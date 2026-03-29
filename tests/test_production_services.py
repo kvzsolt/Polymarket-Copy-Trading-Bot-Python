@@ -1,0 +1,241 @@
+from __future__ import annotations
+
+import sys
+from dataclasses import dataclass
+from decimal import Decimal
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from config.env import SignatureType, WalletConfig, validate_wallet_config
+from services.backtest import BacktestConfig, BacktestEngine
+from services.executionService import ExecutionRequest, ExecutionService
+from services.marketMetaService import MarketMetaService
+from services.riskEngine import PortfolioSnapshot, ProposedTrade, RiskEngine, policy_from_env
+from utils.createClobClient import MarketMeta
+
+
+class TestWalletValidation:
+    def test_valid_wallet_config(self):
+        cfg = WalletConfig(
+            private_key="0x" + ("ab" * 32),
+            chain_id=137,
+            signature_type=SignatureType.EOA,
+            funder_address="0x" + ("1" * 40),
+            polygon_rpc_url="https://polygon-rpc.com",
+        )
+        validate_wallet_config(cfg)
+
+    def test_invalid_chain_raises(self):
+        cfg = WalletConfig(
+            private_key="0x" + ("ab" * 32),
+            chain_id=1,
+            signature_type=SignatureType.EOA,
+            funder_address="0x" + ("1" * 40),
+            polygon_rpc_url="https://polygon-rpc.com",
+        )
+        with pytest.raises(Exception):
+            validate_wallet_config(cfg)
+
+
+class TestMarketMetaService:
+    @pytest.mark.asyncio
+    async def test_caches_market_meta(self):
+        meta = MarketMeta(
+            token_id="t1",
+            tick_size=Decimal("0.01"),
+            min_order_size=Decimal("1"),
+            neg_risk=False,
+        )
+        fake_clob = SimpleNamespace(get_market_meta=AsyncMock(return_value=meta))
+        svc = MarketMetaService(fake_clob, ttl_seconds=60)
+        first = await svc.get("t1")
+        second = await svc.get("t1")
+        assert first == second
+        assert fake_clob.get_market_meta.call_count == 1
+
+
+class _Repo:
+    def __init__(self):
+        self.store = {}
+        self.fills = {}
+
+    def get_by_idempotency_key(self, key):
+        return self.store.get(key)
+
+    def save_submission(self, *, idempotency_key, request, response):
+        self.store[idempotency_key] = {"request": request, "response": response, "order_id": response.get("orderID")}
+
+    def mark_fill(self, *, order_id, fill):
+        self.fills[order_id] = fill
+
+
+@dataclass
+class _FeeSvc:
+    fee_bps: int = 20
+
+    async def get_fee_bps(self, _token_id: str) -> int:
+        return self.fee_bps
+
+
+@dataclass
+class _MetaSvc:
+    async def get(self, token_id: str):
+        return MarketMeta(
+            token_id=token_id,
+            tick_size=Decimal("0.01"),
+            min_order_size=Decimal("1"),
+            neg_risk=False,
+            best_bid=Decimal("0.49"),
+            best_ask=Decimal("0.51"),
+        )
+
+
+class TestExecutionService:
+    @pytest.mark.asyncio
+    async def test_rejects_non_positive_amount(self):
+        clob = SimpleNamespace(get_price=AsyncMock(return_value={"price": "0.5"}))
+        svc = ExecutionService(clob, _MetaSvc(), _FeeSvc(), _Repo())
+        req = ExecutionRequest(
+            user_id="u1",
+            leader_id="l1",
+            token_id="t1",
+            side="BUY",
+            amount=Decimal("0"),
+            max_slippage_bps=100,
+            reason="copy_trade",
+            signal_id="sig_zero",
+        )
+        res = await svc.execute(req)
+        assert res.accepted is False
+        assert res.status == "rejected"
+
+    @pytest.mark.asyncio
+    async def test_rejects_buy_below_min_share_price(self):
+        clob = SimpleNamespace(get_price=AsyncMock(return_value={"price": "0.3"}))
+        svc = ExecutionService(clob, _MetaSvc(), _FeeSvc(), _Repo())
+        req = ExecutionRequest(
+            user_id="u1",
+            leader_id="l1",
+            token_id="t1",
+            side="BUY",
+            amount=Decimal("5"),
+            max_slippage_bps=100,
+            reason="copy_trade",
+            signal_id="sig_minprice",
+        )
+        with patch("services.executionService.ENV", {"MIN_SHARE_PRICE": 0.4}):
+            res = await svc.execute(req)
+
+        assert res.accepted is False
+        assert res.status == "rejected"
+        assert res.error is not None
+        assert "min_share_price" in res.error
+
+    @pytest.mark.asyncio
+    @patch("services.executionService.ENV", {"MIN_SHARE_PRICE": 0})
+    async def test_executes_and_records_fill(self):
+        clob = SimpleNamespace(
+            get_price=AsyncMock(return_value={"price": "0.5"}),
+            create_market_order=AsyncMock(return_value={"signed": True}),
+            post_signed_order=AsyncMock(return_value={"success": True, "orderID": "o1", "status": "submitted"}),
+            client=SimpleNamespace(get_order=lambda _order_id: {"status": "filled", "size_matched": "5", "avg_price": "0.5"}),
+        )
+        repo = _Repo()
+        svc = ExecutionService(clob, _MetaSvc(), _FeeSvc(), repo)
+        req = ExecutionRequest(
+            user_id="u1",
+            leader_id="l1",
+            token_id="t1",
+            side="BUY",
+            amount=Decimal("5"),
+            max_slippage_bps=100,
+            reason="copy_trade",
+            signal_id="sig_fill",
+        )
+        res = await svc.execute(req)
+        assert res.accepted is True
+        assert res.order_id == "o1"
+        assert "o1" in repo.fills
+
+    @pytest.mark.asyncio
+    @patch("services.executionService.ENV", {"MIN_SHARE_PRICE": 0})
+    async def test_duplicate_idempotency_is_ignored(self):
+        clob = SimpleNamespace(get_price=AsyncMock(return_value={"price": "0.5"}))
+        repo = _Repo()
+        svc = ExecutionService(clob, _MetaSvc(), _FeeSvc(), repo)
+        req = ExecutionRequest(
+            user_id="u1",
+            leader_id="l1",
+            token_id="t1",
+            side="BUY",
+            amount=Decimal("5"),
+            max_slippage_bps=100,
+            reason="copy_trade",
+            signal_id="sig_dup",
+        )
+        # Seed duplicate — must have order_id to block retry
+        key = "d"
+        repo.store = {key: {"order_id": "existing", "status": "filled"}}
+        with patch("services.executionService._idempotency_key", return_value=key):
+            res = await svc.execute(req)
+        assert res.status == "duplicate_ignored"
+
+
+class TestRiskEngine:
+    def test_policy_rejects_over_trade_limit(self):
+        engine = RiskEngine()
+        with patch("services.riskEngine.ENV", {
+            "BUY_MAX_AMOUNT": 100,
+            "MAX_POSITION_PCT": 0.25,
+            "MAX_MARKET_EXPOSURE_USDC": 300,
+            "MAX_CATEGORY_EXPOSURE_USDC": 600,
+            "MAX_LEADER_EXPOSURE_USDC": 500,
+            "MAX_OPEN_POSITIONS": 20,
+            "MAX_DAILY_DRAWDOWN_PCT": 20,
+            "SLIPPAGE_TOLERANCE": 2.0,
+            "KILL_SWITCH": False,
+        }):
+            policy = policy_from_env()
+        portfolio = PortfolioSnapshot(
+            equity_usdc=Decimal("1000"),
+            daily_drawdown_pct=Decimal("0"),
+            open_positions_count=1,
+            market_exposures={},
+            category_exposures={},
+            leader_exposures={},
+        )
+        trade = ProposedTrade(
+            user_id="u",
+            leader_id="l",
+            market_id="m1",
+            category="c1",
+            token_id="t1",
+            side="BUY",
+            notional_usdc=Decimal("150"),
+        )
+        decision = engine.evaluate(portfolio, policy, trade)
+        assert decision.allow is False
+
+
+class TestBacktest:
+    def test_backtest_runs(self):
+        cfg = BacktestConfig(
+            initial_equity=1000.0,
+            max_trade_usdc=100.0,
+            slippage_bps=50,
+            fee_bps=20,
+            latency_ms=200,
+        )
+        signals = [
+            {"timestamp": 1, "token_id": "t1", "side": "BUY", "usdc_size": 50, "price": 0.5},
+            {"timestamp": 2, "token_id": "t1", "side": "SELL", "size": 50, "price": 0.6},
+        ]
+        market = {"t1": 0.55}
+        res = BacktestEngine().run(signals, market, cfg)
+        assert "final_equity" in res
+        assert res["num_points"] >= 1

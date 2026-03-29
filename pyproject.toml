@@ -1,0 +1,29 @@
+[project]
+name = "polymarket-copy-trading-bot"
+version = "0.1.0"
+description = "Production-hardened Polymarket copy-trading bot with MongoDB persistence."
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+  "python-dotenv==1.2.2",
+  "pymongo==4.16.0",
+  "aiohttp==3.13.3",
+  "web3==7.14.1",
+  "eth-account==0.13.7",
+  "py-clob-client==0.34.6",
+  "rich==14.3.3",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest==9.0.2",
+  "pytest-asyncio==1.3.0",
+]
+
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

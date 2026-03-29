@@ -1,0 +1,60 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+.env
+
+# Runtime state (created automatically on first run)
+/data/bot_state.db
+/log
+.github
+.claude
+lib/
+.proxyai
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+.qodo
+# Virtual Environment
+venv/
+env/
+ENV/
+.venv
+.python-version
+
+# Environment variables
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+log/
+
+.proxyai
+.github
+# OS
+.DS_Store
+Thumbs.db
+.logs/stdio-server.log.*
+/logs
+.pytest_cache
+.env

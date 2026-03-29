@@ -1,0 +1,39 @@
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+
+class TestIdempotencyStore:
+    def test_build_trade_key(self):
+        from utils.idempotency import build_trade_key
+
+        trade = {
+            "transactionHash": "0xABC",
+            "side": "buy",
+            "asset": "12345",
+        }
+        key = build_trade_key("0xLeader", trade)
+        assert key == "0xleader|0xabc|BUY|12345"
+
+    def test_mark_and_has_processed(self, tmp_path, monkeypatch):
+        import utils.idempotency as idem
+
+        monkeypatch.setattr(idem, "_DB_PATH", tmp_path / "state.db")
+        idem.reset_cache_for_tests()
+
+        trade = {
+            "transactionHash": "0x1",
+            "side": "BUY",
+            "asset": "a1",
+            "conditionId": "c1",
+        }
+        key = idem.build_trade_key("0xleader", trade)
+        assert idem.has_processed(key) is False
+
+        idem.mark_processed("0xleader", trade, status="executed")
+        assert idem.has_processed(key) is True

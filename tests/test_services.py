@@ -1,0 +1,793 @@
+from __future__ import annotations
+
+import sys
+from decimal import Decimal
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch, MagicMock
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from services.tradeMonitor import _normalize_activities
+from services.copyDecisionService import CopyDecision
+from services.tradeExecutor import _calc_buy_amount, _apply_balance_cap
+from utils.getMyBalance import _get_balance_sync, get_my_balance
+
+
+# ---------------------------------------------------------------------------
+# TradeMonitor — _normalize_activities
+# ---------------------------------------------------------------------------
+class TestTradeMonitorNormalize:
+    def test_normalize_list(self):
+        data = [{"a": 1}, {"b": 2}]
+        assert _normalize_activities(data) == data
+
+    def test_normalize_dict_with_data(self):
+        assert _normalize_activities({"data": [{"a": 1}]}) == [{"a": 1}]
+
+    def test_normalize_dict_with_activities(self):
+        assert _normalize_activities({"activities": [{"a": 1}]}) == [{"a": 1}]
+
+    def test_normalize_dict_with_results(self):
+        assert _normalize_activities({"results": [{"a": 1}]}) == [{"a": 1}]
+
+    def test_normalize_none(self):
+        assert _normalize_activities(None) == []
+
+    def test_normalize_empty_list(self):
+        assert _normalize_activities([]) == []
+
+    def test_normalize_non_dict_non_list(self):
+        assert _normalize_activities("string") == []
+
+    def test_normalize_dict_with_empty_known_keys(self):
+        """Dict with known keys but empty lists should return empty list."""
+        assert _normalize_activities({"data": []}) == []
+        assert _normalize_activities({"activities": []}) == []
+        assert _normalize_activities({"results": []}) == []
+
+    def test_normalize_dict_without_known_keys(self):
+        """Dict without data/activities/results falls through to empty."""
+        assert _normalize_activities({"unknown": [1, 2]}) == []
+
+    def test_normalize_integer_input(self):
+        assert _normalize_activities(42) == []
+
+
+# ---------------------------------------------------------------------------
+# TradeExecutor — _calc_buy_amount
+# ---------------------------------------------------------------------------
+class TestTradeExecutorCalcBuyAmount:
+    def test_basic_calculation(self):
+        with patch("services.tradeExecutor.ENV", {"SIZING_MODE": "proportional", "FIXED_AMOUNT": 10}):
+            assert _calc_buy_amount({"usdcSize": 100}, 0.05, 0.5, 50) == 5.0
+
+    def test_clamp_to_max(self):
+        with patch("services.tradeExecutor.ENV", {"SIZING_MODE": "proportional", "FIXED_AMOUNT": 10}):
+            assert _calc_buy_amount({"usdcSize": 10000}, 0.05, 0.5, 50) == 50
+
+    def test_clamp_to_min(self):
+        with patch("services.tradeExecutor.ENV", {"SIZING_MODE": "proportional", "FIXED_AMOUNT": 10}):
+            assert _calc_buy_amount({"usdcSize": 1}, 0.05, 5.0, 100) == 5.0
+
+    def test_fallback_to_size_times_price(self):
+        trade = {"usdcSize": 0, "size": 10, "price": 0.5}
+        with patch("services.tradeExecutor.ENV", {"SIZING_MODE": "proportional", "FIXED_AMOUNT": 10}):
+            # 10 * 0.5 * 0.10 = 0.5, but $1 floor applies
+            assert _calc_buy_amount(trade, 0.10, 0.1, 100) == 1.0
+
+    def test_zero_usdc_zero_size(self):
+        trade = {"usdcSize": 0, "size": 0, "price": 0}
+        with patch("services.tradeExecutor.ENV", {"SIZING_MODE": "proportional", "FIXED_AMOUNT": 10}):
+            # 0 * ratio = 0, clamped to buy_min=0.5, but $1 floor applies
+            assert _calc_buy_amount(trade, 0.05, 0.5, 100) == 1.0
+
+    def test_none_usdc_size_falls_back(self):
+        """When usdcSize is None, should fall back to size * price."""
+        trade = {"usdcSize": None, "size": 20, "price": 0.5}
+        with patch("services.tradeExecutor.ENV", {"SIZING_MODE": "proportional", "FIXED_AMOUNT": 10}):
+            # 20*0.5*0.10 = 1.0
+            assert _calc_buy_amount(trade, 0.10, 0.1, 100) == 1.0
+
+    def test_missing_keys_returns_dollar_floor(self):
+        """Empty trade dict should clamp to $1 floor."""
+        with patch("services.tradeExecutor.ENV", {"SIZING_MODE": "proportional", "FIXED_AMOUNT": 10}):
+            assert _calc_buy_amount({}, 0.05, 0.5, 100) == 1.0
+
+    def test_min_amount_below_one_gets_floored(self):
+        """buy_min < $1 should be floored to $1."""
+        with patch("services.tradeExecutor.ENV", {"SIZING_MODE": "proportional", "FIXED_AMOUNT": 10}):
+            assert _calc_buy_amount({"usdcSize": 1}, 0.05, 0.5, 100) == 1.0
+
+    def test_exact_boundary_no_clamp(self):
+        """proxy_amount exactly at max should return max."""
+        with patch("services.tradeExecutor.ENV", {"SIZING_MODE": "proportional", "FIXED_AMOUNT": 10}):
+            assert _calc_buy_amount({"usdcSize": 1000}, 0.05, 0.5, 50) == 50
+
+    def test_ratio_of_one(self):
+        """100% copy ratio should mirror leader amount."""
+        with patch("services.tradeExecutor.ENV", {"SIZING_MODE": "proportional", "FIXED_AMOUNT": 10}):
+            assert _calc_buy_amount({"usdcSize": 25}, 1.0, 1.0, 100) == 25.0
+
+    def test_string_usdc_size_coerced(self):
+        """String numeric values should be coerced via float()."""
+        with patch("services.tradeExecutor.ENV", {"SIZING_MODE": "proportional", "FIXED_AMOUNT": 10}):
+            assert _calc_buy_amount({"usdcSize": "200"}, 0.05, 0.5, 50) == 10.0
+
+    def test_fixed_sizing_mode(self):
+        """Fixed mode ignores leader trade size and uses FIXED_AMOUNT."""
+        with patch("services.tradeExecutor.ENV", {"SIZING_MODE": "fixed", "FIXED_AMOUNT": 25}):
+            result = _calc_buy_amount({"usdcSize": 1000}, 0.05, 1, 100)
+            assert result == 25.0
+
+    def test_fixed_sizing_mode_clamped_to_max(self):
+        """Fixed amount exceeding max should be clamped."""
+        with patch("services.tradeExecutor.ENV", {"SIZING_MODE": "fixed", "FIXED_AMOUNT": 200}):
+            result = _calc_buy_amount({"usdcSize": 1000}, 0.05, 1, 100)
+            assert result == 100
+
+    def test_adaptive_sizing_mode(self):
+        """Adaptive mode scales ratio by win rate."""
+        mock_pm = MagicMock()
+        mock_pm.summary.return_value = {"win_rate": 80}
+        with patch("services.tradeExecutor.ENV", {"SIZING_MODE": "adaptive", "FIXED_AMOUNT": 10}), \
+             patch("services.tradeExecutor.get_position_manager", return_value=mock_pm):
+            # leader=100, ratio=0.10, win_rate=80% → multiplier = 0.5 + 0.8*1.5 = 1.7
+            # 100 * 0.10 * 1.7 = 17.0
+            result = _calc_buy_amount({"usdcSize": 100}, 0.10, 1, 200)
+            assert result == 17.0
+
+
+# ---------------------------------------------------------------------------
+# TradeExecutor — _apply_balance_cap
+# ---------------------------------------------------------------------------
+class TestApplyBalanceCap:
+    def test_caps_at_max_position_pct(self):
+        with patch("services.tradeExecutor.ENV", {"MAX_POSITION_PCT": 0.25}):
+            assert _apply_balance_cap(50, 100) == 25.0
+
+    def test_amount_below_cap_unchanged(self):
+        with patch("services.tradeExecutor.ENV", {"MAX_POSITION_PCT": 0.25}):
+            assert _apply_balance_cap(10, 100) == 10.0
+
+    def test_caps_at_balance_when_low(self):
+        with patch("services.tradeExecutor.ENV", {"MAX_POSITION_PCT": 0.25}):
+            assert _apply_balance_cap(50, 20) == 5.0
+
+    def test_tiny_balance_allows_full(self):
+        with patch("services.tradeExecutor.ENV", {"MAX_POSITION_PCT": 0.25}):
+            # max_allowed = 2*0.25 = 0.5 < 1.0, so falls back to full balance
+            assert _apply_balance_cap(1.5, 2.0) == 1.5
+
+
+# ---------------------------------------------------------------------------
+# getMyBalance
+# ---------------------------------------------------------------------------
+class TestGetMyBalance:
+    def test_sync_balance_invalid_address_returns_none(self):
+        assert _get_balance_sync("not-an-address") is None
+
+    @pytest.mark.asyncio
+    async def test_async_balance_returns_value(self):
+        with patch("utils.getMyBalance._get_balance_sync", return_value=12.5):
+            assert await get_my_balance("0x1111111111111111111111111111111111111111") == 12.5
+
+    @pytest.mark.asyncio
+    async def test_async_balance_handles_sync_failure(self):
+        with patch("utils.getMyBalance._get_balance_sync", side_effect=RuntimeError("rpc down")):
+            assert await get_my_balance("0x1111111111111111111111111111111111111111") is None
+
+
+# ---------------------------------------------------------------------------
+# TradeExecutor — execute_trades (direct call, no queue)
+# ---------------------------------------------------------------------------
+class TestTradeExecutorExecuteTrades:
+    @pytest.mark.asyncio
+    async def test_execute_trades_calls_post_order(self):
+        """execute_trades should call execution service for each trade."""
+        from services.tradeExecutor import execute_trades
+        mock_clob = AsyncMock()
+        mock_clob.get_min_order_size.return_value = 0.0
+        mock_clob.get_price.return_value = {"price": "0.5", "size": "100"}
+        mock_exec = MagicMock()
+        mock_exec.execute = AsyncMock(
+            return_value=MagicMock(
+                accepted=True,
+                filled_amount=Decimal("10"),
+                avg_price=Decimal("0.5"),
+                status="filled",
+                order_id="o1",
+                error=None,
+            )
+        )
+
+        trade = {
+            "conditionId": "c1", "asset": "a1", "transactionHash": "0x1",
+            "side": "BUY", "usdcSize": 100, "size": 10, "price": 0.5,
+        }
+        bot_params = {
+            "leaderWallet": "0xleader",
+            "tradeRate": 5,
+            "buyMinAmount": 1,
+            "buyMaxAmount": 50,
+            "positionThreshold": 0,
+        }
+        with patch("services.tradeExecutor.get_my_balance", new_callable=AsyncMock, return_value=100.0), \
+             patch("services.tradeExecutor.fetch_data", new_callable=AsyncMock, return_value=[]), \
+             patch("services.tradeExecutor._get_execution_service", return_value=mock_exec):
+            await execute_trades(mock_clob, bot_params, [trade])
+        mock_exec.execute.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_execute_trades_skips_buy_below_min_share_price(self):
+        """BUY should be skipped when live quote is below configured MIN_SHARE_PRICE."""
+        from services.tradeExecutor import execute_trades
+        mock_clob = AsyncMock()
+        mock_clob.get_price.return_value = {"price": "0.50", "size": "100"}
+        mock_exec = MagicMock()
+        mock_exec.execute = AsyncMock()
+
+        trade = {
+            "conditionId": "c1", "asset": "a1", "transactionHash": "0x1",
+            "side": "BUY", "usdcSize": 100, "size": 10, "price": 0.5,
+        }
+        bot_params = {
+            "leaderWallet": "0xleader",
+            "tradeRate": 5,
+            "buyMinAmount": 1,
+            "buyMaxAmount": 50,
+            "positionThreshold": 0,
+        }
+        with patch("services.tradeExecutor.get_my_balance", new_callable=AsyncMock, return_value=100.0), \
+             patch("services.tradeExecutor.fetch_data", new_callable=AsyncMock, return_value=[]), \
+             patch("services.tradeExecutor._get_execution_service", return_value=mock_exec), \
+             patch.dict("services.tradeExecutor.ENV", {"MIN_SHARE_PRICE": 0.60}, clear=False):
+            await execute_trades(mock_clob, bot_params, [trade])
+
+        mock_exec.execute.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_execute_trades_empty_list_no_crash(self):
+        """Passing an empty trade list should not crash."""
+        from services.tradeExecutor import execute_trades
+        mock_clob = AsyncMock()
+        bot_params = {
+            "leaderWallet": "0xleader",
+            "tradeRate": 5,
+            "buyMinAmount": 1,
+            "buyMaxAmount": 50,
+            "positionThreshold": 0,
+        }
+        with patch("services.tradeExecutor.get_my_balance", new_callable=AsyncMock, return_value=100.0), \
+             patch("services.tradeExecutor.fetch_data", new_callable=AsyncMock, return_value=[]), \
+             patch("services.tradeExecutor._get_execution_service", return_value=MagicMock(execute=AsyncMock())):
+            await execute_trades(mock_clob, bot_params, [])
+
+    @pytest.mark.asyncio
+    async def test_execute_trades_skips_unknown_side(self):
+        """Trades with unknown side should be skipped."""
+        from services.tradeExecutor import execute_trades
+        mock_clob = AsyncMock()
+        trade = {
+            "conditionId": "c1", "asset": "a1", "transactionHash": "0x1",
+            "side": "UNKNOWN", "usdcSize": 10,
+        }
+        bot_params = {
+            "leaderWallet": "0xleader",
+            "tradeRate": 5,
+            "buyMinAmount": 1,
+            "buyMaxAmount": 50,
+            "positionThreshold": 0,
+        }
+        with patch("services.tradeExecutor.get_my_balance", new_callable=AsyncMock, return_value=100.0), \
+             patch("services.tradeExecutor.fetch_data", new_callable=AsyncMock, return_value=[]), \
+             patch("services.tradeExecutor._get_execution_service", return_value=MagicMock(execute=AsyncMock())) as mock_exec:
+            await execute_trades(mock_clob, bot_params, [trade])
+        mock_exec.return_value.execute.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_execute_trades_skips_when_balance_lookup_fails(self):
+        """Missing balances should stop the batch before orders are posted."""
+        from services.tradeExecutor import execute_trades
+        mock_clob = AsyncMock()
+        trade = {
+            "conditionId": "c1", "asset": "a1", "transactionHash": "0x1",
+            "side": "BUY", "usdcSize": 10,
+        }
+        bot_params = {
+            "leaderWallet": "0xleader",
+            "tradeRate": 5,
+            "buyMinAmount": 1,
+            "buyMaxAmount": 50,
+            "positionThreshold": 0,
+        }
+        with patch("services.tradeExecutor.get_my_balance", new_callable=AsyncMock, side_effect=[None, 100.0]), \
+             patch("services.tradeExecutor.fetch_data", new_callable=AsyncMock, return_value=[]), \
+             patch("services.tradeExecutor._get_execution_service", return_value=MagicMock(execute=AsyncMock())) as mock_exec:
+            await execute_trades(mock_clob, bot_params, [trade])
+        mock_exec.return_value.execute.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_execute_trades_does_not_log_executed_for_duplicate_or_skip(self):
+        """Skipped/duplicate actions must not be logged as EXECUTED."""
+        from services.tradeExecutor import execute_trades
+        mock_clob = AsyncMock()
+        mock_clob.get_price.return_value = {"price": "0.50", "size": "100"}
+        mock_exec = MagicMock()
+        mock_exec.market_meta_service = MagicMock(
+            get=AsyncMock(
+                return_value=SimpleNamespace(min_order_size=Decimal("0.00001"))
+            )
+        )
+        mock_exec.execute = AsyncMock(
+            return_value=MagicMock(
+                accepted=True,
+                filled_amount=Decimal("0"),
+                avg_price=Decimal("0.5"),
+                status="duplicate_ignored",
+                order_id="dup-order",
+                error=None,
+            )
+        )
+
+        decision = CopyDecision(
+            allow=True,
+            skip_code="ok",
+            reason="approved",
+            side="BUY",
+            decision_score=0.9,
+            leader_score=0.9,
+            trade_score=0.9,
+            live_price=0.5,
+            reference_price=0.5,
+            target_notional_usdc=2.5,
+            target_size_tokens=5.0,
+            price_drift_pct=0.0,
+            edge_decay_pct=0.0,
+        )
+
+        trade = {
+            "conditionId": "c1",
+            "asset": "a1",
+            "transactionHash": "0xleaderhash",
+            "side": "BUY",
+            "usdcSize": 10,
+            "size": 20,
+            "price": 0.5,
+        }
+        bot_params = {
+            "leaderWallet": "0xleader",
+            "tradeRate": 5,
+            "buyMinAmount": 1,
+            "buyMaxAmount": 50,
+            "positionThreshold": 0,
+        }
+        with patch("services.tradeExecutor.get_my_balance", new_callable=AsyncMock, return_value=100.0), \
+             patch("services.tradeExecutor.fetch_data", new_callable=AsyncMock, return_value=[]), \
+             patch("services.tradeExecutor._get_execution_service", return_value=mock_exec), \
+             patch("services.tradeExecutor._copy_decision.decide_buy", return_value=decision), \
+             patch("services.tradeExecutor.log_trade_execution") as log_exec, \
+             patch("services.tradeExecutor.log_trade_skip") as log_skip:
+            await execute_trades(mock_clob, bot_params, [trade])
+
+        log_exec.assert_not_called()
+        assert log_skip.called
+
+    @pytest.mark.asyncio
+    async def test_execute_trades_logs_copy_order_id_not_leader_tx(self):
+        """Execution logs should include copy order id and not fake leader tx as copy tx."""
+        from services.tradeExecutor import execute_trades
+        mock_clob = AsyncMock()
+        mock_clob.get_price.return_value = {"price": "0.50", "size": "100"}
+        mock_exec = MagicMock()
+        mock_exec.market_meta_service = MagicMock(
+            get=AsyncMock(
+                return_value=SimpleNamespace(min_order_size=Decimal("0.00001"))
+            )
+        )
+        mock_exec.execute = AsyncMock(
+            return_value=MagicMock(
+                accepted=True,
+                filled_amount=Decimal("5"),
+                avg_price=Decimal("0.5"),
+                status="filled",
+                order_id="copy-order-123",
+                error=None,
+            )
+        )
+        decision = CopyDecision(
+            allow=True,
+            skip_code="ok",
+            reason="approved",
+            side="BUY",
+            decision_score=0.9,
+            leader_score=0.9,
+            trade_score=0.9,
+            live_price=0.5,
+            reference_price=0.5,
+            target_notional_usdc=2.5,
+            target_size_tokens=5.0,
+            price_drift_pct=0.0,
+            edge_decay_pct=0.0,
+        )
+        trade = {
+            "conditionId": "c1",
+            "asset": "a1",
+            "transactionHash": "0xleaderhash",
+            "side": "BUY",
+            "usdcSize": 10,
+            "size": 20,
+            "price": 0.5,
+        }
+        bot_params = {
+            "leaderWallet": "0xleader",
+            "tradeRate": 5,
+            "buyMinAmount": 1,
+            "buyMaxAmount": 50,
+            "positionThreshold": 0,
+        }
+        with patch("services.tradeExecutor.get_my_balance", new_callable=AsyncMock, return_value=100.0), \
+             patch("services.tradeExecutor.fetch_data", new_callable=AsyncMock, return_value=[]), \
+             patch("services.tradeExecutor._get_execution_service", return_value=mock_exec), \
+             patch("services.tradeExecutor._copy_decision.decide_buy", return_value=decision), \
+             patch("services.tradeExecutor.log_trade_execution") as log_exec:
+            await execute_trades(mock_clob, bot_params, [trade])
+
+        assert log_exec.called
+        kwargs = log_exec.call_args.kwargs
+        assert kwargs["meta"]["copyOrderId"] == "copy-order-123"
+        assert kwargs["meta"]["leaderTx"] == "0xleaderhash"
+        assert "tx_hash" not in kwargs or kwargs["tx_hash"] is None
+
+from utils.postOrder import _extract_copy_tx, _reason, _mark_bot_done
+
+
+# ---------------------------------------------------------------------------
+# PostOrder — helper functions
+# ---------------------------------------------------------------------------
+class TestPostOrderHelpers:
+    def test_extract_copy_tx_from_data(self):
+        resp = {"data": {"transactionHash": "0xabc"}}
+        assert _extract_copy_tx(resp) == "0xabc"
+
+    def test_extract_copy_tx_from_order_id(self):
+        resp = {"data": {}, "orderID": "order123"}
+        assert _extract_copy_tx(resp) == "order123"
+
+    def test_extract_copy_tx_fallback(self):
+        assert _extract_copy_tx({"data": {}}) == "N/A"
+
+    def test_extract_copy_tx_missing_data_key(self):
+        """When 'data' key is absent, should still return 'N/A'."""
+        assert _extract_copy_tx({}) == "N/A"
+
+    def test_reason_does_not_raise(self):
+        _reason("test reason", "detail")
+
+    def test_mark_bot_done_no_activity(self):
+        _mark_bot_done({"_id": None}, None, bot=True)
+
+    def test_mark_bot_done_no_id(self):
+        mock_coll = MagicMock()
+        _mark_bot_done({}, mock_coll, bot=True)
+        mock_coll.update_one.assert_not_called()
+
+    def test_mark_bot_done_update_one_raises(self):
+        """Exception in update_one should be swallowed silently."""
+        mock_coll = MagicMock()
+        mock_coll.update_one.side_effect = Exception("DB error")
+        _mark_bot_done({"_id": "abc"}, mock_coll, bot=True)
+
+
+# ---------------------------------------------------------------------------
+# PostOrder — _execute_order_loop
+# ---------------------------------------------------------------------------
+class TestPostOrderExecuteLoop:
+    @staticmethod
+    def _mock_clob(**overrides):
+        m = AsyncMock()
+        m.get_min_order_size.return_value = 0.0
+        for k, v in overrides.items():
+            setattr(getattr(m, k), 'return_value', v)
+        return m
+
+    @pytest.mark.asyncio
+    async def test_no_price_returns_error(self):
+        from utils.postOrder import _execute_order_loop
+        mock_client = self._mock_clob()
+        mock_client.get_price.return_value = None
+        price, resp, last_resp, retry, err, filled_tokens, filled_usdc = await _execute_order_loop(
+            mock_client, {"conditionId": "c1"}, "asset1", "BUY", 0, 10.0
+        )
+        assert err is not None
+        assert "no price" in err
+        assert filled_tokens == 0
+        assert filled_usdc == 0
+
+    @pytest.mark.asyncio
+    async def test_successful_buy(self):
+        from utils.postOrder import _execute_order_loop
+        from py_clob_client.order_builder.constants import BUY
+        mock_client = self._mock_clob()
+        mock_client.get_price.return_value = {"price": "0.5", "size": "100"}
+        mock_client.post_order.return_value = {"success": True, "data": {"orderID": "o1"}}
+        price, resp, last_resp, retry, err, filled_tokens, filled_usdc = await _execute_order_loop(
+            mock_client, {"conditionId": "c1"}, "asset1", "BUY", BUY, 10.0
+        )
+        assert err is None
+        assert retry == 0
+        assert price == 0.5
+        assert resp["success"] is True
+        assert filled_tokens > 0
+        assert filled_usdc > 0
+
+    @pytest.mark.asyncio
+    async def test_retry_exhaustion(self):
+        from utils.postOrder import _execute_order_loop
+        from py_clob_client.order_builder.constants import BUY
+        mock_client = self._mock_clob()
+        mock_client.get_price.return_value = {"price": "0.5", "size": "100"}
+        mock_client.post_order.return_value = {"success": False, "error": "rejected"}
+        with patch("utils.postOrder.RETRY_BACKOFF_BASE", 0.001):
+            price, resp, last_resp, retry, err, filled_tokens, filled_usdc = await _execute_order_loop(
+                mock_client, {"conditionId": "c1"}, "asset1", "BUY", BUY, 10.0
+            )
+        assert err is None
+        assert retry == 3
+        assert last_resp["success"] is False
+        assert filled_tokens == 0
+        assert filled_usdc == 0
+
+    @pytest.mark.asyncio
+    async def test_sell_size_is_tokens(self):
+        from utils.postOrder import _execute_order_loop
+        from py_clob_client.order_builder.constants import SELL
+        mock_client = self._mock_clob()
+        mock_client.get_price.return_value = {"price": "0.5", "size": "100"}
+        mock_client.post_order.return_value = {"success": True, "data": {}}
+        price, resp, last_resp, retry, err, filled_tokens, filled_usdc = await _execute_order_loop(
+            mock_client, {"conditionId": "c1"}, "asset1", "SELL", SELL, 5.0, size_is_tokens=True
+        )
+        assert err is None
+        assert retry == 0
+        assert filled_tokens == 5.0
+        assert filled_usdc == pytest.approx(2.5)
+        mock_client.post_order.assert_called_once()
+        order_args = mock_client.post_order.call_args[0][0]
+        assert order_args.size == 5.0
+
+    @pytest.mark.asyncio
+    async def test_empty_price_string_returns_error(self):
+        """Price data with empty price string should return error."""
+        from utils.postOrder import _execute_order_loop
+        mock_client = self._mock_clob()
+        mock_client.get_price.return_value = {"price": "", "size": "100"}
+        price, resp, last_resp, retry, err, filled_tokens, filled_usdc = await _execute_order_loop(
+            mock_client, {"conditionId": "c1"}, "asset1", "BUY", 0, 10.0
+        )
+        assert err is not None
+        assert "price" in err
+        assert filled_tokens == 0
+        assert filled_usdc == 0
+
+    @pytest.mark.asyncio
+    async def test_buy_below_min_share_price_returns_error(self):
+        """BUY should be rejected when quote is below MIN_SHARE_PRICE."""
+        from utils.postOrder import _execute_order_loop
+        from py_clob_client.order_builder.constants import BUY
+        mock_client = self._mock_clob()
+        mock_client.get_price.return_value = {"price": "0.40", "size": "100"}
+
+        with patch("utils.postOrder.MIN_SHARE_PRICE", 0.50):
+            _, _, _, _, err, filled_tokens, filled_usdc = await _execute_order_loop(
+                mock_client, {"conditionId": "c1"}, "asset1", "BUY", BUY, 10.0
+            )
+
+        assert err is not None
+        assert "min_share_price" in err
+        assert filled_tokens == 0
+        assert filled_usdc == 0
+
+    @pytest.mark.asyncio
+    async def test_buy_enforces_market_min_size(self):
+        """Order size should be bumped up to market minimum."""
+        from utils.postOrder import _execute_order_loop
+        from py_clob_client.order_builder.constants import BUY
+        mock_client = self._mock_clob()
+        mock_client.get_min_order_size.return_value = 5.0
+        mock_client.get_price.return_value = {"price": "0.37", "size": "100"}
+        mock_client.post_order.return_value = {"success": True, "data": {}}
+        price, resp, last_resp, retry, err, filled_tokens, filled_usdc = await _execute_order_loop(
+            mock_client, {"conditionId": "c1"}, "asset1", "BUY", BUY, 1.0
+        )
+        assert err is None
+        assert retry == 0
+        assert filled_tokens == 5.0
+        assert filled_usdc == pytest.approx(1.85, abs=0.02)
+        order_args = mock_client.post_order.call_args[0][0]
+        assert order_args.size == 5.0
+
+    @pytest.mark.asyncio
+    async def test_slippage_rejection_buy(self):
+        """BUY should be rejected if price moved too far above reference."""
+        from utils.postOrder import _execute_order_loop
+        from py_clob_client.order_builder.constants import BUY
+        mock_client = self._mock_clob()
+        # Current price 0.60, reference 0.50 → 20% slippage > 2% tolerance
+        mock_client.get_price.return_value = {"price": "0.60", "size": "100"}
+        mock_client.post_order.return_value = {"success": True, "data": {}}
+        price, resp, last_resp, retry, err, _, _ = await _execute_order_loop(
+            mock_client, {"conditionId": "c1"}, "asset1", "BUY", BUY, 10.0,
+            reference_price=0.50,
+        )
+        assert err is not None
+        assert "slippage" in err
+
+    @pytest.mark.asyncio
+    async def test_slippage_rejection_sell(self):
+        """SELL should be rejected if price moved too far below reference."""
+        from utils.postOrder import _execute_order_loop
+        from py_clob_client.order_builder.constants import SELL
+        mock_client = self._mock_clob()
+        # Current price 0.40, reference 0.50 → 20% slippage
+        mock_client.get_price.return_value = {"price": "0.40", "size": "100"}
+        mock_client.post_order.return_value = {"success": True, "data": {}}
+        price, resp, last_resp, retry, err, _, _ = await _execute_order_loop(
+            mock_client, {"conditionId": "c1"}, "asset1", "SELL", SELL, 5.0,
+            size_is_tokens=True, reference_price=0.50,
+        )
+        assert err is not None
+        assert "slippage" in err
+
+    @pytest.mark.asyncio
+    async def test_no_slippage_check_when_no_reference(self):
+        """No reference price → no slippage rejection."""
+        from utils.postOrder import _execute_order_loop
+        from py_clob_client.order_builder.constants import BUY
+        mock_client = self._mock_clob()
+        mock_client.get_price.return_value = {"price": "0.90", "size": "100"}
+        mock_client.post_order.return_value = {"success": True, "data": {}}
+        price, resp, last_resp, retry, err, filled_tokens, filled_usdc = await _execute_order_loop(
+            mock_client, {"conditionId": "c1"}, "asset1", "BUY", BUY, 10.0,
+            reference_price=0.0,
+        )
+        assert err is None
+        assert retry == 0
+        assert filled_tokens > 0
+        assert filled_usdc > 0
+
+
+# ---------------------------------------------------------------------------
+# PostOrder — full post_order flow (returns Tuple[str, Optional[dict]])
+# ---------------------------------------------------------------------------
+class TestPostOrderFull:
+    @staticmethod
+    def _mock_clob(**overrides):
+        m = AsyncMock()
+        m.get_min_order_size.return_value = 0.0
+        for k, v in overrides.items():
+            setattr(getattr(m, k), 'return_value', v)
+        return m
+
+    @pytest.mark.asyncio
+    async def test_buy_no_asset_skips(self):
+        from utils.postOrder import post_order
+        mock_client = self._mock_clob()
+        trade = {"conditionId": "c1", "transactionHash": "0x1"}
+        with patch("utils.postOrder._user_activity", return_value=None):
+            result, fill = await post_order(mock_client, "buy", None, None, trade, 100.0, 1000.0, {"tradeRate": 5})
+        assert result == 'skipped'
+        assert fill is None
+        mock_client.get_price.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_sell_no_position_skips(self):
+        from utils.postOrder import post_order
+        mock_client = self._mock_clob()
+        trade = {"conditionId": "c1", "asset": "a1", "transactionHash": "0x1"}
+        with patch("utils.postOrder._user_activity", return_value=None):
+            result, fill = await post_order(mock_client, "sell", None, None, trade, 100.0, 1000.0, {})
+        assert result == 'skipped'
+        assert fill is None
+        mock_client.get_price.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_buy_success_flow(self):
+        from utils.postOrder import post_order
+        mock_client = self._mock_clob()
+        mock_client.get_price.return_value = {"price": "0.5", "size": "100"}
+        mock_client.post_order.return_value = {"success": True, "data": {"transactionHash": "0xcopy"}}
+        trade = {
+            "conditionId": "c1", "asset": "a1", "transactionHash": "0x1",
+            "clampedAmount": 5.0, "side": "BUY", "price": 0.5,
+        }
+        with patch("utils.postOrder._user_activity", return_value=None):
+            result, fill = await post_order(mock_client, "buy", None, None, trade, 100.0, 1000.0, {"tradeRate": 5})
+        assert result == 'executed'
+        assert fill is not None
+        assert fill["price"] == 0.5
+        assert fill["size_tokens"] > 0
+        assert fill["usdc_value"] > 0
+        mock_client.post_order.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_sell_success_flow(self):
+        from utils.postOrder import post_order
+        mock_client = self._mock_clob()
+        mock_client.get_price.return_value = {"price": "0.5", "size": "100"}
+        mock_client.post_order.return_value = {"success": True, "data": {"transactionHash": "0xcopy"}}
+        trade = {
+            "conditionId": "c1", "asset": "a1", "transactionHash": "0x1",
+            "size": 10, "side": "SELL", "price": 0.5,
+        }
+        my_position = {"conditionId": "c1", "asset": "a1", "size": 5}
+        user_position = {"conditionId": "c1", "size": 0}
+        with patch("utils.postOrder._user_activity", return_value=None):
+            result, fill = await post_order(mock_client, "sell", my_position, user_position, trade, 100.0, 1000.0, {})
+        assert result == 'executed'
+        assert fill is not None
+        assert fill["price"] == 0.5
+        assert fill["size_tokens"] > 0
+        assert fill["usdc_value"] > 0
+        mock_client.post_order.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_merge_treated_as_buy(self):
+        from utils.postOrder import post_order
+        mock_client = self._mock_clob()
+        mock_client.get_price.return_value = {"price": "0.5", "size": "100"}
+        mock_client.post_order.return_value = {"success": True, "data": {}}
+        trade = {
+            "conditionId": "c1", "asset": "a1", "transactionHash": "0x1",
+            "clampedAmount": 5.0, "side": "BUY", "price": 0.5,
+        }
+        with patch("utils.postOrder._user_activity", return_value=None):
+            result, fill = await post_order(mock_client, "merge", None, None, trade, 100.0, 1000.0, {"tradeRate": 5})
+        assert result == 'executed'
+        assert fill is not None
+        mock_client.post_order.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# PostOrder — post_risk_sell
+# ---------------------------------------------------------------------------
+class TestPostRiskSell:
+    @pytest.mark.asyncio
+    async def test_risk_sell_success(self):
+        from utils.postOrder import post_risk_sell
+        from services.positionManager import TrackedPosition
+        mock_client = AsyncMock()
+        mock_client.get_min_order_size.return_value = 0.0
+        mock_client.get_price.return_value = {"price": "0.3", "size": "100"}
+        mock_client.post_order.return_value = {"success": True, "data": {}}
+        pos = TrackedPosition(
+            condition_id="c1", asset="a1", side="BUY",
+            entry_price=0.5, size_tokens=10.0, usdc_cost=5.0,
+        )
+        result = await post_risk_sell(mock_client, pos, 0.3, "stop_loss")
+        assert result == 'executed'
+
+    @pytest.mark.asyncio
+    async def test_risk_sell_zero_tokens_skipped(self):
+        from utils.postOrder import post_risk_sell
+        from services.positionManager import TrackedPosition
+        mock_client = AsyncMock()
+        pos = TrackedPosition(
+            condition_id="c1", asset="a1", side="BUY",
+            entry_price=0.5, size_tokens=0.0, usdc_cost=0.0,
+        )
+        result = await post_risk_sell(mock_client, pos, 0.3, "stop_loss")
+        assert result == 'skipped'
+
+
+# ---------------------------------------------------------------------------
+# FetchData
+# ---------------------------------------------------------------------------
+class TestFetchData:
+    @pytest.mark.asyncio
+    async def test_fetch_data_raises_on_error(self):
+        from utils.fetchData import fetch_data
+        with pytest.raises(Exception):
+            await fetch_data("http://localhost:1/nonexistent")
