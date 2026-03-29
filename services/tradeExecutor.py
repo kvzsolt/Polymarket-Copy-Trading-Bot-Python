@@ -37,6 +37,7 @@ from utils.logger import (
     print_executing_strategy,
     print_balance_update,
     print_skip_reason,
+    print_info,
     log_trade_execution,
     log_trade_submitted,
     log_trade_decision,
@@ -221,6 +222,47 @@ async def _maybe_await(value):
     return value
 
 
+def _min_valid_buy_notional_usdc(*, live_price: float, market_min_size: float) -> float:
+    """Minimum BUY notional needed to produce a valid copy order.
+
+    Rule of thumb:
+    - at least 5 shares, or
+    - at least $1 notional,
+    while also respecting exchange market minimum size.
+    """
+    min_tokens = max(5.0, float(market_min_size or 0.0))
+    notional_from_tokens = max(0.0, live_price) * min_tokens
+    return max(1.0, notional_from_tokens)
+
+
+def _maybe_boost_tiny_leader_buy_cap(
+    *,
+    leader_notional: float,
+    min_leader_trade_notional: float,
+    decision_score: float,
+    raw_amount: float,
+    shadow_cash: float,
+    live_price: float,
+    market_min_size: float,
+    high_confidence_score: float,
+) -> float:
+    """Return an upsized BUY notional for tiny leader trades when confidence is high.
+
+    This only lifts copy sizing to the minimum executable order. Hard balance/risk checks
+    still happen later in the pipeline.
+    """
+    if leader_notional <= 0 or leader_notional >= min_leader_trade_notional:
+        return raw_amount
+    if decision_score < high_confidence_score:
+        return raw_amount
+
+    min_required = _min_valid_buy_notional_usdc(
+        live_price=live_price,
+        market_min_size=market_min_size,
+    )
+    return _apply_balance_cap(max(raw_amount, min_required), shadow_cash)
+
+
 def _estimate_buy_edge_and_cost(
     *,
     reference_price: float,
@@ -361,6 +403,9 @@ async def execute_trades(clob_client, bot_params: dict, trades: list[dict]):
     )
 
     min_leader_trade_notional = float(ENV.get('MIN_LEADER_TRADE_NOTIONAL_USDC', 8.0) or 8.0)
+    tiny_leader_high_confidence_score = float(
+        ENV.get('TINY_LEADER_HIGH_CONFIDENCE_SCORE', 0.75) or 0.75
+    )
 
     # --- Shadow cash: track balance depletion within a single batch ---
     enable_tiered = str(ENV.get("ENABLE_BALANCE_TIERED_POLICY", "false")).lower() in ("1", "true", "yes")
@@ -399,29 +444,7 @@ async def execute_trades(clob_client, bot_params: dict, trades: list[dict]):
         leader_notional = float(trade.get('usdcSize', 0) or 0)
         if leader_notional <= 0:
             leader_notional = float(trade.get('size', 0) or 0) * float(trade.get('price', 0) or 0)
-        if side == 'BUY' and 0 < leader_notional < min_leader_trade_notional:
-            reason = (
-                f'leader BUY notional too small to copy efficiently '
-                f'({leader_notional:.2f} < {min_leader_trade_notional:.2f} USDC)'
-            )
-            print_skip_reason('tiny leader BUY filtered', reason)
-            log_trade_skip(
-                logger,
-                side='BUY',
-                condition_id=cid,
-                asset=trade.get('asset') or trade.get('tokenID'),
-                size=float(trade.get('size', 0) or 0.0),
-                price=float(trade.get('price', 0) or 0.0),
-                usdc_value=leader_notional,
-                skip_code='tiny_leader_trade',
-                reason=reason,
-                status='skipped',
-                event_slug=trade.get('eventSlug') or trade.get('slug'),
-                meta={'leaderTx': leader_tx or None, 'title': title, 'market': market},
-            )
-            _record_trading_result(leader_wallet, trade, 'skipped', reason='tiny_leader_trade')
-            _mark_processed('skipped_tiny_leader_trade')
-            continue
+        tiny_leader_buy = side == 'BUY' and 0 < leader_notional < min_leader_trade_notional
 
         if not trade.get('asset'):
             trade['asset'] = trade.get('tokenID') or trade.get('token_id')
@@ -588,6 +611,31 @@ async def execute_trades(clob_client, bot_params: dict, trades: list[dict]):
                     max_notional_usdc=float(regime_cap),
                     market_min_size=market_min_size,
                 )
+                if tiny_leader_buy and decision.decision_score >= tiny_leader_high_confidence_score:
+                    boosted_cap = _maybe_boost_tiny_leader_buy_cap(
+                        leader_notional=leader_notional,
+                        min_leader_trade_notional=min_leader_trade_notional,
+                        decision_score=decision.decision_score,
+                        raw_amount=float(raw_amount),
+                        shadow_cash=shadow_cash,
+                        live_price=live_price,
+                        market_min_size=market_min_size,
+                        high_confidence_score=tiny_leader_high_confidence_score,
+                    )
+                    if boosted_cap > float(regime_cap) + 1e-9:
+                        print_info(
+                            f"Tiny leader BUY override: boosting cap from ${float(regime_cap):.4f} "
+                            f"to ${boosted_cap:.4f} (leader=${leader_notional:.2f}, score={decision.decision_score:.3f})"
+                        )
+                        decision = _copy_decision.decide_buy(
+                            trade=trade,
+                            leader_score=leader_score,
+                            live_price=live_price,
+                            base_notional_usdc=boosted_cap,
+                            max_notional_usdc=boosted_cap,
+                            market_min_size=market_min_size,
+                        )
+                        trade['clampedAmount'] = boosted_cap
         elif side == 'SELL':
             sell_tokens = _compute_sell_tokens(my_position, user_position, trade)
             if trade.get("asset"):
@@ -647,6 +695,28 @@ async def execute_trades(clob_client, bot_params: dict, trades: list[dict]):
         )
         await _trade_analytics.record_decision(decision=decision, trade=trade)
 
+        if tiny_leader_buy and decision.allow and decision.decision_score < tiny_leader_high_confidence_score:
+            decision = CopyDecision(
+                allow=False,
+                skip_code="tiny_leader_low_confidence",
+                reason=(
+                    f"leader BUY notional too small ({leader_notional:.2f} < "
+                    f"{min_leader_trade_notional:.2f} USDC) and score {decision.decision_score:.3f} "
+                    f"< high-confidence threshold {tiny_leader_high_confidence_score:.3f}"
+                ),
+                side=decision.side,
+                decision_score=decision.decision_score,
+                leader_score=decision.leader_score,
+                trade_score=decision.trade_score,
+                live_price=decision.live_price,
+                reference_price=decision.reference_price,
+                target_notional_usdc=0.0,
+                target_size_tokens=0.0,
+                price_drift_pct=decision.price_drift_pct,
+                edge_decay_pct=decision.edge_decay_pct,
+                details=dict(decision.details),
+            )
+
         if not decision.allow:
             print_skip_reason("decision gate rejected", decision.reason)
             log_trade_skip(
@@ -693,9 +763,9 @@ async def execute_trades(clob_client, bot_params: dict, trades: list[dict]):
                 ))
                 effective_cap = min(effective_cap, soft)
                 if decision.target_notional_usdc > effective_cap + 0.001:
-                    logger.info(
-                        f"Soft-capping BUY from {decision.target_notional_usdc:.4f} "
-                        f"to {effective_cap:.4f} (regime={regime_name}, score={decision.decision_score:.3f})"
+                    print_info(
+                        f"Soft-capping BUY from ${decision.target_notional_usdc:.4f} "
+                        f"to ${effective_cap:.4f} (regime={regime_name}, score={decision.decision_score:.3f})"
                     )
 
             portfolio = _build_portfolio_snapshot(
