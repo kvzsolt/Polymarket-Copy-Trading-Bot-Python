@@ -12,7 +12,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from services.tradeMonitor import _normalize_activities
 from services.copyDecisionService import CopyDecision
-from services.tradeExecutor import _calc_buy_amount, _apply_balance_cap
+from services.tradeExecutor import (
+    _calc_buy_amount,
+    _apply_balance_cap,
+    _min_valid_buy_notional_usdc,
+    _maybe_boost_tiny_leader_buy_cap,
+)
 from utils.getMyBalance import _get_balance_sync, get_my_balance
 
 
@@ -160,6 +165,42 @@ class TestApplyBalanceCap:
         with patch("services.tradeExecutor.ENV", {"MAX_POSITION_PCT": 0.25}):
             # max_allowed = 2*0.25 = 0.5 < 1.0, so falls back to full balance
             assert _apply_balance_cap(1.5, 2.0) == 1.5
+
+
+class TestTinyLeaderBoost:
+    def test_min_valid_buy_notional_prefers_five_shares_when_larger(self):
+        assert _min_valid_buy_notional_usdc(live_price=0.40, market_min_size=0.0) == 2.0
+
+    def test_min_valid_buy_notional_respects_market_min_size(self):
+        assert _min_valid_buy_notional_usdc(live_price=0.20, market_min_size=8.0) == 1.6
+
+    def test_boosts_tiny_leader_buy_when_confidence_high(self):
+        with patch("services.tradeExecutor.ENV", {"MAX_POSITION_PCT": 0.25}):
+            boosted = _maybe_boost_tiny_leader_buy_cap(
+                leader_notional=0.40,
+                min_leader_trade_notional=1.0,
+                decision_score=0.90,
+                raw_amount=1.0,
+                shadow_cash=100.0,
+                live_price=0.50,
+                market_min_size=0.0,
+                high_confidence_score=0.75,
+            )
+        assert boosted == 2.5
+
+    def test_does_not_boost_tiny_leader_buy_when_confidence_low(self):
+        with patch("services.tradeExecutor.ENV", {"MAX_POSITION_PCT": 0.25}):
+            boosted = _maybe_boost_tiny_leader_buy_cap(
+                leader_notional=0.40,
+                min_leader_trade_notional=1.0,
+                decision_score=0.50,
+                raw_amount=1.0,
+                shadow_cash=100.0,
+                live_price=0.50,
+                market_min_size=0.0,
+                high_confidence_score=0.75,
+            )
+        assert boosted == 1.0
 
 
 # ---------------------------------------------------------------------------

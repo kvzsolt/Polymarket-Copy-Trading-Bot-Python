@@ -89,16 +89,29 @@ class JsonFormatter(logging.Formatter):
 
 
 class RichConsoleHandler(logging.Handler):
-    """Console handler that suppresses JSONL-only log types (api_response, monitor_heartbeat)."""
+    """Console handler with Rich-styled rendering for structured log types."""
 
     # Log types that should only go to JSONL file, not console
-    _JSONL_ONLY_TYPES = frozenset({"api_response", "monitor_heartbeat"})
+    _JSONL_ONLY_TYPES = frozenset({
+        "api_response",
+        "monitor_heartbeat",
+        "trade_detected",           # print_new_trade_detected() handles console
+        "trade_skip",               # print_skip_reason() handles console
+        "trade_quality_decision",   # analytics granularity — JSONL only
+        "trade_quality_execution",  # analytics granularity — JSONL only
+    })
 
     def emit(self, record: LogRecord) -> None:
         try:
-            # Skip JSONL-only records from console output
-            if getattr(record, "type", None) in self._JSONL_ONLY_TYPES:
+            log_type = getattr(record, "type", None)
+            if log_type in self._JSONL_ONLY_TYPES:
                 return
+
+            # Rich rendering for structured trade types
+            if log_type and self._render_structured(record, log_type):
+                return
+
+            # Default: plain styled text
             msg = self.format(record)
             ts = time.strftime("%I:%M:%S %p")
             style = _LEVEL_STYLES.get(record.levelname, "info")
@@ -109,6 +122,110 @@ class RichConsoleHandler(logging.Handler):
                 console.print_exception(show_locals=False)
         except Exception:
             self.handleError(record)
+
+    def _render_structured(self, record: LogRecord, log_type: str) -> bool:
+        """Render structured log types as Rich panels/lines. Returns True if handled."""
+        ts = time.strftime("%I:%M:%S %p")
+        if log_type == "trade_decision":
+            self._render_decision(record, ts)
+            return True
+        if log_type == "trade_execution":
+            self._render_execution(record, ts)
+            return True
+        if log_type == "trade_submitted":
+            self._render_submitted(record, ts)
+            return True
+        if log_type == "risk_exit":
+            self._render_risk_exit(record, ts)
+            return True
+        return False
+
+    def _render_decision(self, record: LogRecord, ts: str) -> None:
+        allow = getattr(record, "allow", False)
+        side = getattr(record, "side", "?")
+        score = float(getattr(record, "decisionScore", 0.0) or 0.0)
+        reason = getattr(record, "reason", "") or ""
+        cond = shorten_addr(getattr(record, "conditionId", None), 8, 6)
+        if allow:
+            label_style = "trade.executed"
+            icon = "✅"
+            label = "ALLOW"
+        else:
+            label_style = "warning"
+            icon = "⛔"
+            label = "SKIP"
+        side_style = "trade.buy" if side == "BUY" else "trade.sell" if side == "SELL" else "info"
+        parts = [
+            f"[muted][{ts}][/muted]",
+            f"{icon} [{label_style}]DECISION {label}[/{label_style}]",
+            f"[{side_style}]{side}[/{side_style}]",
+            f"score={score:.3f}",
+        ]
+        if cond and cond != "N/A":
+            parts.append(f"[muted]cond={cond}[/muted]")
+        if not allow and reason:
+            parts.append(f"[muted]{reason}[/muted]")
+        console.print(" | ".join(parts))
+
+    def _render_execution(self, record: LogRecord, ts: str) -> None:
+        side = getattr(record, "side", "?")
+        size = float(getattr(record, "size", 0) or 0)
+        price = float(getattr(record, "price", 0) or 0)
+        usdc = float(getattr(record, "usdcValue", 0) or 0)
+        cond = shorten_addr(getattr(record, "conditionId", None), 8, 6)
+        title = getattr(record, "title", None) or ""
+        order_id = shorten_addr(getattr(record, "copyOrderId", None), 8, 6)
+        side_style = "trade.buy" if side == "BUY" else "trade.sell"
+        lines = _build_panel_lines(
+            Side=f"[{side_style}]{side}[/{side_style}]",
+            Size=f"{size:.4f} tokens",
+            Price=f"{price:.4f}",
+            Value=f"[money]${usdc:.2f}[/money]",
+            Market=title[:60] if title else None,
+            Condition=cond if cond != "N/A" else None,
+            OrderID=order_id if order_id != "N/A" else None,
+        )
+        console.print()
+        console.print(Panel(
+            "\n".join(lines),
+            title=f"🎯 [bold green]TRADE EXECUTED — {side}[/bold green]  [muted][{ts}][/muted]",
+            border_style="green",
+            padding=(1, 2),
+        ))
+
+    def _render_submitted(self, record: LogRecord, ts: str) -> None:
+        side = getattr(record, "side", "?")
+        usdc = float(getattr(record, "usdcValue", 0) or 0)
+        order_id = shorten_addr(getattr(record, "copyOrderId", None), 8, 6)
+        side_style = "trade.buy" if side == "BUY" else "trade.sell"
+        line = (
+            f"[muted][{ts}][/muted] 📤 [{side_style}]ORDER SUBMITTED — {side}[/{side_style}]"
+            f" | [money]${usdc:.2f}[/money]"
+        )
+        if order_id and order_id != "N/A":
+            line += f" | [muted]order={order_id}[/muted]"
+        console.print(line)
+
+    def _render_risk_exit(self, record: LogRecord, ts: str) -> None:
+        cond = shorten_addr(getattr(record, "conditionId", None), 8, 6)
+        size = float(getattr(record, "size", 0) or 0)
+        price = float(getattr(record, "price", 0) or 0)
+        usdc = float(getattr(record, "usdcValue", 0) or 0)
+        reason = getattr(record, "riskReason", "") or ""
+        lines = _build_panel_lines(
+            Trigger=reason,
+            Size=f"{size:.4f} tokens",
+            Price=f"{price:.4f}",
+            Value=f"[money]${usdc:.2f}[/money]",
+            Condition=cond if cond != "N/A" else None,
+        )
+        console.print()
+        console.print(Panel(
+            "\n".join(lines),
+            title=f"🛡️ [bold red]RISK EXIT — SELL[/bold red]  [muted][{ts}][/muted]",
+            border_style="red",
+            padding=(1, 2),
+        ))
 
 
 def _env_level(default: str) -> str:
@@ -515,10 +632,16 @@ def print_trade_result(
 
 
 def print_skip_reason(reason: str, detail: str = "") -> None:
-    msg = f"⚠️ Copy not executed. Reason: {reason}"
-    if detail:
-        msg += f" | {detail}"
-    console.print(f"[warning]{msg}[/warning]")
+    lines = _build_panel_lines(
+        Reason=reason,
+        Detail=detail or None,
+    )
+    console.print(Panel(
+        "\n".join(lines),
+        title="⚠️ [bold yellow]COPY NOT EXECUTED[/bold yellow]",
+        border_style="yellow",
+        padding=(0, 2),
+    ))
 
 
 def print_error(msg: str) -> None:

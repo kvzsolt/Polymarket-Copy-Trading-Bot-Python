@@ -276,6 +276,8 @@ def validate_runtime_env() -> None:
         errors.append('COPY_SIZE_DECIMALS must be >= 0.')
     if not (0 <= ENV.get('COPY_DECISION_MIN_SCORE', 0.0) <= 1):
         errors.append('COPY_DECISION_MIN_SCORE must be in [0, 1].')
+    if not (0 <= ENV.get('TINY_LEADER_HIGH_CONFIDENCE_SCORE', 0.0) <= 1):
+        errors.append('TINY_LEADER_HIGH_CONFIDENCE_SCORE must be in [0, 1].')
     if ENV.get('COPY_MAX_PRICE_DRIFT_PCT', 0.0) < 0:
         errors.append('COPY_MAX_PRICE_DRIFT_PCT must be non-negative.')
     if ENV.get('COPY_MAX_EDGE_DECAY_PCT', 0.0) < 0:
@@ -376,6 +378,7 @@ ENV = {
     'TRUST_SIZE_MULTIPLIER_MIN': _float('TRUST_SIZE_MULTIPLIER_MIN', '0.70'),
     'TRUST_SIZE_MULTIPLIER_MAX': _float('TRUST_SIZE_MULTIPLIER_MAX', '1.25'),
     'COPY_DECISION_MIN_SCORE': _float('COPY_DECISION_MIN_SCORE', '0.28'),
+    'TINY_LEADER_HIGH_CONFIDENCE_SCORE': _float('TINY_LEADER_HIGH_CONFIDENCE_SCORE', '0.75'),
     'COPY_MAX_PRICE_DRIFT_PCT': _float('COPY_MAX_PRICE_DRIFT_PCT', '6'),
     'COPY_MAX_EDGE_DECAY_PCT': _float('COPY_MAX_EDGE_DECAY_PCT', '70'),
     'COPY_MAX_SIGNAL_AGE_SECONDS': _float('COPY_MAX_SIGNAL_AGE_SECONDS', '120'),
