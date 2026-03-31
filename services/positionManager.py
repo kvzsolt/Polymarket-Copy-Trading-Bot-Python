@@ -84,7 +84,16 @@ class PositionManager:
         self._enabled = ENV.get('ENABLE_RISK_MGMT', True)
 
         # Profit lock
-        self._enable_profit_lock = ENV.get('ENABLE_PROFIT_LOCK', True)
+        # There are 2 modes for backward compatibility:
+        # - legacy (default when ENABLE_PROFIT_LOCK flag is absent): arm above trigger,
+        #   then exit on fallback below trigger.
+        # - advanced (when ENABLE_PROFIT_LOCK is present+true): immediately sell a
+        #   fraction at trigger and trail the remainder.
+        if "ENABLE_PROFIT_LOCK" in ENV:
+            self._profit_lock_mode = "advanced" if bool(ENV.get("ENABLE_PROFIT_LOCK")) else "disabled"
+        else:
+            self._profit_lock_mode = "legacy"
+
         self._profit_lock_trigger = float(ENV.get("PROFIT_LOCK_TRIGGER_PCT", 70.0) or 70.0) / 100.0
         self._profit_lock_sell_fraction = float(ENV.get("PROFIT_LOCK_SELL_FRACTION", 0.50) or 0.50)
 
@@ -94,20 +103,20 @@ class PositionManager:
         self._near_max_warn = float(ENV.get("NEAR_MAX_PRICE_WARN", 0.92) or 0.92)
         self._near_max_warn_ratio = max(0.0, min(1.0, float(ENV.get("NEAR_MAX_PRICE_WARN_TRIM_RATIO", 0.50) or 0.50)))
 
-        # Trailing stop
-        self._enable_trailing = ENV.get('ENABLE_TRAILING_STOP', True)
+        # Trailing stop (default OFF when flag is absent; ON when configured in ENV)
+        self._enable_trailing = bool(ENV.get('ENABLE_TRAILING_STOP')) if "ENABLE_TRAILING_STOP" in ENV else False
         self._trailing_activation_pct = float(ENV.get("TRAILING_ACTIVATION_PCT", 20.0) or 20.0) / 100.0
         self._trailing_distance = float(ENV.get("TRAILING_DISTANCE", 0.05) or 0.05)
 
-        # Staged TP
-        self._enable_staged_tp = ENV.get('ENABLE_STAGED_TP', True)
+        # Staged TP (default OFF when flag is absent; ON when configured in ENV)
+        self._enable_staged_tp = bool(ENV.get('ENABLE_STAGED_TP')) if "ENABLE_STAGED_TP" in ENV else False
         self._staged_levels = _parse_csv_floats(str(ENV.get("STAGED_TP_LEVELS", "30,50")))
         self._staged_fractions = _parse_csv_floats(str(ENV.get("STAGED_TP_FRACTIONS", "0.25,0.35")))
         # Convert % levels to decimals if > 1
         self._staged_levels = [l / 100.0 if l > 1.0 else l for l in self._staged_levels]
 
-        # Leader divergence
-        self._enable_leader_divergence = ENV.get('ENABLE_LEADER_DIVERGENCE_EXIT', True)
+        # Leader divergence (default OFF when flag is absent; ON when configured in ENV)
+        self._enable_leader_divergence = bool(ENV.get('ENABLE_LEADER_DIVERGENCE_EXIT')) if "ENABLE_LEADER_DIVERGENCE_EXIT" in ENV else False
 
     @property
     def open_positions(self) -> dict[str, TrackedPosition]:
@@ -269,8 +278,23 @@ class PositionManager:
                 )
                 return {"reason": "near_max_partial_trim", "size_fraction": self._near_max_warn_ratio}
 
-        # ── Priority 3: +70% PROFIT LOCK ──
-        if self._enable_profit_lock and pct_change >= self._profit_lock_trigger:
+        # ── Priority 3: PROFIT LOCK ──
+        # Legacy mode: arm above trigger, exit on fallback below trigger.
+        if self._profit_lock_mode == "legacy":
+            if pct_change >= self._profit_lock_trigger and not pos.profit_lock_armed:
+                pos.profit_lock_armed = True
+                # do not exit immediately
+                return None
+            if pos.profit_lock_armed and pct_change >= self._profit_lock_trigger and not pos.profit_lock_held_logged:
+                pos.profit_lock_held_logged = True
+                return None
+            if pos.profit_lock_armed and pct_change < self._profit_lock_trigger:
+                # Fallback below trigger: exit fully.
+                pos.profit_lock_armed = False
+                return {"reason": "profit_lock_fallback", "size_fraction": 1.0}
+
+        # Advanced mode: partial sell at trigger then trail remainder.
+        if self._profit_lock_mode == "advanced" and pct_change >= self._profit_lock_trigger:
             if not es.profit_lock_sold:
                 es.profit_lock_triggered = True
                 es.profit_lock_sold = True

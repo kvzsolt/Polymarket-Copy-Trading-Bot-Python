@@ -35,23 +35,42 @@ class _MockLoader(importlib.abc.Loader):
 
 
 class _MockFinder(importlib.abc.MetaPathFinder):
+    """Meta path finder used by this test module to stub heavy optional deps.
+
+    IMPORTANT: this is installed only for the duration of this test module.
+    Leaving it installed globally will break other tests by returning MagicMocks
+    for real libraries.
+    """
+
     _ALLOWED = frozenset((
+        # External / heavy deps we don't want to require in unit tests.
         "pymongo", "py_clob_client", "py_order_utils", "web3",
-        "dotenv", "aiohttp", "motor", "rich", "colorama",
+        "dotenv", "aiohttp", "motor", "colorama",
         "eth_account", "hexbytes",
     ))
 
     def find_spec(self, fullname, path, target=None):
         top = fullname.split(".")[0]
         if top in self._ALLOWED:
-            return importlib.machinery.ModuleSpec(
-                fullname, _MockLoader(), is_package=True
-            )
+            return importlib.machinery.ModuleSpec(fullname, _MockLoader(), is_package=True)
         return None
 
 
-# Install BEFORE any project imports
-sys.meta_path.insert(0, _MockFinder())
+# Install BEFORE any project imports (module-scoped, with teardown below)
+_MOCK_FINDER = _MockFinder()
+
+def setUpModule():  # noqa: N802 (unittest-style name)
+    sys.meta_path.insert(0, _MOCK_FINDER)
+
+
+def tearDownModule():  # noqa: N802
+    # Ensure we don't contaminate other pytest modules.
+    try:
+        sys.meta_path.remove(_MOCK_FINDER)
+    except ValueError:
+        pass
+
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
