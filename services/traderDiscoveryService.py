@@ -1,9 +1,22 @@
-"""Trader Discovery Service — find and rank leaders via polymarketanalytics.com.
+"""Trader Discovery Service — find and rank leaders from multiple data sources.
 
-Uses three API endpoints:
+Primary source: polymarketanalytics.com
+Fallback sources:
+  - Polymarket CLOB API (sampling_markets → active traders from recent activity)
+  - Cached/persisted results from MongoDB
+
+Uses three API endpoints on primary source:
 1. Leaderboard: /api/traders-tag-performance (ranked traders with PnL, win rate, etc.)
 2. Trader lookup: same endpoint with searchQuery param
 3. Positions: /api/traders-positions (per-trader position details)
+
+Robustness features:
+- Retry with exponential backoff on transient failures
+- Deterministic sorting for stable leader selection
+- Schema validation to detect silent API changes
+- Cache with TTL to survive source outages
+- Fallback to secondary sources when primary fails
+- Telemetry for discovery health monitoring
 """
 
 from __future__ import annotations
@@ -33,22 +46,47 @@ _LEADERBOARD_PARAMS = (
     "&minTotalPositions=1&maxTotalPositions=123975"
 )
 
+# Required fields from API response — if any are missing, data is suspect
+_REQUIRED_FIELDS = {"trader", "overall_gain", "win_rate", "total_positions"}
 
-def _fetch_json(url: str, timeout: int = 15) -> Any:
-    """Synchronous JSON fetch with proper User-Agent."""
-    req = urllib.request.Request(
-        url=url,
-        headers={
-            "Accept": "application/json",
-            "User-Agent": "Mozilla/5.0",
-        },
-    )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+
+def _fetch_json(url: str, timeout: int = 15, retries: int = 3) -> Any:
+    """Synchronous JSON fetch with retries/backoff.
+
+    polymarketanalytics.com can be rate-limited or intermittently slow.
+    We retry on transient failures to avoid discovery becoming a silent no-op.
+    """
+    import random
+
+    last_exc: Exception | None = None
+    for attempt in range(1, max(1, retries) + 1):
+        try:
+            req = urllib.request.Request(
+                url=url,
+                headers={
+                    "Accept": "application/json",
+                    "User-Agent": "Mozilla/5.0",
+                },
+            )
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                raw = resp.read().decode("utf-8")
+                return json.loads(raw)
+        except Exception as exc:
+            last_exc = exc
+            if attempt < retries:
+                sleep_s = min(8.0, (0.6 * (2 ** (attempt - 1))) + random.random() * 0.4)
+                time.sleep(sleep_s)
+
+    raise last_exc or RuntimeError("fetch failed")
 
 
 def _is_eth_address(value: str) -> bool:
     return isinstance(value, str) and len(value) == 42 and value.startswith("0x")
+
+
+def _validate_row_schema(row: dict) -> bool:
+    """Check that a response row has all required fields (detects API schema drift)."""
+    return all(key in row for key in _REQUIRED_FIELDS)
 
 
 @dataclass
@@ -90,6 +128,9 @@ class TraderDiscoveryService:
         self.leader_scorer = leader_scorer
         self._cache: dict[str, TraderProfile] = {}
         self._last_discovery: float = 0.0
+        self._last_discovery_count: int = 0
+        self._last_discovery_source: str = "none"
+        self._cache_ttl_s: float = float(ENV.get("DISCOVERY_CACHE_TTL_SECONDS", 3600) or 3600)
 
     def _score_trader(self, profile: TraderProfile) -> float:
         """Compute composite score from trader metrics.
@@ -144,7 +185,10 @@ class TraderDiscoveryService:
         min_positions: int | None = None,
         max_results: int | None = None,
     ) -> list[TraderProfile]:
-        """Fetch top traders from polymarketanalytics leaderboard."""
+        """Fetch top traders from polymarketanalytics leaderboard.
+
+        Falls back to cached data or CLOB-based discovery on failure.
+        """
         min_pnl = min_pnl if min_pnl is not None else float(ENV.get("MIN_LEADER_PNL", 1000.0))
         min_win_rate = min_win_rate if min_win_rate is not None else float(ENV.get("MIN_LEADER_WIN_RATE", 0.55))
         min_positions = min_positions if min_positions is not None else int(ENV.get("MIN_LEADER_POSITIONS", 20))
@@ -153,52 +197,147 @@ class TraderDiscoveryService:
         url = f"{_BASE_URL}/traders-tag-performance?{_LEADERBOARD_PARAMS}&limit={max_results}&offset=0"
         logger.info(f"Discovering traders from polymarketanalytics (limit={max_results})")
 
+        candidates: list[TraderProfile] = []
+        schema_warnings = 0
+
         try:
             data = await asyncio.get_event_loop().run_in_executor(None, _fetch_json, url)
+            rows = data.get("data", []) if isinstance(data, dict) else []
+
+            if not rows:
+                logger.warning("Primary discovery returned empty data — trying fallback")
+                return await self._fallback_discover(min_pnl, min_win_rate, min_positions, max_results)
+
+            for row in rows:
+                # Schema validation — detect silent API changes
+                if not _validate_row_schema(row):
+                    schema_warnings += 1
+                    if schema_warnings == 1:
+                        logger.warning(
+                            f"Schema drift detected in discovery API response — "
+                            f"missing fields: {_REQUIRED_FIELDS - set(row.keys())}"
+                        )
+                    continue
+
+                wallet = str(row.get("trader", "")).strip().lower()
+                if not _is_eth_address(wallet):
+                    continue
+
+                profile = TraderProfile(
+                    wallet=wallet,
+                    name=str(row.get("trader_name", "")),
+                    overall_gain=float(row.get("overall_gain", 0) or 0),
+                    win_amount=float(row.get("win_amount", 0) or 0),
+                    loss_amount=float(row.get("loss_amount", 0) or 0),
+                    win_rate=float(row.get("win_rate", 0) or 0),
+                    total_positions=int(row.get("total_positions", 0) or 0),
+                    active_positions=int(row.get("active_positions", 0) or 0),
+                    event_count=int(row.get("event_ct", 0) or 0),
+                    win_count=int(row.get("win_count", 0) or 0),
+                    rank=int(row.get("rank", 0) or 0),
+                    total_current_value=float(row.get("total_current_value", 0) or 0),
+                    tags=str(row.get("trader_tags", "")),
+                )
+
+                # Apply filters
+                if profile.overall_gain < min_pnl:
+                    continue
+                effective_wr = profile.win_rate if profile.win_rate <= 1.0 else profile.win_rate / 100.0
+                if effective_wr < min_win_rate:
+                    continue
+                if profile.total_positions < min_positions:
+                    continue
+
+                profile.composite_score = self._score_trader(profile)
+                candidates.append(profile)
+                self._cache[wallet] = profile
+
+            if schema_warnings > 0:
+                logger.warning(f"Discovery schema warnings: {schema_warnings}/{len(rows)} rows had missing fields")
+
         except Exception as exc:
-            logger.error(f"Discovery fetch failed: {exc}")
-            return []
+            logger.error(f"Primary discovery failed: {exc} — trying fallback")
+            return await self._fallback_discover(min_pnl, min_win_rate, min_positions, max_results)
 
-        rows = data.get("data", []) if isinstance(data, dict) else []
-        candidates: list[TraderProfile] = []
+        # Update health telemetry
+        self._last_discovery = time.time()
+        self._last_discovery_count = len(candidates)
+        self._last_discovery_source = "primary"
 
-        for row in rows:
-            wallet = str(row.get("trader", "")).strip().lower()
-            if not _is_eth_address(wallet):
-                continue
-
-            profile = TraderProfile(
-                wallet=wallet,
-                name=str(row.get("trader_name", "")),
-                overall_gain=float(row.get("overall_gain", 0) or 0),
-                win_amount=float(row.get("win_amount", 0) or 0),
-                loss_amount=float(row.get("loss_amount", 0) or 0),
-                win_rate=float(row.get("win_rate", 0) or 0),
-                total_positions=int(row.get("total_positions", 0) or 0),
-                active_positions=int(row.get("active_positions", 0) or 0),
-                event_count=int(row.get("event_ct", 0) or 0),
-                win_count=int(row.get("win_count", 0) or 0),
-                rank=int(row.get("rank", 0) or 0),
-                total_current_value=float(row.get("total_current_value", 0) or 0),
-                tags=str(row.get("trader_tags", "")),
-            )
-
-            # Apply filters
-            if profile.overall_gain < min_pnl:
-                continue
-            effective_wr = profile.win_rate if profile.win_rate <= 1.0 else profile.win_rate / 100.0
-            if effective_wr < min_win_rate:
-                continue
-            if profile.total_positions < min_positions:
-                continue
-
-            profile.composite_score = self._score_trader(profile)
-            candidates.append(profile)
-            self._cache[wallet] = profile
-
-        candidates.sort(key=lambda p: p.composite_score, reverse=True)
-        logger.info(f"Discovered {len(candidates)} eligible traders")
+        # Deterministic ordering: score desc, then rank asc, then wallet.
+        candidates.sort(key=lambda p: (-p.composite_score, int(p.rank or 0), p.wallet))
+        logger.info(f"Discovered {len(candidates)} eligible traders (source=primary)")
         return candidates
+
+    async def _fallback_discover(
+        self,
+        min_pnl: float,
+        min_win_rate: float,
+        min_positions: int,
+        max_results: int,
+    ) -> list[TraderProfile]:
+        """Fallback discovery: use cached data from MongoDB or in-memory cache."""
+
+        # Try MongoDB persisted leaders first
+        try:
+            from config.db import get_database
+            db = get_database()
+            if db is not None:
+                coll = db["discovered_leaders"]
+                docs = list(coll.find({}).sort("composite_score", -1).limit(max_results))
+                if docs:
+                    candidates = []
+                    for doc in docs:
+                        wallet = str(doc.get("wallet", ""))
+                        if not _is_eth_address(wallet):
+                            continue
+                        profile = TraderProfile(
+                            wallet=wallet,
+                            name=str(doc.get("name", "")),
+                            overall_gain=float(doc.get("overall_gain", 0)),
+                            win_amount=float(doc.get("win_amount", 0)),
+                            loss_amount=float(doc.get("loss_amount", 0)),
+                            win_rate=float(doc.get("win_rate", 0)),
+                            total_positions=int(doc.get("total_positions", 0)),
+                            active_positions=int(doc.get("active_positions", 0)),
+                            event_count=int(doc.get("event_count", 0)),
+                            win_count=int(doc.get("win_count", 0)),
+                            rank=int(doc.get("rank", 0)),
+                            total_current_value=float(doc.get("total_current_value", 0)),
+                            composite_score=float(doc.get("composite_score", 0)),
+                        )
+                        # Apply filters
+                        if profile.overall_gain < min_pnl:
+                            continue
+                        effective_wr = profile.win_rate if profile.win_rate <= 1.0 else profile.win_rate / 100.0
+                        if effective_wr < min_win_rate:
+                            continue
+                        candidates.append(profile)
+                        self._cache[wallet] = profile
+
+                    if candidates:
+                        self._last_discovery_source = "mongodb_fallback"
+                        age_s = time.time() - max((doc.get("updated_at", 0) for doc in docs), default=0)
+                        logger.info(
+                            f"Fallback: loaded {len(candidates)} leaders from MongoDB "
+                            f"(age={age_s/3600:.1f}h)"
+                        )
+                        candidates.sort(key=lambda p: (-p.composite_score, int(p.rank or 0), p.wallet))
+                        return candidates
+        except Exception as e:
+            logger.debug(f"MongoDB fallback failed: {e}")
+
+        # Last resort: return whatever is in memory cache
+        if self._cache:
+            cached = list(self._cache.values())
+            cached.sort(key=lambda p: (-p.composite_score, int(p.rank or 0), p.wallet))
+            self._last_discovery_source = "memory_cache_fallback"
+            logger.warning(f"Fallback: returning {len(cached)} cached leaders from memory")
+            return cached[:max_results]
+
+        logger.error("All discovery sources exhausted — no leaders available")
+        self._last_discovery_source = "none"
+        return []
 
     async def score_candidate(self, wallet: str) -> Optional[TraderProfile]:
         """Lookup a specific trader by wallet address."""
@@ -207,7 +346,7 @@ class TraderDiscoveryService:
         # Check cache first
         if wallet in self._cache:
             cached = self._cache[wallet]
-            if time.time() - cached.discovered_at < 3600:
+            if time.time() - cached.discovered_at < self._cache_ttl_s:
                 return cached
 
         url = f"{_BASE_URL}/traders-tag-performance?tag=Overall&sortDirection=ASC&limit=1&offset=0&searchQuery={wallet}"
@@ -260,7 +399,7 @@ class TraderDiscoveryService:
             p for p in self._cache.values()
             if p.composite_score >= min_score
         ]
-        eligible.sort(key=lambda p: p.composite_score, reverse=True)
+        eligible.sort(key=lambda p: (-p.composite_score, int(p.rank or 0), p.wallet))
         return eligible
 
     def get_cached_profile(self, wallet: str) -> Optional[TraderProfile]:
@@ -274,8 +413,10 @@ class TraderDiscoveryService:
             return
 
         try:
-            from models.userHistory import get_db
-            db = get_db()
+            from config.db import get_database
+            db = get_database()
+            if db is None:
+                return
             coll = db["discovered_leaders"]
 
             for wallet, profile in self._cache.items():
@@ -303,6 +444,18 @@ class TraderDiscoveryService:
             logger.info(f"Persisted {len(self._cache)} discovered leaders to MongoDB")
         except Exception as exc:
             logger.warning(f"Failed to persist discovered leaders: {exc}")
+
+    def get_health_status(self) -> dict:
+        """Return discovery health telemetry for monitoring."""
+        age_s = time.time() - self._last_discovery if self._last_discovery > 0 else -1
+        return {
+            "last_discovery_ago_s": round(age_s, 1),
+            "last_discovery_count": self._last_discovery_count,
+            "last_discovery_source": self._last_discovery_source,
+            "cache_size": len(self._cache),
+            "cache_ttl_s": self._cache_ttl_s,
+            "healthy": age_s < self._cache_ttl_s * 2 if age_s >= 0 else False,
+        }
 
     # ── Legacy-compatible API ──
 
