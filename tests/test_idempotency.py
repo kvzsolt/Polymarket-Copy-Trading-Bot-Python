@@ -37,3 +37,24 @@ class TestIdempotencyStore:
 
         idem.mark_processed("0xleader", trade, status="executed")
         assert idem.has_processed(key) is True
+
+    def test_mark_processed_all_tx_hashes_marks_aggregated(self, tmp_path, monkeypatch):
+        import utils.idempotency as idem
+
+        monkeypatch.setattr(idem, "_DB_PATH", tmp_path / "state.db")
+        idem.reset_cache_for_tests()
+
+        trade = {
+            "transactionHash": "0xNEW",
+            "side": "BUY",
+            "asset": "a1",
+            "conditionId": "c1",
+            "_txHashes": ["0xOLD1", "0xOLD2"],
+        }
+
+        keys = idem.mark_processed_all_tx_hashes("0xleader", trade, status="executed")
+        assert len(keys) >= 3
+
+        for txh in ["0xnew", "0xold1", "0xold2"]:
+            k = idem.build_trade_key("0xleader", {"transactionHash": txh, "side": "BUY", "asset": "a1"})
+            assert idem.has_processed(k) is True

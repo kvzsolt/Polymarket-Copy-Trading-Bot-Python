@@ -120,6 +120,34 @@ class TestHeadroomForBuy:
         assert not h.allow
         assert h.reason == "max_open_positions_reached"
 
+    def test_daily_loss_respects_env_drawdown_pct(self, monkeypatch):
+        # If MAX_DAILY_DRAWDOWN_PCT is small, headroom should block sooner.
+        import services.riskEngine as re
+
+        monkeypatch.setattr(
+            re,
+            "ENV",
+            {
+                **re.ENV,
+                "MAX_DAILY_DRAWDOWN_PCT": 5,  # 5%
+                "MAX_LEADER_EXPOSURE_USDC": 500,
+                "MAX_MARKET_EXPOSURE_USDC": 300,
+                "MAX_CATEGORY_EXPOSURE_USDC": 600,
+            },
+        )
+        regime = re.get_regime("micro")
+        # day_start=100, max loss=5, daily_loss=6 => blocked
+        h = re.headroom_for_buy(
+            equity_usdc=Decimal("100"),
+            free_cash_usdc=Decimal("90"),
+            open_positions_count=0,
+            daily_loss_usdc=Decimal("6"),
+            day_start_equity_usdc=Decimal("100"),
+            regime=regime,
+        )
+        assert not h.allow
+        assert h.reason == "no_buy_headroom"
+
     def test_no_tradable_cash(self):
         regime = get_regime("micro")
         h = headroom_for_buy(

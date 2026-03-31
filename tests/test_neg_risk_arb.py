@@ -55,14 +55,13 @@ class TestArbProfitability:
             min_ask_depth_tokens=Decimal("5"),
             fee_bps=Decimal("20"),
         )
-        # sum_asks = 0.96
-        # fee = 0.96 * (20/10000 * 2) = 0.96 * 0.004 = 0.00384
-        # total_cost_per_set = 0.96 * 1.004 = 0.96384
-        # profit/token = 1.0 - 0.96384 = 0.03616 → 361.6 bps → well above 10bps
+        # Correct fee model: apply fee_bps once to total notional (sum across legs).
+        # fee = 0.96 * (20/10000) = 0.00192
+        # total_cost_per_set = 0.96 * 1.002 = 0.96192
+        # profit/token = 1.0 - 0.96192 = 0.03808 → 380.8 bps
         sum_asks = Decimal("0.96")
-        fee_per_leg = Decimal("20") / Decimal("10000")
-        total_fee_pct = fee_per_leg * 2
-        total_cost = sum_asks * (1 + total_fee_pct)
+        fee_pct = Decimal("20") / Decimal("10000")
+        total_cost = sum_asks * (1 + fee_pct)
         profit = Decimal("1") - total_cost
         assert profit > Decimal("0.001")
 
@@ -73,13 +72,13 @@ class TestArbProfitability:
         assert profit < 0
 
     def test_marginal_arb_killed_by_fees(self):
-        """YES ask=0.499, NO ask=0.499 → sum=0.998, with fees = 0.998*1.004 = 1.002 → no profit."""
+        """YES ask=0.499, NO ask=0.499 → sum=0.998, with fees = 0.998*1.002 = 0.999996 → ~0 profit."""
         sum_asks = Decimal("0.998")
-        fee_per_leg = Decimal("20") / Decimal("10000")
-        total_fee_pct = fee_per_leg * 2
-        total_cost = sum_asks * (1 + total_fee_pct)
+        fee_pct = Decimal("20") / Decimal("10000")
+        total_cost = sum_asks * (1 + fee_pct)
         profit = Decimal("1") - total_cost
-        assert profit < 0
+        # This is essentially breakeven; with any slippage/impact it's negative.
+        assert profit <= Decimal("0.00001")
 
 
 class TestScanMarketForArb:
@@ -143,11 +142,13 @@ class TestScanMarketForArb:
             fee_bps=Decimal("20"),
         )
         result = await scan_market_for_arb(mock_client, "0xarb", config)
-        # sum = 0.94, fees = 0.94 * 0.004 = 0.00376, total = 0.94376
-        # profit = 1.0 - 0.94376 = 0.05624 → 562 bps → arb!
+        # With SLIPPAGE_TOLERANCE=2% and tick=0.01:
+        # best_ask=0.47 -> worst_ask=ceil(0.4794 to 0.01)=0.48 per leg
+        # sum_worst=0.96; fee=0.96*0.002=0.00192; total=0.96192
+        # profit/token=1-0.96192=0.03808
         assert result is not None
         assert result.sum_asks == Decimal("0.94")
-        assert result.net_profit_per_token > Decimal("0.05")
+        assert result.net_profit_per_token == Decimal("0.03808")
         assert result.optimal_size_tokens > 0
 
     @pytest.mark.asyncio

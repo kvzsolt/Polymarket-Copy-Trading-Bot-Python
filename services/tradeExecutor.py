@@ -7,7 +7,7 @@ from typing import Optional
 from config.env import ENV, get_funder_address
 from utils.fetchData import fetch_data
 from utils.getMyBalance import get_my_balance
-from utils.idempotency import mark_processed
+from utils.idempotency import mark_processed_all_tx_hashes
 from services.executionService import ExecutionRequest, ExecutionService
 from services.feeService import FeeService
 from services.marketMetaService import MarketMetaService
@@ -225,14 +225,29 @@ async def _maybe_await(value):
 def _min_valid_buy_notional_usdc(*, live_price: float, market_min_size: float) -> float:
     """Minimum BUY notional needed to produce a valid copy order.
 
-    Rule of thumb:
-    - at least 5 shares, or
-    - at least $1 notional,
-    while also respecting exchange market minimum size.
+    This must be consistent with ExecutionService semantics:
+    - BUY request amount is USDC notional
+    - min_order_size is enforced using worst_price (slippage-protected)
+
+    We therefore compute the minimum *worst-case* notional required to satisfy the
+    token minimum, and also enforce the $1 Polymarket minimum.
     """
-    min_tokens = max(5.0, float(market_min_size or 0.0))
-    notional_from_tokens = max(0.0, live_price) * min_tokens
-    return max(1.0, notional_from_tokens)
+    if live_price <= 0:
+        return 1.0
+
+    min_shares_cfg = float(ENV.get("COPY_MIN_SHARES", 5.0) or 5.0)
+    min_shares = max(5.0, min_shares_cfg)
+    min_tokens = max(min_shares, float(market_min_size or 0.0))
+
+    slippage_raw = ENV.get("SLIPPAGE_TOLERANCE", 2.0)
+    # IMPORTANT: don't use `or` here; 0.0 is a valid value.
+    if slippage_raw is None or slippage_raw == "":
+        slippage_raw = 2.0
+    slippage_pct = max(0.0, float(slippage_raw)) / 100.0
+    worst_price = live_price * (1.0 + slippage_pct)
+
+    notional_from_tokens = worst_price * min_tokens
+    return max(1.0, float(notional_from_tokens))
 
 
 def _maybe_boost_tiny_leader_buy_cap(
@@ -420,7 +435,7 @@ async def execute_trades(clob_client, bot_params: dict, trades: list[dict]):
 
         def _mark_processed(status: str):
             try:
-                mark_processed(leader_wallet, trade, status=status)
+                mark_processed_all_tx_hashes(leader_wallet, trade, status=status)
             except Exception as e:
                 logger.warning(f'Failed to persist idempotency marker: {e}')
 
@@ -457,7 +472,17 @@ async def execute_trades(clob_client, bot_params: dict, trades: list[dict]):
         user_position = user_by_cid.get(cid)
         decision: CopyDecision
         live_price = float(trade.get("price", 0) or 0.0)
+
+        # Use per-market minimum order size from market metadata when available.
+        # Falling back to ENV MIN_ORDER_SIZE is unsafe: exchange min size varies by market.
         market_min_size = float(ENV.get("MIN_ORDER_SIZE", 0.00001) or 0.00001)
+        try:
+            asset_for_meta = str(trade.get("asset") or trade.get("tokenID") or trade.get("token_id") or "")
+            if asset_for_meta:
+                meta = await execution_service.market_meta_service.get(asset_for_meta)
+                market_min_size = max(market_min_size, float(getattr(meta, "min_order_size", 0) or 0.0))
+        except Exception:
+            pass
 
         if side == 'BUY':
             raw_amount = _calc_buy_amount(trade, ratio, buy_min, buy_max)
