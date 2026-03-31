@@ -147,28 +147,53 @@ class CopyDecisionService:
                 details=trade_score.details,
             )
 
-        min_shares = float(ENV.get("COPY_MIN_SHARES", 5.0) or 5.0)
-        min_notional = float(ENV.get("COPY_MIN_NOTIONAL_USDC", 1.0) or 1.0)
+        # Hard safety floors:
+        # - 5 shares: avoids dust orders and matches other parts of the bot that
+        #   assume a 5-token minimum executable BUY.
+        # - $1 notional: Polymarket rejects < $1 orders.
+        min_shares_cfg = float(ENV.get("COPY_MIN_SHARES", 5.0) or 5.0)
+        min_shares = max(5.0, min_shares_cfg)
+
+        min_notional_cfg = float(ENV.get("COPY_MIN_NOTIONAL_USDC", 1.0) or 1.0)
+        min_notional = max(1.0, min_notional_cfg)
+
         decimals = int(ENV.get("COPY_SIZE_DECIMALS", 4) or 4)
 
+        # Worst-case price for cap compatibility (slippage-adjusted).
+        slippage_pct = float(ENV.get("SLIPPAGE_TOLERANCE", 0.0) or 0.0)
+        slippage_pct = max(slippage_pct, 0.0) / 100.0
+        worst_price = live_price * (1.0 + slippage_pct)
+
         target_size_tokens = desired_notional / live_price
+
+        # Enforce token-size floor
         if 0 < target_size_tokens < min_shares:
             target_size_tokens = min_shares
+
+        # Enforce notional floor at the live quote price (user-facing min notional)
         if target_size_tokens * live_price < min_notional:
             target_size_tokens = min_notional / live_price
+
+        # Enforce market minimum size
         if market_min_size > 0:
             target_size_tokens = max(target_size_tokens, market_min_size)
 
         target_size_tokens = self._ceil(target_size_tokens, decimals)
         target_notional_usdc = target_size_tokens * live_price
 
-        if target_notional_usdc > max_notional_usdc + 1e-9:
-            floored_size_tokens = self._floor(max_notional_usdc / live_price, decimals)
+        # Cap check must use worst-case notional (what we might actually pay).
+        required_worst_notional = target_size_tokens * worst_price
+
+        if required_worst_notional > max_notional_usdc + 1e-9:
+            # Try to floor size to fit cap at worst price.
+            floored_size_tokens = self._floor(max_notional_usdc / worst_price, decimals)
             floored_notional_usdc = floored_size_tokens * live_price
+            floored_required_worst = floored_size_tokens * worst_price
+
             floored_meets_mins = (
                 floored_size_tokens > 0
                 and floored_size_tokens + 1e-12 >= min_shares
-                and floored_notional_usdc + 1e-9 >= min_notional
+                and floored_required_worst + 1e-9 >= min_notional
                 and (market_min_size <= 0 or floored_size_tokens + 1e-12 >= market_min_size)
             )
 
@@ -181,7 +206,7 @@ class CopyDecisionService:
                     skip_code="risk_cap_too_low_for_min_order",
                     reason=(
                         "minimum executable BUY size exceeds available/risk-capped notional "
-                        f"(required={target_notional_usdc:.4f}, cap={max_notional_usdc:.4f})"
+                        f"(required_worst={required_worst_notional:.4f}, cap={max_notional_usdc:.4f})"
                     ),
                     side="BUY",
                     decision_score=trade_score.score,

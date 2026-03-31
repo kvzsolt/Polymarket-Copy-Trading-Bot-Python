@@ -247,6 +247,15 @@ async def main():
             await metrics_runner.cleanup()
 
 if __name__ == '__main__':
+    # Load .env for interactive / script execution.
+    # This is intentionally done here (not in config.env) to avoid import-time
+    # side effects that make tests and tooling non-deterministic.
+    try:
+        from dotenv import load_dotenv
+        load_dotenv()
+    except Exception:
+        pass
+
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
