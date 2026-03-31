@@ -99,6 +99,40 @@ def mark_processed(leader_wallet: str, trade: dict, *, status: str = 'processed'
     return trade_key
 
 
+def mark_processed_all_tx_hashes(leader_wallet: str, trade: dict, *, status: str = 'processed') -> list[str]:
+    """Mark the trade as processed, including any aggregated tx hashes.
+
+    Trade monitor aggregation can merge multiple fills into one signal and attach
+    `_txHashes`. Without marking each underlying tx hash, the bot can re-process
+    earlier fills after restarts or cursor lag.
+
+    Returns list of trade_keys that were marked (may be empty).
+    """
+    keys: list[str] = []
+    # Mark primary trade
+    primary = mark_processed(leader_wallet, trade, status=status)
+    if primary:
+        keys.append(primary)
+
+    tx_hashes = trade.get('_txHashes') or trade.get('txHashes') or []
+    if isinstance(tx_hashes, (list, tuple)):
+        for txh in tx_hashes:
+            if not txh:
+                continue
+            # Create a minimal trade dict carrying this tx hash.
+            t2 = {
+                'transactionHash': txh,
+                'txHash': txh,
+                'side': trade.get('side'),
+                'asset': trade.get('asset') or trade.get('tokenID') or trade.get('token_id'),
+                'conditionId': trade.get('conditionId') or trade.get('condition_id'),
+            }
+            k = mark_processed(leader_wallet, t2, status=status)
+            if k and k not in keys:
+                keys.append(k)
+    return keys
+
+
 def reset_cache_for_tests() -> None:
     """Test helper to force table re-init if env/path changes."""
     global _INITIALIZED

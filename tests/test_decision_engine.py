@@ -102,6 +102,53 @@ class TestTraderDiscoveryService:
         assert resolved == configured
 
     @pytest.mark.asyncio
+    async def test_discovery_sort_is_deterministic_by_score_then_rank(self):
+        svc = TraderDiscoveryService()
+        # Two traders with same computed score; expect smaller rank first.
+        rows = {
+            "data": [
+                {
+                    "trader": "0x" + ("2" * 40),
+                    "trader_name": "B",
+                    "overall_gain": 2000000,
+                    "win_amount": 2000000,
+                    "loss_amount": -0,
+                    "win_rate": 0.80,
+                    "total_positions": 200,
+                    "active_positions": 10,
+                    "event_ct": 80,
+                    "rank": 5,
+                    "total_current_value": 50000,
+                    "trader_tags": "",
+                },
+                {
+                    "trader": "0x" + ("3" * 40),
+                    "trader_name": "A",
+                    "overall_gain": 2000000,
+                    "win_amount": 2000000,
+                    "loss_amount": -0,
+                    "win_rate": 0.80,
+                    "total_positions": 200,
+                    "active_positions": 10,
+                    "event_ct": 80,
+                    "rank": 1,
+                    "total_current_value": 50000,
+                    "trader_tags": "",
+                },
+            ]
+        }
+        with patch("services.traderDiscoveryService._fetch_json", return_value=rows), \
+             patch.dict(
+                 "services.traderDiscoveryService.ENV",
+                 {"MIN_LEADER_PNL": 0, "MIN_LEADER_WIN_RATE": 0, "MIN_LEADER_POSITIONS": 0, "DISCOVERY_MAX_RESULTS": 50},
+                 clear=False,
+             ):
+            cands = await svc.discover_candidates(max_results=2)
+        assert len(cands) == 2
+        assert cands[0].rank == 1
+        assert cands[1].rank == 5
+
+    @pytest.mark.asyncio
     async def test_resolve_leaders_adds_ranked_candidates(self):
         svc = TraderDiscoveryService()
         configured = ["0x" + ("1" * 40)]

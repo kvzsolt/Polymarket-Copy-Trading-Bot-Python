@@ -142,9 +142,19 @@ def headroom_for_buy(
 
     max_market = Decimal(str(ENV.get("MAX_MARKET_EXPOSURE_USDC", 300)))
     max_category = Decimal(str(ENV.get("MAX_CATEGORY_EXPOSURE_USDC", 600)))
-    max_leader = Decimal(str(ENV.get("MAX_LEADER_EXPOSURE_USDC", 200)))
-    day_start_eq = day_start_equity_usdc if day_start_equity_usdc is not None else Decimal(str(ENV.get("DAY_START_EQUITY_USDC", equity_usdc)))
-    max_daily_loss = max(Decimal("2.5"), day_start_eq * Decimal("0.12"))
+    # Keep defaults consistent with policy_from_env and config/env.py.
+    max_leader = Decimal(str(ENV.get("MAX_LEADER_EXPOSURE_USDC", 500)))
+
+    day_start_eq = (
+        day_start_equity_usdc
+        if day_start_equity_usdc is not None
+        else Decimal(str(ENV.get("DAY_START_EQUITY_USDC", equity_usdc)))
+    )
+
+    # Daily loss headroom should respect MAX_DAILY_DRAWDOWN_PCT.
+    # Keep a small absolute floor to avoid micro-accounts getting immediately inert.
+    max_dd_pct = Decimal(str(ENV.get("MAX_DAILY_DRAWDOWN_PCT", 20) or 20)) / Decimal("100")
+    max_daily_loss = max(Decimal("2.5"), day_start_eq * max_dd_pct)
 
     market_headroom = max(Decimal("0"), max_market - market_exposure_usdc)
     category_headroom = max(Decimal("0"), max_category - category_exposure_usdc)

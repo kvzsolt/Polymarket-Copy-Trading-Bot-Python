@@ -169,13 +169,19 @@ class TestApplyBalanceCap:
 
 class TestTinyLeaderBoost:
     def test_min_valid_buy_notional_prefers_five_shares_when_larger(self):
-        assert _min_valid_buy_notional_usdc(live_price=0.40, market_min_size=0.0) == 2.0
+        # Default SLIPPAGE_TOLERANCE=2% => worst_price=0.408, 5 tokens => 2.04 USDC
+        assert _min_valid_buy_notional_usdc(live_price=0.40, market_min_size=0.0) == 2.04
 
     def test_min_valid_buy_notional_respects_market_min_size(self):
-        assert _min_valid_buy_notional_usdc(live_price=0.20, market_min_size=8.0) == 1.6
+        # Default SLIPPAGE_TOLERANCE=2% => worst_price=0.204, 8 tokens => 1.632 USDC
+        assert _min_valid_buy_notional_usdc(live_price=0.20, market_min_size=8.0) == 1.6320000000000001
+
+    def test_min_valid_buy_notional_slippage_zero_matches_quote(self):
+        with patch.dict("services.tradeExecutor.ENV", {"SLIPPAGE_TOLERANCE": 0.0}, clear=False):
+            assert _min_valid_buy_notional_usdc(live_price=0.40, market_min_size=0.0) == 2.0
 
     def test_boosts_tiny_leader_buy_when_confidence_high(self):
-        with patch("services.tradeExecutor.ENV", {"MAX_POSITION_PCT": 0.25}):
+        with patch.dict("services.tradeExecutor.ENV", {"MAX_POSITION_PCT": 0.25}, clear=False):
             boosted = _maybe_boost_tiny_leader_buy_cap(
                 leader_notional=0.40,
                 min_leader_trade_notional=1.0,
@@ -186,7 +192,8 @@ class TestTinyLeaderBoost:
                 market_min_size=0.0,
                 high_confidence_score=0.75,
             )
-        assert boosted == 2.5
+        # Default SLIPPAGE_TOLERANCE=2% => worst_price=0.51, 5 tokens => 2.55 USDC
+        assert boosted == 2.55
 
     def test_does_not_boost_tiny_leader_buy_when_confidence_low(self):
         with patch("services.tradeExecutor.ENV", {"MAX_POSITION_PCT": 0.25}):
