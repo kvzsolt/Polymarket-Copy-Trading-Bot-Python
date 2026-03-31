@@ -6,7 +6,10 @@ from enum import IntEnum
 from pathlib import Path
 from dotenv import load_dotenv
 
-load_dotenv()
+# NOTE: Do NOT call load_dotenv() at import time.
+# Import-time side effects make the test suite non-deterministic because a local
+# `.env` file (developer machine / CI workspace) can silently override defaults.
+# Runtime entrypoints (e.g. index.py) should call load_dotenv() explicitly.
 
 _ETH_ADDR_RE = re.compile(r'^0x[0-9a-fA-F]{40}$')
 _HEX_PRIVATE_KEY_RE = re.compile(r'^0x[0-9a-fA-F]{64}$')
