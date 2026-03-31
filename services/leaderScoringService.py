@@ -19,9 +19,11 @@ class LeaderScore:
     balance_score: float
     analytics_score: float
     activity_score: float
-    discovery_score: float
     sample_size: int
     details: dict[str, Any]
+    # Optional enrichment from TraderDiscoveryService. Kept optional for backward
+    # compatibility because many call sites/tests construct LeaderScore without it.
+    discovery_score: float = 0.0
 
 
 class LeaderScoringService:
