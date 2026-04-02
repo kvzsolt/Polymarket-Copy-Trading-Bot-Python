@@ -1,12 +1,11 @@
 [project]
 name = "polymarket-copy-trading-bot"
 version = "0.1.0"
-description = "Production-hardened Polymarket copy-trading bot with MongoDB persistence."
+description = "Production-hardened Polymarket copy-trading bot with SQLite persistence."
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
 dependencies = [
   "python-dotenv==1.2.2",
-  "pymongo==4.16.0",
   "aiohttp==3.13.5",
   "web3==7.14.1",
   "eth-account==0.13.7",

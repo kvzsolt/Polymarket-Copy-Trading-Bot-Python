@@ -107,14 +107,12 @@ async def main():
     my_balance = user_balances.get(runtime_users[0].user_id, 0.0)
 
     print_startup_banner()
-    database_ok = None
-    if ENV.get('MONGO_URI'):
-        try:
-            await connect_db()
-            database_ok = True
-        except Exception as e:
-            database_ok = False
-            logger.error(f'DB connection error: {e}')
+    database_ok = False
+    try:
+        await connect_db()
+        database_ok = True
+    except Exception as e:
+        logger.error(f'DB connection error: {e}')
 
     rpc_ok = my_balance is not None and all(b is not None for b in leader_balances.values())
     api_ok = True
@@ -122,7 +120,7 @@ async def main():
         rpc_ok=rpc_ok,
         balance=float(my_balance or 0.0),
         api_ok=api_ok,
-        database_ok=(database_ok if database_ok is not None else False)
+        database_ok=database_ok
     )
 
     logger.info("Initializing CLOB clients...")

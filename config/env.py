@@ -215,7 +215,6 @@ def validate_runtime_env() -> None:
         'PROXY_WALLET',
         'SIGNATURE_TYPE',
         'CHAIN_ID',
-        'MONGO_URI',
         'MULTI_USER_CONFIG_FILE',
         'RPC_URL',
         'PNL_LOG_FILE',
@@ -474,7 +473,6 @@ ENV = {
     'RISK_BUFFER_PCT': _float('RISK_BUFFER_PCT', '0.5'),
 
     # --- Infrastructure ---
-    'MONGO_URI': os.getenv('MONGO_URI', ''),
     'MULTI_USER_CONFIG_FILE': os.getenv('MULTI_USER_CONFIG_FILE', ''),
     'RPC_URL': os.getenv('RPC_URL', 'https://polygon-bor-rpc.publicnode.com'),
     'USDC_CONTRACT_ADDRESS': os.getenv('USDC_CONTRACT_ADDRESS', '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174'),

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from typing import Any
 
@@ -14,34 +15,33 @@ def _utc_now() -> datetime:
 
 
 class OrderRepository:
-    """Mongo-backed order persistence with an in-memory fallback for local runs."""
-
-    def __init__(self):
-        self._db = get_database()
-        self._mem_orders: dict[str, dict[str, Any]] = {}
-        self._mem_fills: dict[str, dict[str, Any]] = {}
-        if self._db is not None:
-            self._orders = self._db["orders"]
-            self._fills = self._db["fills"]
-            self._ensure_indexes()
-        else:
-            self._orders = None
-            self._fills = None
-
-    def _ensure_indexes(self) -> None:
-        try:
-            self._orders.create_index("idempotency_key", unique=True)
-            self._orders.create_index("order_id")
-            self._orders.create_index("created_at")
-            self._fills.create_index("order_id")
-            self._fills.create_index("created_at")
-        except Exception as exc:
-            logger.warning(f"OrderRepository index setup warning: {exc}")
+    """SQLite-backed order persistence."""
 
     def get_by_idempotency_key(self, key: str) -> dict[str, Any] | None:
-        if self._orders is not None:
-            return self._orders.find_one({"idempotency_key": key})
-        return self._mem_orders.get(key)
+        with get_database() as conn:
+            row = conn.execute(
+                """
+                SELECT idempotency_key, request_json, response_json, order_id, created_at, status
+                FROM orders
+                WHERE idempotency_key = ?
+                LIMIT 1
+                """,
+                (key,),
+            ).fetchone()
+
+        if not row:
+            return None
+
+        request = json.loads(row["request_json"])
+        response = json.loads(row["response_json"])
+        return {
+            "idempotency_key": row["idempotency_key"],
+            "request": request,
+            "response": response,
+            "order_id": row["order_id"],
+            "created_at": row["created_at"],
+            "status": row["status"] or response.get("status"),
+        }
 
     def save_submission(
         self,
@@ -58,18 +58,36 @@ class OrderRepository:
             "created_at": _utc_now(),
             "status": response.get("status", "submitted"),
         }
-        if self._orders is not None:
-            self._orders.update_one(
-                {"idempotency_key": idempotency_key},
-                {"$setOnInsert": doc},
-                upsert=True,
+        with get_database() as conn:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO orders
+                (idempotency_key, request_json, response_json, order_id, created_at, status)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    doc["idempotency_key"],
+                    json.dumps(doc["request"], separators=(",", ":"), default=str),
+                    json.dumps(doc["response"], separators=(",", ":"), default=str),
+                    doc["order_id"],
+                    doc["created_at"].timestamp(),
+                    doc["status"],
+                ),
             )
-        else:
-            self._mem_orders.setdefault(idempotency_key, doc)
+            conn.commit()
 
     def mark_fill(self, *, order_id: str, fill: dict[str, Any]) -> None:
         doc = {"order_id": order_id, "fill": fill, "created_at": _utc_now()}
-        if self._fills is not None:
-            self._fills.insert_one(doc)
-        else:
-            self._mem_fills[order_id] = doc
+        with get_database() as conn:
+            conn.execute(
+                """
+                INSERT INTO fills (order_id, fill_json, created_at)
+                VALUES (?, ?, ?)
+                """,
+                (
+                    doc["order_id"],
+                    json.dumps(doc["fill"], separators=(",", ":"), default=str),
+                    doc["created_at"].timestamp(),
+                ),
+            )
+            conn.commit()

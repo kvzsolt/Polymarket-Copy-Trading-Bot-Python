@@ -1,7 +1,7 @@
 """Tests for v3.1 features: advanced exits, trader discovery, leader scoring integration.
 
-These tests mock out heavy dependencies (pymongo, py_clob_client) so they run
-in environments without the full Polymarket SDK installed.
+These tests mock out heavy dependencies (py_clob_client, web3) so they run in
+environments without the full Polymarket SDK installed.
 """
 
 import os
@@ -44,7 +44,7 @@ class _MockFinder(importlib.abc.MetaPathFinder):
 
     _ALLOWED = frozenset((
         # External / heavy deps we don't want to require in unit tests.
-        "pymongo", "py_clob_client", "py_order_utils", "web3",
+        "py_clob_client", "py_order_utils", "web3",
         "dotenv", "aiohttp", "motor", "colorama",
         "eth_account", "hexbytes",
     ))
