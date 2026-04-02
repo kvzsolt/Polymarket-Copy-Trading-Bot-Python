@@ -3,7 +3,7 @@
 Primary source: polymarketanalytics.com
 Fallback sources:
   - Polymarket CLOB API (sampling_markets → active traders from recent activity)
-  - Cached/persisted results from MongoDB
+  - Cached/persisted results from bot_state.db
 
 Uses three API endpoints on primary source:
 1. Leaderboard: /api/traders-tag-performance (ranked traders with PnL, win rate, etc.)
@@ -276,56 +276,65 @@ class TraderDiscoveryService:
         min_positions: int,
         max_results: int,
     ) -> list[TraderProfile]:
-        """Fallback discovery: use cached data from MongoDB or in-memory cache."""
+        """Fallback discovery: use cached data from SQLite or in-memory cache."""
 
-        # Try MongoDB persisted leaders first
+        # Try persisted leaders first
         try:
             from config.db import get_database
-            db = get_database()
-            if db is not None:
-                coll = db["discovered_leaders"]
-                docs = list(coll.find({}).sort("composite_score", -1).limit(max_results))
-                if docs:
-                    candidates = []
-                    for doc in docs:
-                        wallet = str(doc.get("wallet", ""))
-                        if not _is_eth_address(wallet):
-                            continue
-                        profile = TraderProfile(
-                            wallet=wallet,
-                            name=str(doc.get("name", "")),
-                            overall_gain=float(doc.get("overall_gain", 0)),
-                            win_amount=float(doc.get("win_amount", 0)),
-                            loss_amount=float(doc.get("loss_amount", 0)),
-                            win_rate=float(doc.get("win_rate", 0)),
-                            total_positions=int(doc.get("total_positions", 0)),
-                            active_positions=int(doc.get("active_positions", 0)),
-                            event_count=int(doc.get("event_count", 0)),
-                            win_count=int(doc.get("win_count", 0)),
-                            rank=int(doc.get("rank", 0)),
-                            total_current_value=float(doc.get("total_current_value", 0)),
-                            composite_score=float(doc.get("composite_score", 0)),
-                        )
-                        # Apply filters
-                        if profile.overall_gain < min_pnl:
-                            continue
-                        effective_wr = profile.win_rate if profile.win_rate <= 1.0 else profile.win_rate / 100.0
-                        if effective_wr < min_win_rate:
-                            continue
-                        candidates.append(profile)
-                        self._cache[wallet] = profile
+            with get_database() as conn:
+                docs = conn.execute(
+                    """
+                    SELECT wallet, name, overall_gain, win_amount, loss_amount, win_rate,
+                           total_positions, active_positions, event_count, win_count, rank,
+                           total_current_value, composite_score, tags, updated_at
+                    FROM discovered_leaders
+                    ORDER BY composite_score DESC
+                    LIMIT ?
+                    """,
+                    (int(max_results),),
+                ).fetchall()
+            if docs:
+                candidates = []
+                for doc in docs:
+                    wallet = str(doc["wallet"] or "")
+                    if not _is_eth_address(wallet):
+                        continue
+                    profile = TraderProfile(
+                        wallet=wallet,
+                        name=str(doc["name"] or ""),
+                        overall_gain=float(doc["overall_gain"] or 0),
+                        win_amount=float(doc["win_amount"] or 0),
+                        loss_amount=float(doc["loss_amount"] or 0),
+                        win_rate=float(doc["win_rate"] or 0),
+                        total_positions=int(doc["total_positions"] or 0),
+                        active_positions=int(doc["active_positions"] or 0),
+                        event_count=int(doc["event_count"] or 0),
+                        win_count=int(doc["win_count"] or 0),
+                        rank=int(doc["rank"] or 0),
+                        total_current_value=float(doc["total_current_value"] or 0),
+                        composite_score=float(doc["composite_score"] or 0),
+                        tags=str(doc["tags"] or ""),
+                    )
+                    # Apply filters
+                    if profile.overall_gain < min_pnl:
+                        continue
+                    effective_wr = profile.win_rate if profile.win_rate <= 1.0 else profile.win_rate / 100.0
+                    if effective_wr < min_win_rate:
+                        continue
+                    candidates.append(profile)
+                    self._cache[wallet] = profile
 
-                    if candidates:
-                        self._last_discovery_source = "mongodb_fallback"
-                        age_s = time.time() - max((doc.get("updated_at", 0) for doc in docs), default=0)
-                        logger.info(
-                            f"Fallback: loaded {len(candidates)} leaders from MongoDB "
-                            f"(age={age_s/3600:.1f}h)"
-                        )
-                        candidates.sort(key=lambda p: (-p.composite_score, int(p.rank or 0), p.wallet))
-                        return candidates
+                if candidates:
+                    self._last_discovery_source = "sqlite_fallback"
+                    age_s = time.time() - max((float(doc["updated_at"] or 0) for doc in docs), default=0)
+                    logger.info(
+                        f"Fallback: loaded {len(candidates)} leaders from SQLite "
+                        f"(age={age_s/3600:.1f}h)"
+                    )
+                    candidates.sort(key=lambda p: (-p.composite_score, int(p.rank or 0), p.wallet))
+                    return candidates
         except Exception as e:
-            logger.debug(f"MongoDB fallback failed: {e}")
+            logger.debug(f"SQLite fallback failed: {e}")
 
         # Last resort: return whatever is in memory cache
         if self._cache:
@@ -407,41 +416,57 @@ class TraderDiscoveryService:
         return self._cache.get(wallet.strip().lower())
 
     async def persist_discovered(self) -> None:
-        """Save discovered leaders to MongoDB."""
-        mongo_uri = ENV.get("MONGO_URI", "")
-        if not mongo_uri or not self._cache:
+        """Save discovered leaders to SQLite."""
+        if not self._cache:
             return
 
         try:
             from config.db import get_database
-            db = get_database()
-            if db is None:
-                return
-            coll = db["discovered_leaders"]
-
-            for wallet, profile in self._cache.items():
-                coll.update_one(
-                    {"wallet": wallet},
-                    {"$set": {
-                        "wallet": wallet,
-                        "name": profile.name,
-                        "overall_gain": profile.overall_gain,
-                        "win_amount": profile.win_amount,
-                        "loss_amount": profile.loss_amount,
-                        "win_rate": profile.win_rate,
-                        "total_positions": profile.total_positions,
-                        "active_positions": profile.active_positions,
-                        "event_count": profile.event_count,
-                        "win_count": profile.win_count,
-                        "rank": profile.rank,
-                        "total_current_value": profile.total_current_value,
-                        "tags": profile.tags,
-                        "composite_score": profile.composite_score,
-                        "updated_at": time.time(),
-                    }},
-                    upsert=True,
-                )
-            logger.info(f"Persisted {len(self._cache)} discovered leaders to MongoDB")
+            with get_database() as conn:
+                for wallet, profile in self._cache.items():
+                    conn.execute(
+                        """
+                        INSERT INTO discovered_leaders
+                        (wallet, name, overall_gain, win_amount, loss_amount, win_rate, total_positions,
+                         active_positions, event_count, win_count, rank, total_current_value, tags,
+                         composite_score, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(wallet) DO UPDATE SET
+                          name = excluded.name,
+                          overall_gain = excluded.overall_gain,
+                          win_amount = excluded.win_amount,
+                          loss_amount = excluded.loss_amount,
+                          win_rate = excluded.win_rate,
+                          total_positions = excluded.total_positions,
+                          active_positions = excluded.active_positions,
+                          event_count = excluded.event_count,
+                          win_count = excluded.win_count,
+                          rank = excluded.rank,
+                          total_current_value = excluded.total_current_value,
+                          tags = excluded.tags,
+                          composite_score = excluded.composite_score,
+                          updated_at = excluded.updated_at
+                        """,
+                        (
+                            wallet,
+                            profile.name,
+                            profile.overall_gain,
+                            profile.win_amount,
+                            profile.loss_amount,
+                            profile.win_rate,
+                            profile.total_positions,
+                            profile.active_positions,
+                            profile.event_count,
+                            profile.win_count,
+                            profile.rank,
+                            profile.total_current_value,
+                            profile.tags,
+                            profile.composite_score,
+                            time.time(),
+                        ),
+                    )
+                conn.commit()
+            logger.info(f"Persisted {len(self._cache)} discovered leaders to SQLite")
         except Exception as exc:
             logger.warning(f"Failed to persist discovered leaders: {exc}")
 

@@ -13,13 +13,14 @@ Lifecycle:
   6. HOLD → persist complete baskets, track to resolution
   7. SETTLE → detect resolution, redeem, record realized PnL
 
-Basket state is persisted to MongoDB so in-flight arbs survive restarts.
+Basket state is persisted to SQLite so in-flight arbs survive restarts.
 """
 
 from __future__ import annotations
 
 import asyncio
 import enum
+import json
 import time
 from dataclasses import dataclass, field
 from decimal import Decimal, ROUND_CEILING, ROUND_DOWN
@@ -150,65 +151,78 @@ class ArbBasket:
 
 
 class ArbBasketStore:
-    """Persist arb baskets to MongoDB for crash recovery."""
+    """Persist arb baskets to SQLite for crash recovery."""
 
     def __init__(self):
         self._in_memory: dict[str, ArbBasket] = {}
 
-    def _get_collection(self):
-        try:
-            from config.db import get_database
-            db = get_database()
-            if db is not None:
-                return db["arb_baskets"]
-        except Exception:
-            pass
-        return None
-
     def save(self, basket: ArbBasket) -> None:
         basket.updated_at = time.time()
         self._in_memory[basket.basket_id] = basket
-        coll = self._get_collection()
-        if coll is not None:
-            try:
-                coll.update_one(
-                    {"basket_id": basket.basket_id},
-                    {"$set": basket.to_dict()},
-                    upsert=True,
+        try:
+            from config.db import get_database
+            with get_database() as conn:
+                payload = basket.to_dict()
+                conn.execute(
+                    """
+                    INSERT INTO arb_baskets (basket_id, condition_id, state, data_json, updated_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(basket_id) DO UPDATE SET
+                      condition_id = excluded.condition_id,
+                      state = excluded.state,
+                      data_json = excluded.data_json,
+                      updated_at = excluded.updated_at
+                    """,
+                    (
+                        basket.basket_id,
+                        basket.condition_id,
+                        basket.state.value,
+                        json.dumps(payload, separators=(",", ":"), default=str),
+                        basket.updated_at,
+                    ),
                 )
-            except Exception as e:
-                logger.warning(f"Failed to persist basket {basket.basket_id}: {e}")
+                conn.commit()
+        except Exception as e:
+            logger.warning(f"Failed to persist basket {basket.basket_id}: {e}")
 
     def load_non_terminal(self) -> list[ArbBasket]:
         """Load all baskets that are not in a terminal state (for recovery)."""
         terminal = {BasketState.REDEEMED, BasketState.ABANDONED, BasketState.FAILED}
-        # Try MongoDB first
-        coll = self._get_collection()
-        if coll is not None:
-            try:
-                docs = coll.find({"state": {"$nin": [s.value for s in terminal]}})
-                baskets = []
-                for doc in docs:
-                    b = ArbBasket(
-                        basket_id=doc["basket_id"],
-                        condition_id=doc["condition_id"],
-                        market_slug=doc.get("market_slug", ""),
-                        question=doc.get("question", ""),
-                        state=BasketState(doc.get("state", "failed")),
-                        neg_risk=doc.get("neg_risk", True),
-                        target_size_tokens=Decimal(str(doc.get("target_size_tokens", 0))),
-                        planned_cost_usdc=Decimal(str(doc.get("planned_cost_usdc", 0))),
-                        expected_profit_usdc=Decimal(str(doc.get("expected_profit_usdc", 0))),
-                        complete_units=Decimal(str(doc.get("complete_units", 0))),
-                        total_cost_usdc=Decimal(str(doc.get("total_cost_usdc", 0))),
-                        created_at=doc.get("created_at", 0),
-                        updated_at=doc.get("updated_at", 0),
-                    )
-                    baskets.append(b)
-                    self._in_memory[b.basket_id] = b
+        try:
+            from config.db import get_database
+            with get_database() as conn:
+                rows = conn.execute(
+                    f"""
+                    SELECT data_json
+                    FROM arb_baskets
+                    WHERE state NOT IN ({",".join("?" for _ in terminal)})
+                    """,
+                    tuple(s.value for s in terminal),
+                ).fetchall()
+            baskets = []
+            for row in rows:
+                doc = json.loads(row["data_json"])
+                b = ArbBasket(
+                    basket_id=doc["basket_id"],
+                    condition_id=doc["condition_id"],
+                    market_slug=doc.get("market_slug", ""),
+                    question=doc.get("question", ""),
+                    state=BasketState(doc.get("state", "failed")),
+                    neg_risk=doc.get("neg_risk", True),
+                    target_size_tokens=Decimal(str(doc.get("target_size_tokens", 0))),
+                    planned_cost_usdc=Decimal(str(doc.get("planned_cost_usdc", 0))),
+                    expected_profit_usdc=Decimal(str(doc.get("expected_profit_usdc", 0))),
+                    complete_units=Decimal(str(doc.get("complete_units", 0))),
+                    total_cost_usdc=Decimal(str(doc.get("total_cost_usdc", 0))),
+                    created_at=doc.get("created_at", 0),
+                    updated_at=doc.get("updated_at", 0),
+                )
+                baskets.append(b)
+                self._in_memory[b.basket_id] = b
+            if baskets:
                 return baskets
-            except Exception as e:
-                logger.warning(f"Failed to load baskets from DB: {e}")
+        except Exception as e:
+            logger.warning(f"Failed to load baskets from DB: {e}")
         # Fallback to in-memory
         return [b for b in self._in_memory.values() if b.state not in terminal]
 
