@@ -46,8 +46,6 @@ def _mark_bot_done(trade: dict, user_activity_coll, **set_fields):
 
 
 def _user_activity(leader_wallet: Optional[str] = None):
-    if not ENV.get('MONGO_URI'):
-        return None
     try:
         from models.userHistory import get_user_activity_model
         wallet = leader_wallet or ENV.get('USER_ADDRESS')

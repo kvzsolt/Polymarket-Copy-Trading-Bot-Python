@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import time
 
 from config.db import get_database
 from utils.logger import get_logger
@@ -8,39 +8,45 @@ from utils.logger import get_logger
 logger = get_logger("LeaderCursorStore")
 
 
-def _utc_now() -> datetime:
-    return datetime.now(tz=timezone.utc)
-
-
 class LeaderCursorStore:
     def __init__(self):
-        self._db = get_database()
-        if self._db is not None:
-            self._collection = self._db["leader_cursors"]
-            try:
-                self._collection.create_index("leader_wallet", unique=True)
-            except Exception as exc:
-                logger.warning(f"leader_cursors index warning: {exc}")
-        else:
-            self._collection = None
-            self._mem: dict[str, float] = {}
+        self._mem: dict[str, float] = {}
 
     def get_last_timestamp(self, leader_wallet: str) -> float:
         key = str(leader_wallet or "").lower()
-        if self._collection is not None:
-            doc = self._collection.find_one({"leader_wallet": key})
-            if not doc:
-                return 0.0
-            return float(doc.get("last_timestamp", 0.0) or 0.0)
+        try:
+            with get_database() as conn:
+                row = conn.execute(
+                    """
+                    SELECT last_timestamp
+                    FROM leader_cursors
+                    WHERE leader_wallet = ?
+                    LIMIT 1
+                    """,
+                    (key,),
+                ).fetchone()
+            if row:
+                return float(row["last_timestamp"] or 0.0)
+        except Exception as exc:
+            logger.warning(f"Failed reading cursor for {key[:10]}…: {exc}")
         return float(self._mem.get(key, 0.0))
 
     def set_last_timestamp(self, leader_wallet: str, ts: float) -> None:
         key = str(leader_wallet or "").lower()
-        if self._collection is not None:
-            self._collection.update_one(
-                {"leader_wallet": key},
-                {"$set": {"last_timestamp": float(ts), "updated_at": _utc_now()}},
-                upsert=True,
-            )
+        try:
+            with get_database() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO leader_cursors (leader_wallet, last_timestamp, updated_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(leader_wallet) DO UPDATE SET
+                      last_timestamp = excluded.last_timestamp,
+                      updated_at = excluded.updated_at
+                    """,
+                    (key, float(ts), time.time()),
+                )
+                conn.commit()
             return
+        except Exception as exc:
+            logger.warning(f"Failed writing cursor for {key[:10]}…: {exc}")
         self._mem[key] = float(ts)

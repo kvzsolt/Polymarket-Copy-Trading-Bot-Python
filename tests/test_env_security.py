@@ -47,8 +47,7 @@ class TestEnvSecurity:
             "PROXY_WALLET": _eth_addr("3"),
             "PRIVATE_KEY": "0x" + ("ab" * 32),
             "PRIVATE_KEY_FILE": "",
-            "MONGO_URI": "mongodb://localhost:27017/db # inline",
-            "RPC_URL": "http://localhost:8545",
+            "RPC_URL": "http://localhost:8545 # inline",
             "PNL_LOG_FILE": "log/pnl.jsonl",
             "CLOB_HTTP_URL": "https://clob.polymarket.com",
         }

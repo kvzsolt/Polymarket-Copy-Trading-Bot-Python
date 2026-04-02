@@ -255,7 +255,7 @@ async def fetch_trade_data(user_address: str, on_trade_callback, state: LeaderMo
             state.last_processed_ts = max_seen_ts
 
         # Save to DB only for new trades
-        if new_trades and ENV.get('MONGO_URI'):
+        if new_trades:
             try:
                 from models.userHistory import get_user_activity_model
                 get_user_activity_model(user_address).insert_many(new_trades)
@@ -266,8 +266,6 @@ async def fetch_trade_data(user_address: str, on_trade_callback, state: LeaderMo
 
 
 async def fetch_and_save_positions(leader_wallet: str, proxy_wallet: str):
-    if not ENV.get('MONGO_URI'):
-        return
     for wallet in (leader_wallet, proxy_wallet):
         if not wallet:
             continue

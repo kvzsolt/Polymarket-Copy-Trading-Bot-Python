@@ -100,8 +100,6 @@ def _record_trading_result_sync(leader_wallet: str, trade: dict, result: str, re
 
 
 def _record_trading_result(leader_wallet: str, trade: dict, result: str, reason: Optional[str] = None):
-    if not ENV.get('MONGO_URI'):
-        return
     try:
         _record_trading_result_sync(leader_wallet, trade, result, reason)
     except Exception:

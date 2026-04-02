@@ -11,7 +11,8 @@ downloads/
 eggs/
 .eggs/
 .env
-
+/data
+.ai
 # Runtime state (created automatically on first run)
 /data/bot_state.db
 /log
@@ -58,3 +59,6 @@ Thumbs.db
 /logs
 .pytest_cache
 .env
+.python-version
+.codex
+AGENTS.md
