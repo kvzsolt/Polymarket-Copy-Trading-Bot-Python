@@ -4,12 +4,14 @@ import asyncio
 from dataclasses import dataclass
 from decimal import Decimal
 from hashlib import sha256
-from typing import Any
 
 from web3 import Web3
 
+from config.db import get_db_path
 from config.env import ENV, SignatureType, WalletConfig, build_wallet_config
+from network.web3_adapter import AsyncWeb3Adapter
 from services.accountingService import AccountingService
+from storage.sqlite.redemptions_repo import RedemptionsRepo
 from utils.fetchData import fetch_data
 from utils.logger import get_logger
 
@@ -52,10 +54,7 @@ class RedemptionResult:
 
 
 class RelayerClient:
-    """Thin abstraction for proxy/safe redemption submission.
-
-    This intentionally isolates uncertain relayer specifics in one place.
-    """
+    """Thin abstraction for proxy/safe redemption submission."""
 
     def __init__(self):
         self._url = str(ENV.get("RELAYER_URL") or "").strip()
@@ -70,7 +69,7 @@ class RelayerClient:
                 redeemed_amount=Decimal("0"),
                 error="relayer_not_configured",
             )
-        # Stubbed integration point. Keep assumptions isolated.
+
         tx_hash = "relayer_" + sha256(
             f"{position.user_id}|{position.condition_id}|{position.outcome_index}".encode("utf-8")
         ).hexdigest()[:24]
@@ -88,6 +87,7 @@ class RedemptionService:
         self.clob_client = clob_client
         self.wallet_config = wallet_config or build_wallet_config()
         self.accounting = AccountingService()
+        self.redemptions_repo = RedemptionsRepo(get_db_path())
         self.relayer = RelayerClient()
         self._successful_keys: set[str] = set()
 
@@ -123,6 +123,7 @@ class RedemptionService:
             return RedemptionResult(False, None, "not_submitted", Decimal("0"), "rpc_url_missing")
 
         w3 = Web3(Web3.HTTPProvider(rpc_url))
+        adapter = AsyncWeb3Adapter(w3, logger=logger)
         ctf_contract = w3.eth.contract(address=Web3.to_checksum_address(CTF_ADDRESS), abi=CTF_REDEEM_ABI)
 
         try:
@@ -135,20 +136,30 @@ class RedemptionService:
             return RedemptionResult(False, None, "failed", Decimal("0"), f"invalid_condition_id:{exc}")
 
         sender = Web3.to_checksum_address(self.wallet_config.funder_address)
-        nonce = w3.eth.get_transaction_count(sender)
-        gas_price = w3.eth.gas_price
+        nonce = await adapter.get_transaction_count(sender)
+        gas_price = await adapter.get_gas_price()
+
         tx = ctf_contract.functions.redeemPositions(
             Web3.to_checksum_address(ENV.get("USDC_CONTRACT_ADDRESS")),
             PARENT_COLLECTION_ID,
             cid_bytes32,
             [1, 2],
         ).build_transaction(
-            {"from": sender, "nonce": nonce, "gas": 300_000, "gasPrice": gas_price}
+            {
+                "from": sender,
+                "nonce": nonce,
+                "gas": 300_000,
+                "gasPrice": gas_price,
+            }
         )
 
-        signed = w3.eth.account.sign_transaction(tx, self.wallet_config.private_key)
-        tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction).hex()
-        receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
+        signed = await asyncio.to_thread(
+            w3.eth.account.sign_transaction,
+            tx,
+            self.wallet_config.private_key,
+        )
+        tx_hash = await adapter.send_raw_transaction(signed.raw_transaction)
+        receipt = await adapter.wait_for_receipt(tx_hash, timeout=120)
         if int(receipt.get("status", 0)) != 1:
             return RedemptionResult(False, tx_hash, "reverted", Decimal("0"), "redeem_tx_reverted")
 
@@ -160,16 +171,16 @@ class RedemptionService:
             return RedemptionResult(False, None, "duplicate", Decimal("0"), "already_redeemed")
 
         attempt_id = self._attempt_id(pos)
-        self.accounting.record_redemption_attempt(
-            {
-                "attempt_id": attempt_id,
-                "user_id": pos.user_id,
-                "condition_id": pos.condition_id,
-                "token_id": pos.token_id,
-                "size": str(pos.size),
-                "status": "attempting",
-            }
-        )
+        attempt_payload = {
+            "attempt_id": attempt_id,
+            "user_id": pos.user_id,
+            "condition_id": pos.condition_id,
+            "token_id": pos.token_id,
+            "size": str(pos.size),
+            "status": "attempting",
+        }
+        self.accounting.record_redemption_attempt(attempt_payload)
+        self.redemptions_repo.save_attempt(attempt_payload)
 
         try:
             if self.wallet_config.signature_type == SignatureType.EOA:
@@ -179,19 +190,20 @@ class RedemptionService:
         except Exception as exc:
             result = RedemptionResult(False, None, "failed", Decimal("0"), str(exc))
 
-        self.accounting.record_redemption_attempt(
-            {
-                "attempt_id": attempt_id,
-                "user_id": pos.user_id,
-                "condition_id": pos.condition_id,
-                "token_id": pos.token_id,
-                "size": str(pos.size),
-                "status": result.status,
-                "tx_hash": result.tx_hash,
-                "error": result.error,
-                "redeemed_amount": str(result.redeemed_amount),
-            }
-        )
+        final_payload = {
+            "attempt_id": attempt_id,
+            "user_id": pos.user_id,
+            "condition_id": pos.condition_id,
+            "token_id": pos.token_id,
+            "size": str(pos.size),
+            "status": result.status,
+            "tx_hash": result.tx_hash,
+            "error": result.error,
+            "redeemed_amount": str(result.redeemed_amount),
+        }
+        self.accounting.record_redemption_attempt(final_payload)
+        self.redemptions_repo.save_attempt(final_payload)
+
         if result.submitted and result.status in {"submitted", "confirmed"}:
             self._successful_keys.add(key)
         return result
