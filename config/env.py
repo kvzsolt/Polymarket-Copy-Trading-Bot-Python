@@ -62,6 +62,12 @@ def _int(key: str, default: str) -> int:
     return int(raw) if raw else int(default)
 
 
+def _bool(key: str, default: bool = False) -> bool:
+    raw_default = 'true' if default else 'false'
+    raw = _ensure_no_inline_comment(key, _raw(key, raw_default))
+    return raw.strip().lower() in ('1', 'true', 'yes')
+
+
 def _runtime_python_supported() -> bool:
     return (sys.version_info.major == 3) and (11 <= sys.version_info.minor < 13)
 
@@ -211,6 +217,12 @@ def validate_runtime_env() -> None:
     for key in (
         'USER_ADDRESS',
         'LEADER_WALLETS',
+        'LEADER_AUTO',
+        'LEADER_AUTO_COUNT',
+        'AUTO_DISCOVER_LEADERS',
+        'AUTO_DISCOVER_TOP_N',
+        'DISCOVERY_PROMOTE_TO_ACTIVE',
+        'ENABLE_TRADER_DISCOVERY',
         'FUNDER_ADDRESS',
         'PROXY_WALLET',
         'SIGNATURE_TYPE',
@@ -334,6 +346,10 @@ def validate_runtime_env() -> None:
         errors.append('MAX_DAILY_DRAWDOWN_PCT must be > 0.')
     if ENV.get('PENDING_SUBMISSION_TTL_SECONDS', 0) <= 0:
         errors.append('PENDING_SUBMISSION_TTL_SECONDS must be > 0.')
+    if ENV.get('AUTO_DISCOVER_TOP_N', 0) <= 0:
+        errors.append('AUTO_DISCOVER_TOP_N must be > 0.')
+    if ENV.get('DISCOVERY_MAX_RESULTS', 0) <= 0:
+        errors.append('DISCOVERY_MAX_RESULTS must be > 0.')
 
     if errors:
         raise EnvValidationError('Invalid runtime environment:\n- ' + '\n- '.join(errors))
@@ -345,6 +361,28 @@ def validate_runtime_env() -> None:
 # after patching ``os.environ`` to rebuild this snapshot in place.
 def _build_env_snapshot() -> dict[str, object]:
     """Return a parsed environment snapshot from current ``os.environ``."""
+    configured_auto_discover = _bool('AUTO_DISCOVER_LEADERS', False)
+    configured_trader_discovery = _bool('ENABLE_TRADER_DISCOVERY', False)
+    configured_promote_to_active = _bool('DISCOVERY_PROMOTE_TO_ACTIVE', False)
+    leader_auto = _bool(
+        'LEADER_AUTO',
+        configured_auto_discover or configured_promote_to_active,
+    )
+    auto_discover_leaders = configured_auto_discover or leader_auto
+    enable_trader_discovery = configured_trader_discovery or leader_auto or auto_discover_leaders
+    discovery_promote_to_active = configured_promote_to_active or leader_auto
+    legacy_auto_count = _int('AUTO_DISCOVER_TOP_N', '5')
+    leader_auto_count_raw = _ensure_no_inline_comment('LEADER_AUTO_COUNT', _raw('LEADER_AUTO_COUNT', ''))
+    if leader_auto_count_raw:
+        try:
+            auto_discover_top_n = int(leader_auto_count_raw)
+        except ValueError as exc:
+            raise EnvValidationError(
+                f'LEADER_AUTO_COUNT must be a valid integer, got: {leader_auto_count_raw!r}'
+            ) from exc
+    else:
+        auto_discover_top_n = legacy_auto_count
+
     return {
     # --- Wallet / auth ---
     'USER_ADDRESS': os.getenv('USER_ADDRESS', ''),
@@ -362,9 +400,11 @@ def _build_env_snapshot() -> dict[str, object]:
 
     # --- Polling ---
     'FETCH_INTERVAL': _int('FETCH_INTERVAL', '1'),
-    'AUTO_DISCOVER_LEADERS': os.getenv('AUTO_DISCOVER_LEADERS', 'false').strip().lower() in ('1', 'true', 'yes'),
-    'AUTO_DISCOVER_MAX_LEADERS': _int('AUTO_DISCOVER_MAX_LEADERS', '10'),
-    'AUTO_DISCOVER_TOP_N': _int('AUTO_DISCOVER_TOP_N', '5'),
+    'LEADER_AUTO': leader_auto,
+    'LEADER_AUTO_COUNT': auto_discover_top_n,
+    'AUTO_DISCOVER_LEADERS': auto_discover_leaders,
+    'AUTO_DISCOVER_MAX_LEADERS': max(_int('AUTO_DISCOVER_MAX_LEADERS', '10'), auto_discover_top_n),
+    'AUTO_DISCOVER_TOP_N': auto_discover_top_n,
     'AUTO_DISCOVER_MIN_SCORE': _float('AUTO_DISCOVER_MIN_SCORE', '0.45'),
     'AGGREGATE_SIGNAL_WINDOW_SECONDS': _float('AGGREGATE_SIGNAL_WINDOW_SECONDS', '2.0'),
 
@@ -456,9 +496,9 @@ def _build_env_snapshot() -> dict[str, object]:
     'ENABLE_LEADER_DIVERGENCE_EXIT': os.getenv('ENABLE_LEADER_DIVERGENCE_EXIT', 'true').strip().lower() in ('1', 'true', 'yes'),
 
     # Trader discovery via polymarketanalytics.com
-    'ENABLE_TRADER_DISCOVERY': os.getenv('ENABLE_TRADER_DISCOVERY', 'false').strip().lower() in ('1', 'true', 'yes'),
+    'ENABLE_TRADER_DISCOVERY': enable_trader_discovery,
     'DISCOVERY_INTERVAL_SECONDS': _int('DISCOVERY_INTERVAL_SECONDS', '3600'),
-    'DISCOVERY_PROMOTE_TO_ACTIVE': os.getenv('DISCOVERY_PROMOTE_TO_ACTIVE', 'false').strip().lower() in ('1', 'true', 'yes'),
+    'DISCOVERY_PROMOTE_TO_ACTIVE': discovery_promote_to_active,
     'MIN_LEADER_PNL': _float('MIN_LEADER_PNL', '1000'),
     'MIN_LEADER_WIN_RATE': _float('MIN_LEADER_WIN_RATE', '0.55'),
     'MIN_LEADER_POSITIONS': _int('MIN_LEADER_POSITIONS', '20'),

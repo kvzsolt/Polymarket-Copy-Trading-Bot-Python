@@ -75,3 +75,30 @@ class TestEnvSecurity:
 
         # Reset snapshot for any later tests in this process.
         rehydrate_env()
+
+    def test_leader_auto_alias_enables_discovery_and_promotion(self):
+        from config.env import ENV, rehydrate_env
+
+        env_ref = ENV
+
+        with patch.dict(
+            os.environ,
+            {
+                "LEADER_AUTO": "true",
+                "LEADER_AUTO_COUNT": "2",
+                "AUTO_DISCOVER_LEADERS": "false",
+                "DISCOVERY_PROMOTE_TO_ACTIVE": "false",
+                "ENABLE_TRADER_DISCOVERY": "false",
+            },
+            clear=False,
+        ):
+            refreshed = rehydrate_env()
+            assert refreshed is env_ref
+            assert ENV["LEADER_AUTO"] is True
+            assert ENV["LEADER_AUTO_COUNT"] == 2
+            assert ENV["AUTO_DISCOVER_LEADERS"] is True
+            assert ENV["DISCOVERY_PROMOTE_TO_ACTIVE"] is True
+            assert ENV["ENABLE_TRADER_DISCOVERY"] is True
+            assert ENV["AUTO_DISCOVER_TOP_N"] == 2
+
+        rehydrate_env()

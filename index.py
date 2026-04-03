@@ -82,10 +82,17 @@ def _configured_leaders() -> list[str]:
             leaders = [single]
     result = [str(w).strip() for w in leaders if str(w).strip()]
     if not result:
-        logger.warning(
-            "No leader wallets configured. Both LEADER_WALLETS and USER_ADDRESS "
-            "are empty. The bot cannot copy-trade without at least one leader."
-        )
+        if ENV.get("LEADER_AUTO", False):
+            logger.info(
+                "No leader wallets configured. LEADER_AUTO is enabled, so the bot "
+                f"will auto-discover and follow up to {int(ENV.get('LEADER_AUTO_COUNT', 5) or 5)} leaders."
+            )
+        else:
+            logger.warning(
+                "No leader wallets configured. Both LEADER_WALLETS and USER_ADDRESS "
+                "are empty. Set LEADER_AUTO=true to auto-discover leaders, or add "
+                "manual leader wallets."
+            )
     return result
 
 
@@ -171,12 +178,18 @@ async def _wait_for_active_leaders(
         return state.active_monitored
 
     if not configured_leaders:
-        logger.error(
-            "No active leaders after initial refresh. No LEADER_WALLETS configured and "
-            "discovery did not promote any leaders. Set LEADER_WALLETS=0x... in your .env, "
-            "or enable auto-promotion with DISCOVERY_PROMOTE_TO_ACTIVE=true and "
-            "AUTO_DISCOVER_LEADERS=true."
-        )
+        if ENV.get("LEADER_AUTO", False):
+            logger.error(
+                "LEADER_AUTO is enabled, but discovery did not find any eligible leaders "
+                "to promote. Relax MIN_LEADER_* or AUTO_DISCOVER_MIN_SCORE, or add "
+                "manual LEADER_WALLETS."
+            )
+        else:
+            logger.error(
+                "No active leaders after initial refresh. No LEADER_WALLETS configured and "
+                "discovery did not promote any leaders. Set LEADER_WALLETS=0x... in your .env, "
+                "or enable LEADER_AUTO=true to auto-discover and promote leaders."
+            )
     else:
         logger.warning(
             "No active leaders available; entering discovery-only mode and continuing refresh."
