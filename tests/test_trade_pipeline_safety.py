@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from config.env import ENV
+from config.env import ENV, rehydrate_env
 from domain.trading_context import TradingContext
 from orchestrators.trade_pipeline import execute_trades, build_trade_key
 from services.executionService import ExecutionResult
@@ -18,6 +18,23 @@ from services.riskEngine import RiskEngine
 from services.accountingService import AccountingService
 from storage.sqlite.connection import create_connection
 from storage.sqlite.fills_repo import FillsRepo
+
+
+@pytest.fixture(autouse=True)
+def _lower_decision_gates_for_tests(monkeypatch):
+    """Lower copy-decision thresholds so test signals pass the gate."""
+    monkeypatch.setenv("COPY_DECISION_MIN_SCORE", "0.01")
+    monkeypatch.setenv("COPY_MAX_SIGNAL_AGE_SECONDS", "999999")
+    monkeypatch.setenv("COPY_MAX_PRICE_DRIFT_PCT", "999")
+    monkeypatch.setenv("COPY_MAX_EDGE_DECAY_PCT", "999")
+    monkeypatch.setenv("COPY_MIN_SHARES", "0.001")
+    monkeypatch.setenv("COPY_MIN_NOTIONAL_USDC", "0.01")
+    monkeypatch.setenv("BUY_MIN_AMOUNT", "0.01")
+    monkeypatch.setenv("MIN_ORDER_SIZE", "0.00001")
+    rehydrate_env()
+    import orchestrators.trade_pipeline as _tp
+    _tp._leader_scorer = None
+    _tp._copy_decision = None
 from storage.sqlite.migrations import apply_migrations
 from storage.sqlite.orders_repo import OrdersRepo
 from storage.sqlite.positions_repo import PositionsRepo
@@ -43,9 +60,9 @@ def _make_context(db_path, *, execution_service=None):
         accounting_service=AccountingService(),
         position_manager=PositionManager(),
         execution_service=execution_service,
-        allocation_pct=0.05,
-        buy_min_amount=1.0,
-        buy_max_amount=100.0,
+        allocation_pct=1.0,
+        buy_min_amount=0.01,
+        buy_max_amount=1000.0,
         extra={"slippage_tolerance_bps": 200},
     )
 

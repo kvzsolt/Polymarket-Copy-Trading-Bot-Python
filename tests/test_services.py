@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from services.tradeMonitor import _normalize_activities
 from services.copyDecisionService import CopyDecision
-from services.tradeExecutor import (
+from legacy.tradeExecutor import (
     _calc_buy_amount,
     _apply_balance_cap,
     _min_valid_buy_notional_usdc,
@@ -66,70 +66,70 @@ class TestTradeMonitorNormalize:
 # ---------------------------------------------------------------------------
 class TestTradeExecutorCalcBuyAmount:
     def test_basic_calculation(self):
-        with patch("services.tradeExecutor.ENV", {"SIZING_MODE": "proportional", "FIXED_AMOUNT": 10}):
+        with patch("legacy.tradeExecutor.ENV", {"SIZING_MODE": "proportional", "FIXED_AMOUNT": 10}):
             assert _calc_buy_amount({"usdcSize": 100}, 0.05, 0.5, 50) == 5.0
 
     def test_clamp_to_max(self):
-        with patch("services.tradeExecutor.ENV", {"SIZING_MODE": "proportional", "FIXED_AMOUNT": 10}):
+        with patch("legacy.tradeExecutor.ENV", {"SIZING_MODE": "proportional", "FIXED_AMOUNT": 10}):
             assert _calc_buy_amount({"usdcSize": 10000}, 0.05, 0.5, 50) == 50
 
     def test_clamp_to_min(self):
-        with patch("services.tradeExecutor.ENV", {"SIZING_MODE": "proportional", "FIXED_AMOUNT": 10}):
+        with patch("legacy.tradeExecutor.ENV", {"SIZING_MODE": "proportional", "FIXED_AMOUNT": 10}):
             assert _calc_buy_amount({"usdcSize": 1}, 0.05, 5.0, 100) == 5.0
 
     def test_fallback_to_size_times_price(self):
         trade = {"usdcSize": 0, "size": 10, "price": 0.5}
-        with patch("services.tradeExecutor.ENV", {"SIZING_MODE": "proportional", "FIXED_AMOUNT": 10}):
+        with patch("legacy.tradeExecutor.ENV", {"SIZING_MODE": "proportional", "FIXED_AMOUNT": 10}):
             # 10 * 0.5 * 0.10 = 0.5, but $1 floor applies
             assert _calc_buy_amount(trade, 0.10, 0.1, 100) == 1.0
 
     def test_zero_usdc_zero_size(self):
         trade = {"usdcSize": 0, "size": 0, "price": 0}
-        with patch("services.tradeExecutor.ENV", {"SIZING_MODE": "proportional", "FIXED_AMOUNT": 10}):
+        with patch("legacy.tradeExecutor.ENV", {"SIZING_MODE": "proportional", "FIXED_AMOUNT": 10}):
             # 0 * ratio = 0, clamped to buy_min=0.5, but $1 floor applies
             assert _calc_buy_amount(trade, 0.05, 0.5, 100) == 1.0
 
     def test_none_usdc_size_falls_back(self):
         """When usdcSize is None, should fall back to size * price."""
         trade = {"usdcSize": None, "size": 20, "price": 0.5}
-        with patch("services.tradeExecutor.ENV", {"SIZING_MODE": "proportional", "FIXED_AMOUNT": 10}):
+        with patch("legacy.tradeExecutor.ENV", {"SIZING_MODE": "proportional", "FIXED_AMOUNT": 10}):
             # 20*0.5*0.10 = 1.0
             assert _calc_buy_amount(trade, 0.10, 0.1, 100) == 1.0
 
     def test_missing_keys_returns_dollar_floor(self):
         """Empty trade dict should clamp to $1 floor."""
-        with patch("services.tradeExecutor.ENV", {"SIZING_MODE": "proportional", "FIXED_AMOUNT": 10}):
+        with patch("legacy.tradeExecutor.ENV", {"SIZING_MODE": "proportional", "FIXED_AMOUNT": 10}):
             assert _calc_buy_amount({}, 0.05, 0.5, 100) == 1.0
 
     def test_min_amount_below_one_gets_floored(self):
         """buy_min < $1 should be floored to $1."""
-        with patch("services.tradeExecutor.ENV", {"SIZING_MODE": "proportional", "FIXED_AMOUNT": 10}):
+        with patch("legacy.tradeExecutor.ENV", {"SIZING_MODE": "proportional", "FIXED_AMOUNT": 10}):
             assert _calc_buy_amount({"usdcSize": 1}, 0.05, 0.5, 100) == 1.0
 
     def test_exact_boundary_no_clamp(self):
         """proxy_amount exactly at max should return max."""
-        with patch("services.tradeExecutor.ENV", {"SIZING_MODE": "proportional", "FIXED_AMOUNT": 10}):
+        with patch("legacy.tradeExecutor.ENV", {"SIZING_MODE": "proportional", "FIXED_AMOUNT": 10}):
             assert _calc_buy_amount({"usdcSize": 1000}, 0.05, 0.5, 50) == 50
 
     def test_ratio_of_one(self):
         """100% copy ratio should mirror leader amount."""
-        with patch("services.tradeExecutor.ENV", {"SIZING_MODE": "proportional", "FIXED_AMOUNT": 10}):
+        with patch("legacy.tradeExecutor.ENV", {"SIZING_MODE": "proportional", "FIXED_AMOUNT": 10}):
             assert _calc_buy_amount({"usdcSize": 25}, 1.0, 1.0, 100) == 25.0
 
     def test_string_usdc_size_coerced(self):
         """String numeric values should be coerced via float()."""
-        with patch("services.tradeExecutor.ENV", {"SIZING_MODE": "proportional", "FIXED_AMOUNT": 10}):
+        with patch("legacy.tradeExecutor.ENV", {"SIZING_MODE": "proportional", "FIXED_AMOUNT": 10}):
             assert _calc_buy_amount({"usdcSize": "200"}, 0.05, 0.5, 50) == 10.0
 
     def test_fixed_sizing_mode(self):
         """Fixed mode ignores leader trade size and uses FIXED_AMOUNT."""
-        with patch("services.tradeExecutor.ENV", {"SIZING_MODE": "fixed", "FIXED_AMOUNT": 25}):
+        with patch("legacy.tradeExecutor.ENV", {"SIZING_MODE": "fixed", "FIXED_AMOUNT": 25}):
             result = _calc_buy_amount({"usdcSize": 1000}, 0.05, 1, 100)
             assert result == 25.0
 
     def test_fixed_sizing_mode_clamped_to_max(self):
         """Fixed amount exceeding max should be clamped."""
-        with patch("services.tradeExecutor.ENV", {"SIZING_MODE": "fixed", "FIXED_AMOUNT": 200}):
+        with patch("legacy.tradeExecutor.ENV", {"SIZING_MODE": "fixed", "FIXED_AMOUNT": 200}):
             result = _calc_buy_amount({"usdcSize": 1000}, 0.05, 1, 100)
             assert result == 100
 
@@ -137,8 +137,8 @@ class TestTradeExecutorCalcBuyAmount:
         """Adaptive mode scales ratio by win rate."""
         mock_pm = MagicMock()
         mock_pm.summary.return_value = {"win_rate": 80}
-        with patch("services.tradeExecutor.ENV", {"SIZING_MODE": "adaptive", "FIXED_AMOUNT": 10}), \
-             patch("services.tradeExecutor.get_position_manager", return_value=mock_pm):
+        with patch("legacy.tradeExecutor.ENV", {"SIZING_MODE": "adaptive", "FIXED_AMOUNT": 10}), \
+             patch("legacy.tradeExecutor.get_position_manager", return_value=mock_pm):
             # leader=100, ratio=0.10, win_rate=80% → multiplier = 0.5 + 0.8*1.5 = 1.7
             # 100 * 0.10 * 1.7 = 17.0
             result = _calc_buy_amount({"usdcSize": 100}, 0.10, 1, 200)
@@ -150,19 +150,19 @@ class TestTradeExecutorCalcBuyAmount:
 # ---------------------------------------------------------------------------
 class TestApplyBalanceCap:
     def test_caps_at_max_position_pct(self):
-        with patch("services.tradeExecutor.ENV", {"MAX_POSITION_PCT": 0.25}):
+        with patch("legacy.tradeExecutor.ENV", {"MAX_POSITION_PCT": 0.25}):
             assert _apply_balance_cap(50, 100) == 25.0
 
     def test_amount_below_cap_unchanged(self):
-        with patch("services.tradeExecutor.ENV", {"MAX_POSITION_PCT": 0.25}):
+        with patch("legacy.tradeExecutor.ENV", {"MAX_POSITION_PCT": 0.25}):
             assert _apply_balance_cap(10, 100) == 10.0
 
     def test_caps_at_balance_when_low(self):
-        with patch("services.tradeExecutor.ENV", {"MAX_POSITION_PCT": 0.25}):
+        with patch("legacy.tradeExecutor.ENV", {"MAX_POSITION_PCT": 0.25}):
             assert _apply_balance_cap(50, 20) == 5.0
 
     def test_tiny_balance_allows_full(self):
-        with patch("services.tradeExecutor.ENV", {"MAX_POSITION_PCT": 0.25}):
+        with patch("legacy.tradeExecutor.ENV", {"MAX_POSITION_PCT": 0.25}):
             # max_allowed = 2*0.25 = 0.5 < 1.0, so falls back to full balance
             assert _apply_balance_cap(1.5, 2.0) == 1.5
 
@@ -177,11 +177,11 @@ class TestTinyLeaderBoost:
         assert _min_valid_buy_notional_usdc(live_price=0.20, market_min_size=8.0) == 1.6320000000000001
 
     def test_min_valid_buy_notional_slippage_zero_matches_quote(self):
-        with patch.dict("services.tradeExecutor.ENV", {"SLIPPAGE_TOLERANCE": 0.0}, clear=False):
+        with patch.dict("legacy.tradeExecutor.ENV", {"SLIPPAGE_TOLERANCE": 0.0}, clear=False):
             assert _min_valid_buy_notional_usdc(live_price=0.40, market_min_size=0.0) == 2.0
 
     def test_boosts_tiny_leader_buy_when_confidence_high(self):
-        with patch.dict("services.tradeExecutor.ENV", {"MAX_POSITION_PCT": 0.25}, clear=False):
+        with patch.dict("legacy.tradeExecutor.ENV", {"MAX_POSITION_PCT": 0.25}, clear=False):
             boosted = _maybe_boost_tiny_leader_buy_cap(
                 leader_notional=0.40,
                 min_leader_trade_notional=1.0,
@@ -196,7 +196,7 @@ class TestTinyLeaderBoost:
         assert boosted == 2.55
 
     def test_does_not_boost_tiny_leader_buy_when_confidence_low(self):
-        with patch("services.tradeExecutor.ENV", {"MAX_POSITION_PCT": 0.25}):
+        with patch("legacy.tradeExecutor.ENV", {"MAX_POSITION_PCT": 0.25}):
             boosted = _maybe_boost_tiny_leader_buy_cap(
                 leader_notional=0.40,
                 min_leader_trade_notional=1.0,
@@ -235,7 +235,7 @@ class TestTradeExecutorExecuteTrades:
     @pytest.mark.asyncio
     async def test_execute_trades_calls_post_order(self):
         """execute_trades should call execution service for each trade."""
-        from services.tradeExecutor import execute_trades
+        from legacy.tradeExecutor import execute_trades
         mock_clob = AsyncMock()
         mock_clob.get_min_order_size.return_value = 0.0
         mock_clob.get_price.return_value = {"price": "0.5", "size": "100"}
@@ -262,16 +262,16 @@ class TestTradeExecutorExecuteTrades:
             "buyMaxAmount": 50,
             "positionThreshold": 0,
         }
-        with patch("services.tradeExecutor.get_my_balance", new_callable=AsyncMock, return_value=100.0), \
-             patch("services.tradeExecutor.fetch_data", new_callable=AsyncMock, return_value=[]), \
-             patch("services.tradeExecutor._get_execution_service", return_value=mock_exec):
+        with patch("legacy.tradeExecutor.get_my_balance", new_callable=AsyncMock, return_value=100.0), \
+             patch("legacy.tradeExecutor.fetch_data", new_callable=AsyncMock, return_value=[]), \
+             patch("legacy.tradeExecutor._get_execution_service", return_value=mock_exec):
             await execute_trades(mock_clob, bot_params, [trade])
         mock_exec.execute.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_execute_trades_skips_buy_below_min_share_price(self):
         """BUY should be skipped when live quote is below configured MIN_SHARE_PRICE."""
-        from services.tradeExecutor import execute_trades
+        from legacy.tradeExecutor import execute_trades
         mock_clob = AsyncMock()
         mock_clob.get_price.return_value = {"price": "0.50", "size": "100"}
         mock_exec = MagicMock()
@@ -288,10 +288,10 @@ class TestTradeExecutorExecuteTrades:
             "buyMaxAmount": 50,
             "positionThreshold": 0,
         }
-        with patch("services.tradeExecutor.get_my_balance", new_callable=AsyncMock, return_value=100.0), \
-             patch("services.tradeExecutor.fetch_data", new_callable=AsyncMock, return_value=[]), \
-             patch("services.tradeExecutor._get_execution_service", return_value=mock_exec), \
-             patch.dict("services.tradeExecutor.ENV", {"MIN_SHARE_PRICE": 0.60}, clear=False):
+        with patch("legacy.tradeExecutor.get_my_balance", new_callable=AsyncMock, return_value=100.0), \
+             patch("legacy.tradeExecutor.fetch_data", new_callable=AsyncMock, return_value=[]), \
+             patch("legacy.tradeExecutor._get_execution_service", return_value=mock_exec), \
+             patch.dict("legacy.tradeExecutor.ENV", {"MIN_SHARE_PRICE": 0.60}, clear=False):
             await execute_trades(mock_clob, bot_params, [trade])
 
         mock_exec.execute.assert_not_called()
@@ -299,7 +299,7 @@ class TestTradeExecutorExecuteTrades:
     @pytest.mark.asyncio
     async def test_execute_trades_empty_list_no_crash(self):
         """Passing an empty trade list should not crash."""
-        from services.tradeExecutor import execute_trades
+        from legacy.tradeExecutor import execute_trades
         mock_clob = AsyncMock()
         bot_params = {
             "leaderWallet": "0xleader",
@@ -308,15 +308,15 @@ class TestTradeExecutorExecuteTrades:
             "buyMaxAmount": 50,
             "positionThreshold": 0,
         }
-        with patch("services.tradeExecutor.get_my_balance", new_callable=AsyncMock, return_value=100.0), \
-             patch("services.tradeExecutor.fetch_data", new_callable=AsyncMock, return_value=[]), \
-             patch("services.tradeExecutor._get_execution_service", return_value=MagicMock(execute=AsyncMock())):
+        with patch("legacy.tradeExecutor.get_my_balance", new_callable=AsyncMock, return_value=100.0), \
+             patch("legacy.tradeExecutor.fetch_data", new_callable=AsyncMock, return_value=[]), \
+             patch("legacy.tradeExecutor._get_execution_service", return_value=MagicMock(execute=AsyncMock())):
             await execute_trades(mock_clob, bot_params, [])
 
     @pytest.mark.asyncio
     async def test_execute_trades_skips_unknown_side(self):
         """Trades with unknown side should be skipped."""
-        from services.tradeExecutor import execute_trades
+        from legacy.tradeExecutor import execute_trades
         mock_clob = AsyncMock()
         trade = {
             "conditionId": "c1", "asset": "a1", "transactionHash": "0x1",
@@ -329,16 +329,16 @@ class TestTradeExecutorExecuteTrades:
             "buyMaxAmount": 50,
             "positionThreshold": 0,
         }
-        with patch("services.tradeExecutor.get_my_balance", new_callable=AsyncMock, return_value=100.0), \
-             patch("services.tradeExecutor.fetch_data", new_callable=AsyncMock, return_value=[]), \
-             patch("services.tradeExecutor._get_execution_service", return_value=MagicMock(execute=AsyncMock())) as mock_exec:
+        with patch("legacy.tradeExecutor.get_my_balance", new_callable=AsyncMock, return_value=100.0), \
+             patch("legacy.tradeExecutor.fetch_data", new_callable=AsyncMock, return_value=[]), \
+             patch("legacy.tradeExecutor._get_execution_service", return_value=MagicMock(execute=AsyncMock())) as mock_exec:
             await execute_trades(mock_clob, bot_params, [trade])
         mock_exec.return_value.execute.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_execute_trades_skips_when_balance_lookup_fails(self):
         """Missing balances should stop the batch before orders are posted."""
-        from services.tradeExecutor import execute_trades
+        from legacy.tradeExecutor import execute_trades
         mock_clob = AsyncMock()
         trade = {
             "conditionId": "c1", "asset": "a1", "transactionHash": "0x1",
@@ -351,16 +351,16 @@ class TestTradeExecutorExecuteTrades:
             "buyMaxAmount": 50,
             "positionThreshold": 0,
         }
-        with patch("services.tradeExecutor.get_my_balance", new_callable=AsyncMock, side_effect=[None, 100.0]), \
-             patch("services.tradeExecutor.fetch_data", new_callable=AsyncMock, return_value=[]), \
-             patch("services.tradeExecutor._get_execution_service", return_value=MagicMock(execute=AsyncMock())) as mock_exec:
+        with patch("legacy.tradeExecutor.get_my_balance", new_callable=AsyncMock, side_effect=[None, 100.0]), \
+             patch("legacy.tradeExecutor.fetch_data", new_callable=AsyncMock, return_value=[]), \
+             patch("legacy.tradeExecutor._get_execution_service", return_value=MagicMock(execute=AsyncMock())) as mock_exec:
             await execute_trades(mock_clob, bot_params, [trade])
         mock_exec.return_value.execute.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_execute_trades_does_not_log_executed_for_duplicate_or_skip(self):
         """Skipped/duplicate actions must not be logged as EXECUTED."""
-        from services.tradeExecutor import execute_trades
+        from legacy.tradeExecutor import execute_trades
         mock_clob = AsyncMock()
         mock_clob.get_price.return_value = {"price": "0.50", "size": "100"}
         mock_exec = MagicMock()
@@ -412,12 +412,12 @@ class TestTradeExecutorExecuteTrades:
             "buyMaxAmount": 50,
             "positionThreshold": 0,
         }
-        with patch("services.tradeExecutor.get_my_balance", new_callable=AsyncMock, return_value=100.0), \
-             patch("services.tradeExecutor.fetch_data", new_callable=AsyncMock, return_value=[]), \
-             patch("services.tradeExecutor._get_execution_service", return_value=mock_exec), \
-             patch("services.tradeExecutor._copy_decision.decide_buy", return_value=decision), \
-             patch("services.tradeExecutor.log_trade_execution") as log_exec, \
-             patch("services.tradeExecutor.log_trade_skip") as log_skip:
+        with patch("legacy.tradeExecutor.get_my_balance", new_callable=AsyncMock, return_value=100.0), \
+             patch("legacy.tradeExecutor.fetch_data", new_callable=AsyncMock, return_value=[]), \
+             patch("legacy.tradeExecutor._get_execution_service", return_value=mock_exec), \
+             patch("legacy.tradeExecutor._copy_decision.decide_buy", return_value=decision), \
+             patch("legacy.tradeExecutor.log_trade_execution") as log_exec, \
+             patch("legacy.tradeExecutor.log_trade_skip") as log_skip:
             await execute_trades(mock_clob, bot_params, [trade])
 
         log_exec.assert_not_called()
@@ -426,7 +426,7 @@ class TestTradeExecutorExecuteTrades:
     @pytest.mark.asyncio
     async def test_execute_trades_logs_copy_order_id_not_leader_tx(self):
         """Execution logs should include copy order id and not fake leader tx as copy tx."""
-        from services.tradeExecutor import execute_trades
+        from legacy.tradeExecutor import execute_trades
         mock_clob = AsyncMock()
         mock_clob.get_price.return_value = {"price": "0.50", "size": "100"}
         mock_exec = MagicMock()
@@ -476,11 +476,11 @@ class TestTradeExecutorExecuteTrades:
             "buyMaxAmount": 50,
             "positionThreshold": 0,
         }
-        with patch("services.tradeExecutor.get_my_balance", new_callable=AsyncMock, return_value=100.0), \
-             patch("services.tradeExecutor.fetch_data", new_callable=AsyncMock, return_value=[]), \
-             patch("services.tradeExecutor._get_execution_service", return_value=mock_exec), \
-             patch("services.tradeExecutor._copy_decision.decide_buy", return_value=decision), \
-             patch("services.tradeExecutor.log_trade_execution") as log_exec:
+        with patch("legacy.tradeExecutor.get_my_balance", new_callable=AsyncMock, return_value=100.0), \
+             patch("legacy.tradeExecutor.fetch_data", new_callable=AsyncMock, return_value=[]), \
+             patch("legacy.tradeExecutor._get_execution_service", return_value=mock_exec), \
+             patch("legacy.tradeExecutor._copy_decision.decide_buy", return_value=decision), \
+             patch("legacy.tradeExecutor.log_trade_execution") as log_exec:
             await execute_trades(mock_clob, bot_params, [trade])
 
         assert log_exec.called

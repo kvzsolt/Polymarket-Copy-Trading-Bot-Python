@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from decimal import Decimal
 
 import pytest
@@ -63,7 +64,19 @@ def _build_context(*, user_id: str, db_path: str) -> TradingContext:
 
 
 @pytest.mark.asyncio
-async def test_multi_user_positions_and_pnl_are_isolated(tmp_path):
+async def test_multi_user_positions_and_pnl_are_isolated(tmp_path, monkeypatch):
+    # Lower decision gates so test signals pass through
+    monkeypatch.setenv("COPY_DECISION_MIN_SCORE", "0.01")
+    monkeypatch.setenv("COPY_MAX_SIGNAL_AGE_SECONDS", "999999")
+    monkeypatch.setenv("COPY_MAX_PRICE_DRIFT_PCT", "100")
+    monkeypatch.setenv("COPY_MAX_EDGE_DECAY_PCT", "100")
+    from config.env import rehydrate_env
+    rehydrate_env()
+    # Reset pipeline singletons so they pick up new ENV
+    import orchestrators.trade_pipeline as _tp
+    _tp._leader_scorer = None
+    _tp._copy_decision = None
+
     db_path = tmp_path / "state.db"
     with create_connection(str(db_path)) as conn:
         apply_migrations(conn)
@@ -72,7 +85,7 @@ async def test_multi_user_positions_and_pnl_are_isolated(tmp_path):
     buy_signal = [
         {
             "transactionHash": "0xtx-buy",
-            "timestamp": 1_700_000_000,
+            "timestamp": int(time.time()),
             "type": "TRADE",
             "side": "BUY",
             "asset": "token-1",
@@ -86,8 +99,8 @@ async def test_multi_user_positions_and_pnl_are_isolated(tmp_path):
     ctx_a = _build_context(user_id="user-a", db_path=str(db_path))
     ctx_b = _build_context(user_id="user-b", db_path=str(db_path))
 
-    await execute_trades(ctx_a, leader_id, buy_signal, now_ts=1_700_000_000)
-    await execute_trades(ctx_b, leader_id, buy_signal, now_ts=1_700_000_000)
+    await execute_trades(ctx_a, leader_id, buy_signal, now_ts=time.time())
+    await execute_trades(ctx_b, leader_id, buy_signal, now_ts=time.time())
 
     pos_a = ctx_a.positions_repo.get_position("user-a", "cond-1")
     pos_b = ctx_b.positions_repo.get_position("user-b", "cond-1")
@@ -99,7 +112,7 @@ async def test_multi_user_positions_and_pnl_are_isolated(tmp_path):
     sell_signal = [
         {
             "transactionHash": "0xtx-sell-a",
-            "timestamp": 1_700_000_100,
+            "timestamp": int(time.time()),
             "type": "TRADE",
             "side": "SELL",
             "asset": "token-1",
@@ -108,7 +121,7 @@ async def test_multi_user_positions_and_pnl_are_isolated(tmp_path):
             "price": 0.5,
         }
     ]
-    await execute_trades(ctx_a, leader_id, sell_signal, now_ts=1_700_000_100)
+    await execute_trades(ctx_a, leader_id, sell_signal, now_ts=time.time())
 
     pos_a_after = ctx_a.positions_repo.get_position("user-a", "cond-1")
     pos_b_after = ctx_b.positions_repo.get_position("user-b", "cond-1")
