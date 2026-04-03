@@ -1,5 +1,11 @@
+from __future__ import annotations
+
+import asyncio
+
 from web3 import Web3
+
 from config.env import ENV
+from network.web3_adapter import AsyncWeb3Adapter
 from utils.logger import get_logger
 
 logger = get_logger("Balance")
@@ -22,6 +28,7 @@ def _masked_address(address: str | None) -> str:
     if len(address) <= 10:
         return address
     return f"{address[:10]}..."
+
 
 
 def _get_balance_sync(address: str) -> float | None:
@@ -62,10 +69,24 @@ async def get_my_balance(address: str) -> float | None:
         return None
 
     try:
-        return _get_balance_sync(address)
+        # Run all Web3 HTTP calls off the event loop.
+        return await asyncio.to_thread(_get_balance_sync, address)
     except Exception as exc:
         logger.error(
             f"Balance lookup failed in async wrapper for wallet={_masked_address(address)} | error={exc}",
             exc_info=True,
         )
+        return None
+
+
+async def get_native_balance_wei(address: str) -> int | None:
+    if not RPC_URL:
+        return None
+    try:
+        w3 = Web3(Web3.HTTPProvider(RPC_URL))
+        adapter = AsyncWeb3Adapter(w3, logger=logger)
+        checksum_address = Web3.to_checksum_address(address)
+        return int(await adapter.get_native_balance(checksum_address))
+    except Exception as exc:
+        logger.warning(f"Native balance lookup failed for {_masked_address(address)}: {exc}")
         return None
