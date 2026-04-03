@@ -1,0 +1,47 @@
+orchestrators/leader_registry.py
+  21ec749c42c60fb9 129-130
+tests/test_leader_registry_modes.py
+  21ec749c42c60fb9 10,77-115
+README.md
+  21ec749c42c60fb9 559-560,600-601
+tests/test_env_security.py
+  21ec749c42c60fb9 78-104
+index.py
+  21ec749c42c60fb9 85-95,181-192
+config/env.py
+  978bcfa93456ae1e 376-384
+  21ec749c42c60fb9 65-70,220-225,349-352,364-375,385,403-407,499,501
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "28d4da0111292b2660dbe52fd2b454796bca3ac2",
+  "prompts": {
+    "21ec749c42c60fb9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019d52ba-78a2-7fc1-b073-9ad80b36715e",
+        "model": "gpt-5.4"
+      },
+      "human_author": "kvzsolt",
+      "messages": [],
+      "total_additions": 133,
+      "total_deletions": 16,
+      "accepted_lines": 132,
+      "overriden_lines": 0
+    },
+    "978bcfa93456ae1e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1e73f404-18aa-4142-aaf6-824929996664",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "kvzsolt",
+      "messages": [],
+      "total_additions": 9,
+      "total_deletions": 1,
+      "accepted_lines": 9,
+      "overriden_lines": 0
+    }
+  }
+}
