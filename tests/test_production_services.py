@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from config.env import SignatureType, WalletConfig, validate_wallet_config
 from services.backtest import BacktestConfig, BacktestEngine
-from services.executionService import ExecutionRequest, ExecutionService
+from services.executionService import ExecutionRequest, ExecutionService, _sanitize_submission_response
 from services.marketMetaService import MarketMetaService
 from services.riskEngine import PortfolioSnapshot, ProposedTrade, RiskEngine, policy_from_env
 from utils.createClobClient import MarketMeta
@@ -63,12 +63,18 @@ class _Repo:
     def __init__(self):
         self.store = {}
         self.fills = {}
+        self.history = []
 
     def get_by_idempotency_key(self, key):
         return self.store.get(key)
 
     def save_submission(self, *, idempotency_key, request, response):
         self.store[idempotency_key] = {"request": request, "response": response, "order_id": response.get("orderID")}
+        self.history.append({
+            "idempotency_key": idempotency_key,
+            "request": request,
+            "response": response,
+        })
 
     def mark_fill(self, *, order_id, fill):
         self.fills[order_id] = fill
@@ -147,6 +153,7 @@ class TestExecutionService:
         )
         repo = _Repo()
         svc = ExecutionService(clob, _MetaSvc(), _FeeSvc(), repo)
+        svc._confirm_fill = AsyncMock(return_value={"status": "filled", "size_matched": "5", "avg_price": "0.5"})
         req = ExecutionRequest(
             user_id="u1",
             leader_id="l1",
@@ -161,6 +168,44 @@ class TestExecutionService:
         assert res.accepted is True
         assert res.order_id == "o1"
         assert "o1" in repo.fills
+
+    def test_persists_sanitized_submission_payload(self):
+        long_signal = "sig_" + ("x" * 600)
+        repo = _Repo()
+        svc = ExecutionService(
+            clob_client=SimpleNamespace(),
+            market_meta_service=SimpleNamespace(),
+            fee_service=SimpleNamespace(),
+            order_repo=repo,
+        )
+        idem_key = "persist-sanitized"
+        svc._save_submission(
+            idempotency_key=idem_key,
+            request={
+                "user_id": "u1",
+                "leader_id": "l1",
+                "token_id": "t1",
+                "side": "BUY",
+                "amount": "5",
+                "signal_id": long_signal,
+                "secret": "drop-me",
+            },
+            response={
+                "success": True,
+                "orderID": "o-sanitized",
+                "status": "submitted",
+                "data": {"sensitive": "should-not-persist"},
+                "unexpected": "drop-me",
+            },
+        )
+
+        stored = repo.store[idem_key]
+        assert "data" not in stored["response"]
+        assert "unexpected" not in stored["response"]
+        assert stored["response"]["orderID"] == "o-sanitized"
+        assert "secret" not in stored["request"]
+        assert stored["request"]["signal_id"] != long_signal
+        assert len(stored["request"]["signal_id"]) < len(long_signal)
 
     @pytest.mark.asyncio
     @patch("services.executionService.ENV", {"MIN_SHARE_PRICE": 0})
@@ -184,6 +229,159 @@ class TestExecutionService:
         with patch("services.executionService._idempotency_key", return_value=key):
             res = await svc.execute(req)
         assert res.status == "duplicate_ignored"
+
+    @pytest.mark.asyncio
+    async def test_stale_pending_submission_expires_and_retries(self):
+        clob = SimpleNamespace(
+            get_price=AsyncMock(return_value={"price": "0.5"}),
+            create_market_order=AsyncMock(return_value={"signed": True}),
+            post_signed_order=AsyncMock(return_value={"success": True, "orderID": "o2", "status": "submitted"}),
+            client=SimpleNamespace(get_order=lambda _order_id: {"status": "filled", "size_matched": "5", "avg_price": "0.5"}),
+        )
+        repo = _Repo()
+        svc = ExecutionService(clob, _MetaSvc(), _FeeSvc(), repo)
+        req = ExecutionRequest(
+            user_id="u1",
+            leader_id="l1",
+            token_id="t1",
+            side="BUY",
+            amount=Decimal("5"),
+            max_slippage_bps=100,
+            reason="copy_trade",
+            signal_id="sig_stale_pending",
+        )
+
+        key = "stale-pending-key"
+        repo.store[key] = {
+            "status": "pending",
+            "order_id": None,
+            "request": {"user_id": "u1", "leader_id": "l1"},
+            "response": {"status": "pending", "pending_since": 0},
+        }
+
+        with patch("services.executionService.ENV", {"MIN_SHARE_PRICE": 0, "PENDING_SUBMISSION_TTL_SECONDS": 120}):
+            with patch("services.executionService._idempotency_key", return_value=key):
+                res = await svc.execute(req)
+
+        assert res.accepted is True
+        assert res.status != "duplicate_ignored"
+        assert clob.create_market_order.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_stale_submitted_unconfirmed_without_order_id_expires_and_retries(self):
+        clob = SimpleNamespace(
+            get_price=AsyncMock(return_value={"price": "0.5"}),
+            create_market_order=AsyncMock(return_value={"signed": True}),
+            post_signed_order=AsyncMock(return_value={"success": True, "orderID": "o2", "status": "submitted"}),
+            client=SimpleNamespace(get_order=lambda _order_id: {"status": "filled", "size_matched": "5", "avg_price": "0.5"}),
+        )
+        repo = _Repo()
+        svc = ExecutionService(clob, _MetaSvc(), _FeeSvc(), repo)
+        req = ExecutionRequest(
+            user_id="u1",
+            leader_id="l1",
+            token_id="t1",
+            side="BUY",
+            amount=Decimal("5"),
+            max_slippage_bps=100,
+            reason="copy_trade",
+            signal_id="sig_stale_submitted_unconfirmed",
+        )
+
+        key = "stale-submitted-unconfirmed-key"
+        repo.store[key] = {
+            "status": "submitted_unconfirmed",
+            "order_id": None,
+            "request": {"user_id": "u1", "leader_id": "l1"},
+            "response": {"status": "submitted_unconfirmed", "pending_since": 0},
+        }
+
+        with patch("services.executionService.ENV", {"MIN_SHARE_PRICE": 0, "PENDING_SUBMISSION_TTL_SECONDS": 120}):
+            with patch("services.executionService._idempotency_key", return_value=key):
+                res = await svc.execute(req)
+
+        assert res.accepted is True
+        assert res.status != "duplicate_ignored"
+        assert clob.create_market_order.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_pending_submission_captures_timestamps_and_ttl(self):
+        clob = SimpleNamespace(
+            get_price=AsyncMock(return_value={"price": "0.5"}),
+            create_market_order=AsyncMock(return_value={"signed": True}),
+            post_signed_order=AsyncMock(return_value={"success": True, "orderID": "o3", "status": "submitted"}),
+            client=SimpleNamespace(get_order=lambda _order_id: {"status": "filled", "size_matched": "5", "avg_price": "0.5"}),
+        )
+        repo = _Repo()
+        svc = ExecutionService(clob, _MetaSvc(), _FeeSvc(), repo)
+        req = ExecutionRequest(
+            user_id="u1",
+            leader_id="l1",
+            token_id="t1",
+            side="BUY",
+            amount=Decimal("5"),
+            max_slippage_bps=100,
+            reason="copy_trade",
+            signal_id="sig_pending_ttl",
+        )
+
+        with patch("services.executionService.ENV", {"MIN_SHARE_PRICE": 0, "PENDING_SUBMISSION_TTL_SECONDS": 120}):
+            await svc.execute(req)
+
+        pending_write = next(item for item in repo.history if item["response"].get("status") == "pending")
+        pending_response = pending_write["response"]
+        assert "pending_since" in pending_response
+        assert pending_response.get("pending_ttl_seconds") == 120
+        assert pending_response.get("pending_expires_at") == pytest.approx(
+            pending_response["pending_since"] + 120,
+            rel=0,
+            abs=1e-6,
+        )
+
+    def test_submission_response_sanitizer_drops_unknown_fields_and_truncates_error(self):
+        long_error = "e" * 5000
+        sanitized = _sanitize_submission_response(
+            {
+                "success": "false",
+                "status": "failed",
+                "error": long_error,
+                "data": {"token": "secret"},
+                "debug": "verbose",
+            }
+        )
+
+        assert sanitized["success"] is False
+        assert "data" not in sanitized
+        assert "debug" not in sanitized
+        assert sanitized["error"] != long_error
+        assert len(sanitized["error"]) < len(long_error)
+
+    @pytest.mark.asyncio
+    @patch("services.executionService.ENV", {"MIN_SHARE_PRICE": 0})
+    async def test_ambiguous_post_submit_returns_submitted_unconfirmed(self):
+        clob = SimpleNamespace(
+            get_price=AsyncMock(return_value={"price": "0.5"}),
+            create_market_order=AsyncMock(return_value={"signed": True}),
+            post_signed_order=AsyncMock(side_effect=RuntimeError("timeout after submit")),
+        )
+        repo = _Repo()
+        svc = ExecutionService(clob, _MetaSvc(), _FeeSvc(), repo)
+        req = ExecutionRequest(
+            user_id="u1",
+            leader_id="l1",
+            token_id="t1",
+            side="BUY",
+            amount=Decimal("5"),
+            max_slippage_bps=100,
+            reason="copy_trade",
+            signal_id="sig_ambiguous_post",
+        )
+
+        res = await svc.execute(req)
+
+        assert res.accepted is True
+        assert res.status == "submitted_unconfirmed"
+        assert clob.create_market_order.await_count == 1
 
 
 class TestRiskEngine:

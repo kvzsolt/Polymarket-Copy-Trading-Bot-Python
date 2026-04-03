@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
 
+from config.env import ENV
 from domain.models import TradeSignal
 from domain.trading_context import TradingContext
 from services.executionService import ExecutionRequest
@@ -43,6 +44,26 @@ def _to_decimal(value: Any, default: str = "0") -> Decimal:
         return Decimal(str(value))
     except Exception:
         return Decimal(default)
+
+
+def _max_non_terminal_failure_attempts() -> int:
+    raw = ENV.get("NON_TERMINAL_FAILURE_MAX_ATTEMPTS", 3)
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = 3
+    return max(1, value)
+
+
+def _retry_attempt_from_status(status: str | None) -> int:
+    text = str(status or "").strip().lower()
+    if not text.startswith("retry_pending_"):
+        return 0
+    suffix = text.replace("retry_pending_", "", 1)
+    try:
+        return int(suffix)
+    except (TypeError, ValueError):
+        return 0
 
 
 
@@ -195,8 +216,7 @@ async def execute_trades(
             )
             continue
 
-        if not exec_result.accepted or exec_result.filled_amount <= 0:
-            await metrics.inc("execution_failures_total", labels={**labels, "reason": exec_result.status})
+        if exec_result.accepted and exec_result.filled_amount <= 0:
             context.orders_repo.mark_processed_trade(
                 trade_key=trade_key,
                 user_id=context.user_id,
@@ -205,8 +225,63 @@ async def execute_trades(
                 side=signal.side,
                 asset=signal.token_id,
                 condition_id=signal.condition_id,
-                status=f"failed_{exec_result.status}",
+                status="submitted_unconfirmed",
             )
+            logger.info(
+                "trade_copy_submitted_unconfirmed",
+                extra={
+                    "user_id": context.user_id,
+                    "leader_id": leader_id,
+                    "condition_id": signal.condition_id,
+                    "side": signal.side,
+                    "order_id": exec_result.order_id,
+                },
+            )
+            results.append(
+                TradePipelineResult(
+                    trade_key=trade_key,
+                    status="submitted_unconfirmed",
+                    reason="accepted_no_fill_confirmed",
+                    order_id=exec_result.order_id,
+                )
+            )
+            continue
+
+        if not exec_result.accepted:
+            await metrics.inc("execution_failures_total", labels={**labels, "reason": exec_result.status})
+            is_terminal = exec_result.status == "rejected"
+            max_non_terminal_attempts = _max_non_terminal_failure_attempts()
+            prev_trade = context.orders_repo.get_processed_trade(trade_key) or {}
+            prev_retry_attempt = _retry_attempt_from_status(prev_trade.get("status"))
+            next_retry_attempt = prev_retry_attempt + 1
+            non_terminal_retry_exhausted = (
+                not is_terminal and next_retry_attempt >= max_non_terminal_attempts
+            )
+            status_to_persist = (
+                f"failed_{exec_result.status}"
+                if is_terminal
+                else (
+                    "failed_non_terminal_retry_exhausted"
+                    if non_terminal_retry_exhausted
+                    else f"retry_pending_{next_retry_attempt}"
+                )
+            )
+            context.orders_repo.mark_processed_trade(
+                trade_key=trade_key,
+                user_id=context.user_id,
+                leader_id=leader_id,
+                tx_hash=signal.tx_hash,
+                side=signal.side,
+                asset=signal.token_id,
+                condition_id=signal.condition_id,
+                status=status_to_persist,
+            )
+            fail_reason = exec_result.error or exec_result.status
+            if non_terminal_retry_exhausted:
+                fail_reason = (
+                    f"{fail_reason} "
+                    f"(retry budget exhausted after {next_retry_attempt} attempts)"
+                )
             logger.warning(
                 "trade_copy_failed",
                 extra={
@@ -216,13 +291,18 @@ async def execute_trades(
                     "side": signal.side,
                     "status": exec_result.status,
                     "error": exec_result.error,
+                    "terminal": is_terminal,
+                    "retry_exhausted": non_terminal_retry_exhausted,
+                    "retry_attempt": next_retry_attempt,
+                    "max_non_terminal_attempts": max_non_terminal_attempts,
+                    "persisted_status": status_to_persist,
                 },
             )
             results.append(
                 TradePipelineResult(
                     trade_key=trade_key,
                     status="failed",
-                    reason=exec_result.error or exec_result.status,
+                    reason=fail_reason,
                     order_id=exec_result.order_id,
                 )
             )

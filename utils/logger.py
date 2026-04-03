@@ -50,6 +50,20 @@ _LEVEL_STYLES = {
     "CRITICAL": "error",
 }
 
+_HTTP_ERROR_CATEGORIES = {
+    "400": "bad_request",
+    "401": "unauthorized",
+    "403": "forbidden",
+    "404": "not_found",
+    "409": "conflict",
+    "422": "unprocessable_entity",
+    "429": "rate_limited",
+    "500": "upstream_error",
+    "502": "upstream_error",
+    "503": "upstream_unavailable",
+    "504": "upstream_timeout",
+}
+
 
 def _project_root() -> Path:
     return Path(__file__).resolve().parents[1]
@@ -84,6 +98,8 @@ class JsonFormatter(logging.Formatter):
             except (TypeError, ValueError):
                 pass
         if record.exc_info:
+            exc_type = record.exc_info[0].__name__ if record.exc_info[0] else "Exception"
+            payload["exc_type"] = exc_type
             payload["exc_info"] = self.formatException(record.exc_info)
         return json.dumps(payload, ensure_ascii=False)
 
@@ -119,7 +135,9 @@ class RichConsoleHandler(logging.Handler):
             body = Text(msg, style=style)
             console.print(prefix + body, highlight=False)
             if record.exc_info and not record.exc_text:
-                console.print_exception(show_locals=False)
+                exc_type = record.exc_info[0].__name__ if record.exc_info[0] else "Exception"
+                exc_val = str(record.exc_info[1]) if record.exc_info[1] else "details omitted"
+                console.print(Text(f"[{exc_type}] {exc_val}", style="muted"))
         except Exception:
             self.handleError(record)
 
@@ -660,6 +678,47 @@ def print_success(msg: str) -> None:
     console.print(f"✅ [success]{msg}[/success]")
 
 
+def redact_error_detail(error: Any) -> str:
+    if error is None:
+        return "unknown_error"
+
+    error_str = str(error).strip()
+    if not error_str:
+        return "unknown_error"
+
+    parsed = _parse_api_error(error_str)
+    status_code = parsed.get("status_code")
+    if status_code:
+        return _HTTP_ERROR_CATEGORIES.get(status_code, f"http_{status_code}")
+
+    lowered = error_str.lower()
+    if "timeout" in lowered:
+        return "timeout"
+    if "rate limit" in lowered or "too many requests" in lowered:
+        return "rate_limited"
+    if "connection" in lowered or "network" in lowered:
+        return "network_error"
+    if "signature" in lowered:
+        return "signature_error"
+    if "nonce" in lowered:
+        return "nonce_error"
+    if "insufficient" in lowered and ("fund" in lowered or "balance" in lowered):
+        return "insufficient_funds"
+    if isinstance(error, BaseException):
+        return type(error).__name__
+    return "request_failed"
+
+
+def _response_shape(data: Any) -> str | None:
+    if data is None:
+        return None
+    if isinstance(data, list):
+        return f"list[{len(data)}]"
+    if isinstance(data, dict):
+        return f"dict[{len(data)}]"
+    return type(data).__name__
+
+
 def _parse_api_error(error_str: str) -> dict[str, str]:
     result: dict[str, str] = {"raw": str(error_str)}
 
@@ -699,13 +758,13 @@ def print_api_error(
     retry: int = 0,
     max_retries: int = 3,
 ) -> None:
-    error_str = str(error) if error else "Unknown error"
-    parsed = _parse_api_error(error_str)
+    parsed = _parse_api_error(str(error) if error else "")
+    redacted_message = redact_error_detail(error)
 
     lines = _build_panel_lines(
         Side=side.upper(),
         Status=f"HTTP {parsed['status_code']}" if parsed.get("status_code") else None,
-        Message=parsed.get("error_message") or error_str,
+        Message=redacted_message,
         Condition=shorten_addr(condition_id, 8, 6) if condition_id else None,
         Asset=shorten_addr(asset, 8, 6) if asset else None,
         Retries=f"{retry}/{max_retries}" if retry > 0 else None,
@@ -731,12 +790,13 @@ def print_api_response(
 
     error_raw = response.get("error", "")
     parsed = _parse_api_error(str(error_raw))
+    redacted_message = redact_error_detail(error_raw)
 
     lines = _build_panel_lines(
         Side=side.upper(),
         Success="[bold red]False[/bold red]",
         Status=f"HTTP {parsed['status_code']}" if parsed.get("status_code") else None,
-        Message=parsed.get("error_message") or (error_raw if error_raw else None),
+        Message=redacted_message,
         Condition=shorten_addr(condition_id, 8, 6) if condition_id else None,
     )
 
@@ -787,14 +847,14 @@ def print_clob_error(
     side: str | None = None,
     condition_id: str | None = None,
 ) -> None:
-    error_str = str(error)
-    parsed = _parse_api_error(error_str)
+    parsed = _parse_api_error(str(error))
+    redacted_message = redact_error_detail(error)
 
     lines = _build_panel_lines(
         Operation=operation,
         Side=side.upper() if side else None,
         Status=f"HTTP {parsed['status_code']}" if parsed.get("status_code") else None,
-        Message=parsed.get("error_message") or error_str,
+        Message=redacted_message,
         Asset=shorten_addr(asset, 8, 6) if asset else None,
         Condition=shorten_addr(condition_id, 8, 6) if condition_id else None,
     )
@@ -1047,17 +1107,8 @@ def log_api_response(
     error: str | None = None,
     meta: dict[str, Any] | None = None,
 ) -> None:
-    """Write a structured JSONL entry for every external API response."""
-    data_summary: Any = None
-    if isinstance(data, list):
-        data_summary = f"list[{len(data)}]"
-    elif isinstance(data, dict):
-        data_summary = {k: v for k, v in data.items() if k in (
-            "success", "orderID", "status", "error", "price", "size",
-            "min_order_size", "transactionHash",
-        )}
-    else:
-        data_summary = str(data)[:200] if data is not None else None
+    """Write a structured JSONL entry for every external API response without raw payloads."""
+    response_shape = _response_shape(data)
 
     ok = 200 <= status < 400
     msg = f"API {method} {status} {'OK' if ok else 'ERR'} {url}"
@@ -1068,10 +1119,16 @@ def log_api_response(
         "url": url,
         "httpStatus": status,
     }
-    if data_summary is not None:
-        extras["response"] = data_summary
+    if response_shape is not None:
+        extras["response_shape"] = response_shape
+        
+    if isinstance(data, dict):
+        for safe_field in ("success", "orderID", "status"):
+            if safe_field in data:
+                extras[safe_field] = data[safe_field]
+
     if error:
-        extras["error"] = error
+        extras["error"] = redact_error_detail(error)
     if meta:
         extras.update(meta)
 
@@ -1079,4 +1136,3 @@ def log_api_response(
         logger.info(msg, extra=extras)
     else:
         logger.warning(msg, extra=extras)
-

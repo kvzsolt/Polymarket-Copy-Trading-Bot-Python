@@ -592,7 +592,11 @@ NEAR_MAX_PRICE_EXIT=0.95
 
 - `PRIVATE_KEY_FILE` is supported and validated with permission checks.
 - `FUNDER_ADDRESS` is preferred; `PROXY_WALLET` exists as a backward-compatible fallback.
-- the environment layer explicitly rejects inline-comment garbage in critical values.
+- The environment layer explicitly rejects inline comments in values (`KEY=value # comment` is invalid).
+- Booleans are parsed as true only for `1`, `true`, or `yes` (case-insensitive).
+- `LEADER_WALLETS` is a comma-separated list (`0x...,0x...`); whitespace around entries is trimmed.
+- Numeric keys are strict base-10 `int`/`float` parses (non-numeric text fails validation).
+- `ENV` is an import-time snapshot. Tests that patch `os.environ` after import should call `config.env.rehydrate_env()` (or patch module-level `ENV` directly) before asserting behavior.
 
 ---
 

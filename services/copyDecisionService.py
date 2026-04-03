@@ -125,7 +125,7 @@ class CopyDecisionService:
                 details=trade_score.details,
             )
 
-        min_decision_score = float(ENV.get("COPY_DECISION_MIN_SCORE", 0.32) or 0.32)
+        min_decision_score = float(ENV.get("COPY_DECISION_MIN_SCORE", 0.28) or 0.28)
         if trade_score.score < min_decision_score:
             return CopyDecision(
                 allow=False,

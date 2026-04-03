@@ -137,20 +137,32 @@ class TraderDiscoveryService:
 
         Formula: 0.30*roi + 0.20*win_rate + 0.20*drawdown_control
                  + 0.15*consistency + 0.15*active_quality
+
+        Guards:
+        - Win rate > 2.0 after normalization → reject (bad data).
+        - Sample size < 20 positions → sqrt(n/20) discount.
+        - Zero-activity wallets heavily penalized (0.05 base).
         """
-        # ROI normalized (log scale for large PnL differences)
         import math
+
+        # Win rate normalization — reject clearly invalid data first
+        wr = profile.win_rate
+        if wr > 1.0:
+            wr = wr / 100.0  # normalize if percentage
+        if wr > 2.0:
+            logger.warning(
+                f"Rejecting {profile.wallet[:12]}…: win_rate={profile.win_rate} "
+                f"normalizes to {wr:.2f} (bad data)"
+            )
+            return 0.0
+        wr_score = min(1.0, max(0.0, wr))
+
+        # ROI normalized (log scale for large PnL differences)
         roi_raw = profile.overall_gain
         if roi_raw > 0:
             roi_score = min(1.0, math.log10(1 + roi_raw) / 7.0)  # 10M → ~1.0
         else:
             roi_score = 0.0
-
-        # Win rate (already 0-1 from API)
-        wr = profile.win_rate
-        if wr > 1.0:
-            wr = wr / 100.0  # normalize if percentage
-        wr_score = min(1.0, max(0.0, wr))
 
         # Drawdown control: loss_amount relative to win_amount
         if profile.win_amount > 0:
@@ -166,7 +178,7 @@ class TraderDiscoveryService:
         if profile.active_positions > 0 and profile.total_current_value > 0:
             active_score = min(1.0, math.log10(1 + profile.total_current_value) / 5.0)
         else:
-            active_score = 0.2  # Small base score — inactive isn't terrible
+            active_score = 0.05  # Heavily penalize inactive wallets
 
         composite = (
             0.30 * roi_score
@@ -175,6 +187,12 @@ class TraderDiscoveryService:
             + 0.15 * consistency_score
             + 0.15 * active_score
         )
+
+        # Sample-size penalty: discount wallets with fewer than 20 positions
+        if profile.total_positions < 20:
+            discount = math.sqrt(profile.total_positions / 20.0)
+            composite *= discount
+
         return max(0.0, min(1.0, composite))
 
     async def discover_candidates(
@@ -212,11 +230,10 @@ class TraderDiscoveryService:
                 # Schema validation — detect silent API changes
                 if not _validate_row_schema(row):
                     schema_warnings += 1
-                    if schema_warnings == 1:
-                        logger.warning(
-                            f"Schema drift detected in discovery API response — "
-                            f"missing fields: {_REQUIRED_FIELDS - set(row.keys())}"
-                        )
+                    missing = _REQUIRED_FIELDS - set(row.keys())
+                    logger.warning(
+                        f"Schema validation: row {schema_warnings} missing fields: {missing}"
+                    )
                     continue
 
                 wallet = str(row.get("trader", "")).strip().lower()
