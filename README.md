@@ -556,6 +556,8 @@ RPC_URL=
 CLOB_HTTP_URL=https://clob.polymarket.com
 MONGO_URI=
 MULTI_USER_CONFIG_FILE=
+LEADER_AUTO=false
+LEADER_AUTO_COUNT=5
 ENABLE_RISK_MGMT=true
 ENABLE_AUTO_REDEEM=true
 ENABLE_METRICS_SERVER=false
@@ -595,6 +597,8 @@ NEAR_MAX_PRICE_EXIT=0.95
 - The environment layer explicitly rejects inline comments in values (`KEY=value # comment` is invalid).
 - Booleans are parsed as true only for `1`, `true`, or `yes` (case-insensitive).
 - `LEADER_WALLETS` is a comma-separated list (`0x...,0x...`); whitespace around entries is trimmed.
+- `LEADER_AUTO=true` is the one-switch auto mode: when `LEADER_WALLETS` and `USER_ADDRESS` are empty, the bot auto-discovers profitable leaders and promotes the top `LEADER_AUTO_COUNT` into live monitoring.
+- `PERCENTAGE` still controls how much of each promoted leader trade you copy; `LEADER_AUTO_COUNT` only controls how many leaders are auto-followed.
 - Numeric keys are strict base-10 `int`/`float` parses (non-numeric text fails validation).
 - `ENV` is an import-time snapshot. Tests that patch `os.environ` after import should call `config.env.rehydrate_env()` (or patch module-level `ENV` directly) before asserting behavior.
 
