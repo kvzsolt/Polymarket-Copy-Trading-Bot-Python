@@ -40,6 +40,9 @@ class OrderRepository:
     def has_processed_trade(self, trade_key: str) -> bool:
         return self._repo.has_processed_trade(trade_key)
 
+    def get_processed_trade(self, trade_key: str) -> dict[str, Any] | None:
+        return self._repo.get_processed_trade(trade_key)
+
     def mark_processed_trade(
         self,
         *,

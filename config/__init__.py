@@ -10,6 +10,7 @@ from .env import (
     get_funder_address,
     get_private_key,
     get_signature_type,
+    rehydrate_env,
     validate_runtime_env,
     validate_wallet_config,
 )
@@ -23,6 +24,7 @@ __all__ = [
     "build_wallet_config",
     "get_chain_id",
     "get_funder_address",
+    "rehydrate_env",
     "validate_runtime_env",
     "validate_wallet_config",
     "get_private_key",

@@ -54,6 +54,7 @@ from utils.logger import (
     print_startup_banner,
     print_status_checks,
     print_traders_copying,
+    redact_error_detail,
 )
 
 logger = get_logger("Main")
@@ -79,7 +80,13 @@ def _configured_leaders() -> list[str]:
         single = str(ENV.get("USER_ADDRESS") or "").strip()
         if single:
             leaders = [single]
-    return [str(w).strip() for w in leaders if str(w).strip()]
+    result = [str(w).strip() for w in leaders if str(w).strip()]
+    if not result:
+        logger.warning(
+            "No leader wallets configured. Both LEADER_WALLETS and USER_ADDRESS "
+            "are empty. The bot cannot copy-trade without at least one leader."
+        )
+    return result
 
 
 def _default_follow(user_id: str, leader_id: str) -> UserFollowConfig:
@@ -163,9 +170,17 @@ async def _wait_for_active_leaders(
     if state.active_monitored:
         return state.active_monitored
 
-    logger.warning(
-        "No active leaders available; entering discovery-only mode and continuing refresh."
-    )
+    if not configured_leaders:
+        logger.error(
+            "No active leaders after initial refresh. No LEADER_WALLETS configured and "
+            "discovery did not promote any leaders. Set LEADER_WALLETS=0x... in your .env, "
+            "or enable auto-promotion with DISCOVERY_PROMOTE_TO_ACTIVE=true and "
+            "AUTO_DISCOVER_LEADERS=true."
+        )
+    else:
+        logger.warning(
+            "No active leaders available; entering discovery-only mode and continuing refresh."
+        )
     while True:
         await metrics.inc("no_leaders_monitored_total")
         await asyncio.sleep(refresh_interval)
@@ -188,7 +203,10 @@ async def _discovery_refresh_loop(
         try:
             await registry.refresh(configured_leaders)
         except Exception as exc:
-            logger.warning("Background discovery refresh failed", extra={"error": repr(exc)})
+            logger.warning(
+                "Background discovery refresh failed",
+                extra={"error": redact_error_detail(exc)},
+            )
 
 
 async def main():
@@ -352,7 +370,20 @@ async def main():
                         execute_trade_pipeline(context, leader_wallet, trades, now_ts)
                         for context in contexts
                     ]
-                    await asyncio.gather(*tasks, return_exceptions=True)
+                    results = await asyncio.gather(*tasks, return_exceptions=True)
+                    for i, result in enumerate(results):
+                        if isinstance(result, Exception):
+                            ctx = contexts[i]
+                            logger.error(
+                                "trade_pipeline_exception",
+                                extra={
+                                    "leader_id": leader_wallet,
+                                    "user": ctx.user_id,
+                                    "error": redact_error_detail(result),
+                                    "error_type": type(result).__name__,
+                                },
+                            )
+                            await metrics.inc("trade_pipeline_crashes_total")
                 finally:
                     trade_queue.task_done()
 

@@ -326,6 +326,57 @@ class TestRetryBlocking:
         from services.executionService import _is_retry_blocking_existing
         assert not _is_retry_blocking_existing(None)
 
+    def test_fresh_pending_blocks(self):
+        from services.executionService import _is_retry_blocking_existing
+        existing = {"status": "pending", "order_id": None, "response": {"status": "pending", "pending_since": 100}}
+        assert _is_retry_blocking_existing(existing, now_ts=150, pending_ttl_seconds=120)
+
+    def test_stale_pending_does_not_block(self):
+        from services.executionService import _is_retry_blocking_existing
+        existing = {"status": "pending", "order_id": None, "response": {"status": "pending", "pending_since": 100}}
+        assert not _is_retry_blocking_existing(existing, now_ts=250, pending_ttl_seconds=120)
+
+    def test_pending_without_timestamp_does_not_block(self):
+        from services.executionService import _is_retry_blocking_existing
+        existing = {"status": "pending", "order_id": None, "response": {"status": "pending"}}
+        assert not _is_retry_blocking_existing(existing, now_ts=250, pending_ttl_seconds=120)
+
+    def test_pending_with_future_expiry_blocks(self):
+        from services.executionService import _is_retry_blocking_existing
+        existing = {
+            "status": "pending",
+            "order_id": None,
+            "response": {"status": "pending", "pending_expires_at": 220},
+        }
+        assert _is_retry_blocking_existing(existing, now_ts=200, pending_ttl_seconds=120)
+
+    def test_pending_with_expired_expiry_does_not_block(self):
+        from services.executionService import _is_retry_blocking_existing
+        existing = {
+            "status": "pending",
+            "order_id": None,
+            "response": {"status": "pending", "pending_expires_at": 220},
+        }
+        assert not _is_retry_blocking_existing(existing, now_ts=230, pending_ttl_seconds=120)
+
+    def test_fresh_submitted_unconfirmed_without_order_id_blocks(self):
+        from services.executionService import _is_retry_blocking_existing
+        existing = {
+            "status": "submitted_unconfirmed",
+            "order_id": None,
+            "response": {"status": "submitted_unconfirmed", "pending_since": 100},
+        }
+        assert _is_retry_blocking_existing(existing, now_ts=150, pending_ttl_seconds=120)
+
+    def test_stale_submitted_unconfirmed_without_order_id_does_not_block(self):
+        from services.executionService import _is_retry_blocking_existing
+        existing = {
+            "status": "submitted_unconfirmed",
+            "order_id": None,
+            "response": {"status": "submitted_unconfirmed", "pending_since": 100},
+        }
+        assert not _is_retry_blocking_existing(existing, now_ts=250, pending_ttl_seconds=120)
+
 
 # ---------------------------------------------------------------------------
 # Day-start equity persistence

@@ -122,6 +122,12 @@ class LeaderRegistry:
                 active_monitored = [c.leader_id for c in ranked[:top_n]]
             else:
                 active_monitored = []
+                self.logger.error(
+                    "No leaders can be monitored: LEADER_WALLETS is empty and "
+                    "DISCOVERY_PROMOTE_TO_ACTIVE is not enabled. Either set "
+                    "LEADER_WALLETS=0x... in your .env or set "
+                    "DISCOVERY_PROMOTE_TO_ACTIVE=true to auto-promote discovered leaders."
+                )
 
         if not active_monitored:
             self.logger.warning("no_leaders_monitored", extra={"mode": mode})

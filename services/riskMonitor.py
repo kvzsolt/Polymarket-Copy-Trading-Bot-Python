@@ -304,11 +304,6 @@ async def run_risk_check_for_context(context: TradingContext) -> None:
                     fee=Decimal(str(result.fees_paid or 0)),
                     fill_ts=int(time.time()),
                 ),
-                raw_payload={
-                    "reason": reason,
-                    "risk_exit": True,
-                    "order_id": result.order_id,
-                },
             )
             updated_pos = context.positions_repo.apply_fill(
                 user_id=context.user_id,

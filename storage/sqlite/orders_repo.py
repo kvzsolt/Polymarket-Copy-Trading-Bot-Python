@@ -19,6 +19,7 @@ _TERMINAL_SUCCESS_STATES = {
 }
 
 _FAILURE_STATES = {"failed", "submission_failed", "created"}
+_RETRY_PENDING_STATUS_PREFIX = "retry_pending_"
 
 
 @dataclass
@@ -182,10 +183,40 @@ class OrdersRepo:
             return False
         with create_connection(self.db_path) as conn:
             row = conn.execute(
-                "SELECT 1 FROM processed_trades WHERE trade_key = ? LIMIT 1",
+                "SELECT status FROM processed_trades WHERE trade_key = ? LIMIT 1",
                 (trade_key,),
             ).fetchone()
-        return row is not None
+        if row is None:
+            return False
+        status = str(row["status"] or "")
+        return not status.startswith(_RETRY_PENDING_STATUS_PREFIX)
+
+    def get_processed_trade(self, trade_key: str) -> dict[str, Any] | None:
+        if not trade_key:
+            return None
+        with create_connection(self.db_path) as conn:
+            row = conn.execute(
+                """
+                SELECT trade_key, user_id, leader_id, tx_hash, side, asset, condition_id, status, processed_at
+                FROM processed_trades
+                WHERE trade_key = ?
+                LIMIT 1
+                """,
+                (trade_key,),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "trade_key": row["trade_key"],
+            "user_id": row["user_id"],
+            "leader_id": row["leader_id"],
+            "tx_hash": row["tx_hash"],
+            "side": row["side"],
+            "asset": row["asset"],
+            "condition_id": row["condition_id"],
+            "status": row["status"],
+            "processed_at": row["processed_at"],
+        }
 
     def mark_processed_trade(
         self,

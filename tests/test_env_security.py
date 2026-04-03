@@ -54,3 +54,24 @@ class TestEnvSecurity:
         with patch.dict(os.environ, env, clear=False):
             with pytest.raises(EnvValidationError):
                 validate_runtime_env()
+
+    def test_rehydrate_env_refreshes_snapshot_in_place(self):
+        from config.env import ENV, rehydrate_env
+
+        env_ref = ENV
+        address = _eth_addr("4")
+
+        with patch.dict(
+            os.environ,
+            {"LEADER_WALLETS": "", "USER_ADDRESS": address, "ENABLE_RISK_MGMT": "false"},
+            clear=False,
+        ):
+            refreshed = rehydrate_env()
+            assert refreshed is env_ref
+            assert ENV is env_ref
+            assert ENV["USER_ADDRESS"] == address
+            assert ENV["LEADER_WALLETS"] == [address]
+            assert ENV["ENABLE_RISK_MGMT"] is False
+
+        # Reset snapshot for any later tests in this process.
+        rehydrate_env()

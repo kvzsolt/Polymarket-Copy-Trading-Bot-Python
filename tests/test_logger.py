@@ -23,6 +23,7 @@ from utils.logger import (
     console,
     event_link,
     get_logger,
+    log_api_response,
     log_monitor_heartbeat,
     log_trade_detected,
     log_trade_decision,
@@ -55,6 +56,7 @@ from utils.logger import (
     print_trade_result,
     print_traders_copying,
     print_warning,
+    redact_error_detail,
     reset_heartbeat,
     shorten_addr,
     tx_link,
@@ -184,8 +186,7 @@ class TestJsonFormatter:
             msg="error", args=(), exc_info=exc_info,
         )
         result = json.loads(fmt.format(record))
-        assert "exc_info" in result
-        assert "ZeroDivisionError" in result["exc_info"]
+        assert result["exc_type"] == "ZeroDivisionError"
 
     def test_non_serializable_extras_skipped(self):
         fmt = JsonFormatter()
@@ -638,6 +639,37 @@ class TestParseApiError:
         parsed = _parse_api_error("PolyApiException[status_code=429, error_message={'error': 'rate limited'}]")
         assert parsed["status_code"] == "429"
         assert parsed["error_message"] == "rate limited"
+
+
+class TestErrorRedaction:
+    def test_redact_error_detail_status_code(self):
+        value = redact_error_detail("PolyApiException[status_code=429, error_message={'error':'rate limited'}]")
+        assert value == "rate_limited"
+
+    def test_redact_error_detail_timeout(self):
+        assert redact_error_detail(RuntimeError("request timeout while posting order")) == "timeout"
+
+    def test_log_api_response_omits_raw_response_payload(self, tmp_log_dir):
+        log = configure_logging(log_dir=tmp_log_dir, level="DEBUG")
+        log_api_response(
+            log,
+            method="POST",
+            url="https://example.test/order",
+            status=400,
+            data={"success": False, "error": {"message": "sensitive detail"}},
+            error="PolyApiException[status_code=400, error_message={'error':'sensitive detail'}]",
+        )
+        for h in log.handlers:
+            h.flush()
+
+        jsonl = tmp_log_dir / f"{APP_NAME}.jsonl"
+        rows = [json.loads(line) for line in jsonl.read_text().splitlines() if line.strip()]
+        api_rows = [row for row in rows if row.get("type") == "api_response"]
+        assert api_rows
+        row = api_rows[-1]
+        assert row.get("error") == "bad_request"
+        assert "response" not in row
+        assert row.get("response_shape") == "dict[2]"
 
 
 class TestErrorDisplayHelpers:

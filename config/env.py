@@ -332,12 +332,20 @@ def validate_runtime_env() -> None:
         errors.append('MAX_OPEN_POSITIONS must be > 0.')
     if ENV.get('MAX_DAILY_DRAWDOWN_PCT', 0.0) <= 0:
         errors.append('MAX_DAILY_DRAWDOWN_PCT must be > 0.')
+    if ENV.get('PENDING_SUBMISSION_TTL_SECONDS', 0) <= 0:
+        errors.append('PENDING_SUBMISSION_TTL_SECONDS must be > 0.')
 
     if errors:
         raise EnvValidationError('Invalid runtime environment:\n- ' + '\n- '.join(errors))
 
 
-ENV = {
+# IMPORTANT: This snapshot is populated at import time from os.environ.
+# ``dotenv.load_dotenv()`` MUST be called before ``config.env`` is first imported
+# in runtime entrypoints (index.py does this). Tests can call ``rehydrate_env()``
+# after patching ``os.environ`` to rebuild this snapshot in place.
+def _build_env_snapshot() -> dict[str, object]:
+    """Return a parsed environment snapshot from current ``os.environ``."""
+    return {
     # --- Wallet / auth ---
     'USER_ADDRESS': os.getenv('USER_ADDRESS', ''),
     'PROXY_WALLET': os.getenv('PROXY_WALLET', ''),
@@ -450,6 +458,7 @@ ENV = {
     # Trader discovery via polymarketanalytics.com
     'ENABLE_TRADER_DISCOVERY': os.getenv('ENABLE_TRADER_DISCOVERY', 'false').strip().lower() in ('1', 'true', 'yes'),
     'DISCOVERY_INTERVAL_SECONDS': _int('DISCOVERY_INTERVAL_SECONDS', '3600'),
+    'DISCOVERY_PROMOTE_TO_ACTIVE': os.getenv('DISCOVERY_PROMOTE_TO_ACTIVE', 'false').strip().lower() in ('1', 'true', 'yes'),
     'MIN_LEADER_PNL': _float('MIN_LEADER_PNL', '1000'),
     'MIN_LEADER_WIN_RATE': _float('MIN_LEADER_WIN_RATE', '0.55'),
     'MIN_LEADER_POSITIONS': _int('MIN_LEADER_POSITIONS', '20'),
@@ -465,6 +474,9 @@ ENV = {
     # Minimum allowed BUY quote price; 0 disables this gate.
     'MIN_SHARE_PRICE': _float('MIN_SHARE_PRICE', '0'),
     'MAX_RETRIES': _int('MAX_RETRIES', '3'),
+    'NON_TERMINAL_FAILURE_MAX_ATTEMPTS': _int('NON_TERMINAL_FAILURE_MAX_ATTEMPTS', '3'),
+    # Expire stale in-flight idempotency locks so retries are not blocked forever.
+    'PENDING_SUBMISSION_TTL_SECONDS': _int('PENDING_SUBMISSION_TTL_SECONDS', '120'),
     # Exponential backoff base (seconds) between retries
     'RETRY_BACKOFF_BASE': _float('RETRY_BACKOFF_BASE', '1.0'),
     # Transaction-cost model for pre-trade gating
@@ -485,3 +497,26 @@ ENV = {
     # --- P&L tracking ---
     'PNL_LOG_FILE': os.getenv('PNL_LOG_FILE', 'log/pnl.jsonl'),
 }
+
+
+ENV = _build_env_snapshot()
+
+
+def rehydrate_env(*, load_dotenv_file: bool = False, dotenv_path: str | os.PathLike[str] | None = None, override: bool = False) -> dict[str, object]:
+    """Rebuild the module-level ``ENV`` snapshot from live ``os.environ``.
+
+    This mutates ``ENV`` in place so modules that imported ``ENV`` keep pointing
+    at the refreshed values. It is primarily intended for tests that patch
+    ``os.environ`` after ``config.env`` has already been imported.
+
+    Args:
+        load_dotenv_file: When True, load dotenv values before rebuilding.
+        dotenv_path: Optional explicit dotenv path (defaults to standard lookup).
+        override: Forwarded to ``load_dotenv`` when ``load_dotenv_file`` is True.
+    """
+    if load_dotenv_file:
+        load_dotenv(dotenv_path=dotenv_path, override=override)
+
+    ENV.clear()
+    ENV.update(_build_env_snapshot())
+    return ENV
