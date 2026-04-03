@@ -126,7 +126,8 @@ class LeaderRegistry:
                     "No leaders can be monitored: LEADER_WALLETS is empty and "
                     "DISCOVERY_PROMOTE_TO_ACTIVE is not enabled. Either set "
                     "LEADER_WALLETS=0x... in your .env or set "
-                    "DISCOVERY_PROMOTE_TO_ACTIVE=true to auto-promote discovered leaders."
+                    "LEADER_AUTO=true (or DISCOVERY_PROMOTE_TO_ACTIVE=true) to "
+                    "auto-promote discovered leaders."
                 )
 
         if not active_monitored:

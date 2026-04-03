@@ -7,6 +7,7 @@ import pytest
 from index import _wait_for_active_leaders
 from orchestrators.leader_registry import LeaderRegistry
 from services.metrics import metrics
+from unittest.mock import patch
 
 
 class _Profile:
@@ -73,3 +74,42 @@ async def test_discovery_only_wait_loop_stays_alive_without_leaders():
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
+
+
+@pytest.mark.asyncio
+async def test_discovery_only_mode_promotes_top_ranked_leaders_when_auto_enabled():
+    registry = LeaderRegistry(
+        discovery_service=_Discovery(
+            [
+                _Profile(
+                    "0x1111111111111111111111111111111111111111",
+                    score=0.91,
+                    total_positions=120,
+                    active_positions=5,
+                ),
+                _Profile(
+                    "0x2222222222222222222222222222222222222222",
+                    score=0.87,
+                    total_positions=95,
+                    active_positions=4,
+                ),
+            ]
+        ),
+        leaders_repo=_LeadersRepo(),
+    )
+
+    with patch.dict(
+        "orchestrators.leader_registry.ENV",
+        {
+            "DISCOVERY_PROMOTE_TO_ACTIVE": True,
+            "AUTO_DISCOVER_TOP_N": 1,
+            "AUTO_DISCOVER_MIN_SCORE": 0.45,
+            "MIN_LEADER_POSITIONS": 20,
+            "MIN_ACTIVE_POSITIONS": 1,
+        },
+        clear=False,
+    ):
+        state = await registry.refresh([])
+
+    assert state.mode == "discovery_only"
+    assert state.active_monitored == ["0x1111111111111111111111111111111111111111"]
