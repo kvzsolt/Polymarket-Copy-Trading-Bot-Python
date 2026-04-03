@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
 from hashlib import sha256
 from typing import Any
@@ -10,9 +12,38 @@ from config.env import ENV
 from py_clob_client.clob_types import OrderType
 from py_clob_client.order_builder.constants import BUY, SELL
 
-from utils.logger import get_logger
+from utils.logger import get_logger, redact_error_detail
 
 logger = get_logger("ExecutionService")
+
+_MAX_PERSISTED_FIELD_CHARS = 160
+_MAX_PERSISTED_ERROR_CHARS = 512
+_TRUNCATED_SUFFIX = "...[truncated]"
+
+_PERSISTED_REQUEST_FIELDS = (
+    "user_id",
+    "leader_id",
+    "token_id",
+    "side",
+    "amount",
+    "max_slippage_bps",
+    "reason",
+    "signal_id",
+    "worst_price",
+    "tick_size",
+    "neg_risk",
+)
+
+_PERSISTED_RESPONSE_FIELDS = (
+    "success",
+    "status",
+    "orderID",
+    "error",
+    "pending_since",
+    "pending_ttl_seconds",
+    "pending_expires_at",
+    "expired_at",
+)
 
 
 @dataclass(frozen=True)
@@ -73,13 +104,256 @@ def _idempotency_key(req: ExecutionRequest) -> str:
     return sha256(payload.encode("utf-8")).hexdigest()
 
 
-def _is_retry_blocking_existing(existing: dict[str, Any] | None) -> bool:
+def _truncate_text(value: Any, *, max_chars: int) -> str:
+    text = (
+        str(value)
+        .replace("\x00", " ")
+        .replace("\r", " ")
+        .replace("\n", " ")
+        .replace("\t", " ")
+    )
+    if len(text) <= max_chars:
+        return text
+    keep = max(0, max_chars - len(_TRUNCATED_SUFFIX))
+    return text[:keep] + _TRUNCATED_SUFFIX
+
+
+def _sanitize_submission_value(
+    value: Any, *, max_chars: int = _MAX_PERSISTED_FIELD_CHARS
+) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, Decimal):
+        return str(value)
+    return _truncate_text(value, max_chars=max_chars)
+
+
+def _sanitize_submission_request(request: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(request, dict):
+        return {}
+    sanitized: dict[str, Any] = {}
+    for key in _PERSISTED_REQUEST_FIELDS:
+        if key not in request:
+            continue
+        value = _sanitize_submission_value(request.get(key))
+        if value is not None:
+            sanitized[key] = value
+    return sanitized
+
+
+def _coerce_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y"}
+    return False
+
+
+def _sanitize_submission_response(response: dict[str, Any] | Any) -> dict[str, Any]:
+    if not isinstance(response, dict):
+        return {
+            "success": False,
+            "status": "failed",
+            "error": _truncate_text(response, max_chars=_MAX_PERSISTED_ERROR_CHARS),
+        }
+
+    sanitized: dict[str, Any] = {}
+    for key in _PERSISTED_RESPONSE_FIELDS:
+        if key not in response:
+            continue
+        raw_value = response.get(key)
+        if key == "success":
+            sanitized[key] = _coerce_bool(raw_value)
+            continue
+        if key in {"pending_since", "pending_expires_at", "expired_at"}:
+            ts_value = _coerce_timestamp(raw_value)
+            sanitized[key] = (
+                ts_value
+                if ts_value is not None
+                else _sanitize_submission_value(raw_value)
+            )
+            continue
+        if key == "error":
+            error_value = _sanitize_submission_value(
+                raw_value, max_chars=_MAX_PERSISTED_ERROR_CHARS
+            )
+            if error_value:
+                sanitized[key] = error_value
+            continue
+        value = _sanitize_submission_value(raw_value)
+        if value is not None:
+            sanitized[key] = value
+
+    if "success" not in sanitized:
+        sanitized["success"] = _coerce_bool(response.get("success"))
+
+    if "status" not in sanitized:
+        sanitized["status"] = "submitted" if sanitized.get("success") else "failed"
+
+    return sanitized
+
+
+_RETRY_BLOCKING_STATUSES = {
+    "pending",
+    "submitted",
+    "submitted_unconfirmed",
+    "filled",
+    "duplicate_ignored",
+    "live",
+    "matched",
+}
+
+
+def _pending_submission_ttl_seconds() -> float:
+    raw = ENV.get("PENDING_SUBMISSION_TTL_SECONDS", 120)
+    try:
+        ttl = float(raw)
+    except (TypeError, ValueError):
+        ttl = 120.0
+    return max(ttl, 0.0)
+
+
+def _coerce_timestamp(value: Any) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+
+    text = str(value).strip()
+    if not text:
+        return None
+
+    try:
+        return float(text)
+    except ValueError:
+        pass
+
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.timestamp()
+    except ValueError:
+        pass
+
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M:%S.%f"):
+        try:
+            parsed = datetime.strptime(text, fmt).replace(tzinfo=timezone.utc)
+            return parsed.timestamp()
+        except ValueError:
+            continue
+
+    return None
+
+
+def _pending_since(existing: dict[str, Any]) -> float | None:
+    response = (
+        existing.get("response") if isinstance(existing.get("response"), dict) else {}
+    )
+    for candidate in (
+        existing.get("pending_since"),
+        response.get("pending_since"),
+        existing.get("updated_at"),
+        existing.get("created_at"),
+    ):
+        ts = _coerce_timestamp(candidate)
+        if ts is not None:
+            return ts
+    return None
+
+
+def _pending_expires_at(existing: dict[str, Any]) -> float | None:
+    response = (
+        existing.get("response") if isinstance(existing.get("response"), dict) else {}
+    )
+    for candidate in (
+        existing.get("pending_expires_at"),
+        response.get("pending_expires_at"),
+    ):
+        ts = _coerce_timestamp(candidate)
+        if ts is not None:
+            return ts
+    return None
+
+
+def _build_pending_response(
+    *, pending_since: float, ttl_seconds: float | None = None
+) -> dict[str, Any]:
+    ttl = (
+        _pending_submission_ttl_seconds()
+        if ttl_seconds is None
+        else max(float(ttl_seconds), 0.0)
+    )
+    return {
+        "success": False,
+        "status": "pending",
+        "pending_since": pending_since,
+        "pending_ttl_seconds": ttl,
+        "pending_expires_at": pending_since + ttl,
+    }
+
+
+def _is_pending_submission_expired(
+    existing: dict[str, Any] | None,
+    *,
+    now_ts: float | None = None,
+    pending_ttl_seconds: float | None = None,
+) -> bool:
     if not existing:
         return False
-    status = str(existing.get("status") or existing.get("response", {}).get("status") or "").lower()
+    status = str(
+        existing.get("status") or existing.get("response", {}).get("status") or ""
+    ).lower()
+    if existing.get("order_id"):
+        return False
+    if status not in _RETRY_BLOCKING_STATUSES:
+        return False
+
+    now_value = time.time() if now_ts is None else float(now_ts)
+    explicit_expires_at = _pending_expires_at(existing)
+    if explicit_expires_at is not None:
+        return now_value >= explicit_expires_at
+
+    ttl_seconds = (
+        _pending_submission_ttl_seconds()
+        if pending_ttl_seconds is None
+        else float(pending_ttl_seconds)
+    )
+    if ttl_seconds <= 0:
+        return True
+
+    submitted_at = _pending_since(existing)
+    if submitted_at is None:
+        # Fail open: a blocking lock with no usable timestamp should never block forever.
+        return True
+
+    return (now_value - submitted_at) >= ttl_seconds
+
+
+def _is_retry_blocking_existing(
+    existing: dict[str, Any] | None,
+    *,
+    now_ts: float | None = None,
+    pending_ttl_seconds: float | None = None,
+) -> bool:
+    if not existing:
+        return False
+    status = str(
+        existing.get("status") or existing.get("response", {}).get("status") or ""
+    ).lower()
     if existing.get("order_id"):
         return True
-    return status in {"submitted", "submitted_unconfirmed", "filled", "duplicate_ignored", "live", "matched"}
+    if _is_pending_submission_expired(
+        existing,
+        now_ts=now_ts,
+        pending_ttl_seconds=pending_ttl_seconds,
+    ):
+        return False
+    return status in _RETRY_BLOCKING_STATUSES
 
 
 class ExecutionService:
@@ -88,6 +362,19 @@ class ExecutionService:
         self.market_meta_service = market_meta_service
         self.fee_service = fee_service
         self.order_repo = order_repo
+
+    def _save_submission(
+        self,
+        *,
+        idempotency_key: str,
+        request: dict[str, Any],
+        response: dict[str, Any] | Any,
+    ) -> None:
+        self.order_repo.save_submission(
+            idempotency_key=idempotency_key,
+            request=_sanitize_submission_request(request),
+            response=_sanitize_submission_response(response),
+        )
 
     async def _confirm_fill(self, order_id: str) -> dict[str, Any]:
         """Poll order status briefly and return best-effort fill details."""
@@ -112,7 +399,11 @@ class ExecutionService:
                 await asyncio.sleep(0.4)
 
         if last_error:
-            logger.warning("fill confirmation warning for %s: %s", order_id, last_error)
+            logger.warning(
+                "fill confirmation warning for %s (%s)",
+                order_id,
+                redact_error_detail(last_error),
+            )
         return {}
 
     async def execute(self, req: ExecutionRequest) -> ExecutionResult:
@@ -166,7 +457,9 @@ class ExecutionService:
         worst_price = _quantize_price(worst_price, meta.tick_size, side)
 
         if side == "BUY" and meta.min_order_size > 0:
-            requested_tokens = req.amount / worst_price if worst_price > 0 else Decimal("0")
+            requested_tokens = (
+                req.amount / worst_price if worst_price > 0 else Decimal("0")
+            )
             if requested_tokens + Decimal("1e-12") < meta.min_order_size:
                 min_notional = meta.min_order_size * worst_price
                 return ExecutionResult(
@@ -183,7 +476,11 @@ class ExecutionService:
                     ),
                 )
 
-        if side == "SELL" and meta.min_order_size > 0 and req.amount + Decimal("1e-12") < meta.min_order_size:
+        if (
+            side == "SELL"
+            and meta.min_order_size > 0
+            and req.amount + Decimal("1e-12") < meta.min_order_size
+        ):
             return ExecutionResult(
                 accepted=False,
                 order_id=None,
@@ -197,6 +494,56 @@ class ExecutionService:
 
         idem_key = _idempotency_key(req)
         existing = self.order_repo.get_by_idempotency_key(idem_key)
+        if (
+            existing
+            and not existing.get("order_id")
+            and _is_pending_submission_expired(existing)
+        ):
+            ttl_seconds = _pending_submission_ttl_seconds()
+            ttl_seconds_log = int(ttl_seconds)
+            existing_status = str(
+                existing.get("status")
+                or existing.get("response", {}).get("status")
+                or "blocking"
+            ).lower()
+            logger.warning(
+                "expiring stale %s submission lock | idempotency_key=%s | ttl=%ss",
+                existing_status,
+                idem_key,
+                ttl_seconds_log,
+            )
+            stale_request = existing.get("request")
+            if not isinstance(stale_request, dict):
+                stale_request = {
+                    "user_id": req.user_id,
+                    "leader_id": req.leader_id,
+                    "token_id": req.token_id,
+                    "side": side,
+                    "amount": str(req.amount),
+                    "reason": req.reason,
+                    "signal_id": req.signal_id,
+                }
+            pending_started_at = _pending_since(existing)
+            if pending_started_at is None:
+                pending_started_at = time.time()
+            pending_expires_at = _pending_expires_at(existing)
+            if pending_expires_at is None:
+                pending_expires_at = pending_started_at + max(ttl_seconds, 0.0)
+            self._save_submission(
+                idempotency_key=idem_key,
+                request=stale_request,
+                response={
+                    "success": False,
+                    "status": "expired",
+                    "error": f"stale {existing_status} submission expired after {ttl_seconds_log}s",
+                    "expired_at": time.time(),
+                    "pending_since": pending_started_at,
+                    "pending_ttl_seconds": ttl_seconds,
+                    "pending_expires_at": pending_expires_at,
+                },
+            )
+            existing = self.order_repo.get_by_idempotency_key(idem_key)
+
         if _is_retry_blocking_existing(existing):
             existing_order_id = existing.get("order_id")
             return ExecutionResult(
@@ -221,7 +568,19 @@ class ExecutionService:
 
         last_error: str | None = None
         response: dict[str, Any] = {}
+
+        # Reserve a "pending" row before any attempt so a crash mid-submission
+        # is visible to future idempotency checks.
+        pending_since = time.time()
+        self._save_submission(
+            idempotency_key=idem_key,
+            request=request_doc,
+            response=_build_pending_response(pending_since=pending_since),
+        )
+
         for attempt in range(1, 4):
+            signed_order = None
+            post_called = False
             try:
                 signed_order = await self.clob_client.create_market_order(
                     token_id=req.token_id,
@@ -232,21 +591,63 @@ class ExecutionService:
                     neg_risk=meta.neg_risk,
                     order_type=OrderType.FOK,
                 )
-                response = await self.clob_client.post_signed_order(signed_order, OrderType.FOK)
+                post_called = True
+                response = await self.clob_client.post_signed_order(
+                    signed_order, OrderType.FOK
+                )
                 if response.get("success"):
+                    self._save_submission(
+                        idempotency_key=idem_key,
+                        request=request_doc,
+                        response=response,
+                    )
                     break
-                last_error = str(response.get("error") or "unknown order submission error")
+                last_error = redact_error_detail(
+                    response.get("error") or "unknown order submission error"
+                )
             except Exception as exc:
-                last_error = str(exc)
+                last_error = redact_error_detail(exc)
+                if post_called:
+                    # post_signed_order was called but we got an exception —
+                    # the order may have been accepted on the exchange.
+                    # Do NOT retry; record as ambiguous.
+                    response = {
+                        "success": False,
+                        "status": "submitted_unconfirmed",
+                        "error": last_error,
+                    }
+                    self._save_submission(
+                        idempotency_key=idem_key,
+                        request=request_doc,
+                        response=response,
+                    )
+                    logger.warning(
+                        "ambiguous submission (post called but exception): %s",
+                        last_error,
+                    )
+                    break
             await asyncio.sleep(0.3 * attempt)
-
-        self.order_repo.save_submission(
-            idempotency_key=idem_key,
-            request=request_doc,
-            response=response or {"success": False, "error": last_error, "status": "failed"},
-        )
+        else:
+            # All retries exhausted without success
+            self._save_submission(
+                idempotency_key=idem_key,
+                request=request_doc,
+                response=response
+                or {"success": False, "error": last_error, "status": "failed"},
+            )
 
         if not response.get("success"):
+            if str(response.get("status") or "").lower() == "submitted_unconfirmed":
+                return ExecutionResult(
+                    accepted=True,
+                    order_id=response.get("orderID"),
+                    status="submitted_unconfirmed",
+                    requested_amount=req.amount,
+                    filled_amount=Decimal("0"),
+                    avg_price=None,
+                    fees_paid=Decimal("0"),
+                    error=last_error,
+                )
             return ExecutionResult(
                 accepted=False,
                 order_id=None,
@@ -269,7 +670,11 @@ class ExecutionService:
         )
         fill_status = str(fill_info.get("status", "")).lower()
 
-        if raw_fill and Decimal(str(raw_fill)) > 0 and fill_status in {"filled", "matched", ""}:
+        if (
+            raw_fill
+            and Decimal(str(raw_fill)) > 0
+            and fill_status in {"filled", "matched", ""}
+        ):
             filled_amount = Decimal(str(raw_fill))
             confirmed = True
         else:
@@ -277,13 +682,13 @@ class ExecutionService:
             filled_amount = Decimal("0")
             confirmed = False
 
-        avg_price = Decimal(
-            str(
-                fill_info.get("avg_price")
-                or fill_info.get("price")
-                or worst_price
+        avg_price = (
+            Decimal(
+                str(fill_info.get("avg_price") or fill_info.get("price") or worst_price)
             )
-        ) if confirmed else None
+            if confirmed
+            else None
+        )
 
         if confirmed and avg_price and avg_price > 0:
             notional = filled_amount * avg_price
@@ -302,7 +707,6 @@ class ExecutionService:
                     "avg_price": str(avg_price),
                     "fee_bps": fee_bps,
                     "fees_paid": str(fees_paid),
-                    "raw": fill_info,
                 },
             )
 

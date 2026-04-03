@@ -21,7 +21,7 @@ from config.env import (
     validate_wallet_config,
 )
 from utils.fetchData import _get_session
-from utils.logger import get_logger, log_api_response, print_clob_error
+from utils.logger import get_logger, log_api_response, print_clob_error, redact_error_detail
 
 logger = get_logger("ClobClient")
 
@@ -71,7 +71,11 @@ class ClobClientWrapper:
             self._market_meta_cache[asset] = meta
             return meta
         except Exception as exc:
-            logger.warning(f"Orderbook metadata fallback to HTTP for {asset}: {exc}")
+            logger.warning(
+                "Orderbook metadata fallback to HTTP for %s (%s)",
+                asset,
+                redact_error_detail(exc),
+            )
 
         # HTTP fallback for resiliency.
         url = f"{CLOB_HTTP_URL}/book?token_id={asset}"
@@ -79,7 +83,13 @@ class ClobClientWrapper:
         async with session.get(url) as resp:
             data = await resp.json()
             if resp.status != 200:
-                log_api_response(logger, method="GET", url=url, status=resp.status, error=str(data))
+                log_api_response(
+                    logger,
+                    method="GET",
+                    url=url,
+                    status=resp.status,
+                    error=f"status_code={resp.status}",
+                )
                 raise RuntimeError(f"Failed to fetch market metadata for {asset}: HTTP {resp.status}")
 
             bids = (data.get("bids") or [])
@@ -109,7 +119,11 @@ class ClobClientWrapper:
                 data = await resp.json()
                 if resp.status != 200:
                     log_api_response(
-                        logger, method="GET", url=price_url, status=resp.status, error=str(data)
+                        logger,
+                        method="GET",
+                        url=price_url,
+                        status=resp.status,
+                        error=f"status_code={resp.status}",
                     )
                     print_clob_error(
                         operation="get_price",
@@ -137,7 +151,7 @@ class ClobClientWrapper:
                     return None
                 return {"price": str(data), "size": "0"}
         except Exception as exc:
-            logger.error(f"Price fetch exception: {exc}")
+            logger.error("Price fetch exception (%s)", redact_error_detail(exc))
             print_clob_error(operation="get_price", error=exc, asset=asset, side=side)
             return None
 
@@ -193,15 +207,16 @@ class ClobClientWrapper:
             )
             return result
         except Exception as exc:
-            logger.error(f"Signed order submission failed: {exc}")
+            redacted_error = redact_error_detail(exc)
+            logger.error("Signed order submission failed (%s)", redacted_error)
             log_api_response(
                 logger,
                 method="POST",
                 url=f"{CLOB_HTTP_URL}/order",
                 status=0,
-                error=str(exc),
+                error=redacted_error,
             )
-            return {"success": False, "error": str(exc)}
+            return {"success": False, "error": redacted_error}
 
     async def post_order(self, order_args: OrderArgs, condition_id: str = None):
         """Backward-compatible helper for existing codepaths."""
@@ -229,13 +244,14 @@ class ClobClientWrapper:
             )
             return result
         except Exception as exc:
-            logger.error(f"Order submission failed: {exc}")
+            redacted_error = redact_error_detail(exc)
+            logger.error("Order submission failed (%s)", redacted_error)
             log_api_response(
                 logger,
                 method="POST",
                 url=f"{CLOB_HTTP_URL}/order",
                 status=0,
-                error=str(exc),
+                error=redacted_error,
                 meta={"conditionId": condition_id},
             )
             print_clob_error(
@@ -245,7 +261,7 @@ class ClobClientWrapper:
                 side=getattr(order_args, "side", None),
                 condition_id=condition_id,
             )
-            return {"success": False, "error": str(exc)}
+            return {"success": False, "error": redacted_error}
 
 
 async def create_clob_client(
