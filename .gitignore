@@ -62,4 +62,4 @@ Thumbs.db
 .python-version
 .codex
 AGENTS.MD
-
+.ruff_cache

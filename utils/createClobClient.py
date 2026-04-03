@@ -216,7 +216,20 @@ class ClobClientWrapper:
                 status=0,
                 error=redacted_error,
             )
-            return {"success": False, "error": redacted_error}
+            # Classify the failure: timeouts and connection errors are AMBIGUOUS
+            # because the exchange may have received the order.
+            # Do NOT return a simple {success: False} for these — the caller
+            # must know this is post-submission ambiguous, not pre-submission safe.
+            exc_name = type(exc).__name__.lower()
+            is_ambiguous = any(
+                kw in exc_name or kw in str(exc).lower()
+                for kw in ("timeout", "connectionerror", "connectionreset", "brokenpipe", "readtimeout", "connecttimeout")
+            )
+            return {
+                "success": False,
+                "error": redacted_error,
+                "ambiguous_post_failure": is_ambiguous,
+            }
 
     async def post_order(self, order_args: OrderArgs, condition_id: str = None):
         """Backward-compatible helper for existing codepaths."""

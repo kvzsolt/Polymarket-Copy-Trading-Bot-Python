@@ -569,9 +569,47 @@ class ExecutionService:
         last_error: str | None = None
         response: dict[str, Any] = {}
 
-        # Reserve a "pending" row before any attempt so a crash mid-submission
-        # is visible to future idempotency checks.
+        # Atomically acquire submission lock BEFORE any retry loop.
+        # This prevents the race where two concurrent execute() calls both
+        # pass the "existing?" check and both submit distinct signed orders.
+        has_atomic_lock = hasattr(self.order_repo, 'try_acquire_submission_lock')
+        if has_atomic_lock:
+            lock_acquired = self.order_repo.try_acquire_submission_lock(
+                idem_key, req.user_id, req.leader_id, request_doc
+            )
+        else:
+            # Fallback for legacy/mock repos without atomic lock
+            lock_acquired = existing is None or not _is_retry_blocking_existing(existing)
+
+        if not lock_acquired:
+            # Someone else holds the lock — check if it's a real submission or just a lock
+            existing_now = self.order_repo.get_by_idempotency_key(idem_key)
+            if existing_now and existing_now.get("order_id"):
+                return ExecutionResult(
+                    accepted=True,
+                    order_id=existing_now.get("order_id"),
+                    status="duplicate_ignored",
+                    requested_amount=req.amount,
+                    filled_amount=Decimal("0"),
+                    avg_price=None,
+                    fees_paid=Decimal("0"),
+                    error=None,
+                )
+            if has_atomic_lock and self.order_repo.is_submission_locked(idem_key):
+                return ExecutionResult(
+                    accepted=False,
+                    order_id=None,
+                    status="inflight_lock",
+                    requested_amount=req.amount,
+                    filled_amount=Decimal("0"),
+                    avg_price=None,
+                    fees_paid=Decimal("0"),
+                    error="another task is currently submitting this order",
+                )
+
         pending_since = time.time()
+        # Write pending row for crash visibility (even if we acquired the atomic lock above,
+        # we still need the pending row so recovery knows about us).
         self._save_submission(
             idempotency_key=idem_key,
             request=request_doc,
@@ -600,6 +638,21 @@ class ExecutionService:
                         idempotency_key=idem_key,
                         request=request_doc,
                         response=response,
+                    )
+                    break
+                # Check if the wrapper flagged this as an ambiguous post failure
+                # (timeout/connection error after POST was sent to exchange).
+                # In this case, the order MAY have been accepted — do NOT retry.
+                if response.get("ambiguous_post_failure"):
+                    response["status"] = "submitted_unconfirmed"
+                    self._save_submission(
+                        idempotency_key=idem_key,
+                        request=request_doc,
+                        response=response,
+                    )
+                    logger.warning(
+                        "ambiguous post failure (timeout/connection after POST): %s",
+                        response.get("error"),
                     )
                     break
                 last_error = redact_error_detail(
@@ -673,8 +726,9 @@ class ExecutionService:
         if (
             raw_fill
             and Decimal(str(raw_fill)) > 0
-            and fill_status in {"filled", "matched", ""}
         ):
+            # Treat ANY positive fill as real, regardless of order status.
+            # A canceled FOK with partial match is still a real fill.
             filled_amount = Decimal(str(raw_fill))
             confirmed = True
         else:

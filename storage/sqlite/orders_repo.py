@@ -38,6 +38,46 @@ class OrdersRepo:
     def __init__(self, db_path: str):
         self.db_path = db_path
 
+    def try_acquire_submission_lock(self, key: str, user_id: str, leader_id: str | None, request_payload: dict) -> bool:
+        """Atomically acquire a submission lock for this idempotency key.
+
+        Uses INSERT ... ON CONFLICT DO NOTHING + rowcount check.
+        Returns True if this caller acquired the lock (may proceed to submit).
+        Returns False if someone else already holds it (must NOT submit).
+
+        This prevents the race condition where two concurrent execute() calls
+        both pass the "existing?" check and both submit distinct signed orders.
+        """
+        request_json = json.dumps(request_payload, sort_keys=True, separators=(",", ":"), default=str)
+        with create_connection(self.db_path) as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO orders (
+                    idempotency_key, user_id, leader_id, order_id, status,
+                    request_json, response_json, attempt_count, last_error,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, NULL, 'pending_lock', ?, NULL, 0, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                ON CONFLICT(idempotency_key) DO NOTHING
+                """,
+                (key, user_id, leader_id, request_json),
+            )
+            conn.commit()
+            acquired = cursor.rowcount == 1
+        return acquired
+
+    def is_submission_locked(self, key: str) -> bool:
+        """Check if a submission lock exists that is still pending (no order_id yet).
+
+        Returns True if locked but not yet submitted (inflight_lock).
+        Returns False if no record exists, or if an order_id is present (terminal).
+        """
+        rec = self.get_by_idempotency_key(key)
+        if rec is None:
+            return False
+        if rec.get("order_id"):
+            return False  # has order_id = terminal, not just locked
+        return rec.get("status") in ("pending", "pending_lock")
+
     def get_by_idempotency_key(self, key: str) -> dict[str, Any] | None:
         with create_connection(self.db_path) as conn:
             row = conn.execute(
