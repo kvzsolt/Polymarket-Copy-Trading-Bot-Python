@@ -4,9 +4,10 @@ from dataclasses import dataclass, field
 
 from config.env import ENV, get_funder_address
 from services.leaderCursorStore import LeaderCursorStore
+from services.healthServer import update_readiness
 from services.metrics import metrics
+from storage.sqlite.cursors_repo import TradeCursor
 from utils.fetchData import fetch_data
-from utils.idempotency import build_trade_key, has_processed
 from utils.logger import (
     get_logger,
     monitor_heartbeat_tick,
@@ -30,6 +31,7 @@ class LeaderMonitorState:
     seen_hashes: set[str] = field(default_factory=set)
     last_position_save: float = 0.0
     last_processed_ts: float = 0.0
+    last_cursor: TradeCursor = field(default_factory=lambda: TradeCursor(timestamp=0, tx_hash="", trade_id=None))
 
 
 def _to_seconds(ts) -> float:
@@ -40,6 +42,13 @@ def _to_seconds(ts) -> float:
     if value > 1e12:
         return value / 1000.0
     return value
+
+
+def _trade_ordering_key(trade: dict) -> tuple[int, str, str]:
+    ts = int(_to_seconds(trade.get("timestamp")))
+    tx_hash = str(trade.get("transactionHash") or trade.get("txHash") or "").strip().lower()
+    trade_id = str(trade.get("id") or trade.get("tradeID") or trade.get("trade_id") or "").strip().lower()
+    return ts, tx_hash, trade_id
 
 
 async def init(user_address: str, state: LeaderMonitorState):
@@ -165,23 +174,20 @@ async def fetch_trade_data(user_address: str, on_trade_callback, state: LeaderMo
         return
     user_activities = _normalize_activities(user_activities)
     if not user_activities:
+        update_readiness(last_trade_poll_ts=int(time.time()))
         return
     try:
         current_timestamp = int(time.time())
+        update_readiness(last_trade_poll_ts=current_timestamp)
+        cursor_key = (
+            int(state.last_cursor.timestamp or 0),
+            str(state.last_cursor.tx_hash or ""),
+            str(state.last_cursor.trade_id or ""),
+        )
 
-        def _ts_ok(ts):
-            t = _to_seconds(ts)
-            if t <= 0:
-                return False
-            if state.last_processed_ts > 0 and t <= state.last_processed_ts:
-                return False
-            return t + 60 > current_timestamp
-
-        existing_hashes = state.seen_hashes
         new_trades = [
             a for a in user_activities
-            if str(a.get('transactionHash') or '').lower() not in existing_hashes
-            and _ts_ok(a.get('timestamp'))
+            if _trade_ordering_key(a) > cursor_key
         ]
         if new_trades:
             newest = max(_to_seconds(t.get("timestamp")) for t in new_trades)
@@ -211,11 +217,6 @@ async def fetch_trade_data(user_address: str, on_trade_callback, state: LeaderMo
             if not trade.get('asset'):
                 trade['asset'] = trade.get('tokenID') or trade.get('token_id')
 
-            trade_key = build_trade_key(user_address, trade)
-            if has_processed(trade_key):
-                await metrics.inc("signals_deduped_total")
-                continue
-            trade['_tradeKey'] = trade_key
             trade_candidates.append(trade)
             ts = _to_seconds(trade.get("timestamp"))
             if ts > max_seen_ts:
@@ -256,6 +257,10 @@ async def fetch_trade_data(user_address: str, on_trade_callback, state: LeaderMo
 
         # Save to DB only for new trades
         if new_trades:
+            max_cursor_trade = max(new_trades, key=_trade_ordering_key)
+            ts, tx_hash, trade_id = _trade_ordering_key(max_cursor_trade)
+            state.last_cursor = TradeCursor(timestamp=ts, tx_hash=tx_hash, trade_id=trade_id or None)
+            state.last_processed_ts = float(ts)
             try:
                 from models.userHistory import get_user_activity_model
                 get_user_activity_model(user_address).insert_many(new_trades)
@@ -266,6 +271,8 @@ async def fetch_trade_data(user_address: str, on_trade_callback, state: LeaderMo
 
 
 async def fetch_and_save_positions(leader_wallet: str, proxy_wallet: str):
+    if not bool(ENV.get("ENABLE_LEGACY_POSITION_SNAPSHOT", False)):
+        return
     for wallet in (leader_wallet, proxy_wallet):
         if not wallet:
             continue
@@ -291,7 +298,8 @@ async def trade_monitor(bot_params: dict, on_trade_callback):
     state = LeaderMonitorState()
     cursor_store = LeaderCursorStore()
     leader_wallet = bot_params['leaderWallet']
-    state.last_processed_ts = cursor_store.get_last_timestamp(leader_wallet)
+    state.last_cursor = cursor_store.get_cursor(leader_wallet)
+    state.last_processed_ts = float(state.last_cursor.timestamp)
 
     print_monitor_start(trader_count=1, interval_s=fetch_interval)
     print_first_run_init()
@@ -299,10 +307,14 @@ async def trade_monitor(bot_params: dict, on_trade_callback):
     print_historical_done()
     proxy_wallet = get_funder_address()
     while True:
-        previous_ts = state.last_processed_ts
+        previous_cursor = state.last_cursor
         await fetch_trade_data(leader_wallet, on_trade_callback, state)
-        if state.last_processed_ts > previous_ts:
-            cursor_store.set_last_timestamp(leader_wallet, state.last_processed_ts)
+        if (
+            state.last_cursor.timestamp != previous_cursor.timestamp
+            or state.last_cursor.tx_hash != previous_cursor.tx_hash
+            or (state.last_cursor.trade_id or "") != (previous_cursor.trade_id or "")
+        ):
+            cursor_store.set_cursor(leader_wallet, state.last_cursor)
 
         # Save positions periodically, not every loop
         now = time.time()

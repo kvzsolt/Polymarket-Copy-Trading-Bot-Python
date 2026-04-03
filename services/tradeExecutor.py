@@ -1,3 +1,12 @@
+"""Legacy trade execution path (compatibility only).
+
+Active production runtime now routes through:
+  - orchestrators/trade_pipeline.py
+  - domain/trading_context.py
+
+This module remains for backward-compatible tests and external imports.
+"""
+
 import asyncio
 import inspect
 import time

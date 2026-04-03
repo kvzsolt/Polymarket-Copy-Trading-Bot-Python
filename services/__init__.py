@@ -1,12 +1,7 @@
-"""Service package."""
+"""Service package.
 
-from .tradeExecutor import execute_trades
-from .tradeMonitor import trade_monitor, init, fetch_trade_data, fetch_and_save_positions
+Avoid importing heavy modules at package import time to prevent side effects
+and circular import chains during startup/tests.
+"""
 
-__all__ = [
-    "execute_trades",
-    "trade_monitor",
-    "init",
-    "fetch_trade_data",
-    "fetch_and_save_positions",
-]
+__all__: list[str] = []

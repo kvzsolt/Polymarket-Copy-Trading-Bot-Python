@@ -7,14 +7,18 @@ import time
 from decimal import Decimal
 
 from config.env import ENV
+from domain.trading_context import TradingContext
 from services.accountingService import AccountingService, PositionLot
 from services.executionService import ExecutionRequest, ExecutionService
 from services.feeService import FeeService
+from services.healthServer import update_readiness
 from services.marketMetaService import MarketMetaService
+from services.metrics import metrics
 from services.orderRepository import OrderRepository
 from services.positionManager import get_position_manager
 from services.pnlTracker import get_pnl_tracker
 from services.riskEngine import regime_for_equity, get_regime
+from storage.sqlite.fills_repo import FillRecord
 from utils.logger import get_logger, log_risk_exit
 
 logger = get_logger("RiskMonitor")
@@ -24,6 +28,9 @@ async def risk_monitor_loop(clob_client, bot_params: dict):
     """Continuously check open positions against stop-loss / take-profit levels.
 
     Runs as a background asyncio task alongside the trade monitor.
+
+    Legacy compatibility path: active runtime uses
+    `risk_monitor_loop_for_contexts` with persisted position repositories.
     """
     pm = get_position_manager()
     interval = ENV.get('RISK_CHECK_INTERVAL', 15)
@@ -190,3 +197,180 @@ async def risk_monitor_loop(clob_client, bot_params: dict):
             logger.error(f"Risk monitor loop error: {e}")
 
         await asyncio.sleep(interval)
+
+
+def rehydrate_position_manager(context: TradingContext) -> None:
+    """Load persisted open positions into the context position manager.
+
+    The persisted positions repository is the source of truth. In-memory state is
+    only a convenience cache for rule evaluation.
+    """
+    pm = context.position_manager
+    if not hasattr(pm, "track_buy"):
+        return
+
+    for pos in context.positions_repo.list_open_positions(context.user_id):
+        existing = None
+        if hasattr(pm, "get_position"):
+            try:
+                existing = pm.get_position(pos.condition_id)
+            except Exception:
+                existing = None
+        if existing is not None:
+            continue
+        try:
+            pm.track_buy(
+                condition_id=pos.condition_id,
+                asset=pos.token_id,
+                entry_price=float(pos.avg_entry_price),
+                size_tokens=float(pos.size_tokens),
+                usdc_cost=float(pos.size_tokens * pos.avg_entry_price),
+                leader_wallet=pos.leader_id or "",
+            )
+        except Exception:
+            continue
+
+
+def _fallback_risk_decision(entry_price: Decimal, current_price: Decimal) -> dict | None:
+    """Simple fallback SL/TP decision when position manager is unavailable."""
+    if entry_price <= 0:
+        return None
+    sl_pct = Decimal(str(ENV.get("STOP_LOSS_PCT", 20))) / Decimal("100")
+    tp_pct = Decimal(str(ENV.get("TAKE_PROFIT_PCT", 30))) / Decimal("100")
+    pct_change = (current_price - entry_price) / entry_price
+    if pct_change <= -sl_pct:
+        return {"reason": "stop_loss", "size_fraction": 1.0}
+    if pct_change >= tp_pct:
+        return {"reason": "take_profit", "size_fraction": 1.0}
+    return None
+
+
+async def run_risk_check_for_context(context: TradingContext) -> None:
+    if not context.execution_service:
+        return
+
+    rehydrate_position_manager(context)
+    slippage_bps = int(float(context.extra.get("slippage_tolerance_bps", 200)))
+
+    for pos in context.positions_repo.list_open_positions(context.user_id):
+        try:
+            price_data = await context.client.get_price(pos.token_id, "SELL")
+            if not price_data or price_data.get("price") is None:
+                continue
+            current_price = Decimal(str(price_data["price"]))
+            if current_price <= 0:
+                continue
+
+            action = None
+            if hasattr(context.position_manager, "evaluate_risk_action"):
+                action = context.position_manager.evaluate_risk_action(pos.condition_id, float(current_price))
+            if not action:
+                action = _fallback_risk_decision(pos.avg_entry_price, current_price)
+            if not action:
+                continue
+
+            fraction = max(0.0, min(1.0, float(action.get("size_fraction", 1.0) or 1.0)))
+            reason = str(action.get("reason") or "risk_exit")
+            sell_size = (pos.size_tokens * Decimal(str(fraction))).quantize(Decimal("0.00000001"))
+            if sell_size <= 0:
+                continue
+
+            req = ExecutionRequest(
+                user_id=context.user_id,
+                leader_id=pos.leader_id or "risk-monitor",
+                token_id=pos.token_id,
+                side="SELL",
+                amount=sell_size,
+                max_slippage_bps=slippage_bps,
+                reason=reason,
+                signal_id=f"risk:{reason}:{pos.condition_id}:{int(time.time())}",
+            )
+            result = await context.execution_service.execute(req)
+            if not result.accepted or result.filled_amount <= 0:
+                continue
+
+            fill_size = Decimal(str(result.filled_amount))
+            fill_price = Decimal(str(result.avg_price or current_price))
+            context.fills_repo.append_fill(
+                FillRecord(
+                    user_id=context.user_id,
+                    leader_id=pos.leader_id,
+                    order_id=result.order_id,
+                    condition_id=pos.condition_id,
+                    token_id=pos.token_id,
+                    side="SELL",
+                    size_tokens=fill_size,
+                    price=fill_price,
+                    fee=Decimal(str(result.fees_paid or 0)),
+                    fill_ts=int(time.time()),
+                ),
+                raw_payload={
+                    "reason": reason,
+                    "risk_exit": True,
+                    "order_id": result.order_id,
+                },
+            )
+            updated_pos = context.positions_repo.apply_fill(
+                user_id=context.user_id,
+                leader_id=pos.leader_id,
+                condition_id=pos.condition_id,
+                token_id=pos.token_id,
+                side="SELL",
+                fill_size=fill_size,
+                fill_price=fill_price,
+            )
+            if hasattr(context.pnl_tracker, "record_sell"):
+                entry_price = float(pos.avg_entry_price)
+                realized = (float(fill_price) - entry_price) * float(fill_size)
+                context.pnl_tracker.record_sell(
+                    condition_id=pos.condition_id,
+                    price=float(fill_price),
+                    size_tokens=float(fill_size),
+                    usdc_value=float(fill_size * fill_price),
+                    entry_price=entry_price,
+                    realized_pnl=realized,
+                    exit_reason=reason,
+                    leader_wallet=pos.leader_id or "",
+                )
+            await metrics.inc(
+                "risk_exits_total",
+                labels={
+                    "user_id": context.user_id,
+                    "leader_id": str(pos.leader_id or ""),
+                    "reason": reason,
+                },
+            )
+            if hasattr(context.position_manager, "track_sell"):
+                context.position_manager.track_sell(
+                    pos.condition_id,
+                    float(fill_price),
+                    float(fill_size),
+                    reason=reason,
+                )
+        except Exception as exc:
+            logger.error(f"Risk context check failed user={context.user_id} condition={pos.condition_id}: {exc}")
+
+
+async def risk_monitor_loop_for_contexts(
+    contexts: list[TradingContext],
+    *,
+    interval: int | None = None,
+) -> None:
+    """Restart-safe risk monitor using persisted positions as the source of truth."""
+    if not contexts:
+        logger.warning("Risk monitor started with no contexts")
+        return
+
+    if not bool(ENV.get("ENABLE_RISK_MGMT", True)):
+        logger.info("Risk management disabled — monitor will not run")
+        return
+
+    poll_interval = int(interval or ENV.get("RISK_CHECK_INTERVAL", 15))
+    while True:
+        update_readiness(last_risk_check_ts=int(time.time()))
+        for context in contexts:
+            try:
+                await run_risk_check_for_context(context)
+            except Exception as exc:
+                logger.error(f"Risk loop error user={context.user_id}: {exc}")
+        await asyncio.sleep(poll_interval)

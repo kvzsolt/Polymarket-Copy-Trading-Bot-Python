@@ -360,7 +360,7 @@ config/
 
 services/
   tradeMonitor.py        leader wallet monitoring
-  tradeExecutor.py       copy-trade orchestration
+  tradeExecutor.py       legacy copy-trade path (compat only)
   copyDecisionService.py decision-first copy gating
   tradeScoringService.py trade quality scoring
   leaderScoringService.py leader trust scoring
@@ -379,6 +379,31 @@ services/
   healthServer.py        /health and /metrics endpoints
   multiUserConfig.py     multi-wallet runtime config
 
+storage/sqlite/
+  connection.py          SQLite connection factory + PRAGMAs
+  migrations.py          centralized schema bootstrap/migrations
+  orders_repo.py         idempotent order persistence and dedupe
+  fills_repo.py          append-only fills persistence
+  positions_repo.py      persisted position reconstruction/update
+  cursors_repo.py        leader ingestion cursors
+  leaders_repo.py        discovered leader persistence
+  redemptions_repo.py    redemption attempt persistence
+
+domain/
+  trading_context.py     per-user injected runtime context
+  models.py              normalized trading data models
+
+network/
+  http_client.py         shared async HTTP client (timeout/retry)
+  web3_adapter.py        async wrapper for sync Web3 calls
+
+orchestrators/
+  trade_pipeline.py      active copy-trade execution orchestration
+  leader_registry.py     configured/discovery leader state machine
+
+legacy/
+  README.md              deprecated path quarantine notes
+
 utils/
   createClobClient.py    Polymarket CLOB wrapper
   fetchData.py           HTTP data access helpers
@@ -389,6 +414,74 @@ utils/
 tests/
   unit and integration-style coverage for risk, execution, env security, etc.
 ```
+
+---
+
+## 2026 Safety Refactor Notes
+
+The active runtime path is now orchestration-first and SQLite-backed:
+
+- `index.py` is orchestration-only (context building, registry/monitor loops, service startup).
+- Trade execution uses `TradingContext` (`domain/trading_context.py`) and `orchestrators/trade_pipeline.py`.
+- Persistence is centralized under `storage/sqlite/*` (no scattered runtime table bootstrap).
+- Risk monitoring has a restart-safe persisted path (`risk_monitor_loop_for_contexts`) that rebuilds state from stored positions/fills.
+
+### Storage layer overview
+
+`storage/sqlite/migrations.py` is the single schema bootstrap path and includes:
+
+- `orders` (idempotency key, user/leader IDs, status, request/response payloads, attempts, errors, timestamps)
+- `fills` (append-only execution records)
+- `positions` (persisted open exposure by `user_id + condition_id`)
+- `processed_trades` (cursor/idempotency dedupe support)
+- `leader_cursors`
+- `discovered_leaders`
+- `redemptions`
+
+### TradingContext model
+
+`TradingContext` is a per-user injected runtime container:
+
+- user identity (`user_id`, `wallet_address`)
+- execution client
+- repositories (`orders_repo`, `fills_repo`, `positions_repo`)
+- per-user state/services (`pnl_tracker`, `position_manager`, `risk_engine`, `accounting_service`)
+- execution path (`execution_service`)
+
+This removes active-path dependence on module-level mutable singletons.
+
+### Restart and rehydration behavior
+
+- Fills are append-only.
+- Open positions are stored in `positions` and can be rebuilt from `fills`.
+- Risk checks run from persisted positions and then update persisted fills/positions on exits.
+- On context startup, `rehydrate_position_manager(context)` loads persisted state into in-memory helpers.
+
+### Discovery-only mode behavior
+
+`LeaderRegistry` supports:
+
+- `configured` mode (explicit leaders)
+- `mixed` mode (configured + discovered candidates)
+- `discovery_only` mode (no configured leaders)
+
+When no active leaders are available, the bot stays alive, continues periodic discovery refresh, and emits explicit `no_leaders_monitored` telemetry.
+
+### Migration and schema notes
+
+Schema is auto-managed through `apply_migrations()` during `connect_db()`.
+
+Order persistence now uses conflict-upsert semantics:
+
+- `ON CONFLICT(idempotency_key) DO UPDATE`
+- later successful submissions overwrite earlier failed rows
+- retry attempts increment `attempt_count`
+
+### Config/default changes
+
+- `ENABLE_LEGACY_POSITION_SNAPSHOT=false` (default) disables legacy monitor snapshots into old model tables.
+- `DISCOVERY_REFRESH_INTERVAL_SECONDS` controls periodic registry refresh.
+- `DISCOVERY_PROMOTE_TO_ACTIVE` controls discovery candidate promotion into monitored set.
 
 ---
 
