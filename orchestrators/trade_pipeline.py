@@ -9,12 +9,38 @@ from config.env import ENV
 from domain.models import TradeSignal
 from domain.trading_context import TradingContext
 from services.executionService import ExecutionRequest
+from services.copyDecisionService import CopyDecisionService, CopyDecision
+from services.leaderScoringService import LeaderScoringService
 from services.healthServer import update_readiness
 from services.metrics import metrics
 from storage.sqlite.fills_repo import FillRecord
-from utils.logger import get_logger
+from utils.logger import (
+    get_logger,
+    log_trade_execution,
+    log_trade_submitted,
+    log_trade_decision,
+    log_trade_skip,
+)
 
 logger = get_logger("TradePipeline")
+
+# Module-level singletons (initialized lazily).
+_leader_scorer: LeaderScoringService | None = None
+_copy_decision: CopyDecisionService | None = None
+
+
+def _get_leader_scorer() -> LeaderScoringService:
+    global _leader_scorer
+    if _leader_scorer is None:
+        _leader_scorer = LeaderScoringService()
+    return _leader_scorer
+
+
+def _get_copy_decision() -> CopyDecisionService:
+    global _copy_decision
+    if _copy_decision is None:
+        _copy_decision = CopyDecisionService(leader_scorer=_get_leader_scorer())
+    return _copy_decision
 
 
 @dataclass
@@ -135,27 +161,102 @@ async def execute_trades(
             )
             continue
 
-        logger.info(
-            "trade_copy_decision",
-            extra={
-                "user_id": context.user_id,
-                "leader_id": leader_id,
-                "condition_id": signal.condition_id,
-                "token_id": signal.token_id,
-                "side": signal.side,
-                "tx_hash": signal.tx_hash,
-                "leader_notional": float(signal.usdc_size),
+        # --- Decision gate: score the leader and this specific trade ---
+        copy_decision_svc = _get_copy_decision()
+        leader_scorer = _get_leader_scorer()
+
+        # Score the leader using available context
+        pnl_metrics = context.pnl_tracker.metrics() if hasattr(context.pnl_tracker, 'metrics') else {}
+        leader_score = leader_scorer.score_leader(
+            leader_id,
+            analytics={
+                "net_pnl": float(pnl_metrics.get("net_pnl", 0.0) or 0.0),
+                "win_rate": float(pnl_metrics.get("win_rate", 50.0) or 50.0),
             },
+            recent_trade_count=len(signals),
         )
+
+        # Fetch live price for decision scoring
+        live_price = float(signal.price or 0)
+        market_min_size = float(ENV.get("MIN_ORDER_SIZE", 0.00001) or 0.00001)
+        try:
+            if hasattr(context, 'execution_service') and context.execution_service:
+                meta = await context.execution_service.market_meta_service.get(signal.token_id)
+                market_min_size = max(market_min_size, float(getattr(meta, "min_order_size", 0) or 0))
+        except Exception:
+            pass
 
         if signal.side == "BUY":
             target_notional = context.copy_notional(signal.usdc_size)
+
+            # Run the copy decision gate
+            decision = copy_decision_svc.decide_buy(
+                trade=raw,
+                leader_score=leader_score,
+                live_price=live_price,
+                base_notional_usdc=float(target_notional),
+                max_notional_usdc=float(target_notional),
+                market_min_size=market_min_size,
+            )
+
+            log_trade_decision(
+                logger,
+                side=signal.side,
+                condition_id=signal.condition_id,
+                asset=signal.token_id,
+                decision_score=decision.decision_score,
+                allow=decision.allow,
+                reason=decision.reason,
+                event_slug=signal.event_slug,
+                meta={
+                    "user_id": context.user_id,
+                    "leader_id": leader_id,
+                    "leader_score": leader_score.score,
+                    "trade_score": decision.trade_score,
+                    "price_drift_pct": decision.price_drift_pct,
+                    "edge_decay_pct": decision.edge_decay_pct,
+                    "leader_notional": float(signal.usdc_size),
+                    "tx_hash": signal.tx_hash,
+                },
+            )
+
+            if not decision.allow:
+                log_trade_skip(
+                    logger,
+                    side=signal.side,
+                    condition_id=signal.condition_id,
+                    asset=signal.token_id,
+                    size=float(signal.size) if signal.size else None,
+                    price=live_price,
+                    usdc_value=float(signal.usdc_size),
+                    skip_code=decision.skip_code,
+                    reason=decision.reason,
+                    event_slug=signal.event_slug,
+                    meta={"user_id": context.user_id, "leader_id": leader_id},
+                )
+                await metrics.inc("trades_skipped_total", labels={**labels, "reason": decision.skip_code})
+                context.orders_repo.mark_processed_trade(
+                    trade_key=trade_key,
+                    user_id=context.user_id,
+                    leader_id=leader_id,
+                    tx_hash=signal.tx_hash,
+                    side=signal.side,
+                    asset=signal.token_id,
+                    condition_id=signal.condition_id,
+                    status=f"skipped_{decision.skip_code}",
+                )
+                results.append(TradePipelineResult(trade_key, "skipped", decision.reason, None))
+                continue
+
+            # Use decision-gated notional (may be adjusted by scoring)
+            gated_notional = Decimal(str(decision.target_notional_usdc)) if decision.target_notional_usdc > 0 else target_notional
+
             exec_req = ExecutionRequest(
                 user_id=context.user_id,
                 leader_id=leader_id,
                 token_id=signal.token_id,
                 side="BUY",
-                amount=target_notional,
+                amount=gated_notional,
                 max_slippage_bps=int(float(context.extra.get("slippage_tolerance_bps", 200))),
                 reason="copy_trade",
                 signal_id=signal.tx_hash,
@@ -164,6 +265,19 @@ async def execute_trades(
             pos = context.positions_repo.get_position(context.user_id, signal.condition_id)
             if pos is None or pos.size_tokens <= Decimal("0"):
                 await metrics.inc("trades_skipped_total", labels={**labels, "reason": "no_position"})
+                log_trade_skip(
+                    logger,
+                    side=signal.side,
+                    condition_id=signal.condition_id,
+                    asset=signal.token_id,
+                    size=float(signal.size) if signal.size else None,
+                    price=float(signal.price) if signal.price else None,
+                    usdc_value=float(signal.usdc_size),
+                    skip_code="no_position",
+                    reason="no open position to sell",
+                    event_slug=signal.event_slug,
+                    meta={"user_id": context.user_id, "leader_id": leader_id},
+                )
                 context.orders_repo.mark_processed_trade(
                     trade_key=trade_key,
                     user_id=context.user_id,
@@ -181,12 +295,69 @@ async def execute_trades(
             if sell_tokens > pos.size_tokens:
                 sell_tokens = pos.size_tokens
 
+            # Run the copy decision gate for SELL
+            decision = copy_decision_svc.decide_sell(
+                trade=raw,
+                sell_tokens=float(sell_tokens),
+                live_price=live_price,
+                market_min_size=market_min_size,
+                max_sell_tokens=float(pos.size_tokens),
+            )
+
+            log_trade_decision(
+                logger,
+                side=signal.side,
+                condition_id=signal.condition_id,
+                asset=signal.token_id,
+                decision_score=decision.decision_score,
+                allow=decision.allow,
+                reason=decision.reason,
+                event_slug=signal.event_slug,
+                meta={
+                    "user_id": context.user_id,
+                    "leader_id": leader_id,
+                    "sell_tokens": float(sell_tokens),
+                    "position_size": float(pos.size_tokens),
+                },
+            )
+
+            if not decision.allow:
+                log_trade_skip(
+                    logger,
+                    side=signal.side,
+                    condition_id=signal.condition_id,
+                    asset=signal.token_id,
+                    size=float(sell_tokens),
+                    price=live_price,
+                    usdc_value=float(signal.usdc_size),
+                    skip_code=decision.skip_code,
+                    reason=decision.reason,
+                    event_slug=signal.event_slug,
+                    meta={"user_id": context.user_id, "leader_id": leader_id},
+                )
+                await metrics.inc("trades_skipped_total", labels={**labels, "reason": decision.skip_code})
+                context.orders_repo.mark_processed_trade(
+                    trade_key=trade_key,
+                    user_id=context.user_id,
+                    leader_id=leader_id,
+                    tx_hash=signal.tx_hash,
+                    side=signal.side,
+                    asset=signal.token_id,
+                    condition_id=signal.condition_id,
+                    status=f"skipped_{decision.skip_code}",
+                )
+                results.append(TradePipelineResult(trade_key, "skipped", decision.reason, None))
+                continue
+
+            # Use decision-gated sell size
+            gated_sell = Decimal(str(decision.target_size_tokens)) if decision.target_size_tokens > 0 else sell_tokens
+
             exec_req = ExecutionRequest(
                 user_id=context.user_id,
                 leader_id=leader_id,
                 token_id=signal.token_id,
                 side="SELL",
-                amount=sell_tokens,
+                amount=gated_sell,
                 max_slippage_bps=int(float(context.extra.get("slippage_tolerance_bps", 200))),
                 reason="leader_sell",
                 signal_id=signal.tx_hash,
@@ -249,6 +420,24 @@ async def execute_trades(
 
         if not exec_result.accepted:
             await metrics.inc("execution_failures_total", labels={**labels, "reason": exec_result.status})
+            log_trade_skip(
+                logger,
+                side=signal.side,
+                condition_id=signal.condition_id,
+                asset=signal.token_id,
+                size=float(signal.size) if signal.size else None,
+                price=float(signal.price) if signal.price else None,
+                usdc_value=float(signal.usdc_size),
+                skip_code=exec_result.status,
+                reason=exec_result.error or exec_result.status,
+                status="failed",
+                event_slug=signal.event_slug,
+                meta={
+                    "user_id": context.user_id,
+                    "leader_id": leader_id,
+                    "order_id": exec_result.order_id,
+                },
+            )
             is_terminal = exec_result.status == "rejected"
             max_non_terminal_attempts = _max_non_terminal_failure_attempts()
             prev_trade = context.orders_repo.get_processed_trade(trade_key) or {}
@@ -367,6 +556,42 @@ async def execute_trades(
             )
 
         await metrics.inc("trades_copied_total", labels=labels)
+
+        log_trade_submitted(
+            logger,
+            side=signal.side,
+            condition_id=signal.condition_id,
+            asset=signal.token_id,
+            size=float(fill_size),
+            price=float(fill_price or 0),
+            usdc_value=float(fill_size * Decimal(str(fill_price or 0))),
+            event_slug=signal.event_slug,
+            meta={
+                "user_id": context.user_id,
+                "leader_id": leader_id,
+                "order_id": exec_result.order_id,
+                "fee_paid": float(fee_paid),
+            },
+        )
+        log_trade_execution(
+            logger,
+            side=signal.side,
+            condition_id=signal.condition_id,
+            asset=signal.token_id,
+            size=float(fill_size),
+            price=float(fill_price or 0),
+            usdc_value=float(fill_size * Decimal(str(fill_price or 0))),
+            tx_hash=signal.tx_hash,
+            event_slug=signal.event_slug,
+            meta={
+                "user_id": context.user_id,
+                "leader_id": leader_id,
+                "order_id": exec_result.order_id,
+                "fee_paid": float(fee_paid),
+                "status": exec_result.status,
+            },
+        )
+
         context.orders_repo.mark_processed_trade(
             trade_key=trade_key,
             user_id=context.user_id,
