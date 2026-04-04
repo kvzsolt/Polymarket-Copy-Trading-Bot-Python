@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import time
 from decimal import Decimal
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from config.env import ENV, rehydrate_env
 from domain.trading_context import TradingContext
 from orchestrators.trade_pipeline import execute_trades, build_trade_key
+from services.copyDecisionService import CopyDecision
 from services.executionService import ExecutionResult
 from services.pnlTracker import PnLTracker
 from services.positionManager import PositionManager
@@ -93,6 +94,48 @@ def _exec_result(*, accepted=True, filled=Decimal("10"), status="filled", order_
         fees_paid=Decimal("0.01"),
         error=error,
     )
+
+
+class _RecordingDecisionService:
+    def __init__(self):
+        self.buy_calls: list[dict[str, float]] = []
+
+    def decide_buy(
+        self,
+        *,
+        trade,
+        leader_score,
+        live_price,
+        base_notional_usdc,
+        max_notional_usdc,
+        market_min_size,
+    ):
+        self.buy_calls.append(
+            {
+                "base_notional_usdc": float(base_notional_usdc),
+                "max_notional_usdc": float(max_notional_usdc),
+                "live_price": float(live_price),
+                "market_min_size": float(market_min_size),
+            }
+        )
+        target_notional = float(max_notional_usdc)
+        target_size = target_notional / max(float(live_price), 1e-9)
+        return CopyDecision(
+            allow=True,
+            skip_code="ok",
+            reason="decision-approved BUY",
+            side="BUY",
+            decision_score=0.80,
+            leader_score=float(leader_score.score),
+            trade_score=0.80,
+            live_price=float(live_price),
+            reference_price=float(trade.get("price") or 0),
+            target_notional_usdc=target_notional,
+            target_size_tokens=target_size,
+            price_drift_pct=0.0,
+            edge_decay_pct=0.0,
+            details={},
+        )
 
 
 @pytest.mark.asyncio
@@ -198,6 +241,84 @@ async def test_submitted_unconfirmed_is_marked_processed(tmp_path):
 
     trade_key = build_trade_key("user1", "leader1", signal)
     assert ctx.orders_repo.has_processed_trade(trade_key) is True
+
+
+@pytest.mark.asyncio
+async def test_balance_tiered_policy_disabled_does_not_lookup_balance(tmp_path, monkeypatch):
+    db_path = _init_db(tmp_path)
+    exec_svc = AsyncMock()
+    exec_svc.execute.return_value = _exec_result(
+        accepted=True, filled=Decimal("10"), status="filled", order_id="ord-balance-off"
+    )
+    ctx = _make_context(db_path, execution_service=exec_svc)
+
+    monkeypatch.setitem(ENV, "ENABLE_BALANCE_TIERED_POLICY", False)
+
+    with patch("orchestrators.trade_pipeline.get_my_balance", new_callable=AsyncMock) as balance_lookup:
+        results = await execute_trades(ctx, "leader1", [_signal(tx_hash="0xbal-off")], time.time())
+
+    assert results[0].status == "executed"
+    balance_lookup.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_balance_tiered_policy_blocks_buy_without_tradable_cash(tmp_path, monkeypatch):
+    db_path = _init_db(tmp_path)
+    exec_svc = AsyncMock()
+    ctx = _make_context(db_path, execution_service=exec_svc)
+
+    monkeypatch.setitem(ENV, "ENABLE_BALANCE_TIERED_POLICY", True)
+    monkeypatch.setitem(ENV, "DAY_START_EQUITY_USDC", 4)
+
+    with patch(
+        "orchestrators.trade_pipeline.get_my_balance",
+        new_callable=AsyncMock,
+        return_value=4.0,
+    ), patch(
+        "orchestrators.trade_pipeline.get_day_start_equity",
+        return_value=Decimal("4"),
+    ):
+        results = await execute_trades(ctx, "leader1", [_signal(tx_hash="0xbal-block")], time.time())
+
+    assert results[0].status == "skipped"
+    assert results[0].reason == "no_tradable_cash_after_reserve"
+    exec_svc.execute.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_balance_tiered_policy_caps_buy_before_execution(tmp_path, monkeypatch):
+    db_path = _init_db(tmp_path)
+    exec_svc = AsyncMock()
+    exec_svc.execute.return_value = _exec_result(
+        accepted=True, filled=Decimal("10"), status="filled", order_id="ord-balance-cap"
+    )
+    ctx = _make_context(db_path, execution_service=exec_svc)
+
+    monkeypatch.setitem(ENV, "ENABLE_BALANCE_TIERED_POLICY", True)
+    monkeypatch.setitem(ENV, "DAY_START_EQUITY_USDC", 25)
+
+    import orchestrators.trade_pipeline as tp
+
+    decision_service = _RecordingDecisionService()
+    monkeypatch.setattr(tp, "_copy_decision", decision_service)
+
+    with patch(
+        "orchestrators.trade_pipeline.get_my_balance",
+        new_callable=AsyncMock,
+        return_value=25.0,
+    ), patch(
+        "orchestrators.trade_pipeline.get_day_start_equity",
+        return_value=Decimal("25"),
+    ):
+        results = await execute_trades(ctx, "leader1", [_signal(tx_hash="0xbal-cap")], time.time())
+
+    assert results[0].status == "executed"
+    assert decision_service.buy_calls
+    assert decision_service.buy_calls[0]["max_notional_usdc"] == pytest.approx(4.5)
+
+    req = exec_svc.execute.await_args.args[0]
+    assert req.side == "BUY"
+    assert req.amount == Decimal("4.5")
 
 
 @pytest.mark.asyncio
