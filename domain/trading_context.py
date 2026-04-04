@@ -4,6 +4,9 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any
 
+from config.env import ENV
+from services.copyStrategy import calculate_copy_notional
+
 
 @dataclass
 class TradingContext:
@@ -25,6 +28,18 @@ class TradingContext:
     extra: dict[str, Any] = field(default_factory=dict)
 
     def copy_notional(self, leader_notional: Decimal) -> Decimal:
-        raw = leader_notional * Decimal(str(self.allocation_pct))
-        clamped = max(Decimal(str(self.buy_min_amount)), min(raw, Decimal(str(self.buy_max_amount))))
-        return max(Decimal("1"), clamped)
+        result = calculate_copy_notional(
+            strategy=str(ENV.get("SIZING_MODE", "proportional") or "proportional"),
+            leader_notional_usdc=leader_notional,
+            copy_percentage=Decimal(str(self.allocation_pct)) * Decimal("100"),
+            fixed_amount=ENV.get("FIXED_AMOUNT", self.buy_min_amount),
+            min_order_usdc=self.buy_min_amount,
+            max_order_usdc=self.buy_max_amount,
+            trade_multiplier=ENV.get("TRADE_MULTIPLIER", 1.0),
+            tiered_multipliers=ENV.get("TIERED_TRADE_MULTIPLIERS", ""),
+            adaptive_basis=str(ENV.get("ADAPTIVE_SIZING_BASIS", "trade_size") or "trade_size"),
+            adaptive_min_percent=ENV.get("ADAPTIVE_MIN_PERCENT", 0),
+            adaptive_max_percent=ENV.get("ADAPTIVE_MAX_PERCENT", 0),
+            adaptive_threshold_usdc=ENV.get("ADAPTIVE_THRESHOLD_USDC", 500),
+        )
+        return result.final_notional_usdc

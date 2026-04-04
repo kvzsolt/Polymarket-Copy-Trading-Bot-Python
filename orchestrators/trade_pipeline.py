@@ -9,11 +9,14 @@ from config.env import ENV
 from domain.models import TradeSignal
 from domain.trading_context import TradingContext
 from services.executionService import ExecutionRequest
-from services.copyDecisionService import CopyDecisionService, CopyDecision
+from services.copyDecisionService import CopyDecisionService
 from services.leaderScoringService import LeaderScoringService
 from services.healthServer import update_readiness
 from services.metrics import metrics
+from services.riskEngine import headroom_for_buy
 from storage.sqlite.fills_repo import FillRecord
+from utils.dayEquity import get_day_start_equity
+from utils.getMyBalance import get_my_balance
 from utils.logger import (
     get_logger,
     log_trade_execution,
@@ -49,6 +52,14 @@ class TradePipelineResult:
     status: str
     reason: str | None
     order_id: str | None
+
+
+@dataclass(frozen=True)
+class _BuyRiskCap:
+    allow: bool
+    reason: str
+    regime: str
+    cap_notional_usdc: Decimal
 
 
 
@@ -90,6 +101,72 @@ def _retry_attempt_from_status(status: str | None) -> int:
         return int(suffix)
     except (TypeError, ValueError):
         return 0
+
+
+def _balance_tiered_policy_enabled() -> bool:
+    return bool(ENV.get("ENABLE_BALANCE_TIERED_POLICY", False))
+
+
+def _position_notional_usdc(position: Any) -> Decimal:
+    size_tokens = _to_decimal(getattr(position, "size_tokens", 0))
+    avg_entry_price = _to_decimal(getattr(position, "avg_entry_price", 0))
+    notional = size_tokens * avg_entry_price
+    return notional if notional > 0 else Decimal("0")
+
+
+async def _resolve_buy_risk_cap(
+    context: TradingContext,
+    leader_id: str,
+    signal: TradeSignal,
+) -> _BuyRiskCap:
+    balance_usdc = await get_my_balance(context.wallet_address)
+    if balance_usdc is None:
+        return _BuyRiskCap(
+            allow=False,
+            reason="balance_unavailable",
+            regime="unknown",
+            cap_notional_usdc=Decimal("0"),
+        )
+
+    free_cash_usdc = Decimal(str(balance_usdc))
+    open_positions = context.positions_repo.list_open_positions(context.user_id)
+
+    total_exposure_usdc = Decimal("0")
+    market_exposure_usdc = Decimal("0")
+    leader_exposure_usdc = Decimal("0")
+    for position in open_positions:
+        position_notional = _position_notional_usdc(position)
+        total_exposure_usdc += position_notional
+        if str(getattr(position, "condition_id", "") or "") == signal.condition_id:
+            market_exposure_usdc += position_notional
+        if str(getattr(position, "leader_id", "") or "") == leader_id:
+            leader_exposure_usdc += position_notional
+
+    equity_usdc = free_cash_usdc + total_exposure_usdc
+
+    day_start_equity = Decimal(str(ENV.get("DAY_START_EQUITY_USDC", 0) or 0))
+    if day_start_equity <= 0:
+        day_start_equity = get_day_start_equity(equity_usdc)
+    daily_loss_usdc = max(Decimal("0"), day_start_equity - equity_usdc)
+
+    # The active pipeline does not yet persist per-position categories, so
+    # category headroom cannot be reconstructed reliably here.
+    headroom = headroom_for_buy(
+        equity_usdc=equity_usdc,
+        free_cash_usdc=free_cash_usdc,
+        open_positions_count=len(open_positions),
+        market_exposure_usdc=market_exposure_usdc,
+        category_exposure_usdc=Decimal("0"),
+        leader_exposure_usdc=leader_exposure_usdc,
+        daily_loss_usdc=daily_loss_usdc,
+        day_start_equity_usdc=day_start_equity,
+    )
+    return _BuyRiskCap(
+        allow=headroom.allow,
+        reason=headroom.reason,
+        regime=headroom.regime,
+        cap_notional_usdc=headroom.cap_notional_usdc,
+    )
 
 
 
@@ -188,6 +265,55 @@ async def execute_trades(
 
         if signal.side == "BUY":
             target_notional = context.copy_notional(signal.usdc_size)
+            max_notional_for_decision = target_notional
+            if _balance_tiered_policy_enabled():
+                buy_risk_cap = await _resolve_buy_risk_cap(context, leader_id, signal)
+                if not buy_risk_cap.allow:
+                    reason = (
+                        f"balance regime [{buy_risk_cap.regime}] headroom: "
+                        f"{buy_risk_cap.reason}"
+                    )
+                    log_trade_skip(
+                        logger,
+                        side=signal.side,
+                        condition_id=signal.condition_id,
+                        asset=signal.token_id,
+                        size=float(signal.size) if signal.size else None,
+                        price=live_price,
+                        usdc_value=float(signal.usdc_size),
+                        skip_code=buy_risk_cap.reason,
+                        reason=reason,
+                        event_slug=signal.event_slug,
+                        meta={"user_id": context.user_id, "leader_id": leader_id},
+                    )
+                    await metrics.inc(
+                        "trades_skipped_total",
+                        labels={**labels, "reason": buy_risk_cap.reason},
+                    )
+                    context.orders_repo.mark_processed_trade(
+                        trade_key=trade_key,
+                        user_id=context.user_id,
+                        leader_id=leader_id,
+                        tx_hash=signal.tx_hash,
+                        side=signal.side,
+                        asset=signal.token_id,
+                        condition_id=signal.condition_id,
+                        status=f"skipped_{buy_risk_cap.reason}",
+                    )
+                    results.append(
+                        TradePipelineResult(
+                            trade_key,
+                            "skipped",
+                            buy_risk_cap.reason,
+                            None,
+                        )
+                    )
+                    continue
+
+                max_notional_for_decision = min(
+                    target_notional,
+                    buy_risk_cap.cap_notional_usdc,
+                )
 
             # Run the copy decision gate
             decision = copy_decision_svc.decide_buy(
@@ -195,7 +321,7 @@ async def execute_trades(
                 leader_score=leader_score,
                 live_price=live_price,
                 base_notional_usdc=float(target_notional),
-                max_notional_usdc=float(target_notional),
+                max_notional_usdc=float(max_notional_for_decision),
                 market_min_size=market_min_size,
             )
 
