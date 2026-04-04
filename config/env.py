@@ -270,6 +270,23 @@ def validate_runtime_env() -> None:
     # Basic guardrails for risk-critical numeric settings.
     if not (0 < ENV.get('MAX_POSITION_PCT', 0.0) <= 1.0):
         errors.append('MAX_POSITION_PCT must be in (0, 1].')
+    if ENV.get('TRADE_MULTIPLIER', 1.0) < 0:
+        errors.append('TRADE_MULTIPLIER must be non-negative.')
+    adaptive_basis = str(ENV.get('ADAPTIVE_SIZING_BASIS', 'trade_size') or 'trade_size').strip().lower()
+    if adaptive_basis not in ('trade_size', 'performance'):
+        errors.append('ADAPTIVE_SIZING_BASIS must be one of: trade_size, performance.')
+    if ENV.get('ADAPTIVE_MIN_PERCENT', 0.0) < 0:
+        errors.append('ADAPTIVE_MIN_PERCENT must be non-negative.')
+    if ENV.get('ADAPTIVE_MAX_PERCENT', 0.0) < 0:
+        errors.append('ADAPTIVE_MAX_PERCENT must be non-negative.')
+    if ENV.get('ADAPTIVE_THRESHOLD_USDC', 0.0) <= 0:
+        errors.append('ADAPTIVE_THRESHOLD_USDC must be > 0.')
+    if (
+        ENV.get('ADAPTIVE_MIN_PERCENT', 0.0) > 0
+        and ENV.get('ADAPTIVE_MAX_PERCENT', 0.0) > 0
+        and ENV.get('ADAPTIVE_MIN_PERCENT', 0.0) > ENV.get('ADAPTIVE_MAX_PERCENT', 0.0)
+    ):
+        errors.append('ADAPTIVE_MIN_PERCENT must be <= ADAPTIVE_MAX_PERCENT.')
     if ENV.get('SLIPPAGE_TOLERANCE', 0.0) < 0:
         errors.append('SLIPPAGE_TOLERANCE must be non-negative.')
     if ENV.get('MIN_SHARE_PRICE', 0.0) < 0:
@@ -412,10 +429,16 @@ def _build_env_snapshot() -> dict[str, object]:
     # SIZING_MODE: "proportional" (default), "fixed", "adaptive"
     #   proportional = copy PERCENTAGE% of leader trade size
     #   fixed         = always use FIXED_AMOUNT USDC per trade
-    #   adaptive      = scale percentage by leader's recent win rate
+    #   adaptive      = optionally scale by trade size (runtime) or performance (legacy path)
     'SIZING_MODE': os.getenv('SIZING_MODE', 'proportional').strip().lower(),
     'PERCENTAGE': _float('PERCENTAGE', '5'),
     'FIXED_AMOUNT': _float('FIXED_AMOUNT', '10'),
+    'TRADE_MULTIPLIER': _float('TRADE_MULTIPLIER', '1.0'),
+    'TIERED_TRADE_MULTIPLIERS': os.getenv('TIERED_TRADE_MULTIPLIERS', '').strip(),
+    'ADAPTIVE_SIZING_BASIS': os.getenv('ADAPTIVE_SIZING_BASIS', 'trade_size').strip().lower(),
+    'ADAPTIVE_MIN_PERCENT': _float('ADAPTIVE_MIN_PERCENT', '0'),
+    'ADAPTIVE_MAX_PERCENT': _float('ADAPTIVE_MAX_PERCENT', '0'),
+    'ADAPTIVE_THRESHOLD_USDC': _float('ADAPTIVE_THRESHOLD_USDC', '500'),
     'BUY_MIN_AMOUNT': _float('BUY_MIN_AMOUNT', os.getenv('MIN_AMOUNT', '1')),
     'BUY_MAX_AMOUNT': _float('BUY_MAX_AMOUNT', os.getenv('MAX_AMOUNT', '100')),
     'POSITION_THRESHOLD': _int('POSITION_THRESHOLD', '0'),
