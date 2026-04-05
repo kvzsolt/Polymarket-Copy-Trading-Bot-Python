@@ -1,0 +1,60 @@
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "5fb607fdf4b1d6098e563f68f97b8f19709901b7",
+  "prompts": {
+    "353cb6306f7e1aa9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019d5c55-6055-7262-9a4e-7f60235e3d5d",
+        "model": "gpt-5.4"
+      },
+      "human_author": "kvzsolt",
+      "messages": [],
+      "total_additions": 40,
+      "total_deletions": 5,
+      "accepted_lines": 40,
+      "overriden_lines": 0
+    },
+    "b2d6434c43e92f7f": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019d5c43-6b12-75a2-8f67-16f284b6be08",
+        "model": "gpt-5.4"
+      },
+      "human_author": "kvzsolt",
+      "messages": [],
+      "total_additions": 1549,
+      "total_deletions": 0,
+      "accepted_lines": 1517,
+      "overriden_lines": 0
+    },
+    "c6023a14f7b77eeb": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019d5c42-da74-7c50-843e-49c8875ae0ba",
+        "model": "gpt-5.4"
+      },
+      "human_author": "kvzsolt",
+      "messages": [],
+      "total_additions": 194,
+      "total_deletions": 23,
+      "accepted_lines": 194,
+      "overriden_lines": 0
+    },
+    "dd9b739f3985cb1c": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019d5c62-81b8-7ae2-bfff-d7800c7e31b8",
+        "model": "gpt-5.4"
+      },
+      "human_author": "kvzsolt",
+      "messages": [],
+      "total_additions": 57,
+      "total_deletions": 4,
+      "accepted_lines": 57,
+      "overriden_lines": 0
+    }
+  }
+}
