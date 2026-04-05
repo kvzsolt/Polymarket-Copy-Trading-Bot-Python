@@ -45,9 +45,7 @@ class _LeadersRepo:
 
 @pytest.mark.asyncio
 async def test_discovery_only_mode_emits_no_leader_signal(capsys):
-    async with metrics._lock:
-        metrics.counters.clear()
-        metrics.gauges.clear()
+    await metrics.clear()
 
     registry = LeaderRegistry(
         discovery_service=_Discovery(

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from decimal import Decimal
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -383,3 +384,66 @@ async def test_sell_reduces_position(tmp_path):
     pos = ctx.positions_repo.get_position("user1", "cond1")
     assert pos is not None
     assert pos.size_tokens == Decimal("10")
+
+
+@pytest.mark.asyncio
+async def test_sell_realized_pnl_falls_back_to_updated_position_or_signal_price(tmp_path):
+    db_path = _init_db(tmp_path)
+    exec_svc = AsyncMock()
+    exec_svc.execute.return_value = _exec_result(
+        accepted=True, filled=Decimal("10"), status="filled", order_id="ord-sell-fallback"
+    )
+    ctx = _make_context(db_path, execution_service=exec_svc)
+
+    pnl_tracker = MagicMock()
+    ctx.pnl_tracker = pnl_tracker
+    ctx.positions_repo.get_position = MagicMock(
+        return_value=SimpleNamespace(size_tokens=Decimal("20"), avg_entry_price=None)
+    )
+    ctx.positions_repo.apply_fill = MagicMock(
+        return_value=SimpleNamespace(avg_entry_price=Decimal("0.45"))
+    )
+
+    signal = _signal(side="SELL", price=0.60, size=10.0)
+    results = await execute_trades(ctx, "leader1", [signal], time.time())
+
+    assert len(results) == 1
+    assert results[0].status == "executed"
+
+    record_sell_kwargs = pnl_tracker.record_sell.call_args.kwargs
+    assert record_sell_kwargs["entry_price"] == pytest.approx(0.45)
+    assert record_sell_kwargs["realized_pnl"] == pytest.approx(0.5)
+
+
+@pytest.mark.asyncio
+async def test_sell_realized_pnl_falls_back_to_signal_price_when_position_prices_missing(tmp_path):
+    db_path = _init_db(tmp_path)
+    exec_svc = AsyncMock()
+    exec_svc.execute.return_value = ExecutionResult(
+        accepted=True,
+        order_id="ord-sell-signal-fallback",
+        status="filled",
+        requested_amount=Decimal("10"),
+        filled_amount=Decimal("10"),
+        avg_price=Decimal("0.50"),
+        fees_paid=Decimal("0.01"),
+        error=None,
+    )
+    ctx = _make_context(db_path, execution_service=exec_svc)
+
+    pnl_tracker = MagicMock()
+    ctx.pnl_tracker = pnl_tracker
+    ctx.positions_repo.get_position = MagicMock(
+        return_value=SimpleNamespace(size_tokens=Decimal("20"), avg_entry_price=None)
+    )
+    ctx.positions_repo.apply_fill = MagicMock(return_value=None)
+
+    signal = _signal(side="SELL", price=0.60, size=10.0)
+    results = await execute_trades(ctx, "leader1", [signal], time.time())
+
+    assert len(results) == 1
+    assert results[0].status == "executed"
+
+    record_sell_kwargs = pnl_tracker.record_sell.call_args.kwargs
+    assert record_sell_kwargs["entry_price"] == pytest.approx(0.60)
+    assert record_sell_kwargs["realized_pnl"] == pytest.approx(-1.0)

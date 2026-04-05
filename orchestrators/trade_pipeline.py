@@ -97,6 +97,15 @@ def _to_decimal(value: Any, default: str = "0") -> Decimal:
         return Decimal(default)
 
 
+def _to_optional_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _max_non_terminal_failure_attempts() -> int:
     raw = ENV.get("NON_TERMINAL_FAILURE_MAX_ATTEMPTS", 3)
     try:
@@ -237,6 +246,7 @@ async def execute_trades(
 
     for signal, raw in normalized:
         labels = {"user_id": context.user_id, "leader_id": leader_id}
+        sell_entry_price: float | None = None
         await metrics.inc("trades_detected_total", labels=labels)
 
         trade_key = build_trade_key(context.user_id, leader_id, raw)
@@ -473,6 +483,9 @@ async def execute_trades(
                 )
                 results.append(TradePipelineResult(trade_key, "skipped", "no_position", None))
                 continue
+
+            # Capture entry price before apply_fill mutates or closes/deletes the position.
+            sell_entry_price = _to_optional_float(getattr(pos, "avg_entry_price", None))
 
             sell_tokens = signal.size if signal.size > 0 else pos.size_tokens
             if sell_tokens > pos.size_tokens:
@@ -723,7 +736,30 @@ async def execute_trades(
                 title=signal.title,
             )
         else:
-            entry_price = float(updated_position.avg_entry_price) if updated_position else float(signal.price or 0)
+            updated_entry_price = _to_optional_float(
+                getattr(updated_position, "avg_entry_price", None) if updated_position is not None else None
+            )
+            signal_entry_price = _to_optional_float(signal.price)
+            entry_price = next(
+                (
+                    candidate
+                    for candidate in (sell_entry_price, updated_entry_price, signal_entry_price)
+                    if candidate is not None
+                ),
+                0.0,
+            )
+            if entry_price == 0.0 and all(
+                candidate is None for candidate in (sell_entry_price, updated_entry_price, signal_entry_price)
+            ):
+                logger.warning(
+                    "trade_sell_entry_price_missing",
+                    extra={
+                        "user_id": context.user_id,
+                        "leader_id": leader_id,
+                        "condition_id": signal.condition_id,
+                        "order_id": exec_result.order_id,
+                    },
+                )
             realized = (float(fill_price or 0) - entry_price) * float(fill_size)
             context.pnl_tracker.record_sell(
                 condition_id=signal.condition_id,

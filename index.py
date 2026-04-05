@@ -437,13 +437,15 @@ async def main():
     if str(ENV.get("ENABLE_NEG_RISK_ARB", "false")).lower() in ("1", "true", "yes"):
         arb_task = asyncio.create_task(arb_scanner_loop(first_client, {}))
 
-    reconcile_task = None
+    reconcile_tasks: list[asyncio.Task] = []
     if str(ENV.get("ENABLE_RECONCILIATION", "true")).lower() in ("1", "true", "yes"):
-        recon_svc = ReconciliationService(
-            clob_client=first_client,
-            orders_repo=orders_repo,
-        )
-        reconcile_task = asyncio.create_task(reconciliation_loop(recon_svc))
+        for runtime_user in runtime_users:
+            user_state = user_states[runtime_user.user_id]
+            recon_svc = ReconciliationService(
+                clob_client=user_state.client,
+                orders_repo=user_state.orders_repo,
+            )
+            reconcile_tasks.append(asyncio.create_task(reconciliation_loop(recon_svc)))
 
     async def run_leader(leader_wallet: str):
         contexts = contexts_by_leader.get(leader_wallet, [])
@@ -515,17 +517,31 @@ async def main():
                 await asyncio.sleep(refresh_interval)
                 await metrics.inc("no_leaders_monitored_total")
     finally:
-        for task in monitor_tasks:
-            task.cancel()
-        discovery_task.cancel()
+        shutdown_tasks = list(monitor_tasks)
+        shutdown_tasks.append(discovery_task)
         if risk_task:
-            risk_task.cancel()
+            shutdown_tasks.append(risk_task)
         if redeem_task:
-            redeem_task.cancel()
+            shutdown_tasks.append(redeem_task)
         if arb_task:
-            arb_task.cancel()
-        if reconcile_task:
-            reconcile_task.cancel()
+            shutdown_tasks.append(arb_task)
+        if reconcile_tasks:
+            shutdown_tasks.extend(reconcile_tasks)
+
+        for task in shutdown_tasks:
+            task.cancel()
+        if shutdown_tasks:
+            await asyncio.gather(*shutdown_tasks, return_exceptions=True)
+
+        try:
+            from utils.fetchData import close_session
+
+            await close_session()
+        except Exception as exc:
+            logger.warning(
+                "failed_to_close_http_session",
+                extra={"error": redact_error_detail(exc)},
+            )
         if metrics_runner:
             await metrics_runner.cleanup()
 
