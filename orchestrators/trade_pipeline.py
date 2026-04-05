@@ -15,6 +15,7 @@ from services.healthServer import update_readiness
 from services.metrics import metrics
 from services.riskEngine import headroom_for_buy
 from storage.sqlite.fills_repo import FillRecord
+from utils import is_valid_clob_token_id
 from utils.dayEquity import get_day_start_equity
 from utils.getMyBalance import get_my_balance
 from utils.logger import (
@@ -23,6 +24,10 @@ from utils.logger import (
     log_trade_submitted,
     log_trade_decision,
     log_trade_skip,
+    print_new_trade_detected,
+    print_executing_strategy,
+    print_skip_reason,
+    print_trade_result,
 )
 
 logger = get_logger("TradePipeline")
@@ -205,6 +210,9 @@ def normalize_signals(raw_signals: list[dict[str, Any]], leader_id: str) -> list
         tx_hash = str(raw.get("transactionHash") or raw.get("txHash") or "")
         if not condition_id or not token_id or not tx_hash:
             continue
+        if not is_valid_clob_token_id(token_id):
+            logger.warning("normalize_signals: skipping signal with invalid token_id=%r", token_id)
+            continue
 
         size = _to_decimal(raw.get("size") or 0)
         price = _to_decimal(raw.get("price") or 0)
@@ -262,6 +270,8 @@ async def execute_trades(
             )
             continue
 
+        print_new_trade_detected(raw)
+
         # --- Tier gate: check follow tier before costly decision/execution ---
         leader_tier = _resolve_leader_tier(context, leader_id)
         if leader_tier == "watchlist":
@@ -275,6 +285,7 @@ async def execute_trades(
                     "condition_id": signal.condition_id,
                 },
             )
+            print_skip_reason("Tier gate: watchlist", "Leader is on watchlist — observing only")
             await metrics.inc("trades_skipped_total", labels={**labels, "reason": "tier_watchlist"})
             results.append(TradePipelineResult(trade_key, "skipped", "tier_watchlist", None))
             continue
@@ -291,6 +302,7 @@ async def execute_trades(
                     "usdc_size": float(signal.usdc_size),
                 },
             )
+            print_skip_reason("Tier gate: paper follow", "Paper-tracking only — no live order submitted")
             await metrics.inc("trades_paper_total", labels=labels)
             context.orders_repo.mark_processed_trade(
                 trade_key=trade_key,
@@ -339,6 +351,10 @@ async def execute_trades(
                     reason = (
                         f"balance regime [{buy_risk_cap.regime}] headroom: "
                         f"{buy_risk_cap.reason}"
+                    )
+                    print_skip_reason(
+                        f"Balance regime [{buy_risk_cap.regime}] headroom blocked BUY",
+                        buy_risk_cap.reason,
                     )
                     log_trade_skip(
                         logger,
@@ -414,6 +430,7 @@ async def execute_trades(
             )
 
             if not decision.allow:
+                print_skip_reason("Decision gate rejected BUY", decision.reason)
                 log_trade_skip(
                     logger,
                     side=signal.side,
@@ -457,6 +474,7 @@ async def execute_trades(
         else:
             pos = context.positions_repo.get_position(context.user_id, signal.condition_id)
             if pos is None or pos.size_tokens <= Decimal("0"):
+                print_skip_reason("No position to sell", "No open position found for this market")
                 await metrics.inc("trades_skipped_total", labels={**labels, "reason": "no_position"})
                 log_trade_skip(
                     logger,
@@ -518,6 +536,7 @@ async def execute_trades(
             )
 
             if not decision.allow:
+                print_skip_reason("Decision gate rejected SELL", decision.reason)
                 log_trade_skip(
                     logger,
                     side=signal.side,
@@ -559,6 +578,7 @@ async def execute_trades(
                 signal_id=signal.tx_hash,
             )
 
+        print_executing_strategy(signal.side)
         exec_result = await context.execution_service.execute(exec_req)
 
         if exec_result.status == "duplicate_ignored":
@@ -667,6 +687,7 @@ async def execute_trades(
                     f"{fail_reason} "
                     f"(retry budget exhausted after {next_retry_attempt} attempts)"
                 )
+            print_trade_result(success=False, side=signal.side, reason=fail_reason)
             logger.warning(
                 "trade_copy_failed",
                 extra={
@@ -809,6 +830,14 @@ async def execute_trades(
                 "fee_paid": float(fee_paid),
                 "status": exec_result.status,
             },
+        )
+        print_trade_result(
+            success=True,
+            side=signal.side,
+            leader_tx=signal.tx_hash,
+            copy_tx=exec_result.order_id,
+            amount=float(fill_size * Decimal(str(fill_price or 0))),
+            price=float(fill_price or 0),
         )
 
         context.orders_repo.mark_processed_trade(

@@ -13,7 +13,7 @@ from py_clob_client.clob_types import OrderType
 from py_clob_client.order_builder.constants import BUY, SELL
 from services.circuitBreaker import CircuitBreaker, CircuitOpen
 
-from utils.logger import get_logger, redact_error_detail
+from utils.logger import get_logger, log_api_error, redact_error_detail
 
 logger = get_logger("ExecutionService")
 
@@ -731,6 +731,14 @@ class ExecutionService:
                 request=request_doc,
                 response=response
                 or {"success": False, "error": last_error, "status": "failed"},
+            )
+            log_api_error(
+                logger,
+                side=req.side,
+                error=last_error,
+                asset=req.token_id,
+                retry=3,
+                max_retries=3,
             )
 
         if not response.get("success"):

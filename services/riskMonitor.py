@@ -19,6 +19,7 @@ from services.positionManager import get_position_manager
 from services.pnlTracker import get_pnl_tracker
 from services.riskEngine import regime_for_equity, get_regime
 from storage.sqlite.fills_repo import FillRecord
+from utils import is_valid_clob_token_id
 from utils.logger import get_logger, log_risk_exit
 
 logger = get_logger("RiskMonitor")
@@ -57,6 +58,9 @@ async def risk_monitor_loop(clob_client, bot_params: dict):
         try:
             positions = pm.open_positions
             for cid, pos in positions.items():
+                if not is_valid_clob_token_id(pos.asset):
+                    logger.warning("Legacy risk monitor: skipping invalid asset=%r cid=%s", pos.asset, cid)
+                    continue
                 try:
                     price_data = await clob_client.get_price(pos.asset, 'SELL')
                     if not price_data or price_data.get('price') is None:
@@ -253,6 +257,13 @@ async def run_risk_check_for_context(context: TradingContext) -> None:
     slippage_bps = int(float(context.extra.get("slippage_tolerance_bps", 200)))
 
     for pos in context.positions_repo.list_open_positions(context.user_id):
+        if not is_valid_clob_token_id(pos.token_id):
+            logger.warning(
+                "Skipping position with invalid token_id=%r (condition=%s) — "
+                "likely stale placeholder; close or delete manually",
+                pos.token_id, pos.condition_id,
+            )
+            continue
         try:
             price_data = await context.client.get_price(pos.token_id, "SELL")
             if not price_data or price_data.get("price") is None:

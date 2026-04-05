@@ -115,6 +115,8 @@ class RichConsoleHandler(logging.Handler):
         "trade_skip",               # print_skip_reason() handles console
         "trade_quality_decision",   # analytics granularity — JSONL only
         "trade_quality_execution",  # analytics granularity — JSONL only
+        "tier_gate_watchlist",
+        "tier_gate_paper",
     })
 
     def emit(self, record: LogRecord) -> None:
@@ -156,7 +158,34 @@ class RichConsoleHandler(logging.Handler):
         if log_type == "risk_exit":
             self._render_risk_exit(record, ts)
             return True
+        if log_type == "api_error":
+            self._render_api_error(record, ts)
+            return True
         return False
+
+    def _render_api_error(self, record: LogRecord, ts: str) -> None:
+        side = getattr(record, "side", "?")
+        error = getattr(record, "error", "")
+        cond = shorten_addr(getattr(record, "conditionId", None), 8, 6)
+        asset = shorten_addr(getattr(record, "asset", None), 8, 6)
+        retry = getattr(record, "retry", 0)
+        max_retries = getattr(record, "maxRetries", 3)
+
+        lines = _build_panel_lines(
+            Side=side.upper(),
+            Message=error,
+            Condition=cond if cond != "N/A" else None,
+            Asset=asset if asset != "N/A" else None,
+            Retries=f"{retry}/{max_retries}" if retry > 0 else None,
+        )
+
+        console.print()
+        console.print(Panel(
+            "\n".join(lines),
+            title=f"❌ [bold red]ORDER REJECTED[/bold red]  [muted][{ts}][/muted]",
+            border_style="red",
+            padding=(1, 2),
+        ))
 
     def _render_decision(self, record: LogRecord, ts: str) -> None:
         allow = getattr(record, "allow", False)
@@ -916,6 +945,34 @@ def _log_trade(
         extras.update(meta)
 
     logger.info(" | ".join(parts), extra=extras)
+
+
+def log_api_error(
+    logger: logging.Logger,
+    *,
+    side: str,
+    error: str | dict | None = None,
+    condition_id: str | None = None,
+    asset: str | None = None,
+    retry: int = 0,
+    max_retries: int = 3,
+    meta: dict[str, Any] | None = None,
+) -> None:
+    redacted_message = redact_error_detail(error)
+    payload = {
+        "type": "api_error",
+        "side": side.upper(),
+        "error": redacted_message,
+        "conditionId": condition_id,
+        "asset": asset,
+        "retry": retry,
+        "maxRetries": max_retries,
+        **(meta or {}),
+    }
+    logger.error(
+        f"API ERROR {side.upper()} | {redacted_message} | cond={condition_id}",
+        extra=payload,
+    )
 
 
 def log_trade_execution(

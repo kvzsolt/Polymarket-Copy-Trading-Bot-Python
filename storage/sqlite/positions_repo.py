@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 
 from storage.sqlite.connection import create_connection
+from utils import is_valid_clob_token_id
 
 
 @dataclass
@@ -118,6 +119,9 @@ class PositionsRepo:
         fill_size: Decimal,
         fill_price: Decimal,
     ) -> PositionRecord | None:
+        if not is_valid_clob_token_id(token_id):
+            raise ValueError(f"apply_fill: refusing invalid token_id={token_id!r}")
+
         current = self.get_position(user_id, condition_id)
 
         if current is None:
