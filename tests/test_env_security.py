@@ -76,6 +76,66 @@ class TestEnvSecurity:
         # Reset snapshot for any later tests in this process.
         rehydrate_env()
 
+    def test_rehydrate_env_redacts_private_key_file_in_snapshot(self, tmp_path):
+        from config.env import ENV, rehydrate_env
+
+        key_file = tmp_path / "pk.txt"
+        key_file.write_text("0x" + ("ab" * 32), encoding="utf-8")
+        key_file.chmod(0o600)
+
+        with patch.dict(
+            os.environ,
+            {"PRIVATE_KEY_FILE": str(key_file), "PRIVATE_KEY": ""},
+            clear=False,
+        ):
+            rehydrate_env()
+            assert ENV["PRIVATE_KEY"] == "***REDACTED***"
+            assert ENV["PRIVATE_KEY_FILE"] == "***REDACTED***"
+
+        rehydrate_env()
+
+    def test_rehydrate_env_keeps_private_key_fields_empty_when_unset(self):
+        from config.env import ENV, rehydrate_env
+
+        with patch.dict(
+            os.environ,
+            {"PRIVATE_KEY_FILE": "", "PRIVATE_KEY": ""},
+            clear=False,
+        ):
+            rehydrate_env()
+            assert ENV["PRIVATE_KEY"] == ""
+            assert ENV["PRIVATE_KEY_FILE"] == ""
+
+        rehydrate_env()
+
+    def test_rehydrate_env_does_not_redact_private_key_with_inline_comment(self):
+        from config.env import ENV, rehydrate_env
+
+        with patch.dict(
+            os.environ,
+            {"PRIVATE_KEY": "0x" + ("ab" * 32) + " # inline", "PRIVATE_KEY_FILE": ""},
+            clear=False,
+        ):
+            rehydrate_env()
+            assert ENV["PRIVATE_KEY"] == ""
+            assert ENV["PRIVATE_KEY_FILE"] == ""
+
+        rehydrate_env()
+
+    def test_rehydrate_env_does_not_redact_private_key_file_with_inline_comment(self):
+        from config.env import ENV, rehydrate_env
+
+        with patch.dict(
+            os.environ,
+            {"PRIVATE_KEY": "", "PRIVATE_KEY_FILE": "/tmp/pk.txt # inline"},
+            clear=False,
+        ):
+            rehydrate_env()
+            assert ENV["PRIVATE_KEY"] == ""
+            assert ENV["PRIVATE_KEY_FILE"] == ""
+
+        rehydrate_env()
+
     def test_leader_auto_alias_enables_discovery_and_promotion(self):
         from config.env import ENV, rehydrate_env
 

@@ -17,7 +17,10 @@ def _metric_key(name: str, labels: dict[str, str] | None = None) -> str:
 class MetricsRegistry:
     counters: dict[str, float] = field(default_factory=lambda: defaultdict(float))
     gauges: dict[str, float] = field(default_factory=lambda: defaultdict(float))
-    _lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    _lock: asyncio.Lock = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        self._lock = asyncio.Lock()
 
     async def inc(self, name: str, value: float = 1.0, labels: dict[str, str] | None = None) -> None:
         key = _metric_key(name, labels)
@@ -32,6 +35,11 @@ class MetricsRegistry:
     async def snapshot(self) -> tuple[dict[str, float], dict[str, float]]:
         async with self._lock:
             return dict(self.counters), dict(self.gauges)
+
+    async def clear(self) -> None:
+        async with self._lock:
+            self.counters.clear()
+            self.gauges.clear()
 
     async def render_prometheus(self) -> str:
         counters, gauges = await self.snapshot()

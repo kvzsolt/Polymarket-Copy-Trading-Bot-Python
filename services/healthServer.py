@@ -5,6 +5,7 @@ from copy import deepcopy
 
 from aiohttp import web
 
+from config.env import get_metrics_bind_host
 from services.metrics import metrics
 
 
@@ -48,6 +49,7 @@ async def start_health_server(port: int = 9102) -> web.AppRunner:
     app.router.add_get("/metrics", metrics_handler)
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, host="0.0.0.0", port=port)
+    host = get_metrics_bind_host()
+    site = web.TCPSite(runner, host=host, port=port)
     await site.start()
     return runner

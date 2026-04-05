@@ -79,12 +79,6 @@ class CircuitBreaker:
             return False
         return False
 
-    def remaining_cooldown(self) -> float:
-        if self._state != CircuitState.OPEN:
-            return 0.0
-        elapsed = time.monotonic() - self._last_failure_time
-        return max(0.0, self.cooldown_seconds - elapsed)
-
     def record_success(self) -> None:
         if self._state != CircuitState.CLOSED:
             logger.info("Circuit '%s' recovered → CLOSED", self.name)

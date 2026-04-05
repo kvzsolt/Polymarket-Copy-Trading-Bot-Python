@@ -83,6 +83,26 @@ class ReconciliationService:
             os.environ.get("RECONCILE_AUTO_CANCEL", "false").lower() in ("1", "true", "yes")
         )
 
+    @staticmethod
+    def _supports_order_management(candidate: Any) -> bool:
+        if candidate is None:
+            return False
+        return all(
+            callable(getattr(candidate, method_name, None))
+            for method_name in ("get_orders", "cancel_orders")
+        )
+
+    def _orders_client(self) -> Any:
+        """Return a client object that exposes blocking order-management methods."""
+        if self._supports_order_management(self.clob_client):
+            return self.clob_client
+
+        nested_client = getattr(self.clob_client, "client", None)
+        if self._supports_order_management(nested_client):
+            return nested_client
+
+        return self.clob_client
+
     async def reconcile(self) -> ReconciliationResult:
         """Run one reconciliation pass."""
         now = time.time()
@@ -168,8 +188,9 @@ class ReconciliationService:
     async def _fetch_open_orders(self) -> list[dict[str, Any]]:
         """Fetch all open orders from the CLOB."""
         loop = asyncio.get_running_loop()
+        orders_client = self._orders_client()
         raw = await loop.run_in_executor(
-            None, lambda: self.clob_client.get_orders()
+            None, lambda: orders_client.get_orders()
         )
         # py-clob-client returns a list or paginated dict
         if isinstance(raw, list):
@@ -181,8 +202,9 @@ class ReconciliationService:
     async def _cancel_order(self, order_id: str) -> None:
         """Cancel a single order on the CLOB."""
         loop = asyncio.get_running_loop()
+        orders_client = self._orders_client()
         await loop.run_in_executor(
-            None, lambda: self.clob_client.cancel_orders([order_id])
+            None, lambda: orders_client.cancel_orders([order_id])
         )
 
 
