@@ -442,6 +442,28 @@ class ExecutionService:
 
         meta = await self.market_meta_service.get(req.token_id)
 
+        # --- Book quality gate: reject if spread is too wide ---
+        max_spread_bps = int(ENV.get("MAX_BOOK_SPREAD_BPS", 500))
+        if max_spread_bps > 0 and meta.best_bid and meta.best_ask and meta.best_bid > 0:
+            spread_bps = int(
+                (meta.best_ask - meta.best_bid) / meta.best_bid * Decimal(10_000)
+            )
+            if spread_bps > max_spread_bps:
+                return ExecutionResult(
+                    accepted=False,
+                    order_id=None,
+                    status="rejected",
+                    requested_amount=req.amount,
+                    filled_amount=Decimal("0"),
+                    avg_price=None,
+                    fees_paid=Decimal("0"),
+                    error=(
+                        f"book spread too wide ({spread_bps} bps > "
+                        f"{max_spread_bps} bps max; "
+                        f"bid={meta.best_bid} ask={meta.best_ask})"
+                    ),
+                )
+
         quote = await self.clob_client.get_price(req.token_id, side)
         if not quote or quote.get("price") is None:
             return ExecutionResult(
