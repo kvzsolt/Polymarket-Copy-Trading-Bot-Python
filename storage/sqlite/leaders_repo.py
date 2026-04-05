@@ -16,6 +16,13 @@ class LeaderCandidateRecord:
     source: str | None = None
 
 
+@dataclass
+class LeaderTierRecord:
+    wallet: str
+    follow_tier: str
+    tier_changed_at: float | None
+
+
 class LeadersRepo:
     def __init__(self, db_path: str):
         self.db_path = db_path
@@ -62,3 +69,34 @@ class LeadersRepo:
                 """
             ).fetchall()
         return [str(r["wallet"]) for r in rows]
+
+    def get_tier(self, wallet: str) -> LeaderTierRecord:
+        with create_connection(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT wallet, follow_tier, tier_changed_at FROM discovered_leaders WHERE wallet = ?",
+                (wallet.lower(),),
+            ).fetchone()
+        if row is None:
+            return LeaderTierRecord(wallet=wallet.lower(), follow_tier="watchlist", tier_changed_at=None)
+        return LeaderTierRecord(
+            wallet=str(row["wallet"]),
+            follow_tier=str(row["follow_tier"]) if row["follow_tier"] else "watchlist",
+            tier_changed_at=float(row["tier_changed_at"]) if row["tier_changed_at"] else None,
+        )
+
+    def update_tier(self, wallet: str, follow_tier: str, tier_changed_at: float) -> None:
+        with create_connection(self.db_path) as conn:
+            conn.execute(
+                """
+                UPDATE discovered_leaders
+                SET follow_tier = ?, tier_changed_at = ?, updated_at = ?
+                WHERE wallet = ?
+                """,
+                (follow_tier, tier_changed_at, time.time(), wallet.lower()),
+            )
+            conn.commit()
+
+    def get_tier_for_leader(self, wallet: str) -> str:
+        """Return the follow tier string for a leader. Defaults to 'watchlist'."""
+        rec = self.get_tier(wallet)
+        return rec.follow_tier

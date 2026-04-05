@@ -1,8 +1,14 @@
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 
 from config.env import ENV, is_valid_eth_address
+from services.discovery.permission_ladder import (
+    FollowTier,
+    PromotionThresholds,
+    evaluate_tier,
+)
 from services.healthServer import update_readiness
 from services.metrics import metrics
 from storage.sqlite.leaders_repo import LeaderCandidateRecord
@@ -18,6 +24,7 @@ class LeaderCandidate:
     recent_trades: int
     active: bool
     rejection_reason: str | None = None
+    follow_tier: str = "watchlist"
 
 
 @dataclass
@@ -33,6 +40,43 @@ class LeaderRegistry:
         self.discovery_service = discovery_service
         self.leaders_repo = leaders_repo
         self.logger = logger_instance or logger
+
+    def _evaluate_leader_tier(self, wallet: str, score: float, has_sufficient_coverage: bool) -> FollowTier:
+        """Evaluate and persist tier for a discovered leader."""
+        tier_rec = self.leaders_repo.get_tier(wallet)
+        current_tier = FollowTier(tier_rec.follow_tier) if tier_rec.follow_tier in {t.value for t in FollowTier} else FollowTier.WATCHLIST
+        seconds_in_tier = int(time.time() - tier_rec.tier_changed_at) if tier_rec.tier_changed_at else 0
+
+        thresholds = PromotionThresholds(
+            promote_to_paper=float(ENV.get("TIER_PROMOTE_TO_PAPER", 0.40) or 0.40),
+            promote_to_live=float(ENV.get("TIER_PROMOTE_TO_LIVE", 0.55) or 0.55),
+            demote_to_paper=float(ENV.get("TIER_DEMOTE_TO_PAPER", 0.35) or 0.35),
+            demote_to_watchlist=float(ENV.get("TIER_DEMOTE_TO_WATCHLIST", 0.25) or 0.25),
+            min_paper_seconds=int(ENV.get("TIER_MIN_PAPER_SECONDS", 86400) or 86400),
+        )
+
+        decision = evaluate_tier(
+            leader_id=wallet,
+            current_tier=current_tier,
+            aggregate_score=score,
+            has_sufficient_coverage=has_sufficient_coverage,
+            seconds_in_current_tier=seconds_in_tier,
+            thresholds=thresholds,
+        )
+
+        if decision.changed:
+            self.leaders_repo.update_tier(wallet, decision.recommended_tier.value, time.time())
+            self.logger.info(
+                "leader_tier_changed",
+                extra={
+                    "leader_id": wallet,
+                    "from_tier": current_tier.value,
+                    "to_tier": decision.recommended_tier.value,
+                    "reason": decision.reason,
+                },
+            )
+
+        return decision.recommended_tier
 
     async def refresh(self, configured: list[str] | None = None) -> LeaderRegistryState:
         configured = configured or []
@@ -66,6 +110,14 @@ class LeaderRegistry:
                     active = False
                     reason = "low_score"
 
+                # Evaluate tier via permission ladder
+                has_coverage = profile.total_positions >= min_positions
+                tier = self._evaluate_leader_tier(
+                    wallet=str(profile.wallet).lower(),
+                    score=float(profile.composite_score),
+                    has_sufficient_coverage=has_coverage and active,
+                )
+
                 candidates.append(
                     LeaderCandidate(
                         leader_id=str(profile.wallet).lower(),
@@ -73,6 +125,7 @@ class LeaderRegistry:
                         recent_trades=int(profile.total_positions),
                         active=active,
                         rejection_reason=reason,
+                        follow_tier=tier.value,
                     )
                 )
 
