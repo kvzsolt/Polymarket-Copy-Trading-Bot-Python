@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import signal
 import time
 from dataclasses import dataclass
 
@@ -20,6 +21,7 @@ from orchestrators.trade_pipeline import execute_trades as execute_trade_pipelin
 from services.accountingService import AccountingService
 from services.autoRedeem import auto_redeem_loop
 from services.compliance import check_geoblock
+from services.discovery.capture_service import DiscoveryCaptureService
 from services.executionService import ExecutionService
 from services.feeService import FeeService
 from services.healthServer import start_health_server, update_readiness
@@ -143,7 +145,9 @@ def _build_user_state(runtime_user: RuntimeUser, client: object, db_path: str) -
     )
 
 
-def _build_trading_context(user_state: UserRuntimeState, follow: UserFollowConfig) -> TradingContext:
+def _build_trading_context(
+    user_state: UserRuntimeState, follow: UserFollowConfig, leaders_repo=None
+) -> TradingContext:
     context = TradingContext(
         user_id=user_state.user.user_id,
         wallet_address=user_state.user.wallet.funder_address,
@@ -156,6 +160,7 @@ def _build_trading_context(user_state: UserRuntimeState, follow: UserFollowConfi
         accounting_service=user_state.accounting_service,
         position_manager=user_state.position_manager,
         execution_service=user_state.execution_service,
+        leaders_repo=leaders_repo,
         allocation_pct=follow.allocation_pct,
         buy_min_amount=float(ENV.get("BUY_MIN_AMOUNT", 1)),
         buy_max_amount=min(float(ENV.get("BUY_MAX_AMOUNT", 100)), follow.max_trade_usdc),
@@ -257,9 +262,18 @@ async def main():
     update_readiness(db_ok=True)
 
     db_path = get_db_path()
+
+    # Startup housekeeping: purge stale records from SQLite
+    from utils.idempotency import purge_stale_records
+    purged = purge_stale_records()
+    if purged:
+        logger.info(f"Startup cleanup: purged {purged} stale records")
+
+    research_capture_service = DiscoveryCaptureService(db_path)
+    leaders_repo = LeadersRepo(db_path)
     registry = LeaderRegistry(
         discovery_service=TraderDiscoveryService(),
-        leaders_repo=LeadersRepo(db_path),
+        leaders_repo=leaders_repo,
         logger_instance=logger,
     )
     refresh_interval = int(ENV.get("DISCOVERY_REFRESH_INTERVAL_SECONDS", 300) or 300)
@@ -332,7 +346,7 @@ async def main():
             follow = runtime_user.follows.get(leader)
             if not follow or not follow.enabled:
                 continue
-            context = _build_trading_context(user_state, follow)
+            context = _build_trading_context(user_state, follow, leaders_repo=leaders_repo)
             contexts_by_leader[leader].append(context)
             if context.user_id not in risk_contexts_by_user:
                 risk_contexts_by_user[context.user_id] = context
@@ -411,6 +425,7 @@ async def main():
                     "FETCH_INTERVAL": ENV.get("FETCH_INTERVAL", 1),
                 },
                 on_trade,
+                research_capture_service=research_capture_service,
             )
         finally:
             worker_task.cancel()
@@ -439,11 +454,23 @@ async def main():
 
 
 if __name__ == "__main__":
+    loop = asyncio.new_event_loop()
+    main_task = loop.create_task(main())
+
+    def _shutdown_handler(sig, _frame):
+        logger.info("Received %s — initiating graceful shutdown", signal.Signals(sig).name)
+        main_task.cancel()
+
+    signal.signal(signal.SIGTERM, _shutdown_handler)
+    signal.signal(signal.SIGINT, _shutdown_handler)
+
     try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
+        loop.run_until_complete(main_task)
+    except (asyncio.CancelledError, KeyboardInterrupt):
         pass
     except Exception:
         import sys
 
         sys.exit(1)
+    finally:
+        loop.close()

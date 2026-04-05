@@ -11,10 +11,17 @@ from typing import Any
 from config.env import ENV
 from py_clob_client.clob_types import OrderType
 from py_clob_client.order_builder.constants import BUY, SELL
+from services.circuitBreaker import CircuitBreaker, CircuitOpen
 
 from utils.logger import get_logger, redact_error_detail
 
 logger = get_logger("ExecutionService")
+
+_CLOB_CIRCUIT = CircuitBreaker(
+    name="clob_api",
+    failure_threshold=int(ENV.get("CIRCUIT_FAILURE_THRESHOLD", 5)),
+    cooldown_seconds=float(ENV.get("CIRCUIT_COOLDOWN_SECONDS", 60)),
+)
 
 _MAX_PERSISTED_FIELD_CHARS = 160
 _MAX_PERSISTED_ERROR_CHARS = 512
@@ -420,6 +427,19 @@ class ExecutionService:
                 error="amount must be > 0",
             )
 
+        if not _CLOB_CIRCUIT.allow_request():
+            remaining = _CLOB_CIRCUIT.remaining_cooldown()
+            return ExecutionResult(
+                accepted=False,
+                order_id=None,
+                status="circuit_open",
+                requested_amount=req.amount,
+                filled_amount=Decimal("0"),
+                avg_price=None,
+                fees_paid=Decimal("0"),
+                error=f"CLOB circuit breaker open — retry in {remaining:.0f}s",
+            )
+
         meta = await self.market_meta_service.get(req.token_id)
 
         quote = await self.clob_client.get_price(req.token_id, side)
@@ -634,6 +654,7 @@ class ExecutionService:
                     signed_order, OrderType.FOK
                 )
                 if response.get("success"):
+                    _CLOB_CIRCUIT.record_success()
                     self._save_submission(
                         idempotency_key=idem_key,
                         request=request_doc,
@@ -682,6 +703,7 @@ class ExecutionService:
             await asyncio.sleep(0.3 * attempt)
         else:
             # All retries exhausted without success
+            _CLOB_CIRCUIT.record_failure()
             self._save_submission(
                 idempotency_key=idem_key,
                 request=request_doc,

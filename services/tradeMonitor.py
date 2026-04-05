@@ -1,6 +1,7 @@
 import asyncio
 import time
 from dataclasses import dataclass, field
+from typing import Any
 
 from config.env import ENV, get_funder_address
 from services.leaderCursorStore import LeaderCursorStore
@@ -15,6 +16,7 @@ from utils.logger import (
     print_first_run_init,
     print_historical_done,
     print_monitor_start,
+    redact_error_detail,
     shorten_addr,
     log_trade_detected,
 )
@@ -49,6 +51,36 @@ def _trade_ordering_key(trade: dict) -> tuple[int, str, str]:
     tx_hash = str(trade.get("transactionHash") or trade.get("txHash") or "").strip().lower()
     trade_id = str(trade.get("id") or trade.get("tradeID") or trade.get("trade_id") or "").strip().lower()
     return ts, tx_hash, trade_id
+
+
+async def _run_research_capture(
+    research_capture_service: Any,
+    raw_trades: list[dict],
+) -> None:
+    try:
+        await research_capture_service.capture_observed_trades(raw_trades)
+    except Exception as exc:
+        logger.warning(
+            "research_trade_capture_failed",
+            extra={"error": redact_error_detail(exc)},
+        )
+
+
+async def _run_position_capture(
+    research_capture_service: Any,
+    leader_wallet: str,
+    positions: list[dict],
+) -> None:
+    try:
+        await research_capture_service.capture_position_snapshots(
+            leader_wallet,
+            positions,
+        )
+    except Exception as exc:
+        logger.warning(
+            "research_position_capture_failed",
+            extra={"leader_wallet": leader_wallet, "error": redact_error_detail(exc)},
+        )
 
 
 async def init(user_address: str, state: LeaderMonitorState):
@@ -162,7 +194,12 @@ def _aggregate_trades(trades: list[dict]) -> list[dict]:
     return aggregated
 
 
-async def fetch_trade_data(user_address: str, on_trade_callback, state: LeaderMonitorState):
+async def fetch_trade_data(
+    user_address: str,
+    on_trade_callback,
+    state: LeaderMonitorState,
+    research_capture_service: Any | None = None,
+):
     """Fetch new trades and call *on_trade_callback(trade)* immediately for each."""
     try:
         user_activities = await fetch_data(
@@ -223,6 +260,10 @@ async def fetch_trade_data(user_address: str, on_trade_callback, state: LeaderMo
                 max_seen_ts = ts
 
         trade_list = _aggregate_trades(trade_candidates)
+        if trade_candidates and research_capture_service is not None:
+            asyncio.create_task(
+                _run_research_capture(research_capture_service, list(trade_candidates))
+            )
         for trade in trade_list:
             # --- Rich console panel for detected trade ---
             print_new_trade_detected(trade)
@@ -270,7 +311,11 @@ async def fetch_trade_data(user_address: str, on_trade_callback, state: LeaderMo
         logger.error(f'Error fetch_trade_data: {e}')
 
 
-async def fetch_and_save_positions(leader_wallet: str, proxy_wallet: str):
+async def fetch_and_save_positions(
+    leader_wallet: str,
+    proxy_wallet: str,
+    research_capture_service: Any | None = None,
+):
     if not bool(ENV.get("ENABLE_LEGACY_POSITION_SNAPSHOT", False)):
         return
     for wallet in (leader_wallet, proxy_wallet):
@@ -282,6 +327,10 @@ async def fetch_and_save_positions(leader_wallet: str, proxy_wallet: str):
                 silent=True,
             )
             positions = positions or []
+            if wallet == leader_wallet and research_capture_service is not None:
+                asyncio.create_task(
+                    _run_position_capture(research_capture_service, leader_wallet, list(positions))
+                )
             docs = [dict(p, proxyWallet=p.get('proxyWallet') or wallet) for p in positions]
             from models.userHistory import get_user_position_model
             coll = get_user_position_model(wallet)
@@ -292,7 +341,11 @@ async def fetch_and_save_positions(leader_wallet: str, proxy_wallet: str):
             logger.error(f'DB save positions {shorten_addr(wallet)}: {e}')
 
 
-async def trade_monitor(bot_params: dict, on_trade_callback):
+async def trade_monitor(
+    bot_params: dict,
+    on_trade_callback,
+    research_capture_service: Any | None = None,
+):
     """Main monitor loop. Calls *on_trade_callback(trades_list)* immediately on detection."""
     fetch_interval = int(bot_params.get('FETCH_INTERVAL', ENV.get('FETCH_INTERVAL', 1)))
     state = LeaderMonitorState()
@@ -308,7 +361,12 @@ async def trade_monitor(bot_params: dict, on_trade_callback):
     proxy_wallet = get_funder_address()
     while True:
         previous_cursor = state.last_cursor
-        await fetch_trade_data(leader_wallet, on_trade_callback, state)
+        await fetch_trade_data(
+            leader_wallet,
+            on_trade_callback,
+            state,
+            research_capture_service=research_capture_service,
+        )
         if (
             state.last_cursor.timestamp != previous_cursor.timestamp
             or state.last_cursor.tx_hash != previous_cursor.tx_hash
@@ -320,7 +378,13 @@ async def trade_monitor(bot_params: dict, on_trade_callback):
         now = time.time()
         if now - state.last_position_save >= _POSITION_SAVE_INTERVAL:
             state.last_position_save = now
-            asyncio.create_task(fetch_and_save_positions(bot_params['leaderWallet'], proxy_wallet))
+            asyncio.create_task(
+                fetch_and_save_positions(
+                    bot_params['leaderWallet'],
+                    proxy_wallet,
+                    research_capture_service=research_capture_service,
+                )
+            )
 
         monitor_heartbeat_tick(trader_count=1, checked_activities=len(state.recent_activities))
         await asyncio.sleep(fetch_interval)
