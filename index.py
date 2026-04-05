@@ -215,11 +215,34 @@ async def _discovery_refresh_loop(
     registry: LeaderRegistry,
     configured_leaders: list[str],
     refresh_interval: int,
+    leaders_repo: "LeadersRepo | None" = None,
+    on_new_leaders: "Callable[[list[str]], Awaitable[None]] | None" = None,
+    already_monitored: set[str] | None = None,
 ) -> None:
+    """Periodically refresh leader discovery and promote newly-monitorable leaders.
+
+    When *leaders_repo* and *on_new_leaders* are provided, the loop checks after
+    each refresh whether any leaders have been promoted to ``paper_follow`` or
+    ``live_follow`` that are not yet being monitored, and calls *on_new_leaders*
+    with the new wallet addresses so that ``main()`` can spawn monitor tasks.
+    """
+    _monitored: set[str] = set(already_monitored) if already_monitored else set()
     while True:
         await asyncio.sleep(refresh_interval)
         try:
             await registry.refresh(configured_leaders)
+            if leaders_repo is not None and on_new_leaders is not None:
+                live = set(leaders_repo.get_leaders_by_tier("live_follow"))
+                paper = set(leaders_repo.get_leaders_by_tier("paper_follow"))
+                monitorable = live | paper
+                new_leaders = sorted(monitorable - _monitored)
+                if new_leaders:
+                    logger.info(
+                        "discovery_new_monitorable_leaders",
+                        extra={"count": len(new_leaders), "wallets": new_leaders},
+                    )
+                    _monitored.update(new_leaders)
+                    await on_new_leaders(new_leaders)
         except Exception as exc:
             logger.warning(
                 "Background discovery refresh failed",
@@ -352,6 +375,8 @@ async def main():
                 risk_contexts_by_user[context.user_id] = context
 
     monitored_leaders = [leader for leader, contexts in contexts_by_leader.items() if contexts]
+    monitored_set: set[str] = set(monitored_leaders)
+    monitor_tasks: list[asyncio.Task] = []
     update_readiness(monitored_leader_count=len(monitored_leaders))
     if not monitored_leaders:
         logger.warning("no_leaders_monitored", extra={"reason": "no_user_follows_active_leaders"})
@@ -361,8 +386,40 @@ async def main():
     if ENV.get("ENABLE_METRICS_SERVER", False):
         metrics_runner = await start_health_server(int(ENV.get("METRICS_PORT", 9102)))
 
+    async def _on_new_leaders(new_wallets: list[str]) -> None:
+        """Callback invoked by the discovery loop when new leaders become monitorable."""
+        _ensure_runtime_follows(runtime_users, new_wallets)
+        for wallet in new_wallets:
+            if wallet in contexts_by_leader:
+                continue
+            contexts_by_leader[wallet] = []
+            for ru in runtime_users:
+                us = user_states.get(ru.user_id)
+                follow = ru.follows.get(wallet)
+                if not us or not follow or not follow.enabled:
+                    continue
+                ctx = _build_trading_context(us, follow, leaders_repo=leaders_repo)
+                contexts_by_leader[wallet].append(ctx)
+            if contexts_by_leader[wallet]:
+                task = asyncio.create_task(run_leader(wallet))
+                monitor_tasks.append(task)
+                logger.info(
+                    "dynamic_leader_monitor_started",
+                    extra={"leader": wallet},
+                )
+        update_readiness(monitored_leader_count=len([
+            w for w, ctxs in contexts_by_leader.items() if ctxs
+        ]))
+
     discovery_task = asyncio.create_task(
-        _discovery_refresh_loop(registry, configured_leaders, refresh_interval)
+        _discovery_refresh_loop(
+            registry,
+            configured_leaders,
+            refresh_interval,
+            leaders_repo=leaders_repo,
+            on_new_leaders=_on_new_leaders,
+            already_monitored=monitored_set,
+        )
     )
 
     risk_task = None
@@ -430,13 +487,22 @@ async def main():
         finally:
             worker_task.cancel()
 
-    monitor_tasks = [asyncio.create_task(run_leader(wallet)) for wallet in monitored_leaders]
+    monitor_tasks.extend(asyncio.create_task(run_leader(wallet)) for wallet in monitored_leaders)
 
     try:
-        if monitor_tasks:
-            await asyncio.gather(*monitor_tasks)
-        else:
-            while True:
+        # Keep main alive: wait for monitors, or sleep-poll if none yet.
+        # Dynamic monitors may be added by the discovery callback.
+        while True:
+            active = [t for t in monitor_tasks if not t.done()]
+            if active:
+                done, _ = await asyncio.wait(active, timeout=refresh_interval)
+                for t in done:
+                    if t.exception():
+                        logger.error(
+                            "monitor_task_crashed",
+                            extra={"error": redact_error_detail(t.exception())},
+                        )
+            else:
                 await asyncio.sleep(refresh_interval)
                 await metrics.inc("no_leaders_monitored_total")
     finally:
