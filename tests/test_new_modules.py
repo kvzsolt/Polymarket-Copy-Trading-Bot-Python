@@ -12,6 +12,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+FAKE_TOKEN_ID = "71321045679252212594626385532706912750332728571942532223535764789812338637396"
+
 
 # ---------------------------------------------------------------------------
 # Config — _leader_wallets
@@ -289,7 +291,7 @@ class TestRiskMonitor:
 
         mock_pm = MagicMock(spec=PositionManager)
         pos = TrackedPosition(
-            condition_id="c1", asset="a1", side="BUY",
+            condition_id="c1", asset=FAKE_TOKEN_ID, side="BUY",
             entry_price=0.5, size_tokens=10.0, usdc_cost=5.0,
         )
         mock_pm.open_positions = {"c1": pos}
@@ -590,3 +592,16 @@ class TestSellNotCapped:
         order_args = mock_client.post_order.call_args[0][0]
         # Full 500 tokens sold — no cap applied
         assert abs(order_args.size - 500.0) < 0.01
+
+
+# ---------------------------------------------------------------------------
+# Token ID validation
+# ---------------------------------------------------------------------------
+def test_is_valid_clob_token_id():
+    from utils import is_valid_clob_token_id
+    assert is_valid_clob_token_id("71321045679252212594626385532706912750332728571942532223535764789812338637396")
+    assert not is_valid_clob_token_id("a1")
+    assert not is_valid_clob_token_id("token1")
+    assert not is_valid_clob_token_id("")
+    assert not is_valid_clob_token_id("0xabc123")
+    assert not is_valid_clob_token_id("123")  # too short

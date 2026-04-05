@@ -15,6 +15,8 @@ from storage.sqlite.migrations import apply_migrations
 from storage.sqlite.orders_repo import OrdersRepo
 from storage.sqlite.positions_repo import PositionsRepo
 
+FAKE_TOKEN_ID = "71321045679252212594626385532706912750332728571942532223535764789812338637396"
+
 
 class _FakeExecutionService:
     async def execute(self, req):
@@ -88,7 +90,7 @@ async def test_multi_user_positions_and_pnl_are_isolated(tmp_path, monkeypatch):
             "timestamp": int(time.time()),
             "type": "TRADE",
             "side": "BUY",
-            "asset": "token-1",
+            "asset": FAKE_TOKEN_ID,
             "conditionId": "cond-1",
             "size": 10,
             "price": 0.5,
@@ -115,7 +117,7 @@ async def test_multi_user_positions_and_pnl_are_isolated(tmp_path, monkeypatch):
             "timestamp": int(time.time()),
             "type": "TRADE",
             "side": "SELL",
-            "asset": "token-1",
+            "asset": FAKE_TOKEN_ID,
             "conditionId": "cond-1",
             "size": 0,
             "price": 0.5,

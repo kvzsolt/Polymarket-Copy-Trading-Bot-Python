@@ -22,6 +22,8 @@ from storage.sqlite.migrations import apply_migrations
 from storage.sqlite.orders_repo import OrdersRepo
 from storage.sqlite.positions_repo import PositionsRepo
 
+FAKE_TOKEN_ID = "71321045679252212594626385532706912750332728571942532223535764789812338637396"
+
 
 @pytest.fixture(autouse=True)
 def _reset_singletons(monkeypatch):
@@ -85,7 +87,7 @@ def _make_context(db_path, *, leaders_repo=None, execution_service=None):
     )
 
 
-def _signal(*, side="BUY", tx_hash="0xabc", asset="token1", condition_id="cond1", price=0.50, size=10.0):
+def _signal(*, side="BUY", tx_hash="0xabc", asset=FAKE_TOKEN_ID, condition_id="cond1", price=0.50, size=10.0):
     return {
         "side": side,
         "transactionHash": tx_hash,
@@ -197,9 +199,9 @@ async def test_multiple_signals_tier_applied_to_all(tmp_path):
     repo = _FakeLeadersRepo({"0xleader": "watchlist"})
     ctx = _make_context(_init_db(tmp_path), leaders_repo=repo, execution_service=MagicMock())
     signals = [
-        _signal(tx_hash="0x1", asset="t1"),
-        _signal(tx_hash="0x2", asset="t2"),
-        _signal(tx_hash="0x3", asset="t3"),
+        _signal(tx_hash="0x1", asset=FAKE_TOKEN_ID),
+        _signal(tx_hash="0x2", asset=FAKE_TOKEN_ID),
+        _signal(tx_hash="0x3", asset=FAKE_TOKEN_ID),
     ]
     results = await execute_trades(ctx, "0xleader", signals, time.time())
     assert len(results) == 3

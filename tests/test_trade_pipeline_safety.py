@@ -41,6 +41,8 @@ from storage.sqlite.migrations import apply_migrations
 from storage.sqlite.orders_repo import OrdersRepo
 from storage.sqlite.positions_repo import PositionsRepo
 
+FAKE_TOKEN_ID = "71321045679252212594626385532706912750332728571942532223535764789812338637396"
+
 
 def _init_db(tmp_path):
     db_path = str(tmp_path / "test.db")
@@ -69,7 +71,7 @@ def _make_context(db_path, *, execution_service=None):
     )
 
 
-def _signal(*, side="BUY", tx_hash="0xabc", asset="token1", condition_id="cond1", price=0.50, size=10.0):
+def _signal(*, side="BUY", tx_hash="0xabc", asset=FAKE_TOKEN_ID, condition_id="cond1", price=0.50, size=10.0):
     return {
         "side": side,
         "transactionHash": tx_hash,
@@ -149,7 +151,7 @@ async def test_duplicate_trade_is_skipped(tmp_path):
     trade_key = build_trade_key("user1", "leader1", signal)
     ctx.orders_repo.mark_processed_trade(
         trade_key=trade_key, user_id="user1", leader_id="leader1",
-        tx_hash="0xabc", side="BUY", asset="token1",
+        tx_hash="0xabc", side="BUY", asset=FAKE_TOKEN_ID,
         condition_id="cond1", status="executed",
     )
 
@@ -368,7 +370,7 @@ async def test_sell_reduces_position(tmp_path):
     # Set up existing position
     from storage.sqlite.positions_repo import PositionRecord
     ctx.positions_repo.upsert_position(PositionRecord(
-        user_id="user1", condition_id="cond1", token_id="token1",
+        user_id="user1", condition_id="cond1", token_id=FAKE_TOKEN_ID,
         leader_id="leader1", size_tokens=Decimal("20"), avg_entry_price=Decimal("0.40"),
     ))
 
