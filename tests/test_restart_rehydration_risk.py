@@ -14,6 +14,8 @@ from storage.sqlite.migrations import apply_migrations
 from storage.sqlite.orders_repo import OrdersRepo
 from storage.sqlite.positions_repo import PositionsRepo
 
+FAKE_TOKEN_ID = "71321045679252212594626385532706912750332728571942532223535764789812338637396"
+
 
 class _FakeClient:
     async def get_price(self, _token_id: str, _side: str):
@@ -59,7 +61,7 @@ async def test_restart_rehydration_and_risk_exit_uses_persisted_positions(tmp_pa
             leader_id="l1",
             order_id="buy-1",
             condition_id="cond-1",
-            token_id="token-1",
+            token_id=FAKE_TOKEN_ID,
             side="BUY",
             size_tokens=Decimal("10"),
             price=Decimal("0.6"),
