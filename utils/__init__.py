@@ -1,5 +1,21 @@
 """Utility package exports."""
 
+import re as _re
+
+# Polymarket CLOB token IDs are CTF (Conditional Token Framework) uint256
+# values represented as decimal digit strings, typically 70-80 characters.
+# Anything shorter than 10 digits or containing non-digit characters is
+# not a valid on-chain token identifier.
+_CLOB_TOKEN_RE = _re.compile(r"^\d{10,}$")
+
+
+def is_valid_clob_token_id(token_id: str | None) -> bool:
+    """Return True when *token_id* looks like a real Polymarket CLOB token."""
+    if not token_id:
+        return False
+    return bool(_CLOB_TOKEN_RE.match(token_id))
+
+
 from .createClobClient import ClobClientWrapper, MarketMeta, create_clob_client
 from .fetchData import fetch_data, close_session
 from .getMyBalance import get_my_balance
@@ -49,6 +65,8 @@ from .logger import (
 )
 
 __all__ = [
+    # validation
+    "is_valid_clob_token_id",
     # createClobClient
     "ClobClientWrapper",
     "MarketMeta",
