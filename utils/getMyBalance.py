@@ -10,9 +10,6 @@ from utils.logger import get_logger
 
 logger = get_logger("Balance")
 
-RPC_URL = ENV.get('RPC_URL')
-USDC_CONTRACT_ADDRESS = ENV.get('USDC_CONTRACT_ADDRESS')
-
 USDC_ABI = [{
     "constant": True,
     "inputs": [{"name": "owner", "type": "address"}],
@@ -32,15 +29,18 @@ def _masked_address(address: str | None) -> str:
 
 
 def _get_balance_sync(address: str) -> float | None:
-    if not RPC_URL:
+    rpc_url = ENV.get('RPC_URL')
+    usdc_contract_address = ENV.get('USDC_CONTRACT_ADDRESS')
+
+    if not rpc_url:
         logger.error("Balance lookup failed: RPC_URL is not configured")
         return None
-    if not USDC_CONTRACT_ADDRESS:
+    if not usdc_contract_address:
         logger.error("Balance lookup failed: USDC_CONTRACT_ADDRESS is not configured")
         return None
 
     try:
-        checksum_contract = Web3.to_checksum_address(USDC_CONTRACT_ADDRESS)
+        checksum_contract = Web3.to_checksum_address(usdc_contract_address)
         checksum_address = Web3.to_checksum_address(address)
     except (TypeError, ValueError) as exc:
         logger.error(
@@ -49,7 +49,7 @@ def _get_balance_sync(address: str) -> float | None:
         return None
 
     try:
-        w3 = Web3(Web3.HTTPProvider(RPC_URL))
+        w3 = Web3(Web3.HTTPProvider(rpc_url))
         usdc_contract = w3.eth.contract(address=checksum_contract, abi=USDC_ABI)
         balance_usdc = usdc_contract.functions.balanceOf(checksum_address).call()
         bal = float(balance_usdc / 10**6)
@@ -80,10 +80,11 @@ async def get_my_balance(address: str) -> float | None:
 
 
 async def get_native_balance_wei(address: str) -> int | None:
-    if not RPC_URL:
+    rpc_url = ENV.get('RPC_URL')
+    if not rpc_url:
         return None
     try:
-        w3 = Web3(Web3.HTTPProvider(RPC_URL))
+        w3 = Web3(Web3.HTTPProvider(rpc_url))
         adapter = AsyncWeb3Adapter(w3, logger=logger)
         checksum_address = Web3.to_checksum_address(address)
         return int(await adapter.get_native_balance(checksum_address))

@@ -205,6 +205,37 @@ class TestReconciliationService:
         assert result.open_orders_on_exchange == 2
 
     @pytest.mark.asyncio
+    async def test_orders_client_prefers_top_level_order_methods(self):
+        """If top-level client exposes order methods, use it instead of nested .client."""
+        clob = MagicMock()
+        clob.get_orders.return_value = [{"id": "top-level"}]
+        clob.client.get_orders.return_value = [{"id": "nested"}]
+
+        svc = ReconciliationService(clob_client=clob, stale_threshold_seconds=9999)
+        result = await svc.reconcile()
+
+        assert result.open_orders_on_exchange == 1
+        clob.get_orders.assert_called_once()
+        clob.client.get_orders.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_orders_client_falls_back_to_nested_client(self):
+        """If top-level client lacks order methods, use nested .client implementation."""
+
+        class _Wrapper:
+            def __init__(self):
+                self.client = MagicMock()
+
+        wrapper = _Wrapper()
+        wrapper.client.get_orders.return_value = [{"id": "nested-1"}, {"id": "nested-2"}]
+
+        svc = ReconciliationService(clob_client=wrapper, stale_threshold_seconds=9999)
+        result = await svc.reconcile()
+
+        assert result.open_orders_on_exchange == 2
+        wrapper.client.get_orders.assert_called_once()
+
+    @pytest.mark.asyncio
     async def test_env_defaults(self):
         """Service reads from env when no explicit values."""
         clob = _make_mock_clob()

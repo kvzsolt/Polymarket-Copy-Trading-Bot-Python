@@ -52,6 +52,13 @@ def _ensure_no_inline_comment(key: str, raw: str) -> str:
     return raw.strip()
 
 
+def _configured_if_valid(key: str) -> bool:
+    try:
+        return bool(_ensure_no_inline_comment(key, _raw(key, '')))
+    except EnvValidationError:
+        return False
+
+
 def _float(key: str, default: str) -> float:
     raw = _ensure_no_inline_comment(key, _raw(key, default))
     return float(raw) if raw else float(default)
@@ -179,6 +186,10 @@ def get_funder_address() -> str:
     return _ensure_no_inline_comment('PROXY_WALLET', _raw('PROXY_WALLET', ''))
 
 
+def get_metrics_bind_host() -> str:
+    return _ensure_no_inline_comment('METRICS_BIND_HOST', _raw('METRICS_BIND_HOST', '0.0.0.0'))
+
+
 def build_wallet_config() -> WalletConfig:
     return WalletConfig(
         private_key=get_private_key(),
@@ -231,6 +242,7 @@ def validate_runtime_env() -> None:
         'RPC_URL',
         'PNL_LOG_FILE',
         'CLOB_HTTP_URL',
+        'METRICS_BIND_HOST',
     ):
         try:
             _ensure_no_inline_comment(key, _raw(key, ''))
@@ -400,13 +412,17 @@ def _build_env_snapshot() -> dict[str, object]:
     else:
         auto_discover_top_n = legacy_auto_count
 
+    private_key_file_configured = _configured_if_valid('PRIVATE_KEY_FILE')
+    private_key_configured = private_key_file_configured or _configured_if_valid('PRIVATE_KEY')
+
     return {
     # --- Wallet / auth ---
     'USER_ADDRESS': os.getenv('USER_ADDRESS', ''),
     'PROXY_WALLET': os.getenv('PROXY_WALLET', ''),
     'FUNDER_ADDRESS': os.getenv('FUNDER_ADDRESS', ''),
-    'PRIVATE_KEY': os.getenv('PRIVATE_KEY', ''),
-    'PRIVATE_KEY_FILE': os.getenv('PRIVATE_KEY_FILE', ''),
+    # Keep secrets and secret-file metadata out of ENV snapshot; call get_private_key() where needed.
+    'PRIVATE_KEY': '***REDACTED***' if private_key_configured else '',
+    'PRIVATE_KEY_FILE': '***REDACTED***' if private_key_file_configured else '',
     'SIGNATURE_TYPE': _int('SIGNATURE_TYPE', '0'),
     'CHAIN_ID': _int('CHAIN_ID', '137'),
     'LEADER_WALLETS': _leader_wallets(),
