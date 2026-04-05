@@ -93,5 +93,15 @@ def mark_processed_all_tx_hashes(leader_wallet: str, trade: dict, *, status: str
 
 
 
+def purge_stale_records(max_age_seconds: float | None = None) -> int:
+    """Delete old processed_trades. Returns total rows deleted."""
+    age = max_age_seconds or float(ENV.get("RETENTION_MAX_AGE_SECONDS", 30 * 86400))
+    repo = _repo()
+    n = repo.purge_old_processed_trades(age)
+    if n:
+        logger.info(f"Purged {n} stale processed_trades (age > {age:.0f}s)")
+    return n
+
+
 def reset_cache_for_tests() -> None:
     _SCHEMA_READY.clear()

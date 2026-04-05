@@ -295,3 +295,16 @@ class OrdersRepo:
                 ),
             )
             conn.commit()
+
+    # ── retention / cleanup ──────────────────────────────────────────
+
+    def purge_old_processed_trades(self, max_age_seconds: float = 30 * 86400) -> int:
+        """Delete processed_trades older than *max_age_seconds*. Returns rows deleted."""
+        cutoff = time.time() - max_age_seconds
+        with create_connection(self.db_path) as conn:
+            cur = conn.execute(
+                "DELETE FROM processed_trades WHERE processed_at < ?",
+                (cutoff,),
+            )
+            conn.commit()
+            return cur.rowcount
