@@ -136,10 +136,8 @@ class RichConsoleHandler(logging.Handler):
             prefix = Text(f"[{ts}] ", style="muted")
             body = Text(msg, style=style)
             console.print(prefix + body, highlight=False)
-            if record.exc_info and not record.exc_text:
-                exc_type = record.exc_info[0].__name__ if record.exc_info[0] else "Exception"
-                exc_val = str(record.exc_info[1]) if record.exc_info[1] else "details omitted"
-                console.print(Text(f"[{exc_type}] {exc_val}", style="muted"))
+            if record.exc_info and record.exc_info[1] and not record.exc_text:
+                console.print_exception(max_frames=12)
         except Exception:
             self.handleError(record)
 
@@ -165,15 +163,18 @@ class RichConsoleHandler(logging.Handler):
 
     def _render_api_error(self, record: LogRecord, ts: str) -> None:
         side = getattr(record, "side", "?")
-        error = getattr(record, "error", "")
+        error_detail = getattr(record, "error_detail", None)
+        error = error_detail or getattr(record, "error", "")
         cond = shorten_addr(getattr(record, "conditionId", None), 8, 6)
         asset = shorten_addr(getattr(record, "asset", None), 8, 6)
         retry = getattr(record, "retry", 0)
         max_retries = getattr(record, "maxRetries", 3)
+        category = getattr(record, "error", "") if error_detail else None
 
         lines = _build_panel_lines(
             Side=side.upper(),
             Message=error,
+            Category=category if category and category != error else None,
             Condition=cond if cond != "N/A" else None,
             Asset=asset if asset != "N/A" else None,
             Retries=f"{retry}/{max_retries}" if retry > 0 else None,
@@ -787,13 +788,14 @@ def print_api_error(
     retry: int = 0,
     max_retries: int = 3,
 ) -> None:
-    parsed = _parse_api_error(str(error) if error else "")
-    redacted_message = redact_error_detail(error)
+    error_str = str(error) if error else "Unknown error"
+    parsed = _parse_api_error(error_str)
 
     lines = _build_panel_lines(
         Side=side.upper(),
         Status=f"HTTP {parsed['status_code']}" if parsed.get("status_code") else None,
-        Message=redacted_message,
+        Message=parsed.get("error_message") or error_str,
+        Category=redact_error_detail(error),
         Condition=shorten_addr(condition_id, 8, 6) if condition_id else None,
         Asset=shorten_addr(asset, 8, 6) if asset else None,
         Retries=f"{retry}/{max_retries}" if retry > 0 else None,
@@ -819,13 +821,13 @@ def print_api_response(
 
     error_raw = response.get("error", "")
     parsed = _parse_api_error(str(error_raw))
-    redacted_message = redact_error_detail(error_raw)
 
     lines = _build_panel_lines(
         Side=side.upper(),
         Success="[bold red]False[/bold red]",
         Status=f"HTTP {parsed['status_code']}" if parsed.get("status_code") else None,
-        Message=redacted_message,
+        Message=parsed.get("error_message") or (error_raw if error_raw else None),
+        Category=redact_error_detail(error_raw) if error_raw else None,
         Condition=shorten_addr(condition_id, 8, 6) if condition_id else None,
     )
 
@@ -876,14 +878,15 @@ def print_clob_error(
     side: str | None = None,
     condition_id: str | None = None,
 ) -> None:
-    parsed = _parse_api_error(str(error))
-    redacted_message = redact_error_detail(error)
+    error_str = str(error)
+    parsed = _parse_api_error(error_str)
 
     lines = _build_panel_lines(
         Operation=operation,
         Side=side.upper() if side else None,
         Status=f"HTTP {parsed['status_code']}" if parsed.get("status_code") else None,
-        Message=redacted_message,
+        Message=parsed.get("error_message") or error_str,
+        Category=redact_error_detail(error),
         Asset=shorten_addr(asset, 8, 6) if asset else None,
         Condition=shorten_addr(condition_id, 8, 6) if condition_id else None,
     )
@@ -958,11 +961,13 @@ def log_api_error(
     max_retries: int = 3,
     meta: dict[str, Any] | None = None,
 ) -> None:
+    error_str = str(error) if error else "Unknown error"
     redacted_message = redact_error_detail(error)
     payload = {
         "type": "api_error",
         "side": side.upper(),
         "error": redacted_message,
+        "error_detail": error_str,
         "conditionId": condition_id,
         "asset": asset,
         "retry": retry,
@@ -1178,14 +1183,20 @@ def log_api_response(
     }
     if response_shape is not None:
         extras["response_shape"] = response_shape
-        
+
+    # Restore rich data_summary for safe fields (v5 behavior)
+    _SAFE_DATA_FIELDS = (
+        "success", "orderID", "status", "error", "price", "size",
+        "min_order_size", "transactionHash",
+    )
     if isinstance(data, dict):
-        for safe_field in ("success", "orderID", "status"):
-            if safe_field in data:
-                extras[safe_field] = data[safe_field]
+        summary = {k: data[k] for k in _SAFE_DATA_FIELDS if k in data}
+        if summary:
+            extras["data_summary"] = summary
 
     if error:
         extras["error"] = redact_error_detail(error)
+        extras["error_detail"] = error
     if meta:
         extras.update(meta)
 
