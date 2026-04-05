@@ -90,7 +90,7 @@ def _resolve_leader_tier(context: TradingContext, leader_id: str) -> str:
 def build_trade_key(user_id: str, leader_id: str, trade: dict[str, Any]) -> str:
     tx_hash = trade.get("transactionHash") or trade.get("txHash") or ""
     side = str(trade.get("side") or "").strip().upper()
-    asset = trade.get("asset") or trade.get("tokenID") or trade.get("token_id") or ""
+    asset = trade.get("tokenID") or trade.get("token_id") or trade.get("asset") or ""
     return f"{_normalize(user_id)}|{_normalize(leader_id)}|{_normalize(tx_hash)}|{side}|{_normalize(asset)}"
 
 
@@ -206,7 +206,7 @@ def normalize_signals(raw_signals: list[dict[str, Any]], leader_id: str) -> list
             continue
 
         condition_id = str(raw.get("conditionId") or raw.get("condition_id") or "")
-        token_id = str(raw.get("asset") or raw.get("tokenID") or raw.get("token_id") or "")
+        token_id = str(raw.get("tokenID") or raw.get("token_id") or raw.get("asset") or "")
         tx_hash = str(raw.get("transactionHash") or raw.get("txHash") or "")
         if not condition_id or not token_id or not tx_hash:
             continue

@@ -139,7 +139,7 @@ def _aggregate_trades(trades: list[dict]) -> list[dict]:
 
     for trade in ordered:
         ts = _to_seconds(trade.get('timestamp'))
-        asset = trade.get('asset') or trade.get('tokenID') or trade.get('token_id')
+        asset = trade.get('tokenID') or trade.get('token_id') or trade.get('asset')
         if not asset:
             aggregated.append(trade)
             continue
@@ -153,7 +153,7 @@ def _aggregate_trades(trades: list[dict]) -> list[dict]:
 
         last = aggregated[-1] if aggregated else None
         if last:
-            last_asset = last.get('asset') or last.get('tokenID') or last.get('token_id')
+            last_asset = last.get('tokenID') or last.get('token_id') or last.get('asset')
             last_key = (
                 str(last.get('proxyWallet') or last.get('user') or '').lower(),
                 str(last.get('conditionId') or ''),
