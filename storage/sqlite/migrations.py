@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import sqlite3
 
+from storage.sqlite.discovery_migrations import apply_discovery_migrations
+
 
 def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
     rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
@@ -197,6 +199,8 @@ def _ensure_leaders_table(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "discovered_leaders", "active INTEGER NOT NULL DEFAULT 0")
     _ensure_column(conn, "discovered_leaders", "rejection_reason TEXT")
     _ensure_column(conn, "discovered_leaders", "source TEXT")
+    _ensure_column(conn, "discovered_leaders", "follow_tier TEXT NOT NULL DEFAULT 'watchlist'")
+    _ensure_column(conn, "discovered_leaders", "tier_changed_at REAL")
 
 
 def _ensure_redemptions_table(conn: sqlite3.Connection) -> None:
@@ -322,4 +326,5 @@ def apply_migrations(conn: sqlite3.Connection) -> None:
     _ensure_leaders_table(conn)
     _ensure_redemptions_table(conn)
     _ensure_legacy_tables(conn)
+    apply_discovery_migrations(conn)
     conn.commit()
