@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 import time
 from dataclasses import dataclass
 
@@ -100,3 +101,13 @@ class LeadersRepo:
         """Return the follow tier string for a leader. Defaults to 'watchlist'."""
         rec = self.get_tier(wallet)
         return rec.follow_tier
+
+    def get_leaders_by_tier(self, tier: str) -> list[str]:
+        """Return wallet addresses for all leaders at a given tier."""
+        with create_connection(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT wallet FROM discovered_leaders WHERE follow_tier = ?",
+                (tier,),
+            ).fetchall()
+        return [row["wallet"] for row in rows]
