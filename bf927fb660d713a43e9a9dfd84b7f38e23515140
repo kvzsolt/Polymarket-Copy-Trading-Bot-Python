@@ -1,0 +1,100 @@
+orchestrators/trade_pipeline.py
+  9623f7cc5a21ceb1 100-108,488,739-762
+  5d5006779eb8986b 249,487,489
+services/healthServer.py
+  4a219dd747b203db 53
+  9623f7cc5a21ceb1 8,52
+services/reconciliation.py
+  f5dbd74114be5e7f 86-94,97-104
+  5d5006779eb8986b 95-96,105,191,193,205,207
+index.py
+  5d5006779eb8986b 520-521,523,525,527,530-544
+  f5dbd74114be5e7f 440,442-448,528-529
+services/metrics.py
+  9623f7cc5a21ceb1 20,22-23,39-43
+tests/test_env_security.py
+  9623f7cc5a21ceb1 79-138
+tests/test_trade_pipeline_safety.py
+  9623f7cc5a21ceb1 7,387-449
+config/env.py
+  9623f7cc5a21ceb1 55-61,189-192,245,415-416,423,425
+  5d5006779eb8986b 417,424
+tests/test_health_readiness.py
+  9623f7cc5a21ceb1 43-58
+utils/getMyBalance.py
+  5d5006779eb8986b 32-35,38,43,52,83-84,87
+tests/test_leader_registry_modes.py
+  9623f7cc5a21ceb1 48
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "bf927fb660d713a43e9a9dfd84b7f38e23515140",
+  "prompts": {
+    "4a219dd747b203db": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "75caf2ff-6eab-4c54-aa60-34653ea77fca",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "kvzsolt",
+      "messages": [],
+      "total_additions": 3,
+      "total_deletions": 1,
+      "accepted_lines": 1,
+      "overriden_lines": 0
+    },
+    "5d5006779eb8986b": {
+      "agent_id": {
+        "tool": "github-copilot",
+        "id": "c8bcb503-c60a-4d27-8963-14053e20002c",
+        "model": "copilot/auto"
+      },
+      "human_author": "kvzsolt",
+      "messages": [],
+      "total_additions": 61,
+      "total_deletions": 31,
+      "accepted_lines": 43,
+      "overriden_lines": 0
+    },
+    "766b38a2a06b69ec": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dea557b4-5837-445b-a10c-77a122378cc5",
+        "model": "claude-haiku-4-5-20251001"
+      },
+      "human_author": "kvzsolt",
+      "messages": [],
+      "total_additions": 1,
+      "total_deletions": 1,
+      "accepted_lines": 0,
+      "overriden_lines": 0
+    },
+    "9623f7cc5a21ceb1": {
+      "agent_id": {
+        "tool": "github-copilot",
+        "id": "d011e3e4-1927-4267-b59b-825d57cfb220",
+        "model": "copilot/gpt-5.4"
+      },
+      "human_author": "kvzsolt",
+      "messages": [],
+      "total_additions": 209,
+      "total_deletions": 26,
+      "accepted_lines": 204,
+      "overriden_lines": 0
+    },
+    "f5dbd74114be5e7f": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019d5dc9-64ad-72f3-bd0c-6d0220ffd0b4",
+        "model": "gpt-5.3-codex"
+      },
+      "human_author": "kvzsolt",
+      "messages": [],
+      "total_additions": 28,
+      "total_deletions": 10,
+      "accepted_lines": 27,
+      "overriden_lines": 0
+    }
+  }
+}
