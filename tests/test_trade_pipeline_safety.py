@@ -449,3 +449,95 @@ async def test_sell_realized_pnl_falls_back_to_signal_price_when_position_prices
     record_sell_kwargs = pnl_tracker.record_sell.call_args.kwargs
     assert record_sell_kwargs["entry_price"] == pytest.approx(0.60)
     assert record_sell_kwargs["realized_pnl"] == pytest.approx(-1.0)
+
+
+# ---------------------------------------------------------------------------
+# Regression: token_id field-mapping priority (tokenID > token_id > asset)
+# ---------------------------------------------------------------------------
+
+from orchestrators.trade_pipeline import normalize_signals
+
+HEX_ASSET = "0x951403abcdef1234567890abcdef1234567890ab8665"
+
+
+def _raw_trade(**overrides):
+    """Minimal raw trade payload accepted by normalize_signals."""
+    base = {
+        "side": "BUY",
+        "conditionId": "cond1",
+        "transactionHash": "0xdeadbeef",
+        "price": 0.55,
+        "size": 5.0,
+        "usdcSize": 2.75,
+        "timestamp": int(time.time()),
+    }
+    base.update(overrides)
+    return base
+
+
+class TestTokenIdFieldPriority:
+    """tokenID must win over asset when both are present."""
+
+    def test_tokenID_preferred_over_hex_asset(self):
+        """Live-ish payload: asset=hex, tokenID=numeric → tokenID must win."""
+        raw = _raw_trade(asset=HEX_ASSET, tokenID=FAKE_TOKEN_ID)
+        signals = normalize_signals([raw], leader_id="L1")
+        assert len(signals) == 1
+        assert signals[0][0].token_id == FAKE_TOKEN_ID
+
+    def test_token_id_preferred_over_hex_asset(self):
+        """Underscore variant: asset=hex, token_id=numeric → token_id must win."""
+        raw = _raw_trade(asset=HEX_ASSET, token_id=FAKE_TOKEN_ID)
+        signals = normalize_signals([raw], leader_id="L1")
+        assert len(signals) == 1
+        assert signals[0][0].token_id == FAKE_TOKEN_ID
+
+    def test_asset_fallback_when_no_tokenID(self):
+        """If tokenID/token_id absent, asset (valid numeric) is used as fallback."""
+        raw = _raw_trade(asset=FAKE_TOKEN_ID)
+        signals = normalize_signals([raw], leader_id="L1")
+        assert len(signals) == 1
+        assert signals[0][0].token_id == FAKE_TOKEN_ID
+
+    def test_hex_asset_only_is_rejected(self):
+        """Hex-only asset fails is_valid_clob_token_id and signal is skipped."""
+        raw = _raw_trade(asset=HEX_ASSET)
+        signals = normalize_signals([raw], leader_id="L1")
+        assert len(signals) == 0
+
+    def test_tokenID_only(self):
+        """Payload with only tokenID (no asset) works fine."""
+        raw = _raw_trade(tokenID=FAKE_TOKEN_ID)
+        signals = normalize_signals([raw], leader_id="L1")
+        assert len(signals) == 1
+        assert signals[0][0].token_id == FAKE_TOKEN_ID
+
+    def test_build_trade_key_prefers_tokenID(self):
+        """build_trade_key must also prefer tokenID over hex asset."""
+        trade = {"transactionHash": "0xabc", "side": "BUY",
+                 "asset": HEX_ASSET, "tokenID": FAKE_TOKEN_ID}
+        key = build_trade_key("u1", "l1", trade)
+        assert FAKE_TOKEN_ID in key
+        assert HEX_ASSET not in key
+
+
+@pytest.mark.asyncio
+async def test_full_flow_persisted_token_id(tmp_path):
+    """End-to-end: raw payload → normalize → execute → positions_repo stores correct token_id."""
+    db_path = _init_db(tmp_path)
+    exec_svc = AsyncMock()
+    exec_svc.execute = AsyncMock(return_value=_exec_result(filled=Decimal("5")))
+    ctx = _make_context(db_path, execution_service=exec_svc)
+
+    # Simulate a live payload where asset is a hex string but tokenID is correct
+    raw = _raw_trade(asset=HEX_ASSET, tokenID=FAKE_TOKEN_ID, size=100.0, price=0.50, usdcSize=50.0)
+    results = await execute_trades(ctx, "leader1", [raw], time.time())
+
+    assert len(results) == 1
+    assert results[0].status == "executed"
+
+    # Verify the persisted position uses the correct (numeric) token_id
+    pos = ctx.positions_repo.get_position("user1", "cond1")
+    assert pos is not None
+    assert pos.token_id == FAKE_TOKEN_ID
+    assert pos.token_id != HEX_ASSET

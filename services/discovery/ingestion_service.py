@@ -98,7 +98,7 @@ class IngestionService:
                 return None
 
             cond_id = raw.get("conditionId") or raw.get("condition_id") or ""
-            token_id = raw.get("asset") or raw.get("tokenID") or raw.get("token_id") or ""
+            token_id = raw.get("tokenID") or raw.get("token_id") or raw.get("asset") or ""
             if not cond_id or not token_id:
                 return None
             event_ts = int(raw.get("timestamp") or raw.get("event_ts") or time.time())
@@ -171,7 +171,7 @@ class IngestionService:
     ) -> PositionSnapshotRecord | None:
         try:
             cond_id = raw.get("conditionId") or raw.get("condition_id") or ""
-            token_id = raw.get("asset") or raw.get("tokenID") or raw.get("token_id") or ""
+            token_id = raw.get("tokenID") or raw.get("token_id") or raw.get("asset") or ""
             if not cond_id or not token_id:
                 return None
             size = _safe_decimal(raw.get("size"), Decimal("0"))
@@ -227,7 +227,7 @@ class IngestionService:
     ) -> ClosedPositionSnapshot | None:
         try:
             cond_id = raw.get("conditionId") or raw.get("condition_id") or ""
-            token_id = raw.get("asset") or raw.get("tokenID") or raw.get("token_id") or ""
+            token_id = raw.get("tokenID") or raw.get("token_id") or raw.get("asset") or ""
             entry_size = _safe_decimal(
                 raw.get("entrySize") or raw.get("entry_size") or raw.get("size"),
                 Decimal("0"),
@@ -401,7 +401,7 @@ def _extract_token_ids(raw: dict[str, Any]) -> tuple[str, str, str]:
             if outcome == "no" and not no_token_id:
                 no_token_id = token_id
 
-    raw_token_id = str(raw.get("asset") or raw.get("tokenID") or raw.get("token_id") or "").strip()
+    raw_token_id = str(raw.get("tokenID") or raw.get("token_id") or raw.get("asset") or "").strip()
     raw_outcome = str(raw.get("outcome") or "").strip().lower()
     if raw_token_id and raw_outcome == "yes" and not yes_token_id:
         yes_token_id = raw_token_id
