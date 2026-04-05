@@ -1,0 +1,23 @@
+storage/sqlite/migrations.py
+  b2d6434c43e92f7f 5,329
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "fe19ad233d6b1252225810c44006422b6ba6a867",
+  "prompts": {
+    "b2d6434c43e92f7f": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019d5c43-6b12-75a2-8f67-16f284b6be08",
+        "model": "gpt-5.4"
+      },
+      "human_author": "kvzsolt",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 3,
+      "overriden_lines": 0
+    }
+  }
+}
