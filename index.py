@@ -28,6 +28,7 @@ from services.healthServer import start_health_server, update_readiness
 from services.marketMetaService import MarketMetaService
 from services.metrics import metrics
 from services.multiUserConfig import RuntimeUser, UserFollowConfig, load_runtime_users
+from services.reconciliation import ReconciliationService, reconciliation_loop
 from services.negRiskArb import arb_scanner_loop
 from services.orderRepository import OrderRepository
 from services.pnlTracker import PnLTracker
@@ -436,6 +437,14 @@ async def main():
     if str(ENV.get("ENABLE_NEG_RISK_ARB", "false")).lower() in ("1", "true", "yes"):
         arb_task = asyncio.create_task(arb_scanner_loop(first_client, {}))
 
+    reconcile_task = None
+    if str(ENV.get("ENABLE_RECONCILIATION", "true")).lower() in ("1", "true", "yes"):
+        recon_svc = ReconciliationService(
+            clob_client=first_client,
+            orders_repo=orders_repo,
+        )
+        reconcile_task = asyncio.create_task(reconciliation_loop(recon_svc))
+
     async def run_leader(leader_wallet: str):
         contexts = contexts_by_leader.get(leader_wallet, [])
         if not contexts:
@@ -515,6 +524,8 @@ async def main():
             redeem_task.cancel()
         if arb_task:
             arb_task.cancel()
+        if reconcile_task:
+            reconcile_task.cancel()
         if metrics_runner:
             await metrics_runner.cleanup()
 
