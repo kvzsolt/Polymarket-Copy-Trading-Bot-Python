@@ -21,6 +21,7 @@ class TradingContext:
     accounting_service: Any
     position_manager: Any
     execution_service: Any | None = None
+    leaders_repo: Any | None = None
     allocation_pct: float = 0.05
     buy_min_amount: float = 1.0
     buy_max_amount: float = 100.0

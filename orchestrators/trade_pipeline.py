@@ -67,6 +67,20 @@ def _normalize(value: Any) -> str:
     return str(value or "").strip().lower()
 
 
+def _resolve_leader_tier(context: TradingContext, leader_id: str) -> str:
+    """Look up the follow tier for a leader. Defaults to live_follow if no repo/record."""
+    if not hasattr(context, "leaders_repo") or context.leaders_repo is None:
+        return "live_follow"
+    try:
+        rec = context.leaders_repo.get_tier(leader_id)
+        tier = rec.follow_tier if rec and rec.follow_tier else None
+    except Exception:
+        return "live_follow"
+    if not tier or tier not in ("watchlist", "paper_follow", "live_follow"):
+        return "live_follow"
+    return tier
+
+
 
 def build_trade_key(user_id: str, leader_id: str, trade: dict[str, Any]) -> str:
     tx_hash = trade.get("transactionHash") or trade.get("txHash") or ""
@@ -236,6 +250,49 @@ async def execute_trades(
                     order_id=None,
                 )
             )
+            continue
+
+        # --- Tier gate: check follow tier before costly decision/execution ---
+        leader_tier = _resolve_leader_tier(context, leader_id)
+        if leader_tier == "watchlist":
+            logger.info(
+                "tier_gate_watchlist",
+                extra={
+                    "user_id": context.user_id,
+                    "leader_id": leader_id,
+                    "trade_key": trade_key,
+                    "side": signal.side,
+                    "condition_id": signal.condition_id,
+                },
+            )
+            await metrics.inc("trades_skipped_total", labels={**labels, "reason": "tier_watchlist"})
+            results.append(TradePipelineResult(trade_key, "skipped", "tier_watchlist", None))
+            continue
+
+        if leader_tier == "paper_follow":
+            logger.info(
+                "tier_gate_paper",
+                extra={
+                    "user_id": context.user_id,
+                    "leader_id": leader_id,
+                    "trade_key": trade_key,
+                    "side": signal.side,
+                    "condition_id": signal.condition_id,
+                    "usdc_size": float(signal.usdc_size),
+                },
+            )
+            await metrics.inc("trades_paper_total", labels=labels)
+            context.orders_repo.mark_processed_trade(
+                trade_key=trade_key,
+                user_id=context.user_id,
+                leader_id=leader_id,
+                tx_hash=signal.tx_hash,
+                side=signal.side,
+                asset=signal.token_id,
+                condition_id=signal.condition_id,
+                status="paper_follow",
+            )
+            results.append(TradePipelineResult(trade_key, "paper", "tier_paper_follow", None))
             continue
 
         # --- Decision gate: score the leader and this specific trade ---
