@@ -57,7 +57,7 @@ class AsyncHttpClient:
                     payload = await resp.json(content_type=None)
                     latency_ms = round((time.perf_counter() - started) * 1000, 2)
                     if self.logger:
-                        self.logger.info(
+                        self.logger.debug(
                             "http_request_complete",
                             extra={
                                 "method": method,
