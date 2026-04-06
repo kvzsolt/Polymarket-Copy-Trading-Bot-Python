@@ -110,6 +110,7 @@ class RichConsoleHandler(logging.Handler):
     # Log types that should only go to JSONL file, not console
     _JSONL_ONLY_TYPES = frozenset({
         "api_response",
+        "http_request_complete",    # high-frequency HTTP polling — JSONL only
         "monitor_heartbeat",
         "trade_detected",           # print_new_trade_detected() handles console
         "trade_skip",               # print_skip_reason() handles console
@@ -555,7 +556,7 @@ class MonitorHeartbeat:
             self._last_log = now
             ts = time.strftime("%I:%M:%S %p")
             console.print(
-                f"[muted][{ts}][/muted] ✅ [heartbeat]Monitor running — watching "
+                f"[muted][{ts}][/muted] ✅ [heartbeat]Monitor is running, and healthy — watching "
                 f"{trader_count} trader(s)[/heartbeat]"
             )
             # Also write structured heartbeat to JSONL

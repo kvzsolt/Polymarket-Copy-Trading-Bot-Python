@@ -24,6 +24,9 @@ from utils.logger import get_logger, log_risk_exit
 
 logger = get_logger("RiskMonitor")
 
+# Track token_ids we've already warned about to avoid log spam every cycle.
+_warned_invalid_tokens: set[str] = set()
+
 
 async def risk_monitor_loop(clob_client, bot_params: dict):
     """Continuously check open positions against stop-loss / take-profit levels.
@@ -258,11 +261,13 @@ async def run_risk_check_for_context(context: TradingContext) -> None:
 
     for pos in context.positions_repo.list_open_positions(context.user_id):
         if not is_valid_clob_token_id(pos.token_id):
-            logger.warning(
-                "Skipping position with invalid token_id=%r (condition=%s) — "
-                "likely stale placeholder; close or delete manually",
-                pos.token_id, pos.condition_id,
-            )
+            if pos.token_id not in _warned_invalid_tokens:
+                _warned_invalid_tokens.add(pos.token_id)
+                logger.warning(
+                    "Skipping position with invalid token_id=%r (condition=%s) — "
+                    "likely stale placeholder; close or delete manually",
+                    pos.token_id, pos.condition_id,
+                )
             continue
         try:
             price_data = await context.client.get_price(pos.token_id, "SELL")
