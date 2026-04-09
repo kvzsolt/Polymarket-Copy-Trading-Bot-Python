@@ -87,6 +87,17 @@ class LeaderRegistry:
                 "Invalid configured leader wallets: " + ", ".join(invalid)
             )
 
+        discovery_enabled = bool(ENV.get("ENABLE_TRADER_DISCOVERY", False))
+        if configured_clean and not discovery_enabled:
+            await metrics.set_gauge("monitored_leaders", float(len(configured_clean)))
+            update_readiness(monitored_leader_count=len(configured_clean))
+            return LeaderRegistryState(
+                configured=configured_clean,
+                discovered=[],
+                active_monitored=list(configured_clean),
+                mode="configured",
+            )
+
         self.logger.info("discovery_refresh_started")
         await metrics.inc("discovery_refresh_started_total")
 

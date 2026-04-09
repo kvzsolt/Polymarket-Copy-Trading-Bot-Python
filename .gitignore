@@ -63,3 +63,4 @@ Thumbs.db
 .codex
 AGENTS.MD
 .ruff_cache
+.aider*

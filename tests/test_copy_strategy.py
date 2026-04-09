@@ -86,7 +86,7 @@ def test_trading_context_copy_notional_applies_tiered_multiplier():
         result = ctx.copy_notional(Decimal("200"))
 
     # 10% of 200 = 20, 100+ tier applies 0.5x => 10
-    assert float(result) == pytest.approx(10.0)
+    assert float(result.final_notional_usdc) == pytest.approx(10.0)
 
 
 def test_legacy_calc_buy_amount_supports_tiered_multiplier():

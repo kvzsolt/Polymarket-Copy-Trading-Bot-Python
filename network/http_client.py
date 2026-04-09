@@ -34,8 +34,9 @@ class AsyncHttpClient:
         *,
         params: dict[str, Any] | None = None,
         headers: dict[str, str] | None = None,
+        silent: bool = False,
     ) -> Any:
-        return await self._request_json("GET", url, params=params, headers=headers)
+        return await self._request_json("GET", url, params=params, headers=headers, silent=silent)
 
     async def post_json(
         self,
@@ -43,10 +44,11 @@ class AsyncHttpClient:
         *,
         json_body: dict[str, Any] | None = None,
         headers: dict[str, str] | None = None,
+        silent: bool = False,
     ) -> Any:
-        return await self._request_json("POST", url, json=json_body, headers=headers)
+        return await self._request_json("POST", url, json=json_body, headers=headers, silent=silent)
 
-    async def _request_json(self, method: str, url: str, **kwargs) -> Any:
+    async def _request_json(self, method: str, url: str, *, silent: bool = False, **kwargs) -> Any:
         last_exc = None
 
         for attempt in range(1, self.retry_policy.attempts + 1):
@@ -56,7 +58,7 @@ class AsyncHttpClient:
                 async with self.session.request(method, url, timeout=timeout, **kwargs) as resp:
                     payload = await resp.json(content_type=None)
                     latency_ms = round((time.perf_counter() - started) * 1000, 2)
-                    if self.logger:
+                    if self.logger and not silent:
                         self.logger.debug(
                             "http_request_complete",
                             extra={
@@ -71,7 +73,7 @@ class AsyncHttpClient:
                     return payload
             except Exception as exc:  # pragma: no cover - covered via behavior tests
                 last_exc = exc
-                if self.logger:
+                if self.logger and not silent:
                     self.logger.warning(
                         "http_request_failed",
                         extra={

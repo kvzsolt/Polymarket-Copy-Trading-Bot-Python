@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+from unittest.mock import Mock
+
 import pytest
 
 from network.http_client import AsyncHttpClient, HttpRetryPolicy
@@ -29,6 +31,29 @@ class _FakeResponse:
 class _FakeSession:
     def request(self, method, url, timeout=None, **kwargs):  # noqa: ANN001, ARG002
         return _FakeResponse({"ok": True, "method": method, "url": url})
+
+
+class _FailingResponse:
+    def __init__(self, exc: Exception):
+        self.status = 503
+        self._exc = exc
+
+    async def json(self, content_type=None):  # noqa: ARG002
+        raise self._exc
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):  # noqa: ANN001
+        return False
+
+
+class _FailingSession:
+    def __init__(self, exc: Exception):
+        self._exc = exc
+
+    def request(self, method, url, timeout=None, **kwargs):  # noqa: ANN001, ARG002
+        return _FailingResponse(self._exc)
 
 
 @pytest.mark.asyncio
@@ -90,3 +115,32 @@ async def test_slow_web3_call_does_not_block_event_loop():
         web3_adapter_module.asyncio.to_thread = original_to_thread
 
     assert ticks >= 4
+
+
+def test_silent_http_failure_suppresses_retry_warning_logs():
+    logger = Mock()
+    client = AsyncHttpClient(
+        _FailingSession(RuntimeError("boom")),
+        retry_policy=HttpRetryPolicy(attempts=2, base_delay=0.0, max_delay=0.0, timeout_seconds=0.1),
+        logger=logger,
+    )
+
+    with pytest.raises(RuntimeError, match="boom"):
+        asyncio.run(client.get_json("https://example.test/fail", silent=True))
+
+    logger.warning.assert_not_called()
+    logger.debug.assert_not_called()
+
+
+def test_non_silent_http_failure_logs_retry_warning():
+    logger = Mock()
+    client = AsyncHttpClient(
+        _FailingSession(RuntimeError("boom")),
+        retry_policy=HttpRetryPolicy(attempts=1, base_delay=0.0, max_delay=0.0, timeout_seconds=0.1),
+        logger=logger,
+    )
+
+    with pytest.raises(RuntimeError, match="boom"):
+        asyncio.run(client.get_json("https://example.test/fail", silent=False))
+
+    logger.warning.assert_called_once()

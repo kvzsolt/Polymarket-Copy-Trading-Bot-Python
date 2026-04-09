@@ -287,6 +287,29 @@ async def run_risk_check_for_context(context: TradingContext) -> None:
 
             fraction = max(0.0, min(1.0, float(action.get("size_fraction", 1.0) or 1.0)))
             reason = str(action.get("reason") or "risk_exit")
+
+            # Regime-aware partial exit gating (ported from legacy risk_monitor_loop)
+            if (
+                fraction < 1.0
+                and str(ENV.get("ENABLE_BALANCE_TIERED_POLICY", "false")).lower()
+                in ("1", "true", "yes")
+            ):
+                try:
+                    from utils.getMyBalance import get_my_balance as _get_bal
+
+                    bal = await _get_bal(context.wallet_address)
+                    equity = Decimal(str(bal or 0))
+                    rname = regime_for_equity(equity)
+                    regime = get_regime(rname)
+                    if not regime.allow_partial_exits:
+                        logger.info(
+                            "Regime [%s] upgrades partial exit → full for %s (was %.0f%%)",
+                            rname, pos.condition_id[:12], fraction * 100,
+                        )
+                        fraction = 1.0
+                except Exception as e:
+                    logger.warning("Regime partial-exit check failed, using original fraction: %s", e)
+
             sell_size = (pos.size_tokens * Decimal(str(fraction))).quantize(Decimal("0.00000001"))
             if sell_size <= 0:
                 continue
