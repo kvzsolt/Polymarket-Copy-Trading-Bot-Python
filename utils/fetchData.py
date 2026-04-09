@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import asyncio
+import atexit
+import warnings
+
 import aiohttp
 
 from network.http_client import AsyncHttpClient, HttpRetryPolicy
@@ -9,6 +13,28 @@ logger = get_logger("FetchData")
 
 _session: aiohttp.ClientSession | None = None
 _http_client: AsyncHttpClient | None = None
+
+
+def _close_session_sync() -> None:
+    """Best-effort shutdown hook for environments that do not call close_session."""
+    global _session, _http_client
+    session = _session
+    if not session or session.closed:
+        return
+
+    close_coro = session.close()
+    try:
+        asyncio.run(close_coro)
+    except Exception as exc:
+        close_coro.close()
+        # Do not raise during process shutdown, but make leaks observable.
+        warnings.warn(f"Failed to close shared HTTP session during shutdown: {exc}")
+    finally:
+        _session = None
+        _http_client = None
+
+
+atexit.register(_close_session_sync)
 
 
 
@@ -27,9 +53,14 @@ def _get_session() -> aiohttp.ClientSession:
 
 def _get_http_client() -> AsyncHttpClient:
     global _http_client
-    if _http_client is None:
+    session = _get_session()
+    if (
+        _http_client is None
+        or _http_client.session.closed
+        or _http_client.session is not session
+    ):
         _http_client = AsyncHttpClient(
-            _get_session(),
+            session,
             retry_policy=HttpRetryPolicy(attempts=4, base_delay=0.25, max_delay=2.5, timeout_seconds=10.0),
             logger=logger,
         )
