@@ -96,6 +96,22 @@ class TradeScoringService:
             hard_fail_reason = "edge_decay_exceeded"
         elif trade_ts > 0 and max_age_seconds > 0 and age_seconds > max_age_seconds:
             hard_fail_reason = "signal_too_old"
+        else:
+            # Near-resolution gate: if the live price is very close to 1.0 (market
+            # about to resolve YES), only allow the signal if it is very fresh.
+            # A leader's last-second bet at 0.95+ cannot be safely copied because
+            # the market may resolve before our order fills.
+            # Set NEAR_RESOLUTION_GATE_PRICE=0 to disable this gate entirely.
+            near_res_price_raw = ENV.get("NEAR_RESOLUTION_GATE_PRICE", 0.95)
+            near_res_price = float(near_res_price_raw) if near_res_price_raw is not None else 0.95
+            near_res_max_age = float(ENV.get("NEAR_RESOLUTION_MAX_AGE_SECONDS", 15) or 15)
+            if (
+                near_res_price > 0
+                and live_price >= near_res_price
+                and trade_ts > 0
+                and age_seconds > near_res_max_age
+            ):
+                hard_fail_reason = "near_resolution_too_stale"
 
         return TradeScore(
             score=quality,
@@ -108,6 +124,9 @@ class TradeScoringService:
                 "reference_price": ref_price,
                 "live_price": live_price,
                 "leader_notional": leader_notional,
+                "max_age_seconds": max_age_seconds,
+                "max_drift_pct": max_drift_pct,
+                "max_edge_decay": max_edge_decay,
             },
         )
 

@@ -35,6 +35,9 @@ def _reset_singletons(monkeypatch):
     monkeypatch.setenv("COPY_MIN_NOTIONAL_USDC", "0.01")
     monkeypatch.setenv("BUY_MIN_AMOUNT", "0.01")
     monkeypatch.setenv("MIN_ORDER_SIZE", "0.00001")
+    # Ensure tier gates are enabled so tier-gating tests actually gate
+    monkeypatch.setenv("ENABLE_TIER_GATE_WATCHLIST", "true")
+    monkeypatch.setenv("ENABLE_TIER_GATE_WATCHLIST_LOG", "true")
     rehydrate_env()
     import orchestrators.trade_pipeline as _tp
     _tp._leader_scorer = None
@@ -206,3 +209,86 @@ async def test_multiple_signals_tier_applied_to_all(tmp_path):
     results = await execute_trades(ctx, "0xleader", signals, time.time())
     assert len(results) == 3
     assert all(r.status == "skipped" and r.reason == "tier_watchlist" for r in results)
+
+
+@pytest.mark.asyncio
+async def test_watchlist_gate_can_be_disabled(tmp_path, monkeypatch):
+    from unittest.mock import AsyncMock
+    from services.executionService import ExecutionResult
+
+    monkeypatch.setenv("ENABLE_TIER_GATE_WATCHLIST", "false")
+    rehydrate_env()
+
+    repo = _FakeLeadersRepo({"0xleader": "watchlist"})
+    exec_svc = AsyncMock()
+    exec_svc.execute = AsyncMock(return_value=ExecutionResult(
+        accepted=True, order_id="ord123", status="filled",
+        requested_amount=Decimal("5"), filled_amount=Decimal("5"),
+        avg_price=Decimal("0.50"), fees_paid=Decimal("0.01"),
+    ))
+    exec_svc.market_meta_service = AsyncMock()
+    exec_svc.market_meta_service.get = AsyncMock(side_effect=Exception("no meta"))
+
+    ctx = _make_context(_init_db(tmp_path), leaders_repo=repo, execution_service=exec_svc)
+    results = await execute_trades(ctx, "0xleader", [_signal()], time.time())
+
+    assert len(results) == 1
+    assert results[0].reason != "tier_watchlist"
+    assert exec_svc.execute.await_count == 1
+
+
+# --- PAPER_TRADE_ONLY global override tests ---
+
+@pytest.mark.asyncio
+async def test_paper_trade_only_overrides_live_follow(tmp_path, monkeypatch):
+    """PAPER_TRADE_ONLY=true must demote live_follow leaders to paper without executing."""
+    monkeypatch.setenv("PAPER_TRADE_ONLY", "true")
+    rehydrate_env()
+
+    repo = _FakeLeadersRepo({"0xleader": "live_follow"})
+    from unittest.mock import AsyncMock
+    exec_svc = AsyncMock()
+    ctx = _make_context(_init_db(tmp_path), leaders_repo=repo, execution_service=exec_svc)
+    results = await execute_trades(ctx, "0xleader", [_signal()], time.time())
+    assert len(results) == 1
+    assert results[0].status == "paper"
+    assert results[0].reason == "tier_paper_follow"
+    # Real execution must never be called
+    exec_svc.execute.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_paper_trade_only_does_not_affect_watchlist(tmp_path, monkeypatch):
+    """PAPER_TRADE_ONLY=true should not change watchlist behavior (still skipped)."""
+    monkeypatch.setenv("PAPER_TRADE_ONLY", "true")
+    rehydrate_env()
+
+    repo = _FakeLeadersRepo({"0xleader": "watchlist"})
+    ctx = _make_context(_init_db(tmp_path), leaders_repo=repo, execution_service=MagicMock())
+    results = await execute_trades(ctx, "0xleader", [_signal()], time.time())
+    assert len(results) == 1
+    assert results[0].status == "skipped"
+    assert results[0].reason == "tier_watchlist"
+
+
+@pytest.mark.asyncio
+async def test_paper_trade_only_false_allows_live(tmp_path, monkeypatch):
+    """PAPER_TRADE_ONLY=false must not interfere with live execution."""
+    from unittest.mock import AsyncMock
+    from services.executionService import ExecutionResult
+
+    monkeypatch.setenv("PAPER_TRADE_ONLY", "false")
+    rehydrate_env()
+
+    repo = _FakeLeadersRepo({"0xleader": "live_follow"})
+    exec_svc = AsyncMock()
+    exec_svc.execute = AsyncMock(return_value=ExecutionResult(
+        accepted=True, order_id="ord456", status="filled",
+        requested_amount=Decimal("5"), filled_amount=Decimal("5"),
+        avg_price=Decimal("0.50"), fees_paid=Decimal("0.01"),
+    ))
+    ctx = _make_context(_init_db(tmp_path), leaders_repo=repo, execution_service=exec_svc)
+    results = await execute_trades(ctx, "0xleader", [_signal()], time.time())
+    assert len(results) == 1
+    # With PAPER_TRADE_ONLY=false, execution should be attempted (not forced to paper)
+    assert results[0].status != "paper"

@@ -5,7 +5,7 @@ from decimal import Decimal
 from typing import Any
 
 from config.env import ENV
-from services.copyStrategy import calculate_copy_notional
+from services.copyStrategy import CopySizingResult, calculate_copy_notional
 
 
 @dataclass
@@ -28,8 +28,9 @@ class TradingContext:
     max_market_exposure_usdc: float = 300.0
     extra: dict[str, Any] = field(default_factory=dict)
 
-    def copy_notional(self, leader_notional: Decimal) -> Decimal:
-        result = calculate_copy_notional(
+    def copy_notional(self, leader_notional: Decimal) -> CopySizingResult:
+        """Return the full sizing result so callers can inspect reasoning."""
+        return calculate_copy_notional(
             strategy=str(ENV.get("SIZING_MODE", "proportional") or "proportional"),
             leader_notional_usdc=leader_notional,
             copy_percentage=Decimal(str(self.allocation_pct)) * Decimal("100"),
@@ -43,4 +44,3 @@ class TradingContext:
             adaptive_max_percent=ENV.get("ADAPTIVE_MAX_PERCENT", 0),
             adaptive_threshold_usdc=ENV.get("ADAPTIVE_THRESHOLD_USDC", 500),
         )
-        return result.final_notional_usdc

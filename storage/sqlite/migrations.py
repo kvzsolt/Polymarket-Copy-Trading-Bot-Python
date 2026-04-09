@@ -71,6 +71,75 @@ def _ensure_orders_table(conn: sqlite3.Connection) -> None:
 
 
 
+def _rebuild_legacy_fills_table(conn: sqlite3.Connection) -> None:
+    info = conn.execute("PRAGMA table_info(fills)").fetchall()
+    if not info:
+        return
+
+    columns = {str(row[1]): row for row in info}
+    order_id_is_not_null = bool(columns.get("order_id") and int(columns["order_id"][3]))
+    fill_json_is_not_null = bool(columns.get("fill_json") and int(columns["fill_json"][3]))
+    created_at_is_not_null = bool(columns.get("created_at") and int(columns["created_at"][3]))
+
+    legacy_layout = {
+        "id",
+        "order_id",
+        "fill_json",
+        "created_at",
+    }.issubset(columns.keys())
+
+    if not legacy_layout and not order_id_is_not_null and not fill_json_is_not_null and not created_at_is_not_null:
+        return
+
+    conn.execute("ALTER TABLE fills RENAME TO fills_legacy")
+    conn.execute(
+        """
+        CREATE TABLE fills (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT,
+            leader_id TEXT,
+            order_id TEXT,
+            condition_id TEXT,
+            token_id TEXT,
+            side TEXT,
+            size_tokens TEXT,
+            price TEXT,
+            fee TEXT,
+            fill_ts INTEGER,
+            fill_json TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    def _legacy_expr(column: str, *, default_sql: str = "NULL") -> str:
+        return column if column in columns else default_sql
+
+    conn.execute(
+        f"""
+        INSERT INTO fills (
+            id, user_id, leader_id, order_id, condition_id, token_id, side,
+            size_tokens, price, fee, fill_ts, fill_json, created_at
+        )
+        SELECT
+            {_legacy_expr('id')},
+            {_legacy_expr('user_id')},
+            {_legacy_expr('leader_id')},
+            {_legacy_expr('order_id')},
+            {_legacy_expr('condition_id')},
+            {_legacy_expr('token_id')},
+            {_legacy_expr('side')},
+            {_legacy_expr('size_tokens')},
+            {_legacy_expr('price')},
+            {_legacy_expr('fee')},
+            {_legacy_expr('fill_ts')},
+            {_legacy_expr('fill_json')},
+            {_legacy_expr('created_at', default_sql='CURRENT_TIMESTAMP')}
+        FROM fills_legacy
+        """
+    )
+    conn.execute("DROP TABLE fills_legacy")
+
+
 def _ensure_fills_table(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
@@ -91,6 +160,8 @@ def _ensure_fills_table(conn: sqlite3.Connection) -> None:
         )
         """
     )
+
+    _rebuild_legacy_fills_table(conn)
 
     _ensure_column(conn, "fills", "user_id TEXT")
     _ensure_column(conn, "fills", "leader_id TEXT")

@@ -58,6 +58,7 @@ from utils.logger import (
     print_status_checks,
     print_traders_copying,
     redact_error_detail,
+    safe_error_detail,
 )
 
 logger = get_logger("Main")
@@ -412,16 +413,18 @@ async def main():
             w for w, ctxs in contexts_by_leader.items() if ctxs
         ]))
 
-    discovery_task = asyncio.create_task(
-        _discovery_refresh_loop(
-            registry,
-            configured_leaders,
-            refresh_interval,
-            leaders_repo=leaders_repo,
-            on_new_leaders=_on_new_leaders,
-            already_monitored=monitored_set,
+    discovery_task = None
+    if ENV.get("ENABLE_TRADER_DISCOVERY", False):
+        discovery_task = asyncio.create_task(
+            _discovery_refresh_loop(
+                registry,
+                configured_leaders,
+                refresh_interval,
+                leaders_repo=leaders_repo,
+                on_new_leaders=_on_new_leaders,
+                already_monitored=monitored_set,
+            )
         )
-    )
 
     risk_task = None
     if ENV.get("ENABLE_RISK_MGMT", True):
@@ -474,7 +477,7 @@ async def main():
                                 extra={
                                     "leader_id": leader_wallet,
                                     "user": ctx.user_id,
-                                    "error": redact_error_detail(result),
+                                    "error": safe_error_detail(result),
                                     "error_type": type(result).__name__,
                                 },
                             )
@@ -518,7 +521,8 @@ async def main():
                 await metrics.inc("no_leaders_monitored_total")
     finally:
         shutdown_tasks = list(monitor_tasks)
-        shutdown_tasks.append(discovery_task)
+        if discovery_task:
+            shutdown_tasks.append(discovery_task)
         if risk_task:
             shutdown_tasks.append(risk_task)
         if redeem_task:

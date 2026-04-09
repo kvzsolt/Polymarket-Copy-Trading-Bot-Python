@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 import pytest
 import sys
+from rich.traceback import Traceback
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -218,6 +219,30 @@ class TestRichConsoleHandler:
                 msg=f"level {level}", args=(), exc_info=None,
             )
             handler.emit(record)
+
+    def test_emit_exception_uses_record_exc_info(self):
+        handler = RichConsoleHandler()
+        handler.setFormatter(logging.Formatter("%(message)s"))
+
+        try:
+            raise ValueError("record-backed error")
+        except ValueError:
+            exc_info = sys.exc_info()
+
+        record = logging.LogRecord(
+            name="test", level=logging.ERROR, pathname="", lineno=0,
+            msg="test message", args=(), exc_info=exc_info,
+        )
+
+        with patch("utils.logger.console.print") as print_mock:
+            with patch.object(handler, "format", return_value="test message"):
+                handler.emit(record)
+
+        assert print_mock.call_count == 2
+        traceback_renderable = print_mock.call_args_list[1].args[0]
+        assert isinstance(traceback_renderable, Traceback)
+        assert traceback_renderable.trace.stacks[-1].exc_type == "ValueError"
+        assert "record-backed error" in str(traceback_renderable.trace.stacks[-1].exc_value)
 
 
 class TestUrlHelpers:

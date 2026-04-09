@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
@@ -38,13 +39,30 @@ class MarketMeta:
     best_ask: Decimal | None = None
 
 
+_META_CACHE_TTL_GOOD = float(ENV.get("META_CACHE_TTL_GOOD", 300))
+_META_CACHE_TTL_THIN = float(ENV.get("META_CACHE_TTL_THIN", 30))
+
+# Thresholds for detecting garbage/placeholder orderbook state.
+# bid <= this AND ask >= (1 - this) means the book is effectively empty.
+_THIN_BOOK_BID_CEIL = Decimal("0.03")
+_THIN_BOOK_ASK_FLOOR = Decimal("0.97")
+
+
+def _is_thin_or_empty_book(bid: Decimal | None, ask: Decimal | None) -> bool:
+    """Detect garbage/placeholder orderbook (e.g. bid=0.01, ask=0.99)."""
+    if bid is None or ask is None:
+        return True
+    return bid <= _THIN_BOOK_BID_CEIL and ask >= _THIN_BOOK_ASK_FLOOR
+
+
 class ClobClientWrapper:
     def __init__(self, client: ClobClient, wallet_config: WalletConfig):
         self.client = client
         self.wallet_config = wallet_config
         self.signature_type = int(wallet_config.signature_type)
         self.proxy_wallet = wallet_config.funder_address
-        self._market_meta_cache: dict[str, MarketMeta] = {}
+        # Cache: asset -> (MarketMeta, expiry_timestamp)
+        self._market_meta_cache: dict[str, tuple[MarketMeta, float]] = {}
 
     async def get_order_book(self, asset: str) -> Any:
         loop = asyncio.get_running_loop()
@@ -53,7 +71,11 @@ class ClobClientWrapper:
     async def get_market_meta(self, asset: str) -> MarketMeta:
         cached = self._market_meta_cache.get(asset)
         if cached:
-            return cached
+            meta, expiry = cached
+            if time.monotonic() < expiry:
+                return meta
+            # expired — evict and re-fetch
+            del self._market_meta_cache[asset]
 
         # Prefer py-clob-client orderbook API first.
         try:
@@ -68,7 +90,8 @@ class ClobClientWrapper:
                 best_bid=Decimal(str(bids[0].price)) if bids else None,
                 best_ask=Decimal(str(asks[0].price)) if asks else None,
             )
-            self._market_meta_cache[asset] = meta
+            ttl = _META_CACHE_TTL_THIN if _is_thin_or_empty_book(meta.best_bid, meta.best_ask) else _META_CACHE_TTL_GOOD
+            self._market_meta_cache[asset] = (meta, time.monotonic() + ttl)
             return meta
         except Exception as exc:
             logger.warning(
@@ -102,7 +125,8 @@ class ClobClientWrapper:
                 best_bid=Decimal(str(bids[0].get("price"))) if bids else None,
                 best_ask=Decimal(str(asks[0].get("price"))) if asks else None,
             )
-            self._market_meta_cache[asset] = meta
+            ttl = _META_CACHE_TTL_THIN if _is_thin_or_empty_book(meta.best_bid, meta.best_ask) else _META_CACHE_TTL_GOOD
+            self._market_meta_cache[asset] = (meta, time.monotonic() + ttl)
             log_api_response(logger, method="GET", url=url, status=resp.status, data=data)
             return meta
 

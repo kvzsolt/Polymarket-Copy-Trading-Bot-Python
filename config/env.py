@@ -546,6 +546,9 @@ def _build_env_snapshot() -> dict[str, object]:
     # --- Auto-redeem ---
     'ENABLE_AUTO_REDEEM': os.getenv('ENABLE_AUTO_REDEEM', 'true').strip().lower() in ('1', 'true', 'yes'),
     'REDEEM_CHECK_INTERVAL': _int('REDEEM_CHECK_INTERVAL', '60'),
+    # Optional relayer for POLY_PROXY / GNOSIS_SAFE redemptions (leave empty for EOA)
+    'RELAYER_URL': os.getenv('RELAYER_URL', ''),
+    'RELAYER_API_KEY': os.getenv('RELAYER_API_KEY', ''),
 
     # --- Execution quality ---
     # Max acceptable slippage (%) before rejecting order
@@ -554,6 +557,14 @@ def _build_env_snapshot() -> dict[str, object]:
     'MIN_SHARE_PRICE': _float('MIN_SHARE_PRICE', '0'),
     'MAX_RETRIES': _int('MAX_RETRIES', '3'),
     'NON_TERMINAL_FAILURE_MAX_ATTEMPTS': _int('NON_TERMINAL_FAILURE_MAX_ATTEMPTS', '3'),
+    'ENABLE_TIER_GATE_WATCHLIST': os.getenv('ENABLE_TIER_GATE_WATCHLIST', 'true').strip().lower() in ('1', 'true', 'yes'),
+    'ENABLE_TIER_GATE_WATCHLIST_LOG': os.getenv('ENABLE_TIER_GATE_WATCHLIST_LOG', 'true').strip().lower() in ('1', 'true', 'yes'),
+    # Global paper-only override: if true, all live_follow leaders are treated as paper_follow.
+    # Must be false in production. Use true for dry-run / staging verification.
+    'PAPER_TRADE_ONLY': os.getenv('PAPER_TRADE_ONLY', 'false').strip().lower() in ('1', 'true', 'yes'),
+    # Near-resolution gate for BUY signals: reject stale signals when live_price >= this threshold.
+    'NEAR_RESOLUTION_GATE_PRICE': _float('NEAR_RESOLUTION_GATE_PRICE', '0.95'),
+    'NEAR_RESOLUTION_MAX_AGE_SECONDS': _float('NEAR_RESOLUTION_MAX_AGE_SECONDS', '15'),
     # Expire stale in-flight idempotency locks so retries are not blocked forever.
     'PENDING_SUBMISSION_TTL_SECONDS': _int('PENDING_SUBMISSION_TTL_SECONDS', '120'),
     # Exponential backoff base (seconds) between retries
@@ -571,10 +582,30 @@ def _build_env_snapshot() -> dict[str, object]:
     'BOT_STATE_DB': os.getenv('BOT_STATE_DB', 'data/bot_state.db'),
     'ENABLE_METRICS_SERVER': os.getenv('ENABLE_METRICS_SERVER', 'false').strip().lower() in ('1', 'true', 'yes'),
     'METRICS_PORT': _int('METRICS_PORT', '9102'),
+    'METRICS_BIND_HOST': os.getenv('METRICS_BIND_HOST', '0.0.0.0'),
     'ENFORCE_GEOBLOCK': os.getenv('ENFORCE_GEOBLOCK', 'true').strip().lower() in ('1', 'true', 'yes'),
+
+    # --- Execution quality gates ---
+    # Maximum acceptable book spread in bps (0 = disabled). Default: 500.
+    'MAX_BOOK_SPREAD_BPS': _int('MAX_BOOK_SPREAD_BPS', '500'),
+    # CLOB circuit breaker settings.
+    'CIRCUIT_FAILURE_THRESHOLD': _int('CIRCUIT_FAILURE_THRESHOLD', '5'),
+    'CIRCUIT_COOLDOWN_SECONDS': _float('CIRCUIT_COOLDOWN_SECONDS', '60'),
+    # Market metadata cache TTLs (seconds): good books cached longer than thin books.
+    'META_CACHE_TTL_GOOD': _float('META_CACHE_TTL_GOOD', '300'),
+    'META_CACHE_TTL_THIN': _float('META_CACHE_TTL_THIN', '30'),
+
+    # --- Leader tier promotion / demotion thresholds ---
+    # Defaults must match the hardcoded fallbacks in orchestrators/leader_registry.py.
+    'TIER_PROMOTE_TO_PAPER': _float('TIER_PROMOTE_TO_PAPER', '0.40'),
+    'TIER_PROMOTE_TO_LIVE': _float('TIER_PROMOTE_TO_LIVE', '0.55'),
+    'TIER_MIN_PAPER_SECONDS': _float('TIER_MIN_PAPER_SECONDS', '86400'),
+    'TIER_DEMOTE_TO_PAPER': _float('TIER_DEMOTE_TO_PAPER', '0.35'),
+    'TIER_DEMOTE_TO_WATCHLIST': _float('TIER_DEMOTE_TO_WATCHLIST', '0.25'),
 
     # --- P&L tracking ---
     'PNL_LOG_FILE': os.getenv('PNL_LOG_FILE', 'log/pnl.jsonl'),
+    'DISCOVERY_REFRESH_INTERVAL_SECONDS': _int('DISCOVERY_REFRESH_INTERVAL_SECONDS', '300'),
 }
 
 
