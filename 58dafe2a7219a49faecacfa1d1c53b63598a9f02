@@ -1,0 +1,23 @@
+utils/fetchData.py
+  f056c748eb7e8f1f 3-4,6,18-24,26,32-37,56-61,63
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.6",
+  "base_commit_sha": "58dafe2a7219a49faecacfa1d1c53b63598a9f02",
+  "prompts": {
+    "f056c748eb7e8f1f": {
+      "agent_id": {
+        "tool": "github-copilot",
+        "id": "4a4433ac-877c-415b-b228-48bb6e7d64e5",
+        "model": "copilot/auto"
+      },
+      "human_author": "kvzsolt",
+      "messages": [],
+      "total_additions": 44,
+      "total_deletions": 16,
+      "accepted_lines": 26,
+      "overriden_lines": 4
+    }
+  }
+}
