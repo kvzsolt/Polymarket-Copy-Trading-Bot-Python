@@ -334,7 +334,7 @@ async def test_sell_with_no_position_skipped(tmp_path):
     results = await execute_trades(ctx, "leader1", [signal], time.time())
     assert len(results) == 1
     assert results[0].status == "skipped"
-    assert results[0].reason == "no_position"
+    assert results[0].reason == "never_held"
 
     trade_key = build_trade_key("user1", "leader1", signal)
     assert ctx.orders_repo.has_processed_trade(trade_key) is True

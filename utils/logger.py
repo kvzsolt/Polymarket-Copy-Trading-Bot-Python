@@ -16,6 +16,7 @@ from rich.panel import Panel
 from rich.rule import Rule
 from rich.table import Table
 from rich.text import Text
+from rich.traceback import Traceback
 from rich.theme import Theme
 
 APP_NAME = "PolymarketCopyTradingBot"
@@ -137,8 +138,16 @@ class RichConsoleHandler(logging.Handler):
             prefix = Text(f"[{ts}] ", style="muted")
             body = Text(msg, style=style)
             console.print(prefix + body, highlight=False)
-            if record.exc_info and record.exc_info[1] and not record.exc_text:
-                console.print_exception(max_frames=12)
+            exc_info = record.exc_info
+            if exc_info and exc_info[0] and exc_info[1] and not record.exc_text:
+                console.print(
+                    Traceback.from_exception(
+                        exc_info[0],
+                        exc_info[1],
+                        exc_info[2],
+                        max_frames=12,
+                    )
+                )
         except Exception:
             self.handleError(record)
 
@@ -738,6 +747,42 @@ def redact_error_detail(error: Any) -> str:
     if isinstance(error, BaseException):
         return type(error).__name__
     return "request_failed"
+
+
+def safe_error_detail(error: Any) -> str:
+    """Return error class + message for diagnostics without leaking secrets.
+
+    Unlike ``redact_error_detail`` (which strips DB/runtime messages to just
+    the class name), this keeps the first 300 chars of ``str(error)`` so that
+    constraint names, table names, and similar non-secret context survive into
+    the structured log.
+
+    When the error message is blank (e.g. IntegrityError with empty args),
+    the traceback is appended so the originating line is still visible.
+    """
+    import traceback as _tb
+
+    if error is None:
+        return "unknown_error"
+    cls = type(error).__name__ if isinstance(error, BaseException) else "Error"
+    msg = str(error).strip()
+    if not msg and isinstance(error, BaseException):
+        # Blank message — include args repr and last 3 traceback frames
+        frames = _tb.format_exception(type(error), error, error.__traceback__)
+        tail = "".join(frames[-3:]) if len(frames) > 3 else "".join(frames)
+        tail = tail.strip()
+        args_repr = repr(error.args) if error.args else "()"
+        detail = f"{cls} args={args_repr}"
+        if tail:
+            detail += f" | tb: {tail}"
+        if len(detail) > 600:
+            detail = detail[:600] + "…"
+        return detail
+    if not msg:
+        return cls
+    if len(msg) > 300:
+        msg = msg[:300] + "…"
+    return f"{cls}: {msg}"
 
 
 def _response_shape(data: Any) -> str | None:

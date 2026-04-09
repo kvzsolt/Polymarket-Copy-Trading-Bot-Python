@@ -58,8 +58,10 @@ def _is_market_resolved(clob_client, condition_id: str) -> Optional[dict]:
         resolved = (
             market.get("resolved") is True
             or str(market.get("closed")).lower() == "true"
-            or str(market.get("end_date_iso", "")) < time.strftime("%Y-%m-%dT%H:%M:%SZ")
-            and market.get("active") is False
+            or (
+                str(market.get("end_date_iso", "")) < time.strftime("%Y-%m-%dT%H:%M:%SZ")
+                and market.get("active") is False
+            )
         )
         if resolved:
             return market

@@ -37,13 +37,20 @@ def _get_http_client() -> AsyncHttpClient:
 
 
 async def fetch_data(url: str, *, silent: bool = False):
-    """Fetch JSON from *url* with retries using true async IO."""
+    """Fetch JSON from *url* with retries using true async IO.
+
+    When ``silent`` is True, suppress the generic HTTP retry/response logs so
+    the caller can emit a single higher-level error instead of log spam on
+    every retry attempt.
+    """
     try:
-        data = await _get_http_client().get_json(url)
-        log_api_response(logger, method="GET", url=url, status=200, data=data)
+        data = await _get_http_client().get_json(url, silent=silent)
+        if not silent:
+            log_api_response(logger, method="GET", url=url, status=200, data=data)
         return data
     except Exception as exc:
-        log_api_response(logger, method="GET", url=url, status=0, error=str(exc))
+        if not silent:
+            log_api_response(logger, method="GET", url=url, status=0, error=str(exc))
         raise
 
 

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import sqlite3
 import time
+import traceback as _tb
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
@@ -24,7 +26,6 @@ from utils.logger import (
     log_trade_submitted,
     log_trade_decision,
     log_trade_skip,
-    print_new_trade_detected,
     print_executing_strategy,
     print_skip_reason,
     print_trade_result,
@@ -270,22 +271,41 @@ async def execute_trades(
             )
             continue
 
-        print_new_trade_detected(raw)
+        # print_new_trade_detected removed: tradeMonitor already prints on detection
 
         # --- Tier gate: check follow tier before costly decision/execution ---
         leader_tier = _resolve_leader_tier(context, leader_id)
-        if leader_tier == "watchlist":
+
+        # Global paper-trade-only override: if PAPER_TRADE_ONLY=true, treat every
+        # signal as paper_follow regardless of the leader's actual tier. This allows
+        # safe dry-run verification without touching live order submission.
+        if ENV.get("PAPER_TRADE_ONLY", False) and leader_tier == "live_follow":
             logger.info(
-                "tier_gate_watchlist",
+                "paper_trade_only_override",
                 extra={
                     "user_id": context.user_id,
                     "leader_id": leader_id,
                     "trade_key": trade_key,
                     "side": signal.side,
                     "condition_id": signal.condition_id,
+                    "original_tier": leader_tier,
                 },
             )
-            print_skip_reason("Tier gate: watchlist", "Leader is on watchlist — observing only")
+            leader_tier = "paper_follow"
+
+        if leader_tier == "watchlist" and ENV.get("ENABLE_TIER_GATE_WATCHLIST", True):
+            if ENV.get("ENABLE_TIER_GATE_WATCHLIST_LOG", True):
+                logger.info(
+                    "tier_gate_watchlist",
+                    extra={
+                        "user_id": context.user_id,
+                        "leader_id": leader_id,
+                        "trade_key": trade_key,
+                        "side": signal.side,
+                        "condition_id": signal.condition_id,
+                    },
+                )
+                print_skip_reason("Tier gate: watchlist", "Leader is on watchlist — observing only")
             await metrics.inc("trades_skipped_total", labels={**labels, "reason": "tier_watchlist"})
             results.append(TradePipelineResult(trade_key, "skipped", "tier_watchlist", None))
             continue
@@ -343,8 +363,11 @@ async def execute_trades(
             pass
 
         if signal.side == "BUY":
-            target_notional = context.copy_notional(signal.usdc_size)
+            sizing_result = context.copy_notional(signal.usdc_size)
+            target_notional = sizing_result.final_notional_usdc
             max_notional_for_decision = target_notional
+
+            buy_risk_cap = None
             if _balance_tiered_policy_enabled():
                 buy_risk_cap = await _resolve_buy_risk_cap(context, leader_id, signal)
                 if not buy_risk_cap.allow:
@@ -397,6 +420,29 @@ async def execute_trades(
                     target_notional,
                     buy_risk_cap.cap_notional_usdc,
                 )
+
+            # --- Sizing audit: unified log showing both sizing sources ---
+            regime_binding = (
+                buy_risk_cap is not None
+                and buy_risk_cap.cap_notional_usdc < target_notional
+            )
+            logger.info(
+                "sizing_audit | cond=%s leader=%s "
+                "leader_notional=%.2f strategy=%s sizing_target=%.4f "
+                "regime_enabled=%s regime_cap=%s regime_binding=%s "
+                "max_for_decision=%.4f | %s",
+                signal.condition_id[:12],
+                leader_id[:12],
+                float(signal.usdc_size),
+                sizing_result.strategy,
+                float(target_notional),
+                _balance_tiered_policy_enabled(),
+                f"{float(buy_risk_cap.cap_notional_usdc):.4f}[{buy_risk_cap.regime}]"
+                if buy_risk_cap else "n/a",
+                regime_binding,
+                float(max_notional_for_decision),
+                sizing_result.reasoning,
+            )
 
             # Run the copy decision gate
             decision = copy_decision_svc.decide_buy(
@@ -461,6 +507,17 @@ async def execute_trades(
             # Use decision-gated notional (may be adjusted by scoring)
             gated_notional = Decimal(str(decision.target_notional_usdc)) if decision.target_notional_usdc > 0 else target_notional
 
+            # Log final execution sizing if decision gate changed the amount
+            if float(gated_notional) != float(target_notional):
+                logger.info(
+                    "sizing_final | cond=%s decision_gate adjusted %.4f → %.4f "
+                    "(trust_mult=%.3f)",
+                    signal.condition_id[:12],
+                    float(target_notional),
+                    float(gated_notional),
+                    decision.trust_multiplier if hasattr(decision, "trust_multiplier") else 0,
+                )
+
             exec_req = ExecutionRequest(
                 user_id=context.user_id,
                 leader_id=leader_id,
@@ -474,8 +531,23 @@ async def execute_trades(
         else:
             pos = context.positions_repo.get_position(context.user_id, signal.condition_id)
             if pos is None or pos.size_tokens <= Decimal("0"):
-                print_skip_reason("No position to sell", "No open position found for this market")
-                await metrics.inc("trades_skipped_total", labels={**labels, "reason": "no_position"})
+                # Distinguish "never bought this market" from "position already closed"
+                if pos is None:
+                    skip_detail = "never held — we never entered this market"
+                    skip_code = "never_held"
+                else:
+                    skip_detail = "already closed — position size is zero"
+                    skip_code = "already_closed"
+                logger.debug(
+                    "sell_skip",
+                    extra={
+                        "reason": skip_code,
+                        "condition_id": signal.condition_id,
+                        "leader_id": leader_id,
+                    },
+                )
+                print_skip_reason("No position to sell", skip_detail)
+                await metrics.inc("trades_skipped_total", labels={**labels, "reason": skip_code})
                 log_trade_skip(
                     logger,
                     side=signal.side,
@@ -484,8 +556,8 @@ async def execute_trades(
                     size=float(signal.size) if signal.size else None,
                     price=float(signal.price) if signal.price else None,
                     usdc_value=float(signal.usdc_size),
-                    skip_code="no_position",
-                    reason="no open position to sell",
+                    skip_code=skip_code,
+                    reason=skip_detail,
                     event_slug=signal.event_slug,
                     meta={"user_id": context.user_id, "leader_id": leader_id},
                 )
@@ -497,9 +569,9 @@ async def execute_trades(
                     side=signal.side,
                     asset=signal.token_id,
                     condition_id=signal.condition_id,
-                    status="skipped_no_position",
+                    status=f"skipped_{skip_code}",
                 )
-                results.append(TradePipelineResult(trade_key, "skipped", "no_position", None))
+                results.append(TradePipelineResult(trade_key, "skipped", skip_code, None))
                 continue
 
             # Capture entry price before apply_fill mutates or closes/deletes the position.
@@ -717,34 +789,48 @@ async def execute_trades(
         fill_price = exec_result.avg_price or signal.price
         fill_size = Decimal(str(exec_result.filled_amount))
         fee_paid = Decimal(str(exec_result.fees_paid or 0))
-        context.fills_repo.append_fill(
-            FillRecord(
+        try:
+            context.fills_repo.append_fill(
+                FillRecord(
+                    user_id=context.user_id,
+                    leader_id=leader_id,
+                    order_id=exec_result.order_id,
+                    condition_id=signal.condition_id,
+                    token_id=signal.token_id,
+                    side=signal.side,
+                    size_tokens=fill_size,
+                    price=Decimal(str(fill_price or 0)),
+                    fee=fee_paid,
+                    fill_ts=int(now_ts),
+                ),
+                raw_payload={
+                    "signal_tx_hash": signal.tx_hash,
+                    "copy_order_id": exec_result.order_id,
+                    "status": exec_result.status,
+                },
+            )
+            updated_position = context.positions_repo.apply_fill(
                 user_id=context.user_id,
                 leader_id=leader_id,
-                order_id=exec_result.order_id,
                 condition_id=signal.condition_id,
                 token_id=signal.token_id,
                 side=signal.side,
-                size_tokens=fill_size,
-                price=Decimal(str(fill_price or 0)),
-                fee=fee_paid,
-                fill_ts=int(now_ts),
-            ),
-            raw_payload={
-                "signal_tx_hash": signal.tx_hash,
-                "copy_order_id": exec_result.order_id,
-                "status": exec_result.status,
-            },
-        )
-        updated_position = context.positions_repo.apply_fill(
-            user_id=context.user_id,
-            leader_id=leader_id,
-            condition_id=signal.condition_id,
-            token_id=signal.token_id,
-            side=signal.side,
-            fill_size=fill_size,
-            fill_price=Decimal(str(fill_price or 0)),
-        )
+                fill_size=fill_size,
+                fill_price=Decimal(str(fill_price or 0)),
+            )
+        except sqlite3.IntegrityError:
+            logger.error(
+                "trade_pipeline_integrity_error",
+                extra={
+                    "user_id": context.user_id,
+                    "leader_id": leader_id,
+                    "condition_id": signal.condition_id,
+                    "signal_tx_hash": signal.tx_hash,
+                    "order_id": exec_result.order_id,
+                    "traceback": _tb.format_exc(),
+                },
+            )
+            raise
 
         if signal.side == "BUY":
             context.pnl_tracker.record_buy(

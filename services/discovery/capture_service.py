@@ -20,7 +20,7 @@ from services.discovery.ingestion_service import IngestionService
 from storage.sqlite.discovery_repo import DiscoveryRepo
 from utils.createClobClient import CLOB_HTTP_URL
 from utils.fetchData import fetch_data
-from utils.logger import get_logger, redact_error_detail
+from utils.logger import get_logger, redact_error_detail, safe_error_detail
 
 logger = get_logger("DiscoveryCapture")
 
@@ -98,7 +98,7 @@ class DiscoveryCaptureService:
                 extra={
                     "token_id": trade.token_id,
                     "tx_hash": trade.tx_hash,
-                    "error": redact_error_detail(exc),
+                    "error": safe_error_detail(exc),
                 },
             )
             return

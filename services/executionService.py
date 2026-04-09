@@ -14,6 +14,7 @@ from py_clob_client.order_builder.constants import BUY, SELL
 from services.circuitBreaker import CircuitBreaker, CircuitOpen
 
 from utils.logger import get_logger, log_api_error, redact_error_detail
+from utils.createClobClient import _is_thin_or_empty_book
 
 logger = get_logger("ExecutionService")
 
@@ -445,14 +446,49 @@ class ExecutionService:
         # --- Book quality gate: reject if spread is too wide ---
         max_spread_bps = int(ENV.get("MAX_BOOK_SPREAD_BPS", 500))
         if max_spread_bps > 0 and meta.best_bid and meta.best_ask and meta.best_bid > 0:
+            # Detect garbage/placeholder orderbook (e.g. bid=0.01, ask=0.99)
+            if _is_thin_or_empty_book(meta.best_bid, meta.best_ask):
+                logger.info(
+                    "book_quality_gate_thin_book",
+                    extra={
+                        "token_id": req.token_id,
+                        "best_bid": str(meta.best_bid),
+                        "best_ask": str(meta.best_ask),
+                        "reason": "orderbook has no real liquidity (placeholder/dust orders only)",
+                    },
+                )
+                return ExecutionResult(
+                    accepted=False,
+                    order_id=None,
+                    status="book_no_liquidity",
+                    requested_amount=req.amount,
+                    filled_amount=Decimal("0"),
+                    avg_price=None,
+                    fees_paid=Decimal("0"),
+                    error=(
+                        f"no real liquidity — book appears empty or placeholder "
+                        f"(bid={meta.best_bid} ask={meta.best_ask})"
+                    ),
+                )
+
             spread_bps = int(
                 (meta.best_ask - meta.best_bid) / meta.best_bid * Decimal(10_000)
             )
             if spread_bps > max_spread_bps:
+                logger.info(
+                    "book_quality_gate_wide_spread",
+                    extra={
+                        "token_id": req.token_id,
+                        "spread_bps": spread_bps,
+                        "max_spread_bps": max_spread_bps,
+                        "best_bid": str(meta.best_bid),
+                        "best_ask": str(meta.best_ask),
+                    },
+                )
                 return ExecutionResult(
                     accepted=False,
                     order_id=None,
-                    status="rejected",
+                    status="book_spread_wide",
                     requested_amount=req.amount,
                     filled_amount=Decimal("0"),
                     avg_price=None,
@@ -463,6 +499,28 @@ class ExecutionService:
                         f"bid={meta.best_bid} ask={meta.best_ask})"
                     ),
                 )
+        elif max_spread_bps > 0 and (meta.best_bid is None or meta.best_ask is None):
+            logger.info(
+                "book_quality_gate_no_book",
+                extra={
+                    "token_id": req.token_id,
+                    "best_bid": str(meta.best_bid),
+                    "best_ask": str(meta.best_ask),
+                    "reason": "orderbook missing bid or ask — market may not exist on CLOB",
+                },
+            )
+            return ExecutionResult(
+                accepted=False,
+                order_id=None,
+                status="book_no_liquidity",
+                requested_amount=req.amount,
+                filled_amount=Decimal("0"),
+                avg_price=None,
+                fees_paid=Decimal("0"),
+                error=(
+                    f"no orderbook data — bid={meta.best_bid} ask={meta.best_ask}"
+                ),
+            )
 
         quote = await self.clob_client.get_price(req.token_id, side)
         if not quote or quote.get("price") is None:
