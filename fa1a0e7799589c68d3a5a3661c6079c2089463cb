@@ -1,0 +1,50 @@
+utils/logger.py
+  9623f7cc5a21ceb1 19,141-149
+orchestrators/trade_pipeline.py
+  71711f7cc837c0c1 278-282,284,291,294-295
+config/env.py
+  71711f7cc837c0c1 549-551,562-567,585,588-605,608
+tests/test_trade_pipeline_tiers.py
+  71711f7cc837c0c1 238-294
+tests/test_logger.py
+  9623f7cc5a21ceb1 12,223-246
+services/tradeScoringService.py
+  71711f7cc837c0c1 99-114
+tests/test_trade_scoring.py
+  71711f7cc837c0c1 1-116
+requirements.txt
+  71711f7cc837c0c1 7-8
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.6",
+  "base_commit_sha": "fa1a0e7799589c68d3a5a3661c6079c2089463cb",
+  "prompts": {
+    "71711f7cc837c0c1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6bb49f80-4a1d-443f-814f-3eec5c39a2ef",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "kvzsolt",
+      "messages": [],
+      "total_additions": 242,
+      "total_deletions": 6,
+      "accepted_lines": 238,
+      "overriden_lines": 0
+    },
+    "9623f7cc5a21ceb1": {
+      "agent_id": {
+        "tool": "github-copilot",
+        "id": "d011e3e4-1927-4267-b59b-825d57cfb220",
+        "model": "copilot/gpt-5.4"
+      },
+      "human_author": "kvzsolt",
+      "messages": [],
+      "total_additions": 43,
+      "total_deletions": 9,
+      "accepted_lines": 37,
+      "overriden_lines": 0
+    }
+  }
+}
