@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 # NOTE: Do NOT call load_dotenv() at import time.
 # Import-time side effects make the test suite non-deterministic because a local
 # `.env` file (developer machine / CI workspace) can silently override defaults.
-# Runtime entrypoints (e.g. index.py) should call load_dotenv() explicitly.
+# Runtime entrypoints (e.g. app.py) should call load_dotenv() explicitly.
 
 _ETH_ADDR_RE = re.compile(r'^0x[0-9a-fA-F]{40}$')
 _HEX_PRIVATE_KEY_RE = re.compile(r'^0x[0-9a-fA-F]{64}$')
@@ -386,7 +386,7 @@ def validate_runtime_env() -> None:
 
 # IMPORTANT: This snapshot is populated at import time from os.environ.
 # ``dotenv.load_dotenv()`` MUST be called before ``config.env`` is first imported
-# in runtime entrypoints (index.py does this). Tests can call ``rehydrate_env()``
+# in runtime entrypoints (app.py does this). Tests can call ``rehydrate_env()``
 # after patching ``os.environ`` to rebuild this snapshot in place.
 def _build_env_snapshot() -> dict[str, object]:
     """Return a parsed environment snapshot from current ``os.environ``."""
@@ -559,10 +559,13 @@ def _build_env_snapshot() -> dict[str, object]:
     'NON_TERMINAL_FAILURE_MAX_ATTEMPTS': _int('NON_TERMINAL_FAILURE_MAX_ATTEMPTS', '3'),
     'ENABLE_TIER_GATE_WATCHLIST': os.getenv('ENABLE_TIER_GATE_WATCHLIST', 'true').strip().lower() in ('1', 'true', 'yes'),
     'ENABLE_TIER_GATE_WATCHLIST_LOG': os.getenv('ENABLE_TIER_GATE_WATCHLIST_LOG', 'true').strip().lower() in ('1', 'true', 'yes'),
+    # Global switch for copy decision gating (trade scoring / trust gating / decision rejections).
+    'ENABLE_COPY_DECISION_GATE': os.getenv('ENABLE_COPY_DECISION_GATE', 'true').strip().lower() in ('1', 'true', 'yes'),
     # Global paper-only override: if true, all live_follow leaders are treated as paper_follow.
     # Must be false in production. Use true for dry-run / staging verification.
     'PAPER_TRADE_ONLY': os.getenv('PAPER_TRADE_ONLY', 'false').strip().lower() in ('1', 'true', 'yes'),
     # Near-resolution gate for BUY signals: reject stale signals when live_price >= this threshold.
+    'ENABLE_NEAR_RESOLUTION_GATE': os.getenv('ENABLE_NEAR_RESOLUTION_GATE', 'true').strip().lower() in ('1', 'true', 'yes'),
     'NEAR_RESOLUTION_GATE_PRICE': _float('NEAR_RESOLUTION_GATE_PRICE', '0.95'),
     'NEAR_RESOLUTION_MAX_AGE_SECONDS': _float('NEAR_RESOLUTION_MAX_AGE_SECONDS', '15'),
     # Expire stale in-flight idempotency locks so retries are not blocked forever.
@@ -586,8 +589,17 @@ def _build_env_snapshot() -> dict[str, object]:
     'ENFORCE_GEOBLOCK': os.getenv('ENFORCE_GEOBLOCK', 'true').strip().lower() in ('1', 'true', 'yes'),
 
     # --- Execution quality gates ---
-    # Maximum acceptable book spread in bps (0 = disabled). Default: 500.
+    # Spread gate mode:
+    # - absolute_bps: (ask-bid) * 10_000
+    # - relative_bps: ((ask-bid)/bid) * 10_000
+    # - ticks: (ask-bid) / tick_size
+    'BOOK_SPREAD_MODE': os.getenv('BOOK_SPREAD_MODE', 'absolute_bps').strip().lower(),
+    # Maximum acceptable book spread in bps for absolute_bps/relative_bps (0 = disabled). Default: 500.
     'MAX_BOOK_SPREAD_BPS': _int('MAX_BOOK_SPREAD_BPS', '500'),
+    # Maximum acceptable spread in ticks when BOOK_SPREAD_MODE=ticks (0 = disabled).
+    'MAX_BOOK_SPREAD_TICKS': _int('MAX_BOOK_SPREAD_TICKS', '0'),
+    # Require fresh orderbook fetch for execution-time spread checks.
+    'EXECUTION_REQUIRE_FRESH_BOOK': os.getenv('EXECUTION_REQUIRE_FRESH_BOOK', 'true').strip().lower() in ('1', 'true', 'yes'),
     # CLOB circuit breaker settings.
     'CIRCUIT_FAILURE_THRESHOLD': _int('CIRCUIT_FAILURE_THRESHOLD', '5'),
     'CIRCUIT_COOLDOWN_SECONDS': _float('CIRCUIT_COOLDOWN_SECONDS', '60'),

@@ -18,6 +18,23 @@ class OrderRepository:
     def get_by_idempotency_key(self, key: str) -> dict[str, Any] | None:
         return self._repo.get_by_idempotency_key(key)
 
+    def try_acquire_submission_lock(
+        self,
+        key: str,
+        user_id: str,
+        leader_id: str | None,
+        request_payload: dict[str, Any],
+    ) -> bool:
+        return self._repo.try_acquire_submission_lock(
+            key=key,
+            user_id=user_id,
+            leader_id=leader_id,
+            request_payload=request_payload,
+        )
+
+    def is_submission_locked(self, key: str) -> bool:
+        return self._repo.is_submission_locked(key)
+
     def save_submission(
         self,
         *,

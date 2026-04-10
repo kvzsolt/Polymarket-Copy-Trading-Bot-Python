@@ -389,6 +389,34 @@ async def test_sell_reduces_position(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_sell_uses_notional_when_size_missing(tmp_path, monkeypatch):
+    db_path = _init_db(tmp_path)
+    exec_svc = AsyncMock()
+    exec_svc.execute.return_value = _exec_result(
+        accepted=True, filled=Decimal("4"), status="filled", order_id="ord-sell-derivation"
+    )
+    ctx = _make_context(db_path, execution_service=exec_svc)
+
+    from storage.sqlite.positions_repo import PositionRecord
+    ctx.positions_repo.upsert_position(PositionRecord(
+        user_id="user1", condition_id="cond1", token_id=FAKE_TOKEN_ID,
+        leader_id="leader1", size_tokens=Decimal("20"), avg_entry_price=Decimal("0.40"),
+    ))
+
+    monkeypatch.setitem(ENV, "ENABLE_COPY_DECISION_GATE", False)
+
+    signal = _signal(side="SELL", price=0.50, size=0.0)
+    signal["usdcSize"] = 2.0
+    results = await execute_trades(ctx, "leader1", [signal], time.time())
+    assert len(results) == 1
+    assert results[0].status == "executed"
+
+    req = exec_svc.execute.await_args.args[0]
+    assert req.side == "SELL"
+    assert req.amount == Decimal("4")
+
+
+@pytest.mark.asyncio
 async def test_sell_realized_pnl_falls_back_to_updated_position_or_signal_price(tmp_path):
     db_path = _init_db(tmp_path)
     exec_svc = AsyncMock()
@@ -511,6 +539,30 @@ class TestTokenIdFieldPriority:
         signals = normalize_signals([raw], leader_id="L1")
         assert len(signals) == 1
         assert signals[0][0].token_id == FAKE_TOKEN_ID
+
+    def test_trade_metadata_primary_fields(self):
+        raw = _raw_trade(
+            tokenID=FAKE_TOKEN_ID,
+            outcome="Blackhawks",
+            submarket="Moneyline",
+        )
+        signals = normalize_signals([raw], leader_id="L1")
+        assert len(signals) == 1
+        signal = signals[0][0]
+        assert signal.outcome == "Blackhawks"
+        assert signal.submarket == "Moneyline"
+
+    def test_trade_metadata_fallback_fields(self):
+        raw = _raw_trade(
+            tokenID=FAKE_TOKEN_ID,
+            selectionName="Hurricanes",
+            marketSubtype="Spread",
+        )
+        signals = normalize_signals([raw], leader_id="L1")
+        assert len(signals) == 1
+        signal = signals[0][0]
+        assert signal.outcome == "Hurricanes"
+        assert signal.submarket == "Spread"
 
     def test_build_trade_key_prefers_tokenID(self):
         """build_trade_key must also prefer tokenID over hex asset."""

@@ -12,10 +12,17 @@ logger = logging.getLogger("Database")
 
 _LOCK = threading.Lock()
 _INITIALIZED = False
-_DB_PATH = Path(ENV.get("BOT_STATE_DB", "data/bot_state.db"))
+_DB_ENABLED = ENV.get("BOT_STATE_DB_ENABLED", "true").strip().lower() not in {"0", "false", "no", "off"}
+_DB_PATH = (
+    Path(ENV.get("BOT_STATE_DB", "data/bot_state.db"))
+    if _DB_ENABLED
+    else Path("/tmp/polymarket-copy-trading-bot-volatile.db")
+)
 
 
 def _connect():
+    if not _DB_ENABLED and _DB_PATH.exists() and not _INITIALIZED:
+        _DB_PATH.unlink()
     return create_connection(str(_DB_PATH))
 
 
@@ -37,7 +44,13 @@ def _init_schema() -> None:
 
 async def connect_db() -> None:
     _init_schema()
-    logger.info(f"SQLite ready at {_DB_PATH}")
+    logger.info(
+        "SQLite ready",
+        extra={
+            "db_path": str(_DB_PATH),
+            "persistent": _DB_ENABLED,
+        },
+    )
 
 
 def get_client():

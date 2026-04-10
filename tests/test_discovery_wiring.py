@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 # ---------------------------------------------------------------------------
 
 # We need to import the function under test.
-# It lives at module-level in index.py which has heavy side-effects at import
+# It lives at module-level in app.py which has heavy side-effects at import
 # time.  To avoid that, we import it carefully.  If that proves fragile we
 # test indirectly via the callback contract.
 
@@ -33,7 +33,7 @@ class _FakeRegistry:
 @pytest.mark.asyncio
 async def test_discovery_loop_detects_new_leaders():
     """When leaders_repo returns new tier-promoted leaders, callback fires."""
-    from index import _discovery_refresh_loop
+    from app import _discovery_refresh_loop
 
     registry = _FakeRegistry()
     tiers: dict[str, list[str]] = {"live_follow": ["0xAAA"], "paper_follow": []}
@@ -69,7 +69,7 @@ async def test_discovery_loop_detects_new_leaders():
 @pytest.mark.asyncio
 async def test_discovery_loop_no_duplicate_callbacks():
     """Once a leader is tracked, it should not trigger callback again."""
-    from index import _discovery_refresh_loop
+    from app import _discovery_refresh_loop
 
     registry = _FakeRegistry()
     tiers = {"live_follow": ["0xBBB"], "paper_follow": []}
@@ -100,7 +100,7 @@ async def test_discovery_loop_no_duplicate_callbacks():
 @pytest.mark.asyncio
 async def test_discovery_loop_already_monitored_skipped():
     """Leaders in already_monitored should not trigger callback."""
-    from index import _discovery_refresh_loop
+    from app import _discovery_refresh_loop
 
     registry = _FakeRegistry()
     tiers = {"live_follow": ["0xCCC"], "paper_follow": []}
@@ -130,7 +130,7 @@ async def test_discovery_loop_already_monitored_skipped():
 @pytest.mark.asyncio
 async def test_discovery_loop_paper_follow_detected():
     """Paper-follow leaders should also trigger monitoring."""
-    from index import _discovery_refresh_loop
+    from app import _discovery_refresh_loop
 
     registry = _FakeRegistry()
     tiers = {"live_follow": [], "paper_follow": ["0xDDD"]}
@@ -161,7 +161,7 @@ async def test_discovery_loop_paper_follow_detected():
 @pytest.mark.asyncio
 async def test_discovery_loop_no_callback_without_repo():
     """When leaders_repo is None, callback is never called."""
-    from index import _discovery_refresh_loop
+    from app import _discovery_refresh_loop
 
     registry = _FakeRegistry()
     callback = AsyncMock()
@@ -189,7 +189,7 @@ async def test_discovery_loop_no_callback_without_repo():
 @pytest.mark.asyncio
 async def test_discovery_loop_refresh_exception_resilience():
     """If registry.refresh raises, the loop continues without crashing."""
-    from index import _discovery_refresh_loop
+    from app import _discovery_refresh_loop
 
     registry = MagicMock()
     call_count = 0

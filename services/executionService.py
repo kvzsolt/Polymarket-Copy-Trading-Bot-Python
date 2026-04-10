@@ -96,6 +96,49 @@ def _quantize_price(price: Decimal, tick_size: Decimal, side: str) -> Decimal:
     return rounded_units * tick_size
 
 
+_SUPPORTED_BOOK_SPREAD_MODES = {"absolute_bps", "relative_bps", "ticks"}
+
+
+@dataclass(frozen=True)
+class _BookSpreadMetrics:
+    absolute: Decimal
+    absolute_bps: int
+    relative_bps: int | None
+    ticks: int | None
+
+
+def _resolve_book_spread_mode(raw_mode: Any) -> str:
+    mode = str(raw_mode or "absolute_bps").strip().lower()
+    if mode in _SUPPORTED_BOOK_SPREAD_MODES:
+        return mode
+    return "absolute_bps"
+
+
+def _calculate_book_spread_metrics(
+    *, best_bid: Decimal, best_ask: Decimal, tick_size: Decimal
+) -> _BookSpreadMetrics:
+    absolute = best_ask - best_bid
+    absolute_bps = int(
+        (absolute * Decimal(10_000)).to_integral_value(rounding=ROUND_CEILING)
+    )
+    relative_bps: int | None = None
+    if best_bid > 0:
+        relative_bps = int(
+            ((absolute / best_bid) * Decimal(10_000)).to_integral_value(
+                rounding=ROUND_CEILING
+            )
+        )
+    ticks: int | None = None
+    if tick_size > 0:
+        ticks = int((absolute / tick_size).to_integral_value(rounding=ROUND_CEILING))
+    return _BookSpreadMetrics(
+        absolute=absolute,
+        absolute_bps=absolute_bps,
+        relative_bps=relative_bps,
+        ticks=ticks,
+    )
+
+
 def _idempotency_key(req: ExecutionRequest) -> str:
     payload = "|".join(
         [
@@ -441,16 +484,32 @@ class ExecutionService:
                 error=f"CLOB circuit breaker open — retry in {remaining:.0f}s",
             )
 
-        meta = await self.market_meta_service.get(req.token_id)
+        require_fresh_book = _coerce_bool(ENV.get("EXECUTION_REQUIRE_FRESH_BOOK", True))
+        meta = await self.market_meta_service.get(
+            req.token_id,
+            refresh=require_fresh_book,
+        )
 
         # --- Book quality gate: reject if spread is too wide ---
+        spread_mode = _resolve_book_spread_mode(
+            ENV.get("BOOK_SPREAD_MODE", "absolute_bps")
+        )
         max_spread_bps = int(ENV.get("MAX_BOOK_SPREAD_BPS", 500))
-        if max_spread_bps > 0 and meta.best_bid and meta.best_ask and meta.best_bid > 0:
+        max_spread_ticks = int(ENV.get("MAX_BOOK_SPREAD_TICKS", 0))
+        spread_limit = max_spread_ticks if spread_mode == "ticks" else max_spread_bps
+        spread_limit_unit = "ticks" if spread_mode == "ticks" else "bps"
+        if (
+            spread_limit > 0
+            and meta.best_bid
+            and meta.best_ask
+            and meta.best_bid > 0
+        ):
             # Detect garbage/placeholder orderbook (e.g. bid=0.01, ask=0.99)
             if _is_thin_or_empty_book(meta.best_bid, meta.best_ask):
                 logger.info(
                     "book_quality_gate_thin_book",
                     extra={
+                        "type": "book_quality_gate_thin_book",
                         "token_id": req.token_id,
                         "best_bid": str(meta.best_bid),
                         "best_ask": str(meta.best_ask),
@@ -471,16 +530,32 @@ class ExecutionService:
                     ),
                 )
 
-            spread_bps = int(
-                (meta.best_ask - meta.best_bid) / meta.best_bid * Decimal(10_000)
+            spread = _calculate_book_spread_metrics(
+                best_bid=meta.best_bid,
+                best_ask=meta.best_ask,
+                tick_size=meta.tick_size,
             )
-            if spread_bps > max_spread_bps:
+            if spread_mode == "relative_bps":
+                measured_spread = spread.relative_bps
+            elif spread_mode == "ticks":
+                measured_spread = spread.ticks
+            else:
+                measured_spread = spread.absolute_bps
+
+            if measured_spread is not None and measured_spread > spread_limit:
                 logger.info(
                     "book_quality_gate_wide_spread",
                     extra={
+                        "type": "book_quality_gate_wide_spread",
                         "token_id": req.token_id,
-                        "spread_bps": spread_bps,
-                        "max_spread_bps": max_spread_bps,
+                        "spread_mode": spread_mode,
+                        "spread_limit": spread_limit,
+                        "spread_limit_unit": spread_limit_unit,
+                        "measured_spread": measured_spread,
+                        "absolute_spread": str(spread.absolute),
+                        "absolute_bps": spread.absolute_bps,
+                        "relative_bps": spread.relative_bps,
+                        "spread_ticks": spread.ticks,
                         "best_bid": str(meta.best_bid),
                         "best_ask": str(meta.best_ask),
                     },
@@ -494,15 +569,20 @@ class ExecutionService:
                     avg_price=None,
                     fees_paid=Decimal("0"),
                     error=(
-                        f"book spread too wide ({spread_bps} bps > "
-                        f"{max_spread_bps} bps max; "
+                        "book spread too wide "
+                        f"(mode={spread_mode}: {measured_spread} {spread_limit_unit} > "
+                        f"{spread_limit} {spread_limit_unit} max; "
+                        f"abs={spread.absolute} ({spread.absolute_bps} bps), "
+                        f"rel={spread.relative_bps if spread.relative_bps is not None else 'n/a'} bps, "
+                        f"ticks={spread.ticks if spread.ticks is not None else 'n/a'}; "
                         f"bid={meta.best_bid} ask={meta.best_ask})"
                     ),
                 )
-        elif max_spread_bps > 0 and (meta.best_bid is None or meta.best_ask is None):
+        elif spread_limit > 0 and (meta.best_bid is None or meta.best_ask is None):
             logger.info(
                 "book_quality_gate_no_book",
                 extra={
+                    "type": "book_quality_gate_no_book",
                     "token_id": req.token_id,
                     "best_bid": str(meta.best_bid),
                     "best_ask": str(meta.best_ask),

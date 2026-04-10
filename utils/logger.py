@@ -113,18 +113,30 @@ class RichConsoleHandler(logging.Handler):
         "api_response",
         "http_request_complete",    # high-frequency HTTP polling — JSONL only
         "monitor_heartbeat",
-        "trade_detected",           # print_new_trade_detected() handles console
-        "trade_skip",               # print_skip_reason() handles console
+        "trade_detected",
+        "trade_skip",
+        "trade_decision",
         "trade_quality_decision",   # analytics granularity — JSONL only
         "trade_quality_execution",  # analytics granularity — JSONL only
         "tier_gate_watchlist",
         "tier_gate_paper",
+        "trade_batch_summary",
+        "sizing_audit",
+        "sizing_final",
+        "trade_copy_failed",
+        "book_quality_gate_no_book",
+        "book_quality_gate_wide_spread",
+        "book_quality_gate_thin_book",
+    })
+
+    _JSONL_ONLY_MESSAGES = frozenset({
+        "orderbook_capture_failed",
     })
 
     def emit(self, record: LogRecord) -> None:
         try:
             log_type = getattr(record, "type", None)
-            if log_type in self._JSONL_ONLY_TYPES:
+            if log_type in self._JSONL_ONLY_TYPES or record.getMessage() in self._JSONL_ONLY_MESSAGES:
                 return
 
             # Rich rendering for structured trade types
@@ -232,6 +244,8 @@ class RichConsoleHandler(logging.Handler):
         usdc = float(getattr(record, "usdcValue", 0) or 0)
         cond = shorten_addr(getattr(record, "conditionId", None), 8, 6)
         title = getattr(record, "title", None) or ""
+        submarket = getattr(record, "submarket", None) or ""
+        outcome = getattr(record, "outcome", None) or ""
         order_id = shorten_addr(getattr(record, "copyOrderId", None), 8, 6)
         side_style = "trade.buy" if side == "BUY" else "trade.sell"
         lines = _build_panel_lines(
@@ -240,6 +254,8 @@ class RichConsoleHandler(logging.Handler):
             Price=f"{price:.4f}",
             Value=f"[money]${usdc:.2f}[/money]",
             Market=title[:60] if title else None,
+            Submarket=submarket or None,
+            Outcome=outcome or None,
             Condition=cond if cond != "N/A" else None,
             OrderID=order_id if order_id != "N/A" else None,
         )
@@ -253,16 +269,33 @@ class RichConsoleHandler(logging.Handler):
 
     def _render_submitted(self, record: LogRecord, ts: str) -> None:
         side = getattr(record, "side", "?")
+        size = float(getattr(record, "size", 0) or 0)
+        price = float(getattr(record, "price", 0) or 0)
         usdc = float(getattr(record, "usdcValue", 0) or 0)
+        cond = shorten_addr(getattr(record, "conditionId", None), 8, 6)
+        title = getattr(record, "title", None) or ""
+        submarket = getattr(record, "submarket", None) or ""
+        outcome = getattr(record, "outcome", None) or ""
         order_id = shorten_addr(getattr(record, "copyOrderId", None), 8, 6)
         side_style = "trade.buy" if side == "BUY" else "trade.sell"
-        line = (
-            f"[muted][{ts}][/muted] 📤 [{side_style}]ORDER SUBMITTED — {side}[/{side_style}]"
-            f" | [money]${usdc:.2f}[/money]"
+        lines = _build_panel_lines(
+            Side=f"[{side_style}]{side}[/{side_style}]",
+            Size=f"{size:.4f} tokens",
+            Price=f"{price:.4f}",
+            Value=f"[money]${usdc:.2f}[/money]",
+            Market=title[:60] if title else None,
+            Submarket=submarket or None,
+            Outcome=outcome or None,
+            Condition=cond if cond != "N/A" else None,
+            OrderID=order_id if order_id != "N/A" else None,
         )
-        if order_id and order_id != "N/A":
-            line += f" | [muted]order={order_id}[/muted]"
-        console.print(line)
+        console.print()
+        console.print(Panel(
+            "\n".join(lines),
+            title=f"📤 [bold cyan]ORDER SUBMITTED — {side}[/bold cyan]  [muted][{ts}][/muted]",
+            border_style="cyan",
+            padding=(1, 2),
+        ))
 
     def _render_risk_exit(self, record: LogRecord, ts: str) -> None:
         cond = shorten_addr(getattr(record, "conditionId", None), 8, 6)
@@ -515,12 +548,17 @@ def print_positions(
         table.add_column("Avg Price", justify="right")
         table.add_column("Value", justify="right")
         for p in positions:
+            size = p.get("size") if p.get("size") is not None else p.get("size_tokens", 0)
+            avg_price = p.get("avgPrice") if p.get("avgPrice") is not None else p.get("avg_entry_price", 0)
+            value = p.get("currentValue") if p.get("currentValue") is not None else p.get("value", 0)
+            market = p.get("title") or p.get("market") or p.get("condition_id") or "?"
+            side = p.get("outcome") or p.get("side") or "?"
             table.add_row(
-                p.get("title", "?")[:40],
-                p.get("outcome", "?"),
-                f'{float(p.get("size", 0)):.2f}',
-                f'{float(p.get("avgPrice", 0)):.4f}',
-                f'${float(p.get("currentValue", 0)):.2f}',
+                str(market)[:40],
+                str(side),
+                f'{float(size or 0):.2f}',
+                f'{float(avg_price or 0):.4f}',
+                f'${float(value or 0):.2f}',
             )
         console.print(table)
     else:
@@ -595,8 +633,29 @@ def reset_heartbeat() -> None:
 def print_new_trade_detected(trade: dict) -> None:
     addr = shorten_addr(trade.get("proxyWallet") or trade.get("user"))
     side = (trade.get("side") or "?").upper()
-    asset = trade.get("asset") or trade.get("tokenID") or "?"
     title = trade.get("title") or "N/A"
+    submarket = _first_present_text(
+        trade,
+        "submarket",
+        "subMarket",
+        "sub_market",
+        "marketSubtype",
+        "marketType",
+        "lineType",
+        "betType",
+        "groupItemTitle",
+        "groupTitle",
+    )
+    outcome = _first_present_text(
+        trade,
+        "outcome",
+        "outcomeName",
+        "outcome_name",
+        "tokenOutcome",
+        "selection",
+        "selectionName",
+        "choice",
+    )
     usdc = float(trade.get("usdcSize") or 0)
     if usdc <= 0:
         usdc = float(trade.get("size", 0) or 0) * float(trade.get("price", 0) or 0)
@@ -615,6 +674,8 @@ def print_new_trade_detected(trade: dict) -> None:
         f"[bold]Trader:[/bold]  {addr}",
         f"[bold]Side:[/bold]    {side}",
         f"[bold]Title:[/bold]   {title}",
+        f"[bold]Submarket:[/bold]  {submarket or 'N/A'}",
+        f"[bold]Outcome:[/bold]  {outcome or 'N/A'}",
         f"[bold]Amount:[/bold]  [money]${usdc:.2f}[/money]",
         f"[bold]Price:[/bold]   {price:.4f}",
     ]
@@ -672,21 +733,44 @@ def print_trade_result(
     amount: float = 0,
     price: float = 0,
     reason: str | None = None,
+    title: str | None = None,
+    submarket: str | None = None,
+    outcome: str | None = None,
 ) -> None:
+    side_style = "trade.buy" if side.upper() == "BUY" else "trade.sell"
     if success:
-        parts = [f"{side.upper()} OK"]
-        if leader_tx:
-            parts.append(f"leader: {shorten_addr(leader_tx, 8, 6)}")
-        if copy_tx:
-            parts.append(f"copy: {shorten_addr(copy_tx, 8, 6)}")
-        if amount > 0:
-            parts.append(f"${amount:.2f} @ {price:.4f}")
-        console.print(f"✅ [trade.executed]{' | '.join(parts)}[/trade.executed]")
+        lines = _build_panel_lines(
+            Side=f"[{side_style}]{side.upper()}[/{side_style}]",
+            Amount=f"[money]${amount:.2f}[/money]" if amount > 0 else None,
+            Price=f"{price:.4f}" if price > 0 else None,
+            Market=(title or "").strip()[:80] or None,
+            Submarket=(submarket or "").strip() or None,
+            Outcome=(outcome or "").strip() or None,
+            LeaderTX=shorten_addr(leader_tx, 8, 6) if leader_tx else None,
+            CopyTX=shorten_addr(copy_tx, 8, 6) if copy_tx else None,
+        )
+        console.print(Panel(
+            "\n".join(lines),
+            title="✅ [bold green]COPY EXECUTED[/bold green]",
+            border_style="green",
+            padding=(0, 2),
+        ))
     else:
-        msg = "Copy not executed"
-        if reason:
-            msg += f" — {reason}"
-        console.print(f"❌ [error]{msg}[/error]")
+        lines = _build_panel_lines(
+            Side=f"[{side_style}]{side.upper()}[/{side_style}]",
+            Reason=reason or "Copy not executed",
+            Market=(title or "").strip()[:80] or None,
+            Submarket=(submarket or "").strip() or None,
+            Outcome=(outcome or "").strip() or None,
+            LeaderTX=shorten_addr(leader_tx, 8, 6) if leader_tx else None,
+            CopyTX=shorten_addr(copy_tx, 8, 6) if copy_tx else None,
+        )
+        console.print(Panel(
+            "\n".join(lines),
+            title="⚠️ [bold yellow]COPY NOT EXECUTED[/bold yellow]",
+            border_style="yellow",
+            padding=(0, 2),
+        ))
 
 
 def print_skip_reason(reason: str, detail: str = "") -> None:
@@ -823,6 +907,17 @@ def _build_panel_lines(**fields: Any) -> list[str]:
         if value is not None:
             lines.append(f"[bold]{label}:[/bold]  {value}")
     return lines
+
+
+def _first_present_text(payload: dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = payload.get(key)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return ""
 
 
 def print_api_error(
@@ -1066,6 +1161,46 @@ def log_trade_detected(
         asset=asset, size=size, price=price, usdc_value=usdc_value,
         tx_hash=tx_hash, meta=meta,
     )
+
+
+def log_trade_batch_summary(
+    logger: logging.Logger,
+    *,
+    leader_wallet: str,
+    trades: list[dict[str, Any]],
+) -> None:
+    buy_count = 0
+    sell_count = 0
+    gross_usdc = 0.0
+    merged_fills = 0
+    for trade in trades:
+        side = str(trade.get("side") or "").upper()
+        if side == "BUY":
+            buy_count += 1
+        elif side == "SELL":
+            sell_count += 1
+        gross_usdc += float(trade.get("usdcSize") or 0)
+        merged_fills += max(0, int(trade.get("_aggregatedCount") or 1) - 1)
+
+    logger.info(
+        "trade_batch leader=%s trades=%d buy=%d sell=%d gross_usdc=%.2f merged_fills=%d",
+        shorten_addr(leader_wallet),
+        len(trades),
+        buy_count,
+        sell_count,
+        gross_usdc,
+        merged_fills,
+        extra={
+            "type": "trade_batch_summary",
+            "leader": leader_wallet,
+            "trades": len(trades),
+            "buyCount": buy_count,
+            "sellCount": sell_count,
+            "grossUsdc": gross_usdc,
+            "mergedFills": merged_fills,
+        },
+    )
+
 
 
 def log_trade_submitted(

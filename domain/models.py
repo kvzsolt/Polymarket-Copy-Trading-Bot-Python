@@ -17,6 +17,8 @@ class TradeSignal:
     event_ts: int
     title: str = ""
     event_slug: str = ""
+    outcome: str = ""
+    submarket: str = ""
 
 
 @dataclass
