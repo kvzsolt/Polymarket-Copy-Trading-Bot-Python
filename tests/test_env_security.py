@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import stat
 import sys
+from importlib import reload
 from pathlib import Path
 from unittest.mock import patch
 
@@ -162,3 +163,27 @@ class TestEnvSecurity:
             assert ENV["AUTO_DISCOVER_TOP_N"] == 2
 
         rehydrate_env()
+
+    def test_runtime_env_load_order_supports_local_public_override_and_secret_override(self, tmp_path):
+        import runtime_env
+
+        shared = tmp_path / "runtime.env"
+        local_public = tmp_path / "runtime.local.env"
+        secrets = tmp_path / ".env"
+
+        shared.write_text("LEADER_WALLETS=0xshared\nRPC_URL=https://shared\n", encoding="utf-8")
+        local_public.write_text("LEADER_WALLETS=0xlocal\nFUNDER_ADDRESS=0xabc\n", encoding="utf-8")
+        secrets.write_text("RPC_URL=https://secret\nPRIVATE_KEY=0x" + ("ab" * 32) + "\n", encoding="utf-8")
+
+        with patch.dict(os.environ, {}, clear=True):
+            reload(runtime_env)
+            runtime_env.load_runtime_env(
+                non_sensitive_path=shared,
+                local_non_sensitive_path=local_public,
+                secrets_path=secrets,
+                override_secrets=True,
+            )
+            assert os.environ["LEADER_WALLETS"] == "0xlocal"
+            assert os.environ["FUNDER_ADDRESS"] == "0xabc"
+            assert os.environ["RPC_URL"] == "https://secret"
+            assert os.environ["PRIVATE_KEY"] == "0x" + ("ab" * 32)

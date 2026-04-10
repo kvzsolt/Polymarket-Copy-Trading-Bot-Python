@@ -2,11 +2,17 @@ from __future__ import annotations
 
 import asyncio
 import time
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from services.tradeMonitor import LeaderMonitorState, fetch_trade_data, init
+from services.tradeMonitor import (
+    LeaderMonitorState,
+    _monitor_loop_healthy,
+    fetch_trade_data,
+    init,
+    trade_monitor,
+)
 from storage.sqlite.cursors_repo import TradeCursor
 
 
@@ -203,3 +209,73 @@ async def test_detected_trade_logs_emit_before_trade_callback():
     print_detected.assert_called_once()
     log_detected.assert_called_once()
     assert events == ["console", "structured", "callback"]
+
+
+def test_monitor_loop_healthy_requires_recent_poll_and_ready_dependencies():
+    with patch(
+        "services.tradeMonitor.get_readiness",
+        return_value={"db_ok": True, "api_ok": True, "last_trade_poll_ts": 100},
+    ), patch("services.tradeMonitor.time.time", return_value=120):
+        assert _monitor_loop_healthy(fetch_ok=True, fetch_interval_s=5) is True
+
+
+def test_monitor_loop_healthy_rejects_stale_or_failed_poll():
+    with patch(
+        "services.tradeMonitor.get_readiness",
+        return_value={"db_ok": True, "api_ok": True, "last_trade_poll_ts": 100},
+    ), patch("services.tradeMonitor.time.time", return_value=140):
+        assert _monitor_loop_healthy(fetch_ok=True, fetch_interval_s=5) is False
+    with patch(
+        "services.tradeMonitor.get_readiness",
+        return_value={"db_ok": True, "api_ok": True, "last_trade_poll_ts": 100},
+    ), patch("services.tradeMonitor.time.time", return_value=110):
+        assert _monitor_loop_healthy(fetch_ok=False, fetch_interval_s=5) is False
+
+
+@pytest.mark.asyncio
+async def test_trade_monitor_emits_heartbeat_when_monitor_is_healthy():
+    leader_wallet = "0x1111111111111111111111111111111111111111"
+    on_trade = AsyncMock()
+    cursor_store = MagicMock()
+    cursor_store.get_cursor.return_value = TradeCursor(timestamp=0, tx_hash="", trade_id=None)
+
+    with patch("services.tradeMonitor.LeaderCursorStore", return_value=cursor_store), \
+         patch("services.tradeMonitor.init", new_callable=AsyncMock), \
+         patch("services.tradeMonitor.fetch_trade_data", new_callable=AsyncMock, return_value=(True, 17)), \
+         patch("services.tradeMonitor._monitor_loop_healthy", return_value=True), \
+         patch("services.tradeMonitor.monitor_heartbeat_tick") as heartbeat_tick, \
+         patch("services.tradeMonitor._POSITION_SAVE_INTERVAL", 10**12), \
+         patch("services.tradeMonitor.asyncio.sleep", side_effect=asyncio.CancelledError):
+        with pytest.raises(asyncio.CancelledError):
+            await trade_monitor(
+                {"leaderWallet": leader_wallet, "FETCH_INTERVAL": 1, "MONITORED_LEADER_COUNT": 3},
+                on_trade,
+            )
+
+    heartbeat_tick.assert_called_once_with(
+        trader_count=3,
+        checked_activities=17,
+        leader_wallet=leader_wallet,
+        monitored_leader_count=3,
+        symbol="🟢",
+    )
+
+
+@pytest.mark.asyncio
+async def test_trade_monitor_skips_heartbeat_when_monitor_is_unhealthy():
+    leader_wallet = "0x1111111111111111111111111111111111111111"
+    on_trade = AsyncMock()
+    cursor_store = MagicMock()
+    cursor_store.get_cursor.return_value = TradeCursor(timestamp=0, tx_hash="", trade_id=None)
+
+    with patch("services.tradeMonitor.LeaderCursorStore", return_value=cursor_store), \
+         patch("services.tradeMonitor.init", new_callable=AsyncMock), \
+         patch("services.tradeMonitor.fetch_trade_data", new_callable=AsyncMock, return_value=(False, 0)), \
+         patch("services.tradeMonitor._monitor_loop_healthy", return_value=False), \
+         patch("services.tradeMonitor.monitor_heartbeat_tick") as heartbeat_tick, \
+         patch("services.tradeMonitor._POSITION_SAVE_INTERVAL", 10**12), \
+         patch("services.tradeMonitor.asyncio.sleep", side_effect=asyncio.CancelledError):
+        with pytest.raises(asyncio.CancelledError):
+            await trade_monitor({"leaderWallet": leader_wallet, "FETCH_INTERVAL": 1}, on_trade)
+
+    heartbeat_tick.assert_not_called()

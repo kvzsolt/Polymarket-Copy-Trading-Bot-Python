@@ -5,7 +5,7 @@ from typing import Any
 
 from config.env import ENV, get_funder_address
 from services.leaderCursorStore import LeaderCursorStore
-from services.healthServer import update_readiness
+from services.healthServer import get_readiness, update_readiness
 from services.metrics import metrics
 from storage.sqlite.cursors_repo import TradeCursor
 from utils.fetchData import fetch_data
@@ -14,6 +14,7 @@ from utils.logger import (
     log_trade_detected,
     redact_error_detail,
     log_trade_batch_summary,
+    monitor_heartbeat_tick,
     print_new_trade_detected,
     shorten_addr,
 )
@@ -216,6 +217,21 @@ def _aggregate_trades(trades: list[dict]) -> list[dict]:
     return aggregated
 
 
+def _monitor_loop_healthy(*, fetch_ok: bool, fetch_interval_s: int) -> bool:
+    if not fetch_ok:
+        return False
+    readiness = get_readiness()
+    if not bool(readiness.get("db_ok")):
+        return False
+    if not bool(readiness.get("api_ok", True)):
+        return False
+    last_poll_ts = int(readiness.get("last_trade_poll_ts") or 0)
+    if last_poll_ts <= 0:
+        return False
+    max_poll_lag_s = max(30, int(fetch_interval_s) * 3)
+    return (int(time.time()) - last_poll_ts) <= max_poll_lag_s
+
+
 def _log_detected_trade(leader_wallet: str, trade: dict) -> None:
     submarket = (
         trade.get("submarket")
@@ -267,6 +283,7 @@ async def fetch_trade_data(
     research_capture_service: Any | None = None,
 ):
     """Fetch new trades and call *on_trade_callback(trade)* immediately for each."""
+    checked_activities = 0
     try:
         user_activities = await fetch_data(
             f'https://data-api.polymarket.com/activity?user={user_address}&limit=50&offset=0',
@@ -274,11 +291,12 @@ async def fetch_trade_data(
         )
     except Exception as e:
         logger.error(f'Fetch activity failed: {e}')
-        return
+        return False, checked_activities
     user_activities = _normalize_activities(user_activities)
+    checked_activities = len(user_activities)
     if not user_activities:
         update_readiness(last_trade_poll_ts=int(time.time()))
-        return
+        return True, checked_activities
     try:
         current_timestamp = int(time.time())
         update_readiness(last_trade_poll_ts=current_timestamp)
@@ -350,6 +368,8 @@ async def fetch_trade_data(
                 logger.error(f'DB save activities: {e}')
     except Exception as e:
         logger.error(f'Error fetch_trade_data: {e}')
+        return False, checked_activities
+    return True, checked_activities
 
 
 async def fetch_and_save_positions(
@@ -398,9 +418,10 @@ async def trade_monitor(
     await init(leader_wallet, state)
     cursor_store.set_cursor(leader_wallet, state.last_cursor)
     proxy_wallet = get_funder_address()
+    monitored_leader_count = int(bot_params.get('MONITORED_LEADER_COUNT', 1) or 1)
     while True:
         previous_cursor = state.last_cursor
-        await fetch_trade_data(
+        fetch_ok, checked_activities = await fetch_trade_data(
             leader_wallet,
             on_trade_callback,
             state,
@@ -423,6 +444,15 @@ async def trade_monitor(
                     proxy_wallet,
                     research_capture_service=research_capture_service,
                 )
+            )
+
+        if _monitor_loop_healthy(fetch_ok=fetch_ok, fetch_interval_s=fetch_interval):
+            monitor_heartbeat_tick(
+                trader_count=monitored_leader_count,
+                checked_activities=checked_activities,
+                leader_wallet=leader_wallet,
+                monitored_leader_count=monitored_leader_count,
+                symbol="🟢",
             )
 
         await asyncio.sleep(fetch_interval)

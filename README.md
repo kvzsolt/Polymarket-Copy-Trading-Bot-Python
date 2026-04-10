@@ -357,6 +357,9 @@ Position manager / P&L tracker / accounting ledger
 config/
   db.py                  Mongo connection + DB selection
   env.py                 environment parsing and validation
+  runtime.env            non-sensitive runtime configuration by subsystem
+
+runtime_env.py           layered dotenv loader (runtime.env + .env)
 
 services/
   tradeMonitor.py        leader wallet monitoring
@@ -533,74 +536,57 @@ The system is built to explain itself.
 
 ## Environment configuration
 
-A starter template lives at:
+Environment settings are split by sensitivity:
 
-- `data/env.example`
+- `config/runtime.env` → checked-in, non-sensitive runtime configuration grouped by subsystem.
+- `config/runtime.local.env` → local non-sensitive overrides for public identities and machine-specific tweaks.
+- `.env` → local sensitive values only (private keys, provider/API credentials, secret RPC URLs).
+- `.env.example` → sensitive-only template to copy for local setup.
+- `config/runtime.local.example` → template for local non-sensitive identity overrides.
 
-Copy it to `.env` and fill in the required values.
+Runtime entrypoints load config in this order:
+1. `config/runtime.env`
+2. `config/runtime.local.env`
+3. `.env`
 
-### Core required variables
+That keeps shared defaults, local public overrides, and secrets in separate lanes.
+
+### Sensitive variables (`.env`)
+
+```env
+RPC_URL=
+CLOB_API_KEY=
+RELAYER_API_KEY=
+PRIVATE_KEY=
+PRIVATE_KEY_FILE=
+```
+
+### Local non-sensitive overrides (`config/runtime.local.env`)
 
 ```env
 LEADER_WALLETS=
+USER_ADDRESS=
 FUNDER_ADDRESS=
-PRIVATE_KEY=
-SIGNATURE_TYPE=2
-CHAIN_ID=137
-RPC_URL=
-```
-
-### Common optional variables
-
-```env
-CLOB_HTTP_URL=https://clob.polymarket.com
-MONGO_URI=
+PROXY_WALLET=
 MULTI_USER_CONFIG_FILE=
-LEADER_AUTO=false
-LEADER_AUTO_COUNT=5
-ENABLE_RISK_MGMT=true
-ENABLE_AUTO_REDEEM=true
-ENABLE_METRICS_SERVER=false
-METRICS_PORT=9102
-ENFORCE_GEOBLOCK=true
 ```
 
-### Sizing and copy decision controls
+### Non-sensitive variables (`config/runtime.env`)
 
-```env
-SIZING_MODE=proportional
-PERCENTAGE=25
-TRADE_MULTIPLIER=1.0
-TIERED_TRADE_MULTIPLIERS=0-25:1.5,25-100:1.0,100+:0.4
-ADAPTIVE_SIZING_BASIS=trade_size
-ADAPTIVE_MIN_PERCENT=5
-ADAPTIVE_MAX_PERCENT=15
-ADAPTIVE_THRESHOLD_USDC=300
-BUY_MIN_AMOUNT=1
-BUY_MAX_AMOUNT=100
-ENABLE_COPY_DECISION_GATE=true
-COPY_DECISION_MIN_SCORE=0.32
-COPY_MAX_PRICE_DRIFT_PCT=6
-COPY_MAX_EDGE_DECAY_PCT=70
-COPY_MAX_SIGNAL_AGE_SECONDS=120
-ENABLE_NEAR_RESOLUTION_GATE=true
-NEAR_RESOLUTION_GATE_PRICE=0.95
-NEAR_RESOLUTION_MAX_AGE_SECONDS=15
-```
+`config/runtime.env` contains grouped sections with per-setting comments for:
 
-### Risk management controls
-
-```env
-STOP_LOSS_PCT=20
-TAKE_PROFIT_PCT=70
-MAX_POSITION_PCT=0.10
-RISK_CHECK_INTERVAL=10
-PROFIT_LOCK_TRIGGER_PCT=70
-NEAR_MAX_PRICE_WARN=0.95
-NEAR_MAX_PRICE_EXIT=0.95
-```
+- Polymarket / API
+- Trading / Execution
+- Risk
+- Database / Storage
+- Logging / Monitoring
+- Feature Flags
+- External Services
 
 ### Notes
+
+- `config/runtime.local.env` is gitignored on purpose.
+- Use `config/runtime.local.example` as the public/local identity template.
 
 - `PRIVATE_KEY_FILE` is supported and validated with permission checks.
 - `FUNDER_ADDRESS` is preferred; `PROXY_WALLET` exists as a backward-compatible fallback.

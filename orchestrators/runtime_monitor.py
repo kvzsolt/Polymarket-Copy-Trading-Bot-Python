@@ -18,6 +18,7 @@ async def run_leader_monitor(
     contexts: list[TradingContext],
     *,
     fetch_interval: int,
+    monitored_leader_count: int = 1,
     research_capture_service: Any | None = None,
 ) -> None:
     if not contexts:
@@ -62,6 +63,7 @@ async def run_leader_monitor(
             {
                 "leaderWallet": leader_wallet,
                 "FETCH_INTERVAL": fetch_interval,
+                "MONITORED_LEADER_COUNT": monitored_leader_count,
             },
             on_trade,
             research_capture_service=research_capture_service,
