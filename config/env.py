@@ -4,12 +4,13 @@ import sys
 from dataclasses import dataclass
 from enum import IntEnum
 from pathlib import Path
-from dotenv import load_dotenv
 
-# NOTE: Do NOT call load_dotenv() at import time.
+from runtime_env import load_runtime_env
+
+# NOTE: Do NOT call load_runtime_env() at import time.
 # Import-time side effects make the test suite non-deterministic because a local
 # `.env` file (developer machine / CI workspace) can silently override defaults.
-# Runtime entrypoints (e.g. app.py) should call load_dotenv() explicitly.
+# Runtime entrypoints (e.g. app.py) should call load_runtime_env() explicitly.
 
 _ETH_ADDR_RE = re.compile(r'^0x[0-9a-fA-F]{40}$')
 _HEX_PRIVATE_KEY_RE = re.compile(r'^0x[0-9a-fA-F]{64}$')
@@ -385,8 +386,8 @@ def validate_runtime_env() -> None:
 
 
 # IMPORTANT: This snapshot is populated at import time from os.environ.
-# ``dotenv.load_dotenv()`` MUST be called before ``config.env`` is first imported
-# in runtime entrypoints (app.py does this). Tests can call ``rehydrate_env()``
+# ``runtime_env.load_runtime_env()`` MUST be called before ``config.env`` is first
+# imported in runtime entrypoints (app.py does this). Tests can call ``rehydrate_env()``
 # after patching ``os.environ`` to rebuild this snapshot in place.
 def _build_env_snapshot() -> dict[str, object]:
     """Return a parsed environment snapshot from current ``os.environ``."""
@@ -634,10 +635,10 @@ def rehydrate_env(*, load_dotenv_file: bool = False, dotenv_path: str | os.PathL
     Args:
         load_dotenv_file: When True, load dotenv values before rebuilding.
         dotenv_path: Optional explicit dotenv path (defaults to standard lookup).
-        override: Forwarded to ``load_dotenv`` when ``load_dotenv_file`` is True.
+        override: Forwarded to the secrets `.env` load when ``load_dotenv_file`` is True.
     """
     if load_dotenv_file:
-        load_dotenv(dotenv_path=dotenv_path, override=override)
+        load_runtime_env(secrets_path=dotenv_path, override_secrets=override)
 
     ENV.clear()
     ENV.update(_build_env_snapshot())

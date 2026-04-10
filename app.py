@@ -4,11 +4,11 @@ import asyncio
 import signal
 from collections.abc import Awaitable, Callable
 
-# Load .env as early as possible for script execution.
+# Load non-sensitive runtime config + local .env as early as possible.
 try:
-    from dotenv import load_dotenv
+    from runtime_env import load_runtime_env
 
-    load_dotenv()
+    load_runtime_env()
 except Exception:
     pass
 
@@ -249,6 +249,7 @@ async def main():
             contexts_by_leader=contexts_by_leader,
             leaders_repo=leaders_repo,
         )
+        monitored_leader_count = len([wallet for wallet, contexts in contexts_by_leader.items() if contexts])
         for wallet in started_wallets:
             monitor_tasks.append(
                 asyncio.create_task(
@@ -256,6 +257,7 @@ async def main():
                         wallet,
                         contexts_by_leader[wallet],
                         fetch_interval=fetch_interval,
+                        monitored_leader_count=monitored_leader_count,
                         research_capture_service=research_capture_service,
                     )
                 )
@@ -310,6 +312,7 @@ async def main():
                 wallet,
                 contexts_by_leader[wallet],
                 fetch_interval=fetch_interval,
+                monitored_leader_count=len(monitored_leaders),
                 research_capture_service=research_capture_service,
             )
         )
