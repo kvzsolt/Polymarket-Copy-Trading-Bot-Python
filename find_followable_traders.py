@@ -4,9 +4,9 @@ import os
 import time
 from pathlib import Path
 
-from dotenv import load_dotenv
+from runtime_env import load_runtime_env
 
-load_dotenv(override=True)
+load_runtime_env(override_secrets=True)
 
 from config.env import ENV, rehydrate_env
 from config.db import connect_db, get_db_path

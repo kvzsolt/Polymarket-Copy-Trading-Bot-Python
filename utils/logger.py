@@ -596,22 +596,41 @@ class MonitorHeartbeat:
         self._last_log: float = 0.0
         self._trader_count: int = 0
 
-    def tick(self, *, trader_count: int = 1, checked_activities: int = 0) -> None:
+    def tick(
+        self,
+        *,
+        trader_count: int = 1,
+        checked_activities: int = 0,
+        leader_wallet: str | None = None,
+        monitored_leader_count: int | None = None,
+        symbol: str = "🟢",
+    ) -> None:
         self._trader_count = trader_count
         now = time.time()
         if now - self._last_log >= self.interval:
             self._last_log = now
             ts = time.strftime("%I:%M:%S %p")
-            console.print(
-                f"[muted][{ts}][/muted] ✅ [heartbeat]Monitor is running, and healthy — watching "
-                f"{trader_count} trader(s)[/heartbeat]"
-            )
+            leader_label = shorten_addr(leader_wallet) if leader_wallet else "multi-leader"
+            if monitored_leader_count and monitored_leader_count > 1:
+                console.print(
+                    f"[muted][{ts}][/muted] {symbol} [heartbeat]Trade Monitor is running and healthy | "
+                    f"leaders {monitored_leader_count} total | current {leader_label} | "
+                    f"watching {trader_count} trader(s)[/heartbeat]"
+                )
+            else:
+                console.print(
+                    f"[muted][{ts}][/muted] {symbol} [heartbeat]Trade Monitor is running and healthy | "
+                    f"leader {leader_label} | watching {trader_count} trader(s)[/heartbeat]"
+                )
             # Also write structured heartbeat to JSONL
             _logger = get_logger()
             log_monitor_heartbeat(
                 _logger,
                 interval_s=self.interval,
                 checked_activities=checked_activities,
+                leader_wallet=leader_wallet,
+                monitored_leader_count=monitored_leader_count,
+                symbol=symbol,
             )
 
     def reset(self) -> None:
@@ -622,8 +641,21 @@ class MonitorHeartbeat:
 _heartbeat = MonitorHeartbeat()
 
 
-def monitor_heartbeat_tick(*, trader_count: int = 1, checked_activities: int = 0) -> None:
-    _heartbeat.tick(trader_count=trader_count, checked_activities=checked_activities)
+def monitor_heartbeat_tick(
+    *,
+    trader_count: int = 1,
+    checked_activities: int = 0,
+    leader_wallet: str | None = None,
+    monitored_leader_count: int | None = None,
+    symbol: str = "🟢",
+) -> None:
+    _heartbeat.tick(
+        trader_count=trader_count,
+        checked_activities=checked_activities,
+        leader_wallet=leader_wallet,
+        monitored_leader_count=monitored_leader_count,
+        symbol=symbol,
+    )
 
 
 def reset_heartbeat() -> None:
@@ -1328,14 +1360,27 @@ def log_monitor_heartbeat(
     *,
     interval_s: int,
     checked_activities: int,
+    leader_wallet: str | None = None,
+    monitored_leader_count: int | None = None,
+    symbol: str = "🟢",
 ) -> None:
+    leader_label = shorten_addr(leader_wallet) if leader_wallet else "multi-leader"
+    leader_summary = (
+        f"leaders={monitored_leader_count} total | current={leader_label}"
+        if monitored_leader_count and monitored_leader_count > 1
+        else f"leader={leader_label}"
+    )
     logger.info(
-        f"Monitoring heartbeat: running (no new trades in last {interval_s}s) | "
-        f"Checked: {checked_activities}",
+        f"{symbol} Trade Monitor is running and healthy | {leader_summary} | "
+        f"no new trades in last {interval_s}s | checked={checked_activities}",
         extra={
             "type": "monitor_heartbeat",
             "intervalSeconds": interval_s,
             "checkedActivities": checked_activities,
+            "leaderWallet": leader_wallet,
+            "monitoredLeaderCount": monitored_leader_count,
+            "status": "healthy",
+            "symbol": symbol,
         },
     )
 
