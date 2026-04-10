@@ -55,6 +55,33 @@ def _is_thin_or_empty_book(bid: Decimal | None, ask: Decimal | None) -> bool:
     return bid <= _THIN_BOOK_BID_CEIL and ask >= _THIN_BOOK_ASK_FLOOR
 
 
+def _safe_decimal(value: Any) -> Decimal | None:
+    try:
+        if value is None:
+            return None
+        return Decimal(str(value))
+    except Exception:
+        return None
+
+
+def _top_of_book_from_levels(levels: list[Any], *, side: str) -> Decimal | None:
+    prices = []
+    for level in levels:
+        price = _safe_decimal(getattr(level, "price", None))
+        if price is None and isinstance(level, dict):
+            price = _safe_decimal(level.get("price"))
+        if price is not None:
+            prices.append(price)
+
+    if not prices:
+        return None
+    if side == "bid":
+        return max(prices)
+    if side == "ask":
+        return min(prices)
+    raise ValueError(f"Unsupported book side: {side}")
+
+
 class ClobClientWrapper:
     def __init__(self, client: ClobClient, wallet_config: WalletConfig):
         self.client = client
@@ -87,8 +114,8 @@ class ClobClientWrapper:
                 tick_size=Decimal(str(getattr(orderbook, "tick_size", "0.01"))),
                 min_order_size=Decimal(str(getattr(orderbook, "min_order_size", "0"))),
                 neg_risk=bool(getattr(orderbook, "neg_risk", False)),
-                best_bid=Decimal(str(bids[0].price)) if bids else None,
-                best_ask=Decimal(str(asks[0].price)) if asks else None,
+                best_bid=_top_of_book_from_levels(bids, side="bid"),
+                best_ask=_top_of_book_from_levels(asks, side="ask"),
             )
             ttl = _META_CACHE_TTL_THIN if _is_thin_or_empty_book(meta.best_bid, meta.best_ask) else _META_CACHE_TTL_GOOD
             self._market_meta_cache[asset] = (meta, time.monotonic() + ttl)
@@ -122,8 +149,8 @@ class ClobClientWrapper:
                 tick_size=Decimal(str(data.get("tick_size", "0.01"))),
                 min_order_size=Decimal(str(data.get("min_order_size", "0"))),
                 neg_risk=bool(data.get("neg_risk", False)),
-                best_bid=Decimal(str(bids[0].get("price"))) if bids else None,
-                best_ask=Decimal(str(asks[0].get("price"))) if asks else None,
+                best_bid=_top_of_book_from_levels(bids, side="bid"),
+                best_ask=_top_of_book_from_levels(asks, side="ask"),
             )
             ttl = _META_CACHE_TTL_THIN if _is_thin_or_empty_book(meta.best_bid, meta.best_ask) else _META_CACHE_TTL_GOOD
             self._market_meta_cache[asset] = (meta, time.monotonic() + ttl)

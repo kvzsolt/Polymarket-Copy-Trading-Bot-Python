@@ -98,53 +98,69 @@ class CopyDecisionService:
                 edge_decay_pct=0.0,
             )
 
-        trust_mult = self.leader_scorer.trust_multiplier(leader_score.score)
+        decision_gate_enabled = bool(ENV.get("ENABLE_COPY_DECISION_GATE", True))
+        trust_mult = (
+            self.leader_scorer.trust_multiplier(leader_score.score)
+            if decision_gate_enabled
+            else 1.0
+        )
         desired_notional = min(base_notional_usdc * trust_mult, max_notional_usdc)
 
-        trade_score = self.trade_scorer.score_buy_trade(
-            trade,
-            live_price=live_price,
-            leader_score=leader_score.score,
-        )
-
-        if trade_score.hard_fail_reason:
-            return CopyDecision(
-                allow=False,
-                skip_code=trade_score.hard_fail_reason,
-                reason=f"decision gate rejected BUY: {trade_score.hard_fail_reason}",
-                side="BUY",
-                decision_score=trade_score.score,
-                leader_score=leader_score.score,
-                trade_score=trade_score.score,
+        if decision_gate_enabled:
+            trade_score = self.trade_scorer.score_buy_trade(
+                trade,
                 live_price=live_price,
-                reference_price=ref_price,
-                target_notional_usdc=0.0,
-                target_size_tokens=0.0,
-                price_drift_pct=trade_score.price_drift_pct,
-                edge_decay_pct=trade_score.edge_decay_pct,
-                details=trade_score.details,
+                leader_score=leader_score.score,
             )
 
-        min_decision_score = float(ENV.get("COPY_DECISION_MIN_SCORE", 0.28) or 0.28)
-        if trade_score.score < min_decision_score:
-            return CopyDecision(
-                allow=False,
-                skip_code="low_trade_score",
-                reason=(
-                    f"trade trust score {trade_score.score:.3f} below threshold "
-                    f"{min_decision_score:.3f}"
-                ),
-                side="BUY",
-                decision_score=trade_score.score,
-                leader_score=leader_score.score,
-                trade_score=trade_score.score,
-                live_price=live_price,
-                reference_price=ref_price,
-                target_notional_usdc=0.0,
-                target_size_tokens=0.0,
-                price_drift_pct=trade_score.price_drift_pct,
-                edge_decay_pct=trade_score.edge_decay_pct,
-                details=trade_score.details,
+            if trade_score.hard_fail_reason:
+                return CopyDecision(
+                    allow=False,
+                    skip_code=trade_score.hard_fail_reason,
+                    reason=f"decision gate rejected BUY: {trade_score.hard_fail_reason}",
+                    side="BUY",
+                    decision_score=trade_score.score,
+                    leader_score=leader_score.score,
+                    trade_score=trade_score.score,
+                    live_price=live_price,
+                    reference_price=ref_price,
+                    target_notional_usdc=0.0,
+                    target_size_tokens=0.0,
+                    price_drift_pct=trade_score.price_drift_pct,
+                    edge_decay_pct=trade_score.edge_decay_pct,
+                    details=trade_score.details,
+                )
+
+            min_decision_score = float(ENV.get("COPY_DECISION_MIN_SCORE", 0.28) or 0.28)
+            if trade_score.score < min_decision_score:
+                return CopyDecision(
+                    allow=False,
+                    skip_code="low_trade_score",
+                    reason=(
+                        f"trade trust score {trade_score.score:.3f} below threshold "
+                        f"{min_decision_score:.3f}"
+                    ),
+                    side="BUY",
+                    decision_score=trade_score.score,
+                    leader_score=leader_score.score,
+                    trade_score=trade_score.score,
+                    live_price=live_price,
+                    reference_price=ref_price,
+                    target_notional_usdc=0.0,
+                    target_size_tokens=0.0,
+                    price_drift_pct=trade_score.price_drift_pct,
+                    edge_decay_pct=trade_score.edge_decay_pct,
+                    details=trade_score.details,
+                )
+        else:
+            trade_score = TradeScore(
+                score=1.0,
+                price_drift_pct=0.0,
+                edge_decay_pct=0.0,
+                age_seconds=0.0,
+                liquidity_score=1.0,
+                hard_fail_reason=None,
+                details={"decision_gate_enabled": False},
             )
 
         # Hard safety floors:
@@ -226,6 +242,8 @@ class CopyDecisionService:
             reason=(
                 f"decision-approved BUY; trust={leader_score.score:.3f}, "
                 f"trade_score={trade_score.score:.3f}"
+                if decision_gate_enabled
+                else "decision gate disabled by config"
             ),
             side="BUY",
             decision_score=trade_score.score,
@@ -239,6 +257,7 @@ class CopyDecisionService:
             edge_decay_pct=trade_score.edge_decay_pct,
             details={
                 **trade_score.details,
+                "decision_gate_enabled": decision_gate_enabled,
                 "trust_multiplier": trust_mult,
                 "base_notional_usdc": base_notional_usdc,
                 "max_notional_usdc": max_notional_usdc,
@@ -257,6 +276,7 @@ class CopyDecisionService:
     ) -> CopyDecision:
         ref_price = float(trade.get("price", 0) or 0)
         decimals = int(ENV.get("COPY_SIZE_DECIMALS", 4) or 4)
+        decision_gate_enabled = bool(ENV.get("ENABLE_COPY_DECISION_GATE", True))
         if sell_tokens <= 0:
             return CopyDecision(
                 allow=False,
@@ -301,7 +321,11 @@ class CopyDecisionService:
         return CopyDecision(
             allow=True,
             skip_code="ok",
-            reason="decision-approved SELL",
+            reason=(
+                "decision gate disabled by config"
+                if not decision_gate_enabled
+                else "decision-approved SELL"
+            ),
             side="SELL",
             decision_score=1.0,
             leader_score=1.0,
@@ -312,6 +336,9 @@ class CopyDecisionService:
             target_size_tokens=target,
             price_drift_pct=0.0,
             edge_decay_pct=0.0,
-            details={"market_min_size": market_min_size, "max_sell_tokens": max_sell_tokens},
+            details={
+                "decision_gate_enabled": decision_gate_enabled,
+                "market_min_size": market_min_size,
+                "max_sell_tokens": max_sell_tokens,
+            },
         )
-

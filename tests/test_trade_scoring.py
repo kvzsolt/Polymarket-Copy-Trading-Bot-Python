@@ -15,6 +15,7 @@ def _reset_env(monkeypatch):
     monkeypatch.setenv("COPY_MAX_PRICE_DRIFT_PCT", "6")
     monkeypatch.setenv("COPY_MAX_EDGE_DECAY_PCT", "70")
     monkeypatch.setenv("COPY_LIQUIDITY_TARGET_USDC", "50")
+    monkeypatch.setenv("ENABLE_NEAR_RESOLUTION_GATE", "true")
     monkeypatch.setenv("NEAR_RESOLUTION_GATE_PRICE", "0.95")
     monkeypatch.setenv("NEAR_RESOLUTION_MAX_AGE_SECONDS", "15")
     rehydrate_env()
@@ -61,6 +62,16 @@ class TestNearResolutionGate:
     def test_gate_disabled_when_zero(self, monkeypatch):
         """NEAR_RESOLUTION_GATE_PRICE=0 disables the gate."""
         monkeypatch.setenv("NEAR_RESOLUTION_GATE_PRICE", "0")
+        rehydrate_env()
+        trade = _trade(price=0.99, age_seconds=60.0)
+        result = TradeScoringService().score_buy_trade(trade, live_price=0.99, leader_score=0.8)
+        assert result.hard_fail_reason != "near_resolution_too_stale"
+
+    def test_gate_disabled_by_explicit_toggle(self, monkeypatch):
+        """ENABLE_NEAR_RESOLUTION_GATE=false disables gate regardless of threshold."""
+        monkeypatch.setenv("ENABLE_NEAR_RESOLUTION_GATE", "false")
+        monkeypatch.setenv("NEAR_RESOLUTION_GATE_PRICE", "0.95")
+        monkeypatch.setenv("NEAR_RESOLUTION_MAX_AGE_SECONDS", "15")
         rehydrate_env()
         trade = _trade(price=0.99, age_seconds=60.0)
         result = TradeScoringService().score_buy_trade(trade, live_price=0.99, leader_score=0.8)

@@ -90,7 +90,7 @@ class _FeeSvc:
 
 @dataclass
 class _MetaSvc:
-    async def get(self, token_id: str):
+    async def get(self, token_id: str, refresh: bool = False):  # noqa: ARG002
         return MarketMeta(
             token_id=token_id,
             tick_size=Decimal("0.01"),

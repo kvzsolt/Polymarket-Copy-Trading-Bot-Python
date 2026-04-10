@@ -89,6 +89,11 @@ class TradeScoringService:
         )
         quality = _clamp(quality)
 
+        near_res_enabled = bool(ENV.get("ENABLE_NEAR_RESOLUTION_GATE", True))
+        near_res_price_raw = ENV.get("NEAR_RESOLUTION_GATE_PRICE", 0.95)
+        near_res_price = float(near_res_price_raw) if near_res_price_raw is not None else 0.95
+        near_res_max_age = float(ENV.get("NEAR_RESOLUTION_MAX_AGE_SECONDS", 15) or 15)
+
         hard_fail_reason = None
         if price_drift_pct > max_drift_pct:
             hard_fail_reason = "price_drift_exceeded"
@@ -101,12 +106,11 @@ class TradeScoringService:
             # about to resolve YES), only allow the signal if it is very fresh.
             # A leader's last-second bet at 0.95+ cannot be safely copied because
             # the market may resolve before our order fills.
-            # Set NEAR_RESOLUTION_GATE_PRICE=0 to disable this gate entirely.
-            near_res_price_raw = ENV.get("NEAR_RESOLUTION_GATE_PRICE", 0.95)
-            near_res_price = float(near_res_price_raw) if near_res_price_raw is not None else 0.95
-            near_res_max_age = float(ENV.get("NEAR_RESOLUTION_MAX_AGE_SECONDS", 15) or 15)
+            # Set ENABLE_NEAR_RESOLUTION_GATE=false (or NEAR_RESOLUTION_GATE_PRICE=0)
+            # to disable this gate.
             if (
-                near_res_price > 0
+                near_res_enabled
+                and near_res_price > 0
                 and live_price >= near_res_price
                 and trade_ts > 0
                 and age_seconds > near_res_max_age
@@ -127,6 +131,8 @@ class TradeScoringService:
                 "max_age_seconds": max_age_seconds,
                 "max_drift_pct": max_drift_pct,
                 "max_edge_decay": max_edge_decay,
+                "near_resolution_gate_enabled": near_res_enabled,
+                "near_resolution_gate_price": near_res_price,
+                "near_resolution_max_age_seconds": near_res_max_age,
             },
         )
-

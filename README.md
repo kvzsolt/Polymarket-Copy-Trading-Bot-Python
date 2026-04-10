@@ -421,7 +421,7 @@ tests/
 
 The active runtime path is now orchestration-first and SQLite-backed:
 
-- `index.py` is orchestration-only (context building, registry/monitor loops, service startup).
+- `app.py` is orchestration-only (context building, registry/monitor loops, service startup).
 - Trade execution uses `TradingContext` (`domain/trading_context.py`) and `orchestrators/trade_pipeline.py`.
 - Persistence is centralized under `storage/sqlite/*` (no scattered runtime table bootstrap).
 - Risk monitoring has a restart-safe persisted path (`risk_monitor_loop_for_contexts`) that rebuilds state from stored positions/fills.
@@ -578,10 +578,14 @@ ADAPTIVE_MAX_PERCENT=15
 ADAPTIVE_THRESHOLD_USDC=300
 BUY_MIN_AMOUNT=1
 BUY_MAX_AMOUNT=100
+ENABLE_COPY_DECISION_GATE=true
 COPY_DECISION_MIN_SCORE=0.32
 COPY_MAX_PRICE_DRIFT_PCT=6
 COPY_MAX_EDGE_DECAY_PCT=70
 COPY_MAX_SIGNAL_AGE_SECONDS=120
+ENABLE_NEAR_RESOLUTION_GATE=true
+NEAR_RESOLUTION_GATE_PRICE=0.95
+NEAR_RESOLUTION_MAX_AGE_SECONDS=15
 ```
 
 ### Risk management controls
@@ -656,7 +660,7 @@ pip install -e .[dev]
 Run the bot:
 
 ```bash
-python index.py
+python app.py
 ```
 
 ---
