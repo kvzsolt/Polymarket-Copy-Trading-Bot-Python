@@ -417,6 +417,8 @@ class TestRichDisplayHelpers:
             "usdcSize": 0.84392,
             "price": 0.014,
             "title": "2026 NBA Champion",
+            "submarket": "Moneyline",
+            "outcome": "Blackhawks",
             "eventSlug": "2026-nba-champion",
             "transactionHash": "0xa43d5164f7eb00b163bf37ab1016bf65381fcc38a96f2ea5ae81bb31fb0cd5bd",
         }
@@ -443,6 +445,9 @@ class TestRichDisplayHelpers:
             success=True, side="BUY",
             leader_tx="0xabc123", copy_tx="0xdef456",
             amount=0.84, price=0.014,
+            title="Hurricanes vs Blackhawks",
+            submarket="Moneyline",
+            outcome="Blackhawks",
         )
 
     def test_print_trade_result_failure(self):

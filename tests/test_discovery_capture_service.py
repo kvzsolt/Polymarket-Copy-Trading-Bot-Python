@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
+import asyncio
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -9,6 +10,9 @@ from services.discovery.capture_service import DiscoveryCaptureService
 from storage.sqlite.connection import create_connection
 from storage.sqlite.discovery_repo import DiscoveryRepo
 from storage.sqlite.migrations import apply_migrations
+
+VALID_TOKEN_YES = "71321045679252212594626385532706912750332728571942532223535764789812338637396"
+VALID_TOKEN_NO = "71321045679252212594626385532706912750332728571942532223535764789812338637397"
 
 
 def _init_db(path) -> None:
@@ -27,7 +31,7 @@ async def test_capture_observed_trades_persists_trade_market_and_orderbook(tmp_p
     raw_trade = {
         "proxyWallet": "0x1111111111111111111111111111111111111111",
         "conditionId": "cond-1",
-        "asset": "token-yes",
+        "asset": VALID_TOKEN_YES,
         "side": "BUY",
         "size": "25",
         "price": "0.44",
@@ -42,8 +46,8 @@ async def test_capture_observed_trades_persists_trade_market_and_orderbook(tmp_p
         "category": "Politics",
         "endDate": "2026-12-31T23:59:59Z",
         "tokens": [
-            {"outcome": "Yes", "token_id": "token-yes"},
-            {"outcome": "No", "token_id": "token-no"},
+            {"outcome": "Yes", "token_id": VALID_TOKEN_YES},
+            {"outcome": "No", "token_id": VALID_TOKEN_NO},
         ],
     }
     orderbook_payload = {
@@ -69,11 +73,11 @@ async def test_capture_observed_trades_persists_trade_market_and_orderbook(tmp_p
     assert market.question == "Will example happen?"
     assert market.slug == "will-example-happen"
     assert market.event_slug == "example-event"
-    assert market.yes_token_id == "token-yes"
-    assert market.no_token_id == "token-no"
+    assert market.yes_token_id == VALID_TOKEN_YES
+    assert market.no_token_id == VALID_TOKEN_NO
     assert market.category == "Politics"
 
-    snapshots = repo.list_orderbook_snapshots("token-yes", reference_tx_hash="0xabc")
+    snapshots = repo.list_orderbook_snapshots(VALID_TOKEN_YES, reference_tx_hash="0xabc")
     assert len(snapshots) == 1
     snapshot = snapshots[0]
     assert snapshot.reference_trade_id == "trade-1"
@@ -120,3 +124,104 @@ async def test_capture_position_snapshots_persists_reported_position_fields(tmp_
     assert snapshot.current_value == Decimal("7.84")
     assert snapshot.current_price == Decimal("0.56")
     assert snapshot.realized_pnl == Decimal("1.20")
+
+
+@pytest.mark.asyncio
+async def test_capture_observed_trades_invalid_token_logs_terminal_without_fetch(tmp_path):
+    db_path = tmp_path / "bot_state.db"
+    _init_db(db_path)
+
+    service = DiscoveryCaptureService(str(db_path))
+    raw_trade = {
+        "proxyWallet": "0x1111111111111111111111111111111111111111",
+        "conditionId": "cond-1",
+        "asset": "invalid-token",
+        "side": "BUY",
+        "size": "25",
+        "price": "0.44",
+        "usdcSize": "11",
+        "transactionHash": "0xabc",
+        "timestamp": 1712300000,
+        "id": "trade-1",
+        "outcome": "Yes",
+        "title": "Will example happen?",
+    }
+
+    with patch("services.discovery.capture_service.fetch_data", new=AsyncMock()) as fetch_mock, \
+         patch("services.discovery.capture_service.logger.warning") as warn_mock:
+        await service.capture_observed_trades([raw_trade])
+
+    fetch_mock.assert_not_called()
+    assert warn_mock.call_count >= 1
+    warning_extra = warn_mock.call_args.kwargs["extra"]
+    assert warning_extra["failure_class"] == "invalid_token_id"
+    assert warning_extra["retryable"] is False
+    assert warning_extra["terminal"] is True
+
+
+@pytest.mark.asyncio
+async def test_capture_observed_trades_transport_error_marked_retryable(tmp_path):
+    db_path = tmp_path / "bot_state.db"
+    _init_db(db_path)
+
+    service = DiscoveryCaptureService(str(db_path))
+    raw_trade = {
+        "proxyWallet": "0x1111111111111111111111111111111111111111",
+        "conditionId": "cond-1",
+        "asset": VALID_TOKEN_YES,
+        "side": "BUY",
+        "size": "25",
+        "price": "0.44",
+        "usdcSize": "11",
+        "transactionHash": "0xabc",
+        "timestamp": 1712300000,
+        "id": "trade-1",
+        "outcome": "Yes",
+        "title": "Will example happen?",
+    }
+
+    with patch("services.discovery.capture_service.fetch_data", new=AsyncMock(side_effect=asyncio.TimeoutError("timeout"))), \
+         patch("services.discovery.capture_service.logger.warning") as warn_mock:
+        await service.capture_observed_trades([raw_trade])
+
+    assert warn_mock.call_count >= 1
+    warning_extra = warn_mock.call_args.kwargs["extra"]
+    assert warning_extra["failure_class"] == "transport_error"
+    assert warning_extra["retryable"] is True
+    assert warning_extra["terminal"] is False
+
+
+@pytest.mark.asyncio
+async def test_capture_observed_trades_throttles_duplicate_orderbook_failures(tmp_path):
+    db_path = tmp_path / "bot_state.db"
+    _init_db(db_path)
+
+    service = DiscoveryCaptureService(str(db_path), orderbook_error_log_window_seconds=60.0)
+    raw_trade = {
+        "proxyWallet": "0x1111111111111111111111111111111111111111",
+        "conditionId": "cond-1",
+        "asset": VALID_TOKEN_YES,
+        "side": "BUY",
+        "size": "25",
+        "price": "0.44",
+        "usdcSize": "11",
+        "transactionHash": "0xabc",
+        "timestamp": 1712300000,
+        "id": "trade-1",
+        "outcome": "Yes",
+        "title": "Will example happen?",
+    }
+
+    with patch("services.discovery.capture_service.fetch_data", new=AsyncMock(side_effect=RuntimeError("boom"))), \
+         patch("services.discovery.capture_service.logger.warning") as warn_mock, \
+         patch("services.discovery.capture_service.time.monotonic", side_effect=[0.0, 1.0, 61.0]):
+        await service.capture_observed_trades([dict(raw_trade, id="trade-1", transactionHash="0xabc1")])
+        await service.capture_observed_trades([dict(raw_trade, id="trade-2", transactionHash="0xabc2")])
+        await service.capture_observed_trades([dict(raw_trade, id="trade-3", transactionHash="0xabc3")])
+
+    assert warn_mock.call_count == 2
+    first_extra = warn_mock.call_args_list[0].kwargs["extra"]
+    second_extra = warn_mock.call_args_list[1].kwargs["extra"]
+    assert first_extra["failure_class"] == "unexpected_error"
+    assert "suppressed_duplicates" not in first_extra
+    assert second_extra["suppressed_duplicates"] == 1

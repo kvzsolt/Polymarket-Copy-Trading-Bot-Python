@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from index import _wait_for_active_leaders
+from app import _wait_for_active_leaders
 from orchestrators.leader_registry import LeaderRegistry
 from services.metrics import metrics
 from unittest.mock import patch

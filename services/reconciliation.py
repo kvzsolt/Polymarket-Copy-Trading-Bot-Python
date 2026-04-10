@@ -209,7 +209,7 @@ class ReconciliationService:
 
 
 # ---------------------------------------------------------------------------
-# Periodic reconciliation loop (for use from index.py)
+# Periodic reconciliation loop (for use from app.py)
 # ---------------------------------------------------------------------------
 
 async def reconciliation_loop(

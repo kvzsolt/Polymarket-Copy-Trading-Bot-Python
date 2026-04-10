@@ -11,14 +11,11 @@ from storage.sqlite.cursors_repo import TradeCursor
 from utils.fetchData import fetch_data
 from utils.logger import (
     get_logger,
-    monitor_heartbeat_tick,
-    print_new_trade_detected,
-    print_first_run_init,
-    print_historical_done,
-    print_monitor_start,
-    redact_error_detail,
-    shorten_addr,
     log_trade_detected,
+    redact_error_detail,
+    log_trade_batch_summary,
+    print_new_trade_detected,
+    shorten_addr,
 )
 
 logger = get_logger("TradeMonitor")
@@ -51,6 +48,22 @@ def _trade_ordering_key(trade: dict) -> tuple[int, str, str]:
     tx_hash = str(trade.get("transactionHash") or trade.get("txHash") or "").strip().lower()
     trade_id = str(trade.get("id") or trade.get("tradeID") or trade.get("trade_id") or "").strip().lower()
     return ts, tx_hash, trade_id
+
+
+def _cursor_key(cursor: TradeCursor) -> tuple[int, str, str]:
+    return (
+        int(cursor.timestamp or 0),
+        str(cursor.tx_hash or "").strip().lower(),
+        str(cursor.trade_id or "").strip().lower(),
+    )
+
+
+def _normalize_cursor(cursor: TradeCursor) -> TradeCursor:
+    return TradeCursor(
+        timestamp=int(cursor.timestamp or 0),
+        tx_hash=str(cursor.tx_hash or "").strip().lower(),
+        trade_id=str(cursor.trade_id or "").strip().lower() or None,
+    )
 
 
 async def _run_research_capture(
@@ -90,6 +103,8 @@ async def init(user_address: str, state: LeaderMonitorState):
         state.seen_hashes.clear()
         return
     try:
+        state.last_cursor = _normalize_cursor(state.last_cursor)
+        state.last_processed_ts = max(state.last_processed_ts, float(state.last_cursor.timestamp))
         user_activities = await fetch_data(
             f'https://data-api.polymarket.com/activity?user={user_address}&limit=50&offset=0',
             silent=True,
@@ -101,6 +116,13 @@ async def init(user_address: str, state: LeaderMonitorState):
             for t in state.recent_activities
             if t.get('transactionHash')
         }
+        if normalized:
+            latest_activity = max(normalized, key=_trade_ordering_key)
+            ts, tx_hash, trade_id = _trade_ordering_key(latest_activity)
+            latest_cursor = TradeCursor(timestamp=ts, tx_hash=tx_hash, trade_id=trade_id or None)
+            if _cursor_key(latest_cursor) > _cursor_key(state.last_cursor):
+                state.last_cursor = latest_cursor
+                state.last_processed_ts = float(ts)
     except Exception as e:
         logger.error(f'Init activity failed: {e}')
         state.recent_activities = []
@@ -194,6 +216,50 @@ def _aggregate_trades(trades: list[dict]) -> list[dict]:
     return aggregated
 
 
+def _log_detected_trade(leader_wallet: str, trade: dict) -> None:
+    submarket = (
+        trade.get("submarket")
+        or trade.get("subMarket")
+        or trade.get("sub_market")
+        or trade.get("marketSubtype")
+        or trade.get("marketType")
+        or trade.get("lineType")
+        or trade.get("betType")
+        or trade.get("groupItemTitle")
+        or trade.get("groupTitle")
+    )
+    outcome = (
+        trade.get("outcome")
+        or trade.get("outcomeName")
+        or trade.get("outcome_name")
+        or trade.get("tokenOutcome")
+        or trade.get("selection")
+        or trade.get("selectionName")
+        or trade.get("choice")
+    )
+    print_new_trade_detected(trade)
+    log_trade_detected(
+        logger,
+        side=str(trade.get("side") or "").upper(),
+        condition_id=trade.get("conditionId"),
+        asset=trade.get("asset") or trade.get("tokenID") or trade.get("token_id"),
+        size=float(trade.get("size", 0) or 0),
+        price=float(trade.get("price", 0) or 0),
+        usdc_value=_trade_usdc_value(trade),
+        tx_hash=trade.get("transactionHash"),
+        event_slug=trade.get("eventSlug") or trade.get("slug"),
+        meta={
+            "leaderWallet": leader_wallet,
+            "proxyWallet": trade.get("proxyWallet") or trade.get("user"),
+            "title": trade.get("title"),
+            "submarket": submarket,
+            "outcome": outcome,
+            "aggregatedCount": int(trade.get("_aggregatedCount") or 1),
+            "txHashes": list(trade.get("_txHashes") or []),
+        },
+    )
+
+
 async def fetch_trade_data(
     user_address: str,
     on_trade_callback,
@@ -216,11 +282,8 @@ async def fetch_trade_data(
     try:
         current_timestamp = int(time.time())
         update_readiness(last_trade_poll_ts=current_timestamp)
-        cursor_key = (
-            int(state.last_cursor.timestamp or 0),
-            str(state.last_cursor.tx_hash or ""),
-            str(state.last_cursor.trade_id or ""),
-        )
+        state.last_cursor = _normalize_cursor(state.last_cursor)
+        cursor_key = _cursor_key(state.last_cursor)
 
         new_trades = [
             a for a in user_activities
@@ -264,35 +327,11 @@ async def fetch_trade_data(
             asyncio.create_task(
                 _run_research_capture(research_capture_service, list(trade_candidates))
             )
-        for trade in trade_list:
-            # --- Rich console panel for detected trade ---
-            print_new_trade_detected(trade)
-
-            # --- Structured JSONL log with full trade details ---
-            usdc = _trade_usdc_value(trade)
-            leader_tx = trade.get('transactionHash', '')
-            event_slug = trade.get('eventSlug') or trade.get('slug') or ''
-            log_trade_detected(
-                logger,
-                side=trade.get('side', '?'),
-                condition_id=trade.get('conditionId'),
-                asset=trade.get('asset') or trade.get('tokenID'),
-                size=float(trade.get('size', 0) or 0),
-                price=float(trade.get('price', 0) or 0),
-                usdc_value=usdc,
-                tx_hash=leader_tx,
-                event_slug=event_slug,
-                meta={
-                    'title': trade.get('title', 'N/A'),
-                    'outcome': trade.get('outcome'),
-                    'leader': trade.get('proxyWallet') or user_address,
-                    'aggregatedCount': int(trade.get('_aggregatedCount') or 1),
-                    'txHashes': trade.get('_txHashes') or None,
-                },
-            )
-
         # Execute all detected trades immediately — no queue
         if trade_list:
+            for trade in trade_list:
+                _log_detected_trade(user_address, trade)
+            log_trade_batch_summary(logger, leader_wallet=user_address, trades=trade_list)
             await on_trade_callback(trade_list)
             state.last_processed_ts = max_seen_ts
 
@@ -300,8 +339,10 @@ async def fetch_trade_data(
         if new_trades:
             max_cursor_trade = max(new_trades, key=_trade_ordering_key)
             ts, tx_hash, trade_id = _trade_ordering_key(max_cursor_trade)
-            state.last_cursor = TradeCursor(timestamp=ts, tx_hash=tx_hash, trade_id=trade_id or None)
-            state.last_processed_ts = float(ts)
+            next_cursor = TradeCursor(timestamp=ts, tx_hash=tx_hash, trade_id=trade_id or None)
+            if _cursor_key(next_cursor) > _cursor_key(state.last_cursor):
+                state.last_cursor = next_cursor
+            state.last_processed_ts = max(state.last_processed_ts, float(ts))
             try:
                 from models.userHistory import get_user_activity_model
                 get_user_activity_model(user_address).insert_many(new_trades)
@@ -351,13 +392,11 @@ async def trade_monitor(
     state = LeaderMonitorState()
     cursor_store = LeaderCursorStore()
     leader_wallet = bot_params['leaderWallet']
-    state.last_cursor = cursor_store.get_cursor(leader_wallet)
+    state.last_cursor = _normalize_cursor(cursor_store.get_cursor(leader_wallet))
     state.last_processed_ts = float(state.last_cursor.timestamp)
 
-    print_monitor_start(trader_count=1, interval_s=fetch_interval)
-    print_first_run_init()
     await init(leader_wallet, state)
-    print_historical_done()
+    cursor_store.set_cursor(leader_wallet, state.last_cursor)
     proxy_wallet = get_funder_address()
     while True:
         previous_cursor = state.last_cursor
@@ -386,5 +425,4 @@ async def trade_monitor(
                 )
             )
 
-        monitor_heartbeat_tick(trader_count=1, checked_activities=len(state.recent_activities))
         await asyncio.sleep(fetch_interval)

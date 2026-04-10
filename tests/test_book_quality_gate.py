@@ -130,14 +130,50 @@ class TestBookQualityGate:
         assert result.error is None or "spread" not in result.error
 
     def test_custom_threshold(self):
-        """Custom threshold at 100 bps should reject 2% spread."""
+        """Relative mode: custom threshold at 100 bps should reject 2% spread."""
         svc = _make_execution_service(_meta("0.50", "0.51"))  # 2% = 200 bps
         req = _req()
-        with patch.dict("config.env.ENV", {"MAX_BOOK_SPREAD_BPS": "100"}):
+        with patch.dict(
+            "config.env.ENV",
+            {"MAX_BOOK_SPREAD_BPS": "100", "BOOK_SPREAD_MODE": "relative_bps"},
+        ):
             result = asyncio.new_event_loop().run_until_complete(svc.execute(req))
         assert result.accepted is False
         assert result.status == "book_spread_wide"
         assert "spread too wide" in result.error
+
+    def test_low_price_one_cent_spread_passes_in_absolute_mode(self):
+        """absolute_bps mode should allow a 1-cent spread when threshold is 100 bps."""
+        svc = _make_execution_service(_meta("0.04", "0.05"))
+        req = _req()
+        with patch.dict(
+            "config.env.ENV",
+            {"MAX_BOOK_SPREAD_BPS": "100", "BOOK_SPREAD_MODE": "absolute_bps"},
+        ):
+            result = asyncio.new_event_loop().run_until_complete(svc.execute(req))
+        assert result.error is None or "spread" not in result.error
+
+    def test_low_price_one_cent_spread_rejects_in_relative_mode(self):
+        """relative_bps mode should reject the same 1-cent spread at a low threshold."""
+        svc = _make_execution_service(_meta("0.04", "0.05"))
+        req = _req()
+        with patch.dict(
+            "config.env.ENV",
+            {"MAX_BOOK_SPREAD_BPS": "1000", "BOOK_SPREAD_MODE": "relative_bps"},
+        ):
+            result = asyncio.new_event_loop().run_until_complete(svc.execute(req))
+        assert result.accepted is False
+        assert result.status == "book_spread_wide"
+
+    def test_spread_gate_requests_fresh_meta(self):
+        svc = _make_execution_service(_meta("0.40", "0.48"))
+        req = _req()
+        with patch.dict(
+            "config.env.ENV",
+            {"MAX_BOOK_SPREAD_BPS": "500", "EXECUTION_REQUIRE_FRESH_BOOK": "true"},
+        ):
+            asyncio.new_event_loop().run_until_complete(svc.execute(req))
+        svc.market_meta_service.get.assert_awaited_once_with("0xabc", refresh=True)
 
     def test_sell_side_also_gated(self):
         """Spread gate applies to SELL orders too."""
@@ -153,7 +189,10 @@ class TestBookQualityGate:
         """Error message includes actual spread in bps."""
         svc = _make_execution_service(_meta("0.40", "0.48"))  # 2000 bps
         req = _req()
-        with patch.dict("config.env.ENV", {"MAX_BOOK_SPREAD_BPS": "500"}):
+        with patch.dict(
+            "config.env.ENV",
+            {"MAX_BOOK_SPREAD_BPS": "500", "BOOK_SPREAD_MODE": "relative_bps"},
+        ):
             result = asyncio.new_event_loop().run_until_complete(svc.execute(req))
         assert "2000 bps" in result.error
         assert "500 bps max" in result.error
@@ -210,6 +249,57 @@ class TestThinBookDetection:
         from utils.createClobClient import _is_thin_or_empty_book
         # bid=0.04 is above the 0.03 ceiling, so not thin
         assert _is_thin_or_empty_book(Decimal("0.04"), Decimal("0.96")) is False
+
+
+class TestSpreadMetrics:
+    def test_spread_metrics_include_absolute_relative_and_ticks(self):
+        from services.executionService import _calculate_book_spread_metrics
+
+        metrics = _calculate_book_spread_metrics(
+            best_bid=Decimal("0.40"),
+            best_ask=Decimal("0.48"),
+            tick_size=Decimal("0.01"),
+        )
+
+        assert metrics.absolute == Decimal("0.08")
+        assert metrics.absolute_bps == 800
+        assert metrics.relative_bps == 2000
+        assert metrics.ticks == 8
+
+
+class TestTopOfBookSelection:
+    def test_uses_highest_bid_even_if_bids_are_unsorted(self):
+        from utils.createClobClient import _top_of_book_from_levels
+
+        bids = [
+            {"price": "0.01", "size": "100"},
+            {"price": "0.43", "size": "25"},
+            {"price": "0.41", "size": "50"},
+        ]
+
+        assert _top_of_book_from_levels(bids, side="bid") == Decimal("0.43")
+
+    def test_uses_lowest_ask_even_if_asks_are_unsorted(self):
+        from utils.createClobClient import _top_of_book_from_levels
+
+        asks = [
+            {"price": "0.99", "size": "100"},
+            {"price": "0.57", "size": "25"},
+            {"price": "0.61", "size": "50"},
+        ]
+
+        assert _top_of_book_from_levels(asks, side="ask") == Decimal("0.57")
+
+    def test_accepts_object_levels_from_py_clob_client(self):
+        from utils.createClobClient import _top_of_book_from_levels
+
+        levels = [
+            type("Level", (), {"price": "0.03"})(),
+            type("Level", (), {"price": "0.47"})(),
+            type("Level", (), {"price": "0.22"})(),
+        ]
+
+        assert _top_of_book_from_levels(levels, side="bid") == Decimal("0.47")
 
 
 class TestMarketMetaCacheTTL:

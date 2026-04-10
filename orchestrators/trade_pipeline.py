@@ -73,6 +73,51 @@ def _normalize(value: Any) -> str:
     return str(value or "").strip().lower()
 
 
+def _first_text(raw: dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = raw.get(key)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return ""
+
+
+def _extract_trade_outcome(raw: dict[str, Any]) -> str:
+    return _first_text(
+        raw,
+        "outcome",
+        "outcomeName",
+        "outcome_name",
+        "tokenOutcome",
+        "token_outcome",
+        "selection",
+        "selectionName",
+        "choice",
+    )
+
+
+def _extract_trade_submarket(raw: dict[str, Any]) -> str:
+    return _first_text(
+        raw,
+        "submarket",
+        "subMarket",
+        "sub_market",
+        "marketSubtype",
+        "market_subtype",
+        "marketType",
+        "market_type",
+        "lineType",
+        "line_type",
+        "betType",
+        "bet_type",
+        "subMarketName",
+        "groupItemTitle",
+        "groupTitle",
+    )
+
+
 def _resolve_leader_tier(context: TradingContext, leader_id: str) -> str:
     """Look up the follow tier for a leader. Defaults to live_follow if no repo/record."""
     if not hasattr(context, "leaders_repo") or context.leaders_repo is None:
@@ -141,6 +186,23 @@ def _position_notional_usdc(position: Any) -> Decimal:
     avg_entry_price = _to_decimal(getattr(position, "avg_entry_price", 0))
     notional = size_tokens * avg_entry_price
     return notional if notional > 0 else Decimal("0")
+
+
+def _derive_sell_tokens(signal: TradeSignal, position: Any) -> Decimal:
+    """Derive the copied sell size from the signal payload.
+
+    Some leader payloads carry SELL notional but leave `size` empty. In that
+    case, use `usdc_size / price` instead of dumping the full position.
+    """
+    if signal.size > 0:
+        return signal.size
+
+    if signal.usdc_size > 0 and signal.price > 0:
+        derived = signal.usdc_size / signal.price
+        if derived > 0:
+            return derived
+
+    return _to_decimal(getattr(position, "size_tokens", 0))
 
 
 async def _resolve_buy_risk_cap(
@@ -236,6 +298,8 @@ def normalize_signals(raw_signals: list[dict[str, Any]], leader_id: str) -> list
             event_ts=ts,
             title=str(raw.get("title") or ""),
             event_slug=str(raw.get("eventSlug") or raw.get("slug") or ""),
+            outcome=_extract_trade_outcome(raw),
+            submarket=_extract_trade_submarket(raw),
         )
         out.append((signal, raw))
     return out
@@ -442,6 +506,18 @@ async def execute_trades(
                 regime_binding,
                 float(max_notional_for_decision),
                 sizing_result.reasoning,
+                extra={
+                    "type": "sizing_audit",
+                    "condition_id": signal.condition_id,
+                    "leader_id": leader_id,
+                    "leader_notional": float(signal.usdc_size),
+                    "strategy": sizing_result.strategy,
+                    "sizing_target": float(target_notional),
+                    "regime_enabled": _balance_tiered_policy_enabled(),
+                    "regime_cap": float(buy_risk_cap.cap_notional_usdc) if buy_risk_cap else None,
+                    "regime_binding": regime_binding,
+                    "max_for_decision": float(max_notional_for_decision),
+                },
             )
 
             # Run the copy decision gate
@@ -476,7 +552,13 @@ async def execute_trades(
             )
 
             if not decision.allow:
-                print_skip_reason("Decision gate rejected BUY", decision.reason)
+                if decision.skip_code != "signal_too_old":
+                    skip_title = (
+                        "BUY blocked by execution minimums/risk cap"
+                        if decision.skip_code == "risk_cap_too_low_for_min_order"
+                        else "Decision gate rejected BUY"
+                    )
+                    print_skip_reason(skip_title, decision.reason)
                 log_trade_skip(
                     logger,
                     side=signal.side,
@@ -516,6 +598,13 @@ async def execute_trades(
                     float(target_notional),
                     float(gated_notional),
                     decision.trust_multiplier if hasattr(decision, "trust_multiplier") else 0,
+                    extra={
+                        "type": "sizing_final",
+                        "condition_id": signal.condition_id,
+                        "leader_id": leader_id,
+                        "original_notional": float(target_notional),
+                        "gated_notional": float(gated_notional),
+                    },
                 )
 
             exec_req = ExecutionRequest(
@@ -546,7 +635,6 @@ async def execute_trades(
                         "leader_id": leader_id,
                     },
                 )
-                print_skip_reason("No position to sell", skip_detail)
                 await metrics.inc("trades_skipped_total", labels={**labels, "reason": skip_code})
                 log_trade_skip(
                     logger,
@@ -577,7 +665,7 @@ async def execute_trades(
             # Capture entry price before apply_fill mutates or closes/deletes the position.
             sell_entry_price = _to_optional_float(getattr(pos, "avg_entry_price", None))
 
-            sell_tokens = signal.size if signal.size > 0 else pos.size_tokens
+            sell_tokens = _derive_sell_tokens(signal, pos)
             if sell_tokens > pos.size_tokens:
                 sell_tokens = pos.size_tokens
 
@@ -759,16 +847,27 @@ async def execute_trades(
                     f"{fail_reason} "
                     f"(retry budget exhausted after {next_retry_attempt} attempts)"
                 )
-            print_trade_result(success=False, side=signal.side, reason=fail_reason)
+            print_trade_result(
+                success=False,
+                side=signal.side,
+                reason=fail_reason,
+                title=signal.title,
+                submarket=signal.submarket,
+                outcome=signal.outcome,
+            )
             logger.warning(
                 "trade_copy_failed",
                 extra={
+                    "type": "trade_copy_failed",
                     "user_id": context.user_id,
                     "leader_id": leader_id,
                     "condition_id": signal.condition_id,
                     "side": signal.side,
                     "status": exec_result.status,
                     "error": exec_result.error,
+                    "title": signal.title,
+                    "submarket": signal.submarket,
+                    "outcome": signal.outcome,
                     "terminal": is_terminal,
                     "retry_exhausted": non_terminal_retry_exhausted,
                     "retry_attempt": next_retry_attempt,
@@ -895,8 +994,12 @@ async def execute_trades(
             meta={
                 "user_id": context.user_id,
                 "leader_id": leader_id,
+                "copyOrderId": exec_result.order_id,
                 "order_id": exec_result.order_id,
                 "fee_paid": float(fee_paid),
+                "title": signal.title,
+                "submarket": signal.submarket,
+                "outcome": signal.outcome,
             },
         )
         log_trade_execution(
@@ -912,9 +1015,13 @@ async def execute_trades(
             meta={
                 "user_id": context.user_id,
                 "leader_id": leader_id,
+                "copyOrderId": exec_result.order_id,
                 "order_id": exec_result.order_id,
                 "fee_paid": float(fee_paid),
                 "status": exec_result.status,
+                "title": signal.title,
+                "submarket": signal.submarket,
+                "outcome": signal.outcome,
             },
         )
         print_trade_result(
@@ -924,6 +1031,9 @@ async def execute_trades(
             copy_tx=exec_result.order_id,
             amount=float(fill_size * Decimal(str(fill_price or 0))),
             price=float(fill_price or 0),
+            title=signal.title,
+            submarket=signal.submarket,
+            outcome=signal.outcome,
         )
 
         context.orders_repo.mark_processed_trade(
