@@ -1,92 +1,81 @@
-"""Tests for balance-tiered regime system and execution safety fixes."""
+"""Tests for simplified account-cap policy and execution safety fixes."""
 
 from __future__ import annotations
 
-import pytest
 from decimal import Decimal
 
+import pytest
+
 from services.riskEngine import (
-    BalanceRegime,
-    RiskHeadroom,
-    regime_for_equity,
-    get_regime,
-    compute_reserve_cash,
     compute_hard_cap,
+    compute_reserve_cash,
     compute_soft_cap,
+    get_policy,
     headroom_for_buy,
+    policy_name_for_equity,
 )
 
 
-# ---------------------------------------------------------------------------
-# regime_for_equity tests
-# ---------------------------------------------------------------------------
+class TestAccountCapPolicySelection:
+    def test_policy_name_for_equity_always_returns_single_policy(self):
+        assert policy_name_for_equity(Decimal("25")) == "account_cap"
+        assert policy_name_for_equity(Decimal("250")) == "account_cap"
+        assert policy_name_for_equity(Decimal("50000")) == "account_cap"
 
-class TestRegimeForEquity:
-    def test_micro(self):
-        assert regime_for_equity(Decimal("25")) == "micro"
-        assert regime_for_equity(Decimal("74.99")) == "micro"
+    def test_get_policy_ignores_legacy_name_and_returns_active_policy(self, monkeypatch):
+        import services.riskEngine as re
 
-    def test_small(self):
-        assert regime_for_equity(Decimal("75")) == "small"
-        assert regime_for_equity(Decimal("249.99")) == "small"
+        monkeypatch.setattr(
+            re,
+            "ENV",
+            {
+                **re.ENV,
+                "BALANCE_POLICY_RESERVE_PCT": 0.10,
+                "BALANCE_POLICY_RESERVE_FLOOR": 6,
+                "BALANCE_POLICY_HARD_CAP_PCT": 0.20,
+                "BALANCE_POLICY_HARD_CAP_CEILING": 9,
+                "BALANCE_POLICY_MAX_OPEN_POSITIONS": 4,
+                "BALANCE_POLICY_ALLOW_PARTIAL_EXITS": False,
+            },
+        )
+        policy = re.get_policy("micro")
+        assert policy.name == "account_cap"
+        assert policy.reserve_floor == Decimal("6")
+        assert policy.max_open_positions == 4
+        assert policy.allow_partial_exits is False
 
-    def test_medium(self):
-        assert regime_for_equity(Decimal("250")) == "medium"
-        assert regime_for_equity(Decimal("999.99")) == "medium"
-
-    def test_large(self):
-        assert regime_for_equity(Decimal("1000")) == "large"
-        assert regime_for_equity(Decimal("50000")) == "large"
-
-    def test_zero(self):
-        assert regime_for_equity(Decimal("0")) == "micro"
-
-
-# ---------------------------------------------------------------------------
-# compute_reserve_cash tests
-# ---------------------------------------------------------------------------
 
 class TestComputeReserveCash:
-    def test_micro_floor_wins(self):
-        regime = get_regime("micro")
-        # 20% of 20 = 4, floor = 5 → 5
-        assert compute_reserve_cash(Decimal("20"), regime) == Decimal("5")
+    def test_reserve_floor_wins(self, monkeypatch):
+        import services.riskEngine as re
 
-    def test_micro_pct_wins(self):
-        regime = get_regime("micro")
-        # 20% of 50 = 10, floor = 5 → 10
-        assert compute_reserve_cash(Decimal("50"), regime) == Decimal("10")
+        monkeypatch.setattr(re, "ENV", {**re.ENV, "BALANCE_POLICY_RESERVE_PCT": 0.10, "BALANCE_POLICY_RESERVE_FLOOR": 7})
+        policy = re.get_policy("ignored")
+        assert compute_reserve_cash(Decimal("20"), policy) == Decimal("7")
 
-    def test_large_floor_wins(self):
-        regime = get_regime("large")
-        # 5% of 500 = 25, floor = 50 → 50
-        assert compute_reserve_cash(Decimal("500"), regime) == Decimal("50")
+    def test_reserve_pct_wins(self, monkeypatch):
+        import services.riskEngine as re
 
+        monkeypatch.setattr(re, "ENV", {**re.ENV, "BALANCE_POLICY_RESERVE_PCT": 0.20, "BALANCE_POLICY_RESERVE_FLOOR": 5})
+        policy = re.get_policy("ignored")
+        assert compute_reserve_cash(Decimal("50"), policy) == Decimal("10")
 
-# ---------------------------------------------------------------------------
-# compute_hard_cap tests
-# ---------------------------------------------------------------------------
 
 class TestComputeHardCap:
-    def test_micro_ceiling_wins(self):
-        regime = get_regime("micro")
-        # 18% of 50 = 9, ceiling = 4.5, tradable = 40 → 4.5
-        assert compute_hard_cap(Decimal("50"), Decimal("40"), regime) == Decimal("4.5")
+    def test_hard_cap_ceiling_wins(self, monkeypatch):
+        import services.riskEngine as re
 
-    def test_micro_tradable_wins(self):
-        regime = get_regime("micro")
-        # 18% of 50 = 9, ceiling = 4.5, tradable = 3 → 3
-        assert compute_hard_cap(Decimal("50"), Decimal("3"), regime) == Decimal("3")
+        monkeypatch.setattr(re, "ENV", {**re.ENV, "BALANCE_POLICY_HARD_CAP_PCT": 0.18, "BALANCE_POLICY_HARD_CAP_CEILING": 4.5})
+        policy = re.get_policy("ignored")
+        assert compute_hard_cap(Decimal("50"), Decimal("40"), policy) == Decimal("4.5")
 
-    def test_large_pct_wins(self):
-        regime = get_regime("large")
-        # 10% of 2000 = 200, ceiling = 150, tradable = 1900 → 150
-        assert compute_hard_cap(Decimal("2000"), Decimal("1900"), regime) == Decimal("150")
+    def test_hard_cap_tradable_wins(self, monkeypatch):
+        import services.riskEngine as re
 
+        monkeypatch.setattr(re, "ENV", {**re.ENV, "BALANCE_POLICY_HARD_CAP_PCT": 0.18, "BALANCE_POLICY_HARD_CAP_CEILING": 4.5})
+        policy = re.get_policy("ignored")
+        assert compute_hard_cap(Decimal("50"), Decimal("3"), policy) == Decimal("3")
 
-# ---------------------------------------------------------------------------
-# compute_soft_cap tests
-# ---------------------------------------------------------------------------
 
 class TestComputeSoftCap:
     def test_min_score_gets_55pct(self):
@@ -99,29 +88,25 @@ class TestComputeSoftCap:
 
     def test_mid_score(self):
         soft = compute_soft_cap(Decimal("10"), Decimal("0.65"), Decimal("0.30"))
-        # score_norm = (0.65-0.30)/(1-0.30) = 0.5
-        # soft = 10 * (0.55 + 0.45*0.5) = 10 * 0.775 = 7.75
         assert soft == Decimal("7.75")
 
 
-# ---------------------------------------------------------------------------
-# headroom_for_buy tests
-# ---------------------------------------------------------------------------
-
 class TestHeadroomForBuy:
-    def test_max_positions_blocks(self):
-        regime = get_regime("micro")
+    def test_max_positions_blocks(self, monkeypatch):
+        import services.riskEngine as re
+
+        monkeypatch.setattr(re, "ENV", {**re.ENV, "BALANCE_POLICY_MAX_OPEN_POSITIONS": 3})
+        policy = re.get_policy("ignored")
         h = headroom_for_buy(
             equity_usdc=Decimal("30"),
             free_cash_usdc=Decimal("25"),
             open_positions_count=3,
-            regime=regime,
+            policy=policy,
         )
         assert not h.allow
         assert h.reason == "max_open_positions_reached"
 
     def test_daily_loss_respects_env_drawdown_pct(self, monkeypatch):
-        # If MAX_DAILY_DRAWDOWN_PCT is small, headroom should block sooner.
         import services.riskEngine as re
 
         monkeypatch.setattr(
@@ -129,60 +114,74 @@ class TestHeadroomForBuy:
             "ENV",
             {
                 **re.ENV,
-                "MAX_DAILY_DRAWDOWN_PCT": 5,  # 5%
+                "MAX_DAILY_DRAWDOWN_PCT": 5,
                 "MAX_LEADER_EXPOSURE_USDC": 500,
                 "MAX_MARKET_EXPOSURE_USDC": 300,
                 "MAX_CATEGORY_EXPOSURE_USDC": 600,
             },
         )
-        regime = re.get_regime("micro")
-        # day_start=100, max loss=5, daily_loss=6 => blocked
+        policy = re.get_policy("ignored")
         h = re.headroom_for_buy(
             equity_usdc=Decimal("100"),
             free_cash_usdc=Decimal("90"),
             open_positions_count=0,
             daily_loss_usdc=Decimal("6"),
             day_start_equity_usdc=Decimal("100"),
-            regime=regime,
+            policy=policy,
         )
         assert not h.allow
         assert h.reason == "no_buy_headroom"
 
-    def test_no_tradable_cash(self):
-        regime = get_regime("micro")
+    def test_no_tradable_cash(self, monkeypatch):
+        import services.riskEngine as re
+
+        monkeypatch.setattr(re, "ENV", {**re.ENV, "BALANCE_POLICY_RESERVE_PCT": 0.10, "BALANCE_POLICY_RESERVE_FLOOR": 5})
+        policy = re.get_policy("ignored")
         h = headroom_for_buy(
             equity_usdc=Decimal("20"),
-            free_cash_usdc=Decimal("4"),  # reserve is 5
+            free_cash_usdc=Decimal("4"),
             open_positions_count=0,
-            regime=regime,
+            policy=policy,
         )
         assert not h.allow
         assert h.reason == "no_tradable_cash_after_reserve"
 
-    def test_micro_allows_small_buy(self):
-        regime = get_regime("micro")
+    def test_allows_small_buy(self, monkeypatch):
+        import services.riskEngine as re
+
+        monkeypatch.setattr(
+            re,
+            "ENV",
+            {
+                **re.ENV,
+                "BALANCE_POLICY_RESERVE_PCT": 0.10,
+                "BALANCE_POLICY_RESERVE_FLOOR": 5,
+                "BALANCE_POLICY_HARD_CAP_PCT": 0.18,
+                "BALANCE_POLICY_HARD_CAP_CEILING": 4.5,
+            },
+        )
+        policy = re.get_policy("ignored")
         h = headroom_for_buy(
             equity_usdc=Decimal("30"),
             free_cash_usdc=Decimal("25"),
             open_positions_count=0,
-            regime=regime,
+            policy=policy,
         )
         assert h.allow
-        assert h.cap_notional_usdc > 0
-        assert h.regime == "micro"
+        assert h.cap_notional_usdc == Decimal("4.5")
+        assert h.policy_name == "account_cap"
 
     def test_daily_loss_blocks(self):
-        regime = get_regime("micro")
+        policy = get_policy("ignored")
         h = headroom_for_buy(
             equity_usdc=Decimal("30"),
             free_cash_usdc=Decimal("25"),
             open_positions_count=0,
-            daily_loss_usdc=Decimal("100"),  # way over limit
-            regime=regime,
+            daily_loss_usdc=Decimal("100"),
+            policy=policy,
         )
         assert not h.allow
         assert h.reason == "no_buy_headroom"
-
 
 # ---------------------------------------------------------------------------
 # Execution safety: worst-price min-size validation

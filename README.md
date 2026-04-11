@@ -110,16 +110,13 @@ Implemented risk controls include:
 - daily drawdown gating
 - open-position count limits
 - reserve-cash logic
-- dynamic regime-based sizing policy
+- dynamic account-cap sizing policy
 
-The repo includes a **balance-tiered regime system**:
+The repo uses a **single account-cap policy** that applies uniformly to all
+account sizes. The policy is fully configurable via environment variables
+(`BALANCE_POLICY_*` keys in `config/runtime.env`).
 
-- `micro`
-- `small`
-- `medium`
-- `large`
-
-Each regime changes:
+The policy controls:
 
 - reserve cash
 - hard cap ceiling
@@ -133,7 +130,7 @@ Key module:
 
 - `services/riskEngine.py`
 
-**Why this was implemented:** a $30 wallet and a $30,000 wallet should not behave the same. Treating them identically is how tiny accounts die and bigger accounts become sloppy.
+**Why this was implemented:** every account needs consistent, predictable capital protection regardless of size. The previous multi-tier approach was simplified into a single configurable policy that operators can tune per-deployment.
 
 ---
 
@@ -335,7 +332,7 @@ Trade monitor  ──► signal aggregation
 Leader scoring + trade scoring + decision gate
           │
           ▼
-Risk engine / balance regime / exposure checks
+Risk engine / account-cap policy / exposure checks
           │
           ▼
 Execution service / fee service / market metadata
@@ -368,7 +365,7 @@ services/
   tradeScoringService.py trade quality scoring
   leaderScoringService.py leader trust scoring
   traderDiscoveryService.py leader discovery / ranking
-  riskEngine.py          portfolio and regime policy
+  riskEngine.py          portfolio and account-cap policy
   riskMonitor.py         background exit execution
   positionManager.py     open/closed position lifecycle
   executionService.py    safe execution layer
@@ -502,8 +499,8 @@ Leader quality is scored using wallet balance, activity, historical stats, and d
 
 **Why:** copying the wrong trader faster just loses money faster.
 
-### Balance-tiered safety policy
-Small accounts and larger accounts are treated differently.
+### Account-cap safety policy
+Small accounts and larger accounts share the same configurable policy, with reserve cash, hard-cap ceilings, and exposure limits tuned per deployment.
 
 **Why:** tiny accounts need stricter preservation logic; larger accounts need smarter scaling, not just bigger buttons.
 
@@ -567,9 +564,12 @@ PRIVATE_KEY_FILE=
 LEADER_WALLETS=
 USER_ADDRESS=
 FUNDER_ADDRESS=
-PROXY_WALLET=
 MULTI_USER_CONFIG_FILE=
 ```
+
+Canonical local identity keys are the only ones shown here on purpose. Legacy
+names are still accepted by the loader for backward compatibility, but new
+configs should not copy them forward.
 
 ### Non-sensitive variables (`config/runtime.env`)
 
@@ -589,7 +589,7 @@ MULTI_USER_CONFIG_FILE=
 - Use `config/runtime.local.example` as the public/local identity template.
 
 - `PRIVATE_KEY_FILE` is supported and validated with permission checks.
-- `FUNDER_ADDRESS` is preferred; `PROXY_WALLET` exists as a backward-compatible fallback.
+- `FUNDER_ADDRESS` is the canonical wallet identity. Older envs may still use `PROXY_WALLET`, but it is deprecated, intentionally omitted from templates, and should not appear in new configs.
 - The environment layer explicitly rejects inline comments in values (`KEY=value # comment` is invalid).
 - Booleans are parsed as true only for `1`, `true`, or `yes` (case-insensitive).
 - `LEADER_WALLETS` is a comma-separated list (`0x...,0x...`); whitespace around entries is trimmed.
@@ -682,7 +682,7 @@ The repository includes a substantial test suite covering:
 - DB name extraction and DB behavior
 - decision engine behavior
 - execution safety
-- risk regimes
+- risk policy
 - position manager behavior
 - negative-risk arb logic
 - logging behavior
@@ -782,7 +782,7 @@ If you want this repo to sell itself even more effectively, the next leverage mo
 5. publish a strategy note comparing:
    - naive copy trading
    - decision-first copy trading
-   - copy + risk-tiering
+   - copy + account-cap policy
 6. add deployment examples for Docker/systemd
 7. add real performance screenshots or anonymized telemetry snapshots
 

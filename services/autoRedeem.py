@@ -159,9 +159,19 @@ async def _try_redeem_position(
     pm = get_position_manager()
     pnl = get_pnl_tracker()
 
-    collateral_address = ENV.get("USDC_CONTRACT_ADDRESS")
-    proxy_wallet = ENV.get("PROXY_WALLET") or ENV.get("USER_ADDRESS", "")
+    collateral_raw = ENV.get("USDC_CONTRACT_ADDRESS")
+    collateral_address = collateral_raw if isinstance(collateral_raw, str) else ""
+    proxy_raw = ENV.get("FUNDER_ADDRESS") or ENV.get("USER_ADDRESS", "")
+    proxy_wallet = proxy_raw if isinstance(proxy_raw, str) else ""
     private_key = get_private_key()
+
+    if not collateral_address:
+        logger.error("Cannot redeem: USDC_CONTRACT_ADDRESS not configured")
+        return False
+
+    if not proxy_wallet:
+        logger.error("Cannot redeem: FUNDER_ADDRESS/USER_ADDRESS not configured")
+        return False
 
     if not private_key:
         logger.error("Cannot redeem: PRIVATE_KEY not configured")
@@ -228,7 +238,7 @@ async def auto_redeem_loop(clob_client, bot_params: dict):
     redemption_service = RedemptionService(clob_client)
     user_id = get_funder_address()
     if not user_id:
-        logger.error("Auto-redeem disabled: missing FUNDER_ADDRESS/PROXY_WALLET")
+        logger.error("Auto-redeem disabled: missing FUNDER_ADDRESS")
         return
 
     while True:
