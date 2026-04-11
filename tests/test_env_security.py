@@ -45,7 +45,6 @@ class TestEnvSecurity:
         env = {
             "USER_ADDRESS": _eth_addr("1"),
             "LEADER_WALLETS": _eth_addr("2"),
-            "PROXY_WALLET": _eth_addr("3"),
             "PRIVATE_KEY": "0x" + ("ab" * 32),
             "PRIVATE_KEY_FILE": "",
             "RPC_URL": "http://localhost:8545 # inline",

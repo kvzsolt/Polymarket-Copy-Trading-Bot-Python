@@ -17,7 +17,7 @@ from services.metrics import metrics
 from services.orderRepository import OrderRepository
 from services.positionManager import get_position_manager
 from services.pnlTracker import get_pnl_tracker
-from services.riskEngine import regime_for_equity, get_regime
+from services.riskEngine import active_policy
 from storage.sqlite.fills_repo import FillRecord
 from utils import is_valid_clob_token_id
 from utils.logger import get_logger, log_risk_exit
@@ -77,30 +77,17 @@ async def risk_monitor_loop(clob_client, bot_params: dict):
                         trigger = str(action.get("reason") or "risk_exit")
                         fraction = float(action.get("size_fraction", 1.0) or 1.0)
 
-                        # Regime-aware partial exit gating
+                        # Simplified account-cap policy: partial exits are a single global choice.
                         enable_tiered = str(ENV.get("ENABLE_BALANCE_TIERED_POLICY", "false")).lower() in ("1", "true", "yes")
                         if enable_tiered and fraction < 1.0:
-                            # Estimate equity from balance (simplified — no full portfolio snapshot)
-                            try:
-                                from utils.getMyBalance import get_my_balance
-                                proxy_wallet = str(
-                                    bot_params.get("proxyWallet")
-                                    or ENV.get("FUNDER_ADDRESS")
-                                    or ENV.get("PROXY_WALLET")
-                                    or ""
+                            policy = active_policy()
+                            if not policy.allow_partial_exits:
+                                logger.info(
+                                    "Balance policy [%s] upgrades partial exit to full for %s…",
+                                    policy.name,
+                                    cid[:12],
                                 )
-                                bal = await get_my_balance(proxy_wallet)
-                                equity = Decimal(str(bal or 0))
-                                rname = regime_for_equity(equity)
-                                regime = get_regime(rname)
-                                if not regime.allow_partial_exits:
-                                    # Micro regime: upgrade partial to full exit
-                                    logger.info(
-                                        f"Regime [{rname}] upgrades partial exit to full for {cid[:12]}…"
-                                    )
-                                    fraction = 1.0
-                            except Exception as e:
-                                logger.warning(f"Regime check failed, proceeding with original fraction: {e}")
+                                fraction = 1.0
 
                         sell_size = pos.size_tokens * max(0.0, min(1.0, fraction))
                         if sell_size <= 0:
@@ -110,12 +97,7 @@ async def risk_monitor_loop(clob_client, bot_params: dict):
                             f"tokens={sell_size:.4f}"
                         )
                         exec_req = ExecutionRequest(
-                            user_id=str(
-                                ENV.get("FUNDER_ADDRESS")
-                                or ENV.get("PROXY_WALLET")
-                                or ENV.get("USER_ADDRESS")
-                                or ""
-                            ),
+                            user_id=str(ENV.get("FUNDER_ADDRESS") or ""),
                             leader_id=pos.leader_wallet or "risk-monitor",
                             token_id=pos.asset,
                             side="SELL",
@@ -163,8 +145,6 @@ async def risk_monitor_loop(clob_client, bot_params: dict):
                             user_id = str(
                                 bot_params.get("proxyWallet")
                                 or ENV.get("FUNDER_ADDRESS")
-                                or ENV.get("PROXY_WALLET")
-                                or ENV.get("USER_ADDRESS")
                                 or ""
                             )
                             accounting.book_fill(
@@ -288,27 +268,19 @@ async def run_risk_check_for_context(context: TradingContext) -> None:
             fraction = max(0.0, min(1.0, float(action.get("size_fraction", 1.0) or 1.0)))
             reason = str(action.get("reason") or "risk_exit")
 
-            # Regime-aware partial exit gating (ported from legacy risk_monitor_loop)
+            # Simplified account-cap policy: partial exits are a single global choice.
             if (
                 fraction < 1.0
                 and str(ENV.get("ENABLE_BALANCE_TIERED_POLICY", "false")).lower()
                 in ("1", "true", "yes")
             ):
-                try:
-                    from utils.getMyBalance import get_my_balance as _get_bal
-
-                    bal = await _get_bal(context.wallet_address)
-                    equity = Decimal(str(bal or 0))
-                    rname = regime_for_equity(equity)
-                    regime = get_regime(rname)
-                    if not regime.allow_partial_exits:
-                        logger.info(
-                            "Regime [%s] upgrades partial exit → full for %s (was %.0f%%)",
-                            rname, pos.condition_id[:12], fraction * 100,
-                        )
-                        fraction = 1.0
-                except Exception as e:
-                    logger.warning("Regime partial-exit check failed, using original fraction: %s", e)
+                policy = active_policy()
+                if not policy.allow_partial_exits:
+                    logger.info(
+                        "Balance policy [%s] upgrades partial exit → full for %s (was %.0f%%)",
+                        policy.name, pos.condition_id[:12], fraction * 100,
+                    )
+                    fraction = 1.0
 
             sell_size = (pos.size_tokens * Decimal(str(fraction))).quantize(Decimal("0.00000001"))
             if sell_size <= 0:

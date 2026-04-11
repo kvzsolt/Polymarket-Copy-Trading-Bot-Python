@@ -468,9 +468,9 @@ async def execute_arb(
     Creates a tracked ArbBasket, executes all legs, reconciles fills,
     handles incomplete baskets with cleanup, and persists state.
     """
-    user_id = str(ENV.get("FUNDER_ADDRESS") or ENV.get("PROXY_WALLET") or "")
+    user_id = str(ENV.get("FUNDER_ADDRESS") or "")
     if not user_id:
-        raise RuntimeError("FUNDER_ADDRESS/PROXY_WALLET required for arb execution")
+        raise RuntimeError("FUNDER_ADDRESS required for arb execution")
 
     # Create tracked basket
     basket = ArbBasket(
@@ -863,7 +863,7 @@ async def _try_redeem_resolved_baskets(
             logger.warning(f"Cannot load RedemptionService: {e}")
             return
 
-    user_id = str(ENV.get("FUNDER_ADDRESS") or ENV.get("PROXY_WALLET") or "")
+    user_id = str(ENV.get("FUNDER_ADDRESS") or "")
     if not user_id:
         return
 

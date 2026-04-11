@@ -351,7 +351,7 @@ class TestTradeExecutorExecuteTrades:
             "buyMaxAmount": 50,
             "positionThreshold": 0,
         }
-        with patch.dict("legacy.tradeExecutor.ENV", {"PROXY_WALLET": ""}, clear=False), \
+        with patch.dict("legacy.tradeExecutor.ENV", {"FUNDER_ADDRESS": ""}, clear=False), \
              patch("legacy.tradeExecutor.get_my_balance", new_callable=AsyncMock, side_effect=[None, 100.0]), \
              patch("legacy.tradeExecutor.fetch_data", new_callable=AsyncMock, return_value=[]), \
              patch("legacy.tradeExecutor._get_execution_service", return_value=MagicMock(execute=AsyncMock())) as mock_exec:

@@ -173,10 +173,13 @@ async def execute_trades(
     if not trades:
         return
 
-    wallet = ENV.get("PROXY_WALLET", "")
+    wallet_raw = ENV.get("FUNDER_ADDRESS", "")
+    wallet = wallet_raw if isinstance(wallet_raw, str) else ""
     balance = await get_my_balance(wallet) if wallet else None
     if balance is None:
-        balance = await get_my_balance(bot_params.get("leaderWallet", ""))
+        leader_wallet_raw = bot_params.get("leaderWallet", "")
+        leader_wallet = leader_wallet_raw if isinstance(leader_wallet_raw, str) else ""
+        balance = await get_my_balance(leader_wallet)
     if balance is None:
         return
 
