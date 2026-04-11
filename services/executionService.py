@@ -841,6 +841,18 @@ class ExecutionService:
                 )
             except Exception as exc:
                 last_error = redact_error_detail(exc)
+                # Log raw CLOB error body for diagnostics before redaction.
+                raw_exc_body = ""
+                if hasattr(exc, 'error_msg'):
+                    raw_exc_body = str(exc.error_msg)
+                elif hasattr(exc, '__cause__'):
+                    raw_exc_body = str(exc.__cause__)
+                if raw_exc_body:
+                    logger.warning(
+                        "raw_clob_error_on_%s | %s",
+                        "create_order" if not post_called else "post_order",
+                        raw_exc_body[:500],
+                    )
                 if post_called:
                     # post_signed_order was called but we got an exception —
                     # the order may have been accepted on the exchange.

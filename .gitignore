@@ -37,10 +37,9 @@ ENV/
 .python-version
 
 # Environment variables
-.env
 .env.local
 config/runtime.local.env
-
+.kilo
 # IDE
 .vscode/
 .idea/
@@ -51,16 +50,12 @@ config/runtime.local.env
 # Logs
 log/
 
-.proxyai
-.github
 # OS
 .DS_Store
 Thumbs.db
 .logs/stdio-server.log.*
 /logs
 .pytest_cache
-.env
-.python-version
 .codex
 AGENTS.MD
 .ruff_cache
