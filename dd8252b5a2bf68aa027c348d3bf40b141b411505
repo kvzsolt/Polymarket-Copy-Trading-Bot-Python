@@ -1,0 +1,21 @@
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "dd8252b5a2bf68aa027c348d3bf40b141b411505",
+  "prompts": {
+    "2034fb728d892aa2": {
+      "agent_id": {
+        "tool": "github-copilot",
+        "id": "3f6bcef2-78f6-4ae9-94cb-623ffd72e37e",
+        "model": "copilot/auto"
+      },
+      "human_author": "kvzsolt",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 12,
+      "overriden_lines": 0
+    }
+  }
+}
