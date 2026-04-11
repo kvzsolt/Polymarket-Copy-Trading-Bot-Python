@@ -1,0 +1,46 @@
+legacy/tradeExecutor.py
+  2034fb728d892aa2 176-177,180-182
+services/autoRedeem.py
+  66832e22b54ca28e 241
+tests/test_health_readiness.py
+  66832e22b54ca28e 30,39
+config/env.py
+  66832e22b54ca28e 190,415,589
+tests/test_services.py
+  66832e22b54ca28e 354
+services/negRiskArb.py
+  66832e22b54ca28e 471,473,866
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "7c082dfb4e3c710d76850910b2d46c443585f757",
+  "prompts": {
+    "2034fb728d892aa2": {
+      "agent_id": {
+        "tool": "github-copilot",
+        "id": "3f6bcef2-78f6-4ae9-94cb-623ffd72e37e",
+        "model": "copilot/auto"
+      },
+      "human_author": "kvzsolt",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 17,
+      "overriden_lines": 0
+    },
+    "66832e22b54ca28e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b3e0a2db-bb9c-44cd-8cbf-0d7d8d9c6131",
+        "model": "glm-5.1"
+      },
+      "human_author": "kvzsolt",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 10,
+      "overriden_lines": 0
+    }
+  }
+}
