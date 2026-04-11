@@ -272,6 +272,8 @@ async def test_balance_tiered_policy_blocks_buy_without_tradable_cash(tmp_path, 
 
     monkeypatch.setitem(ENV, "ENABLE_BALANCE_TIERED_POLICY", True)
     monkeypatch.setitem(ENV, "DAY_START_EQUITY_USDC", 4)
+    monkeypatch.setitem(ENV, "BALANCE_POLICY_RESERVE_PCT", 0.10)
+    monkeypatch.setitem(ENV, "BALANCE_POLICY_RESERVE_FLOOR", 5)
 
     with patch(
         "orchestrators.trade_pipeline.get_my_balance",
@@ -299,6 +301,10 @@ async def test_balance_tiered_policy_caps_buy_before_execution(tmp_path, monkeyp
 
     monkeypatch.setitem(ENV, "ENABLE_BALANCE_TIERED_POLICY", True)
     monkeypatch.setitem(ENV, "DAY_START_EQUITY_USDC", 25)
+    monkeypatch.setitem(ENV, "BALANCE_POLICY_RESERVE_PCT", 0.10)
+    monkeypatch.setitem(ENV, "BALANCE_POLICY_RESERVE_FLOOR", 5)
+    monkeypatch.setitem(ENV, "BALANCE_POLICY_HARD_CAP_PCT", 0.18)
+    monkeypatch.setitem(ENV, "BALANCE_POLICY_HARD_CAP_CEILING", 4.5)
 
     import orchestrators.trade_pipeline as tp
 

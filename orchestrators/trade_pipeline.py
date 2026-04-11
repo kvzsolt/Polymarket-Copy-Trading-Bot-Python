@@ -64,7 +64,7 @@ class TradePipelineResult:
 class _BuyRiskCap:
     allow: bool
     reason: str
-    regime: str
+    policy_name: str
     cap_notional_usdc: Decimal
 
 
@@ -177,7 +177,7 @@ def _retry_attempt_from_status(status: str | None) -> int:
         return 0
 
 
-def _balance_tiered_policy_enabled() -> bool:
+def _account_cap_policy_enabled() -> bool:
     return bool(ENV.get("ENABLE_BALANCE_TIERED_POLICY", False))
 
 
@@ -215,7 +215,7 @@ async def _resolve_buy_risk_cap(
         return _BuyRiskCap(
             allow=False,
             reason="balance_unavailable",
-            regime="unknown",
+            policy_name="unknown",
             cap_notional_usdc=Decimal("0"),
         )
 
@@ -255,7 +255,7 @@ async def _resolve_buy_risk_cap(
     return _BuyRiskCap(
         allow=headroom.allow,
         reason=headroom.reason,
-        regime=headroom.regime,
+        policy_name=headroom.policy_name,
         cap_notional_usdc=headroom.cap_notional_usdc,
     )
 
@@ -432,15 +432,15 @@ async def execute_trades(
             max_notional_for_decision = target_notional
 
             buy_risk_cap = None
-            if _balance_tiered_policy_enabled():
+            if _account_cap_policy_enabled():
                 buy_risk_cap = await _resolve_buy_risk_cap(context, leader_id, signal)
                 if not buy_risk_cap.allow:
                     reason = (
-                        f"balance regime [{buy_risk_cap.regime}] headroom: "
+                        f"account-cap policy [{buy_risk_cap.policy_name}] headroom: "
                         f"{buy_risk_cap.reason}"
                     )
                     print_skip_reason(
-                        f"Balance regime [{buy_risk_cap.regime}] headroom blocked BUY",
+                        f"Account-cap policy [{buy_risk_cap.policy_name}] headroom blocked BUY",
                         buy_risk_cap.reason,
                     )
                     log_trade_skip(
@@ -486,24 +486,24 @@ async def execute_trades(
                 )
 
             # --- Sizing audit: unified log showing both sizing sources ---
-            regime_binding = (
+            policy_binding = (
                 buy_risk_cap is not None
                 and buy_risk_cap.cap_notional_usdc < target_notional
             )
             logger.info(
                 "sizing_audit | cond=%s leader=%s "
                 "leader_notional=%.2f strategy=%s sizing_target=%.4f "
-                "regime_enabled=%s regime_cap=%s regime_binding=%s "
+                "policy_enabled=%s policy_cap=%s policy_binding=%s "
                 "max_for_decision=%.4f | %s",
                 signal.condition_id[:12],
                 leader_id[:12],
                 float(signal.usdc_size),
                 sizing_result.strategy,
                 float(target_notional),
-                _balance_tiered_policy_enabled(),
-                f"{float(buy_risk_cap.cap_notional_usdc):.4f}[{buy_risk_cap.regime}]"
+                _account_cap_policy_enabled(),
+                f"{float(buy_risk_cap.cap_notional_usdc):.4f}[{buy_risk_cap.policy_name}]"
                 if buy_risk_cap else "n/a",
-                regime_binding,
+                policy_binding,
                 float(max_notional_for_decision),
                 sizing_result.reasoning,
                 extra={
@@ -513,9 +513,9 @@ async def execute_trades(
                     "leader_notional": float(signal.usdc_size),
                     "strategy": sizing_result.strategy,
                     "sizing_target": float(target_notional),
-                    "regime_enabled": _balance_tiered_policy_enabled(),
-                    "regime_cap": float(buy_risk_cap.cap_notional_usdc) if buy_risk_cap else None,
-                    "regime_binding": regime_binding,
+                    "policy_enabled": _account_cap_policy_enabled(),
+                    "policy_cap": float(buy_risk_cap.cap_notional_usdc) if buy_risk_cap else None,
+                    "policy_binding": policy_binding,
                     "max_for_decision": float(max_notional_for_decision),
                 },
             )

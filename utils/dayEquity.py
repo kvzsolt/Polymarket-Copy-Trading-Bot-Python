@@ -1,7 +1,7 @@
 """Persistent day-start equity tracker.
 
 Stores the equity snapshot at the start of each trading day in a JSON file.
-Used by the balance-tiered regime system to compute daily drawdown limits.
+Used by the account-cap policy to compute daily drawdown limits.
 """
 
 from __future__ import annotations

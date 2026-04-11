@@ -27,7 +27,7 @@ async def test_health_includes_readiness_fields():
 
 
 @pytest.mark.asyncio
-async def test_metrics_server_binds_to_all_interfaces_by_default():
+async def test_metrics_server_binds_to_localhost_by_default():
     with patch.dict("os.environ", {}, clear=True):
         with patch("services.healthServer.web.TCPSite") as site_cls:
             site_instance = AsyncMock()
@@ -36,7 +36,7 @@ async def test_metrics_server_binds_to_all_interfaces_by_default():
             runner = await start_health_server(port=9102)
 
             _, kwargs = site_cls.call_args
-            assert kwargs["host"] == "0.0.0.0"
+            assert kwargs["host"] == "127.0.0.1"
             assert kwargs["port"] == 9102
 
             await runner.cleanup()

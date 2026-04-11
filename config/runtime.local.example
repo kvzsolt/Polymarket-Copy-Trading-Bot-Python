@@ -16,9 +16,6 @@ USER_ADDRESS=
 # Wallet that funds and signs live trades.
 FUNDER_ADDRESS=
 
-# Legacy fallback for FUNDER_ADDRESS.
-PROXY_WALLET=
-
 # Optional allocator-style multi-user runtime config path.
 MULTI_USER_CONFIG_FILE=
 

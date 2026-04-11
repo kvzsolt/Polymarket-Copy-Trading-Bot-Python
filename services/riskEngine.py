@@ -10,11 +10,11 @@ logger = get_logger("RiskEngine")
 
 
 # ---------------------------------------------------------------------------
-# Balance-tiered regime system
+# Simplified account-cap policy
 # ---------------------------------------------------------------------------
 
 @dataclass(frozen=True)
-class BalanceRegime:
+class AccountCapPolicy:
     name: str
     reserve_pct: Decimal
     reserve_floor: Decimal
@@ -29,66 +29,65 @@ class BalanceRegime:
     dynamic_threshold_raise: bool = False
 
 
-_REGIMES = {
-    "micro": BalanceRegime(
-        name="micro",
-        reserve_pct=Decimal("0.20"), reserve_floor=Decimal("5"),
-        hard_cap_pct=Decimal("0.18"), hard_cap_ceiling=Decimal("4.5"),
-        max_open_positions=3, allow_partial_exits=False, allow_pyramiding=False,
-        max_adds_per_position=0, base_min_score=Decimal("0.30"),
-        strategy_min_notional=Decimal("1"), dynamic_threshold_raise=True,
-    ),
-    "small": BalanceRegime(
-        name="small",
-        reserve_pct=Decimal("0.15"), reserve_floor=Decimal("10"),
-        hard_cap_pct=Decimal("0.15"), hard_cap_ceiling=Decimal("12"),
-        max_open_positions=5, allow_partial_exits=True, allow_pyramiding=False,
-        max_adds_per_position=0, base_min_score=Decimal("0.27"),
-        strategy_min_notional=Decimal("2"), dynamic_threshold_raise=False,
-    ),
-    "medium": BalanceRegime(
-        name="medium",
-        reserve_pct=Decimal("0.10"), reserve_floor=Decimal("25"),
-        hard_cap_pct=Decimal("0.12"), hard_cap_ceiling=Decimal("40"),
-        max_open_positions=8, allow_partial_exits=True, allow_pyramiding=True,
-        max_adds_per_position=1, base_min_score=Decimal("0.25"),
-        strategy_min_notional=Decimal("3"), dynamic_threshold_raise=False,
-    ),
-    "large": BalanceRegime(
-        name="large",
-        reserve_pct=Decimal("0.05"), reserve_floor=Decimal("50"),
-        hard_cap_pct=Decimal("0.10"), hard_cap_ceiling=Decimal("150"),
-        max_open_positions=12, allow_partial_exits=True, allow_pyramiding=True,
-        max_adds_per_position=2, base_min_score=Decimal("0.22"),
-        strategy_min_notional=Decimal("5"), dynamic_threshold_raise=False,
-    ),
-}
+def _env_decimal(key: str, default: str) -> Decimal:
+    value = ENV.get(key)
+    if value not in (None, ""):
+        return Decimal(str(value))
+    return Decimal(default)
 
 
-def regime_for_equity(equity_usdc: Decimal) -> str:
-    micro_max = Decimal(str(ENV.get("BALANCE_REGIME_MICRO_MAX", 75)))
-    small_max = Decimal(str(ENV.get("BALANCE_REGIME_SMALL_MAX", 250)))
-    medium_max = Decimal(str(ENV.get("BALANCE_REGIME_MEDIUM_MAX", 1000)))
-    if equity_usdc < micro_max:
-        return "micro"
-    elif equity_usdc < small_max:
-        return "small"
-    elif equity_usdc < medium_max:
-        return "medium"
-    else:
-        return "large"
+def _env_int(key: str, default: int) -> int:
+    value = ENV.get(key)
+    if value not in (None, ""):
+        return int(value)
+    return default
 
 
-def get_regime(name: str) -> BalanceRegime:
-    return _REGIMES.get(name, _REGIMES["micro"])
+def _env_bool(key: str, default: bool) -> bool:
+    value = ENV.get(key)
+    if value in (None, ""):
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in ("1", "true", "yes")
 
 
-def compute_reserve_cash(equity_usdc: Decimal, regime: BalanceRegime) -> Decimal:
-    return max(regime.reserve_floor, equity_usdc * regime.reserve_pct)
+def active_policy() -> AccountCapPolicy:
+    return AccountCapPolicy(
+        name="account_cap",
+        reserve_pct=_env_decimal("BALANCE_POLICY_RESERVE_PCT", default="0.12"),
+        reserve_floor=_env_decimal("BALANCE_POLICY_RESERVE_FLOOR", default="7"),
+        hard_cap_pct=_env_decimal("BALANCE_POLICY_HARD_CAP_PCT", default="0.15"),
+        hard_cap_ceiling=_env_decimal("BALANCE_POLICY_HARD_CAP_CEILING", default="8"),
+        max_open_positions=_env_int("BALANCE_POLICY_MAX_OPEN_POSITIONS", default=12),
+        allow_partial_exits=_env_bool("BALANCE_POLICY_ALLOW_PARTIAL_EXITS", default=True),
+        allow_pyramiding=_env_bool("BALANCE_POLICY_ALLOW_PYRAMIDING", default=False),
+        max_adds_per_position=_env_int("BALANCE_POLICY_MAX_ADDS_PER_POSITION", default=1),
+        base_min_score=_env_decimal("BALANCE_POLICY_BASE_MIN_SCORE", default="0.22"),
+        strategy_min_notional=_env_decimal("BALANCE_POLICY_MIN_NOTIONAL_USDC", default="0.00001"),
+        dynamic_threshold_raise=_env_bool("BALANCE_POLICY_DYNAMIC_THRESHOLD_RAISE", default=False),
+    )
 
 
-def compute_hard_cap(equity_usdc: Decimal, tradable_cash: Decimal, regime: BalanceRegime) -> Decimal:
-    return min(tradable_cash, equity_usdc * regime.hard_cap_pct, regime.hard_cap_ceiling)
+def policy_name_for_equity(equity_usdc: Decimal) -> str:
+    _ = equity_usdc
+    return active_policy().name
+
+
+def get_active_policy(name: str = "") -> AccountCapPolicy:
+    _ = name
+    return active_policy()
+
+
+get_policy = get_active_policy
+
+
+def compute_reserve_cash(equity_usdc: Decimal, policy: AccountCapPolicy) -> Decimal:
+    return max(policy.reserve_floor, equity_usdc * policy.reserve_pct)
+
+
+def compute_hard_cap(equity_usdc: Decimal, tradable_cash: Decimal, policy: AccountCapPolicy) -> Decimal:
+    return min(tradable_cash, equity_usdc * policy.hard_cap_pct, policy.hard_cap_ceiling)
 
 
 def compute_soft_cap(
@@ -110,7 +109,7 @@ class RiskHeadroom:
     allow: bool
     reason: str
     cap_notional_usdc: Decimal
-    regime: str = "micro"
+    policy_name: str = "account_cap"
 
 
 def headroom_for_buy(
@@ -123,36 +122,34 @@ def headroom_for_buy(
     leader_exposure_usdc: Decimal = Decimal("0"),
     daily_loss_usdc: Decimal = Decimal("0"),
     day_start_equity_usdc: Decimal | None = None,
-    regime: BalanceRegime | None = None,
+    policy: AccountCapPolicy | None = None,
 ) -> RiskHeadroom:
-    if regime is None:
-        rname = regime_for_equity(equity_usdc)
-        regime = get_regime(rname)
+    if policy is None:
+        policy = active_policy()
 
-    if open_positions_count >= regime.max_open_positions:
-        return RiskHeadroom(False, "max_open_positions_reached", Decimal("0"), regime.name)
+    if open_positions_count >= policy.max_open_positions:
+        return RiskHeadroom(False, "max_open_positions_reached", Decimal("0"), policy.name)
 
-    reserve = compute_reserve_cash(equity_usdc, regime)
+    reserve = compute_reserve_cash(equity_usdc, policy)
     tradable = max(Decimal("0"), free_cash_usdc - reserve)
 
     if tradable <= 0:
-        return RiskHeadroom(False, "no_tradable_cash_after_reserve", Decimal("0"), regime.name)
+        return RiskHeadroom(False, "no_tradable_cash_after_reserve", Decimal("0"), policy.name)
 
-    hard_cap = compute_hard_cap(equity_usdc, tradable, regime)
+    hard_cap = compute_hard_cap(equity_usdc, tradable, policy)
 
     max_market = Decimal(str(ENV.get("MAX_MARKET_EXPOSURE_USDC", 300)))
     max_category = Decimal(str(ENV.get("MAX_CATEGORY_EXPOSURE_USDC", 600)))
-    # Keep defaults consistent with policy_from_env and config/env.py.
     max_leader = Decimal(str(ENV.get("MAX_LEADER_EXPOSURE_USDC", 500)))
 
-    day_start_eq = (
-        day_start_equity_usdc
-        if day_start_equity_usdc is not None
-        else Decimal(str(ENV.get("DAY_START_EQUITY_USDC", equity_usdc)))
-    )
+    env_day_start = ENV.get("DAY_START_EQUITY_USDC")
+    if day_start_equity_usdc is not None:
+        day_start_eq = day_start_equity_usdc
+    elif env_day_start not in (None, "") and Decimal(str(env_day_start)) > 0:
+        day_start_eq = Decimal(str(env_day_start))
+    else:
+        day_start_eq = equity_usdc
 
-    # Daily loss headroom should respect MAX_DAILY_DRAWDOWN_PCT.
-    # Keep a small absolute floor to avoid micro-accounts getting immediately inert.
     max_dd_pct = Decimal(str(ENV.get("MAX_DAILY_DRAWDOWN_PCT", 20) or 20)) / Decimal("100")
     max_daily_loss = max(Decimal("2.5"), day_start_eq * max_dd_pct)
 
@@ -164,9 +161,9 @@ def headroom_for_buy(
     cap = min(hard_cap, market_headroom, category_headroom, leader_headroom, daily_headroom)
 
     if cap <= 0:
-        return RiskHeadroom(False, "no_buy_headroom", Decimal("0"), regime.name)
+        return RiskHeadroom(False, "no_buy_headroom", Decimal("0"), policy.name)
 
-    return RiskHeadroom(True, "ok", cap, regime.name)
+    return RiskHeadroom(True, "ok", cap, policy.name)
 
 
 # ---------------------------------------------------------------------------

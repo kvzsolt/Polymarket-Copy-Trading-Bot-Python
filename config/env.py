@@ -183,12 +183,11 @@ def get_funder_address() -> str:
     funder = _ensure_no_inline_comment('FUNDER_ADDRESS', _raw('FUNDER_ADDRESS', ''))
     if funder:
         return funder
-    # Backward-compatible fallback
     return _ensure_no_inline_comment('PROXY_WALLET', _raw('PROXY_WALLET', ''))
 
 
 def get_metrics_bind_host() -> str:
-    return _ensure_no_inline_comment('METRICS_BIND_HOST', _raw('METRICS_BIND_HOST', '0.0.0.0'))
+    return _ensure_no_inline_comment('METRICS_BIND_HOST', _raw('METRICS_BIND_HOST', '127.0.0.1'))
 
 
 def build_wallet_config() -> WalletConfig:
@@ -205,7 +204,7 @@ def validate_wallet_config(cfg: WalletConfig) -> None:
     if not cfg.private_key:
         raise EnvValidationError('PRIVATE_KEY is required.')
     if not cfg.funder_address:
-        raise EnvValidationError('FUNDER_ADDRESS is required (or set PROXY_WALLET as fallback).')
+        raise EnvValidationError('FUNDER_ADDRESS is required.')
     if not is_valid_eth_address(cfg.funder_address):
         raise EnvValidationError(
             f'Invalid FUNDER_ADDRESS "{cfg.funder_address}" (expected 42-char Ethereum address).'
@@ -236,7 +235,6 @@ def validate_runtime_env() -> None:
         'DISCOVERY_PROMOTE_TO_ACTIVE',
         'ENABLE_TRADER_DISCOVERY',
         'FUNDER_ADDRESS',
-        'PROXY_WALLET',
         'SIGNATURE_TYPE',
         'CHAIN_ID',
         'MULTI_USER_CONFIG_FILE',
@@ -263,11 +261,6 @@ def validate_runtime_env() -> None:
             errors.append(
                 f'Invalid leader wallet "{wallet}" (expected 42-char Ethereum address).'
             )
-    proxy_wallet = _ensure_no_inline_comment('PROXY_WALLET', _raw('PROXY_WALLET', ''))
-    if proxy_wallet and not is_valid_eth_address(proxy_wallet):
-        errors.append(
-            f'Invalid PROXY_WALLET "{proxy_wallet}" (expected 42-char Ethereum address).'
-        )
     funder_address = get_funder_address()
     if funder_address and not is_valid_eth_address(funder_address):
         errors.append(
@@ -419,8 +412,7 @@ def _build_env_snapshot() -> dict[str, object]:
     return {
     # --- Wallet / auth ---
     'USER_ADDRESS': os.getenv('USER_ADDRESS', ''),
-    'PROXY_WALLET': os.getenv('PROXY_WALLET', ''),
-    'FUNDER_ADDRESS': os.getenv('FUNDER_ADDRESS', ''),
+    'FUNDER_ADDRESS': get_funder_address(),
     # Keep secrets and secret-file metadata out of ENV snapshot; call get_private_key() where needed.
     'PRIVATE_KEY': '***REDACTED***' if private_key_configured else '',
     'PRIVATE_KEY_FILE': '***REDACTED***' if private_key_file_configured else '',
@@ -456,8 +448,8 @@ def _build_env_snapshot() -> dict[str, object]:
     'ADAPTIVE_MIN_PERCENT': _float('ADAPTIVE_MIN_PERCENT', '0'),
     'ADAPTIVE_MAX_PERCENT': _float('ADAPTIVE_MAX_PERCENT', '0'),
     'ADAPTIVE_THRESHOLD_USDC': _float('ADAPTIVE_THRESHOLD_USDC', '500'),
-    'BUY_MIN_AMOUNT': _float('BUY_MIN_AMOUNT', os.getenv('MIN_AMOUNT', '1')),
-    'BUY_MAX_AMOUNT': _float('BUY_MAX_AMOUNT', os.getenv('MAX_AMOUNT', '100')),
+    'BUY_MIN_AMOUNT': _float('BUY_MIN_AMOUNT', '1'),
+    'BUY_MAX_AMOUNT': _float('BUY_MAX_AMOUNT', '100'),
     'POSITION_THRESHOLD': _int('POSITION_THRESHOLD', '0'),
     # Max fraction of our balance to risk on a single trade (0.0–1.0)
     'MAX_POSITION_PCT': _float('MAX_POSITION_PCT', '0.25'),
@@ -495,11 +487,19 @@ def _build_env_snapshot() -> dict[str, object]:
     'MAX_DAILY_DRAWDOWN_PCT': _float('MAX_DAILY_DRAWDOWN_PCT', '20'),
     'KILL_SWITCH': os.getenv('KILL_SWITCH', 'false').strip().lower() in ('1', 'true', 'yes'),
 
-    # Balance-tiered regime system
+    # Account-cap policy (single unified policy)
     'ENABLE_BALANCE_TIERED_POLICY': os.getenv('ENABLE_BALANCE_TIERED_POLICY', 'false').strip().lower() in ('1', 'true', 'yes'),
-    'BALANCE_REGIME_MICRO_MAX': _float('BALANCE_REGIME_MICRO_MAX', '75'),
-    'BALANCE_REGIME_SMALL_MAX': _float('BALANCE_REGIME_SMALL_MAX', '250'),
-    'BALANCE_REGIME_MEDIUM_MAX': _float('BALANCE_REGIME_MEDIUM_MAX', '1000'),
+    'BALANCE_POLICY_RESERVE_PCT': _float('BALANCE_POLICY_RESERVE_PCT', '0.12'),
+    'BALANCE_POLICY_RESERVE_FLOOR': _float('BALANCE_POLICY_RESERVE_FLOOR', '7'),
+    'BALANCE_POLICY_HARD_CAP_PCT': _float('BALANCE_POLICY_HARD_CAP_PCT', '0.15'),
+    'BALANCE_POLICY_HARD_CAP_CEILING': _float('BALANCE_POLICY_HARD_CAP_CEILING', '8'),
+    'BALANCE_POLICY_MAX_OPEN_POSITIONS': _int('BALANCE_POLICY_MAX_OPEN_POSITIONS', '12'),
+    'BALANCE_POLICY_ALLOW_PARTIAL_EXITS': os.getenv('BALANCE_POLICY_ALLOW_PARTIAL_EXITS', 'true').strip().lower() in ('1', 'true', 'yes'),
+    'BALANCE_POLICY_ALLOW_PYRAMIDING': os.getenv('BALANCE_POLICY_ALLOW_PYRAMIDING', 'false').strip().lower() in ('1', 'true', 'yes'),
+    'BALANCE_POLICY_MAX_ADDS_PER_POSITION': _int('BALANCE_POLICY_MAX_ADDS_PER_POSITION', '1'),
+    'BALANCE_POLICY_BASE_MIN_SCORE': _float('BALANCE_POLICY_BASE_MIN_SCORE', '0.22'),
+    'BALANCE_POLICY_MIN_NOTIONAL_USDC': _float('BALANCE_POLICY_MIN_NOTIONAL_USDC', '0.00001'),
+    'BALANCE_POLICY_DYNAMIC_THRESHOLD_RAISE': os.getenv('BALANCE_POLICY_DYNAMIC_THRESHOLD_RAISE', 'false').strip().lower() in ('1', 'true', 'yes'),
     'DAY_START_EQUITY_USDC': _float('DAY_START_EQUITY_USDC', '0'),
 
     # Neg-risk arbitrage scanner
@@ -586,7 +586,7 @@ def _build_env_snapshot() -> dict[str, object]:
     'BOT_STATE_DB': os.getenv('BOT_STATE_DB', 'data/bot_state.db'),
     'ENABLE_METRICS_SERVER': os.getenv('ENABLE_METRICS_SERVER', 'false').strip().lower() in ('1', 'true', 'yes'),
     'METRICS_PORT': _int('METRICS_PORT', '9102'),
-    'METRICS_BIND_HOST': os.getenv('METRICS_BIND_HOST', '0.0.0.0'),
+    'METRICS_BIND_HOST': os.getenv('METRICS_BIND_HOST', '127.0.0.1'),
     'ENFORCE_GEOBLOCK': os.getenv('ENFORCE_GEOBLOCK', 'true').strip().lower() in ('1', 'true', 'yes'),
 
     # --- Execution quality gates ---
