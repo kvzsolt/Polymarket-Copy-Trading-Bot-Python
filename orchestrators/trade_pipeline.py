@@ -166,11 +166,14 @@ def _max_non_terminal_failure_attempts() -> int:
     return max(1, value)
 
 
+_RETRYABLE_FAILED_STATUS_PREFIX = "retryable_failed_"
+
+
 def _retry_attempt_from_status(status: str | None) -> int:
     text = str(status or "").strip().lower()
-    if not text.startswith("retry_pending_"):
+    if not text.startswith(_RETRYABLE_FAILED_STATUS_PREFIX):
         return 0
-    suffix = text.replace("retry_pending_", "", 1)
+    suffix = text.replace(_RETRYABLE_FAILED_STATUS_PREFIX, "", 1)
     try:
         return int(suffix)
     except (TypeError, ValueError):
@@ -823,12 +826,12 @@ async def execute_trades(
                 not is_terminal and next_retry_attempt >= max_non_terminal_attempts
             )
             status_to_persist = (
-                f"failed_{exec_result.status}"
+                "terminal_failed"
                 if is_terminal
                 else (
-                    "failed_non_terminal_retry_exhausted"
+                    "terminal_failed"
                     if non_terminal_retry_exhausted
-                    else f"retry_pending_{next_retry_attempt}"
+                    else f"{_RETRYABLE_FAILED_STATUS_PREFIX}{next_retry_attempt}"
                 )
             )
             context.orders_repo.mark_processed_trade(
@@ -930,17 +933,25 @@ async def execute_trades(
                         "order_id": exec_result.order_id,
                     },
                 )
-                context.processed_repo.mark_processed(
-                    trade_key=signal.trade_key or f"{signal.tx_hash}:{signal.condition_id}:{signal.side}",
+                context.orders_repo.mark_processed_trade(
+                    trade_key=trade_key,
                     user_id=context.user_id,
                     leader_id=leader_id,
                     tx_hash=signal.tx_hash,
                     side=signal.side,
-                    asset=signal.asset,
+                    asset=signal.token_id,
                     condition_id=signal.condition_id,
                     status="duplicate_ignored",
                 )
-                return
+                results.append(
+                    TradePipelineResult(
+                        trade_key=trade_key,
+                        status="skipped",
+                        reason="duplicate_ignored",
+                        order_id=exec_result.order_id,
+                    )
+                )
+                continue
             # Non-duplicate integrity error — log and re-raise
             logger.error(
                 "trade_pipeline_integrity_error",
