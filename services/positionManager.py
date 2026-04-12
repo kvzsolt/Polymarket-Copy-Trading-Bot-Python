@@ -86,7 +86,7 @@ class PositionManager:
 
         # Basic SL/TP — ratios already in [0,1], no /100 needed
         self._sl_pct = rs.stop_loss_ratio
-        self._tp_pct = rs.tp_price
+        self._tp_pct = rs.take_profit_ratio
         self._enabled = ENV.get('ENABLE_RISK_MGMT', True)
 
         # Profit lock
