@@ -382,8 +382,6 @@ async def execute_trades(
             continue
 
         # --- Decision gate: score the leader and this specific trade ---
-        if context.copy_decision_service is None or context.leader_scorer is None:
-            raise RuntimeError("TradingContext decision services are not initialized")
         copy_decision_svc = context.copy_decision_service
         leader_scorer = context.leader_scorer
 
