@@ -74,13 +74,15 @@ class RedemptionsRepo:
             conn.commit()
             return cur.rowcount > 0
 
-    def is_attempted(self, *, condition_id: str, user_id: str) -> bool:
-        """Check if a confirmed/successful redemption already exists for this condition."""
+    def is_attempted(self, *, condition_id: str, user_id: str, outcome_index: int | None = None) -> bool:
+        """Check if a confirmed/successful redemption already exists for this condition.
+        Only 'confirmed' status counts as terminal — 'submitted' may still be in-flight.
+        """
         with create_connection(self.db_path) as conn:
             row = conn.execute(
                 """
                 SELECT 1 FROM redemptions
-                WHERE user_id = ? AND condition_id = ? AND status IN ('confirmed', 'submitted')
+                WHERE user_id = ? AND condition_id = ? AND status = 'confirmed'
                 LIMIT 1
                 """,
                 (user_id, condition_id),
