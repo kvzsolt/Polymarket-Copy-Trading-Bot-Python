@@ -34,6 +34,8 @@ def _make_pm() -> PositionManager:
         near_max_warn_level=0.90,
     )
     pm = PositionManager(risk_settings=risk)
+    # Make deterministic regardless of process env mutation from other tests/CI
+    pm._enabled = True
     # Override feature flags directly (bypass ENV)
     pm._enable_near_max = True
     pm._profit_lock_mode = "advanced"
