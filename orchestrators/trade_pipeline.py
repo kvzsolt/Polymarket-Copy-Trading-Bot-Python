@@ -167,17 +167,19 @@ def _max_non_terminal_failure_attempts() -> int:
 
 
 _RETRYABLE_FAILED_STATUS_PREFIX = "retryable_failed_"
+_LEGACY_RETRY_PREFIX = "retry_pending_"
 
 
 def _retry_attempt_from_status(status: str | None) -> int:
     text = str(status or "").strip().lower()
-    if not text.startswith(_RETRYABLE_FAILED_STATUS_PREFIX):
-        return 0
-    suffix = text.replace(_RETRYABLE_FAILED_STATUS_PREFIX, "", 1)
-    try:
-        return int(suffix)
-    except (TypeError, ValueError):
-        return 0
+    for prefix in (_RETRYABLE_FAILED_STATUS_PREFIX, _LEGACY_RETRY_PREFIX):
+        if text.startswith(prefix):
+            suffix = text.replace(prefix, "", 1)
+            try:
+                return int(suffix)
+            except (TypeError, ValueError):
+                return 0
+    return 0
 
 
 def _account_cap_policy_enabled() -> bool:
