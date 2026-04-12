@@ -27,8 +27,8 @@ def _lower_decision_gates_for_tests(monkeypatch):
     """Lower copy-decision thresholds so test signals pass the gate."""
     monkeypatch.setenv("COPY_DECISION_MIN_SCORE", "0.01")
     monkeypatch.setenv("COPY_MAX_SIGNAL_AGE_SECONDS", "999999")
-    monkeypatch.setenv("COPY_MAX_PRICE_DRIFT_PCT", "999")
-    monkeypatch.setenv("COPY_MAX_EDGE_DECAY_PCT", "999")
+    monkeypatch.setenv("COPY_MAX_PRICE_DRIFT_RATIO", "1.0")
+    monkeypatch.setenv("COPY_MAX_EDGE_DECAY_RATIO", "1.0")
     monkeypatch.setenv("COPY_MIN_SHARES", "0.001")
     monkeypatch.setenv("COPY_MIN_NOTIONAL_USDC", "0.01")
     monkeypatch.setenv("BUY_MIN_AMOUNT", "0.01")
