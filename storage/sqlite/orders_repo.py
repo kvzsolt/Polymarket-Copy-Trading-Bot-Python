@@ -20,8 +20,8 @@ _TERMINAL_SUCCESS_STATES = {
     "duplicate_ignored",
 }
 
-_FAILURE_STATES = {"failed", "submission_failed", "created"}
-_RETRY_PENDING_STATUS_PREFIX = "retry_pending_"
+_FAILURE_STATES = {"failed", "submission_failed", "created", "retryable_failed", "terminal_failed"}
+_RETRY_PENDING_STATUS_PREFIX = "retryable_failed_"
 
 
 @dataclass
