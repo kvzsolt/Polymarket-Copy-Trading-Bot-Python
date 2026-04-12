@@ -11,8 +11,6 @@ from config.env import ENV
 from domain.models import TradeSignal
 from domain.trading_context import TradingContext
 from services.executionService import ExecutionRequest
-from services.copyDecisionService import CopyDecisionService
-from services.leaderScoringService import LeaderScoringService
 from services.healthServer import update_readiness
 from services.metrics import metrics
 from services.riskEngine import headroom_for_buy
@@ -32,24 +30,6 @@ from utils.logger import (
 )
 
 logger = get_logger("TradePipeline")
-
-# Module-level singletons (initialized lazily).
-_leader_scorer: LeaderScoringService | None = None
-_copy_decision: CopyDecisionService | None = None
-
-
-def _get_leader_scorer() -> LeaderScoringService:
-    global _leader_scorer
-    if _leader_scorer is None:
-        _leader_scorer = LeaderScoringService()
-    return _leader_scorer
-
-
-def _get_copy_decision() -> CopyDecisionService:
-    global _copy_decision
-    if _copy_decision is None:
-        _copy_decision = CopyDecisionService(leader_scorer=_get_leader_scorer())
-    return _copy_decision
 
 
 @dataclass
@@ -402,8 +382,10 @@ async def execute_trades(
             continue
 
         # --- Decision gate: score the leader and this specific trade ---
-        copy_decision_svc = _get_copy_decision()
-        leader_scorer = _get_leader_scorer()
+        if context.copy_decision_service is None or context.leader_scorer is None:
+            raise RuntimeError("TradingContext decision services are not initialized")
+        copy_decision_svc = context.copy_decision_service
+        leader_scorer = context.leader_scorer
 
         # Score the leader using available context
         pnl_metrics = context.pnl_tracker.metrics() if hasattr(context.pnl_tracker, 'metrics') else {}
