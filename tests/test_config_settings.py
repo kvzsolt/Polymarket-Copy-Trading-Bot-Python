@@ -52,7 +52,7 @@ class TestLoadSettingsDefaults:
         settings = load_settings()
         # All ratio fields must be in [0, 1]
         assert 0 <= settings.risk.stop_loss_ratio <= 1
-        assert settings.risk.tp_price >= 0
+        assert settings.risk.take_profit_ratio >= 0
         assert 0 <= settings.risk.daily_drawdown_ratio <= 1
         assert 0 <= settings.risk.profit_lock_trigger_ratio <= 1
         assert 0 <= settings.risk.trailing_trigger_ratio <= 1
@@ -83,7 +83,7 @@ class TestOldNameMigration:
     def test_take_profit_pct_migrated(self):
         env = _fresh_env(TAKE_PROFIT_PCT=70)
         settings = load_settings(env)
-        assert settings.risk.tp_price == pytest.approx(0.70)
+        assert settings.risk.take_profit_ratio == pytest.approx(0.70)
 
     def test_slippage_tolerance_migrated(self):
         env = _fresh_env(SLIPPAGE_TOLERANCE=2.0)
@@ -277,7 +277,7 @@ class TestEmptyEnvDefaults:
         settings = load_settings(env={})
         # Should not raise, all defaults are valid
         assert settings.risk.stop_loss_ratio == pytest.approx(0.20)
-        assert settings.risk.tp_price == pytest.approx(0.70)
+        assert settings.risk.take_profit_ratio == pytest.approx(0.70)
         assert settings.risk.daily_drawdown_ratio == pytest.approx(0.20)
         assert settings.risk.trailing_trigger_ratio == pytest.approx(0.20)
         assert settings.risk.trailing_distance_ratio == pytest.approx(0.05)

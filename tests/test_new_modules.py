@@ -132,7 +132,7 @@ class TestPositionManager:
 
     def test_near_max_warn_trim_triggers_once(self):
         pm = self._make_pm(
-            tp_pct=500,  # avoid regular take-profit interference
+            tp_pct=99,  # avoid regular take-profit interference
             extra_env={
                 "NEAR_MAX_PRICE_WARN": 0.95,
                 "NEAR_MAX_PRICE_EXIT": 0.97,  # keep room for warn-trim stage
@@ -148,7 +148,7 @@ class TestPositionManager:
         assert not (action2 and action2.get("reason") == "near_max_partial_trim")
 
     def test_near_max_full_exit_defaults_to_95c(self):
-        pm = self._make_pm(tp_pct=500)
+        pm = self._make_pm(tp_pct=99)
         pm.track_buy("c1", "a1", 0.5, 10.0, 5.0)
         action = pm.evaluate_risk_action("c1", 0.951)
         assert action is not None
@@ -156,7 +156,7 @@ class TestPositionManager:
         assert action["size_fraction"] == 1.0
 
     def test_profit_lock_arms_above_70_and_triggers_on_fallback(self):
-        pm = self._make_pm(tp_pct=500)
+        pm = self._make_pm(tp_pct=99)
         pm.track_buy("c1", "a1", 0.5, 10.0, 5.0)
         # Arm lock first (> +70%) but do not exit immediately.
         assert pm.evaluate_risk_action("c1", 0.90) is None
