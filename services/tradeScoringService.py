@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from config.env import ENV
+from config.settings import load_settings
 
 
 def _clamp(value: float, low: float = 0.0, high: float = 1.0) -> float:
@@ -61,7 +62,8 @@ class TradeScoringService:
         age_factor = 1.0 if max_age_seconds <= 0 else _clamp(1.0 - (age_seconds / max_age_seconds))
 
         price_drift_pct = max(0.0, (live_price - ref_price) / ref_price)
-        max_drift_pct = float(ENV.get("COPY_MAX_PRICE_DRIFT_PCT", 6.0) or 6.0) / 100.0
+        _exec = load_settings(env=ENV).execution
+        max_drift_pct = _exec.copy_max_price_drift_ratio
 
         initial_edge = max(0.0, 1.0 - ref_price)
         live_edge = max(0.0, 1.0 - live_price)
@@ -69,7 +71,7 @@ class TradeScoringService:
             edge_decay_pct = 1.0
         else:
             edge_decay_pct = _clamp((initial_edge - live_edge) / initial_edge)
-        max_edge_decay = float(ENV.get("COPY_MAX_EDGE_DECAY_PCT", 70.0) or 70.0) / 100.0
+        max_edge_decay = _exec.copy_max_edge_decay_ratio
 
         leader_notional = float(trade.get("usdcSize", 0) or 0)
         if leader_notional <= 0:
