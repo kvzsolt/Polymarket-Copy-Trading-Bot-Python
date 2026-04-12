@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import time
 from dataclasses import dataclass
 from decimal import Decimal
@@ -340,10 +341,10 @@ class OrdersRepo:
                             fill_size, fill_price, fill_fee, fill_ts, fill_json,
                         ),
                     )
-                except Exception as fill_err:
+                except sqlite3.IntegrityError:
                     # Uniqueness constraint violation — duplicate fill
                     import logging
-                    logging.getLogger(__name__).debug("Atomic fill rejected (duplicate?): %s", fill_err)
+                    logging.getLogger(__name__).info("Atomic fill rejected as duplicate: user=%s order=%s cond=%s", user_id, fill.get("order_id"), condition_id)
                     conn.rollback()
                     return False
 
@@ -431,10 +432,9 @@ class OrdersRepo:
 
                 conn.commit()
                 return True
-        except Exception as outer_err:
-            import logging
-            logging.getLogger(__name__).error("Atomic persistence failed: %s", outer_err, exc_info=True)
-            return False
+        except sqlite3.OperationalError:
+            # DB-level failure (locked, missing table, etc.) — let caller handle
+            raise
 
     def purge_old_processed_trades(self, max_age_seconds: float = 30 * 86400) -> int:
         """Delete processed_trades older than *max_age_seconds*. Returns rows deleted."""
