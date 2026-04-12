@@ -233,7 +233,7 @@ class TestAtomicExecutionPersistence:
             )
             assert ok1 is True
 
-            # Duplicate fill (same order_id, condition_id, side, fill_ts)
+            # Duplicate fill (same user_id, order_id, condition_id, side, fill_ts)
             ok2 = repo.persist_execution_atomically(
                 fill={"order_id": "ord-dup"},
                 user_id="u1",
