@@ -1,16 +1,14 @@
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
 
 from config.db import get_db_path
 from storage.sqlite.connection import create_connection
 from storage.sqlite.market_structure_repo import MarketStructureEvent, MarketStructureRepo
 
 
-@dataclass(frozen=True)
 class MarketStructureException(Exception):
-    message: str
+    """Exception for market structure operation failures."""
 
 
 class MarketStructureService:
@@ -83,7 +81,7 @@ class MarketStructureService:
         return None
 
     def reconcile_positions(self, user_id: str) -> int:
-        pending = self.repo.get_pending_remappings()
+        pending = self.repo.get_pending_remappings(user_id=user_id)
         updated = 0
         if not pending:
             return 0
@@ -104,12 +102,15 @@ class MarketStructureService:
                     """,
                     (new_token, user_id, condition_id, old_token),
                 )
-                if cur.rowcount > 0:
-                    updated += cur.rowcount
-                    conn.execute(
-                        "UPDATE market_structure_events SET remapped = 1 WHERE id = ?",
-                        (event["id"],),
-                    )
+                updated += cur.rowcount
+                # Always mark as applied for this user (even if no rows matched)
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO market_structure_event_applied (user_id, event_id, applied_at)
+                    VALUES (?, ?, ?)
+                    """,
+                    (user_id, event["id"], time.time()),
+                )
             conn.commit()
 
         return updated
