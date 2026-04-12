@@ -1,0 +1,53 @@
+services/riskEngine.py
+  17fb140948f457cb 7,258,262,268-269
+config/runtime.env
+  17fb140948f457cb 37,39,43,45,61,63,67,69-70,72,75,77,79,81,102,104-105,107,110-113,115,117,119-122,124,126,128-132
+services/tradeScoringService.py
+  17fb140948f457cb 8,65-66,74
+tests/test_trade_pipeline_safety.py
+  17fb140948f457cb 30-31
+config/validation.py
+  17fb140948f457cb 1-55
+config/settings.py
+  756de92e8529f4e3 2-5,10-15,17-25,27-28,31,33,54-56,58-59,61-68,72,76-104,133,150-151,153-155,157-158,161-162,164-168,171,180,191-193,197-199,204,210-211
+  17fb140948f457cb 1,6-9,16,26,29-30,32,34-53,57,60,69-71,73-75,105-132,134-149,152,156,159-160,163,169-170,172-179,181-190,194-196,200-203,205-209
+services/positionManager.py
+  17fb140948f457cb 20,78,82-89,103-104,108-109,114-115
+tests/test_config_settings.py
+  17fb140948f457cb 1-292
+services/copyDecisionService.py
+  17fb140948f457cb 8,180-181
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "0df26a2fd4411bf7a7f97877467c48dfba18fde5",
+  "prompts": {
+    "17fb140948f457cb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5073a266-05d7-49fd-8c1f-4f67b13d80ad",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "kvzsolt",
+      "messages": [],
+      "total_additions": 753,
+      "total_deletions": 162,
+      "accepted_lines": 531,
+      "overriden_lines": 0
+    },
+    "756de92e8529f4e3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cc79f687-ebd9-42b7-9895-f57bf5efb356",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "kvzsolt",
+      "messages": [],
+      "total_additions": 227,
+      "total_deletions": 214,
+      "accepted_lines": 92,
+      "overriden_lines": 0
+    }
+  }
+}
