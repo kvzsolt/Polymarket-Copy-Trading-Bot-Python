@@ -304,6 +304,27 @@ def _ensure_redemptions_table(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "redemptions", "status TEXT")
 
 
+def _ensure_market_structure_events_table(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS market_structure_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_type TEXT NOT NULL,
+            condition_id TEXT NOT NULL,
+            old_token_id TEXT,
+            new_token_id TEXT,
+            ratio TEXT,
+            event_ts REAL NOT NULL,
+            payload_json TEXT NOT NULL,
+            remapped INTEGER NOT NULL DEFAULT 0,
+            created_at REAL NOT NULL
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_market_structure_condition ON market_structure_events(condition_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_market_structure_pending ON market_structure_events(remapped, event_type)")
+
+
 def _ensure_legacy_tables(conn: sqlite3.Connection) -> None:
     """Keep legacy tables available while active path is migrated."""
     conn.executescript(
@@ -409,6 +430,7 @@ def apply_migrations(conn: sqlite3.Connection) -> None:
     _ensure_cursors_table(conn)
     _ensure_leaders_table(conn)
     _ensure_redemptions_table(conn)
+    _ensure_market_structure_events_table(conn)
     _ensure_legacy_tables(conn)
     apply_discovery_migrations(conn)
     conn.commit()
