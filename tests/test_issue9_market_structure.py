@@ -158,3 +158,41 @@ class TestMarketStructureService:
         pos = positions.get_position("u1", "cond-x")
         assert pos is not None
         assert pos.token_id == new_token
+
+    def test_per_user_remap_independent(self, tmp_path):
+        """Verify reconciliation is per-user: u1 gets remapped, u2 still sees pending."""
+        db = tmp_path / "ms.db"
+        _prepare_db(db)
+        positions = PositionsRepo(str(db))
+        svc = MarketStructureService(str(db))
+
+        old_token = _token(300)
+        new_token = _token(400)
+
+        # seed positions for two users on same condition
+        positions.apply_fill(
+            user_id="u1", leader_id="l1", condition_id="cond-multi",
+            token_id=old_token, side="BUY",
+            fill_size=Decimal("30"), fill_price=Decimal("0.50"),
+        )
+        positions.apply_fill(
+            user_id="u2", leader_id="l1", condition_id="cond-multi",
+            token_id=old_token, side="BUY",
+            fill_size=Decimal("20"), fill_price=Decimal("0.50"),
+        )
+
+        svc.handle_split(
+            condition_id="cond-multi",
+            old_token_id=old_token,
+            new_token_id=new_token,
+            ratio="1:1",
+        )
+
+        # Reconcile u1
+        assert svc.reconcile_positions("u1") == 1
+        assert positions.get_position("u1", "cond-multi").token_id == new_token
+
+        # u2 still has old token and can still be reconciled independently
+        assert positions.get_position("u2", "cond-multi").token_id == old_token
+        assert svc.reconcile_positions("u2") == 1
+        assert positions.get_position("u2", "cond-multi").token_id == new_token

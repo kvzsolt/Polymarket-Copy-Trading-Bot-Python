@@ -323,6 +323,16 @@ def _ensure_market_structure_events_table(conn: sqlite3.Connection) -> None:
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_market_structure_condition ON market_structure_events(condition_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_market_structure_pending ON market_structure_events(remapped, event_type)")
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS market_structure_event_applied (
+            user_id TEXT NOT NULL,
+            event_id INTEGER NOT NULL REFERENCES market_structure_events(id),
+            applied_at REAL NOT NULL,
+            PRIMARY KEY (user_id, event_id)
+        )
+        """
+    )
 
 
 def _ensure_legacy_tables(conn: sqlite3.Connection) -> None:
