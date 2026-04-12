@@ -60,7 +60,28 @@ class MarketStructureRepo:
             ).fetchall()
         return [dict(row) for row in rows]
 
-    def get_pending_remappings(self) -> list[dict[str, Any]]:
+    def get_pending_remappings(self, user_id: str | None = None) -> list[dict[str, Any]]:
+        """Fetch unprocessed split events, optionally filtered for a specific user."""
+        if user_id is not None:
+            with create_connection(self.db_path) as conn:
+                rows = conn.execute(
+                    """
+                    SELECT mse.id, mse.event_type, mse.condition_id, mse.old_token_id,
+                           mse.new_token_id, mse.ratio, mse.event_ts, mse.payload_json,
+                           mse.remapped, mse.created_at
+                    FROM market_structure_events mse
+                    LEFT JOIN market_structure_event_applied msea
+                        ON mse.id = msea.event_id AND msea.user_id = ?
+                    WHERE mse.remapped = 0
+                      AND mse.event_type = 'split'
+                      AND mse.old_token_id IS NOT NULL
+                      AND mse.new_token_id IS NOT NULL
+                      AND msea.event_id IS NULL
+                    ORDER BY mse.event_ts ASC, mse.id ASC
+                    """,
+                    (user_id,),
+                ).fetchall()
+            return [dict(row) for row in rows]
         with create_connection(self.db_path) as conn:
             rows = conn.execute(
                 """
@@ -84,6 +105,19 @@ class MarketStructureRepo:
             )
             conn.commit()
             return cur.rowcount > 0
+
+    def mark_applied_for_user(self, user_id: str, event_id: int) -> None:
+        """Record that a remap event has been applied for a specific user."""
+        import time as _t
+        with create_connection(self.db_path) as conn:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO market_structure_event_applied (user_id, event_id, applied_at)
+                VALUES (?, ?, ?)
+                """,
+                (user_id, event_id, _t.time()),
+            )
+            conn.commit()
 
     @staticmethod
     def payload(data: dict[str, Any]) -> str:
