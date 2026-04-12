@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from config.env import ENV
+from config.settings import RiskSettings, load_settings
 from utils.logger import get_logger
 
 logger = get_logger("PositionManager")
@@ -74,13 +75,18 @@ class TrackedPosition:
 class PositionManager:
     """In-memory position tracker with advanced exit logic."""
 
-    def __init__(self):
+    def __init__(self, risk_settings: RiskSettings | None = None):
         self._positions: dict[str, TrackedPosition] = {}
         self._closed: list[TrackedPosition] = []
 
-        # Basic SL/TP
-        self._sl_pct = ENV.get('STOP_LOSS_PCT', 20) / 100.0
-        self._tp_pct = ENV.get('TAKE_PROFIT_PCT', 30) / 100.0
+        # Load typed settings (caller can inject for testing)
+        if risk_settings is None:
+            risk_settings = load_settings(env=ENV).risk
+        rs = risk_settings
+
+        # Basic SL/TP — ratios already in [0,1], no /100 needed
+        self._sl_pct = rs.stop_loss_ratio
+        self._tp_pct = rs.tp_price
         self._enabled = ENV.get('ENABLE_RISK_MGMT', True)
 
         # Profit lock
@@ -94,19 +100,19 @@ class PositionManager:
         else:
             self._profit_lock_mode = "legacy"
 
-        self._profit_lock_trigger = float(ENV.get("PROFIT_LOCK_TRIGGER_PCT", 70.0) or 70.0) / 100.0
-        self._profit_lock_sell_fraction = float(ENV.get("PROFIT_LOCK_SELL_FRACTION", 0.50) or 0.50)
+        self._profit_lock_trigger = rs.profit_lock_trigger_ratio
+        self._profit_lock_sell_fraction = rs.profit_lock_sell_ratio
 
         # Near-max exit
         self._enable_near_max = ENV.get('ENABLE_NEAR_MAX_EXIT', True)
-        self._near_max_exit = float(ENV.get("NEAR_MAX_PRICE_EXIT", 0.95) or 0.95)
-        self._near_max_warn = float(ENV.get("NEAR_MAX_PRICE_WARN", 0.92) or 0.92)
+        self._near_max_exit = rs.near_max_price_level
+        self._near_max_warn = rs.near_max_warn_level
         self._near_max_warn_ratio = max(0.0, min(1.0, float(ENV.get("NEAR_MAX_PRICE_WARN_TRIM_RATIO", 0.50) or 0.50)))
 
         # Trailing stop (default OFF when flag is absent; ON when configured in ENV)
         self._enable_trailing = bool(ENV.get('ENABLE_TRAILING_STOP')) if "ENABLE_TRAILING_STOP" in ENV else False
-        self._trailing_activation_pct = float(ENV.get("TRAILING_ACTIVATION_PCT", 20.0) or 20.0) / 100.0
-        self._trailing_distance = float(ENV.get("TRAILING_DISTANCE", 0.05) or 0.05)
+        self._trailing_activation_pct = rs.trailing_trigger_ratio
+        self._trailing_distance = rs.trailing_distance_ratio
 
         # Staged TP (default OFF when flag is absent; ON when configured in ENV)
         self._enable_staged_tp = bool(ENV.get('ENABLE_STAGED_TP')) if "ENABLE_STAGED_TP" in ENV else False
