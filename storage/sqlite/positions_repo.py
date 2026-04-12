@@ -153,7 +153,9 @@ class PositionsRepo:
             return current
 
         if side_u == "SELL":
-            new_size = current.size_tokens - fill_size
+            # Clamp to held amount to prevent negative positions
+            effective_fill = min(fill_size, current.size_tokens)
+            new_size = current.size_tokens - effective_fill
             if new_size <= Decimal("1e-12"):
                 self.delete_position(user_id, condition_id)
                 return None
