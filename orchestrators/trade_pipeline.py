@@ -917,7 +917,31 @@ async def execute_trades(
                 fill_size=fill_size,
                 fill_price=Decimal(str(fill_price or 0)),
             )
-        except sqlite3.IntegrityError:
+        except sqlite3.IntegrityError as ie:
+            error_msg = str(ie)
+            if "idx_fills_unique" in error_msg or "UNIQUE constraint failed: fills" in error_msg:
+                # Duplicate fill — idempotent, skip gracefully
+                logger.info(
+                    "trade_pipeline_duplicate_fill_ignored",
+                    extra={
+                        "user_id": context.user_id,
+                        "leader_id": leader_id,
+                        "condition_id": signal.condition_id,
+                        "order_id": exec_result.order_id,
+                    },
+                )
+                context.processed_repo.mark_processed(
+                    trade_key=signal.trade_key or f"{signal.tx_hash}:{signal.condition_id}:{signal.side}",
+                    user_id=context.user_id,
+                    leader_id=leader_id,
+                    tx_hash=signal.tx_hash,
+                    side=signal.side,
+                    asset=signal.asset,
+                    condition_id=signal.condition_id,
+                    status="duplicate_ignored",
+                )
+                return
+            # Non-duplicate integrity error — log and re-raise
             logger.error(
                 "trade_pipeline_integrity_error",
                 extra={

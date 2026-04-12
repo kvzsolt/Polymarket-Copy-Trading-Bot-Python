@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import time
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Any
 
 from storage.sqlite.connection import create_connection
@@ -297,6 +299,142 @@ class OrdersRepo:
             conn.commit()
 
     # ── retention / cleanup ──────────────────────────────────────────
+
+    def persist_execution_atomically(
+        self,
+        *,
+        fill: dict[str, Any],
+        user_id: str,
+        leader_id: str | None,
+        condition_id: str,
+        token_id: str,
+        side: str,
+        fill_size: str,
+        fill_price: str,
+        fill_fee: str,
+        fill_ts: int,
+        fill_json: str,
+        trade_key: str,
+        tx_hash: str | None,
+        asset: str | None,
+        trade_status: str,
+    ) -> bool:
+        """Persist fill + position update + processed trade in a single transaction.
+
+        Returns True if all three operations succeeded atomically.
+        Returns False if the fill was a duplicate (uniqueness constraint).
+        """
+        try:
+            with create_connection(self.db_path) as conn:
+                # 1. Insert fill (may fail on uniqueness constraint)
+                try:
+                    conn.execute(
+                        """
+                        INSERT INTO fills (
+                            user_id, leader_id, order_id, condition_id, token_id, side,
+                            size_tokens, price, fee, fill_ts, fill_json, created_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                        """,
+                        (
+                            user_id, leader_id, fill.get("order_id"),
+                            condition_id, token_id, side,
+                            fill_size, fill_price, fill_fee, fill_ts, fill_json,
+                        ),
+                    )
+                except sqlite3.IntegrityError:
+                    # Uniqueness constraint violation — duplicate fill
+                    import logging
+                    logging.getLogger(__name__).info("Atomic fill rejected as duplicate: user=%s order=%s cond=%s", user_id, fill.get("order_id"), condition_id)
+                    conn.rollback()
+                    return False
+
+                # 2. Update position (apply fill)
+                current = conn.execute(
+                    "SELECT size_tokens, avg_entry_price FROM positions WHERE user_id = ? AND condition_id = ?",
+                    (user_id, condition_id),
+                ).fetchone()
+
+                side_u = str(side or "").upper()
+                if side_u == "BUY":
+                    if current:
+                        cur_size = Decimal(str(current["size_tokens"] or "0"))
+                        cur_avg = Decimal(str(current["avg_entry_price"] or "0"))
+                        new_fill = Decimal(fill_size)
+                        new_price = Decimal(fill_price)
+                        new_size = cur_size + new_fill
+                        if new_size > 0:
+                            avg = ((cur_size * cur_avg) + (new_fill * new_price)) / new_size
+                        else:
+                            avg = new_price
+                        conn.execute(
+                            """
+                            INSERT INTO positions (user_id, condition_id, token_id, leader_id, size_tokens, avg_entry_price, updated_at)
+                            VALUES (?, ?, ?, ?, ?, ?, ?)
+                            ON CONFLICT(user_id, condition_id) DO UPDATE SET
+                                token_id = excluded.token_id,
+                                leader_id = excluded.leader_id,
+                                size_tokens = excluded.size_tokens,
+                                avg_entry_price = excluded.avg_entry_price,
+                                updated_at = excluded.updated_at
+                            """,
+                            (user_id, condition_id, token_id, leader_id, str(new_size), str(avg), time.time()),
+                        )
+                    else:
+                        conn.execute(
+                            """
+                            INSERT INTO positions (user_id, condition_id, token_id, leader_id, size_tokens, avg_entry_price, updated_at)
+                            VALUES (?, ?, ?, ?, ?, ?, ?)
+                            ON CONFLICT(user_id, condition_id) DO UPDATE SET
+                                token_id = excluded.token_id,
+                                leader_id = excluded.leader_id,
+                                size_tokens = excluded.size_tokens,
+                                avg_entry_price = excluded.avg_entry_price,
+                                updated_at = excluded.updated_at
+                            """,
+                            (user_id, condition_id, token_id, leader_id, fill_size, fill_price, time.time()),
+                        )
+
+                elif side_u == "SELL":
+                    if current:
+                        cur_size = Decimal(str(current["size_tokens"] or "0"))
+                        sell_size = min(Decimal(fill_size), cur_size)
+                        new_size = cur_size - sell_size
+                        if new_size <= Decimal("1e-12"):
+                            conn.execute(
+                                "DELETE FROM positions WHERE user_id = ? AND condition_id = ?",
+                                (user_id, condition_id),
+                            )
+                        else:
+                            conn.execute(
+                                """
+                                INSERT INTO positions (user_id, condition_id, token_id, leader_id, size_tokens, avg_entry_price, updated_at)
+                                VALUES (?, ?, ?, ?, ?, ?, ?)
+                                ON CONFLICT(user_id, condition_id) DO UPDATE SET
+                                    token_id = excluded.token_id,
+                                    size_tokens = excluded.size_tokens,
+                                    updated_at = excluded.updated_at
+                                """,
+                                (user_id, condition_id, token_id, leader_id, str(new_size), str(current["avg_entry_price"]), time.time()),
+                            )
+
+                # 3. Mark processed trade
+                conn.execute(
+                    """
+                    INSERT INTO processed_trades (
+                        trade_key, user_id, leader_id, tx_hash, side, asset, condition_id, status, processed_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(trade_key) DO UPDATE SET
+                        status = excluded.status,
+                        processed_at = excluded.processed_at
+                    """,
+                    (trade_key, user_id, leader_id, tx_hash, side, asset, condition_id, trade_status, time.time()),
+                )
+
+                conn.commit()
+                return True
+        except sqlite3.OperationalError:
+            # DB-level failure (locked, missing table, etc.) — let caller handle
+            raise
 
     def purge_old_processed_trades(self, max_age_seconds: float = 30 * 86400) -> int:
         """Delete processed_trades older than *max_age_seconds*. Returns rows deleted."""
