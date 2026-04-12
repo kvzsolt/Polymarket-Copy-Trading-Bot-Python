@@ -5,7 +5,9 @@ from decimal import Decimal
 from typing import Any
 
 from config.env import ENV
+from services.copyDecisionService import CopyDecisionService
 from services.copyStrategy import CopySizingResult, calculate_copy_notional
+from services.leaderScoringService import LeaderScoringService
 
 
 @dataclass
@@ -26,7 +28,16 @@ class TradingContext:
     buy_min_amount: float = 1.0
     buy_max_amount: float = 100.0
     max_market_exposure_usdc: float = 300.0
+    leader_scorer: LeaderScoringService | None = None
+    copy_decision_service: CopyDecisionService | None = None
     extra: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        """Build per-context services explicitly to avoid module singleton coupling."""
+        if self.leader_scorer is None:
+            self.leader_scorer = LeaderScoringService()
+        if self.copy_decision_service is None:
+            self.copy_decision_service = CopyDecisionService(leader_scorer=self.leader_scorer)
 
     def copy_notional(self, leader_notional: Decimal) -> CopySizingResult:
         """Return the full sizing result so callers can inspect reasoning."""
