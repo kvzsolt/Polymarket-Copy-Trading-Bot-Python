@@ -89,7 +89,7 @@ class TestRedemptionsRepo:
 
         assert repo.is_attempted(condition_id="cond-4", user_id="u1") is True
 
-    def test_is_attempted_submitted_counts(self, tmp_path):
+    def test_is_attempted_submitted_not_terminal(self, tmp_path):
         db = tmp_path / "test_redemptions.db"
         _prepare_db(db)
         repo = RedemptionsRepo(str(db))
@@ -101,7 +101,8 @@ class TestRedemptionsRepo:
             "status": "submitted",
         })
 
-        assert repo.is_attempted(condition_id="cond-5", user_id="u1") is True
+        # submitted is NOT terminal — should not block reconciliation
+        assert repo.is_attempted(condition_id="cond-5", user_id="u1") is False
 
     def test_is_attempted_failed_does_not_count(self, tmp_path):
         db = tmp_path / "test_redemptions.db"

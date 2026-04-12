@@ -181,6 +181,7 @@ class RedemptionService:
             "user_id": pos.user_id,
             "condition_id": pos.condition_id,
             "token_id": pos.token_id,
+            "outcome_index": pos.outcome_index,
             "size": str(pos.size),
             "status": "attempting",
         }
@@ -200,6 +201,7 @@ class RedemptionService:
             "user_id": pos.user_id,
             "condition_id": pos.condition_id,
             "token_id": pos.token_id,
+            "outcome_index": pos.outcome_index,
             "size": str(pos.size),
             "status": result.status,
             "tx_hash": result.tx_hash,
