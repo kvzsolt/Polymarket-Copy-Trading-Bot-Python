@@ -176,6 +176,8 @@ def _ensure_fills_table(conn: sqlite3.Connection) -> None:
 
     conn.execute("CREATE INDEX IF NOT EXISTS idx_fills_user_condition ON fills(user_id, condition_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_fills_order ON fills(order_id)")
+    # Uniqueness: prevent duplicate fill records for the same order/condition/side/timestamp
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_fills_unique ON fills(order_id, condition_id, side, fill_ts)")
 
 
 def _ensure_positions_table(conn: sqlite3.Connection) -> None:

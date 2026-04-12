@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
+from decimal import Decimal
 from typing import Optional
 
 from config.env import ENV
@@ -145,6 +146,10 @@ class PositionManager:
         category: str = "unknown",
     ) -> TrackedPosition:
         """Register a new buy position for risk monitoring."""
+        d_entry = Decimal(str(entry_price))
+        d_size = Decimal(str(size_tokens))
+        d_cost = Decimal(str(usdc_cost))
+
         pos = TrackedPosition(
             condition_id=condition_id,
             asset=asset,
@@ -160,19 +165,19 @@ class PositionManager:
         )
         existing = self._positions.get(condition_id)
         if existing:
-            total_tokens = existing.size_tokens + size_tokens
+            total_tokens = Decimal(str(existing.size_tokens)) + d_size
             if total_tokens > 0:
-                existing.entry_price = (
-                    (existing.entry_price * existing.size_tokens + entry_price * size_tokens)
+                existing.entry_price = float(
+                    (Decimal(str(existing.entry_price)) * Decimal(str(existing.size_tokens)) + d_entry * d_size)
                     / total_tokens
                 )
-            existing.size_tokens = total_tokens
+            existing.size_tokens = float(total_tokens)
             existing.usdc_cost += usdc_cost
             existing.peak_price = max(existing.peak_price, entry_price)
             existing.category = category or existing.category
             logger.info(
                 f"Position averaged: {condition_id[:12]}… "
-                f"avg_entry={existing.entry_price:.4f} total_tokens={total_tokens:.4f}"
+                f"avg_entry={existing.entry_price:.4f} total_tokens={existing.size_tokens:.4f}"
             )
             return existing
 
@@ -196,9 +201,9 @@ class PositionManager:
             return None
 
         # Clamp sell amount to held amount to prevent PnL inflation on oversells
-        effective_size = min(size_tokens, pos.size_tokens)
-        pos.size_tokens -= effective_size
-        realized = (exit_price - pos.entry_price) * effective_size
+        effective_size = min(Decimal(str(size_tokens)), Decimal(str(pos.size_tokens)))
+        pos.size_tokens = float(Decimal(str(pos.size_tokens)) - effective_size)
+        realized = float((Decimal(str(exit_price)) - Decimal(str(pos.entry_price))) * effective_size)
         if pos.realized_pnl is None:
             pos.realized_pnl = 0.0
         pos.realized_pnl += realized
@@ -248,7 +253,7 @@ class PositionManager:
             return None
 
         es = pos.exit_state
-        pct_change = (current_price - pos.entry_price) / pos.entry_price
+        pct_change = float((Decimal(str(current_price)) - Decimal(str(pos.entry_price))) / Decimal(str(pos.entry_price)))
 
         # Update peak price for trailing
         if current_price > pos.peak_price:
