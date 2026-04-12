@@ -74,10 +74,6 @@ async def test_multi_user_positions_and_pnl_are_isolated(tmp_path, monkeypatch):
     monkeypatch.setenv("COPY_MAX_EDGE_DECAY_PCT", "100")
     from config.env import rehydrate_env
     rehydrate_env()
-    # Reset pipeline singletons so they pick up new ENV
-    import orchestrators.trade_pipeline as _tp
-    _tp._leader_scorer = None
-    _tp._copy_decision = None
 
     db_path = tmp_path / "state.db"
     with create_connection(str(db_path)) as conn:
