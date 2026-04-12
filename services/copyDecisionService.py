@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from config.env import ENV
+from config.settings import load_settings
 from services.leaderScoringService import LeaderScore, LeaderScoringService
 from services.tradeScoringService import TradeScore, TradeScoringService
 
@@ -176,9 +177,8 @@ class CopyDecisionService:
         decimals = int(ENV.get("COPY_SIZE_DECIMALS", 4) or 4)
 
         # Worst-case price for cap compatibility (slippage-adjusted).
-        slippage_pct = float(ENV.get("SLIPPAGE_TOLERANCE", 0.0) or 0.0)
-        slippage_pct = max(slippage_pct, 0.0) / 100.0
-        worst_price = live_price * (1.0 + slippage_pct)
+        slippage_ratio = load_settings(env=ENV).execution.slippage_tolerance_ratio
+        worst_price = live_price * (1.0 + slippage_ratio)
 
         target_size_tokens = desired_notional / live_price
 
