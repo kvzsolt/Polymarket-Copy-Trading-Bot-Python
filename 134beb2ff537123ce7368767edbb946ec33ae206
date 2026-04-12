@@ -1,0 +1,31 @@
+tests/test_execution_idempotency_extended.py
+  b08d3513d4af6536 1-539
+tests/test_config_edge_cases.py
+  b08d3513d4af6536 1-370
+tests/test_legacy_env_migration.py
+  b08d3513d4af6536 1-374
+tests/test_position_math.py
+  b08d3513d4af6536 1-351
+tests/test_risk_behavior.py
+  b08d3513d4af6536 1-107,109-175,178-219,221,223-273,275-373,375-772
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "134beb2ff537123ce7368767edbb946ec33ae206",
+  "prompts": {
+    "b08d3513d4af6536": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "946b482e-d8a1-4987-99ee-7856529c594c",
+        "model": "glm-5.1"
+      },
+      "human_author": "kvzsolt",
+      "messages": [],
+      "total_additions": 2434,
+      "total_deletions": 30,
+      "accepted_lines": 2399,
+      "overriden_lines": 5
+    }
+  }
+}
