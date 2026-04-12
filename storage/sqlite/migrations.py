@@ -190,6 +190,16 @@ def _ensure_fills_table(conn: sqlite3.Connection) -> None:
     """)
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_fills_unique ON fills(user_id, order_id, condition_id, side, fill_ts)")
 
+    # Migrate legacy retry_pending_<n> statuses to retryable_failed_<n>
+    try:
+        conn.execute("""
+            UPDATE processed_trades
+            SET status = 'retryable_failed_' || SUBSTR(status, 15)
+            WHERE status LIKE 'retry_pending_%'
+        """)
+    except Exception:
+        pass  # Table may not exist yet
+
 
 def _ensure_positions_table(conn: sqlite3.Connection) -> None:
     conn.execute(

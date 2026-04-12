@@ -22,6 +22,8 @@ _TERMINAL_SUCCESS_STATES = {
 
 _FAILURE_STATES = {"failed", "submission_failed", "created", "retryable_failed", "terminal_failed"}
 _RETRY_PENDING_STATUS_PREFIX = "retryable_failed_"
+# Legacy prefix for backward compat with pre-migration data
+_LEGACY_RETRY_PENDING_STATUS_PREFIX = "retry_pending_"
 
 
 @dataclass
@@ -231,7 +233,7 @@ class OrdersRepo:
         if row is None:
             return False
         status = str(row["status"] or "")
-        return not status.startswith(_RETRY_PENDING_STATUS_PREFIX)
+        return not (status.startswith(_RETRY_PENDING_STATUS_PREFIX) or status.startswith(_LEGACY_RETRY_PENDING_STATUS_PREFIX))
 
     def get_processed_trade(self, trade_key: str) -> dict[str, Any] | None:
         if not trade_key:
