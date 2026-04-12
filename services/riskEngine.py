@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 
 from config.env import ENV
+from config.settings import load_settings
 from utils.logger import get_logger
 
 logger = get_logger("RiskEngine")
@@ -254,15 +255,17 @@ class RiskEngine:
 
 
 def policy_from_env() -> RiskPolicy:
+    settings = load_settings(env=ENV)
     max_trade_usdc = Decimal(str(ENV.get("BUY_MAX_AMOUNT", 100)))
     return RiskPolicy(
         max_trade_usdc=max_trade_usdc,
-        max_portfolio_pct_per_trade=Decimal(str(ENV.get("MAX_POSITION_PCT", 0.25))),
+        max_portfolio_pct_per_trade=Decimal(str(settings.sizing.max_position_ratio)),
         max_market_exposure_usdc=Decimal(str(ENV.get("MAX_MARKET_EXPOSURE_USDC", 300))),
         max_category_exposure_usdc=Decimal(str(ENV.get("MAX_CATEGORY_EXPOSURE_USDC", 600))),
         max_leader_exposure_usdc=Decimal(str(ENV.get("MAX_LEADER_EXPOSURE_USDC", 500))),
         max_open_positions=int(ENV.get("MAX_OPEN_POSITIONS", 20)),
         max_daily_drawdown_pct=Decimal(str(ENV.get("MAX_DAILY_DRAWDOWN_PCT", 20))),
-        max_slippage_bps=int(float(ENV.get("SLIPPAGE_TOLERANCE", 2.0)) * 100),
+        # ratio -> bps: multiply by 10_000 (0.02 -> 200 bps)
+        max_slippage_bps=int(settings.execution.slippage_tolerance_ratio * 10_000),
         kill_switch=bool(ENV.get("KILL_SWITCH", False)),
     )
