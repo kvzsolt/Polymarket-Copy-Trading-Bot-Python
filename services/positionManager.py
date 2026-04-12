@@ -195,8 +195,10 @@ class PositionManager:
         if not pos:
             return None
 
-        pos.size_tokens -= size_tokens
-        realized = (exit_price - pos.entry_price) * size_tokens
+        # Clamp sell amount to held amount to prevent PnL inflation on oversells
+        effective_size = min(size_tokens, pos.size_tokens)
+        pos.size_tokens -= effective_size
+        realized = (exit_price - pos.entry_price) * effective_size
         if pos.realized_pnl is None:
             pos.realized_pnl = 0.0
         pos.realized_pnl += realized
