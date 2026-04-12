@@ -254,7 +254,8 @@ class TestFullSell:
 
 class TestOversellProtection:
     def test_sell_more_than_held_closes_position(self):
-        """Selling more tokens than held should close the position (size goes to 0)."""
+        """Selling more tokens than held should close the position (size goes to 0).
+        PnL should be based on actual held amount, not the oversold amount."""
         pm = _make_pm()
         pm.track_buy("cond-1", "asset-1", 0.50, 100.0, 50.0)
         # Sell 150 tokens when only 100 held -> should close
@@ -262,6 +263,8 @@ class TestOversellProtection:
         assert result is not None  # position closed
         assert result.size_tokens == 0.0
         assert "cond-1" not in pm.open_positions
+        # PnL should be based on held amount (100), not oversold amount (150)
+        assert result.realized_pnl == pytest.approx(10.0)  # (0.60 - 0.50) * 100
 
     def test_sell_exactly_threshold_closes(self):
         """Selling down to the threshold (0.001) should close the position."""

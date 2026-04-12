@@ -40,6 +40,20 @@ from storage.sqlite.migrations import apply_migrations
 from utils.createClobClient import MarketMeta
 
 
+# ---------------------------------------------------------------------------
+# Autouse fixture: reset circuit breaker + stabilize ENV spread-gate
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def _reset_circuit():
+    """Reset circuit breaker and stabilize ENV spread-gate for all tests."""
+    import services.executionService as _es
+    _es._CLOB_CIRCUIT.reset()
+    with patch.dict("config.env.ENV", {"MAX_BOOK_SPREAD_BPS": "500"}, clear=False):
+        yield
+    _es._CLOB_CIRCUIT.reset()
+
+
 class _FeeSvc:
     async def get_fee_bps(self, _token_id: str) -> int:
         return 0
@@ -209,7 +223,11 @@ class TestStaleLockExpiry:
 
     @pytest.mark.asyncio
     async def test_expired_submission_allows_new_execution(self, tmp_path):
-        """When an existing submission is expired, a new one should proceed."""
+        """When an existing PENDING submission is expired, a new one should proceed.
+
+        This tests the stale-lock expiry path: a previous submission that got stuck
+        in 'pending' state (no order_id) should not block future attempts once expired.
+        """
         db_path = tmp_path / "state.db"
         _prepare_db(db_path)
         repo = OrderRepository(str(db_path))
@@ -217,19 +235,40 @@ class TestStaleLockExpiry:
         svc = ExecutionService(clob, _MetaSvc(), _FeeSvc(), repo)
         req = _make_req(signal_id="sig-stale")
 
-        # First execution succeeds
-        result1 = await svc.execute(req)
-        assert result1.accepted is True
-
-        # Manually expire the submission by patching the TTL check
+        # Simulate a stuck pending submission directly in the repo
         key = _idempotency_key(req)
-        with patch("services.executionService._is_pending_submission_expired", return_value=True):
-            with patch("services.executionService._is_retry_blocking_existing", return_value=False):
-                # The second call should now try to submit again (not blocked by stale lock)
-                # But it might get blocked by the atomic lock mechanism.
-                # Let's verify the expired path logic works
-                existing = repo.get_by_idempotency_key(key)
-                assert existing is not None
+        now = time.time()
+        svc._save_submission(
+            idempotency_key=key,
+            request={
+                "user_id": req.user_id,
+                "leader_id": req.leader_id,
+                "token_id": req.token_id,
+                "side": "BUY",
+                "amount": str(req.amount),
+                "reason": req.reason,
+                "signal_id": req.signal_id,
+            },
+            response={
+                "success": False,
+                "status": "pending",
+                "pending_since": now - 200,
+                "pending_ttl_seconds": 120,
+                "pending_expires_at": now - 80,
+            },
+        )
+
+        # Verify the stale submission exists
+        existing = repo.get_by_idempotency_key(key)
+        assert existing is not None
+        assert existing.get("status") == "pending"
+
+        # Now execute — should detect the expired pending and proceed
+        result = await svc.execute(req)
+        # Should NOT be duplicate_ignored — the stale lock should be expired
+        assert result.status != "duplicate_ignored"
+        # Should have attempted a real submission (accepted)
+        assert result.accepted is True
 
 
 # ---------------------------------------------------------------------------
