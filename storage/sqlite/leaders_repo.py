@@ -4,6 +4,7 @@ import sqlite3
 import time
 from dataclasses import dataclass
 
+from domain.ports.repositories import AbstractLeaderRepository
 from storage.sqlite.connection import create_connection
 
 
@@ -24,7 +25,7 @@ class LeaderTierRecord:
     tier_changed_at: float | None
 
 
-class LeadersRepo:
+class LeadersRepo(AbstractLeaderRepository):
     def __init__(self, db_path: str):
         self.db_path = db_path
 

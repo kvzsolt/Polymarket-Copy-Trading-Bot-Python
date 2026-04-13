@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
+from config.env import ENV
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -77,10 +77,10 @@ class ReconciliationService:
         self.orders_repo = orders_repo
 
         self.stale_threshold = stale_threshold_seconds or float(
-            os.environ.get("RECONCILE_STALE_SECONDS", "3600")
+            ENV.get("RECONCILE_STALE_SECONDS", 3600) or 3600
         )
         self.auto_cancel = auto_cancel_stale if auto_cancel_stale is not None else (
-            os.environ.get("RECONCILE_AUTO_CANCEL", "false").lower() in ("1", "true", "yes")
+            str(ENV.get("RECONCILE_AUTO_CANCEL", "false")).lower() in ("1", "true", "yes")
         )
 
     @staticmethod
@@ -219,7 +219,7 @@ async def reconciliation_loop(
 ) -> None:
     """Run reconciliation periodically."""
     interval = interval_seconds or float(
-        os.environ.get("RECONCILE_INTERVAL_SECONDS", "300")
+        ENV.get("RECONCILE_INTERVAL_SECONDS", 300) or 300
     )
     logger.info("Reconciliation loop started (interval=%.0fs)", interval)
 

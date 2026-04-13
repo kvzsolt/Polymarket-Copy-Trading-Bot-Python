@@ -154,10 +154,13 @@ async def _try_redeem_position(
     w3: Web3,
     ctf_contract,
     pos: TrackedPosition,
+    *,
+    position_manager=None,
+    pnl_tracker=None,
 ) -> bool:
     """Attempt to redeem a single resolved position. Returns True if successful."""
-    pm = get_position_manager()
-    pnl = get_pnl_tracker()
+    pm = position_manager or get_position_manager()
+    pnl = pnl_tracker or get_pnl_tracker()
 
     collateral_raw = ENV.get("USDC_CONTRACT_ADDRESS")
     collateral_address = collateral_raw if isinstance(collateral_raw, str) else ""

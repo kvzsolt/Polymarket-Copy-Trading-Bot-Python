@@ -4,6 +4,7 @@ import time
 from dataclasses import dataclass
 from decimal import Decimal
 
+from domain.ports.repositories import AbstractPositionRepository
 from storage.sqlite.connection import create_connection
 from utils import is_valid_clob_token_id
 
@@ -18,7 +19,7 @@ class PositionRecord:
     avg_entry_price: Decimal
 
 
-class PositionsRepo:
+class PositionsRepo(AbstractPositionRepository):
     def __init__(self, db_path: str):
         self.db_path = db_path
 
