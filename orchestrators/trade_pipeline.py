@@ -166,15 +166,29 @@ def _max_non_terminal_failure_attempts() -> int:
     return max(1, value)
 
 
-def _retry_attempt_from_status(status: str | None) -> int:
+_RETRYABLE_FAILED_STATUS_PREFIX = "retryable_failed_"
+_RETRYABLE_FAILED_STATUS = "retryable_failed"
+_LEGACY_RETRY_PREFIX = "retry_pending_"
+
+
+def _retry_attempt_from_status(status: str | None, retry_attempt: int | None = None) -> int:
+    """Return the retry attempt number.
+
+    Prefers the explicit ``retry_attempt`` column value when available.
+    Falls back to parsing legacy status strings (``retryable_failed_<n>``
+    or ``retry_pending_<n>``) for rows written before the column existed.
+    """
+    if retry_attempt is not None and retry_attempt > 0:
+        return retry_attempt
     text = str(status or "").strip().lower()
-    if not text.startswith("retry_pending_"):
-        return 0
-    suffix = text.replace("retry_pending_", "", 1)
-    try:
-        return int(suffix)
-    except (TypeError, ValueError):
-        return 0
+    for prefix in (_RETRYABLE_FAILED_STATUS_PREFIX, _LEGACY_RETRY_PREFIX):
+        if text.startswith(prefix):
+            suffix = text.replace(prefix, "", 1)
+            try:
+                return int(suffix)
+            except (TypeError, ValueError):
+                return 0
+    return 0
 
 
 def _account_cap_policy_enabled() -> bool:
@@ -817,18 +831,20 @@ async def execute_trades(
             is_terminal = exec_result.status == "rejected"
             max_non_terminal_attempts = _max_non_terminal_failure_attempts()
             prev_trade = context.orders_repo.get_processed_trade(trade_key) or {}
-            prev_retry_attempt = _retry_attempt_from_status(prev_trade.get("status"))
+            prev_retry_attempt = _retry_attempt_from_status(
+                prev_trade.get("status"), prev_trade.get("retry_attempt")
+            )
             next_retry_attempt = prev_retry_attempt + 1
             non_terminal_retry_exhausted = (
                 not is_terminal and next_retry_attempt >= max_non_terminal_attempts
             )
             status_to_persist = (
-                f"failed_{exec_result.status}"
+                "terminal_failed"
                 if is_terminal
                 else (
-                    "failed_non_terminal_retry_exhausted"
+                    "terminal_failed"
                     if non_terminal_retry_exhausted
-                    else f"retry_pending_{next_retry_attempt}"
+                    else _RETRYABLE_FAILED_STATUS
                 )
             )
             context.orders_repo.mark_processed_trade(
@@ -840,6 +856,7 @@ async def execute_trades(
                 asset=signal.token_id,
                 condition_id=signal.condition_id,
                 status=status_to_persist,
+                retry_attempt=next_retry_attempt,
             )
             fail_reason = exec_result.error or exec_result.status
             if non_terminal_retry_exhausted:
@@ -930,17 +947,25 @@ async def execute_trades(
                         "order_id": exec_result.order_id,
                     },
                 )
-                context.processed_repo.mark_processed(
-                    trade_key=signal.trade_key or f"{signal.tx_hash}:{signal.condition_id}:{signal.side}",
+                context.orders_repo.mark_processed_trade(
+                    trade_key=trade_key,
                     user_id=context.user_id,
                     leader_id=leader_id,
                     tx_hash=signal.tx_hash,
                     side=signal.side,
-                    asset=signal.asset,
+                    asset=signal.token_id,
                     condition_id=signal.condition_id,
                     status="duplicate_ignored",
                 )
-                return
+                results.append(
+                    TradePipelineResult(
+                        trade_key=trade_key,
+                        status="skipped",
+                        reason="duplicate_ignored",
+                        order_id=exec_result.order_id,
+                    )
+                )
+                continue
             # Non-duplicate integrity error — log and re-raise
             logger.error(
                 "trade_pipeline_integrity_error",
