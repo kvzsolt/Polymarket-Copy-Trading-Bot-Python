@@ -408,11 +408,20 @@ def _is_retry_blocking_existing(
 
 
 class ExecutionService:
-    def __init__(self, clob_client, market_meta_service, fee_service, order_repo):
+    def __init__(
+        self,
+        clob_client,
+        market_meta_service,
+        fee_service,
+        order_repo,
+        *,
+        circuit_breaker: CircuitBreaker | None = None,
+    ):
         self.clob_client = clob_client
         self.market_meta_service = market_meta_service
         self.fee_service = fee_service
         self.order_repo = order_repo
+        self.circuit_breaker = circuit_breaker or _CLOB_CIRCUIT
 
     def _save_submission(
         self,
@@ -471,8 +480,8 @@ class ExecutionService:
                 error="amount must be > 0",
             )
 
-        if not _CLOB_CIRCUIT.allow_request():
-            remaining = _CLOB_CIRCUIT.remaining_cooldown()
+        if not self.circuit_breaker.allow_request():
+            remaining = self.circuit_breaker.remaining_cooldown()
             return ExecutionResult(
                 accepted=False,
                 order_id=None,
@@ -814,7 +823,7 @@ class ExecutionService:
                     signed_order, OrderType.FOK
                 )
                 if response.get("success"):
-                    _CLOB_CIRCUIT.record_success()
+                    self.circuit_breaker.record_success()
                     self._save_submission(
                         idempotency_key=idem_key,
                         request=request_doc,
@@ -875,7 +884,7 @@ class ExecutionService:
             await asyncio.sleep(0.3 * attempt)
         else:
             # All retries exhausted without success
-            _CLOB_CIRCUIT.record_failure()
+            self.circuit_breaker.record_failure()
             self._save_submission(
                 idempotency_key=idem_key,
                 request=request_doc,

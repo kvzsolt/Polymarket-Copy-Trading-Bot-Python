@@ -10,6 +10,7 @@ import time
 from decimal import Decimal
 from typing import Any
 
+from domain.ports.repositories import AbstractDiscoveryRepository
 from storage.sqlite.connection import create_connection
 
 from domain.discovery_models import (
@@ -28,7 +29,7 @@ from domain.discovery_models import (
 PositionKey = tuple[str, str, str]
 
 
-class DiscoveryRepo:
+class DiscoveryRepo(AbstractDiscoveryRepository):
     def __init__(self, db_path: str):
         self.db_path = db_path
 

@@ -5,6 +5,7 @@ import time
 from dataclasses import dataclass
 from decimal import Decimal
 
+from domain.ports.repositories import AbstractFillRepository
 from storage.sqlite.connection import create_connection
 
 
@@ -22,7 +23,7 @@ class FillRecord:
     fill_ts: int | None = None
 
 
-class FillsRepo:
+class FillsRepo(AbstractFillRepository):
     def __init__(self, db_path: str):
         self.db_path = db_path
 
