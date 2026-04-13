@@ -1,3 +1,20 @@
+"""Legacy environment configuration module.
+
+.. deprecated:: Phase 6 (Clean Architecture migration)
+    This module's ``ENV`` dict is the legacy runtime config surface. New code
+    should depend on :class:`config.app_config.AppConfig` and receive it via
+    constructor injection (see ``bootstrap.build_app``). ``ENV`` is retained
+    only for:
+
+    * The test suite, which patches it extensively.
+    * Transitional call sites inside ``services/`` and ``orchestrators/``
+      that have not yet been migrated to consume ``AppConfig``.
+
+    Do not introduce new ``from config.env import ENV`` imports in production
+    code — thread ``AppConfig`` (or the specific sub-config) through the
+    constructor instead.
+"""
+
 import os
 import re
 import sys
