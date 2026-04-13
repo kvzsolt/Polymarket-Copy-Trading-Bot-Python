@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 
+from domain.ports.repositories import AbstractCursorRepository
 from storage.sqlite.connection import create_connection
 
 
@@ -13,7 +14,7 @@ class TradeCursor:
     trade_id: str | None = None
 
 
-class CursorsRepo:
+class CursorsRepo(AbstractCursorRepository):
     def __init__(self, db_path: str):
         self.db_path = db_path
 

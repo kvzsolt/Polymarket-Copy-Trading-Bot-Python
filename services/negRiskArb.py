@@ -462,12 +462,15 @@ async def execute_arb(
     opp: ArbOpportunity,
     execution_service: ExecutionService,
     slippage_bps: int = 100,
+    *,
+    store: ArbBasketStore | None = None,
 ) -> dict[str, Any]:
     """Execute a neg-risk arb with full basket lifecycle tracking.
 
     Creates a tracked ArbBasket, executes all legs, reconciles fills,
     handles incomplete baskets with cleanup, and persists state.
     """
+    store = store or _basket_store
     user_id = str(ENV.get("FUNDER_ADDRESS") or "")
     if not user_id:
         raise RuntimeError("FUNDER_ADDRESS required for arb execution")
@@ -486,11 +489,11 @@ async def execute_arb(
         expected_profit_usdc=opp.expected_profit_usdc,
         sum_asks=opp.sum_asks,
     )
-    _basket_store.save(basket)
+    store.save(basket)
 
     # ── Execute all legs concurrently ──
     basket.state = BasketState.EXECUTING
-    _basket_store.save(basket)
+    store.save(basket)
 
     leg_reqs: list[tuple[str, str, Decimal]] = []
     for outcome in opp.outcomes:
@@ -581,10 +584,10 @@ async def execute_arb(
         )
         # Transition to holding
         basket.state = BasketState.HOLDING
-        _basket_store.save(basket)
+        store.save(basket)
     else:
         basket.state = BasketState.INCOMPLETE
-        _basket_store.save(basket)
+        store.save(basket)
 
         logger.warning(
             f"⚠️ INCOMPLETE BASKET: {opp.market_slug} | "
@@ -598,7 +601,7 @@ async def execute_arb(
 
         if cleanup_enabled:
             basket.state = BasketState.CLEANUP_IN_PROGRESS
-            _basket_store.save(basket)
+            store.save(basket)
 
             filled_legs = [
                 lr for lr in basket.leg_results
@@ -647,7 +650,7 @@ async def execute_arb(
 
             basket.cleanup_loss_usdc = basket.total_cost_usdc - basket.cleanup_proceeds_usdc
             basket.state = BasketState.ABANDONED
-            _basket_store.save(basket)
+            store.save(basket)
 
             logger.warning(
                 f"🧹 CLEANUP DONE: {opp.market_slug} | "
@@ -657,7 +660,7 @@ async def execute_arb(
             )
         else:
             basket.state = BasketState.ABANDONED
-            _basket_store.save(basket)
+            store.save(basket)
 
     # Build legacy-compatible summary
     summary = {
@@ -678,11 +681,17 @@ async def execute_arb(
     return summary
 
 
-async def arb_scanner_loop(clob_client, bot_params: dict):
+async def arb_scanner_loop(
+    clob_client,
+    bot_params: dict,
+    *,
+    store: ArbBasketStore | None = None,
+):
     """Background loop that scans for neg-risk arb opportunities.
 
     Also monitors held baskets for resolution and triggers settlement.
     """
+    store = store or _basket_store
     config = _load_arb_config()
     if not config.enabled:
         logger.info("Neg-risk arb scanner disabled (ENABLE_NEG_RISK_ARB=false)")
@@ -704,7 +713,7 @@ async def arb_scanner_loop(clob_client, bot_params: dict):
     )
 
     # Recovery: load non-terminal baskets from persistence
-    recovered = _basket_store.load_non_terminal()
+    recovered = store.load_non_terminal()
     if recovered:
         logger.info(f"🔄 Recovered {len(recovered)} in-flight arb baskets from persistence")
         for b in recovered:
@@ -715,13 +724,13 @@ async def arb_scanner_loop(clob_client, bot_params: dict):
             loop = asyncio.get_running_loop()
 
             # ── Check held baskets for resolution ──
-            await _check_held_baskets_for_resolution(clob_client, _basket_store)
+            await _check_held_baskets_for_resolution(clob_client, store)
 
             # ── Try to redeem resolved baskets ──
-            await _try_redeem_resolved_baskets(clob_client, _basket_store)
+            await _try_redeem_resolved_baskets(clob_client, store)
 
             # ── Scan for new opportunities ──
-            active_conditions = _basket_store.get_active_condition_ids()
+            active_conditions = store.get_active_condition_ids()
 
             try:
                 markets_resp = await loop.run_in_executor(

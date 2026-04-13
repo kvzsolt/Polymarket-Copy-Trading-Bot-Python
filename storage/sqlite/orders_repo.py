@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
 
+from domain.ports.repositories import AbstractOrderRepository
 from storage.sqlite.connection import create_connection
 
 
@@ -38,7 +39,7 @@ class OrderSubmissionRecord:
     last_error: str | None = None
 
 
-class OrdersRepo:
+class OrdersRepo(AbstractOrderRepository):
     def __init__(self, db_path: str):
         self.db_path = db_path
 

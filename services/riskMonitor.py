@@ -28,7 +28,13 @@ logger = get_logger("RiskMonitor")
 _warned_invalid_tokens: set[str] = set()
 
 
-async def risk_monitor_loop(clob_client, bot_params: dict):
+async def risk_monitor_loop(
+    clob_client,
+    bot_params: dict,
+    *,
+    position_manager=None,
+    pnl_tracker=None,
+):
     """Continuously check open positions against stop-loss / take-profit levels.
 
     Runs as a background asyncio task alongside the trade monitor.
@@ -36,7 +42,7 @@ async def risk_monitor_loop(clob_client, bot_params: dict):
     Legacy compatibility path: active runtime uses
     `risk_monitor_loop_for_contexts` with persisted position repositories.
     """
-    pm = get_position_manager()
+    pm = position_manager or get_position_manager()
     interval = ENV.get('RISK_CHECK_INTERVAL', 15)
     enabled = ENV.get('ENABLE_RISK_MGMT', True)
     slippage_bps = int(float(ENV.get("SLIPPAGE_TOLERANCE", 2.0)) * 100)
@@ -111,7 +117,7 @@ async def risk_monitor_loop(clob_client, bot_params: dict):
                             fill_tokens = float(result.filled_amount)
                             fill_price = float(result.avg_price or current_price)
                             usdc_value = fill_price * fill_tokens
-                            tracker = get_pnl_tracker()
+                            tracker = pnl_tracker or get_pnl_tracker()
                             tracked = pm.get_position(cid)
                             entry_price = tracked.entry_price if tracked else pos.entry_price
                             pnl = (fill_price - entry_price) * fill_tokens
