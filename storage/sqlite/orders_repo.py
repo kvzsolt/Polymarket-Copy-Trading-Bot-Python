@@ -21,9 +21,9 @@ _TERMINAL_SUCCESS_STATES = {
 }
 
 _FAILURE_STATES = {"failed", "submission_failed", "created", "retryable_failed", "terminal_failed"}
-_RETRY_PENDING_STATUS_PREFIX = "retryable_failed_"
-# Legacy prefix for backward compat with pre-migration data
-_LEGACY_RETRY_PENDING_STATUS_PREFIX = "retry_pending_"
+_RETRYABLE_FAILED_STATUS = "retryable_failed"
+# Legacy prefixes for backward compat with pre-migration data
+_LEGACY_RETRY_PREFIXES = ("retryable_failed_", "retry_pending_")
 
 
 @dataclass
@@ -233,7 +233,9 @@ class OrdersRepo:
         if row is None:
             return False
         status = str(row["status"] or "")
-        return not (status.startswith(_RETRY_PENDING_STATUS_PREFIX) or status.startswith(_LEGACY_RETRY_PENDING_STATUS_PREFIX))
+        if status == _RETRYABLE_FAILED_STATUS:
+            return False
+        return not any(status.startswith(p) for p in _LEGACY_RETRY_PREFIXES)
 
     def get_processed_trade(self, trade_key: str) -> dict[str, Any] | None:
         if not trade_key:
@@ -241,7 +243,8 @@ class OrdersRepo:
         with create_connection(self.db_path) as conn:
             row = conn.execute(
                 """
-                SELECT trade_key, user_id, leader_id, tx_hash, side, asset, condition_id, status, processed_at
+                SELECT trade_key, user_id, leader_id, tx_hash, side, asset, condition_id, status, processed_at,
+                       COALESCE(retry_attempt, 0) AS retry_attempt
                 FROM processed_trades
                 WHERE trade_key = ?
                 LIMIT 1
@@ -260,6 +263,7 @@ class OrdersRepo:
             "condition_id": row["condition_id"],
             "status": row["status"],
             "processed_at": row["processed_at"],
+            "retry_attempt": row["retry_attempt"],
         }
 
     def mark_processed_trade(
@@ -273,6 +277,7 @@ class OrdersRepo:
         asset: str | None,
         condition_id: str | None,
         status: str,
+        retry_attempt: int = 0,
     ) -> None:
         if not trade_key:
             return
@@ -280,11 +285,12 @@ class OrdersRepo:
             conn.execute(
                 """
                 INSERT INTO processed_trades (
-                    trade_key, user_id, leader_id, tx_hash, side, asset, condition_id, status, processed_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    trade_key, user_id, leader_id, tx_hash, side, asset, condition_id, status, processed_at, retry_attempt
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(trade_key) DO UPDATE SET
                     status = excluded.status,
-                    processed_at = excluded.processed_at
+                    processed_at = excluded.processed_at,
+                    retry_attempt = excluded.retry_attempt
                 """,
                 (
                     trade_key,
@@ -296,6 +302,7 @@ class OrdersRepo:
                     condition_id,
                     status,
                     time.time(),
+                    retry_attempt,
                 ),
             )
             conn.commit()
