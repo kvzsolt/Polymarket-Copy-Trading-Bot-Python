@@ -1,0 +1,108 @@
+tests/test_clients.py
+  561f05ce01fac9a3 1-260
+domain/ports/repositories.py
+  561f05ce01fac9a3 1-190
+config/__init__.py
+  561f05ce01fac9a3 18-33,51-64
+storage/sqlite/fills_repo.py
+  561f05ce01fac9a3 8,26
+domain/ports/notifiers.py
+  561f05ce01fac9a3 1-26
+services/autoRedeem.py
+  561f05ce01fac9a3 157-159,162-163
+tests/test_domain.py
+  561f05ce01fac9a3 1-203
+services/executionService.py
+  561f05ce01fac9a3 411-419,424,483-484,826,887
+last_phase.md
+  561f05ce01fac9a3 1-109
+storage/sqlite/discovery_repo.py
+  561f05ce01fac9a3 13,32
+storage/sqlite/cursors_repo.py
+  561f05ce01fac9a3 6,17
+config/app_config.py
+  561f05ce01fac9a3 1-837
+services/negRiskArb.py
+  561f05ce01fac9a3 465-466,473,492,496,587,590,604,653,663,684-689,694,716,727,730,733
+config/env.py
+  561f05ce01fac9a3 1-17
+app.py
+  561f05ce01fac9a3 15-17,147,174-175,186-187
+clients/market_client.py
+  561f05ce01fac9a3 1-40
+bootstrap.py
+  561f05ce01fac9a3 1-93
+storage/sqlite/leaders_repo.py
+  561f05ce01fac9a3 7,28
+clients/__init__.py
+  561f05ce01fac9a3 1-21
+storage/sqlite/redemptions_repo.py
+  561f05ce01fac9a3 7,11
+storage/sqlite/orders_repo.py
+  561f05ce01fac9a3 10,40
+clients/balance_client.py
+  561f05ce01fac9a3 1-74
+tests/test_book_quality_gate.py
+  561f05ce01fac9a3 41-42,49
+tests/test_services_di.py
+  561f05ce01fac9a3 1-153
+domain/ports/__init__.py
+  561f05ce01fac9a3 1-40
+storage/sqlite/positions_repo.py
+  561f05ce01fac9a3 7,22
+clients/analytics_client.py
+  561f05ce01fac9a3 1-54
+services/reconciliation.py
+  561f05ce01fac9a3 18,80,83,222
+clients/http_client.py
+  561f05ce01fac9a3 1-24
+tests/test_storage.py
+  561f05ce01fac9a3 1-218
+services/healthServer.py
+  561f05ce01fac9a3 5,13-14,16-20,22-34,36-37,39-40,43-47,50-55,69-72
+domain/ports/clients.py
+  561f05ce01fac9a3 1-93
+tests/test_config.py
+  561f05ce01fac9a3 1-290
+clients/order_gateway.py
+  561f05ce01fac9a3 1-55
+services/riskMonitor.py
+  561f05ce01fac9a3 31-37,45,120
+tests/test_bootstrap.py
+  561f05ce01fac9a3 1-113
+tests/test_reconciliation.py
+  561f05ce01fac9a3 242
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "39e234b87f125246f48c4f458f15c883f49ac009",
+  "prompts": {
+    "561f05ce01fac9a3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a76eb189-cb38-4e7d-9119-a7951cb17964",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "kvzsolt",
+      "messages": [],
+      "total_additions": 3073,
+      "total_deletions": 72,
+      "accepted_lines": 3061,
+      "overriden_lines": 0
+    },
+    "e25167635c7d2e0b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2090c7b1-e96e-4a97-83f2-69b5b2625c3a",
+        "model": "glm-5.1"
+      },
+      "human_author": "kvzsolt",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 4,
+      "accepted_lines": 0,
+      "overriden_lines": 0
+    }
+  }
+}
