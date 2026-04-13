@@ -239,7 +239,7 @@ class TestReconciliationService:
     async def test_env_defaults(self):
         """Service reads from env when no explicit values."""
         clob = _make_mock_clob()
-        with patch.dict("os.environ", {
+        with patch.dict("config.env.ENV", {
             "RECONCILE_STALE_SECONDS": "1800",
             "RECONCILE_AUTO_CANCEL": "true",
         }):

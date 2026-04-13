@@ -34,9 +34,6 @@ def _lower_decision_gates_for_tests(monkeypatch):
     monkeypatch.setenv("BUY_MIN_AMOUNT", "0.01")
     monkeypatch.setenv("MIN_ORDER_SIZE", "0.00001")
     rehydrate_env()
-    import orchestrators.trade_pipeline as _tp
-    _tp._leader_scorer = None
-    _tp._copy_decision = None
 from storage.sqlite.migrations import apply_migrations
 from storage.sqlite.orders_repo import OrdersRepo
 from storage.sqlite.positions_repo import PositionsRepo
@@ -306,10 +303,8 @@ async def test_balance_tiered_policy_caps_buy_before_execution(tmp_path, monkeyp
     monkeypatch.setitem(ENV, "BALANCE_POLICY_HARD_CAP_PCT", 0.18)
     monkeypatch.setitem(ENV, "BALANCE_POLICY_HARD_CAP_CEILING", 4.5)
 
-    import orchestrators.trade_pipeline as tp
-
     decision_service = _RecordingDecisionService()
-    monkeypatch.setattr(tp, "_copy_decision", decision_service)
+    ctx.copy_decision_service = decision_service
 
     with patch(
         "orchestrators.trade_pipeline.get_my_balance",

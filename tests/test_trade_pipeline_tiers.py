@@ -39,9 +39,6 @@ def _reset_singletons(monkeypatch):
     monkeypatch.setenv("ENABLE_TIER_GATE_WATCHLIST", "true")
     monkeypatch.setenv("ENABLE_TIER_GATE_WATCHLIST_LOG", "true")
     rehydrate_env()
-    import orchestrators.trade_pipeline as _tp
-    _tp._leader_scorer = None
-    _tp._copy_decision = None
 
 
 @dataclass
