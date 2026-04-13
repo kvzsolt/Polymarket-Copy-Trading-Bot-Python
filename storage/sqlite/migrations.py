@@ -190,15 +190,26 @@ def _ensure_fills_table(conn: sqlite3.Connection) -> None:
     """)
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_fills_unique ON fills(user_id, order_id, condition_id, side, fill_ts)")
 
-    # Migrate legacy retry_pending_<n> statuses to retryable_failed_<n>
+    # Migrate legacy retry_pending_<n> and retryable_failed_<n> statuses:
+    # 1. Extract embedded counter into retry_attempt column
+    # 2. Normalize status to clean "retryable_failed" (no counter suffix)
     try:
+        # Handle retryable_failed_<n> rows
         conn.execute("""
             UPDATE processed_trades
-            SET status = 'retryable_failed_' || SUBSTR(status, 15)
+            SET retry_attempt = CAST(REPLACE(status, 'retryable_failed_', '') AS INTEGER),
+                status = 'retryable_failed'
+            WHERE status LIKE 'retryable_failed_%'
+        """)
+        # Handle legacy retry_pending_<n> rows
+        conn.execute("""
+            UPDATE processed_trades
+            SET retry_attempt = CAST(REPLACE(status, 'retry_pending_', '') AS INTEGER),
+                status = 'retryable_failed'
             WHERE status LIKE 'retry_pending_%'
         """)
     except Exception:
-        pass  # Table may not exist yet
+        pass  # Table/column may not exist yet
 
 
 def _ensure_positions_table(conn: sqlite3.Connection) -> None:
@@ -247,6 +258,7 @@ def _ensure_processed_trades_table(conn: sqlite3.Connection) -> None:
     )
     _ensure_column(conn, "processed_trades", "user_id TEXT NOT NULL DEFAULT ''")
     _ensure_column(conn, "processed_trades", "leader_id TEXT")
+    _ensure_column(conn, "processed_trades", "retry_attempt INTEGER NOT NULL DEFAULT 0")
 
 
 def _ensure_cursors_table(conn: sqlite3.Connection) -> None:
