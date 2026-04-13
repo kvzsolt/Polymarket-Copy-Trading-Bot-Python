@@ -4,10 +4,11 @@ import json
 import time
 from typing import Any
 
+from domain.ports.repositories import AbstractRedemptionRepository
 from storage.sqlite.connection import create_connection
 
 
-class RedemptionsRepo:
+class RedemptionsRepo(AbstractRedemptionRepository):
     def __init__(self, db_path: str):
         self.db_path = db_path
 

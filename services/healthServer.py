@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 from copy import deepcopy
+from typing import Any
 
 from aiohttp import web
 
@@ -9,26 +10,49 @@ from config.env import get_metrics_bind_host
 from services.metrics import metrics
 
 
-_readiness_state: dict[str, object] = {
-    "db_ok": False,
-    "api_ok": False,
-    "last_trade_poll_ts": 0,
-    "last_risk_check_ts": 0,
-    "last_successful_order_ts": 0,
-    "monitored_leader_count": 0,
-    "runtime_user_count": 0,
-    "mode": "configured",
-}
+class ReadinessTracker:
+    """Injectable readiness state — one instance per Application.
+
+    Replaces the old module-level ``_readiness_state`` dict. Services that
+    need to update readiness accept a ``ReadinessTracker`` instance via
+    their constructor; the composition root builds one at startup and
+    hands it to every consumer.
+    """
+
+    def __init__(self, initial: dict[str, Any] | None = None):
+        self._state: dict[str, Any] = {
+            "db_ok": False,
+            "api_ok": False,
+            "last_trade_poll_ts": 0,
+            "last_risk_check_ts": 0,
+            "last_successful_order_ts": 0,
+            "monitored_leader_count": 0,
+            "runtime_user_count": 0,
+            "mode": "configured",
+        }
+        if initial:
+            self._state.update(initial)
+
+    def update(self, **kwargs: Any) -> None:
+        self._state.update(kwargs)
+
+    def snapshot(self) -> dict[str, Any]:
+        return deepcopy(self._state)
 
 
+# Default shared tracker — retained for transitional compatibility with
+# call sites that have not yet been threaded through DI. Phase 5 replaces
+# these callers with explicit instance wiring; Phase 6 removes the module
+# aliases below.
+_default_tracker = ReadinessTracker()
 
-def update_readiness(**kwargs) -> None:
-    _readiness_state.update(kwargs)
+
+def update_readiness(**kwargs: Any) -> None:
+    _default_tracker.update(**kwargs)
 
 
-
-def get_readiness() -> dict[str, object]:
-    return deepcopy(_readiness_state)
+def get_readiness() -> dict[str, Any]:
+    return _default_tracker.snapshot()
 
 
 async def health_handler(_request: web.Request) -> web.Response:
@@ -42,8 +66,10 @@ async def metrics_handler(_request: web.Request) -> web.Response:
     return web.Response(text=body, content_type="text/plain; version=0.0.4")
 
 
-async def start_health_server(port: int = 9102) -> web.AppRunner:
-    update_readiness(started_ts=int(time.time()))
+async def start_health_server(
+    port: int = 9102, *, tracker: ReadinessTracker | None = None
+) -> web.AppRunner:
+    (tracker or _default_tracker).update(started_ts=int(time.time()))
     app = web.Application()
     app.router.add_get("/health", health_handler)
     app.router.add_get("/metrics", metrics_handler)

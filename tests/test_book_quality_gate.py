@@ -38,12 +38,15 @@ def _make_execution_service(meta: MarketMeta, quote_price: str = "0.50"):
     order_repo = MagicMock()
     order_repo.get_by_idempotency_key = MagicMock(return_value=None)
 
+    from services.executionService import _CLOB_CIRCUIT
+
     svc = ExecutionService.__new__(ExecutionService)
     svc.clob_client = clob
     svc.market_meta_service = meta_svc
     svc.order_repo = order_repo
     svc.fee_service = AsyncMock()
     svc.fee_service.get_fee_bps = AsyncMock(return_value=Decimal("0"))
+    svc.circuit_breaker = _CLOB_CIRCUIT
     return svc
 
 

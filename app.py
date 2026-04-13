@@ -12,8 +12,9 @@ try:
 except Exception:
     pass
 
-from config.db import connect_db, get_db_path
-from config.env import ENV, EnvValidationError, is_valid_eth_address, validate_runtime_env
+from bootstrap import build_app
+from config.app_config import EnvValidationError
+from config.env import ENV, is_valid_eth_address, validate_runtime_env
 from orchestrators.leader_registry import LeaderRegistry
 from orchestrators.runtime_bootstrap import (
     UserRuntimeState,
@@ -143,6 +144,7 @@ async def main():
 
     try:
         validate_runtime_env()
+        application = build_app()
     except EnvValidationError as exc:
         print_error(str(exc))
         return
@@ -169,9 +171,9 @@ async def main():
 
     update_readiness(runtime_user_count=len(runtime_users))
 
-    await connect_db()
+    # Composition root provides db + shared repos + registry.
+    db_path = application.db_path
     update_readiness(db_ok=True)
-    db_path = get_db_path()
 
     # Startup housekeeping: purge stale idempotency records.
     from utils.idempotency import purge_stale_records
@@ -181,12 +183,8 @@ async def main():
         logger.info(f"Startup cleanup: purged {purged} stale records")
 
     research_capture_service = DiscoveryCaptureService(db_path)
-    leaders_repo = LeadersRepo(db_path)
-    registry = LeaderRegistry(
-        discovery_service=TraderDiscoveryService(),
-        leaders_repo=leaders_repo,
-        logger_instance=logger,
-    )
+    leaders_repo = application.leaders_repo
+    registry = application.registry
     refresh_interval = int(ENV.get("DISCOVERY_REFRESH_INTERVAL_SECONDS", 300) or 300)
     active_leaders = await _wait_for_active_leaders(registry, configured, refresh_interval)
     ensure_runtime_follows(runtime_users, active_leaders)
