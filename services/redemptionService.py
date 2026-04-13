@@ -171,7 +171,7 @@ class RedemptionService:
             return RedemptionResult(False, None, "duplicate", Decimal("0"), "already_redeemed")
 
         # DB-level dedup: skip if a confirmed/successful redemption already exists
-        if self.redemptions_repo.is_attempted(condition_id=pos.condition_id, user_id=pos.user_id):
+        if await asyncio.to_thread(self.redemptions_repo.is_attempted, condition_id=pos.condition_id, user_id=pos.user_id, outcome_index=pos.outcome_index):
             self._successful_keys.add(key)
             return RedemptionResult(False, None, "duplicate", Decimal("0"), "already_redeemed_persisted")
 
@@ -186,7 +186,7 @@ class RedemptionService:
             "status": "attempting",
         }
         self.accounting.record_redemption_attempt(attempt_payload)
-        self.redemptions_repo.save_attempt(attempt_payload)
+        await asyncio.to_thread(self.redemptions_repo.save_attempt, attempt_payload)
 
         try:
             if self.wallet_config.signature_type == SignatureType.EOA:
@@ -209,17 +209,17 @@ class RedemptionService:
             "redeemed_amount": str(result.redeemed_amount),
         }
         self.accounting.record_redemption_attempt(final_payload)
-        self.redemptions_repo.save_attempt(final_payload)
+        await asyncio.to_thread(self.redemptions_repo.save_attempt, final_payload)
 
-        if result.submitted and result.status in {"submitted", "confirmed"}:
+        if result.status == "confirmed":
             self._successful_keys.add(key)
         return result
 
     async def reconcile_pending(self, user_id: str) -> list[RedemptionResult]:
         """Retry any in-flight redemption attempts that are still in attempting/submitted state."""
-        pending = self.redemptions_repo.list_pending_redemptions(user_id)
+        pending = await asyncio.to_thread(self.redemptions_repo.list_pending_redemptions, user_id)
         results: list[RedemptionResult] = []
-        for attempt in pending:
+        for idx, attempt in enumerate(pending):
             payload = attempt["payload"]
             pos = RedeemablePosition(
                 user_id=user_id,
@@ -230,4 +230,6 @@ class RedemptionService:
             )
             result = await self.redeem(pos)
             results.append(result)
+            if idx + 1 < len(pending):
+                await asyncio.sleep(0.25)
         return results
