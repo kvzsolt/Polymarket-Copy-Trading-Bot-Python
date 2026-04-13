@@ -167,10 +167,19 @@ def _max_non_terminal_failure_attempts() -> int:
 
 
 _RETRYABLE_FAILED_STATUS_PREFIX = "retryable_failed_"
+_RETRYABLE_FAILED_STATUS = "retryable_failed"
 _LEGACY_RETRY_PREFIX = "retry_pending_"
 
 
-def _retry_attempt_from_status(status: str | None) -> int:
+def _retry_attempt_from_status(status: str | None, retry_attempt: int | None = None) -> int:
+    """Return the retry attempt number.
+
+    Prefers the explicit ``retry_attempt`` column value when available.
+    Falls back to parsing legacy status strings (``retryable_failed_<n>``
+    or ``retry_pending_<n>``) for rows written before the column existed.
+    """
+    if retry_attempt is not None and retry_attempt > 0:
+        return retry_attempt
     text = str(status or "").strip().lower()
     for prefix in (_RETRYABLE_FAILED_STATUS_PREFIX, _LEGACY_RETRY_PREFIX):
         if text.startswith(prefix):
@@ -822,7 +831,9 @@ async def execute_trades(
             is_terminal = exec_result.status == "rejected"
             max_non_terminal_attempts = _max_non_terminal_failure_attempts()
             prev_trade = context.orders_repo.get_processed_trade(trade_key) or {}
-            prev_retry_attempt = _retry_attempt_from_status(prev_trade.get("status"))
+            prev_retry_attempt = _retry_attempt_from_status(
+                prev_trade.get("status"), prev_trade.get("retry_attempt")
+            )
             next_retry_attempt = prev_retry_attempt + 1
             non_terminal_retry_exhausted = (
                 not is_terminal and next_retry_attempt >= max_non_terminal_attempts
@@ -833,7 +844,7 @@ async def execute_trades(
                 else (
                     "terminal_failed"
                     if non_terminal_retry_exhausted
-                    else f"{_RETRYABLE_FAILED_STATUS_PREFIX}{next_retry_attempt}"
+                    else _RETRYABLE_FAILED_STATUS
                 )
             )
             context.orders_repo.mark_processed_trade(
@@ -845,6 +856,7 @@ async def execute_trades(
                 asset=signal.token_id,
                 condition_id=signal.condition_id,
                 status=status_to_persist,
+                retry_attempt=next_retry_attempt,
             )
             fail_reason = exec_result.error or exec_result.status
             if non_terminal_retry_exhausted:
