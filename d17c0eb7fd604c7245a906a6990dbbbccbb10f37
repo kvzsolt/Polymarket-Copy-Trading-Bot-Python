@@ -1,0 +1,27 @@
+storage/sqlite/orders_repo.py
+  b02b5dccf7e76679 24-26,236-238,246-247,266,280,288-289,292-293,305
+orchestrators/trade_pipeline.py
+  b02b5dccf7e76679 170,174-182,834-836,847,859
+storage/sqlite/migrations.py
+  b02b5dccf7e76679 193-195,197,200-208,212,261
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "d17c0eb7fd604c7245a906a6990dbbbccbb10f37",
+  "prompts": {
+    "b02b5dccf7e76679": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4a9a5ed3-0cc4-4334-a3d9-9ffb6d44db7e",
+        "model": "glm-5.1"
+      },
+      "human_author": "kvzsolt",
+      "messages": [],
+      "total_additions": 51,
+      "total_deletions": 20,
+      "accepted_lines": 46,
+      "overriden_lines": 0
+    }
+  }
+}
