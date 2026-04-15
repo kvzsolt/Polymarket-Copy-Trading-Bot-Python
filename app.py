@@ -34,7 +34,7 @@ from orchestrators.runtime_summary import print_startup_summary
 from services.autoRedeem import auto_redeem_loop
 from services.compliance import check_geoblock
 from services.discovery.capture_service import DiscoveryCaptureService
-from services.healthServer import start_health_server, update_readiness
+from services.healthServer import start_health_server
 from services.metrics import metrics
 from services.multiUserConfig import RuntimeUser, UserFollowConfig, load_runtime_users
 from services.negRiskArb import arb_scanner_loop
@@ -169,11 +169,11 @@ async def main():
         print_error("No runtime users configured.")
         return
 
-    update_readiness(runtime_user_count=len(runtime_users))
+    application.readiness.update(runtime_user_count=len(runtime_users))
 
     # Composition root provides db + shared repos + registry.
     db_path = application.db_path
-    update_readiness(db_ok=True)
+    application.readiness.update(db_ok=True)
 
     # Startup housekeeping: purge stale idempotency records.
     from utils.idempotency import purge_stale_records
@@ -205,7 +205,7 @@ async def main():
     api_ok = all(value is not None for value in leader_balances_raw) and all(
         value is not None for value in user_balances_raw
     )
-    update_readiness(api_ok=api_ok)
+    application.readiness.update(api_ok=api_ok)
 
     contexts_by_leader, risk_contexts_by_user = build_context_maps(
         runtime_users,
@@ -214,7 +214,7 @@ async def main():
         leaders_repo=leaders_repo,
     )
     monitored_leaders = [leader for leader, contexts in contexts_by_leader.items() if contexts]
-    update_readiness(monitored_leader_count=len(monitored_leaders))
+    application.readiness.update(monitored_leader_count=len(monitored_leaders))
     if not monitored_leaders:
         logger.warning("no_leaders_monitored", extra={"reason": "no_user_follows_active_leaders"})
         await metrics.inc("no_leaders_monitored_total")
@@ -233,7 +233,10 @@ async def main():
 
     metrics_runner = None
     if ENV.get("ENABLE_METRICS_SERVER", False):
-        metrics_runner = await start_health_server(int(ENV.get("METRICS_PORT", 9102)))
+        metrics_runner = await start_health_server(
+            int(ENV.get("METRICS_PORT", 9102)),
+            tracker=application.readiness,
+        )
 
     monitor_tasks: list[asyncio.Task] = []
     monitored_set: set[str] = set(monitored_leaders)
@@ -254,6 +257,8 @@ async def main():
                     run_leader_monitor(
                         wallet,
                         contexts_by_leader[wallet],
+                        readiness_tracker=application.readiness,
+                        config=application.config,
                         fetch_interval=fetch_interval,
                         monitored_leader_count=monitored_leader_count,
                         research_capture_service=research_capture_service,
@@ -261,7 +266,7 @@ async def main():
                 )
             )
             logger.info("dynamic_leader_monitor_started", extra={"leader": wallet})
-        update_readiness(
+        application.readiness.update(
             monitored_leader_count=len([wallet for wallet, contexts in contexts_by_leader.items() if contexts])
         )
 
@@ -282,17 +287,23 @@ async def main():
     if ENV.get("ENABLE_RISK_MGMT", True):
         from services.riskMonitor import risk_monitor_loop_for_contexts
 
-        risk_task = asyncio.create_task(risk_monitor_loop_for_contexts(list(risk_contexts_by_user.values())))
+        risk_task = asyncio.create_task(
+            risk_monitor_loop_for_contexts(
+                list(risk_contexts_by_user.values()),
+                readiness_tracker=application.readiness,
+                config=application.config,
+            )
+        )
 
     redeem_task = None
-    if ENV.get("ENABLE_AUTO_REDEEM", True):
+    if application.config.redemption.enable_auto_redeem:
         first_client = user_states[first_user.user_id].client
-        redeem_task = asyncio.create_task(auto_redeem_loop(first_client, {}))
+        redeem_task = asyncio.create_task(auto_redeem_loop(first_client, application.config))
 
     arb_task = None
     if str(ENV.get("ENABLE_NEG_RISK_ARB", "false")).lower() in ("1", "true", "yes"):
         first_client = user_states[first_user.user_id].client
-        arb_task = asyncio.create_task(arb_scanner_loop(first_client, {}))
+        arb_task = asyncio.create_task(arb_scanner_loop(first_client, {}, config=application.config))
 
     reconcile_tasks: list[asyncio.Task] = []
     if str(ENV.get("ENABLE_RECONCILIATION", "true")).lower() in ("1", "true", "yes"):
@@ -309,6 +320,8 @@ async def main():
             run_leader_monitor(
                 wallet,
                 contexts_by_leader[wallet],
+                readiness_tracker=application.readiness,
+                config=application.config,
                 fetch_interval=fetch_interval,
                 monitored_leader_count=len(monitored_leaders),
                 research_capture_service=research_capture_service,

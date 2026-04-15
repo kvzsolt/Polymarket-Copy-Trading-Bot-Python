@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, TYPE_CHECKING
 
-from config.env import ENV
+if TYPE_CHECKING:
+    from config.app_config import AppConfig
 
 
 def _clamp(value: float, low: float = 0.0, high: float = 1.0) -> float:
@@ -33,8 +34,31 @@ class LeaderScoringService:
     real PnL, win rate, and position data from polymarketanalytics.com.
     """
 
-    def __init__(self, discovery_service=None):
+    def __init__(self, config: AppConfig | None = None, discovery_service=None):
         self._discovery = discovery_service
+
+        if config is not None:
+            lc = config.leader
+            self._balance_target = lc.leader_score_balance_target_usdc
+            self._pnl_bonus_cap = lc.leader_score_pnl_bonus_cap
+            self._activity_target = max(int(lc.leader_score_activity_target), 1)
+            self._weight_balance = lc.leader_score_weight_balance
+            self._weight_analytics = lc.leader_score_weight_analytics
+            self._weight_activity = lc.leader_score_weight_activity
+            self._score_floor = lc.leader_score_floor
+            self._trust_mult_min = config.sizing.trust_size_multiplier_min
+            self._trust_mult_max = config.sizing.trust_size_multiplier_max
+        else:
+            # Defaults for backward compat (tests that don't pass config)
+            self._balance_target = 500.0
+            self._pnl_bonus_cap = 0.1
+            self._activity_target = 8
+            self._weight_balance = 0.35
+            self._weight_analytics = 0.45
+            self._weight_activity = 0.20
+            self._score_floor = 0.10
+            self._trust_mult_min = 0.70
+            self._trust_mult_max = 1.25
 
     def score_leader(
         self,
@@ -52,15 +76,15 @@ class LeaderScoringService:
         recent_trade_count = int(recent_trade_count or 0)
 
         # ── Base scores (existing logic) ──
-        balance_target = float(ENV.get("LEADER_SCORE_BALANCE_TARGET_USDC", 500.0) or 500.0)
+        balance_target = self._balance_target
         balance_score = 1.0 if balance_target <= 0 else _clamp(leader_balance / balance_target)
 
         win_component = _clamp(win_rate / 100.0)
-        pnl_bonus_cap = float(ENV.get("LEADER_SCORE_PNL_BONUS_CAP", 0.1) or 0.1)
+        pnl_bonus_cap = self._pnl_bonus_cap
         pnl_bonus = _clamp(net_pnl / max(balance_target, 1.0), -pnl_bonus_cap, pnl_bonus_cap)
         analytics_score = _clamp(win_component + pnl_bonus)
 
-        activity_target = max(int(ENV.get("LEADER_SCORE_ACTIVITY_TARGET", 8) or 8), 1)
+        activity_target = self._activity_target
         activity_score = _clamp(recent_trade_count / activity_target)
 
         # ── Discovery enrichment ──
@@ -89,9 +113,9 @@ class LeaderScoringService:
                         activity_score = _clamp(profile.total_positions / max(activity_target, 1))
 
         # ── Weighted combination ──
-        weight_balance = float(ENV.get("LEADER_SCORE_WEIGHT_BALANCE", 0.35) or 0.35)
-        weight_analytics = float(ENV.get("LEADER_SCORE_WEIGHT_ANALYTICS", 0.45) or 0.45)
-        weight_activity = float(ENV.get("LEADER_SCORE_WEIGHT_ACTIVITY", 0.20) or 0.20)
+        weight_balance = self._weight_balance
+        weight_analytics = self._weight_analytics
+        weight_activity = self._weight_activity
 
         # If discovery data available, give it extra weight
         if discovery_score > 0:
@@ -112,7 +136,7 @@ class LeaderScoringService:
                 + activity_score * weight_activity
             ) / weight_sum
 
-        score_floor = float(ENV.get("LEADER_SCORE_FLOOR", 0.10) or 0.10)
+        score_floor = self._score_floor
         final_score = _clamp(max(weighted, score_floor))
 
         details = {
@@ -135,7 +159,7 @@ class LeaderScoringService:
         )
 
     def trust_multiplier(self, score: float) -> float:
-        min_mult = float(ENV.get("TRUST_SIZE_MULTIPLIER_MIN", 0.70) or 0.70)
-        max_mult = float(ENV.get("TRUST_SIZE_MULTIPLIER_MAX", 1.25) or 1.25)
+        min_mult = self._trust_mult_min
+        max_mult = self._trust_mult_max
         score = _clamp(score)
         return min_mult + (max_mult - min_mult) * score
