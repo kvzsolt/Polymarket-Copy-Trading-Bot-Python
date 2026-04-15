@@ -4,7 +4,6 @@ import asyncio
 import time
 from dataclasses import dataclass
 
-from config.env import ENV
 from utils.logger import get_logger
 
 logger = get_logger("FeeService")
@@ -17,11 +16,11 @@ class _FeeCache:
 
 
 class FeeService:
-    def __init__(self, clob_client, ttl_seconds: int = 60):
+    def __init__(self, clob_client, ttl_seconds: int = 60, *, default_fee_bps: int = 20):
         self._clob_client = clob_client
         self._ttl_seconds = ttl_seconds
         self._cache: dict[str, _FeeCache] = {}
-        self._default_fee_bps = int(float(ENV.get("TRANSACTION_FEE_BPS", 20)))
+        self._default_fee_bps = default_fee_bps
 
     async def get_fee_bps(self, token_id: str) -> int:
         now = time.time()

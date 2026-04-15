@@ -7,6 +7,7 @@ from typing import Any
 from config.env import ENV
 from services.copyDecisionService import CopyDecisionService
 from services.copyStrategy import CopySizingResult, calculate_copy_notional
+from services.healthServer import ReadinessTracker
 from services.leaderScoringService import LeaderScoringService
 
 
@@ -38,6 +39,7 @@ class TradingContext:
     max_market_exposure_usdc: float = 300.0
     leader_scorer: LeaderScoringService = field(default_factory=_default_leader_scorer)
     copy_decision_service: CopyDecisionService = field(default_factory=_default_copy_decision)
+    readiness: ReadinessTracker = field(default_factory=ReadinessTracker)
     extra: dict[str, Any] = field(default_factory=dict)
 
     def copy_notional(self, leader_notional: Decimal) -> CopySizingResult:

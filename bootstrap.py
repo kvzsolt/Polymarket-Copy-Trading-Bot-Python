@@ -80,6 +80,8 @@ def build_app(env: Mapping[str, str] | None = None) -> Application:
     registry = LeaderRegistry(
         discovery_service=discovery_service,
         leaders_repo=leaders_repo,
+        readiness_tracker=readiness,
+        config=config,
         logger_instance=get_logger("LeaderRegistry"),
     )
 

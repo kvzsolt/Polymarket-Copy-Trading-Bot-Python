@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from domain.trading_context import TradingContext
 from orchestrators.trade_pipeline import execute_trades as execute_trade_pipeline
@@ -10,12 +10,18 @@ from services.metrics import metrics
 from services.tradeMonitor import trade_monitor
 from utils.logger import get_logger, safe_error_detail
 
+if TYPE_CHECKING:
+    from config.app_config import AppConfig
+    from services.healthServer import ReadinessTracker
+
 logger = get_logger("RuntimeMonitor")
 
 
 async def run_leader_monitor(
     leader_wallet: str,
     contexts: list[TradingContext],
+    readiness_tracker: ReadinessTracker,
+    config: AppConfig,
     *,
     fetch_interval: int,
     monitored_leader_count: int = 1,
@@ -66,6 +72,8 @@ async def run_leader_monitor(
                 "MONITORED_LEADER_COUNT": monitored_leader_count,
             },
             on_trade,
+            readiness_tracker=readiness_tracker,
+            config=config,
             research_capture_service=research_capture_service,
         )
     finally:

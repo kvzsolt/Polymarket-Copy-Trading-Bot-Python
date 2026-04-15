@@ -4,11 +4,14 @@ import asyncio
 from dataclasses import dataclass
 from decimal import Decimal
 from hashlib import sha256
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from config.app_config import AppConfig
 
 from web3 import Web3
 
 from config.db import get_db_path
-from config.env import ENV, SignatureType, WalletConfig, build_wallet_config
 from network.web3_adapter import AsyncWeb3Adapter
 from services.accountingService import AccountingService
 from storage.sqlite.redemptions_repo import RedemptionsRepo
@@ -56,11 +59,11 @@ class RedemptionResult:
 class RelayerClient:
     """Thin abstraction for proxy/safe redemption submission."""
 
-    def __init__(self):
-        self._url = str(ENV.get("RELAYER_URL") or "").strip()
-        self._api_key = str(ENV.get("RELAYER_API_KEY") or "").strip()
+    def __init__(self, url: str = "", api_key: str = ""):
+        self._url = url.strip()
+        self._api_key = api_key.strip()
 
-    async def submit_redeem(self, position: RedeemablePosition, wallet: WalletConfig) -> RedemptionResult:
+    async def submit_redeem(self, position: RedeemablePosition, wallet) -> RedemptionResult:
         if not self._url or not self._api_key:
             return RedemptionResult(
                 submitted=False,
@@ -83,12 +86,16 @@ class RelayerClient:
 
 
 class RedemptionService:
-    def __init__(self, clob_client, wallet_config: WalletConfig | None = None):
+    def __init__(self, clob_client, config: AppConfig | None = None, wallet_config = None):
         self.clob_client = clob_client
-        self.wallet_config = wallet_config or build_wallet_config()
+        if config is None:
+            from config.app_config import load_config
+            config = load_config()
+        self._config = config
+        self.wallet_config = wallet_config or config.wallet
         self.accounting = AccountingService()
         self.redemptions_repo = RedemptionsRepo(get_db_path())
-        self.relayer = RelayerClient()
+        self.relayer = RelayerClient(config.redemption.relayer_url, config.redemption.relayer_api_key)
         self._successful_keys: set[str] = set()
 
     def _attempt_id(self, pos: RedeemablePosition) -> str:
@@ -118,7 +125,7 @@ class RedemptionService:
         return result
 
     async def _redeem_via_eoa(self, pos: RedeemablePosition) -> RedemptionResult:
-        rpc_url = str(ENV.get("RPC_URL") or "").strip()
+        rpc_url = self._config.network.rpc_url.strip()
         if not rpc_url:
             return RedemptionResult(False, None, "not_submitted", Decimal("0"), "rpc_url_missing")
 
@@ -139,8 +146,9 @@ class RedemptionService:
         nonce = await adapter.get_transaction_count(sender)
         gas_price = await adapter.get_gas_price()
 
+        usdc_address = self._config.network.usdc_contract_address
         tx = ctf_contract.functions.redeemPositions(
-            Web3.to_checksum_address(ENV.get("USDC_CONTRACT_ADDRESS")),
+            Web3.to_checksum_address(usdc_address),
             PARENT_COLLECTION_ID,
             cid_bytes32,
             [1, 2],
@@ -189,7 +197,7 @@ class RedemptionService:
         await asyncio.to_thread(self.redemptions_repo.save_attempt, attempt_payload)
 
         try:
-            if self.wallet_config.signature_type == SignatureType.EOA:
+            if str(self.wallet_config.signature_type).endswith("EOA"):
                 result = await self._redeem_via_eoa(pos)
             else:
                 result = await self.relayer.submit_redeem(pos, self.wallet_config)
