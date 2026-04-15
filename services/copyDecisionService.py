@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
-from config.env import ENV
-from config.settings import load_settings
 from services.leaderScoringService import LeaderScore, LeaderScoringService
 from services.tradeScoringService import TradeScore, TradeScoringService
+
+if TYPE_CHECKING:
+    from config.app_config import AppConfig
 
 
 @dataclass(frozen=True)
@@ -33,12 +34,29 @@ class CopyDecisionService:
 
     def __init__(
         self,
+        config: AppConfig | None = None,
         *,
         leader_scorer: LeaderScoringService | None = None,
         trade_scorer: TradeScoringService | None = None,
     ):
-        self.leader_scorer = leader_scorer or LeaderScoringService()
-        self.trade_scorer = trade_scorer or TradeScoringService()
+        self._config = config
+        self.leader_scorer = leader_scorer or LeaderScoringService(config=config)
+        self.trade_scorer = trade_scorer or TradeScoringService(config=config)
+
+        if config is not None:
+            self._decision_gate_enabled = config.execution.enable_copy_decision_gate
+            self._min_decision_score = config.leader.copy_decision_min_score
+            self._copy_min_shares = max(5.0, config.sizing.copy_min_shares)
+            self._copy_min_notional = max(1.0, config.sizing.copy_min_notional_usdc)
+            self._copy_size_decimals = config.sizing.copy_size_decimals
+            self._slippage_ratio = config.execution.slippage_tolerance / 100.0
+        else:
+            self._decision_gate_enabled = True
+            self._min_decision_score = 0.28
+            self._copy_min_shares = 5.0
+            self._copy_min_notional = 1.0
+            self._copy_size_decimals = 4
+            self._slippage_ratio = 0.02
 
     @staticmethod
     def _ceil(value: float, decimals: int) -> float:
@@ -99,7 +117,7 @@ class CopyDecisionService:
                 edge_decay_pct=0.0,
             )
 
-        decision_gate_enabled = bool(ENV.get("ENABLE_COPY_DECISION_GATE", True))
+        decision_gate_enabled = self._decision_gate_enabled
         trust_mult = (
             self.leader_scorer.trust_multiplier(leader_score.score)
             if decision_gate_enabled
@@ -132,7 +150,7 @@ class CopyDecisionService:
                     details=trade_score.details,
                 )
 
-            min_decision_score = float(ENV.get("COPY_DECISION_MIN_SCORE", 0.28) or 0.28)
+            min_decision_score = self._min_decision_score
             if trade_score.score < min_decision_score:
                 return CopyDecision(
                     allow=False,
@@ -164,20 +182,13 @@ class CopyDecisionService:
                 details={"decision_gate_enabled": False},
             )
 
-        # Hard safety floors:
-        # - 5 shares: avoids dust orders and matches other parts of the bot that
-        #   assume a 5-token minimum executable BUY.
-        # - $1 notional: Polymarket rejects < $1 orders.
-        min_shares_cfg = float(ENV.get("COPY_MIN_SHARES", 5.0) or 5.0)
-        min_shares = max(5.0, min_shares_cfg)
-
-        min_notional_cfg = float(ENV.get("COPY_MIN_NOTIONAL_USDC", 1.0) or 1.0)
-        min_notional = max(1.0, min_notional_cfg)
-
-        decimals = int(ENV.get("COPY_SIZE_DECIMALS", 4) or 4)
+        # Hard safety floors
+        min_shares = self._copy_min_shares
+        min_notional = self._copy_min_notional
+        decimals = self._copy_size_decimals
 
         # Worst-case price for cap compatibility (slippage-adjusted).
-        slippage_ratio = load_settings(env=ENV).execution.slippage_tolerance_ratio
+        slippage_ratio = self._slippage_ratio
         worst_price = live_price * (1.0 + slippage_ratio)
 
         target_size_tokens = desired_notional / live_price
@@ -275,8 +286,8 @@ class CopyDecisionService:
         max_sell_tokens: float,
     ) -> CopyDecision:
         ref_price = float(trade.get("price", 0) or 0)
-        decimals = int(ENV.get("COPY_SIZE_DECIMALS", 4) or 4)
-        decision_gate_enabled = bool(ENV.get("ENABLE_COPY_DECISION_GATE", True))
+        decimals = self._copy_size_decimals
+        decision_gate_enabled = self._decision_gate_enabled
         if sell_tokens <= 0:
             return CopyDecision(
                 allow=False,

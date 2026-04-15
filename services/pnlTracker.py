@@ -8,7 +8,6 @@ from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Optional
 
-from config.env import ENV
 from utils.logger import get_logger
 
 logger = get_logger("PnLTracker")
@@ -35,7 +34,7 @@ class PnLTracker:
     """Append-only P&L ledger with running metrics."""
 
     def __init__(self, log_path: Optional[str] = None):
-        self._log_path = Path(log_path or ENV.get('PNL_LOG_FILE', 'log/pnl.jsonl'))
+        self._log_path = Path(log_path or "log/pnl.jsonl")
         self._log_path.parent.mkdir(parents=True, exist_ok=True)
         self._records: list[TradeRecord] = []
         self._total_invested: float = 0.0
@@ -143,14 +142,3 @@ class PnLTracker:
             f"net_pnl=${m['net_pnl']:.2f} "
             f"max_drawdown=${m['max_drawdown']:.2f}"
         )
-
-
-# Singleton
-_tracker: Optional[PnLTracker] = None
-
-
-def get_pnl_tracker() -> PnLTracker:
-    global _tracker
-    if _tracker is None:
-        _tracker = PnLTracker()
-    return _tracker

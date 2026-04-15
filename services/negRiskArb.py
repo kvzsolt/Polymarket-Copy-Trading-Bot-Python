@@ -686,6 +686,7 @@ async def arb_scanner_loop(
     bot_params: dict,
     *,
     store: ArbBasketStore | None = None,
+    config=None,
 ):
     """Background loop that scans for neg-risk arb opportunities.
 
@@ -702,6 +703,7 @@ async def arb_scanner_loop(
         market_meta_service=MarketMetaService(clob_client),
         fee_service=FeeService(clob_client),
         order_repo=OrderRepository(),
+        config=config,
     )
     slippage_bps = int(float(ENV.get("SLIPPAGE_TOLERANCE", 2.0)) * 100)
 
@@ -727,7 +729,7 @@ async def arb_scanner_loop(
             await _check_held_baskets_for_resolution(clob_client, store)
 
             # ── Try to redeem resolved baskets ──
-            await _try_redeem_resolved_baskets(clob_client, store)
+            await _try_redeem_resolved_baskets(clob_client, store, config=config)
 
             # ── Scan for new opportunities ──
             active_conditions = store.get_active_condition_ids()
@@ -851,6 +853,8 @@ async def _try_redeem_resolved_baskets(
     clob_client,
     store: ArbBasketStore,
     redemption_service=None,
+    *,
+    config=None,
 ) -> None:
     """Attempt onchain CTF redemption for resolved baskets.
 
@@ -867,7 +871,7 @@ async def _try_redeem_resolved_baskets(
     if redemption_service is None:
         try:
             from services.redemptionService import RedemptionService
-            redemption_service = RedemptionService(clob_client)
+            redemption_service = RedemptionService(clob_client, config=config)
         except Exception as e:
             logger.warning(f"Cannot load RedemptionService: {e}")
             return

@@ -277,7 +277,7 @@ class TestRiskMonitor:
         from services.riskMonitor import risk_monitor_loop
         mock_clob = AsyncMock()
         with patch("services.riskMonitor.ENV", {"ENABLE_RISK_MGMT": False, "RISK_CHECK_INTERVAL": 1}):
-            await risk_monitor_loop(mock_clob, {})
+            await risk_monitor_loop(mock_clob, {}, None, None)
         mock_clob.get_price.assert_not_called()
 
     @pytest.mark.asyncio
@@ -309,8 +309,6 @@ class TestRiskMonitor:
 
         import asyncio
         with patch("services.riskMonitor.ENV", {"ENABLE_RISK_MGMT": True, "RISK_CHECK_INTERVAL": 1, "STOP_LOSS_PCT": 20, "TAKE_PROFIT_PCT": 30}), \
-             patch("services.riskMonitor.get_position_manager", return_value=mock_pm), \
-             patch("services.riskMonitor.get_pnl_tracker", return_value=mock_tracker), \
              patch("services.riskMonitor.asyncio.sleep", side_effect=patched_sleep), \
              patch("services.riskMonitor.ExecutionService") as mock_exec_cls:
             mock_exec = mock_exec_cls.return_value
@@ -323,7 +321,7 @@ class TestRiskMonitor:
                 )
             )
             with pytest.raises(asyncio.CancelledError):
-                await risk_monitor_loop(mock_clob, {})
+                await risk_monitor_loop(mock_clob, {}, mock_pm, mock_tracker)
         mock_exec.execute.assert_called_once()
         mock_pm.track_sell.assert_called_once()
 
@@ -406,24 +404,22 @@ class TestAutoRedeemLoop:
     async def test_disabled_returns_immediately(self):
         from services.autoRedeem import auto_redeem_loop
         mock_clob = AsyncMock()
-        with patch("services.autoRedeem.ENV", {
-            "ENABLE_AUTO_REDEEM": False,
-            "REDEEM_CHECK_INTERVAL": 1,
-            "RPC_URL": "http://rpc",
-        }):
-            await auto_redeem_loop(mock_clob, {})
+        config = MagicMock()
+        config.redemption.enable_auto_redeem = False
+        config.redemption.redeem_check_interval = 1
+        config.network.rpc_url = "http://rpc"
+        await auto_redeem_loop(mock_clob, config)
         assert True
 
     @pytest.mark.asyncio
     async def test_no_rpc_returns_immediately(self):
         from services.autoRedeem import auto_redeem_loop
         mock_clob = AsyncMock()
-        with patch("services.autoRedeem.ENV", {
-            "ENABLE_AUTO_REDEEM": True,
-            "REDEEM_CHECK_INTERVAL": 1,
-            "RPC_URL": "",
-        }):
-            await auto_redeem_loop(mock_clob, {})
+        config = MagicMock()
+        config.redemption.enable_auto_redeem = True
+        config.redemption.redeem_check_interval = 1
+        config.network.rpc_url = ""
+        await auto_redeem_loop(mock_clob, config)
         assert True
 
     @pytest.mark.asyncio
@@ -449,19 +445,20 @@ class TestAutoRedeemLoop:
                 size=10.0,
             )
         ]
-        with patch("services.autoRedeem.ENV", {
-            "ENABLE_AUTO_REDEEM": True,
-            "REDEEM_CHECK_INTERVAL": 1,
-            "RPC_URL": "http://localhost:8545",
-        }), \
-             patch("services.autoRedeem.get_funder_address", return_value="0x1111111111111111111111111111111111111111"), \
-             patch("services.autoRedeem.RedemptionService") as mock_service_cls, \
+        
+        config = MagicMock()
+        config.redemption.enable_auto_redeem = True
+        config.redemption.redeem_check_interval = 1
+        config.network.rpc_url = "http://localhost:8545"
+        config.wallet.funder_address = "0x1111111111111111111111111111111111111111"
+
+        with patch("services.autoRedeem.RedemptionService") as mock_service_cls, \
              patch("services.autoRedeem.asyncio.sleep", side_effect=patched_sleep):
             svc = mock_service_cls.return_value
             svc.scan_redeemables = AsyncMock(return_value=redeemables)
             svc.redeem = AsyncMock(return_value=MagicMock(submitted=True, status="submitted", tx_hash="0xtx"))
             with pytest.raises(asyncio.CancelledError):
-                await auto_redeem_loop(MagicMock(), {})
+                await auto_redeem_loop(MagicMock(), config)
         svc.redeem.assert_called_once()
 
 

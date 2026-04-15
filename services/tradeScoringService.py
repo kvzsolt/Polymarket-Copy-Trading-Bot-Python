@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
-from config.env import ENV
-from config.settings import load_settings
+if TYPE_CHECKING:
+    from config.app_config import AppConfig
 
 
 def _clamp(value: float, low: float = 0.0, high: float = 1.0) -> float:
@@ -36,6 +36,25 @@ class TradeScore:
 class TradeScoringService:
     """Score trade quality before copy execution."""
 
+    def __init__(self, config: AppConfig | None = None) -> None:
+        self._config = config
+        if config is not None:
+            self._max_age_seconds = config.leader.copy_max_signal_age_seconds
+            self._max_drift_pct = config.leader.copy_max_price_drift_pct
+            self._max_edge_decay = config.leader.copy_max_edge_decay_pct
+            self._liquidity_target = config.leader.copy_liquidity_target_usdc
+            self._near_res_enabled = config.execution.enable_near_resolution_gate
+            self._near_res_price = config.execution.near_resolution_gate_price
+            self._near_res_max_age = config.execution.near_resolution_max_age_seconds
+        else:
+            self._max_age_seconds = 120.0
+            self._max_drift_pct = 6.0
+            self._max_edge_decay = 70.0
+            self._liquidity_target = 50.0
+            self._near_res_enabled = True
+            self._near_res_price = 0.95
+            self._near_res_max_age = 15.0
+
     def score_buy_trade(
         self,
         trade: dict,
@@ -58,12 +77,11 @@ class TradeScoringService:
         now = time.time()
         trade_ts = _to_seconds(trade.get("timestamp"))
         age_seconds = max(0.0, now - trade_ts) if trade_ts > 0 else 0.0
-        max_age_seconds = float(ENV.get("COPY_MAX_SIGNAL_AGE_SECONDS", 120) or 120)
+        max_age_seconds = float(self._max_age_seconds)
         age_factor = 1.0 if max_age_seconds <= 0 else _clamp(1.0 - (age_seconds / max_age_seconds))
 
         price_drift_pct = max(0.0, (live_price - ref_price) / ref_price)
-        _exec = load_settings(env=ENV).execution
-        max_drift_pct = _exec.copy_max_price_drift_ratio
+        max_drift_pct = self._max_drift_pct
 
         initial_edge = max(0.0, 1.0 - ref_price)
         live_edge = max(0.0, 1.0 - live_price)
@@ -71,13 +89,13 @@ class TradeScoringService:
             edge_decay_pct = 1.0
         else:
             edge_decay_pct = _clamp((initial_edge - live_edge) / initial_edge)
-        max_edge_decay = _exec.copy_max_edge_decay_ratio
+        max_edge_decay = self._max_edge_decay
 
         leader_notional = float(trade.get("usdcSize", 0) or 0)
         if leader_notional <= 0:
             size = float(trade.get("size", 0) or 0)
             leader_notional = size * ref_price
-        liquidity_target = float(ENV.get("COPY_LIQUIDITY_TARGET_USDC", 50.0) or 50.0)
+        liquidity_target = float(self._liquidity_target)
         liquidity_score = 1.0 if liquidity_target <= 0 else _clamp(leader_notional / liquidity_target)
 
         drift_penalty = _clamp(price_drift_pct / max(max_drift_pct, 1e-9))
@@ -91,10 +109,9 @@ class TradeScoringService:
         )
         quality = _clamp(quality)
 
-        near_res_enabled = bool(ENV.get("ENABLE_NEAR_RESOLUTION_GATE", True))
-        near_res_price_raw = ENV.get("NEAR_RESOLUTION_GATE_PRICE", 0.95)
-        near_res_price = float(near_res_price_raw) if near_res_price_raw is not None else 0.95
-        near_res_max_age = float(ENV.get("NEAR_RESOLUTION_MAX_AGE_SECONDS", 15) or 15)
+        near_res_enabled = self._near_res_enabled
+        near_res_price = self._near_res_price
+        near_res_max_age = self._near_res_max_age
 
         hard_fail_reason = None
         if price_drift_pct > max_drift_pct:
