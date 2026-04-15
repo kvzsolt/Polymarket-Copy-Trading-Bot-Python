@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal
+from typing import TYPE_CHECKING
 
-from config.env import ENV
-from config.settings import load_settings
+if TYPE_CHECKING:
+    from config.app_config import AppConfig
+
 from utils.logger import get_logger
 
 logger = get_logger("RiskEngine")
@@ -30,43 +32,52 @@ class AccountCapPolicy:
     dynamic_threshold_raise: bool = False
 
 
-def _env_decimal(key: str, default: str) -> Decimal:
-    value = ENV.get(key)
-    if value not in (None, ""):
-        return Decimal(str(value))
-    return Decimal(default)
+def _policy_from_config(config: AppConfig) -> AccountCapPolicy:
+    """Build AccountCapPolicy from the typed AppConfig."""
+    rc = config.risk
+    return AccountCapPolicy(
+        name="account_cap",
+        reserve_pct=Decimal(str(rc.balance_policy_reserve_pct)),
+        reserve_floor=Decimal(str(rc.balance_policy_reserve_floor)),
+        hard_cap_pct=Decimal(str(rc.balance_policy_hard_cap_pct)),
+        hard_cap_ceiling=Decimal(str(rc.balance_policy_hard_cap_ceiling)),
+        max_open_positions=rc.balance_policy_max_open_positions,
+        allow_partial_exits=rc.balance_policy_allow_partial_exits,
+        allow_pyramiding=rc.balance_policy_allow_pyramiding,
+        max_adds_per_position=rc.balance_policy_max_adds_per_position,
+        base_min_score=Decimal(str(rc.balance_policy_base_min_score)),
+        strategy_min_notional=Decimal(str(rc.balance_policy_min_notional_usdc)),
+        dynamic_threshold_raise=rc.balance_policy_dynamic_threshold_raise,
+    )
 
 
-def _env_int(key: str, default: int) -> int:
-    value = ENV.get(key)
-    if value not in (None, ""):
-        return int(value)
-    return default
+# Module-level cached policy (set via init_risk_engine)
+_cached_config: AppConfig | None = None
 
 
-def _env_bool(key: str, default: bool) -> bool:
-    value = ENV.get(key)
-    if value in (None, ""):
-        return default
-    if isinstance(value, bool):
-        return value
-    return str(value).strip().lower() in ("1", "true", "yes")
+def init_risk_engine(config: AppConfig) -> None:
+    """Initialize the risk engine with an AppConfig. Call once at startup."""
+    global _cached_config
+    _cached_config = config
 
 
 def active_policy() -> AccountCapPolicy:
+    if _cached_config is not None:
+        return _policy_from_config(_cached_config)
+    # Fallback defaults when no config has been injected
     return AccountCapPolicy(
         name="account_cap",
-        reserve_pct=_env_decimal("BALANCE_POLICY_RESERVE_PCT", default="0.12"),
-        reserve_floor=_env_decimal("BALANCE_POLICY_RESERVE_FLOOR", default="7"),
-        hard_cap_pct=_env_decimal("BALANCE_POLICY_HARD_CAP_PCT", default="0.15"),
-        hard_cap_ceiling=_env_decimal("BALANCE_POLICY_HARD_CAP_CEILING", default="8"),
-        max_open_positions=_env_int("BALANCE_POLICY_MAX_OPEN_POSITIONS", default=12),
-        allow_partial_exits=_env_bool("BALANCE_POLICY_ALLOW_PARTIAL_EXITS", default=True),
-        allow_pyramiding=_env_bool("BALANCE_POLICY_ALLOW_PYRAMIDING", default=False),
-        max_adds_per_position=_env_int("BALANCE_POLICY_MAX_ADDS_PER_POSITION", default=1),
-        base_min_score=_env_decimal("BALANCE_POLICY_BASE_MIN_SCORE", default="0.22"),
-        strategy_min_notional=_env_decimal("BALANCE_POLICY_MIN_NOTIONAL_USDC", default="0.00001"),
-        dynamic_threshold_raise=_env_bool("BALANCE_POLICY_DYNAMIC_THRESHOLD_RAISE", default=False),
+        reserve_pct=Decimal("0.12"),
+        reserve_floor=Decimal("7"),
+        hard_cap_pct=Decimal("0.15"),
+        hard_cap_ceiling=Decimal("8"),
+        max_open_positions=12,
+        allow_partial_exits=True,
+        allow_pyramiding=False,
+        max_adds_per_position=1,
+        base_min_score=Decimal("0.22"),
+        strategy_min_notional=Decimal("0.00001"),
+        dynamic_threshold_raise=False,
     )
 
 
@@ -124,9 +135,13 @@ def headroom_for_buy(
     daily_loss_usdc: Decimal = Decimal("0"),
     day_start_equity_usdc: Decimal | None = None,
     policy: AccountCapPolicy | None = None,
+    config: AppConfig | None = None,
 ) -> RiskHeadroom:
     if policy is None:
         policy = active_policy()
+
+    # Use injected config or fallback to cached module-level config
+    _cfg = config or _cached_config
 
     if open_positions_count >= policy.max_open_positions:
         return RiskHeadroom(False, "max_open_positions_reached", Decimal("0"), policy.name)
@@ -139,19 +154,26 @@ def headroom_for_buy(
 
     hard_cap = compute_hard_cap(equity_usdc, tradable, policy)
 
-    max_market = Decimal(str(ENV.get("MAX_MARKET_EXPOSURE_USDC", 300)))
-    max_category = Decimal(str(ENV.get("MAX_CATEGORY_EXPOSURE_USDC", 600)))
-    max_leader = Decimal(str(ENV.get("MAX_LEADER_EXPOSURE_USDC", 500)))
+    if _cfg is not None:
+        max_market = Decimal(str(_cfg.risk.max_market_exposure_usdc))
+        max_category = Decimal(str(_cfg.risk.max_category_exposure_usdc))
+        max_leader = Decimal(str(_cfg.risk.max_leader_exposure_usdc))
+        day_start_cfg = _cfg.risk.day_start_equity_usdc
+        max_dd_pct = Decimal(str(_cfg.risk.max_daily_drawdown_pct)) / Decimal("100")
+    else:
+        max_market = Decimal("300")
+        max_category = Decimal("600")
+        max_leader = Decimal("500")
+        day_start_cfg = 0.0
+        max_dd_pct = Decimal("0.20")
 
-    env_day_start = ENV.get("DAY_START_EQUITY_USDC")
     if day_start_equity_usdc is not None:
         day_start_eq = day_start_equity_usdc
-    elif env_day_start not in (None, "") and Decimal(str(env_day_start)) > 0:
-        day_start_eq = Decimal(str(env_day_start))
+    elif day_start_cfg > 0:
+        day_start_eq = Decimal(str(day_start_cfg))
     else:
         day_start_eq = equity_usdc
 
-    max_dd_pct = Decimal(str(ENV.get("MAX_DAILY_DRAWDOWN_PCT", 20) or 20)) / Decimal("100")
     max_daily_loss = max(Decimal("2.5"), day_start_eq * max_dd_pct)
 
     market_headroom = max(Decimal("0"), max_market - market_exposure_usdc)
@@ -254,18 +276,38 @@ class RiskEngine:
         return RiskDecision(True, "ok")
 
 
-def policy_from_env() -> RiskPolicy:
-    settings = load_settings(env=ENV)
-    max_trade_usdc = Decimal(str(ENV.get("BUY_MAX_AMOUNT", 100)))
+def policy_from_config(config: AppConfig) -> RiskPolicy:
+    """Build a legacy RiskPolicy from the typed AppConfig."""
+    rc = config.risk
+    ec = config.execution
+    sc = config.sizing
     return RiskPolicy(
-        max_trade_usdc=max_trade_usdc,
-        max_portfolio_pct_per_trade=Decimal(str(settings.sizing.max_position_ratio)),
-        max_market_exposure_usdc=Decimal(str(ENV.get("MAX_MARKET_EXPOSURE_USDC", 300))),
-        max_category_exposure_usdc=Decimal(str(ENV.get("MAX_CATEGORY_EXPOSURE_USDC", 600))),
-        max_leader_exposure_usdc=Decimal(str(ENV.get("MAX_LEADER_EXPOSURE_USDC", 500))),
-        max_open_positions=int(ENV.get("MAX_OPEN_POSITIONS", 20)),
-        max_daily_drawdown_pct=Decimal(str(ENV.get("MAX_DAILY_DRAWDOWN_PCT", 20))),
-        # ratio -> bps: multiply by 10_000 (0.02 -> 200 bps)
-        max_slippage_bps=int(settings.execution.slippage_tolerance_ratio * 10_000),
-        kill_switch=bool(ENV.get("KILL_SWITCH", False)),
+        max_trade_usdc=Decimal(str(sc.buy_max_amount)),
+        max_portfolio_pct_per_trade=Decimal(str(sc.max_position_pct)),
+        max_market_exposure_usdc=Decimal(str(rc.max_market_exposure_usdc)),
+        max_category_exposure_usdc=Decimal(str(rc.max_category_exposure_usdc)),
+        max_leader_exposure_usdc=Decimal(str(rc.max_leader_exposure_usdc)),
+        max_open_positions=rc.max_open_positions,
+        max_daily_drawdown_pct=Decimal(str(rc.max_daily_drawdown_pct)),
+        max_slippage_bps=int(ec.slippage_tolerance * 100),
+        kill_switch=rc.kill_switch,
+    )
+
+
+# Legacy alias for backward compat
+def policy_from_env() -> RiskPolicy:
+    """DEPRECATED: Use policy_from_config() instead."""
+    if _cached_config is not None:
+        return policy_from_config(_cached_config)
+    # Bare fallback
+    return RiskPolicy(
+        max_trade_usdc=Decimal("100"),
+        max_portfolio_pct_per_trade=Decimal("0.45"),
+        max_market_exposure_usdc=Decimal("300"),
+        max_category_exposure_usdc=Decimal("600"),
+        max_leader_exposure_usdc=Decimal("500"),
+        max_open_positions=20,
+        max_daily_drawdown_pct=Decimal("20"),
+        max_slippage_bps=200,
+        kill_switch=False,
     )

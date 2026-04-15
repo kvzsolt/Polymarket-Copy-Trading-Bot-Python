@@ -5,18 +5,19 @@ from __future__ import annotations
 import asyncio
 import time
 from decimal import Decimal
+from typing import TYPE_CHECKING
 
-from config.env import ENV
+if TYPE_CHECKING:
+    from config.app_config import AppConfig
+
 from domain.trading_context import TradingContext
 from services.accountingService import AccountingService, PositionLot
 from services.executionService import ExecutionRequest, ExecutionService
 from services.feeService import FeeService
-from services.healthServer import update_readiness
+from services.healthServer import ReadinessTracker
 from services.marketMetaService import MarketMetaService
 from services.metrics import metrics
 from services.orderRepository import OrderRepository
-from services.positionManager import get_position_manager
-from services.pnlTracker import get_pnl_tracker
 from services.riskEngine import active_policy
 from storage.sqlite.fills_repo import FillRecord
 from utils import is_valid_clob_token_id
@@ -31,9 +32,11 @@ _warned_invalid_tokens: set[str] = set()
 async def risk_monitor_loop(
     clob_client,
     bot_params: dict,
+    position_manager,
+    pnl_tracker,
+    readiness_tracker: ReadinessTracker,
     *,
-    position_manager=None,
-    pnl_tracker=None,
+    config: AppConfig | None = None,
 ):
     """Continuously check open positions against stop-loss / take-profit levels.
 
@@ -42,14 +45,31 @@ async def risk_monitor_loop(
     Legacy compatibility path: active runtime uses
     `risk_monitor_loop_for_contexts` with persisted position repositories.
     """
-    pm = position_manager or get_position_manager()
-    interval = ENV.get('RISK_CHECK_INTERVAL', 15)
-    enabled = ENV.get('ENABLE_RISK_MGMT', True)
-    slippage_bps = int(float(ENV.get("SLIPPAGE_TOLERANCE", 2.0)) * 100)
+    pm = position_manager
+
+    if config is not None:
+        interval = config.polling.risk_check_interval
+        enabled = config.risk.enable_risk_mgmt
+        slippage_bps = int(config.execution.slippage_tolerance * 100)
+        funder_address = config.wallet.funder_address
+        enable_tiered = config.risk.enable_balance_tiered_policy
+        sl_pct = config.risk.stop_loss_pct
+        tp_pct = config.risk.take_profit_pct
+        fee_bps = int(config.execution.transaction_fee_bps)
+    else:
+        interval = 15
+        enabled = True
+        slippage_bps = 200
+        funder_address = ""
+        enable_tiered = False
+        sl_pct = 20
+        tp_pct = 30
+        fee_bps = 20
+
     execution_service = ExecutionService(
         clob_client=clob_client,
         market_meta_service=MarketMetaService(clob_client),
-        fee_service=FeeService(clob_client),
+        fee_service=FeeService(clob_client, default_fee_bps=fee_bps),
         order_repo=OrderRepository(),
     )
     accounting = AccountingService()
@@ -59,12 +79,13 @@ async def risk_monitor_loop(
         return
 
     logger.info(
-        f"Risk monitor started: SL={ENV.get('STOP_LOSS_PCT', 20)}% "
-        f"TP={ENV.get('TAKE_PROFIT_PCT', 30)}% interval={interval}s"
+        f"Risk monitor started: SL={sl_pct}% "
+        f"TP={tp_pct}% interval={interval}s"
     )
 
     while True:
         try:
+            readiness_tracker.update(last_risk_check_ts=int(time.time()))
             positions = pm.open_positions
             for cid, pos in positions.items():
                 if not is_valid_clob_token_id(pos.asset):
@@ -84,7 +105,6 @@ async def risk_monitor_loop(
                         fraction = float(action.get("size_fraction", 1.0) or 1.0)
 
                         # Simplified account-cap policy: partial exits are a single global choice.
-                        enable_tiered = str(ENV.get("ENABLE_BALANCE_TIERED_POLICY", "false")).lower() in ("1", "true", "yes")
                         if enable_tiered and fraction < 1.0:
                             policy = active_policy()
                             if not policy.allow_partial_exits:
@@ -103,7 +123,7 @@ async def risk_monitor_loop(
                             f"tokens={sell_size:.4f}"
                         )
                         exec_req = ExecutionRequest(
-                            user_id=str(ENV.get("FUNDER_ADDRESS") or ""),
+                            user_id=funder_address,
                             leader_id=pos.leader_wallet or "risk-monitor",
                             token_id=pos.asset,
                             side="SELL",
@@ -117,7 +137,7 @@ async def risk_monitor_loop(
                             fill_tokens = float(result.filled_amount)
                             fill_price = float(result.avg_price or current_price)
                             usdc_value = fill_price * fill_tokens
-                            tracker = pnl_tracker or get_pnl_tracker()
+                            tracker = pnl_tracker
                             tracked = pm.get_position(cid)
                             entry_price = tracked.entry_price if tracked else pos.entry_price
                             pnl = (fill_price - entry_price) * fill_tokens
@@ -150,8 +170,7 @@ async def risk_monitor_loop(
                             )
                             user_id = str(
                                 bot_params.get("proxyWallet")
-                                or ENV.get("FUNDER_ADDRESS")
-                                or ""
+                                or funder_address
                             )
                             accounting.book_fill(
                                 user_id=user_id,
@@ -193,11 +212,7 @@ async def risk_monitor_loop(
 
 
 def rehydrate_position_manager(context: TradingContext) -> None:
-    """Load persisted open positions into the context position manager.
-
-    The persisted positions repository is the source of truth. In-memory state is
-    only a convenience cache for rule evaluation.
-    """
+    """Load persisted open positions into the context position manager."""
     pm = context.position_manager
     if not hasattr(pm, "track_buy"):
         return
@@ -224,12 +239,21 @@ def rehydrate_position_manager(context: TradingContext) -> None:
             continue
 
 
-def _fallback_risk_decision(entry_price: Decimal, current_price: Decimal) -> dict | None:
+def _fallback_risk_decision(
+    entry_price: Decimal,
+    current_price: Decimal,
+    *,
+    config: AppConfig | None = None,
+) -> dict | None:
     """Simple fallback SL/TP decision when position manager is unavailable."""
     if entry_price <= 0:
         return None
-    sl_pct = Decimal(str(ENV.get("STOP_LOSS_PCT", 20))) / Decimal("100")
-    tp_pct = Decimal(str(ENV.get("TAKE_PROFIT_PCT", 30))) / Decimal("100")
+    if config is not None:
+        sl_pct = Decimal(str(config.risk.stop_loss_pct)) / Decimal("100")
+        tp_pct = Decimal(str(config.risk.take_profit_pct)) / Decimal("100")
+    else:
+        sl_pct = Decimal("0.20")
+        tp_pct = Decimal("0.30")
     pct_change = (current_price - entry_price) / entry_price
     if pct_change <= -sl_pct:
         return {"reason": "stop_loss", "size_fraction": 1.0}
@@ -244,6 +268,9 @@ async def run_risk_check_for_context(context: TradingContext) -> None:
 
     rehydrate_position_manager(context)
     slippage_bps = int(float(context.extra.get("slippage_tolerance_bps", 200)))
+
+    # Read enable_tiered from context extra (set by bootstrap from config)
+    enable_tiered = str(context.extra.get("enable_balance_tiered_policy", "false")).lower() in ("1", "true", "yes")
 
     for pos in context.positions_repo.list_open_positions(context.user_id):
         if not is_valid_clob_token_id(pos.token_id):
@@ -274,12 +301,8 @@ async def run_risk_check_for_context(context: TradingContext) -> None:
             fraction = max(0.0, min(1.0, float(action.get("size_fraction", 1.0) or 1.0)))
             reason = str(action.get("reason") or "risk_exit")
 
-            # Simplified account-cap policy: partial exits are a single global choice.
-            if (
-                fraction < 1.0
-                and str(ENV.get("ENABLE_BALANCE_TIERED_POLICY", "false")).lower()
-                in ("1", "true", "yes")
-            ):
+            # Simplified account-cap policy
+            if fraction < 1.0 and enable_tiered:
                 policy = active_policy()
                 if not policy.allow_partial_exits:
                     logger.info(
@@ -365,7 +388,9 @@ async def run_risk_check_for_context(context: TradingContext) -> None:
 
 async def risk_monitor_loop_for_contexts(
     contexts: list[TradingContext],
+    readiness_tracker: ReadinessTracker,
     *,
+    config: AppConfig | None = None,
     interval: int | None = None,
 ) -> None:
     """Restart-safe risk monitor using persisted positions as the source of truth."""
@@ -373,13 +398,19 @@ async def risk_monitor_loop_for_contexts(
         logger.warning("Risk monitor started with no contexts")
         return
 
-    if not bool(ENV.get("ENABLE_RISK_MGMT", True)):
+    if config is not None:
+        enabled = config.risk.enable_risk_mgmt
+        poll_interval = int(interval or config.polling.risk_check_interval)
+    else:
+        enabled = True
+        poll_interval = int(interval or 15)
+
+    if not enabled:
         logger.info("Risk management disabled — monitor will not run")
         return
 
-    poll_interval = int(interval or ENV.get("RISK_CHECK_INTERVAL", 15))
     while True:
-        update_readiness(last_risk_check_ts=int(time.time()))
+        readiness_tracker.update(last_risk_check_ts=int(time.time()))
         for context in contexts:
             try:
                 await run_risk_check_for_context(context)

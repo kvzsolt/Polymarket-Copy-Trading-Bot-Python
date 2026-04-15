@@ -39,26 +39,8 @@ class ReadinessTracker:
     def snapshot(self) -> dict[str, Any]:
         return deepcopy(self._state)
 
-
-# Default shared tracker — retained for transitional compatibility with
-# call sites that have not yet been threaded through DI. Phase 5 replaces
-# these callers with explicit instance wiring; Phase 6 removes the module
-# aliases below.
-_default_tracker = ReadinessTracker()
-
-
-def update_readiness(**kwargs: Any) -> None:
-    _default_tracker.update(**kwargs)
-
-
-def get_readiness() -> dict[str, Any]:
-    return _default_tracker.snapshot()
-
-
-async def health_handler(_request: web.Request) -> web.Response:
-    readiness = get_readiness()
-    ok = bool(readiness.get("db_ok")) and bool(readiness.get("api_ok", True))
-    return web.json_response({"ok": ok, "readiness": readiness})
+    def get_all(self) -> dict[str, Any]:
+        return self.snapshot()
 
 
 async def metrics_handler(_request: web.Request) -> web.Response:
@@ -69,8 +51,15 @@ async def metrics_handler(_request: web.Request) -> web.Response:
 async def start_health_server(
     port: int = 9102, *, tracker: ReadinessTracker | None = None
 ) -> web.AppRunner:
-    (tracker or _default_tracker).update(started_ts=int(time.time()))
+    if tracker is not None:
+        tracker.update(started_ts=int(time.time()))
     app = web.Application()
+
+    async def health_handler(_request: web.Request) -> web.Response:
+        readiness = tracker.snapshot() if tracker is not None else {}
+        ok = bool(readiness.get("db_ok")) and bool(readiness.get("api_ok", True))
+        return web.json_response({"ok": ok, "readiness": readiness})
+
     app.router.add_get("/health", health_handler)
     app.router.add_get("/metrics", metrics_handler)
     runner = web.AppRunner(app)

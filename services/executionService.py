@@ -6,9 +6,11 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
 from hashlib import sha256
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
-from config.env import ENV
+if TYPE_CHECKING:
+    from config.app_config import AppConfig
+
 from py_clob_client.clob_types import OrderType
 from py_clob_client.order_builder.constants import BUY, SELL
 from services.circuitBreaker import CircuitBreaker, CircuitOpen
@@ -20,8 +22,8 @@ logger = get_logger("ExecutionService")
 
 _CLOB_CIRCUIT = CircuitBreaker(
     name="clob_api",
-    failure_threshold=int(ENV.get("CIRCUIT_FAILURE_THRESHOLD", 5)),
-    cooldown_seconds=float(ENV.get("CIRCUIT_COOLDOWN_SECONDS", 60)),
+    failure_threshold=5,
+    cooldown_seconds=60,
 )
 
 _MAX_PERSISTED_FIELD_CHARS = 160
@@ -259,13 +261,10 @@ _RETRY_BLOCKING_STATUSES = {
 }
 
 
-def _pending_submission_ttl_seconds() -> float:
-    raw = ENV.get("PENDING_SUBMISSION_TTL_SECONDS", 120)
-    try:
-        ttl = float(raw)
-    except (TypeError, ValueError):
-        ttl = 120.0
-    return max(ttl, 0.0)
+def _pending_submission_ttl_seconds(config: AppConfig | None = None) -> float:
+    if config is not None:
+        return max(float(config.execution.pending_submission_ttl_seconds), 0.0)
+    return 120.0
 
 
 def _coerce_timestamp(value: Any) -> float | None:
@@ -332,10 +331,10 @@ def _pending_expires_at(existing: dict[str, Any]) -> float | None:
 
 
 def _build_pending_response(
-    *, pending_since: float, ttl_seconds: float | None = None
+    *, pending_since: float, ttl_seconds: float | None = None, config: AppConfig | None = None
 ) -> dict[str, Any]:
     ttl = (
-        _pending_submission_ttl_seconds()
+        _pending_submission_ttl_seconds(config)
         if ttl_seconds is None
         else max(float(ttl_seconds), 0.0)
     )
@@ -353,6 +352,7 @@ def _is_pending_submission_expired(
     *,
     now_ts: float | None = None,
     pending_ttl_seconds: float | None = None,
+    config: AppConfig | None = None,
 ) -> bool:
     if not existing:
         return False
@@ -370,7 +370,7 @@ def _is_pending_submission_expired(
         return now_value >= explicit_expires_at
 
     ttl_seconds = (
-        _pending_submission_ttl_seconds()
+        _pending_submission_ttl_seconds(config)
         if pending_ttl_seconds is None
         else float(pending_ttl_seconds)
     )
@@ -379,7 +379,6 @@ def _is_pending_submission_expired(
 
     submitted_at = _pending_since(existing)
     if submitted_at is None:
-        # Fail open: a blocking lock with no usable timestamp should never block forever.
         return True
 
     return (now_value - submitted_at) >= ttl_seconds
@@ -390,6 +389,7 @@ def _is_retry_blocking_existing(
     *,
     now_ts: float | None = None,
     pending_ttl_seconds: float | None = None,
+    config: AppConfig | None = None,
 ) -> bool:
     if not existing:
         return False
@@ -402,6 +402,7 @@ def _is_retry_blocking_existing(
         existing,
         now_ts=now_ts,
         pending_ttl_seconds=pending_ttl_seconds,
+        config=config,
     ):
         return False
     return status in _RETRY_BLOCKING_STATUSES
@@ -416,12 +417,24 @@ class ExecutionService:
         order_repo,
         *,
         circuit_breaker: CircuitBreaker | None = None,
+        config: AppConfig | None = None,
     ):
         self.clob_client = clob_client
         self.market_meta_service = market_meta_service
         self.fee_service = fee_service
         self.order_repo = order_repo
-        self.circuit_breaker = circuit_breaker or _CLOB_CIRCUIT
+        self._config = config
+
+        if circuit_breaker is not None:
+            self.circuit_breaker = circuit_breaker
+        elif config is not None:
+            self.circuit_breaker = CircuitBreaker(
+                name="clob_api",
+                failure_threshold=config.execution.circuit_failure_threshold,
+                cooldown_seconds=config.execution.circuit_cooldown_seconds,
+            )
+        else:
+            self.circuit_breaker = _CLOB_CIRCUIT
 
     def _save_submission(
         self,
@@ -493,7 +506,8 @@ class ExecutionService:
                 error=f"CLOB circuit breaker open — retry in {remaining:.0f}s",
             )
 
-        require_fresh_book = _coerce_bool(ENV.get("EXECUTION_REQUIRE_FRESH_BOOK", True))
+        ec = self._config.execution if self._config else None
+        require_fresh_book = ec.execution_require_fresh_book if ec else True
         meta = await self.market_meta_service.get(
             req.token_id,
             refresh=require_fresh_book,
@@ -501,10 +515,10 @@ class ExecutionService:
 
         # --- Book quality gate: reject if spread is too wide ---
         spread_mode = _resolve_book_spread_mode(
-            ENV.get("BOOK_SPREAD_MODE", "absolute_bps")
+            ec.book_spread_mode if ec else "absolute_bps"
         )
-        max_spread_bps = int(ENV.get("MAX_BOOK_SPREAD_BPS", 500))
-        max_spread_ticks = int(ENV.get("MAX_BOOK_SPREAD_TICKS", 0))
+        max_spread_bps = int(ec.max_book_spread_bps if ec else 500)
+        max_spread_ticks = int(ec.max_book_spread_ticks if ec else 0)
         spread_limit = max_spread_ticks if spread_mode == "ticks" else max_spread_bps
         spread_limit_unit = "ticks" if spread_mode == "ticks" else "bps"
         if (
@@ -625,7 +639,7 @@ class ExecutionService:
             )
 
         quote_price = Decimal(str(quote["price"]))
-        min_share_price = Decimal(str(ENV.get("MIN_SHARE_PRICE", 0) or 0))
+        min_share_price = Decimal(str(ec.min_share_price if ec else 0))
         if side == "BUY" and min_share_price > 0 and quote_price < min_share_price:
             return ExecutionResult(
                 accepted=False,
@@ -686,9 +700,9 @@ class ExecutionService:
         if (
             existing
             and not existing.get("order_id")
-            and _is_pending_submission_expired(existing)
+            and _is_pending_submission_expired(existing, config=self._config)
         ):
-            ttl_seconds = _pending_submission_ttl_seconds()
+            ttl_seconds = _pending_submission_ttl_seconds(self._config)
             ttl_seconds_log = int(ttl_seconds)
             existing_status = str(
                 existing.get("status")
@@ -733,7 +747,7 @@ class ExecutionService:
             )
             existing = self.order_repo.get_by_idempotency_key(idem_key)
 
-        if _is_retry_blocking_existing(existing):
+        if _is_retry_blocking_existing(existing, config=self._config):
             existing_order_id = existing.get("order_id")
             return ExecutionResult(
                 accepted=True,
@@ -768,7 +782,7 @@ class ExecutionService:
             )
         else:
             # Fallback for legacy/mock repos without atomic lock
-            lock_acquired = existing is None or not _is_retry_blocking_existing(existing)
+            lock_acquired = existing is None or not _is_retry_blocking_existing(existing, config=self._config)
 
         if not lock_acquired:
             # Someone else holds the lock — check if it's a real submission or just a lock
@@ -802,7 +816,7 @@ class ExecutionService:
         self._save_submission(
             idempotency_key=idem_key,
             request=request_doc,
-            response=_build_pending_response(pending_since=pending_since),
+            response=_build_pending_response(pending_since=pending_since, config=self._config),
         )
 
         for attempt in range(1, 4):
