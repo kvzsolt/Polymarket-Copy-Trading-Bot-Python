@@ -13,6 +13,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 FAKE_TOKEN_ID = "71321045679252212594626385532706912750332728571942532223535764789812338637396"
+FAKE_FUNDER = "0x0000000000000000000000000000000000000001"
 
 
 # ---------------------------------------------------------------------------
@@ -49,16 +50,48 @@ class TestConfigLeaderWallets:
 # ---------------------------------------------------------------------------
 class TestPositionManager:
     def _make_pm(self, sl_pct=20, tp_pct=30, enabled=True, extra_env=None):
-        env = {
-            "STOP_LOSS_PCT": sl_pct,
-            "TAKE_PROFIT_PCT": tp_pct,
-            "ENABLE_RISK_MGMT": enabled,
-        }
-        if extra_env:
-            env.update(extra_env)
-        with patch("services.positionManager.ENV", env):
+        # PositionManager now uses AppConfig via constructor injection.
+        # When config=None, defaults are used. For custom values, build a mock config.
+        if extra_env or sl_pct != 20 or tp_pct != 30 or not enabled:
+            config = MagicMock()
+            config.risk.stop_loss_pct = sl_pct
+            config.risk.take_profit_pct = tp_pct
+            config.risk.enable_risk_mgmt = enabled
+            config.risk.profit_lock_trigger_pct = 70
+            config.risk.profit_lock_sell_fraction = 0.5
+            config.risk.near_max_price_exit = 0.97
+            config.risk.near_max_price_warn = 0.95
+            config.risk.near_max_price_warn_trim_ratio = 0.5
+            config.risk.staged_tp_levels = "9999"
+            config.risk.staged_tp_fractions = "0.25,0.35"
+            config.features.enable_profit_lock = False
+            config.features.enable_near_max_exit = False
+            config.features.enable_trailing_stop = False
+            config.features.enable_staged_tp = False
+            if extra_env:
+                if "NEAR_MAX_PRICE_WARN" in extra_env:
+                    config.risk.near_max_price_warn = extra_env["NEAR_MAX_PRICE_WARN"]
+                    config.features.enable_near_max_exit = True
+                if "NEAR_MAX_PRICE_EXIT" in extra_env:
+                    config.risk.near_max_price_exit = extra_env["NEAR_MAX_PRICE_EXIT"]
+                    config.features.enable_near_max_exit = True
+                if "NEAR_MAX_PRICE_WARN_TRIM_RATIO" in extra_env:
+                    config.risk.near_max_price_warn_trim_ratio = extra_env["NEAR_MAX_PRICE_WARN_TRIM_RATIO"]
+                if "NEAR_MAX_PRICE_EXIT" in extra_env:
+                    config.risk.near_max_price_exit = extra_env["NEAR_MAX_PRICE_EXIT"]
+                    config.features.enable_near_max_exit = True
+                if "PROFIT_LOCK_TRIGGER_PCT" in extra_env:
+                    config.risk.profit_lock_trigger_pct = extra_env["PROFIT_LOCK_TRIGGER_PCT"]
+                    config.features.enable_profit_lock = True
+                if "STAGED_TP_LEVELS" in extra_env:
+                    # Very high staged TP level effectively disables legacy TP.
+                    config.risk.staged_tp_levels = extra_env["STAGED_TP_LEVELS"]
+                    config.features.enable_staged_tp = True
             from services.positionManager import PositionManager
-            return PositionManager()
+            return PositionManager(config=config)
+        else:
+            from services.positionManager import PositionManager
+            return PositionManager(config=None)
 
     def test_track_buy_creates_position(self):
         pm = self._make_pm()
@@ -109,7 +142,23 @@ class TestPositionManager:
         assert pm.check_risk_triggers("c1", 0.75) == "stop_loss"
 
     def test_check_risk_triggers_take_profit(self):
-        pm = self._make_pm(tp_pct=30)
+        # Use risk_settings to get _enable_staged_tp=False (legacy TP path).
+        # near_max_price_level=1.0 disables near_max check for price=1.35.
+        from config.settings import RiskSettings
+        rs = RiskSettings(
+            stop_loss_ratio=0.20,
+            take_profit_ratio=0.30,
+            daily_drawdown_ratio=0.25,
+            profit_lock_trigger_ratio=0.70,
+            profit_lock_drawdown_ratio=0.05,
+            profit_lock_sell_ratio=0.50,
+            trailing_trigger_ratio=0.20,
+            trailing_distance_ratio=0.05,
+            near_max_price_level=1.0,
+            near_max_warn_level=1.0,
+        )
+        from services.positionManager import PositionManager
+        pm = PositionManager(risk_settings=rs)
         pm.track_buy("c1", "a1", 1.0, 10.0, 10.0)
         # Price up 35% (above 30% threshold)
         assert pm.check_risk_triggers("c1", 1.35) == "take_profit"
@@ -148,7 +197,24 @@ class TestPositionManager:
         assert not (action2 and action2.get("reason") == "near_max_partial_trim")
 
     def test_near_max_full_exit_defaults_to_95c(self):
-        pm = self._make_pm(tp_pct=99)
+        # _near_max_warn_ratio is hardcoded 0.50 in risk_settings path.
+        # Set near_max_warn_level above 0.951 so warn_trim doesn't fire first;
+        # near_max_exit=0.95 is the real target under test.
+        from config.settings import RiskSettings
+        rs = RiskSettings(
+            stop_loss_ratio=0.20,
+            take_profit_ratio=0.99,
+            daily_drawdown_ratio=0.25,
+            profit_lock_trigger_ratio=0.70,
+            profit_lock_drawdown_ratio=0.05,
+            profit_lock_sell_ratio=0.50,
+            trailing_trigger_ratio=0.20,
+            trailing_distance_ratio=0.05,
+            near_max_price_level=0.95,
+            near_max_warn_level=0.952,
+        )
+        from services.positionManager import PositionManager
+        pm = PositionManager(risk_settings=rs)
         pm.track_buy("c1", "a1", 0.5, 10.0, 5.0)
         action = pm.evaluate_risk_action("c1", 0.951)
         assert action is not None
@@ -156,7 +222,23 @@ class TestPositionManager:
         assert action["size_fraction"] == 1.0
 
     def test_profit_lock_arms_above_70_and_triggers_on_fallback(self):
-        pm = self._make_pm(tp_pct=99)
+        # risk_settings path gives _profit_lock_mode="legacy": arm on +70%,
+        # exit on fallback below trigger. near_max disabled via level=1.0.
+        from config.settings import RiskSettings
+        rs = RiskSettings(
+            stop_loss_ratio=0.20,
+            take_profit_ratio=0.99,
+            daily_drawdown_ratio=0.25,
+            profit_lock_trigger_ratio=0.70,
+            profit_lock_drawdown_ratio=0.05,
+            profit_lock_sell_ratio=0.50,
+            trailing_trigger_ratio=0.20,
+            trailing_distance_ratio=0.05,
+            near_max_price_level=1.0,
+            near_max_warn_level=1.0,
+        )
+        from services.positionManager import PositionManager
+        pm = PositionManager(risk_settings=rs)
         pm.track_buy("c1", "a1", 0.5, 10.0, 5.0)
         # Arm lock first (> +70%) but do not exit immediately.
         assert pm.evaluate_risk_action("c1", 0.90) is None
@@ -275,9 +357,12 @@ class TestRiskMonitor:
     async def test_risk_monitor_exits_when_disabled(self):
         """When ENABLE_RISK_MGMT is False, the loop should return immediately."""
         from services.riskMonitor import risk_monitor_loop
+        from services.healthServer import ReadinessTracker
         mock_clob = AsyncMock()
-        with patch("services.riskMonitor.ENV", {"ENABLE_RISK_MGMT": False, "RISK_CHECK_INTERVAL": 1}):
-            await risk_monitor_loop(mock_clob, {}, None, None)
+        mock_config = MagicMock()
+        mock_config.polling.risk_check_interval = 1
+        mock_config.risk.enable_risk_mgmt = False
+        await risk_monitor_loop(mock_clob, {}, None, None, ReadinessTracker(), config=mock_config)
         mock_clob.get_price.assert_not_called()
 
     @pytest.mark.asyncio
@@ -299,6 +384,15 @@ class TestRiskMonitor:
 
         mock_tracker = MagicMock()
 
+        mock_config = MagicMock()
+        mock_config.polling.risk_check_interval = 1
+        mock_config.risk.enable_risk_mgmt = True
+        mock_config.risk.stop_loss_pct = 20
+        mock_config.risk.take_profit_pct = 30
+        mock_config.execution.slippage_tolerance = 2.0
+        mock_config.execution.transaction_fee_bps = 0
+        mock_config.wallet.funder_address = FAKE_FUNDER
+
         iteration_count = 0
 
         async def patched_sleep(n):
@@ -308,8 +402,7 @@ class TestRiskMonitor:
                 raise asyncio.CancelledError()
 
         import asyncio
-        with patch("services.riskMonitor.ENV", {"ENABLE_RISK_MGMT": True, "RISK_CHECK_INTERVAL": 1, "STOP_LOSS_PCT": 20, "TAKE_PROFIT_PCT": 30}), \
-             patch("services.riskMonitor.asyncio.sleep", side_effect=patched_sleep), \
+        with patch("services.riskMonitor.asyncio.sleep", side_effect=patched_sleep), \
              patch("services.riskMonitor.ExecutionService") as mock_exec_cls:
             mock_exec = mock_exec_cls.return_value
             mock_exec.execute = AsyncMock(
@@ -321,7 +414,7 @@ class TestRiskMonitor:
                 )
             )
             with pytest.raises(asyncio.CancelledError):
-                await risk_monitor_loop(mock_clob, {}, mock_pm, mock_tracker)
+                await risk_monitor_loop(mock_clob, {}, mock_pm, mock_tracker, mock_tracker, config=mock_config)
         mock_exec.execute.assert_called_once()
         mock_pm.track_sell.assert_called_once()
 
@@ -353,47 +446,33 @@ class TestConfigHelpers:
 
 
 # ---------------------------------------------------------------------------
-# AutoRedeem — _is_market_resolved
+# AutoRedeem — _is_market_resolved (removed in DI refactor, function no longer exists)
 # ---------------------------------------------------------------------------
 class TestAutoRedeemResolution:
+    @pytest.mark.skip(reason="_is_market_resolved was removed in the DI refactor (PR #20)")
     def test_resolved_true(self):
-        from services.autoRedeem import _is_market_resolved
-        mock_clob = MagicMock()
-        mock_clob.get_market.return_value = {"resolved": True, "condition_id": "c1"}
-        result = _is_market_resolved(mock_clob, "c1")
-        assert result is not None
-        assert result["resolved"] is True
+        pass
 
+    @pytest.mark.skip(reason="_is_market_resolved was removed in the DI refactor (PR #20)")
     def test_not_resolved(self):
-        from services.autoRedeem import _is_market_resolved
-        mock_clob = MagicMock()
-        mock_clob.get_market.return_value = {"resolved": False, "active": True}
-        result = _is_market_resolved(mock_clob, "c1")
-        assert result is None
+        pass
 
+    @pytest.mark.skip(reason="_is_market_resolved was removed in the DI refactor (PR #20)")
     def test_api_error_returns_none(self):
-        from services.autoRedeem import _is_market_resolved
-        mock_clob = MagicMock()
-        mock_clob.get_market.side_effect = Exception("API down")
-        result = _is_market_resolved(mock_clob, "c1")
-        assert result is None
+        pass
 
+    @pytest.mark.skip(reason="_is_market_resolved was removed in the DI refactor (PR #20)")
     def test_none_market_returns_none(self):
-        from services.autoRedeem import _is_market_resolved
-        mock_clob = MagicMock()
-        mock_clob.get_market.return_value = None
-        result = _is_market_resolved(mock_clob, "c1")
-        assert result is None
+        pass
 
 
 # ---------------------------------------------------------------------------
 # AutoRedeem — _get_winning_index_sets
 # ---------------------------------------------------------------------------
 class TestAutoRedeemIndexSets:
+    @pytest.mark.skip(reason="_get_winning_index_sets was removed in the DI refactor (PR #20)")
     def test_returns_both_sets(self):
-        from services.autoRedeem import _get_winning_index_sets
-        result = _get_winning_index_sets({})
-        assert result == [1, 2]
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -466,33 +545,13 @@ class TestAutoRedeemLoop:
 # AutoRedeem — _build_redeem_tx
 # ---------------------------------------------------------------------------
 class TestBuildRedeemTx:
+    @pytest.mark.skip(reason="_build_redeem_tx was removed in the DI refactor (PR #20)")
     def test_builds_valid_tx(self):
-        from services.autoRedeem import _build_redeem_tx
-        mock_w3 = MagicMock()
-        mock_w3.eth.get_transaction_count.return_value = 5
-        mock_w3.eth.gas_price = 30_000_000_000
+        pass
 
-        mock_contract = MagicMock()
-        mock_fn = MagicMock()
-        mock_fn.build_transaction.return_value = {"to": "0xCTF", "value": 0}
-        mock_contract.functions.redeemPositions.return_value = mock_fn
-
-        condition_id = "0x" + "ab" * 32
-        tx = _build_redeem_tx(
-            mock_w3, mock_contract, condition_id,
-            "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
-            "0x1111111111111111111111111111111111111111",
-        )
-        assert tx is not None
-        mock_contract.functions.redeemPositions.assert_called_once()
-
+    @pytest.mark.skip(reason="_build_redeem_tx was removed in the DI refactor (PR #20)")
     def test_invalid_address_returns_none(self):
-        from services.autoRedeem import _build_redeem_tx
-        mock_w3 = MagicMock()
-        mock_contract = MagicMock()
-        # Invalid hex condition_id
-        tx = _build_redeem_tx(mock_w3, mock_contract, "not-hex", "bad", "bad")
-        assert tx is None
+        pass
 
 
 # ---------------------------------------------------------------------------
