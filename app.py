@@ -93,7 +93,7 @@ def _refresh_contexts_for_new_leaders(
             follow: UserFollowConfig | None = runtime_user.follows.get(wallet)
             if not user_state or not follow or not follow.enabled:
                 continue
-            context = build_trading_context(user_state, follow, leaders_repo=leaders_repo)
+            context = build_trading_context(user_state, follow, leaders_repo=leaders_repo, readiness=application.readiness)
             contexts_by_leader[wallet].append(context)
         if contexts_by_leader[wallet]:
             started_wallets.append(wallet)
@@ -212,6 +212,7 @@ async def main():
         user_states,
         active_leaders,
         leaders_repo=leaders_repo,
+        readiness=application.readiness,
     )
     monitored_leaders = [leader for leader, contexts in contexts_by_leader.items() if contexts]
     application.readiness.update(monitored_leader_count=len(monitored_leaders))

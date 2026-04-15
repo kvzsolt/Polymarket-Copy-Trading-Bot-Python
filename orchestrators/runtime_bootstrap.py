@@ -13,6 +13,7 @@ from services.orderRepository import OrderRepository
 from services.pnlTracker import PnLTracker
 from services.positionManager import PositionManager
 from services.riskEngine import RiskEngine
+from services.healthServer import ReadinessTracker
 from services.riskMonitor import rehydrate_position_manager
 from storage.sqlite.fills_repo import FillsRepo
 from storage.sqlite.orders_repo import OrdersRepo
@@ -135,6 +136,7 @@ def build_trading_context(
     user_state: UserRuntimeState,
     follow: UserFollowConfig,
     leaders_repo=None,
+    readiness: ReadinessTracker | None = None,
 ) -> TradingContext:
     context = TradingContext(
         user_id=user_state.user.user_id,
@@ -153,6 +155,7 @@ def build_trading_context(
         buy_min_amount=float(ENV.get("BUY_MIN_AMOUNT", 1)),
         buy_max_amount=min(float(ENV.get("BUY_MAX_AMOUNT", 100)), follow.max_trade_usdc),
         max_market_exposure_usdc=follow.max_market_exposure_usdc,
+        readiness=readiness or ReadinessTracker(),
         extra={
             "slippage_tolerance_bps": int(float(ENV.get("SLIPPAGE_TOLERANCE", 2.0)) * 100),
         },
@@ -167,6 +170,7 @@ def build_context_maps(
     active_leaders: list[str],
     *,
     leaders_repo=None,
+    readiness: ReadinessTracker | None = None,
 ) -> tuple[dict[str, list[TradingContext]], dict[str, TradingContext]]:
     contexts_by_leader: dict[str, list[TradingContext]] = {leader: [] for leader in active_leaders}
     risk_contexts_by_user: dict[str, TradingContext] = {}
@@ -177,7 +181,7 @@ def build_context_maps(
             follow = runtime_user.follows.get(leader)
             if not follow or not follow.enabled:
                 continue
-            context = build_trading_context(user_state, follow, leaders_repo=leaders_repo)
+            context = build_trading_context(user_state, follow, leaders_repo=leaders_repo, readiness=readiness)
             contexts_by_leader[leader].append(context)
             if context.user_id not in risk_contexts_by_user:
                 risk_contexts_by_user[context.user_id] = context

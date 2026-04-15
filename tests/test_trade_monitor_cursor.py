@@ -15,6 +15,11 @@ from services.tradeMonitor import (
 )
 from storage.sqlite.cursors_repo import TradeCursor
 
+# Shared test fixtures for DI refactor
+_MOCK_READINESS = MagicMock()
+_MOCK_CONFIG = MagicMock()
+_MOCK_CONFIG.polling.fetch_interval = 5
+
 
 @pytest.mark.asyncio
 async def test_init_sets_startup_watermark_from_latest_activity_when_no_cursor_exists():
@@ -68,8 +73,8 @@ async def test_late_trade_newer_than_cursor_is_processed_once():
     )
 
     with patch("services.tradeMonitor.fetch_data", new_callable=AsyncMock, return_value=[late_trade]):
-        await fetch_trade_data("0xleader", on_trade, state)
-        await fetch_trade_data("0xleader", on_trade, state)
+        await fetch_trade_data("0xleader", on_trade, state, _MOCK_READINESS, _MOCK_CONFIG)
+        await fetch_trade_data("0xleader", on_trade, state, _MOCK_READINESS, _MOCK_CONFIG)
 
     assert len(calls) == 1
     assert calls[0][0]["transactionHash"] == "0xlate"
@@ -136,6 +141,8 @@ async def test_new_trade_schedules_research_capture_without_blocking_execution()
             "0xleader",
             on_trade,
             state,
+            _MOCK_READINESS,
+            _MOCK_CONFIG,
             research_capture_service=research_capture,
         )
         if scheduled:
@@ -166,7 +173,7 @@ async def test_cursor_comparison_normalizes_hash_and_trade_id_on_restart():
     on_trade = AsyncMock()
 
     with patch("services.tradeMonitor.fetch_data", new_callable=AsyncMock, return_value=[duplicate_trade]):
-        await fetch_trade_data("0xleader", on_trade, state)
+        await fetch_trade_data("0xleader", on_trade, state, _MOCK_READINESS, _MOCK_CONFIG)
 
     on_trade.assert_not_awaited()
 
@@ -204,7 +211,7 @@ async def test_detected_trade_logs_emit_before_trade_callback():
              "services.tradeMonitor.log_trade_detected",
              side_effect=lambda *_args, **_kwargs: events.append("structured"),
          ) as log_detected:
-        await fetch_trade_data("0xleader", on_trade, state)
+        await fetch_trade_data("0xleader", on_trade, state, _MOCK_READINESS, _MOCK_CONFIG)
 
     print_detected.assert_called_once()
     log_detected.assert_called_once()
@@ -212,24 +219,21 @@ async def test_detected_trade_logs_emit_before_trade_callback():
 
 
 def test_monitor_loop_healthy_requires_recent_poll_and_ready_dependencies():
-    with patch(
-        "services.tradeMonitor.get_readiness",
-        return_value={"db_ok": True, "api_ok": True, "last_trade_poll_ts": 100},
-    ), patch("services.tradeMonitor.time.time", return_value=120):
-        assert _monitor_loop_healthy(fetch_ok=True, fetch_interval_s=5) is True
+    from services.healthServer import ReadinessTracker
+    tracker = ReadinessTracker()
+    tracker.update(db_ok=True, api_ok=True, last_trade_poll_ts=100)
+    with patch("services.tradeMonitor.time.time", return_value=120):
+        assert _monitor_loop_healthy(fetch_ok=True, fetch_interval_s=5, readiness_tracker=tracker) is True
 
 
 def test_monitor_loop_healthy_rejects_stale_or_failed_poll():
-    with patch(
-        "services.tradeMonitor.get_readiness",
-        return_value={"db_ok": True, "api_ok": True, "last_trade_poll_ts": 100},
-    ), patch("services.tradeMonitor.time.time", return_value=140):
-        assert _monitor_loop_healthy(fetch_ok=True, fetch_interval_s=5) is False
-    with patch(
-        "services.tradeMonitor.get_readiness",
-        return_value={"db_ok": True, "api_ok": True, "last_trade_poll_ts": 100},
-    ), patch("services.tradeMonitor.time.time", return_value=110):
-        assert _monitor_loop_healthy(fetch_ok=False, fetch_interval_s=5) is False
+    from services.healthServer import ReadinessTracker
+    tracker = ReadinessTracker()
+    tracker.update(db_ok=True, api_ok=True, last_trade_poll_ts=100)
+    with patch("services.tradeMonitor.time.time", return_value=140):
+        assert _monitor_loop_healthy(fetch_ok=True, fetch_interval_s=5, readiness_tracker=tracker) is False
+    with patch("services.tradeMonitor.time.time", return_value=110):
+        assert _monitor_loop_healthy(fetch_ok=False, fetch_interval_s=5, readiness_tracker=tracker) is False
 
 
 @pytest.mark.asyncio
@@ -250,6 +254,8 @@ async def test_trade_monitor_emits_heartbeat_when_monitor_is_healthy():
             await trade_monitor(
                 {"leaderWallet": leader_wallet, "FETCH_INTERVAL": 1, "MONITORED_LEADER_COUNT": 3},
                 on_trade,
+                readiness_tracker=MagicMock(),
+                config=MagicMock(),
             )
 
     heartbeat_tick.assert_called_once_with(
@@ -276,6 +282,6 @@ async def test_trade_monitor_skips_heartbeat_when_monitor_is_unhealthy():
          patch("services.tradeMonitor._POSITION_SAVE_INTERVAL", 10**12), \
          patch("services.tradeMonitor.asyncio.sleep", side_effect=asyncio.CancelledError):
         with pytest.raises(asyncio.CancelledError):
-            await trade_monitor({"leaderWallet": leader_wallet, "FETCH_INTERVAL": 1}, on_trade)
+            await trade_monitor({"leaderWallet": leader_wallet, "FETCH_INTERVAL": 1}, on_trade, readiness_tracker=MagicMock(), config=MagicMock())
 
     heartbeat_tick.assert_not_called()
