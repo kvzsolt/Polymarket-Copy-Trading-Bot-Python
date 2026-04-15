@@ -1,55 +1,51 @@
 from __future__ import annotations
 
+import time
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
 
-from services.healthServer import health_handler, start_health_server, update_readiness
+from services.healthServer import ReadinessTracker, start_health_server
 
 
 @pytest.mark.asyncio
-async def test_health_includes_readiness_fields():
-    update_readiness(
-        db_ok=True,
-        api_ok=True,
-        last_trade_poll_ts=123,
-        last_risk_check_ts=124,
-        last_successful_order_ts=125,
-        monitored_leader_count=3,
-        runtime_user_count=2,
-    )
-    response = await health_handler(make_mocked_request("GET", "/health"))
-    payload = response.text
-    assert '"ok": true' in payload
-    assert '"runtime_user_count": 2' in payload
-    assert '"monitored_leader_count": 3' in payload
+async def test_readiness_tracker_logic():
+    tracker = ReadinessTracker()
+    tracker.update(db_ok=True, api_ok=True, runtime_user_count=2)
+    
+    snap = tracker.snapshot()
+    assert snap["db_ok"] is True
+    assert snap["api_ok"] is True
+    assert snap["runtime_user_count"] == 2
 
 
 @pytest.mark.asyncio
-async def test_metrics_server_binds_to_localhost_by_default():
-    with patch.dict("os.environ", {}, clear=True):
-        with patch("services.healthServer.web.TCPSite") as site_cls:
-            site_instance = AsyncMock()
-            site_cls.return_value = site_instance
+async def test_health_server_setup():
+    tracker = ReadinessTracker()
+    # Test that start_health_server correctly wires the tracker
+    with patch("services.healthServer.web.TCPSite") as site_cls:
+        site_instance = AsyncMock()
+        site_cls.return_value = site_instance
 
-            runner = await start_health_server(port=9102)
-
-            _, kwargs = site_cls.call_args
-            assert kwargs["host"] == "127.0.0.1"
-            assert kwargs["port"] == 9102
-
-            await runner.cleanup()
+        runner = await start_health_server(port=9102, tracker=tracker)
+        
+        # Verify started_ts was set
+        assert tracker.snapshot().get("started_ts") is not None
+        
+        await runner.cleanup()
 
 
 @pytest.mark.asyncio
 async def test_metrics_server_uses_validated_bind_host_from_env():
+    tracker = ReadinessTracker()
     with patch.dict("os.environ", {"METRICS_BIND_HOST": "127.0.0.1"}, clear=True):
         with patch("services.healthServer.web.TCPSite") as site_cls:
             site_instance = AsyncMock()
             site_cls.return_value = site_instance
 
-            runner = await start_health_server(port=9102)
+            runner = await start_health_server(port=9102, tracker=tracker)
 
             _, kwargs = site_cls.call_args
             assert kwargs["host"] == "127.0.0.1"

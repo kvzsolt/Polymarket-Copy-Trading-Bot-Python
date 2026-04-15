@@ -1,14 +1,19 @@
+from __future__ import annotations
+
 import asyncio
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
-from config.env import ENV, get_funder_address
+from config.env import get_funder_address
 from services.leaderCursorStore import LeaderCursorStore
-from services.healthServer import get_readiness, update_readiness
 from services.metrics import metrics
 from storage.sqlite.cursors_repo import TradeCursor
 from utils.fetchData import fetch_data
+
+if TYPE_CHECKING:
+    from config.app_config import AppConfig
+    from services.healthServer import ReadinessTracker
 from utils.logger import (
     get_logger,
     log_trade_detected,
@@ -147,7 +152,7 @@ def _trade_usdc_value(trade: dict) -> float:
     return max(0.0, usdc)
 
 
-def _aggregate_trades(trades: list[dict]) -> list[dict]:
+def _aggregate_trades(trades: list[dict], window_s: float = 2.0) -> list[dict]:
     """Merge bursty same-market fills into a single signal.
 
     Groups by leader + condition + asset + side inside a short time window.
@@ -156,7 +161,6 @@ def _aggregate_trades(trades: list[dict]) -> list[dict]:
     if not trades:
         return []
 
-    window_s = float(ENV.get('AGGREGATE_SIGNAL_WINDOW_SECONDS', 2.0) or 2.0)
     ordered = sorted(trades, key=lambda x: (_to_seconds(x.get('timestamp')), str(x.get('transactionHash') or '')))
     aggregated: list[dict] = []
 
@@ -217,10 +221,10 @@ def _aggregate_trades(trades: list[dict]) -> list[dict]:
     return aggregated
 
 
-def _monitor_loop_healthy(*, fetch_ok: bool, fetch_interval_s: int) -> bool:
+def _monitor_loop_healthy(*, fetch_ok: bool, fetch_interval_s: int, readiness_tracker: ReadinessTracker) -> bool:
     if not fetch_ok:
         return False
-    readiness = get_readiness()
+    readiness = readiness_tracker.get_all()
     if not bool(readiness.get("db_ok")):
         return False
     if not bool(readiness.get("api_ok", True)):
@@ -280,6 +284,8 @@ async def fetch_trade_data(
     user_address: str,
     on_trade_callback,
     state: LeaderMonitorState,
+    readiness_tracker: ReadinessTracker,
+    config: AppConfig,
     research_capture_service: Any | None = None,
 ):
     """Fetch new trades and call *on_trade_callback(trade)* immediately for each."""
@@ -295,11 +301,11 @@ async def fetch_trade_data(
     user_activities = _normalize_activities(user_activities)
     checked_activities = len(user_activities)
     if not user_activities:
-        update_readiness(last_trade_poll_ts=int(time.time()))
+        readiness_tracker.update(last_trade_poll_ts=int(time.time()))
         return True, checked_activities
     try:
         current_timestamp = int(time.time())
-        update_readiness(last_trade_poll_ts=current_timestamp)
+        readiness_tracker.update(last_trade_poll_ts=current_timestamp)
         state.last_cursor = _normalize_cursor(state.last_cursor)
         cursor_key = _cursor_key(state.last_cursor)
 
@@ -340,7 +346,10 @@ async def fetch_trade_data(
             if ts > max_seen_ts:
                 max_seen_ts = ts
 
-        trade_list = _aggregate_trades(trade_candidates)
+        trade_list = _aggregate_trades(
+            trade_candidates,
+            window_s=config.execution.aggregate_signal_window_seconds
+        )
         if trade_candidates and research_capture_service is not None:
             asyncio.create_task(
                 _run_research_capture(research_capture_service, list(trade_candidates))
@@ -375,9 +384,10 @@ async def fetch_trade_data(
 async def fetch_and_save_positions(
     leader_wallet: str,
     proxy_wallet: str,
+    config: AppConfig,
     research_capture_service: Any | None = None,
 ):
-    if not bool(ENV.get("ENABLE_LEGACY_POSITION_SNAPSHOT", False)):
+    if not config.discovery.enable_legacy_position_snapshot:
         return
     for wallet in (leader_wallet, proxy_wallet):
         if not wallet:
@@ -405,10 +415,12 @@ async def fetch_and_save_positions(
 async def trade_monitor(
     bot_params: dict,
     on_trade_callback,
+    readiness_tracker: ReadinessTracker,
+    config: AppConfig,
     research_capture_service: Any | None = None,
 ):
     """Main monitor loop. Calls *on_trade_callback(trades_list)* immediately on detection."""
-    fetch_interval = int(bot_params.get('FETCH_INTERVAL', ENV.get('FETCH_INTERVAL', 1)))
+    fetch_interval = int(bot_params.get('FETCH_INTERVAL', config.polling.fetch_interval))
     state = LeaderMonitorState()
     cursor_store = LeaderCursorStore()
     leader_wallet = bot_params['leaderWallet']
@@ -417,7 +429,7 @@ async def trade_monitor(
 
     await init(leader_wallet, state)
     cursor_store.set_cursor(leader_wallet, state.last_cursor)
-    proxy_wallet = get_funder_address()
+    proxy_wallet = config.wallet.funder_address or get_funder_address()
     monitored_leader_count = int(bot_params.get('MONITORED_LEADER_COUNT', 1) or 1)
     while True:
         previous_cursor = state.last_cursor
@@ -425,6 +437,8 @@ async def trade_monitor(
             leader_wallet,
             on_trade_callback,
             state,
+            readiness_tracker=readiness_tracker,
+            config=config,
             research_capture_service=research_capture_service,
         )
         if (
@@ -442,11 +456,12 @@ async def trade_monitor(
                 fetch_and_save_positions(
                     bot_params['leaderWallet'],
                     proxy_wallet,
+                    config=config,
                     research_capture_service=research_capture_service,
                 )
             )
 
-        if _monitor_loop_healthy(fetch_ok=fetch_ok, fetch_interval_s=fetch_interval):
+        if _monitor_loop_healthy(fetch_ok=fetch_ok, fetch_interval_s=fetch_interval, readiness_tracker=readiness_tracker):
             monitor_heartbeat_tick(
                 trader_count=monitored_leader_count,
                 checked_activities=checked_activities,
