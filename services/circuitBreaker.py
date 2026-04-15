@@ -45,9 +45,9 @@ class CircuitOpen(Exception):
 @dataclass
 class CircuitBreaker:
     name: str
-    failure_threshold: int = 5
+    failure_threshold: int = 15
     cooldown_seconds: float = 60.0
-    half_open_max_probes: int = 1
+    half_open_max_probes: int = 2
 
     _state: CircuitState = field(default=CircuitState.CLOSED, init=False)
     _failure_count: int = field(default=0, init=False)

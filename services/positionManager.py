@@ -15,10 +15,11 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from decimal import Decimal
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
-from config.env import ENV
-from config.settings import RiskSettings, load_settings
+if TYPE_CHECKING:
+    from config.app_config import AppConfig
+
 from utils.logger import get_logger
 
 logger = get_logger("PositionManager")
@@ -76,54 +77,86 @@ class TrackedPosition:
 class PositionManager:
     """In-memory position tracker with advanced exit logic."""
 
-    def __init__(self, risk_settings: RiskSettings | None = None):
+    def __init__(self, config: AppConfig | None = None, *, risk_settings=None):
         self._positions: dict[str, TrackedPosition] = {}
         self._closed: list[TrackedPosition] = []
 
-        # Load typed settings (caller can inject for testing)
-        if risk_settings is None:
-            risk_settings = load_settings(env=ENV).risk
-        rs = risk_settings
+        if config is not None:
+            rc = config.risk
+            fc = config.features
 
-        # Basic SL/TP — ratios already in [0,1], no /100 needed
-        self._sl_pct = rs.stop_loss_ratio
-        self._tp_pct = rs.take_profit_ratio
-        self._enabled = ENV.get('ENABLE_RISK_MGMT', True)
+            # Basic SL/TP — AppConfig stores percentages, convert to ratios
+            self._sl_pct = rc.stop_loss_pct / 100.0
+            self._tp_pct = rc.take_profit_pct / 100.0
+            self._enabled = rc.enable_risk_mgmt
 
-        # Profit lock
-        # There are 2 modes for backward compatibility:
-        # - legacy (default when ENABLE_PROFIT_LOCK flag is absent): arm above trigger,
-        #   then exit on fallback below trigger.
-        # - advanced (when ENABLE_PROFIT_LOCK is present+true): immediately sell a
-        #   fraction at trigger and trail the remainder.
-        if "ENABLE_PROFIT_LOCK" in ENV:
-            self._profit_lock_mode = "advanced" if bool(ENV.get("ENABLE_PROFIT_LOCK")) else "disabled"
-        else:
+            # Profit lock
+            self._profit_lock_mode = (
+                "advanced" if fc.enable_profit_lock else "disabled"
+            )
+            self._profit_lock_trigger = rc.profit_lock_trigger_pct / 100.0
+            self._profit_lock_sell_fraction = rc.profit_lock_sell_fraction
+
+            # Near-max exit
+            self._enable_near_max = fc.enable_near_max_exit
+            self._near_max_exit = rc.near_max_price_exit
+            self._near_max_warn = rc.near_max_price_warn
+            self._near_max_warn_ratio = max(0.0, min(1.0, rc.near_max_price_warn_trim_ratio))
+
+            # Trailing stop
+            self._enable_trailing = fc.enable_trailing_stop
+            self._trailing_activation_pct = rc.trailing_activation_pct / 100.0
+            self._trailing_distance = rc.trailing_distance
+
+            # Staged TP
+            self._enable_staged_tp = fc.enable_staged_tp
+            self._staged_levels = _parse_csv_floats(rc.staged_tp_levels) if rc.staged_tp_levels else [0.30, 0.50]
+            self._staged_fractions = _parse_csv_floats(rc.staged_tp_fractions) if rc.staged_tp_fractions else [0.25, 0.35]
+            self._staged_levels = [l / 100.0 if l > 1.0 else l for l in self._staged_levels]
+
+            # Leader divergence
+            self._enable_leader_divergence = fc.enable_leader_divergence_exit
+
+        elif risk_settings is not None:
+            # Legacy test-compatibility path: accept RiskSettings directly
+            rs = risk_settings
+            self._sl_pct = rs.stop_loss_ratio
+            self._tp_pct = rs.take_profit_ratio
+            self._enabled = True
             self._profit_lock_mode = "legacy"
+            self._profit_lock_trigger = rs.profit_lock_trigger_ratio
+            self._profit_lock_sell_fraction = rs.profit_lock_sell_ratio
+            self._enable_near_max = True
+            self._near_max_exit = rs.near_max_price_level
+            self._near_max_warn = rs.near_max_warn_level
+            self._near_max_warn_ratio = 0.50
+            self._enable_trailing = False
+            self._trailing_activation_pct = rs.trailing_trigger_ratio
+            self._trailing_distance = rs.trailing_distance_ratio
+            self._enable_staged_tp = False
+            self._staged_levels = [0.30, 0.50]
+            self._staged_fractions = [0.25, 0.35]
+            self._enable_leader_divergence = False
 
-        self._profit_lock_trigger = rs.profit_lock_trigger_ratio
-        self._profit_lock_sell_fraction = rs.profit_lock_sell_ratio
-
-        # Near-max exit
-        self._enable_near_max = ENV.get('ENABLE_NEAR_MAX_EXIT', True)
-        self._near_max_exit = rs.near_max_price_level
-        self._near_max_warn = rs.near_max_warn_level
-        self._near_max_warn_ratio = max(0.0, min(1.0, float(ENV.get("NEAR_MAX_PRICE_WARN_TRIM_RATIO", 0.50) or 0.50)))
-
-        # Trailing stop (default OFF when flag is absent; ON when configured in ENV)
-        self._enable_trailing = bool(ENV.get('ENABLE_TRAILING_STOP')) if "ENABLE_TRAILING_STOP" in ENV else False
-        self._trailing_activation_pct = rs.trailing_trigger_ratio
-        self._trailing_distance = rs.trailing_distance_ratio
-
-        # Staged TP (default OFF when flag is absent; ON when configured in ENV)
-        self._enable_staged_tp = bool(ENV.get('ENABLE_STAGED_TP')) if "ENABLE_STAGED_TP" in ENV else False
-        self._staged_levels = _parse_csv_floats(str(ENV.get("STAGED_TP_LEVELS", "30,50")))
-        self._staged_fractions = _parse_csv_floats(str(ENV.get("STAGED_TP_FRACTIONS", "0.25,0.35")))
-        # Convert % levels to decimals if > 1
-        self._staged_levels = [l / 100.0 if l > 1.0 else l for l in self._staged_levels]
-
-        # Leader divergence (default OFF when flag is absent; ON when configured in ENV)
-        self._enable_leader_divergence = bool(ENV.get('ENABLE_LEADER_DIVERGENCE_EXIT')) if "ENABLE_LEADER_DIVERGENCE_EXIT" in ENV else False
+        else:
+            # Bare defaults for backward compat
+            self._sl_pct = 0.20
+            self._tp_pct = 0.70
+            self._enabled = True
+            self._profit_lock_mode = "legacy"
+            self._profit_lock_trigger = 0.70
+            self._profit_lock_sell_fraction = 0.50
+            self._enable_near_max = True
+            self._near_max_exit = 0.95
+            self._near_max_warn = 0.92
+            self._near_max_warn_ratio = 0.50
+            self._enable_trailing = False
+            self._trailing_activation_pct = 0.20
+            self._trailing_distance = 0.05
+            self._enable_staged_tp = False
+            self._staged_levels = [0.30, 0.50]
+            self._staged_fractions = [0.25, 0.35]
+            self._enable_leader_divergence = False
 
     @property
     def open_positions(self) -> dict[str, TrackedPosition]:
@@ -404,14 +437,3 @@ class PositionManager:
             "losses": losses,
             "win_rate": round(wins / max(wins + losses, 1) * 100, 1),
         }
-
-
-# Singleton instance
-_manager: Optional[PositionManager] = None
-
-
-def get_position_manager() -> PositionManager:
-    global _manager
-    if _manager is None:
-        _manager = PositionManager()
-    return _manager

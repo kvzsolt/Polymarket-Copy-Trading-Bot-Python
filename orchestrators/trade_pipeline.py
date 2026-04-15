@@ -11,7 +11,6 @@ from config.env import ENV
 from domain.models import TradeSignal
 from domain.trading_context import TradingContext
 from services.executionService import ExecutionRequest
-from services.healthServer import update_readiness
 from services.metrics import metrics
 from services.riskEngine import headroom_for_buy
 from storage.sqlite.fills_repo import FillRecord
@@ -1099,7 +1098,7 @@ async def execute_trades(
                     status="executed",
                 )
 
-        update_readiness(last_successful_order_ts=int(time.time()))
+        context.readiness.update(last_successful_order_ts=int(time.time()))
         results.append(
             TradePipelineResult(
                 trade_key=trade_key,
