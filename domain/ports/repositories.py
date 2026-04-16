@@ -78,14 +78,21 @@ class AbstractPositionRepository(ABC):
 
     @abstractmethod
     def get_position(
-        self, user_id: str, condition_id: str
+        self, user_id: str, condition_id: str, *, token_id: str | None = None
     ) -> PositionRecord | None: ...
+
+    @abstractmethod
+    def list_positions_for_condition(
+        self, user_id: str, condition_id: str
+    ) -> list[PositionRecord]: ...
 
     @abstractmethod
     def upsert_position(self, record: PositionRecord) -> None: ...
 
     @abstractmethod
-    def delete_position(self, user_id: str, condition_id: str) -> None: ...
+    def delete_position(
+        self, user_id: str, condition_id: str, *, token_id: str | None = None
+    ) -> None: ...
 
     @abstractmethod
     def apply_fill(self, *args: Any, **kwargs: Any) -> Any: ...

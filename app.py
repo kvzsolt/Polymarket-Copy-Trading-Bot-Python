@@ -6,7 +6,7 @@ from collections.abc import Awaitable, Callable
 
 # Load non-sensitive runtime config + local .env as early as possible.
 try:
-    from runtime_env import load_runtime_env
+    from config.runtime_env import load_runtime_env
 
     load_runtime_env()
 except Exception:
@@ -14,7 +14,7 @@ except Exception:
 
 from bootstrap import build_app
 from config.app_config import EnvValidationError
-from config.env import ENV, is_valid_eth_address, validate_runtime_env
+from config.env import is_valid_eth_address, validate_runtime_env
 from orchestrators.leader_registry import LeaderRegistry
 from orchestrators.runtime_bootstrap import (
     UserRuntimeState,
@@ -149,7 +149,7 @@ async def main():
         print_error(str(exc))
         return
 
-    if ENV.get("ENFORCE_GEOBLOCK", True):
+    if application.config.network.enforce_geoblock:
         allowed, reason = await check_geoblock()
         if not allowed:
             print_error(f"Trading disabled by geoblock policy: {reason}")
@@ -185,7 +185,7 @@ async def main():
     research_capture_service = DiscoveryCaptureService(db_path)
     leaders_repo = application.leaders_repo
     registry = application.registry
-    refresh_interval = int(ENV.get("DISCOVERY_REFRESH_INTERVAL_SECONDS", 300) or 300)
+    refresh_interval = application.config.discovery.discovery_interval_seconds
     active_leaders = await _wait_for_active_leaders(registry, configured, refresh_interval)
     ensure_runtime_follows(runtime_users, active_leaders)
 
@@ -233,15 +233,15 @@ async def main():
     )
 
     metrics_runner = None
-    if ENV.get("ENABLE_METRICS_SERVER", False):
+    if application.config.network.enable_metrics_server:
         metrics_runner = await start_health_server(
-            int(ENV.get("METRICS_PORT", 9102)),
+            application.config.network.metrics_port,
             tracker=application.readiness,
         )
 
     monitor_tasks: list[asyncio.Task] = []
     monitored_set: set[str] = set(monitored_leaders)
-    fetch_interval = int(ENV.get("FETCH_INTERVAL", 1) or 1)
+    fetch_interval = application.config.polling.fetch_interval
 
     async def _on_new_leaders(new_wallets: list[str]) -> None:
         started_wallets = _refresh_contexts_for_new_leaders(
@@ -272,7 +272,7 @@ async def main():
         )
 
     discovery_task = None
-    if ENV.get("ENABLE_TRADER_DISCOVERY", False):
+    if application.config.discovery.enable_trader_discovery:
         discovery_task = asyncio.create_task(
             _discovery_refresh_loop(
                 registry,
@@ -285,7 +285,7 @@ async def main():
         )
 
     risk_task = None
-    if ENV.get("ENABLE_RISK_MGMT", True):
+    if application.config.risk.enable_risk_mgmt:
         from services.riskMonitor import risk_monitor_loop_for_contexts
 
         risk_task = asyncio.create_task(
@@ -302,12 +302,13 @@ async def main():
         redeem_task = asyncio.create_task(auto_redeem_loop(first_client, application.config))
 
     arb_task = None
-    if str(ENV.get("ENABLE_NEG_RISK_ARB", "false")).lower() in ("1", "true", "yes"):
+    if application.config.features.enable_neg_risk_arb:
         first_client = user_states[first_user.user_id].client
         arb_task = asyncio.create_task(arb_scanner_loop(first_client, {}, config=application.config))
 
     reconcile_tasks: list[asyncio.Task] = []
-    if str(ENV.get("ENABLE_RECONCILIATION", "true")).lower() in ("1", "true", "yes"):
+    # TODO: add enable_reconciliation to AppConfig when available
+    if application.config.raw.get("ENABLE_RECONCILIATION", "true").lower() in ("1", "true", "yes"):
         for runtime_user in runtime_users:
             user_state = user_states[runtime_user.user_id]
             recon_svc = ReconciliationService(

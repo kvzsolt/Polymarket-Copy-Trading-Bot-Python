@@ -51,17 +51,27 @@ class PositionsRepo(AbstractPositionRepository):
             )
         return out
 
-    def get_position(self, user_id: str, condition_id: str) -> PositionRecord | None:
+    def get_position(self, user_id: str, condition_id: str, *, token_id: str | None = None) -> PositionRecord | None:
         with create_connection(self.db_path) as conn:
-            row = conn.execute(
-                """
-                SELECT user_id, condition_id, token_id, leader_id, size_tokens, avg_entry_price
-                FROM positions
-                WHERE user_id = ? AND condition_id = ?
-                LIMIT 1
-                """,
-                (user_id, condition_id),
-            ).fetchone()
+            if token_id:
+                row = conn.execute(
+                    """
+                    SELECT user_id, condition_id, token_id, leader_id, size_tokens, avg_entry_price
+                    FROM positions
+                    WHERE user_id = ? AND condition_id = ? AND token_id = ?
+                    """,
+                    (user_id, condition_id, token_id),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    """
+                    SELECT user_id, condition_id, token_id, leader_id, size_tokens, avg_entry_price
+                    FROM positions
+                    WHERE user_id = ? AND condition_id = ?
+                    LIMIT 1
+                    """,
+                    (user_id, condition_id),
+                ).fetchone()
 
         if not row:
             return None
@@ -75,6 +85,34 @@ class PositionsRepo(AbstractPositionRepository):
             avg_entry_price=Decimal(str(row["avg_entry_price"] or "0")),
         )
 
+    def list_positions_for_condition(self, user_id: str, condition_id: str) -> list[PositionRecord]:
+        with create_connection(self.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT user_id, condition_id, token_id, leader_id, size_tokens, avg_entry_price
+                FROM positions
+                WHERE user_id = ? AND condition_id = ?
+                """,
+                (user_id, condition_id),
+            ).fetchall()
+
+        out: list[PositionRecord] = []
+        for row in rows:
+            size = Decimal(str(row["size_tokens"] or "0"))
+            if abs(size) <= Decimal("1e-12"):
+                continue
+            out.append(
+                PositionRecord(
+                    user_id=row["user_id"],
+                    condition_id=row["condition_id"],
+                    token_id=row["token_id"],
+                    leader_id=row["leader_id"],
+                    size_tokens=size,
+                    avg_entry_price=Decimal(str(row["avg_entry_price"] or "0")),
+                )
+            )
+        return out
+
     def upsert_position(self, record: PositionRecord) -> None:
         with create_connection(self.db_path) as conn:
             conn.execute(
@@ -82,8 +120,7 @@ class PositionsRepo(AbstractPositionRepository):
                 INSERT INTO positions (
                     user_id, condition_id, token_id, leader_id, size_tokens, avg_entry_price, updated_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(user_id, condition_id) DO UPDATE SET
-                    token_id = excluded.token_id,
+                ON CONFLICT(user_id, condition_id, token_id) DO UPDATE SET
                     leader_id = excluded.leader_id,
                     size_tokens = excluded.size_tokens,
                     avg_entry_price = excluded.avg_entry_price,
@@ -101,12 +138,18 @@ class PositionsRepo(AbstractPositionRepository):
             )
             conn.commit()
 
-    def delete_position(self, user_id: str, condition_id: str) -> None:
+    def delete_position(self, user_id: str, condition_id: str, *, token_id: str | None = None) -> None:
         with create_connection(self.db_path) as conn:
-            conn.execute(
-                "DELETE FROM positions WHERE user_id = ? AND condition_id = ?",
-                (user_id, condition_id),
-            )
+            if token_id:
+                conn.execute(
+                    "DELETE FROM positions WHERE user_id = ? AND condition_id = ? AND token_id = ?",
+                    (user_id, condition_id, token_id),
+                )
+            else:
+                conn.execute(
+                    "DELETE FROM positions WHERE user_id = ? AND condition_id = ?",
+                    (user_id, condition_id),
+                )
             conn.commit()
 
     def apply_fill(
@@ -123,7 +166,7 @@ class PositionsRepo(AbstractPositionRepository):
         if not is_valid_clob_token_id(token_id):
             raise ValueError(f"apply_fill: refusing invalid token_id={token_id!r}")
 
-        current = self.get_position(user_id, condition_id)
+        current = self.get_position(user_id, condition_id, token_id=token_id)
 
         if current is None:
             current = PositionRecord(
@@ -158,7 +201,7 @@ class PositionsRepo(AbstractPositionRepository):
             effective_fill = min(fill_size, current.size_tokens)
             new_size = current.size_tokens - effective_fill
             if new_size <= Decimal("1e-12"):
-                self.delete_position(user_id, condition_id)
+                self.delete_position(user_id, condition_id, token_id=token_id)
                 return None
             current.size_tokens = new_size
             self.upsert_position(current)

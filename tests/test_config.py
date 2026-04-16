@@ -72,8 +72,8 @@ class TestHappyPath:
         cfg = load_config(valid_env)
         # Sizing defaults straight from spec.
         assert cfg.sizing.mode == "proportional"
-        assert cfg.sizing.percentage == pytest.approx(5.0)
-        assert cfg.sizing.max_position_pct == pytest.approx(0.25)
+        assert cfg.sizing.percentage == pytest.approx(2.0)
+        assert cfg.sizing.max_position_pct == pytest.approx(0.45)
         # Polling defaults.
         assert cfg.polling.fetch_interval == 1
         # Execution defaults.

@@ -20,9 +20,9 @@ from rich.traceback import Traceback
 from rich.theme import Theme
 
 APP_NAME = "PolymarketCopyTradingBot"
-LOG_SUBDIR = "log"
-MAX_BYTES = 5 * 1024 * 1024
-BACKUP_COUNT = 3
+DEFAULT_LOG_SUBDIR = "log"
+DEFAULT_MAX_BYTES = 5 * 1024 * 1024
+DEFAULT_BACKUP_COUNT = 3
 MONITOR_HEARTBEAT_INTERVAL = 30
 
 _THEME = Theme({
@@ -71,7 +71,8 @@ def _project_root() -> Path:
 
 
 def _default_log_dir() -> Path:
-    return _project_root() / LOG_SUBDIR
+    configured = (os.getenv("LOG_DIR") or DEFAULT_LOG_SUBDIR).strip() or DEFAULT_LOG_SUBDIR
+    return _project_root() / configured
 
 
 _STANDARD_RECORD_ATTRS = frozenset(
@@ -110,7 +111,6 @@ class RichConsoleHandler(logging.Handler):
 
     # Log types that should only go to JSONL file, not console
     _JSONL_ONLY_TYPES = frozenset({
-        "api_response",
         "http_request_complete",    # high-frequency HTTP polling — JSONL only
         "monitor_heartbeat",
         "trade_detected",
@@ -181,6 +181,9 @@ class RichConsoleHandler(logging.Handler):
         if log_type == "api_error":
             self._render_api_error(record, ts)
             return True
+        if log_type == "api_response":
+            self._render_api_response(record, ts)
+            return True
         return False
 
     def _render_api_error(self, record: LogRecord, ts: str) -> None:
@@ -207,6 +210,39 @@ class RichConsoleHandler(logging.Handler):
             "\n".join(lines),
             title=f"❌ [bold red]ORDER REJECTED[/bold red]  [muted][{ts}][/muted]",
             border_style="red",
+            padding=(1, 2),
+        ))
+
+    def _render_api_response(self, record: LogRecord, ts: str) -> None:
+        method = getattr(record, "httpMethod", "?")
+        url = getattr(record, "url", "")
+        status = getattr(record, "httpStatus", 0)
+        data_summary = getattr(record, "data_summary", None)
+        error = getattr(record, "error", None)
+        ok = 200 <= status < 400
+
+        # Shorten URL for display
+        short_url = url[:60] + "..." if len(url) > 60 else url
+        border = "green" if ok else "red"
+        icon = "✅" if ok else "❌"
+        status_label = "OK" if ok else "ERR"
+
+        lines = _build_panel_lines(
+            Method=method,
+            Status=str(status),
+            URL=short_url or None,
+        )
+        if data_summary and isinstance(data_summary, dict):
+            for k, v in data_summary.items():
+                lines.append(f"  [dim]{k}:[/dim] {v}")
+        if error:
+            lines.append(f"  [dim]error:[/dim] {error}")
+
+        console.print()
+        console.print(Panel(
+            "\n".join(lines),
+            title=f"{icon} [bold {border}]API {status_label} {method}[/bold {border}]  [muted][{ts}][/muted]",
+            border_style=border,
             padding=(1, 2),
         ))
 
@@ -277,6 +313,8 @@ class RichConsoleHandler(logging.Handler):
         submarket = getattr(record, "submarket", None) or ""
         outcome = getattr(record, "outcome", None) or ""
         order_id = shorten_addr(getattr(record, "copyOrderId", None), 8, 6)
+        submission_state = getattr(record, "submissionState", None)
+        is_unconfirmed = submission_state == "submitted_unconfirmed"
         side_style = "trade.buy" if side == "BUY" else "trade.sell"
         lines = _build_panel_lines(
             Side=f"[{side_style}]{side}[/{side_style}]",
@@ -288,14 +326,23 @@ class RichConsoleHandler(logging.Handler):
             Outcome=outcome or None,
             Condition=cond if cond != "N/A" else None,
             OrderID=order_id if order_id != "N/A" else None,
+            State=submission_state if is_unconfirmed else None,
         )
         console.print()
-        console.print(Panel(
-            "\n".join(lines),
-            title=f"📤 [bold cyan]ORDER SUBMITTED — {side}[/bold cyan]  [muted][{ts}][/muted]",
-            border_style="cyan",
-            padding=(1, 2),
-        ))
+        if is_unconfirmed:
+            console.print(Panel(
+                "\n".join(lines),
+                title=f"⏳ [bold yellow]ORDER UNCONFIRMED — {side}[/bold yellow]  [muted][{ts}][/muted]",
+                border_style="yellow",
+                padding=(1, 2),
+            ))
+        else:
+            console.print(Panel(
+                "\n".join(lines),
+                title=f"📤 [bold cyan]ORDER SUBMITTED — {side}[/bold cyan]  [muted][{ts}][/muted]",
+                border_style="cyan",
+                padding=(1, 2),
+            ))
 
     def _render_risk_exit(self, record: LogRecord, ts: str) -> None:
         cond = shorten_addr(getattr(record, "conditionId", None), 8, 6)
@@ -321,6 +368,13 @@ class RichConsoleHandler(logging.Handler):
 
 def _env_level(default: str) -> str:
     return os.getenv("POLYMARKET_LOG_LEVEL", default).upper()
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(str(os.getenv(name, str(default))).strip())
+    except (TypeError, ValueError):
+        return default
 
 
 def _remove_managed_handlers(logger: logging.Logger) -> None:
@@ -351,7 +405,10 @@ def configure_logging(
         resolved_level = level
 
     log_dir_path = Path(log_dir) if log_dir else _default_log_dir()
-    jsonl_path = log_dir_path / f"{APP_NAME}.jsonl"
+    jsonl_override = (os.getenv("APP_LOG_JSONL_FILE") or "").strip()
+    jsonl_path = Path(jsonl_override) if jsonl_override else (log_dir_path / f"{APP_NAME}.jsonl")
+    max_bytes = _env_int("LOG_MAX_BYTES", DEFAULT_MAX_BYTES)
+    backup_count = _env_int("LOG_BACKUP_COUNT", DEFAULT_BACKUP_COUNT)
 
     logger = logging.getLogger(name)
     logger.setLevel(resolved_level)
@@ -368,8 +425,8 @@ def configure_logging(
         log_dir_path.mkdir(parents=True, exist_ok=True)
         file_handler = RotatingFileHandler(
             filename=str(jsonl_path),
-            maxBytes=MAX_BYTES,
-            backupCount=BACKUP_COUNT,
+            maxBytes=max_bytes,
+            backupCount=backup_count,
             encoding="utf-8",
         )
     except Exception:

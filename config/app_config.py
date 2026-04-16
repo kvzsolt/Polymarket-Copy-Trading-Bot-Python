@@ -344,6 +344,11 @@ class LeaderConfig:
 
 @dataclass(frozen=True)
 class LoggingConfig:
+    level: str
+    log_dir: str
+    app_log_jsonl_file: str
+    log_max_bytes: int
+    log_backup_count: int
     pnl_log_file: str
 
 
@@ -423,7 +428,7 @@ class AppConfig:
 
 
 def _runtime_python_supported() -> bool:
-    return sys.version_info.major == 3 and 11 <= sys.version_info.minor < 13
+    return sys.version_info.major == 3 and sys.version_info.minor >= 11
 
 
 def _validate_semantics(cfg: AppConfig, errors: list[str]) -> None:
@@ -617,34 +622,34 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
     # Sizing
     sizing = SizingConfig(
         mode=p.string("SIZING_MODE", "proportional").lower(),
-        percentage=p.float_("PERCENTAGE", "5"),
-        fixed_amount=p.float_("FIXED_AMOUNT", "10"),
+        percentage=p.float_("PERCENTAGE", "2"),
+        fixed_amount=p.float_("FIXED_AMOUNT", "3"),
         trade_multiplier=p.float_("TRADE_MULTIPLIER", "1.0"),
         tiered_trade_multipliers=p.string("TIERED_TRADE_MULTIPLIERS", ""),
         adaptive_basis=p.string("ADAPTIVE_SIZING_BASIS", "trade_size").lower(),
         adaptive_min_percent=p.float_("ADAPTIVE_MIN_PERCENT", "0"),
         adaptive_max_percent=p.float_("ADAPTIVE_MAX_PERCENT", "0"),
         adaptive_threshold_usdc=p.float_("ADAPTIVE_THRESHOLD_USDC", "500"),
-        buy_min_amount=p.float_("BUY_MIN_AMOUNT", "1"),
-        buy_max_amount=p.float_("BUY_MAX_AMOUNT", "100"),
+        buy_min_amount=p.float_("BUY_MIN_AMOUNT", "6"),
+        buy_max_amount=p.float_("BUY_MAX_AMOUNT", "15"),
         position_threshold=p.int_("POSITION_THRESHOLD", "0"),
-        max_position_pct=p.float_("MAX_POSITION_PCT", "0.25"),
-        copy_min_shares=p.float_("COPY_MIN_SHARES", "5"),
+        max_position_pct=p.float_("MAX_POSITION_PCT", "0.45"),
+        copy_min_shares=p.float_("COPY_MIN_SHARES", "1"),
         copy_min_notional_usdc=p.float_("COPY_MIN_NOTIONAL_USDC", "1"),
         copy_size_decimals=p.int_("COPY_SIZE_DECIMALS", "4"),
-        trust_size_multiplier_min=p.float_("TRUST_SIZE_MULTIPLIER_MIN", "0.70"),
+        trust_size_multiplier_min=p.float_("TRUST_SIZE_MULTIPLIER_MIN", "0.50"),
         trust_size_multiplier_max=p.float_("TRUST_SIZE_MULTIPLIER_MAX", "1.25"),
     )
 
     # Risk
     risk = RiskConfig(
-        enable_risk_mgmt=p.bool_("ENABLE_RISK_MGMT", True),
+        enable_risk_mgmt=p.bool_("ENABLE_RISK_MGMT", False),
         stop_loss_pct=p.float_("STOP_LOSS_PCT", "20"),
-        take_profit_pct=p.float_("TAKE_PROFIT_PCT", "60"),
+        take_profit_pct=p.float_("TAKE_PROFIT_PCT", "70"),
         max_market_exposure_usdc=p.float_("MAX_MARKET_EXPOSURE_USDC", "300"),
         max_category_exposure_usdc=p.float_("MAX_CATEGORY_EXPOSURE_USDC", "600"),
         max_leader_exposure_usdc=p.float_("MAX_LEADER_EXPOSURE_USDC", "500"),
-        max_open_positions=p.int_("MAX_OPEN_POSITIONS", "20"),
+        max_open_positions=p.int_("MAX_OPEN_POSITIONS", "40"),
         max_daily_drawdown_pct=p.float_("MAX_DAILY_DRAWDOWN_PCT", "20"),
         kill_switch=p.bool_("KILL_SWITCH", False),
         enable_balance_tiered_policy=p.bool_("ENABLE_BALANCE_TIERED_POLICY", False),
@@ -653,7 +658,7 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         balance_policy_hard_cap_pct=p.float_("BALANCE_POLICY_HARD_CAP_PCT", "0.15"),
         balance_policy_hard_cap_ceiling=p.float_("BALANCE_POLICY_HARD_CAP_CEILING", "8"),
         balance_policy_max_open_positions=p.int_("BALANCE_POLICY_MAX_OPEN_POSITIONS", "12"),
-        balance_policy_allow_partial_exits=p.bool_("BALANCE_POLICY_ALLOW_PARTIAL_EXITS", True),
+        balance_policy_allow_partial_exits=p.bool_("BALANCE_POLICY_ALLOW_PARTIAL_EXITS", False),
         balance_policy_allow_pyramiding=p.bool_("BALANCE_POLICY_ALLOW_PYRAMIDING", False),
         balance_policy_max_adds_per_position=p.int_("BALANCE_POLICY_MAX_ADDS_PER_POSITION", "1"),
         balance_policy_base_min_score=p.float_("BALANCE_POLICY_BASE_MIN_SCORE", "0.22"),
@@ -661,8 +666,8 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         balance_policy_dynamic_threshold_raise=p.bool_(
             "BALANCE_POLICY_DYNAMIC_THRESHOLD_RAISE", False
         ),
-        day_start_equity_usdc=p.float_("DAY_START_EQUITY_USDC", "0"),
-        near_max_price_warn=p.float_("NEAR_MAX_PRICE_WARN", "0.92"),
+        day_start_equity_usdc=p.float_("DAY_START_EQUITY_USDC", "50"),
+        near_max_price_warn=p.float_("NEAR_MAX_PRICE_WARN", "0.95"),
         near_max_price_warn_trim_ratio=p.float_("NEAR_MAX_PRICE_WARN_TRIM_RATIO", "0.50"),
         near_max_price_exit=p.float_("NEAR_MAX_PRICE_EXIT", "0.95"),
         profit_lock_trigger_pct=p.float_("PROFIT_LOCK_TRIGGER_PCT", "70"),
@@ -678,24 +683,24 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
     # Execution
     execution = ExecutionConfig(
         slippage_tolerance=p.float_("SLIPPAGE_TOLERANCE", "2.0"),
-        min_share_price=p.float_("MIN_SHARE_PRICE", "0"),
+        min_share_price=p.float_("MIN_SHARE_PRICE", "0.03"),
         max_retries=p.int_("MAX_RETRIES", "3"),
         non_terminal_failure_max_attempts=p.int_("NON_TERMINAL_FAILURE_MAX_ATTEMPTS", "3"),
         paper_trade_only=p.bool_("PAPER_TRADE_ONLY", False),
-        enable_copy_decision_gate=p.bool_("ENABLE_COPY_DECISION_GATE", True),
-        enable_near_resolution_gate=p.bool_("ENABLE_NEAR_RESOLUTION_GATE", True),
+        enable_copy_decision_gate=p.bool_("ENABLE_COPY_DECISION_GATE", False),
+        enable_near_resolution_gate=p.bool_("ENABLE_NEAR_RESOLUTION_GATE", False),
         near_resolution_gate_price=p.float_("NEAR_RESOLUTION_GATE_PRICE", "0.95"),
         near_resolution_max_age_seconds=p.float_("NEAR_RESOLUTION_MAX_AGE_SECONDS", "15"),
         pending_submission_ttl_seconds=p.int_("PENDING_SUBMISSION_TTL_SECONDS", "120"),
         retry_backoff_base=p.float_("RETRY_BACKOFF_BASE", "1.0"),
         transaction_fee_bps=p.float_("TRANSACTION_FEE_BPS", "20"),
         gas_cost_usdc=p.float_("GAS_COST_USDC", "0.03"),
-        risk_buffer_pct=p.float_("RISK_BUFFER_PCT", "0.5"),
+        risk_buffer_pct=p.float_("RISK_BUFFER_PCT", "0.10"),
         book_spread_mode=p.string("BOOK_SPREAD_MODE", "absolute_bps").lower(),
         max_book_spread_bps=p.int_("MAX_BOOK_SPREAD_BPS", "2500"),
         max_book_spread_ticks=p.int_("MAX_BOOK_SPREAD_TICKS", "0"),
         execution_require_fresh_book=p.bool_("EXECUTION_REQUIRE_FRESH_BOOK", True),
-        circuit_failure_threshold=p.int_("CIRCUIT_FAILURE_THRESHOLD", "5"),
+        circuit_failure_threshold=p.int_("CIRCUIT_FAILURE_THRESHOLD", "15"),
         circuit_cooldown_seconds=p.float_("CIRCUIT_COOLDOWN_SECONDS", "60"),
         meta_cache_ttl_good=p.float_("META_CACHE_TTL_GOOD", "300"),
         meta_cache_ttl_thin=p.float_("META_CACHE_TTL_THIN", "30"),
@@ -739,13 +744,13 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         ),
         auto_discover_top_n=auto_discover_top_n,
         auto_discover_min_score=p.float_("AUTO_DISCOVER_MIN_SCORE", "0.45"),
-        copy_decision_min_score=p.float_("COPY_DECISION_MIN_SCORE", "0.28"),
+        copy_decision_min_score=p.float_("COPY_DECISION_MIN_SCORE", "0.15"),
         tiny_leader_high_confidence_score=p.float_("TINY_LEADER_HIGH_CONFIDENCE_SCORE", "0.75"),
-        copy_max_price_drift_pct=p.float_("COPY_MAX_PRICE_DRIFT_PCT", "6"),
-        copy_max_edge_decay_pct=p.float_("COPY_MAX_EDGE_DECAY_PCT", "70"),
-        copy_max_signal_age_seconds=p.float_("COPY_MAX_SIGNAL_AGE_SECONDS", "120"),
+        copy_max_price_drift_pct=p.float_("COPY_MAX_PRICE_DRIFT_PCT", "15"),
+        copy_max_edge_decay_pct=p.float_("COPY_MAX_EDGE_DECAY_PCT", "90"),
+        copy_max_signal_age_seconds=p.float_("COPY_MAX_SIGNAL_AGE_SECONDS", "100"),
         copy_liquidity_target_usdc=p.float_("COPY_LIQUIDITY_TARGET_USDC", "50"),
-        min_leader_trade_notional_usdc=p.float_("MIN_LEADER_TRADE_NOTIONAL_USDC", "3"),
+        min_leader_trade_notional_usdc=p.float_("MIN_LEADER_TRADE_NOTIONAL_USDC", "1"),
         leader_score_balance_target_usdc=p.float_("LEADER_SCORE_BALANCE_TARGET_USDC", "500"),
         leader_score_pnl_bonus_cap=p.float_("LEADER_SCORE_PNL_BONUS_CAP", "0.10"),
         leader_score_activity_target=p.int_("LEADER_SCORE_ACTIVITY_TARGET", "8"),
@@ -761,11 +766,16 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
     )
 
     logging_cfg = LoggingConfig(
+        level=p.string("POLYMARKET_LOG_LEVEL", "INFO").upper(),
+        log_dir=p.string("LOG_DIR", "log"),
+        app_log_jsonl_file=p.string("APP_LOG_JSONL_FILE", "log/PolymarketCopyTradingBot.jsonl"),
+        log_max_bytes=p.int_("LOG_MAX_BYTES", "5242880"),
+        log_backup_count=p.int_("LOG_BACKUP_COUNT", "3"),
         pnl_log_file=p.string("PNL_LOG_FILE", "log/pnl.jsonl"),
     )
 
     network = NetworkConfig(
-        rpc_url=p.string("RPC_URL", "https://polygon-bor-rpc.publicnode.com"),
+        rpc_url=p.string("RPC_URL", "https://polygon-mainnet.infura.io/v3/a08bcee0810a44edb83883d02e73a96f"),
         chain_id=wallet.chain_id,
         usdc_contract_address=p.string(
             "USDC_CONTRACT_ADDRESS", "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
@@ -778,7 +788,7 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
     )
 
     redemption = RedemptionConfig(
-        enable_auto_redeem=p.bool_("ENABLE_AUTO_REDEEM", True),
+        enable_auto_redeem=p.bool_("ENABLE_AUTO_REDEEM", False),
         relayer_url=p.string("RELAYER_URL", ""),
         relayer_api_key=p.string("RELAYER_API_KEY", ""),
     )
@@ -796,13 +806,13 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
 
     features = FeatureFlagConfig(
         enable_neg_risk_arb=p.bool_("ENABLE_NEG_RISK_ARB", False),
-        enable_profit_lock=p.bool_("ENABLE_PROFIT_LOCK", True),
+        enable_profit_lock=p.bool_("ENABLE_PROFIT_LOCK", False),
         enable_near_max_exit=p.bool_("ENABLE_NEAR_MAX_EXIT", True),
-        enable_trailing_stop=p.bool_("ENABLE_TRAILING_STOP", True),
-        enable_staged_tp=p.bool_("ENABLE_STAGED_TP", True),
-        enable_leader_divergence_exit=p.bool_("ENABLE_LEADER_DIVERGENCE_EXIT", True),
-        enable_tier_gate_watchlist=p.bool_("ENABLE_TIER_GATE_WATCHLIST", True),
-        enable_tier_gate_watchlist_log=p.bool_("ENABLE_TIER_GATE_WATCHLIST_LOG", True),
+        enable_trailing_stop=p.bool_("ENABLE_TRAILING_STOP", False),
+        enable_staged_tp=p.bool_("ENABLE_STAGED_TP", False),
+        enable_leader_divergence_exit=p.bool_("ENABLE_LEADER_DIVERGENCE_EXIT", False),
+        enable_tier_gate_watchlist=p.bool_("ENABLE_TIER_GATE_WATCHLIST", False),
+        enable_tier_gate_watchlist_log=p.bool_("ENABLE_TIER_GATE_WATCHLIST_LOG", False),
         arb_min_profit_bps=p.int_("ARB_MIN_PROFIT_BPS", "30"),
         arb_max_cost_usdc=p.float_("ARB_MAX_COST_USDC", "10"),
         arb_min_ask_depth=p.float_("ARB_MIN_ASK_DEPTH", "20"),
