@@ -380,7 +380,7 @@ class OrdersRepo(AbstractOrderRepository):
                             """
                             INSERT INTO positions (user_id, condition_id, token_id, leader_id, size_tokens, avg_entry_price, updated_at)
                             VALUES (?, ?, ?, ?, ?, ?, ?)
-                            ON CONFLICT(user_id, condition_id) DO UPDATE SET
+                            ON CONFLICT(user_id, condition_id, token_id) DO UPDATE SET
                                 token_id = excluded.token_id,
                                 leader_id = excluded.leader_id,
                                 size_tokens = excluded.size_tokens,
@@ -394,7 +394,7 @@ class OrdersRepo(AbstractOrderRepository):
                             """
                             INSERT INTO positions (user_id, condition_id, token_id, leader_id, size_tokens, avg_entry_price, updated_at)
                             VALUES (?, ?, ?, ?, ?, ?, ?)
-                            ON CONFLICT(user_id, condition_id) DO UPDATE SET
+                            ON CONFLICT(user_id, condition_id, token_id) DO UPDATE SET
                                 token_id = excluded.token_id,
                                 leader_id = excluded.leader_id,
                                 size_tokens = excluded.size_tokens,
@@ -411,15 +411,15 @@ class OrdersRepo(AbstractOrderRepository):
                         new_size = cur_size - sell_size
                         if new_size <= Decimal("1e-12"):
                             conn.execute(
-                                "DELETE FROM positions WHERE user_id = ? AND condition_id = ?",
-                                (user_id, condition_id),
+                                "DELETE FROM positions WHERE user_id = ? AND condition_id = ? AND token_id = ?",
+                                (user_id, condition_id, token_id),
                             )
                         else:
                             conn.execute(
                                 """
                                 INSERT INTO positions (user_id, condition_id, token_id, leader_id, size_tokens, avg_entry_price, updated_at)
                                 VALUES (?, ?, ?, ?, ?, ?, ?)
-                                ON CONFLICT(user_id, condition_id) DO UPDATE SET
+                                ON CONFLICT(user_id, condition_id, token_id) DO UPDATE SET
                                     token_id = excluded.token_id,
                                     size_tokens = excluded.size_tokens,
                                     updated_at = excluded.updated_at

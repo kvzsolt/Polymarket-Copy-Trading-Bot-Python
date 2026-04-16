@@ -390,6 +390,41 @@ async def test_sell_reduces_position(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_sell_uses_leader_fraction_without_sell_decision_gate(tmp_path):
+    db_path = _init_db(tmp_path)
+    exec_svc = AsyncMock()
+    exec_svc.execute.return_value = _exec_result(
+        accepted=True, filled=Decimal("10"), status="filled", order_id="ord-sell-fraction"
+    )
+    ctx = _make_context(db_path, execution_service=exec_svc)
+
+    from storage.sqlite.positions_repo import PositionRecord
+    ctx.positions_repo.upsert_position(PositionRecord(
+        user_id="user1", condition_id="cond1", token_id=FAKE_TOKEN_ID,
+        leader_id="leader1", size_tokens=Decimal("20"), avg_entry_price=Decimal("0.40"),
+    ))
+
+    class _BuyOnlyDecisionService:
+        def decide_buy(self, **_kwargs):
+            raise AssertionError("SELL path should not call the decision gate")
+
+    ctx.copy_decision_service = _BuyOnlyDecisionService()
+
+    signal = _signal(side="SELL", price=0.50, size=100.0)
+    signal["_leader_sell_fraction"] = 0.5
+    signal["_leader_position_size_after"] = 100.0
+    signal["_leader_position_size_before"] = 200.0
+
+    results = await execute_trades(ctx, "leader1", [signal], time.time())
+    assert len(results) == 1
+    assert results[0].status == "executed"
+
+    req = exec_svc.execute.await_args.args[0]
+    assert req.side == "SELL"
+    assert req.amount == Decimal("10")
+
+
+@pytest.mark.asyncio
 async def test_sell_uses_notional_when_size_missing(tmp_path, monkeypatch):
     db_path = _init_db(tmp_path)
     exec_svc = AsyncMock()

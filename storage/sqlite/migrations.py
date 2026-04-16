@@ -212,7 +212,64 @@ def _ensure_fills_table(conn: sqlite3.Connection) -> None:
         pass  # Table/column may not exist yet
 
 
+def _positions_pk_columns(conn: sqlite3.Connection) -> list[str]:
+    """Return the primary-key column names of the positions table (empty if absent)."""
+    if not _table_exists(conn, "positions"):
+        return []
+    # sqlite_master sql may be None for internal tables; fall back to PRAGMA.
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='positions' LIMIT 1"
+    ).fetchone()
+    if row and row["sql"]:
+        sql = row["sql"].upper()
+        if "PRIMARY KEY (USER_ID, CONDITION_ID, TOKEN_ID)" in sql:
+            return ["user_id", "condition_id", "token_id"]
+        if "PRIMARY KEY (USER_ID, CONDITION_ID)" in sql:
+            return ["user_id", "condition_id"]
+    # Fallback: inspect index_list / table_info
+    pks: list[str] = []
+    for col in conn.execute("PRAGMA table_info(positions)").fetchall():
+        if col[5]:  # pk flag
+            pks.append(str(col[1]))
+    return pks
+
+
 def _ensure_positions_table(conn: sqlite3.Connection) -> None:
+    pk_cols = _positions_pk_columns(conn)
+
+    if pk_cols == ["user_id", "condition_id", "token_id"]:
+        # Already on the new 3-column PK — nothing to do.
+        return
+
+    if pk_cols == ["user_id", "condition_id"]:
+        # Migrate: rename old table, create with correct PK, copy data over.
+        conn.execute("ALTER TABLE positions RENAME TO _positions_legacy")
+        conn.execute(
+            """
+            CREATE TABLE positions (
+                user_id TEXT NOT NULL,
+                condition_id TEXT NOT NULL,
+                token_id TEXT NOT NULL,
+                leader_id TEXT,
+                size_tokens TEXT NOT NULL,
+                avg_entry_price TEXT NOT NULL,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (user_id, condition_id, token_id)
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO positions (user_id, condition_id, token_id, leader_id, size_tokens, avg_entry_price, updated_at)
+            SELECT user_id, condition_id, token_id, leader_id, size_tokens, avg_entry_price, updated_at
+            FROM _positions_legacy
+            """
+        )
+        conn.execute("DROP TABLE _positions_legacy")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_positions_user_condition ON positions(user_id, condition_id)")
+        return
+
+    # Fresh create (table doesn't exist yet).
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS positions (
@@ -223,16 +280,17 @@ def _ensure_positions_table(conn: sqlite3.Connection) -> None:
             size_tokens TEXT NOT NULL,
             avg_entry_price TEXT NOT NULL,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            PRIMARY KEY (user_id, condition_id)
+            PRIMARY KEY (user_id, condition_id, token_id)
         )
         """
     )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_positions_user_condition ON positions(user_id, condition_id)")
 
     # Backfill from old positions_ledger when present.
     if _table_exists(conn, "positions_ledger"):
         conn.execute(
             """
-            INSERT OR REPLACE INTO positions (user_id, condition_id, token_id, leader_id, size_tokens, avg_entry_price, updated_at)
+            INSERT OR IGNORE INTO positions (user_id, condition_id, token_id, leader_id, size_tokens, avg_entry_price, updated_at)
             SELECT user_id, condition_id, token_id, leader_id, size_tokens, avg_entry_price,
                    COALESCE(updated_at, created_at, strftime('%s','now'))
             FROM positions_ledger

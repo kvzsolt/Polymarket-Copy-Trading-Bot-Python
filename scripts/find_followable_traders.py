@@ -4,7 +4,7 @@ import os
 import time
 from pathlib import Path
 
-from runtime_env import load_runtime_env
+from config.runtime_env import load_runtime_env
 
 load_runtime_env(override_secrets=True)
 

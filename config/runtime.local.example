@@ -1,0 +1,34 @@
+# Local non-sensitive override template.
+# Copy to: config/runtime.local.env
+# Recommended defaults:
+# - keep LEADER_AUTO=false unless you intentionally want discovery-driven leader rotation
+# - prefer LEADER_WALLETS over USER_ADDRESS for explicit follow lists
+# - keep MULTI_USER_CONFIG_FILE empty unless you are running allocator / multi-user mode
+# - keep machine-specific overrides here, not in `.env`
+
+# -----------------------------------------------------------------------------
+# Wallet / identity overrides
+# -----------------------------------------------------------------------------
+# Comma-separated leader wallets to follow on this machine.
+LEADER_WALLETS=
+
+# Optional single leader fallback when LEADER_WALLETS is empty.
+USER_ADDRESS=
+
+# Wallet that funds and signs live trades for this machine.
+FUNDER_ADDRESS=
+
+# Optional multi-user runtime config path for allocator-style setups.
+MULTI_USER_CONFIG_FILE=
+
+# -----------------------------------------------------------------------------
+# Optional local behavior overrides
+# -----------------------------------------------------------------------------
+# Enable one-switch auto leader discovery mode locally.
+# LEADER_AUTO=false
+
+# Number of leaders to auto-promote when LEADER_AUTO is enabled.
+# LEADER_AUTO_COUNT=5
+
+# Override leader polling cadence locally if needed.
+# FETCH_INTERVAL=1

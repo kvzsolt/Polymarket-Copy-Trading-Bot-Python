@@ -64,7 +64,30 @@ def init_risk_engine(config: AppConfig) -> None:
 def active_policy() -> AccountCapPolicy:
     if _cached_config is not None:
         return _policy_from_config(_cached_config)
-    # Fallback defaults when no config has been injected
+
+    # Compatibility fallback for legacy callers/tests that still patch ENV
+    # without explicitly injecting typed AppConfig.
+    try:
+        from config.env import ENV
+
+        return AccountCapPolicy(
+            name="account_cap",
+            reserve_pct=Decimal(str(ENV.get("BALANCE_POLICY_RESERVE_PCT", 0.12))),
+            reserve_floor=Decimal(str(ENV.get("BALANCE_POLICY_RESERVE_FLOOR", 7))),
+            hard_cap_pct=Decimal(str(ENV.get("BALANCE_POLICY_HARD_CAP_PCT", 0.15))),
+            hard_cap_ceiling=Decimal(str(ENV.get("BALANCE_POLICY_HARD_CAP_CEILING", 8))),
+            max_open_positions=int(ENV.get("BALANCE_POLICY_MAX_OPEN_POSITIONS", 12)),
+            allow_partial_exits=bool(ENV.get("BALANCE_POLICY_ALLOW_PARTIAL_EXITS", True)),
+            allow_pyramiding=bool(ENV.get("BALANCE_POLICY_ALLOW_PYRAMIDING", False)),
+            max_adds_per_position=int(ENV.get("BALANCE_POLICY_MAX_ADDS_PER_POSITION", 1)),
+            base_min_score=Decimal(str(ENV.get("BALANCE_POLICY_BASE_MIN_SCORE", 0.22))),
+            strategy_min_notional=Decimal(str(ENV.get("BALANCE_POLICY_MIN_NOTIONAL_USDC", 0.00001))),
+            dynamic_threshold_raise=bool(ENV.get("BALANCE_POLICY_DYNAMIC_THRESHOLD_RAISE", False)),
+        )
+    except Exception:
+        pass
+
+    # Final hardcoded fallback when even ENV is unavailable.
     return AccountCapPolicy(
         name="account_cap",
         reserve_pct=Decimal("0.12"),

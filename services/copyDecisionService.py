@@ -51,8 +51,8 @@ class CopyDecisionService:
             self._copy_size_decimals = config.sizing.copy_size_decimals
             self._slippage_ratio = config.execution.slippage_tolerance / 100.0
         else:
-            self._decision_gate_enabled = True
-            self._min_decision_score = 0.28
+            self._decision_gate_enabled = False
+            self._min_decision_score = 0.0
             self._copy_min_shares = 5.0
             self._copy_min_notional = 1.0
             self._copy_size_decimals = 4

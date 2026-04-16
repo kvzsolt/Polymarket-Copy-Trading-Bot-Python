@@ -179,6 +179,51 @@ async def test_cursor_comparison_normalizes_hash_and_trade_id_on_restart():
 
 
 @pytest.mark.asyncio
+async def test_sell_trade_is_annotated_with_leader_sell_fraction():
+    now = int(time.time())
+    sell_trade = {
+        "id": "trade-sell-1",
+        "transactionHash": "0xsell1",
+        "timestamp": now,
+        "type": "TRADE",
+        "side": "SELL",
+        "asset": "token-2",
+        "conditionId": "cond-2",
+        "size": 50,
+        "price": 0.60,
+        "usdcSize": 30,
+    }
+    leader_positions = [
+        {
+            "conditionId": "cond-2",
+            "asset": "token-2",
+            "size": 50,
+        }
+    ]
+    state = LeaderMonitorState(
+        last_cursor=TradeCursor(timestamp=now - 100, tx_hash="", trade_id=None),
+        last_processed_ts=float(now - 100),
+    )
+    captured: list[list[dict]] = []
+
+    async def on_trade(trades: list[dict]):
+        captured.append(trades)
+
+    with patch(
+        "services.tradeMonitor.fetch_data",
+        new_callable=AsyncMock,
+        side_effect=[[sell_trade], leader_positions],
+    ):
+        await fetch_trade_data("0xleader", on_trade, state, _MOCK_READINESS, _MOCK_CONFIG)
+
+    assert len(captured) == 1
+    emitted = captured[0][0]
+    assert emitted["_leader_position_size_after"] == pytest.approx(50.0)
+    assert emitted["_leader_position_size_before"] == pytest.approx(100.0)
+    assert emitted["_leader_sell_fraction"] == pytest.approx(0.5)
+
+
+@pytest.mark.asyncio
 async def test_detected_trade_logs_emit_before_trade_callback():
     now = int(time.time())
     trade = {
@@ -248,7 +293,6 @@ async def test_trade_monitor_emits_heartbeat_when_monitor_is_healthy():
          patch("services.tradeMonitor.fetch_trade_data", new_callable=AsyncMock, return_value=(True, 17)), \
          patch("services.tradeMonitor._monitor_loop_healthy", return_value=True), \
          patch("services.tradeMonitor.monitor_heartbeat_tick") as heartbeat_tick, \
-         patch("services.tradeMonitor._POSITION_SAVE_INTERVAL", 10**12), \
          patch("services.tradeMonitor.asyncio.sleep", side_effect=asyncio.CancelledError):
         with pytest.raises(asyncio.CancelledError):
             await trade_monitor(
@@ -279,7 +323,6 @@ async def test_trade_monitor_skips_heartbeat_when_monitor_is_unhealthy():
          patch("services.tradeMonitor.fetch_trade_data", new_callable=AsyncMock, return_value=(False, 0)), \
          patch("services.tradeMonitor._monitor_loop_healthy", return_value=False), \
          patch("services.tradeMonitor.monitor_heartbeat_tick") as heartbeat_tick, \
-         patch("services.tradeMonitor._POSITION_SAVE_INTERVAL", 10**12), \
          patch("services.tradeMonitor.asyncio.sleep", side_effect=asyncio.CancelledError):
         with pytest.raises(asyncio.CancelledError):
             await trade_monitor({"leaderWallet": leader_wallet, "FETCH_INTERVAL": 1}, on_trade, readiness_tracker=MagicMock(), config=MagicMock())

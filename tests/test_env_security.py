@@ -164,7 +164,7 @@ class TestEnvSecurity:
         rehydrate_env()
 
     def test_runtime_env_load_order_supports_local_public_override_and_secret_override(self, tmp_path):
-        import runtime_env
+        from config import runtime_env
 
         shared = tmp_path / "runtime.env"
         local_public = tmp_path / "runtime.local.env"
