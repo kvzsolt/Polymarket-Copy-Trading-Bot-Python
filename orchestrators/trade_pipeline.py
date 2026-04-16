@@ -26,6 +26,7 @@ from utils.logger import (
     print_executing_strategy,
     print_skip_reason,
     print_trade_result,
+    shorten_addr,
 )
 
 logger = get_logger("TradePipeline")
@@ -181,12 +182,40 @@ def _position_notional_usdc(position: Any) -> Decimal:
     return notional if notional > 0 else Decimal("0")
 
 
-def _derive_sell_tokens(signal: TradeSignal, position: Any) -> Decimal:
+def _extract_leader_sell_fraction(raw_trade: dict[str, Any]) -> Decimal | None:
+    raw_fraction = raw_trade.get("_leader_sell_fraction")
+    if raw_fraction is None:
+        raw_fraction = raw_trade.get("leaderSellFraction")
+    if raw_fraction is None:
+        return None
+    try:
+        fraction = Decimal(str(raw_fraction))
+    except Exception:
+        return None
+    if fraction <= 0:
+        return Decimal("0")
+    if fraction > 1:
+        return Decimal("1")
+    return fraction
+
+
+def _derive_sell_tokens(signal: TradeSignal, position: Any, raw_trade: dict[str, Any]) -> Decimal:
     """Derive the copied sell size from the signal payload.
 
-    Some leader payloads carry SELL notional but leave `size` empty. In that
-    case, use `usdc_size / price` instead of dumping the full position.
+    Preferred rule: sell the same fraction of *our* held shares as the leader
+    sold from *their* position. The trade monitor annotates SELL signals with
+    ``_leader_sell_fraction`` when it can reconstruct that ratio from the
+    leader's current remaining size.
+
+    Fallbacks keep legacy behavior alive when that annotation is unavailable.
     """
+    leader_fraction = _extract_leader_sell_fraction(raw_trade)
+    held_tokens = _to_decimal(getattr(position, "size_tokens", 0))
+    if leader_fraction is not None:
+        derived = held_tokens * leader_fraction
+        if derived > 0:
+            return derived
+
     if signal.size > 0:
         return signal.size
 
@@ -195,7 +224,7 @@ def _derive_sell_tokens(signal: TradeSignal, position: Any) -> Decimal:
         if derived > 0:
             return derived
 
-    return _to_decimal(getattr(position, "size_tokens", 0))
+    return held_tokens
 
 
 async def _resolve_buy_risk_cap(
@@ -611,15 +640,58 @@ async def execute_trades(
                 signal_id=signal.tx_hash,
             )
         else:
-            pos = context.positions_repo.get_position(context.user_id, signal.condition_id)
-            if pos is None or pos.size_tokens <= Decimal("0"):
-                # Distinguish "never bought this market" from "position already closed"
-                if pos is None:
+            pos = context.positions_repo.get_position(context.user_id, signal.condition_id, token_id=signal.token_id)
+            if pos is None:
+                # No exact (condition_id, token_id) match — check if we hold the *other* outcome token.
+                candidates = context.positions_repo.list_positions_for_condition(
+                    context.user_id, signal.condition_id
+                )
+                wrong_token_held = any(p.token_id != signal.token_id for p in candidates)
+                if wrong_token_held:
+                    skip_detail = f"wrong token held — leader sells {shorten_addr(signal.token_id, 8, 6)} but we hold a different outcome"
+                    skip_code = "wrong_token_held"
+                else:
                     skip_detail = "never held — we never entered this market"
                     skip_code = "never_held"
-                else:
-                    skip_detail = "already closed — position size is zero"
-                    skip_code = "already_closed"
+                logger.debug(
+                    "sell_skip",
+                    extra={
+                        "reason": skip_code,
+                        "condition_id": signal.condition_id,
+                        "token_id": signal.token_id,
+                        "leader_id": leader_id,
+                    },
+                )
+                await metrics.inc("trades_skipped_total", labels={**labels, "reason": skip_code})
+                log_trade_skip(
+                    logger,
+                    side=signal.side,
+                    condition_id=signal.condition_id,
+                    asset=signal.token_id,
+                    size=float(signal.size) if signal.size else None,
+                    price=float(signal.price) if signal.price else None,
+                    usdc_value=float(signal.usdc_size),
+                    skip_code=skip_code,
+                    reason=skip_detail,
+                    event_slug=signal.event_slug,
+                    meta={"user_id": context.user_id, "leader_id": leader_id},
+                )
+                context.orders_repo.mark_processed_trade(
+                    trade_key=trade_key,
+                    user_id=context.user_id,
+                    leader_id=leader_id,
+                    tx_hash=signal.tx_hash,
+                    side=signal.side,
+                    asset=signal.token_id,
+                    condition_id=signal.condition_id,
+                    status=f"skipped_{skip_code}",
+                )
+                results.append(TradePipelineResult(trade_key, "skipped", skip_code, None))
+                continue
+
+            if pos.size_tokens <= Decimal("0"):
+                skip_detail = "already closed — position size is zero"
+                skip_code = "already_closed"
                 logger.debug(
                     "sell_skip",
                     extra={
@@ -658,74 +730,83 @@ async def execute_trades(
             # Capture entry price before apply_fill mutates or closes/deletes the position.
             sell_entry_price = _to_optional_float(getattr(pos, "avg_entry_price", None))
 
-            sell_tokens = _derive_sell_tokens(signal, pos)
+            sell_tokens = _derive_sell_tokens(signal, pos, raw)
             if sell_tokens > pos.size_tokens:
                 sell_tokens = pos.size_tokens
 
-            # Run the copy decision gate for SELL
-            decision = copy_decision_svc.decide_sell(
-                trade=raw,
-                sell_tokens=float(sell_tokens),
-                live_price=live_price,
-                market_min_size=market_min_size,
-                max_sell_tokens=float(pos.size_tokens),
-            )
-
-            log_trade_decision(
-                logger,
-                side=signal.side,
-                condition_id=signal.condition_id,
-                asset=signal.token_id,
-                decision_score=decision.decision_score,
-                allow=decision.allow,
-                reason=decision.reason,
-                event_slug=signal.event_slug,
-                meta={
-                    "user_id": context.user_id,
-                    "leader_id": leader_id,
-                    "sell_tokens": float(sell_tokens),
-                    "position_size": float(pos.size_tokens),
-                },
-            )
-
-            if not decision.allow:
-                print_skip_reason("Decision gate rejected SELL", decision.reason)
-                log_trade_skip(
-                    logger,
-                    side=signal.side,
-                    condition_id=signal.condition_id,
-                    asset=signal.token_id,
-                    size=float(sell_tokens),
-                    price=live_price,
-                    usdc_value=float(signal.usdc_size),
-                    skip_code=decision.skip_code,
-                    reason=decision.reason,
-                    event_slug=signal.event_slug,
-                    meta={"user_id": context.user_id, "leader_id": leader_id},
+            leader_sell_fraction = _extract_leader_sell_fraction(raw)
+            if leader_sell_fraction is not None:
+                logger.info(
+                    "sell_ratio_applied | cond=%s leader=%s held=%.4f leader_fraction=%.6f sell_tokens=%.4f",
+                    signal.condition_id[:12],
+                    leader_id[:12],
+                    float(pos.size_tokens),
+                    float(leader_sell_fraction),
+                    float(sell_tokens),
+                    extra={
+                        "type": "sell_ratio_applied",
+                        "condition_id": signal.condition_id,
+                        "leader_id": leader_id,
+                        "position_size": float(pos.size_tokens),
+                        "leader_sell_fraction": float(leader_sell_fraction),
+                        "sell_tokens": float(sell_tokens),
+                    },
                 )
-                await metrics.inc("trades_skipped_total", labels={**labels, "reason": decision.skip_code})
-                context.orders_repo.mark_processed_trade(
-                    trade_key=trade_key,
-                    user_id=context.user_id,
-                    leader_id=leader_id,
-                    tx_hash=signal.tx_hash,
-                    side=signal.side,
-                    asset=signal.token_id,
-                    condition_id=signal.condition_id,
-                    status=f"skipped_{decision.skip_code}",
+            else:
+                logger.warning(
+                    "sell_ratio_missing_fallback",
+                    extra={
+                        "type": "sell_ratio_missing_fallback",
+                        "condition_id": signal.condition_id,
+                        "leader_id": leader_id,
+                        "position_size": float(pos.size_tokens),
+                        "signal_size": float(signal.size),
+                        "signal_usdc_size": float(signal.usdc_size),
+                    },
                 )
-                results.append(TradePipelineResult(trade_key, "skipped", decision.reason, None))
-                continue
 
-            # Use decision-gated sell size
-            gated_sell = Decimal(str(decision.target_size_tokens)) if decision.target_size_tokens > 0 else sell_tokens
+            if market_min_size > 0 and sell_tokens < market_min_size:
+                if pos.size_tokens < Decimal(str(market_min_size)):
+                    skip_code = "sell_below_market_min"
+                    skip_reason = (
+                        f"SELL size below market minimum ({float(sell_tokens):.4f} < {market_min_size:.4f}) "
+                        "and position too small to satisfy minimum"
+                    )
+                    print_skip_reason("SELL rejected by market minimum", skip_reason)
+                    log_trade_skip(
+                        logger,
+                        side=signal.side,
+                        condition_id=signal.condition_id,
+                        asset=signal.token_id,
+                        size=float(sell_tokens),
+                        price=live_price,
+                        usdc_value=float(signal.usdc_size),
+                        skip_code=skip_code,
+                        reason=skip_reason,
+                        event_slug=signal.event_slug,
+                        meta={"user_id": context.user_id, "leader_id": leader_id},
+                    )
+                    await metrics.inc("trades_skipped_total", labels={**labels, "reason": skip_code})
+                    context.orders_repo.mark_processed_trade(
+                        trade_key=trade_key,
+                        user_id=context.user_id,
+                        leader_id=leader_id,
+                        tx_hash=signal.tx_hash,
+                        side=signal.side,
+                        asset=signal.token_id,
+                        condition_id=signal.condition_id,
+                        status=f"skipped_{skip_code}",
+                    )
+                    results.append(TradePipelineResult(trade_key, "skipped", skip_reason, None))
+                    continue
+                sell_tokens = min(pos.size_tokens, Decimal(str(market_min_size)))
 
             exec_req = ExecutionRequest(
                 user_id=context.user_id,
                 leader_id=leader_id,
                 token_id=signal.token_id,
                 side="SELL",
-                amount=gated_sell,
+                amount=sell_tokens,
                 max_slippage_bps=int(float(context.extra.get("slippage_tolerance_bps", 200))),
                 reason="leader_sell",
                 signal_id=signal.tx_hash,
@@ -767,14 +848,20 @@ async def execute_trades(
                 condition_id=signal.condition_id,
                 status="submitted_unconfirmed",
             )
-            logger.info(
-                "trade_copy_submitted_unconfirmed",
-                extra={
+            log_trade_submitted(
+                logger,
+                side=signal.side,
+                condition_id=signal.condition_id,
+                asset=signal.token_id,
+                size=float(signal.size) if signal.size else None,
+                price=float(signal.price) if signal.price else None,
+                usdc_value=float(signal.usdc_size),
+                event_slug=signal.event_slug,
+                meta={
                     "user_id": context.user_id,
                     "leader_id": leader_id,
-                    "condition_id": signal.condition_id,
-                    "side": signal.side,
-                    "order_id": exec_result.order_id,
+                    "submissionState": "submitted_unconfirmed",
+                    "copyOrderId": exec_result.order_id,
                 },
             )
             results.append(

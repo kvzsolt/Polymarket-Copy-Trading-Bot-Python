@@ -356,7 +356,7 @@ config/
   env.py                 environment parsing and validation
   runtime.env            non-sensitive runtime configuration by subsystem
 
-runtime_env.py           layered dotenv loader (runtime.env + .env)
+config/runtime_env.py    layered dotenv loader (runtime.env + .env)
 
 services/
   tradeMonitor.py        leader wallet monitoring
@@ -538,7 +538,7 @@ Environment settings are split by sensitivity:
 - `config/runtime.env` → checked-in, non-sensitive runtime configuration grouped by subsystem.
 - `config/runtime.local.env` → local non-sensitive overrides for public identities and machine-specific tweaks.
 - `.env` → local sensitive values only (private keys, provider/API credentials, secret RPC URLs).
-- `.env.example` → sensitive-only template to copy for local setup.
+- `config/secrets.env.example` → sensitive-only template to copy into `.env` for local setup.
 - `config/runtime.local.example` → template for local non-sensitive identity overrides.
 
 Runtime entrypoints load config in this order:

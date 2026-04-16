@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from enum import IntEnum
 from pathlib import Path
 
-from runtime_env import load_runtime_env
+from config.runtime_env import load_runtime_env
 
 # NOTE: Do NOT call load_runtime_env() at import time.
 # Import-time side effects make the test suite non-deterministic because a local
@@ -457,32 +457,32 @@ def _build_env_snapshot() -> dict[str, object]:
     #   fixed         = always use FIXED_AMOUNT USDC per trade
     #   adaptive      = optionally scale by trade size (runtime) or performance (legacy path)
     'SIZING_MODE': os.getenv('SIZING_MODE', 'proportional').strip().lower(),
-    'PERCENTAGE': _float('PERCENTAGE', '5'),
-    'FIXED_AMOUNT': _float('FIXED_AMOUNT', '10'),
+    'PERCENTAGE': _float('PERCENTAGE', '2'),
+    'FIXED_AMOUNT': _float('FIXED_AMOUNT', '3'),
     'TRADE_MULTIPLIER': _float('TRADE_MULTIPLIER', '1.0'),
     'TIERED_TRADE_MULTIPLIERS': os.getenv('TIERED_TRADE_MULTIPLIERS', '').strip(),
     'ADAPTIVE_SIZING_BASIS': os.getenv('ADAPTIVE_SIZING_BASIS', 'trade_size').strip().lower(),
     'ADAPTIVE_MIN_PERCENT': _float('ADAPTIVE_MIN_PERCENT', '0'),
     'ADAPTIVE_MAX_PERCENT': _float('ADAPTIVE_MAX_PERCENT', '0'),
     'ADAPTIVE_THRESHOLD_USDC': _float('ADAPTIVE_THRESHOLD_USDC', '500'),
-    'BUY_MIN_AMOUNT': _float('BUY_MIN_AMOUNT', '1'),
-    'BUY_MAX_AMOUNT': _float('BUY_MAX_AMOUNT', '100'),
+    'BUY_MIN_AMOUNT': _float('BUY_MIN_AMOUNT', '6'),
+    'BUY_MAX_AMOUNT': _float('BUY_MAX_AMOUNT', '15'),
     'POSITION_THRESHOLD': _int('POSITION_THRESHOLD', '0'),
     # Max fraction of our balance to risk on a single trade (0.0–1.0)
-    'MAX_POSITION_PCT': _float('MAX_POSITION_PCT', '0.25'),
+    'MAX_POSITION_PCT': _float('MAX_POSITION_PCT', '0.45'),
     # Decision-first sizing floor controls
-    'COPY_MIN_SHARES': _float('COPY_MIN_SHARES', '5'),
+    'COPY_MIN_SHARES': _float('COPY_MIN_SHARES', '1'),
     'COPY_MIN_NOTIONAL_USDC': _float('COPY_MIN_NOTIONAL_USDC', '1'),
     'COPY_SIZE_DECIMALS': _int('COPY_SIZE_DECIMALS', '4'),
-    'TRUST_SIZE_MULTIPLIER_MIN': _float('TRUST_SIZE_MULTIPLIER_MIN', '0.70'),
+    'TRUST_SIZE_MULTIPLIER_MIN': _float('TRUST_SIZE_MULTIPLIER_MIN', '0.50'),
     'TRUST_SIZE_MULTIPLIER_MAX': _float('TRUST_SIZE_MULTIPLIER_MAX', '1.25'),
-    'COPY_DECISION_MIN_SCORE': _float('COPY_DECISION_MIN_SCORE', '0.28'),
+    'COPY_DECISION_MIN_SCORE': _float('COPY_DECISION_MIN_SCORE', '0.15'),
     'TINY_LEADER_HIGH_CONFIDENCE_SCORE': _float('TINY_LEADER_HIGH_CONFIDENCE_SCORE', '0.75'),
-    'COPY_MAX_PRICE_DRIFT_PCT': _float('COPY_MAX_PRICE_DRIFT_PCT', '6'),
-    'COPY_MAX_EDGE_DECAY_PCT': _float('COPY_MAX_EDGE_DECAY_PCT', '70'),
-    'COPY_MAX_SIGNAL_AGE_SECONDS': _float('COPY_MAX_SIGNAL_AGE_SECONDS', '120'),
+    'COPY_MAX_PRICE_DRIFT_PCT': _float('COPY_MAX_PRICE_DRIFT_PCT', '15'),
+    'COPY_MAX_EDGE_DECAY_PCT': _float('COPY_MAX_EDGE_DECAY_PCT', '90'),
+    'COPY_MAX_SIGNAL_AGE_SECONDS': _float('COPY_MAX_SIGNAL_AGE_SECONDS', '100'),
     'COPY_LIQUIDITY_TARGET_USDC': _float('COPY_LIQUIDITY_TARGET_USDC', '50'),
-    'MIN_LEADER_TRADE_NOTIONAL_USDC': _float('MIN_LEADER_TRADE_NOTIONAL_USDC', '3'),
+    'MIN_LEADER_TRADE_NOTIONAL_USDC': _float('MIN_LEADER_TRADE_NOTIONAL_USDC', '1'),
     'LEADER_SCORE_BALANCE_TARGET_USDC': _float('LEADER_SCORE_BALANCE_TARGET_USDC', '500'),
     'LEADER_SCORE_PNL_BONUS_CAP': _float('LEADER_SCORE_PNL_BONUS_CAP', '0.10'),
     'LEADER_SCORE_ACTIVITY_TARGET': _int('LEADER_SCORE_ACTIVITY_TARGET', '8'),
@@ -492,15 +492,15 @@ def _build_env_snapshot() -> dict[str, object]:
     'LEADER_SCORE_FLOOR': _float('LEADER_SCORE_FLOOR', '0.10'),
 
     # --- Risk management ---
-    'ENABLE_RISK_MGMT': os.getenv('ENABLE_RISK_MGMT', 'true').strip().lower() in ('1', 'true', 'yes'),
+    'ENABLE_RISK_MGMT': os.getenv('ENABLE_RISK_MGMT', 'false').strip().lower() in ('1', 'true', 'yes'),
     'STOP_LOSS_PCT': _float('STOP_LOSS_PCT', '20'),
-    'TAKE_PROFIT_PCT': _float('TAKE_PROFIT_PCT', '60'),
+    'TAKE_PROFIT_PCT': _float('TAKE_PROFIT_PCT', '70'),
     # How often (seconds) the risk manager checks open positions
-    'RISK_CHECK_INTERVAL': _int('RISK_CHECK_INTERVAL', '15'),
+    'RISK_CHECK_INTERVAL': _int('RISK_CHECK_INTERVAL', '10'),
     'MAX_MARKET_EXPOSURE_USDC': _float('MAX_MARKET_EXPOSURE_USDC', '300'),
     'MAX_CATEGORY_EXPOSURE_USDC': _float('MAX_CATEGORY_EXPOSURE_USDC', '600'),
     'MAX_LEADER_EXPOSURE_USDC': _float('MAX_LEADER_EXPOSURE_USDC', '500'),
-    'MAX_OPEN_POSITIONS': _int('MAX_OPEN_POSITIONS', '20'),
+    'MAX_OPEN_POSITIONS': _int('MAX_OPEN_POSITIONS', '40'),
     'MAX_DAILY_DRAWDOWN_PCT': _float('MAX_DAILY_DRAWDOWN_PCT', '20'),
     'KILL_SWITCH': os.getenv('KILL_SWITCH', 'false').strip().lower() in ('1', 'true', 'yes'),
 
@@ -517,7 +517,7 @@ def _build_env_snapshot() -> dict[str, object]:
     'BALANCE_POLICY_BASE_MIN_SCORE': _float('BALANCE_POLICY_BASE_MIN_SCORE', '0.22'),
     'BALANCE_POLICY_MIN_NOTIONAL_USDC': _float('BALANCE_POLICY_MIN_NOTIONAL_USDC', '0.00001'),
     'BALANCE_POLICY_DYNAMIC_THRESHOLD_RAISE': os.getenv('BALANCE_POLICY_DYNAMIC_THRESHOLD_RAISE', 'false').strip().lower() in ('1', 'true', 'yes'),
-    'DAY_START_EQUITY_USDC': _float('DAY_START_EQUITY_USDC', '0'),
+    'DAY_START_EQUITY_USDC': _float('DAY_START_EQUITY_USDC', '50'),
 
     # Neg-risk arbitrage scanner
     'ENABLE_NEG_RISK_ARB': os.getenv('ENABLE_NEG_RISK_ARB', 'false').strip().lower() in ('1', 'true', 'yes'),
@@ -527,30 +527,30 @@ def _build_env_snapshot() -> dict[str, object]:
     'ARB_SCAN_INTERVAL': _int('ARB_SCAN_INTERVAL', '30'),
     'ARB_MAX_CONCURRENT': _int('ARB_MAX_CONCURRENT', '2'),
     # Extended exit intelligence
-    'ENABLE_PROFIT_LOCK': os.getenv('ENABLE_PROFIT_LOCK', 'true').strip().lower() in ('1', 'true', 'yes'),
+    'ENABLE_PROFIT_LOCK': os.getenv('ENABLE_PROFIT_LOCK', 'false').strip().lower() in ('1', 'true', 'yes'),
     'PROFIT_LOCK_TRIGGER_PCT': _float('PROFIT_LOCK_TRIGGER_PCT', '70'),
     'PROFIT_LOCK_SELL_FRACTION': _float('PROFIT_LOCK_SELL_FRACTION', '0.50'),
     'PROFIT_LOCK_MIN_PROFIT_PCT': _float('PROFIT_LOCK_MIN_PROFIT_PCT', '35'),
     'PROFIT_LOCK_DRAWDOWN_PCT': _float('PROFIT_LOCK_DRAWDOWN_PCT', '15'),
 
     # Near-max price exits (default 0.95 = near 95c)
-    'ENABLE_NEAR_MAX_EXIT': os.getenv('ENABLE_NEAR_MAX_EXIT', 'true').strip().lower() in ('1', 'true', 'yes'),
-    'NEAR_MAX_PRICE_WARN': _float('NEAR_MAX_PRICE_WARN', '0.92'),
+    'ENABLE_NEAR_MAX_EXIT': os.getenv('ENABLE_NEAR_MAX_EXIT', 'false').strip().lower() in ('1', 'true', 'yes'),
+    'NEAR_MAX_PRICE_WARN': _float('NEAR_MAX_PRICE_WARN', '0.95'),
     'NEAR_MAX_PRICE_WARN_TRIM_RATIO': _float('NEAR_MAX_PRICE_WARN_TRIM_RATIO', '0.50'),
     'NEAR_MAX_PRICE_EXIT': _float('NEAR_MAX_PRICE_EXIT', '0.95'),
 
     # Trailing stop
-    'ENABLE_TRAILING_STOP': os.getenv('ENABLE_TRAILING_STOP', 'true').strip().lower() in ('1', 'true', 'yes'),
+    'ENABLE_TRAILING_STOP': os.getenv('ENABLE_TRAILING_STOP', 'false').strip().lower() in ('1', 'true', 'yes'),
     'TRAILING_ACTIVATION_PCT': _float('TRAILING_ACTIVATION_PCT', '20'),
     'TRAILING_DISTANCE': _float('TRAILING_DISTANCE', '0.05'),
 
     # Staged take-profit (comma-separated levels and fractions)
-    'ENABLE_STAGED_TP': os.getenv('ENABLE_STAGED_TP', 'true').strip().lower() in ('1', 'true', 'yes'),
+    'ENABLE_STAGED_TP': os.getenv('ENABLE_STAGED_TP', 'false').strip().lower() in ('1', 'true', 'yes'),
     'STAGED_TP_LEVELS': os.getenv('STAGED_TP_LEVELS', '30,50'),
     'STAGED_TP_FRACTIONS': os.getenv('STAGED_TP_FRACTIONS', '0.25,0.35'),
 
     # Leader divergence exit
-    'ENABLE_LEADER_DIVERGENCE_EXIT': os.getenv('ENABLE_LEADER_DIVERGENCE_EXIT', 'true').strip().lower() in ('1', 'true', 'yes'),
+    'ENABLE_LEADER_DIVERGENCE_EXIT': os.getenv('ENABLE_LEADER_DIVERGENCE_EXIT', 'false').strip().lower() in ('1', 'true', 'yes'),
 
     # Trader discovery via polymarketanalytics.com
     'ENABLE_TRADER_DISCOVERY': enable_trader_discovery,
@@ -562,7 +562,7 @@ def _build_env_snapshot() -> dict[str, object]:
     'DISCOVERY_MAX_RESULTS': _int('DISCOVERY_MAX_RESULTS', '50'),
 
     # --- Auto-redeem ---
-    'ENABLE_AUTO_REDEEM': os.getenv('ENABLE_AUTO_REDEEM', 'true').strip().lower() in ('1', 'true', 'yes'),
+    'ENABLE_AUTO_REDEEM': os.getenv('ENABLE_AUTO_REDEEM', 'false').strip().lower() in ('1', 'true', 'yes'),
     'REDEEM_CHECK_INTERVAL': _int('REDEEM_CHECK_INTERVAL', '60'),
     # Optional relayer for POLY_PROXY / GNOSIS_SAFE redemptions (leave empty for EOA)
     'RELAYER_URL': os.getenv('RELAYER_URL', ''),
@@ -572,18 +572,18 @@ def _build_env_snapshot() -> dict[str, object]:
     # Max acceptable slippage (%) before rejecting order
     'SLIPPAGE_TOLERANCE': _float('SLIPPAGE_TOLERANCE', '2.0'),
     # Minimum allowed BUY quote price; 0 disables this gate.
-    'MIN_SHARE_PRICE': _float('MIN_SHARE_PRICE', '0'),
+    'MIN_SHARE_PRICE': _float('MIN_SHARE_PRICE', '0.03'),
     'MAX_RETRIES': _int('MAX_RETRIES', '3'),
     'NON_TERMINAL_FAILURE_MAX_ATTEMPTS': _int('NON_TERMINAL_FAILURE_MAX_ATTEMPTS', '3'),
-    'ENABLE_TIER_GATE_WATCHLIST': os.getenv('ENABLE_TIER_GATE_WATCHLIST', 'true').strip().lower() in ('1', 'true', 'yes'),
-    'ENABLE_TIER_GATE_WATCHLIST_LOG': os.getenv('ENABLE_TIER_GATE_WATCHLIST_LOG', 'true').strip().lower() in ('1', 'true', 'yes'),
+    'ENABLE_TIER_GATE_WATCHLIST': os.getenv('ENABLE_TIER_GATE_WATCHLIST', 'false').strip().lower() in ('1', 'true', 'yes'),
+    'ENABLE_TIER_GATE_WATCHLIST_LOG': os.getenv('ENABLE_TIER_GATE_WATCHLIST_LOG', 'false').strip().lower() in ('1', 'true', 'yes'),
     # Global switch for copy decision gating (trade scoring / trust gating / decision rejections).
-    'ENABLE_COPY_DECISION_GATE': os.getenv('ENABLE_COPY_DECISION_GATE', 'true').strip().lower() in ('1', 'true', 'yes'),
+    'ENABLE_COPY_DECISION_GATE': os.getenv('ENABLE_COPY_DECISION_GATE', 'false').strip().lower() in ('1', 'true', 'yes'),
     # Global paper-only override: if true, all live_follow leaders are treated as paper_follow.
     # Must be false in production. Use true for dry-run / staging verification.
     'PAPER_TRADE_ONLY': os.getenv('PAPER_TRADE_ONLY', 'false').strip().lower() in ('1', 'true', 'yes'),
     # Near-resolution gate for BUY signals: reject stale signals when live_price >= this threshold.
-    'ENABLE_NEAR_RESOLUTION_GATE': os.getenv('ENABLE_NEAR_RESOLUTION_GATE', 'true').strip().lower() in ('1', 'true', 'yes'),
+    'ENABLE_NEAR_RESOLUTION_GATE': os.getenv('ENABLE_NEAR_RESOLUTION_GATE', 'false').strip().lower() in ('1', 'true', 'yes'),
     'NEAR_RESOLUTION_GATE_PRICE': _float('NEAR_RESOLUTION_GATE_PRICE', '0.95'),
     'NEAR_RESOLUTION_MAX_AGE_SECONDS': _float('NEAR_RESOLUTION_MAX_AGE_SECONDS', '15'),
     # Expire stale in-flight idempotency locks so retries are not blocked forever.
@@ -593,7 +593,7 @@ def _build_env_snapshot() -> dict[str, object]:
     # Transaction-cost model for pre-trade gating
     'TRANSACTION_FEE_BPS': _float('TRANSACTION_FEE_BPS', '20'),
     'GAS_COST_USDC': _float('GAS_COST_USDC', '0.03'),
-    'RISK_BUFFER_PCT': _float('RISK_BUFFER_PCT', '0.5'),
+    'RISK_BUFFER_PCT': _float('RISK_BUFFER_PCT', '0.10'),
 
     # --- Infrastructure ---
     'MULTI_USER_CONFIG_FILE': os.getenv('MULTI_USER_CONFIG_FILE', ''),
@@ -633,7 +633,12 @@ def _build_env_snapshot() -> dict[str, object]:
     'TIER_DEMOTE_TO_PAPER': _float('TIER_DEMOTE_TO_PAPER', '0.35'),
     'TIER_DEMOTE_TO_WATCHLIST': _float('TIER_DEMOTE_TO_WATCHLIST', '0.25'),
 
-    # --- P&L tracking ---
+    # --- Logging / P&L tracking ---
+    'POLYMARKET_LOG_LEVEL': os.getenv('POLYMARKET_LOG_LEVEL', 'INFO').strip().upper(),
+    'LOG_DIR': os.getenv('LOG_DIR', 'log'),
+    'APP_LOG_JSONL_FILE': os.getenv('APP_LOG_JSONL_FILE', 'log/PolymarketCopyTradingBot.jsonl'),
+    'LOG_MAX_BYTES': _int('LOG_MAX_BYTES', '5242880'),
+    'LOG_BACKUP_COUNT': _int('LOG_BACKUP_COUNT', '3'),
     'PNL_LOG_FILE': os.getenv('PNL_LOG_FILE', 'log/pnl.jsonl'),
     'DISCOVERY_REFRESH_INTERVAL_SECONDS': _int('DISCOVERY_REFRESH_INTERVAL_SECONDS', '300'),
 }

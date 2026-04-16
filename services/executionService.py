@@ -15,7 +15,7 @@ from py_clob_client.clob_types import OrderType
 from py_clob_client.order_builder.constants import BUY, SELL
 from services.circuitBreaker import CircuitBreaker, CircuitOpen
 
-from utils.logger import get_logger, log_api_error, redact_error_detail
+from utils.logger import get_logger, log_api_error, log_api_response, redact_error_detail
 from utils.createClobClient import _is_thin_or_empty_book
 
 logger = get_logger("ExecutionService")
@@ -453,7 +453,7 @@ class ExecutionService:
         """Poll order status briefly and return best-effort fill details."""
         loop = asyncio.get_running_loop()
         last_error: Exception | None = None
-        for _ in range(5):
+        for _ in range(3):
             try:
                 order = await loop.run_in_executor(
                     None,
@@ -466,10 +466,10 @@ class ExecutionService:
                     # Even canceled FOK may include matched/size.
                     if order.get("size_matched") or order.get("filled_size"):
                         return order
-                await asyncio.sleep(0.4)
+                await asyncio.sleep(0.15)
             except Exception as exc:
                 last_error = exc
-                await asyncio.sleep(0.4)
+                await asyncio.sleep(0.15)
 
         if last_error:
             logger.warning(
@@ -843,6 +843,14 @@ class ExecutionService:
                         request=request_doc,
                         response=response,
                     )
+                    log_api_response(
+                        logger,
+                        method="POST",
+                        url="post_signed_order",
+                        status=200,
+                        data=response,
+                        meta={"side": side, "asset": req.token_id},
+                    )
                     break
                 # Check if the wrapper flagged this as an ambiguous post failure
                 # (timeout/connection error after POST was sent to exchange).
@@ -890,12 +898,20 @@ class ExecutionService:
                         request=request_doc,
                         response=response,
                     )
+                    log_api_response(
+                        logger,
+                        method="POST",
+                        url="post_signed_order",
+                        status=503,
+                        error=last_error,
+                        meta={"side": side, "asset": req.token_id, "state": "submitted_unconfirmed"},
+                    )
                     logger.warning(
                         "ambiguous submission (post called but exception): %s",
                         last_error,
                     )
                     break
-            await asyncio.sleep(0.3 * attempt)
+            await asyncio.sleep(min(0.15 * attempt, 0.30))
         else:
             # All retries exhausted without success
             self.circuit_breaker.record_failure()

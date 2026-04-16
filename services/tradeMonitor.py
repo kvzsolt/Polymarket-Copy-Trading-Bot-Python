@@ -27,14 +27,10 @@ from utils.logger import (
 logger = get_logger("TradeMonitor")
 
 # Position save interval (seconds) — avoid saving on every loop
-_POSITION_SAVE_INTERVAL = 60
-
-
 @dataclass
 class LeaderMonitorState:
     recent_activities: list[dict] = field(default_factory=list)
     seen_hashes: set[str] = field(default_factory=set)
-    last_position_save: float = 0.0
     last_processed_ts: float = 0.0
     last_cursor: TradeCursor = field(default_factory=lambda: TradeCursor(timestamp=0, tx_hash="", trade_id=None))
 
@@ -85,21 +81,7 @@ async def _run_research_capture(
         )
 
 
-async def _run_position_capture(
-    research_capture_service: Any,
-    leader_wallet: str,
-    positions: list[dict],
-) -> None:
-    try:
-        await research_capture_service.capture_position_snapshots(
-            leader_wallet,
-            positions,
-        )
-    except Exception as exc:
-        logger.warning(
-            "research_position_capture_failed",
-            extra={"leader_wallet": leader_wallet, "error": redact_error_detail(exc)},
-        )
+
 
 
 async def init(user_address: str, state: LeaderMonitorState):
@@ -150,6 +132,73 @@ def _trade_usdc_value(trade: dict) -> float:
     if usdc <= 0:
         usdc = float(trade.get('size', 0) or 0) * float(trade.get('price', 0) or 0)
     return max(0.0, usdc)
+
+
+def _position_lookup_keys(position: dict[str, Any]) -> list[tuple[str, str]]:
+    condition_id = str(position.get("conditionId") or position.get("condition_id") or "")
+    token_ids = [
+        str(position.get("tokenID") or ""),
+        str(position.get("token_id") or ""),
+        str(position.get("asset") or ""),
+    ]
+    if not condition_id:
+        return []
+    return [(condition_id, token_id) for token_id in token_ids if token_id]
+
+
+async def _annotate_sell_fractions(trades: list[dict], leader_wallet: str) -> None:
+    sell_trades = [trade for trade in trades if str(trade.get("side") or "").upper() == "SELL"]
+    if not sell_trades:
+        return
+
+    try:
+        positions = await fetch_data(
+            f"https://data-api.polymarket.com/positions?user={leader_wallet}",
+            silent=True,
+        )
+    except Exception as exc:
+        logger.warning(
+            "leader_positions_fetch_failed",
+            extra={
+                "leader_wallet": leader_wallet,
+                "error": redact_error_detail(exc),
+            },
+        )
+        return
+
+    if not isinstance(positions, list):
+        return
+
+    remaining_by_key: dict[tuple[str, str], float] = {}
+    for position in positions:
+        try:
+            size = float(position.get("size") or 0)
+        except (TypeError, ValueError):
+            continue
+        if size < 0:
+            continue
+        for key in _position_lookup_keys(position):
+            remaining_by_key[key] = size
+
+    for trade in sell_trades:
+        condition_id = str(trade.get("conditionId") or trade.get("condition_id") or "")
+        token_id = str(trade.get("tokenID") or trade.get("token_id") or trade.get("asset") or "")
+        try:
+            sold_size = float(trade.get("size") or 0)
+        except (TypeError, ValueError):
+            sold_size = 0.0
+        if not condition_id or not token_id or sold_size <= 0:
+            continue
+
+        remaining_size = max(0.0, remaining_by_key.get((condition_id, token_id), 0.0))
+        leader_size_before = remaining_size + sold_size
+        if leader_size_before <= 0:
+            continue
+
+        sell_fraction = min(1.0, max(0.0, sold_size / leader_size_before))
+        trade["_leader_position_size_after"] = remaining_size
+        trade["_leader_position_size_before"] = leader_size_before
+        trade["_leader_sell_fraction"] = sell_fraction
 
 
 def _aggregate_trades(trades: list[dict], window_s: float = 2.0) -> list[dict]:
@@ -348,12 +397,14 @@ async def fetch_trade_data(
 
         trade_list = _aggregate_trades(
             trade_candidates,
-            window_s=config.execution.aggregate_signal_window_seconds
+            window_s=config.polling.aggregate_signal_window_seconds
         )
         if trade_candidates and research_capture_service is not None:
             asyncio.create_task(
                 _run_research_capture(research_capture_service, list(trade_candidates))
             )
+        if trade_list:
+            await _annotate_sell_fractions(trade_list, user_address)
         # Execute all detected trades immediately — no queue
         if trade_list:
             for trade in trade_list:
@@ -379,37 +430,6 @@ async def fetch_trade_data(
         logger.error(f'Error fetch_trade_data: {e}')
         return False, checked_activities
     return True, checked_activities
-
-
-async def fetch_and_save_positions(
-    leader_wallet: str,
-    proxy_wallet: str,
-    config: AppConfig,
-    research_capture_service: Any | None = None,
-):
-    if not config.discovery.enable_legacy_position_snapshot:
-        return
-    for wallet in (leader_wallet, proxy_wallet):
-        if not wallet:
-            continue
-        try:
-            positions = await fetch_data(
-                f'https://data-api.polymarket.com/positions?user={wallet}',
-                silent=True,
-            )
-            positions = positions or []
-            if wallet == leader_wallet and research_capture_service is not None:
-                asyncio.create_task(
-                    _run_position_capture(research_capture_service, leader_wallet, list(positions))
-                )
-            docs = [dict(p, proxyWallet=p.get('proxyWallet') or wallet) for p in positions]
-            from models.userHistory import get_user_position_model
-            coll = get_user_position_model(wallet)
-            coll.delete_many({})
-            if docs:
-                coll.insert_many(docs)
-        except Exception as e:
-            logger.error(f'DB save positions {shorten_addr(wallet)}: {e}')
 
 
 async def trade_monitor(
@@ -447,19 +467,6 @@ async def trade_monitor(
             or (state.last_cursor.trade_id or "") != (previous_cursor.trade_id or "")
         ):
             cursor_store.set_cursor(leader_wallet, state.last_cursor)
-
-        # Save positions periodically, not every loop
-        now = time.time()
-        if now - state.last_position_save >= _POSITION_SAVE_INTERVAL:
-            state.last_position_save = now
-            asyncio.create_task(
-                fetch_and_save_positions(
-                    bot_params['leaderWallet'],
-                    proxy_wallet,
-                    config=config,
-                    research_capture_service=research_capture_service,
-                )
-            )
 
         if _monitor_loop_healthy(fetch_ok=fetch_ok, fetch_interval_s=fetch_interval, readiness_tracker=readiness_tracker):
             monitor_heartbeat_tick(
