@@ -1,0 +1,50 @@
+storage/sqlite/orders_repo.py
+  df7ad7dc287dc5b7 383,397,414-415,422
+storage/sqlite/positions_repo.py
+  df7ad7dc287dc5b7 54,56-74,88-115,123,141,143-152,169,204
+services/executionService.py
+  df7ad7dc287dc5b7 18,456,469,472,846-853,901-908,914
+orchestrators/trade_pipeline.py
+  df7ad7dc287dc5b7 29,185-202,205-210,212-218,227,643-653,661,692-703,709-710,712-713,725,727,730-802,809,851-860,863-864
+services/tradeMonitor.py
+  c2f8c43534fe6d8f 84,137-203,400
+storage/sqlite/migrations.py
+  df7ad7dc287dc5b7 215-236,238-272,283,287,293
+utils/logger.py
+  df7ad7dc287dc5b7 184-186,216-248,316-317,329,332-345
+domain/ports/repositories.py
+  df7ad7dc287dc5b7 81,84-88,93-95
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "39236f2bbd0a6764b661f42c784c55f69121cabd",
+  "prompts": {
+    "c2f8c43534fe6d8f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e2cbd89a-3166-4f8a-b7df-cff796e1d296",
+        "model": "glm-5.1"
+      },
+      "human_author": "kvzsolt",
+      "messages": [],
+      "total_additions": 2,
+      "total_deletions": 66,
+      "accepted_lines": 2,
+      "overriden_lines": 0
+    },
+    "df7ad7dc287dc5b7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2d0c476b-c280-4a77-b00c-a70ecbe13a6a",
+        "model": "glm-5.1"
+      },
+      "human_author": "kvzsolt",
+      "messages": [],
+      "total_additions": 279,
+      "total_deletions": 59,
+      "accepted_lines": 275,
+      "overriden_lines": 4
+    }
+  }
+}
