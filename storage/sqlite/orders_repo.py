@@ -322,10 +322,10 @@ class OrdersRepo(AbstractOrderRepository):
     def get_unconfirmed_buys(self, max_age_seconds: float = 300.0) -> list[dict]:
         """Return BUY processed_trades stuck at submitted_unconfirmed that have an order_id.
 
-        Only returns records younger than max_age_seconds to skip very stale orders
-        that are likely already cancelled or expired on the venue.
+        Orders with a venue order_id remain eligible for reconciliation regardless of age,
+        because stale venue rows may still be the only signal that the order terminally
+        expired or was cancelled with no fill.
         """
-        cutoff = time.time() - max_age_seconds
         with create_connection(self.db_path) as conn:
             rows = conn.execute(
                 """
@@ -334,20 +334,17 @@ class OrdersRepo(AbstractOrderRepository):
                 WHERE status IN ('submitted_unconfirmed', 'submitted')
                   AND side = 'BUY'
                   AND order_id IS NOT NULL
-                  AND processed_at > ?
                 ORDER BY processed_at ASC
-                """,
-                (cutoff,),
+                """
             ).fetchall()
         return [dict(r) for r in rows]
 
     def get_unconfirmed_sells(self, max_age_seconds: float = 300.0) -> list[dict]:
         """Return SELL processed_trades stuck at submitted_unconfirmed that have an order_id.
 
-        Only returns records younger than max_age_seconds — very stale entries are likely
-        already expired on the venue and would poll for nothing.
+        Orders with a venue order_id remain eligible for reconciliation regardless of age,
+        so terminal no-fill SELLs do not get stuck behind an arbitrary polling cutoff.
         """
-        cutoff = time.time() - max_age_seconds
         with create_connection(self.db_path) as conn:
             rows = conn.execute(
                 """
@@ -356,10 +353,8 @@ class OrdersRepo(AbstractOrderRepository):
                 WHERE status IN ('submitted_unconfirmed', 'submitted')
                   AND side = 'SELL'
                   AND order_id IS NOT NULL
-                  AND processed_at > ?
                 ORDER BY processed_at ASC
-                """,
-                (cutoff,),
+                """
             ).fetchall()
         return [dict(r) for r in rows]
 
@@ -415,8 +410,8 @@ class OrdersRepo(AbstractOrderRepository):
 
                 # 2. Update position (apply fill)
                 current = conn.execute(
-                    "SELECT size_tokens, avg_entry_price FROM positions WHERE user_id = ? AND condition_id = ?",
-                    (user_id, condition_id),
+                    "SELECT size_tokens, avg_entry_price FROM positions WHERE user_id = ? AND condition_id = ? AND token_id = ?",
+                    (user_id, condition_id, token_id),
                 ).fetchone()
 
                 side_u = str(side or "").upper()

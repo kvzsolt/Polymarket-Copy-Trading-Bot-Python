@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import FrozenInstanceError
+from types import SimpleNamespace
 
 import pytest
 
@@ -43,6 +44,14 @@ def _minimal_valid_env(**overrides: str) -> dict[str, str]:
     }
     env.update(overrides)
     return env
+
+
+@pytest.fixture(autouse=True)
+def _supported_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "config.app_config.sys.version_info",
+        SimpleNamespace(major=3, minor=12),
+    )
 
 
 @pytest.fixture
@@ -170,6 +179,15 @@ class TestMalformedValues:
         with pytest.raises(EnvValidationError, match="PRIVATE_KEY must be a 66-char hex key"):
             load_config(valid_env)
 
+    def test_private_key_file_requires_exact_0600_permissions(self, tmp_path, valid_env: dict[str, str]) -> None:
+        key_path = tmp_path / "pk.txt"
+        key_path.write_text(_VALID_PRIVATE_KEY, encoding="utf-8")
+        key_path.chmod(0o700)
+        valid_env["PRIVATE_KEY"] = ""
+        valid_env["PRIVATE_KEY_FILE"] = str(key_path)
+        with pytest.raises(EnvValidationError, match="permissions 0600 exactly"):
+            load_config(valid_env)
+
     def test_invalid_funder_address_format(self, valid_env: dict[str, str]) -> None:
         valid_env["FUNDER_ADDRESS"] = "0xNOT_A_VALID_ADDRESS"
         with pytest.raises(EnvValidationError, match="Invalid FUNDER_ADDRESS"):
@@ -210,6 +228,26 @@ class TestMalformedValues:
 
 
 class TestSemanticInvariants:
+    def test_runtime_python_supported_rejects_313_plus(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            "config.app_config.sys.version_info",
+            SimpleNamespace(major=3, minor=13),
+        )
+        from config.app_config import _runtime_python_supported
+        assert _runtime_python_supported() is False
+
+    def test_bot_state_db_enabled_overrides_legacy_db_enabled(self, valid_env: dict[str, str]) -> None:
+        valid_env["DB_ENABLED"] = "false"
+        valid_env["BOT_STATE_DB_ENABLED"] = "true"
+        cfg = load_config(valid_env)
+        assert cfg.database.enabled is True
+
+    def test_max_share_price_must_not_be_below_min_share_price(self, valid_env: dict[str, str]) -> None:
+        valid_env["MIN_SHARE_PRICE"] = "0.4"
+        valid_env["MAX_SHARE_PRICE"] = "0.3"
+        with pytest.raises(EnvValidationError, match="MAX_SHARE_PRICE must be >= MIN_SHARE_PRICE"):
+            load_config(valid_env)
+
     def test_max_position_pct_out_of_range(self, valid_env: dict[str, str]) -> None:
         valid_env["MAX_POSITION_PCT"] = "1.5"
         with pytest.raises(EnvValidationError, match=r"MAX_POSITION_PCT must be in \(0, 1\]"):

@@ -12,6 +12,8 @@ import importlib.abc
 import importlib.machinery
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 
 class _AutoMockModule(types.ModuleType):
     """Module stub that returns MagicMock for any attribute."""
@@ -167,15 +169,15 @@ class TestPositionExitSystem(unittest.TestCase):
         pm = self._make_pm()
         cid = self._add_position(pm, entry_price=0.50)
         action = pm.evaluate_risk_action(cid, 0.39)  # -22%
-        self.assertIsNotNone(action)
-        self.assertEqual(action["reason"], "stop_loss")
-        self.assertEqual(action["size_fraction"], 1.0)
+        assert action is not None
+        assert action["reason"] == "stop_loss"
+        assert action["size_fraction"] == 1.0
 
     def test_stop_loss_not_triggered(self):
         pm = self._make_pm()
         cid = self._add_position(pm, entry_price=0.50)
         action = pm.evaluate_risk_action(cid, 0.45)  # -10%
-        self.assertIsNone(action)
+        assert action is None
 
     # ── Near-Max Exit ──
 
@@ -183,34 +185,34 @@ class TestPositionExitSystem(unittest.TestCase):
         pm = self._make_pm()
         cid = self._add_position(pm, entry_price=0.50)
         action = pm.evaluate_risk_action(cid, 0.95)
-        self.assertIsNotNone(action)
-        self.assertEqual(action["reason"], "near_max_full_exit")
-        self.assertEqual(action["size_fraction"], 1.0)
+        assert action is not None
+        assert action["reason"] == "near_max_full_exit"
+        assert action["size_fraction"] == 1.0
 
     def test_near_max_warn_at_92c(self):
         pm = self._make_pm()
         cid = self._add_position(pm, entry_price=0.50)
         action = pm.evaluate_risk_action(cid, 0.93)
-        self.assertIsNotNone(action)
-        self.assertEqual(action["reason"], "near_max_partial_trim")
-        self.assertAlmostEqual(action["size_fraction"], 0.50)
+        assert action is not None
+        assert action["reason"] == "near_max_partial_trim"
+        assert action["size_fraction"] == pytest.approx(0.50)
 
     def test_near_max_warn_fires_once(self):
         pm = self._make_pm()
         cid = self._add_position(pm, entry_price=0.50)
         action1 = pm.evaluate_risk_action(cid, 0.93)
-        self.assertEqual(action1["reason"], "near_max_partial_trim")
+        assert action1["reason"] == "near_max_partial_trim"
         pm.track_sell(cid, 0.93, 50.0, reason="near_max_partial_trim")
         action2 = pm.evaluate_risk_action(cid, 0.93)
         if action2:
-            self.assertNotEqual(action2["reason"], "near_max_partial_trim")
+            assert action2["reason"] != "near_max_partial_trim"
 
     def test_near_max_disabled(self):
         pm = self._make_pm(ENABLE_NEAR_MAX_EXIT=False)
         cid = self._add_position(pm, entry_price=0.50)
         action = pm.evaluate_risk_action(cid, 0.96)
         if action:
-            self.assertNotIn("near_max", action["reason"])
+            assert "near_max" not in action["reason"]
 
     # ── Profit Lock ──
 
@@ -219,26 +221,26 @@ class TestPositionExitSystem(unittest.TestCase):
         cid = self._add_position(pm, entry_price=0.50)
         # +80% = 0.90 (below near-max warn 0.92)
         action = pm.evaluate_risk_action(cid, 0.90)
-        self.assertIsNotNone(action)
-        self.assertEqual(action["reason"], "profit_lock")
-        self.assertAlmostEqual(action["size_fraction"], 0.50)
+        assert action is not None
+        assert action["reason"] == "profit_lock"
+        assert action["size_fraction"] == pytest.approx(0.50)
 
     def test_profit_lock_fires_once(self):
         pm = self._make_pm()
         cid = self._add_position(pm, entry_price=0.50)
         action1 = pm.evaluate_risk_action(cid, 0.90)
-        self.assertEqual(action1["reason"], "profit_lock")
+        assert action1["reason"] == "profit_lock"
         pm.track_sell(cid, 0.90, 50.0, reason="profit_lock")
         action2 = pm.evaluate_risk_action(cid, 0.90)
         if action2:
-            self.assertNotEqual(action2["reason"], "profit_lock")
+            assert action2["reason"] != "profit_lock"
 
     def test_profit_lock_disabled(self):
         pm = self._make_pm(ENABLE_PROFIT_LOCK=False)
         cid = self._add_position(pm, entry_price=0.50)
         action = pm.evaluate_risk_action(cid, 0.88)
         if action:
-            self.assertNotEqual(action["reason"], "profit_lock")
+            assert action["reason"] != "profit_lock"
 
     # ── Staged Take-Profit ──
 
@@ -246,9 +248,9 @@ class TestPositionExitSystem(unittest.TestCase):
         pm = self._make_pm(ENABLE_PROFIT_LOCK=False)
         cid = self._add_position(pm, entry_price=0.50)
         action = pm.evaluate_risk_action(cid, 0.66)  # +32%
-        self.assertIsNotNone(action)
-        self.assertEqual(action["reason"], "staged_tp_level_1")
-        self.assertAlmostEqual(action["size_fraction"], 0.25)
+        assert action is not None
+        assert action["reason"] == "staged_tp_level_1"
+        assert action["size_fraction"] == pytest.approx(0.25)
 
     def test_staged_tp_level_2(self):
         pm = self._make_pm(ENABLE_PROFIT_LOCK=False)
@@ -256,15 +258,15 @@ class TestPositionExitSystem(unittest.TestCase):
         pm.evaluate_risk_action(cid, 0.66)  # trigger level 1
         pm.track_sell(cid, 0.66, 25.0, reason="staged_tp_level_1")
         action = pm.evaluate_risk_action(cid, 0.76)  # +52%
-        self.assertIsNotNone(action)
-        self.assertEqual(action["reason"], "staged_tp_level_2")
-        self.assertAlmostEqual(action["size_fraction"], 0.35)
+        assert action is not None
+        assert action["reason"] == "staged_tp_level_2"
+        assert action["size_fraction"] == pytest.approx(0.35)
 
     def test_staged_tp_disabled(self):
         pm = self._make_pm(ENABLE_STAGED_TP=False, ENABLE_PROFIT_LOCK=False)
         cid = self._add_position(pm, entry_price=0.50)
         action = pm.evaluate_risk_action(cid, 0.66)
-        self.assertIsNone(action)
+        assert action is None
 
     # ── Trailing Stop ──
 
@@ -272,31 +274,31 @@ class TestPositionExitSystem(unittest.TestCase):
         pm = self._make_pm(ENABLE_PROFIT_LOCK=False, ENABLE_STAGED_TP=False)
         cid = self._add_position(pm, entry_price=0.50)
         action = pm.evaluate_risk_action(cid, 0.62)  # +24%
-        self.assertIsNone(action)
+        assert action is None
         pos = pm.get_position(cid)
-        self.assertTrue(pos.exit_state.trailing_active)
+        assert pos.exit_state.trailing_active
 
     def test_trailing_triggers_on_pullback(self):
         pm = self._make_pm(ENABLE_PROFIT_LOCK=False, ENABLE_STAGED_TP=False)
         cid = self._add_position(pm, entry_price=0.50)
         pm.evaluate_risk_action(cid, 0.70)  # peak
         action = pm.evaluate_risk_action(cid, 0.64)  # 0.70 - 0.05 = 0.65 > 0.64
-        self.assertIsNotNone(action)
-        self.assertEqual(action["reason"], "trailing_stop")
+        assert action is not None
+        assert action["reason"] == "trailing_stop"
 
     def test_trailing_no_trigger_above_trail(self):
         pm = self._make_pm(ENABLE_PROFIT_LOCK=False, ENABLE_STAGED_TP=False)
         cid = self._add_position(pm, entry_price=0.50)
         pm.evaluate_risk_action(cid, 0.70)
         action = pm.evaluate_risk_action(cid, 0.66)  # above 0.65 trail
-        self.assertIsNone(action)
+        assert action is None
 
     def test_trailing_disabled(self):
         pm = self._make_pm(ENABLE_TRAILING_STOP=False, ENABLE_PROFIT_LOCK=False, ENABLE_STAGED_TP=False)
         cid = self._add_position(pm, entry_price=0.50)
         pm.evaluate_risk_action(cid, 0.70)
         action = pm.evaluate_risk_action(cid, 0.60)
-        self.assertIsNone(action)
+        assert action is None
 
     # ── Leader Divergence ──
 
@@ -305,19 +307,19 @@ class TestPositionExitSystem(unittest.TestCase):
         cid = self._add_position(pm, entry_price=0.50)
         pm.signal_leader_divergence(cid)
         action = pm.evaluate_risk_action(cid, 0.55)
-        self.assertIsNotNone(action)
-        self.assertEqual(action["reason"], "leader_divergence")
-        self.assertAlmostEqual(action["size_fraction"], 0.50)
+        assert action is not None
+        assert action["reason"] == "leader_divergence"
+        assert action["size_fraction"] == pytest.approx(0.50)
 
     def test_leader_divergence_fires_once(self):
         pm = self._make_pm(ENABLE_PROFIT_LOCK=False, ENABLE_STAGED_TP=False, ENABLE_TRAILING_STOP=False)
         cid = self._add_position(pm, entry_price=0.50)
         pm.signal_leader_divergence(cid)
         action1 = pm.evaluate_risk_action(cid, 0.55)
-        self.assertEqual(action1["reason"], "leader_divergence")
+        assert action1["reason"] == "leader_divergence"
         pm.track_sell(cid, 0.55, 50.0, reason="leader_divergence")
         action2 = pm.evaluate_risk_action(cid, 0.55)
-        self.assertIsNone(action2)
+        assert action2 is None
 
     # ── Priority ──
 
@@ -326,13 +328,13 @@ class TestPositionExitSystem(unittest.TestCase):
         cid = self._add_position(pm, entry_price=0.50)
         pm.signal_leader_divergence(cid)
         action = pm.evaluate_risk_action(cid, 0.39)
-        self.assertEqual(action["reason"], "stop_loss")
+        assert action["reason"] == "stop_loss"
 
     def test_near_max_beats_profit_lock(self):
         pm = self._make_pm()
         cid = self._add_position(pm, entry_price=0.10)
         action = pm.evaluate_risk_action(cid, 0.96)
-        self.assertEqual(action["reason"], "near_max_full_exit")
+        assert action["reason"] == "near_max_full_exit"
 
     # ── Legacy TP ──
 
@@ -340,8 +342,8 @@ class TestPositionExitSystem(unittest.TestCase):
         pm = self._make_pm(ENABLE_STAGED_TP=False, ENABLE_PROFIT_LOCK=False, ENABLE_TRAILING_STOP=False)
         cid = self._add_position(pm, entry_price=0.50)
         action = pm.evaluate_risk_action(cid, 0.81)  # +62%
-        self.assertIsNotNone(action)
-        self.assertEqual(action["reason"], "take_profit")
+        assert action is not None
+        assert action["reason"] == "take_profit"
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -361,8 +363,8 @@ class TestTraderDiscoveryScoring(unittest.TestCase):
             event_count=80, total_current_value=50_000,
         )
         score = ds._score_trader(p)
-        self.assertGreater(score, 0.5)
-        self.assertLessEqual(score, 1.0)
+        assert score > 0.5
+        assert score <= 1.0
 
     def test_score_loser(self):
         from services.traderDiscoveryService import TraderDiscoveryService, TraderProfile
@@ -378,7 +380,7 @@ class TestTraderDiscoveryScoring(unittest.TestCase):
         from services.traderDiscoveryService import TraderDiscoveryService, TraderProfile
         ds = TraderDiscoveryService()
         p = TraderProfile(wallet="0x0000000000000000000000000000000000000000")
-        self.assertAlmostEqual(ds._score_trader(p), 0.0, places=1)
+        assert ds._score_trader(p) == pytest.approx(0.0, abs=0.1)
 
     def test_pct_win_rate_normalization(self):
         from services.traderDiscoveryService import TraderDiscoveryService, TraderProfile
@@ -388,7 +390,7 @@ class TestTraderDiscoveryScoring(unittest.TestCase):
             overall_gain=100_000, win_amount=200_000, loss_amount=-100_000,
             win_rate=73.3, total_positions=50, event_count=30,
         )
-        self.assertGreater(ds._score_trader(p), 0.3)
+        assert ds._score_trader(p) > 0.3
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -420,8 +422,8 @@ class TestLeaderScoringIntegration(unittest.TestCase):
             analytics={"win_rate": 65.0, "net_pnl": 50.0},
             recent_trade_count=5,
         )
-        self.assertGreater(result.score, 0.0)
-        self.assertEqual(result.discovery_score, 0.0)
+        assert result.score > 0.0
+        assert result.discovery_score == 0.0
 
     def test_scoring_with_discovery(self):
         from services.traderDiscoveryService import TraderProfile
@@ -442,15 +444,15 @@ class TestLeaderScoringIntegration(unittest.TestCase):
             "0x1234567890abcdef1234567890abcdef12345678",
             leader_balance=300.0,
         )
-        self.assertGreater(result.discovery_score, 0.0)
-        self.assertIn("discovery_pnl", result.details)
+        assert result.discovery_score > 0.0
+        assert "discovery_pnl" in result.details
 
     def test_trust_multiplier(self):
         import services.leaderScoringService as ls_mod
         scorer = ls_mod.LeaderScoringService()
-        self.assertAlmostEqual(scorer.trust_multiplier(0.0), 0.70)
-        self.assertAlmostEqual(scorer.trust_multiplier(1.0), 1.25)
-        self.assertAlmostEqual(scorer.trust_multiplier(0.5), 0.975)
+        assert scorer.trust_multiplier(0.0) == pytest.approx(0.70)
+        assert scorer.trust_multiplier(1.0) == pytest.approx(1.25)
+        assert scorer.trust_multiplier(0.5) == pytest.approx(0.975)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -505,21 +507,21 @@ class TestFeatureFlags(unittest.TestCase):
     def test_all_disabled_sl_still_works(self):
         pm = self._make_pm()
         pm.track_buy("cid1", "tok", 0.50, 100, 50.0)
-        self.assertIsNone(pm.evaluate_risk_action("cid1", 0.55))
+        assert pm.evaluate_risk_action("cid1", 0.55) is None
         action = pm.evaluate_risk_action("cid1", 0.39)
-        self.assertEqual(action["reason"], "stop_loss")
+        assert action["reason"] == "stop_loss"
 
     def test_legacy_tp_when_all_disabled(self):
         pm = self._make_pm()
         pm.track_buy("cid1", "tok", 0.50, 100, 50.0)
         action = pm.evaluate_risk_action("cid1", 0.81)
-        self.assertIsNotNone(action)
-        self.assertEqual(action["reason"], "take_profit")
+        assert action is not None
+        assert action["reason"] == "take_profit"
 
     def test_risk_fully_disabled(self):
         pm = self._make_pm(ENABLE_RISK_MGMT=False)
         pm.track_buy("cid1", "tok", 0.50, 100, 50.0)
-        self.assertIsNone(pm.evaluate_risk_action("cid1", 0.01))
+        assert pm.evaluate_risk_action("cid1", 0.01) is None
 
 
 if __name__ == "__main__":

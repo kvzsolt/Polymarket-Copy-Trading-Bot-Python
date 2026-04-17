@@ -7,6 +7,7 @@ injected env mapping and that successive calls yield independent graphs.
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -35,6 +36,14 @@ def _valid_env(db_path: str, **overrides: str) -> dict[str, str]:
     }
     env.update(overrides)
     return env
+
+
+@pytest.fixture(autouse=True)
+def _supported_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "config.app_config.sys.version_info",
+        SimpleNamespace(major=3, minor=12),
+    )
 
 
 @pytest.fixture
@@ -105,6 +114,13 @@ class TestBuildApp:
         assert app.db_path == db_path
         assert app.readiness.snapshot()["db_ok"] is False
         assert not Path(db_path).exists()
+
+    def test_bot_state_db_enabled_overrides_legacy_db_enabled(self, tmp_path: Path) -> None:
+        db_path = str(tmp_path / "override.db")
+        env = _valid_env(db_path, DB_ENABLED="false", BOT_STATE_DB_ENABLED="true")
+        app = build_app(env)
+        assert app.readiness.snapshot()["db_ok"] is True
+        assert Path(db_path).exists()
 
     def test_invalid_env_surfaces_validation_error(self, tmp_path: Path) -> None:
         from config.app_config import EnvValidationError

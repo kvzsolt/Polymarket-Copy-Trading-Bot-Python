@@ -468,6 +468,8 @@ class ExecutionService:
         """Poll order status briefly and return best-effort fill details."""
         loop = asyncio.get_running_loop()
         last_error: Exception | None = None
+        last_order: dict[str, Any] = {}
+        terminal_no_fill_statuses = {"cancelled", "canceled", "expired", "rejected"}
         for _ in range(3):
             try:
                 order = await loop.run_in_executor(
@@ -475,11 +477,14 @@ class ExecutionService:
                     lambda: self.clob_client.client.get_order(order_id),
                 )
                 if isinstance(order, dict):
+                    last_order = order
                     status = str(order.get("status", "")).lower()
                     if status in {"filled", "matched"}:
                         return order
                     # Even canceled FOK may include matched/size.
                     if order.get("size_matched") or order.get("filled_size"):
+                        return order
+                    if status in terminal_no_fill_statuses:
                         return order
                 await asyncio.sleep(0.15)
             except Exception as exc:
@@ -492,7 +497,7 @@ class ExecutionService:
                 order_id,
                 redact_error_detail(last_error),
             )
-        return {}
+        return last_order
 
     async def execute(self, req: ExecutionRequest) -> ExecutionResult:
         side = _normalize_side(req.side)
@@ -659,6 +664,7 @@ class ExecutionService:
 
         quote_price = Decimal(str(quote["price"]))
         min_share_price = Decimal(str(ec.min_share_price if ec else ENV.get("MIN_SHARE_PRICE", 0)))
+        max_share_price = Decimal(str(ec.max_share_price if ec else ENV.get("MAX_SHARE_PRICE", 0)))
         if side == "BUY" and min_share_price > 0 and quote_price < min_share_price:
             return ExecutionResult(
                 accepted=False,
@@ -669,6 +675,17 @@ class ExecutionService:
                 avg_price=None,
                 fees_paid=Decimal("0"),
                 error=f"price below min_share_price ({quote_price} < {min_share_price})",
+            )
+        if side == "BUY" and max_share_price > 0 and quote_price > max_share_price:
+            return ExecutionResult(
+                accepted=False,
+                order_id=None,
+                status="rejected",
+                requested_amount=req.amount,
+                filled_amount=Decimal("0"),
+                avg_price=None,
+                fees_paid=Decimal("0"),
+                error=f"price above max_share_price ({quote_price} > {max_share_price})",
             )
 
         slippage = Decimal(req.max_slippage_bps) / Decimal(10_000)
