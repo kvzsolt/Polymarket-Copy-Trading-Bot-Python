@@ -43,6 +43,11 @@ class CopyDecisionService:
         self.leader_scorer = leader_scorer or LeaderScoringService(config=config)
         self.trade_scorer = trade_scorer or TradeScoringService(config=config)
 
+        # NOTE: Polymarket's CLOB enforces a minimum of 5 shares per order for
+        # tick_size=0.01 markets (most sports/LoL/politics). Going below will
+        # be rejected with "Size (X) lower than the minimum: 5". We hard-floor
+        # the BUY side at 5 shares to respect that. Operators can still raise
+        # COPY_MIN_SHARES higher via env, but never drop it below 5 here.
         if config is not None:
             self._decision_gate_enabled = config.execution.enable_copy_decision_gate
             self._min_decision_score = config.leader.copy_decision_min_score

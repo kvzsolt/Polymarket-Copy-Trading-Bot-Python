@@ -967,12 +967,23 @@ async def execute_trades(
                 },
             )
 
-            if market_min_size > 0 and sell_tokens < market_min_size:
-                if pos.size_tokens < Decimal(str(market_min_size)):
+            # Polymarket CLOB hard-requires 5 shares minimum per order on
+            # tick_size=0.01 markets. We pad to 5.01 to survive rounding.
+            POLYMARKET_HARD_MIN_SHARES = 5.0
+            effective_min_tokens = max(
+                float(market_min_size),
+                POLYMARKET_HARD_MIN_SHARES,
+                1.05 / (live_price or 0.01),  # keep >$1 notional as safety floor
+            )
+
+            if float(sell_tokens) * live_price < 1.0 or float(sell_tokens) < effective_min_tokens:
+                min_sell_tokens = Decimal(str(effective_min_tokens))
+                if pos.size_tokens < min_sell_tokens:
                     skip_code = "sell_below_market_min"
                     skip_reason = (
-                        f"SELL size below market minimum ({float(sell_tokens):.4f} < {market_min_size:.4f}) "
-                        "and position too small to satisfy minimum"
+                        f"SELL size below exchange minimum "
+                        f"(requested {float(sell_tokens):.4f} tokens @ ${live_price:.4f}, "
+                        f"held {float(pos.size_tokens):.4f}, need >= {effective_min_tokens:.2f} tokens)"
                     )
                     print_skip_reason("SELL rejected by market minimum", skip_reason)
                     log_trade_skip(
@@ -1001,7 +1012,13 @@ async def execute_trades(
                     )
                     results.append(TradePipelineResult(trade_key, "skipped", skip_reason, None))
                     continue
-                sell_tokens = min(pos.size_tokens, Decimal(str(market_min_size)))
+                logger.info(
+                    "sell_size_bumped_to_min | requested=%.4f bumped_to=%.4f held=%.4f",
+                    float(sell_tokens),
+                    effective_min_tokens,
+                    float(pos.size_tokens),
+                )
+                sell_tokens = min_sell_tokens
 
             exec_req = ExecutionRequest(
                 user_id=context.user_id,

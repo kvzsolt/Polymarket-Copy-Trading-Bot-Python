@@ -90,7 +90,7 @@ async def test_multi_user_positions_and_pnl_are_isolated(tmp_path, monkeypatch):
             "conditionId": "cond-1",
             "size": 10,
             "price": 0.5,
-            "usdcSize": 5,
+            "usdcSize": 10,
         }
     ]
 

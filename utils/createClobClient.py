@@ -259,13 +259,48 @@ class ClobClientWrapper:
             return result
         except Exception as exc:
             redacted_error = redact_error_detail(exc)
-            logger.error("Signed order submission failed (%s)", redacted_error)
+            # Pull the raw error body from the CLOB client if present. py_clob_client
+            # attaches the upstream response on `.error_msg` for HTTPException.
+            # This is NOT a secret (it's the CLOB's own rejection reason like
+            # "Size (0.13) lower than the minimum: 5") so we surface it to the
+            # operator for diagnosis.
+            raw_body = ""
+            if hasattr(exc, "error_msg") and exc.error_msg:
+                raw_body = str(exc.error_msg)[:240]
+            elif hasattr(exc, "__cause__") and exc.__cause__:
+                raw_body = str(exc.__cause__)[:240]
+            else:
+                raw_body = str(exc)[:240]
+
+            # Build a human-friendly error code + detail for the TUI.
+            friendly_error = redacted_error
+            if raw_body:
+                # Heuristic: surface common CLOB rejections with their key line.
+                lowered = raw_body.lower()
+                if "lower than the minimum" in lowered or "minimum:" in lowered:
+                    friendly_error = f"size_below_min | {raw_body}"
+                elif "not enough balance" in lowered or "allowance" in lowered:
+                    friendly_error = f"insufficient_balance | {raw_body}"
+                elif "tick size" in lowered:
+                    friendly_error = f"tick_size_violation | {raw_body}"
+                elif "invalid" in lowered:
+                    friendly_error = f"invalid_order | {raw_body}"
+                elif redacted_error == "request_failed":
+                    # Only leak raw body when redaction would otherwise hide a
+                    # real CLOB rejection reason.
+                    friendly_error = f"clob_error | {raw_body}"
+
+            logger.error(
+                "Signed order submission failed (%s) | raw=%s",
+                redacted_error,
+                raw_body[:500],
+            )
             log_api_response(
                 logger,
                 method="POST",
                 url=f"{CLOB_HTTP_URL}/order",
                 status=0,
-                error=redacted_error,
+                error=friendly_error,
             )
             # Classify the failure: timeouts and connection errors are AMBIGUOUS
             # because the exchange may have received the order.
@@ -276,10 +311,28 @@ class ClobClientWrapper:
                 kw in exc_name or kw in str(exc).lower()
                 for kw in ("timeout", "connectionerror", "connectionreset", "brokenpipe", "readtimeout", "connecttimeout")
             )
+            # Classify non-retryable validation errors so the caller can
+            # fail fast instead of burning 3 retries on an order CLOB will
+            # reject every time (size_below_min, tick_size, invalid_order).
+            is_non_retryable = any(
+                kw in raw_body.lower()
+                for kw in (
+                    "lower than the minimum",
+                    "minimum:",
+                    "tick size",
+                    "invalid order",
+                    "invalid payload",
+                    "crosses the book",
+                    "banned",
+                    "closed only",
+                )
+            )
             return {
                 "success": False,
-                "error": redacted_error,
+                "error": friendly_error,
+                "raw_error": raw_body,
                 "ambiguous_post_failure": is_ambiguous,
+                "non_retryable": is_non_retryable,
             }
 
     async def post_order(self, order_args: OrderArgs, condition_id: str = None):
