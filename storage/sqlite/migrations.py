@@ -317,6 +317,7 @@ def _ensure_processed_trades_table(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "processed_trades", "user_id TEXT NOT NULL DEFAULT ''")
     _ensure_column(conn, "processed_trades", "leader_id TEXT")
     _ensure_column(conn, "processed_trades", "retry_attempt INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(conn, "processed_trades", "order_id TEXT")
 
 
 def _ensure_cursors_table(conn: sqlite3.Connection) -> None:

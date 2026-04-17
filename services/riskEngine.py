@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
+from config.env import ENV
+
 if TYPE_CHECKING:
     from config.app_config import AppConfig
 
@@ -68,8 +70,6 @@ def active_policy() -> AccountCapPolicy:
     # Compatibility fallback for legacy callers/tests that still patch ENV
     # without explicitly injecting typed AppConfig.
     try:
-        from config.env import ENV
-
         return AccountCapPolicy(
             name="account_cap",
             reserve_pct=Decimal(str(ENV.get("BALANCE_POLICY_RESERVE_PCT", 0.12))),
@@ -184,11 +184,11 @@ def headroom_for_buy(
         day_start_cfg = _cfg.risk.day_start_equity_usdc
         max_dd_pct = Decimal(str(_cfg.risk.max_daily_drawdown_pct)) / Decimal("100")
     else:
-        max_market = Decimal("300")
-        max_category = Decimal("600")
-        max_leader = Decimal("500")
-        day_start_cfg = 0.0
-        max_dd_pct = Decimal("0.20")
+        max_market = Decimal(str(ENV.get("MAX_MARKET_EXPOSURE_USDC", 300)))
+        max_category = Decimal(str(ENV.get("MAX_CATEGORY_EXPOSURE_USDC", 600)))
+        max_leader = Decimal(str(ENV.get("MAX_LEADER_EXPOSURE_USDC", 500)))
+        day_start_cfg = float(ENV.get("DAY_START_EQUITY_USDC", 0.0))
+        max_dd_pct = Decimal(str(ENV.get("MAX_DAILY_DRAWDOWN_PCT", 20))) / Decimal("100")
 
     if day_start_equity_usdc is not None:
         day_start_eq = day_start_equity_usdc
@@ -322,7 +322,7 @@ def policy_from_env() -> RiskPolicy:
     """DEPRECATED: Use policy_from_config() instead."""
     if _cached_config is not None:
         return policy_from_config(_cached_config)
-    # Bare fallback
+    # Bare hardcoded fallback matching production defaults in AppConfig.
     return RiskPolicy(
         max_trade_usdc=Decimal("100"),
         max_portfolio_pct_per_trade=Decimal("0.45"),

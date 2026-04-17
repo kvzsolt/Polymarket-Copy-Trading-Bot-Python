@@ -74,8 +74,10 @@ class TestBuildApp:
         app = build_app(env)
         assert isinstance(app.registry, LeaderRegistry)
         assert isinstance(app.discovery_service, TraderDiscoveryService)
-        # Registry receives the shared leaders_repo (no duplicate instances).
+        # Registry receives the shared leaders_repo and typed config/readiness.
         assert app.registry.leaders_repo is app.leaders_repo
+        assert app.registry.config is app.config
+        assert app.registry.readiness is app.readiness
 
     def test_two_calls_yield_independent_graphs(self, tmp_path: Path) -> None:
         env1 = _valid_env(str(tmp_path / "a.db"))

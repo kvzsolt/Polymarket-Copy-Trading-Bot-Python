@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
-from config.env import ENV
 from domain.trading_context import TradingContext
 from services.accountingService import AccountingService
 from services.executionService import ExecutionService
@@ -21,6 +21,9 @@ from storage.sqlite.positions_repo import PositionsRepo
 from utils.fetchData import fetch_data
 from utils.logger import get_logger
 
+if TYPE_CHECKING:
+    from config.app_config import AppConfig
+
 logger = get_logger("RuntimeBootstrap")
 
 
@@ -38,18 +41,13 @@ class UserRuntimeState:
     execution_service: ExecutionService
 
 
-def configured_leaders() -> list[str]:
-    leaders = list(ENV.get("LEADER_WALLETS") or [])
+def configured_leaders(config: AppConfig) -> list[str]:
+    leaders = [str(wallet).strip() for wallet in config.leader.wallets if str(wallet).strip()]
     if not leaders:
-        single = str(ENV.get("USER_ADDRESS") or "").strip()
-        if single:
-            leaders = [single]
-    result = [str(w).strip() for w in leaders if str(w).strip()]
-    if not result:
-        if ENV.get("LEADER_AUTO", False):
+        if config.leader.leader_auto:
             logger.info(
                 "No leader wallets configured. LEADER_AUTO is enabled, so the bot "
-                f"will auto-discover and follow up to {int(ENV.get('LEADER_AUTO_COUNT', 5) or 5)} leaders."
+                f"will auto-discover and follow up to {config.leader.leader_auto_count} leaders."
             )
         else:
             logger.warning(
@@ -57,25 +55,25 @@ def configured_leaders() -> list[str]:
                 "are empty. Set LEADER_AUTO=true to auto-discover leaders, or add "
                 "manual leader wallets."
             )
-    return result
+    return leaders
 
 
-def default_follow(user_id: str, leader_id: str) -> UserFollowConfig:
+def default_follow(user_id: str, leader_id: str, config: AppConfig) -> UserFollowConfig:
     return UserFollowConfig(
         user_id=user_id,
         leader_id=leader_id,
         enabled=True,
-        allocation_pct=float(ENV.get("PERCENTAGE", 5.0)) / 100.0,
-        max_trade_usdc=float(ENV.get("BUY_MAX_AMOUNT", 100)),
-        max_market_exposure_usdc=float(ENV.get("MAX_MARKET_EXPOSURE_USDC", 300)),
+        allocation_pct=config.sizing.percentage / 100.0,
+        max_trade_usdc=config.sizing.buy_max_amount,
+        max_market_exposure_usdc=config.risk.max_market_exposure_usdc,
     )
 
 
-def ensure_runtime_follows(runtime_users: list[RuntimeUser], leaders: list[str]) -> None:
+def ensure_runtime_follows(runtime_users: list[RuntimeUser], leaders: list[str], config: AppConfig) -> None:
     for runtime_user in runtime_users:
         for leader in leaders:
             if leader not in runtime_user.follows:
-                runtime_user.follows[leader] = default_follow(runtime_user.user_id, leader)
+                runtime_user.follows[leader] = default_follow(runtime_user.user_id, leader, config)
 
 
 async def fetch_live_positions(wallet: str) -> list[dict]:
@@ -135,6 +133,7 @@ def build_user_state(runtime_user: RuntimeUser, client: object, db_path: str) ->
 def build_trading_context(
     user_state: UserRuntimeState,
     follow: UserFollowConfig,
+    config: AppConfig,
     leaders_repo=None,
     readiness: ReadinessTracker | None = None,
 ) -> TradingContext:
@@ -152,12 +151,12 @@ def build_trading_context(
         execution_service=user_state.execution_service,
         leaders_repo=leaders_repo,
         allocation_pct=follow.allocation_pct,
-        buy_min_amount=float(ENV.get("BUY_MIN_AMOUNT", 1)),
-        buy_max_amount=min(float(ENV.get("BUY_MAX_AMOUNT", 100)), follow.max_trade_usdc),
+        buy_min_amount=config.sizing.buy_min_amount,
+        buy_max_amount=min(config.sizing.buy_max_amount, follow.max_trade_usdc),
         max_market_exposure_usdc=follow.max_market_exposure_usdc,
         readiness=readiness or ReadinessTracker(),
         extra={
-            "slippage_tolerance_bps": int(float(ENV.get("SLIPPAGE_TOLERANCE", 2.0)) * 100),
+            "slippage_tolerance_bps": int(config.execution.slippage_tolerance * 100),
         },
     )
     rehydrate_position_manager(context)
@@ -168,6 +167,7 @@ def build_context_maps(
     runtime_users: list[RuntimeUser],
     user_states: dict[str, UserRuntimeState],
     active_leaders: list[str],
+    config: AppConfig,
     *,
     leaders_repo=None,
     readiness: ReadinessTracker | None = None,
@@ -181,7 +181,13 @@ def build_context_maps(
             follow = runtime_user.follows.get(leader)
             if not follow or not follow.enabled:
                 continue
-            context = build_trading_context(user_state, follow, leaders_repo=leaders_repo, readiness=readiness)
+            context = build_trading_context(
+                user_state,
+                follow,
+                config,
+                leaders_repo=leaders_repo,
+                readiness=readiness,
+            )
             contexts_by_leader[leader].append(context)
             if context.user_id not in risk_contexts_by_user:
                 risk_contexts_by_user[context.user_id] = context

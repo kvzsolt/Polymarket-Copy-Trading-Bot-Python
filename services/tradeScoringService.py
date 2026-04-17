@@ -4,6 +4,8 @@ import time
 from dataclasses import dataclass
 from typing import Any, TYPE_CHECKING
 
+from config import env as env_mod
+
 if TYPE_CHECKING:
     from config.app_config import AppConfig
 
@@ -47,13 +49,14 @@ class TradeScoringService:
             self._near_res_price = config.execution.near_resolution_gate_price
             self._near_res_max_age = config.execution.near_resolution_max_age_seconds
         else:
-            self._max_age_seconds = 120.0
-            self._max_drift_pct = 6.0
-            self._max_edge_decay = 70.0
-            self._liquidity_target = 50.0
-            self._near_res_enabled = True
-            self._near_res_price = 0.95
-            self._near_res_max_age = 15.0
+            env = env_mod.ENV
+            self._max_age_seconds = float(env.get("COPY_MAX_SIGNAL_AGE_SECONDS", 120.0))
+            self._max_drift_pct = float(env.get("COPY_MAX_PRICE_DRIFT_PCT", 6.0))
+            self._max_edge_decay = float(env.get("COPY_MAX_EDGE_DECAY_PCT", 70.0))
+            self._liquidity_target = float(env.get("COPY_LIQUIDITY_TARGET_USDC", 50.0))
+            self._near_res_enabled = str(env.get("ENABLE_NEAR_RESOLUTION_GATE", True)).lower() in {"1", "true", "yes"}
+            self._near_res_price = float(env.get("NEAR_RESOLUTION_GATE_PRICE", 0.95))
+            self._near_res_max_age = float(env.get("NEAR_RESOLUTION_MAX_AGE_SECONDS", 15.0))
 
     def score_buy_trade(
         self,
@@ -98,8 +101,8 @@ class TradeScoringService:
         liquidity_target = float(self._liquidity_target)
         liquidity_score = 1.0 if liquidity_target <= 0 else _clamp(leader_notional / liquidity_target)
 
-        drift_penalty = _clamp(price_drift_pct / max(max_drift_pct, 1e-9))
-        edge_penalty = _clamp(edge_decay_pct / max(max_edge_decay, 1e-9))
+        drift_penalty = _clamp(price_drift_pct / max(max_drift_pct / 100.0, 1e-9))
+        edge_penalty = _clamp(edge_decay_pct / max(max_edge_decay / 100.0, 1e-9))
         quality = (
             leader_score
             * (1.0 - 0.55 * drift_penalty)
@@ -114,9 +117,9 @@ class TradeScoringService:
         near_res_max_age = self._near_res_max_age
 
         hard_fail_reason = None
-        if price_drift_pct > max_drift_pct:
+        if price_drift_pct > max_drift_pct / 100.0:
             hard_fail_reason = "price_drift_exceeded"
-        elif edge_decay_pct > max_edge_decay:
+        elif edge_decay_pct > max_edge_decay / 100.0:
             hard_fail_reason = "edge_decay_exceeded"
         elif trade_ts > 0 and max_age_seconds > 0 and age_seconds > max_age_seconds:
             hard_fail_reason = "signal_too_old"

@@ -5,12 +5,19 @@ import signal
 from collections.abc import Awaitable, Callable
 
 # Load non-sensitive runtime config + local .env as early as possible.
+# IMPORTANT: importing from config triggers config/__init__.py which freezes
+# the ENV snapshot before load_runtime_env() runs.  We must call rehydrate_env()
+# immediately after so ENV reflects the freshly populated os.environ.
 try:
     from config.runtime_env import load_runtime_env
+    from config.env import rehydrate_env
 
     load_runtime_env()
-except Exception:
-    pass
+    rehydrate_env()
+except Exception as exc:  # pragma: no cover
+    import sys
+
+    print(f"[WARNING] Failed to load runtime env: {exc}", file=sys.stderr)
 
 from bootstrap import build_app
 from config.app_config import EnvValidationError
@@ -52,8 +59,15 @@ async def _wait_for_active_leaders(
     registry: LeaderRegistry,
     configured_leaders: list[str],
     refresh_interval: int,
+    *,
+    config,
 ) -> list[str]:
-    return await _wait_for_active_leaders_impl(registry, configured_leaders, refresh_interval)
+    return await _wait_for_active_leaders_impl(
+        registry,
+        configured_leaders,
+        refresh_interval,
+        config=config,
+    )
 
 
 async def _discovery_refresh_loop(
@@ -81,9 +95,11 @@ def _refresh_contexts_for_new_leaders(
     user_states: dict[str, UserRuntimeState],
     contexts_by_leader: dict[str, list],
     leaders_repo: LeadersRepo,
+    config,
+    readiness,
 ) -> list[str]:
     started_wallets: list[str] = []
-    ensure_runtime_follows(runtime_users, new_wallets)
+    ensure_runtime_follows(runtime_users, new_wallets, config)
     for wallet in new_wallets:
         if wallet in contexts_by_leader:
             continue
@@ -93,7 +109,13 @@ def _refresh_contexts_for_new_leaders(
             follow: UserFollowConfig | None = runtime_user.follows.get(wallet)
             if not user_state or not follow or not follow.enabled:
                 continue
-            context = build_trading_context(user_state, follow, leaders_repo=leaders_repo, readiness=application.readiness)
+            context = build_trading_context(
+                user_state,
+                follow,
+                config,
+                leaders_repo=leaders_repo,
+                readiness=readiness,
+            )
             contexts_by_leader[wallet].append(context)
         if contexts_by_leader[wallet]:
             started_wallets.append(wallet)
@@ -155,7 +177,7 @@ async def main():
             print_error(f"Trading disabled by geoblock policy: {reason}")
             return
 
-    configured = configured_leaders()
+    configured = configured_leaders(application.config)
     invalid = [wallet for wallet in configured if not is_valid_eth_address(wallet)]
     if invalid:
         for wallet in invalid:
@@ -164,7 +186,7 @@ async def main():
             )
         return
 
-    runtime_users = load_runtime_users(configured)
+    runtime_users = load_runtime_users(configured, application.config)
     if not runtime_users:
         print_error("No runtime users configured.")
         return
@@ -186,8 +208,13 @@ async def main():
     leaders_repo = application.leaders_repo
     registry = application.registry
     refresh_interval = application.config.discovery.discovery_interval_seconds
-    active_leaders = await _wait_for_active_leaders(registry, configured, refresh_interval)
-    ensure_runtime_follows(runtime_users, active_leaders)
+    active_leaders = await _wait_for_active_leaders(
+        registry,
+        configured,
+        refresh_interval,
+        config=application.config,
+    )
+    ensure_runtime_follows(runtime_users, active_leaders, application.config)
 
     user_states: dict[str, UserRuntimeState] = {}
     for runtime_user in runtime_users:
@@ -211,6 +238,7 @@ async def main():
         runtime_users,
         user_states,
         active_leaders,
+        application.config,
         leaders_repo=leaders_repo,
         readiness=application.readiness,
     )
@@ -250,6 +278,8 @@ async def main():
             user_states=user_states,
             contexts_by_leader=contexts_by_leader,
             leaders_repo=leaders_repo,
+            config=application.config,
+            readiness=application.readiness,
         )
         monitored_leader_count = len([wallet for wallet, contexts in contexts_by_leader.items() if contexts])
         for wallet in started_wallets:
