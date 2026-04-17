@@ -11,8 +11,10 @@ downloads/
 eggs/
 .eggs/
 .env
+secrets.env
 /data
 .ai
+
 # Runtime state (created automatically on first run)
 /data/bot_state.db
 /log
@@ -29,6 +31,7 @@ wheels/
 .installed.cfg
 *.egg
 .qodo
+
 # Virtual Environment
 venv/
 env/
@@ -40,6 +43,11 @@ ENV/
 .env.local
 config/runtime.local.env
 .kilo
+
+# Generated config-local runtime state
+config/data/
+config/logs/
+
 # IDE
 .vscode/
 .idea/
@@ -49,22 +57,27 @@ config/runtime.local.env
 
 # Logs
 log/
+logs/
 
 # OS
 .DS_Store
 Thumbs.db
+
+# Dev & testing
 .logs/stdio-server.log.*
 /logs
 .pytest_cache
 .codex
-AGENTS.MD
 .ruff_cache
 .aider*
+.gitignore
+
+# Useless plans and markdown trash
+bot_audit_export_and_fix_plan.md
+last_phase.md
+docs/refactor-cleanup-review.md
+AGENTS.MD
 CLAUDE.md
 CODEX.md
-.gitignore
 LEARNINGS.md
 KILOCODE.md
-.kilo/plans/1775856558312-mighty-squid.md
-/bot_audit_export_and_fix_plan.md
-
