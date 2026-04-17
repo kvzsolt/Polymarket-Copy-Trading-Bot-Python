@@ -818,7 +818,8 @@ async def execute_trades(
         if signal.side == "BUY":
             sizing_result = context.copy_notional(signal.usdc_size)
             target_notional = sizing_result.final_notional_usdc
-            max_notional_for_decision = target_notional
+            configured_buy_max = Decimal(str(getattr(context, "buy_max_amount", target_notional) or target_notional))
+            max_notional_for_decision = max(target_notional, configured_buy_max)
 
             buy_risk_cap = None
             if _account_cap_policy_enabled():
@@ -870,7 +871,7 @@ async def execute_trades(
                     continue
 
                 max_notional_for_decision = min(
-                    target_notional,
+                    max_notional_for_decision,
                     buy_risk_cap.cap_notional_usdc,
                 )
 

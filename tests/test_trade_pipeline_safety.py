@@ -343,6 +343,36 @@ async def test_sell_with_no_position_skipped(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_buy_can_raise_from_small_target_to_exchange_min_when_within_buy_max(tmp_path, monkeypatch):
+    db_path = _init_db(tmp_path)
+    exec_svc = AsyncMock()
+    exec_svc.execute.return_value = _exec_result(
+        accepted=True, filled=Decimal("5"), status="filled", order_id="ord-buy-min-bump"
+    )
+    exec_svc.market_meta_service = SimpleNamespace(
+        get=AsyncMock(return_value=SimpleNamespace(min_order_size=Decimal("5")))
+    )
+    ctx = _make_context(db_path, execution_service=exec_svc)
+    ctx.buy_min_amount = 1.0
+    ctx.buy_max_amount = 8.0
+
+    monkeypatch.setitem(ENV, "ENABLE_BALANCE_TIERED_POLICY", False)
+
+    signal = _signal(price=0.56, size=20.0, tx_hash="0xmin-bump")
+    results = await execute_trades(ctx, "leader1", [signal], time.time())
+
+    assert len(results) == 1
+    assert results[0].status == "executed"
+
+    req = exec_svc.execute.await_args.args[0]
+    assert req.side == "BUY"
+    # Exchange minimum is 5 shares, so the notional should be bumped above the
+    # tiny $1 strategy target but stay below the configured $8 max.
+    assert float(req.amount) > 2.80
+    assert float(req.amount) < 8.0
+
+
+@pytest.mark.asyncio
 async def test_buy_fill_updates_position_repo(tmp_path):
     db_path = _init_db(tmp_path)
     exec_svc = AsyncMock()
