@@ -312,8 +312,8 @@ class ClobClientWrapper:
                 for kw in ("timeout", "connectionerror", "connectionreset", "brokenpipe", "readtimeout", "connecttimeout")
             )
             # Classify non-retryable validation errors so the caller can
-            # fail fast instead of burning 3 retries on an order CLOB will
-            # reject every time (size_below_min, tick_size, invalid_order).
+            # fail fast instead of burning retries on an order CLOB will
+            # reject every time (size/tick/balance/invalid).
             is_non_retryable = any(
                 kw in raw_body.lower()
                 for kw in (
@@ -325,6 +325,9 @@ class ClobClientWrapper:
                     "crosses the book",
                     "banned",
                     "closed only",
+                    "not enough balance",
+                    "allowance",
+                    "insufficient balance",
                 )
             )
             return {
