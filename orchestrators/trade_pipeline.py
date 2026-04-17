@@ -15,8 +15,10 @@ from services.executionService import ExecutionRequest
 from services.metrics import metrics
 from services.riskEngine import headroom_for_buy
 from storage.sqlite.fills_repo import FillRecord
+from storage.sqlite.positions_repo import PositionRecord
 from utils import is_valid_clob_token_id
 from utils.dayEquity import get_day_start_equity
+from utils.fetchData import fetch_data
 from utils.getMyBalance import get_my_balance
 from utils.logger import (
     get_logger,
@@ -69,6 +71,89 @@ async def _resolve_market_min_size(context: TradingContext, token_id: str) -> fl
     except Exception:
         pass
     return market_min_size
+
+
+async def _sync_sell_position_from_live_holdings(
+    context: TradingContext,
+    *,
+    leader_id: str,
+    condition_id: str,
+    token_id: str,
+) -> Decimal | None:
+    wallet = str(getattr(context, "wallet_address", "") or "").strip().lower()
+    if not wallet:
+        return None
+
+    try:
+        positions = await fetch_data(
+            f"https://data-api.polymarket.com/positions?user={wallet}",
+            silent=True,
+        )
+    except Exception as exc:
+        logger.warning(
+            "live_position_sync_fetch_failed | user_id=%s token=%s error=%s",
+            context.user_id,
+            token_id,
+            repr(exc),
+        )
+        return None
+
+    live_size = Decimal("0")
+    if isinstance(positions, list):
+        for position in positions:
+            if not isinstance(position, dict):
+                continue
+            live_token_id = str(
+                position.get("asset")
+                or position.get("tokenID")
+                or position.get("token_id")
+                or ""
+            ).strip()
+            if live_token_id != token_id:
+                continue
+            try:
+                live_size = Decimal(str(position.get("size") or "0"))
+            except Exception:
+                live_size = Decimal("0")
+            break
+
+    existing = context.positions_repo.get_position(
+        context.user_id,
+        condition_id,
+        token_id=token_id,
+    )
+    avg_entry_price = getattr(existing, "avg_entry_price", Decimal("0")) if existing else Decimal("0")
+
+    if live_size <= Decimal("1e-12"):
+        context.positions_repo.delete_position(context.user_id, condition_id, token_id=token_id)
+        logger.info(
+            "live_position_sync_deleted_local_position | user_id=%s leader_id=%s condition_id=%s token=%s",
+            context.user_id,
+            leader_id,
+            condition_id,
+            token_id,
+        )
+        return Decimal("0")
+
+    context.positions_repo.upsert_position(
+        PositionRecord(
+            user_id=context.user_id,
+            condition_id=condition_id,
+            token_id=token_id,
+            leader_id=leader_id,
+            size_tokens=live_size,
+            avg_entry_price=Decimal(str(avg_entry_price or 0)),
+        )
+    )
+    logger.info(
+        "live_position_sync_updated_local_position | user_id=%s leader_id=%s condition_id=%s token=%s live_size=%s",
+        context.user_id,
+        leader_id,
+        condition_id,
+        token_id,
+        str(live_size),
+    )
+    return live_size
 
 
 @dataclass
@@ -1213,6 +1298,18 @@ async def execute_trades(
                 retry_attempt=next_retry_attempt,
             )
             fail_reason = exec_result.error or exec_result.status
+            live_synced_size: Decimal | None = None
+            if signal.side == "SELL" and "insufficient_balance" in str(fail_reason).lower():
+                live_synced_size = await _sync_sell_position_from_live_holdings(
+                    context,
+                    leader_id=leader_id,
+                    condition_id=signal.condition_id,
+                    token_id=signal.token_id,
+                )
+                if live_synced_size is not None:
+                    fail_reason = (
+                        f"{fail_reason} | local position synced to live holdings={float(live_synced_size):.4f}"
+                    )
             if non_terminal_retry_exhausted:
                 fail_reason = (
                     f"{fail_reason} "
