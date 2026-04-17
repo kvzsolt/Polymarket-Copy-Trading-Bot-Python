@@ -35,6 +35,12 @@ This project was built to change that. I wanted a bot that I could trust to run 
 
 ---
 
+## 📖 Advanced Usage & Fine-Tuning
+
+Want to tweak the risk engine, adjust spread gates, or turn on the Auto-Redeemer? Check out the [Usage & Configuration Guide](usage.md) for a deep dive into every subsystem and environment variable.
+
+---
+
 ## 🛠️ Stack & Architecture
 
 - **Language:** Python 3.11+
