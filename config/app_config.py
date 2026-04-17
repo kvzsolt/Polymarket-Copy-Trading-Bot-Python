@@ -367,8 +367,6 @@ class NetworkConfig:
 @dataclass(frozen=True)
 class RedemptionConfig:
     enable_auto_redeem: bool
-    relayer_url: str
-    relayer_api_key: str
 
 
 @dataclass(frozen=True)
@@ -379,6 +377,7 @@ class DiscoveryConfig:
     min_leader_pnl: float
     min_leader_win_rate: float
     min_leader_positions: int
+    min_active_positions: int
     discovery_max_results: int
     multi_user_config_file: str
 
@@ -570,6 +569,8 @@ def _validate_semantics(cfg: AppConfig, errors: list[str]) -> None:
 
     # Discovery
     d = cfg.discovery
+    if d.min_active_positions <= 0:
+        errors.append("MIN_ACTIVE_POSITIONS must be > 0.")
     if d.discovery_max_results <= 0:
         errors.append("DISCOVERY_MAX_RESULTS must be > 0.")
 
@@ -789,8 +790,6 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
 
     redemption = RedemptionConfig(
         enable_auto_redeem=p.bool_("ENABLE_AUTO_REDEEM", False),
-        relayer_url=p.string("RELAYER_URL", ""),
-        relayer_api_key=p.string("RELAYER_API_KEY", ""),
     )
 
     discovery = DiscoveryConfig(
@@ -800,6 +799,7 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         min_leader_pnl=p.float_("MIN_LEADER_PNL", "1000"),
         min_leader_win_rate=p.float_("MIN_LEADER_WIN_RATE", "0.55"),
         min_leader_positions=p.int_("MIN_LEADER_POSITIONS", "20"),
+        min_active_positions=p.int_("MIN_ACTIVE_POSITIONS", "1"),
         discovery_max_results=p.int_("DISCOVERY_MAX_RESULTS", "50"),
         multi_user_config_file=p.string("MULTI_USER_CONFIG_FILE", ""),
     )
