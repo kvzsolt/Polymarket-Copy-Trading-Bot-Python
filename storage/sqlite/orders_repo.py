@@ -279,6 +279,7 @@ class OrdersRepo(AbstractOrderRepository):
         condition_id: str | None,
         status: str,
         retry_attempt: int = 0,
+        order_id: str | None = None,
     ) -> None:
         if not trade_key:
             return
@@ -286,12 +287,13 @@ class OrdersRepo(AbstractOrderRepository):
             conn.execute(
                 """
                 INSERT INTO processed_trades (
-                    trade_key, user_id, leader_id, tx_hash, side, asset, condition_id, status, processed_at, retry_attempt
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    trade_key, user_id, leader_id, tx_hash, side, asset, condition_id, status, processed_at, retry_attempt, order_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(trade_key) DO UPDATE SET
                     status = excluded.status,
                     processed_at = excluded.processed_at,
-                    retry_attempt = excluded.retry_attempt
+                    retry_attempt = excluded.retry_attempt,
+                    order_id = COALESCE(excluded.order_id, processed_trades.order_id)
                 """,
                 (
                     trade_key,
@@ -304,9 +306,62 @@ class OrdersRepo(AbstractOrderRepository):
                     status,
                     time.time(),
                     retry_attempt,
+                    order_id,
                 ),
             )
             conn.commit()
+
+    def delete_processed_trade(self, trade_key: str) -> None:
+        """Remove a processed_trade row so the trade can be retried on the next cycle."""
+        if not trade_key:
+            return
+        with create_connection(self.db_path) as conn:
+            conn.execute("DELETE FROM processed_trades WHERE trade_key = ?", (trade_key,))
+            conn.commit()
+
+    def get_unconfirmed_buys(self, max_age_seconds: float = 300.0) -> list[dict]:
+        """Return BUY processed_trades stuck at submitted_unconfirmed that have an order_id.
+
+        Only returns records younger than max_age_seconds to skip very stale orders
+        that are likely already cancelled or expired on the venue.
+        """
+        cutoff = time.time() - max_age_seconds
+        with create_connection(self.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT trade_key, user_id, leader_id, tx_hash, asset, condition_id, order_id, processed_at
+                FROM processed_trades
+                WHERE status IN ('submitted_unconfirmed', 'submitted')
+                  AND side = 'BUY'
+                  AND order_id IS NOT NULL
+                  AND processed_at > ?
+                ORDER BY processed_at ASC
+                """,
+                (cutoff,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_unconfirmed_sells(self, max_age_seconds: float = 300.0) -> list[dict]:
+        """Return SELL processed_trades stuck at submitted_unconfirmed that have an order_id.
+
+        Only returns records younger than max_age_seconds — very stale entries are likely
+        already expired on the venue and would poll for nothing.
+        """
+        cutoff = time.time() - max_age_seconds
+        with create_connection(self.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT trade_key, user_id, leader_id, tx_hash, asset, condition_id, order_id, processed_at
+                FROM processed_trades
+                WHERE status IN ('submitted_unconfirmed', 'submitted')
+                  AND side = 'SELL'
+                  AND order_id IS NOT NULL
+                  AND processed_at > ?
+                ORDER BY processed_at ASC
+                """,
+                (cutoff,),
+            ).fetchall()
+        return [dict(r) for r in rows]
 
     # ── retention / cleanup ──────────────────────────────────────────
 

@@ -47,6 +47,7 @@ def _make_execution_service(meta: MarketMeta, quote_price: str = "0.50"):
     svc.fee_service = AsyncMock()
     svc.fee_service.get_fee_bps = AsyncMock(return_value=Decimal("0"))
     svc.circuit_breaker = _CLOB_CIRCUIT
+    svc._config = None
     return svc
 
 

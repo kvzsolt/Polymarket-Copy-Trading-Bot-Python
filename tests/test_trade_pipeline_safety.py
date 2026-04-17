@@ -380,6 +380,7 @@ async def test_sell_reduces_position(tmp_path):
     )
 
     signal = _signal(side="SELL", price=0.60, size=10.0)
+    signal["_leader_sell_fraction"] = 0.5  # sell 50% of our 20-token position = 10 tokens
     results = await execute_trades(ctx, "leader1", [signal], time.time())
     assert len(results) == 1
     assert results[0].status == "executed"
@@ -425,11 +426,12 @@ async def test_sell_uses_leader_fraction_without_sell_decision_gate(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_sell_uses_notional_when_size_missing(tmp_path, monkeypatch):
+async def test_sell_uses_notional_when_size_missing(tmp_path):
+    """SELL without _leader_sell_fraction defaults to full close (100% of held position)."""
     db_path = _init_db(tmp_path)
     exec_svc = AsyncMock()
     exec_svc.execute.return_value = _exec_result(
-        accepted=True, filled=Decimal("4"), status="filled", order_id="ord-sell-derivation"
+        accepted=True, filled=Decimal("20"), status="filled", order_id="ord-sell-full-close"
     )
     ctx = _make_context(db_path, execution_service=exec_svc)
 
@@ -439,8 +441,7 @@ async def test_sell_uses_notional_when_size_missing(tmp_path, monkeypatch):
         leader_id="leader1", size_tokens=Decimal("20"), avg_entry_price=Decimal("0.40"),
     ))
 
-    monkeypatch.setitem(ENV, "ENABLE_COPY_DECISION_GATE", False)
-
+    # No _leader_sell_fraction — pipeline defaults to selling 100% of the position
     signal = _signal(side="SELL", price=0.50, size=0.0)
     signal["usdcSize"] = 2.0
     results = await execute_trades(ctx, "leader1", [signal], time.time())
@@ -449,7 +450,7 @@ async def test_sell_uses_notional_when_size_missing(tmp_path, monkeypatch):
 
     req = exec_svc.execute.await_args.args[0]
     assert req.side == "SELL"
-    assert req.amount == Decimal("4")
+    assert req.amount == Decimal("20")  # full position closed
 
 
 @pytest.mark.asyncio
@@ -471,6 +472,7 @@ async def test_sell_realized_pnl_falls_back_to_updated_position_or_signal_price(
     )
 
     signal = _signal(side="SELL", price=0.60, size=10.0)
+    signal["_leader_sell_fraction"] = 0.5  # sell 50% of 20-token position = 10 tokens
     results = await execute_trades(ctx, "leader1", [signal], time.time())
 
     assert len(results) == 1
@@ -505,6 +507,7 @@ async def test_sell_realized_pnl_falls_back_to_signal_price_when_position_prices
     ctx.positions_repo.apply_fill = MagicMock(return_value=None)
 
     signal = _signal(side="SELL", price=0.60, size=10.0)
+    signal["_leader_sell_fraction"] = 0.5  # sell 50% of 20-token position = 10 tokens
     results = await execute_trades(ctx, "leader1", [signal], time.time())
 
     assert len(results) == 1

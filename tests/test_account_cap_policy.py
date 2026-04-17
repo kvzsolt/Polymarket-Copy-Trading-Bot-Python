@@ -106,19 +106,20 @@ class TestHeadroomForBuy:
         assert not h.allow
         assert h.reason == "max_open_positions_reached"
 
-    def test_daily_loss_respects_env_drawdown_pct(self, monkeypatch):
+    def test_daily_loss_respects_env_drawdown_pct(self):
+        from types import SimpleNamespace
         import services.riskEngine as re
 
-        monkeypatch.setattr(
-            re,
-            "ENV",
-            {
-                **re.ENV,
-                "MAX_DAILY_DRAWDOWN_PCT": 5,
-                "MAX_LEADER_EXPOSURE_USDC": 500,
-                "MAX_MARKET_EXPOSURE_USDC": 300,
-                "MAX_CATEGORY_EXPOSURE_USDC": 600,
-            },
+        # headroom_for_buy reads drawdown/exposure limits from injected config,
+        # not from ENV — pass a mock config directly.
+        mock_config = SimpleNamespace(
+            risk=SimpleNamespace(
+                max_market_exposure_usdc=300,
+                max_category_exposure_usdc=600,
+                max_leader_exposure_usdc=500,
+                day_start_equity_usdc=0.0,
+                max_daily_drawdown_pct=5,
+            )
         )
         policy = re.get_policy("ignored")
         h = re.headroom_for_buy(
@@ -128,6 +129,7 @@ class TestHeadroomForBuy:
             daily_loss_usdc=Decimal("6"),
             day_start_equity_usdc=Decimal("100"),
             policy=policy,
+            config=mock_config,
         )
         assert not h.allow
         assert h.reason == "no_buy_headroom"

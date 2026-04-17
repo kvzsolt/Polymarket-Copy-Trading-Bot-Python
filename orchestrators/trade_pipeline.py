@@ -200,31 +200,31 @@ def _extract_leader_sell_fraction(raw_trade: dict[str, Any]) -> Decimal | None:
 
 
 def _derive_sell_tokens(signal: TradeSignal, position: Any, raw_trade: dict[str, Any]) -> Decimal:
-    """Derive the copied sell size from the signal payload.
+    """Derive the copied sell size from the leader's sell fraction.
 
     Preferred rule: sell the same fraction of *our* held shares as the leader
-    sold from *their* position. The trade monitor annotates SELL signals with
-    ``_leader_sell_fraction`` when it can reconstruct that ratio from the
-    leader's current remaining size.
+    sold from *their* position using the trade monitor's
+    ``_leader_sell_fraction`` annotation.
 
-    Fallbacks keep legacy behavior alive when that annotation is unavailable.
+    Legacy/raw trade feeds do not always include that annotation. In that case
+    we fall back to a full close of the currently held position instead of
+    skipping forever on an underspecified SELL signal.
     """
     leader_fraction = _extract_leader_sell_fraction(raw_trade)
+    if leader_fraction is None:
+        logger.info(
+            "sell_fraction_missing | cond=%s leader=%s — defaulting to full close",
+            signal.condition_id[:12],
+            raw_trade.get("_leader_id", "")[:12],
+            extra={
+                "type": "sell_fraction_missing",
+                "condition_id": signal.condition_id,
+            },
+        )
+        leader_fraction = Decimal("1")
     held_tokens = _to_decimal(getattr(position, "size_tokens", 0))
-    if leader_fraction is not None:
-        derived = held_tokens * leader_fraction
-        if derived > 0:
-            return derived
-
-    if signal.size > 0:
-        return signal.size
-
-    if signal.usdc_size > 0 and signal.price > 0:
-        derived = signal.usdc_size / signal.price
-        if derived > 0:
-            return derived
-
-    return held_tokens
+    derived = held_tokens * leader_fraction
+    return derived if derived > 0 else Decimal("0")
 
 
 async def _resolve_buy_risk_cap(
@@ -327,6 +327,211 @@ def normalize_signals(raw_signals: list[dict[str, Any]], leader_id: str) -> list
     return out
 
 
+async def _reconcile_one(
+    context: TradingContext,
+    record: dict,
+    side: str,
+) -> bool:
+    """Poll exchange and apply a single unconfirmed fill.
+
+    For BUY: creates the local position on confirmed fill.
+    For SELL: reduces/closes the local position on confirmed fill; if the FOK
+              was cancelled (no fill), removes the processed_trade row so the
+              SELL can be retried on the next monitor cycle.
+
+    Returns True if the order was reconciled (fill applied or retry unlocked).
+    """
+    order_id = record.get("order_id")
+    if not order_id:
+        return False
+
+    try:
+        fill_info = await context.execution_service._confirm_fill(order_id)
+    except Exception as exc:
+        logger.warning(
+            "reconcile_unconfirmed_poll_error | side=%s order_id=%s error=%s",
+            side,
+            order_id,
+            repr(exc),
+        )
+        return False
+
+    raw_fill = fill_info.get("size_matched") or fill_info.get("filled_size") or 0
+    try:
+        filled_amount = Decimal(str(raw_fill))
+    except Exception:
+        filled_amount = Decimal("0")
+
+    # FOK cancelled or timed out — no fill on the exchange.
+    # For SELL: remove the processed_trade row so the next cycle can retry.
+    # For BUY: leave the record; the position simply wasn't created.
+    if filled_amount <= 0:
+        if side == "SELL":
+            order_status = str(fill_info.get("status", "")).lower()
+            if order_status in {"cancelled", "canceled", "expired", ""} or not fill_info:
+                logger.info(
+                    "reconcile_sell_no_fill_unlock_retry | order_id=%s cond=%s",
+                    order_id,
+                    str(record.get("condition_id", ""))[:12],
+                    extra={
+                        "type": "reconcile_sell_no_fill_unlock",
+                        "order_id": order_id,
+                        "condition_id": record.get("condition_id"),
+                        "user_id": record["user_id"],
+                        "order_status": order_status,
+                    },
+                )
+                context.orders_repo.delete_processed_trade(record["trade_key"])
+                return True  # unlocked for retry — counts as reconciled
+        return False
+
+    avg_price_raw = (
+        fill_info.get("avg_price")
+        or fill_info.get("price")
+        or fill_info.get("average_price")
+        or 0
+    )
+    try:
+        avg_price = Decimal(str(avg_price_raw))
+    except Exception:
+        avg_price = Decimal("0")
+
+    if avg_price <= 0:
+        return False
+
+    try:
+        context.fills_repo.append_fill(
+            FillRecord(
+                user_id=record["user_id"],
+                leader_id=record.get("leader_id"),
+                order_id=order_id,
+                condition_id=record["condition_id"],
+                token_id=record["asset"],
+                side=side,
+                size_tokens=filled_amount,
+                price=avg_price,
+                fee=Decimal("0"),
+                fill_ts=int(time.time()),
+            ),
+            raw_payload={
+                "reconciled_from": "submitted_unconfirmed",
+                "copy_order_id": order_id,
+                "status": "reconciled",
+                "side": side,
+            },
+        )
+        if side == "SELL":
+            # Capture entry price before the position is reduced/deleted
+            pos = context.positions_repo.get_position(
+                record["user_id"], record["condition_id"], token_id=record["asset"]
+            )
+            entry_price = _to_optional_float(getattr(pos, "avg_entry_price", None)) if pos else None
+
+        context.positions_repo.apply_fill(
+            user_id=record["user_id"],
+            leader_id=record.get("leader_id"),
+            condition_id=record["condition_id"],
+            token_id=record["asset"],
+            side=side,
+            fill_size=filled_amount,
+            fill_price=avg_price,
+        )
+
+        if side == "SELL":
+            ep = entry_price or float(avg_price)
+            realized = (float(avg_price) - ep) * float(filled_amount)
+            context.pnl_tracker.record_sell(
+                condition_id=record["condition_id"],
+                price=float(avg_price),
+                size_tokens=float(filled_amount),
+                usdc_value=float(filled_amount * avg_price),
+                entry_price=ep,
+                realized_pnl=realized,
+                exit_reason="reconciled_sell",
+                leader_wallet=record.get("leader_id", ""),
+                event_slug="",
+                title="",
+            )
+
+    except Exception as exc:
+        logger.warning(
+            "reconcile_unconfirmed_apply_error | side=%s order_id=%s error=%s",
+            side,
+            order_id,
+            repr(exc),
+        )
+        return False
+
+    context.orders_repo.mark_processed_trade(
+        trade_key=record["trade_key"],
+        user_id=record["user_id"],
+        leader_id=record.get("leader_id"),
+        tx_hash=record.get("tx_hash"),
+        side=side,
+        asset=record["asset"],
+        condition_id=record["condition_id"],
+        status="filled_reconciled",
+        order_id=order_id,
+    )
+    logger.info(
+        "reconcile_unconfirmed_filled | side=%s order_id=%s cond=%s size=%.4f price=%.4f",
+        side,
+        order_id,
+        str(record.get("condition_id", ""))[:12],
+        float(filled_amount),
+        float(avg_price),
+        extra={
+            "type": "reconcile_unconfirmed_filled",
+            "side": side,
+            "order_id": order_id,
+            "condition_id": record.get("condition_id"),
+            "user_id": record["user_id"],
+            "filled_amount": str(filled_amount),
+            "avg_price": str(avg_price),
+        },
+    )
+    return True
+
+
+async def reconcile_submitted_unconfirmed(
+    context: TradingContext,
+    *,
+    max_age_seconds: float = 300.0,
+) -> int:
+    """Poll exchange for BUY and SELL orders stuck at submitted_unconfirmed.
+
+    BUY reconciliation: applies the fill and creates the local position so it
+    becomes visible before the current batch of SELL signals is processed.
+
+    SELL reconciliation: applies the fill to reduce/close the local position
+    and records realized PnL. If the FOK was cancelled (no fill), the
+    processed_trade row is deleted so the SELL can be retried next cycle.
+
+    Called at the top of each execute_trades invocation.
+    Returns the total number of orders reconciled (fills applied + retries unlocked).
+    """
+    if context.execution_service is None:
+        return 0
+
+    buy_pending = context.orders_repo.get_unconfirmed_buys(max_age_seconds=max_age_seconds)
+    sell_pending = context.orders_repo.get_unconfirmed_sells(max_age_seconds=max_age_seconds)
+    if not buy_pending and not sell_pending:
+        return 0
+
+    reconciled = 0
+    for record in buy_pending:
+        if await _reconcile_one(context, record, "BUY"):
+            reconciled += 1
+    for record in sell_pending:
+        if await _reconcile_one(context, record, "SELL"):
+            reconciled += 1
+
+    if reconciled:
+        await metrics.inc("reconcile_unconfirmed_total", value=float(reconciled))
+
+    return reconciled
+
+
 async def execute_trades(
     context: TradingContext,
     leader_id: str,
@@ -335,6 +540,15 @@ async def execute_trades(
 ) -> list[TradePipelineResult]:
     if context.execution_service is None:
         raise RuntimeError("TradingContext.execution_service is required")
+
+    # Reconcile any BUYs from previous cycles whose fill confirmation was delayed.
+    # This must happen before SELL processing so that positions are visible.
+    try:
+        n = await reconcile_submitted_unconfirmed(context)
+        if n:
+            logger.info("reconcile_unconfirmed_batch | count=%d", n)
+    except Exception as exc:
+        logger.warning("reconcile_unconfirmed_error | %s", repr(exc))
 
     normalized = normalize_signals(signals, leader_id)
     results: list[TradePipelineResult] = []
@@ -731,39 +945,27 @@ async def execute_trades(
             sell_entry_price = _to_optional_float(getattr(pos, "avg_entry_price", None))
 
             sell_tokens = _derive_sell_tokens(signal, pos, raw)
+
             if sell_tokens > pos.size_tokens:
                 sell_tokens = pos.size_tokens
 
-            leader_sell_fraction = _extract_leader_sell_fraction(raw)
-            if leader_sell_fraction is not None:
-                logger.info(
-                    "sell_ratio_applied | cond=%s leader=%s held=%.4f leader_fraction=%.6f sell_tokens=%.4f",
-                    signal.condition_id[:12],
-                    leader_id[:12],
-                    float(pos.size_tokens),
-                    float(leader_sell_fraction),
-                    float(sell_tokens),
-                    extra={
-                        "type": "sell_ratio_applied",
-                        "condition_id": signal.condition_id,
-                        "leader_id": leader_id,
-                        "position_size": float(pos.size_tokens),
-                        "leader_sell_fraction": float(leader_sell_fraction),
-                        "sell_tokens": float(sell_tokens),
-                    },
-                )
-            else:
-                logger.warning(
-                    "sell_ratio_missing_fallback",
-                    extra={
-                        "type": "sell_ratio_missing_fallback",
-                        "condition_id": signal.condition_id,
-                        "leader_id": leader_id,
-                        "position_size": float(pos.size_tokens),
-                        "signal_size": float(signal.size),
-                        "signal_usdc_size": float(signal.usdc_size),
-                    },
-                )
+            leader_sell_fraction = _extract_leader_sell_fraction(raw) or Decimal("1")
+            logger.info(
+                "sell_ratio_applied | cond=%s leader=%s held=%.4f leader_fraction=%.6f sell_tokens=%.4f",
+                signal.condition_id[:12],
+                leader_id[:12],
+                float(pos.size_tokens),
+                float(leader_sell_fraction),
+                float(sell_tokens),
+                extra={
+                    "type": "sell_ratio_applied",
+                    "condition_id": signal.condition_id,
+                    "leader_id": leader_id,
+                    "position_size": float(pos.size_tokens),
+                    "leader_sell_fraction": float(leader_sell_fraction),
+                    "sell_tokens": float(sell_tokens),
+                },
+            )
 
             if market_min_size > 0 and sell_tokens < market_min_size:
                 if pos.size_tokens < Decimal(str(market_min_size)):
@@ -847,6 +1049,7 @@ async def execute_trades(
                 asset=signal.token_id,
                 condition_id=signal.condition_id,
                 status="submitted_unconfirmed",
+                order_id=exec_result.order_id,
             )
             log_trade_submitted(
                 logger,

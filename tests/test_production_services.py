@@ -15,8 +15,48 @@ from config.env import SignatureType, WalletConfig, validate_wallet_config
 from services.backtest import BacktestConfig, BacktestEngine
 from services.executionService import ExecutionRequest, ExecutionService, _sanitize_submission_response
 from services.marketMetaService import MarketMetaService
-from services.riskEngine import PortfolioSnapshot, ProposedTrade, RiskEngine, policy_from_env
+from services.riskEngine import PortfolioSnapshot, ProposedTrade, RiskEngine, policy_from_config  # noqa: F401
 from utils.createClobClient import MarketMeta
+
+
+def _make_exec_config(min_share_price: float = 0.0, pending_ttl: int = 120) -> SimpleNamespace:
+    """Minimal AppConfig-shaped object for injecting into ExecutionService in tests."""
+    ec = SimpleNamespace(
+        min_share_price=min_share_price,
+        pending_submission_ttl_seconds=pending_ttl,
+        circuit_failure_threshold=5,
+        circuit_cooldown_seconds=60,
+        execution_require_fresh_book=False,
+        book_spread_mode="absolute_bps",
+        max_book_spread_bps=500,
+        max_book_spread_ticks=0,
+    )
+    return SimpleNamespace(execution=ec)
+
+
+def _make_risk_policy_config(
+    buy_max_amount: float = 100,
+    max_position_pct: float = 0.25,
+    max_market_exposure_usdc: float = 300,
+    max_category_exposure_usdc: float = 600,
+    max_leader_exposure_usdc: float = 500,
+    max_open_positions: int = 20,
+    max_daily_drawdown_pct: float = 20,
+    slippage_tolerance: float = 2.0,
+    kill_switch: bool = False,
+) -> SimpleNamespace:
+    """Minimal AppConfig-shaped object for policy_from_config() in tests."""
+    rc = SimpleNamespace(
+        max_market_exposure_usdc=max_market_exposure_usdc,
+        max_category_exposure_usdc=max_category_exposure_usdc,
+        max_leader_exposure_usdc=max_leader_exposure_usdc,
+        max_open_positions=max_open_positions,
+        max_daily_drawdown_pct=max_daily_drawdown_pct,
+        kill_switch=kill_switch,
+    )
+    ec = SimpleNamespace(slippage_tolerance=slippage_tolerance)
+    sc = SimpleNamespace(buy_max_amount=buy_max_amount, max_position_pct=max_position_pct)
+    return SimpleNamespace(risk=rc, execution=ec, sizing=sc)
 
 
 class TestWalletValidation:
@@ -123,7 +163,7 @@ class TestExecutionService:
     @pytest.mark.asyncio
     async def test_rejects_buy_below_min_share_price(self):
         clob = SimpleNamespace(get_price=AsyncMock(return_value={"price": "0.3"}))
-        svc = ExecutionService(clob, _MetaSvc(), _FeeSvc(), _Repo())
+        svc = ExecutionService(clob, _MetaSvc(), _FeeSvc(), _Repo(), config=_make_exec_config(min_share_price=0.4))
         req = ExecutionRequest(
             user_id="u1",
             leader_id="l1",
@@ -134,8 +174,7 @@ class TestExecutionService:
             reason="copy_trade",
             signal_id="sig_minprice",
         )
-        with patch("services.executionService.ENV", {"MIN_SHARE_PRICE": 0.4}):
-            res = await svc.execute(req)
+        res = await svc.execute(req)
 
         assert res.accepted is False
         assert res.status == "rejected"
@@ -143,7 +182,6 @@ class TestExecutionService:
         assert "min_share_price" in res.error
 
     @pytest.mark.asyncio
-    @patch("services.executionService.ENV", {"MIN_SHARE_PRICE": 0})
     async def test_executes_and_records_fill(self):
         clob = SimpleNamespace(
             get_price=AsyncMock(return_value={"price": "0.5"}),
@@ -152,7 +190,7 @@ class TestExecutionService:
             client=SimpleNamespace(get_order=lambda _order_id: {"status": "filled", "size_matched": "5", "avg_price": "0.5"}),
         )
         repo = _Repo()
-        svc = ExecutionService(clob, _MetaSvc(), _FeeSvc(), repo)
+        svc = ExecutionService(clob, _MetaSvc(), _FeeSvc(), repo, config=_make_exec_config(min_share_price=0))
         svc._confirm_fill = AsyncMock(return_value={"status": "filled", "size_matched": "5", "avg_price": "0.5"})
         req = ExecutionRequest(
             user_id="u1",
@@ -208,11 +246,10 @@ class TestExecutionService:
         assert len(stored["request"]["signal_id"]) < len(long_signal)
 
     @pytest.mark.asyncio
-    @patch("services.executionService.ENV", {"MIN_SHARE_PRICE": 0})
     async def test_duplicate_idempotency_is_ignored(self):
         clob = SimpleNamespace(get_price=AsyncMock(return_value={"price": "0.5"}))
         repo = _Repo()
-        svc = ExecutionService(clob, _MetaSvc(), _FeeSvc(), repo)
+        svc = ExecutionService(clob, _MetaSvc(), _FeeSvc(), repo, config=_make_exec_config(min_share_price=0))
         req = ExecutionRequest(
             user_id="u1",
             leader_id="l1",
@@ -259,9 +296,9 @@ class TestExecutionService:
             "response": {"status": "pending", "pending_since": 0},
         }
 
-        with patch("services.executionService.ENV", {"MIN_SHARE_PRICE": 0, "PENDING_SUBMISSION_TTL_SECONDS": 120}):
-            with patch("services.executionService._idempotency_key", return_value=key):
-                res = await svc.execute(req)
+        svc._config = _make_exec_config(min_share_price=0, pending_ttl=120)
+        with patch("services.executionService._idempotency_key", return_value=key):
+            res = await svc.execute(req)
 
         assert res.accepted is True
         assert res.status != "duplicate_ignored"
@@ -296,9 +333,9 @@ class TestExecutionService:
             "response": {"status": "submitted_unconfirmed", "pending_since": 0},
         }
 
-        with patch("services.executionService.ENV", {"MIN_SHARE_PRICE": 0, "PENDING_SUBMISSION_TTL_SECONDS": 120}):
-            with patch("services.executionService._idempotency_key", return_value=key):
-                res = await svc.execute(req)
+        svc._config = _make_exec_config(min_share_price=0, pending_ttl=120)
+        with patch("services.executionService._idempotency_key", return_value=key):
+            res = await svc.execute(req)
 
         assert res.accepted is True
         assert res.status != "duplicate_ignored"
@@ -313,7 +350,7 @@ class TestExecutionService:
             client=SimpleNamespace(get_order=lambda _order_id: {"status": "filled", "size_matched": "5", "avg_price": "0.5"}),
         )
         repo = _Repo()
-        svc = ExecutionService(clob, _MetaSvc(), _FeeSvc(), repo)
+        svc = ExecutionService(clob, _MetaSvc(), _FeeSvc(), repo, config=_make_exec_config(min_share_price=0, pending_ttl=120))
         req = ExecutionRequest(
             user_id="u1",
             leader_id="l1",
@@ -325,8 +362,7 @@ class TestExecutionService:
             signal_id="sig_pending_ttl",
         )
 
-        with patch("services.executionService.ENV", {"MIN_SHARE_PRICE": 0, "PENDING_SUBMISSION_TTL_SECONDS": 120}):
-            await svc.execute(req)
+        await svc.execute(req)
 
         pending_write = next(item for item in repo.history if item["response"].get("status") == "pending")
         pending_response = pending_write["response"]
@@ -357,7 +393,6 @@ class TestExecutionService:
         assert len(sanitized["error"]) < len(long_error)
 
     @pytest.mark.asyncio
-    @patch("services.executionService.ENV", {"MIN_SHARE_PRICE": 0})
     async def test_ambiguous_post_submit_returns_submitted_unconfirmed(self):
         clob = SimpleNamespace(
             get_price=AsyncMock(return_value={"price": "0.5"}),
@@ -365,7 +400,7 @@ class TestExecutionService:
             post_signed_order=AsyncMock(side_effect=RuntimeError("timeout after submit")),
         )
         repo = _Repo()
-        svc = ExecutionService(clob, _MetaSvc(), _FeeSvc(), repo)
+        svc = ExecutionService(clob, _MetaSvc(), _FeeSvc(), repo, config=_make_exec_config(min_share_price=0))
         req = ExecutionRequest(
             user_id="u1",
             leader_id="l1",
@@ -387,18 +422,17 @@ class TestExecutionService:
 class TestRiskEngine:
     def test_policy_rejects_over_trade_limit(self):
         engine = RiskEngine()
-        with patch("services.riskEngine.ENV", {
-            "BUY_MAX_AMOUNT": 100,
-            "MAX_POSITION_PCT": 0.25,
-            "MAX_MARKET_EXPOSURE_USDC": 300,
-            "MAX_CATEGORY_EXPOSURE_USDC": 600,
-            "MAX_LEADER_EXPOSURE_USDC": 500,
-            "MAX_OPEN_POSITIONS": 20,
-            "MAX_DAILY_DRAWDOWN_PCT": 20,
-            "SLIPPAGE_TOLERANCE": 2.0,
-            "KILL_SWITCH": False,
-        }):
-            policy = policy_from_env()
+        policy = policy_from_config(_make_risk_policy_config(
+            buy_max_amount=100,
+            max_position_pct=0.25,
+            max_market_exposure_usdc=300,
+            max_category_exposure_usdc=600,
+            max_leader_exposure_usdc=500,
+            max_open_positions=20,
+            max_daily_drawdown_pct=20,
+            slippage_tolerance=2.0,
+            kill_switch=False,
+        ))
         portfolio = PortfolioSnapshot(
             equity_usdc=Decimal("1000"),
             daily_drawdown_pct=Decimal("0"),

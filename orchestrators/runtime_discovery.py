@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
+from typing import TYPE_CHECKING
 
-from config.env import ENV
 from orchestrators.leader_registry import LeaderRegistry
 from services.metrics import metrics
 from utils.logger import get_logger, redact_error_detail
+
+if TYPE_CHECKING:
+    from config.app_config import AppConfig
 
 logger = get_logger("RuntimeDiscovery")
 
@@ -15,13 +18,15 @@ async def wait_for_active_leaders(
     registry: LeaderRegistry,
     configured_leaders: list[str],
     refresh_interval: int,
+    *,
+    config: AppConfig,
 ) -> list[str]:
     state = await registry.refresh(configured_leaders)
     if state.active_monitored:
         return state.active_monitored
 
     if not configured_leaders:
-        if ENV.get("LEADER_AUTO", False):
+        if config.leader.leader_auto:
             logger.error(
                 "LEADER_AUTO is enabled, but discovery did not find any eligible leaders "
                 "to promote. Relax MIN_LEADER_* or AUTO_DISCOVER_MIN_SCORE, or add "

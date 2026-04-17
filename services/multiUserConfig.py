@@ -3,14 +3,12 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from config.env import (
-    ENV,
-    SignatureType,
-    WalletConfig,
-    build_wallet_config,
-    get_funder_address,
-)
+from config.env import SignatureType, WalletConfig
+
+if TYPE_CHECKING:
+    from config.app_config import AppConfig
 
 
 @dataclass(frozen=True)
@@ -34,13 +32,13 @@ def _parse_signature_type(value) -> SignatureType:
     return SignatureType(int(value))
 
 
-def _runtime_user_from_payload(payload: dict) -> RuntimeUser:
+def _runtime_user_from_payload(payload: dict, config: AppConfig) -> RuntimeUser:
     wallet = WalletConfig(
         private_key=str(payload["private_key"]),
-        chain_id=int(payload.get("chain_id", 137)),
-        signature_type=_parse_signature_type(payload.get("signature_type", 0)),
+        chain_id=int(payload.get("chain_id", config.wallet.chain_id)),
+        signature_type=_parse_signature_type(payload.get("signature_type", int(config.wallet.signature_type))),
         funder_address=str(payload["funder_address"]),
-        polygon_rpc_url=str(payload.get("polygon_rpc_url", ENV.get("RPC_URL"))),
+        polygon_rpc_url=str(payload.get("polygon_rpc_url", config.network.rpc_url)),
     )
     follows: dict[str, UserFollowConfig] = {}
     for item in payload.get("follows", []):
@@ -48,10 +46,10 @@ def _runtime_user_from_payload(payload: dict) -> RuntimeUser:
             user_id=str(payload["user_id"]),
             leader_id=str(item["leader_id"]),
             enabled=bool(item.get("enabled", True)),
-            allocation_pct=float(item.get("allocation_pct", 0.05)),
-            max_trade_usdc=float(item.get("max_trade_usdc", ENV.get("BUY_MAX_AMOUNT", 100))),
+            allocation_pct=float(item.get("allocation_pct", config.sizing.percentage / 100.0)),
+            max_trade_usdc=float(item.get("max_trade_usdc", config.sizing.buy_max_amount)),
             max_market_exposure_usdc=float(
-                item.get("max_market_exposure_usdc", ENV.get("MAX_MARKET_EXPOSURE_USDC", 300))
+                item.get("max_market_exposure_usdc", config.risk.max_market_exposure_usdc)
             ),
         )
         follows[cfg.leader_id] = cfg
@@ -59,27 +57,34 @@ def _runtime_user_from_payload(payload: dict) -> RuntimeUser:
     return RuntimeUser(user_id=str(payload["user_id"]), wallet=wallet, follows=follows)
 
 
-def load_runtime_users(leader_wallets: list[str]) -> list[RuntimeUser]:
+def load_runtime_users(leader_wallets: list[str], config: AppConfig) -> list[RuntimeUser]:
     """Load per-user follow configuration.
 
-    Fallback behavior keeps existing single-user flow.
+    Fallback behavior keeps the existing single-user flow but sources defaults
+    from the strongly typed AppConfig instead of the legacy ENV snapshot.
     """
-    config_file = str(ENV.get("MULTI_USER_CONFIG_FILE") or "").strip()
+    config_file = config.discovery.multi_user_config_file.strip()
     if not config_file:
-        base_wallet = build_wallet_config()
+        base_wallet = WalletConfig(
+            private_key=config.wallet.private_key,
+            chain_id=config.wallet.chain_id,
+            signature_type=config.wallet.signature_type,
+            funder_address=config.wallet.funder_address,
+            polygon_rpc_url=config.wallet.polygon_rpc_url,
+        )
         follows = {
             leader: UserFollowConfig(
                 user_id="default",
                 leader_id=leader,
                 enabled=True,
-                allocation_pct=float(ENV.get("PERCENTAGE", 5.0)) / 100.0,
-                max_trade_usdc=float(ENV.get("BUY_MAX_AMOUNT", 100)),
-                max_market_exposure_usdc=float(ENV.get("MAX_MARKET_EXPOSURE_USDC", 300)),
+                allocation_pct=config.sizing.percentage / 100.0,
+                max_trade_usdc=config.sizing.buy_max_amount,
+                max_market_exposure_usdc=config.risk.max_market_exposure_usdc,
             )
             for leader in leader_wallets
         }
-        return [RuntimeUser(user_id=get_funder_address() or "default", wallet=base_wallet, follows=follows)]
+        return [RuntimeUser(user_id=config.wallet.funder_address or "default", wallet=base_wallet, follows=follows)]
 
     payload = json.loads(Path(config_file).read_text(encoding="utf-8"))
-    users = [_runtime_user_from_payload(p) for p in payload.get("users", [])]
+    users = [_runtime_user_from_payload(p, config) for p in payload.get("users", [])]
     return users

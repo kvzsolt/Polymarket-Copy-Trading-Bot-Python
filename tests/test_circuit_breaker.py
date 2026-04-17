@@ -83,12 +83,12 @@ class TestHalfOpen:
         assert cb.allow_request() is False
 
     def test_half_open_limits_probes(self):
-        cb = _make(threshold=2, cooldown=0.1)
+        cb = CircuitBreaker("test", failure_threshold=2, cooldown_seconds=0.1, half_open_max_probes=1)
         cb.record_failure()
         cb.record_failure()
         cb._last_failure_time = time.monotonic() - 1.0
 
-        assert cb.allow_request() is True  # first probe
+        assert cb.allow_request() is True  # first probe (1 of 1 allowed)
         assert cb.allow_request() is False  # second probe blocked
 
 

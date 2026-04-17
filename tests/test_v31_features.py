@@ -83,7 +83,13 @@ class TestPositionExitSystem(unittest.TestCase):
     """Test the advanced exit system in PositionManager."""
 
     def _make_pm(self, **env_overrides):
-        """Create a fresh PositionManager with custom ENV."""
+        """Create a fresh PositionManager with the given feature flag overrides.
+
+        PositionManager no longer reads module-level ENV; it takes its config
+        via constructor args.  We build a minimal namespace that maps the old
+        ENV-style keys directly onto the private attributes the constructor
+        would otherwise set.
+        """
         defaults = {
             'ENABLE_RISK_MGMT': True,
             'STOP_LOSS_PCT': 20,
@@ -105,11 +111,44 @@ class TestPositionExitSystem(unittest.TestCase):
         }
         defaults.update(env_overrides)
 
-        import importlib
         import services.positionManager as pm_mod
-        with patch.object(pm_mod, 'ENV', defaults):
-            # Force a fresh instance
-            return pm_mod.PositionManager()
+
+        def _csv_floats(s):
+            if not s:
+                return []
+            parts = [p.strip() for p in str(s).split(',') if p.strip()]
+            return [float(p) for p in parts]
+
+        pm = pm_mod.PositionManager()  # bare defaults branch
+
+        # Override all private attrs to match the requested flags.
+        pm._enabled = bool(defaults['ENABLE_RISK_MGMT'])
+        pm._sl_pct = float(defaults['STOP_LOSS_PCT']) / 100.0
+        pm._tp_pct = float(defaults['TAKE_PROFIT_PCT']) / 100.0
+
+        enable_profit_lock = bool(defaults['ENABLE_PROFIT_LOCK'])
+        pm._profit_lock_mode = 'advanced' if enable_profit_lock else 'disabled'
+        pm._profit_lock_trigger = float(defaults['PROFIT_LOCK_TRIGGER_PCT']) / 100.0
+        pm._profit_lock_sell_fraction = float(defaults['PROFIT_LOCK_SELL_FRACTION'])
+
+        pm._enable_near_max = bool(defaults['ENABLE_NEAR_MAX_EXIT'])
+        pm._near_max_exit = float(defaults['NEAR_MAX_PRICE_EXIT'])
+        pm._near_max_warn = float(defaults['NEAR_MAX_PRICE_WARN'])
+        pm._near_max_warn_ratio = float(defaults['NEAR_MAX_PRICE_WARN_TRIM_RATIO'])
+
+        pm._enable_trailing = bool(defaults['ENABLE_TRAILING_STOP'])
+        pm._trailing_activation_pct = float(defaults['TRAILING_ACTIVATION_PCT']) / 100.0
+        pm._trailing_distance = float(defaults['TRAILING_DISTANCE'])
+
+        pm._enable_staged_tp = bool(defaults['ENABLE_STAGED_TP'])
+        raw_levels = _csv_floats(defaults['STAGED_TP_LEVELS'])
+        raw_fractions = _csv_floats(defaults['STAGED_TP_FRACTIONS'])
+        pm._staged_levels = [l / 100.0 if l > 1.0 else l for l in raw_levels] or [0.30, 0.50]
+        pm._staged_fractions = raw_fractions or [0.25, 0.35]
+
+        pm._enable_leader_divergence = bool(defaults['ENABLE_LEADER_DIVERGENCE_EXIT'])
+
+        return pm
 
     def _add_position(self, pm, entry_price=0.50, size=100.0, cid="test_cid_001"):
         pm.track_buy(
@@ -374,16 +413,15 @@ class TestLeaderScoringIntegration(unittest.TestCase):
 
     def test_scoring_without_discovery(self):
         import services.leaderScoringService as ls_mod
-        with patch.object(ls_mod, 'ENV', self._mock_env()):
-            scorer = ls_mod.LeaderScoringService(discovery_service=None)
-            result = scorer.score_leader(
-                "0x1234567890abcdef1234567890abcdef12345678",
-                leader_balance=300.0,
-                analytics={"win_rate": 65.0, "net_pnl": 50.0},
-                recent_trade_count=5,
-            )
-            self.assertGreater(result.score, 0.0)
-            self.assertEqual(result.discovery_score, 0.0)
+        scorer = ls_mod.LeaderScoringService(discovery_service=None)
+        result = scorer.score_leader(
+            "0x1234567890abcdef1234567890abcdef12345678",
+            leader_balance=300.0,
+            analytics={"win_rate": 65.0, "net_pnl": 50.0},
+            recent_trade_count=5,
+        )
+        self.assertGreater(result.score, 0.0)
+        self.assertEqual(result.discovery_score, 0.0)
 
     def test_scoring_with_discovery(self):
         from services.traderDiscoveryService import TraderProfile
@@ -399,22 +437,20 @@ class TestLeaderScoringIntegration(unittest.TestCase):
         mock_disc = MagicMock()
         mock_disc.get_cached_profile.return_value = mock_profile
 
-        with patch.object(ls_mod, 'ENV', self._mock_env()):
-            scorer = ls_mod.LeaderScoringService(discovery_service=mock_disc)
-            result = scorer.score_leader(
-                "0x1234567890abcdef1234567890abcdef12345678",
-                leader_balance=300.0,
-            )
-            self.assertGreater(result.discovery_score, 0.0)
-            self.assertIn("discovery_pnl", result.details)
+        scorer = ls_mod.LeaderScoringService(discovery_service=mock_disc)
+        result = scorer.score_leader(
+            "0x1234567890abcdef1234567890abcdef12345678",
+            leader_balance=300.0,
+        )
+        self.assertGreater(result.discovery_score, 0.0)
+        self.assertIn("discovery_pnl", result.details)
 
     def test_trust_multiplier(self):
         import services.leaderScoringService as ls_mod
-        with patch.object(ls_mod, 'ENV', self._mock_env()):
-            scorer = ls_mod.LeaderScoringService()
-            self.assertAlmostEqual(scorer.trust_multiplier(0.0), 0.70)
-            self.assertAlmostEqual(scorer.trust_multiplier(1.0), 1.25)
-            self.assertAlmostEqual(scorer.trust_multiplier(0.5), 0.975)
+        scorer = ls_mod.LeaderScoringService()
+        self.assertAlmostEqual(scorer.trust_multiplier(0.0), 0.70)
+        self.assertAlmostEqual(scorer.trust_multiplier(1.0), 1.25)
+        self.assertAlmostEqual(scorer.trust_multiplier(0.5), 0.975)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -435,9 +471,36 @@ class TestFeatureFlags(unittest.TestCase):
             'ENABLE_LEADER_DIVERGENCE_EXIT': False,
         }
         defaults.update(overrides)
+
         import services.positionManager as pm_mod
-        with patch.object(pm_mod, 'ENV', defaults):
-            return pm_mod.PositionManager()
+
+        def _csv_floats(s):
+            if not s:
+                return []
+            parts = [p.strip() for p in str(s).split(',') if p.strip()]
+            return [float(p) for p in parts]
+
+        pm = pm_mod.PositionManager()
+        pm._enabled = bool(defaults['ENABLE_RISK_MGMT'])
+        pm._sl_pct = float(defaults['STOP_LOSS_PCT']) / 100.0
+        pm._tp_pct = float(defaults['TAKE_PROFIT_PCT']) / 100.0
+        pm._profit_lock_mode = 'advanced' if defaults['ENABLE_PROFIT_LOCK'] else 'disabled'
+        pm._profit_lock_trigger = float(defaults['PROFIT_LOCK_TRIGGER_PCT']) / 100.0
+        pm._profit_lock_sell_fraction = float(defaults['PROFIT_LOCK_SELL_FRACTION'])
+        pm._enable_near_max = bool(defaults['ENABLE_NEAR_MAX_EXIT'])
+        pm._near_max_exit = float(defaults['NEAR_MAX_PRICE_EXIT'])
+        pm._near_max_warn = float(defaults['NEAR_MAX_PRICE_WARN'])
+        pm._near_max_warn_ratio = float(defaults['NEAR_MAX_PRICE_WARN_TRIM_RATIO'])
+        pm._enable_trailing = bool(defaults['ENABLE_TRAILING_STOP'])
+        pm._trailing_activation_pct = float(defaults['TRAILING_ACTIVATION_PCT']) / 100.0
+        pm._trailing_distance = float(defaults['TRAILING_DISTANCE'])
+        pm._enable_staged_tp = bool(defaults['ENABLE_STAGED_TP'])
+        raw_levels = _csv_floats(defaults['STAGED_TP_LEVELS'])
+        raw_fractions = _csv_floats(defaults['STAGED_TP_FRACTIONS'])
+        pm._staged_levels = [l / 100.0 if l > 1.0 else l for l in raw_levels] or [0.30, 0.50]
+        pm._staged_fractions = raw_fractions or [0.25, 0.35]
+        pm._enable_leader_divergence = bool(defaults['ENABLE_LEADER_DIVERGENCE_EXIT'])
+        return pm
 
     def test_all_disabled_sl_still_works(self):
         pm = self._make_pm()
