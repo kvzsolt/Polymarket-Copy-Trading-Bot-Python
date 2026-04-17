@@ -6,8 +6,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+import services.tradeMonitor as trade_monitor_module
 from services.tradeMonitor import (
     LeaderMonitorState,
+    _guarded_leader_fetch,
     _monitor_loop_healthy,
     fetch_trade_data,
     init,
@@ -19,6 +21,17 @@ from storage.sqlite.cursors_repo import TradeCursor
 _MOCK_READINESS = MagicMock()
 _MOCK_CONFIG = MagicMock()
 _MOCK_CONFIG.polling.fetch_interval = 5
+
+
+@pytest.fixture(autouse=True)
+def _reset_trade_monitor_fetch_guards():
+    trade_monitor_module._LEADER_FETCH_LOCKS.clear()
+    trade_monitor_module._LEADER_FETCH_LAST_TS.clear()
+    trade_monitor_module._LEADER_FETCH_INFLIGHT.clear()
+    yield
+    trade_monitor_module._LEADER_FETCH_LOCKS.clear()
+    trade_monitor_module._LEADER_FETCH_LAST_TS.clear()
+    trade_monitor_module._LEADER_FETCH_INFLIGHT.clear()
 
 
 @pytest.mark.asyncio
@@ -328,3 +341,44 @@ async def test_trade_monitor_skips_heartbeat_when_monitor_is_unhealthy():
             await trade_monitor({"leaderWallet": leader_wallet, "FETCH_INTERVAL": 1}, on_trade, readiness_tracker=MagicMock(), config=MagicMock())
 
     heartbeat_tick.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_guarded_leader_fetch_singleflights_same_wallet_and_kind():
+    calls: list[str] = []
+
+    async def _fake_fetch(url: str, *, silent: bool = False):
+        calls.append(url)
+        await asyncio.sleep(0.01)
+        return [{"ok": True, "url": url}]
+
+    wallet = "0xabc"
+    url = f"https://data-api.polymarket.com/activity?user={wallet}&limit=50&offset=0"
+
+    with patch("services.tradeMonitor.fetch_data", side_effect=_fake_fetch):
+        first, second = await asyncio.gather(
+            _guarded_leader_fetch("activity", wallet, url),
+            _guarded_leader_fetch("activity", wallet, url),
+        )
+
+    assert len(calls) == 1
+    assert first == second
+
+
+@pytest.mark.asyncio
+async def test_guarded_leader_fetch_keeps_different_wallets_parallel():
+    calls: list[str] = []
+
+    async def _fake_fetch(url: str, *, silent: bool = False):
+        calls.append(url)
+        await asyncio.sleep(0.01)
+        return [{"ok": True, "url": url}]
+
+    with patch("services.tradeMonitor.fetch_data", side_effect=_fake_fetch):
+        first, second = await asyncio.gather(
+            _guarded_leader_fetch("activity", "0xaaa", "https://data-api.polymarket.com/activity?user=0xaaa&limit=50&offset=0"),
+            _guarded_leader_fetch("activity", "0xbbb", "https://data-api.polymarket.com/activity?user=0xbbb&limit=50&offset=0"),
+        )
+
+    assert len(calls) == 2
+    assert first[0]["url"] != second[0]["url"]
