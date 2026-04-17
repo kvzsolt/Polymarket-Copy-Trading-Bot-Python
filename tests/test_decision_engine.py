@@ -28,7 +28,7 @@ def _leader(score: float = 0.9) -> LeaderScore:
 
 
 class TestCopyDecisionService:
-    def test_buy_enforces_min_5_shares(self):
+    def test_buy_enforces_min_shares_config(self):
         svc = CopyDecisionService()
         trade = {"price": 0.40, "timestamp": time.time(), "usdcSize": 20}
         decision = svc.decide_buy(
@@ -40,8 +40,9 @@ class TestCopyDecisionService:
             market_min_size=0.0,
         )
         assert decision.allow is True
+        # Polymarket CLOB hard-floor is 5 shares
         assert decision.target_size_tokens == pytest.approx(5.0)
-        assert decision.target_notional_usdc == pytest.approx(2.0)
+        assert decision.target_notional_usdc == pytest.approx(2.0)  # 5 * 0.40
 
     def test_buy_enforces_min_1_notional(self):
         svc = CopyDecisionService()

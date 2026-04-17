@@ -471,7 +471,7 @@ def _build_env_snapshot() -> dict[str, object]:
     # Max fraction of our balance to risk on a single trade (0.0–1.0)
     'MAX_POSITION_PCT': _float('MAX_POSITION_PCT', '0.45'),
     # Decision-first sizing floor controls
-    'COPY_MIN_SHARES': _float('COPY_MIN_SHARES', '1'),
+    'COPY_MIN_SHARES': _float('COPY_MIN_SHARES', '5'),
     'COPY_MIN_NOTIONAL_USDC': _float('COPY_MIN_NOTIONAL_USDC', '1'),
     'COPY_SIZE_DECIMALS': _int('COPY_SIZE_DECIMALS', '4'),
     'TRUST_SIZE_MULTIPLIER_MIN': _float('TRUST_SIZE_MULTIPLIER_MIN', '0.50'),
