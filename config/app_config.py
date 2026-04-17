@@ -220,7 +220,7 @@ class ClobConfig:
 
 @dataclass(frozen=True)
 class PollingConfig:
-    fetch_interval: int
+    fetch_interval: float
     aggregate_signal_window_seconds: float
     risk_check_interval: int
     redeem_check_interval: int
@@ -613,8 +613,8 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
 
     # Polling / cadence
     polling = PollingConfig(
-        fetch_interval=p.int_("FETCH_INTERVAL", "1"),
-        aggregate_signal_window_seconds=p.float_("AGGREGATE_SIGNAL_WINDOW_SECONDS", "2.0"),
+        fetch_interval=p.float_("FETCH_INTERVAL", "0.25"),
+        aggregate_signal_window_seconds=p.float_("AGGREGATE_SIGNAL_WINDOW_SECONDS", "0.1"),
         risk_check_interval=p.int_("RISK_CHECK_INTERVAL", "15"),
         redeem_check_interval=p.int_("REDEEM_CHECK_INTERVAL", "60"),
         discovery_refresh_interval_seconds=p.int_("DISCOVERY_REFRESH_INTERVAL_SECONDS", "300"),

@@ -75,7 +75,7 @@ class TestHappyPath:
         assert cfg.sizing.percentage == pytest.approx(2.0)
         assert cfg.sizing.max_position_pct == pytest.approx(0.45)
         # Polling defaults.
-        assert cfg.polling.fetch_interval == 1
+        assert cfg.polling.fetch_interval == pytest.approx(0.25)
         # Execution defaults.
         assert cfg.execution.max_retries == 3
         assert cfg.execution.paper_trade_only is False
