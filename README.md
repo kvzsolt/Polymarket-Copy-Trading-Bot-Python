@@ -98,6 +98,3 @@ Contributions are absolutely welcome! Whether it's a bug fix, a new feature, or 
 5. **Open a Pull Request** against the main repository.
 
 Please ensure your code passes the existing test suite (`pytest`) and adheres to the project's formatting guidelines.
-
----
-*Built for the degens who want to sleep at night.* ✨
