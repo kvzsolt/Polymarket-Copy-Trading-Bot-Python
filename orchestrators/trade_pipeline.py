@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 import time
 import traceback as _tb
@@ -30,6 +31,44 @@ from utils.logger import (
 )
 
 logger = get_logger("TradePipeline")
+
+
+def _positive_int_env(name: str, default: int) -> int:
+    raw = ENV.get(name, default)
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = default
+    return max(1, value)
+
+
+
+def _analysis_semaphore(context: TradingContext) -> asyncio.Semaphore:
+    semaphore = context.extra.get("_trade_analysis_semaphore")
+    if semaphore is None:
+        semaphore = asyncio.Semaphore(_positive_int_env("TRADE_ANALYSIS_CONCURRENCY", 6))
+        context.extra["_trade_analysis_semaphore"] = semaphore
+    return semaphore
+
+
+
+def _reconcile_semaphore(context: TradingContext) -> asyncio.Semaphore:
+    semaphore = context.extra.get("_reconcile_unconfirmed_semaphore")
+    if semaphore is None:
+        semaphore = asyncio.Semaphore(_positive_int_env("RECONCILE_CONCURRENCY", 4))
+        context.extra["_reconcile_unconfirmed_semaphore"] = semaphore
+    return semaphore
+
+
+async def _resolve_market_min_size(context: TradingContext, token_id: str) -> float:
+    market_min_size = float(ENV.get("MIN_ORDER_SIZE", 0.00001) or 0.00001)
+    try:
+        if hasattr(context, 'execution_service') and context.execution_service:
+            meta = await context.execution_service.market_meta_service.get(token_id)
+            market_min_size = max(market_min_size, float(getattr(meta, "min_order_size", 0) or 0))
+    except Exception:
+        pass
+    return market_min_size
 
 
 @dataclass
@@ -518,13 +557,27 @@ async def reconcile_submitted_unconfirmed(
     if not buy_pending and not sell_pending:
         return 0
 
-    reconciled = 0
-    for record in buy_pending:
-        if await _reconcile_one(context, record, "BUY"):
-            reconciled += 1
-    for record in sell_pending:
-        if await _reconcile_one(context, record, "SELL"):
-            reconciled += 1
+    sem = _reconcile_semaphore(context)
+
+    async def _reconcile_batch(records: list[dict[str, Any]], side: str) -> int:
+        async def _run(record: dict[str, Any]) -> bool:
+            async with sem:
+                return await _reconcile_one(context, record, side)
+
+        if not records:
+            return 0
+        results = await asyncio.gather(*(_run(record) for record in records), return_exceptions=True)
+        batch_reconciled = 0
+        for result in results:
+            if isinstance(result, Exception):
+                logger.warning("reconcile_batch_error | side=%s error=%s", side, repr(result))
+                continue
+            if result:
+                batch_reconciled += 1
+        return batch_reconciled
+
+    reconciled = await _reconcile_batch(buy_pending, "BUY")
+    reconciled += await _reconcile_batch(sell_pending, "SELL")
 
     if reconciled:
         await metrics.inc("reconcile_unconfirmed_total", value=float(reconciled))
@@ -553,6 +606,53 @@ async def execute_trades(
     normalized = normalize_signals(signals, leader_id)
     results: list[TradePipelineResult] = []
 
+    leader_tier_resolved = _resolve_leader_tier(context, leader_id)
+    if ENV.get("PAPER_TRADE_ONLY", False) and leader_tier_resolved == "live_follow":
+        logger.info(
+            "paper_trade_only_override_all",
+            extra={
+                "user_id": context.user_id,
+                "leader_id": leader_id,
+                "original_tier": leader_tier_resolved,
+            },
+        )
+        leader_tier_resolved = "paper_follow"
+
+    pnl_metrics = context.pnl_tracker.metrics() if hasattr(context.pnl_tracker, 'metrics') else {}
+    leader_score = context.leader_scorer.score_leader(
+        leader_id,
+        analytics={
+            "net_pnl": float(pnl_metrics.get("net_pnl", 0.0) or 0.0),
+            "win_rate": float(pnl_metrics.get("win_rate", 50.0) or 50.0),
+        },
+        recent_trade_count=len(signals),
+    )
+
+    market_min_size_by_token: dict[str, float] = {}
+    if normalized:
+        analysis_sem = _analysis_semaphore(context)
+
+        async def _prefetch_market_min(signal: TradeSignal) -> tuple[str, float]:
+            async with analysis_sem:
+                return signal.token_id, await _resolve_market_min_size(context, signal.token_id)
+
+        prefetch_results = await asyncio.gather(
+            *(_prefetch_market_min(signal) for signal, _ in normalized),
+            return_exceptions=True,
+        )
+        for item, result in zip(normalized, prefetch_results):
+            signal, _ = item
+            if isinstance(result, Exception):
+                logger.warning(
+                    "market_min_prefetch_error | token=%s error=%s",
+                    signal.token_id,
+                    repr(result),
+                )
+                market_min_size_by_token[signal.token_id] = float(ENV.get("MIN_ORDER_SIZE", 0.00001) or 0.00001)
+                continue
+            token_id, market_min_size = result
+            market_min_size_by_token[token_id] = market_min_size
+
     for signal, raw in normalized:
         labels = {"user_id": context.user_id, "leader_id": leader_id}
         sell_entry_price: float | None = None
@@ -574,24 +674,7 @@ async def execute_trades(
         # print_new_trade_detected removed: tradeMonitor already prints on detection
 
         # --- Tier gate: check follow tier before costly decision/execution ---
-        leader_tier = _resolve_leader_tier(context, leader_id)
-
-        # Global paper-trade-only override: if PAPER_TRADE_ONLY=true, treat every
-        # signal as paper_follow regardless of the leader's actual tier. This allows
-        # safe dry-run verification without touching live order submission.
-        if ENV.get("PAPER_TRADE_ONLY", False) and leader_tier == "live_follow":
-            logger.info(
-                "paper_trade_only_override",
-                extra={
-                    "user_id": context.user_id,
-                    "leader_id": leader_id,
-                    "trade_key": trade_key,
-                    "side": signal.side,
-                    "condition_id": signal.condition_id,
-                    "original_tier": leader_tier,
-                },
-            )
-            leader_tier = "paper_follow"
+        leader_tier = leader_tier_resolved
 
         if leader_tier == "watchlist" and ENV.get("ENABLE_TIER_GATE_WATCHLIST", True):
             if ENV.get("ENABLE_TIER_GATE_WATCHLIST_LOG", True):
@@ -639,28 +722,13 @@ async def execute_trades(
 
         # --- Decision gate: score the leader and this specific trade ---
         copy_decision_svc = context.copy_decision_service
-        leader_scorer = context.leader_scorer
-
-        # Score the leader using available context
-        pnl_metrics = context.pnl_tracker.metrics() if hasattr(context.pnl_tracker, 'metrics') else {}
-        leader_score = leader_scorer.score_leader(
-            leader_id,
-            analytics={
-                "net_pnl": float(pnl_metrics.get("net_pnl", 0.0) or 0.0),
-                "win_rate": float(pnl_metrics.get("win_rate", 50.0) or 50.0),
-            },
-            recent_trade_count=len(signals),
-        )
 
         # Fetch live price for decision scoring
         live_price = float(signal.price or 0)
-        market_min_size = float(ENV.get("MIN_ORDER_SIZE", 0.00001) or 0.00001)
-        try:
-            if hasattr(context, 'execution_service') and context.execution_service:
-                meta = await context.execution_service.market_meta_service.get(signal.token_id)
-                market_min_size = max(market_min_size, float(getattr(meta, "min_order_size", 0) or 0))
-        except Exception:
-            pass
+        market_min_size = market_min_size_by_token.get(
+            signal.token_id,
+            float(ENV.get("MIN_ORDER_SIZE", 0.00001) or 0.00001),
+        )
 
         if signal.side == "BUY":
             sizing_result = context.copy_notional(signal.usdc_size)
