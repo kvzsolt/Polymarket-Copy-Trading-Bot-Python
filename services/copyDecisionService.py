@@ -211,15 +211,23 @@ class CopyDecisionService:
             target_size_tokens = max(target_size_tokens, market_min_size)
 
         target_size_tokens = self._ceil(target_size_tokens, decimals)
-        target_notional_usdc = target_size_tokens * live_price
+
+        # For BUY execution the downstream order amount is USDC notional, not
+        # token count. To reliably buy `target_size_tokens` under slippage
+        # protection, we must carry the worst-case protected notional forward,
+        # not just the live-price notional. Otherwise the decision layer can
+        # approve 5 shares while execution receives too little USDC to buy 5
+        # shares at the protected price and rejects it as below min_order_size.
+        live_notional_usdc = target_size_tokens * live_price
+        required_worst_notional = target_size_tokens * worst_price
+        target_notional_usdc = required_worst_notional
 
         # Cap check must use worst-case notional (what we might actually pay).
-        required_worst_notional = target_size_tokens * worst_price
 
         if required_worst_notional > max_notional_usdc + 1e-9:
             # Try to floor size to fit cap at worst price.
             floored_size_tokens = self._floor(max_notional_usdc / worst_price, decimals)
-            floored_notional_usdc = floored_size_tokens * live_price
+            floored_live_notional_usdc = floored_size_tokens * live_price
             floored_required_worst = floored_size_tokens * worst_price
 
             floored_meets_mins = (
@@ -231,7 +239,8 @@ class CopyDecisionService:
 
             if floored_meets_mins:
                 target_size_tokens = floored_size_tokens
-                target_notional_usdc = floored_notional_usdc
+                live_notional_usdc = floored_live_notional_usdc
+                target_notional_usdc = floored_required_worst
             else:
                 return CopyDecision(
                     allow=False,
@@ -278,6 +287,8 @@ class CopyDecisionService:
                 "base_notional_usdc": base_notional_usdc,
                 "max_notional_usdc": max_notional_usdc,
                 "market_min_size": market_min_size,
+                "live_notional_usdc": live_notional_usdc,
+                "required_worst_notional_usdc": required_worst_notional,
             },
         )
 
