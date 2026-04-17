@@ -117,6 +117,7 @@ async def test_multi_user_positions_and_pnl_are_isolated(tmp_path, monkeypatch):
             "conditionId": "cond-1",
             "size": 0,
             "price": 0.5,
+            "_leader_sell_fraction": 1.0,  # full close
         }
     ]
     await execute_trades(ctx_a, leader_id, sell_signal, now_ts=time.time())

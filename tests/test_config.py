@@ -95,6 +95,10 @@ class TestHappyPath:
         assert cfg.discovery.enable_trader_discovery is True
         assert cfg.discovery.discovery_promote_to_active is True
 
+    def test_discovery_defaults_include_min_active_positions(self, valid_env: dict[str, str]) -> None:
+        cfg = load_config(valid_env)
+        assert cfg.discovery.min_active_positions == 1
+
     def test_raw_env_preserved_for_transition(self, valid_env: dict[str, str]) -> None:
         cfg = load_config(valid_env)
         assert cfg.raw["PRIVATE_KEY"] == _VALID_PRIVATE_KEY
@@ -244,6 +248,11 @@ class TestSemanticInvariants:
         with pytest.raises(
             EnvValidationError, match=r"LEADER_SCORE_WEIGHT_\* values must sum to > 0"
         ):
+            load_config(valid_env)
+
+    def test_min_active_positions_must_be_positive(self, valid_env: dict[str, str]) -> None:
+        valid_env["MIN_ACTIVE_POSITIONS"] = "0"
+        with pytest.raises(EnvValidationError, match="MIN_ACTIVE_POSITIONS must be > 0"):
             load_config(valid_env)
 
 

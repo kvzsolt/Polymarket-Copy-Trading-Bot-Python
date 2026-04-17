@@ -75,13 +75,25 @@ class TestOrchestratorDISeams:
         assert "readiness_tracker" in sig.parameters
         assert "config" in sig.parameters
 
-    def test_trading_context_has_readiness_tracker(self) -> None:
+    def test_trading_context_has_readiness_tracker(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PRIVATE_KEY", "0x" + "a" * 64)
+        monkeypatch.setenv("FUNDER_ADDRESS", "0x" + "b" * 40)
+        monkeypatch.setenv("RPC_URL", "https://polygon-rpc.example.com")
+        monkeypatch.setenv("CHAIN_ID", "137")
         config = load_config()
         tracker = ReadinessTracker()
         ctx = TradingContext(
             user_id="test",
-            clob_client=MagicMock(),
-            config=config,
+            wallet_address="0x" + "c" * 40,
+            client=MagicMock(),
+            positions_repo=MagicMock(),
+            fills_repo=MagicMock(),
+            orders_repo=MagicMock(),
+            pnl_tracker=MagicMock(),
+            risk_engine=MagicMock(),
+            accounting_service=MagicMock(),
+            position_manager=MagicMock(),
+            execution_service=MagicMock(),
             readiness=tracker
         )
         assert ctx.readiness is tracker

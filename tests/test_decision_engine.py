@@ -31,15 +31,14 @@ class TestCopyDecisionService:
     def test_buy_enforces_min_5_shares(self):
         svc = CopyDecisionService()
         trade = {"price": 0.40, "timestamp": time.time(), "usdcSize": 20}
-        with patch.dict("services.copyDecisionService.ENV", {"COPY_DECISION_MIN_SCORE": 0.0}, clear=False):
-            decision = svc.decide_buy(
-                trade=trade,
-                leader_score=_leader(),
-                live_price=0.40,
-                base_notional_usdc=0.50,
-                max_notional_usdc=10.0,
-                market_min_size=0.0,
-            )
+        decision = svc.decide_buy(
+            trade=trade,
+            leader_score=_leader(),
+            live_price=0.40,
+            base_notional_usdc=0.50,
+            max_notional_usdc=10.0,
+            market_min_size=0.0,
+        )
         assert decision.allow is True
         assert decision.target_size_tokens == pytest.approx(5.0)
         assert decision.target_notional_usdc == pytest.approx(2.0)
@@ -47,15 +46,14 @@ class TestCopyDecisionService:
     def test_buy_enforces_min_1_notional(self):
         svc = CopyDecisionService()
         trade = {"price": 0.08, "timestamp": time.time(), "usdcSize": 10}
-        with patch.dict("services.copyDecisionService.ENV", {"COPY_DECISION_MIN_SCORE": 0.0}, clear=False):
-            decision = svc.decide_buy(
-                trade=trade,
-                leader_score=_leader(),
-                live_price=0.08,
-                base_notional_usdc=0.20,
-                max_notional_usdc=10.0,
-                market_min_size=0.0,
-            )
+        decision = svc.decide_buy(
+            trade=trade,
+            leader_score=_leader(),
+            live_price=0.08,
+            base_notional_usdc=0.20,
+            max_notional_usdc=10.0,
+            market_min_size=0.0,
+        )
         assert decision.allow is True
         assert decision.target_notional_usdc >= 1.0
         assert decision.target_size_tokens >= 12.5
@@ -63,15 +61,14 @@ class TestCopyDecisionService:
     def test_buy_market_min_size_overrides_min_5_shares(self):
         svc = CopyDecisionService()
         trade = {"price": 0.20, "timestamp": time.time(), "usdcSize": 10}
-        with patch.dict("services.copyDecisionService.ENV", {"COPY_DECISION_MIN_SCORE": 0.0}, clear=False):
-            decision = svc.decide_buy(
-                trade=trade,
-                leader_score=_leader(),
-                live_price=0.20,
-                base_notional_usdc=1.00,
-                max_notional_usdc=10.0,
-                market_min_size=8.0,
-            )
+        decision = svc.decide_buy(
+            trade=trade,
+            leader_score=_leader(),
+            live_price=0.20,
+            base_notional_usdc=1.00,
+            max_notional_usdc=10.0,
+            market_min_size=8.0,
+        )
         assert decision.allow is True
         assert decision.target_size_tokens == pytest.approx(8.0)
         assert decision.target_notional_usdc == pytest.approx(1.6)
@@ -79,40 +76,31 @@ class TestCopyDecisionService:
     def test_buy_skips_if_cap_cannot_satisfy_minimum_executable_size(self):
         svc = CopyDecisionService()
         trade = {"price": 0.40, "timestamp": time.time(), "usdcSize": 10}
-        with patch.dict("services.copyDecisionService.ENV", {"COPY_DECISION_MIN_SCORE": 0.0}, clear=False):
-            decision = svc.decide_buy(
-                trade=trade,
-                leader_score=_leader(),
-                live_price=0.40,
-                base_notional_usdc=0.20,
-                max_notional_usdc=0.20,
-                market_min_size=0.0,
-            )
+        decision = svc.decide_buy(
+            trade=trade,
+            leader_score=_leader(),
+            live_price=0.40,
+            base_notional_usdc=0.20,
+            max_notional_usdc=0.20,
+            market_min_size=0.0,
+        )
         assert decision.allow is False
         assert decision.skip_code == "risk_cap_too_low_for_min_order"
 
     def test_buy_decision_gate_can_be_disabled(self):
         svc = CopyDecisionService()
-        # Would normally hard-fail near resolution due to stale age.
+        # Gate is disabled by default (_decision_gate_enabled = False).
+        # Even with a near-resolution stale signal and low leader score,
+        # the gate should be bypassed and the trade allowed.
         trade = {"price": 0.96, "timestamp": time.time() - 60, "usdcSize": 10}
-        with patch.dict(
-            "services.copyDecisionService.ENV",
-            {
-                "ENABLE_COPY_DECISION_GATE": False,
-                "NEAR_RESOLUTION_GATE_PRICE": 0.95,
-                "NEAR_RESOLUTION_MAX_AGE_SECONDS": 15,
-                "COPY_DECISION_MIN_SCORE": 0.99,
-            },
-            clear=False,
-        ):
-            decision = svc.decide_buy(
-                trade=trade,
-                leader_score=_leader(score=0.2),
-                live_price=0.96,
-                base_notional_usdc=2.0,
-                max_notional_usdc=10.0,
-                market_min_size=0.0,
-            )
+        decision = svc.decide_buy(
+            trade=trade,
+            leader_score=_leader(score=0.2),
+            live_price=0.96,
+            base_notional_usdc=2.0,
+            max_notional_usdc=10.0,
+            market_min_size=0.0,
+        )
         assert decision.allow is True
         assert decision.skip_code == "ok"
         assert decision.reason == "decision gate disabled by config"
@@ -121,14 +109,13 @@ class TestCopyDecisionService:
     def test_sell_decision_gate_can_be_disabled(self):
         svc = CopyDecisionService()
         trade = {"price": 0.40, "timestamp": time.time(), "usdcSize": 10}
-        with patch.dict("services.copyDecisionService.ENV", {"ENABLE_COPY_DECISION_GATE": False}, clear=False):
-            decision = svc.decide_sell(
-                trade=trade,
-                sell_tokens=2.0,
-                live_price=0.40,
-                market_min_size=0.0,
-                max_sell_tokens=2.0,
-            )
+        decision = svc.decide_sell(
+            trade=trade,
+            sell_tokens=2.0,
+            live_price=0.40,
+            market_min_size=0.0,
+            max_sell_tokens=2.0,
+        )
         assert decision.allow is True
         assert decision.skip_code == "ok"
         assert decision.target_size_tokens == pytest.approx(2.0)
@@ -137,14 +124,13 @@ class TestCopyDecisionService:
     def test_sell_decision_gate_disabled_still_honors_market_min_size(self):
         svc = CopyDecisionService()
         trade = {"price": 0.40, "timestamp": time.time(), "usdcSize": 10}
-        with patch.dict("services.copyDecisionService.ENV", {"ENABLE_COPY_DECISION_GATE": False}, clear=False):
-            decision = svc.decide_sell(
-                trade=trade,
-                sell_tokens=2.0,
-                live_price=0.40,
-                market_min_size=5.0,
-                max_sell_tokens=10.0,
-            )
+        decision = svc.decide_sell(
+            trade=trade,
+            sell_tokens=2.0,
+            live_price=0.40,
+            market_min_size=5.0,
+            max_sell_tokens=10.0,
+        )
         assert decision.allow is True
         assert decision.target_size_tokens == pytest.approx(5.0)
         assert decision.reason == "decision gate disabled by config"

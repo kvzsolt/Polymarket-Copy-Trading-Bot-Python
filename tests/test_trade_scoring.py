@@ -31,7 +31,8 @@ def _trade(*, price: float = 0.50, usdc_size: float = 100.0, age_seconds: float 
 
 
 class TestNearResolutionGate:
-    svc = TradeScoringService()
+    def setup_method(self):
+        self.svc = TradeScoringService()
 
     def test_near_resolution_fresh_signal_allowed(self):
         """High price but very fresh signal — should NOT be hard-failed."""
@@ -91,7 +92,8 @@ class TestNearResolutionGate:
 
 
 class TestTradeScoringBasics:
-    svc = TradeScoringService()
+    def setup_method(self):
+        self.svc = TradeScoringService()
 
     def test_invalid_price_hard_fail(self):
         trade = {"price": 0, "usdcSize": 0, "timestamp": int(time.time())}

@@ -12,7 +12,7 @@ _LOCAL_NON_SENSITIVE_ENV_PATH = _REPO_ROOT / "config" / "runtime.local.env"
 
 def load_runtime_env(
     *,
-    override_secrets: bool = False,
+    override_secrets: bool = True,
     secrets_path: str | os.PathLike[str] | None = None,
     non_sensitive_path: str | os.PathLike[str] | None = None,
     local_non_sensitive_path: str | os.PathLike[str] | None = None,
@@ -22,7 +22,7 @@ def load_runtime_env(
     Load order is intentional:
     1) config/runtime.env (checked-in, non-sensitive shared defaults)
     2) config/runtime.local.env (local, non-sensitive identity/override lane)
-    3) .env (local, sensitive values)
+    3) secrets.env (local, sensitive values)
     """
     runtime_path = Path(non_sensitive_path).expanduser() if non_sensitive_path else _NON_SENSITIVE_ENV_PATH
     runtime_local_path = (
@@ -37,4 +37,12 @@ def load_runtime_env(
     if runtime_local_path.exists():
         load_dotenv(dotenv_path=runtime_local_path, override=True)
 
-    load_dotenv(dotenv_path=secrets_path, override=override_secrets)
+    # Resolve secrets path explicitly to avoid find_dotenv() frame-inspection
+    # surprises.  If the caller supplies a path use that; otherwise default to
+    # <repo>/.env so the lookup is deterministic regardless of call depth.
+    resolved_secrets = Path(secrets_path).expanduser() if secrets_path else _REPO_ROOT / "secrets.env"
+    if resolved_secrets.exists():
+        # override=True so values in secrets.env always win over inherited empty env
+        # vars (e.g. LEADER_WALLETS= exported in the shell would otherwise
+        # silently suppress the user's wallet list).
+        load_dotenv(dotenv_path=resolved_secrets, override=override_secrets)

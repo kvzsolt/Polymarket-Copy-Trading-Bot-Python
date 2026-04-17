@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 
 from app import _wait_for_active_leaders
 from orchestrators.leader_registry import LeaderRegistry
 from services.metrics import metrics
-from unittest.mock import patch
 
 
 class _Profile:
@@ -36,11 +36,33 @@ class _LeadersRepo:
 
     def get_tier(self, wallet):
         from storage.sqlite.leaders_repo import LeaderTierRecord
+
         tier, changed_at = self._tiers.get(wallet.lower(), ("watchlist", None))
         return LeaderTierRecord(wallet=wallet.lower(), follow_tier=tier, tier_changed_at=changed_at)
 
     def update_tier(self, wallet, follow_tier, tier_changed_at):
         self._tiers[wallet.lower()] = (follow_tier, tier_changed_at)
+
+
+def _mock_config(*, promote_to_active: bool = False, top_n: int = 5, leader_auto: bool = False):
+    return SimpleNamespace(
+        discovery=SimpleNamespace(
+            enable_trader_discovery=True,
+            min_leader_positions=20,
+            min_active_positions=1,
+            discovery_promote_to_active=promote_to_active,
+        ),
+        leader=SimpleNamespace(
+            leader_auto=leader_auto,
+            auto_discover_top_n=top_n,
+            auto_discover_min_score=0.45,
+            tier_promote_to_paper=0.40,
+            tier_promote_to_live=0.55,
+            tier_demote_to_paper=0.35,
+            tier_demote_to_watchlist=0.25,
+            tier_min_paper_seconds=86400,
+        ),
+    )
 
 
 @pytest.mark.asyncio
@@ -59,6 +81,7 @@ async def test_discovery_only_mode_emits_no_leader_signal(capsys):
             ]
         ),
         leaders_repo=_LeadersRepo(),
+        config=_mock_config(promote_to_active=False),
     )
 
     state = await registry.refresh([])
@@ -74,8 +97,11 @@ async def test_discovery_only_mode_emits_no_leader_signal(capsys):
 
 @pytest.mark.asyncio
 async def test_discovery_only_wait_loop_stays_alive_without_leaders():
-    registry = LeaderRegistry(discovery_service=_Discovery([]), leaders_repo=_LeadersRepo())
-    task = asyncio.create_task(_wait_for_active_leaders(registry, [], refresh_interval=1))
+    config = _mock_config(promote_to_active=False, leader_auto=False)
+    registry = LeaderRegistry(discovery_service=_Discovery([]), leaders_repo=_LeadersRepo(), config=config)
+    task = asyncio.create_task(
+        _wait_for_active_leaders(registry, [], refresh_interval=1, config=config)
+    )
     await asyncio.sleep(0.1)
     assert not task.done()
     task.cancel()
@@ -85,6 +111,7 @@ async def test_discovery_only_wait_loop_stays_alive_without_leaders():
 
 @pytest.mark.asyncio
 async def test_discovery_only_mode_promotes_top_ranked_leaders_when_auto_enabled():
+    mock_config = _mock_config(promote_to_active=True, top_n=1, leader_auto=True)
     registry = LeaderRegistry(
         discovery_service=_Discovery(
             [
@@ -103,20 +130,10 @@ async def test_discovery_only_mode_promotes_top_ranked_leaders_when_auto_enabled
             ]
         ),
         leaders_repo=_LeadersRepo(),
+        config=mock_config,
     )
 
-    with patch.dict(
-        "orchestrators.leader_registry.ENV",
-        {
-            "DISCOVERY_PROMOTE_TO_ACTIVE": True,
-            "AUTO_DISCOVER_TOP_N": 1,
-            "AUTO_DISCOVER_MIN_SCORE": 0.45,
-            "MIN_LEADER_POSITIONS": 20,
-            "MIN_ACTIVE_POSITIONS": 1,
-        },
-        clear=False,
-    ):
-        state = await registry.refresh([])
+    state = await registry.refresh([])
 
     assert state.mode == "discovery_only"
     assert state.active_monitored == ["0x1111111111111111111111111111111111111111"]

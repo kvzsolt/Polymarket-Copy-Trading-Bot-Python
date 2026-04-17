@@ -8,6 +8,8 @@ from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
 from hashlib import sha256
 from typing import Any, TYPE_CHECKING
 
+from config.env import ENV
+
 if TYPE_CHECKING:
     from config.app_config import AppConfig
 
@@ -264,7 +266,7 @@ _RETRY_BLOCKING_STATUSES = {
 def _pending_submission_ttl_seconds(config: AppConfig | None = None) -> float:
     if config is not None:
         return max(float(config.execution.pending_submission_ttl_seconds), 0.0)
-    return 120.0
+    return max(float(ENV.get("PENDING_SUBMISSION_TTL_SECONDS", 120.0)), 0.0)
 
 
 def _coerce_timestamp(value: Any) -> float | None:
@@ -507,7 +509,11 @@ class ExecutionService:
             )
 
         ec = self._config.execution if self._config else None
-        require_fresh_book = ec.execution_require_fresh_book if ec else True
+        require_fresh_book = (
+            ec.execution_require_fresh_book
+            if ec
+            else _coerce_bool(ENV.get("EXECUTION_REQUIRE_FRESH_BOOK", True))
+        )
         meta = await self.market_meta_service.get(
             req.token_id,
             refresh=require_fresh_book,
@@ -515,10 +521,10 @@ class ExecutionService:
 
         # --- Book quality gate: reject if spread is too wide ---
         spread_mode = _resolve_book_spread_mode(
-            ec.book_spread_mode if ec else "absolute_bps"
+            ec.book_spread_mode if ec else ENV.get("BOOK_SPREAD_MODE", "absolute_bps")
         )
-        max_spread_bps = int(ec.max_book_spread_bps if ec else 500)
-        max_spread_ticks = int(ec.max_book_spread_ticks if ec else 0)
+        max_spread_bps = int(ec.max_book_spread_bps if ec else ENV.get("MAX_BOOK_SPREAD_BPS", 500))
+        max_spread_ticks = int(ec.max_book_spread_ticks if ec else ENV.get("MAX_BOOK_SPREAD_TICKS", 0))
         spread_limit = max_spread_ticks if spread_mode == "ticks" else max_spread_bps
         spread_limit_unit = "ticks" if spread_mode == "ticks" else "bps"
         if (
@@ -639,7 +645,7 @@ class ExecutionService:
             )
 
         quote_price = Decimal(str(quote["price"]))
-        min_share_price = Decimal(str(ec.min_share_price if ec else 0))
+        min_share_price = Decimal(str(ec.min_share_price if ec else ENV.get("MIN_SHARE_PRICE", 0)))
         if side == "BUY" and min_share_price > 0 and quote_price < min_share_price:
             return ExecutionResult(
                 accepted=False,

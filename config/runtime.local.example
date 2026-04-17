@@ -1,10 +1,10 @@
 # Local non-sensitive override template.
-# Copy to: config/runtime.local.env
+# Copy to: config/runtime.localsecrets.env
 # Recommended defaults:
 # - keep LEADER_AUTO=false unless you intentionally want discovery-driven leader rotation
 # - prefer LEADER_WALLETS over USER_ADDRESS for explicit follow lists
 # - keep MULTI_USER_CONFIG_FILE empty unless you are running allocator / multi-user mode
-# - keep machine-specific overrides here, not in `.env`
+# - keep machine-specific overrides here, not in `secrets.env`
 
 # -----------------------------------------------------------------------------
 # Wallet / identity overrides
