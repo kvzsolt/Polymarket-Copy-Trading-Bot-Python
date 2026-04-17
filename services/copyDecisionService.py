@@ -197,18 +197,41 @@ class CopyDecisionService:
         worst_price = live_price * (1.0 + slippage_ratio)
 
         target_size_tokens = desired_notional / live_price
+        required_min_size_tokens = max(
+            min_shares,
+            (min_notional / live_price) if live_price > 0 else 0.0,
+            market_min_size if market_min_size > 0 else 0.0,
+        )
 
-        # Enforce token-size floor
-        if 0 < target_size_tokens < min_shares:
-            target_size_tokens = min_shares
-
-        # Enforce notional floor at the live quote price (user-facing min notional)
-        if target_size_tokens * live_price < min_notional:
-            target_size_tokens = min_notional / live_price
-
-        # Enforce market minimum size
-        if market_min_size > 0:
-            target_size_tokens = max(target_size_tokens, market_min_size)
+        if 0 < target_size_tokens + 1e-12 < required_min_size_tokens:
+            return CopyDecision(
+                allow=False,
+                skip_code="buy_below_minimum_order_requirements",
+                reason=(
+                    "copied BUY below minimum executable venue size "
+                    f"(target={target_size_tokens:.4f}, required={required_min_size_tokens:.4f}, live_price={live_price:.4f})"
+                ),
+                side="BUY",
+                decision_score=trade_score.score,
+                leader_score=leader_score.score,
+                trade_score=trade_score.score,
+                live_price=live_price,
+                reference_price=ref_price,
+                target_notional_usdc=target_size_tokens * worst_price,
+                target_size_tokens=target_size_tokens,
+                price_drift_pct=trade_score.price_drift_pct,
+                edge_decay_pct=trade_score.edge_decay_pct,
+                details={
+                    **trade_score.details,
+                    "decision_gate_enabled": decision_gate_enabled,
+                    "trust_multiplier": trust_mult,
+                    "base_notional_usdc": base_notional_usdc,
+                    "max_notional_usdc": max_notional_usdc,
+                    "market_min_size": market_min_size,
+                    "required_min_size_tokens": required_min_size_tokens,
+                    "required_min_live_notional_usdc": required_min_size_tokens * live_price,
+                },
+            )
 
         target_size_tokens = self._ceil(target_size_tokens, decimals)
 
@@ -287,6 +310,7 @@ class CopyDecisionService:
                 "base_notional_usdc": base_notional_usdc,
                 "max_notional_usdc": max_notional_usdc,
                 "market_min_size": market_min_size,
+                "required_min_size_tokens": required_min_size_tokens,
                 "live_notional_usdc": live_notional_usdc,
                 "required_worst_notional_usdc": required_worst_notional,
             },

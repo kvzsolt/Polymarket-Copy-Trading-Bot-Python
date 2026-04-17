@@ -28,7 +28,7 @@ def _leader(score: float = 0.9) -> LeaderScore:
 
 
 class TestCopyDecisionService:
-    def test_buy_enforces_min_shares_config(self):
+    def test_buy_skips_when_below_min_shares_requirement(self):
         svc = CopyDecisionService()
         trade = {"price": 0.40, "timestamp": time.time(), "usdcSize": 20}
         decision = svc.decide_buy(
@@ -39,13 +39,11 @@ class TestCopyDecisionService:
             max_notional_usdc=10.0,
             market_min_size=0.0,
         )
-        assert decision.allow is True
-        # Polymarket CLOB hard-floor is 5 shares
-        assert decision.target_size_tokens == pytest.approx(5.0)
-        # Execution uses protected worst-price notional, not live-price notional.
-        assert decision.target_notional_usdc == pytest.approx(2.04)
+        assert decision.allow is False
+        assert decision.skip_code == "buy_below_minimum_order_requirements"
+        assert decision.details["required_min_size_tokens"] == pytest.approx(5.0)
 
-    def test_buy_enforces_min_1_notional(self):
+    def test_buy_skips_when_below_min_1_notional_requirement(self):
         svc = CopyDecisionService()
         trade = {"price": 0.08, "timestamp": time.time(), "usdcSize": 10}
         decision = svc.decide_buy(
@@ -56,11 +54,11 @@ class TestCopyDecisionService:
             max_notional_usdc=10.0,
             market_min_size=0.0,
         )
-        assert decision.allow is True
-        assert decision.target_notional_usdc >= 1.0
-        assert decision.target_size_tokens >= 12.5
+        assert decision.allow is False
+        assert decision.skip_code == "buy_below_minimum_order_requirements"
+        assert decision.details["required_min_size_tokens"] == pytest.approx(12.5)
 
-    def test_buy_market_min_size_overrides_min_5_shares(self):
+    def test_buy_skips_when_below_market_min_size_requirement(self):
         svc = CopyDecisionService()
         trade = {"price": 0.20, "timestamp": time.time(), "usdcSize": 10}
         decision = svc.decide_buy(
@@ -71,52 +69,52 @@ class TestCopyDecisionService:
             max_notional_usdc=10.0,
             market_min_size=8.0,
         )
-        assert decision.allow is True
-        assert decision.target_size_tokens == pytest.approx(8.0)
-        assert decision.target_notional_usdc == pytest.approx(1.632)
+        assert decision.allow is False
+        assert decision.skip_code == "buy_below_minimum_order_requirements"
+        assert decision.details["required_min_size_tokens"] == pytest.approx(8.0)
 
     def test_buy_skips_if_cap_cannot_satisfy_minimum_executable_size(self):
         svc = CopyDecisionService()
-        trade = {"price": 0.40, "timestamp": time.time(), "usdcSize": 10}
-        decision = svc.decide_buy(
-            trade=trade,
-            leader_score=_leader(),
-            live_price=0.40,
-            base_notional_usdc=0.20,
-            max_notional_usdc=0.20,
-            market_min_size=0.0,
-        )
-        assert decision.allow is False
-        assert decision.skip_code == "risk_cap_too_low_for_min_order"
-
-    def test_buy_returns_worst_case_notional_for_min_size_execution(self):
-        svc = CopyDecisionService()
-        trade = {"price": 0.84, "timestamp": time.time(), "usdcSize": 4.20}
+        trade = {"price": 0.84, "timestamp": time.time(), "usdcSize": 10}
         decision = svc.decide_buy(
             trade=trade,
             leader_score=_leader(),
             live_price=0.84,
-            base_notional_usdc=4.20,
+            base_notional_usdc=10.0,
+            max_notional_usdc=4.25,
+            market_min_size=5.0,
+        )
+        assert decision.allow is False
+        assert decision.skip_code == "risk_cap_too_low_for_min_order"
+
+    def test_buy_returns_worst_case_notional_when_already_above_min_size(self):
+        svc = CopyDecisionService()
+        trade = {"price": 0.84, "timestamp": time.time(), "usdcSize": 5.88}
+        decision = svc.decide_buy(
+            trade=trade,
+            leader_score=_leader(),
+            live_price=0.84,
+            base_notional_usdc=5.88,
             max_notional_usdc=8.0,
             market_min_size=5.0,
         )
         assert decision.allow is True
-        assert decision.target_size_tokens == pytest.approx(5.0)
-        assert decision.target_notional_usdc == pytest.approx(4.284, rel=1e-4)
-        assert decision.details["live_notional_usdc"] == pytest.approx(4.2)
-        assert decision.details["required_worst_notional_usdc"] == pytest.approx(4.284, rel=1e-4)
+        assert decision.target_size_tokens == pytest.approx(7.0)
+        assert decision.target_notional_usdc == pytest.approx(5.9976, rel=1e-4)
+        assert decision.details["live_notional_usdc"] == pytest.approx(5.88)
+        assert decision.details["required_worst_notional_usdc"] == pytest.approx(5.9976, rel=1e-4)
 
     def test_buy_decision_gate_can_be_disabled(self):
         svc = CopyDecisionService()
         # Gate is disabled by default (_decision_gate_enabled = False).
         # Even with a near-resolution stale signal and low leader score,
-        # the gate should be bypassed and the trade allowed.
+        # the gate should be bypassed when the trade is already executable.
         trade = {"price": 0.96, "timestamp": time.time() - 60, "usdcSize": 10}
         decision = svc.decide_buy(
             trade=trade,
             leader_score=_leader(score=0.2),
             live_price=0.96,
-            base_notional_usdc=2.0,
+            base_notional_usdc=6.0,
             max_notional_usdc=10.0,
             market_min_size=0.0,
         )
