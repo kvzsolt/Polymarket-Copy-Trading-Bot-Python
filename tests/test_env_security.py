@@ -37,7 +37,18 @@ class TestEnvSecurity:
         key_file.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP)  # 0640
 
         with patch.dict(os.environ, {"PRIVATE_KEY_FILE": str(key_file), "PRIVATE_KEY": ""}):
-            with pytest.raises(EnvValidationError):
+            with pytest.raises(EnvValidationError, match="permissions 0600 exactly"):
+                get_private_key()
+
+    def test_private_key_file_rejects_owner_execute_bit(self, tmp_path):
+        from config.env import get_private_key, EnvValidationError
+
+        key_file = tmp_path / "pk.txt"
+        key_file.write_text("0x" + ("ab" * 32), encoding="utf-8")
+        key_file.chmod(0o700)
+
+        with patch.dict(os.environ, {"PRIVATE_KEY_FILE": str(key_file), "PRIVATE_KEY": ""}):
+            with pytest.raises(EnvValidationError, match="permissions 0600 exactly"):
                 get_private_key()
 
     def test_runtime_validation_rejects_inline_comments(self):

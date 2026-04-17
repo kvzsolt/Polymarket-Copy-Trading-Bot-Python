@@ -11,7 +11,7 @@ import pytest
 
 from config.env import ENV, rehydrate_env
 from domain.trading_context import TradingContext
-from orchestrators.trade_pipeline import execute_trades, build_trade_key
+from orchestrators.trade_pipeline import execute_trades, build_trade_key, reconcile_submitted_unconfirmed
 from services.copyDecisionService import CopyDecision
 from services.executionService import ExecutionResult
 from services.pnlTracker import PnLTracker
@@ -241,6 +241,70 @@ async def test_submitted_unconfirmed_is_marked_processed(tmp_path):
 
     trade_key = build_trade_key("user1", "leader1", signal)
     assert ctx.orders_repo.has_processed_trade(trade_key) is True
+
+
+@pytest.mark.asyncio
+async def test_buy_terminal_no_fill_unlocks_retry(tmp_path):
+    db_path = _init_db(tmp_path)
+
+    class _ExecSvc:
+        async def _confirm_fill(self, _order_id):
+            return {"status": "cancelled", "size_matched": "0"}
+
+    ctx = _make_context(db_path, execution_service=_ExecSvc())
+    signal = _signal(tx_hash="0xbuyretry")
+    trade_key = build_trade_key("user1", "leader1", signal)
+    ctx.orders_repo.mark_processed_trade(
+        trade_key=trade_key,
+        user_id="user1",
+        leader_id="leader1",
+        tx_hash=signal["transactionHash"],
+        side="BUY",
+        asset=signal["asset"],
+        condition_id=signal["conditionId"],
+        status="submitted_unconfirmed",
+        order_id="ord-buy-retry",
+    )
+
+    reconciled = await reconcile_submitted_unconfirmed(ctx)
+
+    assert reconciled == 1
+    assert ctx.orders_repo.has_processed_trade(trade_key) is False
+
+
+@pytest.mark.asyncio
+async def test_stale_buy_unconfirmed_is_still_reconciled(tmp_path):
+    db_path = _init_db(tmp_path)
+
+    class _ExecSvc:
+        async def _confirm_fill(self, _order_id):
+            return {"status": "expired", "size_matched": "0"}
+
+    ctx = _make_context(db_path, execution_service=_ExecSvc())
+    signal = _signal(tx_hash="0xstalebuy")
+    trade_key = build_trade_key("user1", "leader1", signal)
+    ctx.orders_repo.mark_processed_trade(
+        trade_key=trade_key,
+        user_id="user1",
+        leader_id="leader1",
+        tx_hash=signal["transactionHash"],
+        side="BUY",
+        asset=signal["asset"],
+        condition_id=signal["conditionId"],
+        status="submitted_unconfirmed",
+        order_id="ord-stale-buy",
+    )
+    with create_connection(db_path) as conn:
+        conn.execute(
+            "UPDATE processed_trades SET processed_at = ? WHERE trade_key = ?",
+            (time.time() - 3600, trade_key),
+        )
+        conn.commit()
+
+    reconciled = await reconcile_submitted_unconfirmed(ctx, max_age_seconds=1)
+
+    assert reconciled == 1
+    assert ctx.orders_repo.has_processed_trade(trade_key) is False
 
 
 @pytest.mark.asyncio

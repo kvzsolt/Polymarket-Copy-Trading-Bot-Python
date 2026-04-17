@@ -145,9 +145,9 @@ def _load_secret_from_file(path_str: str, env_name: str) -> str:
 
     try:
         mode = path.stat().st_mode & 0o777
-        if mode & 0o077:
+        if mode != 0o600:
             raise EnvValidationError(
-                f'{env_name}_FILE must not be group/world readable (chmod 600): {path}'
+                f'{env_name}_FILE must have permissions 0600 exactly (chmod 600): {path}'
             )
     except OSError as exc:
         raise EnvValidationError(f'Unable to read permissions for {env_name}_FILE: {exc}') from exc
@@ -316,6 +316,12 @@ def validate_runtime_env() -> None:
         errors.append('MIN_SHARE_PRICE must be non-negative.')
     if ENV.get('MIN_SHARE_PRICE', 0.0) > 1:
         errors.append('MIN_SHARE_PRICE must be <= 1.0 for binary markets.')
+    if ENV.get('MAX_SHARE_PRICE', 0.0) < 0:
+        errors.append('MAX_SHARE_PRICE must be non-negative.')
+    if ENV.get('MAX_SHARE_PRICE', 0.0) > 1:
+        errors.append('MAX_SHARE_PRICE must be <= 1.0 for binary markets.')
+    if ENV.get('MAX_SHARE_PRICE', 0.0) > 0 and ENV.get('MAX_SHARE_PRICE', 0.0) < ENV.get('MIN_SHARE_PRICE', 0.0):
+        errors.append('MAX_SHARE_PRICE must be >= MIN_SHARE_PRICE when enabled.')
     if ENV.get('TRANSACTION_FEE_BPS', 0.0) < 0:
         errors.append('TRANSACTION_FEE_BPS must be non-negative.')
     if ENV.get('GAS_COST_USDC', 0.0) < 0:
@@ -570,6 +576,8 @@ def _build_env_snapshot() -> dict[str, object]:
     'SLIPPAGE_TOLERANCE': _float('SLIPPAGE_TOLERANCE', '2.0'),
     # Minimum allowed BUY quote price; 0 disables this gate.
     'MIN_SHARE_PRICE': _float('MIN_SHARE_PRICE', '0.03'),
+    # Maximum allowed BUY quote price; 0 disables this gate.
+    'MAX_SHARE_PRICE': _float('MAX_SHARE_PRICE', '0'),
     'MAX_RETRIES': _int('MAX_RETRIES', '3'),
     'NON_TERMINAL_FAILURE_MAX_ATTEMPTS': _int('NON_TERMINAL_FAILURE_MAX_ATTEMPTS', '3'),
     'ENABLE_TIER_GATE_WATCHLIST': os.getenv('ENABLE_TIER_GATE_WATCHLIST', 'false').strip().lower() in ('1', 'true', 'yes'),
