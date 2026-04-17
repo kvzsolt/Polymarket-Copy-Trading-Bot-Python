@@ -19,10 +19,11 @@ from services.riskEngine import PortfolioSnapshot, ProposedTrade, RiskEngine, po
 from utils.createClobClient import MarketMeta
 
 
-def _make_exec_config(min_share_price: float = 0.0, pending_ttl: int = 120) -> SimpleNamespace:
+def _make_exec_config(min_share_price: float = 0.0, max_share_price: float = 0.0, pending_ttl: int = 120) -> SimpleNamespace:
     """Minimal AppConfig-shaped object for injecting into ExecutionService in tests."""
     ec = SimpleNamespace(
         min_share_price=min_share_price,
+        max_share_price=max_share_price,
         pending_submission_ttl_seconds=pending_ttl,
         circuit_failure_threshold=5,
         circuit_cooldown_seconds=60,
@@ -182,6 +183,27 @@ class TestExecutionService:
         assert "min_share_price" in res.error
 
     @pytest.mark.asyncio
+    async def test_rejects_buy_above_max_share_price(self):
+        clob = SimpleNamespace(get_price=AsyncMock(return_value={"price": "0.8"}))
+        svc = ExecutionService(clob, _MetaSvc(), _FeeSvc(), _Repo(), config=_make_exec_config(min_share_price=0, max_share_price=0.7))
+        req = ExecutionRequest(
+            user_id="u1",
+            leader_id="l1",
+            token_id="t1",
+            side="BUY",
+            amount=Decimal("5"),
+            max_slippage_bps=100,
+            reason="copy_trade",
+            signal_id="sig_maxprice",
+        )
+        res = await svc.execute(req)
+
+        assert res.accepted is False
+        assert res.status == "rejected"
+        assert res.error is not None
+        assert "max_share_price" in res.error
+
+    @pytest.mark.asyncio
     async def test_executes_and_records_fill(self):
         clob = SimpleNamespace(
             get_price=AsyncMock(return_value={"price": "0.5"}),
@@ -244,6 +266,18 @@ class TestExecutionService:
         assert "secret" not in stored["request"]
         assert stored["request"]["signal_id"] != long_signal
         assert len(stored["request"]["signal_id"]) < len(long_signal)
+
+    @pytest.mark.asyncio
+    async def test_confirm_fill_returns_terminal_no_fill_order_state(self):
+        clob = SimpleNamespace(
+            client=SimpleNamespace(get_order=lambda _order_id: {"status": "cancelled", "size_matched": "0"})
+        )
+        svc = ExecutionService(clob, _MetaSvc(), _FeeSvc(), _Repo(), config=_make_exec_config(min_share_price=0))
+
+        fill_info = await svc._confirm_fill("ord-cancelled")
+
+        assert fill_info["status"] == "cancelled"
+        assert fill_info["size_matched"] == "0"
 
     @pytest.mark.asyncio
     async def test_duplicate_idempotency_is_ignored(self):

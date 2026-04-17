@@ -177,9 +177,9 @@ class _Parser:
                     self.errors.append(f"PRIVATE_KEY_FILE must point to a file: {path}")
                     return ""
                 mode = path.stat().st_mode & 0o777
-                if mode & 0o077:
+                if mode != 0o600:
                     self.errors.append(
-                        f"PRIVATE_KEY_FILE must not be group/world readable (chmod 600): {path}"
+                        f"PRIVATE_KEY_FILE must have permissions 0600 exactly (chmod 600): {path}"
                     )
                     return ""
                 key = path.read_text(encoding="utf-8").strip()
@@ -290,6 +290,7 @@ class RiskConfig:
 class ExecutionConfig:
     slippage_tolerance: float
     min_share_price: float
+    max_share_price: float
     max_retries: int
     non_terminal_failure_max_attempts: int
     paper_trade_only: bool
@@ -427,7 +428,13 @@ class AppConfig:
 
 
 def _runtime_python_supported() -> bool:
-    return sys.version_info.major == 3 and sys.version_info.minor >= 11
+    return sys.version_info.major == 3 and 11 <= sys.version_info.minor < 13
+
+
+def _database_enabled(parser: _Parser) -> bool:
+    if parser.raw("BOT_STATE_DB_ENABLED", "") != "":
+        return parser.bool_("BOT_STATE_DB_ENABLED", True)
+    return parser.bool_("DB_ENABLED", True)
 
 
 def _validate_semantics(cfg: AppConfig, errors: list[str]) -> None:
@@ -499,6 +506,12 @@ def _validate_semantics(cfg: AppConfig, errors: list[str]) -> None:
         errors.append("MIN_SHARE_PRICE must be non-negative.")
     if e.min_share_price > 1:
         errors.append("MIN_SHARE_PRICE must be <= 1.0 for binary markets.")
+    if e.max_share_price < 0:
+        errors.append("MAX_SHARE_PRICE must be non-negative.")
+    if e.max_share_price > 1:
+        errors.append("MAX_SHARE_PRICE must be <= 1.0 for binary markets.")
+    if e.max_share_price > 0 and e.max_share_price < e.min_share_price:
+        errors.append("MAX_SHARE_PRICE must be >= MIN_SHARE_PRICE when enabled.")
     if e.transaction_fee_bps < 0:
         errors.append("TRANSACTION_FEE_BPS must be non-negative.")
     if e.gas_cost_usdc < 0:
@@ -593,7 +606,7 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
     # Database
     database = DatabaseConfig(
         db_path=p.string("BOT_STATE_DB", "data/bot_state.db"),
-        enabled=p.bool_("DB_ENABLED", True),
+        enabled=_database_enabled(p),
     )
 
     # Wallet
@@ -685,6 +698,7 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
     execution = ExecutionConfig(
         slippage_tolerance=p.float_("SLIPPAGE_TOLERANCE", "2.0"),
         min_share_price=p.float_("MIN_SHARE_PRICE", "0.03"),
+        max_share_price=p.float_("MAX_SHARE_PRICE", "0"),
         max_retries=p.int_("MAX_RETRIES", "3"),
         non_terminal_failure_max_attempts=p.int_("NON_TERMINAL_FAILURE_MAX_ATTEMPTS", "3"),
         paper_trade_only=p.bool_("PAPER_TRADE_ONLY", False),

@@ -486,27 +486,26 @@ async def _reconcile_one(
     except Exception:
         filled_amount = Decimal("0")
 
-    # FOK cancelled or timed out — no fill on the exchange.
-    # For SELL: remove the processed_trade row so the next cycle can retry.
-    # For BUY: leave the record; the position simply wasn't created.
+    # Terminal no-fill result, unlock retry. Pending/open orders stay blocked.
     if filled_amount <= 0:
-        if side == "SELL":
-            order_status = str(fill_info.get("status", "")).lower()
-            if order_status in {"cancelled", "canceled", "expired", ""} or not fill_info:
-                logger.info(
-                    "reconcile_sell_no_fill_unlock_retry | order_id=%s cond=%s",
-                    order_id,
-                    str(record.get("condition_id", ""))[:12],
-                    extra={
-                        "type": "reconcile_sell_no_fill_unlock",
-                        "order_id": order_id,
-                        "condition_id": record.get("condition_id"),
-                        "user_id": record["user_id"],
-                        "order_status": order_status,
-                    },
-                )
-                context.orders_repo.delete_processed_trade(record["trade_key"])
-                return True  # unlocked for retry — counts as reconciled
+        order_status = str(fill_info.get("status", "")).lower()
+        terminal_no_fill_statuses = {"cancelled", "canceled", "expired", "rejected"}
+        if order_status in terminal_no_fill_statuses:
+            logger.info(
+                "reconcile_%s_no_fill_unlock_retry | order_id=%s cond=%s",
+                side.lower(),
+                order_id,
+                str(record.get("condition_id", ""))[:12],
+                extra={
+                    "type": f"reconcile_{side.lower()}_no_fill_unlock",
+                    "order_id": order_id,
+                    "condition_id": record.get("condition_id"),
+                    "user_id": record["user_id"],
+                    "order_status": order_status,
+                },
+            )
+            context.orders_repo.delete_processed_trade(record["trade_key"])
+            return True  # unlocked for retry — counts as reconciled
         return False
 
     avg_price_raw = (

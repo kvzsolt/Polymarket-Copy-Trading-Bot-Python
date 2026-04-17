@@ -12,7 +12,8 @@ logger = logging.getLogger("Database")
 
 _LOCK = threading.Lock()
 _INITIALIZED = False
-_DB_ENABLED = ENV.get("BOT_STATE_DB_ENABLED", "true").strip().lower() not in {"0", "false", "no", "off"}
+_db_enabled_raw = ENV.get("BOT_STATE_DB_ENABLED", ENV.get("DB_ENABLED", "true"))
+_DB_ENABLED = _db_enabled_raw.strip().lower() not in {"0", "false", "no", "off"}
 _DB_PATH = (
     Path(ENV.get("BOT_STATE_DB", "data/bot_state.db"))
     if _DB_ENABLED
