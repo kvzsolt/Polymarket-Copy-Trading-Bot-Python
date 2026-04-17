@@ -454,6 +454,79 @@ async def test_sell_uses_notional_when_size_missing(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_sell_insufficient_balance_syncs_local_position_from_live_holdings(tmp_path):
+    db_path = _init_db(tmp_path)
+    exec_svc = AsyncMock()
+    exec_svc.execute.return_value = _exec_result(
+        accepted=False,
+        filled=Decimal("0"),
+        status="rejected",
+        order_id=None,
+        error="insufficient_balance | {'error': 'not enough balance / allowance: the balance is not enough -> balance: 4518, order amount: 35870000'}",
+    )
+    ctx = _make_context(db_path, execution_service=exec_svc)
+
+    from storage.sqlite.positions_repo import PositionRecord
+    ctx.positions_repo.upsert_position(PositionRecord(
+        user_id="user1", condition_id="cond1", token_id=FAKE_TOKEN_ID,
+        leader_id="leader1", size_tokens=Decimal("35.8759"), avg_entry_price=Decimal("0.40"),
+    ))
+
+    signal = _signal(side="SELL", price=0.999, size=35.0)
+    signal["_leader_sell_fraction"] = 1.0
+
+    with patch(
+        "orchestrators.trade_pipeline.fetch_data",
+        new_callable=AsyncMock,
+        return_value=[{"asset": FAKE_TOKEN_ID, "size": 4.518, "currentValue": 4.51}],
+    ):
+        results = await execute_trades(ctx, "leader1", [signal], time.time())
+
+    assert len(results) == 1
+    assert results[0].status == "failed"
+    assert "local position synced to live holdings=4.5180" in str(results[0].reason)
+
+    pos = ctx.positions_repo.get_position("user1", "cond1", token_id=FAKE_TOKEN_ID)
+    assert pos is not None
+    assert pos.size_tokens == Decimal("4.518")
+
+
+@pytest.mark.asyncio
+async def test_sell_insufficient_balance_deletes_local_position_when_live_holding_is_zero(tmp_path):
+    db_path = _init_db(tmp_path)
+    exec_svc = AsyncMock()
+    exec_svc.execute.return_value = _exec_result(
+        accepted=False,
+        filled=Decimal("0"),
+        status="rejected",
+        order_id=None,
+        error="insufficient_balance | {'error': 'not enough balance / allowance: the balance is not enough -> balance: 0, order amount: 5000000'}",
+    )
+    ctx = _make_context(db_path, execution_service=exec_svc)
+
+    from storage.sqlite.positions_repo import PositionRecord
+    ctx.positions_repo.upsert_position(PositionRecord(
+        user_id="user1", condition_id="cond1", token_id=FAKE_TOKEN_ID,
+        leader_id="leader1", size_tokens=Decimal("5"), avg_entry_price=Decimal("0.40"),
+    ))
+
+    signal = _signal(side="SELL", price=0.981, size=5.0)
+    signal["_leader_sell_fraction"] = 1.0
+
+    with patch(
+        "orchestrators.trade_pipeline.fetch_data",
+        new_callable=AsyncMock,
+        return_value=[],
+    ):
+        results = await execute_trades(ctx, "leader1", [signal], time.time())
+
+    assert len(results) == 1
+    assert results[0].status == "failed"
+    assert "local position synced to live holdings=0.0000" in str(results[0].reason)
+    assert ctx.positions_repo.get_position("user1", "cond1", token_id=FAKE_TOKEN_ID) is None
+
+
+@pytest.mark.asyncio
 async def test_sell_realized_pnl_falls_back_to_updated_position_or_signal_price(tmp_path):
     db_path = _init_db(tmp_path)
     exec_svc = AsyncMock()
