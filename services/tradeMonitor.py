@@ -5,7 +5,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, TYPE_CHECKING
 
-from config.env import get_funder_address
+from config.env import ENV, get_funder_address
 from services.leaderCursorStore import LeaderCursorStore
 from services.metrics import metrics
 from storage.sqlite.cursors_repo import TradeCursor
@@ -25,6 +25,75 @@ from utils.logger import (
 )
 
 logger = get_logger("TradeMonitor")
+
+_LEADER_FETCH_LOCKS: dict[tuple[str, str], asyncio.Lock] = {}
+_LEADER_FETCH_LAST_TS: dict[tuple[str, str], float] = {}
+_LEADER_FETCH_INFLIGHT: dict[tuple[str, str], asyncio.Task] = {}
+
+
+def _leader_fetch_key(kind: str, leader_wallet: str) -> tuple[str, str]:
+    return kind, str(leader_wallet or "").strip().lower()
+
+
+
+def _leader_fetch_lock(kind: str, leader_wallet: str) -> asyncio.Lock:
+    key = _leader_fetch_key(kind, leader_wallet)
+    lock = _LEADER_FETCH_LOCKS.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _LEADER_FETCH_LOCKS[key] = lock
+    return lock
+
+
+
+def _leader_fetch_spacing_seconds(kind: str) -> float:
+    env_name = (
+        "LEADER_POSITIONS_MIN_FETCH_SPACING_MS"
+        if kind == "positions"
+        else "LEADER_ACTIVITY_MIN_FETCH_SPACING_MS"
+    )
+    raw = ENV.get(env_name, 250)
+    try:
+        ms = int(raw)
+    except (TypeError, ValueError):
+        ms = 250
+    return max(0.0, ms / 1000.0)
+
+
+async def _guarded_leader_fetch(kind: str, leader_wallet: str, url: str):
+    key = _leader_fetch_key(kind, leader_wallet)
+    existing = _LEADER_FETCH_INFLIGHT.get(key)
+    if existing is not None and not existing.done():
+        return await asyncio.shield(existing)
+
+    lock = _leader_fetch_lock(kind, leader_wallet)
+    async with lock:
+        existing = _LEADER_FETCH_INFLIGHT.get(key)
+        if existing is not None and not existing.done():
+            return await asyncio.shield(existing)
+
+        async def _runner():
+            spacing = _leader_fetch_spacing_seconds(kind)
+            last_ts = _LEADER_FETCH_LAST_TS.get(key, 0.0)
+            now = time.monotonic()
+            wait_for = spacing - (now - last_ts)
+            if wait_for > 0:
+                await asyncio.sleep(wait_for)
+            try:
+                return await fetch_data(url, silent=True)
+            finally:
+                _LEADER_FETCH_LAST_TS[key] = time.monotonic()
+
+        task = asyncio.create_task(_runner())
+        _LEADER_FETCH_INFLIGHT[key] = task
+
+    try:
+        return await asyncio.shield(task)
+    finally:
+        current = _LEADER_FETCH_INFLIGHT.get(key)
+        if current is task and task.done():
+            _LEADER_FETCH_INFLIGHT.pop(key, None)
+
 
 # Position save interval (seconds) — avoid saving on every loop
 @dataclass
@@ -152,9 +221,10 @@ async def _annotate_sell_fractions(trades: list[dict], leader_wallet: str) -> No
         return
 
     try:
-        positions = await fetch_data(
+        positions = await _guarded_leader_fetch(
+            "positions",
+            leader_wallet,
             f"https://data-api.polymarket.com/positions?user={leader_wallet}",
-            silent=True,
         )
     except Exception as exc:
         logger.warning(
@@ -340,9 +410,10 @@ async def fetch_trade_data(
     """Fetch new trades and call *on_trade_callback(trade)* immediately for each."""
     checked_activities = 0
     try:
-        user_activities = await fetch_data(
+        user_activities = await _guarded_leader_fetch(
+            "activity",
+            user_address,
             f'https://data-api.polymarket.com/activity?user={user_address}&limit=50&offset=0',
-            silent=True,
         )
     except Exception as e:
         logger.error(f'Fetch activity failed: {e}')
