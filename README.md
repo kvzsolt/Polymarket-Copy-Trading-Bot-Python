@@ -39,7 +39,7 @@ This project was built to change that. I wanted a bot that I could trust to run 
 
 - **Language:** Python 3.11+
 - **Persistence:** SQLite3 (State, fills, positions, orders)
-- **Clients:** Polymarket CLOB API, Gamma API, Open-Meteo
+- **Clients:** Polymarket CLOB API, Gamma API
 - **Architecture:** Clean DI (Dependency Injection) via Composition Root. Everything is testable, decoupled, and explicit.
 
 ---
