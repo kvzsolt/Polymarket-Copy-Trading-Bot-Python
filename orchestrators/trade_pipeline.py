@@ -5,7 +5,7 @@ import sqlite3
 import time
 import traceback as _tb
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import Decimal, ROUND_DOWN
 from typing import Any
 
 from config.env import ENV
@@ -73,11 +73,9 @@ async def _resolve_market_min_size(context: TradingContext, token_id: str) -> fl
     return market_min_size
 
 
-async def _sync_sell_position_from_live_holdings(
+async def _fetch_live_position_size(
     context: TradingContext,
     *,
-    leader_id: str,
-    condition_id: str,
     token_id: str,
 ) -> Decimal | None:
     wallet = str(getattr(context, "wallet_address", "") or "").strip().lower()
@@ -116,6 +114,19 @@ async def _sync_sell_position_from_live_holdings(
             except Exception:
                 live_size = Decimal("0")
             break
+    return live_size
+
+
+async def _sync_sell_position_from_live_holdings(
+    context: TradingContext,
+    *,
+    leader_id: str,
+    condition_id: str,
+    token_id: str,
+) -> Decimal | None:
+    live_size = await _fetch_live_position_size(context, token_id=token_id)
+    if live_size is None:
+        return None
 
     existing = context.positions_repo.get_position(
         context.user_id,
@@ -1101,6 +1112,33 @@ async def execute_trades(
 
             if sell_tokens > pos.size_tokens:
                 sell_tokens = pos.size_tokens
+
+            live_sellable_tokens = await _fetch_live_position_size(
+                context,
+                token_id=signal.token_id,
+            )
+            if live_sellable_tokens is not None:
+                venue_sell_cap = live_sellable_tokens.quantize(Decimal("0.01"), rounding=ROUND_DOWN)
+                if venue_sell_cap <= Decimal("0") and live_sellable_tokens > Decimal("0"):
+                    venue_sell_cap = live_sellable_tokens
+                if venue_sell_cap < sell_tokens:
+                    logger.info(
+                        "sell_size_clamped_to_live_balance | cond=%s leader=%s requested=%.4f live_balance=%.4f clamped=%.4f",
+                        signal.condition_id[:12],
+                        leader_id[:12],
+                        float(sell_tokens),
+                        float(live_sellable_tokens),
+                        float(venue_sell_cap),
+                        extra={
+                            "type": "sell_size_clamped_to_live_balance",
+                            "condition_id": signal.condition_id,
+                            "leader_id": leader_id,
+                            "requested_sell_tokens": float(sell_tokens),
+                            "live_sellable_tokens": float(live_sellable_tokens),
+                            "clamped_sell_tokens": float(venue_sell_cap),
+                        },
+                    )
+                    sell_tokens = venue_sell_cap
 
             leader_sell_fraction = _extract_leader_sell_fraction(raw) or Decimal("1")
             logger.info(
