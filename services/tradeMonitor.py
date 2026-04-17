@@ -440,7 +440,7 @@ async def trade_monitor(
     research_capture_service: Any | None = None,
 ):
     """Main monitor loop. Calls *on_trade_callback(trades_list)* immediately on detection."""
-    fetch_interval = int(bot_params.get('FETCH_INTERVAL', config.polling.fetch_interval))
+    fetch_interval = float(bot_params.get('FETCH_INTERVAL', config.polling.fetch_interval))
     state = LeaderMonitorState()
     cursor_store = LeaderCursorStore()
     leader_wallet = bot_params['leaderWallet']

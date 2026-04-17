@@ -442,14 +442,14 @@ def _build_env_snapshot() -> dict[str, object]:
     'CLOB_API_KEY': os.getenv('CLOB_API_KEY', ''),
 
     # --- Polling ---
-    'FETCH_INTERVAL': _int('FETCH_INTERVAL', '1'),
+    'FETCH_INTERVAL': _float('FETCH_INTERVAL', '0.25'),
     'LEADER_AUTO': leader_auto,
     'LEADER_AUTO_COUNT': auto_discover_top_n,
     'AUTO_DISCOVER_LEADERS': auto_discover_leaders,
     'AUTO_DISCOVER_MAX_LEADERS': max(_int('AUTO_DISCOVER_MAX_LEADERS', '10'), auto_discover_top_n),
     'AUTO_DISCOVER_TOP_N': auto_discover_top_n,
     'AUTO_DISCOVER_MIN_SCORE': _float('AUTO_DISCOVER_MIN_SCORE', '0.45'),
-    'AGGREGATE_SIGNAL_WINDOW_SECONDS': _float('AGGREGATE_SIGNAL_WINDOW_SECONDS', '2.0'),
+    'AGGREGATE_SIGNAL_WINDOW_SECONDS': _float('AGGREGATE_SIGNAL_WINDOW_SECONDS', '0.1'),
 
     # --- Sizing ---
     # SIZING_MODE: "proportional" (default), "fixed", "adaptive"

@@ -23,7 +23,7 @@ async def run_leader_monitor(
     readiness_tracker: ReadinessTracker,
     config: AppConfig,
     *,
-    fetch_interval: int,
+    fetch_interval: float,
     monitored_leader_count: int = 1,
     research_capture_service: Any | None = None,
 ) -> None:

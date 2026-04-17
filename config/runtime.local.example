@@ -31,4 +31,4 @@ MULTI_USER_CONFIG_FILE=
 # LEADER_AUTO_COUNT=5
 
 # Override leader polling cadence locally if needed.
-# FETCH_INTERVAL=1
+# FETCH_INTERVAL=0.25
