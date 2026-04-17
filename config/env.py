@@ -564,9 +564,6 @@ def _build_env_snapshot() -> dict[str, object]:
     # --- Auto-redeem ---
     'ENABLE_AUTO_REDEEM': os.getenv('ENABLE_AUTO_REDEEM', 'false').strip().lower() in ('1', 'true', 'yes'),
     'REDEEM_CHECK_INTERVAL': _int('REDEEM_CHECK_INTERVAL', '60'),
-    # Optional relayer for POLY_PROXY / GNOSIS_SAFE redemptions (leave empty for EOA)
-    'RELAYER_URL': os.getenv('RELAYER_URL', ''),
-    'RELAYER_API_KEY': os.getenv('RELAYER_API_KEY', ''),
 
     # --- Execution quality ---
     # Max acceptable slippage (%) before rejecting order

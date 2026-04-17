@@ -522,6 +522,10 @@ class TestAutoRedeemLoop:
                 condition_id="0xabc123def456abc123def456abc123def456abc123def456abc123def456abc1",
                 outcome_index=0,
                 size=10.0,
+                cur_price=0.99,
+                current_value=9.9,
+                title="Test",
+                outcome="Yes",
             )
         ]
         
@@ -535,10 +539,9 @@ class TestAutoRedeemLoop:
              patch("services.autoRedeem.asyncio.sleep", side_effect=patched_sleep):
             svc = mock_service_cls.return_value
             svc.scan_redeemables = AsyncMock(return_value=redeemables)
-            svc.redeem = AsyncMock(return_value=MagicMock(submitted=True, status="submitted", tx_hash="0xtx"))
-            with pytest.raises(asyncio.CancelledError):
-                await auto_redeem_loop(MagicMock(), config)
-        svc.redeem.assert_called_once()
+            svc.redeem_condition = AsyncMock(return_value=MagicMock(submitted=True, status="confirmed", tx_hash="0xtx"))
+            await auto_redeem_loop(MagicMock(), config)
+        svc.redeem_condition.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
