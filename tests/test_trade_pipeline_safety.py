@@ -548,6 +548,39 @@ async def test_sell_uses_notional_when_size_missing(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_sell_clamps_to_live_holdings_before_submit(tmp_path):
+    db_path = _init_db(tmp_path)
+    exec_svc = AsyncMock()
+    exec_svc.execute.return_value = _exec_result(
+        accepted=True, filled=Decimal("27.36"), status="filled", order_id="ord-sell-clamped"
+    )
+    ctx = _make_context(db_path, execution_service=exec_svc)
+
+    from storage.sqlite.positions_repo import PositionRecord
+    ctx.positions_repo.upsert_position(PositionRecord(
+        user_id="user1", condition_id="cond1", token_id=FAKE_TOKEN_ID,
+        leader_id="leader1", size_tokens=Decimal("27.4623"), avg_entry_price=Decimal("0.40"),
+    ))
+
+    signal = _signal(side="SELL", price=0.3773, size=27.4623)
+    signal["_leader_sell_fraction"] = 1.0
+
+    with patch(
+        "orchestrators.trade_pipeline.fetch_data",
+        new_callable=AsyncMock,
+        return_value=[{"asset": FAKE_TOKEN_ID, "size": "27.367906", "currentValue": 10.33}],
+    ):
+        results = await execute_trades(ctx, "leader1", [signal], time.time())
+
+    assert len(results) == 1
+    assert results[0].status == "executed"
+
+    req = exec_svc.execute.await_args.args[0]
+    assert req.side == "SELL"
+    assert req.amount == Decimal("27.36")
+
+
+@pytest.mark.asyncio
 async def test_sell_insufficient_balance_syncs_local_position_from_live_holdings(tmp_path):
     db_path = _init_db(tmp_path)
     exec_svc = AsyncMock()
