@@ -873,9 +873,19 @@ class ExecutionService:
                         response.get("error"),
                     )
                     break
-                last_error = redact_error_detail(
+                last_error = (
                     response.get("error") or "unknown order submission error"
                 )
+                # If the wrapper flagged this as non-retryable (e.g. size below
+                # minimum, tick-size violation), stop retrying immediately. The
+                # same order will be rejected on every retry, and we were
+                # wasting ~1.5s per order on guaranteed-to-fail retries.
+                if response.get("non_retryable"):
+                    logger.warning(
+                        "non-retryable CLOB rejection, skipping retries: %s",
+                        last_error,
+                    )
+                    break
             except Exception as exc:
                 last_error = redact_error_detail(exc)
                 # Log raw CLOB error body for diagnostics before redaction.

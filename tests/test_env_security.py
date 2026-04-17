@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import stat
 import sys
+import warnings
 from importlib import reload
 from pathlib import Path
 from unittest.mock import patch
@@ -186,3 +187,31 @@ class TestEnvSecurity:
             assert os.environ["FUNDER_ADDRESS"] == "0xabc"
             assert os.environ["RPC_URL"] == "https://secret"
             assert os.environ["PRIVATE_KEY"] == "0x" + ("ab" * 32)
+
+    def test_runtime_env_warns_and_keeps_local_public_value_when_secrets_redefines_public_key(self, tmp_path):
+        from config import runtime_env
+
+        shared = tmp_path / "runtime.env"
+        local_public = tmp_path / "runtime.local.env"
+        secrets = tmp_path / ".env"
+
+        shared.write_text("", encoding="utf-8")
+        local_public.write_text("LEADER_WALLETS=0xlocal1,0xlocal2\n", encoding="utf-8")
+        secrets.write_text("LEADER_WALLETS=0xsecret_only\n", encoding="utf-8")
+
+        with patch.dict(os.environ, {}, clear=True):
+            reload(runtime_env)
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                runtime_env.load_runtime_env(
+                    non_sensitive_path=shared,
+                    local_non_sensitive_path=local_public,
+                    secrets_path=secrets,
+                    override_secrets=True,
+                )
+
+            assert os.environ["LEADER_WALLETS"] == "0xlocal1,0xlocal2"
+            assert any(
+                "defines non-sensitive key 'LEADER_WALLETS'" in str(w.message)
+                for w in caught
+            )

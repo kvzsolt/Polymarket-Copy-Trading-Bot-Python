@@ -60,7 +60,7 @@ def calculate_trade_size_adaptive_percentage(
     adaptive_max_percent=None,
     adaptive_threshold_usdc=None,
 ) -> Decimal:
-    """Port of the TypeScript trade-size adaptive percentage logic.
+    """Trade-size adaptive percentage logic.
 
     Small orders can be copied more aggressively, while large whale orders
     automatically taper down to a smaller percentage.
