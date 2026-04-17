@@ -28,6 +28,15 @@ _CLOB_CIRCUIT = CircuitBreaker(
     cooldown_seconds=60,
 )
 
+
+def _positive_int_env(name: str, default: int) -> int:
+    raw = ENV.get(name, default)
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = default
+    return max(1, value)
+
 _MAX_PERSISTED_FIELD_CHARS = 160
 _MAX_PERSISTED_ERROR_CHARS = 512
 _TRUNCATED_SUFFIX = "...[truncated]"
@@ -438,6 +447,10 @@ class ExecutionService:
         else:
             self.circuit_breaker = _CLOB_CIRCUIT
 
+        self._submit_semaphore = asyncio.Semaphore(
+            _positive_int_env("EXECUTION_SUBMIT_CONCURRENCY", 2)
+        )
+
     def _save_submission(
         self,
         *,
@@ -816,161 +829,162 @@ class ExecutionService:
                     error="another task is currently submitting this order",
                 )
 
-        pending_since = time.time()
-        # Write pending row for crash visibility (even if we acquired the atomic lock above,
-        # we still need the pending row so recovery knows about us).
-        self._save_submission(
-            idempotency_key=idem_key,
-            request=request_doc,
-            response=_build_pending_response(pending_since=pending_since, config=self._config),
-        )
-
-        for attempt in range(1, 4):
-            signed_order = None
-            post_called = False
-            try:
-                signed_order = await self.clob_client.create_market_order(
-                    token_id=req.token_id,
-                    side=side_const,
-                    amount=float(req.amount),
-                    max_price=float(worst_price),
-                    tick_size=str(meta.tick_size),
-                    neg_risk=meta.neg_risk,
-                    order_type=OrderType.FOK,
-                )
-                post_called = True
-                response = await self.clob_client.post_signed_order(
-                    signed_order, OrderType.FOK
-                )
-                if response.get("success"):
-                    self.circuit_breaker.record_success()
-                    self._save_submission(
-                        idempotency_key=idem_key,
-                        request=request_doc,
-                        response=response,
-                    )
-                    log_api_response(
-                        logger,
-                        method="POST",
-                        url="post_signed_order",
-                        status=200,
-                        data=response,
-                        meta={"side": side, "asset": req.token_id},
-                    )
-                    break
-                # Check if the wrapper flagged this as an ambiguous post failure
-                # (timeout/connection error after POST was sent to exchange).
-                # In this case, the order MAY have been accepted — do NOT retry.
-                if response.get("ambiguous_post_failure"):
-                    response["status"] = "submitted_unconfirmed"
-                    self._save_submission(
-                        idempotency_key=idem_key,
-                        request=request_doc,
-                        response=response,
-                    )
-                    logger.warning(
-                        "ambiguous post failure (timeout/connection after POST): %s",
-                        response.get("error"),
-                    )
-                    break
-                last_error = (
-                    response.get("error") or "unknown order submission error"
-                )
-                # If the wrapper flagged this as non-retryable (e.g. size below
-                # minimum, tick-size violation), stop retrying immediately. The
-                # same order will be rejected on every retry, and we were
-                # wasting ~1.5s per order on guaranteed-to-fail retries.
-                if response.get("non_retryable"):
-                    logger.warning(
-                        "non-retryable CLOB rejection, skipping retries: %s",
-                        last_error,
-                    )
-                    break
-            except Exception as exc:
-                last_error = redact_error_detail(exc)
-                # Log raw CLOB error body for diagnostics before redaction.
-                raw_exc_body = ""
-                if hasattr(exc, 'error_msg'):
-                    raw_exc_body = str(exc.error_msg)
-                elif hasattr(exc, '__cause__'):
-                    raw_exc_body = str(exc.__cause__)
-                if raw_exc_body:
-                    logger.warning(
-                        "raw_clob_error_on_%s | %s",
-                        "create_order" if not post_called else "post_order",
-                        raw_exc_body[:500],
-                    )
-                if post_called:
-                    # post_signed_order was called but we got an exception —
-                    # the order may have been accepted on the exchange.
-                    # Do NOT retry; record as ambiguous.
-                    response = {
-                        "success": False,
-                        "status": "submitted_unconfirmed",
-                        "error": last_error,
-                    }
-                    self._save_submission(
-                        idempotency_key=idem_key,
-                        request=request_doc,
-                        response=response,
-                    )
-                    log_api_response(
-                        logger,
-                        method="POST",
-                        url="post_signed_order",
-                        status=503,
-                        error=last_error,
-                        meta={"side": side, "asset": req.token_id, "state": "submitted_unconfirmed"},
-                    )
-                    logger.warning(
-                        "ambiguous submission (post called but exception): %s",
-                        last_error,
-                    )
-                    break
-            await asyncio.sleep(min(0.15 * attempt, 0.30))
-        else:
-            # All retries exhausted without success
-            self.circuit_breaker.record_failure()
+        async with self._submit_semaphore:
+            pending_since = time.time()
+            # Write pending row for crash visibility (even if we acquired the atomic lock above,
+            # we still need the pending row so recovery knows about us).
             self._save_submission(
                 idempotency_key=idem_key,
                 request=request_doc,
-                response=response
-                or {"success": False, "error": last_error, "status": "failed"},
-            )
-            log_api_error(
-                logger,
-                side=req.side,
-                error=last_error,
-                asset=req.token_id,
-                retry=3,
-                max_retries=3,
+                response=_build_pending_response(pending_since=pending_since, config=self._config),
             )
 
-        if not response.get("success"):
-            if str(response.get("status") or "").lower() == "submitted_unconfirmed":
+            for attempt in range(1, 4):
+                signed_order = None
+                post_called = False
+                try:
+                    signed_order = await self.clob_client.create_market_order(
+                        token_id=req.token_id,
+                        side=side_const,
+                        amount=float(req.amount),
+                        max_price=float(worst_price),
+                        tick_size=str(meta.tick_size),
+                        neg_risk=meta.neg_risk,
+                        order_type=OrderType.FOK,
+                    )
+                    post_called = True
+                    response = await self.clob_client.post_signed_order(
+                        signed_order, OrderType.FOK
+                    )
+                    if response.get("success"):
+                        self.circuit_breaker.record_success()
+                        self._save_submission(
+                            idempotency_key=idem_key,
+                            request=request_doc,
+                            response=response,
+                        )
+                        log_api_response(
+                            logger,
+                            method="POST",
+                            url="post_signed_order",
+                            status=200,
+                            data=response,
+                            meta={"side": side, "asset": req.token_id},
+                        )
+                        break
+                    # Check if the wrapper flagged this as an ambiguous post failure
+                    # (timeout/connection error after POST was sent to exchange).
+                    # In this case, the order MAY have been accepted — do NOT retry.
+                    if response.get("ambiguous_post_failure"):
+                        response["status"] = "submitted_unconfirmed"
+                        self._save_submission(
+                            idempotency_key=idem_key,
+                            request=request_doc,
+                            response=response,
+                        )
+                        logger.warning(
+                            "ambiguous post failure (timeout/connection after POST): %s",
+                            response.get("error"),
+                        )
+                        break
+                    last_error = (
+                        response.get("error") or "unknown order submission error"
+                    )
+                    # If the wrapper flagged this as non-retryable (e.g. size below
+                    # minimum, tick-size violation), stop retrying immediately. The
+                    # same order will be rejected on every retry, and we were
+                    # wasting ~1.5s per order on guaranteed-to-fail retries.
+                    if response.get("non_retryable"):
+                        logger.warning(
+                            "non-retryable CLOB rejection, skipping retries: %s",
+                            last_error,
+                        )
+                        break
+                except Exception as exc:
+                    last_error = redact_error_detail(exc)
+                    # Log raw CLOB error body for diagnostics before redaction.
+                    raw_exc_body = ""
+                    if hasattr(exc, 'error_msg'):
+                        raw_exc_body = str(exc.error_msg)
+                    elif hasattr(exc, '__cause__'):
+                        raw_exc_body = str(exc.__cause__)
+                    if raw_exc_body:
+                        logger.warning(
+                            "raw_clob_error_on_%s | %s",
+                            "create_order" if not post_called else "post_order",
+                            raw_exc_body[:500],
+                        )
+                    if post_called:
+                        # post_signed_order was called but we got an exception —
+                        # the order may have been accepted on the exchange.
+                        # Do NOT retry; record as ambiguous.
+                        response = {
+                            "success": False,
+                            "status": "submitted_unconfirmed",
+                            "error": last_error,
+                        }
+                        self._save_submission(
+                            idempotency_key=idem_key,
+                            request=request_doc,
+                            response=response,
+                        )
+                        log_api_response(
+                            logger,
+                            method="POST",
+                            url="post_signed_order",
+                            status=503,
+                            error=last_error,
+                            meta={"side": side, "asset": req.token_id, "state": "submitted_unconfirmed"},
+                        )
+                        logger.warning(
+                            "ambiguous submission (post called but exception): %s",
+                            last_error,
+                        )
+                        break
+                await asyncio.sleep(min(0.15 * attempt, 0.30))
+            else:
+                # All retries exhausted without success
+                self.circuit_breaker.record_failure()
+                self._save_submission(
+                    idempotency_key=idem_key,
+                    request=request_doc,
+                    response=response
+                    or {"success": False, "error": last_error, "status": "failed"},
+                )
+                log_api_error(
+                    logger,
+                    side=req.side,
+                    error=last_error,
+                    asset=req.token_id,
+                    retry=3,
+                    max_retries=3,
+                )
+
+            if not response.get("success"):
+                if str(response.get("status") or "").lower() == "submitted_unconfirmed":
+                    return ExecutionResult(
+                        accepted=True,
+                        order_id=response.get("orderID"),
+                        status="submitted_unconfirmed",
+                        requested_amount=req.amount,
+                        filled_amount=Decimal("0"),
+                        avg_price=None,
+                        fees_paid=Decimal("0"),
+                        error=last_error,
+                    )
                 return ExecutionResult(
-                    accepted=True,
-                    order_id=response.get("orderID"),
-                    status="submitted_unconfirmed",
+                    accepted=False,
+                    order_id=None,
+                    status="failed",
                     requested_amount=req.amount,
                     filled_amount=Decimal("0"),
                     avg_price=None,
                     fees_paid=Decimal("0"),
-                    error=last_error,
+                    error=last_error or "order submission failed",
                 )
-            return ExecutionResult(
-                accepted=False,
-                order_id=None,
-                status="failed",
-                requested_amount=req.amount,
-                filled_amount=Decimal("0"),
-                avg_price=None,
-                fees_paid=Decimal("0"),
-                error=last_error or "order submission failed",
-            )
 
-        order_id = response.get("orderID")
-        fill_info = await self._confirm_fill(order_id) if order_id else {}
+            order_id = response.get("orderID")
+            fill_info = await self._confirm_fill(order_id) if order_id else {}
 
         # Parse fill size — NEVER fallback to req.amount (that's notional for BUY, tokens for SELL)
         raw_fill = (
