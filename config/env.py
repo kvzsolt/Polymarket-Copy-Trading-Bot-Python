@@ -330,8 +330,8 @@ def validate_runtime_env() -> None:
         errors.append('RISK_BUFFER_PCT must be non-negative.')
     if ENV.get('COPY_MIN_SHARES', 0.0) < 0:
         errors.append('COPY_MIN_SHARES must be >= 0.')
-    if ENV.get('COPY_MIN_NOTIONAL_USDC', 0.0) <= 0:
-        errors.append('COPY_MIN_NOTIONAL_USDC must be > 0.')
+    if ENV.get('COPY_MIN_NOTIONAL_USDC', 0.0) < 0:
+        errors.append('COPY_MIN_NOTIONAL_USDC must be >= 0.')
     if ENV.get('COPY_SIZE_DECIMALS', 0) < 0:
         errors.append('COPY_SIZE_DECIMALS must be >= 0.')
     if not (0 <= ENV.get('COPY_DECISION_MIN_SCORE', 0.0) <= 1):
@@ -352,6 +352,8 @@ def validate_runtime_env() -> None:
         errors.append('TRUST_SIZE_MULTIPLIER_MAX must be > 0.')
     if ENV.get('TRUST_SIZE_MULTIPLIER_MIN', 0.0) > ENV.get('TRUST_SIZE_MULTIPLIER_MAX', 0.0):
         errors.append('TRUST_SIZE_MULTIPLIER_MIN must be <= TRUST_SIZE_MULTIPLIER_MAX.')
+    if ENV.get('EXECUTABLE_ORDER_BUFFER_NOTIONAL_USDC', 0.0) < 0:
+        errors.append('EXECUTABLE_ORDER_BUFFER_NOTIONAL_USDC must be >= 0.')
     if ENV.get('LEADER_SCORE_BALANCE_TARGET_USDC', 0.0) <= 0:
         errors.append('LEADER_SCORE_BALANCE_TARGET_USDC must be > 0.')
     if ENV.get('LEADER_SCORE_ACTIVITY_TARGET', 0) <= 0:
@@ -476,6 +478,7 @@ def _build_env_snapshot() -> dict[str, object]:
     'POSITION_THRESHOLD': _int('POSITION_THRESHOLD', '0'),
     # Max fraction of our balance to risk on a single trade (0.0–1.0)
     'MAX_POSITION_PCT': _float('MAX_POSITION_PCT', '0.45'),
+    'ENABLE_TRUST_SIZE_MULTIPLIERS': os.getenv('ENABLE_TRUST_SIZE_MULTIPLIERS', 'true').strip().lower() in ('1', 'true', 'yes'),
     # Decision-first sizing floor controls
     'COPY_MIN_SHARES': _float('COPY_MIN_SHARES', '5'),
     'COPY_MIN_NOTIONAL_USDC': _float('COPY_MIN_NOTIONAL_USDC', '1'),
@@ -580,6 +583,8 @@ def _build_env_snapshot() -> dict[str, object]:
     'MAX_SHARE_PRICE': _float('MAX_SHARE_PRICE', '0'),
     'MAX_RETRIES': _int('MAX_RETRIES', '3'),
     'NON_TERMINAL_FAILURE_MAX_ATTEMPTS': _int('NON_TERMINAL_FAILURE_MAX_ATTEMPTS', '3'),
+    'ENABLE_EXECUTABLE_ORDER_GUARD': os.getenv('ENABLE_EXECUTABLE_ORDER_GUARD', 'true').strip().lower() in ('1', 'true', 'yes'),
+    'EXECUTABLE_ORDER_BUFFER_NOTIONAL_USDC': _float('EXECUTABLE_ORDER_BUFFER_NOTIONAL_USDC', '1.05'),
     'ENABLE_TIER_GATE_WATCHLIST': os.getenv('ENABLE_TIER_GATE_WATCHLIST', 'false').strip().lower() in ('1', 'true', 'yes'),
     'ENABLE_TIER_GATE_WATCHLIST_LOG': os.getenv('ENABLE_TIER_GATE_WATCHLIST_LOG', 'false').strip().lower() in ('1', 'true', 'yes'),
     # Global switch for copy decision gating (trade scoring / trust gating / decision rejections).

@@ -4,6 +4,7 @@ import sys
 import time
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
+import os
 
 import pytest
 
@@ -123,19 +124,50 @@ class TestCopyDecisionService:
         assert decision.reason == "decision gate disabled by config"
         assert decision.details.get("decision_gate_enabled") is False
 
+    def test_minimum_order_guard_can_be_disabled_for_buy(self):
+        trade = {"price": 0.40, "timestamp": time.time(), "usdcSize": 20}
+        with patch.dict(os.environ, {"ENABLE_EXECUTABLE_ORDER_GUARD": "false"}, clear=False):
+            svc = CopyDecisionService()
+            decision = svc.decide_buy(
+                trade=trade,
+                leader_score=_leader(),
+                live_price=0.40,
+                base_notional_usdc=0.50,
+                max_notional_usdc=10.0,
+                market_min_size=0.0,
+            )
+        assert decision.allow is True
+        assert decision.skip_code == "ok"
+        assert decision.details["minimum_order_guard_enabled"] is False
+
+    def test_minimum_order_guard_can_be_disabled_for_sell(self):
+        trade = {"price": 0.40, "timestamp": time.time(), "usdcSize": 10}
+        with patch.dict(os.environ, {"ENABLE_EXECUTABLE_ORDER_GUARD": "false"}, clear=False):
+            svc = CopyDecisionService()
+            decision = svc.decide_sell(
+                trade=trade,
+                sell_tokens=2.0,
+                live_price=0.40,
+                market_min_size=5.0,
+                max_sell_tokens=2.0,
+            )
+        assert decision.allow is True
+        assert decision.target_size_tokens == pytest.approx(2.0)
+        assert decision.details["minimum_order_guard_enabled"] is False
+
     def test_sell_decision_gate_can_be_disabled(self):
         svc = CopyDecisionService()
         trade = {"price": 0.40, "timestamp": time.time(), "usdcSize": 10}
         decision = svc.decide_sell(
             trade=trade,
-            sell_tokens=2.0,
+            sell_tokens=5.0,
             live_price=0.40,
             market_min_size=0.0,
-            max_sell_tokens=2.0,
+            max_sell_tokens=5.0,
         )
         assert decision.allow is True
         assert decision.skip_code == "ok"
-        assert decision.target_size_tokens == pytest.approx(2.0)
+        assert decision.target_size_tokens == pytest.approx(5.0)
         assert decision.reason == "decision gate disabled by config"
 
     def test_sell_decision_gate_disabled_still_honors_market_min_size(self):

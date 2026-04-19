@@ -1138,6 +1138,8 @@ async def execute_trades(
                             "clamped_sell_tokens": float(venue_sell_cap),
                         },
                     )
+                    if venue_sell_cap <= Decimal("0") and live_sellable_tokens <= Decimal("0"):
+                        context.positions_repo.delete_position(context.user_id, signal.condition_id, token_id=signal.token_id)
                     sell_tokens = venue_sell_cap
 
             leader_sell_fraction = _extract_leader_sell_fraction(raw) or Decimal("1")
@@ -1158,58 +1160,68 @@ async def execute_trades(
                 },
             )
 
-            # Polymarket CLOB hard-requires 5 shares minimum per order on
-            # tick_size=0.01 markets. We pad to 5.01 to survive rounding.
-            POLYMARKET_HARD_MIN_SHARES = 5.0
-            effective_min_tokens = max(
-                float(market_min_size),
-                POLYMARKET_HARD_MIN_SHARES,
-                1.05 / (live_price or 0.01),  # keep >$1 notional as safety floor
+            sell_decision = copy_decision_svc.decide_sell(
+                trade=raw,
+                sell_tokens=float(sell_tokens),
+                live_price=live_price,
+                market_min_size=market_min_size,
+                max_sell_tokens=float(pos.size_tokens),
             )
 
-            if float(sell_tokens) * live_price < 1.0 or float(sell_tokens) < effective_min_tokens:
-                min_sell_tokens = Decimal(str(effective_min_tokens))
-                if pos.size_tokens < min_sell_tokens:
-                    skip_code = "sell_below_market_min"
-                    skip_reason = (
-                        f"SELL size below exchange minimum "
-                        f"(requested {float(sell_tokens):.4f} tokens @ ${live_price:.4f}, "
-                        f"held {float(pos.size_tokens):.4f}, need >= {effective_min_tokens:.2f} tokens)"
-                    )
-                    print_skip_reason("SELL rejected by market minimum", skip_reason)
-                    log_trade_skip(
-                        logger,
-                        side=signal.side,
-                        condition_id=signal.condition_id,
-                        asset=signal.token_id,
-                        size=float(sell_tokens),
-                        price=live_price,
-                        usdc_value=float(signal.usdc_size),
-                        skip_code=skip_code,
-                        reason=skip_reason,
-                        event_slug=signal.event_slug,
-                        meta={"user_id": context.user_id, "leader_id": leader_id},
-                    )
-                    await metrics.inc("trades_skipped_total", labels={**labels, "reason": skip_code})
-                    context.orders_repo.mark_processed_trade(
-                        trade_key=trade_key,
-                        user_id=context.user_id,
-                        leader_id=leader_id,
-                        tx_hash=signal.tx_hash,
-                        side=signal.side,
-                        asset=signal.token_id,
-                        condition_id=signal.condition_id,
-                        status=f"skipped_{skip_code}",
-                    )
-                    results.append(TradePipelineResult(trade_key, "skipped", skip_reason, None))
-                    continue
+            log_trade_decision(
+                logger,
+                side=signal.side,
+                condition_id=signal.condition_id,
+                asset=signal.token_id,
+                decision_score=sell_decision.decision_score,
+                allow=sell_decision.allow,
+                reason=sell_decision.reason,
+                event_slug=signal.event_slug,
+                meta={
+                    "user_id": context.user_id,
+                    "leader_id": leader_id,
+                    "trade_score": sell_decision.trade_score,
+                    "tx_hash": signal.tx_hash,
+                },
+            )
+
+            if not sell_decision.allow:
+                print_skip_reason("SELL rejected by execution minimums", sell_decision.reason)
+                log_trade_skip(
+                    logger,
+                    side=signal.side,
+                    condition_id=signal.condition_id,
+                    asset=signal.token_id,
+                    size=float(sell_tokens),
+                    price=live_price,
+                    usdc_value=float(signal.usdc_size),
+                    skip_code=sell_decision.skip_code,
+                    reason=sell_decision.reason,
+                    event_slug=signal.event_slug,
+                    meta={"user_id": context.user_id, "leader_id": leader_id},
+                )
+                await metrics.inc("trades_skipped_total", labels={**labels, "reason": sell_decision.skip_code})
+                context.orders_repo.mark_processed_trade(
+                    trade_key=trade_key,
+                    user_id=context.user_id,
+                    leader_id=leader_id,
+                    tx_hash=signal.tx_hash,
+                    side=signal.side,
+                    asset=signal.token_id,
+                    condition_id=signal.condition_id,
+                    status=f"skipped_{sell_decision.skip_code}",
+                )
+                results.append(TradePipelineResult(trade_key, "skipped", sell_decision.reason, None))
+                continue
+
+            if float(sell_tokens) + 1e-12 < sell_decision.target_size_tokens:
                 logger.info(
                     "sell_size_bumped_to_min | requested=%.4f bumped_to=%.4f held=%.4f",
                     float(sell_tokens),
-                    effective_min_tokens,
+                    sell_decision.target_size_tokens,
                     float(pos.size_tokens),
                 )
-                sell_tokens = min_sell_tokens
+            sell_tokens = Decimal(str(sell_decision.target_size_tokens))
 
             exec_req = ExecutionRequest(
                 user_id=context.user_id,
