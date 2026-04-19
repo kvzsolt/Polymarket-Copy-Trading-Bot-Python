@@ -75,7 +75,7 @@ class ExecutionRequest:
     side: str  # BUY or SELL
     amount: Decimal
     max_slippage_bps: int
-    reason: str  # copy_trade, stop_loss, take_profit, rebalance
+    reason: str  # copy_trade, advanced_risk_exit, rebalance
     signal_id: str | None = None
 
 

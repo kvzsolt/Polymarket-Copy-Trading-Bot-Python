@@ -118,29 +118,14 @@ class TestCrossFieldValidation:
         settings = load_settings(env)
         assert settings.risk.near_max_warn_level == pytest.approx(0.90)
 
-    def test_profit_lock_trigger_lte_stop_loss_raises(self):
+    def test_profit_lock_trigger_is_independent_of_legacy_compat_ratios(self):
         env = _fresh_env(
             profit_lock_trigger_ratio=0.10,
             stop_loss_ratio=0.20,
         )
-        with pytest.raises(EnvValidationError, match="profit_lock_trigger_ratio"):
-            load_settings(env)
-
-    def test_profit_lock_trigger_equal_stop_loss_raises(self):
-        env = _fresh_env(
-            profit_lock_trigger_ratio=0.20,
-            stop_loss_ratio=0.20,
-        )
-        with pytest.raises(EnvValidationError, match="profit_lock_trigger_ratio"):
-            load_settings(env)
-
-    def test_profit_lock_trigger_gt_stop_loss_ok(self):
-        env = _fresh_env(
-            profit_lock_trigger_ratio=0.30,
-            stop_loss_ratio=0.20,
-        )
         settings = load_settings(env)
-        assert settings.risk.profit_lock_trigger_ratio == pytest.approx(0.30)
+        assert settings.risk.profit_lock_trigger_ratio == pytest.approx(0.10)
+        assert settings.risk.stop_loss_ratio == pytest.approx(0.20)
 
     def test_multiple_errors_reported_together(self):
         env = _fresh_env(
@@ -151,7 +136,7 @@ class TestCrossFieldValidation:
         with pytest.raises(EnvValidationError) as exc_info:
             load_settings(env)
         msg = str(exc_info.value)
-        # Both the invalid stop_loss AND the cross-field error should appear
+        # The invalid stop_loss ratio should still be reported with other errors.
         assert "stop_loss_ratio" in msg
 
 
@@ -265,13 +250,6 @@ class TestBoundaryValues:
         settings = load_settings(env)
         assert settings.sizing.max_position_ratio == 0.0
 
-    def test_profit_lock_trigger_zero_with_stop_loss_zero(self):
-        """profit_lock_trigger_ratio=0 requires stop_loss_ratio=0 too (cross-field)."""
-        env = _fresh_env(profit_lock_trigger_ratio=0.0, stop_loss_ratio=0.0)
-        # Cross-field check: profit_lock_trigger <= stop_loss -> error. Both 0 -> equal -> raises.
-        with pytest.raises(EnvValidationError, match="profit_lock_trigger_ratio"):
-            load_settings(env)
-
     @pytest.mark.parametrize("field", [
         "take_profit_ratio",
         "daily_drawdown_ratio",
@@ -286,12 +264,11 @@ class TestBoundaryValues:
         val = _get_field(settings, field)
         assert val == 1.0
 
-    def test_stop_loss_one_requires_profit_lock_above(self):
-        """stop_loss_ratio=1.0 needs profit_lock_trigger > 1.0 which is invalid.
-        So stop_loss=1.0 with default profit_lock raises cross-field error."""
-        env = _fresh_env(stop_loss_ratio=1.0)
-        with pytest.raises(EnvValidationError, match="profit_lock_trigger_ratio"):
-            load_settings(env)
+    def test_profit_lock_trigger_can_be_lower_than_legacy_compat_stop_loss(self):
+        env = _fresh_env(profit_lock_trigger_ratio=0.10, stop_loss_ratio=0.20)
+        settings = load_settings(env)
+        assert settings.risk.profit_lock_trigger_ratio == pytest.approx(0.10)
+        assert settings.risk.stop_loss_ratio == pytest.approx(0.20)
 
     def test_stop_loss_zero_works(self):
         env = _fresh_env(stop_loss_ratio=0.0)
@@ -304,7 +281,7 @@ class TestBoundaryValues:
         assert settings.sizing.max_position_ratio == 1.0
 
     def test_profit_lock_trigger_one(self):
-        """profit_lock_trigger_ratio=1.0 with stop_loss at default 0.20 -> valid."""
+        """profit_lock_trigger_ratio=1.0 stays valid with legacy compat ratios present."""
         env = _fresh_env(profit_lock_trigger_ratio=1.0)
         settings = load_settings(env)
         assert settings.risk.profit_lock_trigger_ratio == 1.0

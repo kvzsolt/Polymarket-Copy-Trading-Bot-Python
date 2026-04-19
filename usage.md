@@ -55,8 +55,8 @@ How the bot protects profits and cuts losses.
 
 ### 1. Stop Loss & Take Profit
 *   **`ENABLE_RISK_MGMT`**: (`true`/`false`) Master switch for automated exits.
-*   **`STOP_LOSS_PCT`**: (e.g., `20` = 20%) Auto-sells if the position drops 20% from entry.
-*   **`TAKE_PROFIT_PCT`**: (e.g., `70` = 70%) Auto-sells if the position gains 70%.
+*   Legacy compatibility only: `STOP_LOSS_PCT` and `TAKE_PROFIT_PCT` may still be accepted by older snapshots, but they are not active strategy controls.
+*   Use the advanced exit controls instead: `ENABLE_PROFIT_LOCK`, `ENABLE_NEAR_MAX_EXIT`, `ENABLE_TRAILING_STOP`, and `ENABLE_STAGED_TP`.
 
 ### 2. Profit Lock
 A dynamic floor that rises once a position becomes highly profitable.

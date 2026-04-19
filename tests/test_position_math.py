@@ -229,10 +229,10 @@ class TestFullSell:
     def test_exit_fields_populated(self):
         pm = _make_pm()
         pm.track_buy("cond-1", "asset-1", 0.50, 100.0, 50.0)
-        result = pm.track_sell("cond-1", 0.80, 100.0, reason="take_profit")
+        result = pm.track_sell("cond-1", 0.80, 100.0, reason="manual_exit")
         assert result.exit_price == pytest.approx(0.80)
         assert result.exit_time is not None
-        assert result.exit_reason == "take_profit"
+        assert result.exit_reason == "manual_exit"
         assert result.realized_pnl == pytest.approx(30.00)
 
     def test_size_zeroed_on_close(self):

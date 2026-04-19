@@ -94,8 +94,6 @@ class TestPositionExitSystem(unittest.TestCase):
         """
         defaults = {
             'ENABLE_RISK_MGMT': True,
-            'STOP_LOSS_PCT': 20,
-            'TAKE_PROFIT_PCT': 60,
             'ENABLE_PROFIT_LOCK': True,
             'PROFIT_LOCK_TRIGGER_PCT': 70,
             'PROFIT_LOCK_SELL_FRACTION': 0.50,
@@ -124,9 +122,8 @@ class TestPositionExitSystem(unittest.TestCase):
         pm = pm_mod.PositionManager()  # bare defaults branch
 
         # Override all private attrs to match the requested flags.
+        pm._risk_master_enabled = bool(defaults['ENABLE_RISK_MGMT'])
         pm._enabled = bool(defaults['ENABLE_RISK_MGMT'])
-        pm._sl_pct = float(defaults['STOP_LOSS_PCT']) / 100.0
-        pm._tp_pct = float(defaults['TAKE_PROFIT_PCT']) / 100.0
 
         enable_profit_lock = bool(defaults['ENABLE_PROFIT_LOCK'])
         pm._profit_lock_mode = 'advanced' if enable_profit_lock else 'disabled'
@@ -162,22 +159,6 @@ class TestPositionExitSystem(unittest.TestCase):
             leader_wallet="0x1234567890abcdef1234567890abcdef12345678",
         )
         return cid
-
-    # ── Stop Loss ──
-
-    def test_stop_loss_triggers(self):
-        pm = self._make_pm()
-        cid = self._add_position(pm, entry_price=0.50)
-        action = pm.evaluate_risk_action(cid, 0.39)  # -22%
-        assert action is not None
-        assert action["reason"] == "stop_loss"
-        assert action["size_fraction"] == 1.0
-
-    def test_stop_loss_not_triggered(self):
-        pm = self._make_pm()
-        cid = self._add_position(pm, entry_price=0.50)
-        action = pm.evaluate_risk_action(cid, 0.45)  # -10%
-        assert action is None
 
     # ── Near-Max Exit ──
 
@@ -323,27 +304,11 @@ class TestPositionExitSystem(unittest.TestCase):
 
     # ── Priority ──
 
-    def test_stop_loss_beats_everything(self):
-        pm = self._make_pm()
-        cid = self._add_position(pm, entry_price=0.50)
-        pm.signal_leader_divergence(cid)
-        action = pm.evaluate_risk_action(cid, 0.39)
-        assert action["reason"] == "stop_loss"
-
     def test_near_max_beats_profit_lock(self):
         pm = self._make_pm()
         cid = self._add_position(pm, entry_price=0.10)
         action = pm.evaluate_risk_action(cid, 0.96)
         assert action["reason"] == "near_max_full_exit"
-
-    # ── Legacy TP ──
-
-    def test_legacy_tp_when_staged_disabled(self):
-        pm = self._make_pm(ENABLE_STAGED_TP=False, ENABLE_PROFIT_LOCK=False, ENABLE_TRAILING_STOP=False)
-        cid = self._add_position(pm, entry_price=0.50)
-        action = pm.evaluate_risk_action(cid, 0.81)  # +62%
-        assert action is not None
-        assert action["reason"] == "take_profit"
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -464,7 +429,7 @@ class TestFeatureFlags(unittest.TestCase):
 
     def _make_pm(self, **overrides):
         defaults = {
-            'ENABLE_RISK_MGMT': True, 'STOP_LOSS_PCT': 20, 'TAKE_PROFIT_PCT': 60,
+            'ENABLE_RISK_MGMT': True,
             'ENABLE_PROFIT_LOCK': False, 'PROFIT_LOCK_TRIGGER_PCT': 70, 'PROFIT_LOCK_SELL_FRACTION': 0.50,
             'ENABLE_NEAR_MAX_EXIT': False, 'NEAR_MAX_PRICE_EXIT': 0.95, 'NEAR_MAX_PRICE_WARN': 0.92,
             'NEAR_MAX_PRICE_WARN_TRIM_RATIO': 0.50,
@@ -483,9 +448,8 @@ class TestFeatureFlags(unittest.TestCase):
             return [float(p) for p in parts]
 
         pm = pm_mod.PositionManager()
+        pm._risk_master_enabled = bool(defaults['ENABLE_RISK_MGMT'])
         pm._enabled = bool(defaults['ENABLE_RISK_MGMT'])
-        pm._sl_pct = float(defaults['STOP_LOSS_PCT']) / 100.0
-        pm._tp_pct = float(defaults['TAKE_PROFIT_PCT']) / 100.0
         pm._profit_lock_mode = 'advanced' if defaults['ENABLE_PROFIT_LOCK'] else 'disabled'
         pm._profit_lock_trigger = float(defaults['PROFIT_LOCK_TRIGGER_PCT']) / 100.0
         pm._profit_lock_sell_fraction = float(defaults['PROFIT_LOCK_SELL_FRACTION'])
@@ -504,24 +468,81 @@ class TestFeatureFlags(unittest.TestCase):
         pm._enable_leader_divergence = bool(defaults['ENABLE_LEADER_DIVERGENCE_EXIT'])
         return pm
 
-    def test_all_disabled_sl_still_works(self):
-        pm = self._make_pm()
+    def test_all_optional_exits_disabled_means_no_action(self):
+        pm = self._make_pm(
+            ENABLE_PROFIT_LOCK=False,
+            ENABLE_NEAR_MAX_EXIT=False,
+            ENABLE_TRAILING_STOP=False,
+            ENABLE_STAGED_TP=False,
+            ENABLE_LEADER_DIVERGENCE_EXIT=False,
+        )
         pm.track_buy("cid1", "tok", 0.50, 100, 50.0)
-        assert pm.evaluate_risk_action("cid1", 0.55) is None
-        action = pm.evaluate_risk_action("cid1", 0.39)
-        assert action["reason"] == "stop_loss"
-
-    def test_legacy_tp_when_all_disabled(self):
-        pm = self._make_pm()
-        pm.track_buy("cid1", "tok", 0.50, 100, 50.0)
-        action = pm.evaluate_risk_action("cid1", 0.81)
-        assert action is not None
-        assert action["reason"] == "take_profit"
+        assert pm.evaluate_risk_action("cid1", 0.39) is None
+        assert pm.evaluate_risk_action("cid1", 0.81) is None
 
     def test_risk_fully_disabled(self):
-        pm = self._make_pm(ENABLE_RISK_MGMT=False)
+        pm = self._make_pm(
+            ENABLE_RISK_MGMT=False,
+            ENABLE_PROFIT_LOCK=False,
+            ENABLE_NEAR_MAX_EXIT=False,
+            ENABLE_TRAILING_STOP=False,
+            ENABLE_STAGED_TP=False,
+            ENABLE_LEADER_DIVERGENCE_EXIT=False,
+        )
         pm.track_buy("cid1", "tok", 0.50, 100, 50.0)
         assert pm.evaluate_risk_action("cid1", 0.01) is None
+
+    def test_near_max_requires_global_risk_master(self):
+        pm = self._make_pm(
+            ENABLE_RISK_MGMT=False,
+            ENABLE_NEAR_MAX_EXIT=True,
+            ENABLE_PROFIT_LOCK=False,
+            ENABLE_TRAILING_STOP=False,
+            ENABLE_STAGED_TP=False,
+            ENABLE_LEADER_DIVERGENCE_EXIT=False,
+        )
+        pm.track_buy("cid1", "tok", 0.50, 100, 50.0)
+        assert pm.evaluate_risk_action("cid1", 0.96) is None
+
+    def test_near_max_can_run_with_master_on_and_base_subengines_off(self):
+        pm = self._make_pm(
+            ENABLE_RISK_MGMT=True,
+            ENABLE_NEAR_MAX_EXIT=True,
+            ENABLE_PROFIT_LOCK=False,
+            ENABLE_TRAILING_STOP=False,
+            ENABLE_STAGED_TP=False,
+            ENABLE_LEADER_DIVERGENCE_EXIT=False,
+        )
+        pm.track_buy("cid1", "tok", 0.50, 100, 50.0)
+        action = pm.evaluate_risk_action("cid1", 0.96)
+        assert action is not None
+        assert action["reason"] == "near_max_full_exit"
+
+    def test_profit_lock_requires_global_risk_master(self):
+        pm = self._make_pm(
+            ENABLE_RISK_MGMT=False,
+            ENABLE_PROFIT_LOCK=True,
+            ENABLE_NEAR_MAX_EXIT=False,
+            ENABLE_TRAILING_STOP=False,
+            ENABLE_STAGED_TP=False,
+            ENABLE_LEADER_DIVERGENCE_EXIT=False,
+        )
+        pm.track_buy("cid1", "tok", 0.50, 100, 50.0)
+        assert pm.evaluate_risk_action("cid1", 0.90) is None
+
+    def test_profit_lock_can_run_with_master_on_and_base_subengines_off(self):
+        pm = self._make_pm(
+            ENABLE_RISK_MGMT=True,
+            ENABLE_PROFIT_LOCK=True,
+            ENABLE_NEAR_MAX_EXIT=False,
+            ENABLE_TRAILING_STOP=False,
+            ENABLE_STAGED_TP=False,
+            ENABLE_LEADER_DIVERGENCE_EXIT=False,
+        )
+        pm.track_buy("cid1", "tok", 0.50, 100, 50.0)
+        action = pm.evaluate_risk_action("cid1", 0.90)
+        assert action is not None
+        assert action["reason"] == "profit_lock"
 
 
 if __name__ == "__main__":
