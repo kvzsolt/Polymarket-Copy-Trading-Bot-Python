@@ -475,7 +475,8 @@ async def test_sell_reduces_position(tmp_path):
 
     signal = _signal(side="SELL", price=0.60, size=10.0)
     signal["_leader_sell_fraction"] = 0.5  # sell 50% of our 20-token position = 10 tokens
-    results = await execute_trades(ctx, "leader1", [signal], time.time())
+    with patch("orchestrators.trade_pipeline._fetch_live_position_size", new_callable=AsyncMock, return_value=Decimal("20")):
+        results = await execute_trades(ctx, "leader1", [signal], time.time())
     assert len(results) == 1
     assert results[0].status == "executed"
 
@@ -499,18 +500,37 @@ async def test_sell_uses_leader_fraction_without_sell_decision_gate(tmp_path):
         leader_id="leader1", size_tokens=Decimal("20"), avg_entry_price=Decimal("0.40"),
     ))
 
-    class _BuyOnlyDecisionService:
+    class _SellAwareDecisionService:
         def decide_buy(self, **_kwargs):
-            raise AssertionError("SELL path should not call the decision gate")
+            raise AssertionError("BUY path should not run in this SELL test")
 
-    ctx.copy_decision_service = _BuyOnlyDecisionService()
+        def decide_sell(self, **kwargs):
+            return CopyDecision(
+                allow=True,
+                skip_code="ok",
+                reason="decision gate disabled by config",
+                side="SELL",
+                decision_score=1.0,
+                leader_score=1.0,
+                trade_score=1.0,
+                live_price=float(kwargs["live_price"]),
+                reference_price=float(kwargs["trade"].get("price") or 0),
+                target_notional_usdc=float(kwargs["sell_tokens"]) * float(kwargs["live_price"]),
+                target_size_tokens=float(kwargs["sell_tokens"]),
+                price_drift_pct=0.0,
+                edge_decay_pct=0.0,
+                details={"decision_gate_enabled": False, "minimum_order_guard_enabled": False},
+            )
+
+    ctx.copy_decision_service = _SellAwareDecisionService()
 
     signal = _signal(side="SELL", price=0.50, size=100.0)
     signal["_leader_sell_fraction"] = 0.5
     signal["_leader_position_size_after"] = 100.0
     signal["_leader_position_size_before"] = 200.0
 
-    results = await execute_trades(ctx, "leader1", [signal], time.time())
+    with patch("orchestrators.trade_pipeline._fetch_live_position_size", new_callable=AsyncMock, return_value=Decimal("20")):
+        results = await execute_trades(ctx, "leader1", [signal], time.time())
     assert len(results) == 1
     assert results[0].status == "executed"
 
@@ -538,7 +558,8 @@ async def test_sell_uses_notional_when_size_missing(tmp_path):
     # No _leader_sell_fraction — pipeline defaults to selling 100% of the position
     signal = _signal(side="SELL", price=0.50, size=0.0)
     signal["usdcSize"] = 2.0
-    results = await execute_trades(ctx, "leader1", [signal], time.time())
+    with patch("orchestrators.trade_pipeline._fetch_live_position_size", new_callable=AsyncMock, return_value=Decimal("20")):
+        results = await execute_trades(ctx, "leader1", [signal], time.time())
     assert len(results) == 1
     assert results[0].status == "executed"
 
@@ -648,8 +669,8 @@ async def test_sell_insufficient_balance_deletes_local_position_when_live_holdin
         results = await execute_trades(ctx, "leader1", [signal], time.time())
 
     assert len(results) == 1
-    assert results[0].status == "failed"
-    assert "local position synced to live holdings=0.0000" in str(results[0].reason)
+    assert results[0].status == "skipped"
+    assert results[0].reason == "SELL size is zero"
     assert ctx.positions_repo.get_position("user1", "cond1", token_id=FAKE_TOKEN_ID) is None
 
 
@@ -673,7 +694,8 @@ async def test_sell_realized_pnl_falls_back_to_updated_position_or_signal_price(
 
     signal = _signal(side="SELL", price=0.60, size=10.0)
     signal["_leader_sell_fraction"] = 0.5  # sell 50% of 20-token position = 10 tokens
-    results = await execute_trades(ctx, "leader1", [signal], time.time())
+    with patch("orchestrators.trade_pipeline._fetch_live_position_size", new_callable=AsyncMock, return_value=Decimal("20")):
+        results = await execute_trades(ctx, "leader1", [signal], time.time())
 
     assert len(results) == 1
     assert results[0].status == "executed"
@@ -708,7 +730,8 @@ async def test_sell_realized_pnl_falls_back_to_signal_price_when_position_prices
 
     signal = _signal(side="SELL", price=0.60, size=10.0)
     signal["_leader_sell_fraction"] = 0.5  # sell 50% of 20-token position = 10 tokens
-    results = await execute_trades(ctx, "leader1", [signal], time.time())
+    with patch("orchestrators.trade_pipeline._fetch_live_position_size", new_callable=AsyncMock, return_value=Decimal("20")):
+        results = await execute_trades(ctx, "leader1", [signal], time.time())
 
     assert len(results) == 1
     assert results[0].status == "executed"

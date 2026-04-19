@@ -409,7 +409,7 @@ class TestLeaderScoringIntegration(unittest.TestCase):
             'LEADER_SCORE_WEIGHT_ANALYTICS': 0.45,
             'LEADER_SCORE_WEIGHT_ACTIVITY': 0.20,
             'LEADER_SCORE_FLOOR': 0.10,
-            'TRUST_SIZE_MULTIPLIER_MIN': 0.70,
+            'TRUST_SIZE_MULTIPLIER_MIN': 0.50,
             'TRUST_SIZE_MULTIPLIER_MAX': 1.25,
         }
 
@@ -450,9 +450,9 @@ class TestLeaderScoringIntegration(unittest.TestCase):
     def test_trust_multiplier(self):
         import services.leaderScoringService as ls_mod
         scorer = ls_mod.LeaderScoringService()
-        assert scorer.trust_multiplier(0.0) == pytest.approx(0.70)
+        assert scorer.trust_multiplier(0.0) == pytest.approx(0.50)
         assert scorer.trust_multiplier(1.0) == pytest.approx(1.25)
-        assert scorer.trust_multiplier(0.5) == pytest.approx(0.975)
+        assert scorer.trust_multiplier(0.5) == pytest.approx(0.875)
 
 
 # ═══════════════════════════════════════════════════════════════════════
