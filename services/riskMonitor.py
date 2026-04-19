@@ -1,9 +1,10 @@
-"""Risk monitor — background task that checks open positions for SL/TP triggers."""
+"""Risk monitor — background task that checks open positions for advanced exit triggers."""
 
 from __future__ import annotations
 
 import asyncio
 import time
+from dataclasses import dataclass
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
@@ -27,6 +28,144 @@ logger = get_logger("RiskMonitor")
 
 # Track token_ids we've already warned about to avoid log spam every cycle.
 _warned_invalid_tokens: set[str] = set()
+_DEFAULT_RISK_PRICE_SEMAPHORE = 8
+_MIN_RISK_CACHE_STALE_SECONDS = 0.75
+
+
+@dataclass
+class CachedRiskPrice:
+    price: Decimal
+    size: Decimal | None
+    fetched_at: float
+
+
+class RiskPriceCache:
+    def __init__(self) -> None:
+        self._entries: dict[str, CachedRiskPrice] = {}
+
+    def get_fresh(self, token_id: str, *, stale_after: float, now: float | None = None) -> CachedRiskPrice | None:
+        entry = self._entries.get(token_id)
+        if entry is None:
+            return None
+        current_ts = now if now is not None else time.time()
+        if current_ts - entry.fetched_at > stale_after:
+            return None
+        return entry
+
+    def set(self, token_id: str, *, price: Decimal, size: Decimal | None = None, fetched_at: float | None = None) -> None:
+        self._entries[token_id] = CachedRiskPrice(
+            price=price,
+            size=size,
+            fetched_at=fetched_at if fetched_at is not None else time.time(),
+        )
+
+
+def _risk_cache_stale_after(refresh_interval: float) -> float:
+    return max(_MIN_RISK_CACHE_STALE_SECONDS, float(refresh_interval) * 3.0)
+
+
+async def _fetch_and_store_price(
+    client,
+    token_id: str,
+    cache: RiskPriceCache,
+    semaphore: asyncio.Semaphore,
+) -> None:
+    async with semaphore:
+        price_data = await client.get_price(token_id, "SELL")
+    if not price_data or price_data.get("price") is None:
+        return
+
+    try:
+        price = Decimal(str(price_data["price"]).strip())
+    except Exception:
+        return
+    if price <= 0:
+        return
+
+    size_raw = price_data.get("size")
+    size: Decimal | None = None
+    if size_raw is not None:
+        try:
+            size = Decimal(str(size_raw).strip())
+        except Exception:
+            size = None
+
+    cache.set(token_id, price=price, size=size)
+
+
+async def _refresh_price_cache_for_tokens(
+    client,
+    token_ids: list[str],
+    cache: RiskPriceCache,
+    *,
+    max_concurrency: int = _DEFAULT_RISK_PRICE_SEMAPHORE,
+) -> None:
+    unique_token_ids = [token_id for token_id in dict.fromkeys(token_ids) if token_id]
+    if not unique_token_ids:
+        return
+
+    semaphore = asyncio.Semaphore(max(1, int(max_concurrency)))
+    await asyncio.gather(
+        *[
+            _fetch_and_store_price(client, token_id, cache, semaphore)
+            for token_id in unique_token_ids
+        ],
+        return_exceptions=True,
+    )
+
+
+def _ensure_context_price_cache(context: TradingContext) -> RiskPriceCache:
+    cache = context.extra.get("risk_price_cache")
+    if isinstance(cache, RiskPriceCache):
+        return cache
+    cache = RiskPriceCache()
+    context.extra["risk_price_cache"] = cache
+    return cache
+
+
+async def _refresh_context_price_cache(
+    context: TradingContext,
+    *,
+    refresh_interval: float,
+    max_concurrency: int = _DEFAULT_RISK_PRICE_SEMAPHORE,
+) -> None:
+    token_ids = [
+        pos.token_id
+        for pos in context.positions_repo.list_open_positions(context.user_id)
+        if is_valid_clob_token_id(pos.token_id)
+    ]
+    if not token_ids:
+        return
+    cache = _ensure_context_price_cache(context)
+    await _refresh_price_cache_for_tokens(
+        context.client,
+        token_ids,
+        cache,
+        max_concurrency=max_concurrency,
+    )
+
+
+async def _get_context_cached_price(
+    context: TradingContext,
+    token_id: str,
+    *,
+    refresh_interval: float,
+) -> Decimal | None:
+    cache = _ensure_context_price_cache(context)
+    stale_after = _risk_cache_stale_after(refresh_interval)
+    entry = cache.get_fresh(token_id, stale_after=stale_after)
+    if entry is not None:
+        return entry.price
+
+    await _refresh_price_cache_for_tokens(context.client, [token_id], cache)
+    refreshed = cache.get_fresh(token_id, stale_after=stale_after)
+    return refreshed.price if refreshed is not None else None
+
+
+def _exit_monitor_enabled(config: AppConfig | None) -> bool:
+    if config is None:
+        return True
+    return bool(getattr(config.risk, "enable_risk_mgmt", False))
 
 
 async def risk_monitor_loop(
@@ -38,7 +177,7 @@ async def risk_monitor_loop(
     *,
     config: AppConfig | None = None,
 ):
-    """Continuously check open positions against stop-loss / take-profit levels.
+    """Continuously check open positions against advanced exit engines.
 
     Runs as a background asyncio task alongside the trade monitor.
 
@@ -49,12 +188,10 @@ async def risk_monitor_loop(
 
     if config is not None:
         interval = config.polling.risk_check_interval
-        enabled = config.risk.enable_risk_mgmt
+        enabled = _exit_monitor_enabled(config)
         slippage_bps = int(config.execution.slippage_tolerance * 100)
         funder_address = config.wallet.funder_address
         enable_tiered = config.risk.enable_balance_tiered_policy
-        sl_pct = config.risk.stop_loss_pct
-        tp_pct = config.risk.take_profit_pct
         fee_bps = int(config.execution.transaction_fee_bps)
     else:
         interval = 15
@@ -62,8 +199,6 @@ async def risk_monitor_loop(
         slippage_bps = 200
         funder_address = ""
         enable_tiered = False
-        sl_pct = 20
-        tp_pct = 30
         fee_bps = 20
 
     execution_service = ExecutionService(
@@ -75,27 +210,34 @@ async def risk_monitor_loop(
     accounting = AccountingService()
 
     if not enabled:
-        logger.info("Risk management disabled — monitor will not run")
+        logger.info("Global risk management disabled — monitor will not run")
         return
 
     logger.info(
-        f"Risk monitor started: SL={sl_pct}% "
-        f"TP={tp_pct}% interval={interval}s"
+        "Risk monitor started: advanced exit engines active "
+        f"interval={interval}s"
     )
+
+    price_cache = RiskPriceCache()
 
     while True:
         try:
             readiness_tracker.update(last_risk_check_ts=int(time.time()))
             positions = pm.open_positions
+            valid_assets = [pos.asset for pos in positions.values() if is_valid_clob_token_id(pos.asset)]
+            await _refresh_price_cache_for_tokens(clob_client, valid_assets, price_cache)
             for cid, pos in positions.items():
                 if not is_valid_clob_token_id(pos.asset):
                     logger.warning("Legacy risk monitor: skipping invalid asset=%r cid=%s", pos.asset, cid)
                     continue
                 try:
-                    price_data = await clob_client.get_price(pos.asset, 'SELL')
-                    if not price_data or price_data.get('price') is None:
+                    cached_price = price_cache.get_fresh(
+                        pos.asset,
+                        stale_after=_risk_cache_stale_after(interval),
+                    )
+                    if cached_price is None:
                         continue
-                    current_price = float(str(price_data['price']).strip())
+                    current_price = float(cached_price.price)
                     if current_price <= 0:
                         continue
 
@@ -245,20 +387,7 @@ def _fallback_risk_decision(
     *,
     config: AppConfig | None = None,
 ) -> dict | None:
-    """Simple fallback SL/TP decision when position manager is unavailable."""
-    if entry_price <= 0:
-        return None
-    if config is not None:
-        sl_pct = Decimal(str(config.risk.stop_loss_pct)) / Decimal("100")
-        tp_pct = Decimal(str(config.risk.take_profit_pct)) / Decimal("100")
-    else:
-        sl_pct = Decimal("0.20")
-        tp_pct = Decimal("0.30")
-    pct_change = (current_price - entry_price) / entry_price
-    if pct_change <= -sl_pct:
-        return {"reason": "stop_loss", "size_fraction": 1.0}
-    if pct_change >= tp_pct:
-        return {"reason": "take_profit", "size_fraction": 1.0}
+    """No implicit fallback exits. Advanced exit decisions live in PositionManager."""
     return None
 
 
@@ -268,6 +397,7 @@ async def run_risk_check_for_context(context: TradingContext) -> None:
 
     rehydrate_position_manager(context)
     slippage_bps = int(float(context.extra.get("slippage_tolerance_bps", 200)))
+    refresh_interval = float(context.extra.get("risk_check_interval_seconds", 0.25) or 0.25)
 
     # Read enable_tiered from context extra (set by bootstrap from config)
     enable_tiered = str(context.extra.get("enable_balance_tiered_policy", "false")).lower() in ("1", "true", "yes")
@@ -283,11 +413,12 @@ async def run_risk_check_for_context(context: TradingContext) -> None:
                 )
             continue
         try:
-            price_data = await context.client.get_price(pos.token_id, "SELL")
-            if not price_data or price_data.get("price") is None:
-                continue
-            current_price = Decimal(str(price_data["price"]))
-            if current_price <= 0:
+            current_price = await _get_context_cached_price(
+                context,
+                pos.token_id,
+                refresh_interval=refresh_interval,
+            )
+            if current_price is None or current_price <= 0:
                 continue
 
             action = None
@@ -391,7 +522,7 @@ async def risk_monitor_loop_for_contexts(
     readiness_tracker: ReadinessTracker,
     *,
     config: AppConfig | None = None,
-    interval: int | None = None,
+    interval: float | None = None,
 ) -> None:
     """Restart-safe risk monitor using persisted positions as the source of truth."""
     if not contexts:
@@ -399,18 +530,29 @@ async def risk_monitor_loop_for_contexts(
         return
 
     if config is not None:
-        enabled = config.risk.enable_risk_mgmt
-        poll_interval = int(interval or config.polling.risk_check_interval)
+        enabled = _exit_monitor_enabled(config)
+        poll_interval = float(interval or config.polling.risk_check_interval)
     else:
         enabled = True
-        poll_interval = int(interval or 15)
+        poll_interval = float(interval or 15)
 
     if not enabled:
-        logger.info("Risk management disabled — monitor will not run")
+        logger.info("Global risk management disabled — monitor will not run")
         return
+
+    for context in contexts:
+        context.extra["risk_check_interval_seconds"] = poll_interval
 
     while True:
         readiness_tracker.update(last_risk_check_ts=int(time.time()))
+        refresh_tasks = [
+            _refresh_context_price_cache(context, refresh_interval=poll_interval)
+            for context in contexts
+        ]
+        refresh_results = await asyncio.gather(*refresh_tasks, return_exceptions=True)
+        for context, result in zip(contexts, refresh_results, strict=False):
+            if isinstance(result, Exception):
+                logger.error(f"Risk price cache refresh failed user={context.user_id}: {result}")
         for context in contexts:
             try:
                 await run_risk_check_for_context(context)

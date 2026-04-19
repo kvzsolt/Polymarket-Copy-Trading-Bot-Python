@@ -43,8 +43,9 @@ def print_startup_summary(
         f"buy_min=${ENV.get('BUY_MIN_AMOUNT')} "
         f"buy_max=${ENV.get('BUY_MAX_AMOUNT')} "
         f"max_exposure=${ENV.get('MAX_MARKET_EXPOSURE_USDC')} "
-        f"sl={ENV.get('STOP_LOSS_PCT')}% "
-        f"tp={ENV.get('TAKE_PROFIT_PCT')}% "
+        f"profit_lock={ENV.get('ENABLE_PROFIT_LOCK')} "
+        f"near_max={ENV.get('ENABLE_NEAR_MAX_EXIT')} "
+        f"trailing={ENV.get('ENABLE_TRAILING_STOP')} "
         f"slippage<={ENV.get('SLIPPAGE_TOLERANCE')}%"
     )
     console.print()

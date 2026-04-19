@@ -1,4 +1,4 @@
-"""Issue #8 tests — explicit exit-rule ordering and ratio semantics."""
+"""Issue #8 tests — advanced exit-rule ordering and ratio semantics."""
 
 from decimal import Decimal
 
@@ -22,8 +22,8 @@ from services.riskEngine import (
 def _make_pm() -> PositionManager:
     """Create a PositionManager with test risk settings, bypassing ENV."""
     risk = RiskSettings(
-        stop_loss_ratio=0.15,
-        take_profit_ratio=0.40,
+        stop_loss_ratio=0.0,
+        take_profit_ratio=0.0,
         daily_drawdown_ratio=0.20,
         profit_lock_trigger_ratio=0.70,
         profit_lock_drawdown_ratio=0.10,
@@ -53,12 +53,15 @@ def _make_pm() -> PositionManager:
 # ---------------------------------------------------------------------------
 
 class TestExitPriorityOrdering:
-    def test_stop_loss_highest_priority(self):
+    def test_primitive_stop_loss_is_inactive(self):
         pm = _make_pm()
+        pm._enable_near_max = False
+        pm._profit_lock_mode = "disabled"
+        pm._enable_staged_tp = False
+        pm._enable_trailing = False
+        pm._enable_leader_divergence = False
         result = pm.evaluate_risk_action("cond-test", 0.30)
-        assert result is not None
-        assert result["reason"] == "stop_loss"
-        assert result["size_fraction"] == 1.0
+        assert result is None
 
     def test_near_max_beats_profit_lock(self):
         pm = _make_pm()
@@ -82,16 +85,14 @@ class TestExitPriorityOrdering:
         assert result is not None
         assert result["reason"] == "trailing_stop"
 
-    def test_legacy_tp_when_staged_disabled(self):
+    def test_legacy_take_profit_is_inactive_when_staged_disabled(self):
         pm = _make_pm()
         pm._enable_staged_tp = False
         pm._enable_trailing = False
         pm._enable_near_max = False
         pm._profit_lock_mode = "disabled"
         result = pm.evaluate_risk_action("cond-test", 0.56)
-        assert result is not None
-        assert result["reason"] == "take_profit"
-        assert result["size_fraction"] == 1.0
+        assert result is None
 
     def test_staged_tp_level_1_fires(self):
         pm = _make_pm()
