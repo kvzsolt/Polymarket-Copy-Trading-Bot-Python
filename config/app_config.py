@@ -222,7 +222,7 @@ class ClobConfig:
 class PollingConfig:
     fetch_interval: float
     aggregate_signal_window_seconds: float
-    risk_check_interval: int
+    risk_check_interval: float
     redeem_check_interval: int
     discovery_refresh_interval_seconds: int
 
@@ -253,8 +253,6 @@ class SizingConfig:
 @dataclass(frozen=True)
 class RiskConfig:
     enable_risk_mgmt: bool
-    stop_loss_pct: float
-    take_profit_pct: float
     max_market_exposure_usdc: float
     max_category_exposure_usdc: float
     max_leader_exposure_usdc: float
@@ -633,7 +631,7 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
     polling = PollingConfig(
         fetch_interval=p.float_("FETCH_INTERVAL", "0.25"),
         aggregate_signal_window_seconds=p.float_("AGGREGATE_SIGNAL_WINDOW_SECONDS", "0.1"),
-        risk_check_interval=p.int_("RISK_CHECK_INTERVAL", "15"),
+        risk_check_interval=p.float_("RISK_CHECK_INTERVAL", "15"),
         redeem_check_interval=p.int_("REDEEM_CHECK_INTERVAL", "60"),
         discovery_refresh_interval_seconds=p.int_("DISCOVERY_REFRESH_INTERVAL_SECONDS", "300"),
     )
@@ -664,8 +662,6 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
     # Risk
     risk = RiskConfig(
         enable_risk_mgmt=p.bool_("ENABLE_RISK_MGMT", False),
-        stop_loss_pct=p.float_("STOP_LOSS_PCT", "20"),
-        take_profit_pct=p.float_("TAKE_PROFIT_PCT", "70"),
         max_market_exposure_usdc=p.float_("MAX_MARKET_EXPOSURE_USDC", "300"),
         max_category_exposure_usdc=p.float_("MAX_CATEGORY_EXPOSURE_USDC", "600"),
         max_leader_exposure_usdc=p.float_("MAX_LEADER_EXPOSURE_USDC", "500"),

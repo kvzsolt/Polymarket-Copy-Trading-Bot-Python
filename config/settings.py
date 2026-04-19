@@ -1,12 +1,17 @@
 """Typed, validated settings built from the ENV snapshot.
 
+This module is a legacy compatibility layer for older tests and env snapshots.
+The live runtime uses :mod:`config.app_config` and the advanced exit engines
+there; the primitive stop-loss / single take-profit fields remain here only so
+older snapshots can still load.
+
 Usage::
 
     from config.settings import load_settings
 
     settings = load_settings()          # uses ENV
-    settings.risk.stop_loss_ratio       # 0.20  (was STOP_LOSS_PCT=20)
-    settings.execution.slippage_tolerance_ratio  # 0.02  (was SLIPPAGE_TOLERANCE=2.0)
+    settings.risk.stop_loss_ratio       # legacy compat only
+    settings.execution.slippage_tolerance_ratio  # 0.02 (was SLIPPAGE_TOLERANCE=2.0)
 """
 
 from __future__ import annotations
@@ -33,7 +38,7 @@ _IDENTITY = lambda v: v         # noqa: E731
 
 # Each entry: (old_env_name, new_field_name, conversion_for_old_value)
 _LEGACY_MAPPINGS: list[tuple[str, str, object]] = [
-    # Risk
+    # Risk compatibility fields.
     ("STOP_LOSS_PCT",              "stop_loss_ratio",              _DIV100),
     ("TAKE_PROFIT_PCT",            "take_profit_ratio",             _DIV100),
     ("MAX_DAILY_DRAWDOWN_PCT",     "daily_drawdown_ratio",         _DIV100),
@@ -56,7 +61,9 @@ _LEGACY_MAPPINGS: list[tuple[str, str, object]] = [
 ]
 
 
-# Defaults (all in new-name units, matching runtime.env defaults)
+# Defaults (all in new-name units, matching runtime.env defaults).
+# The legacy primitive exit ratios stay here for compatibility, but they are
+# not consumed by the live risk engine.
 _DEFAULTS: dict[str, float] = {
     "stop_loss_ratio": 0.20,
     "take_profit_ratio": 0.70,
@@ -129,9 +136,9 @@ def _get(lookup: dict[str, float], name: str) -> float:
 
 @dataclass(frozen=True)
 class RiskSettings:
-    """Risk management ratios (all in [0,1] unless noted)."""
-    stop_loss_ratio: float          # fraction loss to trigger stop
-    take_profit_ratio: float        # take-profit price level [0,1]
+    """Risk settings used by legacy compatibility tests."""
+    stop_loss_ratio: float          # legacy compat only; not used by live exits
+    take_profit_ratio: float        # legacy compat only; not used by live exits
     daily_drawdown_ratio: float     # max daily drawdown as fraction
     profit_lock_trigger_ratio: float
     profit_lock_drawdown_ratio: float
@@ -224,16 +231,11 @@ def load_settings(env: dict | None = None) -> AppSettings:
         txn_fee_bps=_safe(lambda v, n: validate_bps(int(v), n), "txn_fee_bps", 20),
     )
 
-    # Cross-field validation
+    # Cross-field validation for the live advanced exits only.
     if risk.near_max_warn_level > risk.near_max_price_level:
         errors.append(
             f"near_max_warn_level ({risk.near_max_warn_level}) must be <= "
             f"near_max_price_level ({risk.near_max_price_level})"
-        )
-    if risk.profit_lock_trigger_ratio <= risk.stop_loss_ratio:
-        errors.append(
-            f"profit_lock_trigger_ratio ({risk.profit_lock_trigger_ratio}) must be > "
-            f"stop_loss_ratio ({risk.stop_loss_ratio})"
         )
 
     if errors:

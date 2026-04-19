@@ -502,10 +502,8 @@ def _build_env_snapshot() -> dict[str, object]:
 
     # --- Risk management ---
     'ENABLE_RISK_MGMT': os.getenv('ENABLE_RISK_MGMT', 'false').strip().lower() in ('1', 'true', 'yes'),
-    'STOP_LOSS_PCT': _float('STOP_LOSS_PCT', '20'),
-    'TAKE_PROFIT_PCT': _float('TAKE_PROFIT_PCT', '70'),
-    # How often (seconds) the risk manager checks open positions
-    'RISK_CHECK_INTERVAL': _int('RISK_CHECK_INTERVAL', '10'),
+    # How often (seconds) the risk manager checks open positions. Supports sub-second floats.
+    'RISK_CHECK_INTERVAL': _float('RISK_CHECK_INTERVAL', '10'),
     'MAX_MARKET_EXPOSURE_USDC': _float('MAX_MARKET_EXPOSURE_USDC', '300'),
     'MAX_CATEGORY_EXPOSURE_USDC': _float('MAX_CATEGORY_EXPOSURE_USDC', '600'),
     'MAX_LEADER_EXPOSURE_USDC': _float('MAX_LEADER_EXPOSURE_USDC', '500'),

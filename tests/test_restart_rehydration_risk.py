@@ -18,8 +18,13 @@ FAKE_TOKEN_ID = "713210456792522125946263855327069127503327285719425322235357647
 
 
 class _FakeClient:
+    def __init__(self, price: str = "0.97"):
+        self.price = price
+        self.calls = 0
+
     async def get_price(self, _token_id: str, _side: str):
-        return {"price": "0.3"}
+        self.calls += 1
+        return {"price": self.price}
 
 
 class _FakeExecutionService:
@@ -75,7 +80,7 @@ async def test_restart_rehydration_and_risk_exit_uses_persisted_positions(tmp_pa
     context = TradingContext(
         user_id="u1",
         wallet_address="wallet-u1",
-        client=_FakeClient(),
+        client=_FakeClient(price="0.97"),
         positions_repo=positions_repo,
         fills_repo=fills_repo,
         orders_repo=orders_repo,
@@ -96,3 +101,54 @@ async def test_restart_rehydration_and_risk_exit_uses_persisted_positions(tmp_pa
     fills = fills_repo.list_fills_for_user_condition("u1", "cond-1")
     assert len(fills) >= 2
     assert pnl_tracker.sells >= 1
+
+
+@pytest.mark.asyncio
+async def test_risk_price_cache_reuses_recent_price_between_checks(tmp_path):
+    db_path = tmp_path / "state.db"
+    with create_connection(str(db_path)) as conn:
+        apply_migrations(conn)
+
+    fills_repo = FillsRepo(str(db_path))
+    positions_repo = PositionsRepo(str(db_path))
+    orders_repo = OrdersRepo(str(db_path))
+    pnl_tracker = _FakePnlTracker()
+
+    fills_repo.append_fill(
+        FillRecord(
+            user_id="u1",
+            leader_id="l1",
+            order_id="buy-1",
+            condition_id="cond-1",
+            token_id=FAKE_TOKEN_ID,
+            side="BUY",
+            size_tokens=Decimal("10"),
+            price=Decimal("0.60"),
+            fee=Decimal("0"),
+            fill_ts=1_700_000_000,
+        )
+    )
+    positions_repo.rebuild_user_positions_from_fills("u1", fills_repo)
+
+    client = _FakeClient(price="0.60")
+    context = TradingContext(
+        user_id="u1",
+        wallet_address="wallet-u1",
+        client=client,
+        positions_repo=positions_repo,
+        fills_repo=fills_repo,
+        orders_repo=orders_repo,
+        pnl_tracker=pnl_tracker,
+        risk_engine=object(),
+        accounting_service=object(),
+        position_manager=PositionManager(),
+        execution_service=_FakeExecutionService(),
+        extra={"slippage_tolerance_bps": 50, "risk_check_interval_seconds": 0.25},
+    )
+
+    await run_risk_check_for_context(context)
+    await run_risk_check_for_context(context)
+
+    assert positions_repo.get_position("u1", "cond-1") is not None
+    assert pnl_tracker.sells == 0
+    assert client.calls == 1

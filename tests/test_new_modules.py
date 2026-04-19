@@ -5,12 +5,36 @@ from __future__ import annotations
 import json
 import sys
 import tempfile
+import types
 from pathlib import Path
 from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+# Lightweight stubs for optional Polymarket SDK imports used by legacy modules.
+if "py_clob_client" not in sys.modules:
+    py_clob_client = types.ModuleType("py_clob_client")
+    sys.modules["py_clob_client"] = py_clob_client
+if "py_clob_client.clob_types" not in sys.modules:
+    clob_types = types.ModuleType("py_clob_client.clob_types")
+    clob_types.OrderType = type("OrderType", (), {"FOK": "FOK", "GTC": "GTC"})
+    clob_types.OrderArgs = type("OrderArgs", (), {})
+    clob_types.MarketOrderArgs = type("MarketOrderArgs", (), {})
+    clob_types.PartialCreateOrderOptions = type("PartialCreateOrderOptions", (), {})
+    sys.modules["py_clob_client.clob_types"] = clob_types
+if "py_clob_client.client" not in sys.modules:
+    client_mod = types.ModuleType("py_clob_client.client")
+    client_mod.ClobClient = type("ClobClient", (), {})
+    sys.modules["py_clob_client.client"] = client_mod
+if "py_clob_client.order_builder" not in sys.modules:
+    sys.modules["py_clob_client.order_builder"] = types.ModuleType("py_clob_client.order_builder")
+if "py_clob_client.order_builder.constants" not in sys.modules:
+    constants = types.ModuleType("py_clob_client.order_builder.constants")
+    constants.BUY = "BUY"
+    constants.SELL = "SELL"
+    sys.modules["py_clob_client.order_builder.constants"] = constants
 
 FAKE_TOKEN_ID = "71321045679252212594626385532706912750332728571942532223535764789812338637396"
 FAKE_FUNDER = "0x0000000000000000000000000000000000000001"
@@ -49,13 +73,11 @@ class TestConfigLeaderWallets:
 # PositionManager
 # ---------------------------------------------------------------------------
 class TestPositionManager:
-    def _make_pm(self, sl_pct=20, tp_pct=30, enabled=True, extra_env=None):
+    def _make_pm(self, enabled=True, extra_env=None):
         # PositionManager now uses AppConfig via constructor injection.
         # When config=None, defaults are used. For custom values, build a mock config.
-        if extra_env or sl_pct != 20 or tp_pct != 30 or not enabled:
+        if extra_env or not enabled:
             config = MagicMock()
-            config.risk.stop_loss_pct = sl_pct
-            config.risk.take_profit_pct = tp_pct
             config.risk.enable_risk_mgmt = enabled
             config.risk.profit_lock_trigger_pct = 70
             config.risk.profit_lock_sell_fraction = 0.5
@@ -135,36 +157,15 @@ class TestPositionManager:
         pm = self._make_pm()
         assert pm.track_sell("nonexistent", 0.5, 1.0) is None
 
-    def test_check_risk_triggers_stop_loss(self):
-        pm = self._make_pm(sl_pct=20)
+    def test_check_risk_triggers_no_basic_exit_when_optional_engines_disabled(self):
+        pm = self._make_pm()
         pm.track_buy("c1", "a1", 1.0, 10.0, 10.0)
-        # Price dropped 25% (below 20% threshold)
-        assert pm.check_risk_triggers("c1", 0.75) == "stop_loss"
-
-    def test_check_risk_triggers_take_profit(self):
-        # Use risk_settings to get _enable_staged_tp=False (legacy TP path).
-        # near_max_price_level=1.0 disables near_max check for price=1.35.
-        from config.settings import RiskSettings
-        rs = RiskSettings(
-            stop_loss_ratio=0.20,
-            take_profit_ratio=0.30,
-            daily_drawdown_ratio=0.25,
-            profit_lock_trigger_ratio=0.70,
-            profit_lock_drawdown_ratio=0.05,
-            profit_lock_sell_ratio=0.50,
-            trailing_trigger_ratio=0.20,
-            trailing_distance_ratio=0.05,
-            near_max_price_level=1.0,
-            near_max_warn_level=1.0,
-        )
-        from services.positionManager import PositionManager
-        pm = PositionManager(risk_settings=rs)
-        pm.track_buy("c1", "a1", 1.0, 10.0, 10.0)
-        # Price up 35% (above 30% threshold)
-        assert pm.check_risk_triggers("c1", 1.35) == "take_profit"
+        # Basic hard stop-loss / legacy take-profit are retired.
+        assert pm.check_risk_triggers("c1", 0.75) is None
+        assert pm.check_risk_triggers("c1", 1.35) is None
 
     def test_check_risk_triggers_within_bounds(self):
-        pm = self._make_pm(sl_pct=20, tp_pct=30)
+        pm = self._make_pm()
         pm.track_buy("c1", "a1", 1.0, 10.0, 10.0)
         # Price up 10% — no trigger
         assert pm.check_risk_triggers("c1", 1.10) is None
@@ -181,7 +182,6 @@ class TestPositionManager:
 
     def test_near_max_warn_trim_triggers_once(self):
         pm = self._make_pm(
-            tp_pct=99,  # avoid regular take-profit interference
             extra_env={
                 "NEAR_MAX_PRICE_WARN": 0.95,
                 "NEAR_MAX_PRICE_EXIT": 0.97,  # keep room for warn-trim stage
@@ -354,8 +354,8 @@ class TestPnLTracker:
 # ---------------------------------------------------------------------------
 class TestRiskMonitor:
     @pytest.mark.asyncio
-    async def test_risk_monitor_exits_when_disabled(self):
-        """When ENABLE_RISK_MGMT is False, the loop should return immediately."""
+    async def test_risk_monitor_exits_when_global_risk_master_disabled(self):
+        """When the global risk-management master is off, the loop should return immediately."""
         from services.riskMonitor import risk_monitor_loop
         from services.healthServer import ReadinessTracker
         mock_clob = AsyncMock()
@@ -380,15 +380,63 @@ class TestRiskMonitor:
             entry_price=0.5, size_tokens=10.0, usdc_cost=5.0,
         )
         mock_pm.open_positions = {"c1": pos}
-        mock_pm.evaluate_risk_action.return_value = {"reason": "stop_loss", "size_fraction": 1.0}
+        mock_pm.evaluate_risk_action.return_value = {"reason": "near_max_full_exit", "size_fraction": 1.0}
 
         mock_tracker = MagicMock()
 
         mock_config = MagicMock()
         mock_config.polling.risk_check_interval = 1
         mock_config.risk.enable_risk_mgmt = True
-        mock_config.risk.stop_loss_pct = 20
-        mock_config.risk.take_profit_pct = 30
+        mock_config.execution.slippage_tolerance = 2.0
+        mock_config.execution.transaction_fee_bps = 0
+        mock_config.wallet.funder_address = FAKE_FUNDER
+        iteration_count = 0
+
+        async def patched_sleep(n):
+            nonlocal iteration_count
+            iteration_count += 1
+            if iteration_count >= 1:
+                raise asyncio.CancelledError()
+
+        import asyncio
+        with patch("services.riskMonitor.asyncio.sleep", side_effect=patched_sleep), \
+             patch("services.riskMonitor.ExecutionService") as mock_exec_cls:
+            mock_exec = mock_exec_cls.return_value
+            mock_exec.execute = AsyncMock(
+                return_value=MagicMock(
+                    accepted=True,
+                    filled_amount=10.0,
+                    avg_price=0.3,
+                    status="filled",
+                )
+            )
+            with pytest.raises(asyncio.CancelledError):
+                await risk_monitor_loop(mock_clob, {}, mock_pm, mock_tracker, mock_tracker, config=mock_config)
+        mock_exec.execute.assert_called_once()
+        mock_pm.track_sell.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_risk_monitor_runs_when_master_enabled_for_optional_exit_testing(self):
+        """Optional exits can be tested in isolation as long as the global master stays on."""
+        from services.riskMonitor import risk_monitor_loop
+        from services.positionManager import PositionManager, TrackedPosition
+
+        mock_clob = AsyncMock()
+        mock_clob.get_price.return_value = {"price": "0.96", "size": "100"}
+
+        mock_pm = MagicMock(spec=PositionManager)
+        pos = TrackedPosition(
+            condition_id="c1", asset=FAKE_TOKEN_ID, side="BUY",
+            entry_price=0.5, size_tokens=10.0, usdc_cost=5.0,
+        )
+        mock_pm.open_positions = {"c1": pos}
+        mock_pm.evaluate_risk_action.return_value = {"reason": "near_max_full_exit", "size_fraction": 1.0}
+
+        mock_tracker = MagicMock()
+
+        mock_config = MagicMock()
+        mock_config.polling.risk_check_interval = 1
+        mock_config.risk.enable_risk_mgmt = True
         mock_config.execution.slippage_tolerance = 2.0
         mock_config.execution.transaction_fee_bps = 0
         mock_config.wallet.funder_address = FAKE_FUNDER
@@ -409,7 +457,7 @@ class TestRiskMonitor:
                 return_value=MagicMock(
                     accepted=True,
                     filled_amount=10.0,
-                    avg_price=0.3,
+                    avg_price=0.96,
                     status="filled",
                 )
             )
@@ -443,6 +491,19 @@ class TestConfigHelpers:
         from config.env import _int
         with patch.dict("os.environ", {}, clear=False):
             assert _int("NONEXISTENT_KEY_INT_XYZ", "99") == 99
+
+    def test_app_config_allows_subsecond_risk_interval(self):
+        from config.app_config import load_config
+        with patch("config.app_config._runtime_python_supported", return_value=True):
+            cfg = load_config({
+                "PRIVATE_KEY": "0x" + "1" * 64,
+                "FUNDER_ADDRESS": "0x" + "2" * 40,
+                "RPC_URL": "https://polygon-rpc.example",
+                "CHAIN_ID": "137",
+                "SIGNATURE_TYPE": "2",
+                "RISK_CHECK_INTERVAL": "0.25",
+            })
+        assert cfg.polling.risk_check_interval == pytest.approx(0.25)
 
 
 # ---------------------------------------------------------------------------

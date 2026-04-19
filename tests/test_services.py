@@ -815,7 +815,7 @@ class TestPostRiskSell:
             condition_id="c1", asset="a1", side="BUY",
             entry_price=0.5, size_tokens=10.0, usdc_cost=5.0,
         )
-        result = await post_risk_sell(mock_client, pos, 0.3, "stop_loss")
+        result = await post_risk_sell(mock_client, pos, 0.3, "advanced_risk_exit")
         assert result == 'executed'
 
     @pytest.mark.asyncio
@@ -827,7 +827,7 @@ class TestPostRiskSell:
             condition_id="c1", asset="a1", side="BUY",
             entry_price=0.5, size_tokens=0.0, usdc_cost=0.0,
         )
-        result = await post_risk_sell(mock_client, pos, 0.3, "stop_loss")
+        result = await post_risk_sell(mock_client, pos, 0.3, "advanced_risk_exit")
         assert result == 'skipped'
 
 

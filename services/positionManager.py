@@ -1,13 +1,14 @@
 """Position manager — tracks open positions with advanced exit intelligence.
 
 Exit priority (highest first):
-1. Hard stop-loss
-2. Near-max-price exit (95c default)
-3. +70% profit lock (sell fraction + break-even trailing)
-4. Staged take-profit (30%→25%, 50%→35%)
-5. Trailing stop (activate after +20%, trail by 0.05)
-6. Leader divergence (external trigger)
-7. Legacy single take-profit
+1. Near-max-price exit
+2. Profit lock
+3. Staged take-profit
+4. Trailing stop
+5. Leader divergence
+
+Basic hard stop-loss and legacy single take-profit have been retired from the
+live risk system. The remaining engines are the more context-aware exits.
 """
 
 from __future__ import annotations
@@ -85,10 +86,7 @@ class PositionManager:
             rc = config.risk
             fc = config.features
 
-            # Basic SL/TP — AppConfig stores percentages, convert to ratios
-            self._sl_pct = rc.stop_loss_pct / 100.0
-            self._tp_pct = rc.take_profit_pct / 100.0
-            self._enabled = rc.enable_risk_mgmt
+            self._risk_master_enabled = rc.enable_risk_mgmt
 
             # Profit lock
             self._profit_lock_mode = (
@@ -116,13 +114,12 @@ class PositionManager:
 
             # Leader divergence
             self._enable_leader_divergence = fc.enable_leader_divergence_exit
+            self._enabled = self._risk_master_enabled
 
         elif risk_settings is not None:
             # Legacy test-compatibility path: accept RiskSettings directly
             rs = risk_settings
-            self._sl_pct = rs.stop_loss_ratio
-            self._tp_pct = rs.take_profit_ratio
-            self._enabled = True
+            self._risk_master_enabled = True
             self._profit_lock_mode = "legacy"
             self._profit_lock_trigger = rs.profit_lock_trigger_ratio
             self._profit_lock_sell_fraction = rs.profit_lock_sell_ratio
@@ -137,12 +134,11 @@ class PositionManager:
             self._staged_levels = [0.30, 0.50]
             self._staged_fractions = [0.25, 0.35]
             self._enable_leader_divergence = False
+            self._enabled = self._risk_master_enabled
 
         else:
             # Bare defaults for backward compat
-            self._sl_pct = 0.20
-            self._tp_pct = 0.70
-            self._enabled = True
+            self._risk_master_enabled = True
             self._profit_lock_mode = "legacy"
             self._profit_lock_trigger = 0.70
             self._profit_lock_sell_fraction = 0.50
@@ -157,6 +153,10 @@ class PositionManager:
             self._staged_levels = [0.30, 0.50]
             self._staged_fractions = [0.25, 0.35]
             self._enable_leader_divergence = False
+            self._enabled = self._risk_master_enabled
+
+    def _risk_management_enabled(self) -> bool:
+        return bool(getattr(self, "_risk_master_enabled", getattr(self, "_enabled", False)))
 
     @property
     def open_positions(self) -> dict[str, TrackedPosition]:
@@ -271,15 +271,13 @@ class PositionManager:
         """Return risk action dict with reason + size_fraction, or None.
 
         Follows exit priority:
-        1. Hard stop-loss
-        2. Near-max-price exit (95c)
-        3. +70% profit lock
-        4. Staged take-profit
-        5. Trailing stop
-        6. Leader divergence
-        7. Legacy take-profit (only if staged TP disabled)
+        1. Near-max-price exit
+        2. Profit lock
+        3. Staged take-profit
+        4. Trailing stop
+        5. Leader divergence
         """
-        if not self._enabled:
+        if not self._risk_management_enabled():
             return None
         pos = self._positions.get(condition_id)
         if not pos or pos.entry_price <= 0:
@@ -294,16 +292,7 @@ class PositionManager:
         if current_price > es.trailing_high_price:
             es.trailing_high_price = current_price
 
-        # ── Priority 1: HARD STOP-LOSS ──
-        if pct_change <= -self._sl_pct:
-            logger.warning(
-                f"🛑 STOP-LOSS: {condition_id[:12]}… "
-                f"entry={pos.entry_price:.4f} current={current_price:.4f} "
-                f"change={pct_change*100:.1f}%"
-            )
-            return {"reason": "stop_loss", "size_fraction": 1.0}
-
-        # ── Priority 2: NEAR-MAX-PRICE EXIT ──
+        # ── Priority 1: NEAR-MAX-PRICE EXIT ──
         if self._enable_near_max and 0 < current_price <= 1.0:
             if current_price >= self._near_max_exit:
                 logger.info(
@@ -324,7 +313,7 @@ class PositionManager:
                 )
                 return {"reason": "near_max_partial_trim", "size_fraction": self._near_max_warn_ratio}
 
-        # ── Priority 3: PROFIT LOCK ──
+        # ── Priority 2: PROFIT LOCK ──
         # Legacy mode: arm above trigger, exit on fallback below trigger.
         if self._profit_lock_mode == "legacy":
             if pct_change >= self._profit_lock_trigger and not pos.profit_lock_armed:
@@ -354,7 +343,7 @@ class PositionManager:
                 )
                 return {"reason": "profit_lock", "size_fraction": self._profit_lock_sell_fraction}
 
-        # ── Priority 4: STAGED TAKE-PROFIT ──
+        # ── Priority 3: STAGED TAKE-PROFIT ──
         if self._enable_staged_tp and self._staged_levels and self._staged_fractions:
             for i, (level, fraction) in enumerate(zip(self._staged_levels, self._staged_fractions)):
                 if i in es.staged_tp_triggered:
@@ -372,7 +361,7 @@ class PositionManager:
                     )
                     return {"reason": f"staged_tp_level_{i+1}", "size_fraction": fraction}
 
-        # ── Priority 5: TRAILING STOP ──
+        # ── Priority 4: TRAILING STOP ──
         if self._enable_trailing:
             # Auto-activate trailing after activation threshold
             if not es.trailing_active and pct_change >= self._trailing_activation_pct:
@@ -393,7 +382,7 @@ class PositionManager:
                     )
                     return {"reason": "trailing_stop", "size_fraction": 1.0}
 
-        # ── Priority 6: LEADER DIVERGENCE ──
+        # ── Priority 5: LEADER DIVERGENCE ──
         if self._enable_leader_divergence and es.leader_divergence_pending:
             es.leader_divergence_pending = False
             logger.info(
@@ -401,14 +390,6 @@ class PositionManager:
                 f"selling 50% (leader reduced/exited)"
             )
             return {"reason": "leader_divergence", "size_fraction": 0.50}
-
-        # ── Priority 7: LEGACY TAKE-PROFIT (only if staged TP disabled) ──
-        if not self._enable_staged_tp and pct_change >= self._tp_pct:
-            logger.info(
-                f"🎯 TAKE-PROFIT: {condition_id[:12]}… "
-                f"profit={pct_change*100:.1f}%"
-            )
-            return {"reason": "take_profit", "size_fraction": 1.0}
 
         return None
 

@@ -1,8 +1,7 @@
 """Category 5: Risk behavior.
 
 Covers:
-- Stop-loss trigger and near-miss
-- Take-profit trigger
+- Legacy primitive exits stay inert in the advanced risk path
 - Trailing stop: activation, trigger, no-trigger
 - Near-max warn and exit
 - Profit lock legacy mode
@@ -43,8 +42,8 @@ from services.riskEngine import (
 
 def _risk_settings(**overrides) -> RiskSettings:
     defaults = dict(
-        stop_loss_ratio=0.20,
-        take_profit_ratio=0.70,
+        stop_loss_ratio=0.0,
+        take_profit_ratio=0.0,
         daily_drawdown_ratio=0.20,
         profit_lock_trigger_ratio=0.70,
         profit_lock_drawdown_ratio=0.15,
@@ -63,8 +62,7 @@ def _make_pm(**risk_overrides) -> PositionManager:
     pm = PositionManager.__new__(PositionManager)
     pm._positions = {}
     pm._closed = []
-    pm._sl_pct = rs.stop_loss_ratio
-    pm._tp_pct = rs.take_profit_ratio
+    pm._risk_master_enabled = True
     pm._enabled = True
     pm._profit_lock_mode = "legacy"
     pm._profit_lock_trigger = rs.profit_lock_trigger_ratio
@@ -89,76 +87,22 @@ def _open_position(pm, cid="cond-1", entry=0.50, tokens=100.0, cost=50.0):
 
 
 # ---------------------------------------------------------------------------
-# Stop-loss
+# Legacy primitive exits
 # ---------------------------------------------------------------------------
 
 
-class TestStopLoss:
-    def test_stop_loss_trigger(self):
-        pm = _make_pm()
-        _open_position(pm, entry=0.50)
-        action = pm.evaluate_risk_action("cond-1", 0.38)  # -24%
-        assert action is not None
-        assert action["reason"] == "stop_loss"
-        assert action["size_fraction"] == 1.0
-
-    def test_stop_loss_exactly_at_threshold(self):
-        pm = _make_pm()
-        _open_position(pm, entry=0.50)
-        action = pm.evaluate_risk_action("cond-1", 0.399)  # just past -20% threshold
-        assert action is not None
-        assert action["reason"] == "stop_loss"
-
-    def test_stop_loss_near_miss(self):
-        pm = _make_pm()
-        _open_position(pm, entry=0.50)
-        action = pm.evaluate_risk_action("cond-1", 0.41)  # -18%, just above threshold
-        assert action is None or action["reason"] != "stop_loss"
-
-    def test_stop_loss_below_zero(self):
-        """Price at 0 should trigger stop-loss."""
-        pm = _make_pm()
-        _open_position(pm, entry=0.50)
-        action = pm.evaluate_risk_action("cond-1", 0.01)  # -98%
-        assert action is not None
-        assert action["reason"] == "stop_loss"
-
-    def test_stop_loss_different_threshold(self):
-        pm = _make_pm(stop_loss_ratio=0.50)
-        _open_position(pm, entry=0.50)
-        action = pm.evaluate_risk_action("cond-1", 0.30)  # -40%
-        assert action is None or action["reason"] != "stop_loss"
-        action = pm.evaluate_risk_action("cond-1", 0.24)  # -52%
-        assert action is not None
-        assert action["reason"] == "stop_loss"
-
-
-# ---------------------------------------------------------------------------
-# Take-profit
-# ---------------------------------------------------------------------------
-
-
-class TestTakeProfit:
-    def test_take_profit_trigger(self):
+class TestLegacyPrimitiveExits:
+    def test_primitive_exit_controls_do_not_fire_in_main_risk_path(self):
         pm = _make_pm()
         pm._enable_staged_tp = False
         pm._enable_trailing = False
         pm._profit_lock_mode = "disabled"
         pm._enable_near_max = False
         _open_position(pm, entry=0.50)
-        action = pm.evaluate_risk_action("cond-1", 0.90)  # +80%
-        assert action is not None
-        assert action["reason"] == "take_profit"
 
-    def test_take_profit_near_miss(self):
-        pm = _make_pm()
-        pm._enable_staged_tp = False
-        pm._enable_trailing = False
-        pm._profit_lock_mode = "disabled"
-        pm._enable_near_max = False
-        _open_position(pm, entry=0.50)
-        action = pm.evaluate_risk_action("cond-1", 0.83)  # +66%, below 70%
-        assert action is None
+        # Prices that would have hit the retired primitive exits should now be inert.
+        assert pm.evaluate_risk_action("cond-1", 0.38) is None
+        assert pm.evaluate_risk_action("cond-1", 0.90) is None
 
 
 # ---------------------------------------------------------------------------
@@ -218,9 +162,9 @@ class TestTrailingStop:
         _open_position(pm, entry=0.50)
 
         pm.evaluate_risk_action("cond-1", 0.601)  # activate (past float boundary)
-        # Price drops below entry — stop-loss should fire, not trailing
+        # Price drops below entry — the retired primitive exits stay inert.
         action = pm.evaluate_risk_action("cond-1", 0.39)  # well past SL threshold
-        assert action["reason"] == "stop_loss"
+        assert action is None
 
 
 # ---------------------------------------------------------------------------
@@ -271,7 +215,6 @@ class TestNearMax:
         pm._enable_staged_tp = False
         pm._enable_trailing = False
         pm._profit_lock_mode = "disabled"
-        pm._tp_pct = 1.0  # disable legacy TP (set above any possible profit)
         _open_position(pm, entry=0.50)
         action = pm.evaluate_risk_action("cond-1", 0.89)
         assert action is None
@@ -371,7 +314,6 @@ class TestProfitLockAdvanced:
         pm._enable_staged_tp = False
         pm._enable_trailing = False
         pm._enable_near_max = False
-        pm._tp_pct = 1.0  # disable legacy TP (set above any possible profit)
         _open_position(pm, entry=0.50)
 
         pm.evaluate_risk_action("cond-1", 0.90)
@@ -386,17 +328,7 @@ class TestProfitLockAdvanced:
 
 
 class TestExitPriority:
-    """Stop-loss > near-max > profit lock > trailing > legacy TP."""
-
-    def test_stop_loss_beats_near_max(self):
-        pm = _make_pm()
-        pm._profit_lock_mode = "disabled"
-        pm._enable_staged_tp = False
-        pm._enable_trailing = False
-        _open_position(pm, entry=0.95)
-        # Price at 0.75 -> -21% (stop loss) AND near-max price
-        action = pm.evaluate_risk_action("cond-1", 0.75)
-        assert action["reason"] == "stop_loss"
+    """Near-max > profit lock > trailing > leader divergence."""
 
     def test_near_max_beats_profit_lock(self):
         pm = _make_pm()
