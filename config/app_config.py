@@ -242,6 +242,7 @@ class SizingConfig:
     buy_max_amount: float
     position_threshold: int
     max_position_pct: float
+    enable_trust_size_multipliers: bool
     copy_min_shares: float
     copy_min_notional_usdc: float
     copy_size_decimals: int
@@ -294,6 +295,8 @@ class ExecutionConfig:
     max_retries: int
     non_terminal_failure_max_attempts: int
     paper_trade_only: bool
+    enable_executable_order_guard: bool
+    executable_order_buffer_notional_usdc: float
     enable_copy_decision_gate: bool
     enable_near_resolution_gate: bool
     near_resolution_gate_price: float
@@ -487,8 +490,8 @@ def _validate_semantics(cfg: AppConfig, errors: list[str]) -> None:
         errors.append("ADAPTIVE_MIN_PERCENT must be <= ADAPTIVE_MAX_PERCENT.")
     if s.copy_min_shares < 0:
         errors.append("COPY_MIN_SHARES must be >= 0.")
-    if s.copy_min_notional_usdc <= 0:
-        errors.append("COPY_MIN_NOTIONAL_USDC must be > 0.")
+    if s.copy_min_notional_usdc < 0:
+        errors.append("COPY_MIN_NOTIONAL_USDC must be >= 0.")
     if s.copy_size_decimals < 0:
         errors.append("COPY_SIZE_DECIMALS must be >= 0.")
     if s.trust_size_multiplier_min <= 0:
@@ -500,6 +503,8 @@ def _validate_semantics(cfg: AppConfig, errors: list[str]) -> None:
 
     # Execution
     e = cfg.execution
+    if e.executable_order_buffer_notional_usdc < 0:
+        errors.append("EXECUTABLE_ORDER_BUFFER_NOTIONAL_USDC must be >= 0.")
     if e.slippage_tolerance < 0:
         errors.append("SLIPPAGE_TOLERANCE must be non-negative.")
     if e.min_share_price < 0:
@@ -648,6 +653,7 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         buy_max_amount=p.float_("BUY_MAX_AMOUNT", "15"),
         position_threshold=p.int_("POSITION_THRESHOLD", "0"),
         max_position_pct=p.float_("MAX_POSITION_PCT", "0.45"),
+        enable_trust_size_multipliers=p.bool_("ENABLE_TRUST_SIZE_MULTIPLIERS", True),
         copy_min_shares=p.float_("COPY_MIN_SHARES", "1"),
         copy_min_notional_usdc=p.float_("COPY_MIN_NOTIONAL_USDC", "1"),
         copy_size_decimals=p.int_("COPY_SIZE_DECIMALS", "4"),
@@ -702,6 +708,8 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         max_retries=p.int_("MAX_RETRIES", "3"),
         non_terminal_failure_max_attempts=p.int_("NON_TERMINAL_FAILURE_MAX_ATTEMPTS", "3"),
         paper_trade_only=p.bool_("PAPER_TRADE_ONLY", False),
+        enable_executable_order_guard=p.bool_("ENABLE_EXECUTABLE_ORDER_GUARD", True),
+        executable_order_buffer_notional_usdc=p.float_("EXECUTABLE_ORDER_BUFFER_NOTIONAL_USDC", "1.05"),
         enable_copy_decision_gate=p.bool_("ENABLE_COPY_DECISION_GATE", False),
         enable_near_resolution_gate=p.bool_("ENABLE_NEAR_RESOLUTION_GATE", False),
         near_resolution_gate_price=p.float_("NEAR_RESOLUTION_GATE_PRICE", "0.95"),

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import os
 from dataclasses import dataclass, field
 from typing import Any, TYPE_CHECKING
 
@@ -43,25 +44,24 @@ class CopyDecisionService:
         self.leader_scorer = leader_scorer or LeaderScoringService(config=config)
         self.trade_scorer = trade_scorer or TradeScoringService(config=config)
 
-        # NOTE: Polymarket's CLOB enforces a minimum of 5 shares per order for
-        # tick_size=0.01 markets (most sports/LoL/politics). Going below will
-        # be rejected with "Size (X) lower than the minimum: 5". We hard-floor
-        # the BUY side at 5 shares to respect that. Operators can still raise
-        # COPY_MIN_SHARES higher via env, but never drop it below 5 here.
         if config is not None:
             self._decision_gate_enabled = config.execution.enable_copy_decision_gate
+            self._minimum_order_guard_enabled = config.execution.enable_executable_order_guard
+            self._minimum_order_buffer_notional = config.execution.executable_order_buffer_notional_usdc
             self._min_decision_score = config.leader.copy_decision_min_score
-            self._copy_min_shares = max(5.0, config.sizing.copy_min_shares)
-            self._copy_min_notional = max(1.0, config.sizing.copy_min_notional_usdc)
+            self._copy_min_shares = config.sizing.copy_min_shares
+            self._copy_min_notional = config.sizing.copy_min_notional_usdc
             self._copy_size_decimals = config.sizing.copy_size_decimals
             self._slippage_ratio = config.execution.slippage_tolerance / 100.0
         else:
             self._decision_gate_enabled = False
+            self._minimum_order_guard_enabled = os.getenv("ENABLE_EXECUTABLE_ORDER_GUARD", "true").strip().lower() in ("1", "true", "yes")
+            self._minimum_order_buffer_notional = float(os.getenv("EXECUTABLE_ORDER_BUFFER_NOTIONAL_USDC", "1.05") or 1.05)
             self._min_decision_score = 0.0
-            self._copy_min_shares = 5.0
-            self._copy_min_notional = 1.0
-            self._copy_size_decimals = 4
-            self._slippage_ratio = 0.02
+            self._copy_min_shares = float(os.getenv("COPY_MIN_SHARES", "5") or 5.0)
+            self._copy_min_notional = float(os.getenv("COPY_MIN_NOTIONAL_USDC", "1") or 1.0)
+            self._copy_size_decimals = int(os.getenv("COPY_SIZE_DECIMALS", "4") or 4)
+            self._slippage_ratio = float(os.getenv("SLIPPAGE_TOLERANCE", "2.0") or 2.0) / 100.0
 
     @staticmethod
     def _ceil(value: float, decimals: int) -> float:
@@ -197,10 +197,14 @@ class CopyDecisionService:
         worst_price = live_price * (1.0 + slippage_ratio)
 
         target_size_tokens = desired_notional / live_price
-        required_min_size_tokens = max(
-            min_shares,
-            (min_notional / live_price) if live_price > 0 else 0.0,
-            market_min_size if market_min_size > 0 else 0.0,
+        required_min_size_tokens = (
+            max(
+                min_shares,
+                (min_notional / live_price) if live_price > 0 else 0.0,
+                market_min_size if market_min_size > 0 else 0.0,
+            )
+            if self._minimum_order_guard_enabled
+            else 0.0
         )
 
         if 0 < target_size_tokens + 1e-12 < required_min_size_tokens:
@@ -224,6 +228,7 @@ class CopyDecisionService:
                 details={
                     **trade_score.details,
                     "decision_gate_enabled": decision_gate_enabled,
+                    "minimum_order_guard_enabled": self._minimum_order_guard_enabled,
                     "trust_multiplier": trust_mult,
                     "base_notional_usdc": base_notional_usdc,
                     "max_notional_usdc": max_notional_usdc,
@@ -255,9 +260,14 @@ class CopyDecisionService:
 
             floored_meets_mins = (
                 floored_size_tokens > 0
-                and floored_size_tokens + 1e-12 >= min_shares
-                and floored_required_worst + 1e-9 >= min_notional
-                and (market_min_size <= 0 or floored_size_tokens + 1e-12 >= market_min_size)
+                and (
+                    not self._minimum_order_guard_enabled
+                    or (
+                        floored_size_tokens + 1e-12 >= min_shares
+                        and floored_required_worst + 1e-9 >= min_notional
+                        and (market_min_size <= 0 or floored_size_tokens + 1e-12 >= market_min_size)
+                    )
+                )
             )
 
             if floored_meets_mins:
@@ -306,6 +316,7 @@ class CopyDecisionService:
             details={
                 **trade_score.details,
                 "decision_gate_enabled": decision_gate_enabled,
+                "minimum_order_guard_enabled": self._minimum_order_guard_enabled,
                 "trust_multiplier": trust_mult,
                 "base_notional_usdc": base_notional_usdc,
                 "max_notional_usdc": max_notional_usdc,
@@ -346,27 +357,42 @@ class CopyDecisionService:
             )
 
         target = min(sell_tokens, max_sell_tokens)
-        if market_min_size > 0 and target < market_min_size:
-            if max_sell_tokens < market_min_size:
-                return CopyDecision(
-                    allow=False,
-                    skip_code="sell_below_market_min",
-                    reason=(
-                        f"SELL size below market minimum ({target:.4f} < {market_min_size:.4f}) "
-                        "and position too small to satisfy minimum"
-                    ),
-                    side="SELL",
-                    decision_score=1.0,
-                    leader_score=1.0,
-                    trade_score=1.0,
-                    live_price=live_price,
-                    reference_price=ref_price,
-                    target_notional_usdc=target * max(live_price, 0.0),
-                    target_size_tokens=target,
-                    price_drift_pct=0.0,
-                    edge_decay_pct=0.0,
-                )
-            target = market_min_size
+        minimum_guard_enabled = self._minimum_order_guard_enabled
+        if minimum_guard_enabled:
+            required_min_tokens = max(
+                market_min_size if market_min_size > 0 else 0.0,
+                self._copy_min_shares,
+                (self._minimum_order_buffer_notional / live_price) if live_price > 0 else 0.0,
+                (self._copy_min_notional / live_price) if live_price > 0 else 0.0,
+            )
+            if target < required_min_tokens:
+                if max_sell_tokens < required_min_tokens:
+                    return CopyDecision(
+                        allow=False,
+                        skip_code="sell_below_market_min",
+                        reason=(
+                            f"SELL size below exchange minimum ({target:.4f} < {required_min_tokens:.4f}) "
+                            "and position too small to satisfy minimum"
+                        ),
+                        side="SELL",
+                        decision_score=1.0,
+                        leader_score=1.0,
+                        trade_score=1.0,
+                        live_price=live_price,
+                        reference_price=ref_price,
+                        target_notional_usdc=target * max(live_price, 0.0),
+                        target_size_tokens=target,
+                        price_drift_pct=0.0,
+                        edge_decay_pct=0.0,
+                        details={
+                            "decision_gate_enabled": decision_gate_enabled,
+                            "minimum_order_guard_enabled": minimum_guard_enabled,
+                            "market_min_size": market_min_size,
+                            "required_min_size_tokens": required_min_tokens,
+                            "max_sell_tokens": max_sell_tokens,
+                        },
+                    )
+                target = required_min_tokens
 
         target = self._ceil(target, decimals)
         return CopyDecision(
@@ -389,6 +415,7 @@ class CopyDecisionService:
             edge_decay_pct=0.0,
             details={
                 "decision_gate_enabled": decision_gate_enabled,
+                "minimum_order_guard_enabled": minimum_guard_enabled,
                 "market_min_size": market_min_size,
                 "max_sell_tokens": max_sell_tokens,
             },

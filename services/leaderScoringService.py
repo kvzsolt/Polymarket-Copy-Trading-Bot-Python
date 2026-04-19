@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Any, TYPE_CHECKING
 
@@ -46,6 +47,7 @@ class LeaderScoringService:
             self._weight_analytics = lc.leader_score_weight_analytics
             self._weight_activity = lc.leader_score_weight_activity
             self._score_floor = lc.leader_score_floor
+            self._trust_mult_enabled = config.sizing.enable_trust_size_multipliers
             self._trust_mult_min = config.sizing.trust_size_multiplier_min
             self._trust_mult_max = config.sizing.trust_size_multiplier_max
         else:
@@ -57,8 +59,9 @@ class LeaderScoringService:
             self._weight_analytics = 0.45
             self._weight_activity = 0.20
             self._score_floor = 0.10
-            self._trust_mult_min = 0.70
-            self._trust_mult_max = 1.25
+            self._trust_mult_enabled = os.getenv("ENABLE_TRUST_SIZE_MULTIPLIERS", "true").strip().lower() in ("1", "true", "yes")
+            self._trust_mult_min = float(os.getenv("TRUST_SIZE_MULTIPLIER_MIN", "0.50") or 0.50)
+            self._trust_mult_max = float(os.getenv("TRUST_SIZE_MULTIPLIER_MAX", "1.25") or 1.25)
 
     def score_leader(
         self,
@@ -159,6 +162,8 @@ class LeaderScoringService:
         )
 
     def trust_multiplier(self, score: float) -> float:
+        if not self._trust_mult_enabled:
+            return 1.0
         min_mult = self._trust_mult_min
         max_mult = self._trust_mult_max
         score = _clamp(score)
