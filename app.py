@@ -38,6 +38,7 @@ from orchestrators.runtime_discovery import (
 )
 from orchestrators.runtime_monitor import run_leader_monitor
 from orchestrators.runtime_summary import print_startup_summary
+from orchestrators.startup_health import perform_startup_health_check
 from services.autoRedeem import auto_redeem_loop
 from services.compliance import check_geoblock
 from services.discovery.capture_service import DiscoveryCaptureService
@@ -234,6 +235,22 @@ async def main():
     )
     application.readiness.update(api_ok=api_ok)
 
+    live_positions_by_user: dict[str, list[dict]] = {}
+    health_reports_by_user = {}
+    for runtime_user in runtime_users:
+        live_positions = await fetch_live_positions(runtime_user.wallet.funder_address)
+        live_positions_by_user[runtime_user.user_id] = live_positions
+        health_reports_by_user[runtime_user.user_id] = await perform_startup_health_check(
+            wallet=runtime_user.wallet.funder_address,
+            user_id=runtime_user.user_id,
+            db_path=db_path,
+            positions_repo=user_states[runtime_user.user_id].positions_repo,
+            live_positions=live_positions,
+            available_cash=float(user_balances.get(runtime_user.user_id, 0.0)),
+            database_ok=True,
+            rpc_url=application.config.wallet.polygon_rpc_url,
+        )
+
     contexts_by_leader, risk_contexts_by_user = build_context_maps(
         runtime_users,
         user_states,
@@ -249,15 +266,23 @@ async def main():
         await metrics.inc("no_leaders_monitored_total")
 
     first_user = runtime_users[0]
-    live_positions = await fetch_live_positions(first_user.wallet.funder_address)
+    live_positions = live_positions_by_user.get(first_user.user_id, [])
+    health_report = health_reports_by_user[first_user.user_id]
     live_positions_value = sum(float(position.get("currentValue") or 0.0) for position in live_positions)
     available_cash = float(user_balances.get(first_user.user_id, 0.0))
+    application.readiness.update(
+        startup_health_status=health_report.status,
+        startup_health_healthy=health_report.healthy,
+        startup_pruned_positions=health_report.position_sync.pruned_positions,
+    )
     print_startup_summary(
         wallet=first_user.wallet.funder_address,
         available_cash=available_cash,
         total_portfolio=available_cash + live_positions_value,
         positions=live_positions,
         active_leaders=monitored_leaders,
+        config=application.config,
+        health_report=health_report,
     )
 
     metrics_runner = None

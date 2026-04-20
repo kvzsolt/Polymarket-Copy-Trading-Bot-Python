@@ -22,7 +22,13 @@ from config.env import (
     validate_wallet_config,
 )
 from utils.fetchData import _get_session
-from utils.logger import get_logger, log_api_response, print_clob_error, redact_error_detail
+from utils.logger import (
+    get_logger,
+    get_wallet_type,
+    log_api_response,
+    print_clob_error,
+    redact_error_detail,
+)
 
 logger = get_logger("ClobClient")
 
@@ -412,14 +418,6 @@ async def create_clob_client(
         )
 
     validate_wallet_config(cfg)
-    logger.info(
-        "Creating CLOB client host=%s chain_id=%s signature_type=%s funder=%s",
-        host,
-        cfg.chain_id,
-        int(cfg.signature_type),
-        cfg.funder_address,
-    )
-
     client = ClobClient(
         host,
         key=cfg.private_key,
@@ -429,5 +427,16 @@ async def create_clob_client(
     )
     user_api_creds = client.create_or_derive_api_creds()
     client.set_api_creds(user_api_creds)
-    logger.info("CLOB API credentials derived and set")
+    wallet_type, _ = get_wallet_type(client)
+    logger.info(
+        "CLOB client ready",
+        extra={
+            "type": "clob_client_init",
+            "host": host,
+            "chainId": cfg.chain_id,
+            "signatureType": int(cfg.signature_type),
+            "walletType": wallet_type,
+            "funder": cfg.funder_address,
+        },
+    )
     return ClobClientWrapper(client, wallet_config=cfg)
