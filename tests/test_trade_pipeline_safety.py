@@ -308,21 +308,37 @@ async def test_stale_buy_unconfirmed_is_still_reconciled(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_balance_tiered_policy_disabled_does_not_lookup_balance(tmp_path, monkeypatch):
+async def test_max_position_pct_enforced_even_when_balance_policy_disabled(tmp_path, monkeypatch):
     db_path = _init_db(tmp_path)
     exec_svc = AsyncMock()
     exec_svc.execute.return_value = _exec_result(
         accepted=True, filled=Decimal("10"), status="filled", order_id="ord-balance-off"
     )
     ctx = _make_context(db_path, execution_service=exec_svc)
+    ctx.positions_repo.upsert_position(
+        SimpleNamespace(
+            user_id="user1",
+            condition_id="cond1",
+            token_id=FAKE_TOKEN_ID,
+            leader_id="leader1",
+            size_tokens=Decimal("20"),
+            avg_entry_price=Decimal("1.0"),
+        )
+    )
 
     monkeypatch.setitem(ENV, "ENABLE_BALANCE_TIERED_POLICY", False)
+    monkeypatch.setitem(ENV, "MAX_POSITION_PCT", 0.20)
 
-    with patch("orchestrators.trade_pipeline.get_my_balance", new_callable=AsyncMock) as balance_lookup:
+    with patch(
+        "orchestrators.trade_pipeline.get_my_balance",
+        new_callable=AsyncMock,
+        return_value=80.0,
+    ):
         results = await execute_trades(ctx, "leader1", [_signal(tx_hash="0xbal-off")], time.time())
 
-    assert results[0].status == "executed"
-    balance_lookup.assert_not_awaited()
+    assert results[0].status == "skipped"
+    assert results[0].reason == "max_position_pct_reached"
+    exec_svc.execute.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -349,6 +365,47 @@ async def test_balance_tiered_policy_blocks_buy_without_tradable_cash(tmp_path, 
     assert results[0].status == "skipped"
     assert results[0].reason == "no_tradable_cash_after_reserve"
     exec_svc.execute.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_max_position_pct_caps_additional_buy_on_same_market(tmp_path, monkeypatch):
+    db_path = _init_db(tmp_path)
+    exec_svc = AsyncMock()
+    exec_svc.execute.return_value = _exec_result(
+        accepted=True, filled=Decimal("10"), status="filled", order_id="ord-pos-cap"
+    )
+    ctx = _make_context(db_path, execution_service=exec_svc)
+    ctx.positions_repo.upsert_position(
+        SimpleNamespace(
+            user_id="user1",
+            condition_id="cond1",
+            token_id=FAKE_TOKEN_ID,
+            leader_id="leader1",
+            size_tokens=Decimal("10"),
+            avg_entry_price=Decimal("1.0"),
+        )
+    )
+
+    monkeypatch.setitem(ENV, "ENABLE_BALANCE_TIERED_POLICY", False)
+    monkeypatch.setitem(ENV, "MAX_POSITION_PCT", 0.20)
+
+    decision_service = _RecordingDecisionService()
+    ctx.copy_decision_service = decision_service
+
+    with patch(
+        "orchestrators.trade_pipeline.get_my_balance",
+        new_callable=AsyncMock,
+        return_value=90.0,
+    ):
+        results = await execute_trades(ctx, "leader1", [_signal(tx_hash="0xpos-cap")], time.time())
+
+    assert results[0].status == "executed"
+    assert decision_service.buy_calls
+    assert decision_service.buy_calls[0]["max_notional_usdc"] == pytest.approx(10.0)
+
+    req = exec_svc.execute.await_args.args[0]
+    assert req.side == "BUY"
+    assert req.amount == Decimal("10")
 
 
 @pytest.mark.asyncio
