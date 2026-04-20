@@ -277,12 +277,12 @@ class RiskConfig:
     near_max_price_exit: float
     profit_lock_trigger_pct: float
     profit_lock_sell_fraction: float
-    profit_lock_min_profit_pct: float
-    profit_lock_drawdown_pct: float
     trailing_activation_pct: float
     trailing_distance: float
     staged_tp_levels: str
     staged_tp_fractions: str
+    stop_loss_threshold: float
+    stop_loss_grace_period_seconds: float
 
 
 @dataclass(frozen=True)
@@ -392,6 +392,7 @@ class FeatureFlagConfig:
     enable_trailing_stop: bool
     enable_staged_tp: bool
     enable_leader_divergence_exit: bool
+    enable_stop_loss: bool
     enable_tier_gate_watchlist: bool
     enable_tier_gate_watchlist_log: bool
     arb_min_profit_bps: int
@@ -618,7 +619,7 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         chain_id=p.int_("CHAIN_ID", "137"),
         signature_type=p.signature_type(),
         funder_address=p.funder_address(),
-        polygon_rpc_url=p.string("RPC_URL", ""),
+        polygon_rpc_url=p.string("RPC_URL", "https://polygon-bor-rpc.publicnode.com"),
     )
 
     # CLOB
@@ -688,12 +689,12 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         near_max_price_exit=p.float_("NEAR_MAX_PRICE_EXIT", "0.95"),
         profit_lock_trigger_pct=p.float_("PROFIT_LOCK_TRIGGER_PCT", "70"),
         profit_lock_sell_fraction=p.float_("PROFIT_LOCK_SELL_FRACTION", "0.50"),
-        profit_lock_min_profit_pct=p.float_("PROFIT_LOCK_MIN_PROFIT_PCT", "35"),
-        profit_lock_drawdown_pct=p.float_("PROFIT_LOCK_DRAWDOWN_PCT", "15"),
         trailing_activation_pct=p.float_("TRAILING_ACTIVATION_PCT", "20"),
         trailing_distance=p.float_("TRAILING_DISTANCE", "0.05"),
         staged_tp_levels=p.string("STAGED_TP_LEVELS", "30,50"),
         staged_tp_fractions=p.string("STAGED_TP_FRACTIONS", "0.25,0.35"),
+        stop_loss_threshold=p.float_("STOP_LOSS_THRESHOLD", "0.15"),
+        stop_loss_grace_period_seconds=p.float_("STOP_LOSS_GRACE_PERIOD_SECONDS", "180"),
     )
 
     # Execution
@@ -794,7 +795,7 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
     )
 
     network = NetworkConfig(
-        rpc_url=p.string("RPC_URL", "https://polygon-mainnet.infura.io/v3/a08bcee0810a44edb83883d02e73a96f"),
+        rpc_url=p.string("RPC_URL", ""),
         chain_id=wallet.chain_id,
         usdc_contract_address=p.string(
             "USDC_CONTRACT_ADDRESS", "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
@@ -829,6 +830,7 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         enable_trailing_stop=p.bool_("ENABLE_TRAILING_STOP", False),
         enable_staged_tp=p.bool_("ENABLE_STAGED_TP", False),
         enable_leader_divergence_exit=p.bool_("ENABLE_LEADER_DIVERGENCE_EXIT", False),
+        enable_stop_loss=p.bool_("ENABLE_STOP_LOSS", False),
         enable_tier_gate_watchlist=p.bool_("ENABLE_TIER_GATE_WATCHLIST", False),
         enable_tier_gate_watchlist_log=p.bool_("ENABLE_TIER_GATE_WATCHLIST_LOG", False),
         arb_min_profit_bps=p.int_("ARB_MIN_PROFIT_BPS", "30"),

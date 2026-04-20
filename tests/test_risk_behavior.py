@@ -78,6 +78,23 @@ def _make_pm(**risk_overrides) -> PositionManager:
     pm._staged_levels = []
     pm._staged_fractions = []
     pm._enable_leader_divergence = False
+    pm._enable_stop_loss = False
+    pm._stop_loss_threshold = 0.15
+    pm._stop_loss_grace_period_seconds = 180.0
+    return pm
+
+
+def _make_pm_stop_loss(threshold=0.15, grace=180.0) -> PositionManager:
+    """PositionManager with stop-loss enabled and all other exits disabled."""
+    pm = _make_pm()
+    pm._enable_stop_loss = True
+    pm._stop_loss_threshold = threshold
+    pm._stop_loss_grace_period_seconds = grace
+    pm._enable_trailing = False
+    pm._profit_lock_mode = "disabled"
+    pm._enable_near_max = False
+    pm._enable_staged_tp = False
+    pm._enable_leader_divergence = False
     return pm
 
 
@@ -692,6 +709,81 @@ class TestHeadroomCalculation:
 
 # ---------------------------------------------------------------------------
 # Risk management disabled
+# ---------------------------------------------------------------------------
+# Stop-loss (Priority 0)
+# ---------------------------------------------------------------------------
+
+
+class TestStopLoss:
+    def test_triggers_full_exit_below_threshold(self):
+        """Price drops to threshold → full exit."""
+        import time as _time
+
+        pm = _make_pm_stop_loss(threshold=0.15, grace=10.0)
+        pos = _open_position(pm, entry=0.50)
+        pos.entry_time = _time.time() - 300  # 5 min ago → outside grace
+
+        action = pm.evaluate_risk_action("cond-1", 0.14)
+        assert action is not None
+        assert action["reason"] == "stop_loss"
+        assert action["size_fraction"] == 1.0
+
+    def test_triggers_at_exact_threshold(self):
+        """Price exactly at threshold → triggers."""
+        import time as _time
+
+        pm = _make_pm_stop_loss(threshold=0.15, grace=10.0)
+        pos = _open_position(pm, entry=0.50)
+        pos.entry_time = _time.time() - 300
+
+        action = pm.evaluate_risk_action("cond-1", 0.15)
+        assert action is not None
+        assert action["reason"] == "stop_loss"
+
+    def test_no_trigger_inside_grace_window(self):
+        """Fresh buy within grace period → stop-loss suppressed."""
+        pm = _make_pm_stop_loss(threshold=0.15, grace=180.0)
+        _open_position(pm, entry=0.50)  # entry_time = now
+
+        action = pm.evaluate_risk_action("cond-1", 0.05)
+        assert action is None  # grace protects
+
+    def test_triggers_after_grace_expires(self):
+        """Old buy past grace → stop-loss fires."""
+        import time as _time
+
+        pm = _make_pm_stop_loss(threshold=0.15, grace=60.0)
+        pos = _open_position(pm, entry=0.50)
+        pos.entry_time = _time.time() - 61  # just past grace
+
+        action = pm.evaluate_risk_action("cond-1", 0.10)
+        assert action is not None
+        assert action["reason"] == "stop_loss"
+
+    def test_no_trigger_above_threshold(self):
+        """Price above threshold → no stop-loss."""
+        import time as _time
+
+        pm = _make_pm_stop_loss(threshold=0.15, grace=10.0)
+        pos = _open_position(pm, entry=0.50)
+        pos.entry_time = _time.time() - 300
+
+        action = pm.evaluate_risk_action("cond-1", 0.20)
+        assert action is None
+
+    def test_disabled_stop_loss_does_not_fire(self):
+        """Stop-loss disabled → inert even at low prices."""
+        import time as _time
+
+        pm = _make_pm()
+        pm._enable_stop_loss = False  # explicit
+        pos = _open_position(pm, entry=0.50)
+        pos.entry_time = _time.time() - 300
+
+        action = pm.evaluate_risk_action("cond-1", 0.01)
+        assert action is None
+
+
 # ---------------------------------------------------------------------------
 
 
