@@ -1,14 +1,15 @@
 """Position manager — tracks open positions with advanced exit intelligence.
 
 Exit priority (highest first):
+0. Stop-loss (absolute price floor, suppressed inside grace period)
 1. Near-max-price exit
 2. Profit lock
 3. Staged take-profit
 4. Trailing stop
 5. Leader divergence
 
-Basic hard stop-loss and legacy single take-profit have been retired from the
-live risk system. The remaining engines are the more context-aware exits.
+Basic legacy single take-profit has been retired from the live risk system.
+The remaining engines are the more context-aware exits.
 """
 
 from __future__ import annotations
@@ -88,6 +89,11 @@ class PositionManager:
 
             self._risk_master_enabled = rc.enable_risk_mgmt
 
+            # Stop-loss
+            self._enable_stop_loss = fc.enable_stop_loss
+            self._stop_loss_threshold = rc.stop_loss_threshold
+            self._stop_loss_grace_period_seconds = rc.stop_loss_grace_period_seconds
+
             # Profit lock
             self._profit_lock_mode = (
                 "advanced" if fc.enable_profit_lock else "disabled"
@@ -120,6 +126,9 @@ class PositionManager:
             # Legacy test-compatibility path: accept RiskSettings directly
             rs = risk_settings
             self._risk_master_enabled = True
+            self._enable_stop_loss = False
+            self._stop_loss_threshold = 0.15
+            self._stop_loss_grace_period_seconds = 180.0
             self._profit_lock_mode = "legacy"
             self._profit_lock_trigger = rs.profit_lock_trigger_ratio
             self._profit_lock_sell_fraction = rs.profit_lock_sell_ratio
@@ -139,6 +148,9 @@ class PositionManager:
         else:
             # Bare defaults for backward compat
             self._risk_master_enabled = True
+            self._enable_stop_loss = False
+            self._stop_loss_threshold = 0.15
+            self._stop_loss_grace_period_seconds = 180.0
             self._profit_lock_mode = "legacy"
             self._profit_lock_trigger = 0.70
             self._profit_lock_sell_fraction = 0.50
@@ -291,6 +303,19 @@ class PositionManager:
             pos.peak_price = current_price
         if current_price > es.trailing_high_price:
             es.trailing_high_price = current_price
+
+        # ── Priority 0: STOP-LOSS (absolute price floor, grace-period protected) ──
+        if getattr(self, "_enable_stop_loss", False):
+            sl_threshold = getattr(self, "_stop_loss_threshold", 0.15)
+            grace = getattr(self, "_stop_loss_grace_period_seconds", 180.0)
+            age_seconds = time.time() - pos.entry_time
+            if current_price <= sl_threshold and age_seconds > grace:
+                logger.info(
+                    f"STOP-LOSS triggered: {condition_id[:12]}… "
+                    f"price={current_price:.4f} <= threshold={sl_threshold:.4f} "
+                    f"age={age_seconds:.0f}s > grace={grace:.0f}s"
+                )
+                return {"reason": "stop_loss", "size_fraction": 1.0}
 
         # ── Priority 1: NEAR-MAX-PRICE EXIT ──
         if self._enable_near_max and current_price > 0:
