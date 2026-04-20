@@ -362,6 +362,52 @@ def _derive_sell_tokens(signal: TradeSignal, position: Any, raw_trade: dict[str,
     return derived if derived > 0 else Decimal("0")
 
 
+async def _resolve_position_pct_cap(
+    context: TradingContext,
+    signal: TradeSignal,
+) -> _BuyRiskCap:
+    balance_usdc = await get_my_balance(context.wallet_address)
+    if balance_usdc is None:
+        return _BuyRiskCap(
+            allow=False,
+            reason="balance_unavailable",
+            policy_name="max_position_pct",
+            cap_notional_usdc=Decimal("0"),
+        )
+
+    free_cash_usdc = Decimal(str(balance_usdc))
+    open_positions = context.positions_repo.list_open_positions(context.user_id)
+    total_exposure_usdc = Decimal("0")
+    market_exposure_usdc = Decimal("0")
+    for position in open_positions:
+        position_notional = _position_notional_usdc(position)
+        total_exposure_usdc += position_notional
+        if str(getattr(position, "condition_id", "") or "") == signal.condition_id:
+            market_exposure_usdc += position_notional
+
+    equity_usdc = free_cash_usdc + total_exposure_usdc
+    max_position_pct = Decimal(str(ENV.get("MAX_POSITION_PCT", 0) or 0))
+    if max_position_pct <= 0:
+        return _BuyRiskCap(True, "disabled", "max_position_pct", free_cash_usdc)
+
+    cap_total_usdc = equity_usdc * max_position_pct
+    remaining_cap_usdc = max(Decimal("0"), cap_total_usdc - market_exposure_usdc)
+    if remaining_cap_usdc <= 0:
+        return _BuyRiskCap(
+            allow=False,
+            reason="max_position_pct_reached",
+            policy_name="max_position_pct",
+            cap_notional_usdc=Decimal("0"),
+        )
+
+    return _BuyRiskCap(
+        allow=True,
+        reason="ok",
+        policy_name="max_position_pct",
+        cap_notional_usdc=min(remaining_cap_usdc, free_cash_usdc),
+    )
+
+
 async def _resolve_buy_risk_cap(
     context: TradingContext,
     leader_id: str,
@@ -841,6 +887,58 @@ async def execute_trades(
             target_notional = sizing_result.final_notional_usdc
             configured_buy_max = Decimal(str(getattr(context, "buy_max_amount", target_notional) or target_notional))
             max_notional_for_decision = max(target_notional, configured_buy_max)
+
+            position_pct_cap = await _resolve_position_pct_cap(context, signal)
+            if not position_pct_cap.allow:
+                reason = (
+                    f"position cap [{position_pct_cap.policy_name}] blocked BUY: "
+                    f"{position_pct_cap.reason}"
+                )
+                print_skip_reason(
+                    f"Position cap [{position_pct_cap.policy_name}] blocked BUY",
+                    position_pct_cap.reason,
+                )
+                log_trade_skip(
+                    logger,
+                    side=signal.side,
+                    condition_id=signal.condition_id,
+                    asset=signal.token_id,
+                    size=float(signal.size) if signal.size else None,
+                    price=live_price,
+                    usdc_value=float(signal.usdc_size),
+                    skip_code=position_pct_cap.reason,
+                    reason=reason,
+                    event_slug=signal.event_slug,
+                    meta={"user_id": context.user_id, "leader_id": leader_id},
+                )
+                await metrics.inc(
+                    "trades_skipped_total",
+                    labels={**labels, "reason": position_pct_cap.reason},
+                )
+                context.orders_repo.mark_processed_trade(
+                    trade_key=trade_key,
+                    user_id=context.user_id,
+                    leader_id=leader_id,
+                    tx_hash=signal.tx_hash,
+                    side=signal.side,
+                    asset=signal.token_id,
+                    condition_id=signal.condition_id,
+                    status=f"skipped_{position_pct_cap.reason}",
+                )
+                results.append(
+                    TradePipelineResult(
+                        trade_key,
+                        "skipped",
+                        position_pct_cap.reason,
+                        None,
+                    )
+                )
+                continue
+
+            max_notional_for_decision = min(
+                max_notional_for_decision,
+                position_pct_cap.cap_notional_usdc,
+            )
 
             buy_risk_cap = None
             if _account_cap_policy_enabled():
