@@ -15,8 +15,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from config.env import ENV
 import time
+from config.env import ENV
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -76,9 +76,13 @@ class ReconciliationService:
         self.clob_client = clob_client
         self.orders_repo = orders_repo
 
-        self.stale_threshold = stale_threshold_seconds or float(
-            ENV.get("RECONCILE_STALE_SECONDS", 3600) or 3600
-        )
+        if stale_threshold_seconds is not None:
+            self.stale_threshold = float(stale_threshold_seconds)
+        else:
+            try:
+                self.stale_threshold = float(ENV.get("RECONCILE_STALE_SECONDS", 3600))
+            except (TypeError, ValueError):
+                self.stale_threshold = 3600.0
         self.auto_cancel = auto_cancel_stale if auto_cancel_stale is not None else (
             str(ENV.get("RECONCILE_AUTO_CANCEL", "false")).lower() in ("1", "true", "yes")
         )

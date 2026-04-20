@@ -116,7 +116,15 @@ class RedemptionService:
                     cid_bytes = bytes.fromhex(condition_id[2:])
                 else:
                     cid_bytes = bytes.fromhex(condition_id)
-                cid_bytes32 = cid_bytes.ljust(32, b"\x00")[:32]
+                if len(cid_bytes) != 32:
+                    return RedemptionResult(
+                        False,
+                        None,
+                        "failed",
+                        Decimal("0"),
+                        f"invalid_condition_id_length:{len(cid_bytes)}",
+                    )
+                cid_bytes32 = cid_bytes
             except Exception as exc:
                 return RedemptionResult(
                     False, None, "failed", Decimal("0"), f"invalid_condition_id:{exc}"

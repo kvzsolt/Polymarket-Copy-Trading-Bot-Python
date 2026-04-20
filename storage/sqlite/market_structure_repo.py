@@ -44,7 +44,10 @@ class MarketStructureRepo:
                 ),
             )
             conn.commit()
-            return int(cur.lastrowid)
+            lastrowid = cur.lastrowid
+            if lastrowid is None:
+                raise RuntimeError("Insert failed: lastrowid is None")
+            return int(lastrowid)
 
     def get_events_for_condition(self, condition_id: str) -> list[dict[str, Any]]:
         with create_connection(self.db_path) as conn:
@@ -73,8 +76,8 @@ class MarketStructureRepo:
                     LEFT JOIN market_structure_event_applied msea
                         ON mse.id = msea.event_id AND msea.user_id = ?
                     WHERE mse.remapped = 0
-                      AND mse.event_type = 'split'
-                      AND mse.old_token_id IS NOT NULL
+                      AND mse.event_type IN ('split', 'merge')
+                      AND (mse.old_token_id IS NOT NULL OR mse.payload_json IS NOT NULL)
                       AND mse.new_token_id IS NOT NULL
                       AND msea.event_id IS NULL
                     ORDER BY mse.event_ts ASC, mse.id ASC
@@ -89,8 +92,8 @@ class MarketStructureRepo:
                        ratio, event_ts, payload_json, remapped, created_at
                 FROM market_structure_events
                 WHERE remapped = 0
-                  AND event_type = 'split'
-                  AND old_token_id IS NOT NULL
+                  AND event_type IN ('split', 'merge')
+                  AND (old_token_id IS NOT NULL OR payload_json IS NOT NULL)
                   AND new_token_id IS NOT NULL
                 ORDER BY event_ts ASC, id ASC
                 """
@@ -108,14 +111,13 @@ class MarketStructureRepo:
 
     def mark_applied_for_user(self, user_id: str, event_id: int) -> None:
         """Record that a remap event has been applied for a specific user."""
-        import time as _t
         with create_connection(self.db_path) as conn:
             conn.execute(
                 """
                 INSERT OR IGNORE INTO market_structure_event_applied (user_id, event_id, applied_at)
                 VALUES (?, ?, ?)
                 """,
-                (user_id, event_id, _t.time()),
+                (user_id, event_id, time.time()),
             )
             conn.commit()
 

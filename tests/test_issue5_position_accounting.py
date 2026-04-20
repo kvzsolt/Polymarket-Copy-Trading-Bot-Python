@@ -262,6 +262,7 @@ class TestAtomicExecutionPersistence:
             _prepare_db(db_path)
             repo = OrdersRepo(str(db_path))
             token = "21742633143463906290569050155826241533067272736897614950488156847949938836495"
+            ts = int(time.time())
 
             # First: buy
             repo.persist_execution_atomically(
@@ -274,7 +275,7 @@ class TestAtomicExecutionPersistence:
                 fill_size="100",
                 fill_price="0.30",
                 fill_fee="0",
-                fill_ts=int(time.time()),
+                fill_ts=ts,
                 fill_json='{}',
                 trade_key="trade-as-buy",
                 tx_hash=None,
@@ -293,7 +294,7 @@ class TestAtomicExecutionPersistence:
                 fill_size="100",
                 fill_price="0.60",
                 fill_fee="0",
-                fill_ts=int(time.time()),
+                fill_ts=ts,
                 fill_json='{}',
                 trade_key="trade-as-sell",
                 tx_hash=None,

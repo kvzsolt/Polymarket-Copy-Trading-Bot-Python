@@ -212,6 +212,9 @@ async def risk_monitor_loop(
     if not enabled:
         logger.info("Global risk management disabled — monitor will not run")
         return
+    if not funder_address:
+        logger.error("Risk monitor disabled: missing FUNDER_ADDRESS")
+        return
 
     logger.info(
         "Risk monitor started: advanced exit engines active "
@@ -264,6 +267,11 @@ async def risk_monitor_loop(
                             f"Executing risk {trigger} for {cid[:12]}… "
                             f"tokens={sell_size:.4f}"
                         )
+                        if not funder_address:
+                            logger.error(
+                                "Risk monitor cannot build ExecutionRequest without FUNDER_ADDRESS"
+                            )
+                            continue
                         exec_req = ExecutionRequest(
                             user_id=funder_address,
                             leader_id=pos.leader_wallet or "risk-monitor",

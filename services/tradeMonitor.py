@@ -250,6 +250,7 @@ async def _annotate_sell_fractions(trades: list[dict], leader_wallet: str) -> No
         for key in _position_lookup_keys(position):
             remaining_by_key[key] = size
 
+    sell_trades_by_key: dict[tuple[str, str], list[dict]] = {}
     for trade in sell_trades:
         condition_id = str(trade.get("conditionId") or trade.get("condition_id") or "")
         token_id = str(trade.get("tokenID") or trade.get("token_id") or trade.get("asset") or "")
@@ -259,16 +260,40 @@ async def _annotate_sell_fractions(trades: list[dict], leader_wallet: str) -> No
             sold_size = 0.0
         if not condition_id or not token_id or sold_size <= 0:
             continue
+        sell_trades_by_key.setdefault((condition_id, token_id), []).append(trade)
 
-        remaining_size = max(0.0, remaining_by_key.get((condition_id, token_id), 0.0))
-        leader_size_before = remaining_size + sold_size
-        if leader_size_before <= 0:
+    for key, trades_for_key in sell_trades_by_key.items():
+        condition_id, token_id = key
+        trades_for_key.sort(key=lambda trade: _to_seconds(trade.get("timestamp")))
+        total_sold_per_key = 0.0
+        for trade in trades_for_key:
+            try:
+                total_sold_per_key += float(trade.get("size") or 0)
+            except (TypeError, ValueError):
+                continue
+        if total_sold_per_key <= 0:
             continue
+        remaining_by_key[key] = max(0.0, remaining_by_key.get(key, 0.0))
+        remaining_by_key[key] += total_sold_per_key
 
-        sell_fraction = min(1.0, max(0.0, sold_size / leader_size_before))
-        trade["_leader_position_size_after"] = remaining_size
-        trade["_leader_position_size_before"] = leader_size_before
-        trade["_leader_sell_fraction"] = sell_fraction
+        for trade in trades_for_key:
+            try:
+                sold_size = float(trade.get("size") or 0)
+            except (TypeError, ValueError):
+                sold_size = 0.0
+            if sold_size <= 0:
+                continue
+
+            remaining_size = max(0.0, remaining_by_key.get(key, 0.0))
+            leader_size_before = remaining_size
+            if leader_size_before <= 0:
+                continue
+
+            sell_fraction = min(1.0, max(0.0, sold_size / leader_size_before))
+            trade["_leader_position_size_after"] = max(0.0, leader_size_before - sold_size)
+            trade["_leader_position_size_before"] = leader_size_before
+            trade["_leader_sell_fraction"] = sell_fraction
+            remaining_by_key[key] = max(0.0, remaining_size - sold_size)
 
 
 def _aggregate_trades(trades: list[dict], window_s: float = 2.0) -> list[dict]:

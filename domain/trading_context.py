@@ -42,6 +42,10 @@ class TradingContext:
     readiness: ReadinessTracker = field(default_factory=ReadinessTracker)
     extra: dict[str, Any] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        if self.copy_decision_service is not None:
+            self.copy_decision_service.leader_scorer = self.leader_scorer
+
     def copy_notional(self, leader_notional: Decimal) -> CopySizingResult:
         """Return the full sizing result so callers can inspect reasoning."""
         return calculate_copy_notional(

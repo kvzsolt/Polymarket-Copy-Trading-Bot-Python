@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -29,7 +30,7 @@ from config.validation import (
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _fresh_env(**overrides: str) -> dict:
+def _fresh_env(**overrides: Any) -> dict:
     """Build a minimal ENV-like dict with overrides on top of defaults."""
     env = dict(ENV)  # snapshot current defaults
     env.update(overrides)
@@ -52,7 +53,7 @@ class TestLoadSettingsDefaults:
         settings = load_settings()
         # All ratio fields must be in [0, 1]
         assert 0 <= settings.risk.stop_loss_ratio <= 1
-        assert settings.risk.take_profit_ratio >= 0
+        assert 0 <= settings.risk.take_profit_ratio <= 1
         assert 0 <= settings.risk.daily_drawdown_ratio <= 1
         assert 0 <= settings.risk.profit_lock_trigger_ratio <= 1
         assert 0 <= settings.risk.trailing_trigger_ratio <= 1
@@ -131,7 +132,7 @@ class TestOldNameMigration:
         assert settings.risk.trailing_distance_ratio == pytest.approx(0.05)
 
     def test_near_max_price_exit_migrated(self):
-        env = _fresh_env(NEAR_MAX_PRICE_EXIT=0.95)
+        env = _fresh_env(NEAR_MAX_PRICE_EXIT=0.95, NEAR_MAX_PRICE_WARN=0.90)
         settings = load_settings(env)
         assert settings.risk.near_max_price_level == pytest.approx(0.95)
 

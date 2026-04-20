@@ -187,6 +187,7 @@ def _ensure_fills_table(conn: sqlite3.Connection) -> None:
             WHERE order_id IS NOT NULL
             GROUP BY user_id, order_id, condition_id, side, fill_ts
         )
+          AND order_id IS NOT NULL
     """)
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_fills_unique ON fills(user_id, order_id, condition_id, side, fill_ts)")
 
@@ -220,8 +221,8 @@ def _positions_pk_columns(conn: sqlite3.Connection) -> list[str]:
     row = conn.execute(
         "SELECT sql FROM sqlite_master WHERE type='table' AND name='positions' LIMIT 1"
     ).fetchone()
-    if row and row["sql"]:
-        sql = row["sql"].upper()
+    if row and row[0]:
+        sql = str(row[0]).upper()
         if "PRIMARY KEY (USER_ID, CONDITION_ID, TOKEN_ID)" in sql:
             return ["user_id", "condition_id", "token_id"]
         if "PRIMARY KEY (USER_ID, CONDITION_ID)" in sql:
@@ -243,6 +244,7 @@ def _ensure_positions_table(conn: sqlite3.Connection) -> None:
 
     if pk_cols == ["user_id", "condition_id"]:
         # Migrate: rename old table, create with correct PK, copy data over.
+        conn.execute("DROP TABLE IF EXISTS _positions_legacy")
         conn.execute("ALTER TABLE positions RENAME TO _positions_legacy")
         conn.execute(
             """
