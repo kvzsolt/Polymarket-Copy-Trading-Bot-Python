@@ -42,30 +42,63 @@ async def auto_redeem_loop(clob_client, config: AppConfig):
         try:
             # 1. Load and filter positions using the TS logic criteria
             redeemables = await redemption_service.scan_redeemables(user_id)
-            
+
             if redeemables:
                 # 2. Group positions by conditionId to avoid duplicate redemptions
                 positions_by_condition: dict[str, list] = {}
                 for pos in redeemables:
                     positions_by_condition.setdefault(pos.condition_id, []).append(pos)
-                
-                logger.info(f"Found {len(redeemables)} redeemable positions grouped into {len(positions_by_condition)} conditions.")
+
+                estimated_value = sum(float(pos.current_value or 0.0) for pos in redeemables)
+                logger.info(
+                    "redemption_scan",
+                    extra={
+                        "type": "redemption_scan",
+                        "intervalSeconds": interval,
+                        "redeemableCount": len(redeemables),
+                        "conditionCount": len(positions_by_condition),
+                        "estimatedValue": estimated_value,
+                    },
+                )
 
                 # 3. Redeem once per condition
                 for condition_id, pos_group in positions_by_condition.items():
-                    total_value = sum(p.current_value for p in pos_group)
-                    logger.info(f"Redeeming condition {condition_id} (value: ${total_value:.2f})")
-                    
+                    total_value = sum(float(p.current_value or 0.0) for p in pos_group)
+                    logger.info(
+                        "Redeeming condition %s | positions=%s | value=$%.2f",
+                        condition_id,
+                        len(pos_group),
+                        total_value,
+                    )
+
                     for p in pos_group:
                         status = "WIN" if p.cur_price >= 0.99 else "LOSS"
-                        logger.info(f"   -> {status} | {p.title} | {p.outcome} | {p.size:.2f} tokens")
-                    
+                        logger.info(
+                            "   -> %s | %s | %s | size=%.2f | value=$%.2f | price=%.4f",
+                            status,
+                            p.title,
+                            p.outcome,
+                            float(p.size),
+                            float(p.current_value or 0.0),
+                            float(p.cur_price or 0.0),
+                        )
+
                     result = await redemption_service.redeem_condition(condition_id)
-                    if result.submitted and result.status == "confirmed":
-                        logger.info(f"✅ Successfully redeemed condition {condition_id}")
-                    elif result.error:
+                    logger.info(
+                        "redemption_result",
+                        extra={
+                            "type": "redemption_result",
+                            "conditionId": condition_id,
+                            "status": result.status,
+                            "positionCount": len(pos_group),
+                            "estimatedValue": total_value,
+                            "txHash": result.tx_hash,
+                            "error": result.error,
+                        },
+                    )
+                    if result.error:
                         logger.error(f"❌ Failed to redeem condition {condition_id}: {result.error}")
-                        
+
                     # Small delay between transactions
                     await asyncio.sleep(2)
         except asyncio.CancelledError:
