@@ -14,6 +14,7 @@ from domain.trading_context import TradingContext
 from services.executionService import ExecutionRequest
 from services.metrics import metrics
 from services.riskEngine import headroom_for_buy
+from services.riskQuarantine import get_market_risk_quarantine
 from storage.sqlite.fills_repo import FillRecord
 from storage.sqlite.positions_repo import PositionRecord
 from utils import is_valid_clob_token_id
@@ -818,6 +819,48 @@ async def execute_trades(
                     trade_key=trade_key,
                     status="skipped",
                     reason="already_processed",
+                    order_id=None,
+                )
+            )
+            continue
+
+        quarantine = get_market_risk_quarantine(
+            context.orders_repo,
+            user_id=context.user_id,
+            condition_id=signal.condition_id,
+        )
+        if quarantine is not None:
+            quarantine_status = str(quarantine.get("status") or "risk_quarantined")
+            skip_reason = "market_risk_quarantined"
+            log_trade_skip(
+                logger,
+                side=signal.side,
+                condition_id=signal.condition_id,
+                asset=signal.token_id,
+                size=float(signal.size) if signal.size else None,
+                price=float(signal.price or 0),
+                usdc_value=float(signal.usdc_size),
+                skip_code=skip_reason,
+                reason=f"market quarantined after prior risk trigger [{quarantine_status}]",
+                event_slug=signal.event_slug,
+                meta={"user_id": context.user_id, "leader_id": leader_id},
+            )
+            await metrics.inc("trades_skipped_total", labels={**labels, "reason": skip_reason})
+            context.orders_repo.mark_processed_trade(
+                trade_key=trade_key,
+                user_id=context.user_id,
+                leader_id=leader_id,
+                tx_hash=signal.tx_hash,
+                side=signal.side,
+                asset=signal.token_id,
+                condition_id=signal.condition_id,
+                status=f"skipped_{skip_reason}",
+            )
+            results.append(
+                TradePipelineResult(
+                    trade_key=trade_key,
+                    status="skipped",
+                    reason=skip_reason,
                     order_id=None,
                 )
             )

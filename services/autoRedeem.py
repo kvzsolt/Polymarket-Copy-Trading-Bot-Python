@@ -9,9 +9,23 @@ if TYPE_CHECKING:
     from config.app_config import AppConfig
 
 from services.redemptionService import RedemptionService
+from storage.sqlite.positions_repo import PositionsRepo
 from utils.logger import get_logger
 
 logger = get_logger("AutoRedeem")
+
+
+def _prune_redeemed_positions(positions_repo: PositionsRepo, user_id: str, positions: list) -> int:
+    pruned = 0
+    for pos in positions:
+        condition_id = str(getattr(pos, "condition_id", "") or "").strip()
+        token_id = str(getattr(pos, "token_id", "") or "").strip()
+        if not condition_id:
+            continue
+        positions_repo.delete_position(user_id, condition_id, token_id=token_id or None)
+        pruned += 1
+    return pruned
+
 
 async def auto_redeem_loop(clob_client, config: AppConfig):
     """Background task that periodically checks for resolved markets and redeems winnings.
@@ -33,6 +47,7 @@ async def auto_redeem_loop(clob_client, config: AppConfig):
 
     logger.info(f"Auto-redeem started: check every {interval}s")
     redemption_service = RedemptionService(clob_client, config)
+    positions_repo = PositionsRepo(config.database.db_path)
     user_id = config.wallet.funder_address
     if not user_id:
         logger.error("Auto-redeem disabled: missing FUNDER_ADDRESS")
@@ -98,6 +113,19 @@ async def auto_redeem_loop(clob_client, config: AppConfig):
                     )
                     if result.error:
                         logger.error(f"❌ Failed to redeem condition {condition_id}: {result.error}")
+                    elif result.submitted and result.status in {"confirmed", "reverted"}:
+                        pruned = _prune_redeemed_positions(positions_repo, user_id, pos_group)
+                        logger.info(
+                            "redeemed_positions_pruned",
+                            extra={
+                                "type": "redeemed_positions_pruned",
+                                "conditionId": condition_id,
+                                "positionCount": len(pos_group),
+                                "prunedCount": pruned,
+                                "txHash": result.tx_hash,
+                                "status": result.status,
+                            },
+                        )
             
             await asyncio.sleep(interval)
         except asyncio.CancelledError:

@@ -20,8 +20,71 @@ from services.marketMetaService import MarketMetaService
 from services.metrics import metrics
 from services.orderRepository import OrderRepository
 from services.riskEngine import active_policy
+from services.riskQuarantine import mark_market_risk_quarantined
 from storage.sqlite.fills_repo import FillRecord
 from utils import is_valid_clob_token_id
+
+# ---------------------------------------------------------------------------
+# Venue circuit breaker — suppresses price polls during exchange outages.
+# ---------------------------------------------------------------------------
+_DEFAULT_CB_THRESHOLD = 3  # consecutive failures to open
+_DEFAULT_CB_COOLDOWN = 60.0  # seconds before half-open retry
+
+
+class VenueCircuitBreaker:
+    """Tracks consecutive 404 / venue-unavailable failures across all tokens.
+
+    When the threshold is exceeded the breaker opens and all price fetches
+    are suppressed for *cooldown* seconds, preventing log spam and wasted
+    API calls during a Polymarket outage.
+    """
+
+    def __init__(
+        self,
+        *,
+        threshold: int = _DEFAULT_CB_THRESHOLD,
+        cooldown: float = _DEFAULT_CB_COOLDOWN,
+    ) -> None:
+        self._threshold = max(1, threshold)
+        self._cooldown = max(5.0, cooldown)
+        self._consecutive_failures = 0
+        self._opened_at: float | None = None
+
+    @property
+    def state(self) -> str:
+        """``closed`` | ``open`` | ``half_open``"""
+        if self._opened_at is None:
+            return "closed"
+        if time.time() - self._opened_at >= self._cooldown:
+            return "half_open"
+        return "open"
+
+    def record_success(self) -> None:
+        self._consecutive_failures = 0
+        self._opened_at = None
+
+    def record_failure(self) -> None:
+        self._consecutive_failures += 1
+        if self._consecutive_failures >= self._threshold and self._opened_at is None:
+            self._opened_at = time.time()
+            logger.warning(
+                "venue_circuit_breaker_opened | failures=%d cooldown=%.0fs",
+                self._consecutive_failures,
+                self._cooldown,
+            )
+
+    def should_suppress(self) -> bool:
+        """Return *True* when the breaker is open (polls should be skipped)."""
+        state = self.state
+        if state == "closed":
+            return False
+        if state == "half_open":
+            return False  # allow one probe
+        return True  # open
+
+    def reset(self) -> None:
+        self._consecutive_failures = 0
+        self._opened_at = None
 from utils.logger import get_logger, log_risk_exit
 
 logger = get_logger("RiskMonitor")
@@ -64,23 +127,50 @@ def _risk_cache_stale_after(refresh_interval: float) -> float:
     return max(_MIN_RISK_CACHE_STALE_SECONDS, float(refresh_interval) * 3.0)
 
 
+def _ensure_context_venue_circuit_breaker(context: TradingContext) -> VenueCircuitBreaker:
+    breaker = context.extra.get("venue_circuit_breaker")
+    if isinstance(breaker, VenueCircuitBreaker):
+        return breaker
+    breaker = VenueCircuitBreaker()
+    context.extra["venue_circuit_breaker"] = breaker
+    return breaker
+
+
 async def _fetch_and_store_price(
     client,
     token_id: str,
     cache: RiskPriceCache,
     semaphore: asyncio.Semaphore,
+    *,
+    circuit_breaker: VenueCircuitBreaker | None = None,
 ) -> None:
+    if circuit_breaker is not None and circuit_breaker.should_suppress():
+        return
     async with semaphore:
-        price_data = await client.get_price(token_id, "SELL")
+        try:
+            price_data = await client.get_price(token_id, "SELL")
+        except Exception as exc:
+            if circuit_breaker is not None:
+                circuit_breaker.record_failure()
+            raise
     if not price_data or price_data.get("price") is None:
+        if circuit_breaker is not None:
+            circuit_breaker.record_failure()
         return
 
     try:
         price = Decimal(str(price_data["price"]).strip())
     except Exception:
+        if circuit_breaker is not None:
+            circuit_breaker.record_failure()
         return
     if price <= 0:
+        if circuit_breaker is not None:
+            circuit_breaker.record_failure()
         return
+
+    if circuit_breaker is not None:
+        circuit_breaker.record_success()
 
     size_raw = price_data.get("size")
     size: Decimal | None = None
@@ -99,6 +189,7 @@ async def _refresh_price_cache_for_tokens(
     cache: RiskPriceCache,
     *,
     max_concurrency: int = _DEFAULT_RISK_PRICE_SEMAPHORE,
+    circuit_breaker: VenueCircuitBreaker | None = None,
 ) -> None:
     unique_token_ids = [token_id for token_id in dict.fromkeys(token_ids) if token_id]
     if not unique_token_ids:
@@ -107,7 +198,7 @@ async def _refresh_price_cache_for_tokens(
     semaphore = asyncio.Semaphore(max(1, int(max_concurrency)))
     await asyncio.gather(
         *[
-            _fetch_and_store_price(client, token_id, cache, semaphore)
+            _fetch_and_store_price(client, token_id, cache, semaphore, circuit_breaker=circuit_breaker)
             for token_id in unique_token_ids
         ],
         return_exceptions=True,
@@ -137,11 +228,15 @@ async def _refresh_context_price_cache(
     if not token_ids:
         return
     cache = _ensure_context_price_cache(context)
+    breaker = _ensure_context_venue_circuit_breaker(context)
+    if breaker.should_suppress():
+        return
     await _refresh_price_cache_for_tokens(
         context.client,
         token_ids,
         cache,
         max_concurrency=max_concurrency,
+        circuit_breaker=breaker,
     )
 
 
@@ -152,12 +247,20 @@ async def _get_context_cached_price(
     refresh_interval: float,
 ) -> Decimal | None:
     cache = _ensure_context_price_cache(context)
+    breaker = _ensure_context_venue_circuit_breaker(context)
+    if breaker.should_suppress():
+        return None
     stale_after = _risk_cache_stale_after(refresh_interval)
     entry = cache.get_fresh(token_id, stale_after=stale_after)
     if entry is not None:
         return entry.price
 
-    await _refresh_price_cache_for_tokens(context.client, [token_id], cache)
+    await _refresh_price_cache_for_tokens(
+        context.client,
+        [token_id],
+        cache,
+        circuit_breaker=breaker,
+    )
     refreshed = cache.get_fresh(token_id, stale_after=stale_after)
     return refreshed.price if refreshed is not None else None
 
@@ -222,13 +325,19 @@ async def risk_monitor_loop(
     )
 
     price_cache = RiskPriceCache()
+    venue_breaker = VenueCircuitBreaker()
 
     while True:
         try:
             readiness_tracker.update(last_risk_check_ts=int(time.time()))
             positions = pm.open_positions
             valid_assets = [pos.asset for pos in positions.values() if is_valid_clob_token_id(pos.asset)]
-            await _refresh_price_cache_for_tokens(clob_client, valid_assets, price_cache)
+            await _refresh_price_cache_for_tokens(
+                clob_client,
+                valid_assets,
+                price_cache,
+                circuit_breaker=venue_breaker,
+            )
             for cid, pos in positions.items():
                 if not is_valid_clob_token_id(pos.asset):
                     logger.warning("Legacy risk monitor: skipping invalid asset=%r cid=%s", pos.asset, cid)
@@ -439,6 +548,14 @@ async def run_risk_check_for_context(context: TradingContext) -> None:
 
             fraction = max(0.0, min(1.0, float(action.get("size_fraction", 1.0) or 1.0)))
             reason = str(action.get("reason") or "risk_exit")
+            mark_market_risk_quarantined(
+                context.orders_repo,
+                user_id=context.user_id,
+                leader_id=pos.leader_id,
+                condition_id=pos.condition_id,
+                asset=pos.token_id,
+                reason=reason,
+            )
 
             # Simplified account-cap policy
             if fraction < 1.0 and enable_tiered:
