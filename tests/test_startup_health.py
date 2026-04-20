@@ -97,13 +97,14 @@ def test_normalize_startup_order_statuses_collapses_pending_and_delayed(db_path:
     assert cleanup.normalized_pending == 1
     assert cleanup.normalized_delayed == 1
     assert cleanup.normalized_retry_pending == 0
+    assert cleanup.purged_failed == 2
     with create_connection(db_path) as conn:
         rows = conn.execute(
             "SELECT status, COUNT(*) AS count FROM orders WHERE user_id = ? GROUP BY status",
             ("u1",),
         ).fetchall()
     counts = {str(row["status"]): int(row["count"]) for row in rows}
-    assert counts == {"terminal_failed": 2}
+    assert counts == {}
 
 
 @pytest.mark.asyncio
@@ -159,7 +160,9 @@ async def test_perform_startup_health_check_warns_after_self_healing(monkeypatch
     assert report.checks["positionSync"].status == "warning"
     assert report.checks["balance"].status == "warning"
     assert report.checks["orders"].status == "warning"
-    assert report.order_summary == {"successful": 0, "failed": 1}
+    assert report.checks["orders"].message.endswith("startup_purged_failed=1")
+    assert report.order_summary == {"successful": 0, "failed": 0}
     assert report.order_cleanup.normalized_pending == 1
     assert report.order_cleanup.normalized_total == 1
+    assert report.order_cleanup.purged_failed == 1
     assert positions_repo.get_position("u1", "cond-stale", token_id="22222222222222222222") is None
