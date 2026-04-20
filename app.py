@@ -274,6 +274,7 @@ async def main():
         startup_health_status=health_report.status,
         startup_health_healthy=health_report.healthy,
         startup_pruned_positions=health_report.position_sync.pruned_positions,
+        startup_purged_failed_orders=health_report.order_cleanup.purged_failed,
     )
     print_startup_summary(
         wallet=first_user.wallet.funder_address,

@@ -20,7 +20,7 @@ async def auto_redeem_loop(clob_client, config: AppConfig):
     Uses the logic ported from the TypeScript reference implementation.
     """
     enabled = config.redemption.enable_auto_redeem
-    interval = config.redemption.redeem_check_interval
+    interval = config.polling.redeem_check_interval
 
     if not enabled:
         logger.info("Auto-redeem disabled — will not check for resolved markets")
@@ -98,12 +98,10 @@ async def auto_redeem_loop(clob_client, config: AppConfig):
                     )
                     if result.error:
                         logger.error(f"❌ Failed to redeem condition {condition_id}: {result.error}")
-
-                    # Small delay between transactions
-                    await asyncio.sleep(2)
+            
+            await asyncio.sleep(interval)
         except asyncio.CancelledError:
             break
         except Exception as e:
             logger.error(f"Auto-redeem loop error: {e}")
-
-        await asyncio.sleep(interval)
+            await asyncio.sleep(interval)

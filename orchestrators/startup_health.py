@@ -55,6 +55,7 @@ class OrderStartupCleanupResult:
     normalized_delayed: int
     normalized_retry_pending: int
     normalized_total: int
+    purged_failed: int
 
 
 @dataclass(frozen=True)
@@ -263,6 +264,34 @@ def normalize_startup_order_statuses(db_path: str, *, user_id: str) -> OrderStar
             """,
             (user_id,),
         )
+
+        purge_row = conn.execute(
+            """
+            SELECT COUNT(*) AS purge_count
+            FROM orders
+            WHERE user_id = ?
+              AND (
+                status IN ('failed', 'submission_failed', 'created', 'retryable_failed', 'terminal_failed')
+                OR status LIKE 'retryable_failed_%'
+                OR status LIKE 'retry_pending_%'
+              )
+            """,
+            (user_id,),
+        ).fetchone()
+        purged_failed = int((purge_row["purge_count"] or 0) if purge_row else 0)
+
+        conn.execute(
+            """
+            DELETE FROM orders
+            WHERE user_id = ?
+              AND (
+                status IN ('failed', 'submission_failed', 'created', 'retryable_failed', 'terminal_failed')
+                OR status LIKE 'retryable_failed_%'
+                OR status LIKE 'retry_pending_%'
+              )
+            """,
+            (user_id,),
+        )
         conn.commit()
 
     return OrderStartupCleanupResult(
@@ -270,6 +299,7 @@ def normalize_startup_order_statuses(db_path: str, *, user_id: str) -> OrderStar
         normalized_delayed=delayed_count,
         normalized_retry_pending=retry_pending_count,
         normalized_total=pending_count + delayed_count + retry_pending_count,
+        purged_failed=purged_failed,
     )
 
 
@@ -324,12 +354,13 @@ def _orders_check(
         "normalized_pending": order_cleanup.normalized_pending,
         "normalized_delayed": order_cleanup.normalized_delayed,
         "normalized_retry_pending": order_cleanup.normalized_retry_pending,
+        "purged_failed": order_cleanup.purged_failed,
     }
-    if order_cleanup.normalized_total > 0:
+    if order_cleanup.purged_failed > 0 or order_cleanup.normalized_total > 0:
         return StartupHealthCheckItem(
             status="warning",
             message=(
-                f"{message} | startup_normalized={order_cleanup.normalized_total}"
+                f"{message} | startup_purged_failed={order_cleanup.purged_failed}"
             ),
             details=details,
         )
