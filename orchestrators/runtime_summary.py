@@ -438,8 +438,15 @@ def print_startup_summary(
         ),
     ]
 
+    hidden_console_sections = {
+        "process_and_logging",
+        "polymarket_connectivity_and_signing",
+        "storage_and_persistence",
+        "metrics_and_reconciliation_engines",
+    }
+
     for section_name, section_title, section_data in engine_sections:
-        if section_name == "polymarket_connectivity_and_signing":
+        if section_name in hidden_console_sections:
             continue
         console.print(
             Panel(
