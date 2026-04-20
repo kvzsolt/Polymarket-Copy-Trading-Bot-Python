@@ -146,7 +146,12 @@ class TestRedemptionsRepo:
 
         # Old should be gone, new should remain
         assert repo.is_attempted(condition_id="cond-old", user_id="u1") is False
-        assert repo.is_attempted(condition_id="cond-new", user_id="u1") is False  # failed, so false anyway
+        with create_connection(str(db)) as conn:
+            remaining = conn.execute(
+                "SELECT COUNT(*) FROM redemptions WHERE user_id = ? AND condition_id = ?",
+                ("u1", "cond-new"),
+            ).fetchone()[0]
+        assert remaining == 1
 
     def test_upsert_same_attempt_updates_status(self, tmp_path):
         db = tmp_path / "test_redemptions.db"

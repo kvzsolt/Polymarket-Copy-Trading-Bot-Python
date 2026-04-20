@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 
 from config.db import get_db_path
@@ -40,7 +41,7 @@ class MarketStructureService:
         event = MarketStructureEvent(
             event_type="merge",
             condition_id=condition_id,
-            old_token_id=",".join(source_token_ids),
+            old_token_id=None,
             new_token_id=target_token_id,
             ratio=None,
             timestamp=time.time(),
@@ -88,28 +89,92 @@ class MarketStructureService:
 
         with create_connection(self.db_path) as conn:
             for event in pending:
-                old_token = str(event.get("old_token_id") or "")
-                new_token = str(event.get("new_token_id") or "")
+                event_type = str(event.get("event_type") or "")
                 condition_id = str(event.get("condition_id") or "")
-                if not old_token or not new_token or not condition_id:
-                    continue
+                if event_type == "split":
+                    old_token = str(event.get("old_token_id") or "")
+                    new_token = str(event.get("new_token_id") or "")
+                    if not old_token or not new_token or not condition_id:
+                        continue
 
-                cur = conn.execute(
-                    """
-                    UPDATE positions
-                    SET token_id = ?
-                    WHERE user_id = ? AND condition_id = ? AND token_id = ?
-                    """,
-                    (new_token, user_id, condition_id, old_token),
-                )
-                updated += cur.rowcount
-                # Always mark as applied for this user (even if no rows matched)
+                    cur = conn.execute(
+                        """
+                        UPDATE positions
+                        SET token_id = ?
+                        WHERE user_id = ? AND condition_id = ? AND token_id = ?
+                        """,
+                        (new_token, user_id, condition_id, old_token),
+                    )
+                    updated += cur.rowcount
+                elif event_type == "merge":
+                    try:
+                        payload_obj = json.loads(str(event.get("payload_json") or "{}"))
+                    except Exception:
+                        continue
+                    source_token_ids = [
+                        str(token_id).strip()
+                        for token_id in (payload_obj.get("source_token_ids") or [])
+                        if str(token_id).strip()
+                    ]
+                    target_token_id = str(payload_obj.get("target_token_id") or event.get("new_token_id") or "").strip()
+                    if not condition_id or not source_token_ids or not target_token_id:
+                        continue
+
+                    placeholders = ",".join("?" for _ in source_token_ids)
+                    rows = conn.execute(
+                        f"""
+                        SELECT user_id, condition_id, token_id, leader_id, size_tokens, avg_entry_price
+                        FROM positions
+                        WHERE user_id = ? AND condition_id = ? AND token_id IN ({placeholders})
+                        """,
+                        (user_id, condition_id, *source_token_ids),
+                    ).fetchall()
+                    if not rows:
+                        continue
+                    total_tokens = 0.0
+                    weighted_cost = 0.0
+                    leader_id = None
+                    for row in rows:
+                        size = float(row["size_tokens"] or 0.0)
+                        entry = float(row["avg_entry_price"] or 0.0)
+                        total_tokens += size
+                        weighted_cost += size * entry
+                        leader_id = leader_id or row["leader_id"]
+                    if total_tokens <= 0:
+                        continue
+                    avg_entry_price = weighted_cost / total_tokens
+                    conn.execute(
+                        f"DELETE FROM positions WHERE user_id = ? AND condition_id = ? AND token_id IN ({placeholders})",
+                        (user_id, condition_id, *source_token_ids),
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO positions (user_id, condition_id, token_id, leader_id, size_tokens, avg_entry_price, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(user_id, condition_id, token_id) DO UPDATE SET
+                            leader_id = excluded.leader_id,
+                            size_tokens = excluded.size_tokens,
+                            avg_entry_price = excluded.avg_entry_price,
+                            updated_at = excluded.updated_at
+                        """,
+                        (
+                            user_id,
+                            condition_id,
+                            target_token_id,
+                            leader_id,
+                            str(total_tokens),
+                            str(avg_entry_price),
+                            time.time(),
+                        ),
+                    )
+                    updated += len(rows)
+
                 conn.execute(
                     """
                     INSERT OR IGNORE INTO market_structure_event_applied (user_id, event_id, applied_at)
                     VALUES (?, ?, ?)
                     """,
-                    (user_id, event["id"], time.time()),
+                    (user_id, event.get("id"), time.time()),
                 )
             conn.commit()
 

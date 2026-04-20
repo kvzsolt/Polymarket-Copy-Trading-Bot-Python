@@ -6,6 +6,8 @@ value, or raises ``EnvValidationError`` with a human-readable message.
 
 from __future__ import annotations
 
+import math
+
 from config.env import EnvValidationError
 
 
@@ -32,6 +34,10 @@ def validate_bps(value: int, field: str) -> int:
 
 def validate_usdc(value: float, field: str, *, allow_zero: bool = False) -> float:
     """USDC amount must be > 0 (or >= 0 when *allow_zero* is True)."""
+    if isinstance(value, float) and math.isnan(value):
+        if allow_zero:
+            raise EnvValidationError(f"{field} must be >= 0, got {value}")
+        raise EnvValidationError(f"{field} must be > 0, got {value}")
     if allow_zero:
         if value < 0.0:
             raise EnvValidationError(f"{field} must be >= 0, got {value}")
@@ -43,6 +49,8 @@ def validate_usdc(value: float, field: str, *, allow_zero: bool = False) -> floa
 
 def validate_positive_float(value: float, field: str) -> float:
     """Value must be > 0."""
+    if isinstance(value, float) and math.isnan(value):
+        raise EnvValidationError(f"{field} must be > 0, got {value}")
     if value <= 0.0:
         raise EnvValidationError(f"{field} must be > 0, got {value}")
     return value
@@ -50,6 +58,8 @@ def validate_positive_float(value: float, field: str) -> float:
 
 def validate_non_negative_float(value: float, field: str) -> float:
     """Value must be >= 0."""
+    if isinstance(value, float) and math.isnan(value):
+        raise EnvValidationError(f"{field} must be >= 0, got {value}")
     if value < 0.0:
         raise EnvValidationError(f"{field} must be >= 0, got {value}")
     return value

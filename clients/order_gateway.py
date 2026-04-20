@@ -37,7 +37,10 @@ class OrderGateway(AbstractOrderGateway):
             size=size,
             price=price,
         )
-        ot = getattr(OrderType, order_type, OrderType.FOK)
+        try:
+            ot = OrderType[order_type]
+        except KeyError as exc:
+            raise ValueError(f"Unsupported order_type: {order_type!r}") from exc
         condition_id = (extra or {}).get("condition_id") if extra else None
         result = await self._wrapper.post_order(args, condition_id=condition_id)
         if isinstance(result, dict):

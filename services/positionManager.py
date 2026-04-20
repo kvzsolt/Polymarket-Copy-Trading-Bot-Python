@@ -110,7 +110,7 @@ class PositionManager:
             self._enable_staged_tp = fc.enable_staged_tp
             self._staged_levels = _parse_csv_floats(rc.staged_tp_levels) if rc.staged_tp_levels else [0.30, 0.50]
             self._staged_fractions = _parse_csv_floats(rc.staged_tp_fractions) if rc.staged_tp_fractions else [0.25, 0.35]
-            self._staged_levels = [l / 100.0 if l > 1.0 else l for l in self._staged_levels]
+            self._staged_levels = [l / 100.0 if l >= 100.0 else l for l in self._staged_levels]
 
             # Leader divergence
             self._enable_leader_divergence = fc.enable_leader_divergence_exit
@@ -205,7 +205,7 @@ class PositionManager:
                     / total_tokens
                 )
             existing.size_tokens = float(total_tokens)
-            existing.usdc_cost += usdc_cost
+            existing.usdc_cost = float(Decimal(str(existing.usdc_cost)) + d_cost)
             existing.peak_price = max(existing.peak_price, entry_price)
             existing.category = category or existing.category
             logger.info(
@@ -293,7 +293,7 @@ class PositionManager:
             es.trailing_high_price = current_price
 
         # ── Priority 1: NEAR-MAX-PRICE EXIT ──
-        if self._enable_near_max and 0 < current_price <= 1.0:
+        if self._enable_near_max and current_price > 0:
             if current_price >= self._near_max_exit:
                 logger.info(
                     f"🏁 NEAR-MAX full exit: {condition_id[:12]}… "

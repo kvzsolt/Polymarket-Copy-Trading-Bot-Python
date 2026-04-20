@@ -17,8 +17,17 @@ class RedemptionsRepo(AbstractRedemptionRepository):
         user_id = str(payload.get("user_id") or "")
         condition_id = str(payload.get("condition_id") or "")
         attempt_id = str(payload.get("attempt_id") or "")
-        if not user_id or not condition_id or not attempt_id:
-            return
+        missing = [
+            name
+            for name, value in (
+                ("user_id", user_id),
+                ("condition_id", condition_id),
+                ("attempt_id", attempt_id),
+            )
+            if not value
+        ]
+        if missing:
+            raise ValueError(f"missing redemption identifiers: {', '.join(missing)}")
 
         status = str(payload.get("status") or "")
         if not status:

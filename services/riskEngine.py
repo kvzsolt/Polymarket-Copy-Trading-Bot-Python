@@ -14,6 +14,34 @@ from utils.logger import get_logger
 logger = get_logger("RiskEngine")
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    raw = ENV.get(name)
+    if raw is None or raw == "":
+        return default
+    return str(raw).strip().lower() in ("1", "true", "yes")
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = ENV.get(name, default)
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        logger.warning("risk_engine_invalid_float_env", extra={"name": name, "value": raw, "default": default})
+        return default
+
+
+def _env_decimal(name: str, default: Decimal) -> Decimal:
+    raw = ENV.get(name, default)
+    try:
+        return Decimal(str(raw))
+    except (ArithmeticError, ValueError, TypeError):
+        logger.warning(
+            "risk_engine_invalid_decimal_env",
+            extra={"name": name, "value": raw, "default": str(default)},
+        )
+        return default
+
+
 # ---------------------------------------------------------------------------
 # Simplified account-cap policy
 # ---------------------------------------------------------------------------
@@ -77,15 +105,15 @@ def active_policy() -> AccountCapPolicy:
             hard_cap_pct=Decimal(str(ENV.get("BALANCE_POLICY_HARD_CAP_PCT", 0.15))),
             hard_cap_ceiling=Decimal(str(ENV.get("BALANCE_POLICY_HARD_CAP_CEILING", 8))),
             max_open_positions=int(ENV.get("BALANCE_POLICY_MAX_OPEN_POSITIONS", 12)),
-            allow_partial_exits=bool(ENV.get("BALANCE_POLICY_ALLOW_PARTIAL_EXITS", True)),
-            allow_pyramiding=bool(ENV.get("BALANCE_POLICY_ALLOW_PYRAMIDING", False)),
+            allow_partial_exits=_env_bool("BALANCE_POLICY_ALLOW_PARTIAL_EXITS", True),
+            allow_pyramiding=_env_bool("BALANCE_POLICY_ALLOW_PYRAMIDING", False),
             max_adds_per_position=int(ENV.get("BALANCE_POLICY_MAX_ADDS_PER_POSITION", 1)),
             base_min_score=Decimal(str(ENV.get("BALANCE_POLICY_BASE_MIN_SCORE", 0.22))),
             strategy_min_notional=Decimal(str(ENV.get("BALANCE_POLICY_MIN_NOTIONAL_USDC", 0.00001))),
-            dynamic_threshold_raise=bool(ENV.get("BALANCE_POLICY_DYNAMIC_THRESHOLD_RAISE", False)),
+            dynamic_threshold_raise=_env_bool("BALANCE_POLICY_DYNAMIC_THRESHOLD_RAISE", False),
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.exception("risk_engine_env_fallback_failed", extra={"error": repr(exc)})
 
     # Final hardcoded fallback when even ENV is unavailable.
     return AccountCapPolicy(
@@ -184,11 +212,11 @@ def headroom_for_buy(
         day_start_cfg = _cfg.risk.day_start_equity_usdc
         max_dd_pct = Decimal(str(_cfg.risk.max_daily_drawdown_pct)) / Decimal("100")
     else:
-        max_market = Decimal(str(ENV.get("MAX_MARKET_EXPOSURE_USDC", 300)))
-        max_category = Decimal(str(ENV.get("MAX_CATEGORY_EXPOSURE_USDC", 600)))
-        max_leader = Decimal(str(ENV.get("MAX_LEADER_EXPOSURE_USDC", 500)))
-        day_start_cfg = float(ENV.get("DAY_START_EQUITY_USDC", 0.0))
-        max_dd_pct = Decimal(str(ENV.get("MAX_DAILY_DRAWDOWN_PCT", 20))) / Decimal("100")
+        max_market = _env_decimal("MAX_MARKET_EXPOSURE_USDC", Decimal("300"))
+        max_category = _env_decimal("MAX_CATEGORY_EXPOSURE_USDC", Decimal("600"))
+        max_leader = _env_decimal("MAX_LEADER_EXPOSURE_USDC", Decimal("500"))
+        day_start_cfg = _env_float("DAY_START_EQUITY_USDC", 0.0)
+        max_dd_pct = _env_decimal("MAX_DAILY_DRAWDOWN_PCT", Decimal("20")) / Decimal("100")
 
     if day_start_equity_usdc is not None:
         day_start_eq = day_start_equity_usdc
@@ -329,7 +357,7 @@ def policy_from_env() -> RiskPolicy:
         max_market_exposure_usdc=Decimal("300"),
         max_category_exposure_usdc=Decimal("600"),
         max_leader_exposure_usdc=Decimal("500"),
-        max_open_positions=20,
+        max_open_positions=12,
         max_daily_drawdown_pct=Decimal("20"),
         max_slippage_bps=200,
         kill_switch=False,

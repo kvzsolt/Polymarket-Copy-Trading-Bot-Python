@@ -270,11 +270,27 @@ async def main():
     health_report = health_reports_by_user[first_user.user_id]
     live_positions_value = sum(float(position.get("currentValue") or 0.0) for position in live_positions)
     available_cash = float(user_balances.get(first_user.user_id, 0.0))
+    all_health_reports = list(health_reports_by_user.values())
+    startup_health_healthy = all(report.healthy for report in all_health_reports)
+    startup_health_status = "healthy" if startup_health_healthy else "unhealthy"
+    startup_pruned_positions = sum(report.position_sync.pruned_positions for report in all_health_reports)
+    startup_purged_failed_orders = sum(report.order_cleanup.purged_failed for report in all_health_reports)
+    for runtime_user in runtime_users[1:]:
+        secondary_report = health_reports_by_user.get(runtime_user.user_id)
+        if secondary_report is not None and not secondary_report.healthy:
+            logger.warning(
+                "secondary_startup_health_unhealthy",
+                extra={
+                    "user_id": runtime_user.user_id,
+                    "wallet": runtime_user.wallet.funder_address,
+                    "status": secondary_report.status,
+                },
+            )
     application.readiness.update(
-        startup_health_status=health_report.status,
-        startup_health_healthy=health_report.healthy,
-        startup_pruned_positions=health_report.position_sync.pruned_positions,
-        startup_purged_failed_orders=health_report.order_cleanup.purged_failed,
+        startup_health_status=startup_health_status,
+        startup_health_healthy=startup_health_healthy,
+        startup_pruned_positions=startup_pruned_positions,
+        startup_purged_failed_orders=startup_purged_failed_orders,
     )
     print_startup_summary(
         wallet=first_user.wallet.funder_address,

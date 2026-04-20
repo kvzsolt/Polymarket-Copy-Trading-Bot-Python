@@ -130,6 +130,29 @@ def _get(lookup: dict[str, float], name: str) -> float:
     return _DEFAULTS[name]
 
 
+def _coerce_txn_fee_bps(value: float, field: str) -> int:
+    if isinstance(value, int):
+        coerced = value
+    elif isinstance(value, float):
+        if not value.is_integer():
+            raise EnvValidationError(f"{field} must be an integer basis-point value, got {value}")
+        coerced = int(value)
+    elif isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            raise EnvValidationError(f"{field} must be an integer basis-point value, got {value!r}")
+        try:
+            parsed = float(stripped)
+        except ValueError as exc:
+            raise EnvValidationError(f"{field} must be an integer basis-point value, got {value!r}") from exc
+        if not parsed.is_integer():
+            raise EnvValidationError(f"{field} must be an integer basis-point value, got {value!r}")
+        coerced = int(parsed)
+    else:
+        coerced = int(value)
+    return validate_bps(coerced, field)
+
+
 # ---------------------------------------------------------------------------
 # Typed settings dataclasses
 # ---------------------------------------------------------------------------
@@ -228,7 +251,7 @@ def load_settings(env: dict | None = None) -> AppSettings:
         slippage_tolerance_ratio=_safe(validate_ratio, "slippage_tolerance_ratio", 0.02),
         copy_max_price_drift_ratio=_safe(validate_non_negative_float, "copy_max_price_drift_ratio", 0.15),
         copy_max_edge_decay_ratio=_safe(validate_non_negative_float, "copy_max_edge_decay_ratio", 0.90),
-        txn_fee_bps=_safe(lambda v, n: validate_bps(int(v), n), "txn_fee_bps", 20),
+        txn_fee_bps=_safe(_coerce_txn_fee_bps, "txn_fee_bps", 20),
     )
 
     # Cross-field validation for the live advanced exits only.
@@ -256,9 +279,16 @@ _cached_settings: AppSettings | None = None
 def load_settings_cached(env: dict | None = None) -> AppSettings:
     """Return cached settings, building on first call.
 
-    Use ``clear_settings_cache()`` to force a rebuild.
+    Use ``clear_settings_cache()`` to force a rebuild. Passing ``env`` after the
+    cache has been populated is rejected; call ``load_settings(env)`` directly
+    for custom environments.
     """
     global _cached_settings
+    if _cached_settings is not None and env is not None:
+        raise ValueError(
+            "load_settings_cached() cannot accept a custom env after the cache is populated; "
+            "call clear_settings_cache() or use load_settings(env) instead"
+        )
     if _cached_settings is None:
         _cached_settings = load_settings(env)
     return _cached_settings
