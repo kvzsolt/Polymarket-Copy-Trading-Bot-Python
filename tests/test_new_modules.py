@@ -546,7 +546,7 @@ class TestAutoRedeemLoop:
         mock_clob = AsyncMock()
         config = MagicMock()
         config.redemption.enable_auto_redeem = False
-        config.redemption.redeem_check_interval = 1
+        config.polling.redeem_check_interval = 1
         config.network.rpc_url = "http://rpc"
         await auto_redeem_loop(mock_clob, config)
         assert True
@@ -557,7 +557,7 @@ class TestAutoRedeemLoop:
         mock_clob = AsyncMock()
         config = MagicMock()
         config.redemption.enable_auto_redeem = True
-        config.redemption.redeem_check_interval = 1
+        config.polling.redeem_check_interval = 1
         config.network.rpc_url = ""
         await auto_redeem_loop(mock_clob, config)
         assert True
@@ -592,17 +592,25 @@ class TestAutoRedeemLoop:
         
         config = MagicMock()
         config.redemption.enable_auto_redeem = True
-        config.redemption.redeem_check_interval = 1
+        config.polling.redeem_check_interval = 1
         config.network.rpc_url = "http://localhost:8545"
         config.wallet.funder_address = "0x1111111111111111111111111111111111111111"
+        config.database.db_path = "data/test.db"
 
         with patch("services.autoRedeem.RedemptionService") as mock_service_cls, \
+             patch("services.autoRedeem.PositionsRepo") as mock_repo_cls, \
              patch("services.autoRedeem.asyncio.sleep", side_effect=patched_sleep):
             svc = mock_service_cls.return_value
+            repo = mock_repo_cls.return_value
             svc.scan_redeemables = AsyncMock(return_value=redeemables)
-            svc.redeem_condition = AsyncMock(return_value=MagicMock(submitted=True, status="confirmed", tx_hash="0xtx"))
+            svc.redeem_condition = AsyncMock(return_value=MagicMock(submitted=True, status="confirmed", tx_hash="0xtx", error=None))
             await auto_redeem_loop(MagicMock(), config)
         svc.redeem_condition.assert_called_once()
+        repo.delete_position.assert_called_once_with(
+            "0x1111111111111111111111111111111111111111",
+            "0xabc123def456abc123def456abc123def456abc123def456abc123def456abc1",
+            token_id="a1",
+        )
 
 
 # ---------------------------------------------------------------------------
