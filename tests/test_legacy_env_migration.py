@@ -355,11 +355,7 @@ class TestMixedOldAndNew:
             warnings.simplefilter("ignore", DeprecationWarning)
             settings = load_settings(env)
         assert settings.risk.stop_loss_ratio == pytest.approx(0.10)
-        # Other fields that don't have old-name keys in the base ENV
-        # will fall through to their defaults. The base ENV may provide
-        # old-name defaults for some keys (e.g., TAKE_PROFIT_PCT=60 -> 0.60).
-        # Just verify the overridden one is correct.
-        assert settings.risk.stop_loss_ratio == pytest.approx(0.10)
+        assert settings.risk.take_profit_ratio == pytest.approx(_DEFAULTS["take_profit_ratio"])
 
 
 # ---------------------------------------------------------------------------

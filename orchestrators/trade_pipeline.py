@@ -572,7 +572,18 @@ async def _reconcile_one(
         )
 
         if side == "SELL":
-            ep = entry_price or float(avg_price)
+            realized_source = "entry_price"
+            if entry_price is None:
+                logger.warning(
+                    "entry_price missing, using fill price for realized PnL | trade_key=%s cond=%s asset=%s",
+                    record.get("trade_key"),
+                    record.get("condition_id"),
+                    record.get("asset"),
+                )
+                ep = float(avg_price)
+                realized_source = "fill_price_fallback"
+            else:
+                ep = entry_price
             realized = (float(avg_price) - ep) * float(filled_amount)
             context.pnl_tracker.record_sell(
                 condition_id=record["condition_id"],
@@ -584,7 +595,7 @@ async def _reconcile_one(
                 exit_reason="reconciled_sell",
                 leader_wallet=record.get("leader_id", ""),
                 event_slug="",
-                title="",
+                title=f"realized_source={realized_source}",
             )
 
     except Exception as exc:

@@ -7,6 +7,9 @@ from decimal import Decimal
 from domain.ports.repositories import AbstractPositionRepository
 from storage.sqlite.connection import create_connection
 from utils import is_valid_clob_token_id
+from utils.logger import get_logger
+
+logger = get_logger("PositionsRepo")
 
 
 @dataclass
@@ -68,6 +71,7 @@ class PositionsRepo(AbstractPositionRepository):
                     SELECT user_id, condition_id, token_id, leader_id, size_tokens, avg_entry_price
                     FROM positions
                     WHERE user_id = ? AND condition_id = ?
+                    ORDER BY token_id ASC, leader_id ASC
                     LIMIT 1
                     """,
                     (user_id, condition_id),
@@ -198,6 +202,15 @@ class PositionsRepo(AbstractPositionRepository):
 
         if side_u == "SELL":
             # Clamp to held amount to prevent negative positions
+            if fill_size > current.size_tokens:
+                logger.warning(
+                    "sell_fill_exceeds_position_size user=%s condition=%s token=%s fill_size=%s current_size=%s",
+                    user_id,
+                    condition_id,
+                    token_id,
+                    fill_size,
+                    current.size_tokens,
+                )
             effective_fill = min(fill_size, current.size_tokens)
             new_size = current.size_tokens - effective_fill
             if new_size <= Decimal("1e-12"):

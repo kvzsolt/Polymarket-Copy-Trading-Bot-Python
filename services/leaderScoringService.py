@@ -35,7 +35,7 @@ class LeaderScoringService:
     real PnL, win rate, and position data from polymarketanalytics.com.
     """
 
-    def __init__(self, config: AppConfig | None = None, discovery_service=None):
+    def __init__(self, discovery_service=None, *, config: AppConfig | None = None):
         self._discovery = discovery_service
 
         if config is not None:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import time
 from dataclasses import asdict, dataclass, field
 from typing import Any
@@ -405,7 +406,10 @@ async def perform_startup_health_check(
     database_ok: bool,
     rpc_url: str,
 ) -> StartupHealthReport:
-    rpc_check, polymarket_check = await _check_rpc(rpc_url), await _check_polymarket_api()
+    rpc_check, polymarket_check = await asyncio.gather(
+        _check_rpc(rpc_url),
+        _check_polymarket_api(),
+    )
     position_sync = reconcile_persisted_positions_to_live(
         positions_repo,
         user_id=user_id,

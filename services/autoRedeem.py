@@ -72,7 +72,7 @@ async def auto_redeem_loop(clob_client, config: AppConfig):
                     )
 
                     for p in pos_group:
-                        status = "WIN" if p.cur_price >= 0.99 else "LOSS"
+                        status = "WIN" if float(p.cur_price or 0.0) >= 0.99 else "LOSS"
                         logger.info(
                             "   -> %s | %s | %s | size=%.2f | value=$%.2f | price=%.4f",
                             status,

@@ -693,7 +693,8 @@ async def arb_scanner_loop(
     Also monitors held baskets for resolution and triggers settlement.
     """
     store = store or _basket_store
-    config = _load_arb_config()
+    if config is None:
+        config = _load_arb_config()
     if not config.enabled:
         logger.info("Neg-risk arb scanner disabled (ENABLE_NEG_RISK_ARB=false)")
         return

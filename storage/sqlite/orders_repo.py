@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import time
 from dataclasses import dataclass
@@ -320,12 +321,12 @@ class OrdersRepo(AbstractOrderRepository):
             conn.commit()
 
     def get_unconfirmed_buys(self, max_age_seconds: float = 300.0) -> list[dict]:
-        """Return BUY processed_trades stuck at submitted_unconfirmed that have an order_id.
+        """Return BUY processed_trades stuck at submitted_unconfirmed.
 
-        Orders with a venue order_id remain eligible for reconciliation regardless of age,
-        because stale venue rows may still be the only signal that the order terminally
-        expired or was cancelled with no fill.
+        Orders with a venue order_id remain eligible for reconciliation regardless of age.
+        Orders without one must be older than the caller-supplied age cutoff.
         """
+        cutoff = time.time() - max_age_seconds
         with create_connection(self.db_path) as conn:
             rows = conn.execute(
                 """
@@ -333,18 +334,20 @@ class OrdersRepo(AbstractOrderRepository):
                 FROM processed_trades
                 WHERE status IN ('submitted_unconfirmed', 'submitted')
                   AND side = 'BUY'
-                  AND order_id IS NOT NULL
+                  AND (order_id IS NOT NULL OR processed_at <= ?)
                 ORDER BY processed_at ASC
-                """
+                """,
+                (cutoff,),
             ).fetchall()
         return [dict(r) for r in rows]
 
     def get_unconfirmed_sells(self, max_age_seconds: float = 300.0) -> list[dict]:
-        """Return SELL processed_trades stuck at submitted_unconfirmed that have an order_id.
+        """Return SELL processed_trades stuck at submitted_unconfirmed.
 
-        Orders with a venue order_id remain eligible for reconciliation regardless of age,
-        so terminal no-fill SELLs do not get stuck behind an arbitrary polling cutoff.
+        Orders with a venue order_id remain eligible for reconciliation regardless of age.
+        Orders without one must be older than the caller-supplied age cutoff.
         """
+        cutoff = time.time() - max_age_seconds
         with create_connection(self.db_path) as conn:
             rows = conn.execute(
                 """
@@ -352,9 +355,10 @@ class OrdersRepo(AbstractOrderRepository):
                 FROM processed_trades
                 WHERE status IN ('submitted_unconfirmed', 'submitted')
                   AND side = 'SELL'
-                  AND order_id IS NOT NULL
+                  AND (order_id IS NOT NULL OR processed_at <= ?)
                 ORDER BY processed_at ASC
-                """
+                """,
+                (cutoff,),
             ).fetchall()
         return [dict(r) for r in rows]
 
@@ -457,6 +461,15 @@ class OrdersRepo(AbstractOrderRepository):
                 elif side_u == "SELL":
                     if current:
                         cur_size = Decimal(str(current["size_tokens"] or "0"))
+                        if Decimal(fill_size) > cur_size:
+                            logging.getLogger(__name__).warning(
+                                "Atomic SELL fill exceeds held size; clamping user=%s cond=%s token=%s fill_size=%s current_size=%s",
+                                user_id,
+                                condition_id,
+                                token_id,
+                                fill_size,
+                                current["size_tokens"],
+                            )
                         sell_size = min(Decimal(fill_size), cur_size)
                         new_size = cur_size - sell_size
                         if new_size <= Decimal("1e-12"):
@@ -481,13 +494,27 @@ class OrdersRepo(AbstractOrderRepository):
                 conn.execute(
                     """
                     INSERT INTO processed_trades (
-                        trade_key, user_id, leader_id, tx_hash, side, asset, condition_id, status, processed_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        trade_key, user_id, leader_id, tx_hash, side, asset, condition_id, order_id, retry_attempt, status, processed_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(trade_key) DO UPDATE SET
+                        order_id = excluded.order_id,
+                        retry_attempt = excluded.retry_attempt,
                         status = excluded.status,
                         processed_at = excluded.processed_at
                     """,
-                    (trade_key, user_id, leader_id, tx_hash, side, asset, condition_id, trade_status, time.time()),
+                    (
+                        trade_key,
+                        user_id,
+                        leader_id,
+                        tx_hash,
+                        side,
+                        asset,
+                        condition_id,
+                        fill.get("order_id"),
+                        int(fill.get("retry_attempt") or 0),
+                        trade_status,
+                        time.time(),
+                    ),
                 )
 
                 conn.commit()

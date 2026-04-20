@@ -56,8 +56,10 @@ async def start_health_server(
     app = web.Application()
 
     async def health_handler(_request: web.Request) -> web.Response:
-        readiness = tracker.snapshot() if tracker is not None else {}
-        ok = bool(readiness.get("db_ok")) and bool(readiness.get("api_ok", True))
+        # When readiness tracking is disabled, keep both core checks false so /health
+        # fails closed instead of reporting a partially-initialized service as healthy.
+        readiness = tracker.snapshot() if tracker is not None else {"db_ok": False, "api_ok": False}
+        ok = bool(readiness.get("db_ok", False)) and bool(readiness.get("api_ok", False))
         return web.json_response({"ok": ok, "readiness": readiness})
 
     app.router.add_get("/health", health_handler)

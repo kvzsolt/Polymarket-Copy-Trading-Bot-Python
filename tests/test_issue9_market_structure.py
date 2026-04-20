@@ -190,9 +190,15 @@ class TestMarketStructureService:
 
         # Reconcile u1
         assert svc.reconcile_positions("u1") == 1
-        assert positions.get_position("u1", "cond-multi").token_id == new_token
+        pos_u1 = positions.get_position("u1", "cond-multi")
+        assert pos_u1 is not None, "expected remapped position for u1"
+        assert pos_u1.token_id == new_token
 
         # u2 still has old token and can still be reconciled independently
-        assert positions.get_position("u2", "cond-multi").token_id == old_token
+        pos_u2_before = positions.get_position("u2", "cond-multi")
+        assert pos_u2_before is not None, "expected original position for u2 before reconcile"
+        assert pos_u2_before.token_id == old_token
         assert svc.reconcile_positions("u2") == 1
-        assert positions.get_position("u2", "cond-multi").token_id == new_token
+        pos_u2_after = positions.get_position("u2", "cond-multi")
+        assert pos_u2_after is not None, "expected remapped position for u2"
+        assert pos_u2_after.token_id == new_token

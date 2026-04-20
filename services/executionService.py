@@ -37,6 +37,22 @@ def _positive_int_env(name: str, default: int) -> int:
         value = default
     return max(1, value)
 
+
+def _non_negative_int_env(name: str, default: int) -> int:
+    raw = ENV.get(name, default)
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = default
+    return max(0, value)
+
+
+def _parse_decimal_or_default(raw: Any, default: Decimal) -> Decimal:
+    try:
+        return Decimal(str(raw))
+    except Exception:
+        return default
+
 _MAX_PERSISTED_FIELD_CHARS = 160
 _MAX_PERSISTED_ERROR_CHARS = 512
 _TRUNCATED_SUFFIX = "...[truncated]"
@@ -541,8 +557,30 @@ class ExecutionService:
         spread_mode = _resolve_book_spread_mode(
             ec.book_spread_mode if ec else ENV.get("BOOK_SPREAD_MODE", "absolute_bps")
         )
-        max_spread_bps = int(ec.max_book_spread_bps if ec else ENV.get("MAX_BOOK_SPREAD_BPS", 500))
-        max_spread_ticks = int(ec.max_book_spread_ticks if ec else ENV.get("MAX_BOOK_SPREAD_TICKS", 0))
+        try:
+            max_spread_bps = (
+                int(ec.max_book_spread_bps)
+                if ec is not None
+                else _non_negative_int_env("MAX_BOOK_SPREAD_BPS", 500)
+            )
+        except (TypeError, ValueError):
+            logger.warning(
+                "invalid_max_book_spread_bps",
+                extra={"value": getattr(ec, "max_book_spread_bps", None)},
+            )
+            max_spread_bps = _non_negative_int_env("MAX_BOOK_SPREAD_BPS", 500)
+        try:
+            max_spread_ticks = (
+                int(ec.max_book_spread_ticks)
+                if ec is not None
+                else _non_negative_int_env("MAX_BOOK_SPREAD_TICKS", 0)
+            )
+        except (TypeError, ValueError):
+            logger.warning(
+                "invalid_max_book_spread_ticks",
+                extra={"value": getattr(ec, "max_book_spread_ticks", None)},
+            )
+            max_spread_ticks = _non_negative_int_env("MAX_BOOK_SPREAD_TICKS", 0)
         spread_limit = max_spread_ticks if spread_mode == "ticks" else max_spread_bps
         spread_limit_unit = "ticks" if spread_mode == "ticks" else "bps"
         if (
@@ -663,8 +701,14 @@ class ExecutionService:
             )
 
         quote_price = Decimal(str(quote["price"]))
-        min_share_price = Decimal(str(ec.min_share_price if ec else ENV.get("MIN_SHARE_PRICE", 0)))
-        max_share_price = Decimal(str(ec.max_share_price if ec else ENV.get("MAX_SHARE_PRICE", 0)))
+        min_share_price = _parse_decimal_or_default(
+            ec.min_share_price if ec else ENV.get("MIN_SHARE_PRICE", 0),
+            Decimal("0"),
+        )
+        max_share_price = _parse_decimal_or_default(
+            ec.max_share_price if ec else ENV.get("MAX_SHARE_PRICE", 0),
+            Decimal("0"),
+        )
         if side == "BUY" and min_share_price > 0 and quote_price < min_share_price:
             return ExecutionResult(
                 accepted=False,
@@ -845,6 +889,11 @@ class ExecutionService:
                     fees_paid=Decimal("0"),
                     error="another task is currently submitting this order",
                 )
+
+        if not hasattr(self, "_submit_semaphore"):
+            self._submit_semaphore = asyncio.Semaphore(
+                _positive_int_env("EXECUTION_SUBMIT_CONCURRENCY", 2)
+            )
 
         async with self._submit_semaphore:
             pending_since = time.time()

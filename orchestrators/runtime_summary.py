@@ -188,8 +188,16 @@ def print_startup_summary(
         )
     )
 
-    copied_wallets_set = {w.lower() for w in config.leader.wallets} if config.leader.wallets else set()
-    active_leaders_set = {l.lower() for l in active_leaders} if active_leaders else set()
+    copied_wallets_set = {
+        w.lower()
+        for w in (config.leader.wallets or [])
+        if isinstance(w, str) and w.strip()
+    }
+    active_leaders_set = {
+        l.lower()
+        for l in (active_leaders or [])
+        if isinstance(l, str) and l.strip()
+    }
 
     if copied_wallets_set == active_leaders_set:
         leader_lines = [
