@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import time
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
@@ -36,7 +35,6 @@ PARENT_COLLECTION_ID = b"\x00" * 32
 RESOLVED_HIGH = 0.99
 RESOLVED_LOW = 0.01
 ZERO_THRESHOLD = 0.0001
-_CONDITION_STATE_TTL_SECONDS = 3600.0
 
 
 @dataclass(frozen=True)
@@ -70,31 +68,8 @@ class RedemptionService:
             config = load_config()
         self._config = config
         self.wallet_config = wallet_config or config.wallet
-        
-        # Pacing and concurrency control per condition
-        self._condition_locks: dict[str, asyncio.Lock] = {}
-        self._last_redeem_attempt_by_condition: dict[str, float] = {}
-
-    def _normalize_condition_key(self, condition_id: str) -> str:
-        return str(condition_id or "").strip().lower()
-
-    def _get_condition_lock(self, condition_key: str) -> asyncio.Lock:
-        if condition_key not in self._condition_locks:
-            self._condition_locks[condition_key] = asyncio.Lock()
-        return self._condition_locks[condition_key]
-
-    def _prune_condition_state(self, now: float) -> None:
-        stale_keys = [
-            key
-            for key, last_attempt in self._last_redeem_attempt_by_condition.items()
-            if (now - last_attempt) >= _CONDITION_STATE_TTL_SECONDS
-            and not (
-                (lock := self._condition_locks.get(key)) is not None and lock.locked()
-            )
-        ]
-        for key in stale_keys:
-            self._last_redeem_attempt_by_condition.pop(key, None)
-            self._condition_locks.pop(key, None)
+        self.polling_config = config.polling
+        self._redeem_semaphore = asyncio.Semaphore()
 
     async def scan_redeemables(self, user_id: str) -> list[RedeemablePosition]:
         url = f"https://data-api.polymarket.com/positions?user={user_id}"
@@ -125,17 +100,7 @@ class RedemptionService:
         return result
 
     async def redeem_condition(self, condition_id: str) -> RedemptionResult:
-        condition_key = self._normalize_condition_key(condition_id)
-        lock = self._get_condition_lock(condition_key)
-        async with lock:
-            now = time.monotonic()
-            self._prune_condition_state(now)
-
-            last_attempt = self._last_redeem_attempt_by_condition.get(condition_key, 0.0)
-            elapsed = now - last_attempt
-            if elapsed < 1.0:
-                return RedemptionResult(False, None, "skipped", Decimal("0"), "throttled_per_condition")
-
+        async with self._redeem_semaphore:
             rpc_url = self._config.network.rpc_url.strip()
             if not rpc_url:
                 return RedemptionResult(False, None, "not_submitted", Decimal("0"), "rpc_url_missing")
@@ -146,19 +111,16 @@ class RedemptionService:
                 address=Web3.to_checksum_address(CTF_ADDRESS), abi=CTF_REDEEM_ABI
             )
 
-            raw_condition_id = str(condition_id or "").strip()
             try:
-                if raw_condition_id.startswith("0x"):
-                    cid_bytes = bytes.fromhex(raw_condition_id[2:])
+                if condition_id.startswith("0x"):
+                    cid_bytes = bytes.fromhex(condition_id[2:])
                 else:
-                    cid_bytes = bytes.fromhex(raw_condition_id)
+                    cid_bytes = bytes.fromhex(condition_id)
                 cid_bytes32 = cid_bytes.ljust(32, b"\x00")[:32]
             except Exception as exc:
                 return RedemptionResult(
                     False, None, "failed", Decimal("0"), f"invalid_condition_id:{exc}"
                 )
-
-            self._last_redeem_attempt_by_condition[condition_key] = time.monotonic()
 
             sender = Web3.to_checksum_address(self.wallet_config.funder_address)
             nonce = await adapter.get_transaction_count(sender)
@@ -194,6 +156,8 @@ class RedemptionService:
                 
                 receipt = await adapter.wait_for_receipt(tx_hash, timeout=120)
                 
+                await asyncio.sleep(self.polling_config.redeem_check_interval)
+
                 if int(receipt.get("status", 0)) != 1:
                     return RedemptionResult(
                         False, tx_hash, "reverted", Decimal("0"), "redeem_tx_reverted"
@@ -203,6 +167,7 @@ class RedemptionService:
                 return RedemptionResult(True, tx_hash, "confirmed", Decimal("0"), None)
 
             except Exception as exc:
+                await asyncio.sleep(self.polling_config.redeem_check_interval)
                 return RedemptionResult(False, None, "failed", Decimal("0"), str(exc))
 
     # Compatibility methods for tests / older callers (like negRiskArb)
