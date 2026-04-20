@@ -339,6 +339,9 @@ def print_startup_summary(
             "risk_management_sub_engines",
             "RISK MANAGEMENT SUB-ENGINES",
             {
+                "enable_stop_loss": config.features.enable_stop_loss,
+                "stop_loss_threshold": config.risk.stop_loss_threshold,
+                "stop_loss_grace_period_seconds": config.risk.stop_loss_grace_period_seconds,
                 "enable_profit_lock": config.features.enable_profit_lock,
                 "profit_lock_trigger_pct": config.risk.profit_lock_trigger_pct,
                 "profit_lock_sell_fraction": config.risk.profit_lock_sell_fraction,

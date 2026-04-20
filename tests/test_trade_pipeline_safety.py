@@ -12,6 +12,7 @@ import pytest
 from config.env import ENV, rehydrate_env
 from domain.trading_context import TradingContext
 from orchestrators.trade_pipeline import execute_trades, build_trade_key, reconcile_submitted_unconfirmed
+from services.riskQuarantine import market_risk_quarantine_key
 from services.copyDecisionService import CopyDecision
 from services.executionService import ExecutionResult
 from services.pnlTracker import PnLTracker
@@ -33,7 +34,20 @@ def _lower_decision_gates_for_tests(monkeypatch):
     monkeypatch.setenv("COPY_MIN_NOTIONAL_USDC", "0.01")
     monkeypatch.setenv("BUY_MIN_AMOUNT", "0.01")
     monkeypatch.setenv("MIN_ORDER_SIZE", "0.00001")
+    monkeypatch.setenv("MAX_POSITION_PCT", "0")
+    monkeypatch.setenv("ENABLE_BALANCE_TIERED_POLICY", "false")
     rehydrate_env()
+
+
+@pytest.fixture(autouse=True)
+def _mock_balance_for_tests(monkeypatch):
+    """Mock get_my_balance so tests never hit real RPC."""
+    async def _fake_balance(_addr):
+        return 10000.0
+    monkeypatch.setattr(
+        "orchestrators.trade_pipeline.get_my_balance",
+        _fake_balance,
+    )
 from storage.sqlite.migrations import apply_migrations
 from storage.sqlite.orders_repo import OrdersRepo
 from storage.sqlite.positions_repo import PositionsRepo
@@ -49,6 +63,17 @@ def _init_db(tmp_path):
 
 
 def _make_context(db_path, *, execution_service=None):
+    exec_svc = execution_service or AsyncMock()
+    # Ensure market_meta_service returns a small min_order_size so tests aren't
+    # blocked by the venue minimum guard.
+    if not hasattr(exec_svc, "market_meta_service") or isinstance(
+        getattr(exec_svc, "market_meta_service", None), MagicMock
+    ):
+        exec_svc.market_meta_service = AsyncMock()
+        exec_svc.market_meta_service.get.return_value = SimpleNamespace(
+            min_order_size=Decimal("0.001"),
+            tick_size=Decimal("0.01"),
+        )
     return TradingContext(
         user_id="user1",
         wallet_address="0x" + "a" * 40,
@@ -60,7 +85,7 @@ def _make_context(db_path, *, execution_service=None):
         risk_engine=RiskEngine(),
         accounting_service=AccountingService(),
         position_manager=PositionManager(),
-        execution_service=execution_service,
+        execution_service=exec_svc,
         allocation_pct=1.0,
         buy_min_amount=0.01,
         buy_max_amount=1000.0,
@@ -136,6 +161,34 @@ class _RecordingDecisionService:
             edge_decay_pct=0.0,
             details={},
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("side", ["BUY", "SELL"])
+async def test_market_risk_quarantine_skips_future_copy_trades(tmp_path, side):
+    db_path = _init_db(tmp_path)
+    exec_svc = AsyncMock()
+    ctx = _make_context(db_path, execution_service=exec_svc)
+
+    quarantine_key = market_risk_quarantine_key("user1", "cond1")
+    ctx.orders_repo.mark_processed_trade(
+        trade_key=quarantine_key,
+        user_id="user1",
+        leader_id="leader1",
+        tx_hash=None,
+        side="SYSTEM",
+        asset=FAKE_TOKEN_ID,
+        condition_id="cond1",
+        status="risk_quarantined_stop_loss",
+    )
+
+    signal = _signal(side=side, tx_hash=f"0xquarantine-{side.lower()}")
+    results = await execute_trades(ctx, "leader1", [signal], time.time())
+
+    assert len(results) == 1
+    assert results[0].status == "skipped"
+    assert results[0].reason == "market_risk_quarantined"
+    exec_svc.execute.assert_not_called()
 
 
 @pytest.mark.asyncio
