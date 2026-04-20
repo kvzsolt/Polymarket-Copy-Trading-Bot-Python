@@ -342,8 +342,6 @@ def print_startup_summary(
                 "enable_profit_lock": config.features.enable_profit_lock,
                 "profit_lock_trigger_pct": config.risk.profit_lock_trigger_pct,
                 "profit_lock_sell_fraction": config.risk.profit_lock_sell_fraction,
-                "profit_lock_min_profit_pct": config.risk.profit_lock_min_profit_pct,
-                "profit_lock_drawdown_pct": config.risk.profit_lock_drawdown_pct,
                 "enable_near_max_exit": config.features.enable_near_max_exit,
                 "near_max_price_warn": config.risk.near_max_price_warn,
                 "near_max_price_warn_trim_ratio": config.risk.near_max_price_warn_trim_ratio,

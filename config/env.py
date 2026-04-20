@@ -537,8 +537,6 @@ def _build_env_snapshot() -> dict[str, object]:
     'ENABLE_PROFIT_LOCK': os.getenv('ENABLE_PROFIT_LOCK', 'false').strip().lower() in ('1', 'true', 'yes'),
     'PROFIT_LOCK_TRIGGER_PCT': _float('PROFIT_LOCK_TRIGGER_PCT', '70'),
     'PROFIT_LOCK_SELL_FRACTION': _float('PROFIT_LOCK_SELL_FRACTION', '0.50'),
-    'PROFIT_LOCK_MIN_PROFIT_PCT': _float('PROFIT_LOCK_MIN_PROFIT_PCT', '35'),
-    'PROFIT_LOCK_DRAWDOWN_PCT': _float('PROFIT_LOCK_DRAWDOWN_PCT', '15'),
 
     # Near-max price exits (default 0.95 = near 95c)
     'ENABLE_NEAR_MAX_EXIT': os.getenv('ENABLE_NEAR_MAX_EXIT', 'false').strip().lower() in ('1', 'true', 'yes'),
@@ -558,6 +556,11 @@ def _build_env_snapshot() -> dict[str, object]:
 
     # Leader divergence exit
     'ENABLE_LEADER_DIVERGENCE_EXIT': os.getenv('ENABLE_LEADER_DIVERGENCE_EXIT', 'false').strip().lower() in ('1', 'true', 'yes'),
+
+    # Stop-loss exit (absolute price floor, grace-period protected)
+    'ENABLE_STOP_LOSS': _bool('ENABLE_STOP_LOSS', False),
+    'STOP_LOSS_THRESHOLD': _float('STOP_LOSS_THRESHOLD', '0.15'),
+    'STOP_LOSS_GRACE_PERIOD_SECONDS': _float('STOP_LOSS_GRACE_PERIOD_SECONDS', '180'),
 
     # Trader discovery via polymarketanalytics.com
     'ENABLE_TRADER_DISCOVERY': enable_trader_discovery,
