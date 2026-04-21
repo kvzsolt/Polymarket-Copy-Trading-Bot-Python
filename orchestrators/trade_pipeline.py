@@ -11,10 +11,11 @@ from typing import Any
 from config.env import ENV
 from domain.models import TradeSignal
 from domain.trading_context import TradingContext
+from services.entryPermissionService import EntryDecision, EntryPermissionService
 from services.executionService import ExecutionRequest
 from services.metrics import metrics
 from services.riskEngine import headroom_for_buy
-from services.riskQuarantine import get_market_risk_quarantine
+from services.riskEngine import active_policy
 from storage.sqlite.fills_repo import FillRecord
 from storage.sqlite.positions_repo import PositionRecord
 from utils import is_valid_clob_token_id
@@ -824,47 +825,81 @@ async def execute_trades(
             )
             continue
 
-        quarantine = get_market_risk_quarantine(
-            context.orders_repo,
-            user_id=context.user_id,
-            condition_id=signal.condition_id,
-        )
-        if quarantine is not None:
-            quarantine_status = str(quarantine.get("status") or "risk_quarantined")
-            skip_reason = "market_risk_quarantined"
-            log_trade_skip(
-                logger,
-                side=signal.side,
-                condition_id=signal.condition_id,
-                asset=signal.token_id,
-                size=float(signal.size) if signal.size else None,
-                price=float(signal.price or 0),
-                usdc_value=float(signal.usdc_size),
-                skip_code=skip_reason,
-                reason=f"market quarantined after prior risk trigger [{quarantine_status}]",
-                event_slug=signal.event_slug,
-                meta={"user_id": context.user_id, "leader_id": leader_id},
-            )
-            await metrics.inc("trades_skipped_total", labels={**labels, "reason": skip_reason})
-            context.orders_repo.mark_processed_trade(
-                trade_key=trade_key,
-                user_id=context.user_id,
-                leader_id=leader_id,
-                tx_hash=signal.tx_hash,
-                side=signal.side,
-                asset=signal.token_id,
-                condition_id=signal.condition_id,
-                status=f"skipped_{skip_reason}",
-            )
-            results.append(
-                TradePipelineResult(
-                    trade_key=trade_key,
-                    status="skipped",
-                    reason=skip_reason,
-                    order_id=None,
+        # ------------------------------------------------------------------
+        # Entry-permission gate — single authoritative BUY re-entry check
+        # ------------------------------------------------------------------
+        if signal.side == "BUY":
+            _eps: EntryPermissionService | None = context.entry_permission_service
+            if _eps is None:
+                # Fallback: service not yet wired — use raw repo check for safety
+                _raw_block = context.risk_blocks_repo.get_active_risk_block(
+                    user_id=context.user_id,
+                    condition_id=signal.condition_id,
+                    token_id=signal.token_id,
                 )
-            )
-            continue
+                _decision: EntryDecision | None = None
+                if _raw_block is not None:
+                    _decision = EntryDecision(
+                        allowed=False,
+                        reason="denied_risk_block_active",
+                        deny_detail=str(_raw_block.get("reason") or "risk_block_active"),
+                        block_record=_raw_block,
+                    )
+            else:
+                _decision = _eps.check_entry(
+                    user_id=context.user_id,
+                    condition_id=signal.condition_id,
+                    token_id=signal.token_id,
+                    leader_id=leader_id,
+                    leader_notional_usdc=float(signal.usdc_size),
+                )
+
+            if _decision is not None and not _decision.allowed:
+                skip_reason = "market_risk_quarantined"
+                log_trade_skip(
+                    logger,
+                    side=signal.side,
+                    condition_id=signal.condition_id,
+                    asset=signal.token_id,
+                    size=float(signal.size) if signal.size else None,
+                    price=float(signal.price or 0),
+                    usdc_value=float(signal.usdc_size),
+                    skip_code=skip_reason,
+                    reason=(
+                        f"entry denied by policy [{_decision.reason}]"
+                        + (f": {_decision.deny_detail}" if _decision.deny_detail else "")
+                    ),
+                    event_slug=signal.event_slug,
+                    meta={"user_id": context.user_id, "leader_id": leader_id, "policy_reason": _decision.reason},
+                )
+                await metrics.inc("trades_skipped_total", labels={**labels, "reason": skip_reason})
+                await metrics.inc("entry_denied_total", labels={**labels, "policy_reason": _decision.reason})
+                context.orders_repo.mark_processed_trade(
+                    trade_key=trade_key,
+                    user_id=context.user_id,
+                    leader_id=leader_id,
+                    tx_hash=signal.tx_hash,
+                    side=signal.side,
+                    asset=signal.token_id,
+                    condition_id=signal.condition_id,
+                    status=f"skipped_{skip_reason}",
+                )
+                results.append(
+                    TradePipelineResult(
+                        trade_key=trade_key,
+                        status="skipped",
+                        reason=skip_reason,
+                        order_id=None,
+                    )
+                )
+                continue
+
+            if _decision is not None and _decision.clear_rule_applied:
+                # Block was auto-cleared — emit a metric so we can track clear-rule firing
+                await metrics.inc(
+                    "entry_block_auto_cleared_total",
+                    labels={**labels, "clear_rule": _decision.clear_rule_applied},
+                )
 
         # print_new_trade_detected removed: tradeMonitor already prints on detection
 

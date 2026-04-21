@@ -18,6 +18,7 @@ from services.riskMonitor import rehydrate_position_manager
 from storage.sqlite.fills_repo import FillsRepo
 from storage.sqlite.orders_repo import OrdersRepo
 from storage.sqlite.positions_repo import PositionsRepo
+from storage.sqlite.risk_blocks_repo import RiskBlocksRepo
 from utils.fetchData import fetch_data
 from utils.logger import get_logger
 
@@ -34,6 +35,7 @@ class UserRuntimeState:
     orders_repo: OrdersRepo
     fills_repo: FillsRepo
     positions_repo: PositionsRepo
+    risk_blocks_repo: RiskBlocksRepo
     pnl_tracker: PnLTracker
     risk_engine: RiskEngine
     accounting_service: AccountingService
@@ -105,6 +107,7 @@ def build_user_state(runtime_user: RuntimeUser, client: object, db_path: str) ->
     order_repo = OrdersRepo(db_path)
     fills_repo = FillsRepo(db_path)
     positions_repo = PositionsRepo(db_path)
+    risk_blocks_repo = RiskBlocksRepo(db_path)
     pnl_tracker = PnLTracker(log_path=f"log/pnl_{runtime_user.user_id}.jsonl")
     risk_engine = RiskEngine()
     accounting_service = AccountingService()
@@ -122,6 +125,7 @@ def build_user_state(runtime_user: RuntimeUser, client: object, db_path: str) ->
         orders_repo=order_repo,
         fills_repo=fills_repo,
         positions_repo=positions_repo,
+        risk_blocks_repo=risk_blocks_repo,
         pnl_tracker=pnl_tracker,
         risk_engine=risk_engine,
         accounting_service=accounting_service,
@@ -144,6 +148,7 @@ def build_trading_context(
         positions_repo=user_state.positions_repo,
         fills_repo=user_state.fills_repo,
         orders_repo=user_state.orders_repo,
+        risk_blocks_repo=user_state.risk_blocks_repo,
         pnl_tracker=user_state.pnl_tracker,
         risk_engine=user_state.risk_engine,
         accounting_service=user_state.accounting_service,

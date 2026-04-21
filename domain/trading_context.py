@@ -7,6 +7,7 @@ from typing import Any
 from config.env import ENV
 from services.copyDecisionService import CopyDecisionService
 from services.copyStrategy import CopySizingResult, calculate_copy_notional
+from services.entryPermissionService import EntryPermissionService
 from services.healthServer import ReadinessTracker
 from services.leaderScoringService import LeaderScoringService
 
@@ -27,10 +28,12 @@ class TradingContext:
     positions_repo: Any
     fills_repo: Any
     orders_repo: Any
+    risk_blocks_repo: Any
     pnl_tracker: Any
     risk_engine: Any
     accounting_service: Any
     position_manager: Any
+    entry_permission_service: EntryPermissionService | None = None
     execution_service: Any | None = None
     leaders_repo: Any | None = None
     allocation_pct: float = 0.05

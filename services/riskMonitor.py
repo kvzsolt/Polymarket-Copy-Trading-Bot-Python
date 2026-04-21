@@ -20,7 +20,7 @@ from services.marketMetaService import MarketMetaService
 from services.metrics import metrics
 from services.orderRepository import OrderRepository
 from services.riskEngine import active_policy
-from services.riskQuarantine import mark_market_risk_quarantined
+from services.riskEngine import active_policy
 from storage.sqlite.fills_repo import FillRecord
 from utils import is_valid_clob_token_id
 
@@ -548,13 +548,13 @@ async def run_risk_check_for_context(context: TradingContext) -> None:
 
             fraction = max(0.0, min(1.0, float(action.get("size_fraction", 1.0) or 1.0)))
             reason = str(action.get("reason") or "risk_exit")
-            mark_market_risk_quarantined(
-                context.orders_repo,
+            context.risk_blocks_repo.mark_risk_block(
                 user_id=context.user_id,
-                leader_id=pos.leader_id,
                 condition_id=pos.condition_id,
-                asset=pos.token_id,
+                token_id=pos.token_id,
                 reason=reason,
+                source="risk_monitor",
+                leader_anchor=pos.leader_id,
             )
 
             # Simplified account-cap policy

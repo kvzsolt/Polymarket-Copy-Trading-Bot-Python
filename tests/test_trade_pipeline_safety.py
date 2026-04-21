@@ -12,7 +12,7 @@ import pytest
 from config.env import ENV, rehydrate_env
 from domain.trading_context import TradingContext
 from orchestrators.trade_pipeline import execute_trades, build_trade_key, reconcile_submitted_unconfirmed
-from services.riskQuarantine import market_risk_quarantine_key
+from storage.sqlite.risk_blocks_repo import RiskBlocksRepo
 from services.copyDecisionService import CopyDecision
 from services.executionService import ExecutionResult
 from services.pnlTracker import PnLTracker
@@ -81,6 +81,7 @@ def _make_context(db_path, *, execution_service=None):
         positions_repo=PositionsRepo(db_path),
         fills_repo=FillsRepo(db_path),
         orders_repo=OrdersRepo(db_path),
+        risk_blocks_repo=RiskBlocksRepo(db_path),
         pnl_tracker=PnLTracker(log_path=str(db_path) + ".pnl"),
         risk_engine=RiskEngine(),
         accounting_service=AccountingService(),
@@ -164,31 +165,65 @@ class _RecordingDecisionService:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("side", ["BUY", "SELL"])
-async def test_market_risk_quarantine_skips_future_copy_trades(tmp_path, side):
+async def test_market_risk_quarantine_skips_buy_copy_trades(tmp_path):
+    """A risk block must block BUY re-entry on the quarantined position."""
     db_path = _init_db(tmp_path)
     exec_svc = AsyncMock()
     ctx = _make_context(db_path, execution_service=exec_svc)
 
-    quarantine_key = market_risk_quarantine_key("user1", "cond1")
-    ctx.orders_repo.mark_processed_trade(
-        trade_key=quarantine_key,
+    ctx.risk_blocks_repo.mark_risk_block(
         user_id="user1",
-        leader_id="leader1",
-        tx_hash=None,
-        side="SYSTEM",
-        asset=FAKE_TOKEN_ID,
         condition_id="cond1",
-        status="risk_quarantined_stop_loss",
+        token_id=FAKE_TOKEN_ID,
+        reason="stop_loss",
+        source="test",
+        leader_anchor="leader1",
     )
 
-    signal = _signal(side=side, tx_hash=f"0xquarantine-{side.lower()}")
+    signal = _signal(side="BUY", tx_hash="0xquarantine-buy")
     results = await execute_trades(ctx, "leader1", [signal], time.time())
 
     assert len(results) == 1
     assert results[0].status == "skipped"
     assert results[0].reason == "market_risk_quarantined"
     exec_svc.execute.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_sell_not_blocked_when_risk_block_active(tmp_path):
+    """A risk block must NOT block SELL paths — exits must always be allowed."""
+    db_path = _init_db(tmp_path)
+    exec_svc = AsyncMock()
+    ctx = _make_context(db_path, execution_service=exec_svc)
+
+    ctx.risk_blocks_repo.mark_risk_block(
+        user_id="user1",
+        condition_id="cond1",
+        token_id=FAKE_TOKEN_ID,
+        reason="stop_loss",
+        source="test",
+        leader_anchor="leader1",
+    )
+
+    # Seed a position so the SELL has something to act on
+    from storage.sqlite.positions_repo import PositionRecord
+    ctx.positions_repo.upsert_position(
+        PositionRecord(
+            user_id="user1",
+            condition_id="cond1",
+            token_id=FAKE_TOKEN_ID,
+            leader_id="leader1",
+            size_tokens=Decimal("10"),
+            avg_entry_price=Decimal("0.50"),
+        )
+    )
+
+    signal = _signal(side="SELL", tx_hash="0xquarantine-sell")
+    results = await execute_trades(ctx, "leader1", [signal], time.time())
+
+    assert len(results) == 1
+    # SELL must proceed — must NOT be skipped with market_risk_quarantined
+    assert results[0].reason != "market_risk_quarantined"
 
 
 @pytest.mark.asyncio

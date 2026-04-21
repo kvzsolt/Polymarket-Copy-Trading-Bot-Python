@@ -13,12 +13,12 @@ from services.riskMonitor import (
     rehydrate_position_manager,
     run_risk_check_for_context,
 )
-from services.riskQuarantine import market_risk_quarantine_key
 from storage.sqlite.connection import create_connection
 from storage.sqlite.fills_repo import FillRecord, FillsRepo
 from storage.sqlite.migrations import apply_migrations
 from storage.sqlite.orders_repo import OrdersRepo
 from storage.sqlite.positions_repo import PositionsRepo
+from storage.sqlite.risk_blocks_repo import RiskBlocksRepo
 
 FAKE_TOKEN_ID = "71321045679252212594626385532706912750332728571942532223535764789812338637396"
 
@@ -87,6 +87,7 @@ async def test_restart_rehydration_and_risk_exit_uses_persisted_positions(tmp_pa
     fills_repo = FillsRepo(str(db_path))
     positions_repo = PositionsRepo(str(db_path))
     orders_repo = OrdersRepo(str(db_path))
+    risk_blocks_repo = RiskBlocksRepo(str(db_path))
     pnl_tracker = _FakePnlTracker()
 
     fills_repo.append_fill(
@@ -113,6 +114,7 @@ async def test_restart_rehydration_and_risk_exit_uses_persisted_positions(tmp_pa
         positions_repo=positions_repo,
         fills_repo=fills_repo,
         orders_repo=orders_repo,
+        risk_blocks_repo=risk_blocks_repo,
         pnl_tracker=pnl_tracker,
         risk_engine=object(),
         accounting_service=object(),
@@ -141,6 +143,7 @@ async def test_risk_trigger_marks_market_quarantine_even_if_execution_fails(tmp_
     fills_repo = FillsRepo(str(db_path))
     positions_repo = PositionsRepo(str(db_path))
     orders_repo = OrdersRepo(str(db_path))
+    risk_blocks_repo = RiskBlocksRepo(str(db_path))
     pnl_tracker = _FakePnlTracker()
 
     fills_repo.append_fill(
@@ -166,6 +169,7 @@ async def test_risk_trigger_marks_market_quarantine_even_if_execution_fails(tmp_
         positions_repo=positions_repo,
         fills_repo=fills_repo,
         orders_repo=orders_repo,
+        risk_blocks_repo=risk_blocks_repo,
         pnl_tracker=pnl_tracker,
         risk_engine=object(),
         accounting_service=object(),
@@ -176,9 +180,13 @@ async def test_risk_trigger_marks_market_quarantine_even_if_execution_fails(tmp_
 
     await run_risk_check_for_context(context)
 
-    quarantine = orders_repo.get_processed_trade(market_risk_quarantine_key("u1", "cond-1"))
+    quarantine = risk_blocks_repo.get_active_risk_block(
+        user_id="u1",
+        condition_id="cond-1",
+        token_id=FAKE_TOKEN_ID,
+    )
     assert quarantine is not None
-    assert quarantine["status"] == "risk_quarantined_near_max_full_exit"
+    assert quarantine.get("reason") == "near_max_full_exit"
 
 
 @pytest.mark.asyncio
@@ -190,6 +198,7 @@ async def test_venue_circuit_breaker_suppresses_repeated_price_polls(tmp_path, m
     fills_repo = FillsRepo(str(db_path))
     positions_repo = PositionsRepo(str(db_path))
     orders_repo = OrdersRepo(str(db_path))
+    risk_blocks_repo = RiskBlocksRepo(str(db_path))
     pnl_tracker = _FakePnlTracker()
 
     fills_repo.append_fill(
@@ -216,6 +225,7 @@ async def test_venue_circuit_breaker_suppresses_repeated_price_polls(tmp_path, m
         positions_repo=positions_repo,
         fills_repo=fills_repo,
         orders_repo=orders_repo,
+        risk_blocks_repo=risk_blocks_repo,
         pnl_tracker=pnl_tracker,
         risk_engine=object(),
         accounting_service=object(),
@@ -244,6 +254,7 @@ async def test_risk_price_cache_reuses_recent_price_between_checks(tmp_path):
     fills_repo = FillsRepo(str(db_path))
     positions_repo = PositionsRepo(str(db_path))
     orders_repo = OrdersRepo(str(db_path))
+    risk_blocks_repo = RiskBlocksRepo(str(db_path))
     pnl_tracker = _FakePnlTracker()
 
     fills_repo.append_fill(
@@ -270,6 +281,7 @@ async def test_risk_price_cache_reuses_recent_price_between_checks(tmp_path):
         positions_repo=positions_repo,
         fills_repo=fills_repo,
         orders_repo=orders_repo,
+        risk_blocks_repo=risk_blocks_repo,
         pnl_tracker=pnl_tracker,
         risk_engine=object(),
         accounting_service=object(),

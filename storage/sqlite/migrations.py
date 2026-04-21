@@ -418,6 +418,28 @@ def _ensure_market_structure_events_table(conn: sqlite3.Connection) -> None:
     )
 
 
+def _ensure_risk_blocks_table(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS risk_blocks (
+            user_id TEXT NOT NULL,
+            condition_id TEXT NOT NULL,
+            token_id TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            source TEXT NOT NULL,
+            triggered_at REAL NOT NULL,
+            expires_at REAL,
+            cleared_at REAL,
+            clear_reason TEXT,
+            leader_anchor TEXT,
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            PRIMARY KEY (user_id, condition_id, token_id)
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_risk_blocks_cleared ON risk_blocks(cleared_at)")
+
+
 def _ensure_legacy_tables(conn: sqlite3.Connection) -> None:
     """Keep legacy tables available while active path is migrated."""
     conn.executescript(
@@ -524,6 +546,7 @@ def apply_migrations(conn: sqlite3.Connection) -> None:
     _ensure_leaders_table(conn)
     _ensure_redemptions_table(conn)
     _ensure_market_structure_events_table(conn)
+    _ensure_risk_blocks_table(conn)
     _ensure_legacy_tables(conn)
     apply_discovery_migrations(conn)
     conn.commit()
