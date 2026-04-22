@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from decimal import Decimal, ROUND_DOWN
 from typing import Any
 
+from config.app_config import AppConfig
 from config.env import ENV
 from domain.models import TradeSignal
 from domain.trading_context import TradingContext
@@ -329,6 +330,13 @@ def _retry_attempt_from_status(status: str | None, retry_attempt: int | None = N
 
 def _account_cap_policy_enabled() -> bool:
     return bool(ENV.get("ENABLE_BALANCE_TIERED_POLICY", False))
+
+
+def _trade_config(context: TradingContext) -> AppConfig:
+    config = context.config
+    if config is None:
+        raise RuntimeError("TradingContext.config is required for live tier gating")
+    return config
 
 
 def _position_notional_usdc(position: Any) -> Decimal:
@@ -1017,23 +1025,24 @@ async def execute_trades(
             # --- Tier gate: check follow tier before costly decision/execution ---
             leader_tier = leader_tier_resolved
 
-            if leader_tier == "watchlist" and ENV.get("ENABLE_TIER_GATE_WATCHLIST", True):
-                if ENV.get("ENABLE_TIER_GATE_WATCHLIST_LOG", True):
-                    logger.info(
-                        "tier_gate_watchlist",
-                        extra={
-                            "user_id": context.user_id,
-                            "leader_id": leader_id,
-                            "trade_key": trade_key,
-                            "side": signal.side,
-                            "condition_id": signal.condition_id,
-                        },
-                    )
+            if leader_tier == "watchlist":
+                config = _trade_config(context)
+                if config.features.enable_tier_gate_watchlist:
+                    if config.features.enable_tier_gate_watchlist_log:
+                        logger.info(
+                            "tier_gate_watchlist",
+                            extra={
+                                "user_id": context.user_id,
+                                "leader_id": leader_id,
+                                "trade_key": trade_key,
+                                "side": signal.side,
+                                "condition_id": signal.condition_id,
+                            },
+                        )
                     print_skip_reason("Tier gate: watchlist", "Leader is on watchlist — observing only")
-                await metrics.inc("trades_skipped_total", labels={**labels, "reason": "tier_watchlist"})
-                results.append(TradePipelineResult(trade_key, "skipped", "tier_watchlist", None))
-                continue
-
+                    await metrics.inc("trades_skipped_total", labels={**labels, "reason": "tier_watchlist"})
+                    results.append(TradePipelineResult(trade_key, "skipped", "tier_watchlist", None))
+                    continue
             if leader_tier == "paper_follow":
                 logger.info(
                     "tier_gate_paper",

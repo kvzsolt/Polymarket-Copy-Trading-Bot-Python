@@ -98,3 +98,8 @@
 - Observation: `TradingContext` still instantiated a default `CopyDecisionService()` before `__post_init__` replaced it, so the live bootstrap could briefly touch the legacy env-backed constructor even when typed config was available.
 - Action: Keep `copy_decision_service` unset by default, then construct it only from injected `AppConfig` during `TradingContext.__post_init__` and cover the live bootstrap path with a regression test.
 - Confidence: high
+
+**[2026-04-22] — #30 typed-config tier-gate tests must set feature flags in AppConfig, not only ENV**
+- Observation: Once live watchlist gating reads `context.config.features`, old tests that only toggled `ENV` can silently stop exercising the tier-gate branch because `load_config(...)` defaults those flags to false.
+- Action: In tier-gate tests, build `TradingContext` with typed config that explicitly sets `ENABLE_TIER_GATE_WATCHLIST` / `ENABLE_TIER_GATE_WATCHLIST_LOG`, and keep assertions focused on tier-gate behavior instead of unrelated downstream execution gates.
+- Confidence: high
