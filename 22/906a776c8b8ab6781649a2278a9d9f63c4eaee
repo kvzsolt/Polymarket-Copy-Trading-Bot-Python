@@ -1,0 +1,27 @@
+LEARNINGS.md
+  ec803a9f45174567 96-100
+domain/trading_context.py
+  ec803a9f45174567 42
+tests/test_runtime_bootstrap_config.py
+  ec803a9f45174567 5,115-138
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.2",
+  "base_commit_sha": "22906a776c8b8ab6781649a2278a9d9f63c4eaee",
+  "prompts": {
+    "ec803a9f45174567": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019db375-90a9-76c2-8f18-b2a5533cf3de",
+        "model": "gpt-5.4-mini"
+      },
+      "human_author": "kvzsolt",
+      "messages": [],
+      "total_additions": 33,
+      "total_deletions": 6,
+      "accepted_lines": 33,
+      "overriden_lines": 0
+    }
+  }
+}
