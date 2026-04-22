@@ -191,7 +191,13 @@ def test_rehydrate_preserves_token_distinct_positions(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_risk_trigger_marks_market_quarantine_even_if_execution_fails(tmp_path):
+async def test_failed_risk_sell_does_not_create_risk_block(tmp_path):
+    """Issue #27: a failed protective SELL must NOT create a durable risk block.
+
+    Previously, mark_risk_block was called before execution, causing a permanent
+    re-entry ban even when the SELL was rejected.  After the fix, the block is
+    only written after a confirmed fill.
+    """
     db_path = tmp_path / "state.db"
     with create_connection(str(db_path)) as conn:
         apply_migrations(conn)
@@ -236,18 +242,84 @@ async def test_risk_trigger_marks_market_quarantine_even_if_execution_fails(tmp_
 
     await run_risk_check_for_context(context)
 
+    # No risk block should exist — the SELL was rejected.
     quarantine = risk_blocks_repo.get_active_risk_block(
         user_id="u1",
         condition_id="cond-1",
         token_id=FAKE_TOKEN_ID,
     )
-    assert quarantine is not None
-    assert quarantine.get("reason") == "near_max_full_exit"
+    assert quarantine is None, (
+        "risk block must NOT be written when the protective SELL fails"
+    )
+
+    # Position should still be open (SELL didn't fill).
+    assert positions_repo.get_position("u1", "cond-1") is not None
+
+
+@pytest.mark.asyncio
+async def test_successful_risk_sell_creates_risk_block_with_fill_metadata(tmp_path):
+    """Issue #27: a filled protective SELL must persist a risk block with fill metadata."""
+    db_path = tmp_path / "state.db"
+    with create_connection(str(db_path)) as conn:
+        apply_migrations(conn)
+
+    fills_repo = FillsRepo(str(db_path))
+    positions_repo = PositionsRepo(str(db_path))
+    orders_repo = OrdersRepo(str(db_path))
+    risk_blocks_repo = RiskBlocksRepo(str(db_path))
+    pnl_tracker = _FakePnlTracker()
+
+    fills_repo.append_fill(
+        FillRecord(
+            user_id="u1",
+            leader_id="l1",
+            order_id="buy-1",
+            condition_id="cond-1",
+            token_id=FAKE_TOKEN_ID,
+            side="BUY",
+            size_tokens=Decimal("10"),
+            price=Decimal("0.60"),
+            fee=Decimal("0"),
+            fill_ts=1_700_000_000,
+        )
+    )
+    positions_repo.rebuild_user_positions_from_fills("u1", fills_repo)
+
+    context = TradingContext(
+        user_id="u1",
+        wallet_address="wallet-u1",
+        client=_FakeClient(price="0.97"),
+        positions_repo=positions_repo,
+        fills_repo=fills_repo,
+        orders_repo=orders_repo,
+        risk_blocks_repo=risk_blocks_repo,
+        pnl_tracker=pnl_tracker,
+        risk_engine=object(),
+        accounting_service=object(),
+        position_manager=PositionManager(),
+        execution_service=_FakeExecutionService(),
+        extra={"slippage_tolerance_bps": 50},
+    )
+
+    await run_risk_check_for_context(context)
+
+    quarantine = risk_blocks_repo.get_active_risk_block(
+        user_id="u1",
+        condition_id="cond-1",
+        token_id=FAKE_TOKEN_ID,
+    )
+    assert quarantine is not None, "risk block must be written after successful fill"
+    assert quarantine["reason"] == "near_max_full_exit"
     metadata = quarantine.get("metadata") or {}
+    # Trigger-time metadata preserved
     assert metadata.get("leader_notional_at_trigger") == pytest.approx(9.7)
     assert metadata.get("trigger_price") == pytest.approx(0.97)
     assert metadata.get("trigger_size_tokens") == pytest.approx(10.0)
     assert metadata.get("trigger_fraction") == pytest.approx(1.0)
+    # Fill-time metadata enriched by the fix
+    assert metadata.get("fill_price") == pytest.approx(0.3)
+    assert metadata.get("fill_size_tokens") == pytest.approx(10.0)
+    assert metadata.get("fill_order_id") == "risk-exit-1"
 
 
 @pytest.mark.asyncio

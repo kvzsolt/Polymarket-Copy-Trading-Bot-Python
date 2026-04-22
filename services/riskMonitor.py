@@ -561,21 +561,18 @@ async def run_risk_check_for_context(context: TradingContext) -> None:
             fraction = max(0.0, min(1.0, float(action.get("size_fraction", 1.0) or 1.0)))
             reason = str(action.get("reason") or "risk_exit")
             trigger_notional = float((pos.size_tokens * Decimal(str(current_price))).quantize(Decimal("0.00000001")))
-            context.risk_blocks_repo.mark_risk_block(
-                user_id=context.user_id,
-                condition_id=pos.condition_id,
-                token_id=pos.token_id,
-                reason=reason,
-                source="risk_monitor",
-                leader_anchor=pos.leader_id,
-                metadata={
-                    "leader_notional_at_trigger": trigger_notional,
-                    "copied_position_notional_at_trigger": trigger_notional,
-                    "trigger_price": float(current_price),
-                    "trigger_size_tokens": float(pos.size_tokens),
-                    "trigger_fraction": fraction,
-                },
-            )
+
+            # Capture block metadata at trigger time — but defer persisting the
+            # risk block until after the protective SELL actually fills.  Writing
+            # the block before execution creates a durable re-entry ban even when
+            # the SELL fails, which is the core issue #27 lifecycle bug.
+            _block_metadata = {
+                "leader_notional_at_trigger": trigger_notional,
+                "copied_position_notional_at_trigger": trigger_notional,
+                "trigger_price": float(current_price),
+                "trigger_size_tokens": float(pos.size_tokens),
+                "trigger_fraction": fraction,
+            }
 
             # Simplified account-cap policy
             if fraction < 1.0 and enable_tiered:
@@ -603,10 +600,33 @@ async def run_risk_check_for_context(context: TradingContext) -> None:
             )
             result = await context.execution_service.execute(req)
             if not result.accepted or result.filled_amount <= 0:
+                logger.info(
+                    "risk_exit_sell_not_filled | cond=%s token=%s reason=%s status=%s error=%s",
+                    pos.condition_id[:12],
+                    pos.token_id[:12],
+                    reason,
+                    result.status,
+                    result.error,
+                )
                 continue
 
             fill_size = Decimal(str(result.filled_amount))
             fill_price = Decimal(str(result.avg_price or current_price))
+
+            # Persist risk block NOW — the protective SELL actually filled.
+            _block_metadata["fill_price"] = float(fill_price)
+            _block_metadata["fill_size_tokens"] = float(fill_size)
+            _block_metadata["fill_order_id"] = result.order_id
+            context.risk_blocks_repo.mark_risk_block(
+                user_id=context.user_id,
+                condition_id=pos.condition_id,
+                token_id=pos.token_id,
+                reason=reason,
+                source="risk_monitor",
+                leader_anchor=pos.leader_id,
+                metadata=_block_metadata,
+            )
+
             context.fills_repo.append_fill(
                 FillRecord(
                     user_id=context.user_id,
