@@ -84,6 +84,24 @@ class OrdersRepo(AbstractOrderRepository):
             return False  # has order_id = terminal, not just locked
         return rec.get("status") in ("pending", "pending_lock")
 
+    @staticmethod
+    def _row_to_order_record(row: sqlite3.Row | None) -> dict[str, Any] | None:
+        if not row:
+            return None
+        return {
+            "idempotency_key": row["idempotency_key"],
+            "user_id": row["user_id"],
+            "leader_id": row["leader_id"],
+            "order_id": row["order_id"],
+            "status": row["status"],
+            "request": json.loads(row["request_json"] or "{}"),
+            "response": json.loads(row["response_json"] or "{}") if row["response_json"] else {},
+            "attempt_count": int(row["attempt_count"] or 0),
+            "last_error": row["last_error"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+
     def get_by_idempotency_key(self, key: str) -> dict[str, Any] | None:
         with create_connection(self.db_path) as conn:
             row = conn.execute(
@@ -98,22 +116,32 @@ class OrdersRepo(AbstractOrderRepository):
                 (key,),
             ).fetchone()
 
-        if not row:
-            return None
+        return self._row_to_order_record(row)
 
-        return {
-            "idempotency_key": row["idempotency_key"],
-            "user_id": row["user_id"],
-            "leader_id": row["leader_id"],
-            "order_id": row["order_id"],
-            "status": row["status"],
-            "request": json.loads(row["request_json"] or "{}"),
-            "response": json.loads(row["response_json"] or "{}") if row["response_json"] else {},
-            "attempt_count": int(row["attempt_count"] or 0),
-            "last_error": row["last_error"],
-            "created_at": row["created_at"],
-            "updated_at": row["updated_at"],
-        }
+    def get_by_order_id(self, order_id: str) -> dict[str, Any] | None:
+        """Return the locally persisted submission row for a venue order id.
+
+        This is the correct lookup for exchange reconciliation. ``order_id`` is
+        the venue order identifier; it is distinct from the locally generated
+        submission idempotency key.
+        """
+        if not order_id:
+            return None
+        with create_connection(self.db_path) as conn:
+            row = conn.execute(
+                """
+                SELECT idempotency_key, user_id, leader_id, order_id, status,
+                       request_json, response_json, attempt_count, last_error,
+                       created_at, updated_at
+                FROM orders
+                WHERE order_id = ?
+                ORDER BY updated_at DESC
+                LIMIT 1
+                """,
+                (order_id,),
+            ).fetchone()
+
+        return self._row_to_order_record(row)
 
     def save_submission(self, record: OrderSubmissionRecord) -> None:
         request_json = json.dumps(record.request_payload, sort_keys=True, separators=(",", ":"), default=str)
