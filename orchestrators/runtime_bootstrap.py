@@ -15,7 +15,7 @@ from services.positionManager import PositionManager
 from services.riskEngine import RiskEngine
 from services.healthServer import ReadinessTracker
 from services.entryPermissionService import EntryPermissionService
-from services.riskMonitor import rehydrate_position_manager
+from services.riskMonitor import rehydrate_position_manager, reconcile_unconfirmed_risk_orders
 from storage.sqlite.fills_repo import FillsRepo
 from storage.sqlite.orders_repo import OrdersRepo
 from storage.sqlite.positions_repo import PositionsRepo
@@ -61,16 +61,20 @@ async def startup_reconcile_unconfirmed(
             continue
 
         try:
-            n = await reconcile_submitted_unconfirmed(context)
-            if n > 0:
+            trade_n = await reconcile_submitted_unconfirmed(context)
+            risk_n = await reconcile_unconfirmed_risk_orders(context)
+            total_n = trade_n + risk_n
+            if total_n > 0:
                 # Position state changed — re-rehydrate so the risk monitor
                 # and trade loops observe the converged snapshot.
                 rehydrate_position_manager(context)
-                reconciled_by_user[context.user_id] = n
+                reconciled_by_user[context.user_id] = total_n
                 logger.info(
-                    "startup_reconcile_complete | user=%s reconciled=%d",
+                    "startup_reconcile_complete | user=%s reconciled=%d (trade=%d risk=%d)",
                     context.user_id,
-                    n,
+                    total_n,
+                    trade_n,
+                    risk_n,
                 )
         except Exception as exc:
             logger.warning(

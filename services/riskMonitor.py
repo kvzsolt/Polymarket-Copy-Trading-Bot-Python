@@ -392,6 +392,14 @@ async def risk_monitor_loop(
                             max_slippage_bps=slippage_bps,
                             reason=trigger,
                             signal_id=f"risk:{trigger}:{condition_id}:{int(time.time())}",
+                            condition_id=condition_id,
+                            recovery_metadata={
+                                "leader_notional_at_trigger": float(pos.size_tokens * Decimal(str(current_price))),
+                                "copied_position_notional_at_trigger": float(pos.size_tokens * Decimal(str(current_price))),
+                                "trigger_price": float(current_price),
+                                "trigger_size_tokens": float(pos.size_tokens),
+                                "trigger_fraction": fraction,
+                            },
                         )
                         result = await execution_service.execute(exec_req)
                         if result.accepted and result.filled_amount > 0:
@@ -511,6 +519,186 @@ def _fallback_risk_decision(
     return None
 
 
+def _extract_risk_condition_id(request: dict[str, object] | None) -> str | None:
+    if not isinstance(request, dict):
+        return None
+    condition_id = str(request.get("condition_id") or "").strip()
+    if condition_id:
+        return condition_id
+    signal_id = str(request.get("signal_id") or "").strip()
+    if not signal_id.startswith("risk:"):
+        return None
+    parts = signal_id.split(":", 3)
+    if len(parts) < 3:
+        return None
+    derived = str(parts[2] or "").strip()
+    return derived or None
+
+
+async def reconcile_unconfirmed_risk_orders(context: TradingContext) -> int:
+    """Converge risk-monitor-originated submitted_unconfirmed SELLs.
+
+    These orders live in the durable ``orders`` table but do not create a
+    ``processed_trades`` row, so trade-pipeline reconciliation alone cannot
+    recover them after a restart. This helper reuses the persisted submission
+    metadata to resolve the venue outcome deterministically before the risk
+    monitor evaluates positions again.
+    """
+    if not context.execution_service:
+        return 0
+
+    records = context.orders_repo.get_unconfirmed_order_submissions(
+        user_id=context.user_id,
+        side="SELL",
+    )
+    reconciled = 0
+    terminal_no_fill_statuses = {"cancelled", "canceled", "expired", "rejected"}
+
+    for record in records:
+        request = record.get("request") or {}
+        signal_id = str(request.get("signal_id") or "")
+        if not signal_id.startswith("risk:"):
+            continue
+
+        order_id = str(record.get("order_id") or "").strip()
+        token_id = str(request.get("token_id") or "").strip()
+        condition_id = _extract_risk_condition_id(request)
+        if not order_id or not token_id or not condition_id or not is_valid_clob_token_id(token_id):
+            continue
+
+        scope = PositionScope(
+            user_id=context.user_id,
+            condition_id=condition_id,
+            token_id=token_id,
+        )
+        async with context.position_coordinator.acquire(scope):
+            try:
+                fill_info = await context.execution_service._confirm_fill(order_id)
+            except Exception as exc:
+                logger.warning(
+                    "risk_unconfirmed_reconcile_poll_error | user=%s order_id=%s error=%s",
+                    context.user_id,
+                    order_id,
+                    repr(exc),
+                )
+                continue
+
+            raw_fill = fill_info.get("size_matched") or fill_info.get("filled_size") or 0
+            try:
+                filled_amount = Decimal(str(raw_fill))
+            except Exception:
+                filled_amount = Decimal("0")
+
+            venue_status = str(fill_info.get("status", "")).lower()
+            if filled_amount <= 0:
+                if venue_status in terminal_no_fill_statuses:
+                    context.orders_repo.update_submission_status(
+                        order_id=order_id,
+                        status=venue_status,
+                        response_patch=fill_info,
+                    )
+                    reconciled += 1
+                continue
+
+            avg_price_raw = (
+                fill_info.get("avg_price")
+                or fill_info.get("price")
+                or fill_info.get("average_price")
+                or 0
+            )
+            try:
+                avg_price = Decimal(str(avg_price_raw))
+            except Exception:
+                avg_price = Decimal("0")
+            if avg_price <= 0:
+                continue
+
+            reason = str(request.get("reason") or "risk_exit")
+            leader_id = str(request.get("leader_id") or "risk-monitor")
+            existing_pos = context.positions_repo.get_position(
+                context.user_id,
+                condition_id,
+                token_id=token_id,
+            )
+            entry_price = float(getattr(existing_pos, "avg_entry_price", avg_price)) if existing_pos else float(avg_price)
+
+            try:
+                context.fills_repo.append_fill(
+                    FillRecord(
+                        user_id=context.user_id,
+                        leader_id=leader_id,
+                        order_id=order_id,
+                        condition_id=condition_id,
+                        token_id=token_id,
+                        side="SELL",
+                        size_tokens=filled_amount,
+                        price=avg_price,
+                        fee=Decimal("0"),
+                        fill_ts=int(time.time()),
+                    ),
+                    raw_payload={
+                        "reconciled_from": "risk_submitted_unconfirmed",
+                        "copy_order_id": order_id,
+                        "status": "reconciled",
+                        "side": "SELL",
+                    },
+                )
+                context.positions_repo.apply_fill(
+                    user_id=context.user_id,
+                    leader_id=leader_id,
+                    condition_id=condition_id,
+                    token_id=token_id,
+                    side="SELL",
+                    fill_size=filled_amount,
+                    fill_price=avg_price,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "risk_unconfirmed_reconcile_apply_error | user=%s order_id=%s error=%s",
+                    context.user_id,
+                    order_id,
+                    repr(exc),
+                )
+                continue
+
+            recovery_metadata = request.get("recovery_metadata")
+            block_metadata = dict(recovery_metadata) if isinstance(recovery_metadata, dict) else {}
+            block_metadata["fill_price"] = float(avg_price)
+            block_metadata["fill_size_tokens"] = float(filled_amount)
+            block_metadata["fill_order_id"] = order_id
+            context.risk_blocks_repo.mark_risk_block(
+                user_id=context.user_id,
+                condition_id=condition_id,
+                token_id=token_id,
+                reason=reason,
+                source="risk_monitor",
+                leader_anchor=leader_id,
+                metadata=block_metadata,
+            )
+
+            if hasattr(context.pnl_tracker, "record_sell"):
+                realized = (float(avg_price) - entry_price) * float(filled_amount)
+                context.pnl_tracker.record_sell(
+                    condition_id=condition_id,
+                    price=float(avg_price),
+                    size_tokens=float(filled_amount),
+                    usdc_value=float(filled_amount * avg_price),
+                    entry_price=entry_price,
+                    realized_pnl=realized,
+                    exit_reason=reason,
+                    leader_wallet=leader_id,
+                )
+
+            context.orders_repo.update_submission_status(
+                order_id=order_id,
+                status="filled_reconciled",
+                response_patch={**fill_info, "reconciled_from": "risk_submitted_unconfirmed"},
+            )
+            reconciled += 1
+
+    return reconciled
+
+
 async def run_risk_check_for_context(context: TradingContext) -> None:
     if not context.execution_service:
         return
@@ -524,9 +712,16 @@ async def run_risk_check_for_context(context: TradingContext) -> None:
     # execute_trades; the risk monitor must converge the same way.
     try:
         from orchestrators.trade_pipeline import reconcile_submitted_unconfirmed
-        n = await reconcile_submitted_unconfirmed(context)
-        if n:
-            logger.info("risk_monitor_pre_reconcile | reconciled=%d unconfirmed orders", n)
+        trade_n = await reconcile_submitted_unconfirmed(context)
+        risk_n = await reconcile_unconfirmed_risk_orders(context)
+        total_n = trade_n + risk_n
+        if total_n:
+            logger.info(
+                "risk_monitor_pre_reconcile | reconciled=%d unconfirmed orders (trade=%d risk=%d)",
+                total_n,
+                trade_n,
+                risk_n,
+            )
     except Exception as exc:
         logger.warning("risk_monitor_pre_reconcile_error | %s", repr(exc))
 
@@ -620,6 +815,8 @@ async def run_risk_check_for_context(context: TradingContext) -> None:
                     max_slippage_bps=slippage_bps,
                     reason=reason,
                     signal_id=f"risk:{reason}:{pos.condition_id}:{int(time.time())}",
+                    condition_id=pos.condition_id,
+                    recovery_metadata=_block_metadata,
                 )
                 result = await context.execution_service.execute(req)
                 if not result.accepted or result.filled_amount <= 0:

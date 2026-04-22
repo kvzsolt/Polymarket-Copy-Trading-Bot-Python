@@ -1241,6 +1241,7 @@ async def execute_trades(
                     max_slippage_bps=int(float(context.extra.get("slippage_tolerance_bps", 200))),
                     reason="copy_trade",
                     signal_id=signal.tx_hash,
+                    condition_id=signal.condition_id,
                 )
             else:
                 pos = context.positions_repo.get_position(context.user_id, signal.condition_id, token_id=signal.token_id)
@@ -1457,6 +1458,7 @@ async def execute_trades(
                     max_slippage_bps=int(float(context.extra.get("slippage_tolerance_bps", 200))),
                     reason="leader_sell",
                     signal_id=signal.tx_hash,
+                    condition_id=signal.condition_id,
                 )
 
             print_executing_strategy(signal.side)

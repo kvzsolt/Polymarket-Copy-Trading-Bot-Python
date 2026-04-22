@@ -5,6 +5,7 @@ from decimal import Decimal
 import pytest
 
 from domain.trading_context import TradingContext
+from orchestrators.runtime_bootstrap import startup_reconcile_unconfirmed
 from services.executionService import ExecutionResult
 from services.positionManager import PositionManager
 from services.riskMonitor import (
@@ -16,7 +17,7 @@ from services.riskMonitor import (
 from storage.sqlite.connection import create_connection
 from storage.sqlite.fills_repo import FillRecord, FillsRepo
 from storage.sqlite.migrations import apply_migrations
-from storage.sqlite.orders_repo import OrdersRepo
+from storage.sqlite.orders_repo import OrderSubmissionRecord, OrdersRepo
 from storage.sqlite.positions_repo import PositionRecord, PositionsRepo
 from storage.sqlite.risk_blocks_repo import RiskBlocksRepo
 
@@ -76,6 +77,16 @@ class _ReconcilingExecutionService(_RejectingExecutionService):
             "status": "filled",
             "size_matched": "10",
             "avg_price": "0.30",
+            "orderID": order_id,
+        }
+
+
+class _ReconcilingNoFillExecutionService(_RejectingExecutionService):
+    async def _confirm_fill(self, order_id: str):
+        return {
+            "status": "cancelled",
+            "size_matched": "0",
+            "avg_price": None,
             "orderID": order_id,
         }
 
@@ -389,6 +400,97 @@ async def test_venue_circuit_breaker_suppresses_repeated_price_polls(tmp_path, m
 
 
 @pytest.mark.asyncio
+@pytest.mark.asyncio
+async def test_startup_reconcile_closes_unconfirmed_risk_sell_and_persists_block(tmp_path):
+    db_path = tmp_path / "state.db"
+    with create_connection(str(db_path)) as conn:
+        apply_migrations(conn)
+
+    fills_repo = FillsRepo(str(db_path))
+    positions_repo = PositionsRepo(str(db_path))
+    orders_repo = OrdersRepo(str(db_path))
+    risk_blocks_repo = RiskBlocksRepo(str(db_path))
+    pnl_tracker = _FakePnlTracker()
+
+    fills_repo.append_fill(
+        FillRecord(
+            user_id="u1",
+            leader_id="l1",
+            order_id="buy-1",
+            condition_id="cond-1",
+            token_id=FAKE_TOKEN_ID,
+            side="BUY",
+            size_tokens=Decimal("10"),
+            price=Decimal("0.60"),
+            fee=Decimal("0"),
+            fill_ts=1_700_000_000,
+        )
+    )
+    positions_repo.rebuild_user_positions_from_fills("u1", fills_repo)
+    orders_repo.save_submission(
+        OrderSubmissionRecord(
+            idempotency_key="risk-idem-1",
+            user_id="u1",
+            leader_id="l1",
+            order_id="venue-risk-1",
+            status="submitted_unconfirmed",
+            request_payload={
+                "user_id": "u1",
+                "leader_id": "l1",
+                "token_id": FAKE_TOKEN_ID,
+                "condition_id": "cond-1",
+                "side": "SELL",
+                "amount": "10",
+                "reason": "near_max_full_exit",
+                "signal_id": "risk:near_max_full_exit:cond-1:1700000001",
+                "recovery_metadata": {
+                    "leader_notional_at_trigger": 9.7,
+                    "copied_position_notional_at_trigger": 9.7,
+                    "trigger_price": 0.97,
+                    "trigger_size_tokens": 10.0,
+                    "trigger_fraction": 1.0,
+                },
+            },
+            response_payload={"status": "submitted_unconfirmed", "orderID": "venue-risk-1"},
+        )
+    )
+
+    context = TradingContext(
+        user_id="u1",
+        wallet_address="wallet-u1",
+        client=_FakeClient(price="0.97"),
+        positions_repo=positions_repo,
+        fills_repo=fills_repo,
+        orders_repo=orders_repo,
+        risk_blocks_repo=risk_blocks_repo,
+        pnl_tracker=pnl_tracker,
+        risk_engine=object(),
+        accounting_service=object(),
+        position_manager=PositionManager(),
+        execution_service=_ReconcilingExecutionService(),
+        extra={"slippage_tolerance_bps": 50},
+    )
+
+    result = await startup_reconcile_unconfirmed([context])
+
+    assert result == {"u1": 1}
+    assert positions_repo.get_position("u1", "cond-1") is None
+    order_row = orders_repo.get_by_order_id("venue-risk-1")
+    assert order_row is not None
+    assert order_row["status"] == "filled_reconciled"
+    block = risk_blocks_repo.get_active_risk_block(
+        user_id="u1",
+        condition_id="cond-1",
+        token_id=FAKE_TOKEN_ID,
+    )
+    assert block is not None
+    metadata = block.get("metadata") or {}
+    assert metadata.get("leader_notional_at_trigger") == pytest.approx(9.7)
+    assert metadata.get("fill_price") == pytest.approx(0.3)
+    assert metadata.get("fill_size_tokens") == pytest.approx(10.0)
+    assert metadata.get("fill_order_id") == "venue-risk-1"
+
+
 @pytest.mark.asyncio
 async def test_risk_monitor_reconciles_unconfirmed_sell_before_evaluating_positions(tmp_path):
     db_path = tmp_path / "state.db"

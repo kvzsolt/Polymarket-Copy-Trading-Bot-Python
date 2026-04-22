@@ -69,12 +69,14 @@ async def test_startup_reconcile_unconfirmed_dedupes_user_contexts_and_rehydrate
 
     with (
         patch("orchestrators.trade_pipeline.reconcile_submitted_unconfirmed", side_effect=[2, 99]) as reconcile,
+        patch("orchestrators.runtime_bootstrap.reconcile_unconfirmed_risk_orders", return_value=0) as reconcile_risk,
         patch("orchestrators.runtime_bootstrap.rehydrate_position_manager") as rehydrate,
     ):
         result = await startup_reconcile_unconfirmed([ctx1, ctx2, ctx3])
 
     assert result == {"user-1": 2}
     reconcile.assert_called_once_with(ctx1)
+    reconcile_risk.assert_called_once_with(ctx1)
     rehydrate.assert_called_once_with(ctx1)
 
 
