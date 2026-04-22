@@ -535,6 +535,34 @@ def _extract_risk_condition_id(request: dict[str, object] | None) -> str | None:
     return derived or None
 
 
+def _decimal_or_zero(value: object) -> Decimal:
+    try:
+        return Decimal(str(value))
+    except Exception:
+        return Decimal("0")
+
+
+def _matched_amount_from_payload(payload: dict[str, object] | None) -> Decimal:
+    if not isinstance(payload, dict):
+        return Decimal("0")
+    return _decimal_or_zero(
+        payload.get("size_matched")
+        or payload.get("filled_size")
+        or payload.get("size")
+        or 0
+    )
+
+
+def _risk_exit_fully_closed_position(updated_pos: object | None) -> bool:
+    """Return True only when the protective SELL fully closed the position.
+
+    Partial fills are real and must still update fills/positions/PnL, but they
+    must NOT activate a durable re-entry block.  The block represents a
+    completed protective exit regime, not merely a partial de-risking step.
+    """
+    return updated_pos is None
+
+
 async def reconcile_unconfirmed_risk_orders(context: TradingContext) -> int:
     """Converge risk-monitor-originated submitted_unconfirmed SELLs.
 
@@ -553,6 +581,7 @@ async def reconcile_unconfirmed_risk_orders(context: TradingContext) -> int:
     )
     reconciled = 0
     terminal_no_fill_statuses = {"cancelled", "canceled", "expired", "rejected"}
+    final_fill_statuses = {"filled", "matched", ""}
 
     for record in records:
         request = record.get("request") or {}
@@ -583,21 +612,39 @@ async def reconcile_unconfirmed_risk_orders(context: TradingContext) -> int:
                 )
                 continue
 
-            raw_fill = fill_info.get("size_matched") or fill_info.get("filled_size") or 0
-            try:
-                filled_amount = Decimal(str(raw_fill))
-            except Exception:
-                filled_amount = Decimal("0")
-
             venue_status = str(fill_info.get("status", "")).lower()
-            if filled_amount <= 0:
-                if venue_status in terminal_no_fill_statuses:
-                    context.orders_repo.update_submission_status(
-                        order_id=order_id,
-                        status=venue_status,
-                        response_patch=fill_info,
-                    )
-                    reconciled += 1
+            current_matched = _matched_amount_from_payload(fill_info)
+            previous_matched = _matched_amount_from_payload(record.get("response"))
+            delta_matched = current_matched - previous_matched
+            if delta_matched < 0:
+                delta_matched = Decimal("0")
+
+            if current_matched <= 0 and venue_status in terminal_no_fill_statuses:
+                context.orders_repo.update_submission_status(
+                    order_id=order_id,
+                    status=venue_status,
+                    response_patch=fill_info,
+                )
+                reconciled += 1
+                continue
+
+            is_final_fill = venue_status in final_fill_statuses or (
+                venue_status in terminal_no_fill_statuses and current_matched > 0
+            )
+            if delta_matched <= 0 and not is_final_fill:
+                continue
+            if delta_matched <= 0 and is_final_fill:
+                context.orders_repo.update_submission_status(
+                    order_id=order_id,
+                    status="filled_reconciled",
+                    response_patch={
+                        **fill_info,
+                        "reconciled_from": "risk_submitted_unconfirmed",
+                        "matched_previous": str(previous_matched),
+                        "matched_delta": str(delta_matched),
+                    },
+                )
+                reconciled += 1
                 continue
 
             avg_price_raw = (
@@ -631,7 +678,7 @@ async def reconcile_unconfirmed_risk_orders(context: TradingContext) -> int:
                         condition_id=condition_id,
                         token_id=token_id,
                         side="SELL",
-                        size_tokens=filled_amount,
+                        size_tokens=delta_matched,
                         price=avg_price,
                         fee=Decimal("0"),
                         fill_ts=int(time.time()),
@@ -643,13 +690,13 @@ async def reconcile_unconfirmed_risk_orders(context: TradingContext) -> int:
                         "side": "SELL",
                     },
                 )
-                context.positions_repo.apply_fill(
+                updated_pos = context.positions_repo.apply_fill(
                     user_id=context.user_id,
                     leader_id=leader_id,
                     condition_id=condition_id,
                     token_id=token_id,
                     side="SELL",
-                    fill_size=filled_amount,
+                    fill_size=delta_matched,
                     fill_price=avg_price,
                 )
             except Exception as exc:
@@ -664,35 +711,51 @@ async def reconcile_unconfirmed_risk_orders(context: TradingContext) -> int:
             recovery_metadata = request.get("recovery_metadata")
             block_metadata = dict(recovery_metadata) if isinstance(recovery_metadata, dict) else {}
             block_metadata["fill_price"] = float(avg_price)
-            block_metadata["fill_size_tokens"] = float(filled_amount)
+            block_metadata["fill_size_tokens"] = float(delta_matched)
             block_metadata["fill_order_id"] = order_id
-            context.risk_blocks_repo.mark_risk_block(
-                user_id=context.user_id,
-                condition_id=condition_id,
-                token_id=token_id,
-                reason=reason,
-                source="risk_monitor",
-                leader_anchor=leader_id,
-                metadata=block_metadata,
-            )
+            if is_final_fill and _risk_exit_fully_closed_position(updated_pos):
+                context.risk_blocks_repo.mark_risk_block(
+                    user_id=context.user_id,
+                    condition_id=condition_id,
+                    token_id=token_id,
+                    reason=reason,
+                    source="risk_monitor",
+                    leader_anchor=leader_id,
+                    metadata=block_metadata,
+                )
+            else:
+                logger.info(
+                    "risk_unconfirmed_partial_fill_no_block | user=%s order_id=%s condition=%s token=%s remaining=%s",
+                    context.user_id,
+                    order_id,
+                    condition_id,
+                    token_id,
+                    getattr(updated_pos, "size_tokens", None),
+                )
 
             if hasattr(context.pnl_tracker, "record_sell"):
-                realized = (float(avg_price) - entry_price) * float(filled_amount)
+                realized = (float(avg_price) - entry_price) * float(delta_matched)
                 context.pnl_tracker.record_sell(
                     condition_id=condition_id,
                     price=float(avg_price),
-                    size_tokens=float(filled_amount),
-                    usdc_value=float(filled_amount * avg_price),
+                    size_tokens=float(delta_matched),
+                    usdc_value=float(delta_matched * avg_price),
                     entry_price=entry_price,
                     realized_pnl=realized,
                     exit_reason=reason,
                     leader_wallet=leader_id,
                 )
 
+            submission_status = "filled_reconciled" if is_final_fill else "submitted_unconfirmed"
             context.orders_repo.update_submission_status(
                 order_id=order_id,
-                status="filled_reconciled",
-                response_patch={**fill_info, "reconciled_from": "risk_submitted_unconfirmed"},
+                status=submission_status,
+                response_patch={
+                    **fill_info,
+                    "reconciled_from": "risk_submitted_unconfirmed",
+                    "matched_previous": str(previous_matched),
+                    "matched_delta": str(delta_matched),
+                },
             )
             reconciled += 1
 
@@ -833,19 +896,12 @@ async def run_risk_check_for_context(context: TradingContext) -> None:
                 fill_size = Decimal(str(result.filled_amount))
                 fill_price = Decimal(str(result.avg_price or current_price))
 
-                # Persist risk block NOW — the protective SELL actually filled.
+                # Persist risk block only when the protective SELL fully closes
+                # the scoped position. A partial fill is real and should be
+                # accounted for, but it must not create a durable re-entry ban.
                 _block_metadata["fill_price"] = float(fill_price)
                 _block_metadata["fill_size_tokens"] = float(fill_size)
                 _block_metadata["fill_order_id"] = result.order_id
-                context.risk_blocks_repo.mark_risk_block(
-                    user_id=context.user_id,
-                    condition_id=pos.condition_id,
-                    token_id=pos.token_id,
-                    reason=reason,
-                    source="risk_monitor",
-                    leader_anchor=pos.leader_id,
-                    metadata=_block_metadata,
-                )
 
                 context.fills_repo.append_fill(
                     FillRecord(
@@ -870,6 +926,24 @@ async def run_risk_check_for_context(context: TradingContext) -> None:
                     fill_size=fill_size,
                     fill_price=fill_price,
                 )
+                if _risk_exit_fully_closed_position(updated_pos):
+                    context.risk_blocks_repo.mark_risk_block(
+                        user_id=context.user_id,
+                        condition_id=pos.condition_id,
+                        token_id=pos.token_id,
+                        reason=reason,
+                        source="risk_monitor",
+                        leader_anchor=pos.leader_id,
+                        metadata=_block_metadata,
+                    )
+                else:
+                    logger.info(
+                        "risk_exit_partial_fill_no_block | user=%s condition=%s token=%s remaining=%s",
+                        context.user_id,
+                        pos.condition_id,
+                        pos.token_id,
+                        getattr(updated_pos, "size_tokens", None),
+                    )
                 if hasattr(context.pnl_tracker, "record_sell"):
                     entry_price = float(pos.avg_entry_price)
                     realized = (float(fill_price) - entry_price) * float(fill_size)

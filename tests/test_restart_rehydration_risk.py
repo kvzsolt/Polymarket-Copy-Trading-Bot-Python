@@ -57,6 +57,21 @@ class _FakeExecutionService:
         )
 
 
+class _PartialRiskExecutionService:
+    async def execute(self, req):
+        requested = Decimal(str(req.amount))
+        return ExecutionResult(
+            accepted=True,
+            order_id="risk-exit-partial-1",
+            status="cancelled",
+            requested_amount=requested,
+            filled_amount=requested / Decimal("2"),
+            avg_price=Decimal("0.3"),
+            fees_paid=Decimal("0"),
+            error=None,
+        )
+
+
 class _RejectingExecutionService:
     async def execute(self, req):
         return ExecutionResult(
@@ -76,6 +91,16 @@ class _ReconcilingExecutionService(_RejectingExecutionService):
         return {
             "status": "filled",
             "size_matched": "10",
+            "avg_price": "0.30",
+            "orderID": order_id,
+        }
+
+
+class _ReconcilingPartialExecutionService(_RejectingExecutionService):
+    async def _confirm_fill(self, order_id: str):
+        return {
+            "status": "cancelled",
+            "size_matched": "4",
             "avg_price": "0.30",
             "orderID": order_id,
         }
@@ -344,6 +369,63 @@ async def test_successful_risk_sell_creates_risk_block_with_fill_metadata(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_partial_risk_sell_updates_position_but_does_not_create_risk_block(tmp_path):
+    db_path = tmp_path / "state.db"
+    with create_connection(str(db_path)) as conn:
+        apply_migrations(conn)
+
+    fills_repo = FillsRepo(str(db_path))
+    positions_repo = PositionsRepo(str(db_path))
+    orders_repo = OrdersRepo(str(db_path))
+    risk_blocks_repo = RiskBlocksRepo(str(db_path))
+    pnl_tracker = _FakePnlTracker()
+
+    fills_repo.append_fill(
+        FillRecord(
+            user_id="u1",
+            leader_id="l1",
+            order_id="buy-1",
+            condition_id="cond-1",
+            token_id=FAKE_TOKEN_ID,
+            side="BUY",
+            size_tokens=Decimal("10"),
+            price=Decimal("0.60"),
+            fee=Decimal("0"),
+            fill_ts=1_700_000_000,
+        )
+    )
+    positions_repo.rebuild_user_positions_from_fills("u1", fills_repo)
+
+    context = TradingContext(
+        user_id="u1",
+        wallet_address="wallet-u1",
+        client=_FakeClient(price="0.97"),
+        positions_repo=positions_repo,
+        fills_repo=fills_repo,
+        orders_repo=orders_repo,
+        risk_blocks_repo=risk_blocks_repo,
+        pnl_tracker=pnl_tracker,
+        risk_engine=object(),
+        accounting_service=object(),
+        position_manager=PositionManager(),
+        execution_service=_PartialRiskExecutionService(),
+        extra={"slippage_tolerance_bps": 50},
+    )
+
+    await run_risk_check_for_context(context)
+
+    assert risk_blocks_repo.get_active_risk_block(
+        user_id="u1",
+        condition_id="cond-1",
+        token_id=FAKE_TOKEN_ID,
+    ) is None
+    remaining = positions_repo.get_position("u1", "cond-1", token_id=FAKE_TOKEN_ID)
+    assert remaining is not None
+    assert remaining.size_tokens == Decimal("5")
+    assert pnl_tracker.sells >= 1
+
+
+@pytest.mark.asyncio
 async def test_venue_circuit_breaker_suppresses_repeated_price_polls(tmp_path, monkeypatch):
     db_path = tmp_path / "state.db"
     with create_connection(str(db_path)) as conn:
@@ -399,7 +481,6 @@ async def test_venue_circuit_breaker_suppresses_repeated_price_polls(tmp_path, m
     assert client.calls == 2
 
 
-@pytest.mark.asyncio
 @pytest.mark.asyncio
 async def test_startup_reconcile_closes_unconfirmed_risk_sell_and_persists_block(tmp_path):
     db_path = tmp_path / "state.db"
@@ -489,6 +570,93 @@ async def test_startup_reconcile_closes_unconfirmed_risk_sell_and_persists_block
     assert metadata.get("fill_price") == pytest.approx(0.3)
     assert metadata.get("fill_size_tokens") == pytest.approx(10.0)
     assert metadata.get("fill_order_id") == "venue-risk-1"
+
+
+@pytest.mark.asyncio
+async def test_startup_reconcile_partial_unconfirmed_risk_sell_keeps_position_open_without_block(tmp_path):
+    db_path = tmp_path / "state.db"
+    with create_connection(str(db_path)) as conn:
+        apply_migrations(conn)
+
+    fills_repo = FillsRepo(str(db_path))
+    positions_repo = PositionsRepo(str(db_path))
+    orders_repo = OrdersRepo(str(db_path))
+    risk_blocks_repo = RiskBlocksRepo(str(db_path))
+    pnl_tracker = _FakePnlTracker()
+
+    fills_repo.append_fill(
+        FillRecord(
+            user_id="u1",
+            leader_id="l1",
+            order_id="buy-1",
+            condition_id="cond-1",
+            token_id=FAKE_TOKEN_ID,
+            side="BUY",
+            size_tokens=Decimal("10"),
+            price=Decimal("0.60"),
+            fee=Decimal("0"),
+            fill_ts=1_700_000_000,
+        )
+    )
+    positions_repo.rebuild_user_positions_from_fills("u1", fills_repo)
+    orders_repo.save_submission(
+        OrderSubmissionRecord(
+            idempotency_key="risk-idem-partial-1",
+            user_id="u1",
+            leader_id="l1",
+            order_id="venue-risk-partial-1",
+            status="submitted_unconfirmed",
+            request_payload={
+                "user_id": "u1",
+                "leader_id": "l1",
+                "token_id": FAKE_TOKEN_ID,
+                "condition_id": "cond-1",
+                "side": "SELL",
+                "amount": "10",
+                "reason": "near_max_full_exit",
+                "signal_id": "risk:near_max_full_exit:cond-1:1700000002",
+                "recovery_metadata": {
+                    "leader_notional_at_trigger": 9.7,
+                    "copied_position_notional_at_trigger": 9.7,
+                    "trigger_price": 0.97,
+                    "trigger_size_tokens": 10.0,
+                    "trigger_fraction": 1.0,
+                },
+            },
+            response_payload={"status": "submitted_unconfirmed", "orderID": "venue-risk-partial-1"},
+        )
+    )
+
+    context = TradingContext(
+        user_id="u1",
+        wallet_address="wallet-u1",
+        client=_FakeClient(price="0.97"),
+        positions_repo=positions_repo,
+        fills_repo=fills_repo,
+        orders_repo=orders_repo,
+        risk_blocks_repo=risk_blocks_repo,
+        pnl_tracker=pnl_tracker,
+        risk_engine=object(),
+        accounting_service=object(),
+        position_manager=PositionManager(),
+        execution_service=_ReconcilingPartialExecutionService(),
+        extra={"slippage_tolerance_bps": 50},
+    )
+
+    result = await startup_reconcile_unconfirmed([context])
+
+    assert result == {"u1": 1}
+    remaining = positions_repo.get_position("u1", "cond-1", token_id=FAKE_TOKEN_ID)
+    assert remaining is not None
+    assert remaining.size_tokens == Decimal("6")
+    order_row = orders_repo.get_by_order_id("venue-risk-partial-1")
+    assert order_row is not None
+    assert order_row["status"] == "filled_reconciled"
+    assert risk_blocks_repo.get_active_risk_block(
+        user_id="u1",
+        condition_id="cond-1",
+        token_id=FAKE_TOKEN_ID,
+    ) is None
 
 
 @pytest.mark.asyncio
