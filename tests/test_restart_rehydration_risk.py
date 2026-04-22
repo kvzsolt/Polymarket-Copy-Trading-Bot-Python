@@ -70,6 +70,16 @@ class _RejectingExecutionService:
         )
 
 
+class _ReconcilingExecutionService(_RejectingExecutionService):
+    async def _confirm_fill(self, order_id: str):
+        return {
+            "status": "filled",
+            "size_matched": "10",
+            "avg_price": "0.30",
+            "orderID": order_id,
+        }
+
+
 class _FakePnlTracker:
     def __init__(self):
         self.sells = 0
@@ -376,6 +386,78 @@ async def test_venue_circuit_breaker_suppresses_repeated_price_polls(tmp_path, m
     assert second is None
     assert third is None
     assert client.calls == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.asyncio
+async def test_risk_monitor_reconciles_unconfirmed_sell_before_evaluating_positions(tmp_path):
+    db_path = tmp_path / "state.db"
+    with create_connection(str(db_path)) as conn:
+        apply_migrations(conn)
+
+    fills_repo = FillsRepo(str(db_path))
+    positions_repo = PositionsRepo(str(db_path))
+    orders_repo = OrdersRepo(str(db_path))
+    risk_blocks_repo = RiskBlocksRepo(str(db_path))
+    pnl_tracker = _FakePnlTracker()
+
+    fills_repo.append_fill(
+        FillRecord(
+            user_id="u1",
+            leader_id="l1",
+            order_id="buy-1",
+            condition_id="cond-1",
+            token_id=FAKE_TOKEN_ID,
+            side="BUY",
+            size_tokens=Decimal("10"),
+            price=Decimal("0.60"),
+            fee=Decimal("0"),
+            fill_ts=1_700_000_000,
+        )
+    )
+    positions_repo.rebuild_user_positions_from_fills("u1", fills_repo)
+    orders_repo.mark_processed_trade(
+        trade_key="sell-restart-1",
+        user_id="u1",
+        leader_id="l1",
+        tx_hash="0xsell",
+        side="SELL",
+        asset=FAKE_TOKEN_ID,
+        condition_id="cond-1",
+        status="submitted_unconfirmed",
+        order_id="venue-sell-1",
+    )
+
+    context = TradingContext(
+        user_id="u1",
+        wallet_address="wallet-u1",
+        client=_FakeClient(price="0.97"),
+        positions_repo=positions_repo,
+        fills_repo=fills_repo,
+        orders_repo=orders_repo,
+        risk_blocks_repo=risk_blocks_repo,
+        pnl_tracker=pnl_tracker,
+        risk_engine=object(),
+        accounting_service=object(),
+        position_manager=PositionManager(),
+        execution_service=_ReconcilingExecutionService(),
+        extra={"slippage_tolerance_bps": 50},
+    )
+
+    await run_risk_check_for_context(context)
+
+    # The restart-time submitted_unconfirmed SELL should have been reconciled
+    # before any new protective SELL decision, so the position is gone and no
+    # duplicate protective risk block is created.
+    assert positions_repo.get_position("u1", "cond-1") is None
+    processed = orders_repo.get_processed_trade("sell-restart-1")
+    assert processed is not None
+    assert processed["status"] == "filled_reconciled"
+    assert risk_blocks_repo.get_active_risk_block(
+        user_id="u1",
+        condition_id="cond-1",
+        token_id=FAKE_TOKEN_ID,
+    ) is None
 
 
 @pytest.mark.asyncio

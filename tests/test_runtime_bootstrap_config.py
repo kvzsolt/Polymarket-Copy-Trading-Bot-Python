@@ -3,12 +3,14 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
 import config.app_config as app_config_mod
 from config.app_config import load_config
 from orchestrators.runtime_bootstrap import (
     build_trading_context,
     configured_leaders,
     default_follow,
+    startup_reconcile_unconfirmed,
 )
 from services.multiUserConfig import load_runtime_users
 
@@ -57,6 +59,23 @@ def test_load_runtime_users_single_user_uses_typed_config_defaults():
     assert user.wallet.funder_address == _VALID_FUNDER
     assert user.follows["0x" + "d" * 40].allocation_pct == 0.07
     assert user.follows["0x" + "d" * 40].max_trade_usdc == 42.0
+
+
+@pytest.mark.asyncio
+async def test_startup_reconcile_unconfirmed_dedupes_user_contexts_and_rehydrates_once():
+    ctx1 = SimpleNamespace(user_id="user-1", execution_service=object())
+    ctx2 = SimpleNamespace(user_id="user-1", execution_service=object())
+    ctx3 = SimpleNamespace(user_id="user-2", execution_service=None)
+
+    with (
+        patch("orchestrators.trade_pipeline.reconcile_submitted_unconfirmed", side_effect=[2, 99]) as reconcile,
+        patch("orchestrators.runtime_bootstrap.rehydrate_position_manager") as rehydrate,
+    ):
+        result = await startup_reconcile_unconfirmed([ctx1, ctx2, ctx3])
+
+    assert result == {"user-1": 2}
+    reconcile.assert_called_once_with(ctx1)
+    rehydrate.assert_called_once_with(ctx1)
 
 
 def test_build_trading_context_uses_typed_sizing_execution_values():

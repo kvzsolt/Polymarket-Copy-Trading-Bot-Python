@@ -29,6 +29,69 @@ if TYPE_CHECKING:
 logger = get_logger("RuntimeBootstrap")
 
 
+async def startup_reconcile_unconfirmed(
+    contexts: list[TradingContext],
+) -> dict[str, int]:
+    """Reconcile all submitted_unconfirmed orders before starting runtime loops.
+
+    Must run AFTER build_context_maps() and BEFORE risk_monitor / trade_monitor
+    tasks.  This closes the non-deterministic restart window where:
+
+    * BUY fills that landed on-chain during shutdown are invisible to the
+      risk monitor (position never created locally).
+    * SELL fills that landed during shutdown leave stale positions that the
+      risk monitor or next trade cycle could act on.
+
+    After reconciliation, the in-memory PositionManager is re-rehydrated so
+    all downstream consumers observe converged state.
+
+    Returns a dict mapping user_id → number of orders reconciled.
+    """
+    from orchestrators.trade_pipeline import reconcile_submitted_unconfirmed
+
+    reconciled_by_user: dict[str, int] = {}
+    seen_users: set[str] = set()
+
+    for context in contexts:
+        if context.user_id in seen_users:
+            continue
+        seen_users.add(context.user_id)
+
+        if context.execution_service is None:
+            continue
+
+        try:
+            n = await reconcile_submitted_unconfirmed(context)
+            if n > 0:
+                # Position state changed — re-rehydrate so the risk monitor
+                # and trade loops observe the converged snapshot.
+                rehydrate_position_manager(context)
+                reconciled_by_user[context.user_id] = n
+                logger.info(
+                    "startup_reconcile_complete | user=%s reconciled=%d",
+                    context.user_id,
+                    n,
+                )
+        except Exception as exc:
+            logger.warning(
+                "startup_reconcile_error | user=%s error=%s",
+                context.user_id,
+                repr(exc),
+            )
+
+    if reconciled_by_user:
+        total = sum(reconciled_by_user.values())
+        logger.info(
+            "startup_reconcile_summary | users=%d total_reconciled=%d",
+            len(reconciled_by_user),
+            total,
+        )
+    else:
+        logger.info("startup_reconcile_summary | no pending orders to reconcile")
+
+    return reconciled_by_user
+
+
 @dataclass
 class UserRuntimeState:
     user: RuntimeUser

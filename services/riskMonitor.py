@@ -515,6 +515,21 @@ async def run_risk_check_for_context(context: TradingContext) -> None:
     if not context.execution_service:
         return
 
+    # Issue #29 — reconcile unconfirmed orders BEFORE rehydration / position
+    # evaluation.  Without this, on restart the risk monitor observes stale
+    # position state: unconfirmed SELLs that already filled on-exchange still
+    # appear as open positions, leading to duplicate protective SELLs; and
+    # unconfirmed BUYs that filled are invisible, so the monitor cannot
+    # protect them.  The trade pipeline already does this at the top of
+    # execute_trades; the risk monitor must converge the same way.
+    try:
+        from orchestrators.trade_pipeline import reconcile_submitted_unconfirmed
+        n = await reconcile_submitted_unconfirmed(context)
+        if n:
+            logger.info("risk_monitor_pre_reconcile | reconciled=%d unconfirmed orders", n)
+    except Exception as exc:
+        logger.warning("risk_monitor_pre_reconcile_error | %s", repr(exc))
+
     rehydrate_position_manager(context)
     slippage_bps = int(float(context.extra.get("slippage_tolerance_bps", 200)))
     refresh_interval = float(context.extra.get("risk_check_interval_seconds", 0.25) or 0.25)
