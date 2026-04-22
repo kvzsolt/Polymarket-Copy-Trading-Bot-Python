@@ -65,6 +65,24 @@ def _reconcile_semaphore(context: TradingContext) -> asyncio.Semaphore:
     return semaphore
 
 
+def _decimal_or_zero(value: Any) -> Decimal:
+    try:
+        return Decimal(str(value))
+    except Exception:
+        return Decimal("0")
+
+
+def _matched_amount_from_response(response: dict[str, Any] | None) -> Decimal:
+    if not isinstance(response, dict):
+        return Decimal("0")
+    return _decimal_or_zero(
+        response.get("size_matched")
+        or response.get("filled_size")
+        or response.get("size")
+        or 0
+    )
+
+
 async def _resolve_market_min_size(context: TradingContext, token_id: str) -> float:
     market_min_size = float(ENV.get("MIN_ORDER_SIZE", 0.00001) or 0.00001)
     try:
@@ -540,16 +558,25 @@ async def _reconcile_one(
         )
         return False
 
-    raw_fill = fill_info.get("size_matched") or fill_info.get("filled_size") or 0
+    order_status = str(fill_info.get("status", "")).lower()
+    terminal_no_fill_statuses = {"cancelled", "canceled", "expired", "rejected"}
+    final_fill_statuses = {"filled", "matched", ""}
+
+    current_matched = _matched_amount_from_response(fill_info)
+
+    existing_submission = None
     try:
-        filled_amount = Decimal(str(raw_fill))
+        if hasattr(context.orders_repo, "get_by_order_id"):
+            existing_submission = context.orders_repo.get_by_order_id(order_id)
     except Exception:
-        filled_amount = Decimal("0")
+        existing_submission = None
+    previous_matched = _matched_amount_from_response(
+        (existing_submission or {}).get("response") if isinstance(existing_submission, dict) else None
+    )
+    delta_matched = current_matched - previous_matched
 
     # Terminal no-fill result, unlock retry. Pending/open orders stay blocked.
-    if filled_amount <= 0:
-        order_status = str(fill_info.get("status", "")).lower()
-        terminal_no_fill_statuses = {"cancelled", "canceled", "expired", "rejected"}
+    if current_matched <= 0 and order_status in terminal_no_fill_statuses:
         if order_status in terminal_no_fill_statuses:
             logger.info(
                 "reconcile_%s_no_fill_unlock_retry | order_id=%s cond=%s",
@@ -566,6 +593,35 @@ async def _reconcile_one(
             )
             context.orders_repo.delete_processed_trade(record["trade_key"])
             return True  # unlocked for retry — counts as reconciled
+    if delta_matched < 0:
+        delta_matched = Decimal("0")
+
+    is_final_fill = order_status in final_fill_statuses or (
+        order_status in terminal_no_fill_statuses and current_matched > 0
+    )
+
+    if delta_matched <= 0:
+        if is_final_fill:
+            try:
+                context.orders_repo.update_submission_status(
+                    order_id=order_id,
+                    status="filled_reconciled",
+                    response_patch=fill_info,
+                )
+            except Exception:
+                pass
+            context.orders_repo.mark_processed_trade(
+                trade_key=record["trade_key"],
+                user_id=record["user_id"],
+                leader_id=record.get("leader_id"),
+                tx_hash=record.get("tx_hash"),
+                side=side,
+                asset=record["asset"],
+                condition_id=record["condition_id"],
+                status="filled_reconciled",
+                order_id=order_id,
+            )
+            return True
         return False
 
     avg_price_raw = (
@@ -591,7 +647,7 @@ async def _reconcile_one(
                 condition_id=record["condition_id"],
                 token_id=record["asset"],
                 side=side,
-                size_tokens=filled_amount,
+                size_tokens=delta_matched,
                 price=avg_price,
                 fee=Decimal("0"),
                 fill_ts=int(time.time()),
@@ -616,7 +672,7 @@ async def _reconcile_one(
             condition_id=record["condition_id"],
             token_id=record["asset"],
             side=side,
-            fill_size=filled_amount,
+            fill_size=delta_matched,
             fill_price=avg_price,
         )
 
@@ -633,12 +689,12 @@ async def _reconcile_one(
                 realized_source = "fill_price_fallback"
             else:
                 ep = entry_price
-            realized = (float(avg_price) - ep) * float(filled_amount)
+            realized = (float(avg_price) - ep) * float(delta_matched)
             context.pnl_tracker.record_sell(
                 condition_id=record["condition_id"],
                 price=float(avg_price),
-                size_tokens=float(filled_amount),
-                usdc_value=float(filled_amount * avg_price),
+                size_tokens=float(delta_matched),
+                usdc_value=float(delta_matched * avg_price),
                 entry_price=ep,
                 realized_pnl=realized,
                 exit_reason="reconciled_sell",
@@ -656,23 +712,37 @@ async def _reconcile_one(
         )
         return False
 
-    context.orders_repo.mark_processed_trade(
-        trade_key=record["trade_key"],
-        user_id=record["user_id"],
-        leader_id=record.get("leader_id"),
-        tx_hash=record.get("tx_hash"),
-        side=side,
-        asset=record["asset"],
-        condition_id=record["condition_id"],
-        status="filled_reconciled",
-        order_id=order_id,
-    )
+    if is_final_fill:
+        context.orders_repo.mark_processed_trade(
+            trade_key=record["trade_key"],
+            user_id=record["user_id"],
+            leader_id=record.get("leader_id"),
+            tx_hash=record.get("tx_hash"),
+            side=side,
+            asset=record["asset"],
+            condition_id=record["condition_id"],
+            status="filled_reconciled",
+            order_id=order_id,
+        )
+        submission_status = "filled_reconciled"
+    else:
+        submission_status = "submitted_unconfirmed"
+
+    try:
+        context.orders_repo.update_submission_status(
+            order_id=order_id,
+            status=submission_status,
+            response_patch=fill_info,
+        )
+    except Exception:
+        pass
+
     logger.info(
         "reconcile_unconfirmed_filled | side=%s order_id=%s cond=%s size=%.4f price=%.4f",
         side,
         order_id,
         str(record.get("condition_id", ""))[:12],
-        float(filled_amount),
+        float(delta_matched),
         float(avg_price),
         extra={
             "type": "reconcile_unconfirmed_filled",
@@ -680,8 +750,11 @@ async def _reconcile_one(
             "order_id": order_id,
             "condition_id": record.get("condition_id"),
             "user_id": record["user_id"],
-            "filled_amount": str(filled_amount),
+            "filled_amount": str(delta_matched),
             "avg_price": str(avg_price),
+            "venue_status": order_status,
+            "matched_total": str(current_matched),
+            "matched_previous": str(previous_matched),
         },
     )
     return True

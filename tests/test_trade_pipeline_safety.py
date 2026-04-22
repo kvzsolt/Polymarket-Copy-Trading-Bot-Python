@@ -20,7 +20,7 @@ from services.positionManager import PositionManager
 from services.riskEngine import RiskEngine
 from services.accountingService import AccountingService
 from storage.sqlite.connection import create_connection
-from storage.sqlite.fills_repo import FillsRepo
+from storage.sqlite.fills_repo import FillRecord, FillsRepo
 
 
 @pytest.fixture(autouse=True)
@@ -49,7 +49,7 @@ def _mock_balance_for_tests(monkeypatch):
         _fake_balance,
     )
 from storage.sqlite.migrations import apply_migrations
-from storage.sqlite.orders_repo import OrdersRepo
+from storage.sqlite.orders_repo import OrderSubmissionRecord, OrdersRepo
 from storage.sqlite.positions_repo import PositionsRepo
 
 FAKE_TOKEN_ID = "71321045679252212594626385532706912750332728571942532223535764789812338637396"
@@ -443,6 +443,137 @@ async def test_stale_buy_unconfirmed_is_still_reconciled(tmp_path):
 
     assert reconciled == 1
     assert ctx.orders_repo.has_processed_trade(trade_key) is False
+
+
+@pytest.mark.asyncio
+async def test_partial_progress_reconcile_applies_only_incremental_buy_delta(tmp_path):
+    db_path = _init_db(tmp_path)
+
+    class _ExecSvc:
+        async def _confirm_fill(self, _order_id):
+            return {"status": "partially_filled", "size_matched": "5", "avg_price": "0.50"}
+
+    ctx = _make_context(db_path, execution_service=_ExecSvc())
+    signal = _signal(tx_hash="0xpartial-buy")
+    trade_key = build_trade_key("user1", "leader1", signal)
+
+    # Simulate a previous restart checkpoint where 2 tokens were already
+    # durably applied locally and recorded in the submission response.
+    ctx.fills_repo.append_fill(
+        FillRecord(
+            user_id="user1",
+            leader_id="leader1",
+            order_id="ord-partial-buy",
+            condition_id=signal["conditionId"],
+            token_id=signal["asset"],
+            side="BUY",
+            size_tokens=Decimal("2"),
+            price=Decimal("0.50"),
+            fee=Decimal("0"),
+            fill_ts=1_700_000_000,
+        )
+    )
+    ctx.positions_repo.rebuild_user_positions_from_fills("user1", ctx.fills_repo)
+    ctx.orders_repo.mark_processed_trade(
+        trade_key=trade_key,
+        user_id="user1",
+        leader_id="leader1",
+        tx_hash=signal["transactionHash"],
+        side="BUY",
+        asset=signal["asset"],
+        condition_id=signal["conditionId"],
+        status="submitted_unconfirmed",
+        order_id="ord-partial-buy",
+    )
+    ctx.orders_repo.save_submission(
+        OrderSubmissionRecord(
+            idempotency_key="idem-partial-buy",
+            user_id="user1",
+            leader_id="leader1",
+            order_id="ord-partial-buy",
+            status="submitted_unconfirmed",
+            request_payload={"side": "BUY"},
+            response_payload={"status": "submitted_unconfirmed", "orderID": "ord-partial-buy", "size_matched": "2"},
+        )
+    )
+
+    reconciled = await reconcile_submitted_unconfirmed(ctx)
+
+    assert reconciled == 1
+    pos = ctx.positions_repo.get_position("user1", signal["conditionId"], token_id=signal["asset"])
+    assert pos is not None
+    assert pos.size_tokens == Decimal("5")
+    processed = ctx.orders_repo.get_processed_trade(trade_key)
+    assert processed is not None
+    assert processed["status"] == "submitted_unconfirmed"
+    submission = ctx.orders_repo.get_by_order_id("ord-partial-buy")
+    assert submission is not None
+    assert submission["status"] == "submitted_unconfirmed"
+    assert submission["response"].get("size_matched") == "5"
+
+
+@pytest.mark.asyncio
+async def test_final_reconcile_with_no_new_delta_marks_buy_fully_reconciled(tmp_path):
+    db_path = _init_db(tmp_path)
+
+    class _ExecSvc:
+        async def _confirm_fill(self, _order_id):
+            return {"status": "filled", "size_matched": "5", "avg_price": "0.50"}
+
+    ctx = _make_context(db_path, execution_service=_ExecSvc())
+    signal = _signal(tx_hash="0xfinal-buy")
+    trade_key = build_trade_key("user1", "leader1", signal)
+
+    ctx.fills_repo.append_fill(
+        FillRecord(
+            user_id="user1",
+            leader_id="leader1",
+            order_id="ord-final-buy",
+            condition_id=signal["conditionId"],
+            token_id=signal["asset"],
+            side="BUY",
+            size_tokens=Decimal("5"),
+            price=Decimal("0.50"),
+            fee=Decimal("0"),
+            fill_ts=1_700_000_000,
+        )
+    )
+    ctx.positions_repo.rebuild_user_positions_from_fills("user1", ctx.fills_repo)
+    ctx.orders_repo.mark_processed_trade(
+        trade_key=trade_key,
+        user_id="user1",
+        leader_id="leader1",
+        tx_hash=signal["transactionHash"],
+        side="BUY",
+        asset=signal["asset"],
+        condition_id=signal["conditionId"],
+        status="submitted_unconfirmed",
+        order_id="ord-final-buy",
+    )
+    ctx.orders_repo.save_submission(
+        OrderSubmissionRecord(
+            idempotency_key="idem-final-buy",
+            user_id="user1",
+            leader_id="leader1",
+            order_id="ord-final-buy",
+            status="submitted_unconfirmed",
+            request_payload={"side": "BUY"},
+            response_payload={"status": "submitted_unconfirmed", "orderID": "ord-final-buy", "size_matched": "5"},
+        )
+    )
+
+    reconciled = await reconcile_submitted_unconfirmed(ctx)
+
+    assert reconciled == 1
+    pos = ctx.positions_repo.get_position("user1", signal["conditionId"], token_id=signal["asset"])
+    assert pos is not None
+    assert pos.size_tokens == Decimal("5")
+    processed = ctx.orders_repo.get_processed_trade(trade_key)
+    assert processed is not None
+    assert processed["status"] == "filled_reconciled"
+    submission = ctx.orders_repo.get_by_order_id("ord-final-buy")
+    assert submission is not None
+    assert submission["status"] == "filled_reconciled"
 
 
 @pytest.mark.asyncio

@@ -78,3 +78,8 @@
 - Observation: The risk-monitor path was treating any positive protective SELL fill as a completed exit and writing a durable risk block before checking whether the scoped position was actually closed. Partial fills are real state changes, but they do not justify a permanent re-entry ban.
 - Action: In both live risk exits and restart recovery reconciliation, apply the SELL fill first and activate the risk block only if the scoped position is fully closed (`PositionsRepo.apply_fill(...)` returns `None`). Cover both paths with focused tests.
 - Confidence: high
+
+**[2026-04-22] — #29 delayed-fill convergence must apply only incremental matched delta**
+- Observation: Restart reconciliation was reading the venue's cumulative matched size and reapplying the whole amount every pass. If 2 tokens were already durably applied before restart and the venue later reported 5 matched, the old path would apply 5 again instead of the missing delta 3.
+- Action: In `orchestrators.trade_pipeline._reconcile_one(...)`, compare the venue's current matched amount against the previously persisted submission response, apply only the positive delta, keep non-final partial progress in `submitted_unconfirmed`, and only flip to `filled_reconciled` once the venue outcome is actually final.
+- Confidence: high
