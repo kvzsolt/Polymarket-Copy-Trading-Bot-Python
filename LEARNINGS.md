@@ -93,3 +93,8 @@
 - Observation: The active runtime bootstrap still had two config-honesty gaps: `build_user_state()` constructed `PositionManager()` without `AppConfig`, and `TradingContext.copy_notional()` could still fall back to raw `ENV` values instead of failing fast when config was missing.
 - Action: Thread `AppConfig` through the live bootstrap/composition root, construct `PositionManager(config=...)` for active users, and make `TradingContext.copy_notional()` require injected config so live sizing never silently consults `ENV`.
 - Confidence: high
+
+**[2026-04-22] — #30 trading contexts must not eagerly build configless copy-decision services**
+- Observation: `TradingContext` still instantiated a default `CopyDecisionService()` before `__post_init__` replaced it, so the live bootstrap could briefly touch the legacy env-backed constructor even when typed config was available.
+- Action: Keep `copy_decision_service` unset by default, then construct it only from injected `AppConfig` during `TradingContext.__post_init__` and cover the live bootstrap path with a regression test.
+- Confidence: high

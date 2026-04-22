@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 import pytest
 import config.app_config as app_config_mod
@@ -110,6 +110,32 @@ def test_build_trading_context_uses_typed_sizing_execution_values():
     assert ctx.entry_permission_service._repo is risk_blocks_repo
     assert ctx.config is cfg
     assert ctx.copy_decision_service._config is cfg
+
+
+def test_build_trading_context_constructs_copy_decision_service_only_with_injected_config():
+    cfg = _config()
+    follow = default_follow("user-1", "leader-1", cfg)
+    user_state = SimpleNamespace(
+        user=SimpleNamespace(user_id="user-1", wallet=SimpleNamespace(funder_address=_VALID_FUNDER)),
+        client=object(),
+        positions_repo=object(),
+        fills_repo=object(),
+        orders_repo=object(),
+        risk_blocks_repo=object(),
+        pnl_tracker=object(),
+        risk_engine=object(),
+        accounting_service=object(),
+        position_manager=object(),
+        execution_service=object(),
+    )
+
+    with (
+        patch("domain.trading_context.CopyDecisionService") as copy_decision_cls,
+        patch("orchestrators.runtime_bootstrap.rehydrate_position_manager"),
+    ):
+        build_trading_context(user_state, follow, cfg, readiness=object())
+
+    copy_decision_cls.assert_called_once_with(config=cfg, leader_scorer=ANY)
 
 
 def test_build_user_state_injects_typed_config_into_position_manager():

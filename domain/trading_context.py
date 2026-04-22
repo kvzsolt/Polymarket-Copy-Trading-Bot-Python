@@ -17,10 +17,6 @@ def _default_leader_scorer() -> LeaderScoringService:
     return LeaderScoringService()
 
 
-def _default_copy_decision() -> CopyDecisionService:
-    return CopyDecisionService(leader_scorer=_default_leader_scorer())
-
-
 @dataclass
 class TradingContext:
     user_id: str
@@ -43,7 +39,7 @@ class TradingContext:
     buy_max_amount: float = 100.0
     max_market_exposure_usdc: float = 300.0
     leader_scorer: LeaderScoringService = field(default_factory=_default_leader_scorer)
-    copy_decision_service: CopyDecisionService = field(default_factory=_default_copy_decision)
+    copy_decision_service: CopyDecisionService | None = None
     readiness: ReadinessTracker = field(default_factory=ReadinessTracker)
     position_coordinator: PositionActionCoordinator = field(default_factory=PositionActionCoordinator)
     extra: dict[str, Any] = field(default_factory=dict)
