@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -13,9 +14,42 @@ from services.copyStrategy import (
     parse_tiered_multipliers,
 )
 
+_UNSET = object()
 
-def _make_context(*, allocation_pct: float = 0.10, buy_min: float = 1.0, buy_max: float = 100.0) -> TradingContext:
-    return TradingContext(
+
+def _make_config(
+    *,
+    mode: str = "proportional",
+    fixed_amount: float = 10.0,
+    trade_multiplier: float = 1.0,
+    tiered_trade_multipliers: str = "",
+    adaptive_basis: str = "trade_size",
+    adaptive_min_percent: float = 0.0,
+    adaptive_max_percent: float = 0.0,
+    adaptive_threshold_usdc: float = 500.0,
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        sizing=SimpleNamespace(
+            mode=mode,
+            fixed_amount=fixed_amount,
+            trade_multiplier=trade_multiplier,
+            tiered_trade_multipliers=tiered_trade_multipliers,
+            adaptive_basis=adaptive_basis,
+            adaptive_min_percent=adaptive_min_percent,
+            adaptive_max_percent=adaptive_max_percent,
+            adaptive_threshold_usdc=adaptive_threshold_usdc,
+        )
+    )
+
+
+def _make_context(
+    *,
+    allocation_pct: float = 0.10,
+    buy_min: float = 1.0,
+    buy_max: float = 100.0,
+    config: object = _UNSET,
+) -> TradingContext:
+    kwargs = dict(
         user_id="u1",
         wallet_address="0x" + "1" * 40,
         client=object(),
@@ -32,6 +66,10 @@ def _make_context(*, allocation_pct: float = 0.10, buy_min: float = 1.0, buy_max
         buy_min_amount=buy_min,
         buy_max_amount=buy_max,
     )
+    if config is not _UNSET:
+        kwargs["config"] = config
+        kwargs["copy_decision_service"] = SimpleNamespace(_config=object(), leader_scorer=None)
+    return TradingContext(**kwargs)
 
 
 def test_parse_tiered_multipliers_and_pick_matching_multiplier():
@@ -68,26 +106,26 @@ def test_calculate_copy_notional_supports_trade_size_adaptive_logic():
 
 
 def test_trading_context_copy_notional_applies_tiered_multiplier():
-    ctx = _make_context(allocation_pct=0.10, buy_min=1.0, buy_max=100.0)
+    ctx = _make_context(
+        allocation_pct=0.10,
+        buy_min=1.0,
+        buy_max=100.0,
+        config=_make_config(
+            tiered_trade_multipliers="0-100:1.5,100+:0.5",
+        ),
+    )
 
-    with patch.dict(
-        "domain.trading_context.ENV",
-        {
-            "SIZING_MODE": "proportional",
-            "FIXED_AMOUNT": 10,
-            "TRADE_MULTIPLIER": 1.0,
-            "TIERED_TRADE_MULTIPLIERS": "0-100:1.5,100+:0.5",
-            "ADAPTIVE_SIZING_BASIS": "trade_size",
-            "ADAPTIVE_MIN_PERCENT": 0,
-            "ADAPTIVE_MAX_PERCENT": 0,
-            "ADAPTIVE_THRESHOLD_USDC": 500,
-        },
-        clear=False,
-    ):
-        result = ctx.copy_notional(Decimal("200"))
+    result = ctx.copy_notional(Decimal("200"))
 
     # 10% of 200 = 20, 100+ tier applies 0.5x => 10
     assert float(result.final_notional_usdc) == pytest.approx(10.0)
+
+
+def test_trading_context_copy_notional_requires_typed_config():
+    ctx = _make_context(allocation_pct=0.10, buy_min=1.0, buy_max=100.0)
+
+    with pytest.raises(RuntimeError, match="requires injected AppConfig"):
+        ctx.copy_notional(Decimal("200"))
 
 
 def test_legacy_calc_buy_amount_supports_tiered_multiplier():

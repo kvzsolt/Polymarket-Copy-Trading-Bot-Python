@@ -90,6 +90,6 @@
 - Confidence: high
 
 **[2026-04-22] — #30 live bootstrap must inject typed config into active sizing paths**
-- Observation: The active runtime bootstrap still had two config-honesty gaps: `build_user_state()` constructed `PositionManager()` without `AppConfig`, and `TradingContext.copy_notional()` fell back to raw `ENV` values even when typed sizing config was available.
-- Action: Thread `AppConfig` through the live bootstrap/composition root, construct `PositionManager(config=...)` for active users, and have `TradingContext` prefer `config.sizing` whenever the typed config is present. Keep raw `ENV` reads only on the legacy/test-only path.
+- Observation: The active runtime bootstrap still had two config-honesty gaps: `build_user_state()` constructed `PositionManager()` without `AppConfig`, and `TradingContext.copy_notional()` could still fall back to raw `ENV` values instead of failing fast when config was missing.
+- Action: Thread `AppConfig` through the live bootstrap/composition root, construct `PositionManager(config=...)` for active users, and make `TradingContext.copy_notional()` require injected config so live sizing never silently consults `ENV`.
 - Confidence: high
