@@ -227,6 +227,52 @@ async def test_sell_not_blocked_when_risk_block_active(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_fresh_leader_rebuy_auto_clears_risk_block_in_live_pipeline(tmp_path):
+    db_path = _init_db(tmp_path)
+    exec_svc = AsyncMock()
+    exec_svc.execute.return_value = _exec_result()
+    ctx = _make_context(db_path, execution_service=exec_svc)
+
+    ctx.risk_blocks_repo.mark_risk_block(
+        user_id="user1",
+        condition_id="cond1",
+        token_id=FAKE_TOKEN_ID,
+        reason="stop_loss",
+        source="test",
+        leader_anchor="leader1",
+        metadata={"leader_notional_at_trigger": 100.0},
+    )
+
+    signal = _signal(side="BUY", tx_hash="0xfresh-buy", size=10.0, price=0.5)  # 5 USDC < 10% of 100
+    results = await execute_trades(ctx, "leader1", [signal], time.time())
+
+    assert len(results) == 1
+    assert results[0].status != "skipped"
+    exec_svc.execute.assert_awaited()
+    assert ctx.risk_blocks_repo.get_active_risk_block(
+        user_id="user1",
+        condition_id="cond1",
+        token_id=FAKE_TOKEN_ID,
+    ) is None
+
+
+@pytest.mark.asyncio
+async def test_buy_fail_closed_when_entry_policy_service_missing(tmp_path):
+    db_path = _init_db(tmp_path)
+    exec_svc = AsyncMock()
+    ctx = _make_context(db_path, execution_service=exec_svc)
+    ctx.entry_permission_service = None
+
+    signal = _signal(side="BUY", tx_hash="0xpolicy-missing")
+    results = await execute_trades(ctx, "leader1", [signal], time.time())
+
+    assert len(results) == 1
+    assert results[0].status == "skipped"
+    assert results[0].reason == "entry_policy_unavailable"
+    exec_svc.execute.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_duplicate_trade_is_skipped(tmp_path):
     db_path = _init_db(tmp_path)
     exec_svc = AsyncMock()

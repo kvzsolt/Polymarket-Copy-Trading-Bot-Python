@@ -187,6 +187,11 @@ async def test_risk_trigger_marks_market_quarantine_even_if_execution_fails(tmp_
     )
     assert quarantine is not None
     assert quarantine.get("reason") == "near_max_full_exit"
+    metadata = quarantine.get("metadata") or {}
+    assert metadata.get("leader_notional_at_trigger") == pytest.approx(9.7)
+    assert metadata.get("trigger_price") == pytest.approx(0.97)
+    assert metadata.get("trigger_size_tokens") == pytest.approx(10.0)
+    assert metadata.get("trigger_fraction") == pytest.approx(1.0)
 
 
 @pytest.mark.asyncio

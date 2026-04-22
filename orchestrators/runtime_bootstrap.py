@@ -14,6 +14,7 @@ from services.pnlTracker import PnLTracker
 from services.positionManager import PositionManager
 from services.riskEngine import RiskEngine
 from services.healthServer import ReadinessTracker
+from services.entryPermissionService import EntryPermissionService
 from services.riskMonitor import rehydrate_position_manager
 from storage.sqlite.fills_repo import FillsRepo
 from storage.sqlite.orders_repo import OrdersRepo
@@ -153,6 +154,7 @@ def build_trading_context(
         risk_engine=user_state.risk_engine,
         accounting_service=user_state.accounting_service,
         position_manager=user_state.position_manager,
+        entry_permission_service=EntryPermissionService(user_state.risk_blocks_repo),
         execution_service=user_state.execution_service,
         leaders_repo=leaders_repo,
         allocation_pct=follow.allocation_pct,

@@ -48,6 +48,8 @@ class TradingContext:
     def __post_init__(self) -> None:
         if self.copy_decision_service is not None:
             self.copy_decision_service.leader_scorer = self.leader_scorer
+        if self.entry_permission_service is None and self.risk_blocks_repo is not None:
+            self.entry_permission_service = EntryPermissionService(self.risk_blocks_repo)
 
     def copy_notional(self, leader_notional: Decimal) -> CopySizingResult:
         """Return the full sizing result so callers can inspect reasoning."""

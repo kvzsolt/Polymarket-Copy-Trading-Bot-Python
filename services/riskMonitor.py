@@ -540,7 +540,17 @@ async def run_risk_check_for_context(context: TradingContext) -> None:
 
             action = None
             if hasattr(context.position_manager, "evaluate_risk_action"):
-                action = context.position_manager.evaluate_risk_action(pos.condition_id, float(current_price))
+                try:
+                    action = context.position_manager.evaluate_risk_action(
+                        pos.condition_id,
+                        pos.token_id,
+                        float(current_price),
+                    )
+                except TypeError:
+                    action = context.position_manager.evaluate_risk_action(
+                        pos.condition_id,
+                        float(current_price),
+                    )
             if not action:
                 action = _fallback_risk_decision(pos.avg_entry_price, current_price)
             if not action:
@@ -548,6 +558,7 @@ async def run_risk_check_for_context(context: TradingContext) -> None:
 
             fraction = max(0.0, min(1.0, float(action.get("size_fraction", 1.0) or 1.0)))
             reason = str(action.get("reason") or "risk_exit")
+            trigger_notional = float((pos.size_tokens * Decimal(str(current_price))).quantize(Decimal("0.00000001")))
             context.risk_blocks_repo.mark_risk_block(
                 user_id=context.user_id,
                 condition_id=pos.condition_id,
@@ -555,6 +566,13 @@ async def run_risk_check_for_context(context: TradingContext) -> None:
                 reason=reason,
                 source="risk_monitor",
                 leader_anchor=pos.leader_id,
+                metadata={
+                    "leader_notional_at_trigger": trigger_notional,
+                    "copied_position_notional_at_trigger": trigger_notional,
+                    "trigger_price": float(current_price),
+                    "trigger_size_tokens": float(pos.size_tokens),
+                    "trigger_fraction": fraction,
+                },
             )
 
             # Simplified account-cap policy
@@ -632,12 +650,21 @@ async def run_risk_check_for_context(context: TradingContext) -> None:
                 },
             )
             if hasattr(context.position_manager, "track_sell"):
-                context.position_manager.track_sell(
-                    pos.condition_id,
-                    float(fill_price),
-                    float(fill_size),
-                    reason=reason,
-                )
+                try:
+                    context.position_manager.track_sell(
+                        pos.condition_id,
+                        pos.token_id,
+                        float(fill_price),
+                        float(fill_size),
+                        reason=reason,
+                    )
+                except TypeError:
+                    context.position_manager.track_sell(
+                        pos.condition_id,
+                        float(fill_price),
+                        float(fill_size),
+                        reason=reason,
+                    )
         except Exception as exc:
             logger.error(f"Risk context check failed user={context.user_id} condition={pos.condition_id}: {exc}")
 

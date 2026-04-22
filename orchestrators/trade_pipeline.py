@@ -831,28 +831,42 @@ async def execute_trades(
         if signal.side == "BUY":
             _eps: EntryPermissionService | None = context.entry_permission_service
             if _eps is None:
-                # Fallback: service not yet wired — use raw repo check for safety
-                _raw_block = context.risk_blocks_repo.get_active_risk_block(
-                    user_id=context.user_id,
-                    condition_id=signal.condition_id,
-                    token_id=signal.token_id,
+                logger.error(
+                    "entry_permission_unavailable | user=%s leader=%s condition=%s token=%s",
+                    context.user_id,
+                    leader_id,
+                    signal.condition_id,
+                    signal.token_id,
                 )
-                _decision: EntryDecision | None = None
-                if _raw_block is not None:
-                    _decision = EntryDecision(
-                        allowed=False,
-                        reason="denied_risk_block_active",
-                        deny_detail=str(_raw_block.get("reason") or "risk_block_active"),
-                        block_record=_raw_block,
-                    )
-            else:
-                _decision = _eps.check_entry(
+                skip_reason = "entry_policy_unavailable"
+                await metrics.inc("trades_skipped_total", labels={**labels, "reason": skip_reason})
+                context.orders_repo.mark_processed_trade(
+                    trade_key=trade_key,
                     user_id=context.user_id,
-                    condition_id=signal.condition_id,
-                    token_id=signal.token_id,
                     leader_id=leader_id,
-                    leader_notional_usdc=float(signal.usdc_size),
+                    tx_hash=signal.tx_hash,
+                    side=signal.side,
+                    asset=signal.token_id,
+                    condition_id=signal.condition_id,
+                    status=f"skipped_{skip_reason}",
                 )
+                results.append(
+                    TradePipelineResult(
+                        trade_key=trade_key,
+                        status="skipped",
+                        reason=skip_reason,
+                        order_id=None,
+                    )
+                )
+                continue
+
+            _decision: EntryDecision | None = _eps.check_entry(
+                user_id=context.user_id,
+                condition_id=signal.condition_id,
+                token_id=signal.token_id,
+                leader_id=leader_id,
+                leader_notional_usdc=float(signal.usdc_size),
+            )
 
             if _decision is not None and not _decision.allowed:
                 skip_reason = "market_risk_quarantined"

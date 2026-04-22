@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import config.app_config as app_config_mod
 from config.app_config import load_config
 from orchestrators.runtime_bootstrap import (
     build_trading_context,
@@ -31,7 +32,8 @@ def _config(**overrides):
         "SLIPPAGE_TOLERANCE": "1.5",
     }
     env.update(overrides)
-    return load_config(env)
+    with patch.object(app_config_mod, "_runtime_python_supported", return_value=True):
+        return load_config(env)
 
 
 def test_configured_leaders_uses_typed_config_wallets():
@@ -60,12 +62,14 @@ def test_load_runtime_users_single_user_uses_typed_config_defaults():
 def test_build_trading_context_uses_typed_sizing_execution_values():
     cfg = _config()
     follow = default_follow("user-1", "leader-1", cfg)
+    risk_blocks_repo = object()
     user_state = SimpleNamespace(
         user=SimpleNamespace(user_id="user-1", wallet=SimpleNamespace(funder_address=_VALID_FUNDER)),
         client=object(),
         positions_repo=object(),
         fills_repo=object(),
         orders_repo=object(),
+        risk_blocks_repo=risk_blocks_repo,
         pnl_tracker=object(),
         risk_engine=object(),
         accounting_service=object(),
@@ -79,3 +83,5 @@ def test_build_trading_context_uses_typed_sizing_execution_values():
     assert ctx.buy_min_amount == 3.0
     assert ctx.buy_max_amount == 42.0
     assert ctx.extra["slippage_tolerance_bps"] == 150
+    assert ctx.entry_permission_service is not None
+    assert ctx.entry_permission_service._repo is risk_blocks_repo
