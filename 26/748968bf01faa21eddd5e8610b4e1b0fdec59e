@@ -1,0 +1,23 @@
+orchestrators/trade_pipeline.py
+  024ce036fb04d170 68-85,561-567,569-570,572-576,579,596-624,650,675,692,696-697,715-739,745,753,755-757
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.2",
+  "base_commit_sha": "26748968bf01faa21eddd5e8610b4e1b0fdec59e",
+  "prompts": {
+    "024ce036fb04d170": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019db30f-246f-7531-b7c2-dc51dba7718c",
+        "model": "gpt-5.4-mini"
+      },
+      "human_author": "kvzsolt",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 97,
+      "overriden_lines": 0
+    }
+  }
+}
