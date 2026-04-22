@@ -338,13 +338,15 @@ async def risk_monitor_loop(
                 price_cache,
                 circuit_breaker=venue_breaker,
             )
-            for cid, pos in positions.items():
-                if not is_valid_clob_token_id(pos.asset):
-                    logger.warning("Legacy risk monitor: skipping invalid asset=%r cid=%s", pos.asset, cid)
+            for runtime_key, pos in positions.items():
+                condition_id = str(pos.condition_id or "")
+                token_id = str(pos.asset or "")
+                if not is_valid_clob_token_id(token_id):
+                    logger.warning("Legacy risk monitor: skipping invalid asset=%r cid=%s", token_id, condition_id)
                     continue
                 try:
                     cached_price = price_cache.get_fresh(
-                        pos.asset,
+                        token_id,
                         stale_after=_risk_cache_stale_after(interval),
                     )
                     if cached_price is None:
@@ -353,7 +355,7 @@ async def risk_monitor_loop(
                     if current_price <= 0:
                         continue
 
-                    action = pm.evaluate_risk_action(cid, current_price)
+                    action = pm.evaluate_risk_action(condition_id, token_id, current_price)
                     if action:
                         trigger = str(action.get("reason") or "risk_exit")
                         fraction = float(action.get("size_fraction", 1.0) or 1.0)
@@ -365,7 +367,7 @@ async def risk_monitor_loop(
                                 logger.info(
                                     "Balance policy [%s] upgrades partial exit to full for %s…",
                                     policy.name,
-                                    cid[:12],
+                                    condition_id[:12],
                                 )
                                 fraction = 1.0
 
@@ -373,7 +375,7 @@ async def risk_monitor_loop(
                         if sell_size <= 0:
                             continue
                         logger.info(
-                            f"Executing risk {trigger} for {cid[:12]}… "
+                            f"Executing risk {trigger} for {condition_id[:12]}…/{token_id[:12]} "
                             f"tokens={sell_size:.4f}"
                         )
                         if not funder_address:
@@ -384,12 +386,12 @@ async def risk_monitor_loop(
                         exec_req = ExecutionRequest(
                             user_id=funder_address,
                             leader_id=pos.leader_wallet or "risk-monitor",
-                            token_id=pos.asset,
+                            token_id=token_id,
                             side="SELL",
                             amount=Decimal(str(sell_size)),
                             max_slippage_bps=slippage_bps,
                             reason=trigger,
-                            signal_id=f"risk:{trigger}:{cid}:{int(time.time())}",
+                            signal_id=f"risk:{trigger}:{condition_id}:{int(time.time())}",
                         )
                         result = await execution_service.execute(exec_req)
                         if result.accepted and result.filled_amount > 0:
@@ -397,13 +399,13 @@ async def risk_monitor_loop(
                             fill_price = float(result.avg_price or current_price)
                             usdc_value = fill_price * fill_tokens
                             tracker = pnl_tracker
-                            tracked = pm.get_position(cid)
+                            tracked = pm.get_position(condition_id, token_id)
                             entry_price = tracked.entry_price if tracked else pos.entry_price
                             pnl = (fill_price - entry_price) * fill_tokens
                             log_risk_exit(
                                 logger,
-                                condition_id=cid,
-                                asset=pos.asset,
+                                condition_id=condition_id,
+                                asset=token_id,
                                 size=fill_tokens,
                                 price=fill_price,
                                 usdc_value=usdc_value,
@@ -412,11 +414,12 @@ async def risk_monitor_loop(
                                 meta={
                                     "copyOrderId": result.order_id,
                                     "leaderWallet": pos.leader_wallet,
+                                    "runtimeKey": runtime_key,
                                 },
                             )
-                            pm.track_sell(cid, fill_price, fill_tokens, reason=trigger)
+                            pm.track_sell(condition_id, token_id, fill_price, fill_tokens, reason=trigger)
                             tracker.record_sell(
-                                condition_id=cid,
+                                condition_id=condition_id,
                                 price=fill_price,
                                 size_tokens=fill_tokens,
                                 usdc_value=usdc_value,
@@ -435,8 +438,8 @@ async def risk_monitor_loop(
                                 user_id=user_id,
                                 fill_doc={
                                     "order_id": result.order_id,
-                                    "condition_id": cid,
-                                    "token_id": pos.asset,
+                                    "condition_id": condition_id,
+                                    "token_id": token_id,
                                     "side": "SELL",
                                     "size_tokens": str(fill_tokens),
                                     "price": str(fill_price),
@@ -446,15 +449,15 @@ async def risk_monitor_loop(
                                     "reason": trigger,
                                 },
                             )
-                            remaining = pm.get_position(cid)
+                            remaining = pm.get_position(condition_id, token_id)
                             if remaining is None:
-                                accounting.close_position(user_id=user_id, condition_id=str(cid or ""))
+                                accounting.close_position(user_id=user_id, condition_id=condition_id)
                             else:
                                 accounting.upsert_position(
                                     PositionLot(
                                         user_id=user_id,
-                                        condition_id=str(cid or ""),
-                                        token_id=str(remaining.asset or pos.asset),
+                                        condition_id=condition_id,
+                                        token_id=str(remaining.asset or token_id),
                                         size_tokens=Decimal(str(remaining.size_tokens)),
                                         avg_entry_price=Decimal(str(remaining.entry_price)),
                                         leader_id=remaining.leader_wallet or pos.leader_wallet,
@@ -462,7 +465,7 @@ async def risk_monitor_loop(
                                     )
                                 )
                 except Exception as e:
-                    logger.error(f"Risk check error for {cid[:12]}…: {e}")
+                    logger.error(f"Risk check error for {condition_id[:12]}…/{token_id[:12]}: {e}")
 
         except Exception as e:
             logger.error(f"Risk monitor loop error: {e}")
@@ -480,7 +483,7 @@ def rehydrate_position_manager(context: TradingContext) -> None:
         existing = None
         if hasattr(pm, "get_position"):
             try:
-                existing = pm.get_position(pos.condition_id)
+                existing = pm.get_position(pos.condition_id, pos.token_id)
             except Exception:
                 existing = None
         if existing is not None:

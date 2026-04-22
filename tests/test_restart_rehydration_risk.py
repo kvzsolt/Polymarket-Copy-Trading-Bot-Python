@@ -17,7 +17,7 @@ from storage.sqlite.connection import create_connection
 from storage.sqlite.fills_repo import FillRecord, FillsRepo
 from storage.sqlite.migrations import apply_migrations
 from storage.sqlite.orders_repo import OrdersRepo
-from storage.sqlite.positions_repo import PositionsRepo
+from storage.sqlite.positions_repo import PositionRecord, PositionsRepo
 from storage.sqlite.risk_blocks_repo import RiskBlocksRepo
 
 FAKE_TOKEN_ID = "71321045679252212594626385532706912750332728571942532223535764789812338637396"
@@ -124,7 +124,7 @@ async def test_restart_rehydration_and_risk_exit_uses_persisted_positions(tmp_pa
     )
 
     rehydrate_position_manager(context)
-    assert context.position_manager.get_position("cond-1") is not None
+    assert context.position_manager.get_position("cond-1", FAKE_TOKEN_ID) is not None
 
     await run_risk_check_for_context(context)
 
@@ -132,6 +132,62 @@ async def test_restart_rehydration_and_risk_exit_uses_persisted_positions(tmp_pa
     fills = fills_repo.list_fills_for_user_condition("u1", "cond-1")
     assert len(fills) >= 2
     assert pnl_tracker.sells >= 1
+
+
+def test_rehydrate_preserves_token_distinct_positions(tmp_path):
+    db_path = tmp_path / "state.db"
+    with create_connection(str(db_path)) as conn:
+        apply_migrations(conn)
+
+    positions_repo = PositionsRepo(str(db_path))
+    fills_repo = FillsRepo(str(db_path))
+    orders_repo = OrdersRepo(str(db_path))
+    risk_blocks_repo = RiskBlocksRepo(str(db_path))
+    token_b = "61321045679252212594626385532706912750332728571942532223535764789812338637396"
+
+    positions_repo.upsert_position(
+        PositionRecord(
+            user_id="u1",
+            condition_id="cond-1",
+            token_id=FAKE_TOKEN_ID,
+            leader_id="l1",
+            size_tokens=Decimal("10"),
+            avg_entry_price=Decimal("0.60"),
+        )
+    )
+    positions_repo.upsert_position(
+        PositionRecord(
+            user_id="u1",
+            condition_id="cond-1",
+            token_id=token_b,
+            leader_id="l1",
+            size_tokens=Decimal("7"),
+            avg_entry_price=Decimal("0.42"),
+        )
+    )
+
+    context = TradingContext(
+        user_id="u1",
+        wallet_address="wallet-u1",
+        client=_FakeClient(price="0.97"),
+        positions_repo=positions_repo,
+        fills_repo=fills_repo,
+        orders_repo=orders_repo,
+        risk_blocks_repo=risk_blocks_repo,
+        pnl_tracker=_FakePnlTracker(),
+        risk_engine=object(),
+        accounting_service=object(),
+        position_manager=PositionManager(),
+        execution_service=_FakeExecutionService(),
+        extra={"slippage_tolerance_bps": 50},
+    )
+
+    rehydrate_position_manager(context)
+
+    assert context.position_manager.get_position("cond-1", FAKE_TOKEN_ID) is not None
+    assert context.position_manager.get_position("cond-1", token_b) is not None
+    assert context.position_manager.get_position("cond-1") is None
+    assert len(context.position_manager.open_positions) == 2
 
 
 @pytest.mark.asyncio

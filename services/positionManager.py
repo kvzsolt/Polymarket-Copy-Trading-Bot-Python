@@ -27,6 +27,23 @@ from utils.logger import get_logger
 logger = get_logger("PositionManager")
 
 
+def _as_bool(value: object, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    return default
+
+
+def _as_float(value: object, default: float) -> float:
+    if isinstance(value, bool):
+        return float(value)
+    if isinstance(value, (int, float)):
+        return float(value)
+    try:
+        return float(str(value))
+    except Exception:
+        return default
+
+
 def _parse_csv_floats(raw: str) -> list[float]:
     """Parse comma-separated float values."""
     return [float(x.strip()) for x in raw.split(",") if x.strip()]
@@ -77,7 +94,47 @@ class TrackedPosition:
 
 
 class PositionManager:
-    """In-memory position tracker with advanced exit logic."""
+    """In-memory position tracker with advanced exit logic.
+
+    Canonical active-runtime identity is `(condition_id, asset)`.
+    The internal map key is `condition_id::asset` so runtime state matches
+    token-aware persistence and execution paths.
+
+    Legacy condition-only lookups remain for compatibility, but only resolve
+    when exactly one token-scoped position exists for that condition.
+    """
+
+    @staticmethod
+    def _position_key(condition_id: str, asset: str) -> str:
+        return f"{condition_id}::{asset}"
+
+    @classmethod
+    def _decode_position_key(cls, raw_key: str) -> tuple[str, str | None]:
+        if "::" not in raw_key:
+            return raw_key, None
+        condition_id, asset = raw_key.split("::", 1)
+        return condition_id, asset or None
+
+    def _resolve_lookup_key(self, condition_id: str, asset: str | None = None) -> str | None:
+        if asset:
+            direct_key = self._position_key(condition_id, asset)
+            if direct_key in self._positions:
+                return direct_key
+            return None
+
+        if condition_id in self._positions:
+            return condition_id
+
+        if "::" in condition_id and condition_id in self._positions:
+            return condition_id
+
+        matches = [
+            key for key, pos in self._positions.items()
+            if pos.condition_id == condition_id
+        ]
+        if len(matches) == 1:
+            return matches[0]
+        return None
 
     def __init__(self, config: AppConfig | None = None, *, risk_settings=None):
         self._positions: dict[str, TrackedPosition] = {}
@@ -87,39 +144,47 @@ class PositionManager:
             rc = config.risk
             fc = config.features
 
-            self._risk_master_enabled = rc.enable_risk_mgmt
+            self._risk_master_enabled = _as_bool(getattr(rc, "enable_risk_mgmt", True), True)
 
             # Stop-loss
-            self._enable_stop_loss = fc.enable_stop_loss
-            self._stop_loss_threshold = rc.stop_loss_threshold
-            self._stop_loss_grace_period_seconds = rc.stop_loss_grace_period_seconds
+            self._enable_stop_loss = _as_bool(getattr(fc, "enable_stop_loss", False), False)
+            self._stop_loss_threshold = _as_float(getattr(rc, "stop_loss_threshold", 0.15), 0.15)
+            self._stop_loss_grace_period_seconds = _as_float(
+                getattr(rc, "stop_loss_grace_period_seconds", 180.0),
+                180.0,
+            )
 
             # Profit lock
             self._profit_lock_mode = (
-                "advanced" if fc.enable_profit_lock else "disabled"
+                "advanced" if _as_bool(getattr(fc, "enable_profit_lock", False), False) else "disabled"
             )
-            self._profit_lock_trigger = rc.profit_lock_trigger_pct / 100.0
-            self._profit_lock_sell_fraction = rc.profit_lock_sell_fraction
+            self._profit_lock_trigger = _as_float(getattr(rc, "profit_lock_trigger_pct", 70.0), 70.0) / 100.0
+            self._profit_lock_sell_fraction = _as_float(getattr(rc, "profit_lock_sell_fraction", 0.5), 0.5)
 
             # Near-max exit
-            self._enable_near_max = fc.enable_near_max_exit
-            self._near_max_exit = rc.near_max_price_exit
-            self._near_max_warn = rc.near_max_price_warn
-            self._near_max_warn_ratio = max(0.0, min(1.0, rc.near_max_price_warn_trim_ratio))
+            self._enable_near_max = _as_bool(getattr(fc, "enable_near_max_exit", False), False)
+            self._near_max_exit = _as_float(getattr(rc, "near_max_price_exit", 0.95), 0.95)
+            self._near_max_warn = _as_float(getattr(rc, "near_max_price_warn", 0.92), 0.92)
+            self._near_max_warn_ratio = max(
+                0.0,
+                min(1.0, _as_float(getattr(rc, "near_max_price_warn_trim_ratio", 0.5), 0.5)),
+            )
 
             # Trailing stop
-            self._enable_trailing = fc.enable_trailing_stop
-            self._trailing_activation_pct = rc.trailing_activation_pct / 100.0
-            self._trailing_distance = rc.trailing_distance
+            self._enable_trailing = _as_bool(getattr(fc, "enable_trailing_stop", False), False)
+            self._trailing_activation_pct = _as_float(getattr(rc, "trailing_activation_pct", 20.0), 20.0) / 100.0
+            self._trailing_distance = _as_float(getattr(rc, "trailing_distance", 0.05), 0.05)
 
             # Staged TP
-            self._enable_staged_tp = fc.enable_staged_tp
-            self._staged_levels = _parse_csv_floats(rc.staged_tp_levels) if rc.staged_tp_levels else [0.30, 0.50]
-            self._staged_fractions = _parse_csv_floats(rc.staged_tp_fractions) if rc.staged_tp_fractions else [0.25, 0.35]
+            self._enable_staged_tp = _as_bool(getattr(fc, "enable_staged_tp", False), False)
+            staged_levels_raw = getattr(rc, "staged_tp_levels", "")
+            staged_fractions_raw = getattr(rc, "staged_tp_fractions", "")
+            self._staged_levels = _parse_csv_floats(staged_levels_raw) if staged_levels_raw else [0.30, 0.50]
+            self._staged_fractions = _parse_csv_floats(staged_fractions_raw) if staged_fractions_raw else [0.25, 0.35]
             self._staged_levels = [l / 100.0 if l >= 100.0 else l for l in self._staged_levels]
 
             # Leader divergence
-            self._enable_leader_divergence = fc.enable_leader_divergence_exit
+            self._enable_leader_divergence = _as_bool(getattr(fc, "enable_leader_divergence_exit", False), False)
             self._enabled = self._risk_master_enabled
 
         elif risk_settings is not None:
@@ -208,7 +273,8 @@ class PositionManager:
             category=category,
             peak_price=entry_price,
         )
-        existing = self._positions.get(condition_id)
+        key = self._position_key(condition_id, asset)
+        existing = self._positions.get(key)
         if existing:
             total_tokens = Decimal(str(existing.size_tokens)) + d_size
             if total_tokens > 0:
@@ -221,14 +287,14 @@ class PositionManager:
             existing.peak_price = max(existing.peak_price, entry_price)
             existing.category = category or existing.category
             logger.info(
-                f"Position averaged: {condition_id[:12]}… "
+                f"Position averaged: {condition_id[:12]}…/{asset[:12]} "
                 f"avg_entry={existing.entry_price:.4f} total_tokens={existing.size_tokens:.4f}"
             )
             return existing
 
-        self._positions[condition_id] = pos
+        self._positions[key] = pos
         logger.info(
-            f"Position opened: {condition_id[:12]}… "
+            f"Position opened: {condition_id[:12]}…/{asset[:12]} "
             f"entry={entry_price:.4f} tokens={size_tokens:.4f} cost=${usdc_cost:.2f}"
         )
         return pos
@@ -236,17 +302,35 @@ class PositionManager:
     def track_sell(
         self,
         condition_id: str,
-        exit_price: float,
-        size_tokens: float,
+        asset_or_exit_price: str | float,
+        exit_price_or_size_tokens: float,
+        size_tokens: float | None = None,
         reason: str = "leader_sell",
     ) -> Optional[TrackedPosition]:
         """Record a (partial or full) sell. Returns the position if fully closed."""
-        pos = self._positions.get(condition_id)
+        asset: str | None
+        exit_price: float
+        sell_size: float
+
+        if isinstance(asset_or_exit_price, str):
+            asset = asset_or_exit_price
+            exit_price = float(exit_price_or_size_tokens)
+            sell_size = float(size_tokens or 0.0)
+        else:
+            asset = None
+            exit_price = float(asset_or_exit_price)
+            sell_size = float(exit_price_or_size_tokens)
+
+        resolved_key = self._resolve_lookup_key(condition_id, asset)
+        if resolved_key is None:
+            return None
+
+        pos = self._positions.get(resolved_key)
         if not pos:
             return None
 
         # Clamp sell amount to held amount to prevent PnL inflation on oversells
-        effective_size = min(Decimal(str(size_tokens)), Decimal(str(pos.size_tokens)))
+        effective_size = min(Decimal(str(sell_size)), Decimal(str(pos.size_tokens)))
         pos.size_tokens = float(Decimal(str(pos.size_tokens)) - effective_size)
         realized = float((Decimal(str(exit_price)) - Decimal(str(pos.entry_price))) * effective_size)
         if pos.realized_pnl is None:
@@ -258,7 +342,7 @@ class PositionManager:
             pos.exit_time = time.time()
             pos.exit_reason = reason
             pos.size_tokens = 0.0
-            del self._positions[condition_id]
+            del self._positions[resolved_key]
             self._closed.append(pos)
             logger.info(
                 f"Position closed ({reason}): {condition_id[:12]}… "
@@ -272,14 +356,20 @@ class PositionManager:
         )
         return None
 
-    def signal_leader_divergence(self, condition_id: str) -> None:
+    def signal_leader_divergence(self, condition_id: str, asset: str | None = None) -> None:
         """External signal: the copied leader reduced or exited this position."""
-        pos = self._positions.get(condition_id)
+        resolved_key = self._resolve_lookup_key(condition_id, asset)
+        pos = self._positions.get(resolved_key) if resolved_key is not None else None
         if pos:
             pos.exit_state.leader_divergence_pending = True
             logger.info(f"🤝 Leader divergence signaled: {condition_id[:12]}…")
 
-    def evaluate_risk_action(self, condition_id: str, current_price: float) -> Optional[dict]:
+    def evaluate_risk_action(
+        self,
+        condition_id: str,
+        asset_or_current_price: str | float,
+        current_price: float | None = None,
+    ) -> Optional[dict]:
         """Return risk action dict with reason + size_fraction, or None.
 
         Follows exit priority:
@@ -291,7 +381,19 @@ class PositionManager:
         """
         if not self._risk_management_enabled():
             return None
-        pos = self._positions.get(condition_id)
+
+        if isinstance(asset_or_current_price, str):
+            asset = asset_or_current_price
+            current_price = float(current_price) if current_price is not None else None
+        else:
+            asset = None
+            current_price = float(asset_or_current_price)
+
+        if current_price is None:
+            return None
+
+        resolved_key = self._resolve_lookup_key(condition_id, asset)
+        pos = self._positions.get(resolved_key) if resolved_key is not None else None
         if not pos or pos.entry_price <= 0:
             return None
 
@@ -418,15 +520,23 @@ class PositionManager:
 
         return None
 
-    def check_risk_triggers(self, condition_id: str, current_price: float) -> Optional[str]:
+    def check_risk_triggers(
+        self,
+        condition_id: str,
+        asset_or_current_price: str | float,
+        current_price: float | None = None,
+    ) -> Optional[str]:
         """Backwards-compatible risk trigger API (returns reason string only)."""
-        action = self.evaluate_risk_action(condition_id, current_price)
+        action = self.evaluate_risk_action(condition_id, asset_or_current_price, current_price)
         if not action:
             return None
         return str(action.get("reason"))
 
-    def get_position(self, condition_id: str) -> Optional[TrackedPosition]:
-        return self._positions.get(condition_id)
+    def get_position(self, condition_id: str, asset: str | None = None) -> Optional[TrackedPosition]:
+        resolved_key = self._resolve_lookup_key(condition_id, asset)
+        if resolved_key is None:
+            return None
+        return self._positions.get(resolved_key)
 
     def summary(self) -> dict:
         """Return portfolio summary stats."""
