@@ -20,7 +20,6 @@ from services.marketMetaService import MarketMetaService
 from services.metrics import metrics
 from services.orderRepository import OrderRepository
 from services.riskEngine import active_policy
-from services.riskEngine import active_policy
 from storage.sqlite.fills_repo import FillRecord
 from utils import is_valid_clob_token_id
 

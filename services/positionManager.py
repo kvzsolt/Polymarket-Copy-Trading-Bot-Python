@@ -125,9 +125,6 @@ class PositionManager:
         if condition_id in self._positions:
             return condition_id
 
-        if "::" in condition_id and condition_id in self._positions:
-            return condition_id
-
         matches = [
             key for key, pos in self._positions.items()
             if pos.condition_id == condition_id
@@ -315,11 +312,20 @@ class PositionManager:
         if isinstance(asset_or_exit_price, str):
             asset = asset_or_exit_price
             exit_price = float(exit_price_or_size_tokens)
-            sell_size = float(size_tokens or 0.0)
+            if size_tokens is None:
+                raise ValueError(
+                    "track_sell(condition_id, asset, exit_price, size_tokens, ...) requires size_tokens"
+                )
+            sell_size = float(size_tokens)
         else:
             asset = None
             exit_price = float(asset_or_exit_price)
             sell_size = float(exit_price_or_size_tokens)
+
+        if sell_size <= 0:
+            raise ValueError(
+                f"track_sell requires positive size_tokens, got {sell_size} for condition_id={condition_id}"
+            )
 
         resolved_key = self._resolve_lookup_key(condition_id, asset)
         if resolved_key is None:

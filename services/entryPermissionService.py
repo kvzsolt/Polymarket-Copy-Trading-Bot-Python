@@ -11,13 +11,13 @@ Clear rules (evaluated in order before denying):
                                  (handled transparently by the repo query)
     2. ``operator_cleared``    — explicit ``clear_risk_block()`` call set ``cleared_at``.
                                  (handled transparently by the repo query)
-    3. ``fresh_leader_buy_after_net_flat`` — leader went to net-zero after the protective
+    3. ``leader_changed``      — the inbound signal comes from a different leader than
+                                 the one who anchored the block (leader_anchor mismatch).
+    4. ``fresh_leader_buy_after_net_flat`` — leader went to net-zero after the protective
                                  exit and has now re-entered with a fresh BUY.
                                  Detected by comparing ``leader_notional_at_trigger``
                                  stored in block metadata against the caller-supplied
                                  current leader notional.
-    4. ``leader_changed``      — the inbound signal comes from a different leader than
-                                 the one who anchored the block (leader_anchor mismatch).
 """
 from __future__ import annotations
 

@@ -194,6 +194,7 @@ async def test_sell_not_blocked_when_risk_block_active(tmp_path):
     """A risk block must NOT block SELL paths — exits must always be allowed."""
     db_path = _init_db(tmp_path)
     exec_svc = AsyncMock()
+    exec_svc.execute.return_value = _exec_result()
     ctx = _make_context(db_path, execution_service=exec_svc)
 
     ctx.risk_blocks_repo.mark_risk_block(
@@ -219,9 +220,12 @@ async def test_sell_not_blocked_when_risk_block_active(tmp_path):
     )
 
     signal = _signal(side="SELL", tx_hash="0xquarantine-sell")
-    results = await execute_trades(ctx, "leader1", [signal], time.time())
+    with patch("orchestrators.trade_pipeline._fetch_live_position_size", new_callable=AsyncMock, return_value=Decimal("10")):
+        results = await execute_trades(ctx, "leader1", [signal], time.time())
 
     assert len(results) == 1
+    exec_svc.execute.assert_awaited_once()
+    assert results[0].status == "executed"
     # SELL must proceed — must NOT be skipped with market_risk_quarantined
     assert results[0].reason != "market_risk_quarantined"
 
