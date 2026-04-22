@@ -103,3 +103,8 @@
 - Observation: Once live watchlist gating reads `context.config.features`, old tests that only toggled `ENV` can silently stop exercising the tier-gate branch because `load_config(...)` defaults those flags to false.
 - Action: In tier-gate tests, build `TradingContext` with typed config that explicitly sets `ENABLE_TIER_GATE_WATCHLIST` / `ENABLE_TIER_GATE_WATCHLIST_LOG`, and keep assertions focused on tier-gate behavior instead of unrelated downstream execution gates.
 - Confidence: high
+
+**[2026-04-23] — #30 paper-trade override must be tested through typed ExecutionConfig**
+- Observation: The live `trade_pipeline` path still read `ENV.get("PAPER_TRADE_ONLY")` directly even though `AppConfig.execution.paper_trade_only` already existed, and the regression tests were accidentally reinforcing that env fallback.
+- Action: Route the live override through `context.config.execution.paper_trade_only` and build tier tests with `_config(PAPER_TRADE_ONLY=...)` so they exercise typed config instead of raw env state.
+- Confidence: high

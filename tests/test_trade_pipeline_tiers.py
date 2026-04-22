@@ -272,15 +272,17 @@ async def test_watchlist_gate_can_be_disabled(tmp_path):
 # --- PAPER_TRADE_ONLY global override tests ---
 
 @pytest.mark.asyncio
-async def test_paper_trade_only_overrides_live_follow(tmp_path, monkeypatch):
-    """PAPER_TRADE_ONLY=true must demote live_follow leaders to paper without executing."""
-    monkeypatch.setenv("PAPER_TRADE_ONLY", "true")
-    rehydrate_env()
-
+async def test_paper_trade_only_overrides_live_follow(tmp_path):
+    """Typed paper_trade_only must demote live_follow leaders to paper without executing."""
     repo = _FakeLeadersRepo({"0xleader": "live_follow"})
     from unittest.mock import AsyncMock
     exec_svc = AsyncMock()
-    ctx = _make_context(_init_db(tmp_path), leaders_repo=repo, execution_service=exec_svc)
+    ctx = _make_context(
+        _init_db(tmp_path),
+        leaders_repo=repo,
+        execution_service=exec_svc,
+        config=_config(PAPER_TRADE_ONLY="true"),
+    )
     results = await execute_trades(ctx, "0xleader", [_signal()], time.time())
     assert len(results) == 1
     assert results[0].status == "paper"
@@ -290,13 +292,15 @@ async def test_paper_trade_only_overrides_live_follow(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_paper_trade_only_does_not_affect_watchlist(tmp_path, monkeypatch):
-    """PAPER_TRADE_ONLY=true should not change watchlist behavior (still skipped)."""
-    monkeypatch.setenv("PAPER_TRADE_ONLY", "true")
-    rehydrate_env()
-
+async def test_paper_trade_only_does_not_affect_watchlist(tmp_path):
+    """Typed paper_trade_only should not change watchlist behavior (still skipped)."""
     repo = _FakeLeadersRepo({"0xleader": "watchlist"})
-    ctx = _make_context(_init_db(tmp_path), leaders_repo=repo, execution_service=MagicMock())
+    ctx = _make_context(
+        _init_db(tmp_path),
+        leaders_repo=repo,
+        execution_service=MagicMock(),
+        config=_config(PAPER_TRADE_ONLY="true"),
+    )
     results = await execute_trades(ctx, "0xleader", [_signal()], time.time())
     assert len(results) == 1
     assert results[0].status == "skipped"
@@ -304,13 +308,10 @@ async def test_paper_trade_only_does_not_affect_watchlist(tmp_path, monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_paper_trade_only_false_allows_live(tmp_path, monkeypatch):
-    """PAPER_TRADE_ONLY=false must not interfere with live execution."""
+async def test_paper_trade_only_false_allows_live(tmp_path):
+    """Typed paper_trade_only=false must not interfere with live execution."""
     from unittest.mock import AsyncMock
     from services.executionService import ExecutionResult
-
-    monkeypatch.setenv("PAPER_TRADE_ONLY", "false")
-    rehydrate_env()
 
     repo = _FakeLeadersRepo({"0xleader": "live_follow"})
     exec_svc = AsyncMock()
@@ -319,10 +320,15 @@ async def test_paper_trade_only_false_allows_live(tmp_path, monkeypatch):
         requested_amount=Decimal("5"), filled_amount=Decimal("5"),
         avg_price=Decimal("0.50"), fees_paid=Decimal("0.01"),
     ))
-    ctx = _make_context(_init_db(tmp_path), leaders_repo=repo, execution_service=exec_svc)
+    ctx = _make_context(
+        _init_db(tmp_path),
+        leaders_repo=repo,
+        execution_service=exec_svc,
+        config=_config(PAPER_TRADE_ONLY="false"),
+    )
     results = await execute_trades(ctx, "0xleader", [_signal()], time.time())
     assert len(results) == 1
-    # With PAPER_TRADE_ONLY=false, execution should be attempted (not forced to paper)
+    # With paper_trade_only disabled, execution should be attempted (not forced to paper)
     assert results[0].status != "paper"
 
 

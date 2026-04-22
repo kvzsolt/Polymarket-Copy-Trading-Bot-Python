@@ -853,7 +853,7 @@ async def execute_trades(
     results: list[TradePipelineResult] = []
 
     leader_tier_resolved = _resolve_leader_tier(context, leader_id)
-    if ENV.get("PAPER_TRADE_ONLY", False) and leader_tier_resolved == "live_follow":
+    if _trade_config(context).execution.paper_trade_only and leader_tier_resolved == "live_follow":
         logger.info(
             "paper_trade_only_override_all",
             extra={
