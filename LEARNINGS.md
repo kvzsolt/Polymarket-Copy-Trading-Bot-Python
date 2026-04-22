@@ -83,3 +83,8 @@
 - Observation: Restart reconciliation was reading the venue's cumulative matched size and reapplying the whole amount every pass. If 2 tokens were already durably applied before restart and the venue later reported 5 matched, the old path would apply 5 again instead of the missing delta 3.
 - Action: In `orchestrators.trade_pipeline._reconcile_one(...)`, compare the venue's current matched amount against the previously persisted submission response, apply only the positive delta, keep non-final partial progress in `submitted_unconfirmed`, and only flip to `filled_reconciled` once the venue outcome is actually final.
 - Confidence: high
+
+**[2026-04-22] — #29 risk-side delayed-fill progress needs explicit regression coverage**
+- Observation: The risk-monitor recovery path now carries the same cumulative-matched vs incremental-delta logic as trade reconciliation, but without a direct regression test it is too easy for a future edit to reintroduce restart-time double-apply on partially filled protective SELLs.
+- Action: Keep a focused startup-recovery test that seeds prior matched progress in `orders.response_json` and local fills, then asserts only the missing delta is applied, the order stays `submitted_unconfirmed` for non-final venue state, and no risk block is activated while position remains open.
+- Confidence: high

@@ -106,6 +106,16 @@ class _ReconcilingPartialExecutionService(_RejectingExecutionService):
         }
 
 
+class _ReconcilingRiskProgressExecutionService(_RejectingExecutionService):
+    async def _confirm_fill(self, order_id: str):
+        return {
+            "status": "partially_filled",
+            "size_matched": "5",
+            "avg_price": "0.30",
+            "orderID": order_id,
+        }
+
+
 class _ReconcilingNoFillExecutionService(_RejectingExecutionService):
     async def _confirm_fill(self, order_id: str):
         return {
@@ -652,6 +662,113 @@ async def test_startup_reconcile_partial_unconfirmed_risk_sell_keeps_position_op
     order_row = orders_repo.get_by_order_id("venue-risk-partial-1")
     assert order_row is not None
     assert order_row["status"] == "filled_reconciled"
+    assert risk_blocks_repo.get_active_risk_block(
+        user_id="u1",
+        condition_id="cond-1",
+        token_id=FAKE_TOKEN_ID,
+    ) is None
+
+
+@pytest.mark.asyncio
+async def test_startup_reconcile_risk_sell_applies_only_incremental_matched_delta(tmp_path):
+    db_path = tmp_path / "state.db"
+    with create_connection(str(db_path)) as conn:
+        apply_migrations(conn)
+
+    fills_repo = FillsRepo(str(db_path))
+    positions_repo = PositionsRepo(str(db_path))
+    orders_repo = OrdersRepo(str(db_path))
+    risk_blocks_repo = RiskBlocksRepo(str(db_path))
+    pnl_tracker = _FakePnlTracker()
+
+    fills_repo.append_fill(
+        FillRecord(
+            user_id="u1",
+            leader_id="l1",
+            order_id="buy-1",
+            condition_id="cond-1",
+            token_id=FAKE_TOKEN_ID,
+            side="BUY",
+            size_tokens=Decimal("10"),
+            price=Decimal("0.60"),
+            fee=Decimal("0"),
+            fill_ts=1_700_000_000,
+        )
+    )
+    fills_repo.append_fill(
+        FillRecord(
+            user_id="u1",
+            leader_id="l1",
+            order_id="venue-risk-progress-1",
+            condition_id="cond-1",
+            token_id=FAKE_TOKEN_ID,
+            side="SELL",
+            size_tokens=Decimal("2"),
+            price=Decimal("0.30"),
+            fee=Decimal("0"),
+            fill_ts=1_700_000_100,
+        )
+    )
+    positions_repo.rebuild_user_positions_from_fills("u1", fills_repo)
+    orders_repo.save_submission(
+        OrderSubmissionRecord(
+            idempotency_key="risk-idem-progress-1",
+            user_id="u1",
+            leader_id="l1",
+            order_id="venue-risk-progress-1",
+            status="submitted_unconfirmed",
+            request_payload={
+                "user_id": "u1",
+                "leader_id": "l1",
+                "token_id": FAKE_TOKEN_ID,
+                "condition_id": "cond-1",
+                "side": "SELL",
+                "amount": "10",
+                "reason": "near_max_full_exit",
+                "signal_id": "risk:near_max_full_exit:cond-1:1700000003",
+                "recovery_metadata": {
+                    "leader_notional_at_trigger": 9.7,
+                    "copied_position_notional_at_trigger": 9.7,
+                    "trigger_price": 0.97,
+                    "trigger_size_tokens": 10.0,
+                    "trigger_fraction": 1.0,
+                },
+            },
+            response_payload={
+                "status": "submitted_unconfirmed",
+                "orderID": "venue-risk-progress-1",
+                "size_matched": "2",
+            },
+        )
+    )
+
+    context = TradingContext(
+        user_id="u1",
+        wallet_address="wallet-u1",
+        client=_FakeClient(price="0.97"),
+        positions_repo=positions_repo,
+        fills_repo=fills_repo,
+        orders_repo=orders_repo,
+        risk_blocks_repo=risk_blocks_repo,
+        pnl_tracker=pnl_tracker,
+        risk_engine=object(),
+        accounting_service=object(),
+        position_manager=PositionManager(),
+        execution_service=_ReconcilingRiskProgressExecutionService(),
+        extra={"slippage_tolerance_bps": 50},
+    )
+
+    result = await startup_reconcile_unconfirmed([context])
+
+    assert result == {"u1": 1}
+    remaining = positions_repo.get_position("u1", "cond-1", token_id=FAKE_TOKEN_ID)
+    assert remaining is not None
+    assert remaining.size_tokens == Decimal("5")
+    order_row = orders_repo.get_by_order_id("venue-risk-progress-1")
+    assert order_row is not None
+    assert order_row["status"] == "submitted_unconfirmed"
+    assert order_row["response"].get("matched_previous") == "2"
+    assert order_row["response"].get("matched_delta") == "3"
     assert risk_blocks_repo.get_active_risk_block(
         user_id="u1",
         condition_id="cond-1",
