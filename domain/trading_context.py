@@ -10,6 +10,7 @@ from services.copyStrategy import CopySizingResult, calculate_copy_notional
 from services.entryPermissionService import EntryPermissionService
 from services.healthServer import ReadinessTracker
 from services.leaderScoringService import LeaderScoringService
+from services.position_action_coordinator import PositionActionCoordinator
 
 
 def _default_leader_scorer() -> LeaderScoringService:
@@ -43,6 +44,7 @@ class TradingContext:
     leader_scorer: LeaderScoringService = field(default_factory=_default_leader_scorer)
     copy_decision_service: CopyDecisionService = field(default_factory=_default_copy_decision)
     readiness: ReadinessTracker = field(default_factory=ReadinessTracker)
+    position_coordinator: PositionActionCoordinator = field(default_factory=PositionActionCoordinator)
     extra: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
