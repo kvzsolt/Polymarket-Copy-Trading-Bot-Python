@@ -171,7 +171,12 @@ async def fetch_live_positions(wallet: str) -> list[dict]:
     return live_positions
 
 
-def build_user_state(runtime_user: RuntimeUser, client: object, db_path: str) -> UserRuntimeState:
+def build_user_state(
+    runtime_user: RuntimeUser,
+    client: object,
+    db_path: str,
+    config: AppConfig | None = None,
+) -> UserRuntimeState:
     order_repo = OrdersRepo(db_path)
     fills_repo = FillsRepo(db_path)
     positions_repo = PositionsRepo(db_path)
@@ -179,7 +184,7 @@ def build_user_state(runtime_user: RuntimeUser, client: object, db_path: str) ->
     pnl_tracker = PnLTracker(log_path=f"log/pnl_{runtime_user.user_id}.jsonl")
     risk_engine = RiskEngine()
     accounting_service = AccountingService()
-    position_manager = PositionManager()
+    position_manager = PositionManager(config=config)
     execution_service = ExecutionService(
         clob_client=client,
         market_meta_service=MarketMetaService(client),
@@ -221,6 +226,7 @@ def build_trading_context(
         risk_engine=user_state.risk_engine,
         accounting_service=user_state.accounting_service,
         position_manager=user_state.position_manager,
+        config=config,
         entry_permission_service=EntryPermissionService(user_state.risk_blocks_repo),
         execution_service=user_state.execution_service,
         leaders_repo=leaders_repo,

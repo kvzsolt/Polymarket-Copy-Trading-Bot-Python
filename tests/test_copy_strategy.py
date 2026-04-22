@@ -22,6 +22,7 @@ def _make_context(*, allocation_pct: float = 0.10, buy_min: float = 1.0, buy_max
         positions_repo=object(),
         fills_repo=object(),
         orders_repo=object(),
+        risk_blocks_repo=object(),
         pnl_tracker=object(),
         risk_engine=object(),
         accounting_service=object(),

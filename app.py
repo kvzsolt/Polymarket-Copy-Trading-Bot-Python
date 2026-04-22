@@ -221,7 +221,12 @@ async def main():
     user_states: dict[str, UserRuntimeState] = {}
     for runtime_user in runtime_users:
         client = await create_clob_client(wallet_config=runtime_user.wallet)
-        user_states[runtime_user.user_id] = build_user_state(runtime_user, client, db_path)
+        user_states[runtime_user.user_id] = build_user_state(
+            runtime_user,
+            client,
+            db_path,
+            application.config,
+        )
 
     leader_balances_raw = await asyncio.gather(*(get_my_balance(wallet) for wallet in active_leaders))
     user_balances_raw = await asyncio.gather(

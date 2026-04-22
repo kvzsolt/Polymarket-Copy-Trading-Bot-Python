@@ -88,3 +88,8 @@
 - Observation: The risk-monitor recovery path now carries the same cumulative-matched vs incremental-delta logic as trade reconciliation, but without a direct regression test it is too easy for a future edit to reintroduce restart-time double-apply on partially filled protective SELLs.
 - Action: Keep a focused startup-recovery test that seeds prior matched progress in `orders.response_json` and local fills, then asserts only the missing delta is applied, the order stays `submitted_unconfirmed` for non-final venue state, and no risk block is activated while position remains open.
 - Confidence: high
+
+**[2026-04-22] — #30 live bootstrap must inject typed config into active sizing paths**
+- Observation: The active runtime bootstrap still had two config-honesty gaps: `build_user_state()` constructed `PositionManager()` without `AppConfig`, and `TradingContext.copy_notional()` fell back to raw `ENV` values even when typed sizing config was available.
+- Action: Thread `AppConfig` through the live bootstrap/composition root, construct `PositionManager(config=...)` for active users, and have `TradingContext` prefer `config.sizing` whenever the typed config is present. Keep raw `ENV` reads only on the legacy/test-only path.
+- Confidence: high
