@@ -79,7 +79,7 @@ async def test_different_scopes_run_in_parallel():
     results = await asyncio.gather(task_a, task_b)
 
     assert set(results) == {"a", "b"}
-    assert coord.scope_count() == 2
+    assert coord.scope_count() == 0
 
 
 @pytest.mark.asyncio
@@ -161,8 +161,7 @@ async def test_release_scope_drops_unlocked_scope():
     coord = PositionActionCoordinator()
     scope = _scope(condition="release-me", token=FAKE_TOKEN_A)
 
-    async with coord.acquire(scope):
-        pass
+    await coord.get_lock(scope)
 
     assert coord.scope_count() == 1
     assert coord.release_scope(scope) is True
@@ -175,12 +174,27 @@ async def test_prune_removes_only_unlocked_scopes():
     scope_a = _scope(condition="prune-a", token=FAKE_TOKEN_A)
     scope_b = _scope(condition="prune-b", token=FAKE_TOKEN_B)
 
-    async with coord.acquire(scope_a):
-        pass
-    async with coord.acquire(scope_b):
-        pass
+    await coord.get_lock(scope_a)
+    await coord.get_lock(scope_b)
 
     assert coord.scope_count() == 2
     removed = coord.prune()
     assert removed == 2
+    assert coord.scope_count() == 0
+
+
+@pytest.mark.asyncio
+async def test_last_waiter_releases_scope_after_serialized_use():
+    coord = PositionActionCoordinator()
+    scope = _scope(condition="queued", token=FAKE_TOKEN_A)
+    entered = []
+
+    async def worker(name: str) -> None:
+        async with coord.acquire(scope):
+            entered.append(name)
+            await asyncio.sleep(0.01)
+
+    await asyncio.gather(worker("a"), worker("b"))
+
+    assert entered == ["a", "b"]
     assert coord.scope_count() == 0

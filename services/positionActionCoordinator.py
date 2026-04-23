@@ -67,6 +67,9 @@ class PositionActionCoordinator:
     dict of ``asyncio.Lock`` keyed by ``(condition_id, token_id)``. Lock
     creation itself is guarded by a registry lock so two tasks that race
     to observe a brand-new scope cannot create two different locks for it.
+
+    Idle scope locks are released after the final waiter drains so the
+    registry does not grow forever in long-lived runtimes.
     """
 
     def __init__(self) -> None:
@@ -77,6 +80,13 @@ class PositionActionCoordinator:
     @staticmethod
     def _scope_key(scope: PositionScope) -> tuple[str, str]:
         return (scope.condition_id, scope.token_id)
+
+    @staticmethod
+    def _has_waiters(lock: asyncio.Lock) -> bool:
+        waiters = getattr(lock, "_waiters", None)
+        if not waiters:
+            return False
+        return any(not waiter.cancelled() for waiter in waiters)
 
     async def get_lock(self, scope: PositionScope) -> asyncio.Lock:
         """Return (creating if needed) the per-scope ``asyncio.Lock``.
@@ -106,21 +116,22 @@ class PositionActionCoordinator:
         lock = await self.get_lock(scope)
         async with lock:
             yield
+        self.release_scope(scope)
 
     def release_scope(self, scope: PositionScope) -> bool:
-        """Drop an unlocked scope lock so closed positions do not accumulate forever."""
+        """Drop an idle scope lock once it has no holder and no queued waiters."""
         key = self._scope_key(scope)
         lock = self._locks.get(key)
-        if lock is None or lock.locked():
+        if lock is None or lock.locked() or self._has_waiters(lock):
             return False
         self._locks.pop(key, None)
         return True
 
     def prune(self) -> int:
-        """Remove all currently-unlocked scope locks and return the count removed."""
+        """Remove all idle scope locks and return the count removed."""
         removed = 0
         for key, lock in list(self._locks.items()):
-            if lock.locked():
+            if lock.locked() or self._has_waiters(lock):
                 continue
             self._locks.pop(key, None)
             removed += 1
@@ -133,7 +144,7 @@ class PositionActionCoordinator:
     # --- Introspection (tests / diagnostics) ---------------------------------
 
     def scope_count(self) -> int:
-        """Number of distinct scopes that have ever been locked."""
+        """Number of scope locks currently retained in the registry."""
         return len(self._locks)
 
     def locks_held(self) -> int:
