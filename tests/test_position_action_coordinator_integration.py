@@ -31,7 +31,7 @@ from services.accountingService import AccountingService
 from services.executionService import ExecutionResult
 from services.pnlTracker import PnLTracker
 from services.positionManager import PositionManager
-from services.position_action_coordinator import PositionScope
+from services.positionActionCoordinator import PositionScope
 from services.riskEngine import RiskEngine
 from services.riskMonitor import run_risk_check_for_context
 from storage.sqlite.connection import create_connection
@@ -41,6 +41,8 @@ from storage.sqlite.orders_repo import OrdersRepo
 from storage.sqlite.positions_repo import PositionRecord, PositionsRepo
 from storage.sqlite.risk_blocks_repo import RiskBlocksRepo
 
+
+pytestmark = pytest.mark.integration
 
 FAKE_TOKEN_ID = "71321045679252212594626385532706912750332728571942532223535764789812338637396"
 OTHER_TOKEN_ID = "61321045679252212594626385532706912750332728571942532223535764789812338637396"

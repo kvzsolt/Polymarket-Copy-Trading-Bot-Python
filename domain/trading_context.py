@@ -10,7 +10,7 @@ from services.copyStrategy import CopySizingResult, calculate_copy_notional
 from services.entryPermissionService import EntryPermissionService
 from services.healthServer import ReadinessTracker
 from services.leaderScoringService import LeaderScoringService
-from services.position_action_coordinator import PositionActionCoordinator
+from services.positionActionCoordinator import PositionActionCoordinator
 
 
 def _default_leader_scorer() -> LeaderScoringService:

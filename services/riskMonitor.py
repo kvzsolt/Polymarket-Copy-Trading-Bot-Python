@@ -19,7 +19,7 @@ from services.healthServer import ReadinessTracker
 from services.marketMetaService import MarketMetaService
 from services.metrics import metrics
 from services.orderRepository import OrderRepository
-from services.position_action_coordinator import PositionScope
+from services.positionActionCoordinator import PositionScope
 from services.riskEngine import active_policy
 from storage.sqlite.fills_repo import FillRecord
 from utils import is_valid_clob_token_id
@@ -425,7 +425,18 @@ async def risk_monitor_loop(
                                     "runtimeKey": runtime_key,
                                 },
                             )
-                            pm.track_sell(condition_id, token_id, fill_price, fill_tokens, reason=trigger)
+                            closed_pos = pm.track_sell(condition_id, token_id, fill_price, fill_tokens, reason=trigger)
+                            if closed_pos is not None and hasattr(context, "position_coordinator"):
+                                try:
+                                    context.position_coordinator.release_scope(
+                                        PositionScope(
+                                            user_id=context.user_id,
+                                            condition_id=condition_id,
+                                            token_id=token_id,
+                                        )
+                                    )
+                                except Exception:
+                                    pass
                             tracker.record_sell(
                                 condition_id=condition_id,
                                 price=fill_price,
@@ -967,7 +978,7 @@ async def run_risk_check_for_context(context: TradingContext) -> None:
                 )
                 if hasattr(context.position_manager, "track_sell"):
                     try:
-                        context.position_manager.track_sell(
+                        closed_pos = context.position_manager.track_sell(
                             pos.condition_id,
                             pos.token_id,
                             float(fill_price),
@@ -975,12 +986,23 @@ async def run_risk_check_for_context(context: TradingContext) -> None:
                             reason=reason,
                         )
                     except TypeError:
-                        context.position_manager.track_sell(
+                        closed_pos = context.position_manager.track_sell(
                             pos.condition_id,
                             float(fill_price),
                             float(fill_size),
                             reason=reason,
                         )
+                    if closed_pos is not None and hasattr(context, "position_coordinator"):
+                        try:
+                            context.position_coordinator.release_scope(
+                                PositionScope(
+                                    user_id=context.user_id,
+                                    condition_id=pos.condition_id,
+                                    token_id=getattr(pos, "token_id", getattr(pos, "asset", "")),
+                                )
+                            )
+                        except Exception:
+                            pass
             except Exception as exc:
                 logger.error(f"Risk context check failed user={context.user_id} condition={pos.condition_id}: {exc}")
 

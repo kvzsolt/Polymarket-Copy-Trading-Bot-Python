@@ -15,7 +15,7 @@ from domain.trading_context import TradingContext
 from services.entryPermissionService import EntryDecision, EntryPermissionService
 from services.executionService import ExecutionRequest
 from services.metrics import metrics
-from services.position_action_coordinator import PositionScope
+from services.positionActionCoordinator import PositionScope
 from services.riskEngine import headroom_for_buy
 from services.riskEngine import active_policy
 from storage.sqlite.fills_repo import FillRecord
@@ -570,9 +570,25 @@ async def _reconcile_one(
 
     order_status = str(fill_info.get("status", "")).lower()
     terminal_no_fill_statuses = {"cancelled", "canceled", "expired", "rejected"}
-    final_fill_statuses = {"filled", "matched", ""}
+    final_fill_statuses = {"filled", "matched"}
 
     current_matched = _matched_amount_from_response(fill_info)
+    if not order_status and current_matched <= 0:
+        logger.warning(
+            "reconcile_unconfirmed_retryable_missing_status | side=%s order_id=%s cond=%s",
+            side,
+            order_id,
+            str(record.get("condition_id", ""))[:12],
+            extra={
+                "type": "reconcile_unconfirmed_missing_status",
+                "order_id": order_id,
+                "condition_id": record.get("condition_id"),
+                "user_id": record["user_id"],
+                "side": side,
+            },
+        )
+        return False
+
 
     existing_submission = None
     try:
@@ -967,7 +983,7 @@ async def execute_trades(
                     )
                     continue
 
-                _decision: EntryDecision | None = _eps.check_entry(
+                _decision: EntryDecision | None = await _eps.check_entry(
                     user_id=context.user_id,
                     condition_id=signal.condition_id,
                     token_id=signal.token_id,

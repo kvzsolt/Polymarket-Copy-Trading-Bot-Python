@@ -11,7 +11,7 @@ import asyncio
 
 import pytest
 
-from services.position_action_coordinator import (
+from services.positionActionCoordinator import (
     PositionActionCoordinator,
     PositionScope,
 )
@@ -154,3 +154,33 @@ async def test_private_alias_still_works():
     scope = _scope()
     lock = await coord._get_lock(scope)
     assert isinstance(lock, asyncio.Lock)
+
+
+@pytest.mark.asyncio
+async def test_release_scope_drops_unlocked_scope():
+    coord = PositionActionCoordinator()
+    scope = _scope(condition="release-me", token=FAKE_TOKEN_A)
+
+    async with coord.acquire(scope):
+        pass
+
+    assert coord.scope_count() == 1
+    assert coord.release_scope(scope) is True
+    assert coord.scope_count() == 0
+
+
+@pytest.mark.asyncio
+async def test_prune_removes_only_unlocked_scopes():
+    coord = PositionActionCoordinator()
+    scope_a = _scope(condition="prune-a", token=FAKE_TOKEN_A)
+    scope_b = _scope(condition="prune-b", token=FAKE_TOKEN_B)
+
+    async with coord.acquire(scope_a):
+        pass
+    async with coord.acquire(scope_b):
+        pass
+
+    assert coord.scope_count() == 2
+    removed = coord.prune()
+    assert removed == 2
+    assert coord.scope_count() == 0

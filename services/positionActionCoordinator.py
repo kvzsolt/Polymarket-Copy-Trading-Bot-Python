@@ -72,6 +72,7 @@ class PositionActionCoordinator:
     def __init__(self) -> None:
         self._locks: dict[tuple[str, str], asyncio.Lock] = {}
         self._registry_lock = asyncio.Lock()
+        self._prune_threshold = 128
 
     @staticmethod
     def _scope_key(scope: PositionScope) -> tuple[str, str]:
@@ -93,6 +94,7 @@ class PositionActionCoordinator:
             if existing is None:
                 existing = asyncio.Lock()
                 self._locks[key] = existing
+                self._maybe_prune()
             return existing
 
     # Backwards-compatible alias for the previous private name.
@@ -104,6 +106,29 @@ class PositionActionCoordinator:
         lock = await self.get_lock(scope)
         async with lock:
             yield
+
+    def release_scope(self, scope: PositionScope) -> bool:
+        """Drop an unlocked scope lock so closed positions do not accumulate forever."""
+        key = self._scope_key(scope)
+        lock = self._locks.get(key)
+        if lock is None or lock.locked():
+            return False
+        self._locks.pop(key, None)
+        return True
+
+    def prune(self) -> int:
+        """Remove all currently-unlocked scope locks and return the count removed."""
+        removed = 0
+        for key, lock in list(self._locks.items()):
+            if lock.locked():
+                continue
+            self._locks.pop(key, None)
+            removed += 1
+        return removed
+
+    def _maybe_prune(self) -> None:
+        if len(self._locks) > self._prune_threshold:
+            self.prune()
 
     # --- Introspection (tests / diagnostics) ---------------------------------
 

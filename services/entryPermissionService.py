@@ -21,6 +21,7 @@ Clear rules (evaluated in order before denying):
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
@@ -94,7 +95,7 @@ class EntryPermissionService:
     # Main API
     # ------------------------------------------------------------------
 
-    def check_entry(
+    async def check_entry(
         self,
         *,
         user_id: str,
@@ -115,7 +116,8 @@ class EntryPermissionService:
                                   for the ``fresh_leader_buy_after_net_flat``
                                   clear rule.  Pass ``None`` to skip the rule.
         """
-        block = self._repo.get_active_risk_block(
+        block = await asyncio.to_thread(
+            self._repo.get_active_risk_block,
             user_id=user_id,
             condition_id=condition_id,
             token_id=token_id,
@@ -131,7 +133,8 @@ class EntryPermissionService:
             leader_notional_usdc=leader_notional_usdc,
         )
         if clear_rule is not None:
-            cleared = self._repo.clear_risk_block(
+            cleared = await asyncio.to_thread(
+                self._repo.clear_risk_block,
                 user_id=user_id,
                 condition_id=condition_id,
                 token_id=token_id,
