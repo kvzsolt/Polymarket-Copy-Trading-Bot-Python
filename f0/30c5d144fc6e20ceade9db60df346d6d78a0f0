@@ -1,0 +1,25 @@
+tests/test_runtime_bootstrap_config.py
+  5ed026c380d5f205 85-101
+tests/test_startup_health.py
+  5ed026c380d5f205 4-6,10-11,14-16,35-46,130-259
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.2",
+  "base_commit_sha": "f030c5d144fc6e20ceade9db60df346d6d78a0f0",
+  "prompts": {
+    "5ed026c380d5f205": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019dbabd-d8c4-75a0-b8b8-12ec931820a7",
+        "model": "gpt-5.4-mini"
+      },
+      "human_author": "kvzsolt",
+      "messages": [],
+      "total_additions": 225,
+      "total_deletions": 56,
+      "accepted_lines": 169,
+      "overriden_lines": 0
+    }
+  }
+}
