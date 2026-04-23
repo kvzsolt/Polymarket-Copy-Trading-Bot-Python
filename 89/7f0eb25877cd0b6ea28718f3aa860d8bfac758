@@ -1,0 +1,23 @@
+services/copyDecisionService.py
+  b33fe4c756dc0e0f 362-364
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.2",
+  "base_commit_sha": "897f0eb25877cd0b6ea28718f3aa860d8bfac758",
+  "prompts": {
+    "b33fe4c756dc0e0f": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019dbaee-12c9-7950-9f6d-fdcba69fb1ad",
+        "model": "gpt-5.4-mini"
+      },
+      "human_author": "kvzsolt",
+      "messages": [],
+      "total_additions": 3,
+      "total_deletions": 6,
+      "accepted_lines": 3,
+      "overriden_lines": 0
+    }
+  }
+}
