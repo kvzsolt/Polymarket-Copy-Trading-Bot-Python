@@ -13,6 +13,7 @@ import config.app_config as app_config_mod
 from config.app_config import load_config
 from config.env import ENV, rehydrate_env
 from domain.trading_context import TradingContext
+from orchestrators.runtime_bootstrap import startup_reconcile_unconfirmed
 from orchestrators.trade_pipeline import execute_trades, build_trade_key, reconcile_submitted_unconfirmed
 from storage.sqlite.risk_blocks_repo import RiskBlocksRepo
 from services.copyDecisionService import CopyDecision
@@ -606,6 +607,92 @@ async def test_final_reconcile_with_no_new_delta_marks_buy_fully_reconciled(tmp_
     submission = ctx.orders_repo.get_by_order_id("ord-final-buy")
     assert submission is not None
     assert submission["status"] == "filled_reconciled"
+
+
+@pytest.mark.asyncio
+async def test_startup_reconciled_risk_sell_blocks_reentry_on_same_scope(tmp_path):
+    db_path = _init_db(tmp_path)
+
+    class _ReconcilingExecSvc:
+        def __init__(self):
+            self.execute = AsyncMock(return_value=_exec_result())
+
+        async def _confirm_fill(self, order_id):
+            return {
+                "status": "filled",
+                "size_matched": "10",
+                "avg_price": "0.30",
+                "orderID": order_id,
+            }
+
+    exec_svc = _ReconcilingExecSvc()
+    ctx = _make_context(db_path, execution_service=exec_svc)
+
+    sell_signal = _signal(
+        side="SELL",
+        tx_hash="0xrestart-sell",
+        price=0.97,
+        size=10.0,
+    )
+
+    ctx.fills_repo.append_fill(
+        FillRecord(
+            user_id="user1",
+            leader_id="leader1",
+            order_id="buy-seed-1",
+            condition_id=sell_signal["conditionId"],
+            token_id=sell_signal["asset"],
+            side="BUY",
+            size_tokens=Decimal("10"),
+            price=Decimal("0.60"),
+            fee=Decimal("0"),
+            fill_ts=1_700_000_000,
+        )
+    )
+    ctx.positions_repo.rebuild_user_positions_from_fills("user1", ctx.fills_repo)
+    ctx.orders_repo.save_submission(
+        OrderSubmissionRecord(
+            idempotency_key="idem-restart-sell",
+            user_id="user1",
+            leader_id="leader1",
+            order_id="venue-risk-1",
+            status="submitted_unconfirmed",
+            request_payload={
+                "user_id": "user1",
+                "leader_id": "leader1",
+                "token_id": sell_signal["asset"],
+                "condition_id": sell_signal["conditionId"],
+                "side": "SELL",
+                "amount": "10",
+                "reason": "near_max_full_exit",
+                "signal_id": "risk:near_max_full_exit:cond1:1700000001",
+                "recovery_metadata": {
+                    "leader_notional_at_trigger": 9.7,
+                    "copied_position_notional_at_trigger": 9.7,
+                    "trigger_price": 0.97,
+                    "trigger_size_tokens": 10.0,
+                    "trigger_fraction": 1.0,
+                },
+            },
+            response_payload={"status": "submitted_unconfirmed", "orderID": "venue-risk-1"},
+        )
+    )
+
+    reconciled = await startup_reconcile_unconfirmed([ctx])
+    assert reconciled == {"user1": 1}
+    assert ctx.positions_repo.get_position("user1", sell_signal["conditionId"]) is None
+    assert ctx.risk_blocks_repo.get_active_risk_block(
+        user_id="user1",
+        condition_id=sell_signal["conditionId"],
+        token_id=sell_signal["asset"],
+    ) is not None
+
+    buy_results = await execute_trades(ctx, "leader1", [_signal(tx_hash="0xrestart-buy")], time.time())
+
+    assert len(buy_results) == 1
+    assert buy_results[0].status == "skipped"
+    assert buy_results[0].reason == "market_risk_quarantined"
+    exec_svc.execute.assert_not_called()
 
 
 @pytest.mark.asyncio
