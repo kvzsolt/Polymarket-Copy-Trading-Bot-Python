@@ -82,6 +82,23 @@ async def test_startup_reconcile_unconfirmed_dedupes_user_contexts_and_rehydrate
     rehydrate.assert_called_once_with(ctx1)
 
 
+@pytest.mark.asyncio
+async def test_startup_reconcile_unconfirmed_rehydrates_on_risk_only_convergence():
+    ctx = SimpleNamespace(user_id="user-1", execution_service=object())
+
+    with (
+        patch("orchestrators.trade_pipeline.reconcile_submitted_unconfirmed", return_value=0) as reconcile,
+        patch("orchestrators.runtime_bootstrap.reconcile_unconfirmed_risk_orders", return_value=3) as reconcile_risk,
+        patch("orchestrators.runtime_bootstrap.rehydrate_position_manager") as rehydrate,
+    ):
+        result = await startup_reconcile_unconfirmed([ctx])
+
+    assert result == {"user-1": 3}
+    reconcile.assert_called_once_with(ctx)
+    reconcile_risk.assert_called_once_with(ctx)
+    rehydrate.assert_called_once_with(ctx)
+
+
 def test_build_trading_context_uses_typed_sizing_execution_values():
     cfg = _config()
     follow = default_follow("user-1", "leader-1", cfg)
