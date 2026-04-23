@@ -113,3 +113,8 @@
 - Observation: Routing live `MIN_ORDER_SIZE` reads through `context.config.network.min_order_size` breaks old pipeline tests if they still rely on implicit env-only fixtures or build `TradingContext` without typed config.
 - Action: For live-path pipeline tests, give helper contexts a real `AppConfig` via `_config(...)` instead of depending on env mutation alone; keep market-meta/balance behavior mocked so the slice validates config routing rather than network noise.
 - Confidence: high
+
+**[2026-04-23] — #30 retry-budget tests must set typed ExecutionConfig, not ENV**
+- Observation: Once `trade_pipeline` reads `non_terminal_failure_max_attempts` from `context.config.execution`, env mutation in retry-budget tests stops exercising the real live path even if the assertions still look plausible.
+- Action: Set `NON_TERMINAL_FAILURE_MAX_ATTEMPTS` through the test helper `_config(...)` on the `TradingContext` used by the pipeline, and reserve raw env mutation for true legacy/configless paths only.
+- Confidence: high

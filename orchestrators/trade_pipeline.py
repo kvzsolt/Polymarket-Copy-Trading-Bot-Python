@@ -295,8 +295,8 @@ def _to_optional_float(value: Any) -> float | None:
         return None
 
 
-def _max_non_terminal_failure_attempts() -> int:
-    raw = ENV.get("NON_TERMINAL_FAILURE_MAX_ATTEMPTS", 3)
+def _max_non_terminal_failure_attempts(context: TradingContext) -> int:
+    raw = _trade_config(context).execution.non_terminal_failure_max_attempts
     try:
         value = int(raw)
     except (TypeError, ValueError):
@@ -1628,7 +1628,7 @@ async def execute_trades(
                     },
                 )
                 is_terminal = exec_result.status == "rejected"
-                max_non_terminal_attempts = _max_non_terminal_failure_attempts()
+                max_non_terminal_attempts = _max_non_terminal_failure_attempts(context)
                 prev_trade = context.orders_repo.get_processed_trade(trade_key) or {}
                 prev_retry_attempt = _retry_attempt_from_status(
                     prev_trade.get("status"), prev_trade.get("retry_attempt")

@@ -346,14 +346,17 @@ async def test_transient_failure_not_marked_processed(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_transient_failure_marked_processed_after_retry_budget(tmp_path, monkeypatch):
+async def test_transient_failure_marked_processed_after_retry_budget(tmp_path):
     db_path = _init_db(tmp_path)
     exec_svc = AsyncMock()
     exec_svc.execute.return_value = _exec_result(
         accepted=False, filled=Decimal("0"), status="failed", order_id=None, error="connection timeout"
     )
-    ctx = _make_context(db_path, execution_service=exec_svc)
-    monkeypatch.setitem(ENV, "NON_TERMINAL_FAILURE_MAX_ATTEMPTS", "2")
+    ctx = _make_context(
+        db_path,
+        execution_service=exec_svc,
+        config=_config(NON_TERMINAL_FAILURE_MAX_ATTEMPTS="2"),
+    )
 
     signal = _signal(tx_hash="0xretry")
     trade_key = build_trade_key("user1", "leader1", signal)
