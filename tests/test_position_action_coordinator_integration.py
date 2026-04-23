@@ -22,6 +22,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+import config.app_config as app_config_mod
+from config.app_config import load_config
 from config.env import rehydrate_env
 from domain.trading_context import TradingContext
 from orchestrators.trade_pipeline import execute_trades
@@ -66,6 +68,32 @@ def _mock_balance(monkeypatch):
     monkeypatch.setattr("orchestrators.trade_pipeline.get_my_balance", _fake_balance)
 
 
+def _config(**overrides):
+    env = {
+        "PRIVATE_KEY": "0x" + "a" * 64,
+        "FUNDER_ADDRESS": "0x" + "b" * 40,
+        "USER_ADDRESS": "0x" + "c" * 40,
+        "LEADER_WALLETS": "0x" + "d" * 40,
+        "RPC_URL": "https://polygon-rpc.example.com",
+        "CHAIN_ID": "137",
+        "BUY_MIN_AMOUNT": "0.01",
+        "BUY_MAX_AMOUNT": "1000",
+        "MIN_ORDER_SIZE": "0.00001",
+        "MAX_MARKET_EXPOSURE_USDC": "300",
+        "SLIPPAGE_TOLERANCE": "2.0",
+        "COPY_DECISION_MIN_SCORE": "0.01",
+        "COPY_MAX_SIGNAL_AGE_SECONDS": "999999",
+        "COPY_MAX_PRICE_DRIFT_PCT": "999",
+        "COPY_MAX_EDGE_DECAY_PCT": "999",
+        "COPY_MIN_SHARES": "0.001",
+        "COPY_MIN_NOTIONAL_USDC": "0.01",
+        "ENABLE_BALANCE_TIERED_POLICY": "false",
+    }
+    env.update(overrides)
+    with patch.object(app_config_mod, "_runtime_python_supported", return_value=True):
+        return load_config(env)
+
+
 def _init_db(tmp_path):
     db_path = str(tmp_path / "coord.db")
     with create_connection(db_path) as conn:
@@ -73,7 +101,7 @@ def _init_db(tmp_path):
     return db_path
 
 
-def _make_context(db_path, *, execution_service=None) -> TradingContext:
+def _make_context(db_path, *, execution_service=None, config=None) -> TradingContext:
     exec_svc = execution_service or AsyncMock()
     if not hasattr(exec_svc, "market_meta_service") or isinstance(
         getattr(exec_svc, "market_meta_service", None), MagicMock
@@ -96,6 +124,7 @@ def _make_context(db_path, *, execution_service=None) -> TradingContext:
         accounting_service=AccountingService(),
         position_manager=PositionManager(),
         execution_service=exec_svc,
+        config=config or _config(),
         allocation_pct=1.0,
         buy_min_amount=0.01,
         buy_max_amount=1000.0,

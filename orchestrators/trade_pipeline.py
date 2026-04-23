@@ -85,7 +85,8 @@ def _matched_amount_from_response(response: dict[str, Any] | None) -> Decimal:
 
 
 async def _resolve_market_min_size(context: TradingContext, token_id: str) -> float:
-    market_min_size = float(ENV.get("MIN_ORDER_SIZE", 0.00001) or 0.00001)
+    config = _trade_config(context)
+    market_min_size = float(config.network.min_order_size)
     try:
         if hasattr(context, 'execution_service') and context.execution_service:
             meta = await context.execution_service.market_meta_service.get(token_id)
@@ -894,7 +895,7 @@ async def execute_trades(
                     signal.token_id,
                     repr(result),
                 )
-                market_min_size_by_token[signal.token_id] = float(ENV.get("MIN_ORDER_SIZE", 0.00001) or 0.00001)
+                market_min_size_by_token[signal.token_id] = float(_trade_config(context).network.min_order_size)
                 continue
             token_id, market_min_size = result
             market_min_size_by_token[token_id] = market_min_size
@@ -1077,7 +1078,7 @@ async def execute_trades(
             live_price = float(signal.price or 0)
             market_min_size = market_min_size_by_token.get(
                 signal.token_id,
-                float(ENV.get("MIN_ORDER_SIZE", 0.00001) or 0.00001),
+                float(_trade_config(context).network.min_order_size),
             )
 
             if signal.side == "BUY":

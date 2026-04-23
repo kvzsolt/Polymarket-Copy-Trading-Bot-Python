@@ -108,3 +108,8 @@
 - Observation: The live `trade_pipeline` path still read `ENV.get("PAPER_TRADE_ONLY")` directly even though `AppConfig.execution.paper_trade_only` already existed, and the regression tests were accidentally reinforcing that env fallback.
 - Action: Route the live override through `context.config.execution.paper_trade_only` and build tier tests with `_config(PAPER_TRADE_ONLY=...)` so they exercise typed config instead of raw env state.
 - Confidence: high
+
+**[2026-04-23] — #30 MIN_ORDER_SIZE slice needs typed-config test contexts too**
+- Observation: Routing live `MIN_ORDER_SIZE` reads through `context.config.network.min_order_size` breaks old pipeline tests if they still rely on implicit env-only fixtures or build `TradingContext` without typed config.
+- Action: For live-path pipeline tests, give helper contexts a real `AppConfig` via `_config(...)` instead of depending on env mutation alone; keep market-meta/balance behavior mocked so the slice validates config routing rather than network noise.
+- Confidence: high
