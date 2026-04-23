@@ -1,0 +1,27 @@
+orchestrators/trade_pipeline.py
+  ed04182fdffaf889 88-89,898,1081
+tests/test_position_action_coordinator_integration.py
+  ed04182fdffaf889 25-26,71-96,104,127
+tests/test_trade_pipeline_safety.py
+  ed04182fdffaf889 12-13,53-78,93,118
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.2",
+  "base_commit_sha": "4690b351351c880cc78e999aef00347a4a0ce424",
+  "prompts": {
+    "ed04182fdffaf889": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019db78a-c2b6-7690-8e8a-810110181251",
+        "model": "gpt-5.4-mini"
+      },
+      "human_author": "kvzsolt",
+      "messages": [],
+      "total_additions": 64,
+      "total_deletions": 5,
+      "accepted_lines": 64,
+      "overriden_lines": 0
+    }
+  }
+}
