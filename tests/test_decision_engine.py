@@ -155,6 +155,79 @@ class TestCopyDecisionService:
         assert decision.target_size_tokens == pytest.approx(2.0)
         assert decision.details["minimum_order_guard_enabled"] is False
 
+    def test_sell_tiny_order_bumps_to_venue_minimum_when_position_can_cover_it(self):
+        trade = {"price": 0.40, "timestamp": time.time(), "usdcSize": 10}
+        with patch.dict(
+            os.environ,
+            {
+                "ENABLE_EXECUTABLE_ORDER_GUARD": "true",
+                "COPY_MIN_SHARES": "99",
+                "COPY_MIN_NOTIONAL_USDC": "99",
+            },
+            clear=False,
+        ):
+            svc = CopyDecisionService()
+            decision = svc.decide_sell(
+                trade=trade,
+                sell_tokens=1.0,
+                live_price=0.40,
+                market_min_size=5.0,
+                max_sell_tokens=10.0,
+            )
+
+        assert decision.allow is True
+        assert decision.skip_code == "ok"
+        assert decision.target_size_tokens == pytest.approx(5.0)
+        assert decision.reason == "decision gate disabled by config"
+
+    def test_sell_skips_when_full_position_cannot_satisfy_venue_minimum(self):
+        trade = {"price": 0.40, "timestamp": time.time(), "usdcSize": 10}
+        with patch.dict(
+            os.environ,
+            {
+                "ENABLE_EXECUTABLE_ORDER_GUARD": "true",
+                "COPY_MIN_SHARES": "99",
+                "COPY_MIN_NOTIONAL_USDC": "99",
+            },
+            clear=False,
+        ):
+            svc = CopyDecisionService()
+            decision = svc.decide_sell(
+                trade=trade,
+                sell_tokens=1.0,
+                live_price=0.40,
+                market_min_size=5.0,
+                max_sell_tokens=4.0,
+            )
+
+        assert decision.allow is False
+        assert decision.skip_code == "sell_below_market_min"
+        assert decision.target_size_tokens == pytest.approx(1.0)
+
+    def test_sell_keeps_requested_size_when_it_already_clears_minimum(self):
+        trade = {"price": 0.40, "timestamp": time.time(), "usdcSize": 10}
+        with patch.dict(
+            os.environ,
+            {
+                "ENABLE_EXECUTABLE_ORDER_GUARD": "true",
+                "COPY_MIN_SHARES": "99",
+                "COPY_MIN_NOTIONAL_USDC": "99",
+            },
+            clear=False,
+        ):
+            svc = CopyDecisionService()
+            decision = svc.decide_sell(
+                trade=trade,
+                sell_tokens=7.0,
+                live_price=0.40,
+                market_min_size=5.0,
+                max_sell_tokens=10.0,
+            )
+
+        assert decision.allow is True
+        assert decision.target_size_tokens == pytest.approx(7.0)
+        assert decision.reason == "decision gate disabled by config"
+
     def test_sell_decision_gate_can_be_disabled(self):
         svc = CopyDecisionService()
         trade = {"price": 0.40, "timestamp": time.time(), "usdcSize": 10}

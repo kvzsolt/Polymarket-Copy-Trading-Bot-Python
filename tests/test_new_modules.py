@@ -121,7 +121,7 @@ class TestPositionManager:
         assert pos.condition_id == "c1"
         assert pos.entry_price == 0.5
         assert pos.size_tokens == 10.0
-        assert "c1" in pm.open_positions
+        assert "c1::a1" in pm.open_positions
 
     def test_track_buy_averages_in(self):
         pm = self._make_pm()
@@ -141,7 +141,7 @@ class TestPositionManager:
         assert result.exit_price == 0.7
         assert result.exit_reason == "leader_sell"
         assert result.realized_pnl == pytest.approx(2.0)  # (0.7-0.5)*10
-        assert "c1" not in pm.open_positions
+        assert "c1::a1" not in pm.open_positions
         assert len(pm.closed_positions) == 1
 
     def test_track_sell_partial(self):
@@ -259,6 +259,13 @@ class TestPositionManager:
         assert s["open_positions"] == 0
         assert s["closed_positions"] == 0
         assert s["win_rate"] == 0.0
+
+    def test_same_condition_different_tokens_do_not_collapse(self):
+        pm = self._make_pm()
+        pm.track_buy("c1", "token-a", 0.5, 10.0, 5.0)
+        pm.track_buy("c1", "token-b", 0.4, 20.0, 8.0)
+        assert len(pm.open_positions) == 2
+        assert pm.get_position("c1") is None
 
     def test_summary_with_trades(self):
         pm = self._make_pm()

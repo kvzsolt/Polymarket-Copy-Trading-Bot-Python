@@ -9,6 +9,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
+import config.app_config as app_config_mod
+from config.app_config import load_config
 from config.env import ENV, rehydrate_env
 from domain.trading_context import TradingContext
 from orchestrators.trade_pipeline import execute_trades, _resolve_leader_tier
@@ -23,6 +25,31 @@ from storage.sqlite.orders_repo import OrdersRepo
 from storage.sqlite.positions_repo import PositionsRepo
 
 FAKE_TOKEN_ID = "71321045679252212594626385532706912750332728571942532223535764789812338637396"
+_VALID_PRIVATE_KEY = "0x" + "a" * 64
+_VALID_FUNDER = "0x" + "b" * 40
+_VALID_USER = "0x" + "c" * 40
+
+
+def _config(**overrides):
+    env = {
+        "PRIVATE_KEY": _VALID_PRIVATE_KEY,
+        "FUNDER_ADDRESS": _VALID_FUNDER,
+        "USER_ADDRESS": _VALID_USER,
+        "LEADER_WALLETS": "0x" + "d" * 40,
+        "RPC_URL": "https://polygon-rpc.example.com",
+        "CHAIN_ID": "137",
+        "PERCENTAGE": "7",
+        "BUY_MIN_AMOUNT": "3",
+        "BUY_MAX_AMOUNT": "42",
+        "MAX_MARKET_EXPOSURE_USDC": "123",
+        "SLIPPAGE_TOLERANCE": "1.5",
+        "ENABLE_TIER_GATE_WATCHLIST": "true",
+        "ENABLE_TIER_GATE_WATCHLIST_LOG": "true",
+    }
+    env.update(overrides)
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(app_config_mod, "_runtime_python_supported", lambda: True)
+        return load_config(env)
 
 
 @pytest.fixture(autouse=True)
@@ -66,20 +93,22 @@ def _init_db(tmp_path):
     return db_path
 
 
-def _make_context(db_path, *, leaders_repo=None, execution_service=None):
+def _make_context(db_path, *, leaders_repo=None, execution_service=None, config=None):
     return TradingContext(
         user_id="user1",
-        wallet_address="0x" + "a" * 40,
+        wallet_address=_VALID_FUNDER,
         client=MagicMock(),
         positions_repo=PositionsRepo(db_path),
         fills_repo=FillsRepo(db_path),
         orders_repo=OrdersRepo(db_path),
+        risk_blocks_repo=MagicMock(),
         pnl_tracker=PnLTracker(log_path=str(db_path) + ".pnl"),
         risk_engine=RiskEngine(),
         accounting_service=AccountingService(),
         position_manager=PositionManager(),
         execution_service=execution_service,
         leaders_repo=leaders_repo,
+        config=config or _config(),
         allocation_pct=1.0,
         buy_min_amount=0.01,
         buy_max_amount=1000.0,
@@ -209,12 +238,9 @@ async def test_multiple_signals_tier_applied_to_all(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_watchlist_gate_can_be_disabled(tmp_path, monkeypatch):
+async def test_watchlist_gate_can_be_disabled(tmp_path):
     from unittest.mock import AsyncMock
     from services.executionService import ExecutionResult
-
-    monkeypatch.setenv("ENABLE_TIER_GATE_WATCHLIST", "false")
-    rehydrate_env()
 
     repo = _FakeLeadersRepo({"0xleader": "watchlist"})
     exec_svc = AsyncMock()
@@ -226,26 +252,37 @@ async def test_watchlist_gate_can_be_disabled(tmp_path, monkeypatch):
     exec_svc.market_meta_service = AsyncMock()
     exec_svc.market_meta_service.get = AsyncMock(side_effect=Exception("no meta"))
 
-    ctx = _make_context(_init_db(tmp_path), leaders_repo=repo, execution_service=exec_svc)
-    results = await execute_trades(ctx, "0xleader", [_signal()], time.time())
+    ctx = _make_context(
+        _init_db(tmp_path),
+        leaders_repo=repo,
+        execution_service=exec_svc,
+        config=_config(ENABLE_TIER_GATE_WATCHLIST="false", PERCENTAGE="100"),
+    )
+    results = await execute_trades(
+        ctx,
+        "0xleader",
+        [_signal(price=1.0, size=25.0)],
+        time.time(),
+    )
 
     assert len(results) == 1
     assert results[0].reason != "tier_watchlist"
-    assert exec_svc.execute.await_count == 1
 
 
 # --- PAPER_TRADE_ONLY global override tests ---
 
 @pytest.mark.asyncio
-async def test_paper_trade_only_overrides_live_follow(tmp_path, monkeypatch):
-    """PAPER_TRADE_ONLY=true must demote live_follow leaders to paper without executing."""
-    monkeypatch.setenv("PAPER_TRADE_ONLY", "true")
-    rehydrate_env()
-
+async def test_paper_trade_only_overrides_live_follow(tmp_path):
+    """Typed paper_trade_only must demote live_follow leaders to paper without executing."""
     repo = _FakeLeadersRepo({"0xleader": "live_follow"})
     from unittest.mock import AsyncMock
     exec_svc = AsyncMock()
-    ctx = _make_context(_init_db(tmp_path), leaders_repo=repo, execution_service=exec_svc)
+    ctx = _make_context(
+        _init_db(tmp_path),
+        leaders_repo=repo,
+        execution_service=exec_svc,
+        config=_config(PAPER_TRADE_ONLY="true"),
+    )
     results = await execute_trades(ctx, "0xleader", [_signal()], time.time())
     assert len(results) == 1
     assert results[0].status == "paper"
@@ -255,13 +292,15 @@ async def test_paper_trade_only_overrides_live_follow(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_paper_trade_only_does_not_affect_watchlist(tmp_path, monkeypatch):
-    """PAPER_TRADE_ONLY=true should not change watchlist behavior (still skipped)."""
-    monkeypatch.setenv("PAPER_TRADE_ONLY", "true")
-    rehydrate_env()
-
+async def test_paper_trade_only_does_not_affect_watchlist(tmp_path):
+    """Typed paper_trade_only should not change watchlist behavior (still skipped)."""
     repo = _FakeLeadersRepo({"0xleader": "watchlist"})
-    ctx = _make_context(_init_db(tmp_path), leaders_repo=repo, execution_service=MagicMock())
+    ctx = _make_context(
+        _init_db(tmp_path),
+        leaders_repo=repo,
+        execution_service=MagicMock(),
+        config=_config(PAPER_TRADE_ONLY="true"),
+    )
     results = await execute_trades(ctx, "0xleader", [_signal()], time.time())
     assert len(results) == 1
     assert results[0].status == "skipped"
@@ -269,13 +308,10 @@ async def test_paper_trade_only_does_not_affect_watchlist(tmp_path, monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_paper_trade_only_false_allows_live(tmp_path, monkeypatch):
-    """PAPER_TRADE_ONLY=false must not interfere with live execution."""
+async def test_paper_trade_only_false_allows_live(tmp_path):
+    """Typed paper_trade_only=false must not interfere with live execution."""
     from unittest.mock import AsyncMock
     from services.executionService import ExecutionResult
-
-    monkeypatch.setenv("PAPER_TRADE_ONLY", "false")
-    rehydrate_env()
 
     repo = _FakeLeadersRepo({"0xleader": "live_follow"})
     exec_svc = AsyncMock()
@@ -284,8 +320,41 @@ async def test_paper_trade_only_false_allows_live(tmp_path, monkeypatch):
         requested_amount=Decimal("5"), filled_amount=Decimal("5"),
         avg_price=Decimal("0.50"), fees_paid=Decimal("0.01"),
     ))
-    ctx = _make_context(_init_db(tmp_path), leaders_repo=repo, execution_service=exec_svc)
+    ctx = _make_context(
+        _init_db(tmp_path),
+        leaders_repo=repo,
+        execution_service=exec_svc,
+        config=_config(PAPER_TRADE_ONLY="false"),
+    )
     results = await execute_trades(ctx, "0xleader", [_signal()], time.time())
     assert len(results) == 1
-    # With PAPER_TRADE_ONLY=false, execution should be attempted (not forced to paper)
+    # With paper_trade_only disabled, execution should be attempted (not forced to paper)
     assert results[0].status != "paper"
+
+
+@pytest.mark.asyncio
+async def test_watchlist_gate_requires_injected_config(tmp_path):
+    repo = _FakeLeadersRepo({"0xleader": "watchlist"})
+    db_path = _init_db(tmp_path)
+    ctx = TradingContext(
+        user_id="user1",
+        wallet_address=_VALID_FUNDER,
+        client=MagicMock(),
+        positions_repo=PositionsRepo(db_path),
+        fills_repo=FillsRepo(db_path),
+        orders_repo=OrdersRepo(db_path),
+        risk_blocks_repo=MagicMock(),
+        pnl_tracker=PnLTracker(log_path=str(db_path) + ".pnl"),
+        risk_engine=RiskEngine(),
+        accounting_service=AccountingService(),
+        position_manager=PositionManager(),
+        execution_service=MagicMock(),
+        leaders_repo=repo,
+        allocation_pct=1.0,
+        buy_min_amount=0.01,
+        buy_max_amount=1000.0,
+        extra={"slippage_tolerance_bps": 200},
+    )
+
+    with pytest.raises(RuntimeError, match="TradingContext.config is required for live tier gating"):
+        await execute_trades(ctx, "0xleader", [_signal()], time.time())

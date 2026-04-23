@@ -6,9 +6,23 @@ to detect drift:
   - Orders that filled on-chain but were not recorded locally
   - Orders we think are open but the exchange no longer knows about
 
-The reconciler is intentionally read-heavy and conservative:
-it logs discrepancies and optionally cancels stale orders,
-but does NOT invent fills or modify position state.
+Convergence ownership model (issue #29)
+---------------------------------------
+This service is intentionally **read-heavy and conservative**. It owns:
+
+* open-order drift detection against the venue
+* local-vs-exchange order identity matching for already-submitted venue orders
+* optional cancellation of stale open venue orders
+
+It does **not** invent fills or mutate persisted position state. The current
+state-mutating convergence path for delayed fills lives in
+``orchestrators.trade_pipeline.reconcile_submitted_unconfirmed(...)`` and the
+in-memory runtime shadow rebuild lives in ``services.riskMonitor`` via
+``rehydrate_position_manager(...)``.
+
+That ownership split matters: this module should classify venue orders against
+local durable order records using the **venue order id** (``order_id``), not by
+mistaking it for the local submission idempotency key.
 """
 
 from __future__ import annotations
@@ -141,16 +155,20 @@ class ReconciliationService:
             if not order_id:
                 continue
 
-            # Check if we know about this order locally
+            # Check if we know about this venue order locally. Reconciliation
+            # must match on the venue order id, not the locally generated
+            # idempotency key.
             local_record = None
             if self.orders_repo:
                 try:
-                    local_record = self.orders_repo.get_by_idempotency_key(order_id)
+                    if hasattr(self.orders_repo, "get_by_order_id"):
+                        local_record = self.orders_repo.get_by_order_id(order_id)
+                    elif hasattr(self.orders_repo, "get_by_idempotency_key"):
+                        # Backwards-compatible fallback for older mock repos.
+                        local_record = self.orders_repo.get_by_idempotency_key(order_id)
                 except Exception:
                     pass
                 if local_record is None:
-                    # Try looking up by scanning — but get_by_idempotency_key
-                    # uses idempotency key, not order_id. We just note it.
                     unknown_count += 1
 
             # Check staleness
