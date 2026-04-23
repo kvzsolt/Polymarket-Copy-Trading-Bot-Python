@@ -61,11 +61,13 @@ _PERSISTED_REQUEST_FIELDS = (
     "user_id",
     "leader_id",
     "token_id",
+    "condition_id",
     "side",
     "amount",
     "max_slippage_bps",
     "reason",
     "signal_id",
+    "recovery_metadata",
     "worst_price",
     "tick_size",
     "neg_risk",
@@ -93,6 +95,8 @@ class ExecutionRequest:
     max_slippage_bps: int
     reason: str  # copy_trade, advanced_risk_exit, rebalance
     signal_id: str | None = None
+    condition_id: str | None = None
+    recovery_metadata: dict[str, Any] | None = None
 
 
 @dataclass
@@ -207,6 +211,19 @@ def _sanitize_submission_value(
         return value
     if isinstance(value, Decimal):
         return str(value)
+    if isinstance(value, dict):
+        sanitized_dict: dict[str, Any] = {}
+        for key, item in value.items():
+            sanitized_item = _sanitize_submission_value(item, max_chars=max_chars)
+            if sanitized_item is not None:
+                sanitized_dict[_truncate_text(key, max_chars=max_chars)] = sanitized_item
+        return sanitized_dict
+    if isinstance(value, (list, tuple)):
+        return [
+            sanitized_item
+            for item in value
+            if (sanitized_item := _sanitize_submission_value(item, max_chars=max_chars)) is not None
+        ]
     return _truncate_text(value, max_chars=max_chars)
 
 

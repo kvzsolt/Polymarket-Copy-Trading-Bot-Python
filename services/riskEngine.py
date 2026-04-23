@@ -188,11 +188,11 @@ def headroom_for_buy(
     policy: AccountCapPolicy | None = None,
     config: AppConfig | None = None,
 ) -> RiskHeadroom:
-    if policy is None:
-        policy = active_policy()
-
-    # Use injected config or fallback to cached module-level config
+    # Use injected config first, then cached module-level config.
     _cfg = config or _cached_config
+
+    if policy is None:
+        policy = _policy_from_config(_cfg) if _cfg is not None else active_policy()
 
     if open_positions_count >= policy.max_open_positions:
         return RiskHeadroom(False, "max_open_positions_reached", Decimal("0"), policy.name)
