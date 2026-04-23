@@ -43,6 +43,7 @@ ENV/
 .env.local
 config/runtime.local.env
 .kilo
+config/runtime.env
 
 # Generated config-local runtime state
 config/data/
@@ -79,6 +80,5 @@ docs/refactor-cleanup-review.md
 AGENTS.MD
 CLAUDE.md
 CODEX.md
-LEARNINGS.md
 KILOCODE.md
-l
+

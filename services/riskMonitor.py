@@ -19,8 +19,8 @@ from services.healthServer import ReadinessTracker
 from services.marketMetaService import MarketMetaService
 from services.metrics import metrics
 from services.orderRepository import OrderRepository
+from services.positionActionCoordinator import PositionScope
 from services.riskEngine import active_policy
-from services.riskQuarantine import mark_market_risk_quarantined
 from storage.sqlite.fills_repo import FillRecord
 from utils import is_valid_clob_token_id
 
@@ -338,13 +338,15 @@ async def risk_monitor_loop(
                 price_cache,
                 circuit_breaker=venue_breaker,
             )
-            for cid, pos in positions.items():
-                if not is_valid_clob_token_id(pos.asset):
-                    logger.warning("Legacy risk monitor: skipping invalid asset=%r cid=%s", pos.asset, cid)
+            for runtime_key, pos in positions.items():
+                condition_id = str(pos.condition_id or "")
+                token_id = str(pos.asset or "")
+                if not is_valid_clob_token_id(token_id):
+                    logger.warning("Legacy risk monitor: skipping invalid asset=%r cid=%s", token_id, condition_id)
                     continue
                 try:
                     cached_price = price_cache.get_fresh(
-                        pos.asset,
+                        token_id,
                         stale_after=_risk_cache_stale_after(interval),
                     )
                     if cached_price is None:
@@ -353,7 +355,7 @@ async def risk_monitor_loop(
                     if current_price <= 0:
                         continue
 
-                    action = pm.evaluate_risk_action(cid, current_price)
+                    action = pm.evaluate_risk_action(condition_id, token_id, current_price)
                     if action:
                         trigger = str(action.get("reason") or "risk_exit")
                         fraction = float(action.get("size_fraction", 1.0) or 1.0)
@@ -365,7 +367,7 @@ async def risk_monitor_loop(
                                 logger.info(
                                     "Balance policy [%s] upgrades partial exit to full for %s…",
                                     policy.name,
-                                    cid[:12],
+                                    condition_id[:12],
                                 )
                                 fraction = 1.0
 
@@ -373,7 +375,7 @@ async def risk_monitor_loop(
                         if sell_size <= 0:
                             continue
                         logger.info(
-                            f"Executing risk {trigger} for {cid[:12]}… "
+                            f"Executing risk {trigger} for {condition_id[:12]}…/{token_id[:12]} "
                             f"tokens={sell_size:.4f}"
                         )
                         if not funder_address:
@@ -384,12 +386,20 @@ async def risk_monitor_loop(
                         exec_req = ExecutionRequest(
                             user_id=funder_address,
                             leader_id=pos.leader_wallet or "risk-monitor",
-                            token_id=pos.asset,
+                            token_id=token_id,
                             side="SELL",
                             amount=Decimal(str(sell_size)),
                             max_slippage_bps=slippage_bps,
                             reason=trigger,
-                            signal_id=f"risk:{trigger}:{cid}:{int(time.time())}",
+                            signal_id=f"risk:{trigger}:{condition_id}:{int(time.time())}",
+                            condition_id=condition_id,
+                            recovery_metadata={
+                                "leader_notional_at_trigger": float(pos.size_tokens * Decimal(str(current_price))),
+                                "copied_position_notional_at_trigger": float(pos.size_tokens * Decimal(str(current_price))),
+                                "trigger_price": float(current_price),
+                                "trigger_size_tokens": float(pos.size_tokens),
+                                "trigger_fraction": fraction,
+                            },
                         )
                         result = await execution_service.execute(exec_req)
                         if result.accepted and result.filled_amount > 0:
@@ -397,13 +407,13 @@ async def risk_monitor_loop(
                             fill_price = float(result.avg_price or current_price)
                             usdc_value = fill_price * fill_tokens
                             tracker = pnl_tracker
-                            tracked = pm.get_position(cid)
+                            tracked = pm.get_position(condition_id, token_id)
                             entry_price = tracked.entry_price if tracked else pos.entry_price
                             pnl = (fill_price - entry_price) * fill_tokens
                             log_risk_exit(
                                 logger,
-                                condition_id=cid,
-                                asset=pos.asset,
+                                condition_id=condition_id,
+                                asset=token_id,
                                 size=fill_tokens,
                                 price=fill_price,
                                 usdc_value=usdc_value,
@@ -412,11 +422,23 @@ async def risk_monitor_loop(
                                 meta={
                                     "copyOrderId": result.order_id,
                                     "leaderWallet": pos.leader_wallet,
+                                    "runtimeKey": runtime_key,
                                 },
                             )
-                            pm.track_sell(cid, fill_price, fill_tokens, reason=trigger)
+                            closed_pos = pm.track_sell(condition_id, token_id, fill_price, fill_tokens, reason=trigger)
+                            if closed_pos is not None and hasattr(context, "position_coordinator"):
+                                try:
+                                    context.position_coordinator.release_scope(
+                                        PositionScope(
+                                            user_id=context.user_id,
+                                            condition_id=condition_id,
+                                            token_id=token_id,
+                                        )
+                                    )
+                                except Exception:
+                                    pass
                             tracker.record_sell(
-                                condition_id=cid,
+                                condition_id=condition_id,
                                 price=fill_price,
                                 size_tokens=fill_tokens,
                                 usdc_value=usdc_value,
@@ -435,8 +457,8 @@ async def risk_monitor_loop(
                                 user_id=user_id,
                                 fill_doc={
                                     "order_id": result.order_id,
-                                    "condition_id": cid,
-                                    "token_id": pos.asset,
+                                    "condition_id": condition_id,
+                                    "token_id": token_id,
                                     "side": "SELL",
                                     "size_tokens": str(fill_tokens),
                                     "price": str(fill_price),
@@ -446,15 +468,15 @@ async def risk_monitor_loop(
                                     "reason": trigger,
                                 },
                             )
-                            remaining = pm.get_position(cid)
+                            remaining = pm.get_position(condition_id, token_id)
                             if remaining is None:
-                                accounting.close_position(user_id=user_id, condition_id=str(cid or ""))
+                                accounting.close_position(user_id=user_id, condition_id=condition_id)
                             else:
                                 accounting.upsert_position(
                                     PositionLot(
                                         user_id=user_id,
-                                        condition_id=str(cid or ""),
-                                        token_id=str(remaining.asset or pos.asset),
+                                        condition_id=condition_id,
+                                        token_id=str(remaining.asset or token_id),
                                         size_tokens=Decimal(str(remaining.size_tokens)),
                                         avg_entry_price=Decimal(str(remaining.entry_price)),
                                         leader_id=remaining.leader_wallet or pos.leader_wallet,
@@ -462,7 +484,7 @@ async def risk_monitor_loop(
                                     )
                                 )
                 except Exception as e:
-                    logger.error(f"Risk check error for {cid[:12]}…: {e}")
+                    logger.error(f"Risk check error for {condition_id[:12]}…/{token_id[:12]}: {e}")
 
         except Exception as e:
             logger.error(f"Risk monitor loop error: {e}")
@@ -480,7 +502,7 @@ def rehydrate_position_manager(context: TradingContext) -> None:
         existing = None
         if hasattr(pm, "get_position"):
             try:
-                existing = pm.get_position(pos.condition_id)
+                existing = pm.get_position(pos.condition_id, pos.token_id)
             except Exception:
                 existing = None
         if existing is not None:
@@ -508,9 +530,274 @@ def _fallback_risk_decision(
     return None
 
 
+def _extract_risk_condition_id(request: dict[str, object] | None) -> str | None:
+    if not isinstance(request, dict):
+        return None
+    condition_id = str(request.get("condition_id") or "").strip()
+    if condition_id:
+        return condition_id
+    signal_id = str(request.get("signal_id") or "").strip()
+    if not signal_id.startswith("risk:"):
+        return None
+    parts = signal_id.split(":", 3)
+    if len(parts) < 3:
+        return None
+    derived = str(parts[2] or "").strip()
+    return derived or None
+
+
+def _decimal_or_zero(value: object) -> Decimal:
+    try:
+        return Decimal(str(value))
+    except Exception:
+        return Decimal("0")
+
+
+def _matched_amount_from_payload(payload: dict[str, object] | None) -> Decimal:
+    if not isinstance(payload, dict):
+        return Decimal("0")
+    return _decimal_or_zero(
+        payload.get("size_matched")
+        or payload.get("filled_size")
+        or payload.get("size")
+        or 0
+    )
+
+
+def _risk_exit_fully_closed_position(updated_pos: object | None) -> bool:
+    """Return True only when the protective SELL fully closed the position.
+
+    Partial fills are real and must still update fills/positions/PnL, but they
+    must NOT activate a durable re-entry block.  The block represents a
+    completed protective exit regime, not merely a partial de-risking step.
+    """
+    return updated_pos is None
+
+
+async def reconcile_unconfirmed_risk_orders(context: TradingContext) -> int:
+    """Converge risk-monitor-originated submitted_unconfirmed SELLs.
+
+    These orders live in the durable ``orders`` table but do not create a
+    ``processed_trades`` row, so trade-pipeline reconciliation alone cannot
+    recover them after a restart. This helper reuses the persisted submission
+    metadata to resolve the venue outcome deterministically before the risk
+    monitor evaluates positions again.
+    """
+    if not context.execution_service:
+        return 0
+
+    records = context.orders_repo.get_unconfirmed_order_submissions(
+        user_id=context.user_id,
+        side="SELL",
+    )
+    reconciled = 0
+    terminal_no_fill_statuses = {"cancelled", "canceled", "expired", "rejected"}
+    final_fill_statuses = {"filled", "matched", ""}
+
+    for record in records:
+        request = record.get("request") or {}
+        signal_id = str(request.get("signal_id") or "")
+        if not signal_id.startswith("risk:"):
+            continue
+
+        order_id = str(record.get("order_id") or "").strip()
+        token_id = str(request.get("token_id") or "").strip()
+        condition_id = _extract_risk_condition_id(request)
+        if not order_id or not token_id or not condition_id or not is_valid_clob_token_id(token_id):
+            continue
+
+        scope = PositionScope(
+            user_id=context.user_id,
+            condition_id=condition_id,
+            token_id=token_id,
+        )
+        async with context.position_coordinator.acquire(scope):
+            try:
+                fill_info = await context.execution_service._confirm_fill(order_id)
+            except Exception as exc:
+                logger.warning(
+                    "risk_unconfirmed_reconcile_poll_error | user=%s order_id=%s error=%s",
+                    context.user_id,
+                    order_id,
+                    repr(exc),
+                )
+                continue
+
+            venue_status = str(fill_info.get("status", "")).lower()
+            current_matched = _matched_amount_from_payload(fill_info)
+            previous_matched = _matched_amount_from_payload(record.get("response"))
+            delta_matched = current_matched - previous_matched
+            if delta_matched < 0:
+                delta_matched = Decimal("0")
+
+            if current_matched <= 0 and venue_status in terminal_no_fill_statuses:
+                context.orders_repo.update_submission_status(
+                    order_id=order_id,
+                    status=venue_status,
+                    response_patch=fill_info,
+                )
+                reconciled += 1
+                continue
+
+            is_final_fill = venue_status in final_fill_statuses or (
+                venue_status in terminal_no_fill_statuses and current_matched > 0
+            )
+            if delta_matched <= 0 and not is_final_fill:
+                continue
+            if delta_matched <= 0 and is_final_fill:
+                context.orders_repo.update_submission_status(
+                    order_id=order_id,
+                    status="filled_reconciled",
+                    response_patch={
+                        **fill_info,
+                        "reconciled_from": "risk_submitted_unconfirmed",
+                        "matched_previous": str(previous_matched),
+                        "matched_delta": str(delta_matched),
+                    },
+                )
+                reconciled += 1
+                continue
+
+            avg_price_raw = (
+                fill_info.get("avg_price")
+                or fill_info.get("price")
+                or fill_info.get("average_price")
+                or 0
+            )
+            try:
+                avg_price = Decimal(str(avg_price_raw))
+            except Exception:
+                avg_price = Decimal("0")
+            if avg_price <= 0:
+                continue
+
+            reason = str(request.get("reason") or "risk_exit")
+            leader_id = str(request.get("leader_id") or "risk-monitor")
+            existing_pos = context.positions_repo.get_position(
+                context.user_id,
+                condition_id,
+                token_id=token_id,
+            )
+            entry_price = float(getattr(existing_pos, "avg_entry_price", avg_price)) if existing_pos else float(avg_price)
+
+            try:
+                context.fills_repo.append_fill(
+                    FillRecord(
+                        user_id=context.user_id,
+                        leader_id=leader_id,
+                        order_id=order_id,
+                        condition_id=condition_id,
+                        token_id=token_id,
+                        side="SELL",
+                        size_tokens=delta_matched,
+                        price=avg_price,
+                        fee=Decimal("0"),
+                        fill_ts=int(time.time()),
+                    ),
+                    raw_payload={
+                        "reconciled_from": "risk_submitted_unconfirmed",
+                        "copy_order_id": order_id,
+                        "status": "reconciled",
+                        "side": "SELL",
+                    },
+                )
+                updated_pos = context.positions_repo.apply_fill(
+                    user_id=context.user_id,
+                    leader_id=leader_id,
+                    condition_id=condition_id,
+                    token_id=token_id,
+                    side="SELL",
+                    fill_size=delta_matched,
+                    fill_price=avg_price,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "risk_unconfirmed_reconcile_apply_error | user=%s order_id=%s error=%s",
+                    context.user_id,
+                    order_id,
+                    repr(exc),
+                )
+                continue
+
+            recovery_metadata = request.get("recovery_metadata")
+            block_metadata = dict(recovery_metadata) if isinstance(recovery_metadata, dict) else {}
+            block_metadata["fill_price"] = float(avg_price)
+            block_metadata["fill_size_tokens"] = float(delta_matched)
+            block_metadata["fill_order_id"] = order_id
+            if is_final_fill and _risk_exit_fully_closed_position(updated_pos):
+                context.risk_blocks_repo.mark_risk_block(
+                    user_id=context.user_id,
+                    condition_id=condition_id,
+                    token_id=token_id,
+                    reason=reason,
+                    source="risk_monitor",
+                    leader_anchor=leader_id,
+                    metadata=block_metadata,
+                )
+            else:
+                logger.info(
+                    "risk_unconfirmed_partial_fill_no_block | user=%s order_id=%s condition=%s token=%s remaining=%s",
+                    context.user_id,
+                    order_id,
+                    condition_id,
+                    token_id,
+                    getattr(updated_pos, "size_tokens", None),
+                )
+
+            if hasattr(context.pnl_tracker, "record_sell"):
+                realized = (float(avg_price) - entry_price) * float(delta_matched)
+                context.pnl_tracker.record_sell(
+                    condition_id=condition_id,
+                    price=float(avg_price),
+                    size_tokens=float(delta_matched),
+                    usdc_value=float(delta_matched * avg_price),
+                    entry_price=entry_price,
+                    realized_pnl=realized,
+                    exit_reason=reason,
+                    leader_wallet=leader_id,
+                )
+
+            submission_status = "filled_reconciled" if is_final_fill else "submitted_unconfirmed"
+            context.orders_repo.update_submission_status(
+                order_id=order_id,
+                status=submission_status,
+                response_patch={
+                    **fill_info,
+                    "reconciled_from": "risk_submitted_unconfirmed",
+                    "matched_previous": str(previous_matched),
+                    "matched_delta": str(delta_matched),
+                },
+            )
+            reconciled += 1
+
+    return reconciled
+
+
 async def run_risk_check_for_context(context: TradingContext) -> None:
     if not context.execution_service:
         return
+
+    # Issue #29 — reconcile unconfirmed orders BEFORE rehydration / position
+    # evaluation.  Without this, on restart the risk monitor observes stale
+    # position state: unconfirmed SELLs that already filled on-exchange still
+    # appear as open positions, leading to duplicate protective SELLs; and
+    # unconfirmed BUYs that filled are invisible, so the monitor cannot
+    # protect them.  The trade pipeline already does this at the top of
+    # execute_trades; the risk monitor must converge the same way.
+    try:
+        from orchestrators.trade_pipeline import reconcile_submitted_unconfirmed
+        trade_n = await reconcile_submitted_unconfirmed(context)
+        risk_n = await reconcile_unconfirmed_risk_orders(context)
+        total_n = trade_n + risk_n
+        if total_n:
+            logger.info(
+                "risk_monitor_pre_reconcile | reconciled=%d unconfirmed orders (trade=%d risk=%d)",
+                total_n,
+                trade_n,
+                risk_n,
+            )
+    except Exception as exc:
+        logger.warning("risk_monitor_pre_reconcile_error | %s", repr(exc))
 
     rehydrate_position_manager(context)
     slippage_bps = int(float(context.extra.get("slippage_tolerance_bps", 200)))
@@ -529,117 +816,195 @@ async def run_risk_check_for_context(context: TradingContext) -> None:
                     pos.token_id, pos.condition_id,
                 )
             continue
-        try:
-            current_price = await _get_context_cached_price(
-                context,
-                pos.token_id,
-                refresh_interval=refresh_interval,
-            )
-            if current_price is None or current_price <= 0:
-                continue
+        # --- Per-scoped-position action coordination (issue #28) ---
+        _scope = PositionScope(
+            user_id=context.user_id,
+            condition_id=pos.condition_id,
+            token_id=pos.token_id,
+        )
+        async with context.position_coordinator.acquire(_scope):
+            try:
+                current_price = await _get_context_cached_price(
+                    context,
+                    pos.token_id,
+                    refresh_interval=refresh_interval,
+                )
+                if current_price is None or current_price <= 0:
+                    continue
 
-            action = None
-            if hasattr(context.position_manager, "evaluate_risk_action"):
-                action = context.position_manager.evaluate_risk_action(pos.condition_id, float(current_price))
-            if not action:
-                action = _fallback_risk_decision(pos.avg_entry_price, current_price)
-            if not action:
-                continue
+                action = None
+                if hasattr(context.position_manager, "evaluate_risk_action"):
+                    try:
+                        action = context.position_manager.evaluate_risk_action(
+                            pos.condition_id,
+                            pos.token_id,
+                            float(current_price),
+                        )
+                    except TypeError:
+                        action = context.position_manager.evaluate_risk_action(
+                            pos.condition_id,
+                            float(current_price),
+                        )
+                if not action:
+                    action = _fallback_risk_decision(pos.avg_entry_price, current_price)
+                if not action:
+                    continue
 
-            fraction = max(0.0, min(1.0, float(action.get("size_fraction", 1.0) or 1.0)))
-            reason = str(action.get("reason") or "risk_exit")
-            mark_market_risk_quarantined(
-                context.orders_repo,
-                user_id=context.user_id,
-                leader_id=pos.leader_id,
-                condition_id=pos.condition_id,
-                asset=pos.token_id,
-                reason=reason,
-            )
+                fraction = max(0.0, min(1.0, float(action.get("size_fraction", 1.0) or 1.0)))
+                reason = str(action.get("reason") or "risk_exit")
+                trigger_notional = float((pos.size_tokens * Decimal(str(current_price))).quantize(Decimal("0.00000001")))
 
-            # Simplified account-cap policy
-            if fraction < 1.0 and enable_tiered:
-                policy = active_policy()
-                if not policy.allow_partial_exits:
+                # Capture block metadata at trigger time — but defer persisting the
+                # risk block until after the protective SELL actually fills.  Writing
+                # the block before execution creates a durable re-entry ban even when
+                # the SELL fails, which is the core issue #27 lifecycle bug.
+                _block_metadata = {
+                    "leader_notional_at_trigger": trigger_notional,
+                    "copied_position_notional_at_trigger": trigger_notional,
+                    "trigger_price": float(current_price),
+                    "trigger_size_tokens": float(pos.size_tokens),
+                    "trigger_fraction": fraction,
+                }
+
+                # Simplified account-cap policy
+                if fraction < 1.0 and enable_tiered:
+                    policy = active_policy()
+                    if not policy.allow_partial_exits:
+                        logger.info(
+                            "Balance policy [%s] upgrades partial exit → full for %s (was %.0f%%)",
+                            policy.name, pos.condition_id[:12], fraction * 100,
+                        )
+                        fraction = 1.0
+
+                sell_size = (pos.size_tokens * Decimal(str(fraction))).quantize(Decimal("0.00000001"))
+                if sell_size <= 0:
+                    continue
+
+                req = ExecutionRequest(
+                    user_id=context.user_id,
+                    leader_id=pos.leader_id or "risk-monitor",
+                    token_id=pos.token_id,
+                    side="SELL",
+                    amount=sell_size,
+                    max_slippage_bps=slippage_bps,
+                    reason=reason,
+                    signal_id=f"risk:{reason}:{pos.condition_id}:{int(time.time())}",
+                    condition_id=pos.condition_id,
+                    recovery_metadata=_block_metadata,
+                )
+                result = await context.execution_service.execute(req)
+                if not result.accepted or result.filled_amount <= 0:
                     logger.info(
-                        "Balance policy [%s] upgrades partial exit → full for %s (was %.0f%%)",
-                        policy.name, pos.condition_id[:12], fraction * 100,
+                        "risk_exit_sell_not_filled | cond=%s token=%s reason=%s status=%s error=%s",
+                        pos.condition_id[:12],
+                        pos.token_id[:12],
+                        reason,
+                        result.status,
+                        result.error,
                     )
-                    fraction = 1.0
+                    continue
 
-            sell_size = (pos.size_tokens * Decimal(str(fraction))).quantize(Decimal("0.00000001"))
-            if sell_size <= 0:
-                continue
+                fill_size = Decimal(str(result.filled_amount))
+                fill_price = Decimal(str(result.avg_price or current_price))
 
-            req = ExecutionRequest(
-                user_id=context.user_id,
-                leader_id=pos.leader_id or "risk-monitor",
-                token_id=pos.token_id,
-                side="SELL",
-                amount=sell_size,
-                max_slippage_bps=slippage_bps,
-                reason=reason,
-                signal_id=f"risk:{reason}:{pos.condition_id}:{int(time.time())}",
-            )
-            result = await context.execution_service.execute(req)
-            if not result.accepted or result.filled_amount <= 0:
-                continue
+                # Persist risk block only when the protective SELL fully closes
+                # the scoped position. A partial fill is real and should be
+                # accounted for, but it must not create a durable re-entry ban.
+                _block_metadata["fill_price"] = float(fill_price)
+                _block_metadata["fill_size_tokens"] = float(fill_size)
+                _block_metadata["fill_order_id"] = result.order_id
 
-            fill_size = Decimal(str(result.filled_amount))
-            fill_price = Decimal(str(result.avg_price or current_price))
-            context.fills_repo.append_fill(
-                FillRecord(
+                context.fills_repo.append_fill(
+                    FillRecord(
+                        user_id=context.user_id,
+                        leader_id=pos.leader_id,
+                        order_id=result.order_id,
+                        condition_id=pos.condition_id,
+                        token_id=pos.token_id,
+                        side="SELL",
+                        size_tokens=fill_size,
+                        price=fill_price,
+                        fee=Decimal(str(result.fees_paid or 0)),
+                        fill_ts=int(time.time()),
+                    ),
+                )
+                updated_pos = context.positions_repo.apply_fill(
                     user_id=context.user_id,
                     leader_id=pos.leader_id,
-                    order_id=result.order_id,
                     condition_id=pos.condition_id,
                     token_id=pos.token_id,
                     side="SELL",
-                    size_tokens=fill_size,
-                    price=fill_price,
-                    fee=Decimal(str(result.fees_paid or 0)),
-                    fill_ts=int(time.time()),
-                ),
-            )
-            updated_pos = context.positions_repo.apply_fill(
-                user_id=context.user_id,
-                leader_id=pos.leader_id,
-                condition_id=pos.condition_id,
-                token_id=pos.token_id,
-                side="SELL",
-                fill_size=fill_size,
-                fill_price=fill_price,
-            )
-            if hasattr(context.pnl_tracker, "record_sell"):
-                entry_price = float(pos.avg_entry_price)
-                realized = (float(fill_price) - entry_price) * float(fill_size)
-                context.pnl_tracker.record_sell(
-                    condition_id=pos.condition_id,
-                    price=float(fill_price),
-                    size_tokens=float(fill_size),
-                    usdc_value=float(fill_size * fill_price),
-                    entry_price=entry_price,
-                    realized_pnl=realized,
-                    exit_reason=reason,
-                    leader_wallet=pos.leader_id or "",
+                    fill_size=fill_size,
+                    fill_price=fill_price,
                 )
-            await metrics.inc(
-                "risk_exits_total",
-                labels={
-                    "user_id": context.user_id,
-                    "leader_id": str(pos.leader_id or ""),
-                    "reason": reason,
-                },
-            )
-            if hasattr(context.position_manager, "track_sell"):
-                context.position_manager.track_sell(
-                    pos.condition_id,
-                    float(fill_price),
-                    float(fill_size),
-                    reason=reason,
+                if _risk_exit_fully_closed_position(updated_pos):
+                    context.risk_blocks_repo.mark_risk_block(
+                        user_id=context.user_id,
+                        condition_id=pos.condition_id,
+                        token_id=pos.token_id,
+                        reason=reason,
+                        source="risk_monitor",
+                        leader_anchor=pos.leader_id,
+                        metadata=_block_metadata,
+                    )
+                else:
+                    logger.info(
+                        "risk_exit_partial_fill_no_block | user=%s condition=%s token=%s remaining=%s",
+                        context.user_id,
+                        pos.condition_id,
+                        pos.token_id,
+                        getattr(updated_pos, "size_tokens", None),
+                    )
+                if hasattr(context.pnl_tracker, "record_sell"):
+                    entry_price = float(pos.avg_entry_price)
+                    realized = (float(fill_price) - entry_price) * float(fill_size)
+                    context.pnl_tracker.record_sell(
+                        condition_id=pos.condition_id,
+                        price=float(fill_price),
+                        size_tokens=float(fill_size),
+                        usdc_value=float(fill_size * fill_price),
+                        entry_price=entry_price,
+                        realized_pnl=realized,
+                        exit_reason=reason,
+                        leader_wallet=pos.leader_id or "",
+                    )
+                await metrics.inc(
+                    "risk_exits_total",
+                    labels={
+                        "user_id": context.user_id,
+                        "leader_id": str(pos.leader_id or ""),
+                        "reason": reason,
+                    },
                 )
-        except Exception as exc:
-            logger.error(f"Risk context check failed user={context.user_id} condition={pos.condition_id}: {exc}")
+                if hasattr(context.position_manager, "track_sell"):
+                    try:
+                        closed_pos = context.position_manager.track_sell(
+                            pos.condition_id,
+                            pos.token_id,
+                            float(fill_price),
+                            float(fill_size),
+                            reason=reason,
+                        )
+                    except TypeError:
+                        closed_pos = context.position_manager.track_sell(
+                            pos.condition_id,
+                            float(fill_price),
+                            float(fill_size),
+                            reason=reason,
+                        )
+                    if closed_pos is not None and hasattr(context, "position_coordinator"):
+                        try:
+                            context.position_coordinator.release_scope(
+                                PositionScope(
+                                    user_id=context.user_id,
+                                    condition_id=pos.condition_id,
+                                    token_id=getattr(pos, "token_id", getattr(pos, "asset", "")),
+                                )
+                            )
+                        except Exception:
+                            pass
+            except Exception as exc:
+                logger.error(f"Risk context check failed user={context.user_id} condition={pos.condition_id}: {exc}")
 
 
 async def risk_monitor_loop_for_contexts(

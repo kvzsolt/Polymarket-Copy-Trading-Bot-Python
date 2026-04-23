@@ -359,12 +359,9 @@ class CopyDecisionService:
         target = min(sell_tokens, max_sell_tokens)
         minimum_guard_enabled = self._minimum_order_guard_enabled
         if minimum_guard_enabled:
-            required_min_tokens = max(
-                market_min_size if market_min_size > 0 else 0.0,
-                self._copy_min_shares,
-                (self._minimum_order_buffer_notional / live_price) if live_price > 0 else 0.0,
-                (self._copy_min_notional / live_price) if live_price > 0 else 0.0,
-            )
+            # SELLs should be constrained by the venue minimum and the held
+            # position size, not by the copy-sizing floor used on BUYs.
+            required_min_tokens = market_min_size if market_min_size > 0 else 0.0
             if target < required_min_tokens:
                 if max_sell_tokens < required_min_tokens:
                     return CopyDecision(
