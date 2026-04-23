@@ -123,3 +123,8 @@
 - Observation: Moving `ENABLE_BALANCE_TIERED_POLICY`, `MAX_POSITION_PCT`, and `DAY_START_EQUITY_USDC` off raw env in `trade_pipeline` can still leave tests and live behavior on old policy defaults if `headroom_for_buy()` falls back to `active_policy()` without injected config.
 - Action: When cleaning balance-policy live paths, pass typed config into `headroom_for_buy(...)` and initialize the live risk-engine cache from runtime bootstrap so policy math and pipeline gating read the same config source.
 - Confidence: high
+
+**[2026-04-23] — SELL executable-minimum logic should use venue floor, not BUY copy floors**
+- Observation: Reusing BUY-side `COPY_MIN_SHARES` / `COPY_MIN_NOTIONAL_USDC` in `decide_sell(...)` makes the engine over-reject tiny SELLs that should instead be bumped to the venue minimum when the held position can cover it.
+- Action: For SELL decisions, derive the executable minimum from venue `market_min_size` and available held size; bump to that minimum when possible, and only skip when the full held position still cannot satisfy it.
+- Confidence: high

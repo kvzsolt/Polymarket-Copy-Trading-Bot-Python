@@ -993,6 +993,40 @@ async def test_sell_uses_leader_fraction_without_sell_decision_gate(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_sell_bumps_tiny_request_to_executable_minimum(tmp_path):
+    db_path = _init_db(tmp_path)
+    exec_svc = AsyncMock()
+    exec_svc.execute.return_value = _exec_result(
+        accepted=True, filled=Decimal("5"), status="filled", order_id="ord-sell-min"
+    )
+    ctx = _make_context(
+        db_path,
+        execution_service=exec_svc,
+        config=_config(MIN_ORDER_SIZE="5"),
+    )
+
+    from storage.sqlite.positions_repo import PositionRecord
+
+    ctx.positions_repo.upsert_position(PositionRecord(
+        user_id="user1", condition_id="cond1", token_id=FAKE_TOKEN_ID,
+        leader_id="leader1", size_tokens=Decimal("10"), avg_entry_price=Decimal("0.40"),
+    ))
+
+    signal = _signal(side="SELL", price=0.50, size=1.0)
+    signal["_leader_sell_fraction"] = 0.1
+
+    with patch("orchestrators.trade_pipeline._fetch_live_position_size", new_callable=AsyncMock, return_value=Decimal("10")):
+        results = await execute_trades(ctx, "leader1", [signal], time.time())
+
+    assert len(results) == 1
+    assert results[0].status == "executed"
+
+    req = exec_svc.execute.await_args.args[0]
+    assert req.side == "SELL"
+    assert req.amount == Decimal("5")
+
+
+@pytest.mark.asyncio
 async def test_sell_uses_notional_when_size_missing(tmp_path):
     """SELL without _leader_sell_fraction defaults to full close (100% of held position)."""
     db_path = _init_db(tmp_path)
