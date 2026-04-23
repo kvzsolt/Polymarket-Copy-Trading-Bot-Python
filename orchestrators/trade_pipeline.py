@@ -329,8 +329,8 @@ def _retry_attempt_from_status(status: str | None, retry_attempt: int | None = N
     return 0
 
 
-def _account_cap_policy_enabled() -> bool:
-    return bool(ENV.get("ENABLE_BALANCE_TIERED_POLICY", False))
+def _account_cap_policy_enabled(context: TradingContext) -> bool:
+    return bool(_trade_config(context).risk.enable_balance_tiered_policy)
 
 
 def _trade_config(context: TradingContext) -> AppConfig:
@@ -416,7 +416,7 @@ async def _resolve_position_pct_cap(
             market_exposure_usdc += position_notional
 
     equity_usdc = free_cash_usdc + total_exposure_usdc
-    max_position_pct = Decimal(str(ENV.get("MAX_POSITION_PCT", 0) or 0))
+    max_position_pct = Decimal(str(_trade_config(context).sizing.max_position_pct or 0))
     if max_position_pct <= 0:
         return _BuyRiskCap(True, "disabled", "max_position_pct", free_cash_usdc)
 
@@ -468,7 +468,7 @@ async def _resolve_buy_risk_cap(
 
     equity_usdc = free_cash_usdc + total_exposure_usdc
 
-    day_start_equity = Decimal(str(ENV.get("DAY_START_EQUITY_USDC", 0) or 0))
+    day_start_equity = Decimal(str(_trade_config(context).risk.day_start_equity_usdc or 0))
     if day_start_equity <= 0:
         day_start_equity = get_day_start_equity(equity_usdc)
     daily_loss_usdc = max(Decimal("0"), day_start_equity - equity_usdc)
@@ -484,6 +484,7 @@ async def _resolve_buy_risk_cap(
         leader_exposure_usdc=leader_exposure_usdc,
         daily_loss_usdc=daily_loss_usdc,
         day_start_equity_usdc=day_start_equity,
+        config=_trade_config(context),
     )
     return _BuyRiskCap(
         allow=headroom.allow,
@@ -1139,8 +1140,9 @@ async def execute_trades(
                     position_pct_cap.cap_notional_usdc,
                 )
 
+                policy_enabled = _account_cap_policy_enabled(context)
                 buy_risk_cap = None
-                if _account_cap_policy_enabled():
+                if policy_enabled:
                     buy_risk_cap = await _resolve_buy_risk_cap(context, leader_id, signal)
                     if not buy_risk_cap.allow:
                         reason = (
@@ -1208,7 +1210,7 @@ async def execute_trades(
                     float(signal.usdc_size),
                     sizing_result.strategy,
                     float(target_notional),
-                    _account_cap_policy_enabled(),
+                    policy_enabled,
                     f"{float(buy_risk_cap.cap_notional_usdc):.4f}[{buy_risk_cap.policy_name}]"
                     if buy_risk_cap else "n/a",
                     policy_binding,
@@ -1221,7 +1223,7 @@ async def execute_trades(
                         "leader_notional": float(signal.usdc_size),
                         "strategy": sizing_result.strategy,
                         "sizing_target": float(target_notional),
-                        "policy_enabled": _account_cap_policy_enabled(),
+                        "policy_enabled": policy_enabled,
                         "policy_cap": float(buy_risk_cap.cap_notional_usdc) if buy_risk_cap else None,
                         "policy_binding": policy_binding,
                         "max_for_decision": float(max_notional_for_decision),

@@ -12,7 +12,7 @@ from services.multiUserConfig import RuntimeUser, UserFollowConfig
 from services.orderRepository import OrderRepository
 from services.pnlTracker import PnLTracker
 from services.positionManager import PositionManager
-from services.riskEngine import RiskEngine
+from services.riskEngine import RiskEngine, init_risk_engine
 from services.healthServer import ReadinessTracker
 from services.entryPermissionService import EntryPermissionService
 from services.riskMonitor import rehydrate_position_manager, reconcile_unconfirmed_risk_orders
@@ -177,6 +177,9 @@ def build_user_state(
     db_path: str,
     config: AppConfig | None = None,
 ) -> UserRuntimeState:
+    if config is not None:
+        init_risk_engine(config)
+
     order_repo = OrdersRepo(db_path)
     fills_repo = FillsRepo(db_path)
     positions_repo = PositionsRepo(db_path)

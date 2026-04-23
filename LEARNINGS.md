@@ -118,3 +118,8 @@
 - Observation: Once `trade_pipeline` reads `non_terminal_failure_max_attempts` from `context.config.execution`, env mutation in retry-budget tests stops exercising the real live path even if the assertions still look plausible.
 - Action: Set `NON_TERMINAL_FAILURE_MAX_ATTEMPTS` through the test helper `_config(...)` on the `TradingContext` used by the pipeline, and reserve raw env mutation for true legacy/configless paths only.
 - Confidence: high
+
+**[2026-04-23] — #30 balance-policy cleanup must include RiskEngine config path, not just trade_pipeline**
+- Observation: Moving `ENABLE_BALANCE_TIERED_POLICY`, `MAX_POSITION_PCT`, and `DAY_START_EQUITY_USDC` off raw env in `trade_pipeline` can still leave tests and live behavior on old policy defaults if `headroom_for_buy()` falls back to `active_policy()` without injected config.
+- Action: When cleaning balance-policy live paths, pass typed config into `headroom_for_buy(...)` and initialize the live risk-engine cache from runtime bootstrap so policy math and pipeline gating read the same config source.
+- Confidence: high

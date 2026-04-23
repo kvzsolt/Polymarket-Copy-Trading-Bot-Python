@@ -609,13 +609,17 @@ async def test_final_reconcile_with_no_new_delta_marks_buy_fully_reconciled(tmp_
 
 
 @pytest.mark.asyncio
-async def test_max_position_pct_enforced_even_when_balance_policy_disabled(tmp_path, monkeypatch):
+async def test_max_position_pct_enforced_even_when_balance_policy_disabled(tmp_path):
     db_path = _init_db(tmp_path)
     exec_svc = AsyncMock()
     exec_svc.execute.return_value = _exec_result(
         accepted=True, filled=Decimal("10"), status="filled", order_id="ord-balance-off"
     )
-    ctx = _make_context(db_path, execution_service=exec_svc)
+    ctx = _make_context(
+        db_path,
+        execution_service=exec_svc,
+        config=_config(ENABLE_BALANCE_TIERED_POLICY="false", MAX_POSITION_PCT="0.20"),
+    )
     ctx.positions_repo.upsert_position(
         SimpleNamespace(
             user_id="user1",
@@ -626,9 +630,6 @@ async def test_max_position_pct_enforced_even_when_balance_policy_disabled(tmp_p
             avg_entry_price=Decimal("1.0"),
         )
     )
-
-    monkeypatch.setitem(ENV, "ENABLE_BALANCE_TIERED_POLICY", False)
-    monkeypatch.setitem(ENV, "MAX_POSITION_PCT", 0.20)
 
     with patch(
         "orchestrators.trade_pipeline.get_my_balance",
@@ -643,15 +644,19 @@ async def test_max_position_pct_enforced_even_when_balance_policy_disabled(tmp_p
 
 
 @pytest.mark.asyncio
-async def test_balance_tiered_policy_blocks_buy_without_tradable_cash(tmp_path, monkeypatch):
+async def test_balance_tiered_policy_blocks_buy_without_tradable_cash(tmp_path):
     db_path = _init_db(tmp_path)
     exec_svc = AsyncMock()
-    ctx = _make_context(db_path, execution_service=exec_svc)
-
-    monkeypatch.setitem(ENV, "ENABLE_BALANCE_TIERED_POLICY", True)
-    monkeypatch.setitem(ENV, "DAY_START_EQUITY_USDC", 4)
-    monkeypatch.setitem(ENV, "BALANCE_POLICY_RESERVE_PCT", 0.10)
-    monkeypatch.setitem(ENV, "BALANCE_POLICY_RESERVE_FLOOR", 5)
+    ctx = _make_context(
+        db_path,
+        execution_service=exec_svc,
+        config=_config(
+            ENABLE_BALANCE_TIERED_POLICY="true",
+            DAY_START_EQUITY_USDC="4",
+            BALANCE_POLICY_RESERVE_PCT="0.10",
+            BALANCE_POLICY_RESERVE_FLOOR="5",
+        ),
+    )
 
     with patch(
         "orchestrators.trade_pipeline.get_my_balance",
@@ -669,13 +674,17 @@ async def test_balance_tiered_policy_blocks_buy_without_tradable_cash(tmp_path, 
 
 
 @pytest.mark.asyncio
-async def test_max_position_pct_caps_additional_buy_on_same_market(tmp_path, monkeypatch):
+async def test_max_position_pct_caps_additional_buy_on_same_market(tmp_path):
     db_path = _init_db(tmp_path)
     exec_svc = AsyncMock()
     exec_svc.execute.return_value = _exec_result(
         accepted=True, filled=Decimal("10"), status="filled", order_id="ord-pos-cap"
     )
-    ctx = _make_context(db_path, execution_service=exec_svc)
+    ctx = _make_context(
+        db_path,
+        execution_service=exec_svc,
+        config=_config(ENABLE_BALANCE_TIERED_POLICY="false", MAX_POSITION_PCT="0.20"),
+    )
     ctx.positions_repo.upsert_position(
         SimpleNamespace(
             user_id="user1",
@@ -686,9 +695,6 @@ async def test_max_position_pct_caps_additional_buy_on_same_market(tmp_path, mon
             avg_entry_price=Decimal("1.0"),
         )
     )
-
-    monkeypatch.setitem(ENV, "ENABLE_BALANCE_TIERED_POLICY", False)
-    monkeypatch.setitem(ENV, "MAX_POSITION_PCT", 0.20)
 
     decision_service = _RecordingDecisionService()
     ctx.copy_decision_service = decision_service
@@ -710,20 +716,24 @@ async def test_max_position_pct_caps_additional_buy_on_same_market(tmp_path, mon
 
 
 @pytest.mark.asyncio
-async def test_balance_tiered_policy_caps_buy_before_execution(tmp_path, monkeypatch):
+async def test_balance_tiered_policy_caps_buy_before_execution(tmp_path):
     db_path = _init_db(tmp_path)
     exec_svc = AsyncMock()
     exec_svc.execute.return_value = _exec_result(
         accepted=True, filled=Decimal("10"), status="filled", order_id="ord-balance-cap"
     )
-    ctx = _make_context(db_path, execution_service=exec_svc)
-
-    monkeypatch.setitem(ENV, "ENABLE_BALANCE_TIERED_POLICY", True)
-    monkeypatch.setitem(ENV, "DAY_START_EQUITY_USDC", 25)
-    monkeypatch.setitem(ENV, "BALANCE_POLICY_RESERVE_PCT", 0.10)
-    monkeypatch.setitem(ENV, "BALANCE_POLICY_RESERVE_FLOOR", 5)
-    monkeypatch.setitem(ENV, "BALANCE_POLICY_HARD_CAP_PCT", 0.18)
-    monkeypatch.setitem(ENV, "BALANCE_POLICY_HARD_CAP_CEILING", 4.5)
+    ctx = _make_context(
+        db_path,
+        execution_service=exec_svc,
+        config=_config(
+            ENABLE_BALANCE_TIERED_POLICY="true",
+            DAY_START_EQUITY_USDC="25",
+            BALANCE_POLICY_RESERVE_PCT="0.10",
+            BALANCE_POLICY_RESERVE_FLOOR="5",
+            BALANCE_POLICY_HARD_CAP_PCT="0.18",
+            BALANCE_POLICY_HARD_CAP_CEILING="4.5",
+        ),
+    )
 
     decision_service = _RecordingDecisionService()
     ctx.copy_decision_service = decision_service
@@ -765,7 +775,7 @@ async def test_sell_with_no_position_skipped(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_buy_can_raise_from_small_target_to_exchange_min_when_within_buy_max(tmp_path, monkeypatch):
+async def test_buy_can_raise_from_small_target_to_exchange_min_when_within_buy_max(tmp_path):
     db_path = _init_db(tmp_path)
     exec_svc = AsyncMock()
     exec_svc.execute.return_value = _exec_result(
@@ -777,8 +787,6 @@ async def test_buy_can_raise_from_small_target_to_exchange_min_when_within_buy_m
     ctx = _make_context(db_path, execution_service=exec_svc)
     ctx.buy_min_amount = 1.0
     ctx.buy_max_amount = 8.0
-
-    monkeypatch.setitem(ENV, "ENABLE_BALANCE_TIERED_POLICY", False)
 
     signal = _signal(price=0.56, size=20.0, tx_hash="0xmin-bump")
     results = await execute_trades(ctx, "leader1", [signal], time.time())
