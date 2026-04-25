@@ -84,16 +84,24 @@ def _matched_amount_from_response(response: dict[str, Any] | None) -> Decimal:
     )
 
 
-async def _resolve_market_min_size(context: TradingContext, token_id: str) -> float:
+async def _resolve_market_meta(context: TradingContext, token_id: str) -> tuple[float, float]:
+    """Returns (min_order_size, tick_size) for the token."""
     config = _trade_config(context)
     market_min_size = float(config.network.min_order_size)
+    tick_size = 0.0
     try:
         if hasattr(context, 'execution_service') and context.execution_service:
             meta = await context.execution_service.market_meta_service.get(token_id)
             market_min_size = max(market_min_size, float(getattr(meta, "min_order_size", 0) or 0))
+            tick_size = float(getattr(meta, "tick_size", 0) or 0)
     except Exception:
         pass
-    return market_min_size
+    return market_min_size, tick_size
+
+
+async def _resolve_market_min_size(context: TradingContext, token_id: str) -> float:
+    min_size, _ = await _resolve_market_meta(context, token_id)
+    return min_size
 
 
 async def _fetch_live_position_size(
@@ -915,12 +923,14 @@ async def execute_trades(
     )
 
     market_min_size_by_token: dict[str, float] = {}
+    tick_size_by_token: dict[str, float] = {}
     if normalized:
         analysis_sem = _analysis_semaphore(context)
 
-        async def _prefetch_market_min(signal: TradeSignal) -> tuple[str, float]:
+        async def _prefetch_market_min(signal: TradeSignal) -> tuple[str, float, float]:
             async with analysis_sem:
-                return signal.token_id, await _resolve_market_min_size(context, signal.token_id)
+                min_size, tick = await _resolve_market_meta(context, signal.token_id)
+                return signal.token_id, min_size, tick
 
         prefetch_results = await asyncio.gather(
             *(_prefetch_market_min(signal) for signal, _ in normalized),
@@ -935,9 +945,11 @@ async def execute_trades(
                     repr(result),
                 )
                 market_min_size_by_token[signal.token_id] = float(_trade_config(context).network.min_order_size)
+                tick_size_by_token[signal.token_id] = 0.0
                 continue
-            token_id, market_min_size = result
+            token_id, market_min_size, tick_size = result
             market_min_size_by_token[token_id] = market_min_size
+            tick_size_by_token[token_id] = tick_size
 
     for signal, raw in normalized:
         labels = {"user_id": context.user_id, "leader_id": leader_id}
@@ -1119,6 +1131,7 @@ async def execute_trades(
                 signal.token_id,
                 float(_trade_config(context).network.min_order_size),
             )
+            market_tick_size = tick_size_by_token.get(signal.token_id, 0.0)
 
             if signal.side == "BUY":
                 sizing_result = context.copy_notional(signal.usdc_size)
@@ -1313,6 +1326,7 @@ async def execute_trades(
                     base_notional_usdc=float(target_notional),
                     max_notional_usdc=float(max_notional_for_decision),
                     market_min_size=market_min_size,
+                    tick_size=market_tick_size,
                 )
 
                 log_trade_decision(
