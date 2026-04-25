@@ -368,3 +368,76 @@ class TestTradeAnalyticsService:
         assert snap["executed_trades"] == 1
         assert snap["avg_quality_score"] > 0
         assert snap["avg_slippage_bps"] > 0
+
+
+class TestCopyDecisionServicePartialHeadroom:
+    """Tests for issue #37: MAX_POSITION_PCT should downsize BUY to remaining cap headroom."""
+
+    def test_buy_downsized_to_partial_headroom(self):
+        """17% exposure, 25% cap → 8% headroom → BUY should be downsized to fit, not denied."""
+        # equity=100 USDC, cap=0.25 → max cap notional=25
+        # existing market exposure = 17 → remaining = 8 USDC headroom
+        # desired trade = 15 USDC, cap constrains to 8 USDC
+        # min_order at 0.50 price = 5 shares * 0.50 = 2.50 USDC notional
+        # → should downsize to ~8 USDC (fits within cap and above min)
+        svc = CopyDecisionService()
+        trade = {"price": 0.50, "timestamp": time.time(), "usdcSize": 15.0}
+        decision = svc.decide_buy(
+            trade=trade,
+            leader_score=_leader(),
+            live_price=0.50,
+            base_notional_usdc=15.0,
+            max_notional_usdc=8.0,  # cap headroom = 8 USDC
+            market_min_size=5.0,
+        )
+        assert decision.allow is True, f"Expected allow=True, got skip_code={decision.skip_code}"
+        # final notional must be <= cap headroom
+        assert decision.target_notional_usdc <= 8.0 + 1e-6
+        # final order must be above minimum
+        assert decision.target_size_tokens >= 5.0 - 1e-6
+
+    def test_buy_hard_denied_when_zero_headroom(self):
+        """Zero remaining cap headroom → hard deny."""
+        svc = CopyDecisionService()
+        trade = {"price": 0.50, "timestamp": time.time(), "usdcSize": 15.0}
+        decision = svc.decide_buy(
+            trade=trade,
+            leader_score=_leader(),
+            live_price=0.50,
+            base_notional_usdc=15.0,
+            max_notional_usdc=0.0,  # zero headroom
+            market_min_size=5.0,
+        )
+        assert decision.allow is False
+        assert decision.skip_code in ("insufficient_notional", "risk_cap_too_low_for_min_order", "buy_below_minimum_order_requirements")
+
+    def test_buy_hard_denied_when_headroom_below_min_order(self):
+        """Cap headroom exists but is below the minimum executable order size → hard deny."""
+        # headroom = 1 USDC, min order = 5 shares * 0.50 = 2.50 USDC → can't fill minimum
+        svc = CopyDecisionService()
+        trade = {"price": 0.50, "timestamp": time.time(), "usdcSize": 15.0}
+        decision = svc.decide_buy(
+            trade=trade,
+            leader_score=_leader(),
+            live_price=0.50,
+            base_notional_usdc=15.0,
+            max_notional_usdc=1.0,  # below min order notional
+            market_min_size=5.0,
+        )
+        assert decision.allow is False
+        assert decision.skip_code in ("risk_cap_too_low_for_min_order", "buy_below_minimum_order_requirements")
+
+    def test_buy_not_capped_when_headroom_covers_full_order(self):
+        """When cap headroom > desired order size, full order goes through unchanged."""
+        svc = CopyDecisionService()
+        trade = {"price": 0.50, "timestamp": time.time(), "usdcSize": 10.0}
+        decision = svc.decide_buy(
+            trade=trade,
+            leader_score=_leader(),
+            live_price=0.50,
+            base_notional_usdc=10.0,
+            max_notional_usdc=20.0,  # plenty of headroom
+            market_min_size=5.0,
+        )
+        assert decision.allow is True
+        assert decision.target_size_tokens == pytest.approx(20.0, rel=0.05)

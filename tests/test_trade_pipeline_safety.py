@@ -165,6 +165,7 @@ class _RecordingDecisionService:
         base_notional_usdc,
         max_notional_usdc,
         market_min_size,
+        tick_size=0.0,
     ):
         self.buy_calls.append(
             {
