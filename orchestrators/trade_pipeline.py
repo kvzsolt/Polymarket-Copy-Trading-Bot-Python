@@ -392,30 +392,73 @@ def _derive_sell_tokens(signal: TradeSignal, position: Any, raw_trade: dict[str,
     return derived if derived > 0 else Decimal("0")
 
 
-async def _resolve_position_pct_cap(
+class _BalanceSnapshot:
+    """Cached balance + exposure data shared across cap resolvers."""
+    __slots__ = (
+        "free_cash_usdc",
+        "equity_usdc",
+        "total_exposure_usdc",
+        "market_exposure_usdc",
+        "leader_exposure_usdc",
+        "open_positions_count",
+    )
+
+    def __init__(
+        self,
+        free_cash_usdc: Decimal,
+        total_exposure_usdc: Decimal,
+        market_exposure_usdc: Decimal,
+        leader_exposure_usdc: Decimal,
+        open_positions_count: int,
+    ) -> None:
+        self.free_cash_usdc = free_cash_usdc
+        self.total_exposure_usdc = total_exposure_usdc
+        self.market_exposure_usdc = market_exposure_usdc
+        self.leader_exposure_usdc = leader_exposure_usdc
+        self.equity_usdc = free_cash_usdc + total_exposure_usdc
+        self.open_positions_count = open_positions_count
+
+
+async def _fetch_balance_snapshot(
     context: TradingContext,
-    signal: TradeSignal,
-) -> _BuyRiskCap:
+    condition_id: str,
+    leader_id: str,
+) -> _BalanceSnapshot | None:
+    """Single balance + positions fetch shared by both cap resolvers."""
     balance_usdc = await get_my_balance(context.wallet_address)
     if balance_usdc is None:
-        return _BuyRiskCap(
-            allow=False,
-            reason="balance_unavailable",
-            policy_name="max_position_pct",
-            cap_notional_usdc=Decimal("0"),
-        )
+        return None
 
     free_cash_usdc = Decimal(str(balance_usdc))
     open_positions = context.positions_repo.list_open_positions(context.user_id)
     total_exposure_usdc = Decimal("0")
     market_exposure_usdc = Decimal("0")
+    leader_exposure_usdc = Decimal("0")
     for position in open_positions:
         position_notional = _position_notional_usdc(position)
         total_exposure_usdc += position_notional
-        if str(getattr(position, "condition_id", "") or "") == signal.condition_id:
+        if str(getattr(position, "condition_id", "") or "") == condition_id:
             market_exposure_usdc += position_notional
+        if str(getattr(position, "leader_id", "") or "") == leader_id:
+            leader_exposure_usdc += position_notional
 
-    equity_usdc = free_cash_usdc + total_exposure_usdc
+    return _BalanceSnapshot(
+        free_cash_usdc=free_cash_usdc,
+        total_exposure_usdc=total_exposure_usdc,
+        market_exposure_usdc=market_exposure_usdc,
+        leader_exposure_usdc=leader_exposure_usdc,
+        open_positions_count=len(open_positions),
+    )
+
+
+async def _resolve_position_pct_cap(
+    context: TradingContext,
+    signal: TradeSignal,
+    snapshot: _BalanceSnapshot,
+) -> _BuyRiskCap:
+    free_cash_usdc = snapshot.free_cash_usdc
+    equity_usdc = snapshot.equity_usdc
+    market_exposure_usdc = snapshot.market_exposure_usdc
     max_position_pct = Decimal(str(_trade_config(context).sizing.max_position_pct or 0))
     if max_position_pct <= 0:
         return _BuyRiskCap(True, "disabled", "max_position_pct", free_cash_usdc)
@@ -442,31 +485,10 @@ async def _resolve_buy_risk_cap(
     context: TradingContext,
     leader_id: str,
     signal: TradeSignal,
+    snapshot: _BalanceSnapshot,
 ) -> _BuyRiskCap:
-    balance_usdc = await get_my_balance(context.wallet_address)
-    if balance_usdc is None:
-        return _BuyRiskCap(
-            allow=False,
-            reason="balance_unavailable",
-            policy_name="unknown",
-            cap_notional_usdc=Decimal("0"),
-        )
-
-    free_cash_usdc = Decimal(str(balance_usdc))
-    open_positions = context.positions_repo.list_open_positions(context.user_id)
-
-    total_exposure_usdc = Decimal("0")
-    market_exposure_usdc = Decimal("0")
-    leader_exposure_usdc = Decimal("0")
-    for position in open_positions:
-        position_notional = _position_notional_usdc(position)
-        total_exposure_usdc += position_notional
-        if str(getattr(position, "condition_id", "") or "") == signal.condition_id:
-            market_exposure_usdc += position_notional
-        if str(getattr(position, "leader_id", "") or "") == leader_id:
-            leader_exposure_usdc += position_notional
-
-    equity_usdc = free_cash_usdc + total_exposure_usdc
+    equity_usdc = snapshot.equity_usdc
+    free_cash_usdc = snapshot.free_cash_usdc
 
     day_start_equity = Decimal(str(_trade_config(context).risk.day_start_equity_usdc or 0))
     if day_start_equity <= 0:
@@ -478,10 +500,10 @@ async def _resolve_buy_risk_cap(
     headroom = headroom_for_buy(
         equity_usdc=equity_usdc,
         free_cash_usdc=free_cash_usdc,
-        open_positions_count=len(open_positions),
-        market_exposure_usdc=market_exposure_usdc,
+        open_positions_count=snapshot.open_positions_count,
+        market_exposure_usdc=snapshot.market_exposure_usdc,
         category_exposure_usdc=Decimal("0"),
-        leader_exposure_usdc=leader_exposure_usdc,
+        leader_exposure_usdc=snapshot.leader_exposure_usdc,
         daily_loss_usdc=daily_loss_usdc,
         day_start_equity_usdc=day_start_equity,
         config=_trade_config(context),
@@ -1104,7 +1126,43 @@ async def execute_trades(
                 configured_buy_max = Decimal(str(getattr(context, "buy_max_amount", target_notional) or target_notional))
                 max_notional_for_decision = max(target_notional, configured_buy_max)
 
-                position_pct_cap = await _resolve_position_pct_cap(context, signal)
+                snapshot = await _fetch_balance_snapshot(
+                    context, signal.condition_id, leader_id,
+                )
+                if snapshot is None:
+                    reason = "balance_unavailable"
+                    print_skip_reason("Balance unavailable", reason)
+                    log_trade_skip(
+                        logger,
+                        side=signal.side,
+                        condition_id=signal.condition_id,
+                        asset=signal.token_id,
+                        size=float(signal.size) if signal.size else None,
+                        price=live_price,
+                        usdc_value=float(signal.usdc_size),
+                        skip_code=reason,
+                        reason=reason,
+                        event_slug=signal.event_slug,
+                        meta={"user_id": context.user_id, "leader_id": leader_id},
+                    )
+                    await metrics.inc(
+                        "trades_skipped_total",
+                        labels={**labels, "reason": reason},
+                    )
+                    context.orders_repo.mark_processed_trade(
+                        trade_key=trade_key,
+                        user_id=context.user_id,
+                        leader_id=leader_id,
+                        tx_hash=signal.tx_hash,
+                        side=signal.side,
+                        asset=signal.token_id,
+                        condition_id=signal.condition_id,
+                        status=f"skipped_{reason}",
+                    )
+                    results.append(TradePipelineResult(trade_key, "skipped", reason, None))
+                    continue
+
+                position_pct_cap = await _resolve_position_pct_cap(context, signal, snapshot)
                 if not position_pct_cap.allow:
                     reason = (
                         f"position cap [{position_pct_cap.policy_name}] blocked BUY: "
@@ -1156,10 +1214,9 @@ async def execute_trades(
                     position_pct_cap.cap_notional_usdc,
                 )
 
-                policy_enabled = _account_cap_policy_enabled(context)
                 buy_risk_cap = None
-                if policy_enabled:
-                    buy_risk_cap = await _resolve_buy_risk_cap(context, leader_id, signal)
+                if _account_cap_policy_enabled(context):
+                    buy_risk_cap = await _resolve_buy_risk_cap(context, leader_id, signal, snapshot)
                     if not buy_risk_cap.allow:
                         reason = (
                             f"account-cap policy [{buy_risk_cap.policy_name}] headroom: "
@@ -1210,6 +1267,8 @@ async def execute_trades(
                         max_notional_for_decision,
                         buy_risk_cap.cap_notional_usdc,
                     )
+
+                policy_enabled = _account_cap_policy_enabled(context)
 
                 # --- Sizing audit: unified log showing both sizing sources ---
                 policy_binding = (
