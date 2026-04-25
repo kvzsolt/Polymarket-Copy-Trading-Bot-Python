@@ -90,6 +90,7 @@ class CopyDecisionService:
         base_notional_usdc: float,
         max_notional_usdc: float,
         market_min_size: float,
+        tick_size: float = 0.0,
     ) -> CopyDecision:
         ref_price = float(trade.get("price", 0) or 0)
         if live_price <= 0 or ref_price <= 0:
@@ -198,8 +199,12 @@ class CopyDecisionService:
         decimals = self._copy_size_decimals
 
         # Worst-case price for cap compatibility (slippage-adjusted).
+        # Apply tick-size ceiling (ROUND_CEILING for BUY) to match ExecutionService semantics.
         slippage_ratio = self._slippage_ratio
         worst_price = live_price * (1.0 + slippage_ratio)
+        if tick_size > 0:
+            import math
+            worst_price = math.ceil(worst_price / tick_size) * tick_size
 
         target_size_tokens = desired_notional / live_price
         required_min_size_tokens = (
@@ -297,6 +302,7 @@ class CopyDecisionService:
                 target_size_tokens = floored_size_tokens
                 live_notional_usdc = floored_live_notional_usdc
                 target_notional_usdc = floored_required_worst
+                required_worst_notional = floored_required_worst  # keep details in sync
             else:
                 cap_can_cover_minimum = (
                     cap_binding
@@ -307,6 +313,7 @@ class CopyDecisionService:
                     target_size_tokens = self._floor(max_notional_usdc / worst_price, decimals)
                     live_notional_usdc = target_size_tokens * live_price
                     target_notional_usdc = max_notional_usdc
+                    required_worst_notional = target_size_tokens * worst_price  # keep details in sync
                 else:
                     return CopyDecision(
                         allow=False,
@@ -381,7 +388,7 @@ class CopyDecisionService:
                 "minimum_executable_notional_usdc": minimum_executable_notional_usdc,
                 "cap_binding": cap_binding,
                 "live_notional_usdc": live_notional_usdc,
-                "required_worst_notional_usdc": required_worst_notional,
+                "required_worst_notional_usdc": required_worst_notional,  # reflects final clamped size
             },
         )
 

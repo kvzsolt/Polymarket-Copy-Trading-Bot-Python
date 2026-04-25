@@ -409,6 +409,7 @@ class TestCopyDecisionServicePartialHeadroom:
             market_min_size=5.0,
         )
         assert decision.allow is False
+        assert decision.skip_code in ("insufficient_notional", "risk_cap_too_low_for_min_order", "buy_below_minimum_order_requirements")
 
     def test_buy_hard_denied_when_headroom_below_min_order(self):
         """Cap headroom exists but is below the minimum executable order size → hard deny."""
@@ -424,6 +425,7 @@ class TestCopyDecisionServicePartialHeadroom:
             market_min_size=5.0,
         )
         assert decision.allow is False
+        assert decision.skip_code in ("risk_cap_too_low_for_min_order", "buy_below_minimum_order_requirements")
 
     def test_buy_not_capped_when_headroom_covers_full_order(self):
         """When cap headroom > desired order size, full order goes through unchanged."""
