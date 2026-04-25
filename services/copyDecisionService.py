@@ -7,9 +7,13 @@ from typing import Any, TYPE_CHECKING
 
 from services.leaderScoringService import LeaderScore, LeaderScoringService
 from services.tradeScoringService import TradeScore, TradeScoringService
+from utils.logger import get_logger
 
 if TYPE_CHECKING:
     from config.app_config import AppConfig
+
+
+logger = get_logger("CopyDecisionService")
 
 
 @dataclass(frozen=True)
@@ -128,7 +132,8 @@ class CopyDecisionService:
             if decision_gate_enabled
             else 1.0
         )
-        desired_notional = min(base_notional_usdc * trust_mult, max_notional_usdc)
+        unconstrained_notional = base_notional_usdc * trust_mult
+        desired_notional = min(unconstrained_notional, max_notional_usdc)
 
         if decision_gate_enabled:
             trade_score = self.trade_scorer.score_buy_trade(
@@ -206,37 +211,55 @@ class CopyDecisionService:
             if self._minimum_order_guard_enabled
             else 0.0
         )
+        minimum_executable_notional_usdc = (
+            max(
+                min_notional,
+                min_shares * worst_price,
+                (market_min_size if market_min_size > 0 else 0.0) * worst_price,
+            )
+            if self._minimum_order_guard_enabled
+            else 0.0
+        )
+        cap_binding = max_notional_usdc + 1e-9 < unconstrained_notional
 
         if 0 < target_size_tokens + 1e-12 < required_min_size_tokens:
-            return CopyDecision(
-                allow=False,
-                skip_code="buy_below_minimum_order_requirements",
-                reason=(
-                    "copied BUY below minimum executable venue size "
-                    f"(target={target_size_tokens:.4f}, required={required_min_size_tokens:.4f}, live_price={live_price:.4f})"
-                ),
-                side="BUY",
-                decision_score=trade_score.score,
-                leader_score=leader_score.score,
-                trade_score=trade_score.score,
-                live_price=live_price,
-                reference_price=ref_price,
-                target_notional_usdc=target_size_tokens * worst_price,
-                target_size_tokens=target_size_tokens,
-                price_drift_pct=trade_score.price_drift_pct,
-                edge_decay_pct=trade_score.edge_decay_pct,
-                details={
-                    **trade_score.details,
-                    "decision_gate_enabled": decision_gate_enabled,
-                    "minimum_order_guard_enabled": self._minimum_order_guard_enabled,
-                    "trust_multiplier": trust_mult,
-                    "base_notional_usdc": base_notional_usdc,
-                    "max_notional_usdc": max_notional_usdc,
-                    "market_min_size": market_min_size,
-                    "required_min_size_tokens": required_min_size_tokens,
-                    "required_min_live_notional_usdc": required_min_size_tokens * live_price,
-                },
+            cap_can_cover_minimum = (
+                cap_binding
+                and minimum_executable_notional_usdc > 0
+                and max_notional_usdc + 1e-9 >= minimum_executable_notional_usdc
             )
+            if not cap_can_cover_minimum:
+                return CopyDecision(
+                    allow=False,
+                    skip_code="buy_below_minimum_order_requirements",
+                    reason=(
+                        "copied BUY below minimum executable venue size "
+                        f"(target={target_size_tokens:.4f}, required={required_min_size_tokens:.4f}, live_price={live_price:.4f})"
+                    ),
+                    side="BUY",
+                    decision_score=trade_score.score,
+                    leader_score=leader_score.score,
+                    trade_score=trade_score.score,
+                    live_price=live_price,
+                    reference_price=ref_price,
+                    target_notional_usdc=target_size_tokens * worst_price,
+                    target_size_tokens=target_size_tokens,
+                    price_drift_pct=trade_score.price_drift_pct,
+                    edge_decay_pct=trade_score.edge_decay_pct,
+                    details={
+                        **trade_score.details,
+                        "decision_gate_enabled": decision_gate_enabled,
+                        "minimum_order_guard_enabled": self._minimum_order_guard_enabled,
+                        "trust_multiplier": trust_mult,
+                        "base_notional_usdc": base_notional_usdc,
+                        "max_notional_usdc": max_notional_usdc,
+                        "market_min_size": market_min_size,
+                        "required_min_size_tokens": required_min_size_tokens,
+                        "required_min_live_notional_usdc": required_min_size_tokens * live_price,
+                        "minimum_executable_notional_usdc": minimum_executable_notional_usdc,
+                        "cap_binding": cap_binding,
+                    },
+                )
 
         target_size_tokens = self._ceil(target_size_tokens, decimals)
 
@@ -275,24 +298,56 @@ class CopyDecisionService:
                 live_notional_usdc = floored_live_notional_usdc
                 target_notional_usdc = floored_required_worst
             else:
-                return CopyDecision(
-                    allow=False,
-                    skip_code="risk_cap_too_low_for_min_order",
-                    reason=(
-                        "minimum executable BUY size exceeds available/risk-capped notional "
-                        f"(required_worst={required_worst_notional:.4f}, cap={max_notional_usdc:.4f})"
-                    ),
-                    side="BUY",
-                    decision_score=trade_score.score,
-                    leader_score=leader_score.score,
-                    trade_score=trade_score.score,
-                    live_price=live_price,
-                    reference_price=ref_price,
-                    target_notional_usdc=target_notional_usdc,
-                    target_size_tokens=target_size_tokens,
-                    price_drift_pct=trade_score.price_drift_pct,
-                    edge_decay_pct=trade_score.edge_decay_pct,
+                cap_can_cover_minimum = (
+                    cap_binding
+                    and minimum_executable_notional_usdc > 0
+                    and max_notional_usdc + 1e-9 >= minimum_executable_notional_usdc
                 )
+                if cap_can_cover_minimum:
+                    target_size_tokens = self._floor(max_notional_usdc / worst_price, decimals)
+                    live_notional_usdc = target_size_tokens * live_price
+                    target_notional_usdc = max_notional_usdc
+                else:
+                    return CopyDecision(
+                        allow=False,
+                        skip_code="risk_cap_too_low_for_min_order",
+                        reason=(
+                            "minimum executable BUY size exceeds available/risk-capped notional "
+                            f"(required_worst={required_worst_notional:.4f}, cap={max_notional_usdc:.4f})"
+                        ),
+                        side="BUY",
+                        decision_score=trade_score.score,
+                        leader_score=leader_score.score,
+                        trade_score=trade_score.score,
+                        live_price=live_price,
+                        reference_price=ref_price,
+                        target_notional_usdc=target_notional_usdc,
+                        target_size_tokens=target_size_tokens,
+                        price_drift_pct=trade_score.price_drift_pct,
+                        edge_decay_pct=trade_score.edge_decay_pct,
+                        details={
+                            **trade_score.details,
+                            "decision_gate_enabled": decision_gate_enabled,
+                            "minimum_order_guard_enabled": self._minimum_order_guard_enabled,
+                            "trust_multiplier": trust_mult,
+                            "base_notional_usdc": base_notional_usdc,
+                            "max_notional_usdc": max_notional_usdc,
+                            "market_min_size": market_min_size,
+                            "required_min_size_tokens": required_min_size_tokens,
+                            "minimum_executable_notional_usdc": minimum_executable_notional_usdc,
+                            "cap_binding": cap_binding,
+                        },
+                    )
+
+        if cap_binding and abs(target_notional_usdc - desired_notional) > 1e-9:
+            logger.info(
+                "buy_size_clamped_by_cap | desired_notional=%.4f cap_headroom=%.4f final_notional=%.4f final_tokens=%.4f min_exec_notional=%.4f",
+                desired_notional,
+                max_notional_usdc,
+                target_notional_usdc,
+                target_size_tokens,
+                minimum_executable_notional_usdc,
+            )
 
         return CopyDecision(
             allow=True,
@@ -319,9 +374,12 @@ class CopyDecisionService:
                 "minimum_order_guard_enabled": self._minimum_order_guard_enabled,
                 "trust_multiplier": trust_mult,
                 "base_notional_usdc": base_notional_usdc,
+                "unconstrained_notional_usdc": unconstrained_notional,
                 "max_notional_usdc": max_notional_usdc,
                 "market_min_size": market_min_size,
                 "required_min_size_tokens": required_min_size_tokens,
+                "minimum_executable_notional_usdc": minimum_executable_notional_usdc,
+                "cap_binding": cap_binding,
                 "live_notional_usdc": live_notional_usdc,
                 "required_worst_notional_usdc": required_worst_notional,
             },
