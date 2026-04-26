@@ -961,23 +961,8 @@ async def test_sell_uses_leader_fraction_without_sell_decision_gate(tmp_path):
         def decide_buy(self, **_kwargs):
             raise AssertionError("BUY path should not run in this SELL test")
 
-        def decide_sell(self, **kwargs):
-            return CopyDecision(
-                allow=True,
-                skip_code="ok",
-                reason="decision gate disabled by config",
-                side="SELL",
-                decision_score=1.0,
-                leader_score=1.0,
-                trade_score=1.0,
-                live_price=float(kwargs["live_price"]),
-                reference_price=float(kwargs["trade"].get("price") or 0),
-                target_notional_usdc=float(kwargs["sell_tokens"]) * float(kwargs["live_price"]),
-                target_size_tokens=float(kwargs["sell_tokens"]),
-                price_drift_pct=0.0,
-                edge_decay_pct=0.0,
-                details={"decision_gate_enabled": False, "minimum_order_guard_enabled": False},
-            )
+        def decide_sell(self, **_kwargs):
+            raise AssertionError("leader SELL path must not call decision gate")
 
     ctx.copy_decision_service = _SellAwareDecisionService()
 
@@ -1028,6 +1013,40 @@ async def test_sell_bumps_tiny_request_to_executable_minimum(tmp_path):
     req = exec_svc.execute.await_args.args[0]
     assert req.side == "SELL"
     assert req.amount == Decimal("5")
+
+
+@pytest.mark.asyncio
+async def test_sell_below_minimum_sells_largest_remaining_amount(tmp_path):
+    db_path = _init_db(tmp_path)
+    exec_svc = AsyncMock()
+    exec_svc.execute.return_value = _exec_result(
+        accepted=True, filled=Decimal("3"), status="filled", order_id="ord-sell-largest"
+    )
+    ctx = _make_context(
+        db_path,
+        execution_service=exec_svc,
+        config=_config(MIN_ORDER_SIZE="5"),
+    )
+
+    from storage.sqlite.positions_repo import PositionRecord
+
+    ctx.positions_repo.upsert_position(PositionRecord(
+        user_id="user1", condition_id="cond1", token_id=FAKE_TOKEN_ID,
+        leader_id="leader1", size_tokens=Decimal("3"), avg_entry_price=Decimal("0.40"),
+    ))
+
+    signal = _signal(side="SELL", price=0.50, size=0.3)
+    signal["_leader_sell_fraction"] = 0.1
+
+    with patch("orchestrators.trade_pipeline._fetch_live_position_size", new_callable=AsyncMock, return_value=Decimal("3")):
+        results = await execute_trades(ctx, "leader1", [signal], time.time())
+
+    assert len(results) == 1
+    assert results[0].status == "executed"
+
+    req = exec_svc.execute.await_args.args[0]
+    assert req.side == "SELL"
+    assert req.amount == Decimal("3")
 
 
 @pytest.mark.asyncio
