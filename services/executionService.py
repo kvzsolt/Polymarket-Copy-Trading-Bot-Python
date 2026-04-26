@@ -469,14 +469,13 @@ class ExecutionService:
         self.order_repo = order_repo
         self._config = config
 
+        # Always default to the shared module-level breaker so multi-user
+        # runtimes get one venue-wide backoff window during a CLOB outage.
+        # Only honor an explicit per-instance breaker passed via DI; do NOT
+        # silently mint a fresh breaker just because typed config is present
+        # (config is used for execution policy, not breaker isolation).
         if circuit_breaker is not None:
             self.circuit_breaker = circuit_breaker
-        elif config is not None:
-            self.circuit_breaker = CircuitBreaker(
-                name="clob_api",
-                failure_threshold=config.execution.circuit_failure_threshold,
-                cooldown_seconds=config.execution.circuit_cooldown_seconds,
-            )
         else:
             self.circuit_breaker = _CLOB_CIRCUIT
 

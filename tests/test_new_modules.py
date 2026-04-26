@@ -362,17 +362,19 @@ class TestPnLTracker:
 class TestRiskMonitor:
     @pytest.mark.asyncio
     async def test_risk_monitor_exits_when_global_risk_master_disabled(self):
-        """When the global risk-management master is off, the loop should return immediately."""
+        """When the global risk-management master is off, the loop should return immediately.
+
+        We only assert on externally observable behavior (no venue calls). We deliberately
+        do not assert that ``ExecutionService`` was constructed: the disabled-path is allowed
+        to early-return before allocating any venue-bound services.
+        """
         from services.riskMonitor import risk_monitor_loop
         from services.healthServer import ReadinessTracker
         mock_clob = AsyncMock()
         mock_config = MagicMock()
         mock_config.polling.risk_check_interval = 1
         mock_config.risk.enable_risk_mgmt = False
-        with patch("services.riskMonitor.ExecutionService") as execution_service_cls:
-            await risk_monitor_loop(mock_clob, {}, None, None, ReadinessTracker(), config=mock_config)
-        execution_service_cls.assert_called_once()
-        assert execution_service_cls.call_args.kwargs["config"] is mock_config
+        await risk_monitor_loop(mock_clob, {}, None, None, ReadinessTracker(), config=mock_config)
         mock_clob.get_price.assert_not_called()
 
     @pytest.mark.asyncio

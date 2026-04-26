@@ -304,6 +304,15 @@ async def risk_monitor_loop(
         enable_tiered = False
         fee_bps = 20
 
+    if not enabled:
+        logger.info("Global risk management disabled — monitor will not run")
+        return
+    if not funder_address:
+        logger.error("Risk monitor disabled: missing FUNDER_ADDRESS")
+        return
+
+    # Construct execution-side services only after early-return guards so a
+    # disabled risk-management run does not allocate venue clients/repos.
     execution_service = ExecutionService(
         clob_client=clob_client,
         market_meta_service=MarketMetaService(clob_client),
@@ -312,13 +321,6 @@ async def risk_monitor_loop(
         config=config,
     )
     accounting = AccountingService()
-
-    if not enabled:
-        logger.info("Global risk management disabled — monitor will not run")
-        return
-    if not funder_address:
-        logger.error("Risk monitor disabled: missing FUNDER_ADDRESS")
-        return
 
     logger.info(
         "Risk monitor started: advanced exit engines active "
