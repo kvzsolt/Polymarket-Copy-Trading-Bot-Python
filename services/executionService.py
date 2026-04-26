@@ -560,6 +560,11 @@ class ExecutionService:
             )
 
         ec = self._config.execution if self._config else None
+        executable_order_guard_enabled = (
+            ec.enable_executable_order_guard
+            if ec and hasattr(ec, "enable_executable_order_guard")
+            else _coerce_bool(ENV.get("ENABLE_EXECUTABLE_ORDER_GUARD", True))
+        )
         require_fresh_book = (
             ec.execution_require_fresh_book
             if ec
@@ -756,7 +761,7 @@ class ExecutionService:
             worst_price = quote_price * (Decimal("1") - slippage)
         worst_price = _quantize_price(worst_price, meta.tick_size, side)
 
-        if side == "BUY" and meta.min_order_size > 0:
+        if executable_order_guard_enabled and side == "BUY" and meta.min_order_size > 0:
             requested_tokens = (
                 req.amount / worst_price if worst_price > 0 else Decimal("0")
             )
@@ -777,7 +782,8 @@ class ExecutionService:
                 )
 
         if (
-            side == "SELL"
+            executable_order_guard_enabled
+            and side == "SELL"
             and meta.min_order_size > 0
             and req.amount + Decimal("1e-12") < meta.min_order_size
         ):
