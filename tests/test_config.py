@@ -248,8 +248,9 @@ class TestSemanticInvariants:
         with pytest.raises(EnvValidationError, match="MAX_SHARE_PRICE must be >= MIN_SHARE_PRICE"):
             load_config(valid_env)
 
-    def test_max_position_pct_out_of_range(self, valid_env: dict[str, str]) -> None:
-        valid_env["MAX_POSITION_PCT"] = "1.5"
+    @pytest.mark.parametrize("bad_value", ["0", "1.5"])
+    def test_max_position_pct_out_of_range(self, valid_env: dict[str, str], bad_value: str) -> None:
+        valid_env["MAX_POSITION_PCT"] = bad_value
         with pytest.raises(EnvValidationError, match=r"MAX_POSITION_PCT must be in \(0, 1\]"):
             load_config(valid_env)
 
