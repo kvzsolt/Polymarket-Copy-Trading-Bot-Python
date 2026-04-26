@@ -286,13 +286,18 @@ class CopyDecisionService:
             floored_live_notional_usdc = floored_size_tokens * live_price
             floored_required_worst = floored_size_tokens * worst_price
 
+            # min_notional is the CLOB venue absolute floor (default $1).
+            # It must be enforced regardless of the executable_order_guard
+            # toggle, because the exchange will reject any order below this
+            # threshold unconditionally. The guard toggle controls share/
+            # market-minimum checks only; the notional floor is non-optional.
             floored_meets_mins = (
                 floored_size_tokens > 0
+                and floored_required_worst + 1e-9 >= min_notional
                 and (
                     not self._minimum_order_guard_enabled
                     or (
                         floored_size_tokens + 1e-12 >= min_shares
-                        and floored_required_worst + 1e-9 >= min_notional
                         and (market_min_size <= 0 or floored_size_tokens + 1e-12 >= market_min_size)
                     )
                 )

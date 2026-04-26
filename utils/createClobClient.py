@@ -386,6 +386,8 @@ class ClobClientWrapper:
                 for kw in (
                     "lower than the minimum",
                     "minimum:",
+                    "min size:",
+                    "invalid amount for a marketable",
                     "tick size",
                     "invalid order",
                     "invalid payload",
