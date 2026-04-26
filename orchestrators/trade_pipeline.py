@@ -400,6 +400,32 @@ def _derive_sell_tokens(signal: TradeSignal, position: Any, raw_trade: dict[str,
     return derived if derived > 0 else Decimal("0")
 
 
+def _resolve_leader_sell_tokens(
+    *,
+    requested_sell_tokens: Decimal,
+    max_sell_tokens: Decimal,
+    market_min_size: float,
+) -> Decimal:
+    """Resolve leader-follow SELL size without decision-gate scoring.
+
+    Leader SELLs are authoritative exits: copy the same fraction of our held
+    position, capped by what we can actually sell. If that fraction is below
+    the venue minimum, sell the minimum when possible; otherwise sell the
+    largest remaining sellable amount. Risk-management exits may still use
+    their own logic, but leader SELLs should not be blocked by copy-decision
+    scoring.
+    """
+    max_sell_tokens = max(Decimal("0"), max_sell_tokens)
+    target = min(max(Decimal("0"), requested_sell_tokens), max_sell_tokens)
+    if target <= 0:
+        return Decimal("0")
+
+    min_tokens = _to_decimal(market_min_size)
+    if min_tokens > 0 and target < min_tokens:
+        return min(max_sell_tokens, min_tokens)
+    return target
+
+
 class _BalanceSnapshot:
     """Cached balance + exposure data shared across cap resolvers."""
     __slots__ = (
@@ -1519,10 +1545,8 @@ async def execute_trades(
                 # Capture entry price before apply_fill mutates or closes/deletes the position.
                 sell_entry_price = _to_optional_float(getattr(pos, "avg_entry_price", None))
 
-                sell_tokens = _derive_sell_tokens(signal, pos, raw)
-
-                if sell_tokens > pos.size_tokens:
-                    sell_tokens = pos.size_tokens
+                requested_sell_tokens = _derive_sell_tokens(signal, pos, raw)
+                max_sell_tokens = pos.size_tokens
 
                 live_sellable_tokens = await _fetch_live_position_size(
                     context,
@@ -1532,28 +1556,72 @@ async def execute_trades(
                     venue_sell_cap = live_sellable_tokens.quantize(Decimal("0.01"), rounding=ROUND_DOWN)
                     if venue_sell_cap <= Decimal("0") and live_sellable_tokens > Decimal("0"):
                         venue_sell_cap = live_sellable_tokens
-                    if venue_sell_cap < sell_tokens:
+                    if venue_sell_cap < max_sell_tokens:
                         logger.info(
                             "sell_size_clamped_to_live_balance | cond=%s leader=%s requested=%.4f live_balance=%.4f clamped=%.4f",
                             signal.condition_id[:12],
                             leader_id[:12],
-                            float(sell_tokens),
+                            float(requested_sell_tokens),
                             float(live_sellable_tokens),
                             float(venue_sell_cap),
                             extra={
                                 "type": "sell_size_clamped_to_live_balance",
                                 "condition_id": signal.condition_id,
                                 "leader_id": leader_id,
-                                "requested_sell_tokens": float(sell_tokens),
+                                "requested_sell_tokens": float(requested_sell_tokens),
                                 "live_sellable_tokens": float(live_sellable_tokens),
                                 "clamped_sell_tokens": float(venue_sell_cap),
                             },
                         )
                         if venue_sell_cap <= Decimal("0") and live_sellable_tokens <= Decimal("0"):
                             context.positions_repo.delete_position(context.user_id, signal.condition_id, token_id=signal.token_id)
-                        sell_tokens = venue_sell_cap
+                        max_sell_tokens = venue_sell_cap
 
                 leader_sell_fraction = _extract_leader_sell_fraction(raw) or Decimal("1")
+                sell_tokens = _resolve_leader_sell_tokens(
+                    requested_sell_tokens=requested_sell_tokens,
+                    max_sell_tokens=max_sell_tokens,
+                    market_min_size=market_min_size,
+                )
+
+                if sell_tokens <= Decimal("0"):
+                    reason = "SELL size is zero"
+                    print_skip_reason("SELL skipped", reason)
+                    log_trade_skip(
+                        logger,
+                        side=signal.side,
+                        condition_id=signal.condition_id,
+                        asset=signal.token_id,
+                        size=float(sell_tokens),
+                        price=live_price,
+                        usdc_value=float(signal.usdc_size),
+                        skip_code="sell_size_zero",
+                        reason=reason,
+                        event_slug=signal.event_slug,
+                        meta={"user_id": context.user_id, "leader_id": leader_id},
+                    )
+                    await metrics.inc("trades_skipped_total", labels={**labels, "reason": "sell_size_zero"})
+                    context.orders_repo.mark_processed_trade(
+                        trade_key=trade_key,
+                        user_id=context.user_id,
+                        leader_id=leader_id,
+                        tx_hash=signal.tx_hash,
+                        side=signal.side,
+                        asset=signal.token_id,
+                        condition_id=signal.condition_id,
+                        status="skipped_sell_size_zero",
+                    )
+                    results.append(TradePipelineResult(trade_key, "skipped", reason, None))
+                    continue
+
+                if requested_sell_tokens + Decimal("1e-12") < sell_tokens:
+                    logger.info(
+                        "sell_size_bumped_to_min | requested=%.4f bumped_to=%.4f held=%.4f",
+                        float(requested_sell_tokens),
+                        float(sell_tokens),
+                        float(pos.size_tokens),
+                    )
+
                 logger.info(
                     "sell_ratio_applied | cond=%s leader=%s held=%.4f leader_fraction=%.6f sell_tokens=%.4f",
                     signal.condition_id[:12],
@@ -1567,72 +1635,12 @@ async def execute_trades(
                         "leader_id": leader_id,
                         "position_size": float(pos.size_tokens),
                         "leader_sell_fraction": float(leader_sell_fraction),
+                        "requested_sell_tokens": float(requested_sell_tokens),
+                        "max_sell_tokens": float(max_sell_tokens),
+                        "market_min_size": float(market_min_size),
                         "sell_tokens": float(sell_tokens),
                     },
                 )
-
-                sell_decision = copy_decision_svc.decide_sell(
-                    trade=raw,
-                    sell_tokens=float(sell_tokens),
-                    live_price=live_price,
-                    market_min_size=market_min_size,
-                    max_sell_tokens=float(pos.size_tokens),
-                )
-
-                log_trade_decision(
-                    logger,
-                    side=signal.side,
-                    condition_id=signal.condition_id,
-                    asset=signal.token_id,
-                    decision_score=sell_decision.decision_score,
-                    allow=sell_decision.allow,
-                    reason=sell_decision.reason,
-                    event_slug=signal.event_slug,
-                    meta={
-                        "user_id": context.user_id,
-                        "leader_id": leader_id,
-                        "trade_score": sell_decision.trade_score,
-                        "tx_hash": signal.tx_hash,
-                    },
-                )
-
-                if not sell_decision.allow:
-                    print_skip_reason("SELL rejected by execution minimums", sell_decision.reason)
-                    log_trade_skip(
-                        logger,
-                        side=signal.side,
-                        condition_id=signal.condition_id,
-                        asset=signal.token_id,
-                        size=float(sell_tokens),
-                        price=live_price,
-                        usdc_value=float(signal.usdc_size),
-                        skip_code=sell_decision.skip_code,
-                        reason=sell_decision.reason,
-                        event_slug=signal.event_slug,
-                        meta={"user_id": context.user_id, "leader_id": leader_id},
-                    )
-                    await metrics.inc("trades_skipped_total", labels={**labels, "reason": sell_decision.skip_code})
-                    context.orders_repo.mark_processed_trade(
-                        trade_key=trade_key,
-                        user_id=context.user_id,
-                        leader_id=leader_id,
-                        tx_hash=signal.tx_hash,
-                        side=signal.side,
-                        asset=signal.token_id,
-                        condition_id=signal.condition_id,
-                        status=f"skipped_{sell_decision.skip_code}",
-                    )
-                    results.append(TradePipelineResult(trade_key, "skipped", sell_decision.reason, None))
-                    continue
-
-                if float(sell_tokens) + 1e-12 < sell_decision.target_size_tokens:
-                    logger.info(
-                        "sell_size_bumped_to_min | requested=%.4f bumped_to=%.4f held=%.4f",
-                        float(sell_tokens),
-                        sell_decision.target_size_tokens,
-                        float(pos.size_tokens),
-                    )
-                sell_tokens = Decimal(str(sell_decision.target_size_tokens))
 
                 exec_req = ExecutionRequest(
                     user_id=context.user_id,
