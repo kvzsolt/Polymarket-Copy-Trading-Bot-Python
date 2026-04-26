@@ -362,7 +362,12 @@ class TestPnLTracker:
 class TestRiskMonitor:
     @pytest.mark.asyncio
     async def test_risk_monitor_exits_when_global_risk_master_disabled(self):
-        """When the global risk-management master is off, the loop should return immediately."""
+        """When the global risk-management master is off, the loop should return immediately.
+
+        We only assert on externally observable behavior (no venue calls). We deliberately
+        do not assert that ``ExecutionService`` was constructed: the disabled-path is allowed
+        to early-return before allocating any venue-bound services.
+        """
         from services.riskMonitor import risk_monitor_loop
         from services.healthServer import ReadinessTracker
         mock_clob = AsyncMock()
