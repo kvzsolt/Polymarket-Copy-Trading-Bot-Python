@@ -369,7 +369,10 @@ class TestRiskMonitor:
         mock_config = MagicMock()
         mock_config.polling.risk_check_interval = 1
         mock_config.risk.enable_risk_mgmt = False
-        await risk_monitor_loop(mock_clob, {}, None, None, ReadinessTracker(), config=mock_config)
+        with patch("services.riskMonitor.ExecutionService") as execution_service_cls:
+            await risk_monitor_loop(mock_clob, {}, None, None, ReadinessTracker(), config=mock_config)
+        execution_service_cls.assert_called_once()
+        assert execution_service_cls.call_args.kwargs["config"] is mock_config
         mock_clob.get_price.assert_not_called()
 
     @pytest.mark.asyncio

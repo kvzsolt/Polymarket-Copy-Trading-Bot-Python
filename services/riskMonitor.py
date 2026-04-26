@@ -309,6 +309,7 @@ async def risk_monitor_loop(
         market_meta_service=MarketMetaService(clob_client),
         fee_service=FeeService(clob_client, default_fee_bps=fee_bps),
         order_repo=OrderRepository(),
+        config=config,
     )
     accounting = AccountingService()
 

@@ -193,6 +193,7 @@ def build_user_state(
         market_meta_service=MarketMetaService(client),
         fee_service=FeeService(client),
         order_repo=OrderRepository(db_path=db_path),
+        config=config,
     )
 
     return UserRuntimeState(
