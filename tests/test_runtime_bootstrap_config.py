@@ -155,15 +155,19 @@ def test_build_trading_context_constructs_copy_decision_service_only_with_inject
     copy_decision_cls.assert_called_once_with(config=cfg, leader_scorer=ANY)
 
 
-def test_build_user_state_injects_typed_config_into_position_manager():
+def test_build_user_state_injects_typed_config_into_runtime_services():
     cfg = _config()
     runtime_user = SimpleNamespace(
         user_id="user-1",
         wallet=SimpleNamespace(funder_address=_VALID_FUNDER),
     )
 
-    with patch("orchestrators.runtime_bootstrap.PositionManager") as position_manager_cls:
+    with (
+        patch("orchestrators.runtime_bootstrap.PositionManager") as position_manager_cls,
+        patch("orchestrators.runtime_bootstrap.ExecutionService") as execution_service_cls,
+    ):
         position_manager_instance = position_manager_cls.return_value
+        execution_service_instance = execution_service_cls.return_value
         state = runtime_bootstrap.build_user_state(
             runtime_user,
             client=object(),
@@ -172,7 +176,10 @@ def test_build_user_state_injects_typed_config_into_position_manager():
         )
 
     position_manager_cls.assert_called_once_with(config=cfg)
+    execution_service_cls.assert_called_once()
+    assert execution_service_cls.call_args.kwargs["config"] is cfg
     assert state.position_manager is position_manager_instance
+    assert state.execution_service is execution_service_instance
 
 
 def test_copy_notional_prefers_typed_config_over_env():
