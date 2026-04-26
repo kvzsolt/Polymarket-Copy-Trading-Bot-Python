@@ -471,7 +471,10 @@ async def _resolve_position_pct_cap(
     if max_position_pct <= 0:
         return _BuyRiskCap(True, "disabled", "max_position_pct", free_cash_usdc)
 
-    cap_total_usdc = equity_usdc * max_position_pct
+    # Cap against FREE CASH only (not total equity). Using equity as the
+    # denominator was allowing one position to consume the entire deposit
+    # when existing open positions inflated the equity figure.
+    cap_total_usdc = free_cash_usdc * max_position_pct
     remaining_cap_usdc = max(Decimal("0"), cap_total_usdc - market_exposure_usdc)
     if remaining_cap_usdc <= 0:
         return _BuyRiskCap(
@@ -1137,7 +1140,10 @@ async def execute_trades(
                 sizing_result = context.copy_notional(signal.usdc_size)
                 target_notional = sizing_result.final_notional_usdc
                 configured_buy_max = Decimal(str(getattr(context, "buy_max_amount", target_notional) or target_notional))
-                max_notional_for_decision = max(target_notional, configured_buy_max)
+                # BUY_MAX_AMOUNT is a HARD CEILING — use min(), not max().
+                # The old max() let strategy output exceed buy_max and blow
+                # past the absolute per-trade cap.
+                max_notional_for_decision = min(target_notional, configured_buy_max)
 
                 snapshot = await _fetch_balance_snapshot(
                     context, signal.condition_id, leader_id,

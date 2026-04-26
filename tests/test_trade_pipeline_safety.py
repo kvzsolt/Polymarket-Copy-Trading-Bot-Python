@@ -796,11 +796,14 @@ async def test_max_position_pct_caps_additional_buy_on_same_market(tmp_path):
 
     assert results[0].status == "executed"
     assert decision_service.buy_calls
-    assert decision_service.buy_calls[0]["max_notional_usdc"] == pytest.approx(10.0)
+    # After fix: cap is against free_cash ($90 * 0.20 = $18), minus existing market
+    # exposure ($10) = $8. Strategy produces $5 (100% of $5 signal). Final
+    # max_notional = min($5 strategy, $1000 buy_max, $8 pct_cap) = $5.
+    assert decision_service.buy_calls[0]["max_notional_usdc"] == pytest.approx(5.0)
 
     req = exec_svc.execute.await_args.args[0]
     assert req.side == "BUY"
-    assert req.amount == Decimal("10")
+    assert req.amount == Decimal("5")
 
 
 @pytest.mark.asyncio
