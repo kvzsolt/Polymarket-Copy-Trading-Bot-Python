@@ -1,6 +1,6 @@
 # CLOB V2 Migration Inventory
 
-**Status:** v2-migration-slice1 (Phase 1 — Compatibility Seam)
+**Status:** v2-migration-slice2 (Phase 2b — Method Adapter Seams)
 **Last Updated:** 2026-04-29
 
 ## Overview
@@ -98,24 +98,38 @@ This document tracks the CLOB V1 (py-clob-client v0.34.6) surface area in active
 
 ## Migration Phases
 
-### Phase 1: Compatibility Seam (CURRENT SLICE)
+### Phase 1: Compatibility Seam (DONE)
 ✓ Create inventory doc
 ✓ Create `utils/clob_v1_compat.py` — centralize all V1 imports
 ✓ Update call sites to import through seam
 ✓ Add seam validation tests
 ✓ **No behavior change**, no V2 code yet
 
-### Phase 2: V2 SDK Integration (FUTURE)
+### Phase 2a: API Delta Inventory (DONE)
+✓ Document confirmed V1 → V2 method signature deltas
+✓ Identify three critical breakpoints
+
+### Phase 2b: Method Adapter Seams (CURRENT SLICE)
+✓ Add `derive_api_creds(client)` adapter — wraps `create_or_derive_api_creds()` (V2: `create_or_derive_api_key()`)
+✓ Add `submit_signed_order(client, signed_order, order_type)` adapter — wraps `post_order(..., orderType=)` (V2: `order_type=`)
+✓ Add `cancel_order_by_id(client, order_id)` adapter — wraps `cancel(order_id=)` (V2: `cancel_order(OrderPayload(...))`)
+✓ Route `createClobClient.py` through `derive_api_creds` and `submit_signed_order`
+✓ Route `order_gateway.py` through `cancel_order_by_id`
+✓ Add adapter delegation tests (mock-based)
+✓ Update `__all__` and existing seam tests
+✓ **No behavior change**, no V2 code yet
+
+### Phase 3: V2 SDK Integration (FUTURE)
 - Add py-clob-client-v2 to pyproject.toml
 - Map V1 → V2 types/methods in compat module
-- Implement V2 wrappers behind seam
+- Swap adapter internals to V2 equivalents
 - Run integration tests
 
-### Phase 3: Execution Service Auth/Order Migration (FUTURE)
+### Phase 4: Execution Service Auth/Order Migration (FUTURE)
 - Migrate order signing logic to V2 patterns
 - Update order creation and submission
 
-### Phase 4: Edge Case Cleanup (FUTURE)
+### Phase 5: Edge Case Cleanup (FUTURE)
 - Remove legacy postOrder.py if no longer used in tests
 - Clean up deprecation warnings
 - Final validation
@@ -141,12 +155,21 @@ This document tracks the CLOB V1 (py-clob-client v0.34.6) surface area in active
 - `clients/order_gateway.py` — updated imports
 - `tests/test_clob_v1_compat_seam.py` — NEW seam validation
 
+## Files Changed in Phase 2b
+
+- `utils/clob_v1_compat.py` — added `derive_api_creds`, `submit_signed_order`, `cancel_order_by_id` adapters
+- `utils/createClobClient.py` — routed through `derive_api_creds` and `submit_signed_order`
+- `clients/order_gateway.py` — routed through `cancel_order_by_id`
+- `tests/test_clob_v1_compat_seam.py` — updated `__all__` expectations
+- `tests/test_clob_v1_method_adapters.py` — NEW adapter delegation tests
+- `docs/clob_v2_migration_inventory.md` — updated phases
+
 ---
 
-## Next Steps (Phase 2+)
+## Next Steps (Phase 3+)
 
-1. **V2 Research:** Analyze py-clob-client-v2 API
-2. **Type Mapping:** Build V1 → V2 type translation table
-3. **Adapter Implementation:** Implement V2 wrappers inside compat module
-4. **Migration:** Route code through V2 adapters, deprecate V1 calls
+1. **V2 SDK Integration:** Add py-clob-client-v2 to pyproject.toml
+2. **Type Mapping:** Build V1 → V2 type translation table in compat module
+3. **Adapter Swap:** Change adapter internals from V1 to V2 method calls
+4. **Integration Tests:** Run against V2 SDK with real client
 5. **Cleanup:** Remove V1 imports when migration complete
