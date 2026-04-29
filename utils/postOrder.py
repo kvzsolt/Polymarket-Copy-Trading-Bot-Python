@@ -10,8 +10,7 @@ import math
 import warnings
 from typing import Optional, Tuple
 from config.env import ENV
-from py_clob_client.clob_types import OrderArgs
-from py_clob_client.order_builder.constants import BUY, SELL
+from utils.clob_v1_compat import OrderArgs, BUY, SELL
 from utils.logger import (
     get_logger,
     print_trade_result,

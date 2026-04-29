@@ -8,8 +8,8 @@ from typing import Any
 
 from web3 import Web3
 
-from py_clob_client.client import ClobClient
-from py_clob_client.clob_types import (
+from utils.clob_v1_compat import (
+    ClobClient,
     MarketOrderArgs,
     OrderArgs,
     OrderType,
