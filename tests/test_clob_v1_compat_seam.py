@@ -56,6 +56,9 @@ def test_clob_v1_compat_module_all_export() -> None:
         "PartialCreateOrderOptions",
         "BUY",
         "SELL",
+        "derive_api_creds",
+        "submit_signed_order",
+        "cancel_order_by_id",
     }
     assert set(clob_v1_compat.__all__) == expected_exports
 

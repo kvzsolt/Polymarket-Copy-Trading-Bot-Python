@@ -37,4 +37,50 @@ __all__ = [
     "PartialCreateOrderOptions",
     "BUY",
     "SELL",
+    "derive_api_creds",
+    "submit_signed_order",
+    "cancel_order_by_id",
 ]
+
+
+# ---------------------------------------------------------------------------
+# Method-level adapter seams
+#
+# These functions wrap ClobClient method calls whose signatures change
+# between V1 and V2.  Active code calls these adapters instead of the
+# raw client methods, so the V2 switch is localised to this module.
+#
+# Phase 1 (current): delegate to V1 methods unchanged.
+# Phase 2+: swap internals to V2 equivalents.
+# ---------------------------------------------------------------------------
+
+
+def derive_api_creds(client: ClobClient) -> object:
+    """Derive or create API credentials for the CLOB client.
+
+    V1: client.create_or_derive_api_creds()
+    V2: client.create_or_derive_api_key()
+    """
+    return client.create_or_derive_api_creds()
+
+
+def submit_signed_order(
+    client: ClobClient,
+    signed_order: object,
+    order_type: OrderType,
+) -> object:
+    """Submit a pre-signed order to the CLOB.
+
+    V1: client.post_order(signed_order, orderType=order_type)
+    V2: client.post_order(signed_order, order_type=order_type)
+    """
+    return client.post_order(signed_order, orderType=order_type)
+
+
+def cancel_order_by_id(client: ClobClient, order_id: str) -> object:
+    """Cancel an open order by its exchange-assigned ID.
+
+    V1: client.cancel(order_id=order_id)
+    V2: client.cancel_order(OrderPayload(order_id))
+    """
+    return client.cancel(order_id=order_id)
