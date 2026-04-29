@@ -10,8 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from py_clob_client.clob_types import OrderArgs, OrderType
-
+from utils.clob_v1_compat import OrderArgs, OrderType
 from domain.ports.clients import AbstractOrderGateway
 from utils.createClobClient import ClobClientWrapper
 
