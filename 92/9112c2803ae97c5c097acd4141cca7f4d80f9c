@@ -1,0 +1,23 @@
+docs/clob_v2_api_delta.md
+  7b4a2ceacfe3a549 1-317
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.4",
+  "base_commit_sha": "929112c2803ae97c5c097acd4141cca7f4d80f9c",
+  "prompts": {
+    "7b4a2ceacfe3a549": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "22491be8-1aef-4137-9f8f-72aa0e5a489d",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "kvzsolt",
+      "messages": [],
+      "total_additions": 317,
+      "total_deletions": 0,
+      "accepted_lines": 317,
+      "overriden_lines": 0
+    }
+  }
+}
