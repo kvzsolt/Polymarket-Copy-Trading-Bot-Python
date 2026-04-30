@@ -13,7 +13,8 @@ from config.env import ENV
 if TYPE_CHECKING:
     from config.app_config import AppConfig
 
-from utils.clob_v1_compat import OrderType, BUY, SELL
+from py_clob_client.clob_types import OrderType
+from py_clob_client.order_builder.constants import BUY, SELL
 from services.circuitBreaker import CircuitBreaker, CircuitOpen
 
 from utils.logger import get_logger, log_api_error, log_api_response, redact_error_detail
