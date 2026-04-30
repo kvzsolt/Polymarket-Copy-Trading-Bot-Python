@@ -1,7 +1,7 @@
 # CLOB V2 Migration Inventory
 
-**Status:** v2-migration-slice2 (Phase 2b — Method Adapter Seams)
-**Last Updated:** 2026-04-29
+**Status:** v2-migration-slice3 (Phase 2c — Package-Adaptive Seam)
+**Last Updated:** 2026-04-30
 
 ## Overview
 
@@ -109,7 +109,7 @@ This document tracks the CLOB V1 (py-clob-client v0.34.6) surface area in active
 ✓ Document confirmed V1 → V2 method signature deltas
 ✓ Identify three critical breakpoints
 
-### Phase 2b: Method Adapter Seams (CURRENT SLICE)
+### Phase 2b: Method Adapter Seams (DONE)
 ✓ Add `derive_api_creds(client)` adapter — wraps `create_or_derive_api_creds()` (V2: `create_or_derive_api_key()`)
 ✓ Add `submit_signed_order(client, signed_order, order_type)` adapter — wraps `post_order(..., orderType=)` (V2: `order_type=`)
 ✓ Add `cancel_order_by_id(client, order_id)` adapter — wraps `cancel(order_id=)` (V2: `cancel_order(OrderPayload(...))`)
@@ -118,6 +118,15 @@ This document tracks the CLOB V1 (py-clob-client v0.34.6) surface area in active
 ✓ Add adapter delegation tests (mock-based)
 ✓ Update `__all__` and existing seam tests
 ✓ **No behavior change**, no V2 code yet
+
+### Phase 2c: Package-Adaptive Seam (CURRENT SLICE)
+✓ `_is_v2_client(client)` — duck-type detection via `hasattr(client, "create_or_derive_api_key")`
+✓ `_OrderPayload` probe at import time — fails silently on V1 SDK, stays None
+✓ `derive_api_creds` dispatches to `create_or_derive_api_key()` on V2 client
+✓ `submit_signed_order` dispatches with `order_type=` kwarg on V2 client
+✓ `cancel_order_by_id` dispatches to `cancel_order(OrderPayload(...))` on V2 client; raises RuntimeError if _OrderPayload unavailable
+✓ Tests cover V1 and V2 paths for all three adapters, plus _is_v2_client detection
+✓ **Runtime stays V1**; V2 paths activate automatically when V2-shaped client detected
 
 ### Phase 3: V2 SDK Integration (FUTURE)
 - Add py-clob-client-v2 to pyproject.toml
@@ -163,6 +172,13 @@ This document tracks the CLOB V1 (py-clob-client v0.34.6) surface area in active
 - `tests/test_clob_v1_compat_seam.py` — updated `__all__` expectations
 - `tests/test_clob_v1_method_adapters.py` — NEW adapter delegation tests
 - `docs/clob_v2_migration_inventory.md` — updated phases
+
+---
+
+## Files Changed in Phase 2c
+
+- `utils/clob_v1_compat.py` — added `_is_v2_client()`, `_OrderPayload` probe, V2 dispatch branches in all three adapters
+- `tests/test_clob_v1_method_adapters.py` — replaced unspec'd MagicMock with `spec=` fakes; added V2-path tests and `_is_v2_client` tests
 
 ---
 
