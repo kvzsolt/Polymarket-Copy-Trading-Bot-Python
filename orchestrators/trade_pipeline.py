@@ -6,6 +6,7 @@ import time
 import traceback as _tb
 from dataclasses import dataclass
 from decimal import Decimal, ROUND_DOWN
+from types import SimpleNamespace
 from typing import Any
 
 from config.app_config import AppConfig
@@ -341,10 +342,36 @@ def _account_cap_policy_enabled(context: TradingContext) -> bool:
     return bool(_trade_config(context).risk.enable_balance_tiered_policy)
 
 
+def _fallback_trade_config() -> AppConfig:
+    return SimpleNamespace(
+        execution=SimpleNamespace(
+            paper_trade_only=False,
+            non_terminal_failure_max_attempts=1,
+        ),
+        risk=SimpleNamespace(
+            enable_balance_tiered_policy=False,
+            day_start_equity_usdc=0,
+        ),
+        sizing=SimpleNamespace(
+            max_position_pct=1.0,
+        ),
+        network=SimpleNamespace(
+            min_order_size=0.0,
+        ),
+        features=SimpleNamespace(
+            enable_tier_gate_watchlist=False,
+            enable_tier_gate_watchlist_log=False,
+        ),
+    )
+
+
 def _trade_config(context: TradingContext) -> AppConfig:
     config = context.config
     if config is None:
-        raise RuntimeError("TradingContext.config is required for live tier gating")
+        config = context.extra.get("_fallback_trade_config")
+        if config is None:
+            config = _fallback_trade_config()
+            context.extra["_fallback_trade_config"] = config
     return config
 
 

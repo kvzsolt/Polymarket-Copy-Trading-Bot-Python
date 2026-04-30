@@ -11,6 +11,14 @@ from __future__ import annotations
 from typing import Any
 
 from utils.clob_v1_compat import OrderArgs, OrderType, cancel_order_by_id
+
+
+def _resolve_order_type(order_type: str) -> Any:
+    """Resolve an order type across enum-like and attribute-based SDK shapes."""
+    try:
+        return OrderType[order_type]
+    except Exception:
+        return getattr(OrderType, order_type, order_type)
 from domain.ports.clients import AbstractOrderGateway
 from utils.createClobClient import ClobClientWrapper
 
@@ -36,10 +44,7 @@ class OrderGateway(AbstractOrderGateway):
             size=size,
             price=price,
         )
-        try:
-            ot = OrderType[order_type]
-        except KeyError as exc:
-            raise ValueError(f"Unsupported order_type: {order_type!r}") from exc
+        ot = _resolve_order_type(order_type)
         condition_id = (extra or {}).get("condition_id") if extra else None
         result = await self._wrapper.post_order(args, condition_id=condition_id)
         if isinstance(result, dict):

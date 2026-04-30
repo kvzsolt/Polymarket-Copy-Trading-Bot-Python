@@ -23,8 +23,9 @@ Design notes
 from __future__ import annotations
 
 import re
-import sys
 from collections.abc import Mapping
+from types import SimpleNamespace
+import sys as _sys
 from dataclasses import dataclass, field
 from enum import IntEnum
 from pathlib import Path
@@ -427,6 +428,11 @@ class AppConfig:
 # ---------------------------------------------------------------------------
 # Factory & validation.
 # ---------------------------------------------------------------------------
+
+
+# Keep version checks behind a local proxy so tests can monkeypatch this module
+# without mutating the real process-wide ``sys.version_info`` object.
+sys = SimpleNamespace(version_info=_sys.version_info)
 
 
 def _runtime_python_supported() -> bool:

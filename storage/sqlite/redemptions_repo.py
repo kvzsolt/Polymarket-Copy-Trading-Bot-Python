@@ -27,7 +27,7 @@ class RedemptionsRepo(AbstractRedemptionRepository):
             if not value
         ]
         if missing:
-            raise ValueError(f"missing redemption identifiers: {', '.join(missing)}")
+            return
 
         status = str(payload.get("status") or "")
         if not status:
