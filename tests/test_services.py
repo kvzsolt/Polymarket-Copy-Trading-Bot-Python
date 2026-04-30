@@ -217,6 +217,30 @@ class TestGetMyBalance:
     def test_sync_balance_invalid_address_returns_none(self):
         assert _get_balance_sync("not-an-address") is None
 
+    def test_sync_balance_prefers_collateral_contract_over_legacy_usdc(self):
+        fake_contract = MagicMock()
+        fake_contract.functions.balanceOf.return_value.call.return_value = 12_500_000
+        fake_w3 = MagicMock()
+        fake_w3.eth.contract.return_value = fake_contract
+
+        with patch.dict(
+            "utils.getMyBalance.ENV",
+            {
+                "RPC_URL": "http://rpc",
+                "USDC_CONTRACT_ADDRESS": "0x" + "a" * 40,
+                "PUSD_CONTRACT_ADDRESS": "0x" + "b" * 40,
+                "COLLATERAL_CONTRACT_ADDRESS": "0x" + "c" * 40,
+            },
+            clear=False,
+        ), patch("utils.getMyBalance.Web3") as mock_web3:
+            mock_web3.HTTPProvider.return_value = object()
+            mock_web3.return_value = fake_w3
+            mock_web3.to_checksum_address.side_effect = lambda v: f"chk:{v}"
+
+            assert _get_balance_sync("0x1111111111111111111111111111111111111111") == 12.5
+            contract_address = fake_w3.eth.contract.call_args.kwargs["address"]
+            assert contract_address == "chk:0x" + "c" * 40
+
     @pytest.mark.asyncio
     async def test_async_balance_returns_value(self):
         with patch("utils.getMyBalance._get_balance_sync", return_value=12.5):

@@ -30,17 +30,21 @@ def _masked_address(address: str | None) -> str:
 
 def _get_balance_sync(address: str) -> float | None:
     rpc_url = ENV.get('RPC_URL')
-    usdc_contract_address = ENV.get('USDC_CONTRACT_ADDRESS')
+    collateral_contract_address = (
+        ENV.get('COLLATERAL_CONTRACT_ADDRESS')
+        or ENV.get('PUSD_CONTRACT_ADDRESS')
+        or ENV.get('USDC_CONTRACT_ADDRESS')
+    )
 
     if not rpc_url:
         logger.error("Balance lookup failed: RPC_URL is not configured")
         return None
-    if not usdc_contract_address:
-        logger.error("Balance lookup failed: USDC_CONTRACT_ADDRESS is not configured")
+    if not collateral_contract_address:
+        logger.error("Balance lookup failed: collateral contract address is not configured")
         return None
 
     try:
-        checksum_contract = Web3.to_checksum_address(usdc_contract_address)
+        checksum_contract = Web3.to_checksum_address(collateral_contract_address)
         checksum_address = Web3.to_checksum_address(address)
     except (TypeError, ValueError) as exc:
         logger.error(
@@ -53,7 +57,7 @@ def _get_balance_sync(address: str) -> float | None:
         usdc_contract = w3.eth.contract(address=checksum_contract, abi=USDC_ABI)
         balance_usdc = usdc_contract.functions.balanceOf(checksum_address).call()
         bal = float(balance_usdc / 10**6)
-        logger.debug(f"USDC balance for {_masked_address(checksum_address)}={bal:.2f}")
+        logger.debug(f"Collateral balance for {_masked_address(checksum_address)}={bal:.2f}")
         return bal
     except Exception as exc:
         logger.error(

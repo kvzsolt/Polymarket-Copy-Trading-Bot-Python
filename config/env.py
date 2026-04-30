@@ -610,6 +610,8 @@ def _build_env_snapshot() -> dict[str, object]:
     'MULTI_USER_CONFIG_FILE': os.getenv('MULTI_USER_CONFIG_FILE', ''),
     'RPC_URL': os.getenv('RPC_URL', 'https://polygon-bor-rpc.publicnode.com'),
     'USDC_CONTRACT_ADDRESS': os.getenv('USDC_CONTRACT_ADDRESS', '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174'),
+    'PUSD_CONTRACT_ADDRESS': os.getenv('PUSD_CONTRACT_ADDRESS', '0x5731a8987bC70324e2C14d22D95a9cF0E84b687E'),
+    'COLLATERAL_CONTRACT_ADDRESS': os.getenv('COLLATERAL_CONTRACT_ADDRESS') or os.getenv('PUSD_CONTRACT_ADDRESS') or os.getenv('USDC_CONTRACT_ADDRESS', '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174'),
     'MIN_ORDER_SIZE': _float('MIN_ORDER_SIZE', '0.00001'),
     'BOT_STATE_DB': os.getenv('BOT_STATE_DB', 'data/bot_state.db'),
     'ENABLE_METRICS_SERVER': os.getenv('ENABLE_METRICS_SERVER', 'false').strip().lower() in ('1', 'true', 'yes'),
