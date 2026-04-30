@@ -113,6 +113,19 @@ class TestHappyPath:
         assert cfg.raw["PRIVATE_KEY"] == _VALID_PRIVATE_KEY
         assert cfg.raw["FUNDER_ADDRESS"] == _VALID_FUNDER
 
+    def test_network_contract_prefers_collateral_then_pusd(self, valid_env: dict[str, str]) -> None:
+        valid_env["USDC_CONTRACT_ADDRESS"] = "0x" + "1" * 40
+        valid_env["PUSD_CONTRACT_ADDRESS"] = "0x" + "2" * 40
+        valid_env["COLLATERAL_CONTRACT_ADDRESS"] = "0x" + "3" * 40
+        cfg = load_config(valid_env)
+        assert cfg.network.usdc_contract_address == "0x" + "3" * 40
+
+    def test_network_contract_falls_back_to_pusd_before_legacy_usdc(self, valid_env: dict[str, str]) -> None:
+        valid_env["USDC_CONTRACT_ADDRESS"] = "0x" + "1" * 40
+        valid_env["PUSD_CONTRACT_ADDRESS"] = "0x" + "2" * 40
+        cfg = load_config(valid_env)
+        assert cfg.network.usdc_contract_address == "0x" + "2" * 40
+
     def test_load_without_env_reads_os_environ(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
