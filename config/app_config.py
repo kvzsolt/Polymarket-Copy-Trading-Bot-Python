@@ -797,8 +797,10 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
     network = NetworkConfig(
         rpc_url=p.string("RPC_URL", ""),
         chain_id=wallet.chain_id,
-        usdc_contract_address=p.string(
-            "USDC_CONTRACT_ADDRESS", "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
+        usdc_contract_address=(
+            p.string("COLLATERAL_CONTRACT_ADDRESS", "")
+            or p.string("PUSD_CONTRACT_ADDRESS", "")
+            or p.string("USDC_CONTRACT_ADDRESS", "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174")
         ),
         enforce_geoblock=p.bool_("ENFORCE_GEOBLOCK", True),
         enable_metrics_server=p.bool_("ENABLE_METRICS_SERVER", False),
