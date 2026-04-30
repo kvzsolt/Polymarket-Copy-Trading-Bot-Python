@@ -10,7 +10,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from utils.clob_v1_compat import OrderArgs, OrderType, cancel_order_by_id
+from py_clob_client.clob_types import OrderArgs, OrderType
+
 from domain.ports.clients import AbstractOrderGateway
 from utils.createClobClient import ClobClientWrapper
 
@@ -53,5 +54,5 @@ class OrderGateway(AbstractOrderGateway):
         client = self._wrapper.client
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
-            None, lambda: cancel_order_by_id(client, order_id)
+            None, lambda: client.cancel(order_id=order_id)
         )
