@@ -571,25 +571,24 @@ async def create_clob_client(
 
     # V2 collateral readiness: pUSD balance + allowance check.
     # Only runs when CLOB_V2_READY is true (we're past the safety gate above).
-    # Failures are logged as warnings; live trading guard is upstream.
-    try:
-        from services.collateral_readiness import check_collateral_readiness
+    # FAIL CLOSED: if readiness fails, startup is aborted.
+    from services.collateral_readiness import check_collateral_readiness
 
-        funder_or_signer = runtime_cfg.funder_address or signer_address or ""
-        if funder_or_signer:
-            collateral_status = await check_collateral_readiness(
-                wallet_address=funder_or_signer,
-                rpc_url=runtime_cfg.polygon_rpc_url,
+    funder_or_signer = runtime_cfg.funder_address or signer_address or ""
+    if funder_or_signer:
+        collateral_status = await check_collateral_readiness(
+            wallet_address=funder_or_signer,
+            rpc_url=runtime_cfg.polygon_rpc_url,
+        )
+        if not collateral_status.ready:
+            reasons = "; ".join(collateral_status.failures)
+            raise RuntimeError(
+                f"V2 collateral readiness FAILED — live trading blocked. "
+                f"Resolve: {reasons}"
             )
-            logger.info(
-                "V2 collateral readiness: ready=%s pusd_balance=%.2f",
-                collateral_status.ready,
-                collateral_status.pusd_balance,
-            )
-    except Exception as exc:
-        logger.warning(
-            "V2 collateral readiness check skipped (%s)",
-            redact_error_detail(exc),
+        logger.info(
+            "V2 collateral readiness OK — pusd_balance=%.2f",
+            collateral_status.pusd_balance,
         )
 
     return ClobClientWrapper(client, wallet_config=runtime_cfg)

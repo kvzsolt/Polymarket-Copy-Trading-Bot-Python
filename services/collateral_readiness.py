@@ -79,7 +79,7 @@ class CollateralStatus:
     wallet_address: str
     rpc_url: str
     ready: bool
-    failures: list[str]
+    failures: tuple[str, ...]
 
 
 def _erc20_read(
@@ -171,7 +171,7 @@ def _check_sync(
         wallet_address=wallet_address,
         rpc_url=rpc_url,
         ready=ready,
-        failures=failures,
+        failures=tuple(failures),
     )
 
 

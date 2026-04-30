@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -31,7 +31,7 @@ def _make_status(**overrides: Any) -> CollateralStatus:
         "wallet_address": "0x" + "a" * 40,
         "rpc_url": "http://rpc",
         "ready": True,
-        "failures": [],
+        "failures": (),
     }
     defaults.update(overrides)
     return CollateralStatus(**defaults)
@@ -41,10 +41,10 @@ class TestCollateralStatus:
     def test_ready_when_no_failures(self) -> None:
         s = _make_status()
         assert s.ready is True
-        assert s.failures == []
+        assert s.failures == ()
 
     def test_not_ready_with_failures(self) -> None:
-        s = _make_status(failures=["low balance"], ready=False)
+        s = _make_status(failures=("low balance",), ready=False)
         assert s.ready is False
         assert len(s.failures) == 1
 
@@ -151,3 +151,47 @@ class TestNoSecretLeakage:
         assert "secret" not in serialized.lower()
         # Wallet address is fine to log (it's public on-chain)
         assert "0x" + "a" * 40 in serialized
+
+
+class TestFailClosedStartup:
+    """Verify create_clob_client() raises on collateral readiness failure."""
+
+    @pytest.mark.asyncio
+    @patch("services.collateral_readiness.check_collateral_readiness")
+    async def test_startup_raises_on_readiness_failure(self, mock_check: AsyncMock) -> None:
+        from services.collateral_readiness import CollateralStatus
+        from utils.createClobClient import create_clob_client
+        from unittest.mock import patch as _p
+
+        mock_check.return_value = CollateralStatus(
+            pusd_balance=Decimal("0"),
+            pusd_allowance_ctf=Decimal("0"),
+            pusd_allowance_neg_risk=Decimal("0"),
+            wallet_address="0x" + "a" * 40,
+            rpc_url="http://rpc",
+            ready=False,
+            failures=("pUSD balance 0.00 < minimum 1", "CTF Exchange pUSD allowance is 0"),
+        )
+
+        # Mock the heavy init path to reach the collateral gate
+        mock_client = MagicMock()
+        mock_client.get_tick_size.return_value = "0.01"
+        mock_client.get_neg_risk.return_value = False
+        mock_client.get_order_book.return_value = MagicMock(bids=[], asks=[], tick_size="0.01", neg_risk=False, min_order_size="5")
+
+        with _p("utils.createClobClient.ENV", {"CLOB_V2_READY": True}), \
+             _p("utils.createClobClient.build_wallet_config") as mock_bwc, \
+             _p("utils.createClobClient.validate_wallet_config"), \
+             _p("utils.createClobClient.ClobClient", return_value=mock_client), \
+             _p("utils.createClobClient.derive_api_creds", return_value=MagicMock()), \
+             _p("utils.createClobClient.detect_wallet_signature_type", return_value=(1, "EOA", "0x" + "a" * 40)):
+            from config.env import SignatureType, WalletConfig
+            mock_bwc.return_value = WalletConfig(
+                private_key="0x" + "a" * 64,
+                chain_id=137,
+                signature_type=SignatureType.EOA,
+                funder_address="0x" + "a" * 40,
+                polygon_rpc_url="http://localhost",
+            )
+            with pytest.raises(RuntimeError, match="V2 collateral readiness FAILED"):
+                await create_clob_client(private_key="0x" + "a" * 64)
