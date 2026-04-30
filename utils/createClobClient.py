@@ -8,12 +8,14 @@ from typing import Any
 
 from web3 import Web3
 
-from py_clob_client.client import ClobClient
-from py_clob_client.clob_types import (
+from utils.clob_v1_compat import (
+    ClobClient,
     MarketOrderArgs,
     OrderArgs,
     OrderType,
     PartialCreateOrderOptions,
+    derive_api_creds,
+    submit_signed_order,
 )
 
 from config.env import (
@@ -307,7 +309,7 @@ class ClobClientWrapper:
             loop = asyncio.get_running_loop()
             response = await loop.run_in_executor(
                 None,
-                lambda: self.client.post_order(signed_order, orderType=order_type),
+                lambda: submit_signed_order(self.client, signed_order, order_type),
             )
             result = {
                 "success": True,
@@ -496,7 +498,7 @@ async def create_clob_client(
         signature_type=int(runtime_cfg.signature_type),
         funder=(runtime_cfg.funder_address if runtime_cfg.signature_type != SignatureType.EOA else None),
     )
-    user_api_creds = client.create_or_derive_api_creds()
+    user_api_creds = derive_api_creds(client)
     client.set_api_creds(user_api_creds)
     logger.info(
         "CLOB client ready",
