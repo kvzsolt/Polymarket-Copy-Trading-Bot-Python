@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass
-from decimal import ROUND_DOWN, Decimal
+from decimal import ROUND_CEILING, ROUND_DOWN, ROUND_FLOOR, Decimal
 from typing import Any
 
 from web3 import Web3
@@ -73,10 +73,28 @@ def _safe_decimal(value: Any) -> Decimal | None:
         return None
 
 
-def quantize_to_tick(price: Decimal, tick_size: Decimal) -> Decimal:
-    """Floor price to the nearest tick_size boundary."""
+def quantize_to_tick(
+    price: Decimal,
+    tick_size: Decimal,
+    side: str | None = None,
+) -> Decimal:
+    """Quantize price to the nearest tick_size boundary.
+
+    When *side* is provided the rounding is direction-aware:
+    - BUY  → round **up**   (ROUND_CEILING) to give more generous fill protection
+    - SELL → round **down** (ROUND_FLOOR)   to stay conservative
+
+    Without *side* the legacy ROUND_DOWN behaviour is preserved.
+    """
     if tick_size <= 0:
         return price
+    if side is not None:
+        units = price / tick_size
+        if side.upper() == "BUY":
+            rounded_units = units.to_integral_value(rounding=ROUND_CEILING)
+        else:
+            rounded_units = units.to_integral_value(rounding=ROUND_FLOOR)
+        return rounded_units * tick_size
     return price.quantize(tick_size, rounding=ROUND_DOWN)
 
 
@@ -231,7 +249,6 @@ class ClobClientWrapper:
         url = f"{CLOB_HTTP_URL}/book?token_id={asset}"
         session = _get_session()
         async with session.get(url) as resp:
-            data = await resp.json()
             if resp.status != 200:
                 log_api_response(
                     logger,
@@ -241,6 +258,7 @@ class ClobClientWrapper:
                     error=f"status_code={resp.status}",
                 )
                 raise RuntimeError(f"Failed to fetch market metadata for {asset}: HTTP {resp.status}")
+            data = await resp.json()
 
             bids = (data.get("bids") or [])
             asks = (data.get("asks") or [])
@@ -317,7 +335,7 @@ class ClobClientWrapper:
         neg_risk: bool,
         order_type: OrderType = OrderType.FOK,
     ):
-        quantized_price = float(quantize_to_tick(Decimal(str(max_price)), Decimal(tick_size)))
+        quantized_price = float(quantize_to_tick(Decimal(str(max_price)), Decimal(tick_size), side=side))
         order_args = MarketOrderArgs(
             token_id=token_id,
             amount=amount,
@@ -494,7 +512,7 @@ async def create_clob_client(
     proxy_wallet: str | None = None,
 ):
     if not ENV.get("CLOB_V2_READY", False):
-        logger.warning(
+        raise RuntimeError(
             "CLOB V2 migration not finalized — CLOB_V2_READY is not set. "
             "Set CLOB_V2_READY=true once smoke tests pass "
             "(see docs/v2_operator_runbook.md)."

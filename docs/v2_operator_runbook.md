@@ -32,6 +32,14 @@ The smoke test verifies:
 
 **It does NOT place orders or touch funds.**
 
+### 2b. Run V2 readiness test suite
+
+```bash
+.venv/bin/python -m pytest tests/test_clob_v2_market_meta.py tests/test_v2_readiness.py tests/test_clob_v2_runtime_smoke.py tests/test_v2_metadata_and_order_options.py -q
+```
+
+All tests must pass before setting the readiness flag below.
+
 ### 3. Set readiness flag
 
 Once smoke tests pass, enable V2 readiness in your `.env` or `runtime.env`:
@@ -40,7 +48,7 @@ Once smoke tests pass, enable V2 readiness in your `.env` or `runtime.env`:
 CLOB_V2_READY=true
 ```
 
-Without this flag, the bot logs a startup warning but continues to operate normally (the code is already V2-native; this is a safety confirmation gate, not a feature toggle).
+Without this flag, the bot **will not start** — `create_clob_client()` raises a `RuntimeError` to prevent accidental deployment before operator sign-off.
 
 ## What "Ready" Means
 

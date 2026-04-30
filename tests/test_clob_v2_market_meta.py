@@ -2,17 +2,12 @@
 
 from __future__ import annotations
 
-import asyncio
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from utils.createClobClient import ClobClientWrapper, MarketMeta, quantize_to_tick
-
-
-def _run(coro):
-    return asyncio.run(coro)
 
 
 def _dummy_wallet():
@@ -51,6 +46,15 @@ class TestQuantizeToTick:
     def test_boundary_exact_multiple(self):
         assert quantize_to_tick(Decimal("0.600"), Decimal("0.01")) == Decimal("0.60")
 
+    def test_buy_rounds_up(self):
+        assert quantize_to_tick(Decimal("0.551"), Decimal("0.01"), side="BUY") == Decimal("0.56")
+
+    def test_sell_rounds_down(self):
+        assert quantize_to_tick(Decimal("0.559"), Decimal("0.01"), side="SELL") == Decimal("0.55")
+
+    def test_buy_exact_stays(self):
+        assert quantize_to_tick(Decimal("0.55"), Decimal("0.01"), side="BUY") == Decimal("0.55")
+
 
 class TestMinOrderSizeGate:
     def _make_gateway(self):
@@ -61,39 +65,43 @@ class TestMinOrderSizeGate:
         wrapper.post_signed_order = AsyncMock(return_value={"success": True, "orderID": "x"})
         return OrderGateway(wrapper)
 
-    def test_below_min_rejected_without_exchange_call(self):
+    @pytest.mark.asyncio
+    async def test_below_min_rejected_without_exchange_call(self):
         gw = self._make_gateway()
-        result = _run(gw.post_market_order(
+        result = await gw.post_market_order(
             token_id="tok", side="BUY", amount=3.0, max_price=0.5,
             tick_size="0.01", neg_risk=False, min_order_size=5.0,
-        ))
+        )
         assert result["success"] is False
         assert "size_below_min" in result["error"]
         assert result["non_retryable"] is True
         gw._wrapper.create_market_order.assert_not_called()
 
-    def test_exactly_at_min_allowed(self):
+    @pytest.mark.asyncio
+    async def test_exactly_at_min_allowed(self):
         gw = self._make_gateway()
-        result = _run(gw.post_market_order(
+        result = await gw.post_market_order(
             token_id="tok", side="BUY", amount=5.0, max_price=0.5,
             tick_size="0.01", neg_risk=False, min_order_size=5.0,
-        ))
+        )
         assert result["success"] is True
 
-    def test_above_min_allowed(self):
+    @pytest.mark.asyncio
+    async def test_above_min_allowed(self):
         gw = self._make_gateway()
-        result = _run(gw.post_market_order(
+        result = await gw.post_market_order(
             token_id="tok", side="BUY", amount=10.0, max_price=0.5,
             tick_size="0.01", neg_risk=False, min_order_size=5.0,
-        ))
+        )
         assert result["success"] is True
 
-    def test_zero_min_always_passes(self):
+    @pytest.mark.asyncio
+    async def test_zero_min_always_passes(self):
         gw = self._make_gateway()
-        result = _run(gw.post_market_order(
+        result = await gw.post_market_order(
             token_id="tok", side="BUY", amount=0.001, max_price=0.5,
             tick_size="0.01", neg_risk=False, min_order_size=0.0,
-        ))
+        )
         assert result["success"] is True
 
 
@@ -106,29 +114,40 @@ class TestNegRiskPropagation:
         wrapper.post_signed_order = AsyncMock(return_value={"success": True})
         return OrderGateway(wrapper), wrapper
 
-    def test_neg_risk_true_forwarded(self):
+    @pytest.mark.asyncio
+    async def test_neg_risk_true_forwarded(self):
         gw, wrapper = self._make_gateway()
-        _run(gw.post_market_order(
+        await gw.post_market_order(
             token_id="tok", side="BUY", amount=10.0, max_price=0.5,
             tick_size="0.01", neg_risk=True,
-        ))
+        )
         assert wrapper.create_market_order.call_args.kwargs["neg_risk"] is True
 
-    def test_neg_risk_false_forwarded(self):
+    @pytest.mark.asyncio
+    async def test_neg_risk_false_forwarded(self):
         gw, wrapper = self._make_gateway()
-        _run(gw.post_market_order(
+        await gw.post_market_order(
             token_id="tok", side="BUY", amount=10.0, max_price=0.5,
             tick_size="0.01", neg_risk=False,
-        ))
+        )
         assert wrapper.create_market_order.call_args.kwargs["neg_risk"] is False
 
-    def test_tick_size_forwarded(self):
+    @pytest.mark.asyncio
+    async def test_tick_size_forwarded(self):
         gw, wrapper = self._make_gateway()
-        _run(gw.post_market_order(
+        await gw.post_market_order(
             token_id="tok", side="BUY", amount=10.0, max_price=0.5,
             tick_size="0.001", neg_risk=False,
-        ))
+        )
         assert wrapper.create_market_order.call_args.kwargs["tick_size"] == "0.001"
+
+
+class TestInvalidOrderTypeRejected:
+    def test_unknown_order_type_raises(self):
+        from clients.order_gateway import _resolve_order_type
+
+        with pytest.raises(ValueError, match="Unsupported order_type"):
+            _resolve_order_type("NONEXISTENT_TYPE")
 
 
 class TestGetMarketMetaV2Methods:
@@ -154,27 +173,31 @@ class TestGetMarketMetaV2Methods:
 
         return ClobClientWrapper(client, _dummy_wallet())
 
-    def test_v2_tick_size_overrides_orderbook(self):
+    @pytest.mark.asyncio
+    async def test_v2_tick_size_overrides_orderbook(self):
         wrapper = self._make_wrapper(tick_size_v2="0.001", neg_risk_v2=False, ob_tick="0.01")
-        meta = _run(wrapper.get_market_meta("tok"))
+        meta = await wrapper.get_market_meta("tok")
         assert meta.tick_size == Decimal("0.001")
 
-    def test_fallback_to_orderbook_when_v2_tick_fails(self):
+    @pytest.mark.asyncio
+    async def test_fallback_to_orderbook_when_v2_tick_fails(self):
         wrapper = self._make_wrapper(tick_size_raises=True, neg_risk_v2=False, ob_tick="0.01")
-        meta = _run(wrapper.get_market_meta("tok"))
+        meta = await wrapper.get_market_meta("tok")
         assert meta.tick_size == Decimal("0.01")
 
-    def test_price_quantized_in_create_market_order(self):
+    @pytest.mark.asyncio
+    async def test_price_quantized_in_create_market_order(self):
         from utils.clob_v1_compat import OrderType
 
         client = MagicMock()
         client.create_market_order.return_value = object()
         wrapper = ClobClientWrapper(client, _dummy_wallet())
 
-        _run(wrapper.create_market_order(
+        await wrapper.create_market_order(
             token_id="tok", side="BUY", amount=10.0, max_price=0.556,
             tick_size="0.01", neg_risk=False, order_type=OrderType.FOK,
-        ))
+        )
 
         args_passed = client.create_market_order.call_args[0][0]
-        assert float(args_passed.price) == pytest.approx(0.55, rel=1e-9)
+        # BUY side now rounds UP: 0.556 -> 0.56
+        assert float(args_passed.price) == pytest.approx(0.56, rel=1e-9)
