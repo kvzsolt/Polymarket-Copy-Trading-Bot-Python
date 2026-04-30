@@ -37,6 +37,11 @@ def _base_kwargs() -> dict:
         "positions_repo": MagicMock(),
         "fills_repo": MagicMock(),
         "orders_repo": MagicMock(),
+        "risk_blocks_repo": None,
+        "pnl_tracker": None,
+        "risk_engine": None,
+        "accounting_service": None,
+        "position_manager": None,
     }
 
 

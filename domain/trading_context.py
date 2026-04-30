@@ -25,11 +25,11 @@ class TradingContext:
     positions_repo: Any
     fills_repo: Any
     orders_repo: Any
-    risk_blocks_repo: Any | None = None
-    pnl_tracker: Any | None = None
-    risk_engine: Any | None = None
-    accounting_service: Any | None = None
-    position_manager: Any | None = None
+    risk_blocks_repo: Any
+    pnl_tracker: Any
+    risk_engine: Any
+    accounting_service: Any
+    position_manager: Any
     entry_permission_service: EntryPermissionService | None = None
     execution_service: Any | None = None
     leaders_repo: Any | None = None

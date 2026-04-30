@@ -119,7 +119,7 @@ This document tracks the CLOB V1 (py-clob-client v0.34.6) surface area in active
 ✓ Update `__all__` and existing seam tests
 ✓ **No behavior change**, no V2 code yet
 
-### Phase 2c: Package-Adaptive Seam (CURRENT SLICE)
+### Phase 2c: Package-Adaptive Seam (DONE)
 ✓ `_is_v2_client(client)` — duck-type detection via `hasattr(client, "create_or_derive_api_key")`
 ✓ `_OrderPayload` probe at import time — fails silently on V1 SDK, stays None
 ✓ `derive_api_creds` dispatches to `create_or_derive_api_key()` on V2 client
