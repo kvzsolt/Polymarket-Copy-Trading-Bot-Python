@@ -221,6 +221,7 @@ class TestGetMyBalance:
         fake_contract = MagicMock()
         fake_contract.functions.balanceOf.return_value.call.return_value = 12_500_000
         fake_w3 = MagicMock()
+        fake_w3.eth.get_code.return_value = b"\x01"
         fake_w3.eth.contract.return_value = fake_contract
 
         with patch.dict(
