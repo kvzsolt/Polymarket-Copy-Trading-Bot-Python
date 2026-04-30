@@ -13,7 +13,7 @@ from typing import Any
 from config.env import ENV
 from utils.getMyBalance import get_my_balance
 from utils.fetchData import fetch_data
-from utils.logger import log_trade_execution, log_trade_skip
+from utils.logger import get_logger, log_trade_execution, log_trade_skip
 from services.copyDecisionService import CopyDecisionService
 
 _logger = logging.getLogger(__name__)
@@ -151,6 +151,7 @@ def _maybe_boost_tiny_leader_buy_cap(
 # ---------------------------------------------------------------------------
 _copy_decision = CopyDecisionService()
 _execution_service = None
+logger = get_logger("LegacyTradeExecutor")
 
 
 def _get_execution_service():
