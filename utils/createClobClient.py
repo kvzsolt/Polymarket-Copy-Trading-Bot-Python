@@ -568,4 +568,28 @@ async def create_clob_client(
             "signer": signer_address,
         },
     )
+
+    # V2 collateral readiness: pUSD balance + allowance check.
+    # Only runs when CLOB_V2_READY is true (we're past the safety gate above).
+    # Failures are logged as warnings; live trading guard is upstream.
+    try:
+        from services.collateral_readiness import check_collateral_readiness
+
+        funder_or_signer = runtime_cfg.funder_address or signer_address or ""
+        if funder_or_signer:
+            collateral_status = await check_collateral_readiness(
+                wallet_address=funder_or_signer,
+                rpc_url=runtime_cfg.polygon_rpc_url,
+            )
+            logger.info(
+                "V2 collateral readiness: ready=%s pusd_balance=%.2f",
+                collateral_status.ready,
+                collateral_status.pusd_balance,
+            )
+    except Exception as exc:
+        logger.warning(
+            "V2 collateral readiness check skipped (%s)",
+            redact_error_detail(exc),
+        )
+
     return ClobClientWrapper(client, wallet_config=runtime_cfg)

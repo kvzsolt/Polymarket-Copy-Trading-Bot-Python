@@ -196,10 +196,12 @@ still relevant for:
 
 ---
 
-## Next Steps (Phase 3+)
+## Next Steps (Post-Merge)
 
-1. **V2 SDK Integration:** Add py-clob-client-v2 to pyproject.toml
-2. **Type Mapping:** Build V1 → V2 type translation table in compat module
-3. **Adapter Swap:** Change adapter internals from V1 to V2 method calls
-4. **Integration Tests:** Run against V2 SDK with real client
-5. **Cleanup:** Remove V1 imports when migration complete
+All migration phases complete. Post-merge checklist:
+
+1. Operator runs `scripts/smoke_v2.py` and verifies all checks pass
+2. Operator sets `CLOB_V2_READY=true` in environment
+3. Operator verifies pUSD balance/allowance on funded wallet (checked automatically at startup)
+4. Paper-trade validation (`PAPER_TRADE_ONLY=true`) before live mode
+5. Remove `py-clob-client` (V1) from dependency history if desired
