@@ -178,7 +178,7 @@ async def execute_trades(
     wallet = wallet_raw if isinstance(wallet_raw, str) else ""
     if not wallet.strip():
         logger.error("legacy_executor_missing_funder_address", extra={"env_key": "FUNDER_ADDRESS"})
-        return
+        raise ValueError("FUNDER_ADDRESS is required for legacy trade execution")
 
     balance = await get_my_balance(wallet)
     if balance is None:

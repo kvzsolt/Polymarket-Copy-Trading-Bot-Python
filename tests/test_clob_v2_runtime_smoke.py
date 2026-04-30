@@ -88,3 +88,57 @@ class TestNoV1DetectionLeftovers:
         assert not hasattr(mod, "_is_v2_client"), (
             "V1/V2 dispatch detector _is_v2_client should be removed"
         )
+
+
+class TestV2SDKInstalledEnvironment:
+    """Verify the V2 SDK package is actually importable with expected types.
+
+    These tests exercise the real installed environment, not mocks.
+    They guard against packaging or dependency regressions that seam-only
+    tests would miss.
+    """
+
+    def test_v2_client_class_importable(self) -> None:
+        from py_clob_client_v2.client import ClobClient
+
+        assert callable(ClobClient)
+
+    def test_v2_order_types_are_real_enum(self) -> None:
+        from utils.clob_v1_compat import OrderType
+
+        assert hasattr(OrderType, "FOK")
+        assert hasattr(OrderType, "GTC")
+        assert hasattr(OrderType, "GTD")
+
+    def test_v2_order_payload_is_real_dataclass(self) -> None:
+        from utils.clob_v1_compat import OrderPayload
+
+        payload = OrderPayload(orderID="test-id")
+        assert payload.orderID == "test-id"
+
+    def test_v2_order_args_is_real_dataclass(self) -> None:
+        from utils.clob_v1_compat import OrderArgs
+
+        args = OrderArgs(token_id="tok", side="BUY", size=10.0, price=0.5)
+        assert args.token_id == "tok"
+        assert args.side == "BUY"
+
+    def test_v2_buy_sell_constants_exist(self) -> None:
+        from utils.clob_v1_compat import BUY, SELL
+
+        assert BUY is not None
+        assert SELL is not None
+        assert BUY != SELL
+
+    def test_compat_layer_exports_match_all(self) -> None:
+        import utils.clob_v1_compat as mod
+
+        for name in mod.__all__:
+            assert hasattr(mod, name), f"__all__ lists {name!r} but it is not exported"
+
+    def test_order_gateway_resolve_order_type_roundtrip(self) -> None:
+        from clients.order_gateway import _resolve_order_type
+
+        for ot_name in ("FOK", "GTC", "GTD"):
+            resolved = _resolve_order_type(ot_name)
+            assert str(resolved) == ot_name, f"Expected {ot_name!r}, got {resolved!r}"
