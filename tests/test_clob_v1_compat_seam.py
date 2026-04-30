@@ -118,7 +118,7 @@ def test_active_code_imports_only_through_seam() -> None:
 def test_seam_is_transparent_ordertype_enum() -> None:
     """Validate that OrderType from seam behaves identically to direct import."""
     from utils.clob_v1_compat import OrderType
-    from py_clob_client.clob_types import OrderType as DirectOrderType
+    from py_clob_client_v2.clob_types import OrderType as DirectOrderType
 
     # Must be the same type
     assert OrderType is DirectOrderType
@@ -136,8 +136,8 @@ def test_seam_is_transparent_ordertype_enum() -> None:
 def test_seam_is_transparent_buy_sell_constants() -> None:
     """Validate that BUY/SELL from seam are identical to direct import."""
     from utils.clob_v1_compat import BUY, SELL
-    from py_clob_client.order_builder.constants import BUY as DirectBUY
-    from py_clob_client.order_builder.constants import SELL as DirectSELL
+    from py_clob_client_v2.order_builder.constants import BUY as DirectBUY
+    from py_clob_client_v2.order_builder.constants import SELL as DirectSELL
 
     # Must be identical strings
     assert BUY == DirectBUY

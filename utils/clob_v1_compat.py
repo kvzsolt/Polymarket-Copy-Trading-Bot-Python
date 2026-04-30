@@ -1,50 +1,27 @@
-"""CLOB V1 Compatibility Seam — Central import boundary for py-clob-client v0.34.6.
+"""CLOB Compatibility Seam — Central import boundary for py-clob-client-v2.
 
-This module exists to centralize all CLOB V1 (py-clob-client==0.34.6) imports and re-exports
-into a single, controlled boundary. When the codebase migrates to py-clob-client-v2, this
-module will become the adapter layer — implementations will switch from V1 to V2, but all
-external call sites will continue importing from here unchanged.
-
-This pattern limits the blast radius of the V2 migration to this single module,
-avoiding the need for scattered, incremental changes across the codebase.
+This module centralizes all CLOB SDK imports and re-exports into a single,
+controlled boundary.  It currently wraps py-clob-client-v2==1.0.0 and provides
+method-level adapters so callers can remain agnostic to V1 vs V2 API
+differences.
 
 Seam boundary guarantees:
-- All active runtime code imports V1 types/constants from THIS module only
+- All active runtime code imports SDK types/constants from THIS module only
 - Legacy/test-only code may import directly (e.g., utils/postOrder.py)
-- No direct py_clob_client imports outside this module (enforced by tests)
-
-Phase 1: Pure re-export of V1 types
-Phase 2a: API delta documentation
-Phase 2b: Method adapter seams (hardcoded V1 delegation)
-Phase 2c (Current): Package-adaptive seam — duck-type client shape at call time,
-    dispatch to V1 or V2 method accordingly.  Runtime stays V1; V2 paths activate
-    automatically when a V2-shaped client is detected.
+- No direct py_clob_client_v2 imports outside this module (enforced by tests)
 """
 
 from __future__ import annotations
 
-# Re-export all V1 types that active code depends on
-from py_clob_client.client import ClobClient
-from py_clob_client.clob_types import (
+from py_clob_client_v2.client import ClobClient
+from py_clob_client_v2.clob_types import (
     MarketOrderArgs,
     OrderArgs,
+    OrderPayload,
     OrderType,
     PartialCreateOrderOptions,
 )
-from py_clob_client.order_builder.constants import BUY, SELL
-
-# ---------------------------------------------------------------------------
-# V2 type availability probe
-#
-# OrderPayload is introduced in V2.  We attempt to import it eagerly so the
-# cancel adapter can use it without a per-call import.  On V1 SDK this will
-# fail and _OrderPayload stays None.  Tests that exercise the V2 cancel path
-# patch this module-level name directly.
-# ---------------------------------------------------------------------------
-try:
-    from py_clob_client.clob_types import OrderPayload as _OrderPayload  # type: ignore[attr-defined]
-except (ImportError, AttributeError):
-    _OrderPayload = None  # type: ignore[assignment,misc]
+from py_clob_client_v2.order_builder.constants import BUY, SELL
 
 __all__ = [
     "ClobClient",
@@ -60,11 +37,6 @@ __all__ = [
 ]
 
 
-# ---------------------------------------------------------------------------
-# V2 client shape detection
-# ---------------------------------------------------------------------------
-
-
 def _is_v2_client(client: object) -> bool:
     """Return True if *client* exposes a V2-shaped interface.
 
@@ -73,15 +45,6 @@ def _is_v2_client(client: object) -> bool:
     treated as V2-shaped; all others fall back to V1 dispatch.
     """
     return hasattr(client, "create_or_derive_api_key")
-
-
-# ---------------------------------------------------------------------------
-# Method-level adapter seams (package-adaptive)
-#
-# Each function probes the client shape at call time via _is_v2_client()
-# and dispatches to the V1 or V2 method accordingly.  Active code calls
-# these adapters; the V1/V2 distinction is invisible to callers.
-# ---------------------------------------------------------------------------
 
 
 def derive_api_creds(client: object) -> object:
@@ -114,16 +77,8 @@ def cancel_order_by_id(client: object, order_id: str) -> object:
     """Cancel an open order by its exchange-assigned ID.
 
     V1: client.cancel(order_id=order_id)
-    V2: client.cancel_order(OrderPayload(order_id))
-
-    Raises RuntimeError if a V2-shaped client is detected but _OrderPayload
-    is not importable (i.e. the V2 SDK is not installed yet).
+    V2: client.cancel_order(OrderPayload(orderID=order_id))
     """
     if _is_v2_client(client):
-        if _OrderPayload is None:
-            raise RuntimeError(
-                "V2-shaped client detected but py_clob_client.clob_types.OrderPayload "
-                "is not importable. Install the V2 SDK to use V2 cancel semantics."
-            )
-        return client.cancel_order(_OrderPayload(order_id))  # type: ignore[union-attr]
+        return client.cancel_order(OrderPayload(orderID=order_id))  # type: ignore[union-attr]
     return client.cancel(order_id=order_id)  # type: ignore[union-attr]

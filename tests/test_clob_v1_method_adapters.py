@@ -5,7 +5,6 @@ on the client's shape at call time.  These tests verify:
 - V1-shaped client → V1 method called with V1 signature
 - V2-shaped client → V2 method called with V2 signature
 - Exception propagation in both paths
-- RuntimeError when V2 client detected but _OrderPayload unavailable
 
 Fakes use MagicMock(spec=[...]) so hasattr() returns False for absent names,
 mirroring real V1/V2 duck-type detection.
@@ -161,11 +160,11 @@ class TestSubmitSignedOrder:
 class _FakeOrderPayload:
     """Minimal stand-in for V2 OrderPayload."""
 
-    def __init__(self, order_id: str) -> None:
-        self.order_id = order_id
+    def __init__(self, orderID: str) -> None:
+        self.orderID = orderID
 
     def __eq__(self, other: object) -> bool:
-        return isinstance(other, _FakeOrderPayload) and self.order_id == other.order_id
+        return isinstance(other, _FakeOrderPayload) and self.orderID == other.orderID
 
 
 class TestCancelOrderById:
@@ -189,7 +188,7 @@ class TestCancelOrderById:
         client = _v2_client()
         client.cancel_order.return_value = sentinel.v2_cancel
 
-        with patch("utils.clob_v1_compat._OrderPayload", _FakeOrderPayload):
+        with patch("utils.clob_v1_compat.OrderPayload", _FakeOrderPayload):
             result = cancel_order_by_id(client, "order-v2-55")
 
         client.cancel_order.assert_called_once_with(_FakeOrderPayload("order-v2-55"))
@@ -199,23 +198,16 @@ class TestCancelOrderById:
         client = _v2_client()
         client.cancel_order.return_value = sentinel.v2_cancel
 
-        with patch("utils.clob_v1_compat._OrderPayload", _FakeOrderPayload):
+        with patch("utils.clob_v1_compat.OrderPayload", _FakeOrderPayload):
             cancel_order_by_id(client, "order-v2-55")
 
         assert not hasattr(client, "cancel")
-
-    def test_v2_raises_runtime_error_when_order_payload_unavailable(self) -> None:
-        client = _v2_client()
-
-        with patch("utils.clob_v1_compat._OrderPayload", None):
-            with pytest.raises(RuntimeError, match="OrderPayload"):
-                cancel_order_by_id(client, "order-42")
 
     def test_v2_propagates_exception_from_cancel_order(self) -> None:
         client = _v2_client()
         client.cancel_order.side_effect = RuntimeError("v2 cancel failed")
 
-        with patch("utils.clob_v1_compat._OrderPayload", _FakeOrderPayload):
+        with patch("utils.clob_v1_compat.OrderPayload", _FakeOrderPayload):
             with pytest.raises(RuntimeError, match="v2 cancel failed"):
                 cancel_order_by_id(client, "order-v2-99")
 
