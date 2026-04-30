@@ -1,9 +1,8 @@
-"""CLOB Compatibility Seam — Central import boundary for py-clob-client-v2.
+"""CLOB SDK import boundary — V2-native runtime helpers.
 
-This module centralizes all CLOB SDK imports and re-exports into a single,
-controlled boundary.  It currently wraps py-clob-client-v2==1.0.0 and provides
-method-level adapters so callers can remain agnostic to V1 vs V2 API
-differences.
+Centralises all py-clob-client-v2 imports and provides thin call-path
+helpers for auth, order submission, and cancel.  All V1 dispatch branches
+were removed in Phase 4; the runtime is V2-only.
 
 Seam boundary guarantees:
 - All active runtime code imports SDK types/constants from THIS module only
@@ -37,48 +36,17 @@ __all__ = [
 ]
 
 
-def _is_v2_client(client: object) -> bool:
-    """Return True if *client* exposes a V2-shaped interface.
-
-    Detection marker: V2 renamed ``create_or_derive_api_creds`` to
-    ``create_or_derive_api_key``.  Any client that has the new name is
-    treated as V2-shaped; all others fall back to V1 dispatch.
-    """
-    return hasattr(client, "create_or_derive_api_key")
-
-
-def derive_api_creds(client: object) -> object:
-    """Derive or create API credentials for the CLOB client.
-
-    V1: client.create_or_derive_api_creds()
-    V2: client.create_or_derive_api_key()
-    """
-    if _is_v2_client(client):
-        return client.create_or_derive_api_key()  # type: ignore[union-attr]
-    return client.create_or_derive_api_creds()  # type: ignore[union-attr]
+def derive_api_creds(client: ClobClient) -> object:
+    return client.create_or_derive_api_key()
 
 
 def submit_signed_order(
-    client: object,
+    client: ClobClient,
     signed_order: object,
     order_type: OrderType,
 ) -> object:
-    """Submit a pre-signed order to the CLOB.
-
-    V1: client.post_order(signed_order, orderType=order_type)
-    V2: client.post_order(signed_order, order_type=order_type)
-    """
-    if _is_v2_client(client):
-        return client.post_order(signed_order, order_type=order_type)  # type: ignore[union-attr]
-    return client.post_order(signed_order, orderType=order_type)  # type: ignore[union-attr]
+    return client.post_order(signed_order, order_type=order_type)
 
 
-def cancel_order_by_id(client: object, order_id: str) -> object:
-    """Cancel an open order by its exchange-assigned ID.
-
-    V1: client.cancel(order_id=order_id)
-    V2: client.cancel_order(OrderPayload(orderID=order_id))
-    """
-    if _is_v2_client(client):
-        return client.cancel_order(OrderPayload(orderID=order_id))  # type: ignore[union-attr]
-    return client.cancel(order_id=order_id)  # type: ignore[union-attr]
+def cancel_order_by_id(client: ClobClient, order_id: str) -> object:
+    return client.cancel_order(OrderPayload(orderID=order_id))

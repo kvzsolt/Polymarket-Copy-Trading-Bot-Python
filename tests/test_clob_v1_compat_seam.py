@@ -1,9 +1,9 @@
-"""Tests validating the CLOB V1 compatibility seam module.
+"""Tests validating the CLOB V2-native import boundary module.
 
 This test suite ensures that:
-1. The compatibility seam exports all required V1 types/constants
+1. The seam exports all required V2 types/constants
 2. Active code paths import exclusively through the seam (not directly from py_clob_client)
-3. The seam is transparent — code using it behaves identically to pre-seam code
+3. The seam is transparent — code using it behaves identically to direct V2 import
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ import pytest
 
 # Test that seam module exists and exports all required symbols
 def test_clob_v1_compat_exports_required_symbols() -> None:
-    """Validate that clob_v1_compat exports all necessary V1 types and constants."""
+    """Validate that clob_v1_compat exports all necessary V2 types and constants."""
     from utils.clob_v1_compat import (
         ClobClient,
         MarketOrderArgs,
@@ -38,7 +38,7 @@ def test_clob_v1_compat_exports_required_symbols() -> None:
     assert SELL is not None
 
     # Validate type names match expected V1 SDK
-    assert ClobClient.__module__.startswith("py_clob_client")
+    assert ClobClient.__module__.startswith("py_clob_client_v2")
     assert OrderType.__name__ == "OrderType"
     assert isinstance(BUY, str)
     assert isinstance(SELL, str)
@@ -78,9 +78,9 @@ class AstImportVisitor(ast.NodeVisitor):
 
 
 def test_active_code_imports_only_through_seam() -> None:
-    """Validate that active runtime code imports V1 types only through the seam.
+    """Validate that active runtime code imports V2 types only through the seam.
 
-    This ensures we have a single controlled boundary for future V2 migration.
+    This ensures we have a single controlled boundary for V2 SDK.
     Allowed direct imports: only in utils/clob_v1_compat.py itself.
     """
     repo_root = Path(__file__).parent.parent
@@ -116,14 +116,14 @@ def test_active_code_imports_only_through_seam() -> None:
 
 
 def test_seam_is_transparent_ordertype_enum() -> None:
-    """Validate that OrderType from seam behaves identically to direct import."""
+    """Validate that OrderType from seam behaves identically to direct V2 import."""
     from utils.clob_v1_compat import OrderType
     from py_clob_client_v2.clob_types import OrderType as DirectOrderType
 
     # Must be the same type
     assert OrderType is DirectOrderType
 
-    # Must support enum access (V1 SDK has FOK, GTC, FAK, GTD)
+    # Must support enum access (V2 SDK has FOK, GTC, FAK)
     assert hasattr(OrderType, "FOK")
     assert hasattr(OrderType, "GTC")
     assert hasattr(OrderType, "FAK")
@@ -134,7 +134,7 @@ def test_seam_is_transparent_ordertype_enum() -> None:
 
 
 def test_seam_is_transparent_buy_sell_constants() -> None:
-    """Validate that BUY/SELL from seam are identical to direct import."""
+    """Validate that BUY/SELL from seam are identical to direct V2 import."""
     from utils.clob_v1_compat import BUY, SELL
     from py_clob_client_v2.order_builder.constants import BUY as DirectBUY
     from py_clob_client_v2.order_builder.constants import SELL as DirectSELL
@@ -204,11 +204,12 @@ def test_seam_module_exports_all_symbols(expected_export: str) -> None:
 
 def test_executeservice_imports_through_seam() -> None:
     """Smoke test that executionService can import OrderType, BUY, SELL from seam."""
-    from services.executionService import OrderType, BUY, SELL
+    from utils.clob_v1_compat import OrderType, BUY, SELL
+    import services.executionService as _es
 
-    assert OrderType is not None
-    assert BUY == "BUY"
-    assert SELL == "SELL"
+    assert _es.OrderType is OrderType
+    assert _es.BUY == "BUY"
+    assert _es.SELL == "SELL"
 
 
 def test_ordergateay_imports_through_seam() -> None:
@@ -225,7 +226,7 @@ def test_ordergateay_imports_through_seam() -> None:
 
 
 def test_createclobclient_imports_through_seam() -> None:
-    """Smoke test that createClobClient imports V1 types from seam."""
+    """Smoke test that createClobClient imports V2 types from seam."""
     from utils.createClobClient import (
         ClobClient,
         MarketOrderArgs,
