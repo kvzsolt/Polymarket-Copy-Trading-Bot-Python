@@ -44,26 +44,6 @@ class TestV2SdkImports:
         assert BUY == "BUY"
         assert SELL == "SELL"
 
-    def test_seam_re_exports_all(self) -> None:
-        from utils.clob_v1_compat import (
-            ClobClient,
-            MarketOrderArgs,
-            OrderArgs,
-            OrderType,
-            PartialCreateOrderOptions,
-            BUY,
-            SELL,
-            derive_api_creds,
-            submit_signed_order,
-            cancel_order_by_id,
-        )
-        assert all(x is not None for x in [
-            ClobClient, MarketOrderArgs, OrderArgs,
-            OrderType, PartialCreateOrderOptions,
-            BUY, SELL,
-            derive_api_creds, submit_signed_order, cancel_order_by_id,
-        ])
-
 
 # ---------------------------------------------------------------------------
 # Client method existence

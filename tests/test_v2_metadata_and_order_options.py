@@ -67,7 +67,7 @@ class TestV2MetadataPropagation:
     @pytest.fixture()
     def mock_wrapper(self) -> Any:
         """Build a ClobClientWrapper with a mocked V2 ClobClient."""
-        from utils.clob_v1_compat import OrderType
+        from py_clob_client.clob_types import OrderType
         from utils.createClobClient import ClobClientWrapper
         from config.env import WalletConfig, SignatureType
 

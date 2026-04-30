@@ -10,8 +10,9 @@ from __future__ import annotations
 
 from typing import Any
 
+from py_clob_client.clob_types import OrderArgs, OrderType
+
 from domain.ports.clients import AbstractOrderGateway
-from utils.clob_v1_compat import OrderArgs, OrderType, cancel_order_by_id
 from utils.createClobClient import ClobClientWrapper
 
 
@@ -21,10 +22,6 @@ def _resolve_order_type(order_type: str) -> Any:
     Raises ``ValueError`` for unknown / unsupported order types so callers
     get a clear boundary error instead of an opaque SDK failure downstream.
     """
-    try:
-        return OrderType[order_type]
-    except (KeyError, TypeError):
-        pass
     resolved = getattr(OrderType, order_type, None)
     if resolved is not None:
         return resolved
@@ -108,9 +105,10 @@ class OrderGateway(AbstractOrderGateway):
 
     async def cancel_order(self, order_id: str) -> Any:
         import asyncio
+        from py_clob_client_v2.clob_types import OrderPayload
 
         client = self._wrapper.client
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
-            None, lambda: cancel_order_by_id(client, order_id)
+            None, lambda: client.cancel_order(OrderPayload(orderID=order_id))
         )

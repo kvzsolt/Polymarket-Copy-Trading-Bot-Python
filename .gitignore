@@ -83,3 +83,5 @@ CODEX.md
 KILOCODE.md
 
 pytest_output.txt
+
+config/runtime.env

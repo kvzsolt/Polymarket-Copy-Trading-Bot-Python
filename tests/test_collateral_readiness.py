@@ -183,7 +183,6 @@ class TestFailClosedStartup:
              _p("utils.createClobClient.build_wallet_config") as mock_bwc, \
              _p("utils.createClobClient.validate_wallet_config"), \
              _p("utils.createClobClient.ClobClient", return_value=mock_client), \
-             _p("utils.createClobClient.derive_api_creds", return_value=MagicMock()), \
              _p("utils.createClobClient.detect_wallet_signature_type", return_value=(1, "EOA", "0x" + "a" * 40)):
             from config.env import SignatureType, WalletConfig
             mock_bwc.return_value = WalletConfig(
