@@ -52,6 +52,47 @@ class OrderGateway(AbstractOrderGateway):
             result.setdefault("order_type", str(ot))
         return result
 
+    async def post_market_order(
+        self,
+        *,
+        token_id: str,
+        side: str,
+        amount: float,
+        max_price: float,
+        tick_size: str,
+        neg_risk: bool,
+        min_order_size: float = 0.0,
+        order_type: str = "FOK",
+        idempotency_key: str = "",
+        extra: dict[str, Any] | None = None,
+    ) -> Any:
+        """Create and post a V2 market order with tick_size and neg_risk options.
+
+        Rejects before hitting the exchange if amount < min_order_size.
+        tick_size and neg_risk are forwarded into PartialCreateOrderOptions.
+        """
+        if min_order_size > 0 and amount < min_order_size:
+            return {
+                "success": False,
+                "error": f"size_below_min | amount {amount} < min_order_size {min_order_size}",
+                "non_retryable": True,
+            }
+        ot = _resolve_order_type(order_type)
+        signed = await self._wrapper.create_market_order(
+            token_id=token_id,
+            side=side,
+            amount=amount,
+            max_price=max_price,
+            tick_size=tick_size,
+            neg_risk=neg_risk,
+            order_type=ot,
+        )
+        result = await self._wrapper.post_signed_order(signed, order_type=ot)
+        if isinstance(result, dict):
+            result.setdefault("idempotency_key", idempotency_key)
+            result.setdefault("order_type", str(ot))
+        return result
+
     async def cancel_order(self, order_id: str) -> Any:
         import asyncio
 

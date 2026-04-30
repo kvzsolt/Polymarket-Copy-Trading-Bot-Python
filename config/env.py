@@ -652,6 +652,11 @@ def _build_env_snapshot() -> dict[str, object]:
     'LOG_BACKUP_COUNT': _int('LOG_BACKUP_COUNT', '3'),
     'PNL_LOG_FILE': os.getenv('PNL_LOG_FILE', 'log/pnl.jsonl'),
     'DISCOVERY_REFRESH_INTERVAL_SECONDS': _int('DISCOVERY_REFRESH_INTERVAL_SECONDS', '300'),
+
+    # --- V2 Migration readiness ---
+    # Set to true once smoke tests pass and pUSD balance/allowance confirmed.
+    # When false, a startup warning is logged. This is a safety signal, not a feature toggle.
+    'CLOB_V2_READY': _bool('CLOB_V2_READY', False),
 }
 
 

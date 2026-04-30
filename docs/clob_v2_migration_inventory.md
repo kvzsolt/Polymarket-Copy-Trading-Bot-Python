@@ -182,6 +182,20 @@ This document tracks the CLOB V1 (py-clob-client v0.34.6) surface area in active
 
 ---
 
+## Fee Handling in V2
+
+V2 removed `feeRateBps` from the signed order payload — the exchange no longer
+requires the taker to embed a fee rate in the order struct.  Fee information is
+still relevant for:
+
+- **Analytics / accounting** — use `get_fee_rate_bps(token_id)` to read the
+  current taker fee rate for a token and incorporate it into P&L calculations.
+- **Pre-trade cost modelling** — `services/feeService.py` and the
+  `TRANSACTION_FEE_BPS` env var are the appropriate place to account for fees
+  before order sizing; do not re-introduce `feeRateBps` into the signed order.
+
+---
+
 ## Next Steps (Phase 3+)
 
 1. **V2 SDK Integration:** Add py-clob-client-v2 to pyproject.toml
