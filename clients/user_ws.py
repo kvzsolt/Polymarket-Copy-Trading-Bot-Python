@@ -151,7 +151,11 @@ class UserWebSocket:
                 await ws.send("PING")
             except Exception as exc:
                 logger.warning("UserWS: heartbeat send failed: %s", exc)
-                return  # Triggers reconnect via message_loop exit
+                try:
+                    await ws.close()
+                except Exception:
+                    pass
+                return
 
     async def _message_loop(self, ws: Any) -> None:
         """Receive and dispatch messages until disconnect."""

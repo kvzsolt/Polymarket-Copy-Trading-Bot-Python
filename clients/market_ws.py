@@ -176,7 +176,11 @@ class MarketWebSocket:
                 await ws.send("PING")
             except Exception as exc:
                 logger.warning("MarketWS: heartbeat send failed: %s", exc)
-                return  # Triggers reconnect via message_loop exit
+                try:
+                    await ws.close()
+                except Exception:
+                    pass
+                return
 
     async def _message_loop(self, ws: Any) -> None:
         """Receive and dispatch messages until disconnect."""
@@ -229,10 +233,15 @@ class MarketWebSocket:
                 if isinstance(change, dict):
                     side = change.get("side", "").upper()
                     price_str = change.get("price")
-                    if price_str is not None and side == "BUY":
-                        best_bid = Decimal(str(price_str))
-                    elif price_str is not None and side == "SELL":
-                        best_ask = Decimal(str(price_str))
+                    if price_str is not None:
+                        try:
+                            price = Decimal(str(price_str))
+                        except (InvalidOperation, ValueError):
+                            continue
+                        if side == "BUY":
+                            best_bid = max(best_bid, price) if best_bid is not None else price
+                        elif side == "SELL":
+                            best_ask = min(best_ask, price) if best_ask is not None else price
 
             # Fallback: top-level bid/ask
             if best_bid is None:

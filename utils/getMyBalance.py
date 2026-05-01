@@ -61,7 +61,11 @@ def _get_balance_sync(address: str) -> float | None:
         )
         return None
 
-    w3 = Web3(Web3.HTTPProvider(rpc_url))
+    try:
+        w3 = Web3(Web3.HTTPProvider(rpc_url))
+    except Exception as exc:
+        logger.error("Balance lookup failed: could not create Web3 provider: %s", exc)
+        return None
     failures: list[str] = []
 
     for contract_address in candidates:
