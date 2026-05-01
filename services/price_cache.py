@@ -143,7 +143,7 @@ class PositionPriceCache:
         best_ask: Decimal | None,
     ) -> None:
         """WSS price-change event: refresh quote snapshot."""
-        existing = self._quotes.get(token_id)
+        existing = self.get_quote(token_id)
         merged_bid = best_bid if best_bid is not None else (existing.best_bid if existing else None)
         merged_ask = best_ask if best_ask is not None else (existing.best_ask if existing else None)
         self.set_quote(token_id, best_bid=merged_bid, best_ask=merged_ask)
