@@ -29,7 +29,7 @@ def _leader(score: float = 0.9) -> LeaderScore:
 
 
 class TestCopyDecisionService:
-    def test_buy_skips_when_below_min_shares_requirement(self):
+    def test_buy_passes_when_no_venue_metadata(self):
         """With no market metadata (market_min_size=0), no venue floor applies → BUY passes."""
         svc = CopyDecisionService()
         trade = {"price": 0.40, "timestamp": time.time(), "usdcSize": 20}
@@ -44,7 +44,7 @@ class TestCopyDecisionService:
         assert decision.allow is True
         assert decision.skip_code == "ok"
 
-    def test_buy_skips_when_below_min_1_notional_requirement(self):
+    def test_buy_passes_when_tiny_order_no_venue_floor(self):
         """With no market metadata (market_min_size=0), no venue floor → BUY passes."""
         svc = CopyDecisionService()
         trade = {"price": 0.08, "timestamp": time.time(), "usdcSize": 10}
@@ -59,7 +59,7 @@ class TestCopyDecisionService:
         assert decision.allow is True
         assert decision.skip_code == "ok"
 
-    def test_buy_skips_when_below_market_min_size_requirement(self):
+    def test_buy_upsizes_to_venue_min_when_cap_allows(self):
         """BUY below venue min → upsize to venue min when cap allows."""
         svc = CopyDecisionService()
         trade = {"price": 0.20, "timestamp": time.time(), "usdcSize": 10}
@@ -203,7 +203,7 @@ class TestCopyDecisionService:
             )
 
         assert decision.allow is False
-        assert decision.skip_code == "sell_below_market_min"
+        assert decision.skip_code == "sell_held_below_venue_min"
         assert decision.target_size_tokens == pytest.approx(1.0)
 
     def test_sell_keeps_requested_size_when_it_already_clears_minimum(self):
@@ -413,7 +413,7 @@ class TestCopyDecisionServicePartialHeadroom:
             market_min_size=5.0,
         )
         assert decision.allow is False
-        assert decision.skip_code in ("insufficient_notional", "risk_cap_too_low_for_min_order", "buy_below_minimum_order_requirements")
+        assert decision.skip_code in ("insufficient_notional", "buy_cap_blocks_upsize_to_venue_min")
 
     def test_buy_hard_denied_when_headroom_below_min_order(self):
         """Cap headroom exists but is below the minimum executable order size → hard deny."""
@@ -429,7 +429,7 @@ class TestCopyDecisionServicePartialHeadroom:
             market_min_size=5.0,
         )
         assert decision.allow is False
-        assert decision.skip_code in ("risk_cap_too_low_for_min_order", "buy_below_minimum_order_requirements")
+        assert decision.skip_code in ("buy_cap_blocks_upsize_to_venue_min")
 
     def test_buy_not_capped_when_headroom_covers_full_order(self):
         """When cap headroom > desired order size, full order goes through unchanged."""
@@ -481,7 +481,7 @@ class TestPhase3MetadataSizing:
             market_min_size=5.0,
         )
         assert decision.allow is False
-        assert decision.skip_code in ("risk_cap_too_low_for_min_order", "buy_below_minimum_order_requirements")
+        assert decision.skip_code in ("buy_cap_blocks_upsize_to_venue_min")
 
     def test_sell_skips_when_held_below_venue_min(self):
         """SELL below venue min, held position too small → skip."""
@@ -495,7 +495,7 @@ class TestPhase3MetadataSizing:
             max_sell_tokens=3.0,  # held < venue min
         )
         assert decision.allow is False
-        assert decision.skip_code == "sell_below_market_min"
+        assert decision.skip_code == "sell_held_below_venue_min"
         assert decision.sizing is not None
         assert decision.sizing.accept is False
 

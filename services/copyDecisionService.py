@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 import os
 from dataclasses import dataclass, field
@@ -44,16 +45,16 @@ def effective_intent_key(
     This must be computed *after* sizing adjustments so that an upsize
     produces a different key than the original below-min request.
     """
-    payload = "|".join([
-        user,
-        condition_id,
-        token_id,
-        side.upper(),
-        format(effective_size, "f"),
-        format(effective_price, "f"),
-        format(tick_size, "f"),
-        intent_id,
-    ])
+    payload = json.dumps({
+        "user": user,
+        "condition_id": condition_id,
+        "token_id": token_id,
+        "side": side.upper(),
+        "effective_size": format(effective_size, "f"),
+        "effective_price": format(effective_price, "f"),
+        "tick_size": format(tick_size, "f"),
+        "intent_id": intent_id,
+    }, separators=(',', ':'), sort_keys=True)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
@@ -270,15 +271,15 @@ class CopyDecisionService:
                     effective_size=Decimal("0"),
                     effective_price=Decimal("0"),
                     venue_min_size=Decimal(str(required_min_size_tokens)),
-                    reason="buy_below_minimum_order_requirements",
+                    reason="buy_cap_blocks_upsize_to_venue_min",
                     upsized=False,
                 )
                 return CopyDecision(
                     allow=False,
-                    skip_code="buy_below_minimum_order_requirements",
+                    skip_code="buy_cap_blocks_upsize_to_venue_min",
                     reason=(
-                        "copied BUY below minimum executable venue size "
-                        f"(target={target_size_tokens:.4f}, required={required_min_size_tokens:.4f}, live_price={live_price:.4f})"
+                        "BUY below venue minimum and cap cannot cover upsize "
+                        f"(target={target_size_tokens:.4f}, venue_min={required_min_size_tokens:.4f}, cap={max_notional_usdc:.4f})"
                     ),
                     side="BUY",
                     decision_score=trade_score.score,
@@ -484,12 +485,12 @@ class CopyDecisionService:
                         effective_size=Decimal("0"),
                         effective_price=Decimal("0"),
                         venue_min_size=Decimal(str(required_min_tokens)),
-                        reason="sell_below_market_min",
+                        reason="sell_held_below_venue_min",
                         upsized=False,
                     )
                     return CopyDecision(
                         allow=False,
-                        skip_code="sell_below_market_min",
+                        skip_code="sell_held_below_venue_min",
                         reason=(
                             f"SELL size below exchange minimum ({target:.4f} < {required_min_tokens:.4f}) "
                             "and position too small to satisfy minimum"
