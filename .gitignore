@@ -14,7 +14,7 @@ eggs/
 secrets.env
 /data
 .ai
-
+.remember
 # Runtime state (created automatically on first run)
 /data/bot_state.db
 /log
@@ -81,3 +81,7 @@ AGENTS.MD
 CLAUDE.md
 CODEX.md
 KILOCODE.md
+
+pytest_output.txt
+
+config/runtime.env
