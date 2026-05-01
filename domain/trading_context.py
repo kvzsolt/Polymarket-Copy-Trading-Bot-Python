@@ -45,6 +45,26 @@ class TradingContext:
     extra: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        # Fail fast: these dependencies are required in production contexts.
+        # They default to None only to ease unit-test construction, but any
+        # production code path that calls trade_pipeline or riskMonitor will
+        # crash with a late AttributeError if they are absent.
+        _required_for_runtime = {
+            "risk_blocks_repo": self.risk_blocks_repo,
+            "pnl_tracker": self.pnl_tracker,
+            "risk_engine": self.risk_engine,
+            "accounting_service": self.accounting_service,
+            "position_manager": self.position_manager,
+        }
+        missing = [k for k, v in _required_for_runtime.items() if v is None]
+        if missing and self.config is not None:
+            # If a typed config was injected this is a production context —
+            # all runtime deps must be present.
+            raise TypeError(
+                f"TradingContext created with config but missing required "
+                f"dependencies: {', '.join(missing)}"
+            )
+
         if self.config is not None and getattr(self.copy_decision_service, "_config", None) is None:
             self.copy_decision_service = CopyDecisionService(
                 config=self.config,
