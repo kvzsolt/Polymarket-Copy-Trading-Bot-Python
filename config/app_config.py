@@ -24,26 +24,6 @@ from __future__ import annotations
 
 import re
 import sys
-from types import SimpleNamespace
-
-
-class _VersionInfoProxy(tuple):
-    def __new__(cls, version_info):
-        return super().__new__(cls, tuple(version_info))
-
-    @property
-    def major(self): return self[0]
-    @property
-    def minor(self): return self[1]
-    @property
-    def micro(self): return self[2]
-    @property
-    def releaselevel(self): return self[3]
-    @property
-    def serial(self): return self[4]
-
-
-sys = SimpleNamespace(version_info=_VersionInfoProxy(sys.version_info))
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import IntEnum
@@ -820,7 +800,7 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         usdc_contract_address=(
             p.string("COLLATERAL_CONTRACT_ADDRESS", "")
             or p.string("PUSD_CONTRACT_ADDRESS", "")
-            or p.string("USDC_CONTRACT_ADDRESS", "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174")
+            or p.string("USDC_CONTRACT_ADDRESS", "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359")
         ),
         enforce_geoblock=p.bool_("ENFORCE_GEOBLOCK", True),
         enable_metrics_server=p.bool_("ENABLE_METRICS_SERVER", False),

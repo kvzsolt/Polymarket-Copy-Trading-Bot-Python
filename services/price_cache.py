@@ -78,6 +78,7 @@ class PositionPriceCache:
         if snap is None:
             return None
         if (time.monotonic() - snap.ts) > self._quote_ttl:
+            del self._quotes[token_id]
             return None
         return snap
 
@@ -87,6 +88,7 @@ class PositionPriceCache:
         if snap is None:
             return None
         if (time.monotonic() - snap.ts) > self._tick_ttl:
+            del self._ticks[token_id]
             return None
         return snap
 
@@ -141,7 +143,10 @@ class PositionPriceCache:
         best_ask: Decimal | None,
     ) -> None:
         """WSS price-change event: refresh quote snapshot."""
-        self.set_quote(token_id, best_bid=best_bid, best_ask=best_ask)
+        existing = self._quotes.get(token_id)
+        merged_bid = best_bid if best_bid is not None else (existing.best_bid if existing else None)
+        merged_ask = best_ask if best_ask is not None else (existing.best_ask if existing else None)
+        self.set_quote(token_id, best_bid=merged_bid, best_ask=merged_ask)
 
     def on_tick_size_change(
         self,
