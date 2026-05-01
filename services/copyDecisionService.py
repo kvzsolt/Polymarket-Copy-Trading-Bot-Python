@@ -5,7 +5,7 @@ import json
 import math
 import os
 from dataclasses import dataclass, field
-from decimal import Decimal
+from decimal import Decimal, ROUND_CEILING
 from typing import Any, TYPE_CHECKING
 
 from services.leaderScoringService import LeaderScore, LeaderScoringService
@@ -232,28 +232,26 @@ class CopyDecisionService:
                 details={"decision_gate_enabled": False},
             )
 
-        # Hard safety floors
+        # Hard safety floors — parse venue metadata as Decimal immediately
         decimals = self._copy_size_decimals
+        d_market_min = Decimal(str(market_min_size)) if market_min_size > 0 else Decimal("0")
+        d_tick_size = Decimal(str(tick_size)) if tick_size > 0 else Decimal("0")
 
         # Worst-case price for cap compatibility (slippage-adjusted).
-        # Apply tick-size ceiling (ROUND_CEILING for BUY) to match ExecutionService semantics.
-        slippage_ratio = self._slippage_ratio
-        worst_price = live_price * (1.0 + slippage_ratio)
-        if tick_size > 0:
-            import math
-            worst_price = math.ceil(worst_price / tick_size) * tick_size
+        # Apply tick-size ceiling (ROUND_CEILING for BUY) using Decimal math.
+        d_slippage = Decimal(str(self._slippage_ratio))
+        d_worst_price = Decimal(str(live_price)) * (Decimal("1") + d_slippage)
+        if d_tick_size > 0:
+            d_worst_price = (d_worst_price / d_tick_size).to_integral_value(rounding=ROUND_CEILING) * d_tick_size
+        worst_price = float(d_worst_price)
 
         target_size_tokens = desired_notional / live_price
         required_min_size_tokens = (
-            max(market_min_size if market_min_size > 0 else 0.0, 0.0)
-            if self._minimum_order_guard_enabled
-            else 0.0
-        )
+            float(d_market_min) if d_market_min > 0 else 0.0
+        ) if self._minimum_order_guard_enabled else 0.0
         minimum_executable_notional_usdc = (
-            (market_min_size if market_min_size > 0 else 0.0) * worst_price
-            if self._minimum_order_guard_enabled
-            else 0.0
-        )
+            float(d_market_min * d_worst_price) if d_market_min > 0 else 0.0
+        ) if self._minimum_order_guard_enabled else 0.0
         cap_binding = max_notional_usdc + 1e-9 < unconstrained_notional
 
         upsized = False
@@ -302,7 +300,13 @@ class CopyDecisionService:
                         "cap_binding": cap_binding,
                     },
                 )
-            target_size_tokens = float(required_min_size_tokens)
+            # Quantize upsize to tick_size when available
+            if d_tick_size > 0:
+                target_size_tokens = float(
+                    (Decimal(str(required_min_size_tokens)) / d_tick_size).to_integral_value(rounding=ROUND_CEILING) * d_tick_size
+                )
+            else:
+                target_size_tokens = float(required_min_size_tokens)
             upsized = True
 
         target_size_tokens = self._ceil(target_size_tokens, decimals)
@@ -432,9 +436,9 @@ class CopyDecisionService:
             },
             sizing=SizingDecision(
                 accept=True,
-                effective_size=Decimal(str(target_size_tokens)),
-                effective_price=Decimal(str(worst_price)),
-                venue_min_size=Decimal(str(required_min_size_tokens)),
+                effective_size=Decimal(str(target_size_tokens)).quantize(d_tick_size) if d_tick_size > 0 else Decimal(str(target_size_tokens)),
+                effective_price=d_worst_price,
+                venue_min_size=d_market_min,
                 reason="upsized" if upsized else "ok",
                 upsized=upsized,
             ),
@@ -473,7 +477,8 @@ class CopyDecisionService:
         target = min(sell_tokens, max_sell_tokens)
         minimum_guard_enabled = self._minimum_order_guard_enabled
         upsized = False
-        required_min_tokens = market_min_size if market_min_size > 0 else 0.0
+        d_market_min = Decimal(str(market_min_size)) if market_min_size > 0 else Decimal("0")
+        required_min_tokens = float(d_market_min)
 
         if minimum_guard_enabled:
             # SELLs should be constrained by the venue minimum and the held
@@ -522,7 +527,7 @@ class CopyDecisionService:
             accept=True,
             effective_size=Decimal(str(target)),
             effective_price=Decimal(str(live_price)),
-            venue_min_size=Decimal(str(required_min_tokens)),
+            venue_min_size=d_market_min,
             reason="upsized" if upsized else "ok",
             upsized=upsized,
         )
