@@ -328,10 +328,6 @@ def validate_runtime_env() -> None:
         errors.append('GAS_COST_USDC must be non-negative.')
     if ENV.get('RISK_BUFFER_PCT', 0.0) < 0:
         errors.append('RISK_BUFFER_PCT must be non-negative.')
-    if ENV.get('COPY_MIN_SHARES', 0.0) < 0:
-        errors.append('COPY_MIN_SHARES must be >= 0.')
-    if ENV.get('COPY_MIN_NOTIONAL_USDC', 0.0) < 0:
-        errors.append('COPY_MIN_NOTIONAL_USDC must be >= 0.')
     if ENV.get('COPY_SIZE_DECIMALS', 0) < 0:
         errors.append('COPY_SIZE_DECIMALS must be >= 0.')
     if not (0 <= ENV.get('COPY_DECISION_MIN_SCORE', 0.0) <= 1):
@@ -480,8 +476,6 @@ def _build_env_snapshot() -> dict[str, object]:
     'MAX_POSITION_PCT': _float('MAX_POSITION_PCT', '0.45'),
     'ENABLE_TRUST_SIZE_MULTIPLIERS': os.getenv('ENABLE_TRUST_SIZE_MULTIPLIERS', 'true').strip().lower() in ('1', 'true', 'yes'),
     # Decision-first sizing floor controls
-    'COPY_MIN_SHARES': _float('COPY_MIN_SHARES', '5'),
-    'COPY_MIN_NOTIONAL_USDC': _float('COPY_MIN_NOTIONAL_USDC', '1'),
     'COPY_SIZE_DECIMALS': _int('COPY_SIZE_DECIMALS', '4'),
     'TRUST_SIZE_MULTIPLIER_MIN': _float('TRUST_SIZE_MULTIPLIER_MIN', '0.50'),
     'TRUST_SIZE_MULTIPLIER_MAX': _float('TRUST_SIZE_MULTIPLIER_MAX', '1.25'),
