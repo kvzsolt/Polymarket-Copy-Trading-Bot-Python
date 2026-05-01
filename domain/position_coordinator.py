@@ -32,8 +32,6 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import defaultdict
-from contextlib import asynccontextmanager
-from typing import AsyncIterator
 
 from domain.intent import IntentRecord, IntentState
 from domain.position_key import PositionKey
@@ -58,6 +56,14 @@ class PositionCoordinator:
         # defaultdict(asyncio.Lock) creates a lock on first access per key
         self._locks: dict[PositionKey, asyncio.Lock] = defaultdict(asyncio.Lock)
         self._intents: dict[PositionKey, IntentRecord] = {}
+        self._prune_threshold = 128
+
+    @staticmethod
+    def _has_waiters(lock: asyncio.Lock) -> bool:
+        waiters = getattr(lock, "_waiters", None)
+        if not waiters:
+            return False
+        return any(not waiter.cancelled() for waiter in waiters)
 
     # ---- public API ---------------------------------------------------------
 
@@ -75,7 +81,9 @@ class PositionCoordinator:
         Prefer :meth:`acquire` for new code.  ``get_lock`` is exposed for
         compatibility with call sites that manage the lock manually.
         """
-        return self._locks[key]
+        lock = self._locks[key]
+        self._maybe_prune()
+        return lock
 
     def get_intent(self, key: PositionKey) -> IntentRecord:
         """Return (creating if needed) the per-key ``IntentRecord``."""
@@ -117,16 +125,18 @@ class PositionCoordinator:
     # ---- cleanup ------------------------------------------------------------
 
     def release_key(self, key: PositionKey) -> bool:
-        """Drop an idle key's lock and intent if the lock is not held.
+        """Drop an idle key's lock and intent if it is safe to do so.
 
         Returns True if the key was successfully removed.
         """
         lock = self._locks.get(key)
-        if lock is not None and lock.locked():
+        if lock is not None and (lock.locked() or self._has_waiters(lock)):
+            return False
+        intent = self._intents.get(key)
+        if intent is not None and intent.is_active:
             return False
         self._locks.pop(key, None)
-        intent = self._intents.get(key)
-        if intent is not None and not intent.is_active:
+        if intent is not None:
             self._intents.pop(key, None)
         return True
 
@@ -137,6 +147,10 @@ class PositionCoordinator:
             if self.release_key(key):
                 removed += 1
         return removed
+
+    def _maybe_prune(self) -> None:
+        if len(self._locks) > self._prune_threshold:
+            self.prune()
 
 
 class _AcquireContext:
@@ -163,6 +177,7 @@ class _AcquireContext:
         lock = self._coordinator._locks.get(self._key)
         if lock is not None and lock.locked():
             lock.release()
+        self._coordinator.release_key(self._key)
         logger.debug(
             "PositionCoordinator: released key=%s",
             self._key,
