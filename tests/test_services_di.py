@@ -89,6 +89,7 @@ class TestOrchestratorDISeams:
             positions_repo=MagicMock(),
             fills_repo=MagicMock(),
             orders_repo=MagicMock(),
+            risk_blocks_repo=MagicMock(),
             pnl_tracker=MagicMock(),
             risk_engine=MagicMock(),
             accounting_service=MagicMock(),
