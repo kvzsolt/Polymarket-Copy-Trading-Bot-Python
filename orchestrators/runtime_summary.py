@@ -269,11 +269,10 @@ def print_startup_summary(
             "POLYMARKET BASE EXECUTION RULES",
             {
                 "enable_executable_order_guard": config.execution.enable_executable_order_guard,
-                "copy_min_shares": config.sizing.copy_min_shares,
-                "copy_min_notional_usdc": config.sizing.copy_min_notional_usdc,
                 "copy_size_decimals": config.sizing.copy_size_decimals,
                 "executable_order_buffer_notional_usdc": config.execution.executable_order_buffer_notional_usdc,
                 "min_order_size": config.network.min_order_size,
+                "sizing_source": "venue_metadata",
             },
         ),
         (
