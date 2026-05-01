@@ -10,12 +10,17 @@ from clients.analytics_client import AnalyticsClient
 from clients.balance_client import BalanceClient
 from clients.http_client import HttpClient
 from clients.market_client import PolymarketClobClient
+from clients.market_ws import MarketWebSocket
 from clients.order_gateway import OrderGateway
+from clients.user_ws import UserWebSocket
 
 __all__ = [
     "AnalyticsClient",
     "BalanceClient",
     "HttpClient",
+    "MarketWebSocket",
     "OrderGateway",
     "PolymarketClobClient",
+    "UserWebSocket",
 ]
+
