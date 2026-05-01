@@ -184,13 +184,15 @@ class TestOrderGateway:
     @pytest.mark.asyncio
     async def test_cancel_order_offloads(self) -> None:
         sdk = MagicMock()
-        sdk.cancel = MagicMock(return_value={"cancelled": True})
+        sdk.cancel_order = MagicMock(return_value={"cancelled": True})
         wrapper = MagicMock()
         wrapper.client = sdk
         gateway = OrderGateway(wrapper)
         result = await gateway.cancel_order("ord-1")
         assert result == {"cancelled": True}
-        sdk.cancel.assert_called_once_with(order_id="ord-1")
+        sdk.cancel_order.assert_called_once()
+        call_args = sdk.cancel_order.call_args[0][0]
+        assert getattr(call_args, "orderID", None) == "ord-1"
 
 
 # ---------------------------------------------------------------------------

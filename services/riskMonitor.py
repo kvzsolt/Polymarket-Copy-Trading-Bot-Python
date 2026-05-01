@@ -397,8 +397,8 @@ async def risk_monitor_loop(
                             signal_id=f"risk:{trigger}:{condition_id}:{int(time.time())}",
                             condition_id=condition_id,
                             recovery_metadata={
-                                "leader_notional_at_trigger": float(pos.size_tokens * Decimal(str(current_price))),
-                                "copied_position_notional_at_trigger": float(pos.size_tokens * Decimal(str(current_price))),
+                                "leader_notional_at_trigger": float(Decimal(str(pos.size_tokens)) * Decimal(str(current_price))),
+                                "copied_position_notional_at_trigger": float(Decimal(str(pos.size_tokens)) * Decimal(str(current_price))),
                                 "trigger_price": float(current_price),
                                 "trigger_size_tokens": float(pos.size_tokens),
                                 "trigger_fraction": fraction,
@@ -855,7 +855,7 @@ async def run_risk_check_for_context(context: TradingContext) -> None:
 
                 fraction = max(0.0, min(1.0, float(action.get("size_fraction", 1.0) or 1.0)))
                 reason = str(action.get("reason") or "risk_exit")
-                trigger_notional = float((pos.size_tokens * Decimal(str(current_price))).quantize(Decimal("0.00000001")))
+                trigger_notional = float((Decimal(str(pos.size_tokens)) * Decimal(str(current_price))).quantize(Decimal("0.00000001")))
 
                 # Capture block metadata at trigger time — but defer persisting the
                 # risk block until after the protective SELL actually fills.  Writing

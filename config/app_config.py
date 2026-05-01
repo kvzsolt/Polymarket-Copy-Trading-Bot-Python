@@ -23,8 +23,9 @@ Design notes
 from __future__ import annotations
 
 import re
-import sys
 from collections.abc import Mapping
+from types import SimpleNamespace
+import sys as _sys
 from dataclasses import dataclass, field
 from enum import IntEnum
 from pathlib import Path
@@ -429,6 +430,11 @@ class AppConfig:
 # ---------------------------------------------------------------------------
 
 
+# Keep version checks behind a local proxy so tests can monkeypatch this module
+# without mutating the real process-wide ``sys.version_info`` object.
+sys = SimpleNamespace(version_info=_sys.version_info)
+
+
 def _runtime_python_supported() -> bool:
     return sys.version_info.major == 3 and 11 <= sys.version_info.minor < 13
 
@@ -800,7 +806,7 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         usdc_contract_address=(
             p.string("COLLATERAL_CONTRACT_ADDRESS", "")
             or p.string("PUSD_CONTRACT_ADDRESS", "")
-            or p.string("USDC_CONTRACT_ADDRESS", "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359")
+            or p.string("USDC_CONTRACT_ADDRESS", "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174")
         ),
         enforce_geoblock=p.bool_("ENFORCE_GEOBLOCK", True),
         enable_metrics_server=p.bool_("ENABLE_METRICS_SERVER", False),

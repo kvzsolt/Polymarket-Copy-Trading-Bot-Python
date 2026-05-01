@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import time
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 
+from config.app_config import load_config
 from domain.trading_context import TradingContext
 from orchestrators.trade_pipeline import execute_trades
 from services.executionService import ExecutionResult
@@ -14,6 +16,7 @@ from storage.sqlite.fills_repo import FillsRepo
 from storage.sqlite.migrations import apply_migrations
 from storage.sqlite.orders_repo import OrdersRepo
 from storage.sqlite.positions_repo import PositionsRepo
+from storage.sqlite.risk_blocks_repo import RiskBlocksRepo
 
 FAKE_TOKEN_ID = "71321045679252212594626385532706912750332728571942532223535764789812338637396"
 
@@ -47,16 +50,18 @@ class _FakePnlTracker:
 def _build_context(*, user_id: str, db_path: str) -> TradingContext:
     return TradingContext(
         user_id=user_id,
-        wallet_address=f"wallet-{user_id}",
+        wallet_address=("0x" + ("a" if user_id.endswith("a") else "b") * 40),
         client=object(),
         positions_repo=PositionsRepo(db_path),
         fills_repo=FillsRepo(db_path),
         orders_repo=OrdersRepo(db_path),
+        risk_blocks_repo=RiskBlocksRepo(db_path),
         pnl_tracker=_FakePnlTracker(),
         risk_engine=object(),
         accounting_service=object(),
         position_manager=PositionManager(),
         execution_service=_FakeExecutionService(),
+        config=load_config(),
         allocation_pct=1.0,
         buy_min_amount=1.0,
         buy_max_amount=1000.0,
@@ -72,8 +77,20 @@ async def test_multi_user_positions_and_pnl_are_isolated(tmp_path, monkeypatch):
     monkeypatch.setenv("COPY_MAX_SIGNAL_AGE_SECONDS", "999999")
     monkeypatch.setenv("COPY_MAX_PRICE_DRIFT_PCT", "100")
     monkeypatch.setenv("COPY_MAX_EDGE_DECAY_PCT", "100")
+    monkeypatch.setenv("PRIVATE_KEY", "0x" + "a" * 64)
+    monkeypatch.setenv("FUNDER_ADDRESS", "0x" + "b" * 40)
+    monkeypatch.setenv("RPC_URL", "https://polygon-rpc.example.com")
+    monkeypatch.setenv("CHAIN_ID", "137")
+    monkeypatch.setenv("LEADER_WALLETS", "0x" + "c" * 40)
+    monkeypatch.setenv("SIGNATURE_TYPE", "0")
     from config.env import rehydrate_env
     rehydrate_env()
+    import orchestrators.trade_pipeline as trade_pipeline
+
+    async def _fake_balance(_wallet: str):
+        return 1000.0
+
+    monkeypatch.setattr(trade_pipeline, "get_my_balance", _fake_balance)
 
     db_path = tmp_path / "state.db"
     with create_connection(str(db_path)) as conn:
