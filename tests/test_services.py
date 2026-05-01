@@ -289,7 +289,8 @@ class TestTradeExecutorExecuteTrades:
         }
         with patch("legacy.tradeExecutor.get_my_balance", new_callable=AsyncMock, return_value=100.0), \
              patch("legacy.tradeExecutor.fetch_data", new_callable=AsyncMock, return_value=[]), \
-             patch("legacy.tradeExecutor._get_execution_service", return_value=mock_exec):
+             patch("legacy.tradeExecutor._get_execution_service", return_value=mock_exec), \
+             patch.dict("legacy.tradeExecutor.ENV", {"FUNDER_ADDRESS": "0x" + "a" * 40}, clear=False):
             await execute_trades(mock_clob, bot_params, [trade])
         mock_exec.execute.assert_called_once()
 
@@ -316,7 +317,7 @@ class TestTradeExecutorExecuteTrades:
         with patch("legacy.tradeExecutor.get_my_balance", new_callable=AsyncMock, return_value=100.0), \
              patch("legacy.tradeExecutor.fetch_data", new_callable=AsyncMock, return_value=[]), \
              patch("legacy.tradeExecutor._get_execution_service", return_value=mock_exec), \
-             patch.dict("legacy.tradeExecutor.ENV", {"MIN_SHARE_PRICE": 0.60}, clear=False):
+             patch.dict("legacy.tradeExecutor.ENV", {"MIN_SHARE_PRICE": 0.60, "FUNDER_ADDRESS": "0x" + "a" * 40}, clear=False):
             await execute_trades(mock_clob, bot_params, [trade])
 
         mock_exec.execute.assert_not_called()
@@ -356,13 +357,14 @@ class TestTradeExecutorExecuteTrades:
         }
         with patch("legacy.tradeExecutor.get_my_balance", new_callable=AsyncMock, return_value=100.0), \
              patch("legacy.tradeExecutor.fetch_data", new_callable=AsyncMock, return_value=[]), \
+             patch.dict("legacy.tradeExecutor.ENV", {"FUNDER_ADDRESS": "0x" + "a" * 40}, clear=False), \
              patch("legacy.tradeExecutor._get_execution_service", return_value=MagicMock(execute=AsyncMock())) as mock_exec:
             await execute_trades(mock_clob, bot_params, [trade])
         mock_exec.return_value.execute.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_execute_trades_skips_when_balance_lookup_fails(self):
-        """Missing balances should stop the batch before orders are posted."""
+        """Missing FUNDER_ADDRESS should raise before orders are posted."""
         from legacy.tradeExecutor import execute_trades
         mock_clob = AsyncMock()
         trade = {
@@ -377,11 +379,11 @@ class TestTradeExecutorExecuteTrades:
             "positionThreshold": 0,
         }
         with patch.dict("legacy.tradeExecutor.ENV", {"FUNDER_ADDRESS": ""}, clear=False), \
-             patch("legacy.tradeExecutor.get_my_balance", new_callable=AsyncMock, side_effect=[None, 100.0]), \
+             patch("legacy.tradeExecutor.get_my_balance", new_callable=AsyncMock, return_value=100.0), \
              patch("legacy.tradeExecutor.fetch_data", new_callable=AsyncMock, return_value=[]), \
-             patch("legacy.tradeExecutor._get_execution_service", return_value=MagicMock(execute=AsyncMock())) as mock_exec:
-            await execute_trades(mock_clob, bot_params, [trade])
-        mock_exec.return_value.execute.assert_not_called()
+             patch("legacy.tradeExecutor._get_execution_service", return_value=MagicMock(execute=AsyncMock())):
+            with pytest.raises(ValueError, match="FUNDER_ADDRESS"):
+                await execute_trades(mock_clob, bot_params, [trade])
 
     @pytest.mark.asyncio
     async def test_execute_trades_does_not_log_executed_for_duplicate_or_skip(self):
@@ -443,7 +445,8 @@ class TestTradeExecutorExecuteTrades:
              patch("legacy.tradeExecutor._get_execution_service", return_value=mock_exec), \
              patch("legacy.tradeExecutor._copy_decision.decide_buy", return_value=decision), \
              patch("legacy.tradeExecutor.log_trade_execution") as log_exec, \
-             patch("legacy.tradeExecutor.log_trade_skip") as log_skip:
+             patch("legacy.tradeExecutor.log_trade_skip") as log_skip, \
+             patch.dict("legacy.tradeExecutor.ENV", {"FUNDER_ADDRESS": "0x" + "a" * 40}, clear=False):
             await execute_trades(mock_clob, bot_params, [trade])
 
         log_exec.assert_not_called()
@@ -506,7 +509,8 @@ class TestTradeExecutorExecuteTrades:
              patch("legacy.tradeExecutor.fetch_data", new_callable=AsyncMock, return_value=[]), \
              patch("legacy.tradeExecutor._get_execution_service", return_value=mock_exec), \
              patch("legacy.tradeExecutor._copy_decision.decide_buy", return_value=decision), \
-             patch("legacy.tradeExecutor.log_trade_execution") as log_exec:
+             patch("legacy.tradeExecutor.log_trade_execution") as log_exec, \
+             patch.dict("legacy.tradeExecutor.ENV", {"FUNDER_ADDRESS": "0x" + "a" * 40}, clear=False):
             await execute_trades(mock_clob, bot_params, [trade])
 
         assert log_exec.called

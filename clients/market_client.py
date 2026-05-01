@@ -1,7 +1,7 @@
 """CLOB market-data adapter — ``AbstractMarketClient`` implementation.
 
 Wraps ``utils.createClobClient.ClobClientWrapper`` (which owns the metadata
-cache and the async executor offloading for the sync ``py_clob_client``
+cache and the async executor offloading for the sync ``py_clob_client_v2``
 SDK). Services depend on the ABC, not on the wrapper, so the wrapper can
 be swapped out or rebuilt for testing without touching consumers.
 """
