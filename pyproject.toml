@@ -11,6 +11,7 @@ dependencies = [
   "eth-account==0.13.7",
   "py-clob-client==0.34.6",
   "rich==14.3.3",
+  "websockets>=13.0",
 ]
 
 [project.optional-dependencies]
@@ -27,6 +28,7 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = [
+  "clients*",
   "config*",
   "interfaces*",
   "models*",
