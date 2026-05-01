@@ -779,18 +779,19 @@ async def _reconcile_one(
             else:
                 ep = entry_price
             realized = (float(avg_price) - ep) * float(delta_matched)
-            context.pnl_tracker.record_sell(
-                condition_id=record["condition_id"],
-                price=float(avg_price),
-                size_tokens=float(delta_matched),
-                usdc_value=float(delta_matched * avg_price),
-                entry_price=ep,
-                realized_pnl=realized,
-                exit_reason="reconciled_sell",
-                leader_wallet=record.get("leader_id", ""),
-                event_slug="",
-                title=f"realized_source={realized_source}",
-            )
+            if context.pnl_tracker is not None:
+                context.pnl_tracker.record_sell(
+                    condition_id=record["condition_id"],
+                    price=float(avg_price),
+                    size_tokens=float(delta_matched),
+                    usdc_value=float(delta_matched * avg_price),
+                    entry_price=ep,
+                    realized_pnl=realized,
+                    exit_reason="reconciled_sell",
+                    leader_wallet=record.get("leader_id", ""),
+                    event_slug="",
+                    title=f"realized_source={realized_source}",
+                )
 
     except Exception as exc:
         logger.warning(
@@ -945,7 +946,7 @@ async def execute_trades(
         )
         leader_tier_resolved = "paper_follow"
 
-    pnl_metrics = context.pnl_tracker.metrics() if hasattr(context.pnl_tracker, 'metrics') else {}
+    pnl_metrics = context.pnl_tracker.metrics() if context.pnl_tracker is not None and hasattr(context.pnl_tracker, 'metrics') else {}
     leader_score = context.leader_scorer.score_leader(
         leader_id,
         analytics={
@@ -1902,15 +1903,16 @@ async def execute_trades(
                 raise
 
             if signal.side == "BUY":
-                context.pnl_tracker.record_buy(
-                    condition_id=signal.condition_id,
-                    price=float(fill_price or 0),
-                    size_tokens=float(fill_size),
-                    usdc_value=float(fill_size * Decimal(str(fill_price or 0))),
-                    leader_wallet=leader_id,
-                    event_slug=signal.event_slug,
-                    title=signal.title,
-                )
+                if context.pnl_tracker is not None:
+                    context.pnl_tracker.record_buy(
+                        condition_id=signal.condition_id,
+                        price=float(fill_price or 0),
+                        size_tokens=float(fill_size),
+                        usdc_value=float(fill_size * Decimal(str(fill_price or 0))),
+                        leader_wallet=leader_id,
+                        event_slug=signal.event_slug,
+                        title=signal.title,
+                    )
             else:
                 updated_entry_price = _to_optional_float(
                     getattr(updated_position, "avg_entry_price", None) if updated_position is not None else None
@@ -1937,18 +1939,19 @@ async def execute_trades(
                         },
                     )
                 realized = (float(fill_price or 0) - entry_price) * float(fill_size)
-                context.pnl_tracker.record_sell(
-                    condition_id=signal.condition_id,
-                    price=float(fill_price or 0),
-                    size_tokens=float(fill_size),
-                    usdc_value=float(fill_size * Decimal(str(fill_price or 0))),
-                    entry_price=entry_price,
-                    realized_pnl=realized,
-                    exit_reason="leader_sell",
-                    leader_wallet=leader_id,
-                    event_slug=signal.event_slug,
-                    title=signal.title,
-                )
+                if context.pnl_tracker is not None:
+                    context.pnl_tracker.record_sell(
+                        condition_id=signal.condition_id,
+                        price=float(fill_price or 0),
+                        size_tokens=float(fill_size),
+                        usdc_value=float(fill_size * Decimal(str(fill_price or 0))),
+                        entry_price=entry_price,
+                        realized_pnl=realized,
+                        exit_reason="leader_sell",
+                        leader_wallet=leader_id,
+                        event_slug=signal.event_slug,
+                        title=signal.title,
+                    )
 
             await metrics.inc("trades_copied_total", labels=labels)
 

@@ -75,45 +75,42 @@ class TestConfigLeaderWallets:
 class TestPositionManager:
     def _make_pm(self, enabled=True, extra_env=None):
         # PositionManager now uses AppConfig via constructor injection.
-        # When config=None, defaults are used. For custom values, build a mock config.
-        if extra_env or not enabled:
-            config = MagicMock()
-            config.risk.enable_risk_mgmt = enabled
-            config.risk.profit_lock_trigger_pct = 70
-            config.risk.profit_lock_sell_fraction = 0.5
-            config.risk.near_max_price_exit = 0.97
-            config.risk.near_max_price_warn = 0.95
-            config.risk.near_max_price_warn_trim_ratio = 0.5
-            config.risk.staged_tp_levels = "9999"
-            config.risk.staged_tp_fractions = "0.25,0.35"
-            config.features.enable_profit_lock = False
-            config.features.enable_near_max_exit = False
-            config.features.enable_trailing_stop = False
-            config.features.enable_staged_tp = False
-            if extra_env:
-                if "NEAR_MAX_PRICE_WARN" in extra_env:
-                    config.risk.near_max_price_warn = extra_env["NEAR_MAX_PRICE_WARN"]
-                    config.features.enable_near_max_exit = True
-                if "NEAR_MAX_PRICE_EXIT" in extra_env:
-                    config.risk.near_max_price_exit = extra_env["NEAR_MAX_PRICE_EXIT"]
-                    config.features.enable_near_max_exit = True
-                if "NEAR_MAX_PRICE_WARN_TRIM_RATIO" in extra_env:
-                    config.risk.near_max_price_warn_trim_ratio = extra_env["NEAR_MAX_PRICE_WARN_TRIM_RATIO"]
-                if "NEAR_MAX_PRICE_EXIT" in extra_env:
-                    config.risk.near_max_price_exit = extra_env["NEAR_MAX_PRICE_EXIT"]
-                    config.features.enable_near_max_exit = True
-                if "PROFIT_LOCK_TRIGGER_PCT" in extra_env:
-                    config.risk.profit_lock_trigger_pct = extra_env["PROFIT_LOCK_TRIGGER_PCT"]
-                    config.features.enable_profit_lock = True
-                if "STAGED_TP_LEVELS" in extra_env:
-                    # Very high staged TP level effectively disables legacy TP.
-                    config.risk.staged_tp_levels = extra_env["STAGED_TP_LEVELS"]
-                    config.features.enable_staged_tp = True
-            from services.positionManager import PositionManager
-            return PositionManager(config=config)
-        else:
-            from services.positionManager import PositionManager
-            return PositionManager(config=None)
+        # Build an explicit mock config so the tests don't depend on bare-default
+        # constructor semantics.
+        config = MagicMock()
+        config.risk.enable_risk_mgmt = enabled
+        config.risk.profit_lock_trigger_pct = 70
+        config.risk.profit_lock_sell_fraction = 0.5
+        config.risk.near_max_price_exit = 0.97
+        config.risk.near_max_price_warn = 0.95
+        config.risk.near_max_price_warn_trim_ratio = 0.5
+        config.risk.staged_tp_levels = "9999"
+        config.risk.staged_tp_fractions = "0.25,0.35"
+        config.features.enable_profit_lock = False
+        config.features.enable_near_max_exit = False
+        config.features.enable_trailing_stop = False
+        config.features.enable_staged_tp = False
+        if extra_env:
+            if "NEAR_MAX_PRICE_WARN" in extra_env:
+                config.risk.near_max_price_warn = extra_env["NEAR_MAX_PRICE_WARN"]
+                config.features.enable_near_max_exit = True
+            if "NEAR_MAX_PRICE_EXIT" in extra_env:
+                config.risk.near_max_price_exit = extra_env["NEAR_MAX_PRICE_EXIT"]
+                config.features.enable_near_max_exit = True
+            if "NEAR_MAX_PRICE_WARN_TRIM_RATIO" in extra_env:
+                config.risk.near_max_price_warn_trim_ratio = extra_env["NEAR_MAX_PRICE_WARN_TRIM_RATIO"]
+            if "NEAR_MAX_PRICE_EXIT" in extra_env:
+                config.risk.near_max_price_exit = extra_env["NEAR_MAX_PRICE_EXIT"]
+                config.features.enable_near_max_exit = True
+            if "PROFIT_LOCK_TRIGGER_PCT" in extra_env:
+                config.risk.profit_lock_trigger_pct = extra_env["PROFIT_LOCK_TRIGGER_PCT"]
+                config.features.enable_profit_lock = True
+            if "STAGED_TP_LEVELS" in extra_env:
+                # Very high staged TP level effectively disables legacy TP.
+                config.risk.staged_tp_levels = extra_env["STAGED_TP_LEVELS"]
+                config.features.enable_staged_tp = True
+        from services.positionManager import PositionManager
+        return PositionManager(config=config)
 
     def test_track_buy_creates_position(self):
         pm = self._make_pm()

@@ -23,28 +23,9 @@ Design notes
 from __future__ import annotations
 
 import re
-import sys
-from types import SimpleNamespace
-
-
-class _VersionInfoProxy(tuple):
-    def __new__(cls, version_info):
-        return super().__new__(cls, tuple(version_info))
-
-    @property
-    def major(self): return self[0]
-    @property
-    def minor(self): return self[1]
-    @property
-    def micro(self): return self[2]
-    @property
-    def releaselevel(self): return self[3]
-    @property
-    def serial(self): return self[4]
-
-
-sys = SimpleNamespace(version_info=_VersionInfoProxy(sys.version_info))
 from collections.abc import Mapping
+from types import SimpleNamespace
+import sys as _sys
 from dataclasses import dataclass, field
 from enum import IntEnum
 from pathlib import Path
@@ -447,6 +428,11 @@ class AppConfig:
 # ---------------------------------------------------------------------------
 # Factory & validation.
 # ---------------------------------------------------------------------------
+
+
+# Keep version checks behind a local proxy so tests can monkeypatch this module
+# without mutating the real process-wide ``sys.version_info`` object.
+sys = SimpleNamespace(version_info=_sys.version_info)
 
 
 def _runtime_python_supported() -> bool:

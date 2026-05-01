@@ -215,4 +215,15 @@ class TestCursorsRepo:
 class TestRedemptionsRepo:
     def test_save_attempt_does_not_raise(self, db_path: str) -> None:
         repo = RedemptionsRepo(db_path)
-        repo.save_attempt({"user_id": "u1", "status": "ok", "amount": "1"})
+        repo.save_attempt({
+            "user_id": "u1",
+            "condition_id": "cond-1",
+            "attempt_id": "att-1",
+            "status": "ok",
+            "amount": "1",
+        })
+
+    def test_save_attempt_raises_on_missing_identifiers(self, db_path: str) -> None:
+        repo = RedemptionsRepo(db_path)
+        with pytest.raises(ValueError, match="missing redemption identifiers"):
+            repo.save_attempt({"user_id": "u1", "status": "ok"})
