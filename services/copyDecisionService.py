@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 import os
 from dataclasses import dataclass, field
+from decimal import Decimal, ROUND_CEILING
 from typing import Any, TYPE_CHECKING
 
 from services.leaderScoringService import LeaderScore, LeaderScoringService
@@ -14,6 +17,45 @@ if TYPE_CHECKING:
 
 
 logger = get_logger("CopyDecisionService")
+
+
+@dataclass(frozen=True)
+class SizingDecision:
+    accept: bool
+    effective_size: Decimal
+    effective_price: Decimal
+    venue_min_size: Decimal
+    reason: str
+    upsized: bool
+
+
+def effective_intent_key(
+    *,
+    user: str,
+    condition_id: str,
+    token_id: str,
+    side: str,
+    effective_size: Decimal,
+    effective_price: Decimal,
+    tick_size: Decimal,
+    intent_id: str = "",
+) -> str:
+    """Compute SHA256 idempotency key from the **effective adjusted** request.
+
+    This must be computed *after* sizing adjustments so that an upsize
+    produces a different key than the original below-min request.
+    """
+    payload = json.dumps({
+        "user": user,
+        "condition_id": condition_id,
+        "token_id": token_id,
+        "side": side.upper(),
+        "effective_size": format(effective_size, "f"),
+        "effective_price": format(effective_price, "f"),
+        "tick_size": format(tick_size, "f"),
+        "intent_id": intent_id,
+    }, separators=(',', ':'), sort_keys=True)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -31,6 +73,7 @@ class CopyDecision:
     target_size_tokens: float
     price_drift_pct: float
     edge_decay_pct: float
+    sizing: SizingDecision | None = None
     details: dict[str, Any] = field(default_factory=dict)
 
 
@@ -53,8 +96,6 @@ class CopyDecisionService:
             self._minimum_order_guard_enabled = config.execution.enable_executable_order_guard
             self._minimum_order_buffer_notional = config.execution.executable_order_buffer_notional_usdc
             self._min_decision_score = config.leader.copy_decision_min_score
-            self._copy_min_shares = config.sizing.copy_min_shares
-            self._copy_min_notional = config.sizing.copy_min_notional_usdc
             self._copy_size_decimals = config.sizing.copy_size_decimals
             self._slippage_ratio = config.execution.slippage_tolerance / 100.0
         else:
@@ -62,8 +103,6 @@ class CopyDecisionService:
             self._minimum_order_guard_enabled = os.getenv("ENABLE_EXECUTABLE_ORDER_GUARD", "true").strip().lower() in ("1", "true", "yes")
             self._minimum_order_buffer_notional = float(os.getenv("EXECUTABLE_ORDER_BUFFER_NOTIONAL_USDC", "1.05") or 1.05)
             self._min_decision_score = 0.0
-            self._copy_min_shares = float(os.getenv("COPY_MIN_SHARES", "5") or 5.0)
-            self._copy_min_notional = float(os.getenv("COPY_MIN_NOTIONAL_USDC", "1") or 1.0)
             self._copy_size_decimals = int(os.getenv("COPY_SIZE_DECIMALS", "4") or 4)
             self._slippage_ratio = float(os.getenv("SLIPPAGE_TOLERANCE", "2.0") or 2.0) / 100.0
 
@@ -193,53 +232,52 @@ class CopyDecisionService:
                 details={"decision_gate_enabled": False},
             )
 
-        # Hard safety floors
-        min_shares = self._copy_min_shares
-        min_notional = self._copy_min_notional
+        # Hard safety floors — parse venue metadata as Decimal immediately
         decimals = self._copy_size_decimals
+        d_market_min = Decimal(str(market_min_size)) if market_min_size > 0 else Decimal("0")
+        d_tick_size = Decimal(str(tick_size)) if tick_size > 0 else Decimal("0")
 
         # Worst-case price for cap compatibility (slippage-adjusted).
-        # Apply tick-size ceiling (ROUND_CEILING for BUY) to match ExecutionService semantics.
-        slippage_ratio = self._slippage_ratio
-        worst_price = live_price * (1.0 + slippage_ratio)
-        if tick_size > 0:
-            import math
-            worst_price = math.ceil(worst_price / tick_size) * tick_size
+        # Apply tick-size ceiling (ROUND_CEILING for BUY) using Decimal math.
+        d_slippage = Decimal(str(self._slippage_ratio))
+        d_worst_price = Decimal(str(live_price)) * (Decimal("1") + d_slippage)
+        if d_tick_size > 0:
+            d_worst_price = (d_worst_price / d_tick_size).to_integral_value(rounding=ROUND_CEILING) * d_tick_size
+        worst_price = float(d_worst_price)
 
         target_size_tokens = desired_notional / live_price
         required_min_size_tokens = (
-            max(
-                min_shares,
-                (min_notional / live_price) if live_price > 0 else 0.0,
-                market_min_size if market_min_size > 0 else 0.0,
-            )
-            if self._minimum_order_guard_enabled
-            else 0.0
-        )
+            float(d_market_min) if d_market_min > 0 else 0.0
+        ) if self._minimum_order_guard_enabled else 0.0
         minimum_executable_notional_usdc = (
-            max(
-                min_notional,
-                min_shares * worst_price,
-                (market_min_size if market_min_size > 0 else 0.0) * worst_price,
-            )
-            if self._minimum_order_guard_enabled
-            else 0.0
-        )
+            float(d_market_min * d_worst_price) if d_market_min > 0 else 0.0
+        ) if self._minimum_order_guard_enabled else 0.0
         cap_binding = max_notional_usdc + 1e-9 < unconstrained_notional
 
+        upsized = False
         if 0 < target_size_tokens + 1e-12 < required_min_size_tokens:
             cap_can_cover_minimum = (
                 cap_binding
                 and minimum_executable_notional_usdc > 0
                 and max_notional_usdc + 1e-9 >= minimum_executable_notional_usdc
             )
-            if not cap_can_cover_minimum:
+            # If there's no cap or the cap can cover the minimum, we upsize.
+            # If the cap cannot cover the minimum (because of max limit), we reject.
+            if cap_binding and not cap_can_cover_minimum:
+                sizing_reject = SizingDecision(
+                    accept=False,
+                    effective_size=Decimal("0"),
+                    effective_price=Decimal("0"),
+                    venue_min_size=Decimal(str(required_min_size_tokens)),
+                    reason="buy_cap_blocks_upsize_to_venue_min",
+                    upsized=False,
+                )
                 return CopyDecision(
                     allow=False,
-                    skip_code="buy_below_minimum_order_requirements",
+                    skip_code="buy_cap_blocks_upsize_to_venue_min",
                     reason=(
-                        "copied BUY below minimum executable venue size "
-                        f"(target={target_size_tokens:.4f}, required={required_min_size_tokens:.4f}, live_price={live_price:.4f})"
+                        "BUY below venue minimum and cap cannot cover upsize "
+                        f"(target={target_size_tokens:.4f}, venue_min={required_min_size_tokens:.4f}, cap={max_notional_usdc:.4f})"
                     ),
                     side="BUY",
                     decision_score=trade_score.score,
@@ -251,20 +289,25 @@ class CopyDecisionService:
                     target_size_tokens=target_size_tokens,
                     price_drift_pct=trade_score.price_drift_pct,
                     edge_decay_pct=trade_score.edge_decay_pct,
+                    sizing=sizing_reject,
                     details={
-                        **trade_score.details,
                         "decision_gate_enabled": decision_gate_enabled,
                         "minimum_order_guard_enabled": self._minimum_order_guard_enabled,
-                        "trust_multiplier": trust_mult,
-                        "base_notional_usdc": base_notional_usdc,
                         "max_notional_usdc": max_notional_usdc,
                         "market_min_size": market_min_size,
                         "required_min_size_tokens": required_min_size_tokens,
-                        "required_min_live_notional_usdc": required_min_size_tokens * live_price,
                         "minimum_executable_notional_usdc": minimum_executable_notional_usdc,
                         "cap_binding": cap_binding,
                     },
                 )
+            # Quantize upsize to tick_size when available
+            if d_tick_size > 0:
+                target_size_tokens = float(
+                    (Decimal(str(required_min_size_tokens)) / d_tick_size).to_integral_value(rounding=ROUND_CEILING) * d_tick_size
+                )
+            else:
+                target_size_tokens = float(required_min_size_tokens)
+            upsized = True
 
         target_size_tokens = self._ceil(target_size_tokens, decimals)
 
@@ -293,13 +336,9 @@ class CopyDecisionService:
             # market-minimum checks only; the notional floor is non-optional.
             floored_meets_mins = (
                 floored_size_tokens > 0
-                and floored_required_worst + 1e-9 >= min_notional
                 and (
                     not self._minimum_order_guard_enabled
-                    or (
-                        floored_size_tokens + 1e-12 >= min_shares
-                        and (market_min_size <= 0 or floored_size_tokens + 1e-12 >= market_min_size)
-                    )
+                    or (market_min_size <= 0 or floored_size_tokens + 1e-12 >= market_min_size)
                 )
             )
 
@@ -395,6 +434,14 @@ class CopyDecisionService:
                 "live_notional_usdc": live_notional_usdc,
                 "required_worst_notional_usdc": required_worst_notional,  # reflects final clamped size
             },
+            sizing=SizingDecision(
+                accept=True,
+                effective_size=Decimal(str(target_size_tokens)).quantize(d_tick_size) if d_tick_size > 0 else Decimal(str(target_size_tokens)),
+                effective_price=d_worst_price,
+                venue_min_size=d_market_min,
+                reason="upsized" if upsized else "ok",
+                upsized=upsized,
+            ),
         )
 
     def decide_sell(
@@ -424,19 +471,31 @@ class CopyDecisionService:
                 target_size_tokens=0.0,
                 price_drift_pct=0.0,
                 edge_decay_pct=0.0,
+                sizing=SizingDecision(False, Decimal("0"), Decimal("0"), Decimal("0"), "sell_size_zero", False),
             )
 
         target = min(sell_tokens, max_sell_tokens)
         minimum_guard_enabled = self._minimum_order_guard_enabled
+        upsized = False
+        d_market_min = Decimal(str(market_min_size)) if market_min_size > 0 else Decimal("0")
+        required_min_tokens = float(d_market_min)
+
         if minimum_guard_enabled:
             # SELLs should be constrained by the venue minimum and the held
             # position size, not by the copy-sizing floor used on BUYs.
-            required_min_tokens = market_min_size if market_min_size > 0 else 0.0
             if target < required_min_tokens:
                 if max_sell_tokens < required_min_tokens:
+                    sizing_reject = SizingDecision(
+                        accept=False,
+                        effective_size=Decimal("0"),
+                        effective_price=Decimal("0"),
+                        venue_min_size=Decimal(str(required_min_tokens)),
+                        reason="sell_held_below_venue_min",
+                        upsized=False,
+                    )
                     return CopyDecision(
                         allow=False,
-                        skip_code="sell_below_market_min",
+                        skip_code="sell_held_below_venue_min",
                         reason=(
                             f"SELL size below exchange minimum ({target:.4f} < {required_min_tokens:.4f}) "
                             "and position too small to satisfy minimum"
@@ -451,6 +510,7 @@ class CopyDecisionService:
                         target_size_tokens=target,
                         price_drift_pct=0.0,
                         edge_decay_pct=0.0,
+                        sizing=sizing_reject,
                         details={
                             "decision_gate_enabled": decision_gate_enabled,
                             "minimum_order_guard_enabled": minimum_guard_enabled,
@@ -460,8 +520,18 @@ class CopyDecisionService:
                         },
                     )
                 target = required_min_tokens
+                upsized = True
 
         target = self._ceil(target, decimals)
+        sizing_accept = SizingDecision(
+            accept=True,
+            effective_size=Decimal(str(target)),
+            effective_price=Decimal(str(live_price)),
+            venue_min_size=d_market_min,
+            reason="upsized" if upsized else "ok",
+            upsized=upsized,
+        )
+
         return CopyDecision(
             allow=True,
             skip_code="ok",
@@ -478,6 +548,7 @@ class CopyDecisionService:
             reference_price=ref_price,
             target_notional_usdc=target * max(live_price, 0.0),
             target_size_tokens=target,
+            sizing=sizing_accept,
             price_drift_pct=0.0,
             edge_decay_pct=0.0,
             details={

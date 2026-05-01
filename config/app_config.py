@@ -244,8 +244,6 @@ class SizingConfig:
     position_threshold: int
     max_position_pct: float
     enable_trust_size_multipliers: bool
-    copy_min_shares: float
-    copy_min_notional_usdc: float
     copy_size_decimals: int
     trust_size_multiplier_min: float
     trust_size_multiplier_max: float
@@ -493,10 +491,6 @@ def _validate_semantics(cfg: AppConfig, errors: list[str]) -> None:
         and s.adaptive_min_percent > s.adaptive_max_percent
     ):
         errors.append("ADAPTIVE_MIN_PERCENT must be <= ADAPTIVE_MAX_PERCENT.")
-    if s.copy_min_shares < 0:
-        errors.append("COPY_MIN_SHARES must be >= 0.")
-    if s.copy_min_notional_usdc < 0:
-        errors.append("COPY_MIN_NOTIONAL_USDC must be >= 0.")
     if s.copy_size_decimals < 0:
         errors.append("COPY_SIZE_DECIMALS must be >= 0.")
     if s.trust_size_multiplier_min <= 0:
@@ -659,8 +653,6 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         position_threshold=p.int_("POSITION_THRESHOLD", "0"),
         max_position_pct=p.float_("MAX_POSITION_PCT", "0.45"),
         enable_trust_size_multipliers=p.bool_("ENABLE_TRUST_SIZE_MULTIPLIERS", True),
-        copy_min_shares=p.float_("COPY_MIN_SHARES", "5"),
-        copy_min_notional_usdc=p.float_("COPY_MIN_NOTIONAL_USDC", "1"),
         copy_size_decimals=p.int_("COPY_SIZE_DECIMALS", "4"),
         trust_size_multiplier_min=p.float_("TRUST_SIZE_MULTIPLIER_MIN", "0.50"),
         trust_size_multiplier_max=p.float_("TRUST_SIZE_MULTIPLIER_MAX", "1.25"),

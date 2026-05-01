@@ -29,7 +29,8 @@ def _leader(score: float = 0.9) -> LeaderScore:
 
 
 class TestCopyDecisionService:
-    def test_buy_skips_when_below_min_shares_requirement(self):
+    def test_buy_passes_when_no_venue_metadata(self):
+        """With no market metadata (market_min_size=0), no venue floor applies → BUY passes."""
         svc = CopyDecisionService()
         trade = {"price": 0.40, "timestamp": time.time(), "usdcSize": 20}
         decision = svc.decide_buy(
@@ -40,11 +41,11 @@ class TestCopyDecisionService:
             max_notional_usdc=10.0,
             market_min_size=0.0,
         )
-        assert decision.allow is False
-        assert decision.skip_code == "buy_below_minimum_order_requirements"
-        assert decision.details["required_min_size_tokens"] == pytest.approx(5.0)
+        assert decision.allow is True
+        assert decision.skip_code == "ok"
 
-    def test_buy_skips_when_below_min_1_notional_requirement(self):
+    def test_buy_passes_when_tiny_order_no_venue_floor(self):
+        """With no market metadata (market_min_size=0), no venue floor → BUY passes."""
         svc = CopyDecisionService()
         trade = {"price": 0.08, "timestamp": time.time(), "usdcSize": 10}
         decision = svc.decide_buy(
@@ -55,11 +56,11 @@ class TestCopyDecisionService:
             max_notional_usdc=10.0,
             market_min_size=0.0,
         )
-        assert decision.allow is False
-        assert decision.skip_code == "buy_below_minimum_order_requirements"
-        assert decision.details["required_min_size_tokens"] == pytest.approx(12.5)
+        assert decision.allow is True
+        assert decision.skip_code == "ok"
 
-    def test_buy_skips_when_below_market_min_size_requirement(self):
+    def test_buy_upsizes_to_venue_min_when_cap_allows(self):
+        """BUY below venue min → upsize to venue min when cap allows."""
         svc = CopyDecisionService()
         trade = {"price": 0.20, "timestamp": time.time(), "usdcSize": 10}
         decision = svc.decide_buy(
@@ -70,9 +71,10 @@ class TestCopyDecisionService:
             max_notional_usdc=10.0,
             market_min_size=8.0,
         )
-        assert decision.allow is False
-        assert decision.skip_code == "buy_below_minimum_order_requirements"
-        assert decision.details["required_min_size_tokens"] == pytest.approx(8.0)
+        # 1.00 / 0.20 = 5 tokens < 8 min → upsize to 8 tokens
+        # 8 * 0.20 * 1.02 = 1.632 USDC, cap=10 → fits
+        assert decision.allow is True
+        assert decision.target_size_tokens >= 8.0 - 1e-6
 
     def test_buy_skips_if_cap_cannot_satisfy_minimum_executable_size(self):
         svc = CopyDecisionService()
@@ -201,7 +203,7 @@ class TestCopyDecisionService:
             )
 
         assert decision.allow is False
-        assert decision.skip_code == "sell_below_market_min"
+        assert decision.skip_code == "sell_held_below_venue_min"
         assert decision.target_size_tokens == pytest.approx(1.0)
 
     def test_sell_keeps_requested_size_when_it_already_clears_minimum(self):
@@ -253,9 +255,11 @@ class TestCopyDecisionService:
             market_min_size=5.0,
             max_sell_tokens=10.0,
         )
+        # Decision gate disabled but guard enabled → upsize to venue min
         assert decision.allow is True
         assert decision.target_size_tokens == pytest.approx(5.0)
-        assert decision.reason == "decision gate disabled by config"
+        assert decision.sizing is not None
+        assert decision.sizing.upsized is True
 
 
 class TestTraderDiscoveryService:
@@ -409,7 +413,7 @@ class TestCopyDecisionServicePartialHeadroom:
             market_min_size=5.0,
         )
         assert decision.allow is False
-        assert decision.skip_code in ("insufficient_notional", "risk_cap_too_low_for_min_order", "buy_below_minimum_order_requirements")
+        assert decision.skip_code in ("insufficient_notional", "buy_cap_blocks_upsize_to_venue_min")
 
     def test_buy_hard_denied_when_headroom_below_min_order(self):
         """Cap headroom exists but is below the minimum executable order size → hard deny."""
@@ -425,7 +429,7 @@ class TestCopyDecisionServicePartialHeadroom:
             market_min_size=5.0,
         )
         assert decision.allow is False
-        assert decision.skip_code in ("risk_cap_too_low_for_min_order", "buy_below_minimum_order_requirements")
+        assert decision.skip_code in ("buy_cap_blocks_upsize_to_venue_min")
 
     def test_buy_not_capped_when_headroom_covers_full_order(self):
         """When cap headroom > desired order size, full order goes through unchanged."""
@@ -441,3 +445,129 @@ class TestCopyDecisionServicePartialHeadroom:
         )
         assert decision.allow is True
         assert decision.target_size_tokens == pytest.approx(20.0, rel=0.05)
+
+
+class TestPhase3MetadataSizing:
+    """Phase 3: metadata-driven min-executable order sizing (issue #38)."""
+
+    def test_buy_upsizes_to_venue_min_when_allowed(self):
+        """BUY below venue min → upsize when balance/headroom allow."""
+        svc = CopyDecisionService()
+        trade = {"price": 0.50, "timestamp": time.time(), "usdcSize": 5}
+        decision = svc.decide_buy(
+            trade=trade,
+            leader_score=_leader(),
+            live_price=0.50,
+            base_notional_usdc=1.00,  # 2 tokens, below min
+            max_notional_usdc=10.0,
+            market_min_size=5.0,
+        )
+        assert decision.allow is True
+        assert decision.target_size_tokens >= 5.0 - 1e-6
+        assert decision.sizing is not None
+        assert decision.sizing.accept is True
+        assert decision.sizing.upsized is True
+
+    def test_buy_skips_when_headroom_insufficient(self):
+        """BUY below venue min, cap too low → skip with risk_cap_too_low."""
+        svc = CopyDecisionService()
+        trade = {"price": 0.50, "timestamp": time.time(), "usdcSize": 5}
+        decision = svc.decide_buy(
+            trade=trade,
+            leader_score=_leader(),
+            live_price=0.50,
+            base_notional_usdc=10.0,
+            max_notional_usdc=1.0,  # cap = 1 USDC, min needs ~2.55
+            market_min_size=5.0,
+        )
+        assert decision.allow is False
+        assert decision.skip_code in ("buy_cap_blocks_upsize_to_venue_min")
+
+    def test_sell_skips_when_held_below_venue_min(self):
+        """SELL below venue min, held position too small → skip."""
+        svc = CopyDecisionService()
+        trade = {"price": 0.50, "timestamp": time.time(), "usdcSize": 5}
+        decision = svc.decide_sell(
+            trade=trade,
+            sell_tokens=2.0,
+            live_price=0.50,
+            market_min_size=5.0,
+            max_sell_tokens=3.0,  # held < venue min
+        )
+        assert decision.allow is False
+        assert decision.skip_code == "sell_held_below_venue_min"
+        assert decision.sizing is not None
+        assert decision.sizing.accept is False
+
+    def test_sell_upsizes_when_held_supports_min(self):
+        """SELL below venue min, held position >= min → upsize."""
+        svc = CopyDecisionService()
+        trade = {"price": 0.50, "timestamp": time.time(), "usdcSize": 5}
+        decision = svc.decide_sell(
+            trade=trade,
+            sell_tokens=2.0,
+            live_price=0.50,
+            market_min_size=5.0,
+            max_sell_tokens=10.0,  # enough held
+        )
+        assert decision.allow is True
+        assert decision.target_size_tokens >= 5.0 - 1e-6
+        assert decision.sizing is not None
+        assert decision.sizing.upsized is True
+
+
+class TestEffectiveIntentKey:
+    """Phase 3: idempotency key recomputed on effective adjusted request."""
+
+    def test_key_changes_when_effective_size_changes(self):
+        from decimal import Decimal
+        from services.copyDecisionService import effective_intent_key
+
+        key_before = effective_intent_key(
+            user="user1",
+            condition_id="cond1",
+            token_id="token1",
+            side="BUY",
+            effective_size=Decimal("2.0"),
+            effective_price=Decimal("0.50"),
+            tick_size=Decimal("0.01"),
+            intent_id="intent-1",
+        )
+        key_after = effective_intent_key(
+            user="user1",
+            condition_id="cond1",
+            token_id="token1",
+            side="BUY",
+            effective_size=Decimal("5.0"),  # upsized
+            effective_price=Decimal("0.50"),
+            tick_size=Decimal("0.01"),
+            intent_id="intent-1",
+        )
+        assert key_before != key_after
+        assert len(key_before) == 64  # SHA256 hex
+
+    def test_key_deterministic(self):
+        from decimal import Decimal
+        from services.copyDecisionService import effective_intent_key
+
+        key1 = effective_intent_key(
+            user="user1",
+            condition_id="cond1",
+            token_id="token1",
+            side="BUY",
+            effective_size=Decimal("5.0"),
+            effective_price=Decimal("0.50"),
+            tick_size=Decimal("0.01"),
+            intent_id="intent-1",
+        )
+        key2 = effective_intent_key(
+            user="user1",
+            condition_id="cond1",
+            token_id="token1",
+            side="BUY",
+            effective_size=Decimal("5.0"),
+            effective_price=Decimal("0.50"),
+            tick_size=Decimal("0.01"),
+            intent_id="intent-1",
+        )
+        assert key1 == key2
