@@ -429,7 +429,7 @@ class TestCopyDecisionServicePartialHeadroom:
             market_min_size=5.0,
         )
         assert decision.allow is False
-        assert decision.skip_code in ("buy_cap_blocks_upsize_to_venue_min")
+        assert decision.skip_code == "buy_cap_blocks_upsize_to_venue_min"
 
     def test_buy_not_capped_when_headroom_covers_full_order(self):
         """When cap headroom > desired order size, full order goes through unchanged."""
@@ -481,7 +481,7 @@ class TestPhase3MetadataSizing:
             market_min_size=5.0,
         )
         assert decision.allow is False
-        assert decision.skip_code in ("buy_cap_blocks_upsize_to_venue_min")
+        assert decision.skip_code == "buy_cap_blocks_upsize_to_venue_min"
 
     def test_sell_skips_when_held_below_venue_min(self):
         """SELL below venue min, held position too small → skip."""
