@@ -23,6 +23,7 @@ import asyncio
 import logging
 import time
 import uuid
+import copy
 from dataclasses import dataclass, field
 from decimal import Decimal
 from enum import Enum
@@ -153,17 +154,23 @@ class IntentRegistry:
         # in-flight intent's reservation).
         self._reserved: dict[tuple[str, str, str], Reservation] = {}
         self._lock = asyncio.Lock()
+        # Max retained resolved intents before pruning (memory leak guard)
+        self._max_resolved = 10_000
 
     # --- introspection ------------------------------------------------------
 
     def open_intent_for(self, scope: PositionScope) -> Optional[IntentRecord]:
+        """Return a **copy** of the open intent record (mutable escape protection)."""
         intent_id = self._scope_open.get(_scope_key(scope))
         if intent_id is None:
             return None
-        return self._intents.get(intent_id)
+        record = self._intents.get(intent_id)
+        return copy.copy(record) if record else None
 
     def get(self, intent_id: str) -> Optional[IntentRecord]:
-        return self._intents.get(intent_id)
+        """Return a **copy** of the intent record (mutable escape protection)."""
+        record = self._intents.get(intent_id)
+        return copy.copy(record) if record else None
 
     def reserved_for(self, scope: PositionScope) -> Reservation:
         agg = self._reserved.get(_scope_key(scope))
@@ -272,7 +279,7 @@ class IntentRegistry:
                 )
             record.state = new_state
             record.updated_at = time.time()
-            if venue_order_id:
+            if venue_order_id is not None:
                 record.venue_order_id = venue_order_id
             return record
 
@@ -343,7 +350,14 @@ class IntentRegistry:
         if agg is not None:
             new_quote = agg.quote_usdc - record.reservation.quote_usdc
             new_shares = agg.token_shares - record.reservation.token_shares
-            if new_quote <= 0 and new_shares <= 0:
+            # Surface invariant violations — negative residuals indicate a bug
+            if new_quote < 0 or new_shares < 0:
+                logger.error(
+                    "intent.reservation_negative_residual id=%s scope=%s "
+                    "new_quote=%s new_shares=%s (reservation leak?)",
+                    intent_id, key, new_quote, new_shares,
+                )
+            if new_quote == Decimal(0) and new_shares == Decimal(0):
                 self._reserved.pop(key, None)
             else:
                 self._reserved[key] = Reservation(
@@ -360,4 +374,24 @@ class IntentRegistry:
             record.reservation.quote_usdc,
             record.reservation.token_shares,
         )
+
+        # Prune oldest resolved intents to prevent unbounded memory growth
+        self._maybe_prune_resolved()
+
         return record
+
+    def _maybe_prune_resolved(self) -> None:
+        """Remove oldest resolved intents when the registry exceeds _max_resolved."""
+        resolved = [
+            (iid, rec)
+            for iid, rec in self._intents.items()
+            if rec.is_resolved()
+        ]
+        if len(resolved) <= self._max_resolved:
+            return
+        # Sort by updated_at ascending (oldest first) and remove excess
+        resolved.sort(key=lambda r: r[1].updated_at)
+        excess = len(resolved) - self._max_resolved
+        for iid, _ in resolved[:excess]:
+            del self._intents[iid]
+        logger.debug("intent.prune removed=%d resolved_intents=%d", excess, self._max_resolved)
