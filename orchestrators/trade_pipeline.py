@@ -1392,7 +1392,7 @@ async def execute_trades(
                     if decision.skip_code != "signal_too_old":
                         skip_title = (
                             "BUY blocked by execution minimums/risk cap"
-                            if decision.skip_code in {"risk_cap_too_low_for_min_order", "buy_below_minimum_order_requirements"}
+                            if decision.skip_code in {"risk_cap_too_low_for_min_order", "buy_below_minimum_order_requirements", "buy_cap_blocks_upsize_to_venue_min"}
                             else "Decision gate rejected BUY"
                         )
                         print_skip_reason(skip_title, decision.reason)
