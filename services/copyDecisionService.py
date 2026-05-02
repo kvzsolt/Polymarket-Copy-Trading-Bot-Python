@@ -256,15 +256,11 @@ class CopyDecisionService:
 
         upsized = False
         if 0 < target_size_tokens + 1e-12 < required_min_size_tokens:
-            # Check if we have enough notional to cover the venue minimum
-            # This must work regardless of cap_binding — even without a cap,
-            # max_notional_usdc is the effective spending limit.
+            # Check if we have enough notional to cover the venue minimum.
+            # max_notional_usdc is always the effective spending limit.
             can_afford_upsize = (
-                not cap_binding
-                or (
-                    minimum_executable_notional_usdc > 0
-                    and max_notional_usdc + 1e-9 >= minimum_executable_notional_usdc
-                )
+                minimum_executable_notional_usdc > 0
+                and max_notional_usdc + 1e-9 >= minimum_executable_notional_usdc
             )
             if not can_afford_upsize:
                 sizing_reject = SizingDecision(
@@ -303,13 +299,8 @@ class CopyDecisionService:
                         "cap_binding": cap_binding,
                     },
                 )
-            # Quantize upsize to tick_size when available
-            if d_tick_size > 0:
-                target_size_tokens = float(
-                    (Decimal(str(required_min_size_tokens)) / d_tick_size).to_integral_value(rounding=ROUND_CEILING) * d_tick_size
-                )
-            else:
-                target_size_tokens = float(required_min_size_tokens)
+            # Upsize to venue minimum (tick_size is a price increment, not a size step)
+            target_size_tokens = float(required_min_size_tokens)
             upsized = True
 
         target_size_tokens = self._ceil(target_size_tokens, decimals)
@@ -475,7 +466,7 @@ class CopyDecisionService:
             },
             sizing=SizingDecision(
                 accept=True,
-                effective_size=Decimal(str(target_size_tokens)).quantize(d_tick_size) if d_tick_size > 0 else Decimal(str(target_size_tokens)),
+                effective_size=Decimal(str(target_size_tokens)),
                 effective_price=d_worst_price,
                 venue_min_size=d_market_min,
                 reason="upsized" if upsized else "ok",
