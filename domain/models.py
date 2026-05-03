@@ -1,7 +1,15 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
+
+
+@dataclass(frozen=True)
+class ComplianceDecision:
+    """Geoblock decision with explicit verdict and mutable metadata."""
+    allowed: bool
+    reason: str = ""
+    metadata: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
