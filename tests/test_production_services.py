@@ -19,12 +19,18 @@ from services.riskEngine import PortfolioSnapshot, ProposedTrade, RiskEngine, po
 from utils.createClobClient import MarketMeta
 
 
-def _make_exec_config(min_share_price: float = 0.0, max_share_price: float = 0.0, pending_ttl: int = 120) -> SimpleNamespace:
+def _make_exec_config(
+    min_share_price: float = 0.0,
+    max_share_price: float = 0.0,
+    pending_ttl: int = 120,
+    enable_executable_order_guard: bool = True,
+) -> SimpleNamespace:
     """Minimal AppConfig-shaped object for injecting into ExecutionService in tests."""
     ec = SimpleNamespace(
         min_share_price=min_share_price,
         max_share_price=max_share_price,
         pending_submission_ttl_seconds=pending_ttl,
+        enable_executable_order_guard=enable_executable_order_guard,
         circuit_failure_threshold=5,
         circuit_cooldown_seconds=60,
         execution_require_fresh_book=False,
@@ -228,6 +234,69 @@ class TestExecutionService:
         assert res.accepted is True
         assert res.order_id == "o1"
         assert "o1" in repo.fills
+
+    @pytest.mark.asyncio
+    async def test_executable_order_guard_rejects_small_buy_when_enabled(self):
+        clob = SimpleNamespace(get_price=AsyncMock(return_value={"price": "0.5"}))
+        svc = ExecutionService(
+            clob,
+            _MetaSvc(),
+            _FeeSvc(),
+            _Repo(),
+            config=_make_exec_config(min_share_price=0, enable_executable_order_guard=True),
+        )
+        req = ExecutionRequest(
+            user_id="u1",
+            leader_id="l1",
+            token_id="t1",
+            side="BUY",
+            amount=Decimal("0.10"),
+            max_slippage_bps=100,
+            reason="copy_trade",
+            signal_id="sig_guard_on",
+        )
+
+        res = await svc.execute(req)
+
+        assert res.accepted is False
+        assert res.status == "rejected"
+        assert res.error is not None
+        assert "min_order_size" in res.error
+        assert not hasattr(clob, "create_market_order") or not clob.create_market_order.called
+
+    @pytest.mark.asyncio
+    async def test_executable_order_guard_can_be_disabled_for_small_buy(self):
+        clob = SimpleNamespace(
+            get_price=AsyncMock(return_value={"price": "0.5"}),
+            create_market_order=AsyncMock(return_value={"signed": True}),
+            post_signed_order=AsyncMock(return_value={"success": True, "orderID": "o-small", "status": "submitted"}),
+            client=SimpleNamespace(get_order=lambda _order_id: {"status": "filled", "size_matched": "0.2", "avg_price": "0.5"}),
+        )
+        repo = _Repo()
+        svc = ExecutionService(
+            clob,
+            _MetaSvc(),
+            _FeeSvc(),
+            repo,
+            config=_make_exec_config(min_share_price=0, enable_executable_order_guard=False),
+        )
+        svc._confirm_fill = AsyncMock(return_value={"status": "filled", "size_matched": "0.2", "avg_price": "0.5"})
+        req = ExecutionRequest(
+            user_id="u1",
+            leader_id="l1",
+            token_id="t1",
+            side="BUY",
+            amount=Decimal("0.10"),
+            max_slippage_bps=100,
+            reason="copy_trade",
+            signal_id="sig_guard_off",
+        )
+
+        res = await svc.execute(req)
+
+        assert res.accepted is True
+        assert res.order_id == "o-small"
+        clob.create_market_order.assert_awaited_once()
 
     def test_persists_sanitized_submission_payload(self):
         long_signal = "sig_" + ("x" * 600)

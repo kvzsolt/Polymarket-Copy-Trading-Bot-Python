@@ -31,6 +31,7 @@ from orchestrators.runtime_bootstrap import (
     configured_leaders,
     ensure_runtime_follows,
     fetch_live_positions,
+    startup_reconcile_unconfirmed,
 )
 from orchestrators.runtime_discovery import (
     discovery_refresh_loop as _discovery_refresh_loop_impl,
@@ -220,7 +221,12 @@ async def main():
     user_states: dict[str, UserRuntimeState] = {}
     for runtime_user in runtime_users:
         client = await create_clob_client(wallet_config=runtime_user.wallet)
-        user_states[runtime_user.user_id] = build_user_state(runtime_user, client, db_path)
+        user_states[runtime_user.user_id] = build_user_state(
+            runtime_user,
+            client,
+            db_path,
+            application.config,
+        )
 
     leader_balances_raw = await asyncio.gather(*(get_my_balance(wallet) for wallet in active_leaders))
     user_balances_raw = await asyncio.gather(
@@ -264,6 +270,18 @@ async def main():
     if not monitored_leaders:
         logger.warning("no_leaders_monitored", extra={"reason": "no_user_follows_active_leaders"})
         await metrics.inc("no_leaders_monitored_total")
+
+    # ── Startup convergence (issue #29) ─────────────────────────────────
+    # Reconcile any submitted_unconfirmed orders from the previous session
+    # BEFORE starting risk monitor or trade loops.  This ensures position
+    # state is deterministic after a restart.
+    startup_reconciled = await startup_reconcile_unconfirmed(
+        list(risk_contexts_by_user.values()),
+    )
+    if startup_reconciled:
+        application.readiness.update(
+            startup_reconciled_orders=sum(startup_reconciled.values()),
+        )
 
     first_user = runtime_users[0]
     live_positions = live_positions_by_user.get(first_user.user_id, [])
@@ -445,9 +463,12 @@ if __name__ == "__main__":
         loop.run_until_complete(main_task)
     except (asyncio.CancelledError, KeyboardInterrupt):
         pass
-    except Exception:
+    except Exception as exc:
         import sys
+        import traceback
 
+        print_error(f"Fatal startup error: {exc}")
+        traceback.print_exc()
         sys.exit(1)
     finally:
         loop.close()

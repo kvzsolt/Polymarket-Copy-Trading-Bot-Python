@@ -268,12 +268,17 @@ def print_startup_summary(
             "polymarket_base_execution_rules",
             "POLYMARKET BASE EXECUTION RULES",
             {
-                "enable_executable_order_guard": config.execution.enable_executable_order_guard,
-                "copy_min_shares": config.sizing.copy_min_shares,
-                "copy_min_notional_usdc": config.sizing.copy_min_notional_usdc,
-                "copy_size_decimals": config.sizing.copy_size_decimals,
-                "executable_order_buffer_notional_usdc": config.execution.executable_order_buffer_notional_usdc,
-                "min_order_size": config.network.min_order_size,
+                "enable_executable_order_guard": config.raw.get(
+                    "ENABLE_EXECUTABLE_ORDER_GUARD", "disabled"
+                ),
+                "copy_size_decimals": config.raw.get(
+                    "COPY_SIZE_DECIMALS", "disabled"
+                ),
+                "executable_order_buffer_notional_usdc": config.raw.get(
+                    "EXECUTABLE_ORDER_BUFFER_NOTIONAL_USDC", "disabled"
+                ),
+                "min_order_size": config.raw.get("MIN_ORDER_SIZE", "venue_metadata"),
+                "sizing_source": "venue_metadata",
             },
         ),
         (

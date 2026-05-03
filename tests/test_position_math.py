@@ -69,7 +69,7 @@ class TestTrackBuyNewPosition:
     def test_position_in_open_positions(self):
         pm = _make_pm()
         pm.track_buy("cond-1", "asset-1", 0.50, 100.0, 50.0)
-        assert "cond-1" in pm.open_positions
+        assert "cond-1::asset-1" in pm.open_positions
         assert len(pm.open_positions) == 1
 
     def test_metadata_preserved(self):
@@ -127,7 +127,7 @@ class TestPyramiding:
         pm.track_buy("cond-1", "asset-1", 0.50, 100.0, 50.0)
         pm.track_buy("cond-1", "asset-1", 0.60, 100.0, 60.0)
         assert len(pm.open_positions) == 1
-        assert "cond-1" in pm.open_positions
+        assert "cond-1::asset-1" in pm.open_positions
 
 
 # ---------------------------------------------------------------------------
@@ -191,7 +191,7 @@ class TestPartialSell:
         pm = _make_pm()
         pm.track_buy("cond-1", "asset-1", 0.50, 100.0, 50.0)
         pm.track_sell("cond-1", 0.60, 50.0)
-        assert "cond-1" in pm.open_positions
+        assert "cond-1::asset-1" in pm.open_positions
         assert len(pm.closed_positions) == 0
 
     def test_multiple_partial_sells_accumulate_pnl(self):
@@ -223,7 +223,7 @@ class TestFullSell:
         pm = _make_pm()
         pm.track_buy("cond-1", "asset-1", 0.50, 100.0, 50.0)
         pm.track_sell("cond-1", 0.60, 100.0)
-        assert "cond-1" not in pm.open_positions
+        assert "cond-1::asset-1" not in pm.open_positions
         assert len(pm.closed_positions) == 1
 
     def test_exit_fields_populated(self):
@@ -262,7 +262,7 @@ class TestOversellProtection:
         result = pm.track_sell("cond-1", 0.60, 150.0)
         assert result is not None  # position closed
         assert result.size_tokens == 0.0
-        assert "cond-1" not in pm.open_positions
+        assert "cond-1::asset-1" not in pm.open_positions
         # PnL should be based on held amount (100), not oversold amount (150)
         assert result.realized_pnl == pytest.approx(10.0)  # (0.60 - 0.50) * 100
 

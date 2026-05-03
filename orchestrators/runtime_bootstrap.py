@@ -12,12 +12,14 @@ from services.multiUserConfig import RuntimeUser, UserFollowConfig
 from services.orderRepository import OrderRepository
 from services.pnlTracker import PnLTracker
 from services.positionManager import PositionManager
-from services.riskEngine import RiskEngine
+from services.riskEngine import RiskEngine, init_risk_engine
 from services.healthServer import ReadinessTracker
-from services.riskMonitor import rehydrate_position_manager
+from services.entryPermissionService import EntryPermissionService
+from services.riskMonitor import rehydrate_position_manager, reconcile_unconfirmed_risk_orders
 from storage.sqlite.fills_repo import FillsRepo
 from storage.sqlite.orders_repo import OrdersRepo
 from storage.sqlite.positions_repo import PositionsRepo
+from storage.sqlite.risk_blocks_repo import RiskBlocksRepo
 from utils.fetchData import fetch_data
 from utils.logger import get_logger
 
@@ -27,6 +29,73 @@ if TYPE_CHECKING:
 logger = get_logger("RuntimeBootstrap")
 
 
+async def startup_reconcile_unconfirmed(
+    contexts: list[TradingContext],
+) -> dict[str, int]:
+    """Reconcile all submitted_unconfirmed orders before starting runtime loops.
+
+    Must run AFTER build_context_maps() and BEFORE risk_monitor / trade_monitor
+    tasks.  This closes the non-deterministic restart window where:
+
+    * BUY fills that landed on-chain during shutdown are invisible to the
+      risk monitor (position never created locally).
+    * SELL fills that landed during shutdown leave stale positions that the
+      risk monitor or next trade cycle could act on.
+
+    After reconciliation, the in-memory PositionManager is re-rehydrated so
+    all downstream consumers observe converged state.
+
+    Returns a dict mapping user_id → number of orders reconciled.
+    """
+    from orchestrators.trade_pipeline import reconcile_submitted_unconfirmed
+
+    reconciled_by_user: dict[str, int] = {}
+    seen_users: set[str] = set()
+
+    for context in contexts:
+        if context.user_id in seen_users:
+            continue
+        seen_users.add(context.user_id)
+
+        if context.execution_service is None:
+            continue
+
+        try:
+            trade_n = await reconcile_submitted_unconfirmed(context)
+            risk_n = await reconcile_unconfirmed_risk_orders(context)
+            total_n = trade_n + risk_n
+            if total_n > 0:
+                # Position state changed — re-rehydrate so the risk monitor
+                # and trade loops observe the converged snapshot.
+                rehydrate_position_manager(context)
+                reconciled_by_user[context.user_id] = total_n
+                logger.info(
+                    "startup_reconcile_complete | user=%s reconciled=%d (trade=%d risk=%d)",
+                    context.user_id,
+                    total_n,
+                    trade_n,
+                    risk_n,
+                )
+        except Exception as exc:
+            logger.warning(
+                "startup_reconcile_error | user=%s error=%s",
+                context.user_id,
+                repr(exc),
+            )
+
+    if reconciled_by_user:
+        total = sum(reconciled_by_user.values())
+        logger.info(
+            "startup_reconcile_summary | users=%d total_reconciled=%d",
+            len(reconciled_by_user),
+            total,
+        )
+    else:
+        logger.info("startup_reconcile_summary | no pending orders to reconcile")
+
+    return reconciled_by_user
+
+
 @dataclass
 class UserRuntimeState:
     user: RuntimeUser
@@ -34,6 +103,7 @@ class UserRuntimeState:
     orders_repo: OrdersRepo
     fills_repo: FillsRepo
     positions_repo: PositionsRepo
+    risk_blocks_repo: RiskBlocksRepo
     pnl_tracker: PnLTracker
     risk_engine: RiskEngine
     accounting_service: AccountingService
@@ -101,19 +171,29 @@ async def fetch_live_positions(wallet: str) -> list[dict]:
     return live_positions
 
 
-def build_user_state(runtime_user: RuntimeUser, client: object, db_path: str) -> UserRuntimeState:
+def build_user_state(
+    runtime_user: RuntimeUser,
+    client: object,
+    db_path: str,
+    config: AppConfig | None = None,
+) -> UserRuntimeState:
+    if config is not None:
+        init_risk_engine(config)
+
     order_repo = OrdersRepo(db_path)
     fills_repo = FillsRepo(db_path)
     positions_repo = PositionsRepo(db_path)
+    risk_blocks_repo = RiskBlocksRepo(db_path)
     pnl_tracker = PnLTracker(log_path=f"log/pnl_{runtime_user.user_id}.jsonl")
     risk_engine = RiskEngine()
     accounting_service = AccountingService()
-    position_manager = PositionManager()
+    position_manager = PositionManager(config=config)
     execution_service = ExecutionService(
         clob_client=client,
         market_meta_service=MarketMetaService(client),
         fee_service=FeeService(client),
         order_repo=OrderRepository(db_path=db_path),
+        config=config,
     )
 
     return UserRuntimeState(
@@ -122,6 +202,7 @@ def build_user_state(runtime_user: RuntimeUser, client: object, db_path: str) ->
         orders_repo=order_repo,
         fills_repo=fills_repo,
         positions_repo=positions_repo,
+        risk_blocks_repo=risk_blocks_repo,
         pnl_tracker=pnl_tracker,
         risk_engine=risk_engine,
         accounting_service=accounting_service,
@@ -144,10 +225,13 @@ def build_trading_context(
         positions_repo=user_state.positions_repo,
         fills_repo=user_state.fills_repo,
         orders_repo=user_state.orders_repo,
+        risk_blocks_repo=user_state.risk_blocks_repo,
         pnl_tracker=user_state.pnl_tracker,
         risk_engine=user_state.risk_engine,
         accounting_service=user_state.accounting_service,
         position_manager=user_state.position_manager,
+        config=config,
+        entry_permission_service=EntryPermissionService(user_state.risk_blocks_repo),
         execution_service=user_state.execution_service,
         leaders_repo=leaders_repo,
         allocation_pct=follow.allocation_pct,
