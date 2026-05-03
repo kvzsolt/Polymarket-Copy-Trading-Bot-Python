@@ -86,20 +86,31 @@ class ReconciliationService:
         orders_repo: Any | None = None,
         stale_threshold_seconds: float | None = None,
         auto_cancel_stale: bool | None = None,
+        *,
+        config: Any | None = None,
     ):
         self.clob_client = clob_client
         self.orders_repo = orders_repo
 
+        # Priority: explicit arg > AppConfig > ENV fallback
         if stale_threshold_seconds is not None:
             self.stale_threshold = float(stale_threshold_seconds)
+        elif config is not None and hasattr(config, 'reconciliation'):
+            self.stale_threshold = config.reconciliation.stale_threshold_seconds
         else:
             try:
                 self.stale_threshold = float(ENV.get("RECONCILE_STALE_SECONDS", 3600))
             except (TypeError, ValueError):
                 self.stale_threshold = 3600.0
-        self.auto_cancel = auto_cancel_stale if auto_cancel_stale is not None else (
-            str(ENV.get("RECONCILE_AUTO_CANCEL", "false")).lower() in ("1", "true", "yes")
-        )
+
+        if auto_cancel_stale is not None:
+            self.auto_cancel = auto_cancel_stale
+        elif config is not None and hasattr(config, 'reconciliation'):
+            self.auto_cancel = config.reconciliation.auto_cancel_stale
+        else:
+            self.auto_cancel = (
+                str(ENV.get("RECONCILE_AUTO_CANCEL", "false")).lower() in ("1", "true", "yes")
+            )
 
     @staticmethod
     def _supports_order_management(candidate: Any) -> bool:
@@ -238,11 +249,18 @@ async def reconciliation_loop(
     service: ReconciliationService,
     interval_seconds: float | None = None,
     shutdown_event: asyncio.Event | None = None,
+    *,
+    config: Any | None = None,
 ) -> None:
     """Run reconciliation periodically."""
-    interval = interval_seconds or float(
-        ENV.get("RECONCILE_INTERVAL_SECONDS", 300) or 300
-    )
+    if interval_seconds is not None:
+        interval = float(interval_seconds)
+    elif config is not None and hasattr(config, 'polling'):
+        interval = float(config.polling.reconcile_interval_seconds)
+    else:
+        interval = float(
+            ENV.get("RECONCILE_INTERVAL_SECONDS", 300) or 300
+        )
     logger.info("Reconciliation loop started (interval=%.0fs)", interval)
 
     while True:

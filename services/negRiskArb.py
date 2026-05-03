@@ -280,10 +280,10 @@ def _load_arb_config(app_config) -> ArbConfig:
         max_cost_usdc=Decimal(str(app_config.features.arb_max_cost_usdc)),
         min_ask_depth_tokens=Decimal(str(app_config.features.arb_min_ask_depth)),
         scan_interval_seconds=app_config.features.arb_scan_interval,
-        fee_bps=Decimal("20"), # Polymarket fee structure config integration pending
+        fee_bps=Decimal(str(app_config.execution.transaction_fee_bps)),
         max_concurrent_arbs=app_config.features.arb_max_concurrent,
         enabled=app_config.features.enable_neg_risk_arb,
-        slippage_pct=Decimal(str(app_config.execution.slippage_tolerance_bps)) / Decimal("10000"),
+        slippage_pct=Decimal(str(app_config.execution.slippage_tolerance)) / Decimal("100"),
         user_id=app_config.wallet.funder_address or "",
         cleanup_enabled=str(app_config.raw.get("ARB_CLEANUP_ON_PARTIAL", "true")).lower() in ("1", "true", "yes"),
         max_cleanup_loss_bps=int(app_config.raw.get("ARB_MAX_CLEANUP_LOSS_BPS", 50)),
@@ -400,8 +400,7 @@ async def scan_market_for_arb(
     # Revenue per token set at resolution: $1.00 (exactly one outcome wins).
     # Fees: modeled as fee_bps applied to total notional on entry (sum across legs).
 
-    slippage_pct = Decimal(str(ENV.get("SLIPPAGE_TOLERANCE", 2.0) or 2.0)) / Decimal("100")
-    slippage_pct = max(Decimal("0"), slippage_pct)
+    slippage_pct = config.slippage_pct
     fee_pct = (config.fee_bps / Decimal("10000"))
 
     sum_worst = Decimal("0")
