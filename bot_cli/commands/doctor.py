@@ -144,22 +144,28 @@ async def run_doctor_checks(mode: str) -> dict:
     else:
         output["checks"]["order_size"] = {"status": "ok"}
 
-    # Check 9: Redemption wallet validation (live mode only)
+    # Check 9: Redemption wallet validation (only when live mode AND auto-redeem enabled)
     if mode == "live":
-        from services.redemption.wallet_validator import (
-            validate_redemption_wallet_mode,
-        )
-        wallet_check = validate_redemption_wallet_mode(config.wallet)
-        if not wallet_check.allowed:
+        if not config.redemption.enable_auto_redeem:
             output["checks"]["redemption_wallet"] = {
-                "status": "failed",
-                "reason": wallet_check.reason,
-                "signer": wallet_check.signer_address,
-                "funder": wallet_check.funder_address,
+                "status": "skipped",
+                "reason": "auto_redeem_disabled",
             }
-            output["status"] = "blocked"
         else:
-            output["checks"]["redemption_wallet"] = {"status": "ok"}
+            from services.redemption.wallet_validator import (
+                validate_redemption_wallet_mode,
+            )
+            wallet_check = validate_redemption_wallet_mode(config.wallet)
+            if not wallet_check.allowed:
+                output["checks"]["redemption_wallet"] = {
+                    "status": "failed",
+                    "reason": wallet_check.reason,
+                    "signer": wallet_check.signer_address,
+                    "funder": wallet_check.funder_address,
+                }
+                output["status"] = "blocked"
+            else:
+                output["checks"]["redemption_wallet"] = {"status": "ok"}
     else:
         output["checks"]["redemption_wallet"] = {
             "status": "skipped",
