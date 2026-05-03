@@ -21,7 +21,7 @@ TARGET_COUNT = int(os.getenv("FIND_TRADERS_TARGET", "6"))
 REFRESH_SECONDS = int(os.getenv("FIND_TRADERS_REFRESH_SECONDS", "60"))
 
 
-def snapshot_payload(state, discovery):
+def snapshot_payload(state, discovery, config: AppConfig):
     rows = []
     for cand in state.discovered:
         profile = discovery.get_cached_profile(cand.leader_id)
@@ -46,13 +46,13 @@ def snapshot_payload(state, discovery):
         "target_count": TARGET_COUNT,
         "refresh_seconds": REFRESH_SECONDS,
         "filters_used_exactly_as_implemented": {
-            "min_pnl": ENV.get("MIN_LEADER_PNL"),
-            "min_win_rate": ENV.get("MIN_LEADER_WIN_RATE"),
-            "min_positions": ENV.get("MIN_LEADER_POSITIONS"),
-            "auto_discover_min_score": ENV.get("AUTO_DISCOVER_MIN_SCORE"),
-            "discovery_promote_to_active": ENV.get("DISCOVERY_PROMOTE_TO_ACTIVE"),
-            "auto_discover_top_n": ENV.get("AUTO_DISCOVER_TOP_N"),
-            "min_active_positions": ENV.get("MIN_ACTIVE_POSITIONS", 1),
+            "min_pnl": config.discovery.min_leader_pnl,
+            "min_win_rate": config.discovery.min_leader_win_rate,
+            "min_positions": config.discovery.min_leader_positions,
+            "auto_discover_min_score": config.leader.auto_discover_min_score,
+            "discovery_promote_to_active": config.discovery.discovery_promote_to_active,
+            "auto_discover_top_n": config.leader.auto_discover_top_n,
+            "min_active_positions": config.discovery.min_active_positions,
         },
         "not_implemented_filters": [
             "max hold duration < 12h",
@@ -69,16 +69,17 @@ async def main():
     rehydrate_env(load_dotenv_file=False)
     await connect_db()
 
+    config = load_config()
     discovery = TraderDiscoveryService()
     repo = LeadersRepo(get_db_path())
-    registry = LeaderRegistry(discovery, repo)
+    registry = LeaderRegistry(discovery, repo, config)
 
     print(f"[finder] started: target={TARGET_COUNT} refresh={REFRESH_SECONDS}s")
     print("[finder] using implemented filters only: pnl / win rate / positions / active positions / composite score")
 
     while True:
         state = await registry.refresh([])
-        payload = snapshot_payload(state, discovery)
+        payload = snapshot_payload(state, discovery, config)
         OUTPUT_JSON.write_text(json.dumps(payload, indent=2))
 
         active = state.active_monitored
@@ -100,4 +101,6 @@ async def main():
 
 
 if __name__ == "__main__":
+    asyncio.run(main())
+__":
     asyncio.run(main())

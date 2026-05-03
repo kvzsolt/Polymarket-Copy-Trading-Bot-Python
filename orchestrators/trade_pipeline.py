@@ -9,7 +9,6 @@ from decimal import Decimal, ROUND_DOWN
 from typing import Any
 
 from config.app_config import AppConfig
-from config.env import ENV
 from domain.models import TradeSignal
 from domain.trading_context import TradingContext
 from services.entryPermissionService import EntryDecision, EntryPermissionService
@@ -39,8 +38,7 @@ from utils.logger import (
 logger = get_logger("TradePipeline")
 
 
-def _positive_int_env(name: str, default: int) -> int:
-    raw = ENV.get(name, default)
+def _positive_int(raw: Any, default: int) -> int:
     try:
         value = int(raw)
     except (TypeError, ValueError):
@@ -52,7 +50,8 @@ def _positive_int_env(name: str, default: int) -> int:
 def _analysis_semaphore(context: TradingContext) -> asyncio.Semaphore:
     semaphore = context.extra.get("_trade_analysis_semaphore")
     if semaphore is None:
-        semaphore = asyncio.Semaphore(_positive_int_env("TRADE_ANALYSIS_CONCURRENCY", 6))
+        config_val = context.config.raw.get("TRADE_ANALYSIS_CONCURRENCY", 6) if context.config else 6
+        semaphore = asyncio.Semaphore(_positive_int(config_val, 6))
         context.extra["_trade_analysis_semaphore"] = semaphore
     return semaphore
 
@@ -61,7 +60,8 @@ def _analysis_semaphore(context: TradingContext) -> asyncio.Semaphore:
 def _reconcile_semaphore(context: TradingContext) -> asyncio.Semaphore:
     semaphore = context.extra.get("_reconcile_unconfirmed_semaphore")
     if semaphore is None:
-        semaphore = asyncio.Semaphore(_positive_int_env("RECONCILE_CONCURRENCY", 4))
+        config_val = context.config.raw.get("RECONCILE_CONCURRENCY", 4) if context.config else 4
+        semaphore = asyncio.Semaphore(_positive_int(config_val, 4))
         context.extra["_reconcile_unconfirmed_semaphore"] = semaphore
     return semaphore
 

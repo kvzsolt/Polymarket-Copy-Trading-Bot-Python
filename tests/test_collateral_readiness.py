@@ -60,6 +60,10 @@ class TestCheckSync:
         status = _check_sync(
             wallet_address="0x" + "a" * 40,
             rpc_url="http://rpc",
+            pusd_address="0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB",
+            ctf_exchange_address="0xE111180000d2663C0091e4f400237545B87B996B",
+            neg_risk_exchange_address="0xe2222d279d744050d28e00520010520000310F59",
+            min_pusd_balance=Decimal("1.0"),
         )
         assert status.ready is True
         assert status.pusd_balance == Decimal("100")
@@ -73,6 +77,10 @@ class TestCheckSync:
         status = _check_sync(
             wallet_address="0x" + "a" * 40,
             rpc_url="http://rpc",
+            pusd_address="0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB",
+            ctf_exchange_address="0xE111180000d2663C0091e4f400237545B87B996B",
+            neg_risk_exchange_address="0xe2222d279d744050d28e00520010520000310F59",
+            min_pusd_balance=Decimal("1.0"),
         )
         assert status.ready is False
         assert any("pUSD balance" in f for f in status.failures)
@@ -84,6 +92,10 @@ class TestCheckSync:
         status = _check_sync(
             wallet_address="0x" + "a" * 40,
             rpc_url="http://rpc",
+            pusd_address="0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB",
+            ctf_exchange_address="0xE111180000d2663C0091e4f400237545B87B996B",
+            neg_risk_exchange_address="0xe2222d279d744050d28e00520010520000310F59",
+            min_pusd_balance=Decimal("1.0"),
         )
         assert status.ready is False
         assert any("CTF Exchange" in f for f in status.failures)
@@ -95,6 +107,10 @@ class TestCheckSync:
         status = _check_sync(
             wallet_address="0x" + "a" * 40,
             rpc_url="http://rpc",
+            pusd_address="0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB",
+            ctf_exchange_address="0xE111180000d2663C0091e4f400237545B87B996B",
+            neg_risk_exchange_address="0xe2222d279d744050d28e00520010520000310F59",
+            min_pusd_balance=Decimal("1.0"),
         )
         assert status.ready is False
         assert any("Neg Risk" in f for f in status.failures)
@@ -105,6 +121,10 @@ class TestCheckSync:
         status = _check_sync(
             wallet_address="0x" + "a" * 40,
             rpc_url="http://rpc",
+            pusd_address="0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB",
+            ctf_exchange_address="0xE111180000d2663C0091e4f400237545B87B996B",
+            neg_risk_exchange_address="0xe2222d279d744050d28e00520010520000310F59",
+            min_pusd_balance=Decimal("1.0"),
         )
         assert status.ready is False
         # All three checks should have failure entries
@@ -126,14 +146,14 @@ class TestAsyncCheck:
 
     @pytest.mark.asyncio
     @patch("services.collateral_readiness._check_sync")
-    async def test_uses_env_rpc_url_default(self, mock_sync: MagicMock) -> None:
+    async def test_uses_explicit_rpc_url(self, mock_sync: MagicMock) -> None:
         mock_sync.return_value = _make_status()
         await check_collateral_readiness(
             wallet_address="0x" + "a" * 40,
+            rpc_url="http://explicit-rpc",
         )
-        # Should have called with the default RPC URL from ENV
         call_kwargs = mock_sync.call_args[1]
-        assert "rpc_url" in call_kwargs
+        assert call_kwargs["rpc_url"] == "http://explicit-rpc"
 
 
 class TestNoSecretLeakage:
@@ -145,6 +165,10 @@ class TestNoSecretLeakage:
         status = _check_sync(
             wallet_address="0x" + "a" * 40,
             rpc_url="http://rpc",
+            pusd_address="0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB",
+            ctf_exchange_address="0xE111180000d2663C0091e4f400237545B87B996B",
+            neg_risk_exchange_address="0xe2222d279d744050d28e00520010520000310F59",
+            min_pusd_balance=Decimal("1.0"),
         )
         serialized = str(status)
         assert "private" not in serialized.lower()

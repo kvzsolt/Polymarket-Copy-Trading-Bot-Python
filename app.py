@@ -173,7 +173,16 @@ async def main():
         print_error(str(exc))
         return
 
-    if application.config.network.enforce_geoblock:
+    from bot_cli.commands.doctor import run_doctor_checks
+    mode = "paper" if application.config.execution.paper_trade_only else "live"
+    if mode == "live":
+        doctor_result = await run_doctor_checks("live")
+        if doctor_result.get("status") == "blocked":
+            print_error("Live mode doctor check failed. Refusing to start.")
+            import json
+            print(json.dumps(doctor_result, indent=2))
+            return
+    elif application.config.network.enforce_geoblock:
         decision = await check_geoblock()
         if not decision.allowed:
             print_error(f"Trading disabled by geoblock policy: {decision.reason}")
