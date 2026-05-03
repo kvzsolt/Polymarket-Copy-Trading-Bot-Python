@@ -27,7 +27,6 @@ def _make_status(**overrides: Any) -> CollateralStatus:
     defaults = {
         "pusd_balance": Decimal("100"),
         "pusd_allowance_ctf": Decimal("999999"),
-        "pusd_allowance_neg_risk": Decimal("999999"),
         "wallet_address": "0x" + "a" * 40,
         "rpc_url": "http://rpc",
         "ready": True,
@@ -54,32 +53,26 @@ class TestCheckSync:
 
     @patch("services.collateral_readiness._erc20_read")
     def test_all_green(self, mock_read: MagicMock) -> None:
-        # balanceOf returns 100 USDC (100 * 10^6)
-        # allowance returns max uint256-ish (1e12 * 10^6)
-        mock_read.side_effect = [100_000_000, 1_000_000_000_000_000, 1_000_000_000_000_000]
+        mock_read.side_effect = [100_000_000, 1_000_000_000_000_000]
         status = _check_sync(
             wallet_address="0x" + "a" * 40,
             rpc_url="http://rpc",
             pusd_address="0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB",
             ctf_exchange_address="0xE111180000d2663C0091e4f400237545B87B996B",
-            neg_risk_exchange_address="0xe2222d279d744050d28e00520010520000310F59",
             min_pusd_balance=Decimal("1.0"),
         )
         assert status.ready is True
         assert status.pusd_balance == Decimal("100")
         assert status.pusd_allowance_ctf > 0
-        assert status.pusd_allowance_neg_risk > 0
 
     @patch("services.collateral_readiness._erc20_read")
     def test_low_balance_fails(self, mock_read: MagicMock) -> None:
-        # 0.5 USDC balance — below minimum of 1.0
-        mock_read.side_effect = [500_000, 1_000_000_000_000_000, 1_000_000_000_000_000]
+        mock_read.side_effect = [500_000, 1_000_000_000_000_000]
         status = _check_sync(
             wallet_address="0x" + "a" * 40,
             rpc_url="http://rpc",
             pusd_address="0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB",
             ctf_exchange_address="0xE111180000d2663C0091e4f400237545B87B996B",
-            neg_risk_exchange_address="0xe2222d279d744050d28e00520010520000310F59",
             min_pusd_balance=Decimal("1.0"),
         )
         assert status.ready is False
@@ -87,33 +80,16 @@ class TestCheckSync:
 
     @patch("services.collateral_readiness._erc20_read")
     def test_zero_allowance_ctf_fails(self, mock_read: MagicMock) -> None:
-        # Balance OK, but CTF allowance = 0
-        mock_read.side_effect = [100_000_000, 0, 1_000_000_000_000_000]
+        mock_read.side_effect = [100_000_000, 0]
         status = _check_sync(
             wallet_address="0x" + "a" * 40,
             rpc_url="http://rpc",
             pusd_address="0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB",
             ctf_exchange_address="0xE111180000d2663C0091e4f400237545B87B996B",
-            neg_risk_exchange_address="0xe2222d279d744050d28e00520010520000310F59",
             min_pusd_balance=Decimal("1.0"),
         )
         assert status.ready is False
         assert any("CTF Exchange" in f for f in status.failures)
-
-    @patch("services.collateral_readiness._erc20_read")
-    def test_zero_allowance_neg_risk_fails(self, mock_read: MagicMock) -> None:
-        # Balance OK, CTF allowance OK, but neg risk allowance = 0
-        mock_read.side_effect = [100_000_000, 1_000_000_000_000_000, 0]
-        status = _check_sync(
-            wallet_address="0x" + "a" * 40,
-            rpc_url="http://rpc",
-            pusd_address="0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB",
-            ctf_exchange_address="0xE111180000d2663C0091e4f400237545B87B996B",
-            neg_risk_exchange_address="0xe2222d279d744050d28e00520010520000310F59",
-            min_pusd_balance=Decimal("1.0"),
-        )
-        assert status.ready is False
-        assert any("Neg Risk" in f for f in status.failures)
 
     @patch("services.collateral_readiness._erc20_read")
     def test_rpc_failure_records_failure(self, mock_read: MagicMock) -> None:
@@ -123,11 +99,9 @@ class TestCheckSync:
             rpc_url="http://rpc",
             pusd_address="0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB",
             ctf_exchange_address="0xE111180000d2663C0091e4f400237545B87B996B",
-            neg_risk_exchange_address="0xe2222d279d744050d28e00520010520000310F59",
             min_pusd_balance=Decimal("1.0"),
         )
         assert status.ready is False
-        # All three checks should have failure entries
         assert len(status.failures) >= 1
 
 
@@ -161,19 +135,17 @@ class TestNoSecretLeakage:
 
     @patch("services.collateral_readiness._erc20_read")
     def test_status_has_no_private_key(self, mock_read: MagicMock) -> None:
-        mock_read.side_effect = [100_000_000, 1_000_000_000_000_000, 1_000_000_000_000_000]
+        mock_read.side_effect = [100_000_000, 1_000_000_000_000_000]
         status = _check_sync(
             wallet_address="0x" + "a" * 40,
             rpc_url="http://rpc",
             pusd_address="0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB",
             ctf_exchange_address="0xE111180000d2663C0091e4f400237545B87B996B",
-            neg_risk_exchange_address="0xe2222d279d744050d28e00520010520000310F59",
             min_pusd_balance=Decimal("1.0"),
         )
         serialized = str(status)
         assert "private" not in serialized.lower()
         assert "secret" not in serialized.lower()
-        # Wallet address is fine to log (it's public on-chain)
         assert "0x" + "a" * 40 in serialized
 
 
@@ -190,18 +162,18 @@ class TestFailClosedStartup:
         mock_check.return_value = CollateralStatus(
             pusd_balance=Decimal("0"),
             pusd_allowance_ctf=Decimal("0"),
-            pusd_allowance_neg_risk=Decimal("0"),
             wallet_address="0x" + "a" * 40,
             rpc_url="http://rpc",
             ready=False,
             failures=("pUSD balance 0.00 < minimum 1", "CTF Exchange pUSD allowance is 0"),
         )
 
-        # Mock the heavy init path to reach the collateral gate
         mock_client = MagicMock()
         mock_client.get_tick_size.return_value = "0.01"
         mock_client.get_neg_risk.return_value = False
-        mock_client.get_order_book.return_value = MagicMock(bids=[], asks=[], tick_size="0.01", neg_risk=False, min_order_size="5")
+        mock_client.get_order_book.return_value = MagicMock(
+            bids=[], asks=[], tick_size="0.01", neg_risk=False, min_order_size="5"
+        )
 
         with _p("utils.createClobClient.ENV", {"CLOB_V2_READY": True}), \
              _p("utils.createClobClient.build_wallet_config") as mock_bwc, \

@@ -178,7 +178,7 @@ class RedemptionService:
                 await asyncio.sleep(self.polling_config.redeem_check_interval)
                 return RedemptionResult(False, None, "failed", Decimal("0"), str(exc))
 
-    # Compatibility methods for tests / older callers (like negRiskArb)
+    # Compatibility method for tests / older callers
     async def redeem(self, pos: RedeemablePosition) -> RedemptionResult:
         return await self.redeem_condition(pos.condition_id)
 

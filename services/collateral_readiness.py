@@ -48,7 +48,6 @@ class CollateralStatus:
 
     pusd_balance: Decimal
     pusd_allowance_ctf: Decimal
-    pusd_allowance_neg_risk: Decimal
     wallet_address: str
     rpc_url: str
     ready: bool
@@ -76,7 +75,6 @@ def _check_sync(
     rpc_url: str,
     pusd_address: str,
     ctf_exchange_address: str,
-    neg_risk_exchange_address: str,
     min_pusd_balance: Decimal,
 ) -> CollateralStatus:
     """Run all collateral checks synchronously (call from thread)."""
@@ -121,30 +119,10 @@ def _check_sync(
             f"{ctf_exchange_address}"
         )
 
-    # 3. Neg Risk Exchange allowance
-    try:
-        raw_nr = _erc20_read(
-            rpc_url=rpc_url,
-            contract_address=pusd_contract,
-            method="allowance",
-            args=[checksum_wallet, Web3.to_checksum_address(neg_risk_exchange_address)],
-        )
-        pusd_allowance_neg_risk = Decimal(raw_nr) / Decimal(10**6)
-    except Exception as exc:
-        pusd_allowance_neg_risk = Decimal("0")
-        failures.append(f"Neg Risk exchange allowance check failed: {exc}")
-
-    if pusd_allowance_neg_risk <= 0:
-        failures.append(
-            "Neg Risk Exchange pUSD allowance is 0 — approve pUSD spending for "
-            f"{neg_risk_exchange_address}"
-        )
-
     ready = len(failures) == 0
     return CollateralStatus(
         pusd_balance=pusd_balance,
         pusd_allowance_ctf=pusd_allowance_ctf,
-        pusd_allowance_neg_risk=pusd_allowance_neg_risk,
         wallet_address=wallet_address,
         rpc_url=rpc_url,
         ready=ready,
@@ -158,7 +136,6 @@ async def check_collateral_readiness(
     rpc_url: str,
     pusd_address: str = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB",
     ctf_exchange_address: str = "0xE111180000d2663C0091e4f400237545B87B996B",
-    neg_risk_exchange_address: str = "0xe2222d279d744050d28e00520010520000310F59",
     min_pusd_balance: Decimal = Decimal("1.0"),
 ) -> CollateralStatus:
     """Run pUSD collateral readiness checks.
@@ -172,17 +149,15 @@ async def check_collateral_readiness(
         rpc_url=rpc_url,
         pusd_address=pusd_address,
         ctf_exchange_address=ctf_exchange_address,
-        neg_risk_exchange_address=neg_risk_exchange_address,
         min_pusd_balance=min_pusd_balance,
     )
 
     if status.ready:
         logger.info(
             "V2 collateral readiness OK — pUSD balance=%.2f, "
-            "CTF allowance=%.2f, NegRisk allowance=%.2f",
+            "CTF allowance=%.2f",
             status.pusd_balance,
             status.pusd_allowance_ctf,
-            status.pusd_allowance_neg_risk,
         )
     else:
         for failure in status.failures:
