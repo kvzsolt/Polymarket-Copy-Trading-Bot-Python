@@ -276,17 +276,17 @@ async def test_fresh_leader_rebuy_auto_clears_risk_block_in_live_pipeline(tmp_pa
         metadata={"leader_notional_at_trigger": 100.0},
     )
 
-    signal = _signal(side="BUY", tx_hash="0xfresh-buy", size=10.0, price=0.5)  # 5 USDC < 10% of 100
+    # With leader_notional_usdc=None, the fresh_leader_buy_after_net_flat
+    # rule is intentionally disabled because the caller does not have the
+    # leader's total position. Small routine BUY signals should NOT
+    # auto-clear risk blocks (P1 PR #63). The rule will be re-enabled when
+    # leader position fetch is available on the BUY path.
+    signal = _signal(side="BUY", tx_hash="0xfresh-buy", size=10.0, price=0.5)
     results = await execute_trades(ctx, "leader1", [signal], time.time())
 
     assert len(results) == 1
-    assert results[0].status != "skipped"
-    exec_svc.execute.assert_awaited()
-    assert ctx.risk_blocks_repo.get_active_risk_block(
-        user_id="user1",
-        condition_id="cond1",
-        token_id=FAKE_TOKEN_ID,
-    ) is None
+    assert results[0].status == "skipped"
+    assert results[0].reason == "market_risk_quarantined"
 
 
 @pytest.mark.asyncio
