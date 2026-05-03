@@ -14,7 +14,7 @@ eggs/
 secrets.env
 /data
 .ai
-
+.remember
 # Runtime state (created automatically on first run)
 /data/bot_state.db
 /log
@@ -43,6 +43,7 @@ ENV/
 .env.local
 config/runtime.local.env
 .kilo
+config/runtime.env
 
 # Generated config-local runtime state
 config/data/
@@ -79,6 +80,8 @@ docs/refactor-cleanup-review.md
 AGENTS.MD
 CLAUDE.md
 CODEX.md
-LEARNINGS.md
 KILOCODE.md
-l
+
+pytest_output.txt
+
+config/runtime.env

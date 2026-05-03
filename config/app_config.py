@@ -23,8 +23,9 @@ Design notes
 from __future__ import annotations
 
 import re
-import sys
 from collections.abc import Mapping
+from types import SimpleNamespace
+import sys as _sys
 from dataclasses import dataclass, field
 from enum import IntEnum
 from pathlib import Path
@@ -243,9 +244,6 @@ class SizingConfig:
     position_threshold: int
     max_position_pct: float
     enable_trust_size_multipliers: bool
-    copy_min_shares: float
-    copy_min_notional_usdc: float
-    copy_size_decimals: int
     trust_size_multiplier_min: float
     trust_size_multiplier_max: float
 
@@ -293,8 +291,6 @@ class ExecutionConfig:
     max_retries: int
     non_terminal_failure_max_attempts: int
     paper_trade_only: bool
-    enable_executable_order_guard: bool
-    executable_order_buffer_notional_usdc: float
     enable_copy_decision_gate: bool
     enable_near_resolution_gate: bool
     near_resolution_gate_price: float
@@ -363,7 +359,6 @@ class NetworkConfig:
     enable_metrics_server: bool
     metrics_port: int
     metrics_bind_host: str
-    min_order_size: float
 
 
 @dataclass(frozen=True)
@@ -429,6 +424,11 @@ class AppConfig:
 # ---------------------------------------------------------------------------
 
 
+# Keep version checks behind a local proxy so tests can monkeypatch this module
+# without mutating the real process-wide ``sys.version_info`` object.
+sys = SimpleNamespace(version_info=_sys.version_info)
+
+
 def _runtime_python_supported() -> bool:
     return sys.version_info.major == 3 and 11 <= sys.version_info.minor < 13
 
@@ -487,12 +487,6 @@ def _validate_semantics(cfg: AppConfig, errors: list[str]) -> None:
         and s.adaptive_min_percent > s.adaptive_max_percent
     ):
         errors.append("ADAPTIVE_MIN_PERCENT must be <= ADAPTIVE_MAX_PERCENT.")
-    if s.copy_min_shares < 0:
-        errors.append("COPY_MIN_SHARES must be >= 0.")
-    if s.copy_min_notional_usdc < 0:
-        errors.append("COPY_MIN_NOTIONAL_USDC must be >= 0.")
-    if s.copy_size_decimals < 0:
-        errors.append("COPY_SIZE_DECIMALS must be >= 0.")
     if s.trust_size_multiplier_min <= 0:
         errors.append("TRUST_SIZE_MULTIPLIER_MIN must be > 0.")
     if s.trust_size_multiplier_max <= 0:
@@ -502,8 +496,6 @@ def _validate_semantics(cfg: AppConfig, errors: list[str]) -> None:
 
     # Execution
     e = cfg.execution
-    if e.executable_order_buffer_notional_usdc < 0:
-        errors.append("EXECUTABLE_ORDER_BUFFER_NOTIONAL_USDC must be >= 0.")
     if e.slippage_tolerance < 0:
         errors.append("SLIPPAGE_TOLERANCE must be non-negative.")
     if e.min_share_price < 0:
@@ -653,9 +645,6 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         position_threshold=p.int_("POSITION_THRESHOLD", "0"),
         max_position_pct=p.float_("MAX_POSITION_PCT", "0.45"),
         enable_trust_size_multipliers=p.bool_("ENABLE_TRUST_SIZE_MULTIPLIERS", True),
-        copy_min_shares=p.float_("COPY_MIN_SHARES", "5"),
-        copy_min_notional_usdc=p.float_("COPY_MIN_NOTIONAL_USDC", "1"),
-        copy_size_decimals=p.int_("COPY_SIZE_DECIMALS", "4"),
         trust_size_multiplier_min=p.float_("TRUST_SIZE_MULTIPLIER_MIN", "0.50"),
         trust_size_multiplier_max=p.float_("TRUST_SIZE_MULTIPLIER_MAX", "1.25"),
     )
@@ -705,8 +694,6 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         max_retries=p.int_("MAX_RETRIES", "3"),
         non_terminal_failure_max_attempts=p.int_("NON_TERMINAL_FAILURE_MAX_ATTEMPTS", "3"),
         paper_trade_only=p.bool_("PAPER_TRADE_ONLY", False),
-        enable_executable_order_guard=p.bool_("ENABLE_EXECUTABLE_ORDER_GUARD", True),
-        executable_order_buffer_notional_usdc=p.float_("EXECUTABLE_ORDER_BUFFER_NOTIONAL_USDC", "1.05"),
         enable_copy_decision_gate=p.bool_("ENABLE_COPY_DECISION_GATE", False),
         enable_near_resolution_gate=p.bool_("ENABLE_NEAR_RESOLUTION_GATE", False),
         near_resolution_gate_price=p.float_("NEAR_RESOLUTION_GATE_PRICE", "0.95"),
@@ -797,14 +784,15 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
     network = NetworkConfig(
         rpc_url=p.string("RPC_URL", ""),
         chain_id=wallet.chain_id,
-        usdc_contract_address=p.string(
-            "USDC_CONTRACT_ADDRESS", "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
+        usdc_contract_address=(
+            p.string("COLLATERAL_CONTRACT_ADDRESS", "")
+            or p.string("PUSD_CONTRACT_ADDRESS", "")
+            or p.string("USDC_CONTRACT_ADDRESS", "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174")
         ),
         enforce_geoblock=p.bool_("ENFORCE_GEOBLOCK", True),
         enable_metrics_server=p.bool_("ENABLE_METRICS_SERVER", False),
         metrics_port=p.int_("METRICS_PORT", "9102"),
         metrics_bind_host=p.string("METRICS_BIND_HOST", "127.0.0.1"),
-        min_order_size=p.float_("MIN_ORDER_SIZE", "0.00001"),
     )
 
     redemption = RedemptionConfig(

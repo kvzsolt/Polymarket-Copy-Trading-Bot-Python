@@ -328,12 +328,6 @@ def validate_runtime_env() -> None:
         errors.append('GAS_COST_USDC must be non-negative.')
     if ENV.get('RISK_BUFFER_PCT', 0.0) < 0:
         errors.append('RISK_BUFFER_PCT must be non-negative.')
-    if ENV.get('COPY_MIN_SHARES', 0.0) < 0:
-        errors.append('COPY_MIN_SHARES must be >= 0.')
-    if ENV.get('COPY_MIN_NOTIONAL_USDC', 0.0) < 0:
-        errors.append('COPY_MIN_NOTIONAL_USDC must be >= 0.')
-    if ENV.get('COPY_SIZE_DECIMALS', 0) < 0:
-        errors.append('COPY_SIZE_DECIMALS must be >= 0.')
     if not (0 <= ENV.get('COPY_DECISION_MIN_SCORE', 0.0) <= 1):
         errors.append('COPY_DECISION_MIN_SCORE must be in [0, 1].')
     if not (0 <= ENV.get('TINY_LEADER_HIGH_CONFIDENCE_SCORE', 0.0) <= 1):
@@ -352,8 +346,6 @@ def validate_runtime_env() -> None:
         errors.append('TRUST_SIZE_MULTIPLIER_MAX must be > 0.')
     if ENV.get('TRUST_SIZE_MULTIPLIER_MIN', 0.0) > ENV.get('TRUST_SIZE_MULTIPLIER_MAX', 0.0):
         errors.append('TRUST_SIZE_MULTIPLIER_MIN must be <= TRUST_SIZE_MULTIPLIER_MAX.')
-    if ENV.get('EXECUTABLE_ORDER_BUFFER_NOTIONAL_USDC', 0.0) < 0:
-        errors.append('EXECUTABLE_ORDER_BUFFER_NOTIONAL_USDC must be >= 0.')
     if ENV.get('LEADER_SCORE_BALANCE_TARGET_USDC', 0.0) <= 0:
         errors.append('LEADER_SCORE_BALANCE_TARGET_USDC must be > 0.')
     if ENV.get('LEADER_SCORE_ACTIVITY_TARGET', 0) <= 0:
@@ -480,9 +472,6 @@ def _build_env_snapshot() -> dict[str, object]:
     'MAX_POSITION_PCT': _float('MAX_POSITION_PCT', '0.45'),
     'ENABLE_TRUST_SIZE_MULTIPLIERS': os.getenv('ENABLE_TRUST_SIZE_MULTIPLIERS', 'true').strip().lower() in ('1', 'true', 'yes'),
     # Decision-first sizing floor controls
-    'COPY_MIN_SHARES': _float('COPY_MIN_SHARES', '5'),
-    'COPY_MIN_NOTIONAL_USDC': _float('COPY_MIN_NOTIONAL_USDC', '1'),
-    'COPY_SIZE_DECIMALS': _int('COPY_SIZE_DECIMALS', '4'),
     'TRUST_SIZE_MULTIPLIER_MIN': _float('TRUST_SIZE_MULTIPLIER_MIN', '0.50'),
     'TRUST_SIZE_MULTIPLIER_MAX': _float('TRUST_SIZE_MULTIPLIER_MAX', '1.25'),
     'COPY_DECISION_MIN_SCORE': _float('COPY_DECISION_MIN_SCORE', '0.15'),
@@ -584,8 +573,6 @@ def _build_env_snapshot() -> dict[str, object]:
     'MAX_SHARE_PRICE': _float('MAX_SHARE_PRICE', '0'),
     'MAX_RETRIES': _int('MAX_RETRIES', '3'),
     'NON_TERMINAL_FAILURE_MAX_ATTEMPTS': _int('NON_TERMINAL_FAILURE_MAX_ATTEMPTS', '3'),
-    'ENABLE_EXECUTABLE_ORDER_GUARD': os.getenv('ENABLE_EXECUTABLE_ORDER_GUARD', 'true').strip().lower() in ('1', 'true', 'yes'),
-    'EXECUTABLE_ORDER_BUFFER_NOTIONAL_USDC': _float('EXECUTABLE_ORDER_BUFFER_NOTIONAL_USDC', '1.05'),
     'ENABLE_TIER_GATE_WATCHLIST': os.getenv('ENABLE_TIER_GATE_WATCHLIST', 'false').strip().lower() in ('1', 'true', 'yes'),
     'ENABLE_TIER_GATE_WATCHLIST_LOG': os.getenv('ENABLE_TIER_GATE_WATCHLIST_LOG', 'false').strip().lower() in ('1', 'true', 'yes'),
     # Global switch for copy decision gating (trade scoring / trust gating / decision rejections).
@@ -610,7 +597,10 @@ def _build_env_snapshot() -> dict[str, object]:
     'MULTI_USER_CONFIG_FILE': os.getenv('MULTI_USER_CONFIG_FILE', ''),
     'RPC_URL': os.getenv('RPC_URL', 'https://polygon-bor-rpc.publicnode.com'),
     'USDC_CONTRACT_ADDRESS': os.getenv('USDC_CONTRACT_ADDRESS', '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174'),
-    'MIN_ORDER_SIZE': _float('MIN_ORDER_SIZE', '0.00001'),
+    'PUSD_CONTRACT_ADDRESS': os.getenv('PUSD_CONTRACT_ADDRESS', '0x5731a8987bC70324e2C14d22D95a9cF0E84b687E'),
+    'CTF_EXCHANGE_V2_ADDRESS': os.getenv('CTF_EXCHANGE_V2_ADDRESS', '0xE111180000d2663C0091e4f400237545B87B996B'),
+    'NEG_RISK_EXCHANGE_V2_ADDRESS': os.getenv('NEG_RISK_EXCHANGE_V2_ADDRESS', '0xe2222d279d744050d28e00520010520000310F59'),
+    'MIN_PUSD_BALANCE': _float('MIN_PUSD_BALANCE', '1.0'),
     'BOT_STATE_DB': os.getenv('BOT_STATE_DB', 'data/bot_state.db'),
     'ENABLE_METRICS_SERVER': os.getenv('ENABLE_METRICS_SERVER', 'false').strip().lower() in ('1', 'true', 'yes'),
     'METRICS_PORT': _int('METRICS_PORT', '9102'),
@@ -652,6 +642,11 @@ def _build_env_snapshot() -> dict[str, object]:
     'LOG_BACKUP_COUNT': _int('LOG_BACKUP_COUNT', '3'),
     'PNL_LOG_FILE': os.getenv('PNL_LOG_FILE', 'log/pnl.jsonl'),
     'DISCOVERY_REFRESH_INTERVAL_SECONDS': _int('DISCOVERY_REFRESH_INTERVAL_SECONDS', '300'),
+
+    # --- V2 Migration readiness ---
+    # Set to true once smoke tests pass and pUSD balance/allowance confirmed.
+    # When false, a startup warning is logged. This is a safety signal, not a feature toggle.
+    'CLOB_V2_READY': _bool('CLOB_V2_READY', False),
 }
 
 

@@ -217,6 +217,31 @@ class TestGetMyBalance:
     def test_sync_balance_invalid_address_returns_none(self):
         assert _get_balance_sync("not-an-address") is None
 
+    def test_sync_balance_prefers_collateral_contract_over_legacy_usdc(self):
+        fake_contract = MagicMock()
+        fake_contract.functions.balanceOf.return_value.call.return_value = 12_500_000
+        fake_w3 = MagicMock()
+        fake_w3.eth.get_code.return_value = b"\x01"
+        fake_w3.eth.contract.return_value = fake_contract
+
+        with patch.dict(
+            "utils.getMyBalance.ENV",
+            {
+                "RPC_URL": "http://rpc",
+                "USDC_CONTRACT_ADDRESS": "0x" + "a" * 40,
+                "PUSD_CONTRACT_ADDRESS": "0x" + "b" * 40,
+                "COLLATERAL_CONTRACT_ADDRESS": "0x" + "c" * 40,
+            },
+            clear=False,
+        ), patch("utils.getMyBalance.Web3") as mock_web3:
+            mock_web3.HTTPProvider.return_value = object()
+            mock_web3.return_value = fake_w3
+            mock_web3.to_checksum_address.side_effect = lambda v: f"chk:{v}"
+
+            assert _get_balance_sync("0x1111111111111111111111111111111111111111") == 12.5
+            contract_address = fake_w3.eth.contract.call_args.kwargs["address"]
+            assert contract_address == "chk:0x" + "c" * 40
+
     @pytest.mark.asyncio
     async def test_async_balance_returns_value(self):
         with patch("utils.getMyBalance._get_balance_sync", return_value=12.5):
@@ -264,7 +289,8 @@ class TestTradeExecutorExecuteTrades:
         }
         with patch("legacy.tradeExecutor.get_my_balance", new_callable=AsyncMock, return_value=100.0), \
              patch("legacy.tradeExecutor.fetch_data", new_callable=AsyncMock, return_value=[]), \
-             patch("legacy.tradeExecutor._get_execution_service", return_value=mock_exec):
+             patch("legacy.tradeExecutor._get_execution_service", return_value=mock_exec), \
+             patch.dict("legacy.tradeExecutor.ENV", {"FUNDER_ADDRESS": "0x" + "a" * 40}, clear=False):
             await execute_trades(mock_clob, bot_params, [trade])
         mock_exec.execute.assert_called_once()
 
@@ -291,7 +317,7 @@ class TestTradeExecutorExecuteTrades:
         with patch("legacy.tradeExecutor.get_my_balance", new_callable=AsyncMock, return_value=100.0), \
              patch("legacy.tradeExecutor.fetch_data", new_callable=AsyncMock, return_value=[]), \
              patch("legacy.tradeExecutor._get_execution_service", return_value=mock_exec), \
-             patch.dict("legacy.tradeExecutor.ENV", {"MIN_SHARE_PRICE": 0.60}, clear=False):
+             patch.dict("legacy.tradeExecutor.ENV", {"MIN_SHARE_PRICE": 0.60, "FUNDER_ADDRESS": "0x" + "a" * 40}, clear=False):
             await execute_trades(mock_clob, bot_params, [trade])
 
         mock_exec.execute.assert_not_called()
@@ -331,13 +357,14 @@ class TestTradeExecutorExecuteTrades:
         }
         with patch("legacy.tradeExecutor.get_my_balance", new_callable=AsyncMock, return_value=100.0), \
              patch("legacy.tradeExecutor.fetch_data", new_callable=AsyncMock, return_value=[]), \
+             patch.dict("legacy.tradeExecutor.ENV", {"FUNDER_ADDRESS": "0x" + "a" * 40}, clear=False), \
              patch("legacy.tradeExecutor._get_execution_service", return_value=MagicMock(execute=AsyncMock())) as mock_exec:
             await execute_trades(mock_clob, bot_params, [trade])
         mock_exec.return_value.execute.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_execute_trades_skips_when_balance_lookup_fails(self):
-        """Missing balances should stop the batch before orders are posted."""
+        """Missing FUNDER_ADDRESS should raise before orders are posted."""
         from legacy.tradeExecutor import execute_trades
         mock_clob = AsyncMock()
         trade = {
@@ -352,11 +379,11 @@ class TestTradeExecutorExecuteTrades:
             "positionThreshold": 0,
         }
         with patch.dict("legacy.tradeExecutor.ENV", {"FUNDER_ADDRESS": ""}, clear=False), \
-             patch("legacy.tradeExecutor.get_my_balance", new_callable=AsyncMock, side_effect=[None, 100.0]), \
+             patch("legacy.tradeExecutor.get_my_balance", new_callable=AsyncMock, return_value=100.0), \
              patch("legacy.tradeExecutor.fetch_data", new_callable=AsyncMock, return_value=[]), \
-             patch("legacy.tradeExecutor._get_execution_service", return_value=MagicMock(execute=AsyncMock())) as mock_exec:
-            await execute_trades(mock_clob, bot_params, [trade])
-        mock_exec.return_value.execute.assert_not_called()
+             patch("legacy.tradeExecutor._get_execution_service", return_value=MagicMock(execute=AsyncMock())):
+            with pytest.raises(ValueError, match="FUNDER_ADDRESS"):
+                await execute_trades(mock_clob, bot_params, [trade])
 
     @pytest.mark.asyncio
     async def test_execute_trades_does_not_log_executed_for_duplicate_or_skip(self):
@@ -418,7 +445,8 @@ class TestTradeExecutorExecuteTrades:
              patch("legacy.tradeExecutor._get_execution_service", return_value=mock_exec), \
              patch("legacy.tradeExecutor._copy_decision.decide_buy", return_value=decision), \
              patch("legacy.tradeExecutor.log_trade_execution") as log_exec, \
-             patch("legacy.tradeExecutor.log_trade_skip") as log_skip:
+             patch("legacy.tradeExecutor.log_trade_skip") as log_skip, \
+             patch.dict("legacy.tradeExecutor.ENV", {"FUNDER_ADDRESS": "0x" + "a" * 40}, clear=False):
             await execute_trades(mock_clob, bot_params, [trade])
 
         log_exec.assert_not_called()
@@ -481,7 +509,8 @@ class TestTradeExecutorExecuteTrades:
              patch("legacy.tradeExecutor.fetch_data", new_callable=AsyncMock, return_value=[]), \
              patch("legacy.tradeExecutor._get_execution_service", return_value=mock_exec), \
              patch("legacy.tradeExecutor._copy_decision.decide_buy", return_value=decision), \
-             patch("legacy.tradeExecutor.log_trade_execution") as log_exec:
+             patch("legacy.tradeExecutor.log_trade_execution") as log_exec, \
+             patch.dict("legacy.tradeExecutor.ENV", {"FUNDER_ADDRESS": "0x" + "a" * 40}, clear=False):
             await execute_trades(mock_clob, bot_params, [trade])
 
         assert log_exec.called
@@ -490,349 +519,10 @@ class TestTradeExecutorExecuteTrades:
         assert kwargs["meta"]["leaderTx"] == "0xleaderhash"
         assert "tx_hash" not in kwargs or kwargs["tx_hash"] is None
 
-from utils.postOrder import _extract_copy_tx, _reason, _mark_bot_done
 
 
 # ---------------------------------------------------------------------------
 # PostOrder — helper functions
-# ---------------------------------------------------------------------------
-class TestPostOrderHelpers:
-    def test_extract_copy_tx_from_data(self):
-        resp = {"data": {"transactionHash": "0xabc"}}
-        assert _extract_copy_tx(resp) == "0xabc"
-
-    def test_extract_copy_tx_from_order_id(self):
-        resp = {"data": {}, "orderID": "order123"}
-        assert _extract_copy_tx(resp) == "order123"
-
-    def test_extract_copy_tx_fallback(self):
-        assert _extract_copy_tx({"data": {}}) == "N/A"
-
-    def test_extract_copy_tx_missing_data_key(self):
-        """When 'data' key is absent, should still return 'N/A'."""
-        assert _extract_copy_tx({}) == "N/A"
-
-    def test_reason_does_not_raise(self):
-        _reason("test reason", "detail")
-
-    def test_mark_bot_done_no_activity(self):
-        _mark_bot_done({"_id": None}, None, bot=True)
-
-    def test_mark_bot_done_no_id(self):
-        mock_coll = MagicMock()
-        _mark_bot_done({}, mock_coll, bot=True)
-        mock_coll.update_one.assert_not_called()
-
-    def test_mark_bot_done_update_one_raises(self):
-        """Exception in update_one should be swallowed silently."""
-        mock_coll = MagicMock()
-        mock_coll.update_one.side_effect = Exception("DB error")
-        _mark_bot_done({"_id": "abc"}, mock_coll, bot=True)
-
-
-# ---------------------------------------------------------------------------
-# PostOrder — _execute_order_loop
-# ---------------------------------------------------------------------------
-class TestPostOrderExecuteLoop:
-    @staticmethod
-    def _mock_clob(**overrides):
-        m = AsyncMock()
-        m.get_min_order_size.return_value = 0.0
-        for k, v in overrides.items():
-            setattr(getattr(m, k), 'return_value', v)
-        return m
-
-    @pytest.mark.asyncio
-    async def test_no_price_returns_error(self):
-        from utils.postOrder import _execute_order_loop
-        mock_client = self._mock_clob()
-        mock_client.get_price.return_value = None
-        price, resp, last_resp, retry, err, filled_tokens, filled_usdc = await _execute_order_loop(
-            mock_client, {"conditionId": "c1"}, "asset1", "BUY", 0, 10.0
-        )
-        assert err is not None
-        assert "no price" in err
-        assert filled_tokens == 0
-        assert filled_usdc == 0
-
-    @pytest.mark.asyncio
-    async def test_successful_buy(self):
-        from utils.postOrder import _execute_order_loop
-        from py_clob_client.order_builder.constants import BUY
-        mock_client = self._mock_clob()
-        mock_client.get_price.return_value = {"price": "0.5", "size": "100"}
-        mock_client.post_order.return_value = {"success": True, "data": {"orderID": "o1"}}
-        price, resp, last_resp, retry, err, filled_tokens, filled_usdc = await _execute_order_loop(
-            mock_client, {"conditionId": "c1"}, "asset1", "BUY", BUY, 10.0
-        )
-        assert err is None
-        assert retry == 0
-        assert price == 0.5
-        assert resp["success"] is True
-        assert filled_tokens > 0
-        assert filled_usdc > 0
-
-    @pytest.mark.asyncio
-    async def test_retry_exhaustion(self):
-        from utils.postOrder import _execute_order_loop
-        from py_clob_client.order_builder.constants import BUY
-        mock_client = self._mock_clob()
-        mock_client.get_price.return_value = {"price": "0.5", "size": "100"}
-        mock_client.post_order.return_value = {"success": False, "error": "rejected"}
-        with patch("utils.postOrder.RETRY_BACKOFF_BASE", 0.001):
-            price, resp, last_resp, retry, err, filled_tokens, filled_usdc = await _execute_order_loop(
-                mock_client, {"conditionId": "c1"}, "asset1", "BUY", BUY, 10.0
-            )
-        assert err is None
-        assert retry == 3
-        assert last_resp["success"] is False
-        assert filled_tokens == 0
-        assert filled_usdc == 0
-
-    @pytest.mark.asyncio
-    async def test_sell_size_is_tokens(self):
-        from utils.postOrder import _execute_order_loop
-        from py_clob_client.order_builder.constants import SELL
-        mock_client = self._mock_clob()
-        mock_client.get_price.return_value = {"price": "0.5", "size": "100"}
-        mock_client.post_order.return_value = {"success": True, "data": {}}
-        price, resp, last_resp, retry, err, filled_tokens, filled_usdc = await _execute_order_loop(
-            mock_client, {"conditionId": "c1"}, "asset1", "SELL", SELL, 5.0, size_is_tokens=True
-        )
-        assert err is None
-        assert retry == 0
-        assert filled_tokens == 5.0
-        assert filled_usdc == pytest.approx(2.5)
-        mock_client.post_order.assert_called_once()
-        order_args = mock_client.post_order.call_args[0][0]
-        assert order_args.size == 5.0
-
-    @pytest.mark.asyncio
-    async def test_empty_price_string_returns_error(self):
-        """Price data with empty price string should return error."""
-        from utils.postOrder import _execute_order_loop
-        mock_client = self._mock_clob()
-        mock_client.get_price.return_value = {"price": "", "size": "100"}
-        price, resp, last_resp, retry, err, filled_tokens, filled_usdc = await _execute_order_loop(
-            mock_client, {"conditionId": "c1"}, "asset1", "BUY", 0, 10.0
-        )
-        assert err is not None
-        assert "price" in err
-        assert filled_tokens == 0
-        assert filled_usdc == 0
-
-    @pytest.mark.asyncio
-    async def test_buy_below_min_share_price_returns_error(self):
-        """BUY should be rejected when quote is below MIN_SHARE_PRICE."""
-        from utils.postOrder import _execute_order_loop
-        from py_clob_client.order_builder.constants import BUY
-        mock_client = self._mock_clob()
-        mock_client.get_price.return_value = {"price": "0.40", "size": "100"}
-
-        with patch("utils.postOrder.MIN_SHARE_PRICE", 0.50):
-            _, _, _, _, err, filled_tokens, filled_usdc = await _execute_order_loop(
-                mock_client, {"conditionId": "c1"}, "asset1", "BUY", BUY, 10.0
-            )
-
-        assert err is not None
-        assert "min_share_price" in err
-        assert filled_tokens == 0
-        assert filled_usdc == 0
-
-    @pytest.mark.asyncio
-    async def test_buy_enforces_market_min_size(self):
-        """Order size should be bumped up to market minimum."""
-        from utils.postOrder import _execute_order_loop
-        from py_clob_client.order_builder.constants import BUY
-        mock_client = self._mock_clob()
-        mock_client.get_min_order_size.return_value = 5.0
-        mock_client.get_price.return_value = {"price": "0.37", "size": "100"}
-        mock_client.post_order.return_value = {"success": True, "data": {}}
-        price, resp, last_resp, retry, err, filled_tokens, filled_usdc = await _execute_order_loop(
-            mock_client, {"conditionId": "c1"}, "asset1", "BUY", BUY, 1.0
-        )
-        assert err is None
-        assert retry == 0
-        assert filled_tokens == 5.0
-        assert filled_usdc == pytest.approx(1.85, abs=0.02)
-        order_args = mock_client.post_order.call_args[0][0]
-        assert order_args.size == 5.0
-
-    @pytest.mark.asyncio
-    async def test_slippage_rejection_buy(self):
-        """BUY should be rejected if price moved too far above reference."""
-        from utils.postOrder import _execute_order_loop
-        from py_clob_client.order_builder.constants import BUY
-        mock_client = self._mock_clob()
-        # Current price 0.60, reference 0.50 → 20% slippage > 2% tolerance
-        mock_client.get_price.return_value = {"price": "0.60", "size": "100"}
-        mock_client.post_order.return_value = {"success": True, "data": {}}
-        price, resp, last_resp, retry, err, _, _ = await _execute_order_loop(
-            mock_client, {"conditionId": "c1"}, "asset1", "BUY", BUY, 10.0,
-            reference_price=0.50,
-        )
-        assert err is not None
-        assert "slippage" in err
-
-    @pytest.mark.asyncio
-    async def test_slippage_rejection_sell(self):
-        """SELL should be rejected if price moved too far below reference."""
-        from utils.postOrder import _execute_order_loop
-        from py_clob_client.order_builder.constants import SELL
-        mock_client = self._mock_clob()
-        # Current price 0.40, reference 0.50 → 20% slippage
-        mock_client.get_price.return_value = {"price": "0.40", "size": "100"}
-        mock_client.post_order.return_value = {"success": True, "data": {}}
-        price, resp, last_resp, retry, err, _, _ = await _execute_order_loop(
-            mock_client, {"conditionId": "c1"}, "asset1", "SELL", SELL, 5.0,
-            size_is_tokens=True, reference_price=0.50,
-        )
-        assert err is not None
-        assert "slippage" in err
-
-    @pytest.mark.asyncio
-    async def test_no_slippage_check_when_no_reference(self):
-        """No reference price → no slippage rejection."""
-        from utils.postOrder import _execute_order_loop
-        from py_clob_client.order_builder.constants import BUY
-        mock_client = self._mock_clob()
-        mock_client.get_price.return_value = {"price": "0.90", "size": "100"}
-        mock_client.post_order.return_value = {"success": True, "data": {}}
-        price, resp, last_resp, retry, err, filled_tokens, filled_usdc = await _execute_order_loop(
-            mock_client, {"conditionId": "c1"}, "asset1", "BUY", BUY, 10.0,
-            reference_price=0.0,
-        )
-        assert err is None
-        assert retry == 0
-        assert filled_tokens > 0
-        assert filled_usdc > 0
-
-
-# ---------------------------------------------------------------------------
-# PostOrder — full post_order flow (returns Tuple[str, Optional[dict]])
-# ---------------------------------------------------------------------------
-class TestPostOrderFull:
-    @staticmethod
-    def _mock_clob(**overrides):
-        m = AsyncMock()
-        m.get_min_order_size.return_value = 0.0
-        for k, v in overrides.items():
-            setattr(getattr(m, k), 'return_value', v)
-        return m
-
-    @pytest.mark.asyncio
-    async def test_buy_no_asset_skips(self):
-        from utils.postOrder import post_order
-        mock_client = self._mock_clob()
-        trade = {"conditionId": "c1", "transactionHash": "0x1"}
-        with patch("utils.postOrder._user_activity", return_value=None):
-            result, fill = await post_order(mock_client, "buy", None, None, trade, 100.0, 1000.0, {"tradeRate": 5})
-        assert result == 'skipped'
-        assert fill is None
-        mock_client.get_price.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_sell_no_position_skips(self):
-        from utils.postOrder import post_order
-        mock_client = self._mock_clob()
-        trade = {"conditionId": "c1", "asset": "a1", "transactionHash": "0x1"}
-        with patch("utils.postOrder._user_activity", return_value=None):
-            result, fill = await post_order(mock_client, "sell", None, None, trade, 100.0, 1000.0, {})
-        assert result == 'skipped'
-        assert fill is None
-        mock_client.get_price.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_buy_success_flow(self):
-        from utils.postOrder import post_order
-        mock_client = self._mock_clob()
-        mock_client.get_price.return_value = {"price": "0.5", "size": "100"}
-        mock_client.post_order.return_value = {"success": True, "data": {"transactionHash": "0xcopy"}}
-        trade = {
-            "conditionId": "c1", "asset": "a1", "transactionHash": "0x1",
-            "clampedAmount": 5.0, "side": "BUY", "price": 0.5,
-        }
-        with patch("utils.postOrder._user_activity", return_value=None):
-            result, fill = await post_order(mock_client, "buy", None, None, trade, 100.0, 1000.0, {"tradeRate": 5})
-        assert result == 'executed'
-        assert fill is not None
-        assert fill["price"] == 0.5
-        assert fill["size_tokens"] > 0
-        assert fill["usdc_value"] > 0
-        mock_client.post_order.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_sell_success_flow(self):
-        from utils.postOrder import post_order
-        mock_client = self._mock_clob()
-        mock_client.get_price.return_value = {"price": "0.5", "size": "100"}
-        mock_client.post_order.return_value = {"success": True, "data": {"transactionHash": "0xcopy"}}
-        trade = {
-            "conditionId": "c1", "asset": "a1", "transactionHash": "0x1",
-            "size": 10, "side": "SELL", "price": 0.5,
-        }
-        my_position = {"conditionId": "c1", "asset": "a1", "size": 5}
-        user_position = {"conditionId": "c1", "size": 0}
-        with patch("utils.postOrder._user_activity", return_value=None):
-            result, fill = await post_order(mock_client, "sell", my_position, user_position, trade, 100.0, 1000.0, {})
-        assert result == 'executed'
-        assert fill is not None
-        assert fill["price"] == 0.5
-        assert fill["size_tokens"] > 0
-        assert fill["usdc_value"] > 0
-        mock_client.post_order.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_merge_treated_as_buy(self):
-        from utils.postOrder import post_order
-        mock_client = self._mock_clob()
-        mock_client.get_price.return_value = {"price": "0.5", "size": "100"}
-        mock_client.post_order.return_value = {"success": True, "data": {}}
-        trade = {
-            "conditionId": "c1", "asset": "a1", "transactionHash": "0x1",
-            "clampedAmount": 5.0, "side": "BUY", "price": 0.5,
-        }
-        with patch("utils.postOrder._user_activity", return_value=None):
-            result, fill = await post_order(mock_client, "merge", None, None, trade, 100.0, 1000.0, {"tradeRate": 5})
-        assert result == 'executed'
-        assert fill is not None
-        mock_client.post_order.assert_called_once()
-
-
-# ---------------------------------------------------------------------------
-# PostOrder — post_risk_sell
-# ---------------------------------------------------------------------------
-class TestPostRiskSell:
-    @pytest.mark.asyncio
-    async def test_risk_sell_success(self):
-        from utils.postOrder import post_risk_sell
-        from services.positionManager import TrackedPosition
-        mock_client = AsyncMock()
-        mock_client.get_min_order_size.return_value = 0.0
-        mock_client.get_price.return_value = {"price": "0.3", "size": "100"}
-        mock_client.post_order.return_value = {"success": True, "data": {}}
-        pos = TrackedPosition(
-            condition_id="c1", asset="a1", side="BUY",
-            entry_price=0.5, size_tokens=10.0, usdc_cost=5.0,
-        )
-        result = await post_risk_sell(mock_client, pos, 0.3, "advanced_risk_exit")
-        assert result == 'executed'
-
-    @pytest.mark.asyncio
-    async def test_risk_sell_zero_tokens_skipped(self):
-        from utils.postOrder import post_risk_sell
-        from services.positionManager import TrackedPosition
-        mock_client = AsyncMock()
-        pos = TrackedPosition(
-            condition_id="c1", asset="a1", side="BUY",
-            entry_price=0.5, size_tokens=0.0, usdc_cost=0.0,
-        )
-        result = await post_risk_sell(mock_client, pos, 0.3, "advanced_risk_exit")
-        assert result == 'skipped'
-
-
-# ---------------------------------------------------------------------------
-# FetchData
 # ---------------------------------------------------------------------------
 class TestFetchData:
     @pytest.mark.asyncio

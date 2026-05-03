@@ -113,6 +113,19 @@ class TestHappyPath:
         assert cfg.raw["PRIVATE_KEY"] == _VALID_PRIVATE_KEY
         assert cfg.raw["FUNDER_ADDRESS"] == _VALID_FUNDER
 
+    def test_network_contract_prefers_collateral_then_pusd(self, valid_env: dict[str, str]) -> None:
+        valid_env["USDC_CONTRACT_ADDRESS"] = "0x" + "1" * 40
+        valid_env["PUSD_CONTRACT_ADDRESS"] = "0x" + "2" * 40
+        valid_env["COLLATERAL_CONTRACT_ADDRESS"] = "0x" + "3" * 40
+        cfg = load_config(valid_env)
+        assert cfg.network.usdc_contract_address == "0x" + "3" * 40
+
+    def test_network_contract_falls_back_to_pusd_before_legacy_usdc(self, valid_env: dict[str, str]) -> None:
+        valid_env["USDC_CONTRACT_ADDRESS"] = "0x" + "1" * 40
+        valid_env["PUSD_CONTRACT_ADDRESS"] = "0x" + "2" * 40
+        cfg = load_config(valid_env)
+        assert cfg.network.usdc_contract_address == "0x" + "2" * 40
+
     def test_load_without_env_reads_os_environ(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -248,8 +261,9 @@ class TestSemanticInvariants:
         with pytest.raises(EnvValidationError, match="MAX_SHARE_PRICE must be >= MIN_SHARE_PRICE"):
             load_config(valid_env)
 
-    def test_max_position_pct_out_of_range(self, valid_env: dict[str, str]) -> None:
-        valid_env["MAX_POSITION_PCT"] = "1.5"
+    @pytest.mark.parametrize("bad_value", ["0", "1.5"])
+    def test_max_position_pct_out_of_range(self, valid_env: dict[str, str], bad_value: str) -> None:
+        valid_env["MAX_POSITION_PCT"] = bad_value
         with pytest.raises(EnvValidationError, match=r"MAX_POSITION_PCT must be in \(0, 1\]"):
             load_config(valid_env)
 

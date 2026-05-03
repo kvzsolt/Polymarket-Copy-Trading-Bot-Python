@@ -14,6 +14,9 @@ from services.reconciliation import (
     _order_age_seconds,
     _safe_int,
 )
+from storage.sqlite.connection import create_connection
+from storage.sqlite.migrations import apply_migrations
+from storage.sqlite.orders_repo import OrderSubmissionRecord, OrdersRepo
 
 
 # ---------------------------------------------------------------------------
@@ -165,7 +168,7 @@ class TestReconciliationService:
         orders = [{"id": "x1", "timestamp": now}]
         clob = _make_mock_clob(orders=orders)
         repo_mock = MagicMock()
-        repo_mock.get_by_idempotency_key.return_value = None
+        repo_mock.get_by_order_id.return_value = None
 
         svc = ReconciliationService(
             clob_client=clob,
@@ -174,16 +177,17 @@ class TestReconciliationService:
         )
         result = await svc.reconcile()
 
+        repo_mock.get_by_order_id.assert_called_once_with("x1")
         assert result.locally_unknown_orders == 1
 
     @pytest.mark.asyncio
     async def test_known_order_not_counted_unknown(self):
-        """Orders found locally should not be counted as unknown."""
+        """Orders found locally by venue order_id should not be counted as unknown."""
         now = time.time()
         orders = [{"id": "k1", "timestamp": now}]
         clob = _make_mock_clob(orders=orders)
         repo_mock = MagicMock()
-        repo_mock.get_by_idempotency_key.return_value = {"some": "record"}
+        repo_mock.get_by_order_id.return_value = {"some": "record"}
 
         svc = ReconciliationService(
             clob_client=clob,
@@ -192,6 +196,7 @@ class TestReconciliationService:
         )
         result = await svc.reconcile()
 
+        repo_mock.get_by_order_id.assert_called_once_with("k1")
         assert result.locally_unknown_orders == 0
 
     @pytest.mark.asyncio
@@ -246,3 +251,49 @@ class TestReconciliationService:
             svc = ReconciliationService(clob_client=clob)
             assert svc.stale_threshold == 1800.0
             assert svc.auto_cancel is True
+
+
+class TestOrderIdentityResolution:
+    def test_orders_repo_can_lookup_by_venue_order_id(self, tmp_path):
+        db_path = str(tmp_path / "reconcile.db")
+        with create_connection(db_path) as conn:
+            apply_migrations(conn)
+
+        repo = OrdersRepo(db_path)
+        repo.save_submission(
+            OrderSubmissionRecord(
+                idempotency_key="idem-1",
+                user_id="u1",
+                leader_id="leader1",
+                order_id="venue-123",
+                status="submitted_unconfirmed",
+                request_payload={"foo": "bar"},
+                response_payload={"orderID": "venue-123"},
+            )
+        )
+
+        by_order = repo.get_by_order_id("venue-123")
+        assert by_order is not None
+        assert by_order["order_id"] == "venue-123"
+        assert by_order["idempotency_key"] == "idem-1"
+
+    @pytest.mark.asyncio
+    async def test_reconciliation_prefers_venue_order_id_lookup(self):
+        now = time.time()
+        orders = [{"id": "venue-999", "timestamp": now}]
+        clob = _make_mock_clob(orders=orders)
+        repo_mock = MagicMock()
+        repo_mock.get_by_order_id.return_value = {"idempotency_key": "idem-999", "order_id": "venue-999"}
+        repo_mock.get_by_idempotency_key.side_effect = AssertionError(
+            "reconciliation must not treat venue order_id as idempotency key"
+        )
+
+        svc = ReconciliationService(
+            clob_client=clob,
+            orders_repo=repo_mock,
+            stale_threshold_seconds=9999,
+        )
+        result = await svc.reconcile()
+
+        repo_mock.get_by_order_id.assert_called_once_with("venue-999")
+        assert result.locally_unknown_orders == 0

@@ -9,8 +9,9 @@ dependencies = [
   "aiohttp==3.13.5",
   "web3==7.15.0",
   "eth-account==0.13.7",
-  "py-clob-client==0.34.6",
+  "py-clob-client-v2==1.0.0",
   "rich==14.3.3",
+  "websockets>=13.0",
 ]
 
 [project.optional-dependencies]
@@ -27,6 +28,7 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = [
+  "clients*",
   "config*",
   "interfaces*",
   "models*",

@@ -30,37 +30,78 @@ def _masked_address(address: str | None) -> str:
 
 def _get_balance_sync(address: str) -> float | None:
     rpc_url = ENV.get('RPC_URL')
-    usdc_contract_address = ENV.get('USDC_CONTRACT_ADDRESS')
 
     if not rpc_url:
         logger.error("Balance lookup failed: RPC_URL is not configured")
         return None
-    if not usdc_contract_address:
-        logger.error("Balance lookup failed: USDC_CONTRACT_ADDRESS is not configured")
+
+    raw_candidates = [
+        ENV.get('COLLATERAL_CONTRACT_ADDRESS'),
+        ENV.get('PUSD_CONTRACT_ADDRESS'),
+        ENV.get('USDC_CONTRACT_ADDRESS'),
+    ]
+    # Preserve order but drop blanks/duplicates.
+    seen: set[str] = set()
+    candidates: list[str] = []
+    for raw in raw_candidates:
+        s = str(raw or '').strip()
+        if s and s not in seen:
+            seen.add(s)
+            candidates.append(s)
+
+    if not candidates:
+        logger.error("Balance lookup failed: collateral contract address is not configured")
         return None
 
     try:
-        checksum_contract = Web3.to_checksum_address(usdc_contract_address)
         checksum_address = Web3.to_checksum_address(address)
     except (TypeError, ValueError) as exc:
         logger.error(
-            f"Balance lookup failed: invalid address config for wallet={_masked_address(address)} | error={exc}"
+            f"Balance lookup failed: invalid wallet address for wallet={_masked_address(address)} | error={exc}"
         )
         return None
 
     try:
         w3 = Web3(Web3.HTTPProvider(rpc_url))
-        usdc_contract = w3.eth.contract(address=checksum_contract, abi=USDC_ABI)
-        balance_usdc = usdc_contract.functions.balanceOf(checksum_address).call()
-        bal = float(balance_usdc / 10**6)
-        logger.debug(f"USDC balance for {_masked_address(checksum_address)}={bal:.2f}")
-        return bal
     except Exception as exc:
-        logger.error(
-            f"Balance lookup failed for wallet={_masked_address(checksum_address)} | error={exc}",
-            exc_info=True,
-        )
+        logger.error("Balance lookup failed: could not create Web3 provider: %s", exc)
         return None
+    failures: list[str] = []
+
+    for contract_address in candidates:
+        try:
+            checksum_contract = Web3.to_checksum_address(contract_address)
+        except (TypeError, ValueError) as exc:
+            failures.append(f"invalid_contract:{_masked_address(contract_address)}:{exc}")
+            continue
+
+        try:
+            code = w3.eth.get_code(checksum_contract)
+            if not code:
+                failures.append(f"no_code:{checksum_contract}")
+                continue
+
+            token_contract = w3.eth.contract(address=checksum_contract, abi=USDC_ABI)
+            raw_balance = token_contract.functions.balanceOf(checksum_address).call()
+            bal = float(raw_balance / 10**6)
+            logger.debug(
+                "Collateral balance for %s=%0.2f via %s",
+                _masked_address(checksum_address),
+                bal,
+                _masked_address(checksum_contract),
+            )
+            return bal
+        except Exception as exc:
+            # Typical misconfig/chain mismatch path; keep trying fallbacks.
+            failures.append(f"call_failed:{_masked_address(checksum_contract)}:{exc}")
+            continue
+
+    logger.error(
+        "Balance lookup failed for wallet=%s | no usable collateral contract. tried=%s",
+        _masked_address(checksum_address),
+        "; ".join(failures[:5]),
+    )
+    return None
 
 
 async def get_my_balance(address: str) -> float | None:
