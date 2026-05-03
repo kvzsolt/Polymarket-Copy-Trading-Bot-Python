@@ -23,8 +23,7 @@ from decimal import Decimal
 
 import pytest
 
-from clients.market_ws import _HEARTBEAT_INTERVAL as MARKET_HB
-from clients.user_ws import _HEARTBEAT_INTERVAL as USER_HB
+from clients.ws_constants import HEARTBEAT_INTERVAL
 from services.intentRegistry import (
     DuplicateIntentError,
     IllegalTransitionError,
@@ -90,7 +89,8 @@ class TestPositionScopeIdentity:
 
     def test_scope_is_frozen(self) -> None:
         s = _scope()
-        with pytest.raises(Exception):  # FrozenInstanceError
+        import dataclasses
+        with pytest.raises(dataclasses.FrozenInstanceError):
             s.user_id = "mutated"  # type: ignore[misc]
 
     def test_scope_usable_as_dict_key(self) -> None:
@@ -119,7 +119,7 @@ class TestCoordinatorSerializationStress:
     async def test_n_way_same_scope_strictly_serialized(self) -> None:
         coord = PositionActionCoordinator()
         scope = _scope()
-        N = 32
+        contender_count = 32
         active = 0
         peak = 0
         completed = 0
@@ -135,10 +135,10 @@ class TestCoordinatorSerializationStress:
                 active -= 1
                 completed += 1
 
-        await asyncio.gather(*(worker() for _ in range(N)))
+        await asyncio.gather(*(worker() for _ in range(contender_count)))
 
         assert peak == 1
-        assert completed == N
+        assert completed == contender_count
         assert coord.locks_held() == 0
 
     @pytest.mark.asyncio
@@ -179,20 +179,38 @@ class TestCacheTTLBoundary:
     The cache uses ``(now - ts) > ttl`` so ts == ttl is still valid.
     """
 
-    def test_quote_just_within_ttl_kept(self) -> None:
+    def test_quote_just_within_ttl_kept(self, monkeypatch: pytest.MonkeyPatch) -> None:
         cache = PositionPriceCache(quote_ttl=10.0, tick_ttl=300.0)
+        
+        import services.price_cache
+        current_time = 1000.0
+        monkeypatch.setattr(services.price_cache.time, "monotonic", lambda: current_time)
+        
         cache.set_quote(
             "tkn", best_bid=Decimal("0.5"), best_ask=Decimal("0.55")
         )
-        # Immediate read is well inside TTL
+        
+        # Advance clock to EXACTLY the TTL boundary
+        current_time += 10.0
+        
+        # Exact equal boundary is considered fresh (now - ts <= ttl)
         assert cache.get_quote("tkn") is not None
 
-    def test_quote_past_ttl_evicted(self) -> None:
+    def test_quote_past_ttl_evicted(self, monkeypatch: pytest.MonkeyPatch) -> None:
         cache = PositionPriceCache(quote_ttl=0.02, tick_ttl=0.02)
+        
+        # Patch the time module used inside price_cache.py
+        import services.price_cache
+        current_time = 1000.0
+        monkeypatch.setattr(services.price_cache.time, "monotonic", lambda: current_time)
+        
         cache.set_quote(
             "tkn", best_bid=Decimal("0.5"), best_ask=Decimal("0.55")
         )
-        time.sleep(0.05)
+        
+        # Advance clock past TTL
+        current_time += 0.05
+        
         assert cache.get_quote("tkn") is None
 
     def test_invalidate_removes_quote_only_for_target_token(self) -> None:
@@ -222,10 +240,10 @@ class TestCacheTTLBoundary:
 
 class TestHeartbeatInterval:
     def test_market_ws_heartbeat_is_five_seconds(self) -> None:
-        assert MARKET_HB == 5
+        assert HEARTBEAT_INTERVAL == 5
 
     def test_user_ws_heartbeat_is_five_seconds(self) -> None:
-        assert USER_HB == 5
+        assert HEARTBEAT_INTERVAL == 5
 
 
 # ---------------------------------------------------------------------------

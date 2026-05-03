@@ -42,7 +42,7 @@ DEFAULT_MARKET_WS_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 # Reconnect parameters
 _MIN_RECONNECT_DELAY = 1.0
 _MAX_RECONNECT_DELAY = 30.0
-_HEARTBEAT_INTERVAL = 5  # seconds — per spec
+from clients.ws_constants import HEARTBEAT_INTERVAL  # seconds — per spec
 
 
 class MarketWebSocket:
@@ -171,7 +171,7 @@ class MarketWebSocket:
     async def _heartbeat(self, ws: Any) -> None:
         """Send PING every 5 seconds. Exits on send failure."""
         while self._running:
-            await asyncio.sleep(_HEARTBEAT_INTERVAL)
+            await asyncio.sleep(HEARTBEAT_INTERVAL)
             try:
                 await ws.send("PING")
             except Exception as exc:
