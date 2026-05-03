@@ -463,9 +463,12 @@ if __name__ == "__main__":
         loop.run_until_complete(main_task)
     except (asyncio.CancelledError, KeyboardInterrupt):
         pass
-    except Exception:
+    except Exception as exc:
         import sys
+        import traceback
 
+        print_error(f"Fatal startup error: {exc}")
+        traceback.print_exc()
         sys.exit(1)
     finally:
         loop.close()
