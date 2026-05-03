@@ -341,6 +341,13 @@ def _account_cap_policy_enabled(context: TradingContext) -> bool:
 
 
 def _trade_config(context: TradingContext) -> AppConfig:
+    """Return the AppConfig for this context.
+
+    ``TracingContext.config`` is typed ``AppConfig | None`` and may be unset
+    by integration tests or callers that don't run the full ``load_config()``
+    startup path. Callers that *require* a real config (live tier gating)
+    must inject one — the function raises when it is absent.
+    """
     config = context.config
     if config is None:
         raise RuntimeError("TradingContext.config is required for live tier gating")
@@ -493,9 +500,14 @@ async def _resolve_position_pct_cap(
     market_exposure_usdc = snapshot.market_exposure_usdc
     max_position_pct = Decimal(str(_trade_config(context).sizing.max_position_pct or 0))
     if max_position_pct <= 0:
+        # MAX_POSITION_PCT <= 0 means the cap is intentionally disabled by the
+        # operator. Returning ``allow=False`` here would silently block every
+        # BUY signal — that was a regression introduced when the legacy
+        # ``_BuyRiskCap(True, "disabled", ...)`` branch was rewritten. Restore
+        # the disabled-cap semantics so BUYs continue to flow uncapped.
         return _BuyRiskCap(
-            allow=False,
-            reason="max_position_pct_invalid",
+            allow=True,
+            reason="disabled",
             policy_name="max_position_pct",
             cap_notional_usdc=Decimal("0"),
         )
@@ -1050,12 +1062,21 @@ async def execute_trades(
                     )
                     continue
 
+                # NOTE: ``leader_notional_usdc`` MUST be the leader's CURRENT
+                # total position notional in this market — not the size of a
+                # single signal. Passing ``signal.usdc_size`` here causes the
+                # ``fresh_leader_buy_after_net_flat`` clear rule to mis-fire on
+                # any incremental BUY whose notional is < 10% of the trigger
+                # notional, prematurely clearing the risk block. We do not
+                # currently fetch the leader's live position on the BUY path,
+                # so we pass ``None`` to disable that rule. The
+                # ``leader_changed`` rule still applies. (Greptile P1 PR #63.)
                 _decision: EntryDecision | None = await _eps.check_entry(
                     user_id=context.user_id,
                     condition_id=signal.condition_id,
                     token_id=signal.token_id,
                     leader_id=leader_id,
-                    leader_notional_usdc=float(signal.usdc_size),
+                    leader_notional_usdc=None,
                 )
 
                 if _decision is not None and not _decision.allowed:
