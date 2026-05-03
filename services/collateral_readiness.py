@@ -20,31 +20,7 @@ from typing import Any
 
 from web3 import Web3
 
-from config.env import ENV
-
 logger = logging.getLogger("collateral_readiness")
-
-# pUSD (Polymarket USD) collateral on Polygon.
-# Prefer the explicit collateral config, then legacy aliases, then the current
-# known Polymarket pUSD address.
-_PUSD_CONTRACT_ADDRESS = (
-    ENV.get("COLLATERAL_CONTRACT_ADDRESS")
-    or ENV.get("PUSD_CONTRACT_ADDRESS")
-    or ENV.get("USDC_CONTRACT_ADDRESS")
-    or "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"
-)
-
-# CTF Exchange V2 — the exchange contract that needs pUSD allowance.
-_CTF_EXCHANGE_V2 = ENV.get(
-    "CTF_EXCHANGE_V2_ADDRESS",
-    "0xE111180000d2663C0091e4f400237545B87B996B",
-)
-
-# Neg Risk Exchange V2
-_NEG_RISK_EXCHANGE_V2 = ENV.get(
-    "NEG_RISK_EXCHANGE_V2_ADDRESS",
-    "0xe2222d279d744050d28e00520010520000310F59",
-)
 
 _ERC20_ABI: list[dict[str, Any]] = [
     {
@@ -65,12 +41,6 @@ _ERC20_ABI: list[dict[str, Any]] = [
         "type": "function",
     },
 ]
-
-# Minimum pUSD balance to consider "ready" (configurable).
-_MIN_PUSD_BALANCE = Decimal(
-    ENV.get("MIN_PUSD_BALANCE", "1.0")
-)
-
 
 @dataclass(frozen=True)
 class CollateralStatus:
@@ -104,11 +74,15 @@ def _check_sync(
     *,
     wallet_address: str,
     rpc_url: str,
+    pusd_address: str,
+    ctf_exchange_address: str,
+    neg_risk_exchange_address: str,
+    min_pusd_balance: Decimal,
 ) -> CollateralStatus:
     """Run all collateral checks synchronously (call from thread)."""
     failures: list[str] = []
     checksum_wallet = Web3.to_checksum_address(wallet_address)
-    pusd_contract = Web3.to_checksum_address(_PUSD_CONTRACT_ADDRESS)
+    pusd_contract = Web3.to_checksum_address(pusd_address)
 
     # 1. pUSD balance
     try:
@@ -123,9 +97,9 @@ def _check_sync(
         pusd_balance = Decimal("0")
         failures.append(f"pUSD balance check failed: {exc}")
 
-    if pusd_balance < _MIN_PUSD_BALANCE:
+    if pusd_balance < min_pusd_balance:
         failures.append(
-            f"pUSD balance {pusd_balance:.2f} < minimum {_MIN_PUSD_BALANCE}"
+            f"pUSD balance {pusd_balance:.2f} < minimum {min_pusd_balance}"
         )
 
     # 2. CTF Exchange allowance
@@ -134,7 +108,7 @@ def _check_sync(
             rpc_url=rpc_url,
             contract_address=pusd_contract,
             method="allowance",
-            args=[checksum_wallet, Web3.to_checksum_address(_CTF_EXCHANGE_V2)],
+            args=[checksum_wallet, Web3.to_checksum_address(ctf_exchange_address)],
         )
         pusd_allowance_ctf = Decimal(raw_allowance) / Decimal(10**6)
     except Exception as exc:
@@ -144,7 +118,7 @@ def _check_sync(
     if pusd_allowance_ctf <= 0:
         failures.append(
             "CTF Exchange pUSD allowance is 0 — approve pUSD spending for "
-            f"{_CTF_EXCHANGE_V2}"
+            f"{ctf_exchange_address}"
         )
 
     # 3. Neg Risk Exchange allowance
@@ -153,7 +127,7 @@ def _check_sync(
             rpc_url=rpc_url,
             contract_address=pusd_contract,
             method="allowance",
-            args=[checksum_wallet, Web3.to_checksum_address(_NEG_RISK_EXCHANGE_V2)],
+            args=[checksum_wallet, Web3.to_checksum_address(neg_risk_exchange_address)],
         )
         pusd_allowance_neg_risk = Decimal(raw_nr) / Decimal(10**6)
     except Exception as exc:
@@ -163,7 +137,7 @@ def _check_sync(
     if pusd_allowance_neg_risk <= 0:
         failures.append(
             "Neg Risk Exchange pUSD allowance is 0 — approve pUSD spending for "
-            f"{_NEG_RISK_EXCHANGE_V2}"
+            f"{neg_risk_exchange_address}"
         )
 
     ready = len(failures) == 0
@@ -181,19 +155,25 @@ def _check_sync(
 async def check_collateral_readiness(
     *,
     wallet_address: str,
-    rpc_url: str | None = None,
+    rpc_url: str,
+    pusd_address: str = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB",
+    ctf_exchange_address: str = "0xE111180000d2663C0091e4f400237545B87B996B",
+    neg_risk_exchange_address: str = "0xe2222d279d744050d28e00520010520000310F59",
+    min_pusd_balance: Decimal = Decimal("1.0"),
 ) -> CollateralStatus:
     """Run pUSD collateral readiness checks.
 
     Returns a ``CollateralStatus`` with structured details.
     Logs a summary and any failures at WARNING level.
     """
-    rpc = rpc_url or ENV.get("RPC_URL", "https://polygon-bor-rpc.publicnode.com")
-
     status = await asyncio.to_thread(
         _check_sync,
         wallet_address=wallet_address,
-        rpc_url=rpc,
+        rpc_url=rpc_url,
+        pusd_address=pusd_address,
+        ctf_exchange_address=ctf_exchange_address,
+        neg_risk_exchange_address=neg_risk_exchange_address,
+        min_pusd_balance=min_pusd_balance,
     )
 
     if status.ready:

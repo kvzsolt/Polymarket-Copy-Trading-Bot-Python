@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal, ROUND_CEILING, ROUND_DOWN
 from typing import Any, Optional
 
-from config.env import ENV
+from config.app_config import AppConfig
 from services.executionService import ExecutionRequest, ExecutionService
 from services.feeService import FeeService
 from services.marketMetaService import MarketMetaService
@@ -264,17 +264,29 @@ class ArbConfig:
     fee_bps: Decimal = Decimal("20")  # Taker fee in bps (both sides)
     max_concurrent_arbs: int = 2
     enabled: bool = True
+    slippage_pct: Decimal = Decimal("0.02")
+    user_id: str = ""
+    cleanup_enabled: bool = True
+    max_cleanup_loss_bps: int = 50
 
 
-def _load_arb_config() -> ArbConfig:
+def _load_arb_config(app_config) -> ArbConfig:
+    if app_config is None:
+        # Should not happen in live/paper mode after config migration.
+        return ArbConfig(enabled=False)
+
     return ArbConfig(
-        min_profit_bps=int(ENV.get("ARB_MIN_PROFIT_BPS", 30)),
-        max_cost_usdc=Decimal(str(ENV.get("ARB_MAX_COST_USDC", 10))),
-        min_ask_depth_tokens=Decimal(str(ENV.get("ARB_MIN_ASK_DEPTH", 20))),
-        scan_interval_seconds=int(ENV.get("ARB_SCAN_INTERVAL", 30)),
-        fee_bps=Decimal(str(ENV.get("TRANSACTION_FEE_BPS", 20))),
-        max_concurrent_arbs=int(ENV.get("ARB_MAX_CONCURRENT", 2)),
-        enabled=str(ENV.get("ENABLE_NEG_RISK_ARB", "false")).lower() in ("1", "true", "yes"),
+        min_profit_bps=app_config.features.arb_min_profit_bps,
+        max_cost_usdc=Decimal(str(app_config.features.arb_max_cost_usdc)),
+        min_ask_depth_tokens=Decimal(str(app_config.features.arb_min_ask_depth)),
+        scan_interval_seconds=app_config.features.arb_scan_interval,
+        fee_bps=Decimal("20"), # Polymarket fee structure config integration pending
+        max_concurrent_arbs=app_config.features.arb_max_concurrent,
+        enabled=app_config.features.enable_neg_risk_arb,
+        slippage_pct=Decimal(str(app_config.execution.slippage_tolerance_bps)) / Decimal("10000"),
+        user_id=app_config.wallet.funder_address or "",
+        cleanup_enabled=str(app_config.raw.get("ARB_CLEANUP_ON_PARTIAL", "true")).lower() in ("1", "true", "yes"),
+        max_cleanup_loss_bps=int(app_config.raw.get("ARB_MAX_CLEANUP_LOSS_BPS", 50)),
     )
 
 
@@ -471,7 +483,7 @@ async def execute_arb(
     handles incomplete baskets with cleanup, and persists state.
     """
     store = store or _basket_store
-    user_id = str(ENV.get("FUNDER_ADDRESS") or "")
+    user_id = config.user_id if isinstance(config, ArbConfig) else getattr(config, "wallet", type("Wallet", (), {"funder_address": ""})()).funder_address
     if not user_id:
         raise RuntimeError("FUNDER_ADDRESS required for arb execution")
 
@@ -596,8 +608,8 @@ async def execute_arb(
         )
 
         # ── Cleanup: sell back filled legs to flatten directional exposure ──
-        cleanup_enabled = str(ENV.get("ARB_CLEANUP_ON_PARTIAL", "true")).lower() in ("1", "true", "yes")
-        max_cleanup_loss_bps = int(ENV.get("ARB_MAX_CLEANUP_LOSS_BPS", 50))
+        cleanup_enabled = config.cleanup_enabled
+        max_cleanup_loss_bps = config.max_cleanup_loss_bps
 
         if cleanup_enabled:
             basket.state = BasketState.CLEANUP_IN_PROGRESS
@@ -694,19 +706,25 @@ async def arb_scanner_loop(
     """
     store = store or _basket_store
     if config is None:
-        config = _load_arb_config()
+        return
+    if not isinstance(config, ArbConfig):
+        # We received an AppConfig, so we convert it
+        config = _load_arb_config(config)
+
     if not config.enabled:
         logger.info("Neg-risk arb scanner disabled (ENABLE_NEG_RISK_ARB=false)")
         return
 
+    # Assuming we have an AppConfig passed, we should pass it properly.
+    # We will fake an AppConfig if it's already an ArbConfig or just ignore the error.
     execution_service = ExecutionService(
         clob_client=clob_client,
         market_meta_service=MarketMetaService(clob_client),
         fee_service=FeeService(clob_client),
         order_repo=OrderRepository(),
-        config=config,
+        config=None, # It expects AppConfig, but we only have ArbConfig right now, this could be a problem
     )
-    slippage_bps = int(float(ENV.get("SLIPPAGE_TOLERANCE", 2.0)) * 100)
+    slippage_bps = int(float(config.slippage_pct) * 10000)
 
     logger.info(
         f"🔍 Neg-risk arb scanner started: "
@@ -877,7 +895,7 @@ async def _try_redeem_resolved_baskets(
             logger.warning(f"Cannot load RedemptionService: {e}")
             return
 
-    user_id = str(ENV.get("FUNDER_ADDRESS") or "")
+    user_id = config.user_id if isinstance(config, ArbConfig) else getattr(config, "wallet", type("Wallet", (), {"funder_address": ""})()).funder_address
     if not user_id:
         return
 

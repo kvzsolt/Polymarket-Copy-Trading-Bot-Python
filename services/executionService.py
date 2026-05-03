@@ -8,8 +8,6 @@ from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
 from hashlib import sha256
 from typing import Any, TYPE_CHECKING
 
-from config.env import ENV
-
 if TYPE_CHECKING:
     from config.app_config import AppConfig
 
@@ -29,8 +27,7 @@ _CLOB_CIRCUIT = CircuitBreaker(
 )
 
 
-def _positive_int_env(name: str, default: int) -> int:
-    raw = ENV.get(name, default)
+def _positive_int(raw: Any, default: int) -> int:
     try:
         value = int(raw)
     except (TypeError, ValueError):
@@ -38,8 +35,7 @@ def _positive_int_env(name: str, default: int) -> int:
     return max(1, value)
 
 
-def _non_negative_int_env(name: str, default: int) -> int:
-    raw = ENV.get(name, default)
+def _non_negative_int(raw: Any, default: int) -> int:
     try:
         value = int(raw)
     except (TypeError, ValueError):
@@ -308,7 +304,7 @@ _RETRY_BLOCKING_STATUSES = {
 def _pending_submission_ttl_seconds(config: AppConfig | None = None) -> float:
     if config is not None:
         return max(float(config.execution.pending_submission_ttl_seconds), 0.0)
-    return max(float(ENV.get("PENDING_SUBMISSION_TTL_SECONDS", 120.0)), 0.0)
+    return 120.0
 
 
 def _coerce_timestamp(value: Any) -> float | None:
@@ -480,7 +476,7 @@ class ExecutionService:
             self.circuit_breaker = _CLOB_CIRCUIT
 
         self._submit_semaphore = asyncio.Semaphore(
-            _positive_int_env("EXECUTION_SUBMIT_CONCURRENCY", 2)
+            _positive_int(self._config.raw.get("EXECUTION_SUBMIT_CONCURRENCY", 2), 2) if self._config else 2
         )
 
     def _save_submission(
@@ -558,45 +554,31 @@ class ExecutionService:
                 error=f"CLOB circuit breaker open — retry in {remaining:.0f}s",
             )
 
-        ec = self._config.execution if self._config else None
-        require_fresh_book = (
-            ec.execution_require_fresh_book
-            if ec
-            else _coerce_bool(ENV.get("EXECUTION_REQUIRE_FRESH_BOOK", True))
-        )
+        ec = self._config.execution
+        require_fresh_book = ec.execution_require_fresh_book
         meta = await self.market_meta_service.get(
             req.token_id,
             refresh=require_fresh_book,
         )
 
         # --- Book quality gate: reject if spread is too wide ---
-        spread_mode = _resolve_book_spread_mode(
-            ec.book_spread_mode if ec else ENV.get("BOOK_SPREAD_MODE", "absolute_bps")
-        )
+        spread_mode = _resolve_book_spread_mode(ec.book_spread_mode)
         try:
-            max_spread_bps = (
-                int(ec.max_book_spread_bps)
-                if ec is not None
-                else _non_negative_int_env("MAX_BOOK_SPREAD_BPS", 500)
-            )
+            max_spread_bps = int(ec.max_book_spread_bps)
         except (TypeError, ValueError):
             logger.warning(
                 "invalid_max_book_spread_bps",
                 extra={"value": getattr(ec, "max_book_spread_bps", None)},
             )
-            max_spread_bps = _non_negative_int_env("MAX_BOOK_SPREAD_BPS", 500)
+            max_spread_bps = 500
         try:
-            max_spread_ticks = (
-                int(ec.max_book_spread_ticks)
-                if ec is not None
-                else _non_negative_int_env("MAX_BOOK_SPREAD_TICKS", 0)
-            )
+            max_spread_ticks = int(ec.max_book_spread_ticks)
         except (TypeError, ValueError):
             logger.warning(
                 "invalid_max_book_spread_ticks",
                 extra={"value": getattr(ec, "max_book_spread_ticks", None)},
             )
-            max_spread_ticks = _non_negative_int_env("MAX_BOOK_SPREAD_TICKS", 0)
+            max_spread_ticks = 0
         spread_limit = max_spread_ticks if spread_mode == "ticks" else max_spread_bps
         spread_limit_unit = "ticks" if spread_mode == "ticks" else "bps"
         if (
@@ -718,11 +700,11 @@ class ExecutionService:
 
         quote_price = Decimal(str(quote["price"]))
         min_share_price = _parse_decimal_or_default(
-            ec.min_share_price if ec else ENV.get("MIN_SHARE_PRICE", 0),
+            ec.min_share_price if ec else 0,
             Decimal("0"),
         )
         max_share_price = _parse_decimal_or_default(
-            ec.max_share_price if ec else ENV.get("MAX_SHARE_PRICE", 0),
+            ec.max_share_price if ec else 0,
             Decimal("0"),
         )
         if side == "BUY" and min_share_price > 0 and quote_price < min_share_price:
@@ -872,7 +854,7 @@ class ExecutionService:
 
         if not hasattr(self, "_submit_semaphore"):
             self._submit_semaphore = asyncio.Semaphore(
-                _positive_int_env("EXECUTION_SUBMIT_CONCURRENCY", 2)
+                _positive_int(self._config.raw.get("EXECUTION_SUBMIT_CONCURRENCY"), 2) if self._config else 2
             )
 
         async with self._submit_semaphore:

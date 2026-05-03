@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
 
-from config.env import ENV, is_valid_eth_address
+from config.app_config import AppConfig
+from config.env import is_valid_eth_address
 from services.discovery.permission_ladder import (
     FollowTier,
     PromotionThresholds,
@@ -15,9 +15,6 @@ from storage.sqlite.leaders_repo import LeaderCandidateRecord
 from utils.logger import get_logger
 
 from services.healthServer import ReadinessTracker
-
-if TYPE_CHECKING:
-    from config.app_config import AppConfig
 
 logger = get_logger("LeaderRegistry")
 
@@ -45,26 +42,15 @@ class LeaderRegistry:
         self,
         discovery_service,
         leaders_repo,
+        config: AppConfig,
         readiness_tracker: ReadinessTracker | None = None,
-        config: AppConfig | None = None,
         logger_instance=None,
     ):
         self.discovery_service = discovery_service
         self.leaders_repo = leaders_repo
-        self.readiness = readiness_tracker or ReadinessTracker()
         self.config = config
+        self.readiness = readiness_tracker or ReadinessTracker()
         self.logger = logger_instance or logger
-
-    def _ensure_config(self) -> AppConfig | None:
-        if self.config is None:
-            from config.app_config import load_config
-
-            try:
-                self.config = load_config()
-            except Exception as exc:
-                self.logger.warning("leader_registry_config_load_failed", extra={"error": repr(exc)})
-                self.config = None
-        return self.config
 
     def _evaluate_leader_tier(self, wallet: str, score: float, has_sufficient_coverage: bool) -> FollowTier:
         """Evaluate and persist tier for a discovered leader."""
@@ -72,23 +58,13 @@ class LeaderRegistry:
         current_tier = FollowTier(tier_rec.follow_tier) if tier_rec.follow_tier in {t.value for t in FollowTier} else FollowTier.WATCHLIST
         seconds_in_tier = int(time.time() - tier_rec.tier_changed_at) if tier_rec.tier_changed_at else 0
 
-        cfg = self._ensure_config()
-        if cfg is not None:
-            thresholds = PromotionThresholds(
-                promote_to_paper=cfg.leader.tier_promote_to_paper,
-                promote_to_live=cfg.leader.tier_promote_to_live,
-                demote_to_paper=cfg.leader.tier_demote_to_paper,
-                demote_to_watchlist=cfg.leader.tier_demote_to_watchlist,
-                min_paper_seconds=cfg.leader.tier_min_paper_seconds,
-            )
-        else:
-            thresholds = PromotionThresholds(
-                promote_to_paper=float(ENV.get("TIER_PROMOTE_TO_PAPER", 0.40)),
-                promote_to_live=float(ENV.get("TIER_PROMOTE_TO_LIVE", 0.55)),
-                demote_to_paper=float(ENV.get("TIER_DEMOTE_TO_PAPER", 0.35)),
-                demote_to_watchlist=float(ENV.get("TIER_DEMOTE_TO_WATCHLIST", 0.25)),
-                min_paper_seconds=float(ENV.get("TIER_MIN_PAPER_SECONDS", 86400)),
-            )
+        thresholds = PromotionThresholds(
+            promote_to_paper=self.config.leader.tier_promote_to_paper,
+            promote_to_live=self.config.leader.tier_promote_to_live,
+            demote_to_paper=self.config.leader.tier_demote_to_paper,
+            demote_to_watchlist=self.config.leader.tier_demote_to_watchlist,
+            min_paper_seconds=self.config.leader.tier_min_paper_seconds,
+        )
 
         decision = evaluate_tier(
             leader_id=wallet,
@@ -122,8 +98,7 @@ class LeaderRegistry:
                 "Invalid configured leader wallets: " + ", ".join(invalid)
             )
 
-        cfg = self._ensure_config()
-        discovery_enabled = cfg.discovery.enable_trader_discovery if cfg is not None else bool(ENV.get("ENABLE_TRADER_DISCOVERY", False))
+        discovery_enabled = self.config.discovery.enable_trader_discovery
         if configured_clean and not discovery_enabled:
             await metrics.set_gauge("monitored_leaders", float(len(configured_clean)))
             if self.readiness is not None:
@@ -141,15 +116,9 @@ class LeaderRegistry:
         candidates: list[LeaderCandidate] = []
         try:
             discovered_profiles = await self.discovery_service.discover_candidates()
-            cfg = self._ensure_config()
-            if cfg is not None:
-                min_score = cfg.leader.auto_discover_min_score
-                min_positions = cfg.discovery.min_leader_positions
-                min_active_positions = cfg.discovery.min_active_positions
-            else:
-                min_score = float(ENV.get("AUTO_DISCOVER_MIN_SCORE", 0.45))
-                min_positions = int(ENV.get("MIN_LEADER_POSITIONS", 20))
-                min_active_positions = int(ENV.get("MIN_ACTIVE_POSITIONS", 1))
+            min_score = self.config.leader.auto_discover_min_score
+            min_positions = self.config.discovery.min_leader_positions
+            min_active_positions = self.config.discovery.min_active_positions
 
             for profile in discovered_profiles:
                 reason = None
@@ -219,10 +188,9 @@ class LeaderRegistry:
                 mode = "mixed"
         else:
             mode = "discovery_only"
-            cfg = self._ensure_config()
-            promote = cfg.discovery.discovery_promote_to_active if cfg is not None else bool(ENV.get("DISCOVERY_PROMOTE_TO_ACTIVE", False))
+            promote = self.config.discovery.discovery_promote_to_active
             if promote:
-                top_n = cfg.leader.auto_discover_top_n if cfg is not None else int(ENV.get("AUTO_DISCOVER_TOP_N", 5))
+                top_n = self.config.leader.auto_discover_top_n
                 ranked = sorted(
                     [c for c in candidates if c.active],
                     key=lambda x: (-x.score, -x.recent_trades, x.leader_id),
