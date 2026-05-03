@@ -868,21 +868,27 @@ class ExecutionService:
                     fees_paid=Decimal("0"),
                     error=None,
                 )
-            if has_atomic_lock and self.order_repo.is_submission_locked(idem_key):
-                return ExecutionResult(
-                    accepted=False,
-                    order_id=None,
-                    status="inflight_lock",
-                    requested_amount=req.amount,
-                    filled_amount=Decimal("0"),
-                    avg_price=None,
-                    fees_paid=Decimal("0"),
-                    error="another task is currently submitting this order",
-                )
-
-        if not hasattr(self, "_submit_semaphore"):
-            self._submit_semaphore = asyncio.Semaphore(
-                _positive_int_env("EXECUTION_SUBMIT_CONCURRENCY", 2)
+            # When atomic lock is available and we failed to acquire it (INSERT + compare-and-swap
+            # both returned False), someone else holds the lock or has a terminal record. Return
+            # inflight_lock unconditionally — the compare-and-swap already proved we cannot
+            # atomically claim this idempotency key right now.
+            return ExecutionResult(
+                accepted=bool(existing_now and existing_now.get("order_id")),
+                order_id=existing_now.get("order_id") if existing_now else None,
+                status=(
+                    "duplicate_ignored"
+                    if (existing_now and existing_now.get("order_id"))
+                    else "inflight_lock"
+                ),
+                requested_amount=req.amount,
+                filled_amount=Decimal("0"),
+                avg_price=None,
+                fees_paid=Decimal("0"),
+                error=(
+                    None
+                    if (existing_now and existing_now.get("order_id"))
+                    else "another task is currently submitting this order"
+                ),
             )
 
         async with self._submit_semaphore:

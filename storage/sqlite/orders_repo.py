@@ -47,15 +47,22 @@ class OrdersRepo(AbstractOrderRepository):
     def try_acquire_submission_lock(self, key: str, user_id: str, leader_id: str | None, request_payload: dict) -> bool:
         """Atomically acquire a submission lock for this idempotency key.
 
-        Uses INSERT ... ON CONFLICT DO NOTHING + rowcount check.
+        Two-phase acquisition:
+        1. INSERT ... ON CONFLICT DO NOTHING for new rows
+        2. If row already exists and is in a non-blocking terminal status
+           (no order_id, not already pending), UPDATE it to pending_lock
+           with compare-and-swap semantics (rowcount check).
+
         Returns True if this caller acquired the lock (may proceed to submit).
         Returns False if someone else already holds it (must NOT submit).
 
         This prevents the race condition where two concurrent execute() calls
-        both pass the "existing?" check and both submit distinct signed orders.
+        both pass the "existing?" check and both submit distinct signed orders,
+        even after a failed/expired previous attempt.
         """
         request_json = json.dumps(request_payload, sort_keys=True, separators=(",", ":"), default=str)
         with create_connection(self.db_path) as conn:
+            # Phase 1: INSERT for completely new idempotency keys
             cursor = conn.execute(
                 """
                 INSERT INTO orders (
@@ -68,8 +75,26 @@ class OrdersRepo(AbstractOrderRepository):
                 (key, user_id, leader_id, request_json),
             )
             conn.commit()
-            acquired = cursor.rowcount == 1
-        return acquired
+            if cursor.rowcount == 1:
+                return True
+
+            # Phase 2: compare-and-swap for existing rows in non-locked terminal state.
+            # Only succeeds if current status is NOT already pending/pending_lock
+            # and no order_id has been assigned yet.
+            cursor = conn.execute(
+                """
+                UPDATE orders
+                SET status = 'pending_lock',
+                    request_json = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE idempotency_key = ?
+                  AND order_id IS NULL
+                  AND status NOT IN ('pending', 'pending_lock')
+                """,
+                (request_json, key),
+            )
+            conn.commit()
+            return cursor.rowcount == 1
 
     def is_submission_locked(self, key: str) -> bool:
         """Check if a submission lock exists that is still pending (no order_id yet).
