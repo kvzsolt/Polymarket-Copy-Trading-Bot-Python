@@ -16,6 +16,11 @@ from py_clob_client.order_builder.constants import BUY, SELL
 try:
     from py_clob_client_v2.clob_types import OrderPayload  # type: ignore[import-untyped]
 except ImportError:  # pragma: no cover
-    OrderPayload = None  # type: ignore[assignment,misc]
+    from dataclasses import dataclass
+
+    @dataclass
+    class OrderPayload:
+        """Minimal fallback when py_clob_client_v2 is not installed."""
+        orderID: str
 
 __all__ = ["BUY", "OrderArgs", "OrderPayload", "OrderType", "SELL"]
