@@ -1,0 +1,21 @@
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.4",
+  "base_commit_sha": "e1201ca36d23008a8520e7aca2ed6bf242b1d0c1",
+  "prompts": {
+    "0a682780d0d120bc": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019deb9a-dd86-7ff1-9bbe-d637d08ee5d2",
+        "model": "gpt-5.5"
+      },
+      "human_author": "kvzsolt",
+      "messages": [],
+      "total_additions": 94,
+      "total_deletions": 70,
+      "accepted_lines": 94,
+      "overriden_lines": 0
+    }
+  }
+}
