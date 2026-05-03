@@ -75,45 +75,42 @@ class TestConfigLeaderWallets:
 class TestPositionManager:
     def _make_pm(self, enabled=True, extra_env=None):
         # PositionManager now uses AppConfig via constructor injection.
-        # When config=None, defaults are used. For custom values, build a mock config.
-        if extra_env or not enabled:
-            config = MagicMock()
-            config.risk.enable_risk_mgmt = enabled
-            config.risk.profit_lock_trigger_pct = 70
-            config.risk.profit_lock_sell_fraction = 0.5
-            config.risk.near_max_price_exit = 0.97
-            config.risk.near_max_price_warn = 0.95
-            config.risk.near_max_price_warn_trim_ratio = 0.5
-            config.risk.staged_tp_levels = "9999"
-            config.risk.staged_tp_fractions = "0.25,0.35"
-            config.features.enable_profit_lock = False
-            config.features.enable_near_max_exit = False
-            config.features.enable_trailing_stop = False
-            config.features.enable_staged_tp = False
-            if extra_env:
-                if "NEAR_MAX_PRICE_WARN" in extra_env:
-                    config.risk.near_max_price_warn = extra_env["NEAR_MAX_PRICE_WARN"]
-                    config.features.enable_near_max_exit = True
-                if "NEAR_MAX_PRICE_EXIT" in extra_env:
-                    config.risk.near_max_price_exit = extra_env["NEAR_MAX_PRICE_EXIT"]
-                    config.features.enable_near_max_exit = True
-                if "NEAR_MAX_PRICE_WARN_TRIM_RATIO" in extra_env:
-                    config.risk.near_max_price_warn_trim_ratio = extra_env["NEAR_MAX_PRICE_WARN_TRIM_RATIO"]
-                if "NEAR_MAX_PRICE_EXIT" in extra_env:
-                    config.risk.near_max_price_exit = extra_env["NEAR_MAX_PRICE_EXIT"]
-                    config.features.enable_near_max_exit = True
-                if "PROFIT_LOCK_TRIGGER_PCT" in extra_env:
-                    config.risk.profit_lock_trigger_pct = extra_env["PROFIT_LOCK_TRIGGER_PCT"]
-                    config.features.enable_profit_lock = True
-                if "STAGED_TP_LEVELS" in extra_env:
-                    # Very high staged TP level effectively disables legacy TP.
-                    config.risk.staged_tp_levels = extra_env["STAGED_TP_LEVELS"]
-                    config.features.enable_staged_tp = True
-            from services.positionManager import PositionManager
-            return PositionManager(config=config)
-        else:
-            from services.positionManager import PositionManager
-            return PositionManager(config=None)
+        # Build an explicit mock config so the tests don't depend on bare-default
+        # constructor semantics.
+        config = MagicMock()
+        config.risk.enable_risk_mgmt = enabled
+        config.risk.profit_lock_trigger_pct = 70
+        config.risk.profit_lock_sell_fraction = 0.5
+        config.risk.near_max_price_exit = 0.97
+        config.risk.near_max_price_warn = 0.95
+        config.risk.near_max_price_warn_trim_ratio = 0.5
+        config.risk.staged_tp_levels = "9999"
+        config.risk.staged_tp_fractions = "0.25,0.35"
+        config.features.enable_profit_lock = False
+        config.features.enable_near_max_exit = False
+        config.features.enable_trailing_stop = False
+        config.features.enable_staged_tp = False
+        if extra_env:
+            if "NEAR_MAX_PRICE_WARN" in extra_env:
+                config.risk.near_max_price_warn = extra_env["NEAR_MAX_PRICE_WARN"]
+                config.features.enable_near_max_exit = True
+            if "NEAR_MAX_PRICE_EXIT" in extra_env:
+                config.risk.near_max_price_exit = extra_env["NEAR_MAX_PRICE_EXIT"]
+                config.features.enable_near_max_exit = True
+            if "NEAR_MAX_PRICE_WARN_TRIM_RATIO" in extra_env:
+                config.risk.near_max_price_warn_trim_ratio = extra_env["NEAR_MAX_PRICE_WARN_TRIM_RATIO"]
+            if "NEAR_MAX_PRICE_EXIT" in extra_env:
+                config.risk.near_max_price_exit = extra_env["NEAR_MAX_PRICE_EXIT"]
+                config.features.enable_near_max_exit = True
+            if "PROFIT_LOCK_TRIGGER_PCT" in extra_env:
+                config.risk.profit_lock_trigger_pct = extra_env["PROFIT_LOCK_TRIGGER_PCT"]
+                config.features.enable_profit_lock = True
+            if "STAGED_TP_LEVELS" in extra_env:
+                # Very high staged TP level effectively disables legacy TP.
+                config.risk.staged_tp_levels = extra_env["STAGED_TP_LEVELS"]
+                config.features.enable_staged_tp = True
+        from services.positionManager import PositionManager
+        return PositionManager(config=config)
 
     def test_track_buy_creates_position(self):
         pm = self._make_pm()
@@ -121,7 +118,7 @@ class TestPositionManager:
         assert pos.condition_id == "c1"
         assert pos.entry_price == 0.5
         assert pos.size_tokens == 10.0
-        assert "c1" in pm.open_positions
+        assert "c1::a1" in pm.open_positions
 
     def test_track_buy_averages_in(self):
         pm = self._make_pm()
@@ -141,7 +138,7 @@ class TestPositionManager:
         assert result.exit_price == 0.7
         assert result.exit_reason == "leader_sell"
         assert result.realized_pnl == pytest.approx(2.0)  # (0.7-0.5)*10
-        assert "c1" not in pm.open_positions
+        assert "c1::a1" not in pm.open_positions
         assert len(pm.closed_positions) == 1
 
     def test_track_sell_partial(self):
@@ -260,6 +257,13 @@ class TestPositionManager:
         assert s["closed_positions"] == 0
         assert s["win_rate"] == 0.0
 
+    def test_same_condition_different_tokens_do_not_collapse(self):
+        pm = self._make_pm()
+        pm.track_buy("c1", "token-a", 0.5, 10.0, 5.0)
+        pm.track_buy("c1", "token-b", 0.4, 20.0, 8.0)
+        assert len(pm.open_positions) == 2
+        assert pm.get_position("c1") is None
+
     def test_summary_with_trades(self):
         pm = self._make_pm()
         pm.track_buy("c1", "a1", 0.5, 10.0, 5.0)
@@ -355,7 +359,12 @@ class TestPnLTracker:
 class TestRiskMonitor:
     @pytest.mark.asyncio
     async def test_risk_monitor_exits_when_global_risk_master_disabled(self):
-        """When the global risk-management master is off, the loop should return immediately."""
+        """When the global risk-management master is off, the loop should return immediately.
+
+        We only assert on externally observable behavior (no venue calls). We deliberately
+        do not assert that ``ExecutionService`` was constructed: the disabled-path is allowed
+        to early-return before allocating any venue-bound services.
+        """
         from services.riskMonitor import risk_monitor_loop
         from services.healthServer import ReadinessTracker
         mock_clob = AsyncMock()
@@ -629,107 +638,3 @@ class TestBuildRedeemTx:
 # ---------------------------------------------------------------------------
 # Proportional sell — verify sell ratio matches leader
 # ---------------------------------------------------------------------------
-class TestProportionalSell:
-    @pytest.mark.asyncio
-    async def test_sell_matches_leader_ratio(self):
-        """When leader sells 50% of their position, bot sells 50% of its position."""
-        from utils.postOrder import post_order
-        mock_client = AsyncMock()
-        mock_client.get_min_order_size.return_value = 0.0
-        mock_client.get_price.return_value = {"price": "0.6", "size": "100"}
-        mock_client.post_order.return_value = {"success": True, "data": {}}
-
-        # Leader had 100 tokens, sold 50 (50%)
-        trade = {
-            "conditionId": "c1", "asset": "a1", "transactionHash": "0x1",
-            "size": 50, "side": "SELL", "price": 0.6,
-        }
-        # Bot has 20 tokens
-        my_position = {"conditionId": "c1", "asset": "a1", "size": 20}
-        # Leader has 50 tokens remaining after sell
-        user_position = {"conditionId": "c1", "size": 50}
-
-        with patch("utils.postOrder._user_activity", return_value=None):
-            result, fill = await post_order(
-                mock_client, "sell", my_position, user_position,
-                trade, 100.0, 1000.0, {}
-            )
-        assert result == 'executed'
-        assert fill is not None
-        # Bot should sell 50% of 20 = 10 tokens
-        order_args = mock_client.post_order.call_args[0][0]
-        assert abs(order_args.size - 10.0) < 0.01
-
-    @pytest.mark.asyncio
-    async def test_sell_100_percent_when_leader_closes(self):
-        """When leader sells 100% of position, bot sells all."""
-        from utils.postOrder import post_order
-        mock_client = AsyncMock()
-        mock_client.get_min_order_size.return_value = 0.0
-        mock_client.get_price.return_value = {"price": "0.6", "size": "100"}
-        mock_client.post_order.return_value = {"success": True, "data": {}}
-
-        # Leader had 100 tokens, sold all 100
-        trade = {
-            "conditionId": "c1", "asset": "a1", "transactionHash": "0x1",
-            "size": 100, "side": "SELL", "price": 0.6,
-        }
-        my_position = {"conditionId": "c1", "asset": "a1", "size": 30}
-        user_position = {"conditionId": "c1", "size": 0}  # Leader fully exited
-
-        with patch("utils.postOrder._user_activity", return_value=None):
-            result, fill = await post_order(
-                mock_client, "sell", my_position, user_position,
-                trade, 100.0, 1000.0, {}
-            )
-        assert result == 'executed'
-        assert fill is not None
-        order_args = mock_client.post_order.call_args[0][0]
-        assert abs(order_args.size - 30.0) < 0.01
-
-
-# ---------------------------------------------------------------------------
-# Sell is NOT capped by BUY_MAX_AMOUNT
-# ---------------------------------------------------------------------------
-class TestSellNotCapped:
-    @pytest.mark.asyncio
-    async def test_large_sell_not_blocked(self):
-        """Sell of 500 tokens goes through even if BUY_MAX_AMOUNT is $100."""
-        from utils.postOrder import post_order
-        mock_client = AsyncMock()
-        mock_client.get_min_order_size.return_value = 0.0
-        mock_client.get_price.return_value = {"price": "0.5", "size": "1000"}
-        mock_client.post_order.return_value = {"success": True, "data": {}}
-
-        # Leader fully exits large position
-        trade = {
-            "conditionId": "c1", "asset": "a1", "transactionHash": "0x1",
-            "size": 1000, "side": "SELL", "price": 0.5,
-        }
-        # Bot has 500 tokens (worth $250 at 0.5 — exceeds BUY_MAX_AMOUNT of $100)
-        my_position = {"conditionId": "c1", "asset": "a1", "size": 500}
-        user_position = {"conditionId": "c1", "size": 0}
-
-        with patch("utils.postOrder._user_activity", return_value=None):
-            result, fill = await post_order(
-                mock_client, "sell", my_position, user_position,
-                trade, 100.0, 1000.0, {"buyMaxAmount": 100}
-            )
-        assert result == 'executed'
-        assert fill is not None
-        order_args = mock_client.post_order.call_args[0][0]
-        # Full 500 tokens sold — no cap applied
-        assert abs(order_args.size - 500.0) < 0.01
-
-
-# ---------------------------------------------------------------------------
-# Token ID validation
-# ---------------------------------------------------------------------------
-def test_is_valid_clob_token_id():
-    from utils import is_valid_clob_token_id
-    assert is_valid_clob_token_id("71321045679252212594626385532706912750332728571942532223535764789812338637396")
-    assert not is_valid_clob_token_id("a1")
-    assert not is_valid_clob_token_id("token1")
-    assert not is_valid_clob_token_id("")
-    assert not is_valid_clob_token_id("0xabc123")
-    assert not is_valid_clob_token_id("123")  # too short

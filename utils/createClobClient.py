@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import ROUND_CEILING, ROUND_DOWN, ROUND_FLOOR, Decimal
 from typing import Any
 
 from web3 import Web3
@@ -69,6 +69,31 @@ def _safe_decimal(value: Any) -> Decimal | None:
         return Decimal(str(value))
     except Exception:
         return None
+
+
+def quantize_to_tick(
+    price: Decimal,
+    tick_size: Decimal,
+    side: str | None = None,
+) -> Decimal:
+    """Quantize price to the nearest tick_size boundary.
+
+    When *side* is provided the rounding is direction-aware:
+    - BUY  → round **up**   (ROUND_CEILING) to give more generous fill protection
+    - SELL → round **down** (ROUND_FLOOR)   to stay conservative
+
+    Without *side* the legacy ROUND_DOWN behaviour is preserved.
+    """
+    if tick_size <= 0:
+        return price
+    if side is not None:
+        units = price / tick_size
+        if side.upper() == "BUY":
+            rounded_units = units.to_integral_value(rounding=ROUND_CEILING)
+        else:
+            rounded_units = units.to_integral_value(rounding=ROUND_FLOOR)
+        return rounded_units * tick_size
+    return price.quantize(tick_size, rounding=ROUND_DOWN)
 
 
 def _top_of_book_from_levels(levels: list[Any], *, side: str) -> Decimal | None:
@@ -168,37 +193,60 @@ class ClobClientWrapper:
             meta, expiry = cached
             if time.monotonic() < expiry:
                 return meta
-            # expired — evict and re-fetch
             del self._market_meta_cache[asset]
 
-        # Prefer py-clob-client orderbook API first.
-        try:
-            orderbook = await self.get_order_book(asset)
+        loop = asyncio.get_running_loop()
+
+        # Phase 6: V2 dedicated methods + orderbook fetched concurrently.
+        # get_tick_size / get_neg_risk are authoritative V2 endpoints; orderbook
+        # provides best_bid, best_ask, and min_order_size.  Each failure is
+        # isolated — return_exceptions=True prevents one bad call from aborting all.
+        ts_raw, nr_raw, ob_result = await asyncio.gather(
+            loop.run_in_executor(None, lambda: self.client.get_tick_size(asset)),
+            loop.run_in_executor(None, lambda: self.client.get_neg_risk(asset)),
+            self.get_order_book(asset),
+            return_exceptions=True,
+        )
+
+        tick_size_v2: Decimal | None = None
+        neg_risk_v2: bool | None = None
+
+        if not isinstance(ts_raw, BaseException):
+            tick_size_v2 = _safe_decimal(str(ts_raw))
+        else:
+            logger.warning("get_tick_size failed for %s (%s)", asset, redact_error_detail(ts_raw))
+
+        if not isinstance(nr_raw, BaseException):
+            neg_risk_v2 = bool(nr_raw)
+        else:
+            logger.warning("get_neg_risk failed for %s (%s)", asset, redact_error_detail(nr_raw))
+
+        if not isinstance(ob_result, BaseException):
+            orderbook = ob_result
             bids = list(getattr(orderbook, "bids", []) or [])
             asks = list(getattr(orderbook, "asks", []) or [])
             meta = MarketMeta(
                 token_id=asset,
-                tick_size=Decimal(str(getattr(orderbook, "tick_size", "0.01"))),
+                tick_size=tick_size_v2 if tick_size_v2 is not None else Decimal(str(getattr(orderbook, "tick_size", "0.01"))),
                 min_order_size=Decimal(str(getattr(orderbook, "min_order_size", "0"))),
-                neg_risk=bool(getattr(orderbook, "neg_risk", False)),
+                neg_risk=neg_risk_v2 if neg_risk_v2 is not None else bool(getattr(orderbook, "neg_risk", False)),
                 best_bid=_top_of_book_from_levels(bids, side="bid"),
                 best_ask=_top_of_book_from_levels(asks, side="ask"),
             )
             ttl = _META_CACHE_TTL_THIN if _is_thin_or_empty_book(meta.best_bid, meta.best_ask) else _META_CACHE_TTL_GOOD
             self._market_meta_cache[asset] = (meta, time.monotonic() + ttl)
             return meta
-        except Exception as exc:
-            logger.warning(
-                "Orderbook metadata fallback to HTTP for %s (%s)",
-                asset,
-                redact_error_detail(exc),
-            )
+
+        logger.warning(
+            "Orderbook metadata fallback to HTTP for %s (%s)",
+            asset,
+            redact_error_detail(ob_result),
+        )
 
         # HTTP fallback for resiliency.
         url = f"{CLOB_HTTP_URL}/book?token_id={asset}"
         session = _get_session()
         async with session.get(url) as resp:
-            data = await resp.json()
             if resp.status != 200:
                 log_api_response(
                     logger,
@@ -208,14 +256,15 @@ class ClobClientWrapper:
                     error=f"status_code={resp.status}",
                 )
                 raise RuntimeError(f"Failed to fetch market metadata for {asset}: HTTP {resp.status}")
+            data = await resp.json()
 
             bids = (data.get("bids") or [])
             asks = (data.get("asks") or [])
             meta = MarketMeta(
                 token_id=asset,
-                tick_size=Decimal(str(data.get("tick_size", "0.01"))),
+                tick_size=tick_size_v2 if tick_size_v2 is not None else Decimal(str(data.get("tick_size", "0.01"))),
                 min_order_size=Decimal(str(data.get("min_order_size", "0"))),
-                neg_risk=bool(data.get("neg_risk", False)),
+                neg_risk=neg_risk_v2 if neg_risk_v2 is not None else bool(data.get("neg_risk", False)),
                 best_bid=_top_of_book_from_levels(bids, side="bid"),
                 best_ask=_top_of_book_from_levels(asks, side="ask"),
             )
@@ -284,11 +333,12 @@ class ClobClientWrapper:
         neg_risk: bool,
         order_type: OrderType = OrderType.FOK,
     ):
+        quantized_price = float(quantize_to_tick(Decimal(str(max_price)), Decimal(tick_size), side=side))
         order_args = MarketOrderArgs(
             token_id=token_id,
             amount=amount,
             side=side,
-            price=max_price,
+            price=quantized_price,
             order_type=order_type,
         )
         opts = PartialCreateOrderOptions(tick_size=tick_size, neg_risk=neg_risk)
@@ -386,6 +436,8 @@ class ClobClientWrapper:
                 for kw in (
                     "lower than the minimum",
                     "minimum:",
+                    "min size:",
+                    "invalid amount for a marketable",
                     "tick size",
                     "invalid order",
                     "invalid payload",
@@ -457,6 +509,12 @@ async def create_clob_client(
     private_key: str | None = None,
     proxy_wallet: str | None = None,
 ):
+    if not ENV.get("CLOB_V2_READY", False):
+        raise RuntimeError(
+            "CLOB V2 migration not finalized — CLOB_V2_READY is not set. "
+            "Set CLOB_V2_READY=true once smoke tests pass "
+            "(see docs/v2_operator_runbook.md)."
+        )
     host = CLOB_HTTP_URL
     cfg = wallet_config or build_wallet_config()
 
@@ -508,4 +566,27 @@ async def create_clob_client(
             "signer": signer_address,
         },
     )
+
+    # V2 collateral readiness: pUSD balance + allowance check.
+    # Only runs when CLOB_V2_READY is true (we're past the safety gate above).
+    # FAIL CLOSED: if readiness fails, startup is aborted.
+    from services.collateral_readiness import check_collateral_readiness
+
+    funder_or_signer = runtime_cfg.funder_address or signer_address or ""
+    if funder_or_signer:
+        collateral_status = await check_collateral_readiness(
+            wallet_address=funder_or_signer,
+            rpc_url=runtime_cfg.polygon_rpc_url,
+        )
+        if not collateral_status.ready:
+            reasons = "; ".join(collateral_status.failures)
+            raise RuntimeError(
+                f"V2 collateral readiness FAILED — live trading blocked. "
+                f"Resolve: {reasons}"
+            )
+        logger.info(
+            "V2 collateral readiness OK — pusd_balance=%.2f",
+            collateral_status.pusd_balance,
+        )
+
     return ClobClientWrapper(client, wallet_config=runtime_cfg)

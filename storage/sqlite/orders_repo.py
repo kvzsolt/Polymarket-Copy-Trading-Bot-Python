@@ -84,6 +84,24 @@ class OrdersRepo(AbstractOrderRepository):
             return False  # has order_id = terminal, not just locked
         return rec.get("status") in ("pending", "pending_lock")
 
+    @staticmethod
+    def _row_to_order_record(row: sqlite3.Row | None) -> dict[str, Any] | None:
+        if not row:
+            return None
+        return {
+            "idempotency_key": row["idempotency_key"],
+            "user_id": row["user_id"],
+            "leader_id": row["leader_id"],
+            "order_id": row["order_id"],
+            "status": row["status"],
+            "request": json.loads(row["request_json"] or "{}"),
+            "response": json.loads(row["response_json"] or "{}") if row["response_json"] else {},
+            "attempt_count": int(row["attempt_count"] or 0),
+            "last_error": row["last_error"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+
     def get_by_idempotency_key(self, key: str) -> dict[str, Any] | None:
         with create_connection(self.db_path) as conn:
             row = conn.execute(
@@ -98,22 +116,32 @@ class OrdersRepo(AbstractOrderRepository):
                 (key,),
             ).fetchone()
 
-        if not row:
-            return None
+        return self._row_to_order_record(row)
 
-        return {
-            "idempotency_key": row["idempotency_key"],
-            "user_id": row["user_id"],
-            "leader_id": row["leader_id"],
-            "order_id": row["order_id"],
-            "status": row["status"],
-            "request": json.loads(row["request_json"] or "{}"),
-            "response": json.loads(row["response_json"] or "{}") if row["response_json"] else {},
-            "attempt_count": int(row["attempt_count"] or 0),
-            "last_error": row["last_error"],
-            "created_at": row["created_at"],
-            "updated_at": row["updated_at"],
-        }
+    def get_by_order_id(self, order_id: str) -> dict[str, Any] | None:
+        """Return the locally persisted submission row for a venue order id.
+
+        This is the correct lookup for exchange reconciliation. ``order_id`` is
+        the venue order identifier; it is distinct from the locally generated
+        submission idempotency key.
+        """
+        if not order_id:
+            return None
+        with create_connection(self.db_path) as conn:
+            row = conn.execute(
+                """
+                SELECT idempotency_key, user_id, leader_id, order_id, status,
+                       request_json, response_json, attempt_count, last_error,
+                       created_at, updated_at
+                FROM orders
+                WHERE order_id = ?
+                ORDER BY updated_at DESC
+                LIMIT 1
+                """,
+                (order_id,),
+            ).fetchone()
+
+        return self._row_to_order_record(row)
 
     def save_submission(self, record: OrderSubmissionRecord) -> None:
         request_json = json.dumps(record.request_payload, sort_keys=True, separators=(",", ":"), default=str)
@@ -319,6 +347,89 @@ class OrdersRepo(AbstractOrderRepository):
         with create_connection(self.db_path) as conn:
             conn.execute("DELETE FROM processed_trades WHERE trade_key = ?", (trade_key,))
             conn.commit()
+
+    def update_submission_status(
+        self,
+        *,
+        order_id: str,
+        status: str,
+        response_patch: dict[str, Any] | None = None,
+    ) -> None:
+        """Update the durable status/response for a venue order submission row."""
+        if not order_id:
+            return
+        response_patch = response_patch or {}
+        with create_connection(self.db_path) as conn:
+            row = conn.execute(
+                """
+                SELECT response_json
+                FROM orders
+                WHERE order_id = ?
+                ORDER BY updated_at DESC
+                LIMIT 1
+                """,
+                (order_id,),
+            ).fetchone()
+            if row is None:
+                return
+            existing_response = json.loads(row["response_json"] or "{}") if row["response_json"] else {}
+            merged_response = {**existing_response, **response_patch, "status": status}
+            conn.execute(
+                """
+                UPDATE orders
+                SET status = ?,
+                    response_json = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE order_id = ?
+                """,
+                (
+                    status,
+                    json.dumps(merged_response, sort_keys=True, separators=(",", ":"), default=str),
+                    order_id,
+                ),
+            )
+            conn.commit()
+
+    def get_unconfirmed_order_submissions(
+        self,
+        *,
+        user_id: str | None = None,
+        side: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return durable order-submission rows still awaiting convergence.
+
+        This reads from the ``orders`` table (venue submissions), unlike the
+        processed-trade helpers below which read from ``processed_trades``.
+        """
+        query = """
+            SELECT idempotency_key, user_id, leader_id, order_id, status,
+                   request_json, response_json, attempt_count, last_error,
+                   created_at, updated_at
+            FROM orders
+            WHERE status IN ('submitted_unconfirmed', 'submitted')
+              AND order_id IS NOT NULL
+        """
+        params: list[Any] = []
+        if user_id is not None:
+            query += " AND user_id = ?"
+            params.append(user_id)
+        if side is not None:
+            # request_json stores side, but sqlite JSON helpers are not assumed;
+            # filter in Python below after row decoding.
+            pass
+        query += " ORDER BY updated_at ASC"
+
+        with create_connection(self.db_path) as conn:
+            rows = conn.execute(query, tuple(params)).fetchall()
+
+        decoded = [record for row in rows if (record := self._row_to_order_record(row)) is not None]
+        if side is None:
+            return decoded
+        side_u = str(side or "").upper()
+        return [
+            record for record in decoded
+            if str((record.get("request") or {}).get("side") or "").upper() == side_u
+        ]
 
     def get_unconfirmed_buys(self, max_age_seconds: float = 300.0) -> list[dict]:
         """Return BUY processed_trades stuck at submitted_unconfirmed.
