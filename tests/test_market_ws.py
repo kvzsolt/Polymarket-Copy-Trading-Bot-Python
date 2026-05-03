@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from clients.market_ws import MarketWebSocket, _HEARTBEAT_INTERVAL
+from clients.market_ws import MarketWebSocket, HEARTBEAT_INTERVAL
 from services.price_cache import PositionPriceCache
 
 
@@ -94,10 +94,10 @@ class TestHeartbeat:
 
         with patch("clients.market_ws.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
             await market_ws._heartbeat(mock_ws)
-            # Should have slept for _HEARTBEAT_INTERVAL each time
+            # Should have slept for HEARTBEAT_INTERVAL each time
             assert mock_sleep.call_count >= 2
             for call in mock_sleep.call_args_list:
-                assert call[0][0] == _HEARTBEAT_INTERVAL
+                assert call[0][0] == HEARTBEAT_INTERVAL
 
     @pytest.mark.asyncio
     async def test_heartbeat_exits_on_send_failure(

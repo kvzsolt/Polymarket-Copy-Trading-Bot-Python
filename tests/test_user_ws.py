@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from clients.user_ws import UserWebSocket, _HEARTBEAT_INTERVAL
+from clients.user_ws import UserWebSocket, HEARTBEAT_INTERVAL
 from services.price_cache import PositionPriceCache
 
 
@@ -217,7 +217,7 @@ class TestHeartbeat:
             await user_ws._heartbeat(mock_ws)
             assert mock_sleep.call_count >= 2
             for call in mock_sleep.call_args_list:
-                assert call[0][0] == _HEARTBEAT_INTERVAL
+                assert call[0][0] == HEARTBEAT_INTERVAL
 
     @pytest.mark.asyncio
     async def test_heartbeat_exits_on_failure(
