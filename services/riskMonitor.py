@@ -428,7 +428,13 @@ async def risk_monitor_loop(
                                     "runtimeKey": runtime_key,
                                 },
                             )
-                            closed_pos = pm.track_sell(condition_id, token_id, fill_price, fill_tokens, reason=trigger)
+                            closed_pos = pm.track_sell(
+                                condition_id,
+                                fill_price,
+                                fill_tokens,
+                                asset=token_id,
+                                reason=trigger,
+                            )
                             if closed_pos is not None and hasattr(context, "position_coordinator"):
                                 try:
                                     context.position_coordinator.release_scope(
@@ -980,32 +986,16 @@ async def run_risk_check_for_context(context: TradingContext) -> None:
                     },
                 )
                 if hasattr(context.position_manager, "track_sell"):
-                    try:
-                        closed_pos = context.position_manager.track_sell(
-                            pos.condition_id,
-                            pos.token_id,
-                            float(fill_price),
-                            float(fill_size),
-                            reason=reason,
-                        )
-                    except TypeError:
-                        closed_pos = context.position_manager.track_sell(
-                            pos.condition_id,
-                            float(fill_price),
-                            float(fill_size),
-                            reason=reason,
-                        )
-                    if closed_pos is not None and hasattr(context, "position_coordinator"):
-                        try:
-                            context.position_coordinator.release_scope(
-                                PositionScope(
-                                    user_id=context.user_id,
-                                    condition_id=pos.condition_id,
-                                    token_id=getattr(pos, "token_id", getattr(pos, "asset", "")),
-                                )
-                            )
-                        except Exception:
-                            pass
+                    closed_pos = context.position_manager.track_sell(
+                        pos.condition_id,
+                        float(fill_price),
+                        float(fill_size),
+                        asset=pos.token_id,
+                        reason=reason,
+                    )
+                    # NOTE: no manual ``release_scope`` here — the surrounding
+                    # ``async with context.position_coordinator.acquire(_scope)``
+                    # context manager already releases on exit. (Greptile P2 PR #63.)
             except Exception as exc:
                 logger.error(f"Risk context check failed user={context.user_id} condition={pos.condition_id}: {exc}")
 

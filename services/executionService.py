@@ -755,3 +755,332 @@ class ExecutionService:
             worst_price = quote_price * (Decimal("1") - slippage)
         worst_price = _quantize_price(worst_price, meta.tick_size, side)
 
+        idem_key = _idempotency_key(req)
+        existing = self.order_repo.get_by_idempotency_key(idem_key)
+        if (
+            existing
+            and not existing.get("order_id")
+            and _is_pending_submission_expired(existing, config=self._config)
+        ):
+            ttl_seconds = _pending_submission_ttl_seconds(self._config)
+            ttl_seconds_log = int(ttl_seconds)
+            existing_status = str(
+                existing.get("status")
+                or existing.get("response", {}).get("status")
+                or "blocking"
+            ).lower()
+            logger.warning(
+                "expiring stale %s submission lock | idempotency_key=%s | ttl=%ss",
+                existing_status,
+                idem_key,
+                ttl_seconds_log,
+            )
+            stale_request = existing.get("request")
+            if not isinstance(stale_request, dict):
+                stale_request = {
+                    "user_id": req.user_id,
+                    "leader_id": req.leader_id,
+                    "token_id": req.token_id,
+                    "side": side,
+                    "amount": str(req.amount),
+                    "reason": req.reason,
+                    "signal_id": req.signal_id,
+                }
+            pending_started_at = _pending_since(existing)
+            if pending_started_at is None:
+                pending_started_at = time.time()
+            pending_expires_at = _pending_expires_at(existing)
+            if pending_expires_at is None:
+                pending_expires_at = pending_started_at + max(ttl_seconds, 0.0)
+            self._save_submission(
+                idempotency_key=idem_key,
+                request=stale_request,
+                response={
+                    "success": False,
+                    "status": "expired",
+                    "error": f"stale {existing_status} submission expired after {ttl_seconds_log}s",
+                    "expired_at": time.time(),
+                    "pending_since": pending_started_at,
+                    "pending_ttl_seconds": ttl_seconds,
+                    "pending_expires_at": pending_expires_at,
+                },
+            )
+            existing = self.order_repo.get_by_idempotency_key(idem_key)
+
+        if _is_retry_blocking_existing(existing, config=self._config):
+            existing_order_id = existing.get("order_id")
+            return ExecutionResult(
+                accepted=True,
+                order_id=existing_order_id,
+                status="duplicate_ignored",
+                requested_amount=req.amount,
+                filled_amount=Decimal("0"),
+                avg_price=None,
+                fees_paid=Decimal("0"),
+                error=None,
+            )
+
+        side_const = BUY if side == "BUY" else SELL
+        fee_bps = await self.fee_service.get_fee_bps(req.token_id)
+
+        request_doc = asdict(req)
+        request_doc["amount"] = str(req.amount)
+        request_doc["worst_price"] = str(worst_price)
+        request_doc["tick_size"] = str(meta.tick_size)
+        request_doc["neg_risk"] = meta.neg_risk
+
+        last_error: str | None = None
+        response: dict[str, Any] = {}
+
+        # Atomically acquire submission lock BEFORE any retry loop to prevent the
+        # race where two concurrent execute() calls both pass the "existing?" check
+        # and both submit distinct signed orders.
+        has_atomic_lock = hasattr(self.order_repo, "try_acquire_submission_lock")
+        if has_atomic_lock:
+            lock_acquired = self.order_repo.try_acquire_submission_lock(
+                idem_key, req.user_id, req.leader_id, request_doc
+            )
+        else:
+            lock_acquired = existing is None or not _is_retry_blocking_existing(
+                existing, config=self._config
+            )
+
+        if not lock_acquired:
+            existing_now = self.order_repo.get_by_idempotency_key(idem_key)
+            if existing_now and existing_now.get("order_id"):
+                return ExecutionResult(
+                    accepted=True,
+                    order_id=existing_now.get("order_id"),
+                    status="duplicate_ignored",
+                    requested_amount=req.amount,
+                    filled_amount=Decimal("0"),
+                    avg_price=None,
+                    fees_paid=Decimal("0"),
+                    error=None,
+                )
+            if has_atomic_lock and self.order_repo.is_submission_locked(idem_key):
+                return ExecutionResult(
+                    accepted=False,
+                    order_id=None,
+                    status="inflight_lock",
+                    requested_amount=req.amount,
+                    filled_amount=Decimal("0"),
+                    avg_price=None,
+                    fees_paid=Decimal("0"),
+                    error="another task is currently submitting this order",
+                )
+
+        if not hasattr(self, "_submit_semaphore"):
+            self._submit_semaphore = asyncio.Semaphore(
+                _positive_int_env("EXECUTION_SUBMIT_CONCURRENCY", 2)
+            )
+
+        async with self._submit_semaphore:
+            pending_since = time.time()
+            self._save_submission(
+                idempotency_key=idem_key,
+                request=request_doc,
+                response=_build_pending_response(
+                    pending_since=pending_since, config=self._config
+                ),
+            )
+
+            for attempt in range(1, 4):
+                signed_order = None
+                post_called = False
+                try:
+                    signed_order = await self.clob_client.create_market_order(
+                        token_id=req.token_id,
+                        side=side_const,
+                        amount=float(req.amount),
+                        max_price=float(worst_price),
+                        tick_size=str(meta.tick_size),
+                        neg_risk=meta.neg_risk,
+                        order_type=OrderType.FOK,
+                    )
+                    post_called = True
+                    response = await self.clob_client.post_signed_order(
+                        signed_order, OrderType.FOK
+                    )
+                    if response.get("success"):
+                        self.circuit_breaker.record_success()
+                        self._save_submission(
+                            idempotency_key=idem_key,
+                            request=request_doc,
+                            response=response,
+                        )
+                        log_api_response(
+                            logger,
+                            method="POST",
+                            url="post_signed_order",
+                            status=200,
+                            data=response,
+                            meta={"side": side, "asset": req.token_id},
+                        )
+                        break
+                    if response.get("ambiguous_post_failure"):
+                        response["status"] = "submitted_unconfirmed"
+                        self._save_submission(
+                            idempotency_key=idem_key,
+                            request=request_doc,
+                            response=response,
+                        )
+                        logger.warning(
+                            "ambiguous post failure (timeout/connection after POST): %s",
+                            response.get("error"),
+                        )
+                        break
+                    last_error = (
+                        response.get("error") or "unknown order submission error"
+                    )
+                    if response.get("non_retryable"):
+                        logger.warning(
+                            "non-retryable CLOB rejection, skipping retries: %s",
+                            last_error,
+                        )
+                        break
+                except Exception as exc:
+                    last_error = redact_error_detail(exc)
+                    raw_exc_body = ""
+                    if hasattr(exc, "error_msg"):
+                        raw_exc_body = str(exc.error_msg)
+                    elif hasattr(exc, "__cause__"):
+                        raw_exc_body = str(exc.__cause__)
+                    if raw_exc_body:
+                        logger.warning(
+                            "raw_clob_error_on_%s | %s",
+                            "create_order" if not post_called else "post_order",
+                            raw_exc_body[:500],
+                        )
+                    if post_called:
+                        response = {
+                            "success": False,
+                            "status": "submitted_unconfirmed",
+                            "error": last_error,
+                        }
+                        self._save_submission(
+                            idempotency_key=idem_key,
+                            request=request_doc,
+                            response=response,
+                        )
+                        log_api_response(
+                            logger,
+                            method="POST",
+                            url="post_signed_order",
+                            status=503,
+                            error=last_error,
+                            meta={
+                                "side": side,
+                                "asset": req.token_id,
+                                "state": "submitted_unconfirmed",
+                            },
+                        )
+                        logger.warning(
+                            "ambiguous submission (post called but exception): %s",
+                            last_error,
+                        )
+                        break
+                await asyncio.sleep(min(0.15 * attempt, 0.30))
+            else:
+                self.circuit_breaker.record_failure()
+                self._save_submission(
+                    idempotency_key=idem_key,
+                    request=request_doc,
+                    response=response
+                    or {"success": False, "error": last_error, "status": "failed"},
+                )
+                log_api_error(
+                    logger,
+                    side=req.side,
+                    error=last_error,
+                    asset=req.token_id,
+                    retry=3,
+                    max_retries=3,
+                )
+
+            if not response.get("success"):
+                if str(response.get("status") or "").lower() == "submitted_unconfirmed":
+                    return ExecutionResult(
+                        accepted=True,
+                        order_id=response.get("orderID"),
+                        status="submitted_unconfirmed",
+                        requested_amount=req.amount,
+                        filled_amount=Decimal("0"),
+                        avg_price=None,
+                        fees_paid=Decimal("0"),
+                        error=last_error,
+                    )
+                return ExecutionResult(
+                    accepted=False,
+                    order_id=None,
+                    status="failed",
+                    requested_amount=req.amount,
+                    filled_amount=Decimal("0"),
+                    avg_price=None,
+                    fees_paid=Decimal("0"),
+                    error=last_error or "order submission failed",
+                )
+
+            order_id = response.get("orderID")
+            fill_info = await self._confirm_fill(order_id) if order_id else {}
+
+        # Parse fill size — never fall back to req.amount (BUY=notional, SELL=tokens).
+        raw_fill = (
+            fill_info.get("size_matched")
+            or fill_info.get("filled_size")
+            or fill_info.get("size")
+        )
+        fill_status = str(fill_info.get("status", "")).lower()
+
+        if raw_fill and Decimal(str(raw_fill)) > 0:
+            filled_amount = Decimal(str(raw_fill))
+            confirmed = True
+        else:
+            filled_amount = Decimal("0")
+            confirmed = False
+
+        avg_price = (
+            Decimal(
+                str(
+                    fill_info.get("avg_price")
+                    or fill_info.get("price")
+                    or worst_price
+                )
+            )
+            if confirmed
+            else None
+        )
+
+        if confirmed and avg_price and avg_price > 0:
+            notional = filled_amount * avg_price
+            fees_paid = (notional * Decimal(fee_bps) / Decimal(10_000)).quantize(
+                Decimal("0.00000001")
+            )
+        else:
+            notional = Decimal("0")
+            fees_paid = Decimal("0")
+
+        if order_id:
+            self.order_repo.mark_fill(
+                order_id=order_id,
+                fill={
+                    "filled_amount": str(filled_amount),
+                    "avg_price": str(avg_price),
+                    "fee_bps": fee_bps,
+                    "fees_paid": str(fees_paid),
+                },
+            )
+
+        result_status = "filled" if confirmed else "submitted_unconfirmed"
+        if fill_status and fill_status not in {"", "filled", "matched"}:
+            result_status = fill_status
+        return ExecutionResult(
+            accepted=True,
+            order_id=order_id,
+            status=result_status,
+            requested_amount=req.amount,
+            filled_amount=filled_amount,
+            avg_price=avg_price,
+            fees_paid=fees_paid,
+            error=None,
+        )
