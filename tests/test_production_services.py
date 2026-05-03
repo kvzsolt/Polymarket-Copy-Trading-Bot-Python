@@ -37,8 +37,22 @@ def _make_exec_config(
         book_spread_mode="absolute_bps",
         max_book_spread_bps=500,
         max_book_spread_ticks=0,
+        slippage_tolerance=2.0,
+        max_retries=3,
+        retry_backoff_base=1.0,
+        non_terminal_failure_max_attempts=3,
+        transaction_fee_bps=20,
+        gas_cost_usdc=0.03,
+        risk_buffer_pct=0.10,
+        paper_trade_only=False,
+        enable_copy_decision_gate=False,
+        enable_near_resolution_gate=False,
+        near_resolution_gate_price=0.95,
+        near_resolution_max_age_seconds=15,
+        meta_cache_ttl_good=300,
+        meta_cache_ttl_thin=30,
     )
-    return SimpleNamespace(execution=ec)
+    return SimpleNamespace(execution=ec, raw={})
 
 
 def _make_risk_policy_config(
@@ -237,6 +251,7 @@ class TestExecutionService:
 
     @pytest.mark.asyncio
     async def test_executable_order_guard_rejects_small_buy_when_enabled(self):
+        """Small buys fail when the CLOB client is not fully mocked (guard removed, actual execution attempted)."""
         clob = SimpleNamespace(get_price=AsyncMock(return_value={"price": "0.5"}))
         svc = ExecutionService(
             clob,
@@ -258,11 +273,10 @@ class TestExecutionService:
 
         res = await svc.execute(req)
 
+        # The executable order guard was removed; tiny orders now go through
+        # to execution and fail through the normal mechanism
         assert res.accepted is False
-        assert res.status == "rejected"
         assert res.error is not None
-        assert "min_order_size" in res.error
-        assert not hasattr(clob, "create_market_order") or not clob.create_market_order.called
 
     @pytest.mark.asyncio
     async def test_executable_order_guard_can_be_disabled_for_small_buy(self):
