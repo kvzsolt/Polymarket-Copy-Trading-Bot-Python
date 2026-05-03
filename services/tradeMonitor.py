@@ -30,6 +30,9 @@ _LEADER_FETCH_LOCKS: dict[tuple[str, str], asyncio.Lock] = {}
 _LEADER_FETCH_LAST_TS: dict[tuple[str, str], float] = {}
 _LEADER_FETCH_INFLIGHT: dict[tuple[str, str], asyncio.Task] = {}
 
+# Set by trade_monitor() at startup; read by _leader_fetch_spacing_seconds()
+_fetch_spacing_config: Any = None
+
 
 def _leader_fetch_key(kind: str, leader_wallet: str) -> tuple[str, str]:
     return kind, str(leader_wallet or "").strip().lower()
@@ -47,6 +50,16 @@ def _leader_fetch_lock(kind: str, leader_wallet: str) -> asyncio.Lock:
 
 
 def _leader_fetch_spacing_seconds(kind: str) -> float:
+    global _fetch_spacing_config
+    if _fetch_spacing_config is not None:
+        ms = (
+            _fetch_spacing_config.polling.leader_positions_min_fetch_spacing_ms
+            if kind == "positions"
+            else _fetch_spacing_config.polling.leader_activity_min_fetch_spacing_ms
+        )
+        return max(0.0, ms / 1000.0)
+
+    # Legacy ENV fallback
     env_name = (
         "LEADER_POSITIONS_MIN_FETCH_SPACING_MS"
         if kind == "positions"
@@ -536,6 +549,8 @@ async def trade_monitor(
     research_capture_service: Any | None = None,
 ):
     """Main monitor loop. Calls *on_trade_callback(trades_list)* immediately on detection."""
+    global _fetch_spacing_config
+    _fetch_spacing_config = config
     fetch_interval = float(bot_params.get('FETCH_INTERVAL', config.polling.fetch_interval))
     state = LeaderMonitorState()
     cursor_store = LeaderCursorStore()

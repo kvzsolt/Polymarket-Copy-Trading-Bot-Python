@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from config.env import ENV
+from config.app_config import AppConfig
 from utils.logger import get_logger
 
 logger = get_logger("TraderDiscoveryService")
@@ -124,13 +125,38 @@ class RankedLeader:
 class TraderDiscoveryService:
     """Discover and rank leaders from polymarketanalytics.com."""
 
-    def __init__(self, leader_scorer=None):
+    def __init__(self, leader_scorer=None, *, config: AppConfig | None = None):
         self.leader_scorer = leader_scorer
         self._cache: dict[str, TraderProfile] = {}
         self._last_discovery: float = 0.0
         self._last_discovery_count: int = 0
         self._last_discovery_source: str = "none"
-        self._cache_ttl_s: float = float(ENV.get("DISCOVERY_CACHE_TTL_SECONDS", 3600) or 3600)
+
+        if config is not None:
+            d = config.discovery
+            l = config.leader
+            self._cache_ttl_s: float = d.discovery_cache_ttl_seconds
+            self._min_pnl: float = d.min_leader_pnl
+            self._min_win_rate: float = d.min_leader_win_rate
+            self._min_positions: int = d.min_leader_positions
+            self._max_results: int = d.discovery_max_results
+            self._enabled: bool = d.enable_trader_discovery
+            self._auto_discover: bool = l.auto_discover_leaders
+            self._auto_discover_min_score: float = l.auto_discover_min_score
+            self._auto_discover_top_n: int = l.auto_discover_top_n
+            self._discovery_interval: int = d.discovery_interval_seconds
+        else:
+            # Legacy fallback for tests that don't pass config
+            self._cache_ttl_s: float = float(ENV.get("DISCOVERY_CACHE_TTL_SECONDS", 3600) or 3600)
+            self._min_pnl: float = float(ENV.get("MIN_LEADER_PNL", 1000.0))
+            self._min_win_rate: float = float(ENV.get("MIN_LEADER_WIN_RATE", 0.55))
+            self._min_positions: int = int(ENV.get("MIN_LEADER_POSITIONS", 20))
+            self._max_results: int = int(ENV.get("DISCOVERY_MAX_RESULTS", 50))
+            self._enabled: bool = ENV.get("ENABLE_TRADER_DISCOVERY", False)
+            self._auto_discover: bool = ENV.get("AUTO_DISCOVER_LEADERS", False)
+            self._auto_discover_min_score: float = float(ENV.get("AUTO_DISCOVER_MIN_SCORE", 0.45) or 0.45)
+            self._auto_discover_top_n: int = int(ENV.get("AUTO_DISCOVER_TOP_N", 5) or 5)
+            self._discovery_interval: int = int(ENV.get("DISCOVERY_INTERVAL_SECONDS", 3600) or 3600)
 
     def _score_trader(self, profile: TraderProfile) -> float:
         """Compute composite score from trader metrics.
@@ -207,10 +233,10 @@ class TraderDiscoveryService:
 
         Falls back to cached data or CLOB-based discovery on failure.
         """
-        min_pnl = min_pnl if min_pnl is not None else float(ENV.get("MIN_LEADER_PNL", 1000.0))
-        min_win_rate = min_win_rate if min_win_rate is not None else float(ENV.get("MIN_LEADER_WIN_RATE", 0.55))
-        min_positions = min_positions if min_positions is not None else int(ENV.get("MIN_LEADER_POSITIONS", 20))
-        max_results = max_results if max_results is not None else int(ENV.get("DISCOVERY_MAX_RESULTS", 50))
+        min_pnl = min_pnl if min_pnl is not None else self._min_pnl
+        min_win_rate = min_win_rate if min_win_rate is not None else self._min_win_rate
+        min_positions = min_positions if min_positions is not None else self._min_positions
+        max_results = max_results if max_results is not None else self._max_results
 
         url = f"{_BASE_URL}/traders-tag-performance?{_LEADERBOARD_PARAMS}&limit={max_results}&offset=0"
         logger.info(f"Discovering traders from polymarketanalytics (limit={max_results})")
@@ -503,7 +529,7 @@ class TraderDiscoveryService:
 
     async def discover_ranked_leaders(self, *, limit: int = 200) -> list[RankedLeader]:
         """Legacy API — wraps new discovery."""
-        if not ENV.get("AUTO_DISCOVER_LEADERS", False) and not ENV.get("ENABLE_TRADER_DISCOVERY", False):
+        if not self._auto_discover and not self._enabled:
             return []
 
         candidates = await self.discover_candidates(max_results=limit)
@@ -520,7 +546,7 @@ class TraderDiscoveryService:
     async def resolve_leaders(self, configured: list[str]) -> list[str]:
         """Merge configured leaders with discovered ones."""
         configured_clean = [w for w in configured if _is_eth_address(w)]
-        if not ENV.get("AUTO_DISCOVER_LEADERS", False) and not ENV.get("ENABLE_TRADER_DISCOVERY", False):
+        if not self._auto_discover and not self._enabled:
             return configured_clean
 
         discovered = await self.discover_ranked_leaders()
@@ -529,8 +555,8 @@ class TraderDiscoveryService:
         if not merged:
             return configured_clean
 
-        min_score = float(ENV.get("AUTO_DISCOVER_MIN_SCORE", 0.45) or 0.45)
-        top_n = int(ENV.get("AUTO_DISCOVER_TOP_N", 5) or 5)
+        min_score = self._auto_discover_min_score
+        top_n = self._auto_discover_top_n
         keep = set(configured_clean)
         for item in discovered:
             if item.score >= min_score and len(keep) < (len(configured_clean) + top_n):
@@ -540,8 +566,8 @@ class TraderDiscoveryService:
 
 async def discovery_background_loop(discovery: TraderDiscoveryService) -> None:
     """Background loop that runs discovery periodically."""
-    interval = int(ENV.get("DISCOVERY_INTERVAL_SECONDS", 3600) or 3600)
-    enabled = ENV.get("ENABLE_TRADER_DISCOVERY", False)
+    interval = discovery._discovery_interval
+    enabled = discovery._enabled
 
     if not enabled:
         logger.info("Trader discovery disabled")
