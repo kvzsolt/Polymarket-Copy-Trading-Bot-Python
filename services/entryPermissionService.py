@@ -217,26 +217,36 @@ class EntryPermissionService:
     @staticmethod
     def _rule_fresh_leader_buy(
         block: dict[str, Any],
-        if trigger_notional_raw is None:
-            return False
+        leader_notional_usdc: float | None,
+    ) -> bool:
         """Fire when the leader went net-flat after the block and now has a fresh BUY.
 
-        # the trigger notional, indicating a routine add rather than a re-entry
-        # after going net-flat. The original logic incorrectly used
-        # `leader_notional_usdc` (signal size) instead of `trigger_notional_raw`.
-        if leader_notional_usdc < trigger_notional_raw * 0.1:
-            # Block cleared: This is a routine add, not a fresh re-entry after going net-flat.
-            # The leader_notional_usdc is significantly smaller than the trigger_notional_raw.
-            # suggesting a new entry or a substantial add.
-            return True
-        else:
+        ``leader_notional_usdc`` MUST be the leader's *current total position
+        notional* in this market (post-trade), not the size of a single signal.
+        Passing a single-signal notional causes false-positive clears for any
+        incremental add.
+
+        Requires ``leader_notional_at_trigger`` to have been stored in block
+        metadata by the risk-monitor at block creation time. Pass ``None`` for
+        ``leader_notional_usdc`` to skip this rule when the caller cannot
+        cheaply obtain the leader's current total position.
+        """
+        if leader_notional_usdc is None:
+            return False
+        metadata = block.get("metadata") or {}
+        trigger_notional_raw = metadata.get("leader_notional_at_trigger")
+        if trigger_notional_raw is None:
             return False
         try:
             trigger_notional = float(trigger_notional_raw)
         except (TypeError, ValueError):
             return False
-        # Leader had size > 0 at trigger, went to 0, and now has a fresh BUY
-        return trigger_notional > 0 and leader_notional_usdc > 0 and leader_notional_usdc < trigger_notional * 0.1
+        # Leader had a size > 0 at trigger, went to ~0, and now re-entered.
+        return (
+            trigger_notional > 0
+            and leader_notional_usdc > 0
+            and leader_notional_usdc < trigger_notional * 0.1
+        )
 
     # ------------------------------------------------------------------
     # Convenience helpers for callers

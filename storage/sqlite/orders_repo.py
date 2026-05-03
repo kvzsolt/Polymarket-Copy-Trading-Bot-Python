@@ -47,15 +47,22 @@ class OrdersRepo(AbstractOrderRepository):
     def try_acquire_submission_lock(self, key: str, user_id: str, leader_id: str | None, request_payload: dict) -> bool:
         """Atomically acquire a submission lock for this idempotency key.
 
-        Uses INSERT ... ON CONFLICT DO NOTHING + rowcount check.
+        Two-phase acquisition:
+        1. INSERT ... ON CONFLICT DO NOTHING for new rows
+        2. If row already exists and is in a non-blocking terminal status
+           (no order_id, not already pending), UPDATE it to pending_lock
+           with compare-and-swap semantics (rowcount check).
+
         Returns True if this caller acquired the lock (may proceed to submit).
         Returns False if someone else already holds it (must NOT submit).
 
         This prevents the race condition where two concurrent execute() calls
-        both pass the "existing?" check and both submit distinct signed orders.
+        both pass the "existing?" check and both submit distinct signed orders,
+        even after a failed/expired previous attempt.
         """
         request_json = json.dumps(request_payload, sort_keys=True, separators=(",", ":"), default=str)
         with create_connection(self.db_path) as conn:
+            # Phase 1: INSERT for completely new idempotency keys
             cursor = conn.execute(
                 """
                 INSERT INTO orders (
@@ -68,8 +75,26 @@ class OrdersRepo(AbstractOrderRepository):
                 (key, user_id, leader_id, request_json),
             )
             conn.commit()
-            acquired = cursor.rowcount == 1
-        return acquired
+            if cursor.rowcount == 1:
+                return True
+
+            # Phase 2: compare-and-swap for existing rows in non-locked terminal state.
+            # Only succeeds if current status is NOT already pending/pending_lock
+            # and no order_id has been assigned yet.
+            cursor = conn.execute(
+                """
+                UPDATE orders
+                SET status = 'pending_lock',
+                    request_json = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE idempotency_key = ?
+                  AND order_id IS NULL
+                  AND status NOT IN ('pending', 'pending_lock')
+                """,
+                (request_json, key),
+            )
+            conn.commit()
+            return cursor.rowcount == 1
 
     def is_submission_locked(self, key: str) -> bool:
         """Check if a submission lock exists that is still pending (no order_id yet).
@@ -413,22 +438,24 @@ class OrdersRepo(AbstractOrderRepository):
         if user_id is not None:
             query += " AND user_id = ?"
             params.append(user_id)
+        # Push the side filter into SQL via json_extract so we don't load every
+        # unconfirmed row across all users into memory just to drop most of
+        # them. SQLite ships the JSON1 extension by default since 3.38; we
+        # match case-insensitively against the canonical upper-case form.
+        # (Greptile P2 PR #63.)
         if side is not None:
-            # request_json stores side, but sqlite JSON helpers are not assumed;
-            # filter in Python below after row decoding.
-            pass
+            query += (
+                " AND UPPER(COALESCE(json_extract(request_json, '$.side'), '')) = ?"
+            )
+            params.append(str(side).upper())
         query += " ORDER BY updated_at ASC"
 
         with create_connection(self.db_path) as conn:
             rows = conn.execute(query, tuple(params)).fetchall()
 
-        decoded = [record for row in rows if (record := self._row_to_order_record(row)) is not None]
-        if side is None:
-            return decoded
-        side_u = str(side or "").upper()
         return [
-            record for record in decoded
-            if str((record.get("request") or {}).get("side") or "").upper() == side_u
+            record for row in rows
+            if (record := self._row_to_order_record(row)) is not None
         ]
 
     def get_unconfirmed_buys(self, max_age_seconds: float = 300.0) -> list[dict]:
