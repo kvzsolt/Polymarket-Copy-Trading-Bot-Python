@@ -299,28 +299,25 @@ class PositionManager:
     def track_sell(
         self,
         condition_id: str,
-        asset_or_exit_price: str | float,
-        exit_price_or_size_tokens: float,
-        size_tokens: float | None = None,
+        exit_price: float,
+        size_tokens: float,
+        *,
+        asset: str | None = None,
         reason: str = "leader_sell",
     ) -> Optional[TrackedPosition]:
-        """Record a (partial or full) sell. Returns the position if fully closed."""
-        asset: str | None
-        exit_price: float
-        sell_size: float
+        """Record a (partial or full) sell. Returns the position if fully closed.
 
-        if isinstance(asset_or_exit_price, str):
-            asset = asset_or_exit_price
-            exit_price = float(exit_price_or_size_tokens)
-            if size_tokens is None:
-                raise ValueError(
-                    "track_sell(condition_id, asset, exit_price, size_tokens, ...) requires size_tokens"
-                )
-            sell_size = float(size_tokens)
-        else:
-            asset = None
-            exit_price = float(asset_or_exit_price)
-            sell_size = float(exit_price_or_size_tokens)
+        Pass ``asset=<token_id>`` to disambiguate when multiple positions share
+        the same ``condition_id`` (binary-outcome markets). Without ``asset``
+        the manager falls back to the first matching key — fine for tests and
+        single-token markets.
+        """
+        # NOTE: This used to dispatch on ``isinstance(asset_or_exit_price, str)``
+        # which silently routed any unexpected type to the wrong path. The
+        # keyword-only ``asset`` parameter makes the asset-aware form
+        # unambiguous. (Greptile P2 PR #63.)
+        sell_size: float = float(size_tokens)
+        exit_price = float(exit_price)
 
         if sell_size <= 0:
             raise ValueError(
