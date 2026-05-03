@@ -2,8 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from dataclasses import asdict
 from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
 from hashlib import sha256
 from typing import Any, TYPE_CHECKING
@@ -13,9 +12,34 @@ if TYPE_CHECKING:
 
 from integrations.polymarket.clob_v2_gateway import BUY, OrderType, SELL
 from services.circuitBreaker import CircuitBreaker, CircuitOpen
-
 from utils.logger import get_logger, log_api_error, log_api_response, redact_error_detail
 from utils.createClobClient import _is_thin_or_empty_book
+
+# Re-exported from submodules for backward compatibility
+from services.execution.types import (
+    ExecutionRequest,
+    ExecutionResult,
+    BookSpreadMetrics as _BookSpreadMetrics,
+    _SUPPORTED_BOOK_SPREAD_MODES,
+)
+from services.execution.book_spread import (
+    resolve_book_spread_mode as _resolve_book_spread_mode,
+    calculate_book_spread_metrics as _calculate_book_spread_metrics,
+)
+from services.execution.submission import (
+    truncate_text as _truncate_text,
+    sanitize_submission_value as _sanitize_submission_value,
+    sanitize_submission_request as _sanitize_submission_request,
+    sanitize_submission_response as _sanitize_submission_response,
+    coerce_bool as _coerce_bool,
+    coerce_timestamp as _coerce_timestamp,
+    pending_submission_ttl_seconds as _pending_submission_ttl_seconds,
+    pending_since as _pending_since,
+    pending_expires_at as _pending_expires_at,
+    build_pending_response as _build_pending_response,
+    is_pending_submission_expired as _is_pending_submission_expired,
+    is_retry_blocking_existing as _is_retry_blocking_existing,
+)
 
 logger = get_logger("ExecutionService")
 
@@ -48,63 +72,6 @@ def _parse_decimal_or_default(raw: Any, default: Decimal) -> Decimal:
     except Exception:
         return default
 
-_MAX_PERSISTED_FIELD_CHARS = 160
-_MAX_PERSISTED_ERROR_CHARS = 512
-_TRUNCATED_SUFFIX = "...[truncated]"
-
-_PERSISTED_REQUEST_FIELDS = (
-    "user_id",
-    "leader_id",
-    "token_id",
-    "condition_id",
-    "side",
-    "amount",
-    "max_slippage_bps",
-    "reason",
-    "signal_id",
-    "recovery_metadata",
-    "worst_price",
-    "tick_size",
-    "neg_risk",
-)
-
-_PERSISTED_RESPONSE_FIELDS = (
-    "success",
-    "status",
-    "orderID",
-    "error",
-    "pending_since",
-    "pending_ttl_seconds",
-    "pending_expires_at",
-    "expired_at",
-)
-
-
-@dataclass(frozen=True)
-class ExecutionRequest:
-    user_id: str
-    leader_id: str
-    token_id: str
-    side: str  # BUY or SELL
-    amount: Decimal
-    max_slippage_bps: int
-    reason: str  # copy_trade, advanced_risk_exit, rebalance
-    signal_id: str | None = None
-    condition_id: str | None = None
-    recovery_metadata: dict[str, Any] | None = None
-
-
-@dataclass
-class ExecutionResult:
-    accepted: bool
-    order_id: str | None
-    status: str
-    requested_amount: Decimal
-    filled_amount: Decimal
-    avg_price: Decimal | None
-    fees_paid: Decimal
-    error: str | None = None
-
 
 def _normalize_side(side: str) -> str:
     value = (side or "").strip().upper()
@@ -124,49 +91,6 @@ def _quantize_price(price: Decimal, tick_size: Decimal, side: str) -> Decimal:
     return rounded_units * tick_size
 
 
-_SUPPORTED_BOOK_SPREAD_MODES = {"absolute_bps", "relative_bps", "ticks"}
-
-
-@dataclass(frozen=True)
-class _BookSpreadMetrics:
-    absolute: Decimal
-    absolute_bps: int
-    relative_bps: int | None
-    ticks: int | None
-
-
-def _resolve_book_spread_mode(raw_mode: Any) -> str:
-    mode = str(raw_mode or "absolute_bps").strip().lower()
-    if mode in _SUPPORTED_BOOK_SPREAD_MODES:
-        return mode
-    return "absolute_bps"
-
-
-def _calculate_book_spread_metrics(
-    *, best_bid: Decimal, best_ask: Decimal, tick_size: Decimal
-) -> _BookSpreadMetrics:
-    absolute = best_ask - best_bid
-    absolute_bps = int(
-        (absolute * Decimal(10_000)).to_integral_value(rounding=ROUND_CEILING)
-    )
-    relative_bps: int | None = None
-    if best_bid > 0:
-        relative_bps = int(
-            ((absolute / best_bid) * Decimal(10_000)).to_integral_value(
-                rounding=ROUND_CEILING
-            )
-        )
-    ticks: int | None = None
-    if tick_size > 0:
-        ticks = int((absolute / tick_size).to_integral_value(rounding=ROUND_CEILING))
-    return _BookSpreadMetrics(
-        absolute=absolute,
-        absolute_bps=absolute_bps,
-        relative_bps=relative_bps,
-        ticks=ticks,
-    )
-
-
 def _idempotency_key(req: ExecutionRequest) -> str:
     payload = "|".join(
         [
@@ -181,270 +105,6 @@ def _idempotency_key(req: ExecutionRequest) -> str:
         ]
     )
     return sha256(payload.encode("utf-8")).hexdigest()
-
-
-def _truncate_text(value: Any, *, max_chars: int) -> str:
-    text = (
-        str(value)
-        .replace("\x00", " ")
-        .replace("\r", " ")
-        .replace("\n", " ")
-        .replace("\t", " ")
-    )
-    if len(text) <= max_chars:
-        return text
-    keep = max(0, max_chars - len(_TRUNCATED_SUFFIX))
-    return text[:keep] + _TRUNCATED_SUFFIX
-
-
-def _sanitize_submission_value(
-    value: Any, *, max_chars: int = _MAX_PERSISTED_FIELD_CHARS
-) -> Any:
-    if value is None:
-        return None
-    if isinstance(value, (bool, int, float)):
-        return value
-    if isinstance(value, Decimal):
-        return str(value)
-    if isinstance(value, dict):
-        sanitized_dict: dict[str, Any] = {}
-        for key, item in value.items():
-            sanitized_item = _sanitize_submission_value(item, max_chars=max_chars)
-            if sanitized_item is not None:
-                sanitized_dict[_truncate_text(key, max_chars=max_chars)] = sanitized_item
-        return sanitized_dict
-    if isinstance(value, (list, tuple)):
-        return [
-            sanitized_item
-            for item in value
-            if (sanitized_item := _sanitize_submission_value(item, max_chars=max_chars)) is not None
-        ]
-    return _truncate_text(value, max_chars=max_chars)
-
-
-def _sanitize_submission_request(request: dict[str, Any] | None) -> dict[str, Any]:
-    if not isinstance(request, dict):
-        return {}
-    sanitized: dict[str, Any] = {}
-    for key in _PERSISTED_REQUEST_FIELDS:
-        if key not in request:
-            continue
-        value = _sanitize_submission_value(request.get(key))
-        if value is not None:
-            sanitized[key] = value
-    return sanitized
-
-
-def _coerce_bool(value: Any) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)):
-        return bool(value)
-    if isinstance(value, str):
-        return value.strip().lower() in {"1", "true", "yes", "y"}
-    return False
-
-
-def _sanitize_submission_response(response: dict[str, Any] | Any) -> dict[str, Any]:
-    if not isinstance(response, dict):
-        return {
-            "success": False,
-            "status": "failed",
-            "error": _truncate_text(response, max_chars=_MAX_PERSISTED_ERROR_CHARS),
-        }
-
-    sanitized: dict[str, Any] = {}
-    for key in _PERSISTED_RESPONSE_FIELDS:
-        if key not in response:
-            continue
-        raw_value = response.get(key)
-        if key == "success":
-            sanitized[key] = _coerce_bool(raw_value)
-            continue
-        if key in {"pending_since", "pending_expires_at", "expired_at"}:
-            ts_value = _coerce_timestamp(raw_value)
-            sanitized[key] = (
-                ts_value
-                if ts_value is not None
-                else _sanitize_submission_value(raw_value)
-            )
-            continue
-        if key == "error":
-            error_value = _sanitize_submission_value(
-                raw_value, max_chars=_MAX_PERSISTED_ERROR_CHARS
-            )
-            if error_value:
-                sanitized[key] = error_value
-            continue
-        value = _sanitize_submission_value(raw_value)
-        if value is not None:
-            sanitized[key] = value
-
-    if "success" not in sanitized:
-        sanitized["success"] = _coerce_bool(response.get("success"))
-
-    if "status" not in sanitized:
-        sanitized["status"] = "submitted" if sanitized.get("success") else "failed"
-
-    return sanitized
-
-
-_RETRY_BLOCKING_STATUSES = {
-    "pending",
-    "submitted",
-    "submitted_unconfirmed",
-    "filled",
-    "duplicate_ignored",
-    "live",
-    "matched",
-}
-
-
-def _pending_submission_ttl_seconds(config: AppConfig | None = None) -> float:
-    if config is not None:
-        return max(float(config.execution.pending_submission_ttl_seconds), 0.0)
-    return 120.0
-
-
-def _coerce_timestamp(value: Any) -> float | None:
-    if value is None:
-        return None
-    if isinstance(value, (int, float)):
-        return float(value)
-
-    text = str(value).strip()
-    if not text:
-        return None
-
-    try:
-        return float(text)
-    except ValueError:
-        pass
-
-    try:
-        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
-        return parsed.timestamp()
-    except ValueError:
-        pass
-
-    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M:%S.%f"):
-        try:
-            parsed = datetime.strptime(text, fmt).replace(tzinfo=timezone.utc)
-            return parsed.timestamp()
-        except ValueError:
-            continue
-
-    return None
-
-
-def _pending_since(existing: dict[str, Any]) -> float | None:
-    response = (
-        existing.get("response") if isinstance(existing.get("response"), dict) else {}
-    )
-    for candidate in (
-        existing.get("pending_since"),
-        response.get("pending_since"),
-        existing.get("updated_at"),
-        existing.get("created_at"),
-    ):
-        ts = _coerce_timestamp(candidate)
-        if ts is not None:
-            return ts
-    return None
-
-
-def _pending_expires_at(existing: dict[str, Any]) -> float | None:
-    response = (
-        existing.get("response") if isinstance(existing.get("response"), dict) else {}
-    )
-    for candidate in (
-        existing.get("pending_expires_at"),
-        response.get("pending_expires_at"),
-    ):
-        ts = _coerce_timestamp(candidate)
-        if ts is not None:
-            return ts
-    return None
-
-
-def _build_pending_response(
-    *, pending_since: float, ttl_seconds: float | None = None, config: AppConfig | None = None
-) -> dict[str, Any]:
-    ttl = (
-        _pending_submission_ttl_seconds(config)
-        if ttl_seconds is None
-        else max(float(ttl_seconds), 0.0)
-    )
-    return {
-        "success": False,
-        "status": "pending",
-        "pending_since": pending_since,
-        "pending_ttl_seconds": ttl,
-        "pending_expires_at": pending_since + ttl,
-    }
-
-
-def _is_pending_submission_expired(
-    existing: dict[str, Any] | None,
-    *,
-    now_ts: float | None = None,
-    pending_ttl_seconds: float | None = None,
-    config: AppConfig | None = None,
-) -> bool:
-    if not existing:
-        return False
-    status = str(
-        existing.get("status") or existing.get("response", {}).get("status") or ""
-    ).lower()
-    if existing.get("order_id"):
-        return False
-    if status not in _RETRY_BLOCKING_STATUSES:
-        return False
-
-    now_value = time.time() if now_ts is None else float(now_ts)
-    explicit_expires_at = _pending_expires_at(existing)
-    if explicit_expires_at is not None:
-        return now_value >= explicit_expires_at
-
-    ttl_seconds = (
-        _pending_submission_ttl_seconds(config)
-        if pending_ttl_seconds is None
-        else float(pending_ttl_seconds)
-    )
-    if ttl_seconds <= 0:
-        return True
-
-    submitted_at = _pending_since(existing)
-    if submitted_at is None:
-        return True
-
-    return (now_value - submitted_at) >= ttl_seconds
-
-
-def _is_retry_blocking_existing(
-    existing: dict[str, Any] | None,
-    *,
-    now_ts: float | None = None,
-    pending_ttl_seconds: float | None = None,
-    config: AppConfig | None = None,
-) -> bool:
-    if not existing:
-        return False
-    status = str(
-        existing.get("status") or existing.get("response", {}).get("status") or ""
-    ).lower()
-    if existing.get("order_id"):
-        return True
-    if _is_pending_submission_expired(
-        existing,
-        now_ts=now_ts,
-        pending_ttl_seconds=pending_ttl_seconds,
-        config=config,
-    ):
-        return False
-    return status in _RETRY_BLOCKING_STATUSES
 
 
 class ExecutionService:
