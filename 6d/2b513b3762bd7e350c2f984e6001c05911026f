@@ -1,0 +1,75 @@
+scripts/find_followable_traders.py
+  7c9d7d3647885c58 24,49-55,72,75,82,105
+services/execution/coordinator.py
+  7c9d7d3647885c58 1-188
+tests/test_execution_coordinator.py
+  7c9d7d3647885c58 1-204
+tests/test_reconciliation_service.py
+  7c9d7d3647885c58 1-181
+services/compliance.py
+  7c9d7d3647885c58 3,13-14,18-19,22,29-32,38-41,49-52,60-63,71-74,76-84
+tests/test_order_lifecycle.py
+  7c9d7d3647885c58 1-33
+orchestrators/trade_pipeline.py
+  7c9d7d3647885c58 41,53-54,63-64
+services/collateral_readiness.py
+  7c9d7d3647885c58 77-80,85,100,102,111,121,130,140,158-162,172-176
+storage/sqlite/migrations.py
+  7c9d7d3647885c58 540-574,576
+services/execution/state_machine.py
+  7c9d7d3647885c58 1-77
+domain/models.py
+  7c9d7d3647885c58 4,6,12-16
+services/executionService.py
+  7c9d7d3647885c58 30,38,307,479,557-558,565,567,573,575,581,703,707,857
+services/execution/reconciliation_service.py
+  7c9d7d3647885c58 1-120,123-127
+services/negRiskArb.py
+  7c9d7d3647885c58 29,267-270,273-277,279-289,486,611-612,709-713,718-719,725,727,898
+storage/sqlite/reservations_repo.py
+  7c9d7d3647885c58 1-105
+orchestrators/leader_registry.py
+  7c9d7d3647885c58 6-7,45,52,61-67,101,119-121,191,193
+bot.py
+  7c9d7d3647885c58 1-6
+tests/test_collateral_readiness.py
+  7c9d7d3647885c58 63-66,80-83,95-98,110-113,124-127,149,153,156,168-171
+bot_cli/main.py
+  7c9d7d3647885c58 1-17
+tests/test_reservation_service.py
+  7c9d7d3647885c58 1-149
+tests/test_compliance.py
+  7c9d7d3647885c58 2,11,16-17,21,26-27,31,44,48,53,57,62,66,71-82
+domain/order_lifecycle.py
+  7c9d7d3647885c58 1-118
+AUDIT.md
+  7c9d7d3647885c58 1-12
+bot_cli/commands/doctor.py
+  7c9d7d3647885c58 1-156
+app.py
+  7c9d7d3647885c58 176-185
+services/execution/reservation_service.py
+  7c9d7d3647885c58 1-103
+tests/test_state_machine.py
+  7c9d7d3647885c58 1-27
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.4",
+  "base_commit_sha": "6d2b513b3762bd7e350c2f984e6001c05911026f",
+  "prompts": {
+    "7c9d7d3647885c58": {
+      "agent_id": {
+        "tool": "gemini",
+        "id": "5525dcf5-4c56-4c24-b726-c91be4feadc2",
+        "model": "unknown"
+      },
+      "human_author": "kvzsolt",
+      "messages": [],
+      "total_additions": 1787,
+      "total_deletions": 226,
+      "accepted_lines": 1751,
+      "overriden_lines": 1
+    }
+  }
+}
