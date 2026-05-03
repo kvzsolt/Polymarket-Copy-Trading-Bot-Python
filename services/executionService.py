@@ -296,6 +296,7 @@ def _sanitize_submission_response(response: dict[str, Any] | Any) -> dict[str, A
 
 _RETRY_BLOCKING_STATUSES = {
     "pending",
+    "pending_lock",
     "submitted",
     "submitted_unconfirmed",
     "filled",
@@ -303,6 +304,10 @@ _RETRY_BLOCKING_STATUSES = {
     "live",
     "matched",
 }
+
+
+# Terminal statuses where a fill record should be persisted.
+_FILL_CONFIRM_STATUSES = {"filled", "matched", ""}
 
 
 def _pending_submission_ttl_seconds(config: AppConfig | None = None) -> float:
@@ -513,8 +518,13 @@ class ExecutionService:
                     status = str(order.get("status", "")).lower()
                     if status in {"filled", "matched"}:
                         return order
-                    # Even canceled FOK may include matched/size.
-                    if order.get("size_matched") or order.get("filled_size"):
+                    # Even canceled FOK may include matched/size — but only treat
+                    # size_matched/filled_size as confirmed if status is a
+                    # terminal-fill status.  'live' + size_matched is a partial
+                    # match that should NOT be treated as a confirmed fill.
+                    safe_fill_status = status in _FILL_CONFIRM_STATUSES
+                    has_fill_data = bool(order.get("size_matched") or order.get("filled_size"))
+                    if has_fill_data and (safe_fill_status or status in terminal_no_fill_statuses):
                         return order
                     if status in terminal_no_fill_statuses:
                         return order
@@ -1032,12 +1042,21 @@ class ExecutionService:
         )
         fill_status = str(fill_info.get("status", "")).lower()
 
-        if raw_fill and Decimal(str(raw_fill)) > 0:
+        # Only treat fill as confirmed when the venue status is terminal/success.
+        # Non-terminal statuses like 'live' with a size_matched indicate a partial
+        # or speculative fill that should NOT be persisted as a confirmed fill.
+        if raw_fill and Decimal(str(raw_fill)) > 0 and fill_status in _FILL_CONFIRM_STATUSES:
             filled_amount = Decimal(str(raw_fill))
             confirmed = True
         else:
             filled_amount = Decimal("0")
             confirmed = False
+
+        if raw_fill and Decimal(str(raw_fill)) > 0 and fill_status not in _FILL_CONFIRM_STATUSES:
+            logger.warning(
+                "fill data present but status is non-terminal (status=%s, raw_fill=%s, order_id=%s) — skipping persistence",
+                fill_status, raw_fill, order_id,
+            )
 
         avg_price = (
             Decimal(
@@ -1060,7 +1079,7 @@ class ExecutionService:
             notional = Decimal("0")
             fees_paid = Decimal("0")
 
-        if order_id:
+        if order_id and confirmed:
             self.order_repo.mark_fill(
                 order_id=order_id,
                 fill={
