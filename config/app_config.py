@@ -48,6 +48,7 @@ __all__ = [
     "LoggingConfig",
     "NetworkConfig",
     "PollingConfig",
+    "ReconciliationConfig",
     "RedemptionConfig",
     "RiskConfig",
     "SignatureType",
@@ -226,6 +227,9 @@ class PollingConfig:
     risk_check_interval: float
     redeem_check_interval: int
     discovery_refresh_interval_seconds: int
+    leader_positions_min_fetch_spacing_ms: int
+    leader_activity_min_fetch_spacing_ms: int
+    reconcile_interval_seconds: int
 
 
 @dataclass(frozen=True)
@@ -362,6 +366,12 @@ class NetworkConfig:
 
 
 @dataclass(frozen=True)
+class ReconciliationConfig:
+    stale_threshold_seconds: float
+    auto_cancel_stale: bool
+
+
+@dataclass(frozen=True)
 class RedemptionConfig:
     enable_auto_redeem: bool
 
@@ -376,6 +386,7 @@ class DiscoveryConfig:
     min_leader_positions: int
     min_active_positions: int
     discovery_max_results: int
+    discovery_cache_ttl_seconds: float
     multi_user_config_file: str
 
 
@@ -412,6 +423,7 @@ class AppConfig:
     logging: LoggingConfig
     network: NetworkConfig
     redemption: RedemptionConfig
+    reconciliation: ReconciliationConfig
     discovery: DiscoveryConfig
     features: FeatureFlagConfig
     # The raw mapping is kept for transitional backwards compatibility
@@ -627,6 +639,9 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         risk_check_interval=p.float_("RISK_CHECK_INTERVAL", "15"),
         redeem_check_interval=p.int_("REDEEM_CHECK_INTERVAL", "60"),
         discovery_refresh_interval_seconds=p.int_("DISCOVERY_REFRESH_INTERVAL_SECONDS", "300"),
+        leader_positions_min_fetch_spacing_ms=p.int_("LEADER_POSITIONS_MIN_FETCH_SPACING_MS", "250"),
+        leader_activity_min_fetch_spacing_ms=p.int_("LEADER_ACTIVITY_MIN_FETCH_SPACING_MS", "250"),
+        reconcile_interval_seconds=p.int_("RECONCILE_INTERVAL_SECONDS", "300"),
     )
 
     # Sizing
@@ -795,6 +810,11 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         metrics_bind_host=p.string("METRICS_BIND_HOST", "127.0.0.1"),
     )
 
+    reconciliation = ReconciliationConfig(
+        stale_threshold_seconds=p.float_("RECONCILE_STALE_SECONDS", "3600"),
+        auto_cancel_stale=p.bool_("RECONCILE_AUTO_CANCEL", False),
+    )
+
     redemption = RedemptionConfig(
         enable_auto_redeem=p.bool_("ENABLE_AUTO_REDEEM", False),
     )
@@ -808,6 +828,7 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         min_leader_positions=p.int_("MIN_LEADER_POSITIONS", "20"),
         min_active_positions=p.int_("MIN_ACTIVE_POSITIONS", "1"),
         discovery_max_results=p.int_("DISCOVERY_MAX_RESULTS", "50"),
+        discovery_cache_ttl_seconds=p.float_("DISCOVERY_CACHE_TTL_SECONDS", "3600"),
         multi_user_config_file=p.string("MULTI_USER_CONFIG_FILE", ""),
     )
 
@@ -840,6 +861,7 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         logging=logging_cfg,
         network=network,
         redemption=redemption,
+        reconciliation=reconciliation,
         discovery=discovery,
         features=features,
         raw=dict(env),
