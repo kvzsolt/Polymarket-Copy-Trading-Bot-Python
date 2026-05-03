@@ -24,11 +24,14 @@ from config.env import ENV
 
 logger = logging.getLogger("collateral_readiness")
 
-# pUSD (Polymarket USD) — standard ERC-20 on Polygon, backed 1:1 by USDC.e.
-# See https://docs.polymarket.com/v2-migration
-_PUSD_CONTRACT_ADDRESS = ENV.get(
-    "PUSD_CONTRACT_ADDRESS",
-    "0x5731a8987bC70324e2C14d22D95a9cF0E84b687E",
+# pUSD (Polymarket USD) collateral on Polygon.
+# Prefer the explicit collateral config, then legacy aliases, then the current
+# known Polymarket pUSD address.
+_PUSD_CONTRACT_ADDRESS = (
+    ENV.get("COLLATERAL_CONTRACT_ADDRESS")
+    or ENV.get("PUSD_CONTRACT_ADDRESS")
+    or ENV.get("USDC_CONTRACT_ADDRESS")
+    or "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"
 )
 
 # CTF Exchange V2 — the exchange contract that needs pUSD allowance.
