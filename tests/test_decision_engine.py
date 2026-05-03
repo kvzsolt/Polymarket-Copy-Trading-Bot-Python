@@ -290,22 +290,18 @@ class TestTraderDiscoveryService:
     @pytest.mark.asyncio
     async def test_resolve_leaders_adds_ranked_candidates(self):
         svc = TraderDiscoveryService()
+        # Patch instance attrs directly — they're set in __init__ from ENV
+        # and don't re-read ENV at resolve time.
+        svc._auto_discover = True
+        svc._auto_discover_min_score = 0.45
+        svc._auto_discover_top_n = 5
         configured = ["0x" + ("1" * 40)]
         discovered = [
             RankedLeader(wallet="0x" + ("2" * 40), score=0.80, recent_trade_count=10, recent_notional_usdc=200),
             RankedLeader(wallet="0x" + ("3" * 40), score=0.20, recent_trade_count=10, recent_notional_usdc=200),
         ]
-        with patch.dict(
-            "services.traderDiscoveryService.ENV",
-            {
-                "AUTO_DISCOVER_LEADERS": True,
-                "AUTO_DISCOVER_MIN_SCORE": 0.45,
-                "AUTO_DISCOVER_TOP_N": 5,
-            },
-            clear=False,
-        ):
-            with patch.object(svc, "discover_ranked_leaders", new=AsyncMock(return_value=discovered)):
-                resolved = await svc.resolve_leaders(configured)
+        with patch.object(svc, "discover_ranked_leaders", new=AsyncMock(return_value=discovered)):
+            resolved = await svc.resolve_leaders(configured)
         assert configured[0] in resolved
         assert discovered[0].wallet in resolved
         assert discovered[1].wallet not in resolved
