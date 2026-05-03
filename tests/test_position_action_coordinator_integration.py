@@ -57,7 +57,6 @@ def _lower_decision_gates_for_tests(monkeypatch):
     monkeypatch.setenv("COPY_MIN_SHARES", "0.001")
     monkeypatch.setenv("COPY_MIN_NOTIONAL_USDC", "0.01")
     monkeypatch.setenv("BUY_MIN_AMOUNT", "0.01")
-    monkeypatch.setenv("MIN_ORDER_SIZE", "0.00001")
     monkeypatch.setenv("MAX_POSITION_PCT", "0")
     monkeypatch.setenv("ENABLE_BALANCE_TIERED_POLICY", "false")
     rehydrate_env()
@@ -80,7 +79,6 @@ def _config(**overrides):
         "CHAIN_ID": "137",
         "BUY_MIN_AMOUNT": "0.01",
         "BUY_MAX_AMOUNT": "1000",
-        "MIN_ORDER_SIZE": "0.00001",
         "MAX_MARKET_EXPOSURE_USDC": "300",
         "SLIPPAGE_TOLERANCE": "2.0",
         "COPY_DECISION_MIN_SCORE": "0.01",

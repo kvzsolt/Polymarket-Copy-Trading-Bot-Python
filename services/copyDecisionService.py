@@ -93,17 +93,11 @@ class CopyDecisionService:
 
         if config is not None:
             self._decision_gate_enabled = config.execution.enable_copy_decision_gate
-            self._minimum_order_guard_enabled = config.execution.enable_executable_order_guard
-            self._minimum_order_buffer_notional = config.execution.executable_order_buffer_notional_usdc
             self._min_decision_score = config.leader.copy_decision_min_score
-            self._copy_size_decimals = config.sizing.copy_size_decimals
             self._slippage_ratio = config.execution.slippage_tolerance / 100.0
         else:
             self._decision_gate_enabled = False
-            self._minimum_order_guard_enabled = os.getenv("ENABLE_EXECUTABLE_ORDER_GUARD", "true").strip().lower() in ("1", "true", "yes")
-            self._minimum_order_buffer_notional = float(os.getenv("EXECUTABLE_ORDER_BUFFER_NOTIONAL_USDC", "1.05") or 1.05)
             self._min_decision_score = 0.0
-            self._copy_size_decimals = int(os.getenv("COPY_SIZE_DECIMALS", "4") or 4)
             self._slippage_ratio = float(os.getenv("SLIPPAGE_TOLERANCE", "2.0") or 2.0) / 100.0
 
     @staticmethod
@@ -233,7 +227,7 @@ class CopyDecisionService:
             )
 
         # Hard safety floors — parse venue metadata as Decimal immediately
-        decimals = self._copy_size_decimals
+        decimals = 4
         d_market_min = Decimal(str(market_min_size)) if market_min_size > 0 else Decimal("0")
         d_tick_size = Decimal(str(tick_size)) if tick_size > 0 else Decimal("0")
 
@@ -248,10 +242,10 @@ class CopyDecisionService:
         target_size_tokens = desired_notional / live_price
         required_min_size_tokens = (
             float(d_market_min) if d_market_min > 0 else 0.0
-        ) if self._minimum_order_guard_enabled else 0.0
+        )
         minimum_executable_notional_usdc = (
             float(d_market_min * d_worst_price) if d_market_min > 0 else 0.0
-        ) if self._minimum_order_guard_enabled else 0.0
+        )
         cap_binding = max_notional_usdc + 1e-9 < unconstrained_notional
 
         upsized = False
@@ -291,7 +285,7 @@ class CopyDecisionService:
                     sizing=sizing_reject,
                     details={
                         "decision_gate_enabled": decision_gate_enabled,
-                        "minimum_order_guard_enabled": self._minimum_order_guard_enabled,
+                        "minimum_order_guard_enabled": True,
                         "max_notional_usdc": max_notional_usdc,
                         "market_min_size": market_min_size,
                         "required_min_size_tokens": required_min_size_tokens,
@@ -331,7 +325,7 @@ class CopyDecisionService:
             floored_meets_mins = (
                 floored_size_tokens > 0
                 and (
-                    not self._minimum_order_guard_enabled
+                    False
                     or (market_min_size <= 0 or floored_size_tokens + 1e-12 >= market_min_size)
                 )
             )
@@ -351,7 +345,7 @@ class CopyDecisionService:
                     floored_cap_size = self._floor(max_notional_usdc / worst_price, decimals)
                     # Re-check venue minimum — if floored size is below venue min after cap, reject
                     if (
-                        self._minimum_order_guard_enabled
+                        True
                         and d_market_min > 0
                         and floored_cap_size + 1e-12 < required_min_size_tokens
                     ):
@@ -375,7 +369,7 @@ class CopyDecisionService:
                             details={
                                 **trade_score.details,
                                 "decision_gate_enabled": decision_gate_enabled,
-                                "minimum_order_guard_enabled": self._minimum_order_guard_enabled,
+                                "minimum_order_guard_enabled": True,
                                 "trust_multiplier": trust_mult,
                                 "base_notional_usdc": base_notional_usdc,
                                 "max_notional_usdc": max_notional_usdc,
@@ -409,7 +403,7 @@ class CopyDecisionService:
                         details={
                             **trade_score.details,
                             "decision_gate_enabled": decision_gate_enabled,
-                            "minimum_order_guard_enabled": self._minimum_order_guard_enabled,
+                            "minimum_order_guard_enabled": True,
                             "trust_multiplier": trust_mult,
                             "base_notional_usdc": base_notional_usdc,
                             "max_notional_usdc": max_notional_usdc,
@@ -452,7 +446,7 @@ class CopyDecisionService:
             details={
                 **trade_score.details,
                 "decision_gate_enabled": decision_gate_enabled,
-                "minimum_order_guard_enabled": self._minimum_order_guard_enabled,
+                "minimum_order_guard_enabled": True,
                 "trust_multiplier": trust_mult,
                 "base_notional_usdc": base_notional_usdc,
                 "unconstrained_notional_usdc": unconstrained_notional,
@@ -484,7 +478,7 @@ class CopyDecisionService:
         max_sell_tokens: float,
     ) -> CopyDecision:
         ref_price = float(trade.get("price", 0) or 0)
-        decimals = self._copy_size_decimals
+        decimals = 4
         decision_gate_enabled = self._decision_gate_enabled
         if sell_tokens <= 0:
             return CopyDecision(
@@ -505,12 +499,11 @@ class CopyDecisionService:
             )
 
         target = min(sell_tokens, max_sell_tokens)
-        minimum_guard_enabled = self._minimum_order_guard_enabled
         upsized = False
         d_market_min = Decimal(str(market_min_size)) if market_min_size > 0 else Decimal("0")
         required_min_tokens = float(d_market_min)
 
-        if minimum_guard_enabled:
+        if True:
             # SELLs should be constrained by the venue minimum and the held
             # position size, not by the copy-sizing floor used on BUYs.
             if target < required_min_tokens:
@@ -543,7 +536,7 @@ class CopyDecisionService:
                         sizing=sizing_reject,
                         details={
                             "decision_gate_enabled": decision_gate_enabled,
-                            "minimum_order_guard_enabled": minimum_guard_enabled,
+                            "minimum_order_guard_enabled": True,
                             "market_min_size": market_min_size,
                             "required_min_size_tokens": required_min_tokens,
                             "max_sell_tokens": max_sell_tokens,
@@ -585,7 +578,7 @@ class CopyDecisionService:
             edge_decay_pct=0.0,
             details={
                 "decision_gate_enabled": decision_gate_enabled,
-                "minimum_order_guard_enabled": minimum_guard_enabled,
+                "minimum_order_guard_enabled": True,
                 "market_min_size": market_min_size,
                 "max_sell_tokens": max_sell_tokens,
             },

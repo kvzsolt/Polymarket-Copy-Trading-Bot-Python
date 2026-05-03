@@ -36,7 +36,6 @@ def _lower_decision_gates_for_tests(monkeypatch):
     monkeypatch.setenv("COPY_MIN_SHARES", "0.001")
     monkeypatch.setenv("COPY_MIN_NOTIONAL_USDC", "0.01")
     monkeypatch.setenv("BUY_MIN_AMOUNT", "0.01")
-    monkeypatch.setenv("MIN_ORDER_SIZE", "0.00001")
     monkeypatch.setenv("MAX_POSITION_PCT", "0")
     monkeypatch.setenv("ENABLE_BALANCE_TIERED_POLICY", "false")
     rehydrate_env()
@@ -63,7 +62,6 @@ def _config(**overrides):
         "CHAIN_ID": "137",
         "BUY_MIN_AMOUNT": "0.01",
         "BUY_MAX_AMOUNT": "1000",
-        "MIN_ORDER_SIZE": "0.00001",
         "MAX_MARKET_EXPOSURE_USDC": "300",
         "SLIPPAGE_TOLERANCE": "2.0",
         "COPY_DECISION_MIN_SCORE": "0.01",
@@ -985,13 +983,16 @@ async def test_sell_uses_leader_fraction_without_sell_decision_gate(tmp_path):
 async def test_sell_bumps_tiny_request_to_executable_minimum(tmp_path):
     db_path = _init_db(tmp_path)
     exec_svc = AsyncMock()
+    exec_svc.market_meta_service.get.return_value = SimpleNamespace(
+        min_order_size=Decimal("5.0"),
+        tick_size=Decimal("0.01"),
+    )
     exec_svc.execute.return_value = _exec_result(
         accepted=True, filled=Decimal("5"), status="filled", order_id="ord-sell-min"
     )
     ctx = _make_context(
         db_path,
         execution_service=exec_svc,
-        config=_config(MIN_ORDER_SIZE="5"),
     )
 
     from storage.sqlite.positions_repo import PositionRecord
@@ -1019,13 +1020,16 @@ async def test_sell_bumps_tiny_request_to_executable_minimum(tmp_path):
 async def test_sell_below_minimum_sells_largest_remaining_amount(tmp_path):
     db_path = _init_db(tmp_path)
     exec_svc = AsyncMock()
+    exec_svc.market_meta_service.get.return_value = SimpleNamespace(
+        min_order_size=Decimal("5.0"),
+        tick_size=Decimal("0.01"),
+    )
     exec_svc.execute.return_value = _exec_result(
         accepted=True, filled=Decimal("3"), status="filled", order_id="ord-sell-largest"
     )
     ctx = _make_context(
         db_path,
         execution_service=exec_svc,
-        config=_config(MIN_ORDER_SIZE="5"),
     )
 
     from storage.sqlite.positions_repo import PositionRecord

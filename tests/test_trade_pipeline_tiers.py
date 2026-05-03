@@ -61,7 +61,6 @@ def _reset_singletons(monkeypatch):
     monkeypatch.setenv("COPY_MIN_SHARES", "0.001")
     monkeypatch.setenv("COPY_MIN_NOTIONAL_USDC", "0.01")
     monkeypatch.setenv("BUY_MIN_AMOUNT", "0.01")
-    monkeypatch.setenv("MIN_ORDER_SIZE", "0.00001")
     # Ensure tier gates are enabled so tier-gating tests actually gate
     monkeypatch.setenv("ENABLE_TIER_GATE_WATCHLIST", "true")
     monkeypatch.setenv("ENABLE_TIER_GATE_WATCHLIST_LOG", "true")
