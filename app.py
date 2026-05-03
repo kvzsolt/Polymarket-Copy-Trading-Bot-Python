@@ -174,9 +174,9 @@ async def main():
         return
 
     if application.config.network.enforce_geoblock:
-        allowed, reason = await check_geoblock()
-        if not allowed:
-            print_error(f"Trading disabled by geoblock policy: {reason}")
+        decision = await check_geoblock()
+        if not decision.allowed:
+            print_error(f"Trading disabled by geoblock policy: {decision.reason}")
             return
 
     configured = configured_leaders(application.config)
