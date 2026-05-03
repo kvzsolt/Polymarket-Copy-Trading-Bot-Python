@@ -141,7 +141,6 @@ class TestHappyPath:
                     "DISCOVERY_",
                     "AUTO_",
                     "TIER_",
-                    "ARB_",
                     "EXECUTION_",
                     "NEAR_",
                     "PROFIT_",

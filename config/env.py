@@ -515,13 +515,6 @@ def _build_env_snapshot() -> dict[str, object]:
     'BALANCE_POLICY_DYNAMIC_THRESHOLD_RAISE': os.getenv('BALANCE_POLICY_DYNAMIC_THRESHOLD_RAISE', 'false').strip().lower() in ('1', 'true', 'yes'),
     'DAY_START_EQUITY_USDC': _float('DAY_START_EQUITY_USDC', '50'),
 
-    # Neg-risk arbitrage scanner
-    'ENABLE_NEG_RISK_ARB': os.getenv('ENABLE_NEG_RISK_ARB', 'false').strip().lower() in ('1', 'true', 'yes'),
-    'ARB_MIN_PROFIT_BPS': _int('ARB_MIN_PROFIT_BPS', '30'),
-    'ARB_MAX_COST_USDC': _float('ARB_MAX_COST_USDC', '10'),
-    'ARB_MIN_ASK_DEPTH': _float('ARB_MIN_ASK_DEPTH', '20'),
-    'ARB_SCAN_INTERVAL': _int('ARB_SCAN_INTERVAL', '30'),
-    'ARB_MAX_CONCURRENT': _int('ARB_MAX_CONCURRENT', '2'),
     # Extended exit intelligence
     'ENABLE_PROFIT_LOCK': os.getenv('ENABLE_PROFIT_LOCK', 'false').strip().lower() in ('1', 'true', 'yes'),
     'PROFIT_LOCK_TRIGGER_PCT': _float('PROFIT_LOCK_TRIGGER_PCT', '70'),

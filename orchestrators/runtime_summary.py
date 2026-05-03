@@ -438,18 +438,6 @@ def print_startup_summary(
                 "redeem_check_interval": config.polling.redeem_check_interval,
             },
         ),
-        (
-            "negative_risk_arbitrage_engine",
-            "NEGATIVE-RISK ARBITRAGE ENGINE",
-            {
-                "enable_neg_risk_arb": config.features.enable_neg_risk_arb,
-                "arb_min_profit_bps": config.features.arb_min_profit_bps,
-                "arb_max_cost_usdc": config.features.arb_max_cost_usdc,
-                "arb_min_ask_depth": config.features.arb_min_ask_depth,
-                "arb_scan_interval": config.features.arb_scan_interval,
-                "arb_max_concurrent": config.features.arb_max_concurrent,
-            },
-        ),
     ]
 
     hidden_console_sections = {

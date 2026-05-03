@@ -17,7 +17,6 @@ class IntentReason(StrEnum):
     COPY_SELL = "copy_sell"
     RISK_EXIT = "risk_exit"
     AUTO_REDEEM = "auto_redeem"
-    NEG_RISK_ARB = "neg_risk_arb"
 
 
 class OrderLifecycleStatus(StrEnum):

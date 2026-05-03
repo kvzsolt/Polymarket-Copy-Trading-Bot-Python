@@ -392,7 +392,6 @@ class DiscoveryConfig:
 
 @dataclass(frozen=True)
 class FeatureFlagConfig:
-    enable_neg_risk_arb: bool
     enable_profit_lock: bool
     enable_near_max_exit: bool
     enable_trailing_stop: bool
@@ -401,11 +400,6 @@ class FeatureFlagConfig:
     enable_stop_loss: bool
     enable_tier_gate_watchlist: bool
     enable_tier_gate_watchlist_log: bool
-    arb_min_profit_bps: int
-    arb_max_cost_usdc: float
-    arb_min_ask_depth: float
-    arb_scan_interval: int
-    arb_max_concurrent: int
 
 
 @dataclass(frozen=True)
@@ -833,7 +827,6 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
     )
 
     features = FeatureFlagConfig(
-        enable_neg_risk_arb=p.bool_("ENABLE_NEG_RISK_ARB", False),
         enable_profit_lock=p.bool_("ENABLE_PROFIT_LOCK", False),
         enable_near_max_exit=p.bool_("ENABLE_NEAR_MAX_EXIT", True),
         enable_trailing_stop=p.bool_("ENABLE_TRAILING_STOP", False),
@@ -842,11 +835,6 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         enable_stop_loss=p.bool_("ENABLE_STOP_LOSS", False),
         enable_tier_gate_watchlist=p.bool_("ENABLE_TIER_GATE_WATCHLIST", False),
         enable_tier_gate_watchlist_log=p.bool_("ENABLE_TIER_GATE_WATCHLIST_LOG", False),
-        arb_min_profit_bps=p.int_("ARB_MIN_PROFIT_BPS", "30"),
-        arb_max_cost_usdc=p.float_("ARB_MAX_COST_USDC", "10"),
-        arb_min_ask_depth=p.float_("ARB_MIN_ASK_DEPTH", "20"),
-        arb_scan_interval=p.int_("ARB_SCAN_INTERVAL", "30"),
-        arb_max_concurrent=p.int_("ARB_MAX_CONCURRENT", "2"),
     )
 
     cfg = AppConfig(

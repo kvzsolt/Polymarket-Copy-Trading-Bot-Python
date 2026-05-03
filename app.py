@@ -46,7 +46,6 @@ from services.discovery.capture_service import DiscoveryCaptureService
 from services.healthServer import start_health_server
 from services.metrics import metrics
 from services.multiUserConfig import RuntimeUser, UserFollowConfig, load_runtime_users
-from services.negRiskArb import arb_scanner_loop
 from services.reconciliation import ReconciliationService, reconciliation_loop
 from services.traderDiscoveryService import TraderDiscoveryService
 from storage.sqlite.leaders_repo import LeadersRepo
@@ -130,7 +129,6 @@ async def _shutdown_runtime(
     discovery_task: asyncio.Task | None,
     risk_task: asyncio.Task | None,
     redeem_task: asyncio.Task | None,
-    arb_task: asyncio.Task | None,
     reconcile_tasks: list[asyncio.Task],
     metrics_runner,
 ) -> None:
@@ -141,8 +139,6 @@ async def _shutdown_runtime(
         shutdown_tasks.append(risk_task)
     if redeem_task:
         shutdown_tasks.append(redeem_task)
-    if arb_task:
-        shutdown_tasks.append(arb_task)
     shutdown_tasks.extend(reconcile_tasks)
 
     for task in shutdown_tasks:
@@ -400,11 +396,6 @@ async def main():
         first_client = user_states[first_user.user_id].client
         redeem_task = asyncio.create_task(auto_redeem_loop(first_client, application.config))
 
-    arb_task = None
-    if application.config.features.enable_neg_risk_arb:
-        first_client = user_states[first_user.user_id].client
-        arb_task = asyncio.create_task(arb_scanner_loop(first_client, {}, config=application.config))
-
     reconcile_tasks: list[asyncio.Task] = []
     # TODO: add enable_reconciliation to AppConfig when available
     if application.config.raw.get("ENABLE_RECONCILIATION", "true").lower() in ("1", "true", "yes"):
@@ -451,7 +442,6 @@ async def main():
             discovery_task=discovery_task,
             risk_task=risk_task,
             redeem_task=redeem_task,
-            arb_task=arb_task,
             reconcile_tasks=reconcile_tasks,
             metrics_runner=metrics_runner,
         )
