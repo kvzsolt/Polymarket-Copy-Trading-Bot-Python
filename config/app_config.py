@@ -134,25 +134,6 @@ class _Parser:
         return raw.lower() in ("1", "true", "yes")
 
     # ---- specialised parsers ----
-    def signature_type(self) -> SignatureType:
-        raw = self._strip("SIGNATURE_TYPE", self.raw("SIGNATURE_TYPE", "0"))
-        if raw == "":
-            raw = "0"
-        try:
-            value = int(raw)
-        except ValueError:
-            self.errors.append(
-                "SIGNATURE_TYPE must be one of: 0 (EOA), 1 (POLY_PROXY), 2 (GNOSIS_SAFE)."
-            )
-            return SignatureType.EOA
-        try:
-            return SignatureType(value)
-        except ValueError:
-            self.errors.append(
-                "SIGNATURE_TYPE must be one of: 0 (EOA), 1 (POLY_PROXY), 2 (GNOSIS_SAFE)."
-            )
-            return SignatureType.EOA
-
     def leader_wallets(self) -> tuple[str, ...]:
         raw = self._strip("LEADER_WALLETS", self.raw("LEADER_WALLETS", ""))
         if raw:
@@ -615,7 +596,6 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
     wallet = WalletConfig(
         private_key=p.private_key(),
         chain_id=p.int_("CHAIN_ID", "137"),
-        signature_type=p.signature_type(),
         funder_address=p.funder_address(),
         polygon_rpc_url=p.string("RPC_URL", "https://polygon-bor-rpc.publicnode.com"),
     )
