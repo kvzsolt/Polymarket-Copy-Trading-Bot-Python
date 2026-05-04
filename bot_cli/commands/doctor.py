@@ -152,10 +152,22 @@ async def run_doctor_checks(mode: str) -> dict:
                 "reason": "auto_redeem_disabled",
             }
         else:
+            from utils.createClobClient import detect_wallet_signature_type
+            from config.env import WalletConfig
+            
+            sig_type, _, _ = await detect_wallet_signature_type(config.wallet)
+            detected_wallet = WalletConfig(
+                private_key=config.wallet.private_key,
+                chain_id=config.wallet.chain_id,
+                signature_type=sig_type,
+                funder_address=config.wallet.funder_address,
+                polygon_rpc_url=config.wallet.polygon_rpc_url,
+            )
+
             from services.redemption.wallet_validator import (
                 validate_redemption_wallet_mode,
             )
-            wallet_check = validate_redemption_wallet_mode(config.wallet)
+            wallet_check = validate_redemption_wallet_mode(detected_wallet)
             if not wallet_check.allowed:
                 output["checks"]["redemption_wallet"] = {
                     "status": "failed",
