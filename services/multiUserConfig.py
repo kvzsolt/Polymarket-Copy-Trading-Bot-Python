@@ -36,7 +36,7 @@ def _runtime_user_from_payload(payload: dict, config: AppConfig) -> RuntimeUser:
     wallet = WalletConfig(
         private_key=str(payload["private_key"]),
         chain_id=int(payload.get("chain_id", config.wallet.chain_id)),
-        signature_type=_parse_signature_type(payload.get("signature_type", int(config.wallet.signature_type))),
+        signature_type=_parse_signature_type(payload.get("signature_type", 0)),
         funder_address=str(payload["funder_address"]),
         polygon_rpc_url=str(payload.get("polygon_rpc_url", config.network.rpc_url)),
     )
@@ -68,7 +68,7 @@ def load_runtime_users(leader_wallets: list[str], config: AppConfig) -> list[Run
         base_wallet = WalletConfig(
             private_key=config.wallet.private_key,
             chain_id=config.wallet.chain_id,
-            signature_type=config.wallet.signature_type,
+            signature_type=None,
             funder_address=config.wallet.funder_address,
             polygon_rpc_url=config.wallet.polygon_rpc_url,
         )

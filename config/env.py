@@ -47,9 +47,9 @@ class SignatureType(IntEnum):
 class WalletConfig:
     private_key: str
     chain_id: int
-    signature_type: SignatureType
     funder_address: str
     polygon_rpc_url: str
+    signature_type: SignatureType | None = None
 
 
 def _raw(key: str, default: str = '') -> str:
@@ -183,19 +183,6 @@ def get_chain_id() -> int:
     return _int('CHAIN_ID', '137')
 
 
-def get_signature_type() -> SignatureType:
-    raw = _ensure_no_inline_comment('SIGNATURE_TYPE', _raw('SIGNATURE_TYPE', '0'))
-    try:
-        value = int(raw)
-    except ValueError as exc:
-        raise EnvValidationError("SIGNATURE_TYPE must be one of: 0, 1, 2.") from exc
-
-    try:
-        return SignatureType(value)
-    except ValueError as exc:
-        raise EnvValidationError("SIGNATURE_TYPE must be one of: 0 (EOA), 1 (POLY_PROXY), 2 (GNOSIS_SAFE).") from exc
-
-
 def get_funder_address() -> str:
     funder = _ensure_no_inline_comment('FUNDER_ADDRESS', _raw('FUNDER_ADDRESS', ''))
     if funder:
@@ -211,7 +198,6 @@ def build_wallet_config() -> WalletConfig:
     return WalletConfig(
         private_key=get_private_key(),
         chain_id=get_chain_id(),
-        signature_type=get_signature_type(),
         funder_address=get_funder_address(),
         polygon_rpc_url=_ensure_no_inline_comment('RPC_URL', _raw('RPC_URL', '')),
     )
@@ -433,8 +419,7 @@ def _build_env_snapshot() -> dict[str, object]:
     # Keep secrets and secret-file metadata out of ENV snapshot; call get_private_key() where needed.
     'PRIVATE_KEY': '***REDACTED***' if private_key_configured else '',
     'PRIVATE_KEY_FILE': '***REDACTED***' if private_key_file_configured else '',
-    'SIGNATURE_TYPE': _int('SIGNATURE_TYPE', '0'),
-    'CHAIN_ID': _int('CHAIN_ID', '137'),
+        'CHAIN_ID': _int('CHAIN_ID', '137'),
     'LEADER_WALLETS': _leader_wallets(),
 
     # --- CLOB ---

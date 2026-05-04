@@ -74,7 +74,6 @@ class TestHappyPath:
         assert cfg.wallet.private_key == _VALID_PRIVATE_KEY
         assert cfg.wallet.funder_address == _VALID_FUNDER
         assert cfg.wallet.chain_id == 137
-        assert cfg.wallet.signature_type == SignatureType.EOA
         assert cfg.wallet.polygon_rpc_url == "https://polygon-rpc.example.com"
 
     def test_defaults_are_applied(self, valid_env: dict[str, str]) -> None:
@@ -215,10 +214,6 @@ class TestMalformedValues:
         with pytest.raises(EnvValidationError, match="inline comment"):
             load_config(valid_env)
 
-    def test_bad_signature_type(self, valid_env: dict[str, str]) -> None:
-        valid_env["SIGNATURE_TYPE"] = "99"
-        with pytest.raises(EnvValidationError, match="SIGNATURE_TYPE must be one of"):
-            load_config(valid_env)
 
     def test_bad_chain_id(self, valid_env: dict[str, str]) -> None:
         valid_env["CHAIN_ID"] = "1"
