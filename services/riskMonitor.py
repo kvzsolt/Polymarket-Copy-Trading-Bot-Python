@@ -734,6 +734,18 @@ async def run_risk_check_for_context(context: TradingContext) -> None:
                     "trigger_fraction": fraction,
                 }
 
+                # Simplified account-cap policy
+                if fraction < 1.0 and enable_tiered:
+                    policy = active_policy()
+                    if not policy.allow_partial_exits:
+                        logger.info(
+                            "Balance policy [%s] upgrades partial exit → full for %s (was %.0f%%)",
+                            policy.name, pos.condition_id[:12], fraction * 100,
+                        )
+                        fraction = 1.0
+
+                _block_metadata["trigger_fraction"] = fraction
+
                 _trigger_id: int | None = None
                 if context.risk_triggers_repo is not None:
                     try:
@@ -748,16 +760,6 @@ async def run_risk_check_for_context(context: TradingContext) -> None:
                         )
                     except Exception:
                         logger.debug("risk_trigger_record_error", exc_info=True)
-
-                # Simplified account-cap policy
-                if fraction < 1.0 and enable_tiered:
-                    policy = active_policy()
-                    if not policy.allow_partial_exits:
-                        logger.info(
-                            "Balance policy [%s] upgrades partial exit → full for %s (was %.0f%%)",
-                            policy.name, pos.condition_id[:12], fraction * 100,
-                        )
-                        fraction = 1.0
 
                 sell_size = (pos.size_tokens * Decimal(str(fraction))).quantize(Decimal("0.00000001"))
                 if sell_size <= 0:
@@ -776,7 +778,44 @@ async def run_risk_check_for_context(context: TradingContext) -> None:
                     recovery_metadata=_block_metadata,
                 )
                 result = await context.execution_service.execute(req)
-                if not result.accepted or result.filled_amount <= 0:
+                if not result.accepted:
+                    logger.info(
+                        "risk_exit_sell_not_filled | cond=%s token=%s reason=%s status=%s error=%s",
+                        pos.condition_id[:12],
+                        pos.token_id[:12],
+                        reason,
+                        result.status,
+                        result.error,
+                    )
+                    if _trigger_id is not None and context.risk_triggers_repo is not None:
+                        try:
+                            context.risk_triggers_repo.update_fill_status(
+                                _trigger_id,
+                                fill_status="rejected",
+                                fill_order_id=result.order_id,
+                            )
+                        except Exception:
+                            logger.debug("risk_trigger_update_error", exc_info=True)
+                    continue
+                if result.filled_amount <= 0 and result.status in ("submitted_unconfirmed",):
+                    logger.info(
+                        "risk_exit_submitted_unconfirmed | cond=%s token=%s reason=%s order_id=%s",
+                        pos.condition_id[:12],
+                        pos.token_id[:12],
+                        reason,
+                        result.order_id,
+                    )
+                    if _trigger_id is not None and context.risk_triggers_repo is not None:
+                        try:
+                            context.risk_triggers_repo.update_fill_status(
+                                _trigger_id,
+                                fill_status="pending",
+                                fill_order_id=result.order_id,
+                            )
+                        except Exception:
+                            logger.debug("risk_trigger_update_error", exc_info=True)
+                    continue
+                if result.filled_amount <= 0:
                     logger.info(
                         "risk_exit_sell_not_filled | cond=%s token=%s reason=%s status=%s error=%s",
                         pos.condition_id[:12],
