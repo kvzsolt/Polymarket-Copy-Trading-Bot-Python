@@ -3,9 +3,12 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import asdict, dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from aiohttp import ClientSession
+
+if TYPE_CHECKING:
+    from interfaces.clob_gateway import ClobGateway
 
 from storage.sqlite.connection import create_connection
 from storage.sqlite.positions_repo import PositionRecord, PositionsRepo
@@ -395,7 +398,7 @@ def _position_sync_check(sync: PositionSyncResult) -> StartupHealthCheckItem:
     )
 
 
-async def _check_clob_gateway(gateway: object | None) -> StartupHealthCheckItem:
+async def _check_clob_gateway(gateway: ClobGateway | None) -> StartupHealthCheckItem:
     """Probe CLOB V2 gateway compatibility (issue #66).
 
     Always returns a check item — never raises. The caller decides whether to
@@ -448,7 +451,7 @@ async def perform_startup_health_check(
     available_cash: float,
     database_ok: bool,
     rpc_url: str,
-    clob_gateway: object | None = None,
+    clob_gateway: ClobGateway | None = None,
     require_live_clob: bool = False,
 ) -> StartupHealthReport:
     rpc_check, polymarket_check, clob_check = await asyncio.gather(

@@ -154,9 +154,9 @@ _GATEWAY_OWNED_FILES = {
 def _scan_for_sdk_order_types(rel: str, content: str) -> list[str]:
     hits: list[str] = []
     for line_no, line in enumerate(content.splitlines(), start=1):
-        # Skip comments / docstrings — the marker is allowed in prose.
+        # Skip line comments and docstring openers — the marker is allowed in prose.
         stripped = line.lstrip()
-        if stripped.startswith("#"):
+        if stripped.startswith("#") or stripped.startswith('"""') or stripped.startswith("'''"):
             continue
         if _EXECUTION_ORDER_TYPE_PATTERNS.search(line):
             hits.append(f"{rel}:{line_no}: {line.rstrip()}")

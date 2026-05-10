@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from domain.trading_context import TradingContext
+from interfaces.clob_gateway import ClobGateway
 from services.accountingService import AccountingService
 from services.executionService import ExecutionService
 from services.feeService import FeeService
@@ -113,7 +114,7 @@ class UserRuntimeState:
     # reconciler / execution coordinator when those wires land (see issue #66
     # / #71). Optional default keeps existing test fixtures that build state
     # without a venue boundary working.
-    clob_gateway: object | None = None
+    clob_gateway: ClobGateway | None = None
 
 
 def configured_leaders(config: AppConfig) -> list[str]:
