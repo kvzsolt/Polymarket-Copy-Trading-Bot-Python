@@ -56,7 +56,9 @@ class TestFillEvent:
         """User fill event triggers cache invalidation."""
         # Pre-populate cache
         cache.set_quote(TOKEN_A, best_bid=Decimal("0.55"), best_ask=Decimal("0.60"))
+        cache.set_book(TOKEN_A, bids={Decimal("0.55"): Decimal("100")}, asks={Decimal("0.60"): Decimal("50")})
         assert cache.get_quote(TOKEN_A) is not None
+        assert cache.get_book(TOKEN_A) is not None
 
         # Simulate fill event
         event = json.dumps({
@@ -70,6 +72,7 @@ class TestFillEvent:
 
         # Cache should be invalidated
         assert cache.get_quote(TOKEN_A) is None
+        assert cache.get_book(TOKEN_A) is None
 
     def test_fill_event_order_fill_type(
         self,
