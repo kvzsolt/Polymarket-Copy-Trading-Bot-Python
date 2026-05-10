@@ -12,6 +12,7 @@ from config.app_config import AppConfig
 from domain.models import TradeSignal
 from domain.trading_context import TradingContext
 from services.entryPermissionService import EntryDecision, EntryPermissionService
+from services.execution.reconciliation_service import ReconciliationService
 from services.executionService import ExecutionRequest
 from services.metrics import metrics
 from domain.position_key import PositionKey
@@ -65,6 +66,26 @@ def _reconcile_semaphore(context: TradingContext) -> asyncio.Semaphore:
         semaphore = asyncio.Semaphore(_positive_int(config_val, 4))
         context.extra["_reconcile_unconfirmed_semaphore"] = semaphore
     return semaphore
+
+
+def get_reconciliation_service(context: TradingContext) -> ReconciliationService:
+    """Return the shared reconciler bound to this trading context.
+
+    The reconciler is the canonical owner of unconfirmed-order settlement
+    (issue #71). One instance per ``TradingContext`` keeps batch reconciles
+    consistent across trade and risk paths.
+    """
+    svc = context.extra.get("_reconciliation_service")
+    if svc is None:
+        svc = ReconciliationService(
+            orders_repo=context.orders_repo,
+            fills_repo=context.fills_repo,
+            positions_repo=context.positions_repo,
+            risk_blocks_repo=getattr(context, "risk_blocks_repo", None),
+            audit_logger=getattr(context, "audit_logger", None),
+        )
+        context.extra["_reconciliation_service"] = svc
+    return svc
 
 
 def _decimal_or_zero(value: Any) -> Decimal:
@@ -619,247 +640,24 @@ async def _reconcile_one(
     record: dict,
     side: str,
 ) -> bool:
-    """Poll exchange and apply a single unconfirmed fill.
+    """Reconcile a single unconfirmed BUY/SELL via the canonical reconciler.
 
-    For BUY: creates the local position on confirmed fill.
-    For SELL: reduces/closes the local position on confirmed fill; if the FOK
-              was cancelled (no fill), removes the processed_trade row so the
-              SELL can be retried on the next monitor cycle.
-
-    Returns True if the order was reconciled (fill applied or retry unlocked).
+    Issue #71 — terminal settlement is owned by ``ReconciliationService``;
+    this wrapper supplies the per-context dependencies (fill confirmation,
+    position lookup, PnL tracker) and preserves caller-facing logging tags.
     """
-    order_id = record.get("order_id")
-    if not order_id:
+    if context.execution_service is None:
         return False
 
-    try:
-        fill_info = await context.execution_service._confirm_fill(order_id)
-    except Exception as exc:
-        logger.warning(
-            "reconcile_unconfirmed_poll_error | side=%s order_id=%s error=%s",
-            side,
-            order_id,
-            repr(exc),
-        )
-        return False
-
-    order_status = str(fill_info.get("status", "")).lower()
-    terminal_no_fill_statuses = {"cancelled", "canceled", "expired", "rejected"}
-    final_fill_statuses = {"filled", "matched"}
-
-    current_matched = _matched_amount_from_response(fill_info)
-    if not order_status and current_matched <= 0:
-        logger.warning(
-            "reconcile_unconfirmed_retryable_missing_status | side=%s order_id=%s cond=%s",
-            side,
-            order_id,
-            str(record.get("condition_id", ""))[:12],
-            extra={
-                "type": "reconcile_unconfirmed_missing_status",
-                "order_id": order_id,
-                "condition_id": record.get("condition_id"),
-                "user_id": record["user_id"],
-                "side": side,
-            },
-        )
-        return False
-
-
-    existing_submission = None
-    try:
-        if hasattr(context.orders_repo, "get_by_order_id"):
-            existing_submission = context.orders_repo.get_by_order_id(order_id)
-    except Exception:
-        existing_submission = None
-    previous_matched = _matched_amount_from_response(
-        (existing_submission or {}).get("response") if isinstance(existing_submission, dict) else None
-    )
-    delta_matched = current_matched - previous_matched
-
-    # Terminal no-fill result, unlock retry. Pending/open orders stay blocked.
-    if current_matched <= 0 and order_status in terminal_no_fill_statuses:
-        if order_status in terminal_no_fill_statuses:
-            logger.info(
-                "reconcile_%s_no_fill_unlock_retry | order_id=%s cond=%s",
-                side.lower(),
-                order_id,
-                str(record.get("condition_id", ""))[:12],
-                extra={
-                    "type": f"reconcile_{side.lower()}_no_fill_unlock",
-                    "order_id": order_id,
-                    "condition_id": record.get("condition_id"),
-                    "user_id": record["user_id"],
-                    "order_status": order_status,
-                },
-            )
-            context.orders_repo.delete_processed_trade(record["trade_key"])
-            return True  # unlocked for retry — counts as reconciled
-    if delta_matched < 0:
-        delta_matched = Decimal("0")
-
-    is_final_fill = order_status in final_fill_statuses or (
-        order_status in terminal_no_fill_statuses and current_matched > 0
-    )
-
-    if delta_matched <= 0:
-        if is_final_fill:
-            try:
-                context.orders_repo.update_submission_status(
-                    order_id=order_id,
-                    status="filled_reconciled",
-                    response_patch=fill_info,
-                )
-            except Exception:
-                pass
-            context.orders_repo.mark_processed_trade(
-                trade_key=record["trade_key"],
-                user_id=record["user_id"],
-                leader_id=record.get("leader_id"),
-                tx_hash=record.get("tx_hash"),
-                side=side,
-                asset=record["asset"],
-                condition_id=record["condition_id"],
-                status="filled_reconciled",
-                order_id=order_id,
-            )
-            return True
-        return False
-
-    avg_price_raw = (
-        fill_info.get("avg_price")
-        or fill_info.get("price")
-        or fill_info.get("average_price")
-        or 0
-    )
-    try:
-        avg_price = Decimal(str(avg_price_raw))
-    except Exception:
-        avg_price = Decimal("0")
-
-    if avg_price <= 0:
-        return False
-
-    try:
-        context.fills_repo.append_fill(
-            FillRecord(
-                user_id=record["user_id"],
-                leader_id=record.get("leader_id"),
-                order_id=order_id,
-                condition_id=record["condition_id"],
-                token_id=record["asset"],
-                side=side,
-                size_tokens=delta_matched,
-                price=avg_price,
-                fee=Decimal("0"),
-                fill_ts=int(time.time()),
-            ),
-            raw_payload={
-                "reconciled_from": "submitted_unconfirmed",
-                "copy_order_id": order_id,
-                "status": "reconciled",
-                "side": side,
-            },
-        )
-        if side == "SELL":
-            # Capture entry price before the position is reduced/deleted
-            pos = context.positions_repo.get_position(
-                record["user_id"], record["condition_id"], token_id=record["asset"]
-            )
-            entry_price = _to_optional_float(getattr(pos, "avg_entry_price", None)) if pos else None
-
-        context.positions_repo.apply_fill(
-            user_id=record["user_id"],
-            leader_id=record.get("leader_id"),
-            condition_id=record["condition_id"],
-            token_id=record["asset"],
-            side=side,
-            fill_size=delta_matched,
-            fill_price=avg_price,
-        )
-
-        if side == "SELL":
-            realized_source = "entry_price"
-            if entry_price is None:
-                logger.warning(
-                    "entry_price missing, using fill price for realized PnL | trade_key=%s cond=%s asset=%s",
-                    record.get("trade_key"),
-                    record.get("condition_id"),
-                    record.get("asset"),
-                )
-                ep = float(avg_price)
-                realized_source = "fill_price_fallback"
-            else:
-                ep = entry_price
-            realized = (float(avg_price) - ep) * float(delta_matched)
-            if context.pnl_tracker is not None:
-                context.pnl_tracker.record_sell(
-                    condition_id=record["condition_id"],
-                    price=float(avg_price),
-                    size_tokens=float(delta_matched),
-                    usdc_value=float(delta_matched * avg_price),
-                    entry_price=ep,
-                    realized_pnl=realized,
-                    exit_reason="reconciled_sell",
-                    leader_wallet=record.get("leader_id", ""),
-                    event_slug="",
-                    title=f"realized_source={realized_source}",
-                )
-
-    except Exception as exc:
-        logger.warning(
-            "reconcile_unconfirmed_apply_error | side=%s order_id=%s error=%s",
-            side,
-            order_id,
-            repr(exc),
-        )
-        return False
-
-    if is_final_fill:
-        context.orders_repo.mark_processed_trade(
-            trade_key=record["trade_key"],
-            user_id=record["user_id"],
-            leader_id=record.get("leader_id"),
-            tx_hash=record.get("tx_hash"),
-            side=side,
-            asset=record["asset"],
-            condition_id=record["condition_id"],
-            status="filled_reconciled",
-            order_id=order_id,
-        )
-        submission_status = "filled_reconciled"
-    else:
-        submission_status = "submitted_unconfirmed"
-
-    try:
-        context.orders_repo.update_submission_status(
-            order_id=order_id,
-            status=submission_status,
-            response_patch=fill_info,
-        )
-    except Exception:
-        pass
-
-    logger.info(
-        "reconcile_unconfirmed_filled | side=%s order_id=%s cond=%s size=%.4f price=%.4f",
+    reconciler = get_reconciliation_service(context)
+    return await reconciler.reconcile_trade_record(
+        record,
         side,
-        order_id,
-        str(record.get("condition_id", ""))[:12],
-        float(delta_matched),
-        float(avg_price),
-        extra={
-            "type": "reconcile_unconfirmed_filled",
-            "side": side,
-            "order_id": order_id,
-            "condition_id": record.get("condition_id"),
-            "user_id": record["user_id"],
-            "filled_amount": str(delta_matched),
-            "avg_price": str(avg_price),
-            "venue_status": order_status,
-            "matched_total": str(current_matched),
-            "matched_previous": str(previous_matched),
-        },
+        confirm_fill=reconciler.confirm_fill,
+        pnl_tracker=context.pnl_tracker,
+        get_position=context.positions_repo.get_position,
+        logger=logger,
     )
-    return True
 
 
 async def reconcile_submitted_unconfirmed(

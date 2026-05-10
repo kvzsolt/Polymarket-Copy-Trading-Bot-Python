@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 import pytest
 
 from domain.order_lifecycle import OrderIntent, OrderIntentKey, IntentSide, IntentReason, Reservation
-from services.execution.reservation_service import ReservationService, ReservationConflict, Clock
+from services.execution.reservation_service import ReservationService, ReservationConflict, InsufficientFreeQuote, InsufficientFreeShares, Clock
 from storage.sqlite.reservations_repo import ReservationsRepo
 from storage.sqlite.positions_repo import PositionsRepo
 from storage.sqlite.migrations import apply_migrations
@@ -47,7 +47,7 @@ def mock_clock():
 
 @pytest.fixture
 def reservation_service(reservations_repo, positions_repo, mock_clock):
-    return ReservationService(
+    svc = ReservationService(
         reservations_repo=reservations_repo,
         positions_repo=positions_repo,
         get_balance_func=mock_get_balance,
@@ -55,6 +55,11 @@ def reservation_service(reservations_repo, positions_repo, mock_clock):
         clock=mock_clock,
         ttl_seconds=60,
     )
+    import asyncio
+    async def fake_reconciler(res_id: str) -> bool:
+        return True
+    svc.reconciler_callback = fake_reconciler
+    return svc
 
 def create_mock_intent(side: IntentSide, size: Decimal = Decimal("10"), price: Decimal = Decimal("0.5")) -> OrderIntent:
     return OrderIntent(
@@ -114,14 +119,14 @@ async def test_reserve_duplicate_intent_raises_conflict(reservation_service):
 async def test_reserve_insufficient_usdc(reservation_service):
     # Balance is 100
     intent = create_mock_intent(IntentSide.BUY, size=Decimal("300"), price=Decimal("0.5"))
-    with pytest.raises(ValueError, match="insufficient USDC"):
+    with pytest.raises(InsufficientFreeQuote, match="insufficient free USDC"):
         await reservation_service.reserve_for_intent(intent)
 
 @pytest.mark.asyncio
 async def test_reserve_insufficient_position(reservation_service, positions_repo):
     # No position exists
     intent = create_mock_intent(IntentSide.SELL, size=Decimal("15"))
-    with pytest.raises(ValueError, match="no position found"):
+    with pytest.raises(InsufficientFreeShares, match="no position found"):
         await reservation_service.reserve_for_intent(intent)
 
 @pytest.mark.asyncio

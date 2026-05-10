@@ -48,6 +48,11 @@ class _FakePnlTracker:
 
 
 def _build_context(*, user_id: str, db_path: str) -> TradingContext:
+    import config.app_config as app_config_mod
+    from unittest.mock import patch
+    with patch.object(app_config_mod, "_runtime_python_supported", return_value=True):
+        cfg = load_config()
+
     return TradingContext(
         user_id=user_id,
         wallet_address=("0x" + ("a" if user_id.endswith("a") else "b") * 40),
@@ -61,7 +66,7 @@ def _build_context(*, user_id: str, db_path: str) -> TradingContext:
         accounting_service=object(),
         position_manager=PositionManager(),
         execution_service=_FakeExecutionService(),
-        config=load_config(),
+        config=cfg,
         allocation_pct=1.0,
         buy_min_amount=1.0,
         buy_max_amount=1000.0,
