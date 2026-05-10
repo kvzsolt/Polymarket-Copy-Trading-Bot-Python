@@ -8,8 +8,8 @@ from typing import Any
 
 from web3 import Web3
 
-from py_clob_client.client import ClobClient
-from py_clob_client.clob_types import (
+from py_clob_client_v2.client import ClobClient
+from py_clob_client_v2.clob_types import (
     MarketOrderArgs,
     OrderArgs,
     OrderType,
@@ -277,6 +277,12 @@ class ClobClientWrapper:
         meta = await self.get_market_meta(asset)
         return float(meta.min_order_size)
 
+    def get_orders(self, *args: Any, **kwargs: Any) -> Any:
+        return self.client.get_orders(*args, **kwargs)
+
+    def cancel_orders(self, order_ids: list[str]) -> Any:
+        return self.client.cancel_orders(order_ids)
+
     async def get_price(self, asset: str, side: str):
         try:
             api_side = "SELL" if side == "BUY" else "BUY"
@@ -357,7 +363,7 @@ class ClobClientWrapper:
             loop = asyncio.get_running_loop()
             response = await loop.run_in_executor(
                 None,
-                lambda: self.client.post_order(signed_order, orderType=order_type),
+                lambda: self.client.post_order(signed_order, order_type=order_type),
             )
             result = {
                 "success": True,
@@ -376,7 +382,7 @@ class ClobClientWrapper:
             return result
         except Exception as exc:
             redacted_error = redact_error_detail(exc)
-            # Pull the raw error body from the CLOB client if present. py_clob_client
+            # Pull the raw error body from the CLOB client if present. py-clob-client-v2
             # attaches the upstream response on `.error_msg` for HTTPException.
             # This is NOT a secret (it's the CLOB's own rejection reason like
             # "Size (0.13) lower than the minimum: 5") so we surface it to the
@@ -552,7 +558,7 @@ async def create_clob_client(
         signature_type=int(runtime_cfg.signature_type),
         funder=(runtime_cfg.funder_address if runtime_cfg.signature_type != SignatureType.EOA else None),
     )
-    user_api_creds = client.create_or_derive_api_creds()
+    user_api_creds = client.create_or_derive_api_key()
     client.set_api_creds(user_api_creds)
     logger.info(
         "CLOB client ready",

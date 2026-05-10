@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import importlib.util
 import sys
 import tempfile
 import types
@@ -13,28 +14,29 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-# Lightweight stubs for optional Polymarket SDK imports used by legacy modules.
-if "py_clob_client" not in sys.modules:
-    py_clob_client = types.ModuleType("py_clob_client")
-    sys.modules["py_clob_client"] = py_clob_client
-if "py_clob_client.clob_types" not in sys.modules:
-    clob_types = types.ModuleType("py_clob_client.clob_types")
+# Lightweight stubs for optional Polymarket SDK imports used by older module tests.
+_HAS_CLOB_V2 = importlib.util.find_spec("py_clob_client_v2") is not None
+if not _HAS_CLOB_V2 and "py_clob_client_v2" not in sys.modules:
+    py_clob_client_v2 = types.ModuleType("py_clob_client_v2")
+    sys.modules["py_clob_client_v2"] = py_clob_client_v2
+if not _HAS_CLOB_V2 and "py_clob_client_v2.clob_types" not in sys.modules:
+    clob_types = types.ModuleType("py_clob_client_v2.clob_types")
     clob_types.OrderType = type("OrderType", (), {"FOK": "FOK", "GTC": "GTC"})
     clob_types.OrderArgs = type("OrderArgs", (), {})
     clob_types.MarketOrderArgs = type("MarketOrderArgs", (), {})
     clob_types.PartialCreateOrderOptions = type("PartialCreateOrderOptions", (), {})
-    sys.modules["py_clob_client.clob_types"] = clob_types
-if "py_clob_client.client" not in sys.modules:
-    client_mod = types.ModuleType("py_clob_client.client")
+    sys.modules["py_clob_client_v2.clob_types"] = clob_types
+if not _HAS_CLOB_V2 and "py_clob_client_v2.client" not in sys.modules:
+    client_mod = types.ModuleType("py_clob_client_v2.client")
     client_mod.ClobClient = type("ClobClient", (), {})
-    sys.modules["py_clob_client.client"] = client_mod
-if "py_clob_client.order_builder" not in sys.modules:
-    sys.modules["py_clob_client.order_builder"] = types.ModuleType("py_clob_client.order_builder")
-if "py_clob_client.order_builder.constants" not in sys.modules:
-    constants = types.ModuleType("py_clob_client.order_builder.constants")
+    sys.modules["py_clob_client_v2.client"] = client_mod
+if not _HAS_CLOB_V2 and "py_clob_client_v2.order_builder" not in sys.modules:
+    sys.modules["py_clob_client_v2.order_builder"] = types.ModuleType("py_clob_client_v2.order_builder")
+if not _HAS_CLOB_V2 and "py_clob_client_v2.order_builder.constants" not in sys.modules:
+    constants = types.ModuleType("py_clob_client_v2.order_builder.constants")
     constants.BUY = "BUY"
     constants.SELL = "SELL"
-    sys.modules["py_clob_client.order_builder.constants"] = constants
+    sys.modules["py_clob_client_v2.order_builder.constants"] = constants
 
 FAKE_TOKEN_ID = "71321045679252212594626385532706912750332728571942532223535764789812338637396"
 FAKE_FUNDER = "0x0000000000000000000000000000000000000001"

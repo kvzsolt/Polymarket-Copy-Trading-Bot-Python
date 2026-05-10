@@ -1,0 +1,79 @@
+{
+  "_description": "Replay fixture: SELL reservation created but venue rejects the order",
+  "_scenario": "rejected_sell_after_reserved",
+  "_invariant": "reservation is released on rejection; position must not change",
+  "events": [
+    {
+      "ts": "2026-05-01T11:00:00Z",
+      "type": "price_update",
+      "token_id": "0xTOKEN_D",
+      "price": 0.55
+    },
+    {
+      "ts": "2026-05-01T11:00:01Z",
+      "type": "book_snapshot",
+      "token_id": "0xTOKEN_D",
+      "bids": [[0.53, 150], [0.52, 300]],
+      "asks": [[0.57, 200], [0.58, 250]]
+    },
+    {
+      "ts": "2026-05-01T11:00:02Z",
+      "type": "reservation_created",
+      "reservation_id": "res_sell_001",
+      "user_id": "0xUSER",
+      "condition_id": "0xCOND_D",
+      "token_id": "0xTOKEN_D",
+      "side": "SELL",
+      "reserved_size": "30.0",
+      "reserved_usdc": "16.5",
+      "status": "active"
+    },
+    {
+      "ts": "2026-05-01T11:00:03Z",
+      "type": "leader_sell",
+      "leader_wallet": "0xLEADER",
+      "condition_id": "0xCOND_D",
+      "token_id": "0xTOKEN_D",
+      "size": 30.0
+    },
+    {
+      "ts": "2026-05-01T11:00:04Z",
+      "type": "order_submitted",
+      "order_id": "order_sell_001",
+      "venue_order_id": "v_sell_001",
+      "status": "submitted"
+    },
+    {
+      "ts": "2026-05-01T11:00:10Z",
+      "type": "venue_response",
+      "order_id": "order_sell_001",
+      "venue_order_id": "v_sell_001",
+      "status": "rejected",
+      "error": "insufficient_liquidity"
+    },
+    {
+      "ts": "2026-05-01T11:00:11Z",
+      "type": "reservation_released",
+      "reservation_id": "res_sell_001",
+      "status": "released",
+      "reason": "order_rejected"
+    }
+  ],
+  "expected_state": {
+    "position": {
+      "user_id": "0xUSER",
+      "condition_id": "0xCOND_D",
+      "token_id": "0xTOKEN_D",
+      "size_tokens": "30.0",
+      "unchanged": true
+    },
+    "reservations": [],
+    "orders": [
+      {
+        "order_id": "order_sell_001",
+        "status": "rejected",
+        "terminal": true
+      }
+    ]
+  }
+}

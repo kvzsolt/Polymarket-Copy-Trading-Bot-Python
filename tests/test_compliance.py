@@ -73,10 +73,7 @@ async def test_geoblock_missing_blocked_field_fails_closed():
 
 @pytest.mark.asyncio
 async def test_live_mode_refuses_when_compliance_unknown():
-    # If the geoblock API returns something unpredictable (e.g. unknown JSON structure)
-    # it must fail closed and refuse live mode.
     with patch("services.compliance.fetch_data", new=AsyncMock(return_value={"blocked": None})):
         decision = await check_geoblock()
     assert decision.allowed is False
-    # None is treated as missing field
     assert decision.reason == "geoblock_failed_closed_missing_field"

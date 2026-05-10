@@ -1,0 +1,98 @@
+{
+  "_description": "Replay fixture: BUY partially filled then remainder cancelled",
+  "_scenario": "partial_fill_then_cancel",
+  "_invariant": "position shows only filled size (6/10); reservation fully released",
+  "events": [
+    {
+      "ts": "2026-05-01T12:00:00Z",
+      "type": "price_update",
+      "token_id": "0xTOKEN_E",
+      "price": 0.45
+    },
+    {
+      "ts": "2026-05-01T12:00:01Z",
+      "type": "book_snapshot",
+      "token_id": "0xTOKEN_E",
+      "bids": [[0.44, 100], [0.43, 200]],
+      "asks": [[0.46, 6], [0.47, 150]]
+    },
+    {
+      "ts": "2026-05-01T12:00:02Z",
+      "type": "reservation_created",
+      "reservation_id": "res_buy_002",
+      "user_id": "0xUSER",
+      "condition_id": "0xCOND_E",
+      "token_id": "0xTOKEN_E",
+      "side": "BUY",
+      "reserved_size": "10.0",
+      "reserved_usdc": "4.6",
+      "status": "active"
+    },
+    {
+      "ts": "2026-05-01T12:00:03Z",
+      "type": "leader_buy",
+      "leader_wallet": "0xLEADER",
+      "condition_id": "0xCOND_E",
+      "token_id": "0xTOKEN_E",
+      "size": 10.0
+    },
+    {
+      "ts": "2026-05-01T12:00:04Z",
+      "type": "order_submitted",
+      "order_id": "order_buy_002",
+      "venue_order_id": "v_buy_002",
+      "status": "submitted"
+    },
+    {
+      "ts": "2026-05-01T12:00:10Z",
+      "type": "partial_fill",
+      "order_id": "order_buy_002",
+      "venue_order_id": "v_buy_002",
+      "fill_size": 6.0,
+      "fill_price": 0.46,
+      "remaining_size": 4.0,
+      "status": "live"
+    },
+    {
+      "ts": "2026-05-01T12:00:15Z",
+      "type": "venue_response",
+      "order_id": "order_buy_002",
+      "venue_order_id": "v_buy_002",
+      "status": "cancelled",
+      "reason": "no_remaining_liquidity"
+    },
+    {
+      "ts": "2026-05-01T12:00:16Z",
+      "type": "reservation_released",
+      "reservation_id": "res_buy_002",
+      "status": "released",
+      "reason": "order_terminal"
+    }
+  ],
+  "expected_state": {
+    "position": {
+      "user_id": "0xUSER",
+      "condition_id": "0xCOND_E",
+      "token_id": "0xTOKEN_E",
+      "size_tokens": "6.0",
+      "avg_entry_price": "0.46"
+    },
+    "reservations": [],
+    "fills": [
+      {
+        "order_id": "order_buy_002",
+        "side": "BUY",
+        "size_tokens": "6.0",
+        "price": "0.46"
+      }
+    ],
+    "orders": [
+      {
+        "order_id": "order_buy_002",
+        "status": "cancelled",
+        "filled_size": "6.0",
+        "terminal": true
+      }
+    ]
+  }
+}

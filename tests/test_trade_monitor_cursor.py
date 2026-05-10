@@ -355,7 +355,8 @@ async def test_guarded_leader_fetch_singleflights_same_wallet_and_kind():
     wallet = "0xabc"
     url = f"https://data-api.polymarket.com/activity?user={wallet}&limit=50&offset=0"
 
-    with patch("services.tradeMonitor.fetch_data", side_effect=_fake_fetch):
+    with patch("services.tradeMonitor._fetch_spacing_config", None), \
+         patch("services.tradeMonitor.fetch_data", side_effect=_fake_fetch):
         first, second = await asyncio.gather(
             _guarded_leader_fetch("activity", wallet, url),
             _guarded_leader_fetch("activity", wallet, url),
@@ -374,7 +375,8 @@ async def test_guarded_leader_fetch_keeps_different_wallets_parallel():
         await asyncio.sleep(0.01)
         return [{"ok": True, "url": url}]
 
-    with patch("services.tradeMonitor.fetch_data", side_effect=_fake_fetch):
+    with patch("services.tradeMonitor._fetch_spacing_config", None), \
+         patch("services.tradeMonitor.fetch_data", side_effect=_fake_fetch):
         first, second = await asyncio.gather(
             _guarded_leader_fetch("activity", "0xaaa", "https://data-api.polymarket.com/activity?user=0xaaa&limit=50&offset=0"),
             _guarded_leader_fetch("activity", "0xbbb", "https://data-api.polymarket.com/activity?user=0xbbb&limit=50&offset=0"),
