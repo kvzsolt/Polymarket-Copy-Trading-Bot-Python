@@ -1,0 +1,125 @@
+name: ci
+
+on:
+  push:
+    branches: ["main", "full-rework", "issue-*"]
+  pull_request:
+    branches: ["main", "full-rework"]
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    name: unit (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+      - name: pytest (unit tier)
+        run: pytest -m "not integration and not release_gate" --maxfail=5 -q
+
+  release-gate:
+    name: release-gate (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [unit]
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+      - name: pytest (release-gate tier)
+        run: pytest -m "release_gate" --maxfail=1 -q
+
+  lint-type-import:
+    name: lint-type-import (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+      - name: compileall (syntax / import)
+        run: python -m compileall -q .
+      - name: ruff (lint — soft fail)
+        continue-on-error: true
+        run: |
+          pip install ruff
+          ruff check .
+      - name: mypy (type — soft fail)
+        continue-on-error: true
+        run: |
+          pip install mypy
+          mypy --install-types --non-interactive --ignore-missing-imports services orchestrators domain || true
+
+  docker-smoke:
+    name: docker-smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [unit]
+    steps:
+      - uses: actions/checkout@v4
+      - name: docker build
+        run: docker build -t polymarket-copy-trader:ci .
+      - name: docker run (paper mode)
+        run: |
+          docker run -d --name pmct-smoke \
+            -e PAPER_TRADE_ONLY=true \
+            -e PRIVATE_KEY=0x0000000000000000000000000000000000000000000000000000000000000001 \
+            -e FUNDER_ADDRESS=0x0000000000000000000000000000000000000001 \
+            -e CHAIN_ID=137 \
+            -e RPC_URL=https://polygon-bor-rpc.publicnode.com \
+            -e ENABLE_METRICS_SERVER=true \
+            -e METRICS_PORT=9090 \
+            -p 9090:9090 \
+            polymarket-copy-trader:ci
+      - name: container readiness probe
+        run: |
+          for i in $(seq 1 12); do
+            if [ "$(docker inspect -f '{{.State.Running}}' pmct-smoke 2>/dev/null)" = "true" ]; then
+              echo "container running (attempt $i)"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "container failed to stay running"
+          docker logs pmct-smoke || true
+          exit 1
+      - name: cleanup
+        if: always()
+        run: |
+          docker logs pmct-smoke || true
+          docker stop pmct-smoke || true
+          docker rm pmct-smoke || true
