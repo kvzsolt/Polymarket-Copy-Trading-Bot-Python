@@ -24,6 +24,37 @@ from storage.sqlite.risk_blocks_repo import RiskBlocksRepo
 FAKE_TOKEN_ID = "71321045679252212594626385532706912750332728571942532223535764789812338637396"
 
 
+class _FakeClobGateway:
+    def __init__(self, responses=None):
+        self._responses = responses or {}
+
+    async def get_order(self, order_id: str):
+        if order_id in self._responses:
+            return self._responses[order_id]
+        return {"status": "unknown", "size_matched": "0"}
+
+    async def get_market_info(self, token_id: str):
+        return {}
+
+    async def get_orderbook(self, token_id: str):
+        return None
+
+    async def submit_marketable_order(self, request):
+        return None
+
+    async def submit_limit_order(self, request):
+        return None
+
+    async def get_fills(self, market=None):
+        return []
+
+    async def cancel_order(self, order_id: str):
+        return None
+
+    async def check_compatibility(self):
+        return {"sdk_available": True}
+
+
 class _FakeClient:
     def __init__(self, price: str = "0.97"):
         self.price = price
@@ -559,7 +590,9 @@ async def test_startup_reconcile_closes_unconfirmed_risk_sell_and_persists_block
         accounting_service=object(),
         position_manager=PositionManager(),
         execution_service=_ReconcilingExecutionService(),
-        extra={"slippage_tolerance_bps": 50},
+        extra={"slippage_tolerance_bps": 50, "clob_gateway": _FakeClobGateway(responses={
+            "venue-risk-1": {"status": "filled", "size_matched": "10", "avg_price": "0.30", "orderID": "venue-risk-1"},
+        })},
     )
 
     result = await startup_reconcile_unconfirmed([context])
@@ -650,7 +683,9 @@ async def test_startup_reconcile_partial_unconfirmed_risk_sell_keeps_position_op
         accounting_service=object(),
         position_manager=PositionManager(),
         execution_service=_ReconcilingPartialExecutionService(),
-        extra={"slippage_tolerance_bps": 50},
+        extra={"slippage_tolerance_bps": 50, "clob_gateway": _FakeClobGateway(responses={
+            "venue-risk-partial-1": {"status": "cancelled", "size_matched": "4", "avg_price": "0.30", "orderID": "venue-risk-partial-1"},
+        })},
     )
 
     result = await startup_reconcile_unconfirmed([context])
@@ -755,7 +790,9 @@ async def test_startup_reconcile_risk_sell_applies_only_incremental_matched_delt
         accounting_service=object(),
         position_manager=PositionManager(),
         execution_service=_ReconcilingRiskProgressExecutionService(),
-        extra={"slippage_tolerance_bps": 50},
+        extra={"slippage_tolerance_bps": 50, "clob_gateway": _FakeClobGateway(responses={
+            "venue-risk-progress-1": {"status": "partially_filled", "size_matched": "5", "avg_price": "0.30", "orderID": "venue-risk-progress-1"},
+        })},
     )
 
     result = await startup_reconcile_unconfirmed([context])
@@ -828,7 +865,9 @@ async def test_risk_monitor_reconciles_unconfirmed_sell_before_evaluating_positi
         accounting_service=object(),
         position_manager=PositionManager(),
         execution_service=_ReconcilingExecutionService(),
-        extra={"slippage_tolerance_bps": 50},
+        extra={"slippage_tolerance_bps": 50, "clob_gateway": _FakeClobGateway(responses={
+            "venue-sell-1": {"status": "filled", "size_matched": "10", "avg_price": "0.30", "orderID": "venue-sell-1"},
+        })},
     )
 
     await run_risk_check_for_context(context)
