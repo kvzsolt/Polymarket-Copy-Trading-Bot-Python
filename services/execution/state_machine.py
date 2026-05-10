@@ -14,6 +14,7 @@ ALLOWED_TRANSITIONS: dict[OrderLifecycleStatus, set[OrderLifecycleStatus]] = {
         OrderLifecycleStatus.RETRYABLE_FAILED,
         OrderLifecycleStatus.TERMINAL_FAILED,
         OrderLifecycleStatus.RECONCILIATION_REQUIRED,
+        OrderLifecycleStatus.UNKNOWN_UNCONFIRMED,
         OrderLifecycleStatus.FILLED,  # Add FILLED here if venue returns sync fill
         OrderLifecycleStatus.PARTIALLY_FILLED,
         OrderLifecycleStatus.REJECTED,
