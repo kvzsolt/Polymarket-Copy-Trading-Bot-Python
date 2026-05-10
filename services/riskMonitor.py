@@ -744,6 +744,23 @@ async def run_risk_check_for_context(context: TradingContext) -> None:
                         )
                         fraction = 1.0
 
+                _block_metadata["trigger_fraction"] = fraction
+
+                _trigger_id: int | None = None
+                if context.risk_triggers_repo is not None:
+                    try:
+                        _trigger_id = context.risk_triggers_repo.record_trigger(
+                            user_id=context.user_id,
+                            condition_id=pos.condition_id,
+                            token_id=pos.token_id,
+                            reason=reason,
+                            source="risk_monitor",
+                            fill_status="pending",
+                            metadata=_block_metadata,
+                        )
+                    except Exception:
+                        logger.debug("risk_trigger_record_error", exc_info=True)
+
                 sell_size = (pos.size_tokens * Decimal(str(fraction))).quantize(Decimal("0.00000001"))
                 if sell_size <= 0:
                     continue
@@ -761,7 +778,7 @@ async def run_risk_check_for_context(context: TradingContext) -> None:
                     recovery_metadata=_block_metadata,
                 )
                 result = await context.execution_service.execute(req)
-                if not result.accepted or result.filled_amount <= 0:
+                if not result.accepted:
                     logger.info(
                         "risk_exit_sell_not_filled | cond=%s token=%s reason=%s status=%s error=%s",
                         pos.condition_id[:12],
@@ -770,6 +787,52 @@ async def run_risk_check_for_context(context: TradingContext) -> None:
                         result.status,
                         result.error,
                     )
+                    if _trigger_id is not None and context.risk_triggers_repo is not None:
+                        try:
+                            context.risk_triggers_repo.update_fill_status(
+                                _trigger_id,
+                                fill_status="rejected",
+                                fill_order_id=result.order_id,
+                            )
+                        except Exception:
+                            logger.debug("risk_trigger_update_error", exc_info=True)
+                    continue
+                if result.filled_amount <= 0 and result.status in ("submitted_unconfirmed",):
+                    logger.info(
+                        "risk_exit_submitted_unconfirmed | cond=%s token=%s reason=%s order_id=%s",
+                        pos.condition_id[:12],
+                        pos.token_id[:12],
+                        reason,
+                        result.order_id,
+                    )
+                    if _trigger_id is not None and context.risk_triggers_repo is not None:
+                        try:
+                            context.risk_triggers_repo.update_fill_status(
+                                _trigger_id,
+                                fill_status="pending",
+                                fill_order_id=result.order_id,
+                            )
+                        except Exception:
+                            logger.debug("risk_trigger_update_error", exc_info=True)
+                    continue
+                if result.filled_amount <= 0:
+                    logger.info(
+                        "risk_exit_sell_not_filled | cond=%s token=%s reason=%s status=%s error=%s",
+                        pos.condition_id[:12],
+                        pos.token_id[:12],
+                        reason,
+                        result.status,
+                        result.error,
+                    )
+                    if _trigger_id is not None and context.risk_triggers_repo is not None:
+                        try:
+                            context.risk_triggers_repo.update_fill_status(
+                                _trigger_id,
+                                fill_status="rejected",
+                                fill_order_id=result.order_id,
+                            )
+                        except Exception:
+                            logger.debug("risk_trigger_update_error", exc_info=True)
                     continue
 
                 fill_size = Decimal(str(result.filled_amount))
@@ -781,6 +844,16 @@ async def run_risk_check_for_context(context: TradingContext) -> None:
                 _block_metadata["fill_price"] = float(fill_price)
                 _block_metadata["fill_size_tokens"] = float(fill_size)
                 _block_metadata["fill_order_id"] = result.order_id
+
+                if _trigger_id is not None and context.risk_triggers_repo is not None:
+                    try:
+                        context.risk_triggers_repo.update_fill_status(
+                            _trigger_id,
+                            fill_status="filled",
+                            fill_order_id=result.order_id,
+                        )
+                    except Exception:
+                        logger.debug("risk_trigger_update_error", exc_info=True)
 
                 context.fills_repo.append_fill(
                     FillRecord(
