@@ -1,0 +1,23 @@
+tests/test_reconciliation_service_coordinator_wiring.py
+  s_911a9a2f914876::t_b0b4a5fcde09d2 1-256
+tests/test_position_action_coordinator.py
+  s_911a9a2f914876::t_cc5eacc602fc35 201-305
+tests/test_position_key.py
+  s_911a9a2f914876::t_18d2d13585374c 1-238
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.4",
+  "base_commit_sha": "5ce7dc613c71f3bf1f7ac7c706fc469be1434ea2",
+  "prompts": {},
+  "sessions": {
+    "s_911a9a2f914876": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "85b7fefc-2ebf-4aaf-8e4e-09f1a643e002",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
