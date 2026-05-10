@@ -899,8 +899,8 @@ async def reconcile_submitted_unconfirmed(
                 _scope = PositionKey.from_reconciliation_record(record)
             except ValueError:
                 logger.warning(
-                    "reconcile_skip_missing_scope | order_id=%s side=%s",
-                    record.get("id"), side,
+                    "reconcile_skip_missing_scope | order_id=%s trade_key=%s side=%s",
+                    record.get("order_id"), record.get("trade_key"), side,
                 )
                 return False
             async with sem:

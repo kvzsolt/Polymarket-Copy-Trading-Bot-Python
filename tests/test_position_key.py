@@ -68,6 +68,13 @@ def test_hex_token_id_lowercased():
     assert a.condition_id == "0xabcdef"
 
 
+def test_uppercase_hex_prefix_lowercased():
+    a = PositionKey(user_id="0XUSER", condition_id="0XABCDEF", token_id="0XDEADBEEF")
+    b = PositionKey(user_id="0xuser", condition_id="0xabcdef", token_id="0xdeadbeef")
+    assert a == b
+    assert a.identity() == ("0xuser", "0xabcdef", "0xdeadbeef")
+
+
 def test_non_hex_user_id_preserved_case():
     k = PositionKey(user_id="Alice", condition_id="c1", token_id="t1")
     assert k.user_id == "Alice"

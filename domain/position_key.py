@@ -25,7 +25,7 @@ from typing import Any, Optional
 def _normalize_id(value: Any) -> str:
     """Lowercase hex-prefixed ids, strip whitespace; leave non-hex strings as-is."""
     s = str(value or "").strip()
-    return s.lower() if s.startswith("0x") else s
+    return s.lower() if s[:2].lower() == "0x" else s
 
 
 @dataclass(frozen=True, slots=True)
