@@ -109,6 +109,11 @@ class UserRuntimeState:
     accounting_service: AccountingService
     position_manager: PositionManager
     execution_service: ExecutionService
+    # CLOB V2 gateway — single instance per user runtime, reused by the
+    # reconciler / execution coordinator when those wires land (see issue #66
+    # / #71). Optional default keeps existing test fixtures that build state
+    # without a venue boundary working.
+    clob_gateway: object | None = None
 
 
 def configured_leaders(config: AppConfig) -> list[str]:
@@ -188,12 +193,18 @@ def build_user_state(
     risk_engine = RiskEngine()
     accounting_service = AccountingService()
     position_manager = PositionManager(config=config)
+    # Single CLOB venue boundary — same instance used by ExecutionService and,
+    # when issue #71 lands, the reconciler / execution coordinator. SDK-shaped
+    # types stay behind the gateway. See issue #66.
+    from integrations.polymarket.clob_v2_gateway import ClobV2Gateway
+    clob_gateway = ClobV2Gateway(client, config)
     execution_service = ExecutionService(
         clob_client=client,
         market_meta_service=MarketMetaService(client),
         fee_service=FeeService(client),
         order_repo=OrderRepository(db_path=db_path),
         config=config,
+        clob_gateway=clob_gateway,
     )
 
     return UserRuntimeState(
@@ -208,6 +219,7 @@ def build_user_state(
         accounting_service=accounting_service,
         position_manager=position_manager,
         execution_service=execution_service,
+        clob_gateway=clob_gateway,
     )
 
 
