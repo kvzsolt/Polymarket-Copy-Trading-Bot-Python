@@ -114,7 +114,6 @@ __all__ = [
     "close_session",
     # getMyBalance
     "get_my_balance",
-    # postOrder — REMOVED (replaced by ExecutionService)
     # idempotency
     "build_trade_key",
     "has_processed",
