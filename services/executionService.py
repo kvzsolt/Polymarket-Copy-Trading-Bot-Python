@@ -23,6 +23,7 @@ from integrations.polymarket.errors import (
 )
 from integrations.polymarket.models import MarketableOrderRequest
 from services.circuitBreaker import CircuitBreaker, CircuitOpen
+from services.idempotency import compute_effective_key as _compute_effective_key
 from utils.logger import get_logger, log_api_error, log_api_response, redact_error_detail
 from utils.createClobClient import _is_thin_or_empty_book
 
@@ -135,6 +136,12 @@ def _submit_result_to_response(submit_result) -> dict[str, Any]:
 
 
 def _idempotency_key(req: ExecutionRequest) -> str:
+    """Legacy raw-request idempotency key (pre-sizing).
+
+    Kept for backward compatibility with stored records. New code should
+    use :func:`_effective_idempotency_key` which is computed after sizing
+    and tick rounding.
+    """
     payload = "|".join(
         [
             req.signal_id or "",
@@ -148,6 +155,35 @@ def _idempotency_key(req: ExecutionRequest) -> str:
         ]
     )
     return sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _effective_idempotency_key(
+    *,
+    user: str,
+    condition_id: str | None,
+    token_id: str,
+    side: str,
+    effective_size: Decimal,
+    effective_price: Decimal,
+    tick_size: Decimal,
+    intent_id: str = "",
+    policy_version: str = "",
+) -> str:
+    """Compute idempotency key from effective post-sizing order parameters.
+
+    Delegates to :func:`services.idempotency.compute_effective_key`.
+    """
+    return _compute_effective_key(
+        user=user,
+        condition_id=condition_id or "",
+        token_id=token_id,
+        side=side,
+        effective_size=effective_size,
+        effective_price=effective_price,
+        tick_size=tick_size,
+        intent_id=intent_id,
+        policy_version=policy_version,
+    )
 
 
 class ExecutionService:
@@ -468,7 +504,23 @@ class ExecutionService:
             worst_price = quote_price * (Decimal("1") - slippage)
         worst_price = _quantize_price(worst_price, meta.tick_size, side)
 
-        idem_key = _idempotency_key(req)
+        # Effective idempotency key computed after sizing/rounding so
+        # duplicate suppression represents the final executable order
+        # (condition_id, token_id, effective worst price, tick_size, side).
+        idem_key = _effective_idempotency_key(
+            user=req.user_id,
+            condition_id=getattr(req, "condition_id", None),
+            token_id=req.token_id,
+            side=side,
+            effective_size=req.amount,
+            effective_price=worst_price,
+            tick_size=meta.tick_size,
+            intent_id=req.signal_id or "",
+            policy_version=getattr(self._config, "policy_version", "") or "",
+        )
+
+        # Legacy raw key for backward-compatible lookup of stored records.
+        legacy_key = _idempotency_key(req)
         existing = self.order_repo.get_by_idempotency_key(idem_key)
         if (
             existing
@@ -518,7 +570,9 @@ class ExecutionService:
                     "pending_expires_at": pending_expires_at,
                 },
             )
-            existing = self.order_repo.get_by_idempotency_key(idem_key)
+        existing = self.order_repo.get_by_idempotency_key(idem_key)
+        if not existing and legacy_key != idem_key:
+            existing = self.order_repo.get_by_idempotency_key(legacy_key)
 
         if _is_retry_blocking_existing(existing, config=self._config):
             existing_order_id = existing.get("order_id")
@@ -543,6 +597,11 @@ class ExecutionService:
         request_doc["worst_price"] = str(worst_price)
         request_doc["tick_size"] = str(meta.tick_size)
         request_doc["neg_risk"] = meta.neg_risk
+        request_doc["effective_idempotency_key"] = idem_key
+        request_doc["effective_side"] = side
+        request_doc["sizing_method"] = "effective_post_quantize"
+        if hasattr(req, "condition_id") and req.condition_id:
+            request_doc["condition_id"] = req.condition_id
 
         last_error: str | None = None
         response: dict[str, Any] = {}
