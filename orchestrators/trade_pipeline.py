@@ -15,8 +15,7 @@ from services.entryPermissionService import EntryDecision, EntryPermissionServic
 from services.executionService import ExecutionRequest
 from services.metrics import metrics
 from domain.position_key import PositionKey
-from domain.position_key import PositionKey
-from services.positionActionCoordinator import PositionScope  # noqa: F401  back-compat alias  # noqa: F401  back-compat alias
+from services.positionActionCoordinator import PositionScope  # noqa: F401  back-compat alias
 from services.riskEngine import headroom_for_buy
 from services.riskEngine import active_policy
 from storage.sqlite.fills_repo import FillRecord
@@ -896,11 +895,14 @@ async def reconcile_submitted_unconfirmed(
             # the reconciliation state-apply against the same scoped position
             # so risk monitor / execute_trades cannot observe stale state in
             # the middle of the fill-apply critical section.
-            _scope = PositionScope(
-                user_id=str(record.get("user_id") or ""),
-                condition_id=str(record.get("condition_id") or ""),
-                token_id=str(record.get("asset") or ""),
-            )
+            try:
+                _scope = PositionKey.from_reconciliation_record(record)
+            except ValueError:
+                logger.warning(
+                    "reconcile_skip_missing_scope | order_id=%s side=%s",
+                    record.get("id"), side,
+                )
+                return False
             async with sem:
                 async with context.position_coordinator.acquire(_scope):
                     return await _reconcile_one(context, record, side)

@@ -42,7 +42,7 @@ class PositionKey:
     outcome: Optional[str] = None
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "user_id", str(self.user_id or "").strip())
+        object.__setattr__(self, "user_id", _normalize_id(self.user_id))
         object.__setattr__(self, "condition_id", _normalize_id(self.condition_id))
         object.__setattr__(self, "token_id", _normalize_id(self.token_id))
         if self.outcome is not None:

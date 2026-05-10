@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from contextlib import asynccontextmanager
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
 from typing import Any, AsyncIterator, Optional, Protocol
 
@@ -81,7 +81,7 @@ class DbProvider(Protocol):
 # composition layer (would create a circular import). Any object exposing an
 # ``acquire(scope)`` async context manager satisfies this.
 class _PositionCoordinatorLike(Protocol):
-    def acquire(self, scope: PositionKey) -> Any: ...
+    def acquire(self, scope: PositionKey) -> AbstractAsyncContextManager[None]: ...
 
 
 class ReconciliationService:
