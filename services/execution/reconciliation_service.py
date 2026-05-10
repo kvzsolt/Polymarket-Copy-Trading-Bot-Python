@@ -173,6 +173,7 @@ class ReconciliationService:
         db: Any | None = None,
         audit_logger: Any | None = None,
         risk_blocks_repo: Any | None = None,
+        risk_triggers_repo: Any | None = None,
     ):
         self.orders_repo = orders_repo
         self.fills_repo = fills_repo
@@ -182,6 +183,7 @@ class ReconciliationService:
         self.db = db
         self.audit_logger = audit_logger
         self.risk_blocks_repo = risk_blocks_repo
+        self.risk_triggers_repo = risk_triggers_repo
 
     # ------------------------------------------------------------------
     # Fill confirmation (venue poll)
@@ -632,6 +634,23 @@ class ReconciliationService:
                 "reconciliation_risk_no_fill",
                 {"order_id": order_id, "venue_status": venue_status},
             )
+            if self.risk_triggers_repo is not None:
+                try:
+                    recovery_metadata = request.get("recovery_metadata")
+                    trigger_meta = dict(recovery_metadata) if isinstance(recovery_metadata, dict) else {}
+                    trigger_meta["venue_status"] = venue_status
+                    self.risk_triggers_repo.record_trigger(
+                        user_id=user_id,
+                        condition_id=condition_id,
+                        token_id=token_id,
+                        reason=str(request.get("reason") or "risk_exit"),
+                        source="risk_reconciliation",
+                        fill_status="rejected",
+                        fill_order_id=order_id,
+                        metadata=trigger_meta,
+                    )
+                except Exception:
+                    pass
             return True
 
         is_final_fill = venue_status in _FINAL_FILL_STATUSES_RISK or (
@@ -744,6 +763,22 @@ class ReconciliationService:
                 token_id,
                 getattr(updated_pos, "size_tokens", None),
             )
+
+        if self.risk_triggers_repo is not None:
+            try:
+                trigger_fill_status = "filled" if (is_final_fill and updated_pos is None) else "partial"
+                self.risk_triggers_repo.record_trigger(
+                    user_id=user_id,
+                    condition_id=condition_id,
+                    token_id=token_id,
+                    reason=reason,
+                    source="risk_reconciliation",
+                    fill_status=trigger_fill_status,
+                    fill_order_id=order_id,
+                    metadata=block_metadata,
+                )
+            except Exception:
+                pass
 
         if pnl_tracker is not None and hasattr(pnl_tracker, "record_sell"):
             realized = (float(avg_price) - entry_price) * float(delta_matched)
