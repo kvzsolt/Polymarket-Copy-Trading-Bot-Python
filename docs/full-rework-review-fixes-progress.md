@@ -6,7 +6,7 @@ Branch tracking the audit remediation defined in `audit.md` and `plan.md`. One i
 
 | Issue | Slice | Status |
 |---|---|---|
-| #66 | CLOB V2 gateway isolation | in progress |
+| #66 | CLOB V2 gateway isolation | complete |
 | #67 | Canonical PositionKey + action coordinator | pending |
 | #68 | Market-data cache + WSS lifecycle | pending |
 | #69 | Metadata-driven sizing + effective idempotency | pending |
@@ -142,7 +142,10 @@ without test-pollution-prone files (see Remaining risks).
 
 ### Commit SHAs
 
-_pending_
+- `a744c57` chore(issue-66): scaffold full-rework-review-fixes progress doc
+- `302fff5` feat(issue-66): canonical ClobGateway protocol in interfaces/
+- `e582f87` refactor(issue-66): wire ExecutionService through ClobV2Gateway
+- `5ed9ab3` test(issue-66): gateway acceptance + strengthened isolation gate
 
 ### Next issue
 
