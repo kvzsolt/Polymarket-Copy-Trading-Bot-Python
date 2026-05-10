@@ -73,6 +73,77 @@ class ReservationsRepo:
         with create_connection(self._db_path) as conn:
             return conn.execute("SELECT * FROM order_reservations WHERE id = ?", (res_id,)).fetchone()
 
+    def list_expired_active(self, now_ts: int) -> list[Reservation]:
+        """Return all active reservations whose expires_at < now_ts."""
+        with create_connection(self._db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM order_reservations
+                WHERE status = 'active' AND expires_at < ?
+                """,
+                (now_ts,),
+            ).fetchall()
+            return [self._row_to_reservation(row) for row in rows]
+
+    def sum_active_for_scope(
+        self,
+        user_id: str,
+        condition_id: str,
+        token_id: str,
+        side: str,
+    ) -> tuple[Decimal, Decimal]:
+        """Return (total_reserved_usdc, total_reserved_size) for active reservations."""
+        with create_connection(self._db_path) as conn:
+            row = conn.execute(
+                """
+                SELECT COALESCE(SUM(CAST(reserved_usdc AS REAL)), 0),
+                       COALESCE(SUM(CAST(reserved_size AS REAL)), 0)
+                FROM order_reservations
+                WHERE user_id = ? AND condition_id = ? AND token_id = ?
+                      AND side = ? AND status = 'active'
+                """,
+                (user_id, condition_id, token_id, side),
+            ).fetchone()
+        if row is None:
+            return Decimal("0"), Decimal("0")
+        return Decimal(str(row[0])), Decimal(str(row[1]))
+
+    def sum_active_quote_for_user(self, user_id: str) -> Decimal:
+        """Return active BUY quote reserved by user across all markets/tokens.
+
+        Quote/USDC capacity is account-wide, not position-scoped. SELL share
+        reservations remain token-scoped via ``sum_active_for_scope``.
+        """
+        with create_connection(self._db_path) as conn:
+            row = conn.execute(
+                """
+                SELECT COALESCE(SUM(CAST(reserved_usdc AS REAL)), 0)
+                FROM order_reservations
+                WHERE user_id = ? AND side = 'BUY' AND status = 'active'
+                """,
+                (user_id,),
+            ).fetchone()
+        if row is None:
+            return Decimal("0")
+        return Decimal(str(row[0]))
+
+    def list_active_for_scope(
+        self,
+        user_id: str,
+        condition_id: str,
+        token_id: str,
+    ) -> list[Reservation]:
+        with create_connection(self._db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM order_reservations
+                WHERE user_id = ? AND condition_id = ? AND token_id = ?
+                      AND status = 'active'
+                """,
+                (user_id, condition_id, token_id),
+            ).fetchall()
+            return [self._row_to_reservation(row) for row in rows]
+
     def mark_released(self, reservation_id: str, reason: str, released_at: int) -> None:
         with create_connection(self._db_path) as conn:
             conn.execute(

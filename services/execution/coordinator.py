@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass
 from typing import Protocol, Any, Dict
@@ -7,6 +8,8 @@ from typing import Protocol, Any, Dict
 from domain.order_lifecycle import OrderIntent, OrderLifecycleStatus, classify_venue_status
 from services.execution.reservation_service import ReservationService, Clock, DefaultClock
 from services.execution.state_machine import assert_transition_allowed
+
+logger = logging.getLogger(__name__)
 
 class RetryableVenueError(Exception):
     pass
@@ -85,14 +88,26 @@ class ExecutionCoordinator:
 
     async def execute_intent(self, intent: OrderIntent) -> ExecutionResult:
         reservation = await self.reservation_service.reserve_for_intent(intent)
-
-        # Delegate order creation to repo, but simulate here if needed.
-        # In actual system, orders_repo.create_from_intent returns an order object.
-        order = await self.orders_repo.create_from_intent(
-            intent=intent,
-            reservation_id=reservation.id,
-            status=OrderLifecycleStatus.RESERVED,
+        logger.info(
+            "coordinator.reservation_acquired reservation_id=%s key=%s side=%s",
+            reservation.id, intent.key.stable_key(), intent.key.side.value,
         )
+
+        try:
+            order = await self.orders_repo.create_from_intent(
+                intent=intent,
+                reservation_id=reservation.id,
+                status=OrderLifecycleStatus.RESERVED,
+            )
+        except Exception as exc:
+            self.reservation_service.release_terminal(
+                reservation.id, f"create_failed:{exc}"
+            )
+            self._log_audit(
+                "execution_create_failed", intent, "none", reservation.id,
+                error=str(exc),
+            )
+            raise
 
         await self._transition_order(
             order.id,
@@ -143,14 +158,11 @@ class ExecutionCoordinator:
             self._log_audit("execution_filled", intent, order.id, reservation.id, venue_order_id=venue_result.order_id)
             return ExecutionResult.filled(order_id=order.id)
 
-        unresolved_status = (
-            OrderLifecycleStatus.SUBMITTED_UNCONFIRMED
-            if status in {
-                OrderLifecycleStatus.SUBMITTED_UNCONFIRMED,
-                OrderLifecycleStatus.UNKNOWN_UNCONFIRMED,
-            }
-            else status
-        )
+        # Preserve UNKNOWN_UNCONFIRMED distinctly from ordinary submitted/live
+        # statuses. Unknown venue responses are ambiguous and must stay visible
+        # to reconciliation/telemetry instead of being collapsed into
+        # SUBMITTED_UNCONFIRMED.
+        unresolved_status = status
 
         await self._transition_order(
             order.id,
@@ -163,8 +175,17 @@ class ExecutionCoordinator:
         # If terminal status (e.g. REJECTED), we release the reservation
         if unresolved_status in {OrderLifecycleStatus.CANCELLED, OrderLifecycleStatus.REJECTED, OrderLifecycleStatus.EXPIRED, OrderLifecycleStatus.TERMINAL_FAILED}:
             self.reservation_service.release_terminal(reservation.id, str(unresolved_status.value))
+            logger.info(
+                "coordinator.reservation_released reservation_id=%s reason=%s",
+                reservation.id, unresolved_status.value,
+            )
         else:
             await self.reconciler.enqueue(order.id)
+            logger.info(
+                "coordinator.reservation_pending reservation_id=%s "
+                "status=%s — awaiting reconciliation",
+                reservation.id, unresolved_status.value,
+            )
 
         self._log_audit(f"execution_{unresolved_status.value}", intent, order.id, reservation.id, venue_order_id=venue_result.order_id)
         
