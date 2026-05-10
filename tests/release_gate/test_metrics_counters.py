@@ -6,8 +6,6 @@ renderer (so dashboards built against these names will not silently miss).
 """
 from __future__ import annotations
 
-import asyncio
-
 from services.metrics import (
     GAUGE_PENDING_INTENTS,
     GAUGE_RESERVATION_ACTIVE,
@@ -48,11 +46,21 @@ def test_inc_sync_records_counter() -> None:
     reg.inc_sync(METRIC_WSS_RECONNECT, labels={"stream": "user"})
     reg.inc_sync(METRIC_CACHE_STALE_EVICTIONS, labels={"reason": "fill"})
 
-    counters, _ = asyncio.run(reg.snapshot())
+    counters, _ = reg.snapshot()
     user_key = f'{METRIC_WSS_RECONNECT}{{stream="user"}}'
     fill_key = f'{METRIC_CACHE_STALE_EVICTIONS}{{reason="fill"}}'
     assert counters[user_key] == 2
     assert counters[fill_key] == 1
+
+
+def test_inc_records_counter() -> None:
+    reg = MetricsRegistry()
+    reg.inc(METRIC_WSS_RECONNECT, labels={"stream": "market"})
+    reg.inc(METRIC_WSS_RECONNECT, labels={"stream": "market"})
+
+    counters, _ = reg.snapshot()
+    market_key = f'{METRIC_WSS_RECONNECT}{{stream="market"}}'
+    assert counters[market_key] == 2
 
 
 def test_prometheus_render_includes_inc_sync() -> None:
@@ -60,6 +68,6 @@ def test_prometheus_render_includes_inc_sync() -> None:
     reg.inc_sync(
         METRIC_RECONCILIATION_DELTA_APPLIED, value=1.5, labels={"side": "BUY"}
     )
-    rendered = asyncio.run(reg.render_prometheus())
+    rendered = reg.render_prometheus()
     assert METRIC_RECONCILIATION_DELTA_APPLIED in rendered
     assert "1.5" in rendered

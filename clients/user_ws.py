@@ -134,7 +134,7 @@ class UserWebSocket:
                 self._reconnect_delay,
             )
             try:
-                await metrics.inc(METRIC_WSS_RECONNECT, labels={"stream": "user"})
+                metrics.inc(METRIC_WSS_RECONNECT, labels={"stream": "user"})
             except Exception:
                 pass
             await asyncio.sleep(self._reconnect_delay)
@@ -161,7 +161,7 @@ class UserWebSocket:
             except Exception as exc:
                 logger.warning("UserWS: heartbeat send failed: %s", exc)
                 try:
-                    await metrics.inc(
+                    metrics.inc(
                         METRIC_WSS_HEARTBEAT_STALL, labels={"stream": "user"}
                     )
                 except Exception:

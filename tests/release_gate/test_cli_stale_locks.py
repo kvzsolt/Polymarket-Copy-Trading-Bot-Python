@@ -1,11 +1,14 @@
 """Release-gate: ``bot stale-locks list`` CLI (Issue #76).
 
-Seeds two pending_lock orders — one fresh, one synthetically aged past TTL —
-and asserts the listing only includes the aged row.
+Seeds pending_lock orders — one fresh, one synthetically aged past TTL —
+and asserts the listing only includes the aged row. Also validates that
+the ``pending_since`` field in ``response_json`` takes priority over
+``created_at``/``updated_at`` for age computation.
 """
 from __future__ import annotations
 
 import json
+import time
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -39,6 +42,33 @@ def _seed(db_path: str) -> None:
         conn.commit()
 
 
+def _seed_with_pending_since(db_path: str) -> None:
+    """Seed rows with response_json containing pending_since epoch floats."""
+    now_utc = datetime.now(tz=timezone.utc).replace(tzinfo=None)
+    old_ts = _iso(now_utc - timedelta(hours=1))
+    fresh_ts = _iso(now_utc)
+    old_epoch = time.time() - 7200  # 2 hours ago as epoch
+    fresh_epoch = time.time()  # now as epoch
+    with create_connection(db_path) as conn:
+        apply_migrations(conn)
+        conn.execute(
+            """
+            INSERT INTO orders
+              (idempotency_key, user_id, leader_id, order_id, status,
+               request_json, response_json, attempt_count, last_error,
+               created_at, updated_at)
+            VALUES
+              ('k-old-ps','u-test',NULL,NULL,'pending_lock','{}',?,0,NULL,?,?),
+              ('k-fresh-ps','u-test',NULL,NULL,'pending','{}',?,0,NULL,?,?)
+            """,
+            (
+                json.dumps({"pending_since": old_epoch}), old_ts, old_ts,
+                json.dumps({"pending_since": fresh_epoch}), fresh_ts, fresh_ts,
+            ),
+        )
+        conn.commit()
+
+
 def test_only_aged_locks_listed(tmp_path) -> None:
     db = tmp_path / "locks.db"
     _seed(str(db))
@@ -46,6 +76,17 @@ def test_only_aged_locks_listed(tmp_path) -> None:
     assert len(rows) == 1
     assert rows[0]["idempotency_key"] == "k-old"
     assert rows[0]["age_seconds"] >= 120
+
+
+def test_pending_since_priority(tmp_path) -> None:
+    """When response_json.pending_since is present, it overrides created_at for age."""
+    db = tmp_path / "locks.db"
+    _seed_with_pending_since(str(db))
+    rows = _list_stale_locks(str(db), ttl_seconds=120, user_id=None)
+    assert len(rows) == 1
+    assert rows[0]["idempotency_key"] == "k-old-ps"
+    assert rows[0]["age_seconds"] >= 120
+    assert rows[0]["pending_since_ts"] is not None
 
 
 def test_user_filter(tmp_path) -> None:

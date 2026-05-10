@@ -155,7 +155,7 @@ class MarketWebSocket:
                 self._reconnect_delay,
             )
             try:
-                await metrics.inc(METRIC_WSS_RECONNECT, labels={"stream": "market"})
+                metrics.inc(METRIC_WSS_RECONNECT, labels={"stream": "market"})
             except Exception:
                 pass
             await asyncio.sleep(self._reconnect_delay)
@@ -186,7 +186,7 @@ class MarketWebSocket:
             except Exception as exc:
                 logger.warning("MarketWS: heartbeat send failed: %s", exc)
                 try:
-                    await metrics.inc(
+                    metrics.inc(
                         METRIC_WSS_HEARTBEAT_STALL, labels={"stream": "market"}
                     )
                 except Exception:

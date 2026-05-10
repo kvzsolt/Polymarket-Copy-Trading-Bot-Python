@@ -723,7 +723,7 @@ async def reconcile_submitted_unconfirmed(
     reconciled += await _reconcile_batch(sell_pending, "SELL")
 
     if reconciled:
-        await metrics.inc("reconcile_unconfirmed_total", value=float(reconciled))
+        metrics.inc("reconcile_unconfirmed_total", value=float(reconciled))
 
     return reconciled
 
@@ -803,11 +803,11 @@ async def execute_trades(
     for signal, raw in normalized:
         labels = {"user_id": context.user_id, "leader_id": leader_id}
         sell_entry_price: float | None = None
-        await metrics.inc("trades_detected_total", labels=labels)
+        metrics.inc("trades_detected_total", labels=labels)
 
         trade_key = build_trade_key(context.user_id, leader_id, raw)
         if context.orders_repo.has_processed_trade(trade_key):
-            await metrics.inc("duplicate_order_prevented_total", labels=labels)
+            metrics.inc("duplicate_order_prevented_total", labels=labels)
             results.append(
                 TradePipelineResult(
                     trade_key=trade_key,
@@ -842,7 +842,7 @@ async def execute_trades(
                         signal.token_id,
                     )
                     skip_reason = "entry_policy_unavailable"
-                    await metrics.inc("trades_skipped_total", labels={**labels, "reason": skip_reason})
+                    metrics.inc("trades_skipped_total", labels={**labels, "reason": skip_reason})
                     context.orders_repo.mark_processed_trade(
                         trade_key=trade_key,
                         user_id=context.user_id,
@@ -898,8 +898,8 @@ async def execute_trades(
                         event_slug=signal.event_slug,
                         meta={"user_id": context.user_id, "leader_id": leader_id, "policy_reason": _decision.reason},
                     )
-                    await metrics.inc("trades_skipped_total", labels={**labels, "reason": skip_reason})
-                    await metrics.inc("entry_denied_total", labels={**labels, "policy_reason": _decision.reason})
+                    metrics.inc("trades_skipped_total", labels={**labels, "reason": skip_reason})
+                    metrics.inc("entry_denied_total", labels={**labels, "policy_reason": _decision.reason})
                     context.orders_repo.mark_processed_trade(
                         trade_key=trade_key,
                         user_id=context.user_id,
@@ -922,7 +922,7 @@ async def execute_trades(
 
                 if _decision is not None and _decision.clear_rule_applied:
                     # Block was auto-cleared — emit a metric so we can track clear-rule firing
-                    await metrics.inc(
+                    metrics.inc(
                         "entry_block_auto_cleared_total",
                         labels={**labels, "clear_rule": _decision.clear_rule_applied},
                     )
@@ -947,7 +947,7 @@ async def execute_trades(
                             },
                         )
                     print_skip_reason("Tier gate: watchlist", "Leader is on watchlist — observing only")
-                    await metrics.inc("trades_skipped_total", labels={**labels, "reason": "tier_watchlist"})
+                    metrics.inc("trades_skipped_total", labels={**labels, "reason": "tier_watchlist"})
                     results.append(TradePipelineResult(trade_key, "skipped", "tier_watchlist", None))
                     continue
             if leader_tier == "paper_follow":
@@ -963,7 +963,7 @@ async def execute_trades(
                     },
                 )
                 print_skip_reason("Tier gate: paper follow", "Paper-tracking only — no live order submitted")
-                await metrics.inc("trades_paper_total", labels=labels)
+                metrics.inc("trades_paper_total", labels=labels)
                 context.orders_repo.mark_processed_trade(
                     trade_key=trade_key,
                     user_id=context.user_id,
@@ -1014,7 +1014,7 @@ async def execute_trades(
                         event_slug=signal.event_slug,
                         meta={"user_id": context.user_id, "leader_id": leader_id},
                     )
-                    await metrics.inc(
+                    metrics.inc(
                         "trades_skipped_total",
                         labels={**labels, "reason": reason},
                     )
@@ -1054,7 +1054,7 @@ async def execute_trades(
                         event_slug=signal.event_slug,
                         meta={"user_id": context.user_id, "leader_id": leader_id},
                     )
-                    await metrics.inc(
+                    metrics.inc(
                         "trades_skipped_total",
                         labels={**labels, "reason": position_pct_cap.reason},
                     )
@@ -1108,7 +1108,7 @@ async def execute_trades(
                             event_slug=signal.event_slug,
                             meta={"user_id": context.user_id, "leader_id": leader_id},
                         )
-                        await metrics.inc(
+                        metrics.inc(
                             "trades_skipped_total",
                             labels={**labels, "reason": buy_risk_cap.reason},
                         )
@@ -1227,7 +1227,7 @@ async def execute_trades(
                         event_slug=signal.event_slug,
                         meta={"user_id": context.user_id, "leader_id": leader_id},
                     )
-                    await metrics.inc("trades_skipped_total", labels={**labels, "reason": decision.skip_code})
+                    metrics.inc("trades_skipped_total", labels={**labels, "reason": decision.skip_code})
                     context.orders_repo.mark_processed_trade(
                         trade_key=trade_key,
                         user_id=context.user_id,
@@ -1296,7 +1296,7 @@ async def execute_trades(
                             "leader_id": leader_id,
                         },
                     )
-                    await metrics.inc("trades_skipped_total", labels={**labels, "reason": skip_code})
+                    metrics.inc("trades_skipped_total", labels={**labels, "reason": skip_code})
                     log_trade_skip(
                         logger,
                         side=signal.side,
@@ -1334,7 +1334,7 @@ async def execute_trades(
                             "leader_id": leader_id,
                         },
                     )
-                    await metrics.inc("trades_skipped_total", labels={**labels, "reason": skip_code})
+                    metrics.inc("trades_skipped_total", labels={**labels, "reason": skip_code})
                     log_trade_skip(
                         logger,
                         side=signal.side,
@@ -1419,7 +1419,7 @@ async def execute_trades(
                         event_slug=signal.event_slug,
                         meta={"user_id": context.user_id, "leader_id": leader_id},
                     )
-                    await metrics.inc("trades_skipped_total", labels={**labels, "reason": "sell_size_zero"})
+                    metrics.inc("trades_skipped_total", labels={**labels, "reason": "sell_size_zero"})
                     context.orders_repo.mark_processed_trade(
                         trade_key=trade_key,
                         user_id=context.user_id,
@@ -1477,7 +1477,7 @@ async def execute_trades(
             exec_result = await context.execution_service.execute(exec_req)
 
             if exec_result.status == "duplicate_ignored":
-                await metrics.inc("duplicate_order_prevented_total", labels=labels)
+                metrics.inc("duplicate_order_prevented_total", labels=labels)
                 context.orders_repo.mark_processed_trade(
                     trade_key=trade_key,
                     user_id=context.user_id,
@@ -1537,7 +1537,7 @@ async def execute_trades(
                 continue
 
             if not exec_result.accepted:
-                await metrics.inc("execution_failures_total", labels={**labels, "reason": exec_result.status})
+                metrics.inc("execution_failures_total", labels={**labels, "reason": exec_result.status})
                 log_trade_skip(
                     logger,
                     side=signal.side,
@@ -1797,7 +1797,7 @@ async def execute_trades(
                         title=signal.title,
                     )
 
-            await metrics.inc("trades_copied_total", labels=labels)
+            metrics.inc("trades_copied_total", labels=labels)
 
             log_trade_submitted(
                 logger,
