@@ -8,6 +8,14 @@ from dataclasses import dataclass, field
 from decimal import Decimal, ROUND_CEILING
 from typing import Any, TYPE_CHECKING
 
+from services.order_sizing import SizingDecision as _SizingDecision
+from services.order_sizing import size_buy_order as _size_buy_order
+from services.order_sizing import size_sell_order as _size_sell_order
+from services.idempotency import (
+    compute_effective_key as _compute_effective_key,
+    compute_effective_identity as _compute_effective_identity,
+    EffectiveOrderIdentity,
+)
 from services.leaderScoringService import LeaderScore, LeaderScoringService
 from services.tradeScoringService import TradeScore, TradeScoringService
 from utils.logger import get_logger
@@ -19,14 +27,9 @@ if TYPE_CHECKING:
 logger = get_logger("CopyDecisionService")
 
 
-@dataclass(frozen=True)
-class SizingDecision:
-    accept: bool
-    effective_size: Decimal
-    effective_price: Decimal
-    venue_min_size: Decimal
-    reason: str
-    upsized: bool
+# Re-export SizingDecision and effective_intent_key for backward compatibility.
+# New code should import directly from services.order_sizing and services.idempotency.
+SizingDecision = _SizingDecision
 
 
 def effective_intent_key(
@@ -39,23 +42,24 @@ def effective_intent_key(
     effective_price: Decimal,
     tick_size: Decimal,
     intent_id: str = "",
+    policy_version: str = "",
 ) -> str:
     """Compute SHA256 idempotency key from the **effective adjusted** request.
 
-    This must be computed *after* sizing adjustments so that an upsize
-    produces a different key than the original below-min request.
+    Delegates to :func:`services.idempotency.compute_effective_key`.
+    Added ``policy_version`` parameter (defaults to empty for backward compat).
     """
-    payload = json.dumps({
-        "user": user,
-        "condition_id": condition_id,
-        "token_id": token_id,
-        "side": side.upper(),
-        "effective_size": format(effective_size, "f"),
-        "effective_price": format(effective_price, "f"),
-        "tick_size": format(tick_size, "f"),
-        "intent_id": intent_id,
-    }, separators=(',', ':'), sort_keys=True)
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    return _compute_effective_key(
+        user=user,
+        condition_id=condition_id,
+        token_id=token_id,
+        side=side,
+        effective_size=effective_size,
+        effective_price=effective_price,
+        tick_size=tick_size,
+        intent_id=intent_id,
+        policy_version=policy_version,
+    )
 
 
 @dataclass(frozen=True)
