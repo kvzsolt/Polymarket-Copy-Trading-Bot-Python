@@ -1,0 +1,21 @@
+docs/full-rework-review-fixes-progress.md
+  s_911a9a2f914876::t_28665b99a88666 152-286,291
+  s_911a9a2f914876::t_bea7cb1f66f3a7 10
+  s_911a9a2f914876::t_30ea379704cab1 287-290
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.4",
+  "base_commit_sha": "f540bc26d69e5295a022711101d70237d6c39ba1",
+  "prompts": {},
+  "sessions": {
+    "s_911a9a2f914876": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "85b7fefc-2ebf-4aaf-8e4e-09f1a643e002",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
