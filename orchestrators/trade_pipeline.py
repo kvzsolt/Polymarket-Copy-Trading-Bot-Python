@@ -14,7 +14,9 @@ from domain.trading_context import TradingContext
 from services.entryPermissionService import EntryDecision, EntryPermissionService
 from services.executionService import ExecutionRequest
 from services.metrics import metrics
-from services.positionActionCoordinator import PositionScope
+from domain.position_key import PositionKey
+from domain.position_key import PositionKey
+from services.positionActionCoordinator import PositionScope  # noqa: F401  back-compat alias  # noqa: F401  back-compat alias
 from services.riskEngine import headroom_for_buy
 from services.riskEngine import active_policy
 from storage.sqlite.fills_repo import FillRecord
@@ -1015,18 +1017,15 @@ async def execute_trades(
             continue
 
         # ------------------------------------------------------------------
-        # Per-scoped-position action coordination (issue #28)
+        # Per-scoped-position action coordination (issue #28 / #67)
         # ------------------------------------------------------------------
         # Serialize all observe-then-mutate work on this scoped position
         # against the risk monitor's protective SELL path and any concurrent
         # reconciliation state-apply on the same (condition_id, token_id).
         # Unrelated positions remain fully concurrent.
-        _scope = PositionScope(
-            user_id=context.user_id,
-            condition_id=signal.condition_id,
-            token_id=signal.token_id,
-        )
+        _scope = PositionKey.from_signal_event(signal, context.user_id)
         async with context.position_coordinator.acquire(_scope):
+            logger.debug("trade_pipeline.signal_scope_acquired", extra=_scope.log_fields())
             # ------------------------------------------------------------------
             # Entry-permission gate — single authoritative BUY re-entry check
             # ------------------------------------------------------------------

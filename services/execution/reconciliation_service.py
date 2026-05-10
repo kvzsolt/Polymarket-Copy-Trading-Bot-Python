@@ -1,7 +1,15 @@
+from __future__ import annotations
+
+import logging
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, AsyncIterator, Optional, Protocol
 
 from domain.order_lifecycle import OrderLifecycleStatus
+from domain.position_key import PositionKey
+
+logger = logging.getLogger(__name__)
+
 
 @dataclass(frozen=True)
 class ReconciliationResult:
@@ -67,6 +75,15 @@ class DbTransaction(Protocol):
 class DbProvider(Protocol):
     def transaction(self) -> DbTransaction: ...
 
+
+# Issue #67: structural Protocol for the per-position coordinator so this
+# module does not import the heavier ``services.positionCoordinator``
+# composition layer (would create a circular import). Any object exposing an
+# ``acquire(scope)`` async context manager satisfies this.
+class _PositionCoordinatorLike(Protocol):
+    def acquire(self, scope: PositionKey) -> Any: ...
+
+
 class ReconciliationService:
     def __init__(
         self,
@@ -77,6 +94,8 @@ class ReconciliationService:
         clob_gateway: OrderQueryGateway,
         db: DbProvider,
         audit_logger: Any,
+        *,
+        position_coordinator: Optional[_PositionCoordinatorLike] = None,
     ):
         self.orders_repo = orders_repo
         self.fills_repo = fills_repo
@@ -85,6 +104,48 @@ class ReconciliationService:
         self.clob_gateway = clob_gateway
         self.db = db
         self.audit_logger = audit_logger
+        self.position_coordinator = position_coordinator
+
+    @staticmethod
+    def _try_build_key(order: OrderRecord) -> Optional[PositionKey]:
+        """Best-effort PositionKey from an order record.
+
+        Returns None when the record lacks the canonical-position fields
+        (legacy fixtures, partial-state records). Callers must degrade
+        gracefully — the per-scope lock is defense-in-depth; the reconciler
+        remains the sole writer of terminal state regardless.
+        """
+        user_id = getattr(order, "user_id", None)
+        condition_id = getattr(order, "condition_id", None)
+        token_id = (
+            getattr(order, "asset", None)
+            or getattr(order, "token_id", None)
+        )
+        outcome = getattr(order, "outcome", None)
+        if not user_id or not condition_id or not token_id:
+            return None
+        try:
+            return PositionKey(
+                user_id=user_id,
+                condition_id=condition_id,
+                token_id=token_id,
+                outcome=outcome,
+            )
+        except ValueError:
+            return None
+
+    @asynccontextmanager
+    async def _scope_lock(self, key: Optional[PositionKey]) -> AsyncIterator[None]:
+        """Acquire the per-scope coordinator lock when both coordinator and key are present."""
+        if self.position_coordinator is None or key is None:
+            yield
+            return
+        async with self.position_coordinator.acquire(key):
+            logger.debug(
+                "reconcile.scope_lock_acquired",
+                extra=key.log_fields(),
+            )
+            yield
 
     async def reconcile_order(self, order_id: str) -> ReconciliationResult:
         order = await self.orders_repo.get(order_id)
@@ -102,18 +163,28 @@ class ReconciliationService:
             self.audit_logger.log_event("reconciliation_unreachable", {"order_id": order.id, "error": str(exc)})
             return ReconciliationResult.unresolved(order.id, OrderLifecycleStatus.UNKNOWN_UNCONFIRMED, str(exc))
 
-        if venue_fills:
-            async with self.db.transaction():
-                for venue_fill in venue_fills:
-                    fill = await self.fills_repo.upsert_venue_fill(order, venue_fill)
-                    self.positions_repo.upsert_position(fill)
+        # Per-position coordinator gate (issue #67). Held across the full
+        # mutation block so a concurrent risk-monitor SELL or copy-trade BUY
+        # on the same scoped position cannot interleave with terminal state
+        # apply / reservation release.
+        scope_key = self._try_build_key(order)
 
-                await self.orders_repo.mark_filled_or_partially_filled(order.id)
-                self.reservation_service.release_terminal(
-                    order.reservation_id,
-                    reason="venue_fill_confirmed",
+        if venue_fills:
+            async with self._scope_lock(scope_key):
+                async with self.db.transaction():
+                    for venue_fill in venue_fills:
+                        fill = await self.fills_repo.upsert_venue_fill(order, venue_fill)
+                        self.positions_repo.upsert_position(fill)
+
+                    await self.orders_repo.mark_filled_or_partially_filled(order.id)
+                    self.reservation_service.release_terminal(
+                        order.reservation_id,
+                        reason="venue_fill_confirmed",
+                    )
+                self.audit_logger.log_event(
+                    "reconciliation_resolved_filled",
+                    {"order_id": order.id, **(scope_key.log_fields() if scope_key else {})},
                 )
-            self.audit_logger.log_event("reconciliation_resolved_filled", {"order_id": order.id})
             return ReconciliationResult.resolved(order.id, OrderLifecycleStatus.FILLED)
 
         if venue_order and venue_order.status.lower() in {"live", "open", "pending"}:
@@ -121,13 +192,21 @@ class ReconciliationService:
             return ReconciliationResult.pending(order.id, OrderLifecycleStatus.SUBMITTED_UNCONFIRMED)
 
         if venue_order and venue_order.status.lower() in {"cancelled", "expired", "rejected"}:
-            async with self.db.transaction():
-                await self.orders_repo.mark_terminal(order.id, venue_order.status.lower())
-                self.reservation_service.release_terminal(
-                    order.reservation_id,
-                    reason=venue_order.status.lower(),
+            async with self._scope_lock(scope_key):
+                async with self.db.transaction():
+                    await self.orders_repo.mark_terminal(order.id, venue_order.status.lower())
+                    self.reservation_service.release_terminal(
+                        order.reservation_id,
+                        reason=venue_order.status.lower(),
+                    )
+                self.audit_logger.log_event(
+                    "reconciliation_resolved_terminal",
+                    {
+                        "order_id": order.id,
+                        "status": venue_order.status.lower(),
+                        **(scope_key.log_fields() if scope_key else {}),
+                    },
                 )
-            self.audit_logger.log_event("reconciliation_resolved_terminal", {"order_id": order.id, "status": venue_order.status.lower()})
             try:
                 status = OrderLifecycleStatus(venue_order.status.lower())
             except ValueError:
