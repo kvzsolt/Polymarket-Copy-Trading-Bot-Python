@@ -44,7 +44,7 @@ class TradeAnalyticsService:
             self._quality_sum += float(decision.decision_score or 0.0)
             self._snapshot.avg_quality_score = self._quality_sum / max(self._snapshot.total_signals, 1)
 
-        await metrics.set_gauge("copy_quality_avg_score", self._snapshot.avg_quality_score)
+        metrics.set_gauge("copy_quality_avg_score", self._snapshot.avg_quality_score)
 
         logger.info(
             "ANALYTICS decision | allow=%s | code=%s | score=%.4f | side=%s",
@@ -92,7 +92,7 @@ class TradeAnalyticsService:
             if result != "executed":
                 self._snapshot.by_reason[result] = self._snapshot.by_reason.get(result, 0) + 1
 
-        await metrics.set_gauge("copy_quality_avg_slippage_bps", self._snapshot.avg_slippage_bps)
+        metrics.set_gauge("copy_quality_avg_slippage_bps", self._snapshot.avg_slippage_bps)
 
         logger.info(
             "ANALYTICS execution | result=%s | slippage_bps=%.2f | side=%s",

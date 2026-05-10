@@ -64,3 +64,69 @@ and documented the gate in `docs/release-gate.md`.
 **Next issue.** #76 — runtime ops, Docker readiness, and observability.
 
 **Commit SHA.** _to be filled in after the slice is merged_.
+
+## Issue #76 — Runtime ops, readiness, observability
+
+**Status:** in-flight on branch `issue-76`. Docker scope explicitly excluded
+per the originating ticket conversation; remaining checklist items shipped.
+
+**Summary.** Added three operator CLI subcommands (`reservations list`,
+`stale-locks list`, `drift check`), a strict `/health/ready` endpoint backed
+by an extended `ReadinessTracker` that fails closed on every required
+subsystem, named metric constants for ops-facing counters/gauges, emission
+of `wss_reconnect_total`, `wss_heartbeat_stall_total`,
+`cache_stale_evictions_total`, and `reconciliation_delta_applied_total` at
+the natural call sites, and live-mode doctor probes for the CLOB SDK, WSS
+endpoint, and reconciler config. Hardened `_config_to_dict` so secrets
+inside the `raw` env dict are also redacted.
+
+**Files changed.**
+
+- `bot_cli/commands/reservations.py` *(new)* — `bot reservations list`.
+- `bot_cli/commands/stale_locks.py` *(new)* — `bot stale-locks list`.
+- `bot_cli/commands/drift.py` *(new)* — `bot drift check`.
+- `bot_cli/commands/__init__.py`, `bot_cli/main.py` — register new commands.
+- `bot_cli/commands/doctor.py` — gateway SDK + WSS endpoint + reconciler
+  config checks for live mode.
+- `bot_cli/commands/config.py` — secrets inside dict values are now redacted.
+- `services/healthServer.py` — extended `ReadinessTracker` defaults,
+  `is_ready(strict=...)` helper, new `/health/ready` route.
+- `services/metrics.py` — `inc_sync` helper plus operator metric name
+  constants (`METRIC_*` and `GAUGE_*`).
+- `services/price_cache.py` — emits `cache_stale_evictions_total` on fill /
+  reconcile / reconnect invalidation paths.
+- `services/execution/reconciliation_service.py` — emits
+  `reconciliation_delta_applied_total` after each applied fill delta.
+- `clients/user_ws.py`, `clients/market_ws.py` — emit `wss_reconnect_total`
+  and `wss_heartbeat_stall_total`.
+- `tests/release_gate/test_cli_reservations.py` *(new)*.
+- `tests/release_gate/test_cli_stale_locks.py` *(new)*.
+- `tests/release_gate/test_cli_drift.py` *(new)*.
+- `tests/release_gate/test_cli_redacted_config.py` *(new)*.
+- `tests/release_gate/test_readiness_aggregator.py` *(new)*.
+- `tests/release_gate/test_metrics_counters.py` *(new)*.
+
+**Tests run locally.**
+
+- `pytest -m release_gate` — 93 passed (was 67 pre-#76).
+- `pytest` — 1474 passed, 8 skipped, 7 xfailed.
+- `python -m compileall .` — clean.
+- `python bot.py reservations list`, `… stale-locks list`,
+  `… config print` — JSON output, secrets redacted, exit 0.
+
+**Known remaining risks.**
+
+- Docker readiness was explicitly out of scope for this slice; the
+  Dockerfile + runtime docs item from the original checklist remains open
+  and should be picked up separately if/when live operations are planned.
+- The doctor `gateway_sdk` check is an import probe; it does not yet
+  perform a signed venue handshake. Live ops should still rely on the
+  startup health report for full venue reachability.
+- `is_ready(strict=True)` requires every subsystem flag to be wired by the
+  application composition root; until app.py wires gateway/wss/reconciler
+  flags into the tracker (out of scope here), `/health/ready` will return
+  503 even on a healthy paper run — by design (fail-closed).
+
+**Next issue.** #77 — legacy cleanup and architecture documentation.
+
+**Commit SHA.** _to be filled in after the slice is merged_.
