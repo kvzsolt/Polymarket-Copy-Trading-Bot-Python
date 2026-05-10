@@ -92,7 +92,7 @@ class ReadinessTracker:
 
 
 async def metrics_handler(_request: web.Request) -> web.Response:
-    body = await metrics.render_prometheus()
+    body = metrics.render_prometheus()
     return web.Response(text=body, content_type="text/plain; version=0.0.4")
 
 

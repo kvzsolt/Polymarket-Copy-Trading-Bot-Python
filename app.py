@@ -276,7 +276,7 @@ async def main():
     application.readiness.update(monitored_leader_count=len(monitored_leaders))
     if not monitored_leaders:
         logger.warning("no_leaders_monitored", extra={"reason": "no_user_follows_active_leaders"})
-        await metrics.inc("no_leaders_monitored_total")
+        metrics.inc("no_leaders_monitored_total")
 
     # ── Startup convergence (issue #29) ─────────────────────────────────
     # Reconcile any submitted_unconfirmed orders from the previous session
@@ -437,7 +437,7 @@ async def main():
                         )
             else:
                 await asyncio.sleep(refresh_interval)
-                await metrics.inc("no_leaders_monitored_total")
+                metrics.inc("no_leaders_monitored_total")
     finally:
         await _shutdown_runtime(
             monitor_tasks=monitor_tasks,

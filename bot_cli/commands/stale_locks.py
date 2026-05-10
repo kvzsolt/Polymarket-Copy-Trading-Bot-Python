@@ -53,10 +53,24 @@ def _list_stale_locks(
     query = f"""
         SELECT idempotency_key, user_id, leader_id, order_id, status,
                attempt_count, last_error, created_at, updated_at,
-               (strftime('%s','now') - strftime('%s', created_at)) AS age_seconds
+               response_json,
+               COALESCE(
+                   json_extract(response_json, '$.pending_since'),
+                   updated_at,
+                   created_at
+               ) AS pending_since_ts,
+               (strftime('%s','now') - CASE
+                   WHEN json_extract(response_json, '$.pending_since') IS NOT NULL
+                   THEN json_extract(response_json, '$.pending_since')
+                   ELSE strftime('%s', COALESCE(updated_at, created_at))
+               END) AS age_seconds
         FROM orders
         WHERE status IN ({placeholders})
-          AND (strftime('%s','now') - strftime('%s', created_at)) > ?
+          AND (strftime('%s','now') - CASE
+               WHEN json_extract(response_json, '$.pending_since') IS NOT NULL
+               THEN json_extract(response_json, '$.pending_since')
+               ELSE strftime('%s', COALESCE(updated_at, created_at))
+           END) > ?
     """
     params: list = list(_LOCKED_STATUSES) + [ttl_seconds]
     if user_id is not None:
@@ -83,6 +97,7 @@ def _list_stale_locks(
             "last_error": row["last_error"],
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
+            "pending_since_ts": row["pending_since_ts"],
             "age_seconds": int(row["age_seconds"] or 0),
         }
         for row in rows

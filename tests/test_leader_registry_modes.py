@@ -67,7 +67,7 @@ def _mock_config(*, promote_to_active: bool = False, top_n: int = 5, leader_auto
 
 @pytest.mark.asyncio
 async def test_discovery_only_mode_emits_no_leader_signal(capsys):
-    await metrics.clear()
+    metrics.clear()
 
     registry = LeaderRegistry(
         discovery_service=_Discovery(
@@ -91,7 +91,7 @@ async def test_discovery_only_mode_emits_no_leader_signal(capsys):
     captured = capsys.readouterr()
     assert "no_leaders_monitored" in captured.out
 
-    _counters, gauges = await metrics.snapshot()
+    _counters, gauges = metrics.snapshot()
     assert gauges.get("monitored_leaders") == 0
 
 
