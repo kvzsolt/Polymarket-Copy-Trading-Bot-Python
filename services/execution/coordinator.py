@@ -7,7 +7,12 @@ from decimal import Decimal
 from typing import Any, Awaitable, Callable, Dict, Protocol
 
 from domain.order_lifecycle import OrderIntent, OrderLifecycleStatus, classify_venue_status
-from integrations.polymarket.errors import TerminalVenueError
+from integrations.polymarket.errors import (
+    RetryableVenueError,
+    TerminalVenueError,
+    VenueRateLimitError,
+    VenueUnavailableError,
+)
 from services.execution.reservation_service import ReservationService, Clock, DefaultClock
 from services.execution.state_machine import assert_transition_allowed
 
@@ -17,16 +22,13 @@ _INSUFFICIENT_BALANCE_PATTERNS = (
     "insufficient_balance",
     "insufficient balance",
     "not enough balance",
+    "allowance",
 )
 
 
 def _is_insufficient_balance_error(msg: str) -> bool:
     lower = msg.lower()
     return any(p in lower for p in _INSUFFICIENT_BALANCE_PATTERNS)
-
-
-class RetryableVenueError(Exception):
-    pass
 
 
 @dataclass(frozen=True)

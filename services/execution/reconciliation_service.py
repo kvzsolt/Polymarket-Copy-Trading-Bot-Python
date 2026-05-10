@@ -883,14 +883,18 @@ class ReconciliationService:
 
             if reservation_service is not None:
                 try:
-                    active = getattr(reservation_service, "reservations_repo", None)
-                    if active is not None:
-                        active.release_for_position_scope(
+                    reservations_repo = getattr(reservation_service, "reservations_repo", None)
+                    if reservations_repo is not None:
+                        active_reservations = reservations_repo.list_active_for_scope(
                             user_id=user_id,
                             condition_id=condition_id,
                             token_id=token_id,
-                            reason="manual_position_drift_deleted",
                         )
+                        for res in active_reservations:
+                            if res.side.value == "SELL":
+                                reservation_service.release_terminal(
+                                    res.id, reason="manual_position_drift_deleted"
+                                )
                 except Exception:
                     _log.debug("drift_reservation_cleanup_failed", exc_info=True)
         else:
@@ -908,16 +912,34 @@ class ReconciliationService:
             result["action"] = "shrunk"
             result["reconciled"] = True
 
+            if reservation_service is not None:
+                try:
+                    reservations_repo = getattr(reservation_service, "reservations_repo", None)
+                    if reservations_repo is not None:
+                        active_reservations = reservations_repo.list_active_for_scope(
+                            user_id=user_id,
+                            condition_id=condition_id,
+                            token_id=token_id,
+                        )
+                        for res in active_reservations:
+                            if res.side.value == "SELL" and res.reserved_size > live_size:
+                                reservation_service.release_terminal(
+                                    res.id, reason="manual_position_drift_shrunk"
+                                )
+                except Exception:
+                    _log.debug("drift_reservation_cleanup_failed", exc_info=True)
+
         self._audit(
             "manual_position_drift_reconciled",
             {
                 "user_id": user_id,
+                "leader_id": leader_id,
                 "condition_id": condition_id,
                 "token_id": token_id,
-                "leader_id": leader_id,
                 "previous_local_size": str(local_size),
                 "live_size": str(result["live_size"]),
                 "action": result["action"],
+                "source": "reconciliation_service",
             },
         )
         _log.info(
