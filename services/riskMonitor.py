@@ -586,22 +586,26 @@ def _risk_exit_fully_closed_position(updated_pos: object | None) -> bool:
 async def reconcile_unconfirmed_risk_orders(context: TradingContext) -> int:
     """Converge risk-monitor-originated submitted_unconfirmed SELLs.
 
-    These orders live in the durable ``orders`` table but do not create a
-    ``processed_trades`` row, so trade-pipeline reconciliation alone cannot
-    recover them after a restart. This helper reuses the persisted submission
-    metadata to resolve the venue outcome deterministically before the risk
-    monitor evaluates positions again.
+    Issue #71 — per-record settlement delegates to ``ReconciliationService``,
+    the canonical owner of terminal-state transitions and fill apply. This
+    function still orchestrates the batch (filtering, scope locking) so that
+    risk SELLs serialize against the trade pipeline and live risk-monitor
+    actions on the same scoped position.
     """
     if not context.execution_service:
         return 0
+
+    from orchestrators.trade_pipeline import get_reconciliation_service
 
     records = context.orders_repo.get_unconfirmed_order_submissions(
         user_id=context.user_id,
         side="SELL",
     )
+    if not records:
+        return 0
+
+    reconciler = get_reconciliation_service(context)
     reconciled = 0
-    terminal_no_fill_statuses = {"cancelled", "canceled", "expired", "rejected"}
-    final_fill_statuses = {"filled", "matched", ""}
 
     for record in records:
         request = record.get("request") or {}
@@ -621,164 +625,18 @@ async def reconcile_unconfirmed_risk_orders(context: TradingContext) -> int:
             token_id=token_id,
         )
         async with context.position_coordinator.acquire(scope):
-            logger.debug("risk.scope_lock_acquired_confirm_fill", extra=scope.log_fields())
-            try:
-                fill_info = await context.execution_service._confirm_fill(order_id)
-            except Exception as exc:
-                logger.warning(
-                    "risk_unconfirmed_reconcile_poll_error | user=%s order_id=%s error=%s",
-                    context.user_id,
-                    order_id,
-                    repr(exc),
-                )
-                continue
-
-            venue_status = str(fill_info.get("status", "")).lower()
-            current_matched = _matched_amount_from_payload(fill_info)
-            previous_matched = _matched_amount_from_payload(record.get("response"))
-            delta_matched = current_matched - previous_matched
-            if delta_matched < 0:
-                delta_matched = Decimal("0")
-
-            if current_matched <= 0 and venue_status in terminal_no_fill_statuses:
-                context.orders_repo.update_submission_status(
-                    order_id=order_id,
-                    status=venue_status,
-                    response_patch=fill_info,
-                )
-                reconciled += 1
-                continue
-
-            is_final_fill = venue_status in final_fill_statuses or (
-                venue_status in terminal_no_fill_statuses and current_matched > 0
-            )
-            if delta_matched <= 0 and not is_final_fill:
-                continue
-            if delta_matched <= 0 and is_final_fill:
-                context.orders_repo.update_submission_status(
-                    order_id=order_id,
-                    status="filled_reconciled",
-                    response_patch={
-                        **fill_info,
-                        "reconciled_from": "risk_submitted_unconfirmed",
-                        "matched_previous": str(previous_matched),
-                        "matched_delta": str(delta_matched),
-                    },
-                )
-                reconciled += 1
-                continue
-
-            avg_price_raw = (
-                fill_info.get("avg_price")
-                or fill_info.get("price")
-                or fill_info.get("average_price")
-                or 0
-            )
-            try:
-                avg_price = Decimal(str(avg_price_raw))
-            except Exception:
-                avg_price = Decimal("0")
-            if avg_price <= 0:
-                continue
-
-            reason = str(request.get("reason") or "risk_exit")
-            leader_id = str(request.get("leader_id") or "risk-monitor")
-            existing_pos = context.positions_repo.get_position(
-                context.user_id,
-                condition_id,
+            applied = await reconciler.reconcile_risk_record(
+                record,
+                user_id=context.user_id,
+                condition_id=condition_id,
                 token_id=token_id,
+                confirm_fill=reconciler.confirm_fill,
+                pnl_tracker=context.pnl_tracker,
+                get_position=context.positions_repo.get_position,
+                logger=logger,
             )
-            entry_price = float(getattr(existing_pos, "avg_entry_price", avg_price)) if existing_pos else float(avg_price)
-
-            try:
-                context.fills_repo.append_fill(
-                    FillRecord(
-                        user_id=context.user_id,
-                        leader_id=leader_id,
-                        order_id=order_id,
-                        condition_id=condition_id,
-                        token_id=token_id,
-                        side="SELL",
-                        size_tokens=delta_matched,
-                        price=avg_price,
-                        fee=Decimal("0"),
-                        fill_ts=int(time.time()),
-                    ),
-                    raw_payload={
-                        "reconciled_from": "risk_submitted_unconfirmed",
-                        "copy_order_id": order_id,
-                        "status": "reconciled",
-                        "side": "SELL",
-                    },
-                )
-                updated_pos = context.positions_repo.apply_fill(
-                    user_id=context.user_id,
-                    leader_id=leader_id,
-                    condition_id=condition_id,
-                    token_id=token_id,
-                    side="SELL",
-                    fill_size=delta_matched,
-                    fill_price=avg_price,
-                )
-            except Exception as exc:
-                logger.warning(
-                    "risk_unconfirmed_reconcile_apply_error | user=%s order_id=%s error=%s",
-                    context.user_id,
-                    order_id,
-                    repr(exc),
-                )
-                continue
-
-            recovery_metadata = request.get("recovery_metadata")
-            block_metadata = dict(recovery_metadata) if isinstance(recovery_metadata, dict) else {}
-            block_metadata["fill_price"] = float(avg_price)
-            block_metadata["fill_size_tokens"] = float(delta_matched)
-            block_metadata["fill_order_id"] = order_id
-            if is_final_fill and _risk_exit_fully_closed_position(updated_pos):
-                context.risk_blocks_repo.mark_risk_block(
-                    user_id=context.user_id,
-                    condition_id=condition_id,
-                    token_id=token_id,
-                    reason=reason,
-                    source="risk_monitor",
-                    leader_anchor=leader_id,
-                    metadata=block_metadata,
-                )
-            else:
-                logger.info(
-                    "risk_unconfirmed_partial_fill_no_block | user=%s order_id=%s condition=%s token=%s remaining=%s",
-                    context.user_id,
-                    order_id,
-                    condition_id,
-                    token_id,
-                    getattr(updated_pos, "size_tokens", None),
-                )
-
-            if hasattr(context.pnl_tracker, "record_sell"):
-                realized = (float(avg_price) - entry_price) * float(delta_matched)
-                context.pnl_tracker.record_sell(
-                    condition_id=condition_id,
-                    price=float(avg_price),
-                    size_tokens=float(delta_matched),
-                    usdc_value=float(delta_matched * avg_price),
-                    entry_price=entry_price,
-                    realized_pnl=realized,
-                    exit_reason=reason,
-                    leader_wallet=leader_id,
-                )
-
-            submission_status = "filled_reconciled" if is_final_fill else "submitted_unconfirmed"
-            context.orders_repo.update_submission_status(
-                order_id=order_id,
-                status=submission_status,
-                response_patch={
-                    **fill_info,
-                    "reconciled_from": "risk_submitted_unconfirmed",
-                    "matched_previous": str(previous_matched),
-                    "matched_delta": str(delta_matched),
-                },
-            )
-            reconciled += 1
+            if applied:
+                reconciled += 1
 
     return reconciled
 
@@ -826,15 +684,13 @@ async def run_risk_check_for_context(context: TradingContext) -> None:
                     pos.token_id, pos.condition_id,
                 )
             continue
-        # --- Per-scoped-position action coordination (issue #28 / #67) ---
+        # --- Per-scoped-position action coordination (issue #28) ---
         _scope = PositionScope(
             user_id=context.user_id,
             condition_id=pos.condition_id,
             token_id=pos.token_id,
-            outcome=getattr(pos, "outcome", None),
         )
         async with context.position_coordinator.acquire(_scope):
-            logger.debug("risk.scope_lock_acquired_protective_exit", extra=_scope.log_fields())
             try:
                 current_price = await _get_context_cached_price(
                     context,
