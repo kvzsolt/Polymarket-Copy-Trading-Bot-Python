@@ -84,10 +84,14 @@ def load_runtime_env(
             secrets_path=resolved_secrets,
         )
 
-        # First fill any still-unset values from secrets.env.
-        load_dotenv(dotenv_path=resolved_secrets, override=False)
+        # Only set allowlisted sensitive keys from secrets.env into os.environ.
+        # Non-sensitive keys must live in runtime.env / runtime.local.env.
+        for key in _SECRETS_OVERRIDE_KEYS:
+            value = secret_values.get(key)
+            if value is not None and key not in os.environ:
+                os.environ[key] = value
 
-        # Then explicitly override only sensitive keys.
+        # Then explicitly override sensitive keys (even if already set).
         if override_secrets:
             for key in _SECRETS_OVERRIDE_KEYS:
                 value = secret_values.get(key)

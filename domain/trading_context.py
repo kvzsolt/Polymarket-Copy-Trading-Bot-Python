@@ -13,10 +13,6 @@ from services.leaderScoringService import LeaderScoringService
 from services.positionActionCoordinator import PositionActionCoordinator
 
 
-def _default_leader_scorer() -> LeaderScoringService:
-    return LeaderScoringService()
-
-
 @dataclass
 class TradingContext:
     user_id: str
@@ -38,7 +34,7 @@ class TradingContext:
     buy_min_amount: float = 1.0
     buy_max_amount: float = 100.0
     max_market_exposure_usdc: float = 300.0
-    leader_scorer: LeaderScoringService = field(default_factory=_default_leader_scorer)
+    leader_scorer: LeaderScoringService | None = None
     copy_decision_service: CopyDecisionService | None = None
     readiness: ReadinessTracker = field(default_factory=ReadinessTracker)
     position_coordinator: PositionActionCoordinator = field(default_factory=PositionActionCoordinator)
@@ -66,11 +62,14 @@ class TradingContext:
                 f"dependencies: {', '.join(missing)}"
             )
 
-        if self.config is not None and getattr(self.copy_decision_service, "_config", None) is None:
-            self.copy_decision_service = CopyDecisionService(
-                config=self.config,
-                leader_scorer=self.leader_scorer,
-            )
+        if isinstance(self.config, AppConfig):
+            if self.leader_scorer is None:
+                self.leader_scorer = LeaderScoringService(config=self.config)
+            if getattr(self.copy_decision_service, "_config", None) is None:
+                self.copy_decision_service = CopyDecisionService(
+                    config=self.config,
+                    leader_scorer=self.leader_scorer,
+                )
         if self.copy_decision_service is not None:
             self.copy_decision_service.leader_scorer = self.leader_scorer
         if self.entry_permission_service is None and self.risk_blocks_repo is not None:

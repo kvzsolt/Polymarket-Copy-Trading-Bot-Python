@@ -10,9 +10,29 @@ import types
 import unittest
 import importlib.abc
 import importlib.machinery
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+
+def _scorer_config() -> SimpleNamespace:
+    return SimpleNamespace(
+        leader=SimpleNamespace(
+            leader_score_balance_target_usdc=500.0,
+            leader_score_pnl_bonus_cap=0.1,
+            leader_score_activity_target=8,
+            leader_score_weight_balance=0.35,
+            leader_score_weight_analytics=0.45,
+            leader_score_weight_activity=0.20,
+            leader_score_floor=0.10,
+        ),
+        sizing=SimpleNamespace(
+            enable_trust_size_multipliers=True,
+            trust_size_multiplier_min=0.50,
+            trust_size_multiplier_max=1.25,
+        ),
+    )
 
 
 class _AutoMockModule(types.ModuleType):
@@ -380,7 +400,7 @@ class TestLeaderScoringIntegration(unittest.TestCase):
 
     def test_scoring_without_discovery(self):
         import services.leaderScoringService as ls_mod
-        scorer = ls_mod.LeaderScoringService(discovery_service=None)
+        scorer = ls_mod.LeaderScoringService(discovery_service=None, config=_scorer_config())
         result = scorer.score_leader(
             "0x1234567890abcdef1234567890abcdef12345678",
             leader_balance=300.0,
@@ -404,7 +424,7 @@ class TestLeaderScoringIntegration(unittest.TestCase):
         mock_disc = MagicMock()
         mock_disc.get_cached_profile.return_value = mock_profile
 
-        scorer = ls_mod.LeaderScoringService(discovery_service=mock_disc)
+        scorer = ls_mod.LeaderScoringService(discovery_service=mock_disc, config=_scorer_config())
         result = scorer.score_leader(
             "0x1234567890abcdef1234567890abcdef12345678",
             leader_balance=300.0,
@@ -414,7 +434,7 @@ class TestLeaderScoringIntegration(unittest.TestCase):
 
     def test_trust_multiplier(self):
         import services.leaderScoringService as ls_mod
-        scorer = ls_mod.LeaderScoringService()
+        scorer = ls_mod.LeaderScoringService(config=_scorer_config())
         assert scorer.trust_multiplier(0.0) == pytest.approx(0.50)
         assert scorer.trust_multiplier(1.0) == pytest.approx(1.25)
         assert scorer.trust_multiplier(0.5) == pytest.approx(0.875)
