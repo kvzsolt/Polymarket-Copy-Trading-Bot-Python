@@ -18,6 +18,21 @@ from services.executionService import ExecutionService, _CLOB_CIRCUIT
 from services.healthServer import ReadinessTracker
 from domain.trading_context import TradingContext
 from config.app_config import load_config
+from types import SimpleNamespace
+
+
+def _make_config() -> SimpleNamespace:
+    return SimpleNamespace(
+        raw={},
+        execution=SimpleNamespace(
+            execution_require_fresh_book=True,
+            book_spread_mode="absolute_bps",
+            max_book_spread_bps=2500,
+            max_book_spread_ticks=0,
+            slippage_tolerance=2.0,
+            transaction_fee_bps=20,
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -49,6 +64,7 @@ class TestExecutionCircuitBreakerDI:
             market_meta_service=object(),
             fee_service=object(),
             order_repo=object(),
+            config=_make_config(),
         )
         assert svc.circuit_breaker is _CLOB_CIRCUIT
 
@@ -60,6 +76,7 @@ class TestExecutionCircuitBreakerDI:
             fee_service=object(),
             order_repo=object(),
             circuit_breaker=custom,
+            config=_make_config(),
         )
         assert svc.circuit_breaker is custom
 

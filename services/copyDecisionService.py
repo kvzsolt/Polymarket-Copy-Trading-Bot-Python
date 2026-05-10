@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-import os
 from dataclasses import dataclass, field
 from decimal import Decimal, ROUND_CEILING
 from typing import Any, TYPE_CHECKING
@@ -86,7 +85,7 @@ class CopyDecisionService:
 
     def __init__(
         self,
-        config: AppConfig | None = None,
+        config: AppConfig,
         *,
         leader_scorer: LeaderScoringService | None = None,
         trade_scorer: TradeScoringService | None = None,
@@ -95,14 +94,9 @@ class CopyDecisionService:
         self.leader_scorer = leader_scorer or LeaderScoringService(config=config)
         self.trade_scorer = trade_scorer or TradeScoringService(config=config)
 
-        if config is not None:
-            self._decision_gate_enabled = config.execution.enable_copy_decision_gate
-            self._min_decision_score = config.leader.copy_decision_min_score
-            self._slippage_ratio = config.execution.slippage_tolerance / 100.0
-        else:
-            self._decision_gate_enabled = False
-            self._min_decision_score = 0.0
-            self._slippage_ratio = float(os.getenv("SLIPPAGE_TOLERANCE", "2.0") or 2.0) / 100.0
+        self._decision_gate_enabled = config.execution.enable_copy_decision_gate
+        self._min_decision_score = config.leader.copy_decision_min_score
+        self._slippage_ratio = config.execution.slippage_tolerance / 100.0
 
     @staticmethod
     def _ceil(value: float, decimals: int) -> float:

@@ -8,8 +8,10 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
+from config.app_config import AppConfig
+
 if TYPE_CHECKING:
-    from config.app_config import AppConfig
+    pass
 
 from domain.trading_context import TradingContext
 from services.accountingService import AccountingService, PositionLot
@@ -265,9 +267,7 @@ async def _get_context_cached_price(
     return refreshed.price if refreshed is not None else None
 
 
-def _exit_monitor_enabled(config: AppConfig | None) -> bool:
-    if config is None:
-        return True
+def _exit_monitor_enabled(config: AppConfig) -> bool:
     return bool(getattr(config.risk, "enable_risk_mgmt", False))
 
 
@@ -278,7 +278,7 @@ async def risk_monitor_loop(
     pnl_tracker,
     readiness_tracker: ReadinessTracker,
     *,
-    config: AppConfig | None = None,
+    config: AppConfig,
 ):
     """Continuously check open positions against advanced exit engines.
 
@@ -289,20 +289,12 @@ async def risk_monitor_loop(
     """
     pm = position_manager
 
-    if config is not None:
-        interval = config.polling.risk_check_interval
-        enabled = _exit_monitor_enabled(config)
-        slippage_bps = int(config.execution.slippage_tolerance * 100)
-        funder_address = config.wallet.funder_address
-        enable_tiered = config.risk.enable_balance_tiered_policy
-        fee_bps = int(config.execution.transaction_fee_bps)
-    else:
-        interval = 15
-        enabled = True
-        slippage_bps = 200
-        funder_address = ""
-        enable_tiered = False
-        fee_bps = 20
+    interval = config.polling.risk_check_interval
+    enabled = _exit_monitor_enabled(config)
+    slippage_bps = int(config.execution.slippage_tolerance * 100)
+    funder_address = config.wallet.funder_address
+    enable_tiered = config.risk.enable_balance_tiered_policy
+    fee_bps = int(config.execution.transaction_fee_bps)
 
     if not enabled:
         logger.info("Global risk management disabled — monitor will not run")
@@ -532,8 +524,6 @@ def rehydrate_position_manager(context: TradingContext) -> None:
 def _fallback_risk_decision(
     entry_price: Decimal,
     current_price: Decimal,
-    *,
-    config: AppConfig | None = None,
 ) -> dict | None:
     """No implicit fallback exits. Advanced exit decisions live in PositionManager."""
     return None
@@ -936,7 +926,7 @@ async def risk_monitor_loop_for_contexts(
     contexts: list[TradingContext],
     readiness_tracker: ReadinessTracker,
     *,
-    config: AppConfig | None = None,
+    config: AppConfig,
     interval: float | None = None,
 ) -> None:
     """Restart-safe risk monitor using persisted positions as the source of truth."""
@@ -944,12 +934,8 @@ async def risk_monitor_loop_for_contexts(
         logger.warning("Risk monitor started with no contexts")
         return
 
-    if config is not None:
-        enabled = _exit_monitor_enabled(config)
-        poll_interval = float(interval or config.polling.risk_check_interval)
-    else:
-        enabled = True
-        poll_interval = float(interval or 15)
+    enabled = _exit_monitor_enabled(config)
+    poll_interval = float(interval or config.polling.risk_check_interval)
 
     if not enabled:
         logger.info("Global risk management disabled — monitor will not run")

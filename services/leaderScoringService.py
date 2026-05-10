@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from typing import Any, TYPE_CHECKING
 
@@ -35,33 +34,20 @@ class LeaderScoringService:
     real PnL, win rate, and position data from polymarketanalytics.com.
     """
 
-    def __init__(self, discovery_service=None, *, config: AppConfig | None = None):
+    def __init__(self, discovery_service=None, *, config: AppConfig):
         self._discovery = discovery_service
 
-        if config is not None:
-            lc = config.leader
-            self._balance_target = lc.leader_score_balance_target_usdc
-            self._pnl_bonus_cap = lc.leader_score_pnl_bonus_cap
-            self._activity_target = max(int(lc.leader_score_activity_target), 1)
-            self._weight_balance = lc.leader_score_weight_balance
-            self._weight_analytics = lc.leader_score_weight_analytics
-            self._weight_activity = lc.leader_score_weight_activity
-            self._score_floor = lc.leader_score_floor
-            self._trust_mult_enabled = config.sizing.enable_trust_size_multipliers
-            self._trust_mult_min = config.sizing.trust_size_multiplier_min
-            self._trust_mult_max = config.sizing.trust_size_multiplier_max
-        else:
-            # Defaults for backward compat (tests that don't pass config)
-            self._balance_target = 500.0
-            self._pnl_bonus_cap = 0.1
-            self._activity_target = 8
-            self._weight_balance = 0.35
-            self._weight_analytics = 0.45
-            self._weight_activity = 0.20
-            self._score_floor = 0.10
-            self._trust_mult_enabled = os.getenv("ENABLE_TRUST_SIZE_MULTIPLIERS", "true").strip().lower() in ("1", "true", "yes")
-            self._trust_mult_min = float(os.getenv("TRUST_SIZE_MULTIPLIER_MIN", "0.50") or 0.50)
-            self._trust_mult_max = float(os.getenv("TRUST_SIZE_MULTIPLIER_MAX", "1.25") or 1.25)
+        lc = config.leader
+        self._balance_target = lc.leader_score_balance_target_usdc
+        self._pnl_bonus_cap = lc.leader_score_pnl_bonus_cap
+        self._activity_target = max(int(lc.leader_score_activity_target), 1)
+        self._weight_balance = lc.leader_score_weight_balance
+        self._weight_analytics = lc.leader_score_weight_analytics
+        self._weight_activity = lc.leader_score_weight_activity
+        self._score_floor = lc.leader_score_floor
+        self._trust_mult_enabled = config.sizing.enable_trust_size_multipliers
+        self._trust_mult_min = config.sizing.trust_size_multiplier_min
+        self._trust_mult_max = config.sizing.trust_size_multiplier_max
 
     def score_leader(
         self,
