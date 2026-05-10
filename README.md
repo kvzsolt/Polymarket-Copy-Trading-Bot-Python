@@ -35,18 +35,32 @@ This project was built to change that. I wanted a bot that I could trust to run 
 
 ---
 
-## 📖 Advanced Usage & Fine-Tuning
+## 📖 Operator Documentation
 
-Want to tweak the risk engine, adjust spread gates, or turn on the Auto-Redeemer? Check out the [Usage & Configuration Guide](usage.md) for a deep dive into every subsystem and environment variable.
+Read these in order:
+
+1. [`docs/00-read-this-first.md`](docs/00-read-this-first.md) — what the bot is and is not.
+2. [`docs/02-configuration.md`](docs/02-configuration.md) — full typed-config reference.
+3. [`docs/03-paper-trading.md`](docs/03-paper-trading.md) → [`docs/04-live-trading.md`](docs/04-live-trading.md) — paper soak then live cutover.
+4. [`docs/runbooks/`](docs/runbooks/00-index.md) — incident runbooks (CLOB outage, WSS outage, circuit breaker open, stale locks, reconciliation drift, manual / off-bot drift).
+5. [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — canonical architecture overview.
+6. [`docs/MIGRATION.md`](docs/MIGRATION.md) — migrating from `main` / `develop` to the `full-rework` rewrite.
 
 ---
 
 ## 🛠️ Stack & Architecture
 
-- **Language:** Python 3.11+
-- **Persistence:** SQLite3 (State, fills, positions, orders)
-- **Clients:** Polymarket CLOB API, Gamma API
-- **Architecture:** Clean DI (Dependency Injection) via Composition Root. Everything is testable, decoupled, and explicit.
+- **Language:** Python 3.11+ (3.13 unsupported).
+- **Persistence:** SQLite (positions, orders, fills, intents, reservations) — schema-versioned via `storage/sqlite/migrations.py`.
+- **Venue:** Polymarket CLOB V2 (`py_clob_client_v2`); requires `CLOB_V2_READY=true`.
+- **Composition root:** `bootstrap.py::build_app` (pure, no I/O) wires shared graph; `app.py::main` adds async / per-user wiring.
+- **Execution:** `interfaces.clob_gateway.ClobGateway` (port) → `integrations.polymarket.clob_v2_gateway` (adapter) → `services.executionService.ExecutionService` + `services/execution/` subsystem.
+- **Coordination:** canonical `domain.position_key.PositionKey` everywhere; `PositionCoordinator` + `IntentRegistry` serialise per-position actions; `ReservationService` holds BUY-quote / SELL-share reservations across intent lifecycle.
+- **Reconciliation:** `ReconciliationService` owns terminal settlement; startup reconciliation runs before risk and trade loops.
+- **Market data:** `clients/market_ws.py` + `clients/user_ws.py` with 5 s `PING`, REST snapshot on reconnect, `assets_ids` subscriptions; TTL-based `price_cache` and `marketMetaService`. Decisions fail closed on stale data.
+- **Config:** typed `config.app_config.AppConfig`; production paths fail closed without it.
+- **Observability:** `services.healthServer` exposes `/health`, `/ready`, `/metrics`; structured JSONL audit logs.
+- **Operator CLI:** `bot.py` → `bot_cli.main` → `doctor`, `config`, `reservations`, `stale-locks`, `drift`.
 
 ---
 
