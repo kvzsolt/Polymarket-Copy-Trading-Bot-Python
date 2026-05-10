@@ -1,0 +1,65 @@
+bot_cli/commands/doctor.py
+  s_f5db7c2f128458::t_7758879a50b2cc 4,15-61
+  s_f5db7c2f128458::t_6371c6bc92d160 197-224
+bot_cli/commands/drift.py
+  s_f5db7c2f128458::t_04c78bde44769d 1-218
+bot_cli/commands/__init__.py
+  s_f5db7c2f128458::t_9a86a537dbe7f0 14-22,39-44
+services/execution/reconciliation_service.py
+  s_f5db7c2f128458::t_208405e59cf129 580-592
+tests/release_gate/test_metrics_counters.py
+  s_f5db7c2f128458::t_6f9cad562a826d 1-65
+clients/user_ws.py
+  s_f5db7c2f128458::t_2863a923ce4b77 26-30
+  s_f5db7c2f128458::t_84092ea5884b8a 136-139
+  s_f5db7c2f128458::t_ce715589c9fe9e 164-168
+services/healthServer.py
+  s_f5db7c2f128458::t_7206ed21400e29 13-23,31-33,46-56,70-92,99-104,113-118,121-134,136
+bot_cli/commands/stale_locks.py
+  s_f5db7c2f128458::t_143fecaa5fb347 1-126
+services/metrics.py
+  s_f5db7c2f128458::t_c5e68d6384a141 77
+  s_f5db7c2f128458::t_6933bf176bb49f 30-39
+  s_f5db7c2f128458::t_6cd60ed5fbd58f 69-76,78-84
+tests/release_gate/test_cli_stale_locks.py
+  s_f5db7c2f128458::t_adf5dc0227fe8b 1-78
+docs/full-rework-progress.md
+  s_f5db7c2f128458::t_9d9de1ca445f28 67-132
+services/price_cache.py
+  s_f5db7c2f128458::t_abc8315e67c65d 220-225
+  s_f5db7c2f128458::t_972b8b65b5c436 264-271,279-286
+tests/release_gate/test_cli_redacted_config.py
+  s_f5db7c2f128458::t_8c8d8455299e75 1-70
+bot_cli/commands/config.py
+  s_f5db7c2f128458::t_d5d4f511c4b300 53-59
+tests/release_gate/test_cli_reservations.py
+  s_f5db7c2f128458::t_02662e9e2d751c 1-95
+bot_cli/commands/reservations.py
+  s_f5db7c2f128458::t_cb5a14f83cf90c 1-154
+tests/release_gate/test_cli_drift.py
+  s_f5db7c2f128458::t_e7ea1f244c176b 1-62
+tests/release_gate/test_readiness_aggregator.py
+  s_f5db7c2f128458::t_c2cb3532b4f291 1-65
+bot_cli/main.py
+  s_f5db7c2f128458::t_b15a622bb3db2c 19-24,35-37
+clients/market_ws.py
+  s_f5db7c2f128458::t_8034e587bd7032 189-193
+  s_f5db7c2f128458::t_0607cdbffa296a 157-160
+  s_f5db7c2f128458::t_f71a5ecb6a6a8c 32-36
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.4",
+  "base_commit_sha": "45ffcfe7c88a5dcb2ab3fed770537999da5d1d50",
+  "prompts": {},
+  "sessions": {
+    "s_f5db7c2f128458": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "01a367a9-0005-4786-ac22-e34de6a31779",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
