@@ -66,7 +66,12 @@ from utils.logger import (
 
 
 @pytest.fixture(autouse=True)
-def _clean_loggers():
+def _clean_loggers(monkeypatch):
+    # Strip env vars that override the jsonl path so an upstream test that
+    # set ``APP_LOG_JSONL_FILE`` / ``LOG_DIR`` cannot leak into this module
+    # and redirect log writes away from each test's per-tmp_path log dir.
+    monkeypatch.delenv("APP_LOG_JSONL_FILE", raising=False)
+    monkeypatch.delenv("LOG_DIR", raising=False)
     _CONFIGURED_LOGGERS.clear()
     root = logging.getLogger(APP_NAME)
     root.handlers.clear()
