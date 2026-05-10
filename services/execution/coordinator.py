@@ -3,16 +3,32 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass
-from typing import Protocol, Any, Dict
+from decimal import Decimal
+from typing import Any, Awaitable, Callable, Dict, Protocol
 
 from domain.order_lifecycle import OrderIntent, OrderLifecycleStatus, classify_venue_status
+from integrations.polymarket.errors import (
+    RetryableVenueError,
+    TerminalVenueError,
+    VenueRateLimitError,
+    VenueUnavailableError,
+)
 from services.execution.reservation_service import ReservationService, Clock, DefaultClock
 from services.execution.state_machine import assert_transition_allowed
 
 logger = logging.getLogger(__name__)
 
-class RetryableVenueError(Exception):
-    pass
+_INSUFFICIENT_BALANCE_PATTERNS = (
+    "insufficient_balance",
+    "insufficient balance",
+    "not enough balance",
+    "allowance",
+)
+
+
+def _is_insufficient_balance_error(msg: str) -> bool:
+    lower = msg.lower()
+    return any(p in lower for p in _INSUFFICIENT_BALANCE_PATTERNS)
 
 
 @dataclass(frozen=True)
@@ -76,6 +92,8 @@ class ExecutionCoordinator:
         reconciler: Reconciler,
         audit_logger: AuditLogger,
         clock: Clock = DefaultClock(),
+        reconciliation_service: Any | None = None,
+        live_position_fetcher: Callable[[str, str], Awaitable[Decimal | None]] | None = None,
     ):
         self.reservation_service = reservation_service
         self.orders_repo = orders_repo
@@ -85,6 +103,8 @@ class ExecutionCoordinator:
         self.reconciler = reconciler
         self.audit_logger = audit_logger
         self.clock = clock
+        self.reconciliation_service = reconciliation_service
+        self.live_position_fetcher = live_position_fetcher
 
     async def execute_intent(self, intent: OrderIntent) -> ExecutionResult:
         reservation = await self.reservation_service.reserve_for_intent(intent)
@@ -128,6 +148,23 @@ class ExecutionCoordinator:
             )
             self._log_audit("execution_retryable_failed", intent, order.id, reservation.id, str(exc))
             return ExecutionResult.retryable_failed(order_id=order.id, error=str(exc))
+        except TerminalVenueError as exc:
+            await self._transition_order(
+                order.id,
+                from_status=OrderLifecycleStatus.SUBMITTING,
+                to_status=OrderLifecycleStatus.TERMINAL_FAILED,
+                metadata={"error": str(exc)},
+            )
+            self.reservation_service.release_terminal(reservation.id, "terminal_failed")
+            self._log_audit("execution_terminal_failed", intent, order.id, reservation.id, str(exc))
+            if (
+                intent.key.side.value == "SELL"
+                and self.reconciliation_service is not None
+                and self.live_position_fetcher is not None
+                and _is_insufficient_balance_error(str(exc))
+            ):
+                await self._reconcile_drift_from_intent(intent)
+            raise
         except Exception as exc:
             await self._transition_order(
                 order.id,
@@ -237,3 +274,22 @@ class ExecutionCoordinator:
             "error": error
         }
         self.audit_logger.log_event(event_name, payload)
+
+    async def _reconcile_drift_from_intent(self, intent: OrderIntent) -> None:
+        try:
+            user_id = intent.key.user_id
+            token_id = intent.key.token_id
+
+            async def _fetcher() -> Decimal | None:
+                return await self.live_position_fetcher(user_id, token_id)
+
+            await self.reconciliation_service.reconcile_position_drift(
+                user_id=user_id,
+                condition_id=intent.key.condition_id,
+                token_id=token_id,
+                leader_id=intent.key.leader_wallet or "",
+                live_position_fetcher=_fetcher,
+                reservation_service=self.reservation_service,
+            )
+        except Exception:
+            logger.debug("coordinator_drift_reconciliation_failed", exc_info=True)
