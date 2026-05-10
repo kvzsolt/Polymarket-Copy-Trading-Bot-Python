@@ -199,4 +199,4 @@ the deleted probes, and refreshed the root README to link the new docs.
 
 **Next issue.** None — #77 closes the audit remediation backlog.
 
-**Commit SHA.** _to be filled in after the slice is merged_.
+**Commit SHA.** `11dbb0f` (slice commit on `issue-77`).
