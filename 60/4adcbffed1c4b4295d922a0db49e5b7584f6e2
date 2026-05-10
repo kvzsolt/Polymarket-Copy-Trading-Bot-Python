@@ -1,0 +1,25 @@
+services/riskMonitor.py
+  s_966d12ebea47cf::t_46807225cb6296 589-593,598-599,604-607,628-631,633-636,638-639
+services/execution/reconciliation_service.py
+  s_966d12ebea47cf::t_9c1dcb1b479ae9 1-33,35-36,39-40,42-44,64,72,80,84,88,92,108,113,117-151,153-162,165-172,181-194,196-226,229,232-234,240-243,252-257,267-275,283-749
+orchestrators/trade_pipeline.py
+  s_966d12ebea47cf::t_c9a2e566022ced 70-89
+  s_966d12ebea47cf::t_5e4cd82d2ad6dd 15
+  s_966d12ebea47cf::t_3226c89c89a817 642,644-646,648,651-653,655-658
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.4",
+  "base_commit_sha": "604adcbffed1c4b4295d922a0db49e5b7584f6e2",
+  "prompts": {},
+  "sessions": {
+    "s_966d12ebea47cf": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1cda0ba9-0bc9-4ba6-a8c9-4ca02f58e1ca",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
