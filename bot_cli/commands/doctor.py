@@ -1,6 +1,7 @@
 import argparse
 import asyncio
 import json
+import socket
 import sys
 
 from config.runtime_env import load_runtime_env
@@ -9,6 +10,55 @@ from config.app_config import load_config, EnvValidationError
 from services.compliance import check_geoblock
 from orchestrators.startup_health import _check_rpc
 from storage.sqlite.connection import create_connection
+
+
+def _check_wss_endpoint(host: str, port: int = 443, timeout: float = 3.0) -> dict:
+    """Cheap TCP probe — confirms the WSS host is reachable from this network."""
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return {"status": "ok", "host": host, "port": port}
+    except OSError as exc:
+        return {
+            "status": "failed",
+            "reason": "wss_endpoint_unreachable",
+            "host": host,
+            "port": port,
+            "details": str(exc),
+        }
+
+
+def _check_reconciler_config(config) -> dict:
+    """Verify reconciler-relevant typed-config knobs are sane."""
+    issues: list[str] = []
+    ttl = getattr(config.execution, "pending_submission_ttl_seconds", 0)
+    if not isinstance(ttl, int) or ttl <= 0:
+        issues.append("EXECUTION_PENDING_SUBMISSION_TTL_SECONDS must be > 0")
+    interval = getattr(config.execution, "reconcile_interval_seconds", 0)
+    if interval and (not isinstance(interval, (int, float)) or interval <= 0):
+        issues.append("RECONCILE_INTERVAL_SECONDS must be > 0 if set")
+    if issues:
+        return {
+            "status": "failed",
+            "reason": "reconciler_config_invalid",
+            "issues": issues,
+        }
+    return {"status": "ok"}
+
+
+def _check_gateway_sdk() -> dict:
+    """Best-effort dry-import probe of the CLOB V2 SDK in live mode."""
+    try:
+        import importlib
+
+        importlib.import_module("py_clob_client_v2.client")
+        importlib.import_module("py_clob_client_v2.clob_types")
+    except Exception as exc:
+        return {
+            "status": "failed",
+            "reason": "clob_sdk_import_failed",
+            "details": str(exc),
+        }
+    return {"status": "ok"}
 
 
 def register_doctor_command(subparsers: argparse._SubParsersAction) -> None:
@@ -144,7 +194,34 @@ async def run_doctor_checks(mode: str) -> dict:
     else:
         output["checks"]["order_size"] = {"status": "ok"}
 
-    # Check 9: Redemption wallet validation (only when live mode AND auto-redeem enabled)
+    # Check 9a: Gateway SDK availability (live only)
+    if mode == "live":
+        gw_check = _check_gateway_sdk()
+        output["checks"]["gateway_sdk"] = gw_check
+        if gw_check["status"] == "failed":
+            output["status"] = "blocked"
+    else:
+        output["checks"]["gateway_sdk"] = {"status": "skipped", "reason": "paper_mode"}
+
+    # Check 9b: WSS endpoint reachability (live only)
+    if mode == "live":
+        wss_check = _check_wss_endpoint("ws-subscriptions-clob.polymarket.com")
+        output["checks"]["wss_endpoint"] = wss_check
+        if wss_check["status"] == "failed":
+            output["status"] = "blocked"
+    else:
+        output["checks"]["wss_endpoint"] = {"status": "skipped", "reason": "paper_mode"}
+
+    # Check 9c: Reconciler config sanity (live only)
+    if mode == "live":
+        rec_check = _check_reconciler_config(config)
+        output["checks"]["reconciler_config"] = rec_check
+        if rec_check["status"] == "failed":
+            output["status"] = "blocked"
+    else:
+        output["checks"]["reconciler_config"] = {"status": "skipped", "reason": "paper_mode"}
+
+    # Check 10: Redemption wallet validation (only when live mode AND auto-redeem enabled)
     if mode == "live":
         if not config.redemption.enable_auto_redeem:
             output["checks"]["redemption_wallet"] = {

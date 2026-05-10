@@ -27,6 +27,16 @@ class MetricsRegistry:
         async with self._lock:
             self.counters[key] += value
 
+    def inc_sync(self, name: str, value: float = 1.0, labels: dict[str, str] | None = None) -> None:
+        """Lock-free counter bump for sync code paths (best-effort precision).
+
+        Use only from synchronous call sites where awaiting ``inc`` is awkward
+        (e.g., cache invalidation). Counter values are approximate under
+        contention; that's acceptable for ops dashboards.
+        """
+        key = _metric_key(name, labels)
+        self.counters[key] = self.counters.get(key, 0.0) + value
+
     async def set_gauge(self, name: str, value: float, labels: dict[str, str] | None = None) -> None:
         key = _metric_key(name, labels)
         async with self._lock:
@@ -56,3 +66,19 @@ class MetricsRegistry:
 
 
 metrics = MetricsRegistry()
+
+
+# ── Operator-facing metric names (issue #76) ─────────────────────────────────
+# Use these constants when emitting so names stay stable across the codebase.
+METRIC_ORDERS_SUBMITTED = "orders_submitted_total"
+METRIC_ORDERS_REJECTED = "orders_rejected_total"
+METRIC_ORDERS_SUBMISSION_AMBIGUOUS = "orders_submission_ambiguous_total"
+METRIC_RECONCILIATION_DELTA_APPLIED = "reconciliation_delta_applied_total"
+METRIC_RISK_EXIT_TRIGGERED = "risk_exits_total"  # legacy site already emits this name
+METRIC_WSS_RECONNECT = "wss_reconnect_total"
+METRIC_WSS_HEARTBEAT_STALL = "wss_heartbeat_stall_total"
+METRIC_CACHE_STALE_EVICTIONS = "cache_stale_evictions_total"
+# Gauges
+GAUGE_RESERVATION_ACTIVE = "reservation_active"
+GAUGE_STALE_LOCKS_ACTIVE = "stale_locks_active"
+GAUGE_PENDING_INTENTS = "pending_intents"
