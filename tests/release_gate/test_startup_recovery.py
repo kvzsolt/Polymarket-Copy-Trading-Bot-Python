@@ -7,8 +7,9 @@ later refactors cannot silently remove the pre-loop reconcile step.
 """
 from __future__ import annotations
 
-import asyncio
 import inspect
+
+import pytest
 
 from orchestrators.runtime_bootstrap import startup_reconcile_unconfirmed
 
@@ -22,6 +23,7 @@ def test_startup_reconcile_signature_accepts_contexts() -> None:
     assert "contexts" in sig.parameters
 
 
-def test_startup_reconcile_empty_input_returns_empty_dict() -> None:
-    result = asyncio.run(startup_reconcile_unconfirmed([]))
+@pytest.mark.asyncio
+async def test_startup_reconcile_empty_input_returns_empty_dict() -> None:
+    result = await startup_reconcile_unconfirmed([])
     assert result == {}
