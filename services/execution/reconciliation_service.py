@@ -814,3 +814,114 @@ class ReconciliationService:
             },
         )
         return True
+
+    # ------------------------------------------------------------------
+    # Manual / off-bot position drift reconciliation (Issue #74)
+    # ------------------------------------------------------------------
+    async def reconcile_position_drift(
+        self,
+        *,
+        user_id: str,
+        condition_id: str,
+        token_id: str,
+        leader_id: str,
+        live_position_fetcher: Callable[..., Awaitable[Decimal | None]],
+        reservation_service: Any | None = None,
+    ) -> dict[str, Any]:
+        """Reconcile local position against live venue holdings.
+
+        Called when a SELL fails with ``insufficient_balance`` / ``not enough
+        balance`` / ``allowance`` — strong indicators that the true position
+        has drifted from our local state due to manual or off-bot trades.
+
+        Returns a dict with keys:
+          - ``reconciled``: bool — whether drift was detected and corrected.
+          - ``live_size``: Decimal — the actual live position size.
+          - ``action``: str — ``"deleted"`` | ``"shrunk"`` | ``"no_drift"`` | ``"fetch_failed"``.
+        """
+        result: dict[str, Any] = {
+            "reconciled": False,
+            "live_size": Decimal("0"),
+            "action": "fetch_failed",
+        }
+
+        try:
+            live_size = await live_position_fetcher()
+        except Exception as exc:
+            _log.warning(
+                "reconcile_position_drift_fetch_failed | user=%s cond=%s token=%s error=%s",
+                user_id, condition_id, token_id, repr(exc),
+            )
+            self._audit(
+                "manual_position_drift_fetch_failed",
+                {"user_id": user_id, "condition_id": condition_id, "token_id": token_id, "error": str(exc)},
+            )
+            return result
+
+        result["live_size"] = live_size if live_size is not None else Decimal("0")
+
+        if live_size is None:
+            return result
+
+        existing = self.positions_repo.get_position(user_id, condition_id, token_id=token_id)
+        local_size = getattr(existing, "size_tokens", Decimal("0")) if existing else Decimal("0")
+
+        if local_size <= Decimal("1e-12") and live_size <= Decimal("1e-12"):
+            result["action"] = "no_drift"
+            return result
+
+        if abs(local_size - live_size) <= Decimal("1e-12"):
+            result["action"] = "no_drift"
+            return result
+
+        avg_entry_price = getattr(existing, "avg_entry_price", Decimal("0")) if existing else Decimal("0")
+
+        if live_size <= Decimal("1e-12"):
+            self.positions_repo.delete_position(user_id, condition_id, token_id=token_id)
+            result["action"] = "deleted"
+            result["reconciled"] = True
+
+            if reservation_service is not None:
+                try:
+                    active = getattr(reservation_service, "reservations_repo", None)
+                    if active is not None:
+                        active.release_for_position_scope(
+                            user_id=user_id,
+                            condition_id=condition_id,
+                            token_id=token_id,
+                            reason="manual_position_drift_deleted",
+                        )
+                except Exception:
+                    _log.debug("drift_reservation_cleanup_failed", exc_info=True)
+        else:
+            from storage.sqlite.positions_repo import PositionRecord
+            self.positions_repo.upsert_position(
+                PositionRecord(
+                    user_id=user_id,
+                    condition_id=condition_id,
+                    token_id=token_id,
+                    leader_id=leader_id,
+                    size_tokens=live_size,
+                    avg_entry_price=Decimal(str(avg_entry_price or 0)),
+                )
+            )
+            result["action"] = "shrunk"
+            result["reconciled"] = True
+
+        self._audit(
+            "manual_position_drift_reconciled",
+            {
+                "user_id": user_id,
+                "condition_id": condition_id,
+                "token_id": token_id,
+                "leader_id": leader_id,
+                "previous_local_size": str(local_size),
+                "live_size": str(result["live_size"]),
+                "action": result["action"],
+            },
+        )
+        _log.info(
+            "manual_position_drift_reconciled | user=%s cond=%s token=%s local=%s live=%s action=%s",
+            user_id, condition_id, token_id, str(local_size), str(result["live_size"]), result["action"],
+        )
+        return result
