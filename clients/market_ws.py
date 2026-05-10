@@ -221,7 +221,14 @@ class MarketWebSocket:
                 self._handle_tick_size_change(event)
 
     def _handle_price_change(self, event: dict[str, Any]) -> None:
-        """Process a price change event into the cache."""
+        """Process a price change event into the cache.
+
+        Each change entry carries ``side``, ``price``, and optionally ``size``.
+        When ``size`` is present and equals 0 the level is deleted from the
+        book (per spec: "price_change with size 0 deletes a book level").
+        When ``size`` > 0 the level is upserted. When ``size`` is absent the
+        event is treated as a best-bid/ask quote update only.
+        """
         asset_id = event.get("asset_id") or event.get("market")
         if not asset_id:
             return
@@ -233,11 +240,26 @@ class MarketWebSocket:
                 if isinstance(change, dict):
                     side = change.get("side", "").upper()
                     price_str = change.get("price")
-                    if price_str is not None:
+                    size_str = change.get("size")
+                    if price_str is None:
+                        continue
+                    try:
+                        price = Decimal(str(price_str))
+                    except (InvalidOperation, ValueError):
+                        continue
+
+                    if size_str is not None:
                         try:
-                            price = Decimal(str(price_str))
+                            size = Decimal(str(size_str))
                         except (InvalidOperation, ValueError):
-                            continue
+                            size = Decimal("0")
+                        self._cache.apply_book_delta(asset_id, side, price, size)
+                        if size > Decimal("0"):
+                            if side == "BUY":
+                                best_bid = max(best_bid, price) if best_bid is not None else price
+                            elif side == "SELL":
+                                best_ask = min(best_ask, price) if best_ask is not None else price
+                    else:
                         if side == "BUY":
                             best_bid = max(best_bid, price) if best_bid is not None else price
                         elif side == "SELL":

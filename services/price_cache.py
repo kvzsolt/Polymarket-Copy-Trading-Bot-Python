@@ -1,7 +1,8 @@
 """Position/token-scoped market data cache with TTL and invalidation.
 
-Phase 2 deliverable: replaces per-request REST polling for quote/tick/meta
-data with a cache that is fed by WSS deltas and invalidated on key events.
+Phase 2 / issue #68 deliverable: replaces per-request REST polling for
+quote/book/tick/meta data with a cache that is fed by WSS deltas and
+invalidated on key events.
 
 Invalidation triggers (per spec):
   - own fill
@@ -46,28 +47,57 @@ class TickSnapshot:
     ts: float  # monotonic timestamp
 
 
+@dataclass(frozen=True)
+class BookLevel:
+    """A single price level in the cached order book."""
+    price: Decimal
+    size: Decimal
+
+
+@dataclass
+class BookSnapshot:
+    """Full order book snapshot for a single token.
+
+    Mutable container so that delta application can add/remove levels
+    in-place without reconstructing the entire snapshot on every event.
+    """
+    bids: dict[Decimal, Decimal] = field(default_factory=dict)
+    asks: dict[Decimal, Decimal] = field(default_factory=dict)
+    ts: float = 0.0
+
+    def best_bid(self) -> Decimal | None:
+        return max(self.bids.keys()) if self.bids else None
+
+    def best_ask(self) -> Decimal | None:
+        return min(self.asks.keys()) if self.asks else None
+
+
 # ---------------------------------------------------------------------------
 # Cache
 # ---------------------------------------------------------------------------
 
 class PositionPriceCache:
-    """Token-scoped cache for quote and tick/meta data.
+    """Token-scoped cache for quote, book, tick/meta data.
 
     Quote TTL defaults to 5 s (matching the WSS heartbeat cadence).
+    Book TTL defaults to 5 s.
     Tick TTL defaults to 300 s (tick sizes change rarely).
 
-    Both can be overridden via constructor for testing.
+    All can be overridden via constructor for testing.
     """
 
     def __init__(
         self,
         *,
         quote_ttl: float = 5.0,
+        book_ttl: float = 5.0,
         tick_ttl: float = 300.0,
     ) -> None:
         self._quotes: dict[str, QuoteSnapshot] = {}
+        self._books: dict[str, BookSnapshot] = {}
         self._ticks: dict[str, TickSnapshot] = {}
         self._quote_ttl = quote_ttl
+        self._book_ttl = book_ttl
         self._tick_ttl = tick_ttl
 
     # --- Reads ----------------------------------------------------------------
@@ -79,6 +109,16 @@ class PositionPriceCache:
             return None
         if (time.monotonic() - snap.ts) > self._quote_ttl:
             del self._quotes[token_id]
+            return None
+        return snap
+
+    def get_book(self, token_id: str) -> BookSnapshot | None:
+        """Return cached book if fresh, else ``None``."""
+        snap = self._books.get(token_id)
+        if snap is None:
+            return None
+        if (time.monotonic() - snap.ts) > self._book_ttl:
+            del self._books[token_id]
             return None
         return snap
 
@@ -112,6 +152,20 @@ class PositionPriceCache:
             ts=time.monotonic(),
         )
 
+    def set_book(
+        self,
+        token_id: str,
+        *,
+        bids: dict[Decimal, Decimal],
+        asks: dict[Decimal, Decimal],
+    ) -> None:
+        """Store/refresh full book from a REST snapshot."""
+        self._books[token_id] = BookSnapshot(
+            bids=dict(bids),
+            asks=dict(asks),
+            ts=time.monotonic(),
+        )
+
     def set_tick(
         self,
         token_id: str,
@@ -128,13 +182,42 @@ class PositionPriceCache:
             ts=time.monotonic(),
         )
 
+    def apply_book_delta(
+        self,
+        token_id: str,
+        side: str,
+        price: Decimal,
+        size: Decimal,
+    ) -> None:
+        """Apply a single book level delta from a WSS price_change event.
+
+        When ``size`` is 0 the level is deleted from the book (per spec).
+        When ``size`` > 0 the level is upserted.
+        Creates a new ``BookSnapshot`` if none exists for the token.
+        """
+        book = self._books.get(token_id)
+        if book is None:
+            book = BookSnapshot(ts=time.monotonic())
+            self._books[token_id] = book
+
+        levels = book.bids if side.upper() == "BUY" else book.asks
+
+        if size == Decimal("0"):
+            levels.pop(price, None)
+            logger.debug("Book level deleted: %s %s @ %s", token_id, side, price)
+        else:
+            levels[price] = size
+            logger.debug("Book level upserted: %s %s @ %s x %s", token_id, side, price, size)
+
+        book.ts = time.monotonic()
+
     # --- Invalidation triggers ------------------------------------------------
 
     def invalidate_on_fill(self, token_id: str) -> None:
-        """Own fill: clear quote so execution path fetches fresh data."""
-        removed = self._quotes.pop(token_id, None)
-        if removed:
-            logger.debug("Cache invalidated (fill): quote for %s", token_id)
+        """Own fill: clear quote and book so execution path fetches fresh data."""
+        self._quotes.pop(token_id, None)
+        self._books.pop(token_id, None)
+        logger.debug("Cache invalidated (fill): quote+book for %s", token_id)
 
     def on_price_update(
         self,
@@ -153,7 +236,7 @@ class PositionPriceCache:
         token_id: str,
         new_tick_size: Decimal,
     ) -> None:
-        """WSS tick-size change: update tick snapshot and clear stale quote."""
+        """WSS tick-size change: update tick snapshot and clear stale quote/book."""
         existing = self._ticks.get(token_id)
         min_order = existing.min_order_size if existing else Decimal("0")
         neg_risk = existing.neg_risk if existing else False
@@ -163,19 +246,21 @@ class PositionPriceCache:
             neg_risk=neg_risk,
             ts=time.monotonic(),
         )
-        # Quote is now stale because tick grid changed.
         self._quotes.pop(token_id, None)
+        self._books.pop(token_id, None)
         logger.debug("Cache invalidated (tick_size_change): %s → %s", token_id, new_tick_size)
 
     def invalidate_on_reconcile(self, token_id: str) -> None:
-        """Reconcile: clear both quote and tick for full refresh."""
+        """Reconcile: clear quote, book, and tick for full refresh."""
         self._quotes.pop(token_id, None)
+        self._books.pop(token_id, None)
         self._ticks.pop(token_id, None)
         logger.debug("Cache invalidated (reconcile): %s", token_id)
 
     def invalidate_all(self) -> None:
         """Full wipe — used before REST bootstrap on reconnect."""
         self._quotes.clear()
+        self._books.clear()
         self._ticks.clear()
         logger.info("Cache fully invalidated (reconnect)")
 
@@ -184,9 +269,12 @@ class PositionPriceCache:
     def quote_count(self) -> int:
         return len(self._quotes)
 
+    def book_count(self) -> int:
+        return len(self._books)
+
     def tick_count(self) -> int:
         return len(self._ticks)
 
     def subscribed_tokens(self) -> set[str]:
         """Return all token IDs with any cached data."""
-        return set(self._quotes.keys()) | set(self._ticks.keys())
+        return set(self._quotes.keys()) | set(self._books.keys()) | set(self._ticks.keys())
