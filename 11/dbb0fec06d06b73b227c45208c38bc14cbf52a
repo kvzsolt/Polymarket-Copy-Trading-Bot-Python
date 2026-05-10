@@ -1,0 +1,44 @@
+docs/runbooks/reconciliation-drift.md
+  s_ee62f6730d698e::t_52e80f1f9bb0a3 1-73
+docs/archive/README.md
+  s_ee62f6730d698e::t_ff9928e3653b72 1-25
+docs/runbooks/circuit-breaker-open.md
+  s_ee62f6730d698e::t_02ea2e2125e8d8 1-61
+docs/runbooks/00-index.md
+  s_ee62f6730d698e::t_b9e409e9bfdff7 1-27
+docs/runbooks/stale-locks.md
+  s_ee62f6730d698e::t_2438f6d40122a3 1-61
+docs/runbooks/manual-off-bot-changes.md
+  s_ee62f6730d698e::t_38b518c9f596c2 1-77
+docs/MIGRATION.md
+  s_ee62f6730d698e::t_6ddc291511f519 1-91
+README.md
+  s_ee62f6730d698e::t_922d31286d77ee 38,40-47,53-63
+tests/release_gate/test_no_legacy_imports.py
+  s_ee62f6730d698e::t_cd0141a38afee4 1-120
+docs/runbooks/clob-outage.md
+  s_ee62f6730d698e::t_e65a56d1d3896c 1-56
+docs/ARCHITECTURE.md
+  s_ee62f6730d698e::t_ebf0a996d88952 1-252
+docs/runbooks/wss-outage.md
+  s_ee62f6730d698e::t_4a236d3d89d354 1-60
+docs/full-rework-progress.md
+  s_ee62f6730d698e::t_521be6469c438b 133-173,184-202
+  s_ee62f6730d698e::t_89c3cef8396ae2 174-183
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.4",
+  "base_commit_sha": "11dbb0fec06d06b73b227c45208c38bc14cbf52a",
+  "prompts": {},
+  "sessions": {
+    "s_ee62f6730d698e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "988426d4-932e-4464-a7d2-871ab4ac94dd",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
