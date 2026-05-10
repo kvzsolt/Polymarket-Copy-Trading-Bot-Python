@@ -1,0 +1,30 @@
+tests/test_runtime_bootstrap_config.py
+  s_fc2e1ebe662e1c::t_6c54c9fe398b5c 138-143
+  s_fc2e1ebe662e1c::t_a3f074533295df 102-107
+tests/test_reconciliation_service_coordinator_wiring.py
+  s_fc2e1ebe662e1c::t_1ebfac0eb40ee5 1-20,26-30
+tests/test_logger.py
+  s_fc2e1ebe662e1c::t_42076de13aba48 69-74
+tests/test_trade_pipeline_safety.py
+  s_fc2e1ebe662e1c::t_57bc3f5443b2bb 452-457
+  s_fc2e1ebe662e1c::t_4f9f2debc15c27 493-498
+  s_fc2e1ebe662e1c::t_0e64a216800100 636-641
+  s_fc2e1ebe662e1c::t_d83376dc7fb302 417-422
+  s_fc2e1ebe662e1c::t_256afe7cee31f4 566-571
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.4",
+  "base_commit_sha": "f775372d363eabeebc112c0104c11d32ceac6de2",
+  "prompts": {},
+  "sessions": {
+    "s_fc2e1ebe662e1c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "55404a7d-e170-48de-9d9d-68bc6b29c47b",
+        "model": "unknown"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
