@@ -630,7 +630,7 @@ async def reconcile_unconfirmed_risk_orders(context: TradingContext) -> int:
                 user_id=context.user_id,
                 condition_id=condition_id,
                 token_id=token_id,
-                confirm_fill=context.execution_service._confirm_fill,
+                confirm_fill=reconciler.confirm_fill,
                 pnl_tracker=context.pnl_tracker,
                 get_position=context.positions_repo.get_position,
                 logger=logger,

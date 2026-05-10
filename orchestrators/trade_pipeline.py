@@ -652,7 +652,7 @@ async def _reconcile_one(
     return await reconciler.reconcile_trade_record(
         record,
         side,
-        confirm_fill=context.execution_service._confirm_fill,
+        confirm_fill=reconciler.confirm_fill,
         pnl_tracker=context.pnl_tracker,
         get_position=context.positions_repo.get_position,
         logger=logger,

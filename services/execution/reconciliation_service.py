@@ -36,7 +36,10 @@ from decimal import Decimal
 from typing import Any, Awaitable, Callable, Protocol
 
 from domain.order_lifecycle import OrderLifecycleStatus
+from utils.logger import get_logger, redact_error_detail
 from storage.sqlite.fills_repo import FillRecord
+
+_log = get_logger("ReconciliationService")
 
 
 # ---------------------------------------------------------------------------
@@ -179,6 +182,35 @@ class ReconciliationService:
         self.db = db
         self.audit_logger = audit_logger
         self.risk_blocks_repo = risk_blocks_repo
+
+    # ------------------------------------------------------------------
+    # Fill confirmation (venue poll)
+    # ------------------------------------------------------------------
+    async def confirm_fill(self, order_id: str) -> dict[str, Any]:
+        """Poll the CLOB gateway for order status.
+
+        Returns a dict with at least ``status`` and ``size_matched`` keys.
+        This replaces the former ``ExecutionService._confirm_fill`` so that
+        the reconciler owns the full settlement lifecycle (issue #71).
+        """
+        if self.clob_gateway is None:
+            return {"status": "unknown", "size_matched": "0"}
+        try:
+            venue_state = await self.clob_gateway.get_order(order_id)
+            if venue_state is None:
+                return {"status": "unknown", "size_matched": "0"}
+            # VenueOrderState or raw dict — normalise to a plain dict.
+            if isinstance(venue_state, dict):
+                return venue_state
+            # Protocol-based VenueOrderState — convert to dict.
+            return {
+                "status": getattr(venue_state, "status", "unknown"),
+                "size_matched": str(getattr(venue_state, "size_matched", "0")),
+                "avg_price": str(getattr(venue_state, "avg_price", "0")),
+            }
+        except Exception as exc:
+            _log.warning("confirm_fill poll failed for %s: %s", order_id, redact_error_detail(exc))
+            return {"status": "unknown", "size_matched": "0"}
 
     # ------------------------------------------------------------------
     # Helpers

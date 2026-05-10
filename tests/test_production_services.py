@@ -360,6 +360,25 @@ class TestExecutionService:
         assert not hasattr(svc, "_confirm_fill"), "_confirm_fill should live in ReconciliationService, not ExecutionService"
 
     @pytest.mark.asyncio
+    async def test_reconciler_has_confirm_fill(self):
+        """ReconciliationService.confirm_fill polls the CLOB gateway (issue #71)."""
+        from services.execution.reconciliation_service import ReconciliationService
+
+        async def mock_get_order(order_id: str) -> dict:
+            return {"status": "filled", "size_matched": "3.5", "avg_price": "0.52"}
+
+        mock_gw = SimpleNamespace(get_order=mock_get_order)
+        svc = ReconciliationService(
+            orders_repo=SimpleNamespace(),
+            fills_repo=SimpleNamespace(),
+            positions_repo=SimpleNamespace(),
+            clob_gateway=mock_gw,
+        )
+        result = await svc.confirm_fill("order-42")
+        assert result["status"] == "filled"
+        assert result["size_matched"] == "3.5"
+
+    @pytest.mark.asyncio
     async def test_duplicate_idempotency_is_ignored(self):
         clob = SimpleNamespace(get_price=AsyncMock(return_value={"price": "0.5"}))
         repo = _Repo()
