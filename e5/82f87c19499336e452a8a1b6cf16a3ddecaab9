@@ -1,0 +1,42 @@
+integrations/polymarket/clob_v2_gateway.py
+  s_ec106305ec2a70::t_b16cf1563abd78 334-347
+  s_ec106305ec2a70::t_df676af8e41ad6 184-216
+  s_ec106305ec2a70::t_379925efede8b0 122-131
+  s_ec106305ec2a70::t_3be82e4f53224a 330
+  s_ec106305ec2a70::t_91d62aec017d94 369
+  s_ec106305ec2a70::t_b736d799907a85 463-509
+integrations/polymarket/models.py
+  s_ec106305ec2a70::t_98ab013a3c256c 16-26,33-34
+  s_ec106305ec2a70::t_22903add242ae0 111-117,124-125
+services/executionService.py
+  s_ec106305ec2a70::t_7d28c1900d0424 116-136
+  s_ec106305ec2a70::t_9e5f8d9879f0bf 163,171-182
+  s_ec106305ec2a70::t_310d4cd804b416 603-608,611-612,615-616,618-619,635,648,650,656-695
+  s_ec106305ec2a70::t_d35be7b76414a1 609-610
+  s_ec106305ec2a70::t_8b4c4e95896dbc 536-538
+  s_ec106305ec2a70::t_227e8ffef4cc14 696-707,709-710,712-726
+  s_ec106305ec2a70::t_22ab4bceb76a2a 13-24
+orchestrators/startup_health.py
+  s_ec106305ec2a70::t_0ffa511e20a1f8 398-440,451-452,454,457,459-466
+  s_ec106305ec2a70::t_5e2e6b19947f07 484
+orchestrators/runtime_bootstrap.py
+  s_ec106305ec2a70::t_04fe2a9207fc4d 196-200,207
+  s_ec106305ec2a70::t_067a8797618249 222
+  s_ec106305ec2a70::t_d3ccfd84126c74 112-116
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.4",
+  "base_commit_sha": "e582f87c19499336e452a8a1b6cf16a3ddecaab9",
+  "prompts": {},
+  "sessions": {
+    "s_ec106305ec2a70": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bb81eaf6-39ec-4a21-ac40-292b04e07140",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
