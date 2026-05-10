@@ -15,7 +15,8 @@ from services.entryPermissionService import EntryDecision, EntryPermissionServic
 from services.execution.reconciliation_service import ReconciliationService
 from services.executionService import ExecutionRequest
 from services.metrics import metrics
-from services.positionActionCoordinator import PositionScope
+from domain.position_key import PositionKey
+from services.positionActionCoordinator import PositionScope  # noqa: F401  back-compat alias
 from services.riskEngine import headroom_for_buy
 from services.riskEngine import active_policy
 from storage.sqlite.fills_repo import FillRecord
@@ -692,11 +693,14 @@ async def reconcile_submitted_unconfirmed(
             # the reconciliation state-apply against the same scoped position
             # so risk monitor / execute_trades cannot observe stale state in
             # the middle of the fill-apply critical section.
-            _scope = PositionScope(
-                user_id=str(record.get("user_id") or ""),
-                condition_id=str(record.get("condition_id") or ""),
-                token_id=str(record.get("asset") or ""),
-            )
+            try:
+                _scope = PositionKey.from_reconciliation_record(record)
+            except ValueError:
+                logger.warning(
+                    "reconcile_skip_missing_scope | order_id=%s trade_key=%s side=%s",
+                    record.get("order_id"), record.get("trade_key"), side,
+                )
+                return False
             async with sem:
                 async with context.position_coordinator.acquire(_scope):
                     return await _reconcile_one(context, record, side)
@@ -813,18 +817,15 @@ async def execute_trades(
             continue
 
         # ------------------------------------------------------------------
-        # Per-scoped-position action coordination (issue #28)
+        # Per-scoped-position action coordination (issue #28 / #67)
         # ------------------------------------------------------------------
         # Serialize all observe-then-mutate work on this scoped position
         # against the risk monitor's protective SELL path and any concurrent
         # reconciliation state-apply on the same (condition_id, token_id).
         # Unrelated positions remain fully concurrent.
-        _scope = PositionScope(
-            user_id=context.user_id,
-            condition_id=signal.condition_id,
-            token_id=signal.token_id,
-        )
+        _scope = PositionKey.from_signal_event(signal, context.user_id)
         async with context.position_coordinator.acquire(_scope):
+            logger.debug("trade_pipeline.signal_scope_acquired", extra=_scope.log_fields())
             # ------------------------------------------------------------------
             # Entry-permission gate — single authoritative BUY re-entry check
             # ------------------------------------------------------------------
