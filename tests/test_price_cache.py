@@ -123,13 +123,15 @@ class TestInvalidation:
     """Verify invalidation triggers clear appropriate cache entries."""
 
     def test_invalidate_on_fill(self, cache: PositionPriceCache) -> None:
-        """Own fill clears quote for the affected token only."""
+        """Own fill clears quote and book for the affected token only."""
         cache.set_quote(TOKEN_A, best_bid=Decimal("0.55"), best_ask=Decimal("0.60"))
+        cache.set_book(TOKEN_A, bids={Decimal("0.55"): Decimal("100")}, asks={Decimal("0.60"): Decimal("50")})
         cache.set_quote(TOKEN_B, best_bid=Decimal("0.40"), best_ask=Decimal("0.45"))
 
         cache.invalidate_on_fill(TOKEN_A)
 
         assert cache.get_quote(TOKEN_A) is None
+        assert cache.get_book(TOKEN_A) is None
         assert cache.get_quote(TOKEN_B) is not None  # unaffected
 
     def test_invalidate_on_fill_noop_for_missing(self, cache: PositionPriceCache) -> None:
@@ -186,6 +188,7 @@ class TestInvalidation:
         """Full wipe clears everything for reconnect bootstrap."""
         cache.set_quote(TOKEN_A, best_bid=Decimal("0.55"), best_ask=Decimal("0.60"))
         cache.set_quote(TOKEN_B, best_bid=Decimal("0.40"), best_ask=Decimal("0.45"))
+        cache.set_book(TOKEN_A, bids={Decimal("0.55"): Decimal("100")}, asks={})
         cache.set_tick(
             TOKEN_A,
             tick_size=Decimal("0.01"),
@@ -197,8 +200,10 @@ class TestInvalidation:
 
         assert cache.get_quote(TOKEN_A) is None
         assert cache.get_quote(TOKEN_B) is None
+        assert cache.get_book(TOKEN_A) is None
         assert cache.get_tick(TOKEN_A) is None
         assert cache.quote_count() == 0
+        assert cache.book_count() == 0
         assert cache.tick_count() == 0
 
     def test_on_tick_size_change_no_prior_tick(self, cache: PositionPriceCache) -> None:
