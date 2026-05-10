@@ -1,0 +1,25 @@
+.github/workflows/release-gate.yml
+  s_fc2e1ebe662e1c::t_36c996d713f3e1 13,16-19,24
+tests/release_gate/test_startup_recovery.py
+  s_fc2e1ebe662e1c::t_117ebeb7955c05 12-13,26-28
+.github/workflows/ci.yml
+  s_fc2e1ebe662e1c::t_31d2fd3bff5446 14,17-20,25,35,39-42,47,57,60-63,68,96,107-122
+pytest.ini
+  s_fc2e1ebe662e1c::t_d5c7eadea42201 2
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.4",
+  "base_commit_sha": "3c96bb6b68d13cc3bfa845cfd3f6ca711283c2ad",
+  "prompts": {},
+  "sessions": {
+    "s_fc2e1ebe662e1c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "55404a7d-e170-48de-9d9d-68bc6b29c47b",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
