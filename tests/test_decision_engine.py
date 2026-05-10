@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 import os
 
@@ -14,6 +15,37 @@ from services.copyDecisionService import CopyDecisionService
 from services.leaderScoringService import LeaderScore
 from services.tradeAnalyticsService import TradeAnalyticsService
 from services.traderDiscoveryService import RankedLeader, TraderDiscoveryService
+
+
+def _test_config() -> SimpleNamespace:
+    return SimpleNamespace(
+        execution=SimpleNamespace(
+            enable_copy_decision_gate=False,
+            slippage_tolerance=2.0,
+            enable_near_resolution_gate=False,
+            near_resolution_gate_price=0.95,
+            near_resolution_max_age_seconds=300,
+        ),
+        leader=SimpleNamespace(
+            copy_decision_min_score=0.0,
+            leader_score_balance_target_usdc=500.0,
+            leader_score_pnl_bonus_cap=0.1,
+            leader_score_activity_target=8,
+            leader_score_weight_balance=0.35,
+            leader_score_weight_analytics=0.45,
+            leader_score_weight_activity=0.20,
+            leader_score_floor=0.10,
+            copy_max_signal_age_seconds=120.0,
+            copy_max_price_drift_pct=6.0,
+            copy_max_edge_decay_pct=0.1,
+            copy_liquidity_target_usdc=500.0,
+        ),
+        sizing=SimpleNamespace(
+            enable_trust_size_multipliers=True,
+            trust_size_multiplier_min=0.50,
+            trust_size_multiplier_max=1.25,
+        ),
+    )
 
 
 def _leader(score: float = 0.9) -> LeaderScore:
@@ -31,7 +63,7 @@ def _leader(score: float = 0.9) -> LeaderScore:
 class TestCopyDecisionService:
     def test_buy_passes_when_no_venue_metadata(self):
         """With no market metadata (market_min_size=0), no venue floor applies → BUY passes."""
-        svc = CopyDecisionService()
+        svc = CopyDecisionService(config=_test_config())
         trade = {"price": 0.40, "timestamp": time.time(), "usdcSize": 20}
         decision = svc.decide_buy(
             trade=trade,
@@ -46,7 +78,7 @@ class TestCopyDecisionService:
 
     def test_buy_passes_when_tiny_order_no_venue_floor(self):
         """With no market metadata (market_min_size=0), no venue floor → BUY passes."""
-        svc = CopyDecisionService()
+        svc = CopyDecisionService(config=_test_config())
         trade = {"price": 0.08, "timestamp": time.time(), "usdcSize": 10}
         decision = svc.decide_buy(
             trade=trade,
@@ -61,7 +93,7 @@ class TestCopyDecisionService:
 
     def test_buy_upsizes_to_venue_min_when_cap_allows(self):
         """BUY below venue min → upsize to venue min when cap allows."""
-        svc = CopyDecisionService()
+        svc = CopyDecisionService(config=_test_config())
         trade = {"price": 0.20, "timestamp": time.time(), "usdcSize": 10}
         decision = svc.decide_buy(
             trade=trade,
@@ -77,7 +109,7 @@ class TestCopyDecisionService:
         assert decision.target_size_tokens >= 8.0 - 1e-6
 
     def test_buy_skips_if_cap_cannot_satisfy_minimum_executable_size(self):
-        svc = CopyDecisionService()
+        svc = CopyDecisionService(config=_test_config())
         trade = {"price": 0.84, "timestamp": time.time(), "usdcSize": 10}
         decision = svc.decide_buy(
             trade=trade,
@@ -91,7 +123,7 @@ class TestCopyDecisionService:
         assert decision.skip_code == "risk_cap_too_low_for_min_order"
 
     def test_buy_returns_worst_case_notional_when_already_above_min_size(self):
-        svc = CopyDecisionService()
+        svc = CopyDecisionService(config=_test_config())
         trade = {"price": 0.84, "timestamp": time.time(), "usdcSize": 5.88}
         decision = svc.decide_buy(
             trade=trade,
@@ -108,7 +140,7 @@ class TestCopyDecisionService:
         assert decision.details["required_worst_notional_usdc"] == pytest.approx(5.9976, rel=1e-4)
 
     def test_buy_decision_gate_can_be_disabled(self):
-        svc = CopyDecisionService()
+        svc = CopyDecisionService(config=_test_config())
         # Gate is disabled by default (_decision_gate_enabled = False).
         # Even with a near-resolution stale signal and low leader score,
         # the gate should be bypassed when the trade is already executable.
@@ -137,7 +169,7 @@ class TestCopyDecisionService:
             },
             clear=False,
         ):
-            svc = CopyDecisionService()
+            svc = CopyDecisionService(config=_test_config())
             decision = svc.decide_sell(
                 trade=trade,
                 sell_tokens=1.0,
@@ -162,7 +194,7 @@ class TestCopyDecisionService:
             },
             clear=False,
         ):
-            svc = CopyDecisionService()
+            svc = CopyDecisionService(config=_test_config())
             decision = svc.decide_sell(
                 trade=trade,
                 sell_tokens=1.0,
@@ -186,7 +218,7 @@ class TestCopyDecisionService:
             },
             clear=False,
         ):
-            svc = CopyDecisionService()
+            svc = CopyDecisionService(config=_test_config())
             decision = svc.decide_sell(
                 trade=trade,
                 sell_tokens=7.0,
@@ -200,7 +232,7 @@ class TestCopyDecisionService:
         assert decision.reason == "decision gate disabled by config"
 
     def test_sell_decision_gate_can_be_disabled(self):
-        svc = CopyDecisionService()
+        svc = CopyDecisionService(config=_test_config())
         trade = {"price": 0.40, "timestamp": time.time(), "usdcSize": 10}
         decision = svc.decide_sell(
             trade=trade,
@@ -215,7 +247,7 @@ class TestCopyDecisionService:
         assert decision.reason == "decision gate disabled by config"
 
     def test_sell_decision_gate_disabled_still_honors_market_min_size(self):
-        svc = CopyDecisionService()
+        svc = CopyDecisionService(config=_test_config())
         trade = {"price": 0.40, "timestamp": time.time(), "usdcSize": 10}
         decision = svc.decide_sell(
             trade=trade,
@@ -349,7 +381,7 @@ class TestCopyDecisionServicePartialHeadroom:
         # desired trade = 15 USDC, cap constrains to 8 USDC
         # min_order at 0.50 price = 5 shares * 0.50 = 2.50 USDC notional
         # → should downsize to ~8 USDC (fits within cap and above min)
-        svc = CopyDecisionService()
+        svc = CopyDecisionService(config=_test_config())
         trade = {"price": 0.50, "timestamp": time.time(), "usdcSize": 15.0}
         decision = svc.decide_buy(
             trade=trade,
@@ -367,7 +399,7 @@ class TestCopyDecisionServicePartialHeadroom:
 
     def test_buy_hard_denied_when_zero_headroom(self):
         """Zero remaining cap headroom → hard deny."""
-        svc = CopyDecisionService()
+        svc = CopyDecisionService(config=_test_config())
         trade = {"price": 0.50, "timestamp": time.time(), "usdcSize": 15.0}
         decision = svc.decide_buy(
             trade=trade,
@@ -383,7 +415,7 @@ class TestCopyDecisionServicePartialHeadroom:
     def test_buy_hard_denied_when_headroom_below_min_order(self):
         """Cap headroom exists but is below the minimum executable order size → hard deny."""
         # headroom = 1 USDC, min order = 5 shares * 0.50 = 2.50 USDC → can't fill minimum
-        svc = CopyDecisionService()
+        svc = CopyDecisionService(config=_test_config())
         trade = {"price": 0.50, "timestamp": time.time(), "usdcSize": 15.0}
         decision = svc.decide_buy(
             trade=trade,
@@ -398,7 +430,7 @@ class TestCopyDecisionServicePartialHeadroom:
 
     def test_buy_not_capped_when_headroom_covers_full_order(self):
         """When cap headroom > desired order size, full order goes through unchanged."""
-        svc = CopyDecisionService()
+        svc = CopyDecisionService(config=_test_config())
         trade = {"price": 0.50, "timestamp": time.time(), "usdcSize": 10.0}
         decision = svc.decide_buy(
             trade=trade,
@@ -417,7 +449,7 @@ class TestPhase3MetadataSizing:
 
     def test_buy_upsizes_to_venue_min_when_allowed(self):
         """BUY below venue min → upsize when balance/headroom allow."""
-        svc = CopyDecisionService()
+        svc = CopyDecisionService(config=_test_config())
         trade = {"price": 0.50, "timestamp": time.time(), "usdcSize": 5}
         decision = svc.decide_buy(
             trade=trade,
@@ -435,7 +467,7 @@ class TestPhase3MetadataSizing:
 
     def test_buy_skips_when_headroom_insufficient(self):
         """BUY below venue min, cap too low → skip with risk_cap_too_low."""
-        svc = CopyDecisionService()
+        svc = CopyDecisionService(config=_test_config())
         trade = {"price": 0.50, "timestamp": time.time(), "usdcSize": 5}
         decision = svc.decide_buy(
             trade=trade,
@@ -450,7 +482,7 @@ class TestPhase3MetadataSizing:
 
     def test_sell_skips_when_held_below_venue_min(self):
         """SELL below venue min, held position too small → skip."""
-        svc = CopyDecisionService()
+        svc = CopyDecisionService(config=_test_config())
         trade = {"price": 0.50, "timestamp": time.time(), "usdcSize": 5}
         decision = svc.decide_sell(
             trade=trade,
@@ -466,7 +498,7 @@ class TestPhase3MetadataSizing:
 
     def test_sell_upsizes_when_held_supports_min(self):
         """SELL below venue min, held position >= min → upsize."""
-        svc = CopyDecisionService()
+        svc = CopyDecisionService(config=_test_config())
         trade = {"price": 0.50, "timestamp": time.time(), "usdcSize": 5}
         decision = svc.decide_sell(
             trade=trade,
