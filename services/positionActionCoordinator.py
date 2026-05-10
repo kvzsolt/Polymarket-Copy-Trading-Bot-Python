@@ -43,21 +43,15 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
 from typing import AsyncIterator
 
+from domain.position_key import PositionKey
 
-@dataclass(frozen=True)
-class PositionScope:
-    """Canonical scoped-position identity used for action coordination.
-
-    ``user_id`` is carried for logging / cross-context safety; the per-context
-    coordinator only keys locks by ``(condition_id, token_id)``.
-    """
-
-    user_id: str
-    condition_id: str
-    token_id: str
+# Back-compat alias — issue #67 relocated the canonical type to
+# ``domain.position_key.PositionKey``. ``PositionScope`` is retained here so
+# the 8+ existing call sites in services/ and orchestrators/ keep working
+# unchanged. New code should prefer importing ``PositionKey`` directly.
+PositionScope = PositionKey
 
 
 class PositionActionCoordinator:
