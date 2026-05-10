@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from decimal import Decimal
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -31,6 +32,17 @@ def _make_execution_service(meta: MarketMeta, quote_price: str = "0.50"):
 
     clob = AsyncMock()
     clob.get_price = AsyncMock(return_value={"price": quote_price})
+    clob.create_market_order = AsyncMock(return_value={"signed": True})
+    clob.post_signed_order = AsyncMock(
+        return_value={"success": True, "orderID": "ord-book", "status": "submitted"}
+    )
+    clob.client = SimpleNamespace(
+        get_order=lambda _order_id: {
+            "status": "filled",
+            "size_matched": "10",
+            "avg_price": quote_price,
+        }
+    )
 
     meta_svc = AsyncMock()
     meta_svc.get = AsyncMock(return_value=meta)
@@ -38,36 +50,43 @@ def _make_execution_service(meta: MarketMeta, quote_price: str = "0.50"):
     order_repo = MagicMock()
     order_repo.get_by_idempotency_key = MagicMock(return_value=None)
 
-    from services.executionService import _CLOB_CIRCUIT
+    # Minimal AppConfig-shaped object with concrete values. MagicMock attributes
+    # leak into the effective-idempotency payload and are not JSON serializable.
+    mock_cfg = SimpleNamespace(
+        execution=SimpleNamespace(
+            execution_require_fresh_book=True,
+            book_spread_mode="absolute_bps",
+            max_book_spread_bps=2500,
+            max_book_spread_ticks=0,
+            min_share_price=0.03,
+            max_share_price=0.97,
+            slippage_tolerance=2.0,
+            max_retries=3,
+            retry_backoff_base=1.0,
+            pending_submission_ttl_seconds=120,
+            non_terminal_failure_max_attempts=3,
+            transaction_fee_bps=20,
+            gas_cost_usdc=0.03,
+            risk_buffer_pct=0.10,
+            paper_trade_only=False,
+            enable_copy_decision_gate=False,
+            enable_near_resolution_gate=False,
+            near_resolution_gate_price=0.95,
+            near_resolution_max_age_seconds=15,
+            meta_cache_ttl_good=300,
+            meta_cache_ttl_thin=30,
+        ),
+        policy_version="test",
+        raw={},
+    )
 
-    # Mock config with execution settings
-    mock_cfg = MagicMock()
-    mock_cfg.execution.execution_require_fresh_book = True
-    mock_cfg.execution.book_spread_mode = "absolute_bps"
-    mock_cfg.execution.max_book_spread_bps = 2500
-    mock_cfg.execution.max_book_spread_ticks = 0
-    mock_cfg.execution.min_share_price = 0.03
-    mock_cfg.execution.max_share_price = 0.97
-    mock_cfg.execution.slippage_tolerance = 2.0
-    mock_cfg.execution.max_retries = 3
-    mock_cfg.execution.retry_backoff_base = 1.0
-    mock_cfg.execution.pending_submission_ttl_seconds = 120
-    mock_cfg.execution.non_terminal_failure_max_attempts = 3
-    mock_cfg.execution.transaction_fee_bps = 20
-    mock_cfg.execution.gas_cost_usdc = 0.03
-    mock_cfg.execution.risk_buffer_pct = 0.10
-    mock_cfg.execution.paper_trade_only = False
-    mock_cfg.execution.enable_copy_decision_gate = False
-
-    svc = ExecutionService.__new__(ExecutionService)
-    svc.clob_client = clob
-    svc.market_meta_service = meta_svc
-    svc.order_repo = order_repo
-    svc.fee_service = AsyncMock()
-    svc.fee_service.get_fee_bps = AsyncMock(return_value=Decimal("0"))
-    svc.circuit_breaker = _CLOB_CIRCUIT
-    svc._config = mock_cfg
-    return svc
+    return ExecutionService(
+        clob,
+        meta_svc,
+        AsyncMock(get_fee_bps=AsyncMock(return_value=Decimal("0"))),
+        order_repo,
+        config=mock_cfg,
+    )
 
 
 def _req(amount: str = "10", side: str = "BUY"):

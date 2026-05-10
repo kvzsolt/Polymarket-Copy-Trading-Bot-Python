@@ -18,6 +18,39 @@ from storage.sqlite.migrations import apply_migrations
 from utils.createClobClient import MarketMeta
 
 
+def _make_exec_config() -> SimpleNamespace:
+    """Minimal AppConfig-shaped object for ExecutionService tests."""
+    return SimpleNamespace(
+        execution=SimpleNamespace(
+            min_share_price=0,
+            max_share_price=0,
+            pending_submission_ttl_seconds=120,
+            circuit_failure_threshold=5,
+            circuit_cooldown_seconds=60,
+            execution_require_fresh_book=False,
+            book_spread_mode="absolute_bps",
+            max_book_spread_bps=500,
+            max_book_spread_ticks=0,
+            slippage_tolerance=2.0,
+            max_retries=3,
+            retry_backoff_base=1.0,
+            non_terminal_failure_max_attempts=3,
+            transaction_fee_bps=20,
+            gas_cost_usdc=0.03,
+            risk_buffer_pct=0.10,
+            paper_trade_only=False,
+            enable_copy_decision_gate=False,
+            enable_near_resolution_gate=False,
+            near_resolution_gate_price=0.95,
+            near_resolution_max_age_seconds=15,
+            meta_cache_ttl_good=300,
+            meta_cache_ttl_thin=30,
+        ),
+        policy_version="test",
+        raw={},
+    )
+
+
 class _FeeSvc:
     async def get_fee_bps(self, _token_id: str) -> int:
         return 0
@@ -86,7 +119,7 @@ async def test_atomic_lock_blocks_duplicate_concurrent_submission(tmp_path):
 
     repo = OrderRepository(str(db_path))
     clob = _ConcurrentClob()
-    svc = ExecutionService(clob, _MetaSvc(), _FeeSvc(), repo)
+    svc = ExecutionService(clob, _MetaSvc(), _FeeSvc(), repo, config=_make_exec_config())
     req = ExecutionRequest(
         user_id="u1",
         leader_id="l1",
