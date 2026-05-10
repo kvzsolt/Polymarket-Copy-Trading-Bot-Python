@@ -1,0 +1,28 @@
+interfaces/clob_gateway.py
+  s_ec106305ec2a70::t_3947783a2b7633 1-74
+interfaces/__init__.py
+  s_ec106305ec2a70::t_a2f0d86d1f9738 1-8,12-16,21
+  s_ec106305ec2a70::t_4b0613ae2c58b4 50
+services/execution/reconciliation_service.py
+  s_ec106305ec2a70::t_8d2a6d9abe4f2a 76
+  s_ec106305ec2a70::t_418e83691e9716 47-52,56-60
+services/execution/coordinator.py
+  s_ec106305ec2a70::t_f735aebe444c5d 72
+  s_ec106305ec2a70::t_1680d1f98e59ee 41-47,51-54
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.4",
+  "base_commit_sha": "302fff51de86eb184e45f746a2a9ebceb5835a9f",
+  "prompts": {},
+  "sessions": {
+    "s_ec106305ec2a70": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bb81eaf6-39ec-4a21-ac40-292b04e07140",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
