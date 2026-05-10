@@ -50,7 +50,13 @@ def _config_to_dict(cfg: AppConfig, *, redacted: bool = True) -> dict:
         if isinstance(obj, (list, tuple)):
             return [_convert(item) for item in obj]
         if isinstance(obj, dict):
-            return {k: _convert(v) for k, v in obj.items()}
+            result_dict: dict = {}
+            for k, v in obj.items():
+                converted = _convert(v)
+                if redacted and isinstance(k, str):
+                    converted = _redact_value(k, converted)
+                result_dict[k] = converted
+            return result_dict
         return obj
 
     return _convert(cfg)

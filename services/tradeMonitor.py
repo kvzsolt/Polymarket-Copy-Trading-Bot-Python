@@ -474,7 +474,7 @@ async def fetch_trade_data(
         if new_trades:
             newest = max(_to_seconds(t.get("timestamp")) for t in new_trades)
             ingest_lag = max(0.0, float(current_timestamp) - newest)
-            await metrics.set_gauge("ingest_lag_seconds", ingest_lag)
+            metrics.set_gauge("ingest_lag_seconds", ingest_lag)
         for t in new_trades:
             t['bot'] = False
             t['botExcutedTime'] = 0
@@ -494,7 +494,7 @@ async def fetch_trade_data(
         for trade in new_trades:
             if str(trade.get('type', '')).upper() != 'TRADE':
                 continue
-            await metrics.inc("signals_seen_total")
+            metrics.inc("signals_seen_total")
 
             if not trade.get('asset'):
                 trade['asset'] = trade.get('tokenID') or trade.get('token_id')
