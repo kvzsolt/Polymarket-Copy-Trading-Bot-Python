@@ -1,0 +1,55 @@
+integrations/polymarket/models.py
+  s_8d50b392b7792f::t_cd7e2407b342eb 1-105
+integrations/polymarket/clob_v2_gateway.py
+  s_8d50b392b7792f::t_f8671621faf7d6 4,6-12,17-20,22,25,27-39,45,48-78,81-150,155-157,159-166,169,172-274,277-309,313-317,319-346,348-373,375-378,380-411,413-450
+tests/test_v31_features.py
+  s_8d50b392b7792f::t_80cae28f675cf2 3,49
+services/risk/__init__.py
+  s_8d50b392b7792f::t_9d90794b248969 1-62
+services/execution/idempotency.py
+  s_8d50b392b7792f::t_eecc4136a53e42 1-17
+services/executionService.py
+  s_8d50b392b7792f::t_0d9908e67225a4 8,77-87
+utils/__init__.py
+  s_8d50b392b7792f::t_c87774efbbb6dc 20-41,45,50,56,58-60
+tests/test_clob_v2_gateway_isolation.py
+  s_8d50b392b7792f::t_2087ae918c765c 10,39,105-106
+  s_8d50b392b7792f::t_17af9292711bbc 1,90,97-104,107-113
+tests/test_clob_v2_market_meta.py
+  s_8d50b392b7792f::t_efafb4db3073b4 190
+services/redemption/__init__.py
+  s_8d50b392b7792f::t_8f44567236f80a 2-10,26,31,36,38-46
+utils/createClobClient.py
+  s_8d50b392b7792f::t_36a5d68ff1280c 11-12,366,385,561
+  s_dec880e2a16c4f::t_44c82a225f5c73 280-285
+tests/test_v2_metadata_and_order_options.py
+  s_8d50b392b7792f::t_b858c14a222a34 70
+tests/test_new_modules.py
+  s_8d50b392b7792f::t_0f48cf7dfeec98 17,20-21,23,28,30,32,34,36,39
+  s_8d50b392b7792f::t_ca0ae6049def8a 22,29,33,35
+  s_8d50b392b7792f::t_13bc0db125bcc3 6,18-19
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.4",
+  "base_commit_sha": "3323e2ae516ab66d65cd3b9e5d68a4697554224e",
+  "prompts": {},
+  "sessions": {
+    "s_8d50b392b7792f": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e0090-318b-7e40-b8fc-3b45c5d3fb86",
+        "model": "gpt-5.5"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    },
+    "s_dec880e2a16c4f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "453e221c-d700-434c-81a5-8b88c8121527",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
