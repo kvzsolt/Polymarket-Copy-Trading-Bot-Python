@@ -10,8 +10,18 @@ from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from config.app_config import AppConfig
+    from interfaces.clob_gateway import ClobGateway
 
-from integrations.polymarket.clob_v2_gateway import BUY, OrderType, SELL
+# CLOB venue access flows through the gateway; SDK-shaped types
+# (``OrderType`` / ``OrderArgs`` / ``BUY`` / ``SELL`` constants) are not
+# imported here. See ``interfaces/clob_gateway.py`` and issue #66.
+from integrations.polymarket.errors import (
+    VenueAuthError,
+    VenueInvalidOrderError,
+    VenueRateLimitError,
+    VenueUnavailableError,
+)
+from integrations.polymarket.models import MarketableOrderRequest
 from services.circuitBreaker import CircuitBreaker, CircuitOpen
 from utils.logger import get_logger, log_api_error, log_api_response, redact_error_detail
 from utils.createClobClient import _is_thin_or_empty_book
@@ -103,6 +113,27 @@ def _quantize_price(price: Decimal, tick_size: Decimal, side: str) -> Decimal:
     return rounded_units * tick_size
 
 
+def _submit_result_to_response(submit_result) -> dict[str, Any]:
+    """Translate a ``VenueSubmitResult`` into the dict shape ExecutionService
+    persists and returns. The dict view keeps downstream consumers
+    (``order_repo``, fill confirmation, audit logs) working unchanged while
+    SDK-shaped types stay behind the gateway boundary.
+    """
+    if submit_result.success:
+        default_status = submit_result.status or "submitted"
+    else:
+        default_status = submit_result.status or "failed"
+    return {
+        "success": submit_result.success,
+        "orderID": submit_result.order_id,
+        "status": default_status,
+        "error": submit_result.error,
+        "ambiguous_post_failure": submit_result.ambiguous_post_failure,
+        "non_retryable": submit_result.non_retryable,
+        "raw": submit_result.raw,
+    }
+
+
 def _idempotency_key(req: ExecutionRequest) -> str:
     payload = "|".join(
         [
@@ -129,12 +160,26 @@ class ExecutionService:
         *,
         circuit_breaker: CircuitBreaker | None = None,
         config: AppConfig | None = None,
+        clob_gateway: "ClobGateway | None" = None,
     ):
         self.clob_client = clob_client
         self.market_meta_service = market_meta_service
         self.fee_service = fee_service
         self.order_repo = order_repo
         self._config = config
+
+        # Single CLOB venue boundary. ``runtime_bootstrap`` is expected to pass
+        # a pre-constructed gateway so reconciliation, the execution
+        # coordinator, and ExecutionService all share one instance. When no
+        # gateway is supplied we build a default one over the legacy
+        # ``clob_client`` wrapper to preserve backward-compatibility for
+        # callers that have not yet been updated (the configless construction
+        # itself is fail-closed in #73, not #66).
+        if clob_gateway is None:
+            from integrations.polymarket.clob_v2_gateway import ClobV2Gateway
+            self.clob_gateway = ClobV2Gateway(clob_client, config)
+        else:
+            self.clob_gateway = clob_gateway
 
         # Always default to the shared module-level breaker so multi-user
         # runtimes get one venue-wide backoff window during a CLOB outage.
@@ -488,7 +533,9 @@ class ExecutionService:
                 error=None,
             )
 
-        side_const = BUY if side == "BUY" else SELL
+        # ``side`` is already the canonical "BUY"/"SELL" string (see
+        # ``_normalize_side``). The gateway request consumes the same form;
+        # SDK constants are an implementation detail of the gateway.
         fee_bps = await self.fee_service.get_fee_bps(req.token_id)
 
         request_doc = asdict(req)
@@ -553,24 +600,23 @@ class ExecutionService:
                 ),
             )
 
+            gateway_request = MarketableOrderRequest(
+                token_id=req.token_id,
+                side=side,
+                size=req.amount,
+                price_limit=worst_price,
+                condition_id=getattr(req, "condition_id", None),
+                tick_size=meta.tick_size,
+                neg_risk=meta.neg_risk,
+            )
+
             for attempt in range(1, 4):
-                signed_order = None
-                post_called = False
                 try:
-                    signed_order = await self.clob_client.create_market_order(
-                        token_id=req.token_id,
-                        side=side_const,
-                        amount=float(req.amount),
-                        max_price=float(worst_price),
-                        tick_size=str(meta.tick_size),
-                        neg_risk=meta.neg_risk,
-                        order_type=OrderType.FOK,
+                    submit_result = await self.clob_gateway.submit_marketable_order(
+                        gateway_request
                     )
-                    post_called = True
-                    response = await self.clob_client.post_signed_order(
-                        signed_order, OrderType.FOK
-                    )
-                    if response.get("success"):
+                    response = _submit_result_to_response(submit_result)
+                    if submit_result.success:
                         self.circuit_breaker.record_success()
                         self._save_submission(
                             idempotency_key=idem_key,
@@ -586,7 +632,8 @@ class ExecutionService:
                             meta={"side": side, "asset": req.token_id},
                         )
                         break
-                    if response.get("ambiguous_post_failure"):
+                    if submit_result.ambiguous_post_failure:
+                        last_error = submit_result.error or "ambiguous post failure"
                         response["status"] = "submitted_unconfirmed"
                         self._save_submission(
                             idempotency_key=idem_key,
@@ -599,55 +646,96 @@ class ExecutionService:
                         )
                         break
                     last_error = (
-                        response.get("error") or "unknown order submission error"
+                        submit_result.error or "unknown order submission error"
                     )
-                    if response.get("non_retryable"):
-                        logger.warning(
-                            "non-retryable CLOB rejection, skipping retries: %s",
-                            last_error,
-                        )
-                        break
-                except Exception as exc:
-                    last_error = redact_error_detail(exc)
-                    raw_exc_body = ""
-                    if hasattr(exc, "error_msg"):
-                        raw_exc_body = str(exc.error_msg)
-                    elif hasattr(exc, "__cause__"):
-                        raw_exc_body = str(exc.__cause__)
-                    if raw_exc_body:
-                        logger.warning(
-                            "raw_clob_error_on_%s | %s",
-                            "create_order" if not post_called else "post_order",
-                            raw_exc_body[:500],
-                        )
-                    if post_called:
+                    if submit_result.non_retryable:
                         response = {
                             "success": False,
-                            "status": "submitted_unconfirmed",
+                            "status": "rejected",
                             "error": last_error,
+                            "non_retryable": True,
                         }
                         self._save_submission(
                             idempotency_key=idem_key,
                             request=request_doc,
                             response=response,
                         )
-                        log_api_response(
-                            logger,
-                            method="POST",
-                            url="post_signed_order",
-                            status=503,
-                            error=last_error,
-                            meta={
-                                "side": side,
-                                "asset": req.token_id,
-                                "state": "submitted_unconfirmed",
-                            },
-                        )
                         logger.warning(
-                            "ambiguous submission (post called but exception): %s",
+                            "non-retryable CLOB rejection, skipping retries: %s",
                             last_error,
                         )
                         break
+                except VenueRateLimitError as exc:
+                    last_error = redact_error_detail(exc)
+                    logger.warning("clob rate limited (attempt %s): %s", attempt, last_error)
+                except (VenueAuthError, VenueInvalidOrderError) as exc:
+                    last_error = redact_error_detail(exc)
+                    response = {
+                        "success": False,
+                        "status": "rejected",
+                        "error": last_error,
+                        "non_retryable": True,
+                    }
+                    self._save_submission(
+                        idempotency_key=idem_key,
+                        request=request_doc,
+                        response=response,
+                    )
+                    logger.warning(
+                        "non-retryable CLOB rejection, skipping retries: %s",
+                        last_error,
+                    )
+                    break
+                except VenueUnavailableError as exc:
+                    last_error = redact_error_detail(exc)
+                    # Treat as ambiguous: the POST may have hit the wire and
+                    # we lost the response. A retry would risk duplicate fills.
+                    response = {
+                        "success": False,
+                        "status": "submitted_unconfirmed",
+                        "error": last_error,
+                    }
+                    self._save_submission(
+                        idempotency_key=idem_key,
+                        request=request_doc,
+                        response=response,
+                    )
+                    log_api_response(
+                        logger,
+                        method="POST",
+                        url="post_signed_order",
+                        status=503,
+                        error=last_error,
+                        meta={
+                            "side": side,
+                            "asset": req.token_id,
+                            "state": "submitted_unconfirmed",
+                        },
+                    )
+                    logger.warning(
+                        "ambiguous submission (POST possibly delivered): %s",
+                        last_error,
+                    )
+                    break
+                except Exception as exc:
+                    # Defensive: anything not classified by the gateway is
+                    # treated as ambiguous to avoid duplicate-fill risk.
+                    last_error = redact_error_detail(exc)
+                    response = {
+                        "success": False,
+                        "status": "submitted_unconfirmed",
+                        "error": last_error,
+                    }
+                    self._save_submission(
+                        idempotency_key=idem_key,
+                        request=request_doc,
+                        response=response,
+                    )
+                    logger.warning(
+                        "unclassified gateway exception (treating as ambiguous): %s",
+                        last_error,
+                    )
+                    break
                 await asyncio.sleep(min(0.15 * attempt, 0.30))
             else:
                 self.circuit_breaker.record_failure()

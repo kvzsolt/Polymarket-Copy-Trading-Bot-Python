@@ -130,3 +130,67 @@ def test_clob_v2_gateway_exports_required_symbols() -> None:
     assert OrderType is not None
     assert OrderArgs is not None
     assert TradeParams is not None
+
+
+# ---------------------------------------------------------------------------
+# Issue #66 — execution must depend on the gateway, not SDK-shaped types
+# ---------------------------------------------------------------------------
+
+# SDK-shaped identifiers that must NOT appear in execution / risk / pipeline
+# code. The gateway re-exports these for backward compatibility, but no
+# downstream module is allowed to consume them — they are an implementation
+# detail of ``integrations/polymarket/clob_v2_gateway.py``.
+_EXECUTION_ORDER_TYPE_PATTERNS = re.compile(
+    r"\b(?:OrderType|OrderArgs|MarketOrderArgs)\b"
+)
+
+# Files that own the venue boundary may legitimately reference SDK types.
+_GATEWAY_OWNED_FILES = {
+    "integrations/polymarket/clob_v2_gateway.py",
+    "integrations/polymarket/__init__.py",
+}
+
+
+def _scan_for_sdk_order_types(rel: str, content: str) -> list[str]:
+    hits: list[str] = []
+    for line_no, line in enumerate(content.splitlines(), start=1):
+        # Skip line comments and docstring openers — the marker is allowed in prose.
+        stripped = line.lstrip()
+        if stripped.startswith("#") or stripped.startswith('"""') or stripped.startswith("'''"):
+            continue
+        if _EXECUTION_ORDER_TYPE_PATTERNS.search(line):
+            hits.append(f"{rel}:{line_no}: {line.rstrip()}")
+    return hits
+
+
+def test_no_sdk_order_types_in_execution_paths() -> None:
+    """``ExecutionService``/coordinator/risk/trade-pipeline must never spell
+    ``OrderType`` / ``OrderArgs`` / ``MarketOrderArgs`` directly.  The gateway
+    hides these. Issue #66 acceptance.
+    """
+    scan_targets = [
+        REPO_ROOT / "services" / "executionService.py",
+        *(REPO_ROOT / "services" / "execution").glob("*.py"),
+        *(REPO_ROOT / "services" / "risk").glob("*.py"),
+        REPO_ROOT / "orchestrators" / "trade_pipeline.py",
+    ]
+
+    violations: list[str] = []
+    for path in scan_targets:
+        if not path.is_file():
+            continue
+        rel = str(path.relative_to(REPO_ROOT))
+        if rel in _GATEWAY_OWNED_FILES:
+            continue
+        content = path.read_text(encoding="utf-8", errors="replace")
+        violations.extend(_scan_for_sdk_order_types(rel, content))
+
+    if violations:
+        raise AssertionError(
+            "SDK order-type identifiers leaked into execution/risk/pipeline:\n"
+            + "\n".join(f"  - {v}" for v in violations)
+            + "\n\n"
+            "Use the gateway methods (``submit_marketable_order`` / "
+            "``submit_limit_order``) and the request dataclasses in "
+            "``integrations.polymarket.models`` instead."
+        )

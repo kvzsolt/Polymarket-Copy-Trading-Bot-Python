@@ -27,6 +27,7 @@ class OrderRecord(Protocol):
     venue_order_id: str | None
     reservation_id: str
     status: str
+    market_id: str | None
 
 class OrdersRepo(Protocol):
     async def get(self, order_id: str) -> OrderRecord: ...
@@ -44,9 +45,20 @@ class PositionsRepo(Protocol):
 class ReservationService(Protocol):
     def release_terminal(self, reservation_id: str, reason: str) -> None: ...
 
-class ClobGateway(Protocol):
+# NOTE: The canonical CLOB venue gateway Protocol lives in
+# ``interfaces.clob_gateway.ClobGateway``. ``OrderQueryGateway`` is the
+# query-only subset used by the reconciler; satisfied by the canonical
+# gateway directly (``get_order`` and ``get_fills`` signatures match).
+# See issue #66 for context.
+class OrderQueryGateway(Protocol):
     async def get_order(self, venue_order_id: str) -> Any: ...
-    async def get_fills(self, venue_order_id: str) -> list[Any]: ...
+    async def get_fills(self, market: str | None = None) -> list[Any]: ...
+
+
+# Backward-compatible alias for any out-of-tree imports that referenced the
+# previous local name. New code should import ``OrderQueryGateway`` directly
+# or the canonical ``interfaces.clob_gateway.ClobGateway``.
+ClobGateway = OrderQueryGateway
 
 class DbTransaction(Protocol):
     async def __aenter__(self) -> None: ...
@@ -62,7 +74,7 @@ class ReconciliationService:
         fills_repo: FillsRepo,
         positions_repo: PositionsRepo,
         reservation_service: ReservationService,
-        clob_gateway: ClobGateway,
+        clob_gateway: OrderQueryGateway,
         db: DbProvider,
         audit_logger: Any,
     ):
@@ -84,7 +96,7 @@ class ReconciliationService:
 
         try:
             venue_order = await self.clob_gateway.get_order(order.venue_order_id)
-            venue_fills = await self.clob_gateway.get_fills(order.venue_order_id)
+            venue_fills = await self.clob_gateway.get_fills(market=order.market_id)
         except Exception as exc:
             # Venue unreachable -> keep safe reserved state
             self.audit_logger.log_event("reconciliation_unreachable", {"order_id": order.id, "error": str(exc)})

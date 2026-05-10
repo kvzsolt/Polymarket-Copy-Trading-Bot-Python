@@ -38,8 +38,20 @@ class ExecutionResult:
         return cls(order_id=order_id, status=status)
 
 
-class ClobGateway(Protocol):
+# NOTE: The canonical CLOB venue gateway Protocol lives in
+# ``interfaces.clob_gateway.ClobGateway`` and exposes venue-shaped methods
+# (``submit_marketable_order(MarketableOrderRequest)``, ``get_order``,
+# ``get_fills``, etc.). ``OrderSubmitter`` below is a higher-level,
+# intent-shaped adapter satisfied by the execution-coordinator's binding glue;
+# do not confuse the two. See issue #66 for context.
+class OrderSubmitter(Protocol):
     async def submit_order(self, intent: OrderIntent) -> VenueSubmitResult: ...
+
+
+# Backward-compatible alias for any out-of-tree imports that referenced the
+# previous local name. New code should import ``OrderSubmitter`` directly or
+# the canonical ``interfaces.clob_gateway.ClobGateway``.
+ClobGateway = OrderSubmitter
 
 
 class Reconciler(Protocol):
@@ -57,7 +69,7 @@ class ExecutionCoordinator:
         orders_repo: Any,
         fills_repo: Any,
         positions_repo: Any,
-        clob_gateway: ClobGateway,
+        clob_gateway: OrderSubmitter,
         reconciler: Reconciler,
         audit_logger: AuditLogger,
         clock: Clock = DefaultClock(),
