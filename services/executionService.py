@@ -633,6 +633,7 @@ class ExecutionService:
                         )
                         break
                     if submit_result.ambiguous_post_failure:
+                        last_error = submit_result.error or "ambiguous post failure"
                         response["status"] = "submitted_unconfirmed"
                         self._save_submission(
                             idempotency_key=idem_key,
@@ -648,6 +649,17 @@ class ExecutionService:
                         submit_result.error or "unknown order submission error"
                     )
                     if submit_result.non_retryable:
+                        response = {
+                            "success": False,
+                            "status": "rejected",
+                            "error": last_error,
+                            "non_retryable": True,
+                        }
+                        self._save_submission(
+                            idempotency_key=idem_key,
+                            request=request_doc,
+                            response=response,
+                        )
                         logger.warning(
                             "non-retryable CLOB rejection, skipping retries: %s",
                             last_error,

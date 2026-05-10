@@ -260,6 +260,8 @@ async def main():
             available_cash=float(user_balances.get(runtime_user.user_id, 0.0)),
             database_ok=True,
             rpc_url=application.config.wallet.polygon_rpc_url,
+            clob_gateway=user_states[runtime_user.user_id].clob_gateway,
+            require_live_clob=not application.config.dry_run,
         )
 
     contexts_by_leader, risk_contexts_by_user = build_context_maps(
