@@ -100,7 +100,28 @@ class OrdersRepo(AbstractOrderRepository):
             "last_error": row["last_error"],
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
+            "matched_total": row["matched_total"],
         }
+
+    def upsert_matched_total(self, *, order_id: str, matched: str, committed: bool = True) -> None:
+        """Incrementally update the reconciled matched_total for an order.
+
+        Called by the reconciler each time it observes a new venue cumulative
+        matched size so the next reconciliation pass can compute the correct
+        delta.
+        """
+        if not order_id:
+            return
+        with create_connection(self.db_path) as conn:
+            conn.execute(
+                """
+                UPDATE orders SET matched_total = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE order_id = ?
+                """,
+                (matched, order_id),
+            )
+            if committed:
+                conn.commit()
 
     def get_by_idempotency_key(self, key: str) -> dict[str, Any] | None:
         with create_connection(self.db_path) as conn:
@@ -108,7 +129,8 @@ class OrdersRepo(AbstractOrderRepository):
                 """
                 SELECT idempotency_key, user_id, leader_id, order_id, status,
                        request_json, response_json, attempt_count, last_error,
-                       created_at, updated_at
+                       created_at, updated_at,
+                       COALESCE(matched_total, '0') AS matched_total
                 FROM orders
                 WHERE idempotency_key = ?
                 LIMIT 1
@@ -132,7 +154,8 @@ class OrdersRepo(AbstractOrderRepository):
                 """
                 SELECT idempotency_key, user_id, leader_id, order_id, status,
                        request_json, response_json, attempt_count, last_error,
-                       created_at, updated_at
+                       created_at, updated_at,
+                       COALESCE(matched_total, '0') AS matched_total
                 FROM orders
                 WHERE order_id = ?
                 ORDER BY updated_at DESC
@@ -404,7 +427,8 @@ class OrdersRepo(AbstractOrderRepository):
         query = """
             SELECT idempotency_key, user_id, leader_id, order_id, status,
                    request_json, response_json, attempt_count, last_error,
-                   created_at, updated_at
+                   created_at, updated_at,
+                   COALESCE(matched_total, '0') AS matched_total
             FROM orders
             WHERE status IN ('submitted_unconfirmed', 'submitted')
               AND order_id IS NOT NULL
