@@ -233,7 +233,6 @@ class TestExecutionService:
         )
         repo = _Repo()
         svc = ExecutionService(clob, _MetaSvc(), _FeeSvc(), repo, config=_make_exec_config(min_share_price=0))
-        svc._confirm_fill = AsyncMock(return_value={"status": "filled", "size_matched": "5", "avg_price": "0.5"})
         req = ExecutionRequest(
             user_id="u1",
             leader_id="l1",
@@ -247,7 +246,9 @@ class TestExecutionService:
         res = await svc.execute(req)
         assert res.accepted is True
         assert res.order_id == "o1"
-        assert "o1" in repo.fills
+        # Fill recording is now handled by ReconciliationService, not ExecutionService.
+        # Verify the submission was persisted instead.
+        assert "o1" in {rec.get("order_id") for rec in repo.store.values()}
 
     @pytest.mark.asyncio
     async def test_executable_order_guard_rejects_small_buy_when_enabled(self):
@@ -294,7 +295,6 @@ class TestExecutionService:
             repo,
             config=_make_exec_config(min_share_price=0, enable_executable_order_guard=False),
         )
-        svc._confirm_fill = AsyncMock(return_value={"status": "filled", "size_matched": "0.2", "avg_price": "0.5"})
         req = ExecutionRequest(
             user_id="u1",
             leader_id="l1",
@@ -351,16 +351,32 @@ class TestExecutionService:
         assert len(stored["request"]["signal_id"]) < len(long_signal)
 
     @pytest.mark.asyncio
-    async def test_confirm_fill_returns_terminal_no_fill_order_state(self):
-        clob = SimpleNamespace(
-            client=SimpleNamespace(get_order=lambda _order_id: {"status": "cancelled", "size_matched": "0"})
-        )
+    async def test_execution_service_does_not_expose_confirm_fill(self):
+        """_confirm_fill was moved to ReconciliationService (issue #71).
+        ExecutionService should not have this method.
+        """
+        clob = SimpleNamespace()
         svc = ExecutionService(clob, _MetaSvc(), _FeeSvc(), _Repo(), config=_make_exec_config(min_share_price=0))
+        assert not hasattr(svc, "_confirm_fill"), "_confirm_fill should live in ReconciliationService, not ExecutionService"
 
-        fill_info = await svc._confirm_fill("ord-cancelled")
+    @pytest.mark.asyncio
+    async def test_reconciler_has_confirm_fill(self):
+        """ReconciliationService.confirm_fill polls the CLOB gateway (issue #71)."""
+        from services.execution.reconciliation_service import ReconciliationService
 
-        assert fill_info["status"] == "cancelled"
-        assert fill_info["size_matched"] == "0"
+        async def mock_get_order(order_id: str) -> dict:
+            return {"status": "filled", "size_matched": "3.5", "avg_price": "0.52"}
+
+        mock_gw = SimpleNamespace(get_order=mock_get_order)
+        svc = ReconciliationService(
+            orders_repo=SimpleNamespace(),
+            fills_repo=SimpleNamespace(),
+            positions_repo=SimpleNamespace(),
+            clob_gateway=mock_gw,
+        )
+        result = await svc.confirm_fill("order-42")
+        assert result["status"] == "filled"
+        assert result["size_matched"] == "3.5"
 
     @pytest.mark.asyncio
     async def test_duplicate_idempotency_is_ignored(self):
