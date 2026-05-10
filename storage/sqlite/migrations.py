@@ -50,6 +50,7 @@ def _ensure_orders_table(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "orders", "attempt_count INTEGER NOT NULL DEFAULT 1")
     _ensure_column(conn, "orders", "last_error TEXT")
     _ensure_column(conn, "orders", "updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
+    _ensure_column(conn, "orders", "matched_total TEXT DEFAULT '0'")  # issue-71: reconciler delta tracking
 
     # Backfill user/leader from request payload where possible.
     conn.execute(

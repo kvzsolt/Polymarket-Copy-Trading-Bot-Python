@@ -244,41 +244,6 @@ class ExecutionService:
             response=_sanitize_submission_response(response),
         )
 
-    async def _confirm_fill(self, order_id: str) -> dict[str, Any]:
-        """Poll order status briefly and return best-effort fill details."""
-        loop = asyncio.get_running_loop()
-        last_error: Exception | None = None
-        last_order: dict[str, Any] = {}
-        terminal_no_fill_statuses = {"cancelled", "canceled", "expired", "rejected"}
-        for _ in range(3):
-            try:
-                order = await loop.run_in_executor(
-                    None,
-                    lambda: self.clob_client.client.get_order(order_id),
-                )
-                if isinstance(order, dict):
-                    last_order = order
-                    status = str(order.get("status", "")).lower()
-                    if status in {"filled", "matched"}:
-                        return order
-                    # Even canceled FOK may include matched/size.
-                    if order.get("size_matched") or order.get("filled_size"):
-                        return order
-                    if status in terminal_no_fill_statuses:
-                        return order
-                await asyncio.sleep(0.15)
-            except Exception as exc:
-                last_error = exc
-                await asyncio.sleep(0.15)
-
-        if last_error:
-            logger.warning(
-                "fill confirmation warning for %s (%s)",
-                order_id,
-                redact_error_detail(last_error),
-            )
-        return last_order
-
     async def execute(self, req: ExecutionRequest) -> ExecutionResult:
         side = _normalize_side(req.side)
         if req.amount <= 0:
@@ -837,65 +802,18 @@ class ExecutionService:
                 )
 
             order_id = response.get("orderID")
-            fill_info = await self._confirm_fill(order_id) if order_id else {}
-
-        # Parse fill size — never fall back to req.amount (BUY=notional, SELL=tokens).
-        raw_fill = (
-            fill_info.get("size_matched")
-            or fill_info.get("filled_size")
-            or fill_info.get("size")
-        )
-        fill_status = str(fill_info.get("status", "")).lower()
-
-        if raw_fill and Decimal(str(raw_fill)) > 0:
-            filled_amount = Decimal(str(raw_fill))
-            confirmed = True
-        else:
-            filled_amount = Decimal("0")
-            confirmed = False
-
-        avg_price = (
-            Decimal(
-                str(
-                    fill_info.get("avg_price")
-                    or fill_info.get("price")
-                    or worst_price
-                )
-            )
-            if confirmed
-            else None
-        )
-
-        if confirmed and avg_price and avg_price > 0:
-            notional = filled_amount * avg_price
-            fees_paid = (notional * Decimal(fee_bps) / Decimal(10_000)).quantize(
-                Decimal("0.00000001")
-            )
-        else:
-            notional = Decimal("0")
-            fees_paid = Decimal("0")
-
-        if order_id:
-            self.order_repo.mark_fill(
+            # Settlement is owned by the canonical reconciler.
+            # Execution never self-confirms fills — it returns
+            # submitted_unconfirmed and lets the reconciler poll
+            # venue state, apply incremental deltas, and finalise
+            # terminal statuses.
+            return ExecutionResult(
+                accepted=True,
                 order_id=order_id,
-                fill={
-                    "filled_amount": str(filled_amount),
-                    "avg_price": str(avg_price),
-                    "fee_bps": fee_bps,
-                    "fees_paid": str(fees_paid),
-                },
+                status="submitted_unconfirmed",
+                requested_amount=req.amount,
+                filled_amount=Decimal("0"),
+                avg_price=None,
+                fees_paid=Decimal("0"),
+                error=None,
             )
-
-        result_status = "filled" if confirmed else "submitted_unconfirmed"
-        if fill_status and fill_status not in {"", "filled", "matched"}:
-            result_status = fill_status
-        return ExecutionResult(
-            accepted=True,
-            order_id=order_id,
-            status=result_status,
-            requested_amount=req.amount,
-            filled_amount=filled_amount,
-            avg_price=avg_price,
-            fees_paid=fees_paid,
-            error=None,
-        )
