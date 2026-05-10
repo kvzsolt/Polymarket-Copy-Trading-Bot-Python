@@ -1589,6 +1589,13 @@ async def execute_trades(
                 fail_reason = exec_result.error or exec_result.status
                 live_synced_size: Decimal | None = None
                 if signal.side == "SELL" and "insufficient_balance" in str(fail_reason).lower():
+                    existing = context.positions_repo.get_position(
+                        context.user_id,
+                        signal.condition_id,
+                        token_id=signal.token_id,
+                    )
+                    previous_local_size = getattr(existing, "size_tokens", Decimal("0")) if existing else Decimal("0")
+                    
                     live_synced_size = await _sync_sell_position_from_live_holdings(
                         context,
                         leader_id=leader_id,
@@ -1602,6 +1609,7 @@ async def execute_trades(
                         audit = getattr(context, "audit_logger", None)
                         if audit is not None:
                             try:
+                                action = "deleted" if live_synced_size <= Decimal("1e-12") else "shrunk"
                                 audit.log_event(
                                     "manual_position_drift_reconciled",
                                     {
@@ -1609,7 +1617,9 @@ async def execute_trades(
                                         "leader_id": leader_id,
                                         "condition_id": signal.condition_id,
                                         "token_id": signal.token_id,
+                                        "previous_local_size": str(previous_local_size),
                                         "live_size": str(live_synced_size),
+                                        "action": action,
                                         "source": "trade_pipeline",
                                     },
                                 )

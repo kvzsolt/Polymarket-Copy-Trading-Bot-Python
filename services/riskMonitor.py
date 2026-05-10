@@ -94,6 +94,7 @@ _INSUFFICIENT_BALANCE_PATTERNS = (
     "insufficient_balance",
     "insufficient balance",
     "not enough balance",
+    "allowance",
 )
 
 
