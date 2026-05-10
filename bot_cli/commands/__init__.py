@@ -11,6 +11,15 @@ from bot_cli.commands.positions import register_positions_command, run_positions
 from bot_cli.commands.config import register_config_command, run_config
 from bot_cli.commands.reconcile import register_reconcile_command, run_reconcile
 from bot_cli.commands.run import register_run_command, run_run
+from bot_cli.commands.reservations import (
+    register_reservations_command,
+    run_reservations,
+)
+from bot_cli.commands.stale_locks import (
+    register_stale_locks_command,
+    run_stale_locks,
+)
+from bot_cli.commands.drift import register_drift_command, run_drift
 
 __all__ = [
     "register_doctor_command",
@@ -27,4 +36,10 @@ __all__ = [
     "run_reconcile",
     "register_run_command",
     "run_run",
+    "register_reservations_command",
+    "run_reservations",
+    "register_stale_locks_command",
+    "run_stale_locks",
+    "register_drift_command",
+    "run_drift",
 ]

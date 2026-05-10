@@ -100,7 +100,7 @@ class LeaderRegistry:
 
         discovery_enabled = self.config.discovery.enable_trader_discovery
         if configured_clean and not discovery_enabled:
-            await metrics.set_gauge("monitored_leaders", float(len(configured_clean)))
+            metrics.set_gauge("monitored_leaders", float(len(configured_clean)))
             if self.readiness is not None:
                 self.readiness.update(monitored_leader_count=len(configured_clean), mode="configured")
             return LeaderRegistryState(
@@ -111,7 +111,7 @@ class LeaderRegistry:
             )
 
         self.logger.info("discovery_refresh_started")
-        await metrics.inc("discovery_refresh_started_total")
+        metrics.inc("discovery_refresh_started_total")
 
         candidates: list[LeaderCandidate] = []
         try:
@@ -167,11 +167,11 @@ class LeaderRegistry:
             )
 
             self.logger.info("discovery_refresh_succeeded", extra={"candidate_count": len(candidates)})
-            await metrics.inc("discovery_refresh_succeeded_total")
-            await metrics.set_gauge("discovery_candidates", float(len(candidates)))
+            metrics.inc("discovery_refresh_succeeded_total")
+            metrics.set_gauge("discovery_candidates", float(len(candidates)))
         except Exception as exc:
             self.logger.warning("discovery_refresh_failed", extra={"error": repr(exc)})
-            await metrics.inc("discovery_refresh_failed_total")
+            metrics.inc("discovery_refresh_failed_total")
             candidates = []
 
         active_discovered = [c.leader_id for c in candidates if c.active]
@@ -208,9 +208,9 @@ class LeaderRegistry:
 
         if not active_monitored:
             self.logger.warning("no_leaders_monitored", extra={"mode": mode})
-            await metrics.set_gauge("monitored_leaders", 0)
+            metrics.set_gauge("monitored_leaders", 0)
         else:
-            await metrics.set_gauge("monitored_leaders", float(len(active_monitored)))
+            metrics.set_gauge("monitored_leaders", float(len(active_monitored)))
 
         if self.readiness is not None:
             self.readiness.update(monitored_leader_count=len(active_monitored), mode=mode)

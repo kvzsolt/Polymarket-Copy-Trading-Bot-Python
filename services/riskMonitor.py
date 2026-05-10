@@ -983,7 +983,7 @@ async def run_risk_check_for_context(context: TradingContext) -> None:
                         exit_reason=reason,
                         leader_wallet=pos.leader_id or "",
                     )
-                await metrics.inc(
+                metrics.inc(
                     "risk_exits_total",
                     labels={
                         "user_id": context.user_id,
