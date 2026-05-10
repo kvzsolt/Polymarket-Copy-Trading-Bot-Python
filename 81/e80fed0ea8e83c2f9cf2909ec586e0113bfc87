@@ -1,0 +1,76 @@
+tests/release_gate/test_wss_heartbeat.py
+  s_fc2e1ebe662e1c::t_f9af08a7dc8d90 1-85
+tests/release_gate/test_sizing_metadata_driven.py
+  s_fc2e1ebe662e1c::t_8d599bad8b2420 68,71,79,82
+  s_fc2e1ebe662e1c::t_f03330493563dc 1-67,69-70,72-78,80-81,83-84
+tests/release_gate/test_matrix_coverage.py
+  s_fc2e1ebe662e1c::t_02d92d84414101 1-57
+tests/release_gate/test_effective_idempotency.py
+  s_fc2e1ebe662e1c::t_35aed2babe4634 1-64
+tests/release_gate/test_position_key_uniqueness.py
+  s_fc2e1ebe662e1c::t_e287e417c1949b 1-77
+.github/workflows/ci.yml
+  s_fc2e1ebe662e1c::t_70666e39b3cfb7 1-99
+docs/full-rework-progress.md
+  s_fc2e1ebe662e1c::t_bfea79e806433e 1-66
+tests/release_gate/test_e2e_dry_run_sell.py
+  s_fc2e1ebe662e1c::t_082648bf236995 40,42,44-45
+  s_fc2e1ebe662e1c::t_4cd04bc921da45 1-39,41,43,46-83
+tests/release_gate/test_concurrency_stress.py
+  s_fc2e1ebe662e1c::t_4d528688cf4c4c 1-58
+tests/release_gate/test_reservation_lifecycle.py
+  s_fc2e1ebe662e1c::t_ef440be72f259b 1-109
+tests/release_gate/__init__.py
+  s_fc2e1ebe662e1c::t_cba29fcbdfe620 1-7
+.gitignore
+  s_fc2e1ebe662e1c::t_39dda4f66a06dd 22-23
+tests/release_gate/conftest.py
+  s_fc2e1ebe662e1c::t_f7f6264a377220 1-17
+docs/release-gate.md
+  s_fc2e1ebe662e1c::t_94e49aff8c576b 1-64
+tests/release_gate/test_wss_reconnect_resync.py
+  s_fc2e1ebe662e1c::t_286c81d1cf245e 1-69
+tests/conftest.py
+  s_fc2e1ebe662e1c::t_c0eb1cc2974ea9 1-192
+tests/release_gate/test_e2e_dry_run_buy.py
+  s_fc2e1ebe662e1c::t_d369b792aec839 1-41,43,45,48-86
+  s_fc2e1ebe662e1c::t_d07b4ab37cf2a8 42,44,46-47
+tests/release_gate/test_coordinator_serialization.py
+  s_fc2e1ebe662e1c::t_faa75320c5ecdf 1-85
+tests/release_gate/test_reconciler_terminal_ownership.py
+  s_fc2e1ebe662e1c::t_def26fef020f05 1-50
+tests/release_gate/test_manual_drift_reconciliation.py
+  s_fc2e1ebe662e1c::t_0325826849cbdd 1-104
+tests/release_gate/test_cache_ttl_invalidation.py
+  s_fc2e1ebe662e1c::t_1aa9115a9e0a14 1-87
+tests/release_gate/test_protective_exit_integration.py
+  s_fc2e1ebe662e1c::t_2e9baab6f1c49c 1-37
+pytest.ini
+  s_fc2e1ebe662e1c::t_a7befb6a928066 6
+  s_fc2e1ebe662e1c::t_25e5a18f115ac5 3
+tests/release_gate/test_typed_config_fail_closed.py
+  s_fc2e1ebe662e1c::t_1472ac9c935365 46-56
+  s_fc2e1ebe662e1c::t_1b07a900bd163a 1-45,57-73
+tests/release_gate/test_startup_recovery.py
+  s_fc2e1ebe662e1c::t_9f40784cff5e04 1-27
+tests/release_gate/test_clob_v2_gateway_smoke.py
+  s_fc2e1ebe662e1c::t_377d45a47f8ee6 1-47
+.github/workflows/release-gate.yml
+  s_fc2e1ebe662e1c::t_452041806281a4 1-29
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.4",
+  "base_commit_sha": "81e80fed0ea8e83c2f9cf2909ec586e0113bfc87",
+  "prompts": {},
+  "sessions": {
+    "s_fc2e1ebe662e1c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "55404a7d-e170-48de-9d9d-68bc6b29c47b",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
