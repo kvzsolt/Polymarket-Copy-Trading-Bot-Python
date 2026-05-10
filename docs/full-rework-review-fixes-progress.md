@@ -7,7 +7,7 @@ Branch tracking the audit remediation defined in `audit.md` and `plan.md`. One i
 | Issue | Slice | Status |
 |---|---|---|
 | #66 | CLOB V2 gateway isolation | complete |
-| #67 | Canonical PositionKey + action coordinator | pending |
+| #67 | Canonical PositionKey + action coordinator | complete (sub-branch `fix/issue-67-position-key-coordinator`) |
 | #68 | Market-data cache + WSS lifecycle | pending |
 | #69 | Metadata-driven sizing + effective idempotency | pending |
 | #70 | Reservations + intent lifecycle ownership | pending |
@@ -149,4 +149,143 @@ without test-pollution-prone files (see Remaining risks).
 
 ### Next issue
 
-_#67 — canonical PositionKey + action coordinator_
+_#68 — market-data cache + WSS lifecycle_
+
+## Issue #67 — Canonical PositionKey + action coordinator (complete pending PR)
+
+Sub-branch: `fix/issue-67-position-key-coordinator` (off `full-rework-review-fixes`).
+
+### Summary
+
+Canonical position identity ``(user_id, condition_id, token_id)`` now lives
+in `domain/position_key.py` as `PositionKey` — a frozen-slots dataclass
+with hex-id normalization, optional `outcome` (display only — excluded from
+identity / hashing), and five spec-required factory constructors
+(`from_signal_event`, `from_wss_event`, `from_stored_position`,
+`from_execution_request`, `from_reconciliation_record`). The legacy
+`services.positionActionCoordinator.PositionScope` becomes a back-compat
+alias so the 8+ existing call sites keep working unchanged. The plan-named
+snake_case path `services/position_action_coordinator.py` is added as a
+re-export shim.
+
+`services/execution/reconciliation_service.py` now optionally accepts a
+`position_coordinator` kwarg and acquires the per-scope lock around the
+two mutation blocks (filled-path + terminal-path) when the order record
+carries the canonical fields; legacy records without those fields degrade
+gracefully (no lock attempted, no exception). Structured `position_key`
+fields are now emitted via `extra=` at every coordinator-acquire boundary
+in `intentRegistry`, `riskMonitor`, `trade_pipeline`, and
+`reconciliation_service`. Trade pipeline and risk monitor sites swap
+inline `PositionScope(...)` for the new factory constructors where the
+source data shape matches a factory's contract.
+
+### Files changed
+
+- `domain/position_key.py` — NEW. Canonical `PositionKey` + 5 factories +
+  `log_fields()` + identity tuple; hex normalization; whitespace strip;
+  empty-field validation.
+- `services/position_action_coordinator.py` — NEW. Snake_case shim
+  re-exporting `PositionActionCoordinator`, `PositionScope`, `PositionKey`.
+- `services/positionActionCoordinator.py` — replace local `PositionScope`
+  dataclass with `PositionScope = PositionKey` alias; drop `dataclass` import.
+- `services/intentRegistry.py` — replace tuple-format `intent.begin`,
+  `intent.release`, `intent.reservation_negative_residual` log lines with
+  `extra=scope.log_fields()` structured fields.
+- `services/riskMonitor.py` — emit `extra=scope.log_fields()` at the two
+  protective-exit acquire sites (`scope_lock_acquired_confirm_fill`,
+  `scope_lock_acquired_protective_exit`); pass optional `outcome` into
+  the protective-exit scope.
+- `orchestrators/trade_pipeline.py` — import `PositionKey` from
+  `domain.position_key`; swap inline `PositionScope(...)` for
+  `PositionKey.from_reconciliation_record(record)` and
+  `PositionKey.from_signal_event(signal, context.user_id)`; emit
+  `trade_pipeline.reconcile_scope_acquired` and
+  `trade_pipeline.signal_scope_acquired` with structured fields.
+- `services/execution/reconciliation_service.py` — accept optional
+  `position_coordinator` constructor kwarg; add `_try_build_key`
+  helper + `_scope_lock` async context manager; acquire per-scope lock
+  around filled-path + terminal-path mutation blocks; emit structured
+  `position_key.*` fields in `reconciliation_resolved_filled` and
+  `reconciliation_resolved_terminal` audit events.
+- `tests/test_position_key.py` — NEW. 26 tests (identity, normalization,
+  validation, factories, alias resolution, snake_case shim).
+- `tests/test_reconciliation_service_coordinator_wiring.py` — NEW. 5
+  tests covering filled/terminal acquire, legacy graceful degrade,
+  no-coordinator legacy path, pending-status no-acquire.
+- `tests/test_position_action_coordinator.py` — append 3 spec-gap tests
+  (different users do not collide; YES/NO via domain import; PositionKey
+  vs PositionScope share one lock).
+- `docs/full-rework-review-fixes-progress.md` — flip status row to
+  complete; append this entry.
+
+### Tests run (this slice)
+
+```text
+tests/test_position_key.py                                   26 passed
+tests/test_position_action_coordinator.py                    12 passed (was 9)
+tests/test_position_action_coordinator_integration.py         4 passed
+tests/test_intent_registry.py                                22 passed
+tests/test_reconciliation_service_coordinator_wiring.py       5 passed
+tests/test_reconciliation_service.py                          6 passed
+```
+
+Targeted slice total: **75 passed** (4 deselected, 0 failed).
+
+Regression sweep (no behavior change expected outside #67 surface):
+
+```text
+tests/test_risk_behavior.py
+tests/test_execution_coordinator.py
+tests/test_runtime_bootstrap_config.py
+tests/test_startup_health.py
+tests/test_phase5_hardening.py
+tests/test_clob_v2_gateway_isolation.py
+tests/test_issue66_gateway_isolation.py
+tests/test_trade_pipeline_safety.py
+tests/test_trade_pipeline_tiers.py
+tests/test_reconciliation.py
+tests/test_restart_rehydration_risk.py
+                                                            182 passed (1 warning)
+```
+
+`python -m compileall -q domain/ services/ orchestrators/ tests/` — clean.
+
+### Acceptance criteria mapping
+
+- [x] `domain/position_key.py` with immutable `PositionKey(user, condition_id, token_id, outcome=None)`.
+- [x] Constructors from signal events / WSS events / stored positions / execution requests / reconciliation records.
+- [x] Casing/format normalization (hex lowercased, whitespace stripped) where safe.
+- [x] `services/position_action_coordinator.py` with per-key async lock (snake_case shim wrapping the existing implementation).
+- [x] Intent states: `IDLE`, `INTENT_PENDING`, `SUBMITTED`, `ACK_LIVE`, `PARTIAL`, `FILLED`, `CONFIRMING`, `DONE`, `ERROR`, `CANCELLED` (already present in `services/intentRegistry.py:43`).
+- [x] Coordinator wired into trade pipeline, risk monitor, and reconciliation entrypoints (last one is opt-in via constructor injection — runtime wiring lands with #71 when reconciliation_service replaces `_reconcile_one`).
+- [x] Structured log fields for `PositionKey` at mutation boundaries.
+
+Tests:
+
+- [x] YES and NO under same condition do not collide (`tests/test_intent_registry.py::test_yes_no_token_scopes_do_not_collide` + `tests/test_position_action_coordinator.py::test_yes_no_under_same_condition_do_not_collide_via_domain_import`).
+- [x] Different users do not collide (`tests/test_position_action_coordinator.py::test_different_users_do_not_collide` + `tests/test_position_key.py::test_different_users_distinct_under_same_token`).
+- [x] Same key serializes concurrent operations (`test_same_scope_is_serialized` + `test_same_key_via_domain_and_alias_share_one_lock` + `test_concurrent_buy_sell_serialized_via_coordinator_lock`).
+- [x] Different token ids under same condition can run concurrently (`test_same_condition_different_token_are_distinct_scopes`).
+- [x] Illegal intent transitions are rejected (`test_finalize_requires_by_reconciler_flag`, `test_finalize_rejects_non_terminal_state`, `test_submitter_transition_cannot_write_terminal`).
+
+### Remaining risks
+
+- `services/execution/reconciliation_service.py` is not yet on the live
+  reconciliation path — production reconciliation runs via
+  `_reconcile_one` in `orchestrators/trade_pipeline.py` (which IS
+  coordinator-wired). Full handoff to the new service is owned by #71.
+- `runtime_bootstrap.py` does not yet pass `position_coordinator` into
+  `ReconciliationService` — wiring is preparatory; live wiring lands
+  with #71 once reconciliation_service is the live reconciler.
+- `riskMonitor.py:441` `release_scope` site (post-close) still uses
+  inline `PositionScope(...)` — could move to `from_stored_position`
+  but the close-confirmation context already has the fields locally;
+  no factory migration needed.
+
+### Commit SHAs
+
+- `df3732a` feat(issue-67): canonical PositionKey in domain/
+- `190eb76` refactor(issue-67): wire PositionKey factories + structured logs at mutation boundaries
+- `5ce7dc6` test(issue-67): PositionKey unit tests + spec-gap coordinator tests + recon wiring tests
+- (this commit) docs(issue-67): record final SHAs and complete status
+
