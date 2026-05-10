@@ -43,6 +43,7 @@ class TradingContext:
     readiness: ReadinessTracker = field(default_factory=ReadinessTracker)
     position_coordinator: PositionActionCoordinator = field(default_factory=PositionActionCoordinator)
     extra: dict[str, Any] = field(default_factory=dict)
+    risk_triggers_repo: Any | None = None
 
     def __post_init__(self) -> None:
         # Fail fast: these dependencies are required in production contexts.
