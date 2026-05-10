@@ -5,6 +5,7 @@ import time
 from dataclasses import asdict
 from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
 from hashlib import sha256
+from types import SimpleNamespace
 from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -71,6 +72,17 @@ def _parse_decimal_or_default(raw: Any, default: Decimal) -> Decimal:
         return Decimal(str(raw))
     except Exception:
         return default
+
+
+def _default_execution_config() -> SimpleNamespace:
+    return SimpleNamespace(
+        execution_require_fresh_book=True,
+        book_spread_mode="absolute_bps",
+        max_book_spread_bps=2500,
+        max_book_spread_ticks=0,
+        min_share_price=0,
+        max_share_price=0,
+    )
 
 
 def _normalize_side(side: str) -> str:
@@ -213,6 +225,21 @@ class ExecutionService:
                 error=f"CLOB circuit breaker open — retry in {remaining:.0f}s",
             )
 
+        if self._config is None:
+            logger.error(
+                "execution_rejected_config_missing",
+                extra={"type": "execution_rejected_config_missing", "token_id": req.token_id},
+            )
+            return ExecutionResult(
+                accepted=False,
+                order_id=None,
+                status="rejected",
+                requested_amount=req.amount,
+                filled_amount=Decimal("0"),
+                avg_price=None,
+                fees_paid=Decimal("0"),
+                error="execution config not provided — refusing to execute (fail-closed)",
+            )
         ec = self._config.execution
         require_fresh_book = ec.execution_require_fresh_book
         meta = await self.market_meta_service.get(

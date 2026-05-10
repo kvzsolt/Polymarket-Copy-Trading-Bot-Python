@@ -187,7 +187,7 @@ class TestGetMarketMetaV2Methods:
 
     @pytest.mark.asyncio
     async def test_price_quantized_in_create_market_order(self):
-        from py_clob_client.clob_types import OrderType
+        from py_clob_client_v2.clob_types import OrderType
 
         client = MagicMock()
         client.create_market_order.return_value = object()

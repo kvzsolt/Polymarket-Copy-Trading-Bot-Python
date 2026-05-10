@@ -1,4 +1,4 @@
-"""Verify that only the gateway module imports py_clob_client directly.
+"""Verify that only the approved CLOB boundary imports the SDK directly.
 
 After CLOB V2 gateway isolation, all CLOB SDK access must flow through
 `integrations/polymarket/clob_v2_gateway.py`. The only allowed exception is
@@ -7,9 +7,23 @@ After CLOB V2 gateway isolation, all CLOB SDK access must flow through
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+def _find_repo_root() -> Path:
+    """Walk upward to find the repo root (directory containing pyproject.toml)."""
+    current = Path(__file__).resolve().parent
+    for _ in range(5):  # safety limit
+        if (current / "pyproject.toml").is_file():
+            return current
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
+    # Fallback: assume standard layout
+    return Path(__file__).resolve().parent.parent
+
+REPO_ROOT = _find_repo_root()
 
 ALLOWED_DIRECT_SDK_IMPORTERS = {
     "integrations",
@@ -18,11 +32,11 @@ ALLOWED_DIRECT_SDK_IMPORTERS = {
 }
 
 DIRECT_SDK_PATTERNS = (
-    "from py_clob_client",
-    "import py_clob_client",
     "from py_clob_client_v2",
     "import py_clob_client_v2",
 )
+
+LEGACY_SDK_IMPORT_RE = re.compile(r"^\s*(?:from|import)\s+py_clob_client(?:\s|\.|$)", re.MULTILINE)
 
 
 def test_no_direct_py_clob_imports_in_production_code() -> None:
@@ -73,10 +87,30 @@ def test_no_direct_py_clob_imports_in_production_code() -> None:
 
     if violations:
         raise AssertionError(
-            "Direct py_clob_client imports found outside allowed modules:\n"
+            "Direct py_clob_client_v2 imports found outside allowed modules:\n"
             + "\n".join(f"  - {v}" for v in violations)
             + "\n\n"
             "Use 'from integrations.polymarket.clob_v2_gateway import ...' instead."
+        )
+
+
+def test_no_legacy_py_clob_imports_in_python_code() -> None:
+    violations: list[str] = []
+
+    for py_file in REPO_ROOT.rglob("*.py"):
+        rel = str(py_file.relative_to(REPO_ROOT))
+        if "__pycache__" in rel or ".venv" in rel:
+            continue
+        content = py_file.read_text(encoding="utf-8", errors="replace")
+        if LEGACY_SDK_IMPORT_RE.search(content):
+            violations.append(rel)
+
+    if violations:
+        raise AssertionError(
+            "Legacy py_clob_client imports are not allowed:\n"
+            + "\n".join(f"  - {v}" for v in violations)
+            + "\n\n"
+            "Use py_clob_client_v2 only."
         )
 
 
@@ -87,6 +121,7 @@ def test_clob_v2_gateway_exports_required_symbols() -> None:
         OrderArgs,
         OrderType,
         SELL,
+        TradeParams,
     )
 
     # BUY and SELL should be distinct string constants
@@ -94,3 +129,4 @@ def test_clob_v2_gateway_exports_required_symbols() -> None:
     assert isinstance(BUY, str) and isinstance(SELL, str)
     assert OrderType is not None
     assert OrderArgs is not None
+    assert TradeParams is not None
