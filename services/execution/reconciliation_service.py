@@ -577,6 +577,19 @@ class ReconciliationService:
                 "is_final": is_final_fill,
             },
         )
+        try:
+            from services.metrics import (
+                METRIC_RECONCILIATION_DELTA_APPLIED,
+                metrics,
+            )
+
+            metrics.inc_sync(
+                METRIC_RECONCILIATION_DELTA_APPLIED,
+                value=float(delta_matched),
+                labels={"side": str(side or "unknown")},
+            )
+        except Exception:
+            pass
         return True
 
     # ------------------------------------------------------------------
