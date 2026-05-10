@@ -27,6 +27,7 @@ class OrderRecord(Protocol):
     venue_order_id: str | None
     reservation_id: str
     status: str
+    market_id: str | None
 
 class OrdersRepo(Protocol):
     async def get(self, order_id: str) -> OrderRecord: ...
@@ -51,7 +52,7 @@ class ReservationService(Protocol):
 # See issue #66 for context.
 class OrderQueryGateway(Protocol):
     async def get_order(self, venue_order_id: str) -> Any: ...
-    async def get_fills(self, venue_order_id: str) -> list[Any]: ...
+    async def get_fills(self, market: str | None = None) -> list[Any]: ...
 
 
 # Backward-compatible alias for any out-of-tree imports that referenced the
@@ -95,7 +96,7 @@ class ReconciliationService:
 
         try:
             venue_order = await self.clob_gateway.get_order(order.venue_order_id)
-            venue_fills = await self.clob_gateway.get_fills(order.venue_order_id)
+            venue_fills = await self.clob_gateway.get_fills(market=order.market_id)
         except Exception as exc:
             # Venue unreachable -> keep safe reserved state
             self.audit_logger.log_event("reconciliation_unreachable", {"order_id": order.id, "error": str(exc)})
