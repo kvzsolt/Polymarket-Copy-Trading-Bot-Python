@@ -149,7 +149,18 @@ def _maybe_boost_tiny_leader_buy_cap(
 # ---------------------------------------------------------------------------
 # Module-level singletons (patched in tests)
 # ---------------------------------------------------------------------------
-_copy_decision = CopyDecisionService()
+class _NullCopyDecision:
+    """Placeholder so tests can patch ``_copy_decision.decide_buy`` even
+    when no real ``CopyDecisionService`` has been constructed."""
+
+    def decide_buy(self, **kw):
+        return None
+
+    def decide_sell(self, **kw):
+        return None
+
+
+_copy_decision: CopyDecisionService | _NullCopyDecision = _NullCopyDecision()
 _execution_service = None
 logger = get_logger("LegacyTradeExecutor")
 
