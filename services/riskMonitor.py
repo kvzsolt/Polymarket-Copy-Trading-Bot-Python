@@ -23,6 +23,7 @@ from services.positionActionCoordinator import PositionScope
 from services.riskEngine import active_policy
 from storage.sqlite.fills_repo import FillRecord
 from utils import is_valid_clob_token_id
+from utils.fetchData import fetch_data
 
 # ---------------------------------------------------------------------------
 # Venue circuit breaker — suppresses price polls during exchange outages.
@@ -88,6 +89,53 @@ class VenueCircuitBreaker:
 from utils.logger import get_logger, log_risk_exit
 
 logger = get_logger("RiskMonitor")
+
+_INSUFFICIENT_BALANCE_PATTERNS = (
+    "insufficient_balance",
+    "insufficient balance",
+    "not enough balance",
+)
+
+
+def _is_drift_error(msg: str) -> bool:
+    lower = msg.lower()
+    return any(p in lower for p in _INSUFFICIENT_BALANCE_PATTERNS)
+
+
+async def _fetch_live_risk_position_size(
+    context: TradingContext,
+    *,
+    token_id: str,
+) -> Decimal | None:
+    wallet = str(getattr(context, "wallet_address", "") or "").strip().lower()
+    if not wallet:
+        return None
+    try:
+        positions = await fetch_data(
+            f"https://data-api.polymarket.com/positions?user={wallet}",
+            silent=True,
+        )
+    except Exception:
+        return None
+    live_size = Decimal("0")
+    if isinstance(positions, list):
+        for position in positions:
+            if not isinstance(position, dict):
+                continue
+            live_token_id = str(
+                position.get("asset")
+                or position.get("tokenID")
+                or position.get("token_id")
+                or ""
+            ).strip()
+            if live_token_id != token_id:
+                continue
+            try:
+                live_size = Decimal(str(position.get("size") or "0"))
+            except Exception:
+                live_size = Decimal("0")
+            break
+    return live_size
 
 # Track token_ids we've already warned about to avoid log spam every cycle.
 _warned_invalid_tokens: set[str] = set()
@@ -787,6 +835,41 @@ async def run_risk_check_for_context(context: TradingContext) -> None:
                         result.status,
                         result.error,
                     )
+                    if _is_drift_error(str(result.error or "")):
+                        try:
+                            from orchestrators.trade_pipeline import get_reconciliation_service
+                            drift_reconciler = get_reconciliation_service(context)
+
+                            async def _risk_drift_fetcher():
+                                return await _fetch_live_risk_position_size(
+                                    context, token_id=pos.token_id,
+                                )
+
+                            drift_result = await drift_reconciler.reconcile_position_drift(
+                                user_id=context.user_id,
+                                condition_id=pos.condition_id,
+                                token_id=pos.token_id,
+                                leader_id=pos.leader_id or "risk-monitor",
+                                live_position_fetcher=_risk_drift_fetcher,
+                            )
+                            if drift_result.get("reconciled") and drift_result.get("action") == "deleted":
+                                logger.info(
+                                    "risk_drift_reconciled_position_deleted | cond=%s token=%s live_size=%s",
+                                    pos.condition_id[:12], pos.token_id[:12],
+                                    str(drift_result.get("live_size", 0)),
+                                )
+                                if _trigger_id is not None and context.risk_triggers_repo is not None:
+                                    try:
+                                        context.risk_triggers_repo.update_fill_status(
+                                            _trigger_id,
+                                            fill_status="rejected",
+                                            fill_order_id=result.order_id,
+                                        )
+                                    except Exception:
+                                        logger.debug("risk_trigger_update_error", exc_info=True)
+                                continue
+                        except Exception:
+                            logger.debug("risk_drift_reconciliation_error", exc_info=True)
                     if _trigger_id is not None and context.risk_triggers_repo is not None:
                         try:
                             context.risk_triggers_repo.update_fill_status(
