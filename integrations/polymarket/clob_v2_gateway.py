@@ -119,7 +119,16 @@ def _classify_error(exc: Exception) -> tuple[bool, str]:
     msg = str(exc).lower()
 
     # Timeout / connection errors are ambiguous (order may have landed).
-    if any(kw in exc_name for kw in ("timeout", "connectionerror", "connectionreset")):
+    # Match on either the exception type name OR the message — generic
+    # ``RuntimeError("timeout after submit")``-style failures from the
+    # underlying SDK wrapper would otherwise fall through to the catch-all
+    # invalid-order branch and get marked non-retryable, losing the
+    # submitted-unconfirmed safety net (issue #66).
+    if any(
+        kw in exc_name for kw in ("timeout", "connectionerror", "connectionreset")
+    ) or any(
+        kw in msg for kw in ("timeout", "connection reset", "connection lost", "connection refused")
+    ):
         return True, "timeout_or_connection"
 
     # Rate-limit indicators.
@@ -169,6 +178,40 @@ def _raise_classified(exc: Exception) -> None:
     if "auth" in reason:
         raise VenueAuthError(f"{reason}: {safe_detail}") from exc
     raise VenueInvalidOrderError(f"{reason}: {safe_detail}") from exc
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _build_submit_result(result: dict) -> VenueSubmitResult:
+    """Translate the underlying client's response dict to ``VenueSubmitResult``.
+
+    Surfaces ``ambiguous_post_failure`` and ``non_retryable`` flags as named
+    fields so callers do not need to inspect ``raw`` to make retry/persistence
+    decisions.
+    """
+    data = result.get("data") if isinstance(result.get("data"), dict) else None
+
+    def _pick(key: str) -> object | None:
+        nested = data.get(key) if data is not None else None
+        return result.get(key) if nested is None else nested
+
+    success = bool(result.get("success", False))
+    order_id = _pick("orderID")
+    status = _pick("status")
+    error = result.get("error")
+
+    return VenueSubmitResult(
+        success=success,
+        order_id=str(order_id) if order_id else None,
+        status=str(status) if status else None,
+        raw=result,
+        error=error,
+        ambiguous_post_failure=bool(result.get("ambiguous_post_failure", False)),
+        non_retryable=bool(result.get("non_retryable", False)),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -284,28 +327,24 @@ class ClobV2Gateway:
         if not isinstance(result, dict):
             return VenueSubmitResult(success=False, error="unexpected_response_type")
 
-        success = bool(result.get("success", False))
-        order_id = result.get("orderID") or result.get("data", {}).get("orderID") if isinstance(result.get("data"), dict) else result.get("orderID")
-        status = result.get("status") or result.get("data", {}).get("status") if isinstance(result.get("data"), dict) else result.get("status")
-        error = result.get("error")
-
-        return VenueSubmitResult(
-            success=success,
-            order_id=str(order_id) if order_id else None,
-            status=str(status) if status else None,
-            raw=result,
-            error=error,
-        )
+        return _build_submit_result(result)
 
     async def submit_marketable_order(self, request: MarketableOrderRequest) -> VenueSubmitResult:
         """Submit a marketable (FOK/IOC) order via the CLOB wrapper."""
-        try:
-            meta = await self._client.get_market_meta(request.token_id)
-            tick_size_str = str(meta.tick_size)
-            neg_risk = meta.neg_risk
-        except Exception as exc:
-            logger.error("submit_marketable_order meta fetch failed (%s)", redact_error_detail(exc))
-            _raise_classified(exc)
+        # Use pre-fetched metadata when the caller supplied it (issue #66:
+        # ExecutionService already fetches via MarketMetaService for sizing
+        # and slippage gates; a second fetch here is wasteful and can race).
+        if request.tick_size is not None and request.neg_risk is not None:
+            tick_size_str = str(request.tick_size)
+            neg_risk = bool(request.neg_risk)
+        else:
+            try:
+                meta = await self._client.get_market_meta(request.token_id)
+                tick_size_str = str(meta.tick_size)
+                neg_risk = meta.neg_risk
+            except Exception as exc:
+                logger.error("submit_marketable_order meta fetch failed (%s)", redact_error_detail(exc))
+                _raise_classified(exc)
 
         price_limit = request.price_limit
         if price_limit is None:
@@ -327,18 +366,7 @@ class ClobV2Gateway:
         if not isinstance(result, dict):
             return VenueSubmitResult(success=False, error="unexpected_response_type")
 
-        success = bool(result.get("success", False))
-        order_id = result.get("orderID") or result.get("data", {}).get("orderID") if isinstance(result.get("data"), dict) else result.get("orderID")
-        status = result.get("status") or result.get("data", {}).get("status") if isinstance(result.get("data"), dict) else result.get("status")
-        error = result.get("error")
-
-        return VenueSubmitResult(
-            success=success,
-            order_id=str(order_id) if order_id else None,
-            status=str(status) if status else None,
-            raw=result,
-            error=error,
-        )
+        return _build_submit_result(result)
 
     # --- Order state -----------------------------------------------------------
 
@@ -431,6 +459,53 @@ class ClobV2Gateway:
             if retryable:
                 raise VenueUnavailableError(f"cancel failed: {reason}") from exc
             raise VenueInvalidOrderError(f"cancel failed: {reason}") from exc
+
+    # --- Startup compatibility probe ------------------------------------------
+
+    async def check_compatibility(self) -> dict[str, Any]:
+        """Return a venue/SDK readiness summary for startup health gating.
+
+        Never raises. Caller (``orchestrators/startup_health.py``) decides
+        whether to fail closed in live mode based on ``sdk_available``.
+        """
+        report: dict[str, Any] = {
+            "sdk_available": False,
+            "exchange_address": None,
+            "chain_id": None,
+            "negative_risk_supported": False,
+            "error": None,
+        }
+        try:
+            client = self._require_raw_client()
+        except VenueUnavailableError as exc:
+            report["error"] = str(exc)
+            return report
+        except Exception as exc:  # pragma: no cover — defensive
+            report["error"] = redact_error_detail(exc)
+            return report
+
+        report["sdk_available"] = True
+        for attr, key in (
+            ("exchange_address", "exchange_address"),
+            ("get_exchange_address", "exchange_address"),
+            ("chain_id", "chain_id"),
+            ("get_chain_id", "chain_id"),
+        ):
+            try:
+                value = getattr(client, attr, None)
+                if callable(value):
+                    value = value()
+                if value is not None and report.get(key) is None:
+                    report[key] = (
+                        int(value) if key == "chain_id" else str(value)
+                    )
+            except Exception:  # pragma: no cover — best-effort discovery
+                continue
+
+        report["negative_risk_supported"] = hasattr(
+            client, "create_market_order"
+        ) or hasattr(client, "create_and_post_order")
+        return report
 
 
 # ---------------------------------------------------------------------------

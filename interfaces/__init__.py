@@ -1,13 +1,24 @@
-"""Interface dataclass definitions."""
+"""Interface dataclass definitions.
+
+Note (issue #66): the legacy ``UserActivityInterface`` / ``UserPositionInterface``
+dataclasses depend on ``bson.ObjectId`` from a previously-vendored MongoDB
+driver. They predate the Polymarket rewrite and are scheduled for quarantine
+in issue #77. We tolerate a missing ``bson`` install at import time so that
+production gateway / Protocol modules under this package remain importable.
+"""
 
 from typing import Optional
 from dataclasses import dataclass
-from bson import ObjectId
+
+try:
+    from bson import ObjectId
+except ModuleNotFoundError:  # pragma: no cover — legacy dependency
+    ObjectId = str  # type: ignore[assignment,misc]
 
 
 @dataclass
 class UserActivityInterface:
-    _id: ObjectId
+    _id: "ObjectId"
     proxyWallet: str
     timestamp: int
     conditionId: str
@@ -36,7 +47,7 @@ class UserActivityInterface:
 
 @dataclass
 class UserPositionInterface:
-    _id: ObjectId
+    _id: "ObjectId"
     proxyWallet: str
     asset: str
     conditionId: str

@@ -3,9 +3,12 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import asdict, dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from aiohttp import ClientSession
+
+if TYPE_CHECKING:
+    from interfaces.clob_gateway import ClobGateway
 
 from storage.sqlite.connection import create_connection
 from storage.sqlite.positions_repo import PositionRecord, PositionsRepo
@@ -395,6 +398,49 @@ def _position_sync_check(sync: PositionSyncResult) -> StartupHealthCheckItem:
     )
 
 
+async def _check_clob_gateway(gateway: ClobGateway | None) -> StartupHealthCheckItem:
+    """Probe CLOB V2 gateway compatibility (issue #66).
+
+    Always returns a check item — never raises. The caller decides whether to
+    fail closed (live mode) or warn (paper mode).
+    """
+    if gateway is None:
+        return StartupHealthCheckItem(
+            status="warning",
+            message="CLOB gateway not wired (paper mode without venue connectivity)",
+        )
+    probe = getattr(gateway, "check_compatibility", None)
+    if probe is None:
+        return StartupHealthCheckItem(
+            status="warning",
+            message="CLOB gateway does not implement check_compatibility",
+        )
+    try:
+        report = await asyncio.wait_for(probe(), timeout=5.0)
+    except asyncio.TimeoutError:
+        return StartupHealthCheckItem(
+            status="error",
+            message="CLOB gateway compatibility probe timed out after 5s",
+        )
+    except Exception as exc:  # pragma: no cover — gateway should not raise
+        return StartupHealthCheckItem(
+            status="error",
+            message=f"CLOB gateway compatibility probe raised: {exc!s}",
+        )
+    sdk_ok = bool(report.get("sdk_available"))
+    if not sdk_ok:
+        return StartupHealthCheckItem(
+            status="error",
+            message=str(report.get("error") or "CLOB SDK not available"),
+            details=report,
+        )
+    return StartupHealthCheckItem(
+        status="ok",
+        message="CLOB V2 gateway ready",
+        details=report,
+    )
+
+
 async def perform_startup_health_check(
     *,
     wallet: str,
@@ -405,11 +451,22 @@ async def perform_startup_health_check(
     available_cash: float,
     database_ok: bool,
     rpc_url: str,
+    clob_gateway: ClobGateway | None = None,
+    require_live_clob: bool = False,
 ) -> StartupHealthReport:
-    rpc_check, polymarket_check = await asyncio.gather(
+    rpc_check, polymarket_check, clob_check = await asyncio.gather(
         _check_rpc(rpc_url),
         _check_polymarket_api(),
+        _check_clob_gateway(clob_gateway),
     )
+    # In live mode, downgrade clob_check warnings to errors so the report
+    # refuses to mark the runtime healthy. Paper mode keeps the warning.
+    if require_live_clob and clob_check.status != "ok":
+        clob_check = StartupHealthCheckItem(
+            status="error",
+            message=clob_check.message,
+            details=clob_check.details,
+        )
     position_sync = reconcile_persisted_positions_to_live(
         positions_repo,
         user_id=user_id,
@@ -427,6 +484,7 @@ async def perform_startup_health_check(
         "rpc": rpc_check,
         "balance": _balance_check(available_cash),
         "polymarketApi": polymarket_check,
+        "clobGateway": clob_check,
         "positionSync": _position_sync_check(position_sync),
         "orders": _orders_check(order_status_counts, order_cleanup),
     }

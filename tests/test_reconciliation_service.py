@@ -7,11 +7,12 @@ from services.execution.reconciliation_service import ReconciliationService, Rec
 
 
 class MockOrder(OrderRecord):
-    def __init__(self, order_id, venue_order_id, reservation_id, status):
+    def __init__(self, order_id, venue_order_id, reservation_id, status, market_id=None):
         self.id = order_id
         self.venue_order_id = venue_order_id
         self.reservation_id = reservation_id
         self.status = status
+        self.market_id = market_id
 
 class MockOrdersRepo:
     def __init__(self, order):
@@ -66,7 +67,7 @@ class MockClobGateway:
             return MockVenueOrder(self.order_status)
         return None
 
-    async def get_fills(self, venue_order_id: str) -> list[Any]:
+    async def get_fills(self, market: str | None = None) -> list[Any]:
         if self.raise_exc:
             raise RuntimeError("API down")
         return self.fills

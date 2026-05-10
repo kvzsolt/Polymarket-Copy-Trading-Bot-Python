@@ -13,13 +13,25 @@ from decimal import Decimal
 
 @dataclass(frozen=True)
 class VenueSubmitResult:
-    """Result from submitting an order to the venue."""
+    """Result from submitting an order to the venue.
+
+    ``ambiguous_post_failure`` is True when the venue acknowledged the POST
+    timed out after the order was already sent. Callers must persist a
+    ``submitted_unconfirmed`` record and let reconciliation resolve the
+    terminal state — a retry would risk duplicate fills.
+
+    ``non_retryable`` is True when the venue rejection is final (invalid
+    payload, auth, banned market, balance/allowance) and the request must not
+    consume retry budget.
+    """
 
     success: bool
     order_id: str | None = None
     status: str | None = None
     raw: dict | None = None
     error: str | None = None
+    ambiguous_post_failure: bool = False
+    non_retryable: bool = False
 
 
 @dataclass(frozen=True)
@@ -96,10 +108,18 @@ class LimitOrderRequest:
 
 @dataclass(frozen=True)
 class MarketableOrderRequest:
-    """Request to submit a marketable (FOK/IOC) order."""
+    """Request to submit a marketable (FOK/IOC) order.
+
+    ``tick_size`` and ``neg_risk`` are optional pre-fetched market metadata.
+    When the caller has already fetched metadata via ``MarketMetaService``,
+    passing them avoids a redundant venue round-trip inside the gateway. When
+    ``None`` the gateway fetches metadata itself.
+    """
 
     token_id: str
     side: str
     size: Decimal
     price_limit: Decimal | None = None
     condition_id: str | None = None
+    tick_size: Decimal | None = None
+    neg_risk: bool | None = None
