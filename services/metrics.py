@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import asyncio
+import threading
 from collections import defaultdict
 from dataclasses import dataclass, field
 
@@ -17,42 +17,43 @@ def _metric_key(name: str, labels: dict[str, str] | None = None) -> str:
 class MetricsRegistry:
     counters: dict[str, float] = field(default_factory=lambda: defaultdict(float))
     gauges: dict[str, float] = field(default_factory=lambda: defaultdict(float))
-    _lock: asyncio.Lock = field(init=False, repr=False)
+    _lock: threading.Lock = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
-        self._lock = asyncio.Lock()
+        self._lock = threading.Lock()
 
-    async def inc(self, name: str, value: float = 1.0, labels: dict[str, str] | None = None) -> None:
+    def inc(self, name: str, value: float = 1.0, labels: dict[str, str] | None = None) -> None:
         key = _metric_key(name, labels)
-        async with self._lock:
+        with self._lock:
             self.counters[key] += value
 
     def inc_sync(self, name: str, value: float = 1.0, labels: dict[str, str] | None = None) -> None:
-        """Lock-free counter bump for sync code paths (best-effort precision).
+        """Counter bump for sync code paths (best-effort precision).
 
-        Use only from synchronous call sites where awaiting ``inc`` is awkward
-        (e.g., cache invalidation). Counter values are approximate under
+        Use only from synchronous call sites where blocking for the
+        lock is acceptable. Counter values are approximate under
         contention; that's acceptable for ops dashboards.
         """
         key = _metric_key(name, labels)
-        self.counters[key] = self.counters.get(key, 0.0) + value
+        with self._lock:
+            self.counters[key] += value
 
-    async def set_gauge(self, name: str, value: float, labels: dict[str, str] | None = None) -> None:
+    def set_gauge(self, name: str, value: float, labels: dict[str, str] | None = None) -> None:
         key = _metric_key(name, labels)
-        async with self._lock:
+        with self._lock:
             self.gauges[key] = value
 
-    async def snapshot(self) -> tuple[dict[str, float], dict[str, float]]:
-        async with self._lock:
+    def snapshot(self) -> tuple[dict[str, float], dict[str, float]]:
+        with self._lock:
             return dict(self.counters), dict(self.gauges)
 
-    async def clear(self) -> None:
-        async with self._lock:
+    def clear(self) -> None:
+        with self._lock:
             self.counters.clear()
             self.gauges.clear()
 
-    async def render_prometheus(self) -> str:
-        counters, gauges = await self.snapshot()
+    def render_prometheus(self) -> str:
+        counters, gauges = self.snapshot()
         lines: list[str] = []
         for name, value in sorted(counters.items()):
             metric_name = name.split("{", 1)[0]

@@ -43,7 +43,7 @@ async def wait_for_active_leaders(
             "No active leaders available; entering discovery-only mode and continuing refresh."
         )
     while True:
-        await metrics.inc("no_leaders_monitored_total")
+        metrics.inc("no_leaders_monitored_total")
         await asyncio.sleep(refresh_interval)
         state = await registry.refresh(configured_leaders)
         if state.active_monitored:

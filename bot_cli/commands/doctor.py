@@ -48,10 +48,7 @@ def _check_reconciler_config(config) -> dict:
 def _check_gateway_sdk() -> dict:
     """Best-effort dry-import probe of the CLOB V2 SDK in live mode."""
     try:
-        import importlib
-
-        importlib.import_module("py_clob_client_v2.client")
-        importlib.import_module("py_clob_client_v2.clob_types")
+        from utils.createClobClient import ClobClient  # noqa: F401 — import probe via seam
     except Exception as exc:
         return {
             "status": "failed",
@@ -205,7 +202,7 @@ async def run_doctor_checks(mode: str) -> dict:
 
     # Check 9b: WSS endpoint reachability (live only)
     if mode == "live":
-        wss_check = _check_wss_endpoint("ws-subscriptions-clob.polymarket.com")
+        wss_check = await asyncio.to_thread(_check_wss_endpoint, "ws-subscriptions-clob.polymarket.com")
         output["checks"]["wss_endpoint"] = wss_check
         if wss_check["status"] == "failed":
             output["status"] = "blocked"
