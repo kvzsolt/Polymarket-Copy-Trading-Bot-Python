@@ -1,0 +1,24 @@
+tests/test_clob_v2_gateway_isolation.py
+  s_ec106305ec2a70::t_5201a70f4fdf5c 133-196
+tests/test_issue66_gateway_isolation.py
+  s_ec106305ec2a70::t_6f5f94dc0b9a3b 1-370
+docs/full-rework-review-fixes-progress.md
+  s_ec106305ec2a70::t_72798baeba944d 34-37
+  s_ec106305ec2a70::t_0d7faf5f304ed4 50,54-62,66-104,106-115,117-118,122-143
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.4",
+  "base_commit_sha": "5ed9ab3cc13d3419c63cff3dbd42baac8477bdf2",
+  "prompts": {},
+  "sessions": {
+    "s_ec106305ec2a70": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bb81eaf6-39ec-4a21-ac40-292b04e07140",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
