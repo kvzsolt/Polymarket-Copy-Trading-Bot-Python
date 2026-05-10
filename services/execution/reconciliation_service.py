@@ -650,7 +650,7 @@ class ReconciliationService:
                         metadata=trigger_meta,
                     )
                 except Exception:
-                    pass
+                    _log.debug("risk_trigger_record_error order_id=%s", order_id, exc_info=True)
             return True
 
         is_final_fill = venue_status in _FINAL_FILL_STATUSES_RISK or (
@@ -778,7 +778,7 @@ class ReconciliationService:
                     metadata=block_metadata,
                 )
             except Exception:
-                pass
+                _log.debug("risk_trigger_record_error order_id=%s", order_id, exc_info=True)
 
         if pnl_tracker is not None and hasattr(pnl_tracker, "record_sell"):
             realized = (float(avg_price) - entry_price) * float(delta_matched)

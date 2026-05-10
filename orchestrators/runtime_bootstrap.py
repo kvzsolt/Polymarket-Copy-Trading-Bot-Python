@@ -21,6 +21,7 @@ from storage.sqlite.fills_repo import FillsRepo
 from storage.sqlite.orders_repo import OrdersRepo
 from storage.sqlite.positions_repo import PositionsRepo
 from storage.sqlite.risk_blocks_repo import RiskBlocksRepo
+from storage.sqlite.risk_triggers_repo import RiskTriggersRepo
 from utils.fetchData import fetch_data
 from utils.logger import get_logger
 
@@ -115,6 +116,7 @@ class UserRuntimeState:
     # / #71). Optional default keeps existing test fixtures that build state
     # without a venue boundary working.
     clob_gateway: ClobGateway | None = None
+    risk_triggers_repo: RiskTriggersRepo | None = None
 
 
 def configured_leaders(config: AppConfig) -> list[str]:
@@ -190,6 +192,7 @@ def build_user_state(
     fills_repo = FillsRepo(db_path)
     positions_repo = PositionsRepo(db_path)
     risk_blocks_repo = RiskBlocksRepo(db_path)
+    risk_triggers_repo = RiskTriggersRepo(db_path)
     pnl_tracker = PnLTracker(log_path=f"log/pnl_{runtime_user.user_id}.jsonl")
     risk_engine = RiskEngine()
     accounting_service = AccountingService()
@@ -221,6 +224,7 @@ def build_user_state(
         position_manager=position_manager,
         execution_service=execution_service,
         clob_gateway=clob_gateway,
+        risk_triggers_repo=risk_triggers_repo,
     )
 
 
@@ -254,8 +258,11 @@ def build_trading_context(
         readiness=readiness or ReadinessTracker(),
         extra={
             "slippage_tolerance_bps": int(config.execution.slippage_tolerance * 100),
+            "clob_gateway": user_state.clob_gateway,
         },
     )
+    if user_state.risk_triggers_repo is not None:
+        context.risk_triggers_repo = user_state.risk_triggers_repo
     rehydrate_position_manager(context)
     return context
 

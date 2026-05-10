@@ -21,6 +21,8 @@ from storage.sqlite.positions_repo import PositionRecord, PositionsRepo
 from storage.sqlite.risk_blocks_repo import RiskBlocksRepo
 from storage.sqlite.risk_triggers_repo import RiskTriggersRepo
 
+pytestmark = pytest.mark.integration
+
 FAKE_TOKEN_ID = "71321045679252212594626385532706912750332728571942532223535764789812338637396"
 TOKEN_B = "61321045679252212594626385532706912750332728571942532223535764789812338637396"
 
