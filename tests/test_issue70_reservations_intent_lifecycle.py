@@ -10,7 +10,6 @@ Validates:
 - Startup recovery restores in-flight intents from DB.
 - Operator-visible reservation audit logs.
 """
-import asyncio
 import time
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -247,6 +246,7 @@ class TestAmbiguousPost:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.integration
 class TestStaleReservationExpiry:
     """Expired reservations trigger reconciliation before release."""
 
@@ -324,7 +324,7 @@ class TestStartupRecovery:
 
         registry = IntentRegistry()
         mock_repo = MagicMock()
-        mock_repo.list_non_terminal_orders.return_value = []
+        mock_repo.list_active.return_value = []
 
         count = await recover_intents_from_db(registry, mock_repo)
         assert count == 0
@@ -335,17 +335,22 @@ class TestStartupRecovery:
         from services.execution.intent_recovery import recover_intents_from_db
 
         registry = IntentRegistry()
-        mock_order = MagicMock()
-        mock_order.id = "order-1"
-        mock_order.user_id = "0xUSER"
-        mock_order.condition_id = "0xCOND"
-        mock_order.token_id = "TKN-A"
-        mock_order.side = "BUY"
-        mock_order.status = "reserved"
-        mock_order.reserved_usdc = "100"
-        mock_order.reserved_size = "0"
+        mock_reservation = Reservation(
+            id="res-1",
+            user_id="0xUSER",
+            intent_key="intent-1",
+            condition_id="0xCOND",
+            token_id="TKN-A",
+            side=IntentSide.BUY,
+            reason=IntentReason.COPY_BUY,
+            reserved_usdc=Decimal("100"),
+            reserved_size=Decimal("0"),
+            status="active",
+            created_at=datetime.fromtimestamp(1000, tz=timezone.utc),
+            expires_at=datetime.fromtimestamp(2000, tz=timezone.utc),
+        )
         mock_repo = MagicMock()
-        mock_repo.list_non_terminal_orders.return_value = [mock_order]
+        mock_repo.list_active.return_value = [mock_reservation]
 
         count = await recover_intents_from_db(registry, mock_repo)
         assert count == 1
@@ -359,23 +364,13 @@ class TestStartupRecovery:
         assert reserved.quote_usdc == Decimal("100")
 
     @pytest.mark.asyncio
-    async def test_recovery_skips_terminal_orders(self):
-        """Terminal orders (FILLED, CANCELLED, etc.) are not recovered."""
+    async def test_recovery_uses_active_reservations_only(self):
+        """Released/terminal rows are not recovered because repo returns active rows only."""
         from services.execution.intent_recovery import recover_intents_from_db
 
         registry = IntentRegistry()
-        mock_filled = MagicMock()
-        mock_filled.id = "order-filled"
-        mock_filled.user_id = "0xUSER"
-        mock_filled.condition_id = "0xCOND"
-        mock_filled.token_id = "TKN-A"
-        mock_filled.side = "BUY"
-        mock_filled.status = "filled"
-        mock_filled.reserved_usdc = "100"
-        mock_filled.reserved_size = "0"
-
         mock_repo = MagicMock()
-        mock_repo.list_non_terminal_orders.return_value = [mock_filled]
+        mock_repo.list_active.return_value = []
 
         count = await recover_intents_from_db(registry, mock_repo)
         assert count == 0
@@ -386,28 +381,27 @@ class TestStartupRecovery:
         from services.execution.intent_recovery import recover_intents_from_db
 
         registry = IntentRegistry()
-        mock_a = MagicMock()
-        mock_a.id = "order-a"
-        mock_a.user_id = "0xUSER"
-        mock_a.condition_id = "0xCOND"
-        mock_a.token_id = "TKN-A"
-        mock_a.side = "BUY"
-        mock_a.status = "reserved"
-        mock_a.reserved_usdc = "50"
-        mock_a.reserved_size = "0"
-
-        mock_b = MagicMock()
-        mock_b.id = "order-b"
-        mock_b.user_id = "0xUSER"
-        mock_b.condition_id = "0xCOND"
-        mock_b.token_id = "TKN-A"  # Same scope
-        mock_b.side = "BUY"
-        mock_b.status = "submitting"
-        mock_b.reserved_usdc = "75"
-        mock_b.reserved_size = "0"
+        mock_a = Reservation(
+            id="res-a", user_id="0xUSER", intent_key="intent-a",
+            condition_id="0xCOND", token_id="TKN-A", side=IntentSide.BUY,
+            reason=IntentReason.COPY_BUY, reserved_usdc=Decimal("50"),
+            reserved_size=Decimal("0"), status="active",
+            created_at=datetime.fromtimestamp(1000, tz=timezone.utc),
+            expires_at=datetime.fromtimestamp(2000, tz=timezone.utc),
+            order_id="order-a",
+        )
+        mock_b = Reservation(
+            id="res-b", user_id="0xUSER", intent_key="intent-b",
+            condition_id="0xCOND", token_id="TKN-A", side=IntentSide.BUY,
+            reason=IntentReason.COPY_BUY, reserved_usdc=Decimal("75"),
+            reserved_size=Decimal("0"), status="active",
+            created_at=datetime.fromtimestamp(1000, tz=timezone.utc),
+            expires_at=datetime.fromtimestamp(2000, tz=timezone.utc),
+            order_id="order-b",
+        )
 
         mock_repo = MagicMock()
-        mock_repo.list_non_terminal_orders.return_value = [mock_a, mock_b]
+        mock_repo.list_active.return_value = [mock_a, mock_b]
 
         count = await recover_intents_from_db(registry, mock_repo)
         # First order recovered, second blocked as duplicate
@@ -419,6 +413,7 @@ class TestStartupRecovery:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.integration
 class TestReservationAuditLogging:
     """ReservationService logs acquire and release events."""
 
@@ -460,7 +455,8 @@ class TestReservationAuditLogging:
         finally:
             os.unlink(db_path)
 
-    def test_release_terminal_logs(self, caplog):
+    @pytest.mark.asyncio
+    async def test_release_terminal_logs(self, caplog):
         """release_terminal logs the release event."""
         from storage.sqlite.reservations_repo import ReservationsRepo
         from storage.sqlite.connection import create_connection
@@ -488,9 +484,8 @@ class TestReservationAuditLogging:
             )
 
             # Create then release
-            import asyncio
             intent = _intent()
-            reservation = asyncio.get_event_loop().run_until_complete(svc.reserve_for_intent(intent))
+            reservation = await svc.reserve_for_intent(intent)
 
             with caplog.at_level("INFO"):
                 svc.release_terminal(reservation.id, "filled")

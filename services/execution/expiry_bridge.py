@@ -66,19 +66,21 @@ class ExpiryChecker:
         for reservation_row in expired:
             res_id = reservation_row.id if hasattr(reservation_row, "id") else str(reservation_row)
             order_id = getattr(reservation_row, "order_id", None)
+            venue_order_id = getattr(reservation_row, "venue_order_id", None)
+            reconcile_id = order_id or venue_order_id
 
             logger.info(
-                "reservation.expired id=%s order_id=%s — enqueuing for reconciliation",
-                res_id, order_id,
+                "reservation.expired id=%s order_id=%s venue_order_id=%s — enqueuing for reconciliation",
+                res_id, order_id, venue_order_id,
             )
 
-            if order_id:
+            if reconcile_id:
                 try:
-                    await self._reconciler.enqueue(order_id)
+                    await self._reconciler.enqueue(reconcile_id)
                 except Exception as exc:
                     logger.warning(
                         "reservation.expiry.enqueue_failed id=%s order_id=%s error=%s",
-                        res_id, order_id, exc,
+                        res_id, reconcile_id, exc,
                     )
                     continue
             else:

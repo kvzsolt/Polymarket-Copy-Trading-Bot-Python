@@ -53,6 +53,8 @@ from storage.sqlite.migrations import apply_migrations
 from storage.sqlite.positions_repo import PositionsRepo
 from storage.sqlite.reservations_repo import ReservationsRepo
 
+pytestmark = pytest.mark.integration
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -479,15 +481,17 @@ async def test_expired_reservation_triggers_reconciliation_before_release(tmp_pa
     assert reconciled_ids[0] == res.id
 
     active = res_repo.get_active_by_intent_key(intent.key.stable_key())
-    assert active is None
+    assert active is not None
+    assert active.id == res.id
 
 
 @pytest.mark.asyncio
 async def test_expired_reservation_new_reserve_acquires_after_expiry(tmp_path):
     reconciled_ids: list[str] = []
 
-    async def on_expire(res_id: str) -> None:
+    async def on_expire(res_id: str) -> bool:
         reconciled_ids.append(res_id)
+        return True
 
     svc, res_repo, pos_repo, clk = _svc(tmp_path, ttl=60, reconciler_callback=on_expire)
     intent = _make_intent(IntentSide.BUY, size=Decimal("10"), price=Decimal("0.5"))
@@ -499,6 +503,38 @@ async def test_expired_reservation_new_reserve_acquires_after_expiry(tmp_path):
     assert res2.id != res1.id
     assert res2.status == "active"
     assert len(reconciled_ids) == 1
+
+
+
+
+@pytest.mark.asyncio
+async def test_expiry_bridge_enqueues_linked_order_without_release(tmp_path):
+    from services.execution.expiry_bridge import ExpiryChecker
+
+    class RecordingReconciler:
+        def __init__(self):
+            self.enqueued: list[str] = []
+
+        async def enqueue(self, order_id: str) -> None:
+            self.enqueued.append(order_id)
+
+    svc, res_repo, _pos_repo, clk = _svc(tmp_path, ttl=60)
+    intent = _make_intent(IntentSide.BUY, size=Decimal("10"), price=Decimal("0.5"))
+    res = await svc.reserve_for_intent(intent)
+    res_repo.link_order(res.id, order_id="order-123", venue_order_id="venue-456")
+
+    clk.advance(61)
+    reconciler = RecordingReconciler()
+    checker = ExpiryChecker(res_repo, orders_repo=None, reservation_service=svc, reconciler=reconciler)
+
+    checked = await checker.check_expired_reservations()
+
+    assert checked == 1
+    assert reconciler.enqueued == ["order-123"]
+    active = res_repo.get_active_by_intent_key(intent.key.stable_key())
+    assert active is not None
+    assert active.order_id == "order-123"
+    assert active.venue_order_id == "venue-456"
 
 
 @pytest.mark.asyncio
@@ -694,6 +730,47 @@ async def test_quote_reservations_are_account_wide_across_tokens(tmp_path):
     with pytest.raises(InsufficientFreeQuote):
         await svc.reserve_for_intent(intent_b)
 
+
+
+
+@pytest.mark.asyncio
+async def test_concurrent_buy_reservations_serialize_capacity(tmp_path):
+    svc, *_ = _svc(tmp_path, balance=100.0)
+    intent_a = _make_intent(
+        IntentSide.BUY, size=Decimal("80"), price=Decimal("1"),
+        reason=IntentReason.COPY_BUY,
+    )
+    intent_b = _make_intent(
+        IntentSide.BUY, size=Decimal("80"), price=Decimal("1"),
+        reason=IntentReason.RISK_EXIT,
+    )
+
+    results = await asyncio.gather(
+        svc.reserve_for_intent(intent_a),
+        svc.reserve_for_intent(intent_b),
+        return_exceptions=True,
+    )
+
+    successes = [r for r in results if not isinstance(r, Exception)]
+    failures = [r for r in results if isinstance(r, InsufficientFreeQuote)]
+    assert len(successes) == 1
+    assert len(failures) == 1
+
+
+@pytest.mark.asyncio
+async def test_decimal_reserved_totals_are_exact(tmp_path):
+    svc, res_repo, *_ = _svc(tmp_path, balance=1.0)
+    await svc.reserve_for_intent(
+        _make_intent(IntentSide.BUY, size=Decimal("1"), price=Decimal("0.1"))
+    )
+    await svc.reserve_for_intent(
+        _make_intent(
+            IntentSide.BUY, size=Decimal("1"), price=Decimal("0.2"),
+            reason=IntentReason.RISK_EXIT,
+        )
+    )
+
+    assert res_repo.sum_active_quote_for_user("u1") == Decimal("0.3")
 
 # ---------------------------------------------------------------------------
 # Test: Reservation amounts are recovered from DB after restart

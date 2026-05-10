@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import sqlite3
 import time
 from dataclasses import dataclass
 from decimal import Decimal
@@ -34,7 +35,7 @@ class DefaultClock(Clock):
 
 
 class ReconcilerCallback(Protocol):
-    async def __call__(self, reservation_id: str) -> None: ...
+    async def __call__(self, reservation_id: str) -> bool | None: ...
 
 
 @dataclass
@@ -92,22 +93,27 @@ class ReservationService:
 
         if intent.key.side == IntentSide.BUY:
             required_usdc = intent.size * intent.price
-            await self._assert_available_usdc(
-                intent.key.user_id,
-                intent.key.condition_id,
-                intent.key.token_id,
-                required_usdc,
-            )
+            balance = await self._get_available_balance(intent.key.user_id, required_usdc)
             logger.info(
                 "reservation.acquire.buy key=%s size=%s price=%s usdc=%s "
                 "expires=%d",
                 stable_key, intent.size, intent.price, required_usdc, expires_at,
             )
-            result = self.reservations_repo.create_buy_reservation(
-                intent=intent,
-                reserved_usdc=required_usdc,
-                expires_at=expires_at,
-            )
+            try:
+                result = self.reservations_repo.create_buy_reservation_checked(
+                    intent=intent,
+                    reserved_usdc=required_usdc,
+                    expires_at=expires_at,
+                    available_balance=balance,
+                )
+            except sqlite3.IntegrityError as exc:
+                raise ReservationConflict(
+                    f"active reservation exists for intent={stable_key}"
+                ) from exc
+            if result is None:
+                raise InsufficientFreeQuote(
+                    f"insufficient free USDC after atomic check: need {required_usdc}"
+                )
             logger.info(
                 "reservation.acquire.buy.ok id=%s key=%s usdc=%s",
                 result.id, stable_key, required_usdc,
@@ -115,7 +121,7 @@ class ReservationService:
             return result
 
         if intent.key.side == IntentSide.SELL:
-            self._assert_available_shares(
+            held_size = self._get_held_size(
                 intent.key.user_id,
                 intent.key.condition_id,
                 intent.key.token_id,
@@ -125,11 +131,21 @@ class ReservationService:
                 "reservation.acquire.sell key=%s size=%s expires=%d",
                 stable_key, intent.size, expires_at,
             )
-            result = self.reservations_repo.create_sell_reservation(
-                intent=intent,
-                reserved_size=intent.size,
-                expires_at=expires_at,
-            )
+            try:
+                result = self.reservations_repo.create_sell_reservation_checked(
+                    intent=intent,
+                    reserved_size=intent.size,
+                    expires_at=expires_at,
+                    held_size=held_size,
+                )
+            except sqlite3.IntegrityError as exc:
+                raise ReservationConflict(
+                    f"active reservation exists for intent={stable_key}"
+                ) from exc
+            if result is None:
+                raise InsufficientFreeShares(
+                    f"insufficient free shares after atomic check: need {intent.size}"
+                )
             logger.info(
                 "reservation.acquire.sell.ok id=%s key=%s size=%s",
                 result.id, stable_key, intent.size,
@@ -138,13 +154,11 @@ class ReservationService:
 
         raise ValueError(f"unsupported side={intent.key.side}")
 
-    async def _assert_available_usdc(
+    async def _get_available_balance(
         self,
         user_id: str,
-        condition_id: str,
-        token_id: str,
         required_usdc: Decimal,
-    ) -> None:
+    ) -> Decimal:
         balance_float = await self.get_balance_func(self.funder_address)
         if balance_float is None:
             raise ValueError("failed to fetch available USDC balance")
@@ -168,14 +182,15 @@ class ReservationService:
                 f"free={free_balance} (balance={balance}, "
                 f"reserved={already_reserved})"
             )
+        return balance
 
-    def _assert_available_shares(
+    def _get_held_size(
         self,
         user_id: str,
         condition_id: str,
         token_id: str,
         required_size: Decimal,
-    ) -> None:
+    ) -> Decimal:
         matching_pos = self._find_position(user_id, condition_id, token_id)
 
         if not matching_pos:
@@ -202,6 +217,7 @@ class ReservationService:
                 f"free={free_shares} (held={held}, "
                 f"reserved={already_reserved})"
             )
+        return held
 
     def _get_reserved_usdc(
         self, user_id: str, condition_id: str, token_id: str
@@ -254,20 +270,39 @@ class ReservationService:
         )
 
     async def release_expired_active(self) -> list[str]:
-        """Release all expired active reservations (with reconciliation)."""
+        """Enqueue reconciliation for expired active reservations.
+
+        Expiry alone is not a terminal venue outcome. Reservations stay active
+        until reconciliation confirms the linked order is terminal and calls
+        ``release_terminal``.
+        """
         now = self.clock.utcnow_timestamp()
         expired = self.reservations_repo.list_expired_active(now)
-        released_ids: list[str] = []
+        enqueued_ids: list[str] = []
         for res in expired:
             logger.info(
-                "reservation.expiry_releasing id=%s key=%s side=%s "
+                "reservation.expiry_enqueue id=%s key=%s side=%s "
                 "usdc=%s size=%s",
                 res.id, res.intent_key, res.side.value,
                 res.reserved_usdc, res.reserved_size,
             )
             if self.reconciler_callback is not None:
                 try:
-                    await self.reconciler_callback(res.id)
+                    result = await self.reconciler_callback(res.id)
+                    if result is True:
+                        self.reservations_repo.mark_released(
+                            res.id, "expired_terminal", now
+                        )
+                        enqueued_ids.append(res.id)
+                        continue
+                    if result is False:
+                        logger.info(
+                            "reservation.expiry_callback_deferred id=%s — keeping active",
+                            res.id,
+                        )
+                        continue
+                    enqueued_ids.append(res.id)
+                    continue
                 except Exception as exc:
                     logger.warning(
                         "reservation.expiry_reconciliation_failed id=%s "
@@ -275,16 +310,23 @@ class ReservationService:
                         res.id, exc,
                     )
                     continue
-            self.reservations_repo.mark_released(
-                res.id, "expired", now
-            )
-            released_ids.append(res.id)
-        return released_ids
+            else:
+                logger.info(
+                    "reservation.expiry_no_reconciler id=%s — keeping reservation active",
+                    res.id,
+                )
+        return enqueued_ids
 
     async def _expire_with_reconciliation(self, res: Reservation) -> bool:
         if self.reconciler_callback is not None:
             try:
-                await self.reconciler_callback(res.id)
+                result = await self.reconciler_callback(res.id)
+                if result is True:
+                    self.reservations_repo.mark_released(
+                        res.id, "expired_terminal", self.clock.utcnow_timestamp()
+                    )
+                    return True
+                return False
             except Exception as exc:
                 logger.warning(
                     "reservation.expiry_reconciliation_failed id=%s "
@@ -292,7 +334,4 @@ class ReservationService:
                     res.id, exc,
                 )
                 return False
-        self.reservations_repo.mark_released(
-            res.id, "expired", self.clock.utcnow_timestamp()
-        )
-        return True
+        return False
