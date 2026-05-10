@@ -183,10 +183,9 @@ def build_user_state(
     runtime_user: RuntimeUser,
     client: object,
     db_path: str,
-    config: AppConfig | None = None,
+    config: AppConfig,
 ) -> UserRuntimeState:
-    if config is not None:
-        init_risk_engine(config)
+    init_risk_engine(config)
 
     order_repo = OrdersRepo(db_path)
     fills_repo = FillsRepo(db_path)
