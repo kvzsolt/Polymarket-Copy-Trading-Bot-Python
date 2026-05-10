@@ -1,0 +1,32 @@
+services/intentRegistry.py
+  s_911a9a2f914876::t_f687cbe7c99cce 355,357-358
+  s_911a9a2f914876::t_0581f606e735d7 369,374
+  s_911a9a2f914876::t_e337c17feeaea5 239,244
+services/execution/reconciliation_service.py
+  s_911a9a2f914876::t_bb1fedaffe8ea8 78-86,97-98,107-148
+  s_911a9a2f914876::t_9015e992afc16a 1-4,6,9-12
+  s_911a9a2f914876::t_f5b64c6f1eba37 166-171,173-186,195-208
+orchestrators/trade_pipeline.py
+  s_911a9a2f914876::t_2b750d055b5364 18-19
+  s_911a9a2f914876::t_8d02456f572c11 17
+  s_911a9a2f914876::t_27ea5e3172c436 1020,1026,1028
+services/riskMonitor.py
+  s_911a9a2f914876::t_6e277d0ff0f518 829,834,837
+  s_911a9a2f914876::t_96504c718ae65f 624
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.4",
+  "base_commit_sha": "190eb76fdc0de129e36cb215abff5ab44fe43165",
+  "prompts": {},
+  "sessions": {
+    "s_911a9a2f914876": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "85b7fefc-2ebf-4aaf-8e4e-09f1a643e002",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
