@@ -1599,6 +1599,22 @@ async def execute_trades(
                         fail_reason = (
                             f"{fail_reason} | local position synced to live holdings={float(live_synced_size):.4f}"
                         )
+                        audit = getattr(context, "audit_logger", None)
+                        if audit is not None:
+                            try:
+                                audit.log_event(
+                                    "manual_position_drift_reconciled",
+                                    {
+                                        "user_id": context.user_id,
+                                        "leader_id": leader_id,
+                                        "condition_id": signal.condition_id,
+                                        "token_id": signal.token_id,
+                                        "live_size": str(live_synced_size),
+                                        "source": "trade_pipeline",
+                                    },
+                                )
+                            except Exception:
+                                pass
                 if non_terminal_retry_exhausted:
                     fail_reason = (
                         f"{fail_reason} "
