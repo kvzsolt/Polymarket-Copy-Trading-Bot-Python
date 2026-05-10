@@ -236,13 +236,12 @@ class IntentRegistry:
                 token_shares=agg.token_shares + reservation.token_shares,
             )
             logger.info(
-                "intent.begin id=%s scope=%s side=%s reserved_quote=%s "
-                "reserved_shares=%s",
+                "intent.begin id=%s side=%s reserved_quote=%s reserved_shares=%s",
                 new_id,
-                key,
                 side.value,
                 reservation.quote_usdc,
                 reservation.token_shares,
+                extra=scope.log_fields(),
             )
             return record
 
@@ -353,9 +352,10 @@ class IntentRegistry:
             # Surface invariant violations — negative residuals indicate a bug
             if new_quote < 0 or new_shares < 0:
                 logger.error(
-                    "intent.reservation_negative_residual id=%s scope=%s "
+                    "intent.reservation_negative_residual id=%s "
                     "new_quote=%s new_shares=%s (reservation leak?)",
-                    intent_id, key, new_quote, new_shares,
+                    intent_id, new_quote, new_shares,
+                    extra=record.scope.log_fields(),
                 )
             if new_quote == Decimal(0) and new_shares == Decimal(0):
                 self._reserved.pop(key, None)
@@ -366,13 +366,12 @@ class IntentRegistry:
                 )
 
         logger.info(
-            "intent.release id=%s scope=%s state=%s released_quote=%s "
-            "released_shares=%s",
+            "intent.release id=%s state=%s released_quote=%s released_shares=%s",
             intent_id,
-            key,
             terminal_state.value,
             record.reservation.quote_usdc,
             record.reservation.token_shares,
+            extra=record.scope.log_fields(),
         )
 
         # Prune oldest resolved intents to prevent unbounded memory growth

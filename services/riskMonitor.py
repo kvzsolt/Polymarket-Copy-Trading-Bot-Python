@@ -621,6 +621,7 @@ async def reconcile_unconfirmed_risk_orders(context: TradingContext) -> int:
             token_id=token_id,
         )
         async with context.position_coordinator.acquire(scope):
+            logger.debug("risk.scope_lock_acquired_confirm_fill", extra=scope.log_fields())
             try:
                 fill_info = await context.execution_service._confirm_fill(order_id)
             except Exception as exc:
@@ -825,13 +826,15 @@ async def run_risk_check_for_context(context: TradingContext) -> None:
                     pos.token_id, pos.condition_id,
                 )
             continue
-        # --- Per-scoped-position action coordination (issue #28) ---
+        # --- Per-scoped-position action coordination (issue #28 / #67) ---
         _scope = PositionScope(
             user_id=context.user_id,
             condition_id=pos.condition_id,
             token_id=pos.token_id,
+            outcome=getattr(pos, "outcome", None),
         )
         async with context.position_coordinator.acquire(_scope):
+            logger.debug("risk.scope_lock_acquired_protective_exit", extra=_scope.log_fields())
             try:
                 current_price = await _get_context_cached_price(
                     context,
