@@ -109,6 +109,8 @@ class ExecutionCoordinator:
             )
             raise
 
+        self._link_reservation_order(reservation.id, order_id=order.id)
+
         await self._transition_order(
             order.id,
             from_status=OrderLifecycleStatus.RESERVED,
@@ -136,6 +138,10 @@ class ExecutionCoordinator:
             self.reservation_service.release_terminal(reservation.id, "terminal_failed")
             self._log_audit("execution_terminal_failed", intent, order.id, reservation.id, str(exc))
             raise  # Reraise unknown errors, but ensure reservation is released
+
+        self._link_reservation_order(
+            reservation.id, order_id=order.id, venue_order_id=venue_result.order_id
+        )
 
         status = classify_venue_status(venue_result.status)
 
@@ -193,6 +199,18 @@ class ExecutionCoordinator:
             order_id=order.id,
             status=unresolved_status,
         )
+
+    def _link_reservation_order(
+        self,
+        reservation_id: str,
+        *,
+        order_id: str | None = None,
+        venue_order_id: str | None = None,
+    ) -> None:
+        repo = getattr(self.reservation_service, "reservations_repo", None)
+        linker = getattr(repo, "link_order", None)
+        if linker is not None:
+            linker(reservation_id, order_id=order_id, venue_order_id=venue_order_id)
 
     async def _transition_order(self, order_id: str, from_status: OrderLifecycleStatus, to_status: OrderLifecycleStatus, venue_order_id: str | None = None, metadata: Dict[str, Any] | None = None) -> None:
         assert_transition_allowed(from_status, to_status)
