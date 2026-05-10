@@ -166,7 +166,7 @@ class TestExecutionService:
     @pytest.mark.asyncio
     async def test_rejects_non_positive_amount(self):
         clob = SimpleNamespace(get_price=AsyncMock(return_value={"price": "0.5"}))
-        svc = ExecutionService(clob, _MetaSvc(), _FeeSvc(), _Repo())
+        svc = ExecutionService(clob, _MetaSvc(), _FeeSvc(), _Repo(), config=_make_exec_config())
         req = ExecutionRequest(
             user_id="u1",
             leader_id="l1",
@@ -320,6 +320,7 @@ class TestExecutionService:
             market_meta_service=SimpleNamespace(),
             fee_service=SimpleNamespace(),
             order_repo=repo,
+            config=_make_exec_config(),
         )
         idem_key = "persist-sanitized"
         svc._save_submission(
@@ -409,7 +410,7 @@ class TestExecutionService:
             client=SimpleNamespace(get_order=lambda _order_id: {"status": "filled", "size_matched": "5", "avg_price": "0.5"}),
         )
         repo = _Repo()
-        svc = ExecutionService(clob, _MetaSvc(), _FeeSvc(), repo)
+        svc = ExecutionService(clob, _MetaSvc(), _FeeSvc(), repo, config=_make_exec_config(min_share_price=0, pending_ttl=120))
         req = ExecutionRequest(
             user_id="u1",
             leader_id="l1",
@@ -429,7 +430,6 @@ class TestExecutionService:
             "response": {"status": "pending", "pending_since": 0},
         }
 
-        svc._config = _make_exec_config(min_share_price=0, pending_ttl=120)
         with patch("services.executionService._idempotency_key", return_value=key):
             res = await svc.execute(req)
 
@@ -446,7 +446,7 @@ class TestExecutionService:
             client=SimpleNamespace(get_order=lambda _order_id: {"status": "filled", "size_matched": "5", "avg_price": "0.5"}),
         )
         repo = _Repo()
-        svc = ExecutionService(clob, _MetaSvc(), _FeeSvc(), repo)
+        svc = ExecutionService(clob, _MetaSvc(), _FeeSvc(), repo, config=_make_exec_config(min_share_price=0, pending_ttl=120))
         req = ExecutionRequest(
             user_id="u1",
             leader_id="l1",
@@ -466,7 +466,6 @@ class TestExecutionService:
             "response": {"status": "submitted_unconfirmed", "pending_since": 0},
         }
 
-        svc._config = _make_exec_config(min_share_price=0, pending_ttl=120)
         with patch("services.executionService._idempotency_key", return_value=key):
             res = await svc.execute(req)
 
