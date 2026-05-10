@@ -217,6 +217,12 @@ class PositionPriceCache:
         """Own fill: clear quote and book so execution path fetches fresh data."""
         self._quotes.pop(token_id, None)
         self._books.pop(token_id, None)
+        try:
+            from services.metrics import METRIC_CACHE_STALE_EVICTIONS, metrics
+
+            metrics.inc_sync(METRIC_CACHE_STALE_EVICTIONS, labels={"reason": "fill"})
+        except Exception:
+            pass
         logger.debug("Cache invalidated (fill): quote+book for %s", token_id)
 
     def on_price_update(
@@ -255,6 +261,14 @@ class PositionPriceCache:
         self._quotes.pop(token_id, None)
         self._books.pop(token_id, None)
         self._ticks.pop(token_id, None)
+        try:
+            from services.metrics import METRIC_CACHE_STALE_EVICTIONS, metrics
+
+            metrics.inc_sync(
+                METRIC_CACHE_STALE_EVICTIONS, labels={"reason": "reconcile"}
+            )
+        except Exception:
+            pass
         logger.debug("Cache invalidated (reconcile): %s", token_id)
 
     def invalidate_all(self) -> None:
@@ -262,6 +276,14 @@ class PositionPriceCache:
         self._quotes.clear()
         self._books.clear()
         self._ticks.clear()
+        try:
+            from services.metrics import METRIC_CACHE_STALE_EVICTIONS, metrics
+
+            metrics.inc_sync(
+                METRIC_CACHE_STALE_EVICTIONS, labels={"reason": "reconnect"}
+            )
+        except Exception:
+            pass
         logger.info("Cache fully invalidated (reconnect)")
 
     # --- Introspection --------------------------------------------------------

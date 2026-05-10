@@ -16,6 +16,12 @@ from bot_cli.commands import (
     run_reconcile,
     register_run_command,
     run_run,
+    register_reservations_command,
+    run_reservations,
+    register_stale_locks_command,
+    run_stale_locks,
+    register_drift_command,
+    run_drift,
 )
 
 _COMMANDS = [
@@ -26,6 +32,9 @@ _COMMANDS = [
     ("config", register_config_command, run_config),
     ("reconcile", register_reconcile_command, run_reconcile),
     ("run", register_run_command, run_run),
+    ("reservations", register_reservations_command, run_reservations),
+    ("stale-locks", register_stale_locks_command, run_stale_locks),
+    ("drift", register_drift_command, run_drift),
 ]
 
 _COMMAND_RUNNERS = {name: runner for name, _, runner in _COMMANDS}

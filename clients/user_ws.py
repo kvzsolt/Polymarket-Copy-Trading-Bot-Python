@@ -23,6 +23,11 @@ from websockets.exceptions import (
     ConnectionClosedOK,
 )
 
+from services.metrics import (
+    METRIC_WSS_HEARTBEAT_STALL,
+    METRIC_WSS_RECONNECT,
+    metrics,
+)
 from utils.logger import get_logger
 
 if TYPE_CHECKING:
@@ -128,6 +133,10 @@ class UserWebSocket:
                 "UserWS: reconnecting in %.1fs",
                 self._reconnect_delay,
             )
+            try:
+                await metrics.inc(METRIC_WSS_RECONNECT, labels={"stream": "user"})
+            except Exception:
+                pass
             await asyncio.sleep(self._reconnect_delay)
             self._reconnect_delay = min(
                 self._reconnect_delay * 2,
@@ -151,6 +160,12 @@ class UserWebSocket:
                 await ws.send("PING")
             except Exception as exc:
                 logger.warning("UserWS: heartbeat send failed: %s", exc)
+                try:
+                    await metrics.inc(
+                        METRIC_WSS_HEARTBEAT_STALL, labels={"stream": "user"}
+                    )
+                except Exception:
+                    pass
                 try:
                     await ws.close()
                 except Exception:
