@@ -1,0 +1,32 @@
+README.md
+  s_ee62f6730d698e::t_dc5c9b00e5c50d 46-47
+docs/archive/README.md
+  s_ee62f6730d698e::t_66e5c3d671668d 11,13
+docs/full-rework-progress.md
+  s_ee62f6730d698e::t_19b7a768ab537a 153,155
+  s_ee62f6730d698e::t_f8aef3d692b9e2 175-176,178-181,186-201
+docs/migration.md
+  s_ee62f6730d698e::t_a527a72d3bc027 10
+docs/runbooks/00-index.md
+  s_ee62f6730d698e::t_3158c9ef0e0761 27
+tests/release_gate/test_no_legacy_imports.py
+  s_ee62f6730d698e::t_3a3fd65d0f4031 93-103
+  s_ee62f6730d698e::t_8154aa2896a748 129-162
+  s_ee62f6730d698e::t_5a936fc39a0703 40
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.4",
+  "base_commit_sha": "61c17ae4b6a43eb7e449b6841a91592fea459e23",
+  "prompts": {},
+  "sessions": {
+    "s_ee62f6730d698e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "988426d4-932e-4464-a7d2-871ab4ac94dd",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
