@@ -43,8 +43,8 @@ Read these in order:
 2. [`docs/02-configuration.md`](docs/02-configuration.md) — full typed-config reference.
 3. [`docs/03-paper-trading.md`](docs/03-paper-trading.md) → [`docs/04-live-trading.md`](docs/04-live-trading.md) — paper soak then live cutover.
 4. [`docs/runbooks/`](docs/runbooks/00-index.md) — incident runbooks (CLOB outage, WSS outage, circuit breaker open, stale locks, reconciliation drift, manual / off-bot drift).
-5. [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — canonical architecture overview.
-6. [`docs/MIGRATION.md`](docs/MIGRATION.md) — migrating from `main` / `develop` to the `full-rework` rewrite.
+5. [`docs/architecture.md`](docs/architecture.md) — canonical architecture overview.
+6. [`docs/migration.md`](docs/migration.md) — migrating from `main` / `develop` to the `full-rework` rewrite.
 
 ---
 
