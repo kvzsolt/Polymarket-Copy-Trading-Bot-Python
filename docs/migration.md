@@ -7,7 +7,7 @@ not roll a `main` or `develop` deployment into this branch without
 reading this page.
 
 This document only covers what *changed*. For the live architecture,
-see [`ARCHITECTURE.md`](ARCHITECTURE.md). For runbooks, see
+see [`architecture.md`](architecture.md). For runbooks, see
 [`runbooks/`](runbooks/00-index.md).
 
 ## Headline changes

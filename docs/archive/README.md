@@ -8,9 +8,9 @@ The current sources of truth are:
 
 - `audit.md` (root) — the full-rework audit findings.
 - `plan.md` (root) — the full-rework remediation plan.
-- `docs/ARCHITECTURE.md` — the canonical architecture overview.
+- `docs/architecture.md` — the canonical architecture overview.
 - `docs/runbooks/` — operator runbooks for incident response.
-- `docs/MIGRATION.md` — migration notes from `main` / `develop` to
+- `docs/migration.md` — migration notes from `main` / `develop` to
   `full-rework`.
 - `docs/full-rework-progress.md` — live progress log of the remediation.
 - `docs/00-read-this-first.md` through `docs/12-release-notes.md` — the
