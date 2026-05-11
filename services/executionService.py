@@ -11,6 +11,7 @@ from config.app_config import AppConfig
 
 if TYPE_CHECKING:
     from interfaces.clob_gateway import ClobGateway
+    from services.market_data_service import MarketDataService, StaleDataError
 
 # CLOB venue access flows through the gateway; SDK-shaped types
 # (``OrderType`` / ``OrderArgs`` / ``BUY`` / ``SELL`` constants) are not
@@ -186,12 +187,14 @@ class ExecutionService:
         circuit_breaker: CircuitBreaker | None = None,
         config: AppConfig,
         clob_gateway: "ClobGateway | None" = None,
+        market_data_service: "MarketDataService | None" = None,
     ):
         self.clob_client = clob_client
         self.market_meta_service = market_meta_service
         self.fee_service = fee_service
         self.order_repo = order_repo
         self._config = config
+        self._market_data_service = market_data_service
 
         # Single CLOB venue boundary. ``runtime_bootstrap`` is expected to pass
         # a pre-constructed gateway so reconciliation, the execution
@@ -368,30 +371,116 @@ class ExecutionService:
                     ),
                 )
         elif spread_limit > 0 and (meta.best_bid is None or meta.best_ask is None):
+            # Side-aware: BUY needs best_ask, SELL needs best_bid.
+            # The non-required side being None is a warning, not a rejection.
+            if side == "BUY" and meta.best_ask is None:
+                logger.info(
+                    "book_quality_gate_no_book",
+                    extra={
+                        "type": "book_quality_gate_no_book",
+                        "token_id": req.token_id,
+                        "best_bid": str(meta.best_bid),
+                        "best_ask": str(meta.best_ask),
+                        "side": side,
+                        "reason": "BUY requires best_ask which is missing",
+                    },
+                )
+                return ExecutionResult(
+                    accepted=False,
+                    order_id=None,
+                    status="book_no_liquidity",
+                    requested_amount=req.amount,
+                    filled_amount=Decimal("0"),
+                    avg_price=None,
+                    fees_paid=Decimal("0"),
+                    error=(
+                        f"no orderbook data for required side — bid={meta.best_bid} ask={meta.best_ask}"
+                    ),
+                )
+            if side == "SELL" and meta.best_bid is None:
+                logger.info(
+                    "book_quality_gate_no_book",
+                    extra={
+                        "type": "book_quality_gate_no_book",
+                        "token_id": req.token_id,
+                        "best_bid": str(meta.best_bid),
+                        "best_ask": str(meta.best_ask),
+                        "side": side,
+                        "reason": "SELL requires best_bid which is missing",
+                    },
+                )
+                return ExecutionResult(
+                    accepted=False,
+                    order_id=None,
+                    status="book_no_liquidity",
+                    requested_amount=req.amount,
+                    filled_amount=Decimal("0"),
+                    avg_price=None,
+                    fees_paid=Decimal("0"),
+                    error=(
+                        f"no orderbook data for required side — bid={meta.best_bid} ask={meta.best_ask}"
+                    ),
+                )
+            # The required side is present but the other side is missing.
+            # This is a one-sided book — log a warning but allow execution.
             logger.info(
-                "book_quality_gate_no_book",
+                "book_one_sided",
                 extra={
-                    "type": "book_quality_gate_no_book",
+                    "type": "book_one_sided",
                     "token_id": req.token_id,
                     "best_bid": str(meta.best_bid),
                     "best_ask": str(meta.best_ask),
-                    "reason": "orderbook missing bid or ask — market may not exist on CLOB",
+                    "side": side,
+                    "reason": "one-sided book — required side present, other side missing",
                 },
             )
-            return ExecutionResult(
-                accepted=False,
-                order_id=None,
-                status="book_no_liquidity",
-                requested_amount=req.amount,
-                filled_amount=Decimal("0"),
-                avg_price=None,
-                fees_paid=Decimal("0"),
-                error=(
-                    f"no orderbook data — bid={meta.best_bid} ask={meta.best_ask}"
-                ),
-            )
 
-        quote = await self.clob_client.get_price(req.token_id, side)
+        # --- Freshness-aware price fetch (issue #hardening PR-1) ----------------
+        # Prefer MarketDataService (cache → REST fallback → StaleDataError).
+        # In paper-trade mode, tolerate missing MDS via legacy clob_client.
+        # In live mode without MDS, fail-closed: refuse execution.
+        quote = None
+        if self._market_data_service is not None:
+            try:
+                from services.market_data_service import StaleDataError
+                quote_snap = await self._market_data_service.require_fresh_quote(req.token_id)
+                # Map QuoteSnapshot → dict shape expected downstream
+                price_val = (
+                    quote_snap.best_ask if side == "BUY" else quote_snap.best_bid
+                )
+                if price_val is not None:
+                    quote = {"price": price_val}
+                else:
+                    quote = None
+            except Exception as exc:
+                logger.warning(
+                    "market_data_service.require_fresh_quote failed for %s: %s",
+                    req.token_id, exc,
+                )
+                quote = None
+        else:
+            # Legacy fallback — only allowed in paper-trade mode
+            paper_only = getattr(
+                getattr(self._config, "execution", None), "paper_trade_only", False
+            )
+            if paper_only:
+                try:
+                    quote = await self.clob_client.get_price(req.token_id, side)
+                except Exception as exc:
+                    logger.warning("legacy get_price fallback failed: %s", exc)
+                    quote = None
+            else:
+                return ExecutionResult(
+                    accepted=False,
+                    order_id=None,
+                    status="rejected",
+                    requested_amount=req.amount,
+                    filled_amount=Decimal("0"),
+                    avg_price=None,
+                    fees_paid=Decimal("0"),
+                    error="market_data_service not wired — refusing live execution",
+                )
+
         if not quote or quote.get("price") is None:
             return ExecutionResult(
                 accepted=False,

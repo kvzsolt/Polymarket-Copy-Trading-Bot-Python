@@ -98,12 +98,18 @@ def quantize_to_tick(
 
 def _top_of_book_from_levels(levels: list[Any], *, side: str) -> Decimal | None:
     prices = []
-    for level in levels:
-        price = _safe_decimal(getattr(level, "price", None))
-        if price is None and isinstance(level, dict):
-            price = _safe_decimal(level.get("price"))
-        if price is not None:
-            prices.append(price)
+    if isinstance(levels, dict):
+        for key in levels.keys():
+            price = _safe_decimal(key)
+            if price is not None:
+                prices.append(price)
+    else:
+        for level in levels:
+            price = _safe_decimal(getattr(level, "price", None))
+            if price is None and isinstance(level, dict):
+                price = _safe_decimal(level.get("price"))
+            if price is not None:
+                prices.append(price)
 
     if not prices:
         return None
@@ -187,13 +193,16 @@ class ClobClientWrapper:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, lambda: self.client.get_order_book(asset))
 
-    async def get_market_meta(self, asset: str) -> MarketMeta:
-        cached = self._market_meta_cache.get(asset)
-        if cached:
-            meta, expiry = cached
-            if time.monotonic() < expiry:
-                return meta
-            del self._market_meta_cache[asset]
+    async def get_market_meta(self, asset: str, refresh: bool = False) -> MarketMeta:
+        if refresh:
+            self._market_meta_cache.pop(asset, None)
+        else:
+            cached = self._market_meta_cache.get(asset)
+            if cached:
+                meta, expiry = cached
+                if time.monotonic() < expiry:
+                    return meta
+                del self._market_meta_cache[asset]
 
         loop = asyncio.get_running_loop()
 
@@ -233,6 +242,15 @@ class ClobClientWrapper:
                 best_bid=_top_of_book_from_levels(bids, side="bid"),
                 best_ask=_top_of_book_from_levels(asks, side="ask"),
             )
+
+            # If SDK returned a valid but empty book, try HTTP fallback before
+            # accepting the empty result — the SDK may have stale/cached data.
+            if meta.best_bid is None and meta.best_ask is None and not bids and not asks:
+                logger.info("SDK book empty, trying HTTP fallback for %s", asset)
+                http_meta = await self._http_fallback_market_meta(asset, tick_size_v2, neg_risk_v2)
+                if http_meta is not None:
+                    return http_meta
+
             ttl = _META_CACHE_TTL_THIN if _is_thin_or_empty_book(meta.best_bid, meta.best_ask) else _META_CACHE_TTL_GOOD
             self._market_meta_cache[asset] = (meta, time.monotonic() + ttl)
             return meta
@@ -243,35 +261,47 @@ class ClobClientWrapper:
             redact_error_detail(ob_result),
         )
 
-        # HTTP fallback for resiliency.
+        http_meta = await self._http_fallback_market_meta(asset, tick_size_v2, neg_risk_v2)
+        if http_meta is not None:
+            return http_meta
+
+        raise RuntimeError(f"Failed to fetch market metadata for {asset}: SDK error and HTTP fallback failed")
+
+    async def _http_fallback_market_meta(
+        self, asset: str, tick_size_v2: Decimal | None, neg_risk_v2: bool | None,
+    ) -> MarketMeta | None:
         url = f"{CLOB_HTTP_URL}/book?token_id={asset}"
         session = _get_session()
-        async with session.get(url) as resp:
-            if resp.status != 200:
-                log_api_response(
-                    logger,
-                    method="GET",
-                    url=url,
-                    status=resp.status,
-                    error=f"status_code={resp.status}",
-                )
-                raise RuntimeError(f"Failed to fetch market metadata for {asset}: HTTP {resp.status}")
-            data = await resp.json()
+        try:
+            async with session.get(url) as resp:
+                if resp.status != 200:
+                    log_api_response(
+                        logger,
+                        method="GET",
+                        url=url,
+                        status=resp.status,
+                        error=f"status_code={resp.status}",
+                    )
+                    return None
+                data = await resp.json()
 
-            bids = (data.get("bids") or [])
-            asks = (data.get("asks") or [])
-            meta = MarketMeta(
-                token_id=asset,
-                tick_size=tick_size_v2 if tick_size_v2 is not None else Decimal(str(data.get("tick_size", "0.01"))),
-                min_order_size=Decimal(str(data.get("min_order_size", "0"))),
-                neg_risk=neg_risk_v2 if neg_risk_v2 is not None else bool(data.get("neg_risk", False)),
-                best_bid=_top_of_book_from_levels(bids, side="bid"),
-                best_ask=_top_of_book_from_levels(asks, side="ask"),
-            )
-            ttl = _META_CACHE_TTL_THIN if _is_thin_or_empty_book(meta.best_bid, meta.best_ask) else _META_CACHE_TTL_GOOD
-            self._market_meta_cache[asset] = (meta, time.monotonic() + ttl)
-            log_api_response(logger, method="GET", url=url, status=resp.status, data=data)
-            return meta
+                bids = (data.get("bids") or [])
+                asks = (data.get("asks") or [])
+                meta = MarketMeta(
+                    token_id=asset,
+                    tick_size=tick_size_v2 if tick_size_v2 is not None else Decimal(str(data.get("tick_size", "0.01"))),
+                    min_order_size=Decimal(str(data.get("min_order_size", "0"))),
+                    neg_risk=neg_risk_v2 if neg_risk_v2 is not None else bool(data.get("neg_risk", False)),
+                    best_bid=_top_of_book_from_levels(bids, side="bid"),
+                    best_ask=_top_of_book_from_levels(asks, side="ask"),
+                )
+                ttl = _META_CACHE_TTL_THIN if _is_thin_or_empty_book(meta.best_bid, meta.best_ask) else _META_CACHE_TTL_GOOD
+                self._market_meta_cache[asset] = (meta, time.monotonic() + ttl)
+                log_api_response(logger, method="GET", url=url, status=resp.status, data=data)
+                return meta
+        except Exception as exc:
+            logger.warning("HTTP fallback failed for %s: %s", asset, redact_error_detail(exc))
+            return None
 
     async def get_min_order_size(self, asset: str) -> float:
         meta = await self.get_market_meta(asset)
