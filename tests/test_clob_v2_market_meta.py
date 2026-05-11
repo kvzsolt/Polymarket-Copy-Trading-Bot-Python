@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -201,3 +201,128 @@ class TestGetMarketMetaV2Methods:
         args_passed = client.create_market_order.call_args[0][0]
         # BUY side now rounds UP: 0.556 -> 0.56
         assert float(args_passed.price) == pytest.approx(0.56, rel=1e-9)
+
+
+class TestRefreshBypassesWrapperCache:
+    """Test that refresh=True bypasses the ClobClientWrapper's internal cache."""
+
+    @pytest.mark.asyncio
+    async def test_refresh_bypasses_wrapper_cache(self):
+        client = MagicMock()
+        client.get_tick_size.return_value = "0.01"
+        client.get_neg_risk.return_value = False
+
+        ob = MagicMock()
+        ob.tick_size = "0.01"
+        ob.neg_risk = False
+        ob.bids = []
+        ob.asks = []
+        ob.min_order_size = "5"
+        client.get_order_book.return_value = ob
+
+        wrapper = ClobClientWrapper(client, _dummy_wallet())
+
+        # First call populates the cache
+        meta1 = await wrapper.get_market_meta("tok_refresh")
+        assert meta1.best_bid is None
+        assert meta1.best_ask is None
+
+        # Now update the mock to return real data
+        ob2 = MagicMock()
+        ob2.tick_size = "0.01"
+        ob2.neg_risk = False
+        ob2.bids = [MagicMock(price="0.50")]
+        ob2.asks = [MagicMock(price="0.55")]
+        ob2.min_order_size = "5"
+        client.get_order_book.return_value = ob2
+
+        # Without refresh, the cached (empty) result should be returned
+        # This test assumes the TTL has not expired yet — the wrapper cache
+        # should return the stale empty book.
+        # We'll verify that with refresh=True, we bypass the cache.
+        # Force the TTL to be very short so the cache might expire, but to be
+        # sure, we explicitly test the refresh flag.
+        meta_stale = await wrapper.get_market_meta("tok_refresh", refresh=False)
+        # Depending on TTL timing, this may be stale or fresh. Let's test refresh=True:
+        meta_fresh = await wrapper.get_market_meta("tok_refresh", refresh=True)
+        assert meta_fresh.best_bid == Decimal("0.50")
+        assert meta_fresh.best_ask == Decimal("0.55")
+
+    @pytest.mark.asyncio
+    async def test_refresh_clears_existing_cache_entry(self):
+        client = MagicMock()
+        client.get_tick_size.return_value = "0.01"
+        client.get_neg_risk.return_value = False
+
+        ob1 = MagicMock()
+        ob1.tick_size = "0.01"
+        ob1.neg_risk = False
+        ob1.bids = []
+        ob1.asks = []
+        ob1.min_order_size = "5"
+        client.get_order_book.return_value = ob1
+
+        wrapper = ClobClientWrapper(client, _dummy_wallet())
+        # Populate cache with empty book
+        await wrapper.get_market_meta("tok_clear")
+
+        # Verify cache entry exists
+        assert "tok_clear" in wrapper._market_meta_cache
+
+        # Call with refresh=True — cache should be cleared before fetch
+        ob2 = MagicMock()
+        ob2.tick_size = "0.01"
+        ob2.neg_risk = False
+        ob2.bids = [MagicMock(price="0.45")]
+        ob2.asks = [MagicMock(price="0.55")]
+        ob2.min_order_size = "5"
+        client.get_order_book.return_value = ob2
+
+        meta = await wrapper.get_market_meta("tok_clear", refresh=True)
+        assert meta.best_bid == Decimal("0.45")
+        assert meta.best_ask == Decimal("0.55")
+
+
+class TestEmptySDKBookFallsBackToHTTP:
+    """Test that when SDK returns an empty book, HTTP fallback is attempted."""
+
+    @pytest.mark.asyncio
+    async def test_empty_sdk_book_falls_back_to_http(self):
+        client = MagicMock()
+        client.get_tick_size.return_value = "0.01"
+        client.get_neg_risk.return_value = False
+
+        # SDK returns valid but empty orderbook
+        ob = MagicMock()
+        ob.tick_size = "0.01"
+        ob.neg_risk = False
+        ob.bids = []
+        ob.asks = []
+        ob.min_order_size = "5"
+        client.get_order_book.return_value = ob
+
+        wrapper = ClobClientWrapper(client, _dummy_wallet())
+
+        http_data = {
+            "bids": [{"price": "0.50"}],
+            "asks": [{"price": "0.55"}],
+            "tick_size": "0.01",
+            "min_order_size": "5",
+            "neg_risk": False,
+        }
+
+        mock_response = MagicMock()
+        mock_response.status = 200
+        mock_response.json = AsyncMock(return_value=http_data)
+        mock_cm = MagicMock()
+        mock_cm.__aenter__ = AsyncMock(return_value=mock_response)
+        mock_cm.__aexit__ = AsyncMock(return_value=False)
+
+        mock_session = MagicMock()
+        mock_session.get = MagicMock(return_value=mock_cm)
+
+        with patch("utils.createClobClient._get_session", return_value=mock_session):
+            meta = await wrapper.get_market_meta("tok_empty_http")
+
+        assert meta.best_bid == Decimal("0.50")
+        assert meta.best_ask == Decimal("0.55")
