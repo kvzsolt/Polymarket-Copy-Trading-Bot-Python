@@ -125,9 +125,9 @@ def _classify_error(exc: Exception) -> tuple[bool, str]:
     # invalid-order branch and get marked non-retryable, losing the
     # submitted-unconfirmed safety net (issue #66).
     if any(
-        kw in exc_name for kw in ("timeout", "connectionerror", "connectionreset")
+        kw in exc_name for kw in ("timeout", "connectionerror", "connectionreset", "connectionterminated", "disconnected")
     ) or any(
-        kw in msg for kw in ("timeout", "connection reset", "connection lost", "connection refused")
+        kw in msg for kw in ("timeout", "connection reset", "connection lost", "connection refused", "server disconnected", "connection terminated", "connection closed")
     ):
         return True, "timeout_or_connection"
 
@@ -273,13 +273,13 @@ class ClobV2Gateway:
         for level in list(getattr(raw_book, "bids", []) or []):
             price = _safe_decimal(getattr(level, "price", None) if not isinstance(level, dict) else level.get("price"))
             size = _safe_decimal(getattr(level, "size", None) if not isinstance(level, dict) else level.get("size"))
-            if price is not None and size is not None:
+            if price is not None and size is not None and size > 0:
                 bids.append(OrderBookLevel(price=price, size=size))
 
         for level in list(getattr(raw_book, "asks", []) or []):
             price = _safe_decimal(getattr(level, "price", None) if not isinstance(level, dict) else level.get("price"))
             size = _safe_decimal(getattr(level, "size", None) if not isinstance(level, dict) else level.get("size"))
-            if price is not None and size is not None:
+            if price is not None and size is not None and size > 0:
                 asks.append(OrderBookLevel(price=price, size=size))
 
         best_bid = max((l.price for l in bids), default=None)
