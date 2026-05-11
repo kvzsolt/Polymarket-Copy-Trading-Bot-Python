@@ -28,7 +28,7 @@ class MarketMetaService:
         if item and not refresh and (now - item.ts) < self._ttl_seconds:
             return item.value
 
-        meta = await self._clob_client.get_market_meta(token_id)
+        meta = await self._clob_client.get_market_meta(token_id, refresh=refresh)
         # Normalize defensive defaults
         tick = meta.tick_size if meta.tick_size > 0 else Decimal("0.01")
         min_order = meta.min_order_size if meta.min_order_size >= 0 else Decimal("0")

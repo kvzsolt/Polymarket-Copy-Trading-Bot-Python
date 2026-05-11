@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from utils.createClobClient import MarketMeta
+from utils.createClobClient import MarketMeta, _top_of_book_from_levels
 
 
 # ---------------------------------------------------------------------------
@@ -136,23 +136,41 @@ class TestBookQualityGate:
         result = asyncio.new_event_loop().run_until_complete(svc.execute(req))
         assert result.error is None or "spread" not in result.error
 
-    def test_no_bid_rejected(self):
-        """If best_bid is None, the market has no book — should be rejected."""
+    def test_no_bid_rejected_for_sell(self):
+        """If best_bid is None, SELL orders should be rejected (need bid to sell into)."""
         svc = _make_execution_service(_meta(None, "0.51"))
         svc._config.execution.max_book_spread_bps = 500
-        req = _req()
+        req = _req(side="SELL", amount="5")
         result = asyncio.new_event_loop().run_until_complete(svc.execute(req))
         assert result.accepted is False
         assert result.status == "book_no_liquidity"
 
-    def test_no_ask_rejected(self):
-        """If best_ask is None, the market has no book — should be rejected."""
+    def test_no_ask_rejected_for_buy(self):
+        """If best_ask is None, BUY orders should be rejected (need ask to buy into)."""
         svc = _make_execution_service(_meta("0.50", None))
         svc._config.execution.max_book_spread_bps = 500
         req = _req()
         result = asyncio.new_event_loop().run_until_complete(svc.execute(req))
         assert result.accepted is False
         assert result.status == "book_no_liquidity"
+
+    def test_one_sided_buy_with_no_bid_allowed(self):
+        """BUY with best_bid=None but valid best_ask should pass the spread gate."""
+        svc = _make_execution_service(_meta(None, "0.51"))
+        svc._config.execution.max_book_spread_bps = 500
+        req = _req()
+        result = asyncio.new_event_loop().run_until_complete(svc.execute(req))
+        assert result.error is None or "spread" not in result.error
+        assert result.status != "book_no_liquidity"
+
+    def test_one_sided_sell_with_no_ask_allowed(self):
+        """SELL with best_ask=None but valid best_bid should pass the spread gate."""
+        svc = _make_execution_service(_meta("0.50", None))
+        svc._config.execution.max_book_spread_bps = 500
+        req = _req(side="SELL", amount="5")
+        result = asyncio.new_event_loop().run_until_complete(svc.execute(req))
+        assert result.error is None or "spread" not in result.error
+        assert result.status != "book_no_liquidity"
 
     def test_zero_bid_passes(self):
         """If best_bid is 0, spread check is skipped (avoid division by zero)."""
@@ -269,3 +287,23 @@ class TestSpreadMetrics:
         assert metrics.absolute_bps > 0
         assert metrics.relative_bps > 0
         assert metrics.ticks == 1
+
+
+class TestDictMappedLevels:
+    """Test _top_of_book_from_levels with dict-mapped level data."""
+
+    def test_dict_mapped_bids(self):
+        result = _top_of_book_from_levels({"0.45": 100, "0.50": 200}, side="bid")
+        assert result == Decimal("0.50")
+
+    def test_dict_mapped_asks(self):
+        result = _top_of_book_from_levels({"0.55": 100, "0.51": 200}, side="ask")
+        assert result == Decimal("0.51")
+
+    def test_empty_dict_returns_none(self):
+        assert _top_of_book_from_levels({}, side="bid") is None
+        assert _top_of_book_from_levels({}, side="ask") is None
+
+    def test_dict_mapped_with_invalid_key(self):
+        result = _top_of_book_from_levels({"abc": 100, "0.50": 200}, side="bid")
+        assert result == Decimal("0.50")
