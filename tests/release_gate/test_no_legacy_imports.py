@@ -37,8 +37,7 @@ PRODUCTION_ROOTS: tuple[str, ...] = (
 FORBIDDEN_PREFIXES: tuple[str, ...] = (
     "legacy",
     "test_probe",
-    "test_doctor_detect",
-    "test_doctor_gnosis",
+    "test_doctor",
 )
 
 DELETED_PROBE_FILES: tuple[str, ...] = (
@@ -91,8 +90,17 @@ def _collect_imports(source: str, file_label: str) -> set[str]:
 
 
 def _is_forbidden(target: str) -> bool:
-    head = target.split(".", 1)[0]
-    return any(head == prefix or head.startswith(prefix) for prefix in FORBIDDEN_PREFIXES)
+    """Return True if any dotted segment of ``target`` matches a forbidden prefix.
+
+    Checking every segment (not just the head) catches nested cases like
+    ``scripts.test_probe2`` or ``some.pkg.legacy.foo`` that would slip past a
+    head-only check.
+    """
+    for segment in target.split("."):
+        for prefix in FORBIDDEN_PREFIXES:
+            if segment == prefix or segment.startswith(prefix):
+                return True
+    return False
 
 
 def test_no_production_imports_of_legacy_or_probes() -> None:
@@ -118,3 +126,37 @@ def test_root_probe_scripts_were_deleted() -> None:
         "Probe scripts must not exist at repo root. "
         f"Found: {survivors}"
     )
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        "legacy",
+        "legacy.tradeExecutor",
+        "test_probe",
+        "test_probe2",
+        "test_probe_new_variant",
+        "test_doctor_detect",
+        "test_doctor_gnosis",
+        "test_doctor_anything_else",
+        "scripts.test_probe2",          # nested-segment match (issue #77 PR review)
+        "some.pkg.legacy.foo",          # nested-segment match
+        "pkg.subpkg.test_doctor_x",     # nested-segment + wildcard match
+    ],
+)
+def test_is_forbidden_matches_wildcard_and_nested(target: str) -> None:
+    assert _is_forbidden(target), target
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        "config.app_config",
+        "services.executionService",
+        "tests.helpers",                # 'tests' is not 'test_'
+        "polymarket_legacy_tools",      # head doesn't start with 'legacy'
+        "doctor",                        # different prefix
+    ],
+)
+def test_is_forbidden_does_not_overmatch(target: str) -> None:
+    assert not _is_forbidden(target), target

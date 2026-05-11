@@ -24,4 +24,4 @@ is obvious.
   intents to settle. Do **not** SIGKILL the process — the reconciler must
   terminate cleanly to release reservations.
 - For the architectural background that informs each procedure, see
-  [`../ARCHITECTURE.md`](../ARCHITECTURE.md).
+  [`../architecture.md`](../architecture.md).

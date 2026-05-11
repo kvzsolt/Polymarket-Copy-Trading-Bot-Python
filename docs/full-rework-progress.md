@@ -150,9 +150,9 @@ the deleted probes, and refreshed the root README to link the new docs.
 - Archived (`git mv` into `docs/archive/`): `simplification-plan.md`,
   `full-rework-review-fixes-progress.md`, `usage.md`.
 - New: `docs/archive/README.md` *(index of archived docs)*.
-- New: `docs/ARCHITECTURE.md` *(canonical architecture overview;
+- New: `docs/architecture.md` *(canonical architecture overview;
   layered view, composition root, components, boundaries to defend)*.
-- New: `docs/MIGRATION.md` *(`main`/`develop` → `full-rework` migration
+- New: `docs/migration.md` *(`main`/`develop` → `full-rework` migration
   notes)*.
 - New: `docs/runbooks/00-index.md` plus six runbooks —
   `clob-outage.md`, `wss-outage.md`, `circuit-breaker-open.md`,
@@ -172,15 +172,33 @@ the deleted probes, and refreshed the root README to link the new docs.
 **Tests run locally.**
 
 - `python -m pytest tests/release_gate/test_no_legacy_imports.py -v -m ""`
-  — 2 passed.
+  — 18 passed (after PR #90 review fixes: parametrised wildcard +
+  nested-segment cases added; was 2 passed pre-fix).
 - `python -m pytest tests/release_gate/ -m release_gate` —
-  97 passed (was 93 pre-#77; +2 from the new `test_no_legacy_imports`
-  module, +2 net from gate housekeeping).
-- `python -m pytest -q` — 1474 passed, 8 skipped, 143 deselected,
-  7 xfailed (deltas vs #76 baseline: 0).
+  113 passed (was 97 in the initial #77 commit; +16 from the new
+  parametrised cases).
+- `python -m pytest -q` — 1474 passed, 8 skipped, 159 deselected,
+  7 xfailed.
 - `python -m compileall -q .` — clean.
 - Doc-link sanity script (walks every `.md` under `docs/`, resolves
   every relative `.md` link) — `broken links: none`.
+
+**PR #90 review fixes applied.**
+
+- Renamed `docs/ARCHITECTURE.md` → `docs/architecture.md` and
+  `docs/MIGRATION.md` → `docs/migration.md` to match the existing
+  lowercase / kebab-case `docs/` naming convention. Updated all
+  references (`README.md`, `docs/archive/README.md`,
+  `docs/runbooks/00-index.md`, `docs/migration.md` self-link,
+  this progress entry).
+- Replaced the two enumerated `test_doctor_*` entries in
+  `FORBIDDEN_PREFIXES` with a single `"test_doctor"` prefix so the
+  invariant matches the docstring's `test_doctor_*` wildcard.
+- Strengthened `_is_forbidden()` to walk every dotted segment, not
+  just the head. Catches nested cases like `scripts.test_probe2` or
+  `pkg.subpkg.legacy.foo`.
+- Added parametrised tests covering wildcard, nested-segment, and
+  no-overmatch behaviour for `_is_forbidden()`.
 
 **Known remaining risks.**
 
