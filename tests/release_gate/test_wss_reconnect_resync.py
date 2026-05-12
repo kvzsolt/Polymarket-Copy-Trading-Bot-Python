@@ -13,13 +13,13 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from cache.market_state_store import MarketStateStore
 from clients.market_ws import MarketWebSocket
-from services.price_cache import PositionPriceCache
 
 
 @pytest.mark.asyncio
 async def test_rest_bootstrap_invoked_with_asset_ids() -> None:
-    cache = PositionPriceCache()
+    cache = MarketStateStore()
     rest_bootstrap = AsyncMock()
     ws_client = MarketWebSocket(cache, rest_bootstrap=rest_bootstrap)
     ws_client._asset_ids = ["tokA", "tokB"]
@@ -29,7 +29,7 @@ async def test_rest_bootstrap_invoked_with_asset_ids() -> None:
 
 
 def test_cache_full_invalidation_clears_all_snapshots() -> None:
-    cache = PositionPriceCache()
+    cache = MarketStateStore()
     cache.set_quote("tok", best_bid=Decimal("0.50"), best_ask=Decimal("0.52"))
     cache.set_book("tok", bids={Decimal("0.50"): Decimal("100")}, asks={})
     cache.set_tick(
@@ -39,13 +39,13 @@ def test_cache_full_invalidation_clears_all_snapshots() -> None:
         neg_risk=False,
     )
     cache.invalidate_all()
-    assert cache.quote_count() == 0
-    assert cache.book_count() == 0
-    assert cache.tick_count() == 0
+    assert cache.get_quote("tok") is None
+    assert cache.get_book("tok") is None
+    assert cache.get_tick("tok") is None
 
 
 def test_price_change_with_size_zero_deletes_level() -> None:
-    cache = PositionPriceCache()
+    cache = MarketStateStore()
     cache.set_book(
         "tok",
         bids={Decimal("0.50"): Decimal("100"), Decimal("0.49"): Decimal("50")},
@@ -61,7 +61,7 @@ def test_price_change_with_size_zero_deletes_level() -> None:
 
 
 def test_price_change_with_positive_size_upserts() -> None:
-    cache = PositionPriceCache()
+    cache = MarketStateStore()
     cache.set_book("tok", bids={}, asks={})
     cache.apply_book_delta("tok", "BUY", Decimal("0.51"), Decimal("75"))
     book = cache.get_book("tok")

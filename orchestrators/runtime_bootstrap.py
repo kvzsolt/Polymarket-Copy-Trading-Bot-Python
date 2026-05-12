@@ -5,14 +5,14 @@ from typing import TYPE_CHECKING
 
 from domain.trading_context import TradingContext
 from interfaces.clob_gateway import ClobGateway
+from cache.market_state_store import MarketStateStore
 from services.accountingService import AccountingService
 from services.executionService import ExecutionService
 from services.feeService import FeeService
 from services.marketMetaService import MarketMetaService
-from services.market_data_service import MarketDataService
+from services.market_data_service import MarketDataService, MarketDataPolicy
 from services.multiUserConfig import RuntimeUser, UserFollowConfig
 from services.orderRepository import OrderRepository
-from services.price_cache import PositionPriceCache
 from services.pnlTracker import PnLTracker
 from services.positionManager import PositionManager
 from services.riskEngine import RiskEngine, init_risk_engine
@@ -121,7 +121,7 @@ class UserRuntimeState:
     risk_triggers_repo: RiskTriggersRepo | None = None
     # Freshness-aware market data — issue #hardening PR-1.
     market_data_service: MarketDataService | None = None
-    price_cache: PositionPriceCache | None = None
+    market_store: MarketStateStore | None = None
 
 
 def configured_leaders(config: AppConfig) -> list[str]:
@@ -208,11 +208,19 @@ def build_user_state(
     clob_gateway = ClobV2Gateway(client, config)
 
     # Freshness-aware market data layer (issue #hardening PR-1).
-    # The cache is fed by WSS deltas; the MDS falls back to REST via the
+    # The store is fed by WSS deltas; the MDS falls back to REST via the
     # gateway when cache is stale/missing. ExecutionService uses MDS so that
     # live execution never runs on stale data.
-    price_cache = PositionPriceCache()
-    market_data_svc = MarketDataService(price_cache, clob_gateway)
+    market_store = MarketStateStore()
+    market_data_svc = MarketDataService(
+        market_store,
+        clob_gateway,
+        policy=MarketDataPolicy(
+            require_wss_fresh=True,
+            allow_rest_fallback=False,
+            allow_rest_snapshot_for_execution=False,
+        ),
+    )
 
     execution_service = ExecutionService(
         clob_client=client,
@@ -239,7 +247,7 @@ def build_user_state(
         clob_gateway=clob_gateway,
         risk_triggers_repo=risk_triggers_repo,
         market_data_service=market_data_svc,
-        price_cache=price_cache,
+        market_store=market_store,
     )
 
 

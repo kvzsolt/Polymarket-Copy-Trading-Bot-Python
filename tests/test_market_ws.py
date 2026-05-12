@@ -8,7 +8,6 @@ Phase 2 test coverage:
   - Reconnect on heartbeat failure
   - REST bootstrap on reconnect
 """
-
 from __future__ import annotations
 
 import asyncio
@@ -18,8 +17,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from cache.market_state_store import MarketStateStore
 from clients.market_ws import MarketWebSocket, HEARTBEAT_INTERVAL
-from services.price_cache import PositionPriceCache
 
 
 # ---------------------------------------------------------------------------
@@ -27,12 +26,12 @@ from services.price_cache import PositionPriceCache
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
-def cache() -> PositionPriceCache:
-    return PositionPriceCache(quote_ttl=5.0, tick_ttl=300.0)
+def cache() -> MarketStateStore:
+    return MarketStateStore()
 
 
 @pytest.fixture
-def market_ws(cache: PositionPriceCache) -> MarketWebSocket:
+def market_ws(cache: MarketStateStore) -> MarketWebSocket:
     return MarketWebSocket(
         cache,
         ws_url="wss://test.example.com/ws/market",
@@ -124,7 +123,7 @@ class TestPriceChange:
     def test_price_change_updates_cache(
         self,
         market_ws: MarketWebSocket,
-        cache: PositionPriceCache,
+        cache: MarketStateStore,
     ) -> None:
         """Market price change event updates cache."""
         event = json.dumps({
@@ -145,7 +144,7 @@ class TestPriceChange:
     def test_price_change_fallback_fields(
         self,
         market_ws: MarketWebSocket,
-        cache: PositionPriceCache,
+        cache: MarketStateStore,
     ) -> None:
         """Price change with top-level best_bid/best_ask also works."""
         event = json.dumps({
@@ -164,22 +163,22 @@ class TestPriceChange:
     def test_non_json_message_ignored(
         self,
         market_ws: MarketWebSocket,
-        cache: PositionPriceCache,
+        cache: MarketStateStore,
     ) -> None:
         """Non-JSON messages are silently ignored."""
         market_ws._handle_message("PONG")
         market_ws._handle_message("not-json{broken")
-        assert cache.quote_count() == 0
+        assert cache.get_quote("nonexistent") is None
 
     def test_unknown_event_type_ignored(
         self,
         market_ws: MarketWebSocket,
-        cache: PositionPriceCache,
+        cache: MarketStateStore,
     ) -> None:
         """Unknown event types are ignored without error."""
         event = json.dumps({"event_type": "heartbeat_ack", "status": "ok"})
         market_ws._handle_message(event)
-        assert cache.quote_count() == 0
+        assert cache.get_quote("nonexistent") is None
 
 
 # ---------------------------------------------------------------------------
@@ -192,7 +191,7 @@ class TestTickSizeChange:
     def test_tick_size_change_updates_cache(
         self,
         market_ws: MarketWebSocket,
-        cache: PositionPriceCache,
+        cache: MarketStateStore,
     ) -> None:
         """Tick size change event updates cache."""
         event = json.dumps({
@@ -217,7 +216,7 @@ class TestReconnect:
     @pytest.mark.asyncio
     async def test_reconnect_on_heartbeat_failure(
         self,
-        cache: PositionPriceCache,
+        cache: MarketStateStore,
     ) -> None:
         """Heartbeat failure triggers reconnect cycle.
 
@@ -287,7 +286,7 @@ class TestReconnect:
     @pytest.mark.asyncio
     async def test_reconnect_rest_bootstrap(
         self,
-        cache: PositionPriceCache,
+        cache: MarketStateStore,
     ) -> None:
         """Reconnect fetches REST snapshot before resubscribing."""
         bootstrap_calls: list[list[str]] = []

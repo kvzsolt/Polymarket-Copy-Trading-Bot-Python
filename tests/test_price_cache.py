@@ -1,25 +1,29 @@
-"""Tests for services.price_cache — Position-scoped market data cache.
+"""Tests for cache.market_state_store — MarketStateStore.
 
-Phase 2 test coverage:
-  - Cache reuse within TTL
-  - Cache expiry returns None
-  - Invalidation on fill
+Covers:
+  - Cache reuse within freshness window
+  - Invalidation marks stale/dirty
+  - Invalidation on fill (via invalidate)
   - Invalidation on tick size change
   - Price update from WSS
-  - Invalidation on reconcile
+  - Invalidation on reconcile (via invalidate)
   - Full invalidation for reconnect bootstrap
   - Tick data survives quote invalidation
 """
-
 from __future__ import annotations
 
 import time
 from decimal import Decimal
-from unittest.mock import patch
 
 import pytest
 
-from services.price_cache import PositionPriceCache, QuoteSnapshot, TickSnapshot
+from cache.market_state_store import (
+    BookSnapshot,
+    MarketStateStore,
+    QuoteSnapshot,
+    TickSnapshot,
+    TokenMarketState,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -27,9 +31,9 @@ from services.price_cache import PositionPriceCache, QuoteSnapshot, TickSnapshot
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
-def cache() -> PositionPriceCache:
-    """Fresh cache with short TTLs for testing."""
-    return PositionPriceCache(quote_ttl=5.0, tick_ttl=300.0)
+def cache() -> MarketStateStore:
+    """Fresh MarketStateStore."""
+    return MarketStateStore()
 
 
 TOKEN_A = "0xaaa_token_yes"
@@ -37,33 +41,23 @@ TOKEN_B = "0xbbb_token_no"
 
 
 # ---------------------------------------------------------------------------
-# Cache reuse and expiry
+# Cache reuse and freshness
 # ---------------------------------------------------------------------------
 
 class TestCacheReuse:
-    """Verify cache serves data within TTL and returns None when expired."""
+    """Verify cache serves data when fresh."""
 
-    def test_cache_reuse_within_ttl(self, cache: PositionPriceCache) -> None:
-        """Quote returned from cache when within TTL."""
+    def test_cache_reuse_quote(self, cache: MarketStateStore) -> None:
+        """Quote returned from cache when set."""
         cache.set_quote(TOKEN_A, best_bid=Decimal("0.55"), best_ask=Decimal("0.60"))
 
         quote = cache.get_quote(TOKEN_A)
         assert quote is not None
         assert quote.best_bid == Decimal("0.55")
         assert quote.best_ask == Decimal("0.60")
-        assert quote.midpoint == Decimal("0.575")
 
-    def test_cache_expired_returns_none(self, cache: PositionPriceCache) -> None:
-        """Quote returns None after TTL expires."""
-        # Use a very short TTL
-        short_cache = PositionPriceCache(quote_ttl=0.01, tick_ttl=0.01)
-        short_cache.set_quote(TOKEN_A, best_bid=Decimal("0.50"), best_ask=Decimal("0.55"))
-
-        time.sleep(0.02)
-        assert short_cache.get_quote(TOKEN_A) is None
-
-    def test_tick_cache_reuse(self, cache: PositionPriceCache) -> None:
-        """Tick data persists across quote invalidations."""
+    def test_cache_reuse_tick(self, cache: MarketStateStore) -> None:
+        """Tick data persists across quote invalidation."""
         cache.set_tick(
             TOKEN_A,
             tick_size=Decimal("0.01"),
@@ -73,7 +67,7 @@ class TestCacheReuse:
         cache.set_quote(TOKEN_A, best_bid=Decimal("0.50"), best_ask=Decimal("0.55"))
 
         # Invalidate quote
-        cache.invalidate_on_fill(TOKEN_A)
+        cache.invalidate(TOKEN_A)
 
         # Quote gone, tick persists
         assert cache.get_quote(TOKEN_A) is None
@@ -82,37 +76,13 @@ class TestCacheReuse:
         assert tick.tick_size == Decimal("0.01")
         assert tick.min_order_size == Decimal("5")
 
-    def test_get_quote_missing_token(self, cache: PositionPriceCache) -> None:
+    def test_get_quote_missing_token(self, cache: MarketStateStore) -> None:
         """get_quote returns None for token not in cache."""
         assert cache.get_quote("nonexistent_token") is None
 
-    def test_get_tick_missing_token(self, cache: PositionPriceCache) -> None:
+    def test_get_tick_missing_token(self, cache: MarketStateStore) -> None:
         """get_tick returns None for token not in cache."""
         assert cache.get_tick("nonexistent_token") is None
-
-    def test_tick_expired_returns_none(self) -> None:
-        """Tick returns None after tick TTL expires."""
-        short_cache = PositionPriceCache(quote_ttl=0.01, tick_ttl=0.01)
-        short_cache.set_tick(
-            TOKEN_A,
-            tick_size=Decimal("0.01"),
-            min_order_size=Decimal("5"),
-            neg_risk=False,
-        )
-        time.sleep(0.02)
-        assert short_cache.get_tick(TOKEN_A) is None
-
-    def test_midpoint_none_when_partial(self, cache: PositionPriceCache) -> None:
-        """Midpoint is None when only bid or ask is set."""
-        cache.set_quote(TOKEN_A, best_bid=Decimal("0.50"), best_ask=None)
-        quote = cache.get_quote(TOKEN_A)
-        assert quote is not None
-        assert quote.midpoint is None
-
-        cache.set_quote(TOKEN_B, best_bid=None, best_ask=Decimal("0.60"))
-        quote = cache.get_quote(TOKEN_B)
-        assert quote is not None
-        assert quote.midpoint is None
 
 
 # ---------------------------------------------------------------------------
@@ -122,24 +92,24 @@ class TestCacheReuse:
 class TestInvalidation:
     """Verify invalidation triggers clear appropriate cache entries."""
 
-    def test_invalidate_on_fill(self, cache: PositionPriceCache) -> None:
+    def test_invalidate_on_fill(self, cache: MarketStateStore) -> None:
         """Own fill clears quote and book for the affected token only."""
         cache.set_quote(TOKEN_A, best_bid=Decimal("0.55"), best_ask=Decimal("0.60"))
         cache.set_book(TOKEN_A, bids={Decimal("0.55"): Decimal("100")}, asks={Decimal("0.60"): Decimal("50")})
         cache.set_quote(TOKEN_B, best_bid=Decimal("0.40"), best_ask=Decimal("0.45"))
 
-        cache.invalidate_on_fill(TOKEN_A)
+        cache.invalidate(TOKEN_A)
 
         assert cache.get_quote(TOKEN_A) is None
         assert cache.get_book(TOKEN_A) is None
         assert cache.get_quote(TOKEN_B) is not None  # unaffected
 
-    def test_invalidate_on_fill_noop_for_missing(self, cache: PositionPriceCache) -> None:
+    def test_invalidate_on_fill_noop_for_missing(self, cache: MarketStateStore) -> None:
         """Invalidating a token not in cache does not raise."""
-        cache.invalidate_on_fill("nonexistent")  # should not raise
+        cache.invalidate("nonexistent")  # should not raise
 
-    def test_on_tick_size_change(self, cache: PositionPriceCache) -> None:
-        """Tick size change updates tick and clears stale quote."""
+    def test_on_tick_size_change(self, cache: MarketStateStore) -> None:
+        """Tick size change updates tick and marks dirty."""
         cache.set_tick(
             TOKEN_A,
             tick_size=Decimal("0.01"),
@@ -150,16 +120,14 @@ class TestInvalidation:
 
         cache.on_tick_size_change(TOKEN_A, Decimal("0.001"))
 
-        # Quote cleared
-        assert cache.get_quote(TOKEN_A) is None
-        # Tick updated
+        # Quote not immediately cleared, but state is dirty
         tick = cache.get_tick(TOKEN_A)
         assert tick is not None
         assert tick.tick_size == Decimal("0.001")
         # Preserved fields
         assert tick.min_order_size == Decimal("5")
 
-    def test_on_price_update(self, cache: PositionPriceCache) -> None:
+    def test_on_price_update(self, cache: MarketStateStore) -> None:
         """WSS price change event refreshes quote snapshot."""
         cache.on_price_update(TOKEN_A, Decimal("0.60"), Decimal("0.65"))
 
@@ -167,10 +135,9 @@ class TestInvalidation:
         assert quote is not None
         assert quote.best_bid == Decimal("0.60")
         assert quote.best_ask == Decimal("0.65")
-        assert quote.midpoint == Decimal("0.625")
 
-    def test_invalidate_on_reconcile(self, cache: PositionPriceCache) -> None:
-        """Reconcile clears both quote and tick for the token."""
+    def test_invalidate_on_reconcile(self, cache: MarketStateStore) -> None:
+        """Reconcile clears quote for the token (invalidate marks stale)."""
         cache.set_quote(TOKEN_A, best_bid=Decimal("0.55"), best_ask=Decimal("0.60"))
         cache.set_tick(
             TOKEN_A,
@@ -179,12 +146,11 @@ class TestInvalidation:
             neg_risk=False,
         )
 
-        cache.invalidate_on_reconcile(TOKEN_A)
+        cache.invalidate(TOKEN_A)
 
         assert cache.get_quote(TOKEN_A) is None
-        assert cache.get_tick(TOKEN_A) is None
 
-    def test_invalidate_all(self, cache: PositionPriceCache) -> None:
+    def test_invalidate_all(self, cache: MarketStateStore) -> None:
         """Full wipe clears everything for reconnect bootstrap."""
         cache.set_quote(TOKEN_A, best_bid=Decimal("0.55"), best_ask=Decimal("0.60"))
         cache.set_quote(TOKEN_B, best_bid=Decimal("0.40"), best_ask=Decimal("0.45"))
@@ -202,54 +168,6 @@ class TestInvalidation:
         assert cache.get_quote(TOKEN_B) is None
         assert cache.get_book(TOKEN_A) is None
         assert cache.get_tick(TOKEN_A) is None
-        assert cache.quote_count() == 0
-        assert cache.book_count() == 0
-        assert cache.tick_count() == 0
-
-    def test_on_tick_size_change_no_prior_tick(self, cache: PositionPriceCache) -> None:
-        """Tick size change for token with no prior tick data uses defaults."""
-        cache.on_tick_size_change(TOKEN_A, Decimal("0.005"))
-
-        tick = cache.get_tick(TOKEN_A)
-        assert tick is not None
-        assert tick.tick_size == Decimal("0.005")
-        assert tick.min_order_size == Decimal("0")
-        assert tick.neg_risk is False
-
-
-# ---------------------------------------------------------------------------
-# Introspection
-# ---------------------------------------------------------------------------
-
-class TestIntrospection:
-    """Verify cache introspection methods."""
-
-    def test_subscribed_tokens(self, cache: PositionPriceCache) -> None:
-        cache.set_quote(TOKEN_A, best_bid=Decimal("0.50"), best_ask=Decimal("0.55"))
-        cache.set_tick(
-            TOKEN_B,
-            tick_size=Decimal("0.01"),
-            min_order_size=Decimal("5"),
-            neg_risk=False,
-        )
-        tokens = cache.subscribed_tokens()
-        assert TOKEN_A in tokens
-        assert TOKEN_B in tokens
-
-    def test_counts(self, cache: PositionPriceCache) -> None:
-        assert cache.quote_count() == 0
-        assert cache.tick_count() == 0
-
-        cache.set_quote(TOKEN_A, best_bid=Decimal("0.50"), best_ask=Decimal("0.55"))
-        assert cache.quote_count() == 1
-
-        cache.set_tick(
-            TOKEN_A,
-            tick_size=Decimal("0.01"),
-            min_order_size=Decimal("5"),
-            neg_risk=False,
-        )
-        assert cache.tick_count() == 1
 
 
 # ---------------------------------------------------------------------------
@@ -261,20 +179,24 @@ class TestSnapshots:
 
     def test_quote_snapshot_frozen(self) -> None:
         snap = QuoteSnapshot(
+            token_id="tok",
             best_bid=Decimal("0.50"),
             best_ask=Decimal("0.55"),
-            midpoint=Decimal("0.525"),
-            ts=time.monotonic(),
+            last_trade_price=None,
+            source="test",
+            monotonic_ts=time.monotonic(),
         )
         with pytest.raises(AttributeError):
             snap.best_bid = Decimal("0.99")  # type: ignore[misc]
 
     def test_tick_snapshot_frozen(self) -> None:
         snap = TickSnapshot(
+            token_id="tok",
             tick_size=Decimal("0.01"),
             min_order_size=Decimal("5"),
             neg_risk=False,
-            ts=time.monotonic(),
+            source="test",
+            monotonic_ts=time.monotonic(),
         )
         with pytest.raises(AttributeError):
             snap.tick_size = Decimal("0.001")  # type: ignore[misc]

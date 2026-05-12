@@ -1,4 +1,4 @@
-"""Risk management services — engine, exit policy, monitoring, price cache."""
+"""Risk management services — engine, exit policy, monitoring."""
 from __future__ import annotations
 
 # Eagerly import lightweight modules
@@ -26,8 +26,6 @@ def __getattr__(name: str):
         "reconcile_unconfirmed_risk_orders": "services.risk.risk_monitor",
         "risk_monitor_loop": "services.risk.risk_monitor",
         "run_risk_check_for_context": "services.risk.risk_monitor",
-        # price_cache
-        "PositionPriceCache": "services.risk.price_cache",
     }
     if name in _lazy_map:
         import importlib
@@ -43,7 +41,6 @@ __all__ = [
     "CachedRiskPrice",
     "ExitDecision",
     "PortfolioSnapshot",
-    "PositionPriceCache",
     "ProposedTrade",
     "RiskDecision",
     "RiskEngine",
