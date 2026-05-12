@@ -5,18 +5,21 @@ gateway request emitted by ``ExecutionService`` carries ``side="SELL"``.
 """
 from __future__ import annotations
 
+import time
 from decimal import Decimal
+from unittest.mock import AsyncMock
 
 import pytest
 
+from cache.market_state_store import BookSnapshot, QuoteSnapshot, TickSnapshot
 from integrations.polymarket.models import (
     MarketableOrderRequest,
     VenueSubmitResult,
 )
 from services.executionService import ExecutionRequest, ExecutionService
+from services.market_data_service import MarketDataBundle, MarketDataSource
 from services.orderRepository import OrderRepository
 from tests.conftest import make_clob_gateway
-from utils.createClobClient import MarketMeta
 
 
 class _FeeSvc:
@@ -24,16 +27,43 @@ class _FeeSvc:
         return 0
 
 
-class _MetaSvc:
-    async def get(self, token_id: str, refresh: bool = False) -> MarketMeta:
-        return MarketMeta(
+def _make_bundle(token_id: str = "0xtok") -> MarketDataBundle:
+    now = time.monotonic()
+    return MarketDataBundle(
+        token_id=token_id,
+        quote=QuoteSnapshot(
             token_id=token_id,
-            tick_size=Decimal("0.01"),
-            min_order_size=Decimal("0"),
-            neg_risk=False,
             best_bid=Decimal("0.49"),
             best_ask=Decimal("0.51"),
-        )
+            last_trade_price=None,
+            source="wss",
+            monotonic_ts=now,
+        ),
+        book=BookSnapshot(
+            token_id=token_id,
+            bids={Decimal("0.49"): Decimal("100")},
+            asks={Decimal("0.51"): Decimal("100")},
+            best_bid=Decimal("0.49"),
+            best_ask=Decimal("0.51"),
+            source="wss",
+            monotonic_ts=now,
+        ),
+        tick=TickSnapshot(
+            token_id=token_id,
+            tick_size=Decimal("0.01"),
+            min_order_size=Decimal("1"),
+            neg_risk=False,
+            source="wss",
+            monotonic_ts=now,
+        ),
+        source=MarketDataSource.WSS,
+    )
+
+
+def _mock_mds(token_id: str = "0xtok"):
+    mds = AsyncMock()
+    mds.require_fresh_data = AsyncMock(return_value=_make_bundle(token_id))
+    return mds
 
 
 @pytest.fixture(autouse=True)
@@ -59,9 +89,10 @@ async def test_dry_run_sell_routes_through_gateway(
         )
     )
     svc = ExecutionService(
-        stub_clob_client, _MetaSvc(), _FeeSvc(), repo,
+        stub_clob_client, None, _FeeSvc(), repo,
         config=exec_config,
         clob_gateway=gateway,
+        market_data_service=_mock_mds(),
     )
     request = ExecutionRequest(
         user_id="u1",
