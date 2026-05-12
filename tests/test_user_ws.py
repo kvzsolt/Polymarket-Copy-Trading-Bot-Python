@@ -6,7 +6,6 @@ Phase 2 test coverage:
   - Heartbeat interval compliance (5s PING)
   - Reconnect on connection failure
 """
-
 from __future__ import annotations
 
 import asyncio
@@ -16,8 +15,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from cache.market_state_store import MarketStateStore
 from clients.user_ws import UserWebSocket, HEARTBEAT_INTERVAL
-from services.price_cache import PositionPriceCache
 
 
 # ---------------------------------------------------------------------------
@@ -25,12 +24,12 @@ from services.price_cache import PositionPriceCache
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
-def cache() -> PositionPriceCache:
-    return PositionPriceCache(quote_ttl=5.0, tick_ttl=300.0)
+def cache() -> MarketStateStore:
+    return MarketStateStore()
 
 
 @pytest.fixture
-def user_ws(cache: PositionPriceCache) -> UserWebSocket:
+def user_ws(cache: MarketStateStore) -> UserWebSocket:
     return UserWebSocket(
         cache,
         ws_url="wss://test.example.com/ws/user",
@@ -51,7 +50,7 @@ class TestFillEvent:
     def test_fill_event_invalidates_cache(
         self,
         user_ws: UserWebSocket,
-        cache: PositionPriceCache,
+        cache: MarketStateStore,
     ) -> None:
         """User fill event triggers cache invalidation."""
         # Pre-populate cache
@@ -77,7 +76,7 @@ class TestFillEvent:
     def test_fill_event_order_fill_type(
         self,
         user_ws: UserWebSocket,
-        cache: PositionPriceCache,
+        cache: MarketStateStore,
     ) -> None:
         """order_fill event type also triggers invalidation."""
         cache.set_quote(TOKEN_A, best_bid=Decimal("0.55"), best_ask=Decimal("0.60"))
@@ -94,7 +93,7 @@ class TestFillEvent:
     def test_fill_event_fill_type(
         self,
         user_ws: UserWebSocket,
-        cache: PositionPriceCache,
+        cache: MarketStateStore,
     ) -> None:
         """fill event type also triggers invalidation."""
         cache.set_quote(TOKEN_A, best_bid=Decimal("0.55"), best_ask=Decimal("0.60"))
@@ -111,7 +110,7 @@ class TestFillEvent:
     def test_fill_without_token_id_ignored(
         self,
         user_ws: UserWebSocket,
-        cache: PositionPriceCache,
+        cache: MarketStateStore,
     ) -> None:
         """Fill event missing token_id is safely ignored."""
         cache.set_quote(TOKEN_A, best_bid=Decimal("0.55"), best_ask=Decimal("0.60"))
@@ -137,7 +136,7 @@ class TestOrderUpdate:
     def test_order_update_logged(
         self,
         user_ws: UserWebSocket,
-        cache: PositionPriceCache,
+        cache: MarketStateStore,
     ) -> None:
         """Order update events are logged but don't invalidate cache."""
         cache.set_quote(TOKEN_A, best_bid=Decimal("0.55"), best_ask=Decimal("0.60"))
@@ -247,7 +246,7 @@ class TestReconnect:
     @pytest.mark.asyncio
     async def test_reconnect_on_failure(
         self,
-        cache: PositionPriceCache,
+        cache: MarketStateStore,
     ) -> None:
         """Connection failure triggers reconnect with backoff."""
         ws = UserWebSocket(cache, ws_url="wss://test.example.com/ws/user")
@@ -295,7 +294,7 @@ class TestMessageEdgeCases:
     def test_list_of_events(
         self,
         user_ws: UserWebSocket,
-        cache: PositionPriceCache,
+        cache: MarketStateStore,
     ) -> None:
         """Array of events is processed individually."""
         cache.set_quote(TOKEN_A, best_bid=Decimal("0.55"), best_ask=Decimal("0.60"))

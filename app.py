@@ -403,7 +403,7 @@ async def main():
             NearOneExitService(
                 position_manager=first_state.position_manager,
                 execution_service=first_state.execution_service,
-                price_cache=first_state.price_cache,
+                cache=first_state.market_store,
                 market_data_service=first_state.market_data_service,
                 config=application.config,
                 readiness=application.readiness,

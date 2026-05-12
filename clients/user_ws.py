@@ -31,7 +31,7 @@ from services.metrics import (
 from utils.logger import get_logger
 
 if TYPE_CHECKING:
-    from services.price_cache import PositionPriceCache
+    from cache.market_state_store import MarketStateStore
 
 logger = get_logger("UserWS")
 
@@ -54,7 +54,7 @@ class UserWebSocket:
 
     def __init__(
         self,
-        cache: PositionPriceCache,
+        cache: MarketStateStore,
         *,
         ws_url: str = DEFAULT_USER_WS_URL,
     ) -> None:
@@ -227,7 +227,7 @@ class UserWebSocket:
             logger.debug("UserWS: fill event missing token_id: %s", event)
             return
 
-        self._cache.invalidate_on_fill(token_id)
+        self._cache.invalidate(token_id)
         logger.info(
             "UserWS: fill detected → cache invalidated for %s (side=%s)",
             token_id[:16] + "..." if len(token_id) > 16 else token_id,

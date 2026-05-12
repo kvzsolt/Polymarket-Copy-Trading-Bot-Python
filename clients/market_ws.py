@@ -1,8 +1,8 @@
 """WSS-backed Polymarket market data client.
 
-Consumes the market WebSocket stream and updates a PositionPriceCache /
-market-state store. Intended production rule: execution reads market state only
-from this WSS-backed store and fails closed if state is stale, dirty, missing,
+Consumes the market WebSocket stream and updates a MarketStateStore.
+Intended production rule: execution reads market state only from this
+WSS-backed store and fails closed if state is stale, dirty, missing,
 or resolved.
 
 Polymarket market/user docs specify a literal "PING" heartbeat every 10 seconds.
@@ -29,7 +29,7 @@ except Exception:  # pragma: no cover
     HEARTBEAT_INTERVAL = 10.0
 
 if TYPE_CHECKING:
-    from services.price_cache import PositionPriceCache
+    from cache.market_state_store import MarketStateStore
 
 logger = get_logger("MarketWS")
 
@@ -55,7 +55,7 @@ class MarketWebSocket:
 
     def __init__(
         self,
-        cache: PositionPriceCache,
+        cache: MarketStateStore,
         *,
         ws_url: str = DEFAULT_MARKET_WS_URL,
         rest_bootstrap: RestBootstrap | None = None,

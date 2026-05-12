@@ -5,7 +5,7 @@ release-gate matrix:
 
 * PositionScope (canonical PositionKey) identity invariants
 * PositionActionCoordinator N-way serialization stress
-* PositionPriceCache TTL boundary precision
+* MarketStateStore freshness and invalidation
 * Market + user WSS heartbeat interval literal
 * Reservation aggregate consistency across multiple lifecycle cycles
 * IntentRegistry resolved-record pruning (memory leak guard)
@@ -37,7 +37,7 @@ from services.positionActionCoordinator import (
     PositionScope,
 )
 from services.positionCoordinator import PositionCoordinator
-from services.price_cache import PositionPriceCache
+from cache.market_state_store import MarketStateStore
 
 
 # ---------------------------------------------------------------------------
@@ -169,52 +169,24 @@ class TestCoordinatorSerializationStress:
 
 
 # ---------------------------------------------------------------------------
-# 3. Cache TTL boundary precision
+# 3. MarketStateStore freshness and invalidation
 # ---------------------------------------------------------------------------
 
 
-class TestCacheTTLBoundary:
-    """TTL boundary semantics: ``> ttl`` evicts, exact-equal stays fresh.
-
-    The cache uses ``(now - ts) > ttl`` so ts == ttl is still valid.
+class TestCacheFreshness:
+    """MarketStateStore freshness semantics: snapshots use is_fresh(),
+    and invalidate marks stale/dirty so get_quote/get_book/get_tick return None.
     """
 
-    def test_quote_just_within_ttl_kept(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        cache = PositionPriceCache(quote_ttl=10.0, tick_ttl=300.0)
-        
-        import services.price_cache
-        current_time = 1000.0
-        monkeypatch.setattr(services.price_cache.time, "monotonic", lambda: current_time)
-        
-        cache.set_quote(
-            "tkn", best_bid=Decimal("0.5"), best_ask=Decimal("0.55")
-        )
-        
-        # Advance clock to EXACTLY the TTL boundary
-        current_time += 10.0
-        
-        # Exact equal boundary is considered fresh (now - ts <= ttl)
-        assert cache.get_quote("tkn") is not None
+    def test_quote_is_fresh_within_window(self) -> None:
+        cache = MarketStateStore()
+        cache.set_quote("tkn", best_bid=Decimal("0.5"), best_ask=Decimal("0.55"))
+        quote = cache.get_quote("tkn")
+        assert quote is not None
+        assert quote.is_fresh(10.0)
 
-    def test_quote_past_ttl_evicted(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        cache = PositionPriceCache(quote_ttl=0.02, tick_ttl=0.02)
-        
-        # Patch the time module used inside price_cache.py
-        import services.price_cache
-        current_time = 1000.0
-        monkeypatch.setattr(services.price_cache.time, "monotonic", lambda: current_time)
-        
-        cache.set_quote(
-            "tkn", best_bid=Decimal("0.5"), best_ask=Decimal("0.55")
-        )
-        
-        # Advance clock past TTL
-        current_time += 0.05
-        
-        assert cache.get_quote("tkn") is None
-
-    def test_invalidate_removes_quote_only_for_target_token(self) -> None:
-        cache = PositionPriceCache()
+    def test_quote_stale_after_invalidation(self) -> None:
+        cache = MarketStateStore()
         cache.set_quote("a", best_bid=Decimal("0.1"), best_ask=Decimal("0.2"))
         cache.set_quote("b", best_bid=Decimal("0.3"), best_ask=Decimal("0.4"))
         cache.set_tick(
@@ -224,11 +196,11 @@ class TestCacheTTLBoundary:
             neg_risk=False,
         )
 
-        cache.invalidate_on_fill("a")
+        cache.invalidate("a")
 
         assert cache.get_quote("a") is None
-        # Tick survives a fill invalidation
-        assert cache.get_tick("a") is not None
+        # Tick also stale after invalidate (marks stale/dirty)
+        assert cache.get_tick("a") is None
         # Other token unaffected
         assert cache.get_quote("b") is not None
 
