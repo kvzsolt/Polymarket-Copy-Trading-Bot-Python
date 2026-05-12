@@ -1,0 +1,13 @@
+docs/runbooks/near-one-exit.md
+  ai_agent 1-116
+services/near_one_exit.py
+  ai_agent 1-270
+tests/release_gate/test_near_one_exit.py
+  ai_agent 1-269
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.4",
+  "base_commit_sha": "2da3cb26f519420fd9655510b5aa964797d87f30",
+  "prompts": {}
+}
