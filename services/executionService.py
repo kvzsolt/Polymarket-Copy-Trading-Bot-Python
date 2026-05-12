@@ -11,7 +11,12 @@ from config.app_config import AppConfig
 
 if TYPE_CHECKING:
     from interfaces.clob_gateway import ClobGateway
-    from services.market_data_service import MarketDataService, StaleDataError
+    from services.market_data_service import (
+        MarketDataBundle,
+        MarketDataService,
+        MarketDataNotReady,
+        StaleDataError,
+    )
 
 # CLOB venue access flows through the gateway; SDK-shaped types
 # (``OrderType`` / ``OrderArgs`` / ``BUY`` / ``SELL`` constants) are not
@@ -180,7 +185,7 @@ class ExecutionService:
     def __init__(
         self,
         clob_client,
-        market_meta_service,
+        market_meta_service,  # kept for backward compat; not used in execute()
         fee_service,
         order_repo,
         *,
@@ -190,7 +195,6 @@ class ExecutionService:
         market_data_service: "MarketDataService | None" = None,
     ):
         self.clob_client = clob_client
-        self.market_meta_service = market_meta_service
         self.fee_service = fee_service
         self.order_repo = order_repo
         self._config = config
@@ -264,11 +268,50 @@ class ExecutionService:
             )
 
         ec = self._config.execution
-        require_fresh_book = ec.execution_require_fresh_book
-        meta = await self.market_meta_service.get(
-            req.token_id,
-            refresh=require_fresh_book,
-        )
+
+        # --- Single fresh-data fetch — fail closed if market data not ready ---
+        if self._market_data_service is None:
+            return ExecutionResult(
+                accepted=False,
+                order_id=None,
+                status="rejected",
+                requested_amount=req.amount,
+                filled_amount=Decimal("0"),
+                avg_price=None,
+                fees_paid=Decimal("0"),
+                error="market_data_service not wired — refusing execution",
+            )
+
+        try:
+            from services.market_data_service import MarketDataNotReady, StaleDataError
+            bundle = await self._market_data_service.require_fresh_data(req.token_id)
+        except Exception as exc:
+            from services.market_data_service import MarketDataNotReady, StaleDataError
+            if isinstance(exc, MarketDataNotReady):
+                status = "market_not_ready"
+            else:
+                status = "stale_market_data"
+            logger.warning(
+                "market_data_not_executable | token=%s reason=%s",
+                req.token_id,
+                exc,
+            )
+            return ExecutionResult(
+                accepted=False,
+                order_id=None,
+                status=status,
+                requested_amount=req.amount,
+                filled_amount=Decimal("0"),
+                avg_price=None,
+                fees_paid=Decimal("0"),
+                error=str(exc),
+            )
+
+        best_bid = bundle.quote.best_bid
+        best_ask = bundle.quote.best_ask
+        tick_size = bundle.tick.tick_size
+        neg_risk = bundle.tick.neg_risk
+        min_order_size = bundle.tick.min_order_size
 
         # --- Book quality gate: reject if spread is too wide ---
         spread_mode = _resolve_book_spread_mode(ec.book_spread_mode)
@@ -292,19 +335,19 @@ class ExecutionService:
         spread_limit_unit = "ticks" if spread_mode == "ticks" else "bps"
         if (
             spread_limit > 0
-            and meta.best_bid
-            and meta.best_ask
-            and meta.best_bid > 0
+            and best_bid
+            and best_ask
+            and best_bid > 0
         ):
             # Detect garbage/placeholder orderbook (e.g. bid=0.01, ask=0.99)
-            if _is_thin_or_empty_book(meta.best_bid, meta.best_ask):
+            if _is_thin_or_empty_book(best_bid, best_ask):
                 logger.info(
                     "book_quality_gate_thin_book",
                     extra={
                         "type": "book_quality_gate_thin_book",
                         "token_id": req.token_id,
-                        "best_bid": str(meta.best_bid),
-                        "best_ask": str(meta.best_ask),
+                        "best_bid": str(best_bid),
+                        "best_ask": str(best_ask),
                         "reason": "orderbook has no real liquidity (placeholder/dust orders only)",
                     },
                 )
@@ -318,14 +361,14 @@ class ExecutionService:
                     fees_paid=Decimal("0"),
                     error=(
                         f"no real liquidity — book appears empty or placeholder "
-                        f"(bid={meta.best_bid} ask={meta.best_ask})"
+                        f"(bid={best_bid} ask={best_ask})"
                     ),
                 )
 
             spread = _calculate_book_spread_metrics(
-                best_bid=meta.best_bid,
-                best_ask=meta.best_ask,
-                tick_size=meta.tick_size,
+                best_bid=best_bid,
+                best_ask=best_ask,
+                tick_size=tick_size,
             )
             if spread_mode == "relative_bps":
                 measured_spread = spread.relative_bps
@@ -348,8 +391,8 @@ class ExecutionService:
                         "absolute_bps": spread.absolute_bps,
                         "relative_bps": spread.relative_bps,
                         "spread_ticks": spread.ticks,
-                        "best_bid": str(meta.best_bid),
-                        "best_ask": str(meta.best_ask),
+                        "best_bid": str(best_bid),
+                        "best_ask": str(best_ask),
                     },
                 )
                 return ExecutionResult(
@@ -367,20 +410,20 @@ class ExecutionService:
                         f"abs={spread.absolute} ({spread.absolute_bps} bps), "
                         f"rel={spread.relative_bps if spread.relative_bps is not None else 'n/a'} bps, "
                         f"ticks={spread.ticks if spread.ticks is not None else 'n/a'}; "
-                        f"bid={meta.best_bid} ask={meta.best_ask})"
+                        f"bid={best_bid} ask={best_ask})"
                     ),
                 )
-        elif spread_limit > 0 and (meta.best_bid is None or meta.best_ask is None):
+        elif spread_limit > 0 and (best_bid is None or best_ask is None):
             # Side-aware: BUY needs best_ask, SELL needs best_bid.
             # The non-required side being None is a warning, not a rejection.
-            if side == "BUY" and meta.best_ask is None:
+            if side == "BUY" and best_ask is None:
                 logger.info(
                     "book_quality_gate_no_book",
                     extra={
                         "type": "book_quality_gate_no_book",
                         "token_id": req.token_id,
-                        "best_bid": str(meta.best_bid),
-                        "best_ask": str(meta.best_ask),
+                        "best_bid": str(best_bid),
+                        "best_ask": str(best_ask),
                         "side": side,
                         "reason": "BUY requires best_ask which is missing",
                     },
@@ -394,17 +437,17 @@ class ExecutionService:
                     avg_price=None,
                     fees_paid=Decimal("0"),
                     error=(
-                        f"no orderbook data for required side — bid={meta.best_bid} ask={meta.best_ask}"
+                        f"no orderbook data for required side — bid={best_bid} ask={best_ask}"
                     ),
                 )
-            if side == "SELL" and meta.best_bid is None:
+            if side == "SELL" and best_bid is None:
                 logger.info(
                     "book_quality_gate_no_book",
                     extra={
                         "type": "book_quality_gate_no_book",
                         "token_id": req.token_id,
-                        "best_bid": str(meta.best_bid),
-                        "best_ask": str(meta.best_ask),
+                        "best_bid": str(best_bid),
+                        "best_ask": str(best_ask),
                         "side": side,
                         "reason": "SELL requires best_bid which is missing",
                     },
@@ -418,7 +461,7 @@ class ExecutionService:
                     avg_price=None,
                     fees_paid=Decimal("0"),
                     error=(
-                        f"no orderbook data for required side — bid={meta.best_bid} ask={meta.best_ask}"
+                        f"no orderbook data for required side — bid={best_bid} ask={best_ask}"
                     ),
                 )
             # The required side is present but the other side is missing.
@@ -428,72 +471,15 @@ class ExecutionService:
                 extra={
                     "type": "book_one_sided",
                     "token_id": req.token_id,
-                    "best_bid": str(meta.best_bid),
-                    "best_ask": str(meta.best_ask),
+                    "best_bid": str(best_bid),
+                    "best_ask": str(best_ask),
                     "side": side,
                     "reason": "one-sided book — required side present, other side missing",
                 },
             )
 
-        # --- Freshness-aware price fetch (issue #hardening PR-1) ----------------
-        # Prefer MarketDataService (cache → REST fallback → StaleDataError).
-        # In paper-trade mode, tolerate missing MDS via legacy clob_client.
-        # In live mode without MDS, fail-closed: refuse execution.
-        quote = None
-        if self._market_data_service is not None:
-            try:
-                from services.market_data_service import StaleDataError
-                quote_snap = await self._market_data_service.require_fresh_quote(req.token_id)
-                # Map QuoteSnapshot → dict shape expected downstream
-                price_val = (
-                    quote_snap.best_ask if side == "BUY" else quote_snap.best_bid
-                )
-                if price_val is not None:
-                    quote = {"price": price_val}
-                else:
-                    quote = None
-            except Exception as exc:
-                logger.warning(
-                    "market_data_service.require_fresh_quote failed for %s: %s",
-                    req.token_id, exc,
-                )
-                quote = None
-        else:
-            # Legacy fallback — only allowed in paper-trade mode
-            paper_only = getattr(
-                getattr(self._config, "execution", None), "paper_trade_only", False
-            )
-            if paper_only:
-                try:
-                    quote = await self.clob_client.get_price(req.token_id, side)
-                except Exception as exc:
-                    logger.warning("legacy get_price fallback failed: %s", exc)
-                    quote = None
-            else:
-                return ExecutionResult(
-                    accepted=False,
-                    order_id=None,
-                    status="rejected",
-                    requested_amount=req.amount,
-                    filled_amount=Decimal("0"),
-                    avg_price=None,
-                    fees_paid=Decimal("0"),
-                    error="market_data_service not wired — refusing live execution",
-                )
-
-        if not quote or quote.get("price") is None:
-            return ExecutionResult(
-                accepted=False,
-                order_id=None,
-                status="rejected",
-                requested_amount=req.amount,
-                filled_amount=Decimal("0"),
-                avg_price=None,
-                fees_paid=Decimal("0"),
-                error="unable to fetch live quote",
-            )
-
-        quote_price = Decimal(str(quote["price"]))
+        # Price from fresh quote bundle
+        quote_price = best_ask if side == "BUY" else best_bid
         min_share_price = _parse_decimal_or_default(
             ec.min_share_price if ec else 0,
             Decimal("0"),
@@ -525,12 +511,25 @@ class ExecutionService:
                 error=f"price above max_share_price ({quote_price} > {max_share_price})",
             )
 
+        # Min order size gate (from tick metadata)
+        if min_order_size > 0 and req.amount < min_order_size:
+            return ExecutionResult(
+                accepted=False,
+                order_id=None,
+                status="rejected",
+                requested_amount=req.amount,
+                filled_amount=Decimal("0"),
+                avg_price=None,
+                fees_paid=Decimal("0"),
+                error=f"amount below min_order_size ({req.amount} < {min_order_size})",
+            )
+
         slippage = Decimal(req.max_slippage_bps) / Decimal(10_000)
         if side == "BUY":
             worst_price = quote_price * (Decimal("1") + slippage)
         else:
             worst_price = quote_price * (Decimal("1") - slippage)
-        worst_price = _quantize_price(worst_price, meta.tick_size, side)
+        worst_price = _quantize_price(worst_price, tick_size, side)
 
         # Effective idempotency key computed after sizing/rounding so
         # duplicate suppression represents the final executable order
@@ -542,7 +541,7 @@ class ExecutionService:
             side=side,
             effective_size=req.amount,
             effective_price=worst_price,
-            tick_size=meta.tick_size,
+            tick_size=tick_size,
             intent_id=req.signal_id or "",
             policy_version=getattr(self._config, "policy_version", "") or "",
         )
@@ -623,8 +622,8 @@ class ExecutionService:
         request_doc = asdict(req)
         request_doc["amount"] = str(req.amount)
         request_doc["worst_price"] = str(worst_price)
-        request_doc["tick_size"] = str(meta.tick_size)
-        request_doc["neg_risk"] = meta.neg_risk
+        request_doc["tick_size"] = str(tick_size)
+        request_doc["neg_risk"] = neg_risk
         request_doc["effective_idempotency_key"] = idem_key
         request_doc["effective_side"] = side
         request_doc["sizing_method"] = "effective_post_quantize"
@@ -693,8 +692,8 @@ class ExecutionService:
                 size=req.amount,
                 price_limit=worst_price,
                 condition_id=getattr(req, "condition_id", None),
-                tick_size=meta.tick_size,
-                neg_risk=meta.neg_risk,
+                tick_size=tick_size,
+                neg_risk=neg_risk,
             )
 
             for attempt in range(1, 4):

@@ -30,7 +30,7 @@ from cache.market_state_store import (
 from clients.market_ws import MarketWebSocket, HEARTBEAT_INTERVAL
 from clients.user_ws import UserWebSocket
 from integrations.polymarket.models import OrderBook, OrderBookLevel
-from services.market_data_service import MarketDataService, StaleDataError
+from services.market_data_service import MarketDataPolicy, MarketDataService, StaleDataError
 
 
 # ---------------------------------------------------------------------------
@@ -76,7 +76,8 @@ def mock_gateway():
 
 @pytest.fixture
 def mds(cache: MarketStateStore, mock_gateway) -> MarketDataService:
-    return MarketDataService(cache, mock_gateway)
+    policy = MarketDataPolicy(allow_rest_fallback=True, require_wss_fresh=False)
+    return MarketDataService(cache, mock_gateway, policy=policy)
 
 
 @pytest.fixture
@@ -105,8 +106,8 @@ class TestCacheInvalidationOnFill:
 
         assert cache.get_quote(TOKEN_A) is None
         assert cache.get_book(TOKEN_A) is None
-        # Tick also gone since invalidate marks stale
-        assert cache.get_tick(TOKEN_A) is None
+        # Tick metadata persists across quote/book invalidation
+        assert cache.get_tick(TOKEN_A) is not None
 
     def test_fill_only_affects_target_token(self, cache: MarketStateStore) -> None:
         cache.set_quote(TOKEN_A, best_bid=Decimal("0.50"), best_ask=Decimal("0.55"))
@@ -421,7 +422,7 @@ class TestReconcileInvalidation:
         cache.set_book(TOKEN_A, bids={Decimal("0.50"): Decimal("100")}, asks={Decimal("0.55"): Decimal("80")})
         cache.set_tick(TOKEN_A, tick_size=Decimal("0.01"), min_order_size=Decimal("5"), neg_risk=False)
 
-        cache.invalidate(TOKEN_A)
+        cache.evict(TOKEN_A)
 
         assert cache.get_quote(TOKEN_A) is None
         assert cache.get_book(TOKEN_A) is None
@@ -614,7 +615,10 @@ class TestMarketDataServiceRESTFallback:
     async def test_rest_fallback_only_called_when_stale(
         self, mds: MarketDataService, cache: MarketStateStore, mock_gateway
     ) -> None:
-        cache.set_quote(TOKEN_A, best_bid=Decimal("0.50"), best_ask=Decimal("0.55"))
+        cache.set_quote(TOKEN_A, best_bid=Decimal("0.50"), best_ask=Decimal("0.55"), source="wss")
+        cache.set_book(TOKEN_A, bids={Decimal("0.50"): Decimal("100")}, asks={Decimal("0.55"): Decimal("80")}, source="wss")
+        cache.set_tick(TOKEN_A, tick_size=Decimal("0.01"), min_order_size=Decimal("5"), neg_risk=False, source="wss")
+        cache.mark_fresh(TOKEN_A, source="wss")
         quote = await mds.require_fresh_quote(TOKEN_A)
         assert quote.best_bid == Decimal("0.50")
         mock_gateway.get_orderbook.assert_not_called()
