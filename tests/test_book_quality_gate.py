@@ -2,31 +2,63 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+import time
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from utils.createClobClient import MarketMeta, _top_of_book_from_levels
+from cache.market_state_store import BookSnapshot, QuoteSnapshot, TickSnapshot
+from services.market_data_service import MarketDataBundle, MarketDataSource
+from utils.createClobClient import _top_of_book_from_levels
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-def _meta(bid: str | None, ask: str | None) -> MarketMeta:
-    return MarketMeta(
+def _make_bundle(bid: str | None, ask: str | None) -> MarketDataBundle:
+    now = time.monotonic()
+    best_bid = Decimal(bid) if bid else None
+    best_ask = Decimal(ask) if ask else None
+    return MarketDataBundle(
         token_id="0xabc",
-        tick_size=Decimal("0.01"),
-        min_order_size=Decimal("0"),
-        neg_risk=False,
-        best_bid=Decimal(bid) if bid else None,
-        best_ask=Decimal(ask) if ask else None,
+        quote=QuoteSnapshot(
+            token_id="0xabc",
+            best_bid=best_bid,
+            best_ask=best_ask,
+            last_trade_price=None,
+            source="wss",
+            monotonic_ts=now,
+        ),
+        book=BookSnapshot(
+            token_id="0xabc",
+            bids={best_bid: Decimal("100")} if best_bid else {},
+            asks={best_ask: Decimal("100")} if best_ask else {},
+            best_bid=best_bid,
+            best_ask=best_ask,
+            source="wss",
+            monotonic_ts=now,
+        ),
+        tick=TickSnapshot(
+            token_id="0xabc",
+            tick_size=Decimal("0.01"),
+            min_order_size=Decimal("0"),
+            neg_risk=False,
+            source="wss",
+            monotonic_ts=now,
+        ),
+        source=MarketDataSource.WSS,
     )
 
 
-def _make_execution_service(meta: MarketMeta, quote_price: str = "0.50"):
+def _mock_mds(bid: str | None, ask: str | None) -> AsyncMock:
+    mds = AsyncMock()
+    mds.require_fresh_data = AsyncMock(return_value=_make_bundle(bid, ask))
+    return mds
+
+
+def _make_execution_service(bid: str | None, ask: str | None, quote_price: str = "0.50"):
     """Build a minimal ExecutionService with mocked deps."""
     from services.executionService import ExecutionService
 
@@ -43,9 +75,6 @@ def _make_execution_service(meta: MarketMeta, quote_price: str = "0.50"):
             "avg_price": quote_price,
         }
     )
-
-    meta_svc = AsyncMock()
-    meta_svc.get = AsyncMock(return_value=meta)
 
     order_repo = MagicMock()
     order_repo.get_by_idempotency_key = MagicMock(return_value=None)
@@ -82,10 +111,11 @@ def _make_execution_service(meta: MarketMeta, quote_price: str = "0.50"):
 
     return ExecutionService(
         clob,
-        meta_svc,
+        None,
         AsyncMock(get_fee_bps=AsyncMock(return_value=Decimal("0"))),
         order_repo,
         config=mock_cfg,
+        market_data_service=_mock_mds(bid, ask),
     )
 
 
@@ -120,7 +150,7 @@ class TestBookQualityGate:
 
     def test_wide_spread_rejected(self):
         """Spread of 20% (2000 bps) should be rejected at 500 bps limit."""
-        svc = _make_execution_service(_meta("0.40", "0.48"))  # 20% spread
+        svc = _make_execution_service("0.40", "0.48")  # 20% spread
         svc._config.execution.max_book_spread_bps = 500
         req = _req()
         result = asyncio.new_event_loop().run_until_complete(svc.execute(req))
@@ -130,7 +160,7 @@ class TestBookQualityGate:
 
     def test_tight_spread_passes(self):
         """Spread of 2% (200 bps) should pass at 500 bps limit."""
-        svc = _make_execution_service(_meta("0.50", "0.51"))  # 2% spread
+        svc = _make_execution_service("0.50", "0.51")  # 2% spread
         svc._config.execution.max_book_spread_bps = 500
         req = _req()
         result = asyncio.new_event_loop().run_until_complete(svc.execute(req))
@@ -138,7 +168,7 @@ class TestBookQualityGate:
 
     def test_no_bid_rejected_for_sell(self):
         """If best_bid is None, SELL orders should be rejected (need bid to sell into)."""
-        svc = _make_execution_service(_meta(None, "0.51"))
+        svc = _make_execution_service(None, "0.51")
         svc._config.execution.max_book_spread_bps = 500
         req = _req(side="SELL", amount="5")
         result = asyncio.new_event_loop().run_until_complete(svc.execute(req))
@@ -147,7 +177,7 @@ class TestBookQualityGate:
 
     def test_no_ask_rejected_for_buy(self):
         """If best_ask is None, BUY orders should be rejected (need ask to buy into)."""
-        svc = _make_execution_service(_meta("0.50", None))
+        svc = _make_execution_service("0.50", None)
         svc._config.execution.max_book_spread_bps = 500
         req = _req()
         result = asyncio.new_event_loop().run_until_complete(svc.execute(req))
@@ -156,7 +186,7 @@ class TestBookQualityGate:
 
     def test_one_sided_buy_with_no_bid_allowed(self):
         """BUY with best_bid=None but valid best_ask should pass the spread gate."""
-        svc = _make_execution_service(_meta(None, "0.51"))
+        svc = _make_execution_service(None, "0.51")
         svc._config.execution.max_book_spread_bps = 500
         req = _req()
         result = asyncio.new_event_loop().run_until_complete(svc.execute(req))
@@ -165,7 +195,7 @@ class TestBookQualityGate:
 
     def test_one_sided_sell_with_no_ask_allowed(self):
         """SELL with best_ask=None but valid best_bid should pass the spread gate."""
-        svc = _make_execution_service(_meta("0.50", None))
+        svc = _make_execution_service("0.50", None)
         svc._config.execution.max_book_spread_bps = 500
         req = _req(side="SELL", amount="5")
         result = asyncio.new_event_loop().run_until_complete(svc.execute(req))
@@ -174,7 +204,7 @@ class TestBookQualityGate:
 
     def test_zero_bid_passes(self):
         """If best_bid is 0, spread check is skipped (avoid division by zero)."""
-        svc = _make_execution_service(_meta("0", "0.51"))
+        svc = _make_execution_service("0", "0.51")
         svc._config.execution.max_book_spread_bps = 500
         req = _req()
         result = asyncio.new_event_loop().run_until_complete(svc.execute(req))
@@ -182,7 +212,7 @@ class TestBookQualityGate:
 
     def test_gate_disabled_when_zero(self):
         """MAX_BOOK_SPREAD_BPS=0 disables the gate entirely."""
-        svc = _make_execution_service(_meta("0.10", "0.90"))  # 800% spread
+        svc = _make_execution_service("0.10", "0.90")  # 800% spread
         svc._config.execution.max_book_spread_bps = 0
         req = _req()
         result = asyncio.new_event_loop().run_until_complete(svc.execute(req))
@@ -190,7 +220,7 @@ class TestBookQualityGate:
 
     def test_custom_threshold(self):
         """Relative mode: custom threshold at 100 bps should reject 2% spread."""
-        svc = _make_execution_service(_meta("0.50", "0.51"))  # 2% = 200 bps
+        svc = _make_execution_service("0.50", "0.51")  # 2% = 200 bps
         svc._config.execution.max_book_spread_bps = 100
         svc._config.execution.book_spread_mode = "relative_bps"
         req = _req()
@@ -201,7 +231,7 @@ class TestBookQualityGate:
 
     def test_low_price_one_cent_spread_passes_in_absolute_mode(self):
         """absolute_bps mode should allow a 1-cent spread when threshold is 100 bps."""
-        svc = _make_execution_service(_meta("0.04", "0.05"))
+        svc = _make_execution_service("0.04", "0.05")
         svc._config.execution.max_book_spread_bps = 100
         svc._config.execution.book_spread_mode = "absolute_bps"
         req = _req()
@@ -210,7 +240,7 @@ class TestBookQualityGate:
 
     def test_low_price_one_cent_spread_rejects_in_relative_mode(self):
         """relative_bps mode should reject the same 1-cent spread at a low threshold."""
-        svc = _make_execution_service(_meta("0.04", "0.05"))
+        svc = _make_execution_service("0.04", "0.05")
         svc._config.execution.max_book_spread_bps = 1000
         svc._config.execution.book_spread_mode = "relative_bps"
         req = _req()
@@ -219,16 +249,16 @@ class TestBookQualityGate:
         assert result.status == "book_spread_wide"
 
     def test_spread_gate_requests_fresh_meta(self):
-        svc = _make_execution_service(_meta("0.40", "0.48"))
+        svc = _make_execution_service("0.40", "0.48")
         svc._config.execution.max_book_spread_bps = 500
         svc._config.execution.execution_require_fresh_book = True
         req = _req()
         asyncio.new_event_loop().run_until_complete(svc.execute(req))
-        svc.market_meta_service.get.assert_awaited_once_with("0xabc", refresh=True)
+        svc._market_data_service.require_fresh_data.assert_awaited_once_with("0xabc")
 
     def test_sell_side_also_gated(self):
         """Spread gate applies to SELL orders too."""
-        svc = _make_execution_service(_meta("0.40", "0.48"))  # 20% spread
+        svc = _make_execution_service("0.40", "0.48")  # 20% spread
         svc._config.execution.max_book_spread_bps = 500
         req = _req(side="SELL", amount="5")
         result = asyncio.new_event_loop().run_until_complete(svc.execute(req))
@@ -238,7 +268,7 @@ class TestBookQualityGate:
 
     def test_error_includes_actual_spread(self):
         """Error message includes actual spread in bps."""
-        svc = _make_execution_service(_meta("0.40", "0.48"))  # 2000 bps
+        svc = _make_execution_service("0.40", "0.48")  # 2000 bps
         svc._config.execution.max_book_spread_bps = 500
         svc._config.execution.book_spread_mode = "relative_bps"
         req = _req()
@@ -248,7 +278,7 @@ class TestBookQualityGate:
 
     def test_garbage_book_detected(self):
         """bid=0.01, ask=0.99 is a garbage/placeholder book — should be book_no_liquidity."""
-        svc = _make_execution_service(_meta("0.01", "0.99"))
+        svc = _make_execution_service("0.01", "0.99")
         svc._config.execution.max_book_spread_bps = 500
         req = _req()
         result = asyncio.new_event_loop().run_until_complete(svc.execute(req))
@@ -257,7 +287,7 @@ class TestBookQualityGate:
 
     def test_garbage_book_borderline(self):
         """bid=0.02, ask=0.98 should still be flagged as garbage."""
-        svc = _make_execution_service(_meta("0.02", "0.98"))
+        svc = _make_execution_service("0.02", "0.98")
         svc._config.execution.max_book_spread_bps = 500
         req = _req()
         result = asyncio.new_event_loop().run_until_complete(svc.execute(req))
@@ -266,7 +296,7 @@ class TestBookQualityGate:
 
     def test_legitimate_wide_spread_not_classified_as_garbage(self):
         """bid=0.04, ask=0.96 is NOT garbage — gets the normal spread rejection."""
-        svc = _make_execution_service(_meta("0.04", "0.96"))
+        svc = _make_execution_service("0.04", "0.96")
         svc._config.execution.max_book_spread_bps = 500
         req = _req()
         result = asyncio.new_event_loop().run_until_complete(svc.execute(req))
