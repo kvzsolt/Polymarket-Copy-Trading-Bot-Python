@@ -18,6 +18,7 @@ _STRICT_REQUIRED_KEYS: tuple[str, ...] = (
     "wss_market_ok",
     "wss_user_ok",
     "reconciler_ok",
+    "market_data_ready"
 )
 
 
@@ -47,6 +48,7 @@ class ReadinessTracker:
             "gateway_ok": False,
             "wss_market_ok": False,
             "wss_user_ok": False,
+            "market_data_ready": False,
             "reconciler_ok": False,
             "circuit_breaker_state": "unknown",
             "pending_intents_count": 0,
