@@ -21,6 +21,7 @@ def _all_ready() -> ReadinessTracker:
         wss_market_ok=True,
         wss_user_ok=True,
         reconciler_ok=True,
+        market_data_ready=True,
         circuit_breaker_state="closed",
     )
     return tracker

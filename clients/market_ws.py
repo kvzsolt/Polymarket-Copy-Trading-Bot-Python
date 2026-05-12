@@ -142,7 +142,7 @@ class MarketWebSocket:
                     self._reconnect_delay = self._reconnect_min_delay
                     logger.info("MarketWS: connected to %s", self._ws_url)
 
-                    await self._subscribe_initial(ws)
+                    await self._subscribe(ws)
 
                     if self._on_connected is not None:
                         try:
@@ -190,7 +190,7 @@ class MarketWebSocket:
             logger.warning("MarketWS: REST bootstrap failed: %s", exc)
             self._mark_all_dirty("rest_bootstrap_failed")
 
-    async def _subscribe_initial(self, ws: Any) -> None:
+    async def _subscribe(self, ws: Any) -> None:
         payload = {
             "type": "market",
             "assets_ids": self._asset_ids,
@@ -268,8 +268,8 @@ class MarketWebSocket:
         asks = _parse_levels(event.get("asks") or event.get("sells") or [])
 
         replaced = self._replace_book_snapshot(asset_id, bids, asks, event)
-        best_bid = max(bids) if bids else None
-        best_ask = min(asks) if asks else None
+        best_bid = max(bids) if bids else _to_decimal(event.get("best_bid") or event.get("bid"))
+        best_ask = min(asks) if asks else _to_decimal(event.get("best_ask") or event.get("ask"))
 
         if best_bid is not None or best_ask is not None:
             self._on_price_update(asset_id, best_bid, best_ask)

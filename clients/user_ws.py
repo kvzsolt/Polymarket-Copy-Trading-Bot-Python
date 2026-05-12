@@ -172,11 +172,11 @@ class UserWebSocket:
                 break
 
             try:
-                await self._handle_message(raw_msg)
+                self._handle_message(raw_msg)
             except Exception as exc:
                 logger.warning("UserWS: message handling error: %s", exc)
 
-    async def _handle_message(self, raw_msg: str | bytes) -> None:
+    def _handle_message(self, raw_msg: str | bytes) -> None:
         if isinstance(raw_msg, bytes):
             raw_msg = raw_msg.decode("utf-8", errors="replace")
 
@@ -198,37 +198,37 @@ class UserWebSocket:
             event_type = event.get("event_type") or event.get("type", "")
 
             if event_type in ("trade", "order_fill", "fill"):
-                await self._handle_fill(event)
+                self._handle_fill(event)
             elif event_type in ("order_update", "order"):
-                await self._handle_order_update(event)
+                self._handle_order_update(event)
             elif event_type == "auth":
-                await self._handle_auth(event)
+                self._handle_auth(event)
             else:
                 logger.debug("UserWS: unhandled event_type=%r event=%s", event_type, event)
 
-    async def _handle_auth(self, event: dict[str, Any]) -> None:
+    def _handle_auth(self, event: dict[str, Any]) -> None:
         status = str(event.get("status", "")).lower()
 
         if status in {"success", "authenticated", "ok"}:
             if not self._authenticated:
                 self._authenticated = True
                 logger.info("UserWS: authenticated successfully")
-                await self._run_lifecycle_callback(self._on_authenticated)
+                self._fire_lifecycle_callback(self._on_authenticated)
             return
 
         logger.warning("UserWS: auth response: %s", event)
 
-    async def _handle_fill(self, event: dict[str, Any]) -> None:
+    def _handle_fill(self, event: dict[str, Any]) -> None:
         token_id = _token_id_from_event(event)
 
         if not token_id:
             logger.debug("UserWS: fill event missing token_id: %s", event)
             return
 
-        # Own fill invalidates local market assumptions. This should not settle
-        # the position directly; reconciler remains the settlement owner.
-        self._cache.mark_dirty(token_id, "own_fill")
-        self._cache.invalidate(token_id)
+        # Own fill invalidates local market assumptions. Evict removes the data
+        # so get_quote/get_book return None until WSS delivers fresh state.
+        # Reconciler remains the settlement owner — this is cache hygiene only.
+        self._cache.evict(token_id)
 
         logger.info(
             "UserWS: fill detected -> market state invalidated for %s side=%s",
@@ -236,15 +236,39 @@ class UserWebSocket:
             event.get("side", "?"),
         )
 
-        await self._run_event_callback(self._on_fill, event)
+        self._fire_event_callback(self._on_fill, event)
 
-    async def _handle_order_update(self, event: dict[str, Any]) -> None:
+    def _handle_order_update(self, event: dict[str, Any]) -> None:
         order_id = event.get("order_id") or event.get("id", "?")
         status = event.get("status") or event.get("state", "?")
 
         logger.debug("UserWS: order update: id=%s status=%s", order_id, status)
 
-        await self._run_event_callback(self._on_order_update, event)
+        self._fire_event_callback(self._on_order_update, event)
+
+    def _fire_lifecycle_callback(self, callback: LifecycleCallback | None) -> None:
+        if callback is None:
+            return
+        result = callback()
+        if asyncio.iscoroutine(result):
+            try:
+                asyncio.get_running_loop().create_task(result)
+            except RuntimeError:
+                pass
+
+    def _fire_event_callback(
+        self,
+        callback: EventCallback | None,
+        event: dict[str, Any],
+    ) -> None:
+        if callback is None:
+            return
+        result = callback(event)
+        if asyncio.iscoroutine(result):
+            try:
+                asyncio.get_running_loop().create_task(result)
+            except RuntimeError:
+                pass
 
     async def _run_lifecycle_callback(
         self,
@@ -252,7 +276,6 @@ class UserWebSocket:
     ) -> None:
         if callback is None:
             return
-
         result = callback()
         if asyncio.iscoroutine(result):
             await result
@@ -264,7 +287,6 @@ class UserWebSocket:
     ) -> None:
         if callback is None:
             return
-
         result = callback(event)
         if asyncio.iscoroutine(result):
             await result
