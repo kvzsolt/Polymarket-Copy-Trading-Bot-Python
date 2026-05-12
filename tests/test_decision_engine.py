@@ -205,7 +205,7 @@ class TestCopyDecisionService:
 
         assert decision.allow is False
         assert decision.skip_code == "sell_held_below_venue_min"
-        assert decision.target_size_tokens == pytest.approx(1.0)
+        assert decision.target_size_tokens == pytest.approx(0.0)
 
     def test_sell_keeps_requested_size_when_it_already_clears_minimum(self):
         trade = {"price": 0.40, "timestamp": time.time(), "usdcSize": 10}

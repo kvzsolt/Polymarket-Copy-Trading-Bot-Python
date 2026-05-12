@@ -35,6 +35,7 @@ def _redact_value(key: str, value: object) -> object:
 def _config_to_dict(cfg: AppConfig, *, redacted: bool = True) -> dict:
     """Recursively convert an AppConfig to a dict, optionally redacting secrets."""
     import dataclasses
+    from decimal import Decimal
 
     def _convert(obj: object) -> object:
         if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
@@ -57,6 +58,8 @@ def _config_to_dict(cfg: AppConfig, *, redacted: bool = True) -> dict:
                     converted = _redact_value(k, converted)
                 result_dict[k] = converted
             return result_dict
+        if isinstance(obj, Decimal):
+            return str(obj)
         return obj
 
     return _convert(cfg)
@@ -89,7 +92,10 @@ _CONFIG_EXPLANATIONS: dict[str, str] = {
     "RECONCILE_INTERVAL_SECONDS": "Seconds between reconciliation passes.",
     "PENDING_SUBMISSION_TTL_SECONDS": "Seconds before a pending order is considered stale.",
     "ENFORCE_GEOBLOCK": "If true, check geoblock compliance before trading.",
-    "ENABLE_AUTO_REDEEM": "If true, auto-redeem resolved positions.",
+    "ENABLE_NEAR_ONE_EXIT": "If true, sell entire position when price stays >= threshold for dwell_seconds. Replaces redemption.",
+    "NEAR_ONE_EXIT_THRESHOLD": "Price threshold (Decimal, e.g. 0.99) that triggers near-one exit.",
+    "NEAR_ONE_EXIT_DWELL_SECONDS": "Seconds the price must remain >= threshold before NearOne fires.",
+    "NEAR_ONE_EXIT_CHECK_INTERVAL": "Seconds between NearOneExit loop iterations.",
     "ENABLE_TRADER_DISCOVERY": "If true, auto-discover profitable traders to follow.",
     "AUTO_DISCOVER_LEADERS": "If true, automatically discover and follow top traders.",
     "AUTO_DISCOVER_TOP_N": "Number of top traders to discover.",

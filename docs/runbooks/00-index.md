@@ -13,6 +13,7 @@ is obvious.
 | [`stale-locks.md`](stale-locks.md) | Orders are stuck in a `pending_lock` / `submitting` state past the submission TTL. |
 | [`reconciliation-drift.md`](reconciliation-drift.md) | Persisted positions / fills disagree with venue state. |
 | [`manual-off-bot-changes.md`](manual-off-bot-changes.md) | A SELL hits `insufficient_balance`, or you trade manually while the bot is running. |
+| [`near-one-exit.md`](near-one-exit.md) | NearOneExitService fires a SELL when a token quote sustains >= threshold for dwell_seconds (replaces on-chain redemption). |
 
 ## Conventions
 

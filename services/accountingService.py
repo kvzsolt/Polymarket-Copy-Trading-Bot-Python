@@ -151,26 +151,3 @@ class AccountingService:
             )
             conn.commit()
 
-    def record_redemption_attempt(self, redemption_doc: dict[str, Any]) -> None:
-        doc = dict(redemption_doc)
-        user_id = str(doc.get("user_id") or "")
-        condition_id = str(doc.get("condition_id") or "")
-        attempt_id = str(doc.get("attempt_id") or "")
-        if not user_id or not condition_id or not attempt_id:
-            return
-        with get_database() as conn:
-            conn.execute(
-                """
-                INSERT OR IGNORE INTO redemptions
-                (user_id, condition_id, attempt_id, payload_json, created_at)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                (
-                    user_id,
-                    condition_id,
-                    attempt_id,
-                    json.dumps(doc, separators=(",", ":"), default=str),
-                    float(doc.get("created_at") or _utc_now().timestamp()),
-                ),
-            )
-            conn.commit()

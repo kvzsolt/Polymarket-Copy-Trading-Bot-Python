@@ -82,3 +82,68 @@ def test_sell_below_min_rejected() -> None:
         market_min_size=10.0,
     )
     assert decision.accept is False
+
+
+# --- SELL parity with BUY: explicit min-size handling cases (issue-78) ---
+
+
+def test_sell_below_min_upsized_when_held_allows() -> None:
+    """SELL below venue min upsizes to venue min if held shares cover it."""
+    decision = size_sell_order(
+        sell_tokens=2.0,
+        held_size=12.0,
+        live_price=0.99,
+        market_min_size=5.0,
+    )
+    assert decision.accept is True
+    assert decision.upsized is True
+    assert decision.effective_size == Decimal("5")
+    assert decision.reason == "upsized"
+
+
+def test_sell_below_min_skipped_when_held_short() -> None:
+    """SELL below venue min and held shares can't cover upsize → skip."""
+    decision = size_sell_order(
+        sell_tokens=1.0,
+        held_size=2.0,
+        live_price=0.99,
+        market_min_size=10.0,
+    )
+    assert decision.accept is False
+    assert decision.reason == "sell_held_below_venue_min"
+
+
+def test_sell_exactly_at_venue_min_accepted_unchanged() -> None:
+    decision = size_sell_order(
+        sell_tokens=5.0,
+        held_size=5.0,
+        live_price=0.99,
+        market_min_size=5.0,
+    )
+    assert decision.accept is True
+    assert decision.upsized is False
+    assert decision.effective_size == Decimal("5")
+
+
+def test_sell_clamped_to_held_then_min_check() -> None:
+    """Requested > held → clamp to held; then min-size guard runs."""
+    decision = size_sell_order(
+        sell_tokens=100.0,
+        held_size=3.0,
+        live_price=0.99,
+        market_min_size=10.0,
+    )
+    assert decision.accept is False
+    assert decision.reason == "sell_held_below_venue_min"
+
+
+def test_sell_full_position_at_near_one_price() -> None:
+    """The exact path NearOneExitService takes: held=size, price >= 0.99."""
+    decision = size_sell_order(
+        sell_tokens=42.5,
+        held_size=42.5,
+        live_price=0.995,
+        market_min_size=5.0,
+    )
+    assert decision.accept is True
+    assert decision.effective_size == Decimal("42.5")

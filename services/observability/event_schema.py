@@ -113,20 +113,17 @@ EVENT_TYPES: dict[str, tuple[str, ...]] = {
         "reason",
         "source",
     ),
-    "redemption_submitted": (
+    "near_one_exit_triggered": (
         "condition_id",
         "token_id",
-        "tx_hash",
+        "price",
+        "dwell_seconds",
+        "size_tokens",
     ),
-    "redemption_confirmed": (
+    "near_one_exit_skipped": (
         "condition_id",
         "token_id",
-        "tx_hash",
-    ),
-    "redemption_reverted": (
-        "condition_id",
-        "token_id",
-        "error",
+        "reason",
     ),
 }
 

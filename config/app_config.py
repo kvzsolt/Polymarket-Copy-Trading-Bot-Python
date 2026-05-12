@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
+from decimal import Decimal
 from types import SimpleNamespace
 import sys as _sys
 from dataclasses import dataclass, field
@@ -48,8 +49,8 @@ __all__ = [
     "LoggingConfig",
     "NetworkConfig",
     "PollingConfig",
+    "NearOneExitConfig",
     "ReconciliationConfig",
-    "RedemptionConfig",
     "RiskConfig",
     "SignatureType",
     "SizingConfig",
@@ -206,7 +207,6 @@ class PollingConfig:
     fetch_interval: float
     aggregate_signal_window_seconds: float
     risk_check_interval: float
-    redeem_check_interval: int
     discovery_refresh_interval_seconds: int
     leader_positions_min_fetch_spacing_ms: int
     leader_activity_min_fetch_spacing_ms: int
@@ -353,8 +353,19 @@ class ReconciliationConfig:
 
 
 @dataclass(frozen=True)
-class RedemptionConfig:
-    enable_auto_redeem: bool
+class NearOneExitConfig:
+    """Sell-the-position-near-par exit replaces on-chain redemption.
+
+    When a copied position's token price has been at or above ``threshold`` for
+    at least ``dwell_seconds``, NearOneExitService submits a SELL for the
+    entire held size through the normal CLOB execution path. No CTF
+    ``redeemPositions`` transaction is ever issued.
+    """
+
+    enable_near_one_exit: bool
+    threshold: Decimal
+    dwell_seconds: int
+    check_interval: int
 
 
 @dataclass(frozen=True)
@@ -397,10 +408,12 @@ class AppConfig:
     leader: LeaderConfig
     logging: LoggingConfig
     network: NetworkConfig
-    redemption: RedemptionConfig
+    near_one_exit: NearOneExitConfig
     reconciliation: ReconciliationConfig
     discovery: DiscoveryConfig
     features: FeatureFlagConfig
+    # Global safety: when True the bot runs in paper-only / dry-run mode.
+    dry_run: bool = False
     # The raw mapping is kept for transitional backwards compatibility
     # (Phase 6 will remove any remaining legacy ``ENV`` fallbacks).
     raw: Mapping[str, Any] = field(default_factory=dict, repr=False, compare=False)
@@ -611,7 +624,6 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         fetch_interval=p.float_("FETCH_INTERVAL", "0.25"),
         aggregate_signal_window_seconds=p.float_("AGGREGATE_SIGNAL_WINDOW_SECONDS", "0.1"),
         risk_check_interval=p.float_("RISK_CHECK_INTERVAL", "15"),
-        redeem_check_interval=p.int_("REDEEM_CHECK_INTERVAL", "60"),
         discovery_refresh_interval_seconds=p.int_("DISCOVERY_REFRESH_INTERVAL_SECONDS", "300"),
         leader_positions_min_fetch_spacing_ms=p.int_("LEADER_POSITIONS_MIN_FETCH_SPACING_MS", "250"),
         leader_activity_min_fetch_spacing_ms=p.int_("LEADER_ACTIVITY_MIN_FETCH_SPACING_MS", "250"),
@@ -789,8 +801,11 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         auto_cancel_stale=p.bool_("RECONCILE_AUTO_CANCEL", False),
     )
 
-    redemption = RedemptionConfig(
-        enable_auto_redeem=p.bool_("ENABLE_AUTO_REDEEM", False),
+    near_one_exit = NearOneExitConfig(
+        enable_near_one_exit=p.bool_("ENABLE_NEAR_ONE_EXIT", False),
+        threshold=Decimal(p.string("NEAR_ONE_EXIT_THRESHOLD", "0.99")),
+        dwell_seconds=p.int_("NEAR_ONE_EXIT_DWELL_SECONDS", "60"),
+        check_interval=p.int_("NEAR_ONE_EXIT_CHECK_INTERVAL", "5"),
     )
 
     discovery = DiscoveryConfig(
@@ -828,10 +843,11 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         leader=leader,
         logging=logging_cfg,
         network=network,
-        redemption=redemption,
+        near_one_exit=near_one_exit,
         reconciliation=reconciliation,
         discovery=discovery,
         features=features,
+        dry_run=p.bool_("PAPER_TRADE_ONLY", False),
         raw=dict(env),
     )
 

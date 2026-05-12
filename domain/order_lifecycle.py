@@ -9,14 +9,13 @@ from enum import StrEnum
 class IntentSide(StrEnum):
     BUY = "BUY"
     SELL = "SELL"
-    REDEEM = "REDEEM"
 
 
 class IntentReason(StrEnum):
     COPY_BUY = "copy_buy"
     COPY_SELL = "copy_sell"
     RISK_EXIT = "risk_exit"
-    AUTO_REDEEM = "auto_redeem"
+    NEAR_ONE_EXIT = "near_one_exit"
     NEG_RISK_ARB = "neg_risk_arb"
 
 

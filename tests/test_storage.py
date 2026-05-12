@@ -23,7 +23,6 @@ from domain.ports import (
     AbstractLeaderRepository,
     AbstractOrderRepository,
     AbstractPositionRepository,
-    AbstractRedemptionRepository,
 )
 from storage.sqlite.connection import create_connection
 from storage.sqlite.cursors_repo import CursorsRepo, TradeCursor
@@ -33,7 +32,6 @@ from storage.sqlite.leaders_repo import LeaderCandidateRecord, LeadersRepo
 from storage.sqlite.migrations import apply_migrations
 from storage.sqlite.orders_repo import OrdersRepo, OrderSubmissionRecord
 from storage.sqlite.positions_repo import PositionRecord, PositionsRepo
-from storage.sqlite.redemptions_repo import RedemptionsRepo
 
 
 @pytest.fixture()
@@ -64,9 +62,6 @@ class TestAbcRegistration:
 
     def test_cursors_repo(self) -> None:
         assert issubclass(CursorsRepo, AbstractCursorRepository)
-
-    def test_redemptions_repo(self) -> None:
-        assert issubclass(RedemptionsRepo, AbstractRedemptionRepository)
 
     def test_discovery_repo(self) -> None:
         assert issubclass(DiscoveryRepo, AbstractDiscoveryRepository)
@@ -212,18 +207,3 @@ class TestCursorsRepo:
         assert reloaded.tx_hash == "0xdead"
 
 
-class TestRedemptionsRepo:
-    def test_save_attempt_does_not_raise(self, db_path: str) -> None:
-        repo = RedemptionsRepo(db_path)
-        repo.save_attempt({
-            "user_id": "u1",
-            "condition_id": "cond-1",
-            "attempt_id": "att-1",
-            "status": "ok",
-            "amount": "1",
-        })
-
-    def test_save_attempt_raises_on_missing_identifiers(self, db_path: str) -> None:
-        repo = RedemptionsRepo(db_path)
-        with pytest.raises(ValueError, match="missing redemption identifiers"):
-            repo.save_attempt({"user_id": "u1", "status": "ok"})

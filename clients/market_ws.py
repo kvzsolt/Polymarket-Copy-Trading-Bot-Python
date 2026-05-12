@@ -1,60 +1,56 @@
-"""Market WebSocket client for real-time price and tick data streaming.
+"""WSS-backed Polymarket market data client.
 
-Phase 2 deliverable: streams live market data from Polymarket via WSS,
-feeding the ``PositionPriceCache`` with price-change and tick-size events.
+Consumes the market WebSocket stream and updates a PositionPriceCache /
+market-state store. Intended production rule: execution reads market state only
+from this WSS-backed store and fails closed if state is stale, dirty, missing,
+or resolved.
 
-Connection lifecycle:
-  1. Connect to market WSS endpoint
-  2. Subscribe to ``assets_ids`` with ``type: "market"``
-  3. Start heartbeat (5s PING) + message processing loop
-  4. On disconnect/failure → REST snapshot bootstrap → WSS reconnect
-
-The heartbeat sends a literal ``"PING"`` string every 5 seconds.
-If the send fails, the connection is considered dead and the reconnect
-loop takes over.
+Polymarket market/user docs specify a literal "PING" heartbeat every 10 seconds.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import time
 from decimal import Decimal, InvalidOperation
-from typing import TYPE_CHECKING, Any, Callable, Coroutine
+from typing import TYPE_CHECKING, Any, Callable, Coroutine, Iterable
 
 import websockets
-from websockets.exceptions import (
-    ConnectionClosed,
-    ConnectionClosedError,
-    ConnectionClosedOK,
-)
+from websockets.exceptions import ConnectionClosed, ConnectionClosedError, ConnectionClosedOK
 
-from services.metrics import (
-    METRIC_WSS_HEARTBEAT_STALL,
-    METRIC_WSS_RECONNECT,
-    metrics,
-)
+from services.metrics import METRIC_WSS_HEARTBEAT_STALL, METRIC_WSS_RECONNECT, metrics
 from utils.logger import get_logger
+
+try:
+    from clients.ws_constants import HEARTBEAT_INTERVAL
+except Exception:  # pragma: no cover
+    HEARTBEAT_INTERVAL = 10.0
 
 if TYPE_CHECKING:
     from services.price_cache import PositionPriceCache
 
 logger = get_logger("MarketWS")
 
-# Default Polymarket market WSS endpoint
 DEFAULT_MARKET_WS_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
-
-# Reconnect parameters
 _MIN_RECONNECT_DELAY = 1.0
 _MAX_RECONNECT_DELAY = 30.0
-from clients.ws_constants import HEARTBEAT_INTERVAL  # seconds — per spec
+
+RestBootstrap = Callable[[list[str]], Coroutine[Any, Any, None]]
 
 
 class MarketWebSocket:
-    """Async WebSocket client for Polymarket market data streams.
+    """Polymarket market WebSocket client.
 
-    Subscribes to real-time price changes and tick-size changes for
-    the specified ``asset_ids`` (token IDs).
+    Handles:
+      - book: authoritative full-book snapshot
+      - price_change: incremental level update; size 0 deletes a level
+      - last_trade_price: observability only, not executable price
+      - tick_size_change: update tick and invalidate prepared sizing
+      - best_bid_ask: top-of-book update
+      - new_market: metadata/discovery hook
+      - market_resolved: mark asset/market non-tradable
     """
 
     def __init__(
@@ -62,9 +58,10 @@ class MarketWebSocket:
         cache: PositionPriceCache,
         *,
         ws_url: str = DEFAULT_MARKET_WS_URL,
-        rest_bootstrap: Callable[
-            [list[str]], Coroutine[Any, Any, None]
-        ] | None = None,
+        rest_bootstrap: RestBootstrap | None = None,
+        heartbeat_interval: float | None = None,
+        reconnect_min_delay: float = _MIN_RECONNECT_DELAY,
+        reconnect_max_delay: float = _MAX_RECONNECT_DELAY,
     ) -> None:
         self._cache = cache
         self._ws_url = ws_url
@@ -72,133 +69,135 @@ class MarketWebSocket:
         self._asset_ids: list[str] = []
         self._ws: Any = None
         self._running = False
-        self._reconnect_delay = _MIN_RECONNECT_DELAY
-
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
+        self._reconnect_delay = reconnect_min_delay
+        self._reconnect_min_delay = reconnect_min_delay
+        self._reconnect_max_delay = reconnect_max_delay
+        self._heartbeat_interval = (
+            float(heartbeat_interval)
+            if heartbeat_interval is not None
+            else float(HEARTBEAT_INTERVAL)
+        )
 
     async def connect(self, asset_ids: list[str]) -> None:
-        """Connect, subscribe, and run heartbeat + message loop.
-
-        This coroutine runs until ``stop()`` is called or an
-        unrecoverable error occurs. Reconnects are handled internally.
-        """
-        self._asset_ids = list(asset_ids)
+        self._asset_ids = _dedupe_asset_ids(asset_ids)
         self._running = True
-        logger.info(
-            "MarketWS: starting for %d asset(s)",
-            len(self._asset_ids),
-        )
+        logger.info("MarketWS: starting for %d asset(s)", len(self._asset_ids))
         await self._reconnect_loop()
 
     async def stop(self) -> None:
-        """Signal the client to disconnect gracefully."""
         self._running = False
-        if self._ws:
-            try:
+        if self._ws is not None:
+            with contextlib.suppress(Exception):
                 await self._ws.close()
-            except Exception:
-                pass
+        self._mark_all_stale("stopped")
         logger.info("MarketWS: stopped")
 
-    # ------------------------------------------------------------------
-    # Connection lifecycle
-    # ------------------------------------------------------------------
+    async def subscribe(self, asset_ids: list[str]) -> None:
+        new_ids = [a for a in _dedupe_asset_ids(asset_ids) if a not in self._asset_ids]
+        if not new_ids:
+            return
+        self._asset_ids.extend(new_ids)
+        if self._ws is not None:
+            await self._ws.send(json.dumps({
+                "assets_ids": new_ids,
+                "operation": "subscribe",
+                "custom_feature_enabled": True,
+            }))
+            logger.info("MarketWS: dynamically subscribed to %d asset(s)", len(new_ids))
+
+    async def unsubscribe(self, asset_ids: list[str]) -> None:
+        remove_ids = _dedupe_asset_ids(asset_ids)
+        if not remove_ids:
+            return
+        remove_set = set(remove_ids)
+        self._asset_ids = [a for a in self._asset_ids if a not in remove_set]
+        if self._ws is not None:
+            await self._ws.send(json.dumps({
+                "assets_ids": remove_ids,
+                "operation": "unsubscribe",
+            }))
+            logger.info("MarketWS: dynamically unsubscribed from %d asset(s)", len(remove_ids))
+        for asset_id in remove_ids:
+            self._mark_asset_stale(asset_id, "unsubscribed")
 
     async def _reconnect_loop(self) -> None:
-        """Main reconnect loop: REST bootstrap → WSS connect → run."""
         while self._running:
             try:
-                # 1. REST snapshot bootstrap (if available)
-                if self._rest_bootstrap and self._asset_ids:
-                    try:
-                        logger.info("MarketWS: REST bootstrap for %d assets", len(self._asset_ids))
-                        self._cache.invalidate_all()
-                        await self._rest_bootstrap(self._asset_ids)
-                    except Exception as exc:
-                        logger.warning("MarketWS: REST bootstrap failed: %s", exc)
+                self._mark_all_stale("reconnecting")
 
-                # 2. WSS connect
-                async with websockets.connect(self._ws_url) as ws:
+                if self._rest_bootstrap and self._asset_ids:
+                    await self._run_rest_bootstrap()
+
+                async with websockets.connect(
+                    self._ws_url,
+                    ping_interval=None,  # Polymarket uses literal text PING
+                    close_timeout=5,
+                    max_queue=None,
+                ) as ws:
                     self._ws = ws
-                    self._reconnect_delay = _MIN_RECONNECT_DELAY
+                    self._reconnect_delay = self._reconnect_min_delay
                     logger.info("MarketWS: connected to %s", self._ws_url)
 
-                    # 3. Subscribe
-                    await self._subscribe(ws)
+                    await self._subscribe_initial(ws)
 
-                    # 4. Run heartbeat + message loop concurrently
                     heartbeat_task = asyncio.create_task(self._heartbeat(ws))
                     try:
                         await self._message_loop(ws)
                     finally:
                         heartbeat_task.cancel()
-                        try:
+                        with contextlib.suppress(asyncio.CancelledError):
                             await heartbeat_task
-                        except asyncio.CancelledError:
-                            pass
 
             except (ConnectionClosed, ConnectionClosedError, ConnectionClosedOK) as exc:
                 logger.warning("MarketWS: connection closed: %s", exc)
             except OSError as exc:
                 logger.warning("MarketWS: network error: %s", exc)
             except Exception as exc:
-                logger.error("MarketWS: unexpected error: %s", exc)
+                logger.exception("MarketWS: unexpected error: %s", exc)
+            finally:
+                self._ws = None
+                self._mark_all_stale("disconnected")
 
             if not self._running:
                 break
 
-            # Exponential backoff
-            logger.info(
-                "MarketWS: reconnecting in %.1fs",
-                self._reconnect_delay,
-            )
-            try:
-                metrics.inc(METRIC_WSS_RECONNECT, labels={"stream": "market"})
-            except Exception:
-                pass
+            self._inc_metric(METRIC_WSS_RECONNECT, {"stream": "market"})
+            logger.info("MarketWS: reconnecting in %.1fs", self._reconnect_delay)
             await asyncio.sleep(self._reconnect_delay)
-            self._reconnect_delay = min(
-                self._reconnect_delay * 2,
-                _MAX_RECONNECT_DELAY,
-            )
+            self._reconnect_delay = min(self._reconnect_delay * 2, self._reconnect_max_delay)
 
-    async def _subscribe(self, ws: Any) -> None:
-        """Send subscription message for asset IDs."""
+    async def _run_rest_bootstrap(self) -> None:
+        try:
+            logger.info("MarketWS: REST bootstrap for %d asset(s)", len(self._asset_ids))
+            self._call_cache_optional("invalidate_all")
+            await self._rest_bootstrap(self._asset_ids)
+        except Exception as exc:
+            logger.warning("MarketWS: REST bootstrap failed: %s", exc)
+            self._mark_all_dirty("rest_bootstrap_failed")
+
+    async def _subscribe_initial(self, ws: Any) -> None:
         payload = {
-            "assets_ids": self._asset_ids,
             "type": "market",
+            "assets_ids": self._asset_ids,
             "custom_feature_enabled": True,
         }
         await ws.send(json.dumps(payload))
-        logger.info(
-            "MarketWS: subscribed to %d asset(s)",
-            len(self._asset_ids),
-        )
+        logger.info("MarketWS: subscribed to %d asset(s)", len(self._asset_ids))
 
     async def _heartbeat(self, ws: Any) -> None:
-        """Send PING every 5 seconds. Exits on send failure."""
         while self._running:
-            await asyncio.sleep(HEARTBEAT_INTERVAL)
+            await asyncio.sleep(self._heartbeat_interval)
             try:
                 await ws.send("PING")
+                self._call_cache_optional("on_market_ws_heartbeat", time.monotonic())
             except Exception as exc:
                 logger.warning("MarketWS: heartbeat send failed: %s", exc)
-                try:
-                    metrics.inc(
-                        METRIC_WSS_HEARTBEAT_STALL, labels={"stream": "market"}
-                    )
-                except Exception:
-                    pass
-                try:
+                self._inc_metric(METRIC_WSS_HEARTBEAT_STALL, {"stream": "market"})
+                with contextlib.suppress(Exception):
                     await ws.close()
-                except Exception:
-                    pass
                 return
 
     async def _message_loop(self, ws: Any) -> None:
-        """Receive and dispatch messages until disconnect."""
         async for raw_msg in ws:
             if not self._running:
                 break
@@ -207,101 +206,301 @@ class MarketWebSocket:
             except Exception as exc:
                 logger.warning("MarketWS: message handling error: %s", exc)
 
-    # ------------------------------------------------------------------
-    # Message handling
-    # ------------------------------------------------------------------
-
-    def _handle_message(self, raw_msg: str) -> None:
-        """Parse incoming WSS message and update cache."""
-        # Ignore PONG or heartbeat ack
+    def _handle_message(self, raw_msg: str | bytes) -> None:
+        if isinstance(raw_msg, bytes):
+            raw_msg = raw_msg.decode("utf-8", errors="replace")
         if raw_msg in ("PONG", "pong", ""):
+            self._call_cache_optional("on_market_ws_pong", time.monotonic())
             return
 
         try:
             data = json.loads(raw_msg)
         except (json.JSONDecodeError, TypeError):
-            logger.debug("MarketWS: non-JSON message: %s", raw_msg[:100])
+            logger.debug("MarketWS: non-JSON message: %s", str(raw_msg)[:100])
             return
 
-        # Handle list of events
         events = data if isinstance(data, list) else [data]
-
         for event in events:
-            if not isinstance(event, dict):
-                continue
-            event_type = event.get("event_type") or event.get("type", "")
-            if event_type in ("price_change", "book"):
-                self._handle_price_change(event)
-            elif event_type == "tick_size_change":
-                self._handle_tick_size_change(event)
+            if isinstance(event, dict):
+                self._dispatch_event(event)
 
-    def _handle_price_change(self, event: dict[str, Any]) -> None:
-        """Process a price change event into the cache.
+    def _dispatch_event(self, event: dict[str, Any]) -> None:
+        event_type = event.get("event_type") or event.get("type")
 
-        Each change entry carries ``side``, ``price``, and optionally ``size``.
-        When ``size`` is present and equals 0 the level is deleted from the
-        book (per spec: "price_change with size 0 deletes a book level").
-        When ``size`` > 0 the level is upserted. When ``size`` is absent the
-        event is treated as a best-bid/ask quote update only.
-        """
-        asset_id = event.get("asset_id") or event.get("market")
+        if event_type == "book":
+            self._handle_book(event)
+        elif event_type == "price_change":
+            self._handle_price_change(event)
+        elif event_type == "last_trade_price":
+            self._handle_last_trade_price(event)
+        elif event_type == "tick_size_change":
+            self._handle_tick_size_change(event)
+        elif event_type == "best_bid_ask":
+            self._handle_best_bid_ask(event)
+        elif event_type == "new_market":
+            self._handle_new_market(event)
+        elif event_type == "market_resolved":
+            self._handle_market_resolved(event)
+        else:
+            logger.debug("MarketWS: unhandled event_type=%r event=%s", event_type, event)
+
+    def _handle_book(self, event: dict[str, Any]) -> None:
+        asset_id = _asset_id(event)
         if not asset_id:
             return
-        try:
-            changes = event.get("changes", [])
-            best_bid: Decimal | None = None
-            best_ask: Decimal | None = None
-            for change in changes:
-                if isinstance(change, dict):
-                    side = change.get("side", "").upper()
-                    price_str = change.get("price")
-                    size_str = change.get("size")
-                    if price_str is None:
-                        continue
-                    try:
-                        price = Decimal(str(price_str))
-                    except (InvalidOperation, ValueError):
-                        continue
 
-                    if size_str is not None:
-                        try:
-                            size = Decimal(str(size_str))
-                        except (InvalidOperation, ValueError):
-                            size = Decimal("0")
-                        self._cache.apply_book_delta(asset_id, side, price, size)
-                        if size > Decimal("0"):
-                            if side == "BUY":
-                                best_bid = max(best_bid, price) if best_bid is not None else price
-                            elif side == "SELL":
-                                best_ask = min(best_ask, price) if best_ask is not None else price
-                    else:
-                        if side == "BUY":
-                            best_bid = max(best_bid, price) if best_bid is not None else price
-                        elif side == "SELL":
-                            best_ask = min(best_ask, price) if best_ask is not None else price
+        bids = _parse_levels(event.get("bids") or event.get("buys") or [])
+        asks = _parse_levels(event.get("asks") or event.get("sells") or [])
 
-            # Fallback: top-level bid/ask
-            if best_bid is None:
-                bid_raw = event.get("best_bid") or event.get("bid")
-                if bid_raw is not None:
-                    best_bid = Decimal(str(bid_raw))
-            if best_ask is None:
-                ask_raw = event.get("best_ask") or event.get("ask")
-                if ask_raw is not None:
-                    best_ask = Decimal(str(ask_raw))
+        replaced = self._replace_book_snapshot(asset_id, bids, asks, event)
+        best_bid = max(bids) if bids else None
+        best_ask = min(asks) if asks else None
 
-            if best_bid is not None or best_ask is not None:
-                self._cache.on_price_update(asset_id, best_bid, best_ask)
-        except (InvalidOperation, ValueError) as exc:
-            logger.debug("MarketWS: price parse error: %s", exc)
+        if best_bid is not None or best_ask is not None:
+            self._on_price_update(asset_id, best_bid, best_ask)
+
+        tick = _to_decimal(event.get("tick_size") or event.get("minimum_tick_size"))
+        if tick is not None:
+            self._on_tick_size_change(asset_id, tick)
+
+        if replaced:
+            self._mark_asset_fresh(asset_id, "book_snapshot")
+        else:
+            self._mark_asset_dirty(asset_id, "book_snapshot_not_replaced")
+
+    def _handle_price_change(self, event: dict[str, Any]) -> None:
+        asset_id = _asset_id(event)
+        if not asset_id:
+            return
+
+        changes = event.get("changes") or []
+        if not isinstance(changes, list):
+            changes = []
+
+        changed_best_bid: Decimal | None = None
+        changed_best_ask: Decimal | None = None
+
+        for change in changes:
+            if not isinstance(change, dict):
+                continue
+            side = _normalize_side(change.get("side"))
+            price = _to_decimal(change.get("price"))
+            if side is None or price is None:
+                continue
+
+            size = _to_decimal(change.get("size"))
+            if size is None:
+                if side == "BUY":
+                    changed_best_bid = _max_decimal(changed_best_bid, price)
+                else:
+                    changed_best_ask = _min_decimal(changed_best_ask, price)
+                continue
+
+            self._apply_book_delta(asset_id, side, price, size)
+            if size > 0:
+                if side == "BUY":
+                    changed_best_bid = _max_decimal(changed_best_bid, price)
+                else:
+                    changed_best_ask = _min_decimal(changed_best_ask, price)
+
+        best_bid = _to_decimal(event.get("best_bid") or event.get("bid")) or changed_best_bid
+        best_ask = _to_decimal(event.get("best_ask") or event.get("ask")) or changed_best_ask
+
+        if best_bid is not None or best_ask is not None:
+            self._on_price_update(asset_id, best_bid, best_ask)
+        self._touch_asset(asset_id, "price_change")
+
+    def _handle_best_bid_ask(self, event: dict[str, Any]) -> None:
+        asset_id = _asset_id(event)
+        if not asset_id:
+            return
+        best_bid = _to_decimal(event.get("best_bid") or event.get("bid") or event.get("best_bid_price"))
+        best_ask = _to_decimal(event.get("best_ask") or event.get("ask") or event.get("best_ask_price"))
+        if best_bid is None and best_ask is None:
+            return
+        self._on_price_update(asset_id, best_bid, best_ask)
+        self._call_cache_optional("on_best_bid_ask", asset_id, best_bid, best_ask, event)
+        self._touch_asset(asset_id, "best_bid_ask")
+
+    def _handle_last_trade_price(self, event: dict[str, Any]) -> None:
+        asset_id = _asset_id(event)
+        if not asset_id:
+            return
+        price = _to_decimal(event.get("price") or event.get("last_trade_price") or event.get("last_price"))
+        if price is None:
+            return
+        self._call_cache_optional("on_last_trade_price", asset_id, price, event)
+        self._touch_asset(asset_id, "last_trade_price")
 
     def _handle_tick_size_change(self, event: dict[str, Any]) -> None:
-        """Process a tick size change event into the cache."""
-        asset_id = event.get("asset_id") or event.get("market")
-        new_tick = event.get("tick_size") or event.get("new_tick_size")
-        if not asset_id or new_tick is None:
+        asset_id = _asset_id(event)
+        tick = _to_decimal(event.get("tick_size") or event.get("new_tick_size"))
+        if not asset_id or tick is None:
             return
+        self._on_tick_size_change(asset_id, tick)
+        self._mark_asset_dirty(asset_id, "tick_size_change")
+        self._call_cache_optional("invalidate_sizing_decision", asset_id)
+
+    def _handle_new_market(self, event: dict[str, Any]) -> None:
+        self._call_cache_optional("on_new_market", event)
+        asset_id = _asset_id(event)
+        if asset_id:
+            self._touch_asset(asset_id, "new_market")
+
+    def _handle_market_resolved(self, event: dict[str, Any]) -> None:
+        asset_id = _asset_id(event)
+        if asset_id:
+            self._call_cache_optional("on_market_resolved", asset_id, event)
+            self._mark_asset_dirty(asset_id, "market_resolved")
+            self._mark_asset_stale(asset_id, "market_resolved")
+        else:
+            self._call_cache_optional("on_market_resolved", event)
+
+    # Cache adapter methods -------------------------------------------------
+
+    def _mark_all_stale(self, reason: str) -> None:
+        self._call_cache_optional("mark_all_stale", reason)
+        for asset_id in self._asset_ids:
+            self._mark_asset_stale(asset_id, reason)
+
+    def _mark_all_dirty(self, reason: str) -> None:
+        self._call_cache_optional("mark_all_dirty", reason)
+        for asset_id in self._asset_ids:
+            self._mark_asset_dirty(asset_id, reason)
+
+    def _mark_asset_stale(self, asset_id: str, reason: str) -> None:
+        if not self._call_cache_optional("mark_stale", asset_id, reason):
+            self._call_cache_optional("invalidate", asset_id)
+
+    def _mark_asset_dirty(self, asset_id: str, reason: str) -> None:
+        self._call_cache_optional("mark_dirty", asset_id, reason)
+
+    def _mark_asset_fresh(self, asset_id: str, source: str) -> None:
+        self._call_cache_optional("mark_fresh", asset_id, source, time.monotonic())
+
+    def _touch_asset(self, asset_id: str, source: str) -> None:
+        self._call_cache_optional("touch", asset_id, source, time.monotonic())
+
+    def _replace_book_snapshot(
+        self,
+        asset_id: str,
+        bids: dict[Decimal, Decimal],
+        asks: dict[Decimal, Decimal],
+        raw_event: dict[str, Any],
+    ) -> bool:
+        if self._call_cache_optional("replace_book_snapshot", asset_id, bids, asks, raw_event):
+            return True
+        if self._call_cache_optional("on_book_snapshot", asset_id, bids, asks, raw_event):
+            return True
+        logger.warning(
+            "MarketWS: cache lacks replace_book_snapshot/on_book_snapshot; "
+            "book for asset %s cannot be authoritatively replaced",
+            asset_id,
+        )
+        return False
+
+    def _apply_book_delta(self, asset_id: str, side: str, price: Decimal, size: Decimal) -> None:
+        if not self._call_cache_optional("apply_book_delta", asset_id, side, price, size):
+            logger.debug("MarketWS: cache lacks apply_book_delta for asset %s", asset_id)
+
+    def _on_price_update(self, asset_id: str, best_bid: Decimal | None, best_ask: Decimal | None) -> None:
+        self._call_cache_optional("on_price_update", asset_id, best_bid, best_ask)
+
+    def _on_tick_size_change(self, asset_id: str, tick: Decimal) -> None:
+        self._call_cache_optional("on_tick_size_change", asset_id, tick)
+
+    def _call_cache_optional(self, method_name: str, *args: Any) -> bool:
+        method = getattr(self._cache, method_name, None)
+        if method is None:
+            return False
         try:
-            self._cache.on_tick_size_change(asset_id, Decimal(str(new_tick)))
-        except (InvalidOperation, ValueError) as exc:
-            logger.debug("MarketWS: tick_size parse error: %s", exc)
+            result = method(*args)
+            if asyncio.iscoroutine(result):
+                asyncio.create_task(result)
+            return True
+        except Exception as exc:
+            logger.warning("MarketWS: cache hook %s failed: %s", method_name, exc)
+            return False
+
+    @staticmethod
+    def _inc_metric(metric_name: str, labels: dict[str, str]) -> None:
+        try:
+            metrics.inc(metric_name, labels=labels)
+        except Exception:
+            pass
+
+
+def _dedupe_asset_ids(asset_ids: Iterable[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for raw in asset_ids:
+        asset_id = str(raw).strip()
+        if asset_id and asset_id not in seen:
+            seen.add(asset_id)
+            result.append(asset_id)
+    return result
+
+
+def _asset_id(event: dict[str, Any]) -> str | None:
+    raw = event.get("asset_id") or event.get("asset") or event.get("token_id") or event.get("token")
+    if raw is None:
+        return None
+    asset_id = str(raw).strip()
+    return asset_id or None
+
+
+def _to_decimal(value: Any) -> Decimal | None:
+    if value is None:
+        return None
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, ValueError, TypeError):
+        return None
+
+
+def _normalize_side(side: Any) -> str | None:
+    value = str(side or "").upper()
+    if value in {"BUY", "BID"}:
+        return "BUY"
+    if value in {"SELL", "ASK"}:
+        return "SELL"
+    return None
+
+
+def _parse_levels(raw_levels: Any) -> dict[Decimal, Decimal]:
+    levels: dict[Decimal, Decimal] = {}
+
+    if isinstance(raw_levels, dict):
+        for price_raw, size_raw in raw_levels.items():
+            price = _to_decimal(price_raw)
+            size = _to_decimal(size_raw)
+            if price is not None and size is not None and size > 0:
+                levels[price] = size
+        return levels
+
+    if not isinstance(raw_levels, list):
+        return levels
+
+    for level in raw_levels:
+        price: Decimal | None = None
+        size: Decimal | None = None
+
+        if isinstance(level, dict):
+            price = _to_decimal(level.get("price"))
+            size = _to_decimal(level.get("size"))
+        elif isinstance(level, (list, tuple)) and len(level) >= 2:
+            price = _to_decimal(level[0])
+            size = _to_decimal(level[1])
+
+        if price is not None and size is not None and size > 0:
+            levels[price] = size
+
+    return levels
+
+
+def _max_decimal(a: Decimal | None, b: Decimal) -> Decimal:
+    return b if a is None or b > a else a
+
+
+def _min_decimal(a: Decimal | None, b: Decimal) -> Decimal:
+    return b if a is None or b < a else a

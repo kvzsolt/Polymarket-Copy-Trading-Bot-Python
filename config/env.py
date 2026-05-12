@@ -49,7 +49,7 @@ class WalletConfig:
     chain_id: int
     funder_address: str
     polygon_rpc_url: str
-    signature_type: SignatureType | None = None
+    signature_type: SignatureType | int
 
 
 def _raw(key: str, default: str = '') -> str:
@@ -538,9 +538,11 @@ def _build_env_snapshot() -> dict[str, object]:
     'MIN_LEADER_POSITIONS': _int('MIN_LEADER_POSITIONS', '20'),
     'DISCOVERY_MAX_RESULTS': _int('DISCOVERY_MAX_RESULTS', '50'),
 
-    # --- Auto-redeem ---
-    'ENABLE_AUTO_REDEEM': os.getenv('ENABLE_AUTO_REDEEM', 'false').strip().lower() in ('1', 'true', 'yes'),
-    'REDEEM_CHECK_INTERVAL': _int('REDEEM_CHECK_INTERVAL', '60'),
+    # --- Near-one exit (replaces on-chain redemption) ---
+    'ENABLE_NEAR_ONE_EXIT': os.getenv('ENABLE_NEAR_ONE_EXIT', 'false').strip().lower() in ('1', 'true', 'yes'),
+    'NEAR_ONE_EXIT_THRESHOLD': os.getenv('NEAR_ONE_EXIT_THRESHOLD', '0.99'),
+    'NEAR_ONE_EXIT_DWELL_SECONDS': _int('NEAR_ONE_EXIT_DWELL_SECONDS', '60'),
+    'NEAR_ONE_EXIT_CHECK_INTERVAL': _int('NEAR_ONE_EXIT_CHECK_INTERVAL', '5'),
 
     # --- Execution quality ---
     # Max acceptable slippage (%) before rejecting order
