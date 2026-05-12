@@ -1,0 +1,64 @@
+config/app_config.py
+  s_5a0ec6eb5c03f2::t_2906b942542052 614
+tests/test_issue66_gateway_isolation.py
+  s_5a0ec6eb5c03f2::t_35bfe0a6d8d942 241
+  s_5a0ec6eb5c03f2::t_d71117b1c7c6a9 40-41
+  s_5a0ec6eb5c03f2::t_61c62b1cba825e 197,221,264,282,309,330
+  s_5a0ec6eb5c03f2::t_9469127f35074f 111,120
+  s_5a0ec6eb5c03f2::t_c06d28d3bdc8ac 108-110,112-119,121-127
+tests/test_phase5_hardening.py
+  s_5a0ec6eb5c03f2::t_090ba05a52dd82 202-203
+tests/test_production_services.py
+  s_5a0ec6eb5c03f2::t_4ddb0e172bf0fa 562
+  s_5a0ec6eb5c03f2::t_9d90269b1e3aa2 512
+  s_5a0ec6eb5c03f2::t_c91f755cb0ff2c 210-211
+  s_5a0ec6eb5c03f2::t_4f3adf80f3d0ed 288
+  s_5a0ec6eb5c03f2::t_513ccfc2b5b384 260
+  s_5a0ec6eb5c03f2::t_ce4ecf65cce0d0 476
+  s_5a0ec6eb5c03f2::t_9c6edb14b39342 413
+  s_5a0ec6eb5c03f2::t_07d839fbd65612 168-187
+  s_5a0ec6eb5c03f2::t_8cd48f20c57be1 232-233
+  s_5a0ec6eb5c03f2::t_4ae349b7bf17cc 323
+  s_5a0ec6eb5c03f2::t_74f604ff07d044 4,15-16
+  s_5a0ec6eb5c03f2::t_a16a8b5c9e8b87 192
+  s_5a0ec6eb5c03f2::t_41b98edef8f080 440
+tests/test_issue68_market_data_cache_wss.py
+  s_5a0ec6eb5c03f2::t_33729567f44ee0 618,620-621
+  s_5a0ec6eb5c03f2::t_41b1e3205ac314 619
+  s_5a0ec6eb5c03f2::t_043e19769824a0 79-80
+  s_5a0ec6eb5c03f2::t_b132bd8fac7292 33
+  s_5a0ec6eb5c03f2::t_d4aaeb77e912a9 109-110
+  s_5a0ec6eb5c03f2::t_c3671fbd4bc715 425
+cache/market_state_store.py
+  s_5a0ec6eb5c03f2::t_266fb714dc156d 393-394,587-595
+  s_5a0ec6eb5c03f2::t_0a7de1f51ba6e5 572-586
+  s_5a0ec6eb5c03f2::t_105972c76244d1 598,601-607
+services/executionService.py
+  s_54f081956dfcc2::t_58e76655ad3bcf 309
+  s_5a0ec6eb5c03f2::t_266fb714dc156d 14-19,188,271-308,310-314,338-340,343,349-350,364,369-371,394-395,413,416,419,425-426,440,443,449-450,464,474-475,481-482,514-524,532,544,625-626,695-696
+  s_54f081956dfcc2::t_561c99e340442c 525-526
+tests/test_execution_idempotency_extended.py
+  s_5a0ec6eb5c03f2::t_266fb714dc156d 41-42,92-135,204,221,238,314,372,386,399,437
+tests/test_market_data_service.py
+  s_5a0ec6eb5c03f2::t_b365b01f498d0a 1-365
+tests/test_execution_atomic_lock.py
+  s_5a0ec6eb5c03f2::t_9151807e8842a7 141
+  s_5a0ec6eb5c03f2::t_208a83b1e00c47 14-15,21-22
+  s_5a0ec6eb5c03f2::t_adac828faf93a2 100-114
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.4",
+  "base_commit_sha": "298dd1f323c3f85438169473a89964613f547763",
+  "prompts": {},
+  "sessions": {
+    "s_5a0ec6eb5c03f2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "df503e67-9128-472c-86a9-ccea2d2ffe62",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
