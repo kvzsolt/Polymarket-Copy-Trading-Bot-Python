@@ -611,6 +611,7 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         chain_id=p.int_("CHAIN_ID", "137"),
         funder_address=p.funder_address(),
         polygon_rpc_url=p.string("RPC_URL", "https://polygon-bor-rpc.publicnode.com"),
+        signature_type=SignatureType(p.int_("SIGNATURE_TYPE", "0")),
     )
 
     # CLOB

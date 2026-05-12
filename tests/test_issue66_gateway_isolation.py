@@ -37,6 +37,8 @@ from services.orderRepository import OrderRepository
 from storage.sqlite.connection import create_connection
 from storage.sqlite.migrations import apply_migrations
 from utils.createClobClient import MarketMeta
+from cache.market_state_store import BookSnapshot, QuoteSnapshot, TickSnapshot
+from services.market_data_service import MarketDataBundle, MarketDataSource
 
 
 # ---------------------------------------------------------------------------
@@ -101,6 +103,26 @@ class _MetaSvc:
             best_bid=Decimal("0.49"),
             best_ask=Decimal("0.51"),
         )
+
+
+import time as _time
+
+
+def _make_mds(token_id: str = "t1", *, neg_risk: bool = False) -> AsyncMock:
+    """Return a MarketDataService AsyncMock yielding a valid bundle."""
+    now = _time.monotonic()
+    bid = Decimal("0.49")
+    ask = Decimal("0.51")
+    bundle = MarketDataBundle(
+        token_id=token_id,
+        quote=QuoteSnapshot(token_id=token_id, best_bid=bid, best_ask=ask, last_trade_price=None, source="wss", monotonic_ts=now),
+        book=BookSnapshot(token_id=token_id, bids={bid: Decimal("100")}, asks={ask: Decimal("100")}, best_bid=bid, best_ask=ask, source="wss", monotonic_ts=now),
+        tick=TickSnapshot(token_id=token_id, tick_size=Decimal("0.01"), min_order_size=Decimal("1"), neg_risk=neg_risk, source="wss", monotonic_ts=now),
+        source=MarketDataSource.WSS,
+    )
+    mds = AsyncMock()
+    mds.require_fresh_data = AsyncMock(return_value=bundle)
+    return mds
 
 
 class _StubClob:
@@ -172,6 +194,7 @@ async def test_buy_submission_uses_gateway_marketable_path(tmp_path):
         _StubClob(), _MetaSvc(), _FeeSvc(), repo,
         config=_make_exec_config(),
         clob_gateway=gateway,
+        market_data_service=_make_mds(),
     )
     result = await svc.execute(_make_req(side="BUY", signal_id="sig-buy"))
     assert result.accepted is True
@@ -195,6 +218,7 @@ async def test_sell_submission_uses_gateway_marketable_path(tmp_path):
         _StubClob(), _MetaSvc(), _FeeSvc(), repo,
         config=_make_exec_config(),
         clob_gateway=gateway,
+        market_data_service=_make_mds(),
     )
     result = await svc.execute(_make_req(side="SELL", signal_id="sig-sell"))
     assert result.accepted is True
@@ -214,6 +238,7 @@ async def test_neg_risk_propagates_through_gateway_request(tmp_path):
         _StubClob(), _MetaSvc(neg_risk=True), _FeeSvc(), repo,
         config=_make_exec_config(),
         clob_gateway=gateway,
+        market_data_service=_make_mds(neg_risk=True),
     )
     await svc.execute(_make_req(signal_id="sig-nr"))
     request = gateway.submit_marketable_order.await_args.args[0]
@@ -236,6 +261,7 @@ async def test_invalid_order_error_is_non_retryable(tmp_path):
         _StubClob(), _MetaSvc(), _FeeSvc(), repo,
         config=_make_exec_config(),
         clob_gateway=gateway,
+        market_data_service=_make_mds(),
     )
     result = await svc.execute(_make_req(signal_id="sig-bad"))
     assert result.accepted is False
@@ -253,6 +279,7 @@ async def test_auth_error_is_non_retryable(tmp_path):
         _StubClob(), _MetaSvc(), _FeeSvc(), repo,
         config=_make_exec_config(),
         clob_gateway=gateway,
+        market_data_service=_make_mds(),
     )
     result = await svc.execute(_make_req(signal_id="sig-auth"))
     assert result.accepted is False
@@ -279,6 +306,7 @@ async def test_ambiguous_post_returns_submitted_unconfirmed(tmp_path):
         _StubClob(), _MetaSvc(), _FeeSvc(), repo,
         config=_make_exec_config(),
         clob_gateway=gateway,
+        market_data_service=_make_mds(),
     )
     result = await svc.execute(_make_req(signal_id="sig-ambig"))
     assert result.status == "submitted_unconfirmed"
@@ -299,6 +327,7 @@ async def test_unavailable_error_is_treated_as_ambiguous(tmp_path):
         _StubClob(), _MetaSvc(), _FeeSvc(), repo,
         config=_make_exec_config(),
         clob_gateway=gateway,
+        market_data_service=_make_mds(),
     )
     result = await svc.execute(_make_req(signal_id="sig-unavail"))
     assert result.status == "submitted_unconfirmed"

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import time as _time
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
@@ -11,6 +12,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from cache.market_state_store import BookSnapshot, QuoteSnapshot, TickSnapshot
+from services.market_data_service import MarketDataBundle, MarketDataSource
 from config.env import SignatureType, WalletConfig, validate_wallet_config
 from services.backtest import BacktestConfig, BacktestEngine
 from services.executionService import ExecutionRequest, ExecutionService, _sanitize_submission_response
@@ -162,11 +165,31 @@ class _MetaSvc:
         )
 
 
+def _make_mds(
+    token_id: str = "t1",
+    *,
+    best_bid: Decimal = Decimal("0.49"),
+    best_ask: Decimal = Decimal("0.51"),
+    min_order_size: Decimal = Decimal("1"),
+) -> AsyncMock:
+    now = _time.monotonic()
+    bundle = MarketDataBundle(
+        token_id=token_id,
+        quote=QuoteSnapshot(token_id=token_id, best_bid=best_bid, best_ask=best_ask, last_trade_price=None, source="wss", monotonic_ts=now),
+        book=BookSnapshot(token_id=token_id, bids={best_bid: Decimal("100")}, asks={best_ask: Decimal("100")}, best_bid=best_bid, best_ask=best_ask, source="wss", monotonic_ts=now),
+        tick=TickSnapshot(token_id=token_id, tick_size=Decimal("0.01"), min_order_size=min_order_size, neg_risk=False, source="wss", monotonic_ts=now),
+        source=MarketDataSource.WSS,
+    )
+    mds = AsyncMock()
+    mds.require_fresh_data = AsyncMock(return_value=bundle)
+    return mds
+
+
 class TestExecutionService:
     @pytest.mark.asyncio
     async def test_rejects_non_positive_amount(self):
         clob = SimpleNamespace(get_price=AsyncMock(return_value={"price": "0.5"}))
-        svc = ExecutionService(clob, _MetaSvc(), _FeeSvc(), _Repo(), config=_make_exec_config())
+        svc = ExecutionService(clob, _MetaSvc(), _FeeSvc(), _Repo(), config=_make_exec_config(), market_data_service=_make_mds())
         req = ExecutionRequest(
             user_id="u1",
             leader_id="l1",
@@ -184,7 +207,8 @@ class TestExecutionService:
     @pytest.mark.asyncio
     async def test_rejects_buy_below_min_share_price(self):
         clob = SimpleNamespace(get_price=AsyncMock(return_value={"price": "0.3"}))
-        svc = ExecutionService(clob, _MetaSvc(), _FeeSvc(), _Repo(), config=_make_exec_config(min_share_price=0.4))
+        svc = ExecutionService(clob, _MetaSvc(), _FeeSvc(), _Repo(), config=_make_exec_config(min_share_price=0.4),
+                               market_data_service=_make_mds(best_bid=Decimal("0.34"), best_ask=Decimal("0.36")))
         req = ExecutionRequest(
             user_id="u1",
             leader_id="l1",
@@ -205,7 +229,8 @@ class TestExecutionService:
     @pytest.mark.asyncio
     async def test_rejects_buy_above_max_share_price(self):
         clob = SimpleNamespace(get_price=AsyncMock(return_value={"price": "0.8"}))
-        svc = ExecutionService(clob, _MetaSvc(), _FeeSvc(), _Repo(), config=_make_exec_config(min_share_price=0, max_share_price=0.7))
+        svc = ExecutionService(clob, _MetaSvc(), _FeeSvc(), _Repo(), config=_make_exec_config(min_share_price=0, max_share_price=0.7),
+                               market_data_service=_make_mds(best_bid=Decimal("0.78"), best_ask=Decimal("0.80")))
         req = ExecutionRequest(
             user_id="u1",
             leader_id="l1",
@@ -232,7 +257,7 @@ class TestExecutionService:
             client=SimpleNamespace(get_order=lambda _order_id: {"status": "filled", "size_matched": "5", "avg_price": "0.5"}),
         )
         repo = _Repo()
-        svc = ExecutionService(clob, _MetaSvc(), _FeeSvc(), repo, config=_make_exec_config(min_share_price=0))
+        svc = ExecutionService(clob, _MetaSvc(), _FeeSvc(), repo, config=_make_exec_config(min_share_price=0), market_data_service=_make_mds())
         req = ExecutionRequest(
             user_id="u1",
             leader_id="l1",
@@ -260,6 +285,7 @@ class TestExecutionService:
             _FeeSvc(),
             _Repo(),
             config=_make_exec_config(min_share_price=0, enable_executable_order_guard=True),
+            market_data_service=_make_mds(),
         )
         req = ExecutionRequest(
             user_id="u1",
@@ -294,6 +320,7 @@ class TestExecutionService:
             _FeeSvc(),
             repo,
             config=_make_exec_config(min_share_price=0, enable_executable_order_guard=False),
+            market_data_service=_make_mds(min_order_size=Decimal("0.05")),
         )
         req = ExecutionRequest(
             user_id="u1",
@@ -383,7 +410,7 @@ class TestExecutionService:
     async def test_duplicate_idempotency_is_ignored(self):
         clob = SimpleNamespace(get_price=AsyncMock(return_value={"price": "0.5"}))
         repo = _Repo()
-        svc = ExecutionService(clob, _MetaSvc(), _FeeSvc(), repo, config=_make_exec_config(min_share_price=0))
+        svc = ExecutionService(clob, _MetaSvc(), _FeeSvc(), repo, config=_make_exec_config(min_share_price=0), market_data_service=_make_mds())
         req = ExecutionRequest(
             user_id="u1",
             leader_id="l1",
@@ -410,7 +437,7 @@ class TestExecutionService:
             client=SimpleNamespace(get_order=lambda _order_id: {"status": "filled", "size_matched": "5", "avg_price": "0.5"}),
         )
         repo = _Repo()
-        svc = ExecutionService(clob, _MetaSvc(), _FeeSvc(), repo, config=_make_exec_config(min_share_price=0, pending_ttl=120))
+        svc = ExecutionService(clob, _MetaSvc(), _FeeSvc(), repo, config=_make_exec_config(min_share_price=0, pending_ttl=120), market_data_service=_make_mds())
         req = ExecutionRequest(
             user_id="u1",
             leader_id="l1",
@@ -446,7 +473,7 @@ class TestExecutionService:
             client=SimpleNamespace(get_order=lambda _order_id: {"status": "filled", "size_matched": "5", "avg_price": "0.5"}),
         )
         repo = _Repo()
-        svc = ExecutionService(clob, _MetaSvc(), _FeeSvc(), repo, config=_make_exec_config(min_share_price=0, pending_ttl=120))
+        svc = ExecutionService(clob, _MetaSvc(), _FeeSvc(), repo, config=_make_exec_config(min_share_price=0, pending_ttl=120), market_data_service=_make_mds())
         req = ExecutionRequest(
             user_id="u1",
             leader_id="l1",
@@ -482,7 +509,7 @@ class TestExecutionService:
             client=SimpleNamespace(get_order=lambda _order_id: {"status": "filled", "size_matched": "5", "avg_price": "0.5"}),
         )
         repo = _Repo()
-        svc = ExecutionService(clob, _MetaSvc(), _FeeSvc(), repo, config=_make_exec_config(min_share_price=0, pending_ttl=120))
+        svc = ExecutionService(clob, _MetaSvc(), _FeeSvc(), repo, config=_make_exec_config(min_share_price=0, pending_ttl=120), market_data_service=_make_mds())
         req = ExecutionRequest(
             user_id="u1",
             leader_id="l1",
@@ -532,7 +559,7 @@ class TestExecutionService:
             post_signed_order=AsyncMock(side_effect=RuntimeError("timeout after submit")),
         )
         repo = _Repo()
-        svc = ExecutionService(clob, _MetaSvc(), _FeeSvc(), repo, config=_make_exec_config(min_share_price=0))
+        svc = ExecutionService(clob, _MetaSvc(), _FeeSvc(), repo, config=_make_exec_config(min_share_price=0), market_data_service=_make_mds())
         req = ExecutionRequest(
             user_id="u1",
             leader_id="l1",
