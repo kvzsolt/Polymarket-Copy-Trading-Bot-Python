@@ -431,11 +431,13 @@ def print_startup_summary(
             },
         ),
         (
-            "auto_redeem_engine",
-            "AUTO-REDEEM ENGINE",
+            "near_one_exit_engine",
+            "NEAR-ONE EXIT ENGINE",
             {
-                "enable_auto_redeem": config.redemption.enable_auto_redeem,
-                "redeem_check_interval": config.polling.redeem_check_interval,
+                "enable_near_one_exit": config.near_one_exit.enable_near_one_exit,
+                "threshold": str(config.near_one_exit.threshold),
+                "dwell_seconds": config.near_one_exit.dwell_seconds,
+                "check_interval": config.near_one_exit.check_interval,
             },
         ),
     ]

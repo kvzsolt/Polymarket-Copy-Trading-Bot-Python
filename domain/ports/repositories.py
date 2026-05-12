@@ -152,13 +152,6 @@ class AbstractCursorRepository(ABC):
     def set_cursor(self, leader_id: str, cursor: TradeCursor) -> None: ...
 
 
-class AbstractRedemptionRepository(ABC):
-    """Redemption attempt log."""
-
-    @abstractmethod
-    def save_attempt(self, payload: dict[str, Any]) -> None: ...
-
-
 class AbstractDiscoveryRepository(ABC):
     """Trader-discovery persistence surface.
 

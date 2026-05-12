@@ -15,7 +15,7 @@
       "properties": {
         "event": {"const": "intent_accepted"},
         "intent_key": {"type": "string"},
-        "side": {"enum": ["BUY", "SELL", "REDEEM"]},
+        "side": {"enum": ["BUY", "SELL"]},
         "size": {"type": "string"},
         "price": {"type": "string"},
         "reason": {"type": "string"}

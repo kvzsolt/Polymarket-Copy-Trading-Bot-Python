@@ -180,6 +180,15 @@ async def detect_wallet_signature_type(wallet_config: WalletConfig) -> tuple[Sig
     return (signature_type, wallet_type, signer_address)
 
 
+class _RawBook:
+    """Minimal book object returned by the HTTP fallback so gateway attribute access works."""
+    __slots__ = ("bids", "asks")
+
+    def __init__(self, bids: list, asks: list) -> None:
+        self.bids = bids
+        self.asks = asks
+
+
 class ClobClientWrapper:
     def __init__(self, client: ClobClient, wallet_config: WalletConfig):
         self.client = client
@@ -190,8 +199,39 @@ class ClobClientWrapper:
         self._market_meta_cache: dict[str, tuple[MarketMeta, float]] = {}
 
     async def get_order_book(self, asset: str) -> Any:
+        http_result = await self._http_fallback_orderbook(asset)
+        if http_result is not None:
+            return http_result
+        # SDK last resort only
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, lambda: self.client.get_order_book(asset))
+        try:
+            return await loop.run_in_executor(None, lambda: self.client.get_order_book(asset))
+        except Exception as exc:
+            logger.warning("SDK book fetch failed for %s: %s", asset, redact_error_detail(exc))
+            return _RawBook(bids=[], asks=[])
+
+    async def _http_fallback_orderbook(self, asset: str) -> "_RawBook | None":
+        url = f"{CLOB_HTTP_URL}/book?token_id={asset}"
+        session = _get_session()
+        try:
+            async with session.get(url) as resp:
+                if resp.status != 200:
+                    log_api_response(
+                        logger,
+                        method="GET",
+                        url=url,
+                        status=resp.status,
+                        error=f"status_code={resp.status}",
+                    )
+                    return None
+                data = await resp.json()
+                bids = data.get("bids") or []
+                asks = data.get("asks") or []
+                log_api_response(logger, method="GET", url=url, status=resp.status, data=data)
+                return _RawBook(bids=bids, asks=asks)
+        except Exception as exc:
+            logger.warning("HTTP fallback (book) failed for %s: %s", asset, redact_error_detail(exc))
+            return None
 
     async def get_market_meta(self, asset: str, refresh: bool = False) -> MarketMeta:
         if refresh:
@@ -242,14 +282,6 @@ class ClobClientWrapper:
                 best_bid=_top_of_book_from_levels(bids, side="bid"),
                 best_ask=_top_of_book_from_levels(asks, side="ask"),
             )
-
-            # If SDK returned a valid but empty book, try HTTP fallback before
-            # accepting the empty result — the SDK may have stale/cached data.
-            if meta.best_bid is None and meta.best_ask is None and not bids and not asks:
-                logger.info("SDK book empty, trying HTTP fallback for %s", asset)
-                http_meta = await self._http_fallback_market_meta(asset, tick_size_v2, neg_risk_v2)
-                if http_meta is not None:
-                    return http_meta
 
             ttl = _META_CACHE_TTL_THIN if _is_thin_or_empty_book(meta.best_bid, meta.best_ask) else _META_CACHE_TTL_GOOD
             self._market_meta_cache[asset] = (meta, time.monotonic() + ttl)

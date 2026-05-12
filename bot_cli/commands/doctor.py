@@ -218,44 +218,32 @@ async def run_doctor_checks(mode: str) -> dict:
     else:
         output["checks"]["reconciler_config"] = {"status": "skipped", "reason": "paper_mode"}
 
-    # Check 10: Redemption wallet validation (only when live mode AND auto-redeem enabled)
-    if mode == "live":
-        if not config.redemption.enable_auto_redeem:
-            output["checks"]["redemption_wallet"] = {
-                "status": "skipped",
-                "reason": "auto_redeem_disabled",
+    # Check 10: Near-one exit configuration (replaces former redemption_wallet check)
+    if config.near_one_exit.enable_near_one_exit:
+        threshold = float(config.near_one_exit.threshold)
+        if not (0.5 < threshold < 1.0):
+            output["checks"]["near_one_exit"] = {
+                "status": "failed",
+                "reason": f"threshold_out_of_range:{threshold}",
             }
+            output["status"] = "blocked"
+        elif config.near_one_exit.dwell_seconds <= 0:
+            output["checks"]["near_one_exit"] = {
+                "status": "failed",
+                "reason": f"dwell_seconds_invalid:{config.near_one_exit.dwell_seconds}",
+            }
+            output["status"] = "blocked"
         else:
-            from utils.createClobClient import detect_wallet_signature_type
-            from config.env import WalletConfig
-            
-            sig_type, _, _ = await detect_wallet_signature_type(config.wallet)
-            detected_wallet = WalletConfig(
-                private_key=config.wallet.private_key,
-                chain_id=config.wallet.chain_id,
-                signature_type=sig_type,
-                funder_address=config.wallet.funder_address,
-                polygon_rpc_url=config.wallet.polygon_rpc_url,
-            )
-
-            from services.redemption.wallet_validator import (
-                validate_redemption_wallet_mode,
-            )
-            wallet_check = validate_redemption_wallet_mode(detected_wallet)
-            if not wallet_check.allowed:
-                output["checks"]["redemption_wallet"] = {
-                    "status": "failed",
-                    "reason": wallet_check.reason,
-                    "signer": wallet_check.signer_address,
-                    "funder": wallet_check.funder_address,
-                }
-                output["status"] = "blocked"
-            else:
-                output["checks"]["redemption_wallet"] = {"status": "ok"}
+            output["checks"]["near_one_exit"] = {
+                "status": "ok",
+                "threshold": threshold,
+                "dwell_seconds": config.near_one_exit.dwell_seconds,
+                "check_interval": config.near_one_exit.check_interval,
+            }
     else:
-        output["checks"]["redemption_wallet"] = {
+        output["checks"]["near_one_exit"] = {
             "status": "skipped",
-            "reason": "paper_mode",
+            "reason": "near_one_exit_disabled",
         }
 
     return output

@@ -40,13 +40,11 @@ from orchestrators.runtime_discovery import (
 from orchestrators.runtime_monitor import run_leader_monitor
 from orchestrators.runtime_summary import print_startup_summary
 from orchestrators.startup_health import perform_startup_health_check
-from services.autoRedeem import auto_redeem_loop
 from services.compliance import check_geoblock
 from services.discovery.capture_service import DiscoveryCaptureService
 from services.healthServer import start_health_server
 from services.metrics import metrics
 from services.multiUserConfig import RuntimeUser, UserFollowConfig, load_runtime_users
-from services.reconciliation import ReconciliationService, reconciliation_loop
 from services.traderDiscoveryService import TraderDiscoveryService
 from storage.sqlite.leaders_repo import LeadersRepo
 from utils.createClobClient import create_clob_client
@@ -128,8 +126,7 @@ async def _shutdown_runtime(
     monitor_tasks: list[asyncio.Task],
     discovery_task: asyncio.Task | None,
     risk_task: asyncio.Task | None,
-    redeem_task: asyncio.Task | None,
-    reconcile_tasks: list[asyncio.Task],
+    near_one_task: asyncio.Task | None,
     metrics_runner,
 ) -> None:
     shutdown_tasks = list(monitor_tasks)
@@ -137,9 +134,8 @@ async def _shutdown_runtime(
         shutdown_tasks.append(discovery_task)
     if risk_task:
         shutdown_tasks.append(risk_task)
-    if redeem_task:
-        shutdown_tasks.append(redeem_task)
-    shutdown_tasks.extend(reconcile_tasks)
+    if near_one_task:
+        shutdown_tasks.append(near_one_task)
 
     for task in shutdown_tasks:
         task.cancel()
@@ -232,6 +228,10 @@ async def main():
             db_path,
             application.config,
         )
+    # All user states constructed — mark ClobGateway as healthy.
+    # Each build_user_state instantiates a ClobV2Gateway; if we get here
+    # without exception, the gateway is alive.
+    application.readiness.update(gateway_ok=True, circuit_breaker_state="closed")
 
     leader_balances_raw = await asyncio.gather(*(get_my_balance(wallet) for wallet in active_leaders))
     user_balances_raw = await asyncio.gather(
@@ -285,6 +285,8 @@ async def main():
     startup_reconciled = await startup_reconcile_unconfirmed(
         list(risk_contexts_by_user.values()),
     )
+    # Startup reconciliation succeeded — mark reconciler as healthy.
+    application.readiness.update(reconciler_ok=True)
     if startup_reconciled:
         application.readiness.update(
             startup_reconciled_orders=sum(startup_reconciled.values()),
@@ -393,21 +395,27 @@ async def main():
             )
         )
 
-    redeem_task = None
-    if application.config.redemption.enable_auto_redeem:
-        first_client = user_states[first_user.user_id].client
-        redeem_task = asyncio.create_task(auto_redeem_loop(first_client, application.config))
+    near_one_task = None
+    if application.config.near_one_exit.enable_near_one_exit:
+        from services.near_one_exit import NearOneExitService
+        first_state = user_states[first_user.user_id]
+        near_one_task = asyncio.create_task(
+            NearOneExitService(
+                position_manager=first_state.position_manager,
+                execution_service=first_state.execution_service,
+                price_cache=first_state.price_cache,
+                market_data_service=first_state.market_data_service,
+                config=application.config,
+                readiness=application.readiness,
+                user_id=first_user.user_id,
+                funder_address=first_state.user.wallet.funder_address,
+            ).loop()
+        )
 
-    reconcile_tasks: list[asyncio.Task] = []
-    # TODO: add enable_reconciliation to AppConfig when available
-    if application.config.raw.get("ENABLE_RECONCILIATION", "true").lower() in ("1", "true", "yes"):
-        for runtime_user in runtime_users:
-            user_state = user_states[runtime_user.user_id]
-            recon_svc = ReconciliationService(
-                clob_client=user_state.client,
-                orders_repo=user_state.orders_repo,
-            )
-            reconcile_tasks.append(asyncio.create_task(reconciliation_loop(recon_svc)))
+    # Legacy reconciliation loop removed (PR-2 hardening).
+    # Settlement ownership is now consolidated in startup_reconcile_unconfirmed.
+    # The ReconciliationService module is retained for potential future
+    # read-only drift observation, but is no longer wired into the runtime.
 
     monitor_tasks.extend(
         asyncio.create_task(
@@ -443,8 +451,7 @@ async def main():
             monitor_tasks=monitor_tasks,
             discovery_task=discovery_task,
             risk_task=risk_task,
-            redeem_task=redeem_task,
-            reconcile_tasks=reconcile_tasks,
+            near_one_task=near_one_task,
             metrics_runner=metrics_runner,
         )
 

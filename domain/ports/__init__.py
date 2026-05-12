@@ -20,7 +20,6 @@ from domain.ports.repositories import (
     AbstractLeaderRepository,
     AbstractOrderRepository,
     AbstractPositionRepository,
-    AbstractRedemptionRepository,
 )
 
 __all__ = [
@@ -36,5 +35,4 @@ __all__ = [
     "AbstractOrderGateway",
     "AbstractOrderRepository",
     "AbstractPositionRepository",
-    "AbstractRedemptionRepository",
 ]
