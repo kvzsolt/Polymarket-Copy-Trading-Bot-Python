@@ -1,0 +1,68 @@
+tests/release_gate/test_e2e_dry_run_buy.py
+  s_54f081956dfcc2::t_8013c106661f4a 3-5,9,11,15,21,31-35,39-67,93,96
+tests/release_gate/test_readiness_aggregator.py
+  s_54f081956dfcc2::t_c134a4ec07a17b 24
+tests/test_market_data_runtime.py
+  s_54f081956dfcc2::t_c48619b1469d3b 1-285
+clients/user_ws.py
+  s_c8bcd0f09ca9da::t_229cd2a2915227 228-231
+  s_c8bcd0f09ca9da::t_3edd101c06f417 175,179,201,203,205,209,216,221,239,241,247-271
+tests/test_async_networking.py
+  s_bc5e7b477b563d::t_977161dabfefe7 95
+  s_bc5e7b477b563d::t_e805430821a4b7 7,9
+clients/market_ws.py
+  s_54f081956dfcc2::t_7db78c3b1e1c51 193
+  s_54f081956dfcc2::t_56e03ca5d7f599 271-272
+  s_54f081956dfcc2::t_ab58fcbb61ed04 145
+tests/test_user_data_runtime.py
+  s_9101a8b00d1328::t_311dca44bce148 1-465
+tests/test_execution_market_data_service.py
+  s_54f081956dfcc2::t_316951110b87e6 1-400
+tests/test_book_quality_gate.py
+  s_54f081956dfcc2::t_9fdc2cc223703a 5,12-14,20-24,26-51,55-61
+  s_54f081956dfcc2::t_a04c52f1bc4287 153,163,171,180,189,198,207,215,223,234,243,252,261,271,281,290,299
+  s_54f081956dfcc2::t_3cb3696f10418d 257
+  s_54f081956dfcc2::t_445403ada818a3 114,118
+tests/release_gate/test_e2e_dry_run_sell.py
+  s_54f081956dfcc2::t_517583e498e9ff 8,10,14,20,30-34,38-66,92,95
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.4",
+  "base_commit_sha": "7f1bb2a24082ffedb4473f8d7a28e27c17728e2d",
+  "prompts": {},
+  "sessions": {
+    "s_54f081956dfcc2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7bd6e887-868e-4dd3-9cfc-2b29d192d584",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    },
+    "s_9101a8b00d1328": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "42724d9b-f3fe-4b89-92b3-ced04289ee3a",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    },
+    "s_bc5e7b477b563d": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_1e36d055dffeoD3Ob0QO88KLIj",
+        "model": "big-pickle"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    },
+    "s_c8bcd0f09ca9da": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e90d3753-b532-4d51-be70-84d9c7eae0b6",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
