@@ -190,12 +190,17 @@ class _RawBook:
 
 
 class ClobClientWrapper:
-    def __init__(self, client: ClobClient, wallet_config: WalletConfig):
+    def __init__(
+        self,
+        client: ClobClient,
+        wallet_config: WalletConfig,
+        api_creds: Any | None = None,
+    ):
         self.client = client
         self.wallet_config = wallet_config
+        self.api_creds = api_creds
         self.signature_type = int(wallet_config.signature_type)
         self.proxy_wallet = wallet_config.funder_address
-        # Cache: asset -> (MarketMeta, expiry_timestamp)
         self._market_meta_cache: dict[str, tuple[MarketMeta, float]] = {}
 
     async def get_order_book(self, asset: str) -> Any:
@@ -657,4 +662,8 @@ async def create_clob_client(
             collateral_status.pusd_balance,
         )
 
-    return ClobClientWrapper(client, wallet_config=runtime_cfg)
+    return ClobClientWrapper(
+        client,
+        wallet_config=runtime_cfg,
+        api_creds=user_api_creds,
+    )
