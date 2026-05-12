@@ -26,7 +26,7 @@ from utils.logger import get_logger
 try:
     from clients.ws_constants import HEARTBEAT_INTERVAL
 except Exception:  # pragma: no cover
-    HEARTBEAT_INTERVAL = 10.0
+    HEARTBEAT_INTERVAL = 5.0
 
 if TYPE_CHECKING:
     from cache.market_state_store import MarketStateStore
@@ -62,6 +62,8 @@ class MarketWebSocket:
         heartbeat_interval: float | None = None,
         reconnect_min_delay: float = _MIN_RECONNECT_DELAY,
         reconnect_max_delay: float = _MAX_RECONNECT_DELAY,
+        on_connected: Callable[[], Coroutine[Any, Any, None]] | None = None,
+        on_disconnected: Callable[[], Coroutine[Any, Any, None]] | None = None,
     ) -> None:
         self._cache = cache
         self._ws_url = ws_url
@@ -77,6 +79,8 @@ class MarketWebSocket:
             if heartbeat_interval is not None
             else float(HEARTBEAT_INTERVAL)
         )
+        self._on_connected = on_connected
+        self._on_disconnected = on_disconnected
 
     async def connect(self, asset_ids: list[str]) -> None:
         self._asset_ids = _dedupe_asset_ids(asset_ids)
@@ -140,6 +144,12 @@ class MarketWebSocket:
 
                     await self._subscribe_initial(ws)
 
+                    if self._on_connected is not None:
+                        try:
+                            await self._on_connected()
+                        except Exception:
+                            logger.warning("MarketWS: on_connected callback failed", exc_info=True)
+
                     heartbeat_task = asyncio.create_task(self._heartbeat(ws))
                     try:
                         await self._message_loop(ws)
@@ -156,6 +166,11 @@ class MarketWebSocket:
                 logger.exception("MarketWS: unexpected error: %s", exc)
             finally:
                 self._ws = None
+                if self._on_disconnected is not None:
+                    try:
+                        await self._on_disconnected()
+                    except Exception:
+                        logger.warning("MarketWS: on_disconnected callback failed", exc_info=True)
                 self._mark_all_stale("disconnected")
 
             if not self._running:
