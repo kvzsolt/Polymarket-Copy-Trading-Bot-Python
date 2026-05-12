@@ -16,9 +16,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from cache.market_state_store import MarketStateStore
 from clients.market_ws import MarketWebSocket
 from clients.ws_constants import HEARTBEAT_INTERVAL
-from services.price_cache import PositionPriceCache
 
 
 def test_heartbeat_interval_is_five_seconds() -> None:
@@ -27,7 +27,7 @@ def test_heartbeat_interval_is_five_seconds() -> None:
 
 @pytest.mark.asyncio
 async def test_heartbeat_sends_ping_string_at_cadence() -> None:
-    cache = PositionPriceCache()
+    cache = MarketStateStore()
     ws_client = MarketWebSocket(cache)
     ws_client._asset_ids = ["tok"]
     ws_client._running = True
@@ -52,7 +52,7 @@ async def test_heartbeat_sends_ping_string_at_cadence() -> None:
 
 @pytest.mark.asyncio
 async def test_heartbeat_exits_on_send_failure() -> None:
-    cache = PositionPriceCache()
+    cache = MarketStateStore()
     ws_client = MarketWebSocket(cache)
     ws_client._asset_ids = ["tok"]
     ws_client._running = True
@@ -72,7 +72,7 @@ async def test_heartbeat_exits_on_send_failure() -> None:
 
 @pytest.mark.asyncio
 async def test_subscribe_payload_uses_assets_ids() -> None:
-    cache = PositionPriceCache()
+    cache = MarketStateStore()
     ws_client = MarketWebSocket(cache)
     ws_client._asset_ids = ["tokA", "tokB"]
     fake_ws = MagicMock()
