@@ -390,6 +390,8 @@ class MarketStateStore:
         with self._lock:
             state = self._ensure_state_locked(token_id)
             state.tick_size = Decimal(str(tick_size))
+            if state.min_order_size is None:
+                state.min_order_size = Decimal("0")
 
             now = time.monotonic()
             state.last_tick_monotonic = now
@@ -567,11 +569,42 @@ class MarketStateStore:
                 state.dirty_reason = None
 
     def invalidate(self, token_id: str) -> None:
-        self.mark_stale(token_id, "invalidated")
+        """Clear volatile quote/book data for token_id; tick metadata persists."""
+        with self._lock:
+            state = self._states.get(token_id)
+            if state is None:
+                return
+            state.best_bid = None
+            state.best_ask = None
+            state.last_trade_price = None
+            state.bids = {}
+            state.asks = {}
+            state.stale = True
+            state.stale_reason = "invalidated"
+            state.dirty = True
+            state.dirty_reason = "invalidated"
+            state.mark_updated()
+
+    def evict(self, token_id: str) -> None:
+        """Remove all cached market state for token_id.
+
+        Use after own fills: old book/quote data is stale by definition and
+        must not be traded against until the WSS delivers fresh state.
+        """
+        with self._lock:
+            self._states.pop(token_id, None)
 
     def invalidate_all(self) -> None:
+        """Full wipe for reconnect bootstrap — clears quote, book, and tick."""
         with self._lock:
             for state in self._states.values():
+                state.best_bid = None
+                state.best_ask = None
+                state.last_trade_price = None
+                state.bids = {}
+                state.asks = {}
+                state.tick_size = None
+                state.min_order_size = None
                 state.stale = True
                 state.stale_reason = "invalidate_all"
                 state.dirty = True

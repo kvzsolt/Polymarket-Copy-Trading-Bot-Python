@@ -11,11 +11,15 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import time as _time
+
 from services.executionService import ExecutionRequest, ExecutionService
 from services.orderRepository import OrderRepository
 from storage.sqlite.connection import create_connection
 from storage.sqlite.migrations import apply_migrations
 from utils.createClobClient import MarketMeta
+from cache.market_state_store import BookSnapshot, QuoteSnapshot, TickSnapshot
+from services.market_data_service import MarketDataBundle, MarketDataSource
 
 
 def _make_exec_config() -> SimpleNamespace:
@@ -93,6 +97,21 @@ class _ConcurrentClob:
         return {"signed": True}
 
 
+def _make_mds(token_id: str = "t1") -> AsyncMock:
+    now = _time.monotonic()
+    bid, ask = Decimal("0.49"), Decimal("0.51")
+    bundle = MarketDataBundle(
+        token_id=token_id,
+        quote=QuoteSnapshot(token_id=token_id, best_bid=bid, best_ask=ask, last_trade_price=None, source="wss", monotonic_ts=now),
+        book=BookSnapshot(token_id=token_id, bids={bid: Decimal("100")}, asks={ask: Decimal("100")}, best_bid=bid, best_ask=ask, source="wss", monotonic_ts=now),
+        tick=TickSnapshot(token_id=token_id, tick_size=Decimal("0.01"), min_order_size=Decimal("1"), neg_risk=False, source="wss", monotonic_ts=now),
+        source=MarketDataSource.WSS,
+    )
+    mds = AsyncMock()
+    mds.require_fresh_data = AsyncMock(return_value=bundle)
+    return mds
+
+
 def _prepare_db(path: Path) -> None:
     with create_connection(str(path)) as conn:
         apply_migrations(conn)
@@ -119,7 +138,7 @@ async def test_atomic_lock_blocks_duplicate_concurrent_submission(tmp_path):
 
     repo = OrderRepository(str(db_path))
     clob = _ConcurrentClob()
-    svc = ExecutionService(clob, _MetaSvc(), _FeeSvc(), repo, config=_make_exec_config())
+    svc = ExecutionService(clob, _MetaSvc(), _FeeSvc(), repo, config=_make_exec_config(), market_data_service=_make_mds())
     req = ExecutionRequest(
         user_id="u1",
         leader_id="l1",

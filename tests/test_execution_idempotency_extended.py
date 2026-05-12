@@ -38,6 +38,8 @@ from services.orderRepository import OrderRepository
 from storage.sqlite.connection import create_connection
 from storage.sqlite.migrations import apply_migrations
 from utils.createClobClient import MarketMeta
+from cache.market_state_store import BookSnapshot, QuoteSnapshot, TickSnapshot
+from services.market_data_service import MarketDataBundle, MarketDataSource
 
 
 # ---------------------------------------------------------------------------
@@ -85,6 +87,50 @@ def _make_exec_config(pending_ttl: int = 120) -> SimpleNamespace:
         policy_version="test",
         raw={},
     )
+
+
+def _make_mds(
+    token_id: str = "t1",
+    *,
+    best_bid: Decimal = Decimal("0.49"),
+    best_ask: Decimal = Decimal("0.51"),
+    tick_size: Decimal = Decimal("0.01"),
+    min_order_size: Decimal = Decimal("1"),
+):
+    """Return an AsyncMock MarketDataService yielding a valid bundle."""
+    now = time.monotonic()
+    bundle = MarketDataBundle(
+        token_id=token_id,
+        quote=QuoteSnapshot(
+            token_id=token_id,
+            best_bid=best_bid,
+            best_ask=best_ask,
+            last_trade_price=None,
+            source="wss",
+            monotonic_ts=now,
+        ),
+        book=BookSnapshot(
+            token_id=token_id,
+            bids={best_bid: Decimal("100")},
+            asks={best_ask: Decimal("100")},
+            best_bid=best_bid,
+            best_ask=best_ask,
+            source="wss",
+            monotonic_ts=now,
+        ),
+        tick=TickSnapshot(
+            token_id=token_id,
+            tick_size=tick_size,
+            min_order_size=min_order_size,
+            neg_risk=False,
+            source="wss",
+            monotonic_ts=now,
+        ),
+        source=MarketDataSource.WSS,
+    )
+    mds = AsyncMock()
+    mds.require_fresh_data = AsyncMock(return_value=bundle)
+    return mds
 
 
 class _FeeSvc:
@@ -155,7 +201,7 @@ class TestDuplicateSignalSuppression:
         _prepare_db(db_path)
         repo = OrderRepository(str(db_path))
         clob = _SimpleClob()
-        svc = ExecutionService(clob, _MetaSvc(), _FeeSvc(), repo, config=_make_exec_config())
+        svc = ExecutionService(clob, _MetaSvc(), _FeeSvc(), repo, config=_make_exec_config(), market_data_service=_make_mds())
         req = _make_req(signal_id="sig-dup")
 
         result1 = await svc.execute(req)
@@ -172,7 +218,7 @@ class TestDuplicateSignalSuppression:
         _prepare_db(db_path)
         repo = OrderRepository(str(db_path))
         clob = _SimpleClob()
-        svc = ExecutionService(clob, _MetaSvc(), _FeeSvc(), repo, config=_make_exec_config())
+        svc = ExecutionService(clob, _MetaSvc(), _FeeSvc(), repo, config=_make_exec_config(), market_data_service=_make_mds())
 
         req1 = _make_req(signal_id="sig-A")
         req2 = _make_req(signal_id="sig-B")
@@ -189,7 +235,7 @@ class TestDuplicateSignalSuppression:
         _prepare_db(db_path)
         repo = OrderRepository(str(db_path))
         clob = _SimpleClob()
-        svc = ExecutionService(clob, _MetaSvc(), _FeeSvc(), repo, config=_make_exec_config())
+        svc = ExecutionService(clob, _MetaSvc(), _FeeSvc(), repo, config=_make_exec_config(), market_data_service=_make_mds())
 
         req = _make_req(signal_id="same-key")
         key1 = _idempotency_key(req)
@@ -265,7 +311,7 @@ class TestStaleLockExpiry:
         _prepare_db(db_path)
         repo = OrderRepository(str(db_path))
         clob = _SimpleClob()
-        svc = ExecutionService(clob, _MetaSvc(), _FeeSvc(), repo, config=_make_exec_config())
+        svc = ExecutionService(clob, _MetaSvc(), _FeeSvc(), repo, config=_make_exec_config(), market_data_service=_make_mds())
         req = _make_req(signal_id="sig-stale")
 
         # Simulate a stuck pending submission directly in the repo
@@ -323,7 +369,7 @@ class TestAmbiguousPostHandling:
                 "error": "timeout after POST",
             }
         )
-        svc = ExecutionService(clob, _MetaSvc(), _FeeSvc(), repo, config=_make_exec_config())
+        svc = ExecutionService(clob, _MetaSvc(), _FeeSvc(), repo, config=_make_exec_config(), market_data_service=_make_mds())
         req = _make_req(signal_id="sig-ambig")
         result = await svc.execute(req)
         assert result.status == "submitted_unconfirmed"
@@ -337,7 +383,7 @@ class TestAmbiguousPostHandling:
         repo = OrderRepository(str(db_path))
         clob = _SimpleClob()
         clob.post_signed_order = AsyncMock(side_effect=ConnectionError("connection lost"))
-        svc = ExecutionService(clob, _MetaSvc(), _FeeSvc(), repo, config=_make_exec_config())
+        svc = ExecutionService(clob, _MetaSvc(), _FeeSvc(), repo, config=_make_exec_config(), market_data_service=_make_mds())
         req = _make_req(signal_id="sig-exc")
         result = await svc.execute(req)
         assert result.status == "submitted_unconfirmed"
@@ -350,7 +396,7 @@ class TestAmbiguousPostHandling:
         repo = OrderRepository(str(db_path))
         clob = _SimpleClob()
         clob.create_market_order = AsyncMock(side_effect=ValueError("bad params"))
-        svc = ExecutionService(clob, _MetaSvc(), _FeeSvc(), repo, config=_make_exec_config())
+        svc = ExecutionService(clob, _MetaSvc(), _FeeSvc(), repo, config=_make_exec_config(), market_data_service=_make_mds())
         req = _make_req(signal_id="sig-create-fail")
         result = await svc.execute(req)
         assert result.accepted is False
@@ -388,7 +434,7 @@ class TestConcurrentSubmissionBlocking:
                 return {"signed": True}
 
         clob = _BlockingClob()
-        svc = ExecutionService(clob, _MetaSvc(), _FeeSvc(), repo, config=_make_exec_config())
+        svc = ExecutionService(clob, _MetaSvc(), _FeeSvc(), repo, config=_make_exec_config(), market_data_service=_make_mds())
         req = _make_req(signal_id="sig-race")
 
         # Launch first task that will block during create_market_order

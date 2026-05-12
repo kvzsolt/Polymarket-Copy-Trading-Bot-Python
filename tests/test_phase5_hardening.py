@@ -199,8 +199,8 @@ class TestCacheFreshness:
         cache.invalidate("a")
 
         assert cache.get_quote("a") is None
-        # Tick also stale after invalidate (marks stale/dirty)
-        assert cache.get_tick("a") is None
+        # Tick metadata persists across quote/book invalidation
+        assert cache.get_tick("a") is not None
         # Other token unaffected
         assert cache.get_quote("b") is not None
 
