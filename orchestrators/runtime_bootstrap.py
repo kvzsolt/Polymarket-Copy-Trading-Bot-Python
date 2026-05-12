@@ -9,8 +9,10 @@ from services.accountingService import AccountingService
 from services.executionService import ExecutionService
 from services.feeService import FeeService
 from services.marketMetaService import MarketMetaService
+from services.market_data_service import MarketDataService
 from services.multiUserConfig import RuntimeUser, UserFollowConfig
 from services.orderRepository import OrderRepository
+from services.price_cache import PositionPriceCache
 from services.pnlTracker import PnLTracker
 from services.positionManager import PositionManager
 from services.riskEngine import RiskEngine, init_risk_engine
@@ -117,6 +119,9 @@ class UserRuntimeState:
     # without a venue boundary working.
     clob_gateway: ClobGateway | None = None
     risk_triggers_repo: RiskTriggersRepo | None = None
+    # Freshness-aware market data — issue #hardening PR-1.
+    market_data_service: MarketDataService | None = None
+    price_cache: PositionPriceCache | None = None
 
 
 def configured_leaders(config: AppConfig) -> list[str]:
@@ -201,6 +206,14 @@ def build_user_state(
     # types stay behind the gateway. See issue #66.
     from integrations.polymarket.clob_v2_gateway import ClobV2Gateway
     clob_gateway = ClobV2Gateway(client, config)
+
+    # Freshness-aware market data layer (issue #hardening PR-1).
+    # The cache is fed by WSS deltas; the MDS falls back to REST via the
+    # gateway when cache is stale/missing. ExecutionService uses MDS so that
+    # live execution never runs on stale data.
+    price_cache = PositionPriceCache()
+    market_data_svc = MarketDataService(price_cache, clob_gateway)
+
     execution_service = ExecutionService(
         clob_client=client,
         market_meta_service=MarketMetaService(client),
@@ -208,6 +221,7 @@ def build_user_state(
         order_repo=OrderRepository(db_path=db_path),
         config=config,
         clob_gateway=clob_gateway,
+        market_data_service=market_data_svc,
     )
 
     return UserRuntimeState(
@@ -224,6 +238,8 @@ def build_user_state(
         execution_service=execution_service,
         clob_gateway=clob_gateway,
         risk_triggers_repo=risk_triggers_repo,
+        market_data_service=market_data_svc,
+        price_cache=price_cache,
     )
 
 

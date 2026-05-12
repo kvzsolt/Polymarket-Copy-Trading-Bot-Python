@@ -414,20 +414,16 @@ async def test_submitted_unconfirmed_is_marked_processed(tmp_path):
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(
-    reason="Pre-existing on full-rework: mock setup did not migrate after "
-    "issue #71 moved terminal settlement ownership into ReconciliationService. "
-    "Tracked separately; out of issue #75 scope.",
-    strict=False,
-)
 async def test_buy_terminal_no_fill_unlocks_retry(tmp_path):
     db_path = _init_db(tmp_path)
 
-    class _ExecSvc:
-        async def _confirm_fill(self, _order_id):
-            return {"status": "cancelled", "size_matched": "0"}
+    # Provide a clob_gateway mock so ReconciliationService.confirm_fill
+    # can poll the venue (issue #71 migration).
+    gateway = AsyncMock()
+    gateway.get_order.return_value = {"status": "cancelled", "size_matched": "0"}
 
-    ctx = _make_context(db_path, execution_service=_ExecSvc())
+    ctx = _make_context(db_path)
+    ctx.extra["clob_gateway"] = gateway
     signal = _signal(tx_hash="0xbuyretry")
     trade_key = build_trade_key("user1", "leader1", signal)
     ctx.orders_repo.mark_processed_trade(
@@ -449,20 +445,14 @@ async def test_buy_terminal_no_fill_unlocks_retry(tmp_path):
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(
-    reason="Pre-existing on full-rework: mock setup did not migrate after "
-    "issue #71 moved terminal settlement ownership into ReconciliationService. "
-    "Tracked separately; out of issue #75 scope.",
-    strict=False,
-)
 async def test_stale_buy_unconfirmed_is_still_reconciled(tmp_path):
     db_path = _init_db(tmp_path)
 
-    class _ExecSvc:
-        async def _confirm_fill(self, _order_id):
-            return {"status": "expired", "size_matched": "0"}
+    gateway = AsyncMock()
+    gateway.get_order.return_value = {"status": "expired", "size_matched": "0"}
 
-    ctx = _make_context(db_path, execution_service=_ExecSvc())
+    ctx = _make_context(db_path)
+    ctx.extra["clob_gateway"] = gateway
     signal = _signal(tx_hash="0xstalebuy")
     trade_key = build_trade_key("user1", "leader1", signal)
     ctx.orders_repo.mark_processed_trade(
@@ -490,20 +480,14 @@ async def test_stale_buy_unconfirmed_is_still_reconciled(tmp_path):
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(
-    reason="Pre-existing on full-rework: mock setup did not migrate after "
-    "issue #71 moved terminal settlement ownership into ReconciliationService. "
-    "Tracked separately; out of issue #75 scope.",
-    strict=False,
-)
 async def test_partial_progress_reconcile_applies_only_incremental_buy_delta(tmp_path):
     db_path = _init_db(tmp_path)
 
-    class _ExecSvc:
-        async def _confirm_fill(self, _order_id):
-            return {"status": "partially_filled", "size_matched": "5", "avg_price": "0.50"}
+    gateway = AsyncMock()
+    gateway.get_order.return_value = {"status": "partially_filled", "size_matched": "5", "avg_price": "0.50"}
 
-    ctx = _make_context(db_path, execution_service=_ExecSvc())
+    ctx = _make_context(db_path)
+    ctx.extra["clob_gateway"] = gateway
     signal = _signal(tx_hash="0xpartial-buy")
     trade_key = build_trade_key("user1", "leader1", signal)
 
@@ -563,20 +547,14 @@ async def test_partial_progress_reconcile_applies_only_incremental_buy_delta(tmp
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(
-    reason="Pre-existing on full-rework: mock setup did not migrate after "
-    "issue #71 moved terminal settlement ownership into ReconciliationService. "
-    "Tracked separately; out of issue #75 scope.",
-    strict=False,
-)
 async def test_final_reconcile_with_no_new_delta_marks_buy_fully_reconciled(tmp_path):
     db_path = _init_db(tmp_path)
 
-    class _ExecSvc:
-        async def _confirm_fill(self, _order_id):
-            return {"status": "filled", "size_matched": "5", "avg_price": "0.50"}
+    gateway = AsyncMock()
+    gateway.get_order.return_value = {"status": "filled", "size_matched": "5", "avg_price": "0.50"}
 
-    ctx = _make_context(db_path, execution_service=_ExecSvc())
+    ctx = _make_context(db_path)
+    ctx.extra["clob_gateway"] = gateway
     signal = _signal(tx_hash="0xfinal-buy")
     trade_key = build_trade_key("user1", "leader1", signal)
 
@@ -633,12 +611,6 @@ async def test_final_reconcile_with_no_new_delta_marks_buy_fully_reconciled(tmp_
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(
-    reason="Pre-existing on full-rework: mock setup did not migrate after "
-    "issue #71 moved terminal settlement ownership into ReconciliationService. "
-    "Tracked separately; out of issue #75 scope.",
-    strict=False,
-)
 async def test_startup_reconciled_risk_sell_blocks_reentry_on_same_scope(tmp_path):
     db_path = _init_db(tmp_path)
 
@@ -646,16 +618,16 @@ async def test_startup_reconciled_risk_sell_blocks_reentry_on_same_scope(tmp_pat
         def __init__(self):
             self.execute = AsyncMock(return_value=_exec_result())
 
-        async def _confirm_fill(self, order_id):
-            return {
-                "status": "filled",
-                "size_matched": "10",
-                "avg_price": "0.30",
-                "orderID": order_id,
-            }
+    gateway = AsyncMock()
+    gateway.get_order.return_value = {
+        "status": "filled",
+        "size_matched": "10",
+        "avg_price": "0.30",
+    }
 
     exec_svc = _ReconcilingExecSvc()
     ctx = _make_context(db_path, execution_service=exec_svc)
+    ctx.extra["clob_gateway"] = gateway
 
     sell_signal = _signal(
         side="SELL",

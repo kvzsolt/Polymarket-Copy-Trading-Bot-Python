@@ -31,7 +31,6 @@ from domain.ports import (
     AbstractOrderGateway,
     AbstractOrderRepository,
     AbstractPositionRepository,
-    AbstractRedemptionRepository,
 )
 
 ALL_PORTS = [
@@ -47,7 +46,6 @@ ALL_PORTS = [
     AbstractOrderGateway,
     AbstractOrderRepository,
     AbstractPositionRepository,
-    AbstractRedemptionRepository,
 ]
 
 
@@ -95,14 +93,6 @@ class _StubCursorRepo(AbstractCursorRepository):
         self.store[leader_id.lower()] = cursor
 
 
-class _StubRedemptionRepo(AbstractRedemptionRepository):
-    def __init__(self) -> None:
-        self.attempts: list[dict[str, Any]] = []
-
-    def save_attempt(self, payload: dict[str, Any]) -> None:
-        self.attempts.append(payload)
-
-
 class _StubNotifier(AbstractNotifier):
     def __init__(self) -> None:
         self.messages: list[dict[str, Any]] = []
@@ -124,11 +114,6 @@ class TestLiskovConformance:
     def test_stub_cursor_repo_is_instance(self) -> None:
         repo = _StubCursorRepo()
         assert isinstance(repo, AbstractCursorRepository)
-
-    def test_stub_redemption_repo_round_trip(self) -> None:
-        repo = _StubRedemptionRepo()
-        repo.save_attempt({"id": 1})
-        assert repo.attempts == [{"id": 1}]
 
     @pytest.mark.asyncio
     async def test_stub_notifier_records_messages(self) -> None:

@@ -189,12 +189,6 @@ class RichConsoleHandler(logging.Handler):
         if log_type == "clob_client_init":
             self._render_clob_client_init(record, ts)
             return True
-        if log_type == "redemption_scan":
-            self._render_redemption_scan(record, ts)
-            return True
-        if log_type == "redemption_result":
-            self._render_redemption_result(record, ts)
-            return True
         return False
 
     def _render_api_error(self, record: LogRecord, ts: str) -> None:
@@ -275,41 +269,6 @@ class RichConsoleHandler(logging.Handler):
             "\n".join(lines),
             title=f"🔐 [bold cyan]CLOB CLIENT READY[/bold cyan]  [muted][{ts}][/muted]",
             border_style="cyan",
-            padding=(1, 2),
-        ))
-
-    def _render_redemption_scan(self, record: LogRecord, ts: str) -> None:
-        lines = _build_panel_lines(
-            Interval=f"{getattr(record, 'intervalSeconds', 0)}s",
-            Redeemables=str(getattr(record, "redeemableCount", 0)),
-            Conditions=str(getattr(record, "conditionCount", 0)),
-            EstimatedValue=f"${float(getattr(record, 'estimatedValue', 0.0) or 0.0):.2f}",
-        )
-        console.print()
-        console.print(Panel(
-            "\n".join(lines),
-            title=f"🏦 [bold green]REDEMPTION SCAN[/bold green]  [muted][{ts}][/muted]",
-            border_style="green",
-            padding=(1, 2),
-        ))
-
-    def _render_redemption_result(self, record: LogRecord, ts: str) -> None:
-        status = str(getattr(record, "status", "unknown") or "unknown")
-        ok = status == "confirmed"
-        border = "green" if ok else "red"
-        title = "REDEMPTION CONFIRMED" if ok else "REDEMPTION FAILED"
-        lines = _build_panel_lines(
-            Condition=shorten_addr(getattr(record, "conditionId", None), 10, 6),
-            Positions=str(getattr(record, "positionCount", 0)),
-            EstimatedValue=f"${float(getattr(record, 'estimatedValue', 0.0) or 0.0):.2f}",
-            TxHash=shorten_addr(getattr(record, "txHash", None), 10, 6),
-            Error=getattr(record, "error", None),
-        )
-        console.print()
-        console.print(Panel(
-            "\n".join(lines),
-            title=f"{'✅' if ok else '❌'} [bold {border}]{title}[/bold {border}]  [muted][{ts}][/muted]",
-            border_style=border,
             padding=(1, 2),
         ))
 

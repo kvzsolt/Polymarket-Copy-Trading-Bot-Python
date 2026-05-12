@@ -371,21 +371,16 @@ def _ensure_leaders_table(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "discovered_leaders", "tier_changed_at REAL")
 
 
-def _ensure_redemptions_table(conn: sqlite3.Connection) -> None:
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS redemptions (
-            user_id TEXT NOT NULL,
-            condition_id TEXT NOT NULL,
-            attempt_id TEXT NOT NULL,
-            status TEXT,
-            payload_json TEXT NOT NULL,
-            created_at REAL NOT NULL,
-            PRIMARY KEY (user_id, condition_id, attempt_id)
-        )
-        """
-    )
-    _ensure_column(conn, "redemptions", "status TEXT")
+def _drop_redemptions_table(conn: sqlite3.Connection) -> None:
+    """Destructive migration: removes the legacy ``redemptions`` table.
+
+    Issue-78 replaces on-chain CTF redemption with NearOneExitService, which
+    sells the position at near-par via the normal CLOB SELL path. The table
+    no longer has any writer and is dropped to prevent confusion. Rollback
+    requires restoring the table schema from this commit's parent and
+    repopulating from external audit logs — there is no in-tree downgrade.
+    """
+    conn.execute("DROP TABLE IF EXISTS redemptions")
 
 
 def _ensure_market_structure_events_table(conn: sqlite3.Connection) -> None:
@@ -604,7 +599,7 @@ def apply_migrations(conn: sqlite3.Connection) -> None:
     _ensure_processed_trades_table(conn)
     _ensure_cursors_table(conn)
     _ensure_leaders_table(conn)
-    _ensure_redemptions_table(conn)
+    _drop_redemptions_table(conn)
     _ensure_market_structure_events_table(conn)
     _ensure_risk_blocks_table(conn)
     _ensure_risk_triggers_table(conn)

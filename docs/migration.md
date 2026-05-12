@@ -71,6 +71,17 @@ startup. New tables: `intents`, `reservations`. Existing tables gained
 columns; older snapshots of `data/copy_bot.sqlite3` will migrate
 forward, but **not** backward. Take a backup before first start.
 
+### Issue-78 — `redemptions` table dropped
+
+The `redemptions` table is dropped on next startup (the migration calls
+`DROP TABLE IF EXISTS redemptions`). NearOneExitService replaces the
+on-chain redemption pipeline; the table no longer has any writer.
+Historical rows are lost — the JSONL audit log under `log/` retains the
+corresponding `redemption_submitted` / `redemption_confirmed` lines for
+forensic lookback if needed. There is no in-tree rollback; restoring the
+table requires reverting the migration commit and rebuilding from a
+pre-issue-78 database snapshot.
+
 ## Operational migration steps
 
 1. Backup the existing SQLite database.
