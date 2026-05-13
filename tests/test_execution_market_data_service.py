@@ -398,3 +398,77 @@ class TestMdsNotWiredFailsClosed:
         assert result.status == "rejected"
         assert "market_data_service" in result.error
         gateway.submit_marketable_order.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Missing quote blocks execution
+# ---------------------------------------------------------------------------
+
+class TestMissingQuoteBlocks:
+    @pytest.mark.asyncio
+    async def test_missing_quote_returns_stale_status(self, fresh_db_path) -> None:
+        mds = AsyncMock()
+        mds.require_fresh_data = AsyncMock(
+            side_effect=StaleDataError(
+                f"market data not executable for {TOKEN}; quote missing"
+            )
+        )
+        svc, gateway = _make_svc(mds, fresh_db_path=fresh_db_path)
+        result = await svc.execute(_request())
+
+        assert result.accepted is False
+        assert result.status == "stale_market_data"
+        assert "quote" in result.error
+        gateway.submit_marketable_order.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Missing book blocks execution
+# ---------------------------------------------------------------------------
+
+class TestMissingBookBlocks:
+    @pytest.mark.asyncio
+    async def test_missing_book_returns_stale_status(self, fresh_db_path) -> None:
+        mds = AsyncMock()
+        mds.require_fresh_data = AsyncMock(
+            side_effect=StaleDataError(
+                f"market data not executable for {TOKEN}; book missing"
+            )
+        )
+        svc, gateway = _make_svc(mds, fresh_db_path=fresh_db_path)
+        result = await svc.execute(_request())
+
+        assert result.accepted is False
+        assert result.status == "stale_market_data"
+        assert "book" in result.error
+        gateway.submit_marketable_order.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Spread gate uses MarketDataBundle quote/book values
+# ---------------------------------------------------------------------------
+
+class TestSpreadGateUsesBundle:
+    @pytest.mark.asyncio
+    async def test_wide_spread_from_bundle_rejects(self, fresh_db_path) -> None:
+        """Spread gate is driven by bundle.quote best_bid/best_ask + bundle.tick.tick_size."""
+        exec_config = make_exec_config()
+        exec_config.execution.book_spread_mode = "absolute_bps"
+        exec_config.execution.max_book_spread_bps = 100  # 1% max
+
+        mds = AsyncMock()
+        mds.require_fresh_data = AsyncMock(
+            return_value=_make_bundle(
+                best_bid=Decimal("0.20"),
+                best_ask=Decimal("0.90"),  # 70 cents wide → far above 100 bps
+                tick_size=Decimal("0.01"),
+            )
+        )
+        svc, gateway = _make_svc(
+            mds, fresh_db_path=fresh_db_path, exec_config=exec_config
+        )
+        result = await svc.execute(_request())
+
+        assert result.accepted is False
+        assert result.status == "book_spread_wide"
+        gateway.submit_marketable_order.assert_not_awaited()
