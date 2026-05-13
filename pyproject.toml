@@ -35,7 +35,6 @@ include = [
   "services*",
   "utils*",
   "domain*",
-  "network*",
   "orchestrators*",
   "storage*",
 ]

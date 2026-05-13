@@ -14,7 +14,7 @@ CORE_PACKAGES = {
     "services",
     "utils",
     "domain",
-    "network",
+    "clients.network",
     "orchestrators",
     "storage",
 }
