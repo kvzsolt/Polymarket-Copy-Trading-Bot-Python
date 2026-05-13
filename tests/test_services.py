@@ -392,11 +392,6 @@ class TestTradeExecutorExecuteTrades:
         mock_clob = AsyncMock()
         mock_clob.get_price.return_value = {"price": "0.50", "size": "100"}
         mock_exec = MagicMock()
-        mock_exec.market_meta_service = MagicMock(
-            get=AsyncMock(
-                return_value=SimpleNamespace(min_order_size=Decimal("0.00001"))
-            )
-        )
         mock_exec.execute = AsyncMock(
             return_value=MagicMock(
                 accepted=True,
@@ -459,11 +454,6 @@ class TestTradeExecutorExecuteTrades:
         mock_clob = AsyncMock()
         mock_clob.get_price.return_value = {"price": "0.50", "size": "100"}
         mock_exec = MagicMock()
-        mock_exec.market_meta_service = MagicMock(
-            get=AsyncMock(
-                return_value=SimpleNamespace(min_order_size=Decimal("0.00001"))
-            )
-        )
         mock_exec.execute = AsyncMock(
             return_value=MagicMock(
                 accepted=True,

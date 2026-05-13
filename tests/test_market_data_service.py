@@ -363,3 +363,69 @@ class TestValidStateReturnsBundle:
         bundle = await svc.require_fresh_data(TOKEN)
 
         assert bundle.source == MarketDataSource.REST_SNAPSHOT
+
+class TestComponentSourceGating:
+    """Per-component source split: tick-only WSS must not promote book to WSS."""
+
+    @pytest.mark.asyncio
+    async def test_tick_size_change_does_not_promote_quote_book_to_wss(self) -> None:
+        cache = MarketStateStore()
+        # REST-bootstrapped book + quote (not WSS-fresh for execution).
+        cache.set_book(
+            TOKEN,
+            bids={Decimal("0.49"): Decimal("100")},
+            asks={Decimal("0.51"): Decimal("100")},
+            source="rest_snapshot",
+        )
+        cache.set_quote(
+            TOKEN,
+            best_bid=Decimal("0.49"),
+            best_ask=Decimal("0.51"),
+            source="rest_snapshot",
+        )
+        # A WSS tick_size_change event applies — but quote/book must remain
+        # REST-sourced for the execution gate.
+        cache.on_tick_size_change(TOKEN, Decimal("0.01"))
+        cache.set_tick(
+            TOKEN,
+            tick_size=Decimal("0.01"),
+            min_order_size=Decimal("1"),
+            neg_risk=False,
+            source="wss",
+        )
+        # Clear dirty (tick_size_change sets dirty=True); execution-gate logic
+        # is what we're testing, not the dirty flag.
+        cache.mark_fresh(TOKEN, source="rest_snapshot")
+        # Re-set tick source after mark_fresh to keep tick "wss".
+        cache.on_tick_size_change(TOKEN, Decimal("0.01"))
+        # Re-clear dirty post tick_size_change.
+        cache.mark_fresh(TOKEN, source="rest_snapshot")
+
+        svc = _make_service(cache)
+
+        with pytest.raises(StaleDataError):
+            await svc.require_fresh_data(TOKEN)
+
+    @pytest.mark.asyncio
+    async def test_rest_metadata_with_wss_quote_book_is_executable(self) -> None:
+        """quote/book WSS + REST tick is acceptable under default live policy."""
+        cache = MarketStateStore()
+        cache.replace_book_snapshot(
+            TOKEN,
+            {Decimal("0.49"): Decimal("100")},
+            {Decimal("0.51"): Decimal("100")},
+            {"source": "wss"},
+        )
+        cache.set_tick(
+            TOKEN,
+            tick_size=Decimal("0.01"),
+            min_order_size=Decimal("1"),
+            neg_risk=False,
+            source="rest_snapshot",
+        )
+
+        svc = _make_service(cache)
+        bundle = await svc.require_fresh_data(TOKEN)
+
+        assert bundle.source == MarketDataSource.WSS
+        assert bundle.tick.source == "rest_snapshot"

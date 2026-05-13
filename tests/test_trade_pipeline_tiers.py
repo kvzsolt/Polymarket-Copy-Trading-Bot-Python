@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 from decimal import Decimal
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -92,8 +92,53 @@ def _init_db(tmp_path):
     return db_path
 
 
+def _make_fresh_bundle():
+    """Tiny WSS-fresh MarketDataBundle used by tier tests for sizing inputs."""
+    from cache.market_state_store import BookSnapshot, QuoteSnapshot, TickSnapshot
+    from services.market_data_service import MarketDataBundle, MarketDataSource
+
+    now = time.monotonic()
+    return MarketDataBundle(
+        token_id=FAKE_TOKEN_ID,
+        quote=QuoteSnapshot(
+            token_id=FAKE_TOKEN_ID,
+            best_bid=Decimal("0.49"),
+            best_ask=Decimal("0.51"),
+            last_trade_price=None,
+            source="wss",
+            monotonic_ts=now,
+        ),
+        book=BookSnapshot(
+            token_id=FAKE_TOKEN_ID,
+            bids={Decimal("0.49"): Decimal("100")},
+            asks={Decimal("0.51"): Decimal("100")},
+            best_bid=Decimal("0.49"),
+            best_ask=Decimal("0.51"),
+            source="wss",
+            monotonic_ts=now,
+        ),
+        tick=TickSnapshot(
+            token_id=FAKE_TOKEN_ID,
+            tick_size=Decimal("0.01"),
+            min_order_size=Decimal("0.001"),
+            neg_risk=False,
+            source="wss",
+            monotonic_ts=now,
+        ),
+        source=MarketDataSource.WSS,
+    )
+
+
+class _TiersFakeMDS:
+    def __init__(self, bundle):
+        self._bundle = bundle
+
+    async def require_fresh_data(self, token_id):
+        return self._bundle
+
+
 def _make_context(db_path, *, leaders_repo=None, execution_service=None, config=None):
-    return TradingContext(
+    ctx = TradingContext(
         user_id="user1",
         wallet_address=_VALID_FUNDER,
         client=MagicMock(),
@@ -111,8 +156,11 @@ def _make_context(db_path, *, leaders_repo=None, execution_service=None, config=
         allocation_pct=1.0,
         buy_min_amount=0.01,
         buy_max_amount=1000.0,
+        market_data_service=_TiersFakeMDS(_make_fresh_bundle()),
         extra={"slippage_tolerance_bps": 200},
     )
+    ctx.market_data_runtime = AsyncMock()
+    return ctx
 
 
 def _signal(*, side="BUY", tx_hash="0xabc", asset=FAKE_TOKEN_ID, condition_id="cond1", price=0.50, size=10.0):
@@ -248,9 +296,6 @@ async def test_watchlist_gate_can_be_disabled(tmp_path):
         requested_amount=Decimal("5"), filled_amount=Decimal("5"),
         avg_price=Decimal("0.50"), fees_paid=Decimal("0.01"),
     ))
-    exec_svc.market_meta_service = AsyncMock()
-    exec_svc.market_meta_service.get = AsyncMock(side_effect=Exception("no meta"))
-
     ctx = _make_context(
         _init_db(tmp_path),
         leaders_repo=repo,

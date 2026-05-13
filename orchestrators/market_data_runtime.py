@@ -92,6 +92,7 @@ class MarketDataRuntime:
             rest_bootstrap=self.bootstrap_tokens,
             on_connected=self._on_wss_connected,
             on_disconnected=self._on_wss_disconnected,
+            on_state_change=self._on_market_state_change,
         )
 
         self._ws_task = asyncio.create_task(
@@ -346,14 +347,47 @@ class MarketDataRuntime:
         self._status.stale_token_count = stale
         self._status.dirty_token_count = dirty
 
+    def _token_executable(self, token_id: str) -> bool:
+        """Return True only when this token has executable WSS state.
+
+        Live execution requires:
+          - not resolved
+          - not stale, not dirty
+          - quote_source == "wss"
+          - book_source == "wss"
+          - tick present (any source; metadata is REST-allowed)
+        """
+        store = self.market_store
+        if store.is_resolved(token_id):
+            return False
+        if store.is_stale(token_id) or store.is_dirty(token_id):
+            return False
+
+        quote = store.get_quote(token_id)
+        book = store.get_book(token_id)
+        tick = store.get_tick(token_id)
+        if quote is None or book is None or tick is None:
+            return False
+        if (quote.source or "unknown") != "wss":
+            return False
+        if (book.source or "unknown") != "wss":
+            return False
+        return True
+
     def _update_readiness_from_store(self) -> None:
         self._refresh_counts()
+
+        all_executable = bool(self._subscribed_tokens) and all(
+            self._token_executable(token_id)
+            for token_id in self._subscribed_tokens
+        )
 
         market_ready = (
             self._status.running
             and self._status.subscribed_token_count > 0
             and self._status.stale_token_count == 0
             and self._status.dirty_token_count == 0
+            and all_executable
         )
 
         self._update_readiness(
@@ -362,6 +396,23 @@ class MarketDataRuntime:
             stale_token_count=self._status.stale_token_count,
             dirty_token_count=self._status.dirty_token_count,
         )
+
+    async def _on_market_state_change(self, token_id: str, event_type: str) -> None:
+        """WSS-driven recompute hook.
+
+        Fired by ``MarketWebSocket`` after book / price_change / best_bid_ask /
+        tick_size_change / market_resolved events. Cheap; just recomputes the
+        readiness gate from the store snapshot.
+        """
+        try:
+            self._update_readiness_from_store()
+        except Exception as exc:
+            logger.debug(
+                "market_data_state_change_recompute_failed | token=%s event=%s error=%r",
+                token_id,
+                event_type,
+                exc,
+            )
 
     def _update_readiness(self, **fields: Any) -> None:
         try:

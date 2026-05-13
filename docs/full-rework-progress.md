@@ -93,8 +93,8 @@ inside the `raw` env dict are also redacted.
   `is_ready(strict=...)` helper, new `/health/ready` route.
 - `services/metrics.py` — `inc_sync` helper plus operator metric name
   constants (`METRIC_*` and `GAUGE_*`).
-- `services/price_cache.py` — emits `cache_stale_evictions_total` on fill /
-  reconcile / reconnect invalidation paths.
+- `cache/market_state_store.py` — emits cache invalidation flags on fill /
+  reconcile / reconnect paths; legacy `price_cache.py` removed.
 - `services/execution/reconciliation_service.py` — emits
   `reconciliation_delta_applied_total` after each applied fill delta.
 - `clients/user_ws.py`, `clients/market_ws.py` — emit `wss_reconnect_total`

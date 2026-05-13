@@ -135,9 +135,11 @@ substitutes for `token_id`.
   `PING` heartbeat, REST snapshot on reconnect before applying deltas.
   `price_change` with size 0 deletes a level. Subscriptions use
   `assets_ids`.
-- `services/market_data_service.py`, `services/price_cache.py`,
-  `services/marketMetaService.py` — TTL freshness, invalidation on own
-  fills, price changes, tick-size changes, and after reconciliation.
+- `services/market_data_service.py` and `cache/market_state_store.py` —
+  freshness-aware market data with per-component WSS/REST source split,
+  invalidation on own fills, price changes, tick-size changes, and after
+  reconciliation. (Legacy standalone price-cache and market-meta modules
+  have been removed; this is the single authority.)
 - Decisions fail closed when quote / book / tick / metadata is stale or
   missing.
 
