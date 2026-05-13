@@ -24,8 +24,14 @@ class OrderLifecycleStatus(StrEnum):
     RESERVED = "reserved"
     SUBMITTING = "submitting"
     SUBMITTED_UNCONFIRMED = "submitted_unconfirmed"
+    SUBMITTED_DELAYED = "submitted_delayed"
+    ORDER_LIVE = "order_live"
+    MATCHED_PENDING_CONFIRMATION = "matched_pending_confirmation"
     PARTIALLY_FILLED = "partially_filled"
     FILLED = "filled"
+    TRADE_MINED = "trade_mined"
+    TRADE_CONFIRMED = "trade_confirmed"
+    TRADE_RETRYING = "trade_retrying"
     CANCELLED = "cancelled"
     EXPIRED = "expired"
     REJECTED = "rejected"
@@ -33,6 +39,8 @@ class OrderLifecycleStatus(StrEnum):
     TERMINAL_FAILED = "terminal_failed"
     RECONCILIATION_REQUIRED = "reconciliation_required"
     UNKNOWN_UNCONFIRMED = "unknown_unconfirmed"
+    AMBIGUOUS_TIMEOUT = "ambiguous_timeout"
+    AUTO_RELEASED_AMBIGUOUS = "auto_released_ambiguous"
 
 
 TERMINAL_FILLED_STATUSES = {"filled", "matched"}

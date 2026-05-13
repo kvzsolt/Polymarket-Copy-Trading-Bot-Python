@@ -85,6 +85,7 @@ def get_reconciliation_service(context: TradingContext) -> ReconciliationService
             risk_triggers_repo=getattr(context, "risk_triggers_repo", None),
             clob_gateway=context.extra.get("clob_gateway"),
             audit_logger=getattr(context, "audit_logger", None),
+            reservation_service=context.extra.get("reservation_service"),
         )
         context.extra["_reconciliation_service"] = svc
     return svc
