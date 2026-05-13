@@ -1,0 +1,25 @@
+utils/getMyBalance.py
+  s_5a0ec6eb5c03f2::t_266fb714dc156d 8
+clients/balance_client.py
+  s_5a0ec6eb5c03f2::t_266fb714dc156d 17
+clients/http_client.py
+  s_5a0ec6eb5c03f2::t_266fb714dc156d 13
+utils/fetchData.py
+  s_5a0ec6eb5c03f2::t_266fb714dc156d 9
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.7",
+  "base_commit_sha": "f14f6aa43e2fa1b6adc785d1a9fa84f96970ae53",
+  "prompts": {},
+  "sessions": {
+    "s_5a0ec6eb5c03f2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "df503e67-9128-472c-86a9-ccea2d2ffe62",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
