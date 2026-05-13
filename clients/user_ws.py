@@ -236,6 +236,10 @@ class UserWebSocket:
             event.get("side", "?"),
         )
 
+        # Lifecycle log — classify the WSS trade status. UserWebSocket never
+        # mutates positions or reservations; the reconciler converges state.
+        _emit_lifecycle_for_event(event, token_id=token_id)
+
         self._fire_event_callback(self._on_fill, event)
 
     def _handle_order_update(self, event: dict[str, Any]) -> None:
@@ -243,6 +247,9 @@ class UserWebSocket:
         status = event.get("status") or event.get("state", "?")
 
         logger.debug("UserWS: order update: id=%s status=%s", order_id, status)
+
+        token_id = _token_id_from_event(event)
+        _emit_lifecycle_for_event(event, token_id=token_id)
 
         self._fire_event_callback(self._on_order_update, event)
 
@@ -297,6 +304,69 @@ class UserWebSocket:
             metrics.inc(metric_name, labels=labels)
         except Exception:
             pass
+
+
+# Maps Polymarket WSS trade statuses → canonical lifecycle status strings.
+# Reservation/state mutation belongs to the reconciler; UserWebSocket only
+# emits the lifecycle log.
+_WSS_TRADE_STATUS_MAP: dict[str, str] = {
+    "MATCHED": "matched",
+    "MINED": "mined",
+    "CONFIRMED": "confirmed",
+    "RETRYING": "retrying",
+    "FAILED": "failed",
+}
+
+
+def _emit_lifecycle_for_event(event: dict[str, Any], *, token_id: str | None) -> None:
+    """Classify a WSS event status and emit a lifecycle log if recognised."""
+    raw = (
+        event.get("trade_status")
+        or event.get("tradeStatus")
+        or event.get("status")
+        or event.get("state")
+        or ""
+    )
+    canonical = _WSS_TRADE_STATUS_MAP.get(str(raw).strip().upper())
+    if canonical is None:
+        return
+    order_id = event.get("order_id") or event.get("orderID") or event.get("id")
+    side = str(event.get("side") or event.get("makerSide") or "").upper() or "?"
+    size_raw = event.get("size") or event.get("matched_size") or event.get("filled_size")
+    price_raw = event.get("price") or event.get("avg_price") or event.get("average_price")
+    condition_id = event.get("condition_id") or event.get("conditionId") or event.get("market")
+    tx_hash = event.get("tx_hash") or event.get("txHash") or event.get("transactionHash")
+
+    def _coerce_float(v: Any) -> float | None:
+        try:
+            return float(v) if v is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    try:
+        from utils.logger import log_order_lifecycle as _log_lc
+
+        size = _coerce_float(size_raw)
+        price = _coerce_float(price_raw)
+        usdc = None
+        if size is not None and price is not None:
+            usdc = size * price
+        _log_lc(
+            logger,
+            status=canonical,
+            side=side,
+            condition_id=str(condition_id) if condition_id else None,
+            asset=token_id,
+            order_id=str(order_id) if order_id else None,
+            size=size,
+            price=price,
+            usdc_value=usdc,
+            venue_status=str(raw).upper(),
+            tx_hash=str(tx_hash) if tx_hash else None,
+        )
+    except Exception:
+        # Logging never breaks the WSS loop.
+        pass
 
 
 def _token_id_from_event(event: dict[str, Any]) -> str | None:

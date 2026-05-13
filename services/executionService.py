@@ -841,6 +841,14 @@ class ExecutionService:
 
             if not response.get("success"):
                 if str(response.get("status") or "").lower() == "submitted_unconfirmed":
+                    self._emit_post_lifecycle(
+                        req=req,
+                        side=side,
+                        order_id=response.get("orderID"),
+                        worst_price=worst_price,
+                        venue_status=str(response.get("status") or "submitted_unconfirmed"),
+                        lifecycle_status="submitted_unconfirmed",
+                    )
                     return ExecutionResult(
                         accepted=True,
                         order_id=response.get("orderID"),
@@ -851,6 +859,14 @@ class ExecutionService:
                         fees_paid=Decimal("0"),
                         error=last_error,
                     )
+                self._emit_post_lifecycle(
+                    req=req,
+                    side=side,
+                    order_id=None,
+                    worst_price=worst_price,
+                    venue_status=str(response.get("status") or "failed"),
+                    lifecycle_status="failed",
+                )
                 return ExecutionResult(
                     accepted=False,
                     order_id=None,
@@ -867,7 +883,26 @@ class ExecutionService:
             # Execution never self-confirms fills — it returns
             # submitted_unconfirmed and lets the reconciler poll
             # venue state, apply incremental deltas, and finalise
-            # terminal statuses.
+            # terminal statuses. The lifecycle log emits the POST-side
+            # status (live / matched / delayed / submitted_unconfirmed)
+            # so the user sees order progress immediately.
+            venue_raw = str(response.get("status") or "submitted").lower()
+            if venue_raw == "live":
+                lifecycle_status = "live"
+            elif venue_raw == "matched":
+                lifecycle_status = "matched"
+            elif venue_raw == "delayed":
+                lifecycle_status = "delayed"
+            else:
+                lifecycle_status = "submitted_unconfirmed"
+            self._emit_post_lifecycle(
+                req=req,
+                side=side,
+                order_id=order_id,
+                worst_price=worst_price,
+                venue_status=venue_raw,
+                lifecycle_status=lifecycle_status,
+            )
             return ExecutionResult(
                 accepted=True,
                 order_id=order_id,
@@ -878,3 +913,40 @@ class ExecutionService:
                 fees_paid=Decimal("0"),
                 error=None,
             )
+
+    @staticmethod
+    def _emit_post_lifecycle(
+        *,
+        req: ExecutionRequest,
+        side: str,
+        order_id: str | None,
+        worst_price: Decimal,
+        venue_status: str,
+        lifecycle_status: str,
+    ) -> None:
+        """Emit a lifecycle log after the gateway POST. Idempotent via dedup."""
+        try:
+            from utils.logger import log_order_lifecycle
+
+            usdc_value: float | None = None
+            try:
+                usdc_value = float(req.amount) * float(worst_price or 0)
+            except Exception:
+                usdc_value = None
+            log_order_lifecycle(
+                logger,
+                status=lifecycle_status,
+                side=side,
+                condition_id=getattr(req, "condition_id", None),
+                asset=req.token_id,
+                order_id=order_id,
+                size=float(req.amount) if req.amount is not None else None,
+                price=float(worst_price) if worst_price is not None else None,
+                usdc_value=usdc_value,
+                venue_status=venue_status,
+                submission_state=lifecycle_status,
+                signal_id=getattr(req, "signal_id", None),
+            )
+        except Exception:
+            # Logging must never break execution.
+            pass

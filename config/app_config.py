@@ -48,6 +48,7 @@ __all__ = [
     "LeaderConfig",
     "LoggingConfig",
     "NetworkConfig",
+    "OrderConfirmationConfig",
     "PollingConfig",
     "NearOneExitConfig",
     "ReconciliationConfig",
@@ -133,6 +134,35 @@ class _Parser:
         if raw == "":
             raw = raw_default
         return raw.lower() in ("1", "true", "yes")
+
+    def json_dict_float(self, key: str, default: str = "{}") -> dict[str, float]:
+        """Parse a JSON object mapping to floats.
+
+        Empty / missing input yields an empty dict. Malformed input collects
+        an error and returns an empty dict so other config can still load.
+        """
+        import json as _json
+
+        raw = self._strip(key, self.raw(key, default))
+        if not raw:
+            return {}
+        try:
+            parsed = _json.loads(raw)
+        except (ValueError, TypeError):
+            self.errors.append(f"{key} must be a valid JSON object, got: {raw!r}")
+            return {}
+        if not isinstance(parsed, dict):
+            self.errors.append(f"{key} must be a JSON object (dict), got: {type(parsed).__name__}")
+            return {}
+        result: dict[str, float] = {}
+        for k, v in parsed.items():
+            try:
+                result[str(k)] = float(v)
+            except (TypeError, ValueError):
+                self.errors.append(
+                    f"{key} entry {k!r}={v!r} is not coercible to float"
+                )
+        return result
 
     # ---- specialised parsers ----
     def leader_wallets(self) -> tuple[str, ...]:
@@ -353,6 +383,48 @@ class ReconciliationConfig:
 
 
 @dataclass(frozen=True)
+class OrderConfirmationConfig:
+    """Confirmation-delay and ambiguous-timeout policy (PR5).
+
+    Polymarket order submissions legitimately pass through delayed/live/matched
+    states before reaching CONFIRMED. The reconciler should defer its first
+    poll by ``initial_delay_seconds`` (plus ``delayed_extra_seconds`` if the
+    venue acknowledged ``delayed``). After ``max_wait_seconds + auto_release_
+    grace_seconds`` with no terminal state, the strict auto-release path may
+    run a battery of safety probes; only when every probe is clean is the
+    reservation released. Probe failures or inconclusive results keep the
+    reservation active.
+    """
+
+    initial_delay_seconds: float
+    poll_interval_seconds: float
+    max_wait_seconds: float
+    delayed_extra_seconds: float
+    token_delay_overrides: dict[str, float]
+    condition_delay_overrides: dict[str, float]
+    auto_release_ambiguous: bool
+    auto_release_grace_seconds: float
+    auto_release_require_all_probes_clean: bool
+    auto_release_max_probe_errors: int
+
+    def resolve_initial_delay(
+        self,
+        *,
+        token_id: str | None,
+        condition_id: str | None,
+        venue_status: str | None = None,
+    ) -> float:
+        delay = self.initial_delay_seconds
+        if token_id and token_id in self.token_delay_overrides:
+            delay = self.token_delay_overrides[token_id]
+        elif condition_id and condition_id in self.condition_delay_overrides:
+            delay = self.condition_delay_overrides[condition_id]
+        if str(venue_status or "").lower() == "delayed":
+            delay += self.delayed_extra_seconds
+        return delay
+
+
+@dataclass(frozen=True)
 class NearOneExitConfig:
     """Sell-the-position-near-par exit replaces on-chain redemption.
 
@@ -410,6 +482,7 @@ class AppConfig:
     network: NetworkConfig
     near_one_exit: NearOneExitConfig
     reconciliation: ReconciliationConfig
+    order_confirmation: OrderConfirmationConfig
     discovery: DiscoveryConfig
     features: FeatureFlagConfig
     # Global safety: when True the bot runs in paper-only / dry-run mode.
@@ -802,6 +875,29 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         auto_cancel_stale=p.bool_("RECONCILE_AUTO_CANCEL", False),
     )
 
+    order_confirmation = OrderConfirmationConfig(
+        initial_delay_seconds=p.float_("ORDER_CONFIRMATION_INITIAL_DELAY_SECONDS", "2"),
+        poll_interval_seconds=p.float_("ORDER_CONFIRMATION_POLL_INTERVAL_SECONDS", "3"),
+        max_wait_seconds=p.float_("ORDER_CONFIRMATION_MAX_WAIT_SECONDS", "90"),
+        delayed_extra_seconds=p.float_("ORDER_CONFIRMATION_DELAYED_EXTRA_SECONDS", "2"),
+        token_delay_overrides=p.json_dict_float(
+            "ORDER_CONFIRMATION_TOKEN_DELAY_OVERRIDES", "{}"
+        ),
+        condition_delay_overrides=p.json_dict_float(
+            "ORDER_CONFIRMATION_CONDITION_DELAY_OVERRIDES", "{}"
+        ),
+        auto_release_ambiguous=p.bool_("ORDER_CONFIRMATION_AUTO_RELEASE_AMBIGUOUS", True),
+        auto_release_grace_seconds=p.float_(
+            "ORDER_CONFIRMATION_AUTO_RELEASE_GRACE_SECONDS", "300"
+        ),
+        auto_release_require_all_probes_clean=p.bool_(
+            "ORDER_CONFIRMATION_AUTO_RELEASE_REQUIRE_ALL_PROBES_CLEAN", True
+        ),
+        auto_release_max_probe_errors=p.int_(
+            "ORDER_CONFIRMATION_AUTO_RELEASE_MAX_PROBE_ERRORS", "0"
+        ),
+    )
+
     near_one_exit = NearOneExitConfig(
         enable_near_one_exit=p.bool_("ENABLE_NEAR_ONE_EXIT", False),
         threshold=Decimal(p.string("NEAR_ONE_EXIT_THRESHOLD", "0.99")),
@@ -846,6 +942,7 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         network=network,
         near_one_exit=near_one_exit,
         reconciliation=reconciliation,
+        order_confirmation=order_confirmation,
         discovery=discovery,
         features=features,
         dry_run=p.bool_("PAPER_TRADE_ONLY", False),

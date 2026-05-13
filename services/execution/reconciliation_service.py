@@ -121,11 +121,77 @@ class DbProvider(Protocol):
 # ---------------------------------------------------------------------------
 # Constants shared by the concrete record paths
 # ---------------------------------------------------------------------------
-_TERMINAL_NO_FILL_STATUSES = frozenset({"cancelled", "canceled", "expired", "rejected"})
-_FINAL_FILL_STATUSES_TRADE = frozenset({"filled", "matched"})
+_TERMINAL_NO_FILL_STATUSES = frozenset({
+    "cancelled", "canceled", "expired", "rejected", "failed",
+    "order_status_canceled", "order_status_canceled_market_resolved",
+    "order_status_invalid",
+})
+_FINAL_FILL_STATUSES_TRADE = frozenset({"filled", "matched", "confirmed"})
 # Risk reconcile historically treated empty status + matched > 0 as final fill
 # (see services/riskMonitor.reconcile_unconfirmed_risk_orders) — preserve.
-_FINAL_FILL_STATUSES_RISK = frozenset({"filled", "matched", ""})
+_FINAL_FILL_STATUSES_RISK = frozenset({"filled", "matched", "confirmed", ""})
+# Non-terminal intermediate statuses that should keep the order row alive in
+# its current submitted/delayed/live state. Polymarket POST /order can
+# return live/matched/delayed; ``matched``/`order_status_matched`/`filled` are
+# treated as terminal fill by the reconciler (existing contract). WSS trade
+# events report MATCHED / MINED / RETRYING and are handled in UserWebSocket;
+# the reconciler only sees POST-poll results.
+_VENUE_NON_TERMINAL = frozenset({
+    "live", "delayed",
+    "order_status_live",
+    "submitted", "submitted_unconfirmed", "submitted_delayed",
+    "order_live", "trade_mined", "trade_retrying",
+    "mined", "retrying",
+})
+
+# Map normalised venue status -> (local submission status, lifecycle log status).
+_VENUE_TO_LIFECYCLE: dict[str, tuple[str, str]] = {
+    "live": ("order_live", "live"),
+    "order_status_live": ("order_live", "live"),
+    "order_live": ("order_live", "live"),
+    "delayed": ("submitted_delayed", "delayed"),
+    "submitted_delayed": ("submitted_delayed", "delayed"),
+    "matched": ("matched_pending_confirmation", "matched"),
+    "order_status_matched": ("matched_pending_confirmation", "matched"),
+    "matched_pending_confirmation": ("matched_pending_confirmation", "matched"),
+    "mined": ("trade_mined", "mined"),
+    "trade_mined": ("trade_mined", "mined"),
+    "retrying": ("trade_retrying", "retrying"),
+    "trade_retrying": ("trade_retrying", "retrying"),
+    "confirmed": ("filled_reconciled", "confirmed"),
+    "trade_confirmed": ("filled_reconciled", "confirmed"),
+    "filled": ("filled_reconciled", "confirmed"),
+    "cancelled": ("cancelled", "cancelled"),
+    "canceled": ("cancelled", "cancelled"),
+    "order_status_canceled": ("cancelled", "cancelled"),
+    "order_status_canceled_market_resolved": ("cancelled", "cancelled"),
+    "rejected": ("rejected", "failed"),
+    "order_status_invalid": ("rejected", "failed"),
+    "failed": ("failed", "failed"),
+    "expired": ("expired", "failed"),
+    "submitted_unconfirmed": ("submitted_unconfirmed", "submitted_unconfirmed"),
+    "submitted": ("submitted_unconfirmed", "submitted_unconfirmed"),
+}
+
+
+def _normalize_venue_status(raw: Any) -> str:
+    return str(raw or "").strip().lower()
+
+
+def _record_created_at(record: dict[str, Any]) -> float | None:
+    """Best-effort timestamp from a processed_trade / order row."""
+    for key in ("created_at", "createdAt", "submitted_at", "submittedAt", "timestamp"):
+        value = record.get(key)
+        if value is None:
+            continue
+        try:
+            ts = float(value)
+        except (TypeError, ValueError):
+            continue
+        if ts > 1e12:
+            ts /= 1000.0
+        return ts
+    return None
 
 
 def _decimal_or_zero(value: Any) -> Decimal:
@@ -226,6 +292,345 @@ class ReconciliationService:
         except Exception:
             # Audit logging must never break reconciliation.
             pass
+
+    def _release_reservation_if_present(
+        self,
+        record: dict[str, Any],
+        *,
+        reason: str,
+    ) -> None:
+        """Release a reservation when the record carries reservation_id.
+
+        Coordinator-path orders populate this; the direct trade-pipeline path
+        leaves it empty. Safe no-op when ``reservation_service`` is unset.
+        """
+        if self.reservation_service is None:
+            return
+        request = record.get("request") if isinstance(record, dict) else None
+        reservation_id = None
+        if isinstance(request, dict):
+            reservation_id = request.get("reservation_id")
+        reservation_id = reservation_id or record.get("reservation_id")
+        if not reservation_id:
+            return
+        try:
+            self.reservation_service.release_terminal(str(reservation_id), reason=reason)
+        except Exception as exc:
+            _log.warning(
+                "reconciliation_reservation_release_failed | reservation_id=%s reason=%s error=%r",
+                reservation_id, reason, exc,
+            )
+
+    def _emit_lifecycle(
+        self,
+        *,
+        status: str,
+        side: str,
+        record: dict[str, Any],
+        order_id: str | None,
+        venue_status: str | None = None,
+        size: Any = None,
+        price: Any = None,
+        usdc_value: Any = None,
+        signal_id: str | None = None,
+        meta: dict[str, Any] | None = None,
+    ) -> None:
+        """Emit an order_lifecycle log via the canonical helper.
+
+        Best-effort: never breaks reconciliation. The helper deduplicates by
+        (order_id|signal_id|condition_id, status), so repeated reconciliation
+        passes never re-render the same panel.
+        """
+        try:
+            from utils.logger import log_order_lifecycle as _log_lc
+
+            _log_lc(
+                _log,
+                status=status,
+                side=side,
+                condition_id=record.get("condition_id") or record.get("conditionId"),
+                asset=record.get("asset") or record.get("token_id"),
+                order_id=order_id,
+                size=float(size) if size is not None else None,
+                price=float(price) if price is not None else None,
+                usdc_value=float(usdc_value) if usdc_value is not None else None,
+                venue_status=venue_status,
+                signal_id=signal_id or record.get("trade_key") or record.get("signal_id"),
+                meta=meta,
+            )
+        except Exception:
+            pass
+
+    def _should_skip_for_delay(
+        self,
+        record: dict[str, Any],
+        *,
+        order_confirmation_cfg: Any | None,
+        last_known_venue_status: str | None = None,
+    ) -> bool:
+        """Return True if the reconciler should defer polling for this record.
+
+        Only applies before the configured ``initial_delay_seconds`` elapses
+        AND while no fill has been recorded locally. Once a venue status has
+        been observed at least once (i.e. the record carries a non-empty
+        response.status that's not the pending placeholder) the delay no
+        longer applies.
+        """
+        if order_confirmation_cfg is None:
+            return False
+
+        created_at = _record_created_at(record)
+        if created_at is None:
+            return False
+
+        token_id = str(record.get("asset") or record.get("token_id") or "")
+        condition_id = str(record.get("condition_id") or record.get("conditionId") or "")
+        delay = order_confirmation_cfg.resolve_initial_delay(
+            token_id=token_id,
+            condition_id=condition_id,
+            venue_status=last_known_venue_status,
+        )
+        # Treat any existing matched-total > 0 as "already observed", skip the delay.
+        previous_matched = _matched_amount_from_response(record.get("response"))
+        if previous_matched > 0:
+            return False
+        elapsed = time.time() - created_at
+        return elapsed < delay
+
+    def _is_past_ambiguous_timeout(
+        self,
+        record: dict[str, Any],
+        *,
+        order_confirmation_cfg: Any | None,
+    ) -> bool:
+        if order_confirmation_cfg is None:
+            return False
+        created_at = _record_created_at(record)
+        if created_at is None:
+            return False
+        return (time.time() - created_at) >= float(order_confirmation_cfg.max_wait_seconds)
+
+    def _is_past_auto_release_grace(
+        self,
+        record: dict[str, Any],
+        *,
+        order_confirmation_cfg: Any | None,
+    ) -> bool:
+        if order_confirmation_cfg is None:
+            return False
+        if not getattr(order_confirmation_cfg, "auto_release_ambiguous", False):
+            return False
+        created_at = _record_created_at(record)
+        if created_at is None:
+            return False
+        threshold = (
+            float(order_confirmation_cfg.max_wait_seconds)
+            + float(order_confirmation_cfg.auto_release_grace_seconds)
+        )
+        return (time.time() - created_at) >= threshold
+
+    async def _run_auto_release_probes(
+        self,
+        *,
+        order_id: str,
+        venue_order_id: str | None,
+        market_id: str | None,
+        user_id: str,
+        condition_id: str,
+        token_id: str,
+        expected_size: Decimal,
+    ) -> dict[str, Any]:
+        """Run all four safety probes. Returns dict with probe outcomes.
+
+        Each probe is classified as clean/inconclusive/error. The caller
+        decides whether to auto-release based on the configured policy.
+        """
+        result: dict[str, Any] = {"errors": 0, "inconclusive": 0, "clean": 0, "details": {}}
+
+        gw = self.clob_gateway
+        if gw is None:
+            result["errors"] += 1
+            result["details"]["clob_gateway_missing"] = True
+            return result
+
+        # Probe 1: get_order
+        try:
+            venue_state = await gw.get_order(venue_order_id or order_id)
+            status = _normalize_venue_status(
+                getattr(venue_state, "status", None)
+                if not isinstance(venue_state, dict)
+                else venue_state.get("status")
+            )
+            if status in ("live", "matched", "delayed", "order_status_live", "order_status_matched"):
+                result["inconclusive"] += 1
+                result["details"]["get_order"] = status
+            else:
+                result["clean"] += 1
+                result["details"]["get_order"] = status or "absent"
+        except Exception as exc:
+            result["errors"] += 1
+            result["details"]["get_order_error"] = repr(exc)
+
+        # Probe 2: get_orders_for_market (optional)
+        list_orders = getattr(gw, "get_orders_for_market", None)
+        if callable(list_orders):
+            try:
+                orders = await list_orders(market_id) if market_id else []
+                ids = {str(o.get("id") if isinstance(o, dict) else getattr(o, "id", "")) for o in orders or []}
+                if order_id in ids or (venue_order_id and venue_order_id in ids):
+                    result["inconclusive"] += 1
+                    result["details"]["get_orders_for_market"] = "order_present"
+                else:
+                    result["clean"] += 1
+                    result["details"]["get_orders_for_market"] = "absent"
+            except Exception as exc:
+                result["errors"] += 1
+                result["details"]["get_orders_for_market_error"] = repr(exc)
+        else:
+            result["inconclusive"] += 1
+            result["details"]["get_orders_for_market"] = "not_supported"
+
+        # Probe 3: get_fills
+        try:
+            fills = await gw.get_fills(market=market_id)
+            related = [
+                f for f in fills or []
+                if str(f.get("order_id") if isinstance(f, dict) else getattr(f, "order_id", "")) == order_id
+            ]
+            if related:
+                result["inconclusive"] += 1
+                result["details"]["get_fills"] = f"fills_present:{len(related)}"
+            else:
+                result["clean"] += 1
+                result["details"]["get_fills"] = "absent"
+        except Exception as exc:
+            result["errors"] += 1
+            result["details"]["get_fills_error"] = repr(exc)
+
+        # Probe 4: local position delta
+        try:
+            pos = self.positions_repo.get_position(user_id, condition_id, token_id=token_id)
+            local_size = Decimal(str(getattr(pos, "size_tokens", 0) or 0))
+            if local_size >= expected_size > 0:
+                # Position already absorbed at least the expected size — order
+                # may have filled. Conservative: inconclusive.
+                result["inconclusive"] += 1
+                result["details"]["position_delta"] = f"local_size={local_size}"
+            else:
+                result["clean"] += 1
+                result["details"]["position_delta"] = f"local_size={local_size}"
+        except Exception as exc:
+            result["errors"] += 1
+            result["details"]["position_delta_error"] = repr(exc)
+
+        return result
+
+    async def _maybe_auto_release_ambiguous(
+        self,
+        record: dict[str, Any],
+        *,
+        side: str,
+        order_confirmation_cfg: Any,
+    ) -> bool:
+        """Run safety probes and auto-release the reservation when clean.
+
+        Returns True if the auto-release fired.
+        """
+        order_id = str(record.get("order_id") or "")
+        if not order_id:
+            return False
+
+        request = record.get("request") or {}
+        venue_order_id = str(record.get("venue_order_id") or order_id)
+        market_id = str(request.get("market") or request.get("market_id") or "") or None
+        user_id = str(record.get("user_id") or request.get("user_id") or "")
+        condition_id = str(record.get("condition_id") or request.get("condition_id") or "")
+        token_id = str(record.get("asset") or request.get("token_id") or "")
+        try:
+            expected_size = Decimal(str(request.get("amount") or request.get("size") or "0"))
+        except Exception:
+            expected_size = Decimal("0")
+
+        probe = await self._run_auto_release_probes(
+            order_id=order_id,
+            venue_order_id=venue_order_id,
+            market_id=market_id,
+            user_id=user_id,
+            condition_id=condition_id,
+            token_id=token_id,
+            expected_size=expected_size,
+        )
+
+        max_errors = int(order_confirmation_cfg.auto_release_max_probe_errors)
+        require_clean = bool(order_confirmation_cfg.auto_release_require_all_probes_clean)
+        if probe["errors"] > max_errors:
+            _log.warning(
+                "auto_release_aborted_probe_errors | order_id=%s errors=%d details=%s",
+                order_id, probe["errors"], probe["details"],
+            )
+            self._audit(
+                "reconciliation_auto_release_aborted",
+                {"order_id": order_id, "reason": "probe_errors", "probe": probe},
+            )
+            return False
+        if require_clean and probe["inconclusive"] > 0:
+            _log.info(
+                "auto_release_aborted_inconclusive | order_id=%s details=%s",
+                order_id, probe["details"],
+            )
+            self._audit(
+                "reconciliation_auto_release_aborted",
+                {"order_id": order_id, "reason": "inconclusive", "probe": probe},
+            )
+            return False
+
+        # All probes clean — release.
+        try:
+            self.orders_repo.update_submission_status(
+                order_id=order_id,
+                status="auto_released_ambiguous",
+                response_patch={"probe": probe},
+            )
+        except Exception:
+            pass
+
+        reservation_id = record.get("reservation_id") or request.get("reservation_id")
+        if reservation_id and self.reservation_service is not None:
+            try:
+                self.reservation_service.release_terminal(
+                    str(reservation_id),
+                    reason="auto_release_after_ambiguous_timeout",
+                )
+            except Exception as exc:
+                _log.warning(
+                    "auto_release_reservation_release_failed | order_id=%s error=%r",
+                    order_id, exc,
+                )
+
+        self._emit_lifecycle(
+            status="auto_released_ambiguous",
+            side=side,
+            record=record,
+            order_id=order_id,
+            venue_status="ambiguous_timeout",
+        )
+        self._audit(
+            "reconciliation_auto_release_ambiguous",
+            {"order_id": order_id, "probe": probe},
+        )
+        try:
+            from services.metrics import (
+                METRIC_RECONCILIATION_AUTO_RELEASE_AMBIGUOUS,
+                metrics,
+            )
+
+            metrics.inc_sync(
+                METRIC_RECONCILIATION_AUTO_RELEASE_AMBIGUOUS,
+                labels={"side": (side or "unknown").upper()},
+            )
+        except Exception:
+            pass
+        return True
 
     def _record_negative_delta_anomaly(
         self,
@@ -413,7 +818,7 @@ class ReconciliationService:
                 )
             return False
 
-        order_status = str(fill_info.get("status", "")).lower()
+        order_status = _normalize_venue_status(fill_info.get("status", ""))
         current_matched = _matched_amount_from_response(fill_info)
         if not order_status and current_matched <= 0:
             if logger is not None:
@@ -444,6 +849,35 @@ class ReconciliationService:
                 logger=logger,
             )
 
+        # Non-terminal intermediate status (live, delayed, matched, mined,
+        # retrying). Persist the mapped local status and emit a single
+        # lifecycle log per transition. Reservation stays active. No state
+        # mutation beyond status — the existing terminal branches do the
+        # fill/release work.
+        if order_status in _VENUE_NON_TERMINAL and delta_matched <= 0:
+            mapped = _VENUE_TO_LIFECYCLE.get(order_status)
+            if mapped is not None:
+                local_status, lifecycle_status = mapped
+                # Idempotency: if the row already carries this status, skip.
+                current_local = str(record.get("status") or "")
+                if current_local != local_status:
+                    try:
+                        self.orders_repo.update_submission_status(
+                            order_id=order_id,
+                            status=local_status,
+                            response_patch=fill_info,
+                        )
+                    except Exception:
+                        pass
+                self._emit_lifecycle(
+                    status=lifecycle_status,
+                    side=side,
+                    record=record,
+                    order_id=order_id,
+                    venue_status=order_status,
+                )
+            return False
+
         # Terminal no-fill — unlock the trade key for retry.
         if current_matched <= 0 and order_status in _TERMINAL_NO_FILL_STATUSES:
             if logger is not None:
@@ -465,6 +899,17 @@ class ReconciliationService:
                 "reconciliation_no_fill_unlock",
                 {"order_id": order_id, "side": side, "venue_status": order_status},
             )
+            # Release reservation if the record carries one (coordinator path).
+            self._release_reservation_if_present(record, reason=order_status)
+            # Lifecycle log — render the canonical terminal-failure panel.
+            mapped = _VENUE_TO_LIFECYCLE.get(order_status, ("failed", "failed"))
+            self._emit_lifecycle(
+                status=mapped[1],
+                side=side,
+                record=record,
+                order_id=order_id,
+                venue_status=order_status,
+            )
             return True
 
         if delta_matched < 0:
@@ -476,30 +921,56 @@ class ReconciliationService:
 
         if delta_matched <= 0:
             if is_final_fill:
+                # Detect "already settled": either the in-memory record
+                # already shows the terminal state, or the orders_repo row
+                # was updated by a previous pass.
+                stored_row = None
+                try:
+                    stored_row = self.orders_repo.get_by_order_id(order_id)
+                except Exception:
+                    stored_row = None
+                stored_status = ""
+                if isinstance(stored_row, dict):
+                    stored_status = str(stored_row.get("status") or "")
+                already_terminal = (
+                    str(record.get("status") or "") == "filled_reconciled"
+                    or stored_status == "filled_reconciled"
+                )
                 # Cumulative matched already accounted for — persist terminal
                 # state without double-applying the fill.
-                try:
-                    self.orders_repo.update_submission_status(
-                        order_id=order_id,
+                if not already_terminal:
+                    try:
+                        self.orders_repo.update_submission_status(
+                            order_id=order_id,
+                            status="filled_reconciled",
+                            response_patch=fill_info,
+                        )
+                    except Exception:
+                        pass
+                    self.orders_repo.mark_processed_trade(
+                        trade_key=record["trade_key"],
+                        user_id=record["user_id"],
+                        leader_id=record.get("leader_id"),
+                        tx_hash=record.get("tx_hash"),
+                        side=side,
+                        asset=record["asset"],
+                        condition_id=record["condition_id"],
                         status="filled_reconciled",
-                        response_patch=fill_info,
+                        order_id=order_id,
                     )
-                except Exception:
-                    pass
-                self.orders_repo.mark_processed_trade(
-                    trade_key=record["trade_key"],
-                    user_id=record["user_id"],
-                    leader_id=record.get("leader_id"),
-                    tx_hash=record.get("tx_hash"),
+                    self._audit(
+                        "reconciliation_terminal_no_new_delta",
+                        {"order_id": order_id, "side": side, "matched_total": str(current_matched)},
+                    )
+                    self._release_reservation_if_present(record, reason="confirmed")
+                # Lifecycle log fires once via the dedup map — idempotent.
+                self._emit_lifecycle(
+                    status="confirmed",
                     side=side,
-                    asset=record["asset"],
-                    condition_id=record["condition_id"],
-                    status="filled_reconciled",
+                    record=record,
                     order_id=order_id,
-                )
-                self._audit(
-                    "reconciliation_terminal_no_new_delta",
-                    {"order_id": order_id, "side": side, "matched_total": str(current_matched)},
+                    venue_status=order_status,
+                    size=current_matched,
                 )
                 return True
             return False
@@ -600,8 +1071,31 @@ class ReconciliationService:
                 order_id=order_id,
             )
             submission_status = "filled_reconciled"
+            self._release_reservation_if_present(record, reason="confirmed")
+            self._emit_lifecycle(
+                status="confirmed",
+                side=side,
+                record=record,
+                order_id=order_id,
+                venue_status=order_status,
+                size=current_matched,
+                price=avg_price,
+                usdc_value=float(current_matched * avg_price) if current_matched and avg_price else None,
+            )
         else:
+            # Non-terminal partial fill — keep the order row alive in
+            # ``submitted_unconfirmed`` so duplicate-blocking and the next
+            # reconcile pass continue to fire.
             submission_status = "submitted_unconfirmed"
+            self._emit_lifecycle(
+                status="matched",
+                side=side,
+                record=record,
+                order_id=order_id,
+                venue_status=order_status,
+                size=current_matched,
+                price=avg_price,
+            )
 
         try:
             self.orders_repo.update_submission_status(
@@ -696,7 +1190,7 @@ class ReconciliationService:
                 )
             return False
 
-        venue_status = str(fill_info.get("status", "")).lower()
+        venue_status = _normalize_venue_status(fill_info.get("status", ""))
         current_matched = _matched_amount_from_response(fill_info)
         previous_matched = _matched_amount_from_response(record.get("response"))
         delta_matched = current_matched - previous_matched
@@ -710,6 +1204,35 @@ class ReconciliationService:
             )
         if delta_matched < 0:
             delta_matched = Decimal("0")
+
+        # Non-terminal intermediate status (live, delayed, mined, retrying).
+        # Persist mapped status; reservation stays active; emit lifecycle log.
+        if venue_status in _VENUE_NON_TERMINAL and delta_matched <= 0:
+            mapped = _VENUE_TO_LIFECYCLE.get(venue_status)
+            if mapped is not None:
+                local_status, lifecycle_status = mapped
+                try:
+                    self.orders_repo.update_submission_status(
+                        order_id=order_id,
+                        status=local_status,
+                        response_patch=fill_info,
+                    )
+                except Exception:
+                    pass
+                # Risk SELL log uses synthetic record shape — pass user/cond/token.
+                synthetic_record = {
+                    **record,
+                    "condition_id": condition_id,
+                    "asset": token_id,
+                }
+                self._emit_lifecycle(
+                    status=lifecycle_status,
+                    side="SELL",
+                    record=synthetic_record,
+                    order_id=order_id,
+                    venue_status=venue_status,
+                )
+            return False
 
         # Terminal no-fill: persist status, drop the in-flight reservation.
         if current_matched <= 0 and venue_status in _TERMINAL_NO_FILL_STATUSES:
@@ -739,6 +1262,15 @@ class ReconciliationService:
                     )
                 except Exception:
                     _log.debug("risk_trigger_record_error order_id=%s", order_id, exc_info=True)
+            self._release_reservation_if_present(record, reason=venue_status)
+            mapped = _VENUE_TO_LIFECYCLE.get(venue_status, ("failed", "failed"))
+            self._emit_lifecycle(
+                status=mapped[1],
+                side="SELL",
+                record={**record, "condition_id": condition_id, "asset": token_id},
+                order_id=order_id,
+                venue_status=venue_status,
+            )
             return True
 
         is_final_fill = venue_status in _FINAL_FILL_STATUSES_RISK or (
@@ -749,19 +1281,30 @@ class ReconciliationService:
             return False
 
         if delta_matched <= 0 and is_final_fill:
-            self.orders_repo.update_submission_status(
+            already_terminal = str(record.get("status") or "") == "filled_reconciled"
+            if not already_terminal:
+                self.orders_repo.update_submission_status(
+                    order_id=order_id,
+                    status="filled_reconciled",
+                    response_patch={
+                        **fill_info,
+                        "reconciled_from": "risk_submitted_unconfirmed",
+                        "matched_previous": str(previous_matched),
+                        "matched_delta": str(delta_matched),
+                    },
+                )
+                self._audit(
+                    "reconciliation_risk_terminal_no_new_delta",
+                    {"order_id": order_id, "matched_total": str(current_matched)},
+                )
+                self._release_reservation_if_present(record, reason="confirmed")
+            self._emit_lifecycle(
+                status="confirmed",
+                side="SELL",
+                record={**record, "condition_id": condition_id, "asset": token_id},
                 order_id=order_id,
-                status="filled_reconciled",
-                response_patch={
-                    **fill_info,
-                    "reconciled_from": "risk_submitted_unconfirmed",
-                    "matched_previous": str(previous_matched),
-                    "matched_delta": str(delta_matched),
-                },
-            )
-            self._audit(
-                "reconciliation_risk_terminal_no_new_delta",
-                {"order_id": order_id, "matched_total": str(current_matched)},
+                venue_status=venue_status,
+                size=current_matched,
             )
             return True
 
@@ -900,6 +1443,18 @@ class ReconciliationService:
                 "matched_total": str(current_matched),
                 "is_final": is_final_fill,
             },
+        )
+        if is_final_fill:
+            self._release_reservation_if_present(record, reason="confirmed")
+        self._emit_lifecycle(
+            status="confirmed" if is_final_fill else "matched",
+            side="SELL",
+            record={**record, "condition_id": condition_id, "asset": token_id},
+            order_id=order_id,
+            venue_status=venue_status,
+            size=current_matched,
+            price=avg_price,
+            usdc_value=float(current_matched * avg_price) if current_matched and avg_price else None,
         )
         return True
 
