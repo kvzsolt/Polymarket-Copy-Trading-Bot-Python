@@ -1,0 +1,71 @@
+services/execution/reconciliation_service.py
+  s_62bfb689d71971::t_9a5262e4fdda68 1284-1304,1306-1307
+  s_62bfb689d71971::t_0d201523713b7b 1193,1208-1235
+  s_62bfb689d71971::t_b75c9436bdff98 124-129,132-133,139,142,145-194
+  s_62bfb689d71971::t_0cbfa87647dbfe 1447-1457
+  s_62bfb689d71971::t_9d0e56a1bd5399 1086-1088
+  s_62bfb689d71971::t_fb10cbdb87ad39 924-938
+  s_62bfb689d71971::t_4959d52c96b653 821,852-879
+  s_62bfb689d71971::t_858a7cd02168f3 902-912
+  s_62bfb689d71971::t_796738c4fe5c21 1074-1084,1090-1098
+  s_62bfb689d71971::t_6748a4a98a5c1d 296-323
+  s_62bfb689d71971::t_b1cf5dc7b7e70e 324-634
+  s_62bfb689d71971::t_469019c36bf132 941-957,959,961-968,970,972-973
+  s_62bfb689d71971::t_a03d97b7600ca1 1265-1273
+  s_62bfb689d71971::t_796be61aa722e6 134-138,140-141,143-144
+tests/test_user_ws_lifecycle.py
+  s_62bfb689d71971::t_c61fb4c706919b 1-11,13-51,53,65,69-88
+  s_62bfb689d71971::t_a2bfd1c3d2a3cc 12
+  s_62bfb689d71971::t_4cad737d407951 52,54-64,66-68
+config/app_config.py
+  s_62bfb689d71971::t_12a75886ea939d 51
+  s_62bfb689d71971::t_219115fbf3ae3b 485
+  s_62bfb689d71971::t_2ddad198d4ce9c 386-426
+  s_62bfb689d71971::t_8027113242e26b 878-900
+  s_62bfb689d71971::t_d2f6391cc99cd0 945
+  s_62bfb689d71971::t_1524c704c76be1 138-166
+services/metrics.py
+  s_62bfb689d71971::t_08d556124429ba 79
+services/executionService.py
+  s_62bfb689d71971::t_4afa34a9702bf6 844-851,862-869,886-905,916-952
+tests/test_order_confirmation_delay.py
+  s_62bfb689d71971::t_c55f516e64d07d 1-116
+orchestrators/trade_pipeline.py
+  s_62bfb689d71971::t_6a5f2687e568d8 88
+tests/test_reconciler_idempotent_transitions.py
+  s_62bfb689d71971::t_eab6e6130f3119 39,47-51,55-56,63-64
+  s_62bfb689d71971::t_b0fc58bc34925f 1-38,40-46,52-54,57-62,65-129,134-135,139,147-182
+  s_62bfb689d71971::t_d2e6932917c0cb 130-133,136-138,140-146
+domain/order_lifecycle.py
+  s_62bfb689d71971::t_450d265747ee92 27-29,32-34,42-43
+tests/test_ambiguous_timeout_auto_release.py
+  s_62bfb689d71971::t_ae172447fa0b52 1-242
+tests/test_order_lifecycle_logging.py
+  s_62bfb689d71971::t_0769d619978e87 107-108
+  s_62bfb689d71971::t_c6034b81387cb9 1-104,106,112-129,141-144
+  s_62bfb689d71971::t_5516d17dcc8eb6 105,109-111,130-140
+clients/user_ws.py
+  s_62bfb689d71971::t_55382874cb29c9 309-371
+  s_62bfb689d71971::t_ee36c1b8ece6f5 239-242,251-252
+utils/logger.py
+  s_62bfb689d71971::t_ce061b79ca042d 1450-1514
+  s_62bfb689d71971::t_a3d03d38cdc0cb 432-481
+  s_62bfb689d71971::t_8118afcf399036 236-238
+  s_62bfb689d71971::t_2a426c7b1aa260 109-164
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.7",
+  "base_commit_sha": "db3bd3eb81facfc963c5b9d6f40285ea12cd2105",
+  "prompts": {},
+  "sessions": {
+    "s_62bfb689d71971": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6e021f73-964d-4111-864c-59d2e303c15b",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
