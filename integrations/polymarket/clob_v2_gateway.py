@@ -332,7 +332,7 @@ class ClobV2Gateway:
     async def submit_marketable_order(self, request: MarketableOrderRequest) -> VenueSubmitResult:
         """Submit a marketable (FOK/IOC) order via the CLOB wrapper."""
         # Use pre-fetched metadata when the caller supplied it (issue #66:
-        # ExecutionService already fetches via MarketMetaService for sizing
+        # ExecutionService already fetches via MarketDataService for sizing
         # and slippage gates; a second fetch here is wasteful and can race).
         if request.tick_size is not None and request.neg_risk is not None:
             tick_size_str = str(request.tick_size)

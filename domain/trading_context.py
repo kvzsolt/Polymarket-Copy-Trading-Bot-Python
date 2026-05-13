@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from decimal import Decimal
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from config.app_config import AppConfig
 from services.copyDecisionService import CopyDecisionService
@@ -11,6 +11,10 @@ from services.entryPermissionService import EntryPermissionService
 from services.healthServer import ReadinessTracker
 from services.leaderScoringService import LeaderScoringService
 from services.positionActionCoordinator import PositionActionCoordinator
+
+if TYPE_CHECKING:
+    from orchestrators.market_data_runtime import MarketDataRuntime
+    from services.market_data_service import MarketDataService
 
 
 @dataclass
@@ -40,6 +44,14 @@ class TradingContext:
     position_coordinator: PositionActionCoordinator = field(default_factory=PositionActionCoordinator)
     extra: dict[str, Any] = field(default_factory=dict)
     risk_triggers_repo: Any | None = None
+    # Freshness-aware market data wiring. ``market_data_service`` is the
+    # single execution-time authority for quote/book/tick state; the trade
+    # pipeline reads sizing inputs from it, never from MarketStateStore or
+    # the deprecated meta-service path. ``market_data_runtime`` owns WSS
+    # subscription lifecycle for the user; the pipeline must subscribe new
+    # signal tokens before placing orders.
+    market_data_service: "MarketDataService | None" = None
+    market_data_runtime: "MarketDataRuntime | None" = None
 
     def __post_init__(self) -> None:
         # Fail fast: these dependencies are required in production contexts.

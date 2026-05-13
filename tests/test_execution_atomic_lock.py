@@ -138,7 +138,7 @@ async def test_atomic_lock_blocks_duplicate_concurrent_submission(tmp_path):
 
     repo = OrderRepository(str(db_path))
     clob = _ConcurrentClob()
-    svc = ExecutionService(clob, _MetaSvc(), _FeeSvc(), repo, config=_make_exec_config(), market_data_service=_make_mds())
+    svc = ExecutionService(clob, _FeeSvc(), repo, config=_make_exec_config(), market_data_service=_make_mds())
     req = ExecutionRequest(
         user_id="u1",
         leader_id="l1",

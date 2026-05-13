@@ -185,9 +185,8 @@ class ExecutionService:
     def __init__(
         self,
         clob_client,
-        market_meta_service,  # kept for backward compat; not used in execute()
-        fee_service,
-        order_repo,
+        fee_service=None,
+        order_repo=None,
         *,
         circuit_breaker: CircuitBreaker | None = None,
         config: AppConfig,

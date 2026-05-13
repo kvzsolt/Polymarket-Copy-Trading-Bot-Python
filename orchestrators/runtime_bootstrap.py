@@ -9,7 +9,6 @@ from cache.market_state_store import MarketStateStore
 from services.accountingService import AccountingService
 from services.executionService import ExecutionService
 from services.feeService import FeeService
-from services.marketMetaService import MarketMetaService
 from services.market_data_service import MarketDataService, MarketDataPolicy
 from services.multiUserConfig import RuntimeUser, UserFollowConfig
 from services.orderRepository import OrderRepository
@@ -224,7 +223,6 @@ def build_user_state(
 
     execution_service = ExecutionService(
         clob_client=client,
-        market_meta_service=MarketMetaService(client),
         fee_service=FeeService(client),
         order_repo=OrderRepository(db_path=db_path),
         config=config,
@@ -279,6 +277,7 @@ def build_trading_context(
         buy_max_amount=min(config.sizing.buy_max_amount, follow.max_trade_usdc),
         max_market_exposure_usdc=follow.max_market_exposure_usdc,
         readiness=readiness or ReadinessTracker(),
+        market_data_service=getattr(user_state, "market_data_service", None),
         extra={
             "slippage_tolerance_bps": int(config.execution.slippage_tolerance * 100),
             "clob_gateway": user_state.clob_gateway,

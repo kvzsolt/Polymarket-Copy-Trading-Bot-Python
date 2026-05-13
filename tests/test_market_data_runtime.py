@@ -254,6 +254,112 @@ class TestStatus:
 # extract_token_ids_from_live_positions
 # ---------------------------------------------------------------------------
 
+class TestReadinessFromWss:
+    """``market_data_ready`` must reflect executable WSS state per token."""
+
+    @pytest.mark.asyncio
+    async def test_market_data_ready_true_after_wss_book_and_tick(self) -> None:
+        readiness = ReadinessTracker()
+        store = MarketStateStore()
+        rt = _make_runtime(store=store, readiness=readiness)
+        rt._subscribed_tokens.add(TOKEN_A)
+        rt._status.running = True
+
+        # WSS book snapshot — promotes both quote_source and book_source to wss.
+        store.replace_book_snapshot(
+            TOKEN_A,
+            bids={Decimal("0.49"): Decimal("100")},
+            asks={Decimal("0.51"): Decimal("100")},
+            raw_event={"source": "wss"},
+        )
+        # Tick may legitimately be REST-derived.
+        store.set_tick(
+            TOKEN_A,
+            tick_size=Decimal("0.01"),
+            min_order_size=Decimal("5"),
+            neg_risk=False,
+            source="rest_snapshot",
+        )
+
+        await rt._on_market_state_change(TOKEN_A, "book")
+
+        assert readiness.snapshot().get("market_data_ready") is True
+
+    @pytest.mark.asyncio
+    async def test_market_data_ready_false_when_dirty(self) -> None:
+        readiness = ReadinessTracker()
+        store = MarketStateStore()
+        rt = _make_runtime(store=store, readiness=readiness)
+        rt._subscribed_tokens.add(TOKEN_A)
+        rt._status.running = True
+
+        store.replace_book_snapshot(
+            TOKEN_A,
+            bids={Decimal("0.49"): Decimal("100")},
+            asks={Decimal("0.51"): Decimal("100")},
+            raw_event={"source": "wss"},
+        )
+        store.set_tick(
+            TOKEN_A,
+            tick_size=Decimal("0.01"),
+            min_order_size=Decimal("5"),
+            neg_risk=False,
+        )
+        store.mark_dirty(TOKEN_A, "test_dirty")
+
+        await rt._on_market_state_change(TOKEN_A, "tick_size_change")
+
+        assert readiness.snapshot().get("market_data_ready") is False
+
+    @pytest.mark.asyncio
+    async def test_market_data_ready_false_when_missing_tick(self) -> None:
+        readiness = ReadinessTracker()
+        store = MarketStateStore()
+        rt = _make_runtime(store=store, readiness=readiness)
+        rt._subscribed_tokens.add(TOKEN_A)
+        rt._status.running = True
+
+        # WSS book/quote but no tick.
+        store.replace_book_snapshot(
+            TOKEN_A,
+            bids={Decimal("0.49"): Decimal("100")},
+            asks={Decimal("0.51"): Decimal("100")},
+            raw_event={"source": "wss"},
+        )
+
+        await rt._on_market_state_change(TOKEN_A, "book")
+
+        assert readiness.snapshot().get("market_data_ready") is False
+
+    @pytest.mark.asyncio
+    async def test_market_data_ready_false_when_quote_only_rest(self) -> None:
+        readiness = ReadinessTracker()
+        store = MarketStateStore()
+        rt = _make_runtime(store=store, readiness=readiness)
+        rt._subscribed_tokens.add(TOKEN_A)
+        rt._status.running = True
+
+        # REST-only seeds — book/quote source stays "rest_snapshot".
+        store.set_book(
+            TOKEN_A,
+            bids={Decimal("0.49"): Decimal("100")},
+            asks={Decimal("0.51"): Decimal("100")},
+            source="rest_snapshot",
+        )
+        store.set_tick(
+            TOKEN_A,
+            tick_size=Decimal("0.01"),
+            min_order_size=Decimal("5"),
+            neg_risk=False,
+            source="rest_snapshot",
+        )
+        store.mark_dirty(TOKEN_A, "awaiting_wss_after_rest_bootstrap")
+
+        await rt._on_market_state_change(TOKEN_A, "book")
+
+        assert readiness.snapshot().get("market_data_ready") is False
+
+
 class TestExtractTokenIds:
     def test_extracts_asset_field(self) -> None:
         positions = [{"asset": "0xabc"}, {"asset": "0xdef"}]

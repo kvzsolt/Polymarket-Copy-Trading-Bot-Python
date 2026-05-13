@@ -201,7 +201,7 @@ class TestDuplicateSignalSuppression:
         _prepare_db(db_path)
         repo = OrderRepository(str(db_path))
         clob = _SimpleClob()
-        svc = ExecutionService(clob, _MetaSvc(), _FeeSvc(), repo, config=_make_exec_config(), market_data_service=_make_mds())
+        svc = ExecutionService(clob, _FeeSvc(), repo, config=_make_exec_config(), market_data_service=_make_mds())
         req = _make_req(signal_id="sig-dup")
 
         result1 = await svc.execute(req)
@@ -218,7 +218,7 @@ class TestDuplicateSignalSuppression:
         _prepare_db(db_path)
         repo = OrderRepository(str(db_path))
         clob = _SimpleClob()
-        svc = ExecutionService(clob, _MetaSvc(), _FeeSvc(), repo, config=_make_exec_config(), market_data_service=_make_mds())
+        svc = ExecutionService(clob, _FeeSvc(), repo, config=_make_exec_config(), market_data_service=_make_mds())
 
         req1 = _make_req(signal_id="sig-A")
         req2 = _make_req(signal_id="sig-B")
@@ -235,7 +235,7 @@ class TestDuplicateSignalSuppression:
         _prepare_db(db_path)
         repo = OrderRepository(str(db_path))
         clob = _SimpleClob()
-        svc = ExecutionService(clob, _MetaSvc(), _FeeSvc(), repo, config=_make_exec_config(), market_data_service=_make_mds())
+        svc = ExecutionService(clob, _FeeSvc(), repo, config=_make_exec_config(), market_data_service=_make_mds())
 
         req = _make_req(signal_id="same-key")
         key1 = _idempotency_key(req)
@@ -311,7 +311,7 @@ class TestStaleLockExpiry:
         _prepare_db(db_path)
         repo = OrderRepository(str(db_path))
         clob = _SimpleClob()
-        svc = ExecutionService(clob, _MetaSvc(), _FeeSvc(), repo, config=_make_exec_config(), market_data_service=_make_mds())
+        svc = ExecutionService(clob, _FeeSvc(), repo, config=_make_exec_config(), market_data_service=_make_mds())
         req = _make_req(signal_id="sig-stale")
 
         # Simulate a stuck pending submission directly in the repo
@@ -369,7 +369,7 @@ class TestAmbiguousPostHandling:
                 "error": "timeout after POST",
             }
         )
-        svc = ExecutionService(clob, _MetaSvc(), _FeeSvc(), repo, config=_make_exec_config(), market_data_service=_make_mds())
+        svc = ExecutionService(clob, _FeeSvc(), repo, config=_make_exec_config(), market_data_service=_make_mds())
         req = _make_req(signal_id="sig-ambig")
         result = await svc.execute(req)
         assert result.status == "submitted_unconfirmed"
@@ -383,7 +383,7 @@ class TestAmbiguousPostHandling:
         repo = OrderRepository(str(db_path))
         clob = _SimpleClob()
         clob.post_signed_order = AsyncMock(side_effect=ConnectionError("connection lost"))
-        svc = ExecutionService(clob, _MetaSvc(), _FeeSvc(), repo, config=_make_exec_config(), market_data_service=_make_mds())
+        svc = ExecutionService(clob, _FeeSvc(), repo, config=_make_exec_config(), market_data_service=_make_mds())
         req = _make_req(signal_id="sig-exc")
         result = await svc.execute(req)
         assert result.status == "submitted_unconfirmed"
@@ -396,7 +396,7 @@ class TestAmbiguousPostHandling:
         repo = OrderRepository(str(db_path))
         clob = _SimpleClob()
         clob.create_market_order = AsyncMock(side_effect=ValueError("bad params"))
-        svc = ExecutionService(clob, _MetaSvc(), _FeeSvc(), repo, config=_make_exec_config(), market_data_service=_make_mds())
+        svc = ExecutionService(clob, _FeeSvc(), repo, config=_make_exec_config(), market_data_service=_make_mds())
         req = _make_req(signal_id="sig-create-fail")
         result = await svc.execute(req)
         assert result.accepted is False
@@ -434,7 +434,7 @@ class TestConcurrentSubmissionBlocking:
                 return {"signed": True}
 
         clob = _BlockingClob()
-        svc = ExecutionService(clob, _MetaSvc(), _FeeSvc(), repo, config=_make_exec_config(), market_data_service=_make_mds())
+        svc = ExecutionService(clob, _FeeSvc(), repo, config=_make_exec_config(), market_data_service=_make_mds())
         req = _make_req(signal_id="sig-race")
 
         # Launch first task that will block during create_market_order

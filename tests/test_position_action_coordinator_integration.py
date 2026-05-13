@@ -101,17 +101,53 @@ def _init_db(tmp_path):
     return db_path
 
 
+def _make_fresh_bundle():
+    from cache.market_state_store import BookSnapshot, QuoteSnapshot, TickSnapshot
+    from services.market_data_service import MarketDataBundle, MarketDataSource
+
+    now = time.monotonic()
+    return MarketDataBundle(
+        token_id=FAKE_TOKEN_ID,
+        quote=QuoteSnapshot(
+            token_id=FAKE_TOKEN_ID,
+            best_bid=Decimal("0.49"),
+            best_ask=Decimal("0.51"),
+            last_trade_price=None,
+            source="wss",
+            monotonic_ts=now,
+        ),
+        book=BookSnapshot(
+            token_id=FAKE_TOKEN_ID,
+            bids={Decimal("0.49"): Decimal("100")},
+            asks={Decimal("0.51"): Decimal("100")},
+            best_bid=Decimal("0.49"),
+            best_ask=Decimal("0.51"),
+            source="wss",
+            monotonic_ts=now,
+        ),
+        tick=TickSnapshot(
+            token_id=FAKE_TOKEN_ID,
+            tick_size=Decimal("0.01"),
+            min_order_size=Decimal("0.001"),
+            neg_risk=False,
+            source="wss",
+            monotonic_ts=now,
+        ),
+        source=MarketDataSource.WSS,
+    )
+
+
+class _CoordFakeMDS:
+    def __init__(self, bundle):
+        self._bundle = bundle
+
+    async def require_fresh_data(self, token_id):
+        return self._bundle
+
+
 def _make_context(db_path, *, execution_service=None, config=None) -> TradingContext:
     exec_svc = execution_service or AsyncMock()
-    if not hasattr(exec_svc, "market_meta_service") or isinstance(
-        getattr(exec_svc, "market_meta_service", None), MagicMock
-    ):
-        exec_svc.market_meta_service = AsyncMock()
-        exec_svc.market_meta_service.get.return_value = SimpleNamespace(
-            min_order_size=Decimal("0.001"),
-            tick_size=Decimal("0.01"),
-        )
-    return TradingContext(
+    ctx = TradingContext(
         user_id="user1",
         wallet_address="0x" + "a" * 40,
         client=MagicMock(),
@@ -128,8 +164,11 @@ def _make_context(db_path, *, execution_service=None, config=None) -> TradingCon
         allocation_pct=1.0,
         buy_min_amount=0.01,
         buy_max_amount=1000.0,
+        market_data_service=_CoordFakeMDS(_make_fresh_bundle()),
         extra={"slippage_tolerance_bps": 200},
     )
+    ctx.market_data_runtime = AsyncMock()
+    return ctx
 
 
 def _buy_signal(*, token=FAKE_TOKEN_ID, condition="cond1") -> dict:

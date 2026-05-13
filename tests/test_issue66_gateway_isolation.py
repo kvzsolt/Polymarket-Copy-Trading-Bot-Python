@@ -191,7 +191,7 @@ async def test_buy_submission_uses_gateway_marketable_path(tmp_path):
         VenueSubmitResult(success=True, order_id="ord-buy", status="submitted")
     )
     svc = ExecutionService(
-        _StubClob(), _MetaSvc(), _FeeSvc(), repo,
+        _StubClob(), _FeeSvc(), repo,
         config=_make_exec_config(),
         clob_gateway=gateway,
         market_data_service=_make_mds(),
@@ -215,7 +215,7 @@ async def test_sell_submission_uses_gateway_marketable_path(tmp_path):
         VenueSubmitResult(success=True, order_id="ord-sell", status="submitted")
     )
     svc = ExecutionService(
-        _StubClob(), _MetaSvc(), _FeeSvc(), repo,
+        _StubClob(), _FeeSvc(), repo,
         config=_make_exec_config(),
         clob_gateway=gateway,
         market_data_service=_make_mds(),
@@ -235,7 +235,7 @@ async def test_neg_risk_propagates_through_gateway_request(tmp_path):
         VenueSubmitResult(success=True, order_id="ord-nr", status="submitted")
     )
     svc = ExecutionService(
-        _StubClob(), _MetaSvc(neg_risk=True), _FeeSvc(), repo,
+        _StubClob(), _FeeSvc(), repo,
         config=_make_exec_config(),
         clob_gateway=gateway,
         market_data_service=_make_mds(neg_risk=True),
@@ -258,7 +258,7 @@ async def test_invalid_order_error_is_non_retryable(tmp_path):
     repo = OrderRepository(str(db_path))
     gateway = _make_gateway(VenueInvalidOrderError("invalid amount"))
     svc = ExecutionService(
-        _StubClob(), _MetaSvc(), _FeeSvc(), repo,
+        _StubClob(), _FeeSvc(), repo,
         config=_make_exec_config(),
         clob_gateway=gateway,
         market_data_service=_make_mds(),
@@ -276,7 +276,7 @@ async def test_auth_error_is_non_retryable(tmp_path):
     repo = OrderRepository(str(db_path))
     gateway = _make_gateway(VenueAuthError("unauthorized"))
     svc = ExecutionService(
-        _StubClob(), _MetaSvc(), _FeeSvc(), repo,
+        _StubClob(), _FeeSvc(), repo,
         config=_make_exec_config(),
         clob_gateway=gateway,
         market_data_service=_make_mds(),
@@ -303,7 +303,7 @@ async def test_ambiguous_post_returns_submitted_unconfirmed(tmp_path):
         )
     )
     svc = ExecutionService(
-        _StubClob(), _MetaSvc(), _FeeSvc(), repo,
+        _StubClob(), _FeeSvc(), repo,
         config=_make_exec_config(),
         clob_gateway=gateway,
         market_data_service=_make_mds(),
@@ -324,7 +324,7 @@ async def test_unavailable_error_is_treated_as_ambiguous(tmp_path):
     repo = OrderRepository(str(db_path))
     gateway = _make_gateway(VenueUnavailableError("connection reset"))
     svc = ExecutionService(
-        _StubClob(), _MetaSvc(), _FeeSvc(), repo,
+        _StubClob(), _FeeSvc(), repo,
         config=_make_exec_config(),
         clob_gateway=gateway,
         market_data_service=_make_mds(),

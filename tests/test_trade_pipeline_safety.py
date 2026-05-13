@@ -89,19 +89,81 @@ def _init_db(tmp_path):
     return db_path
 
 
-def _make_context(db_path, *, execution_service=None, config=None):
+def _make_bundle(
+    *,
+    min_order_size: Decimal = Decimal("0.001"),
+    tick_size: Decimal = Decimal("0.01"),
+    token_id: str = FAKE_TOKEN_ID,
+):
+    """Build an executable WSS-fresh MarketDataBundle for trade-pipeline tests."""
+    from cache.market_state_store import BookSnapshot, QuoteSnapshot, TickSnapshot
+    from services.market_data_service import MarketDataBundle, MarketDataSource
+
+    now = time.monotonic()
+    return MarketDataBundle(
+        token_id=token_id,
+        quote=QuoteSnapshot(
+            token_id=token_id,
+            best_bid=Decimal("0.49"),
+            best_ask=Decimal("0.51"),
+            last_trade_price=None,
+            source="wss",
+            monotonic_ts=now,
+        ),
+        book=BookSnapshot(
+            token_id=token_id,
+            bids={Decimal("0.49"): Decimal("100")},
+            asks={Decimal("0.51"): Decimal("100")},
+            best_bid=Decimal("0.49"),
+            best_ask=Decimal("0.51"),
+            source="wss",
+            monotonic_ts=now,
+        ),
+        tick=TickSnapshot(
+            token_id=token_id,
+            tick_size=tick_size,
+            min_order_size=min_order_size,
+            neg_risk=False,
+            source="wss",
+            monotonic_ts=now,
+        ),
+        source=MarketDataSource.WSS,
+    )
+
+
+class _FakeMDS:
+    """Minimal MarketDataService stand-in for trade_pipeline tests."""
+
+    def __init__(self, bundle):
+        self._bundle = bundle
+        self.calls: list[str] = []
+
+    async def require_fresh_data(self, token_id):  # noqa: D401  test helper
+        self.calls.append(token_id)
+        return self._bundle
+
+    async def get_quote_or_none(self, token_id):
+        return self._bundle.quote
+
+    async def get_book_or_none(self, token_id):
+        return self._bundle.book
+
+    async def get_tick_or_none(self, token_id):
+        return self._bundle.tick
+
+
+def _make_context(
+    db_path,
+    *,
+    execution_service=None,
+    config=None,
+    market_data_service=None,
+    market_data_runtime=None,
+):
     exec_svc = execution_service or AsyncMock()
-    # Ensure market_meta_service returns a small min_order_size so tests aren't
-    # blocked by the venue minimum guard.
-    if not hasattr(exec_svc, "market_meta_service") or isinstance(
-        getattr(exec_svc, "market_meta_service", None), MagicMock
-    ):
-        exec_svc.market_meta_service = AsyncMock()
-        exec_svc.market_meta_service.get.return_value = SimpleNamespace(
-            min_order_size=Decimal("0.001"),
-            tick_size=Decimal("0.01"),
-        )
-    return TradingContext(
+    mds = market_data_service or _FakeMDS(_make_bundle())
+    runtime = market_data_runtime or AsyncMock()
+    ctx = TradingContext(
         user_id="user1",
         wallet_address="0x" + "a" * 40,
         client=MagicMock(),
@@ -118,8 +180,11 @@ def _make_context(db_path, *, execution_service=None, config=None):
         allocation_pct=1.0,
         buy_min_amount=0.01,
         buy_max_amount=1000.0,
+        market_data_service=mds,
         extra={"slippage_tolerance_bps": 200},
     )
+    ctx.market_data_runtime = runtime
+    return ctx
 
 
 def _signal(*, side="BUY", tx_hash="0xabc", asset=FAKE_TOKEN_ID, condition_id="cond1", price=0.50, size=10.0):
@@ -872,10 +937,11 @@ async def test_buy_can_raise_from_small_target_to_exchange_min_when_within_buy_m
     exec_svc.execute.return_value = _exec_result(
         accepted=True, filled=Decimal("5"), status="filled", order_id="ord-buy-min-bump"
     )
-    exec_svc.market_meta_service = SimpleNamespace(
-        get=AsyncMock(return_value=SimpleNamespace(min_order_size=Decimal("5")))
+    ctx = _make_context(
+        db_path,
+        execution_service=exec_svc,
+        market_data_service=_FakeMDS(_make_bundle(min_order_size=Decimal("5"))),
     )
-    ctx = _make_context(db_path, execution_service=exec_svc)
     ctx.buy_min_amount = 1.0
     ctx.buy_max_amount = 8.0
 
@@ -985,16 +1051,13 @@ async def test_sell_uses_leader_fraction_without_sell_decision_gate(tmp_path):
 async def test_sell_bumps_tiny_request_to_executable_minimum(tmp_path):
     db_path = _init_db(tmp_path)
     exec_svc = AsyncMock()
-    exec_svc.market_meta_service.get.return_value = SimpleNamespace(
-        min_order_size=Decimal("5.0"),
-        tick_size=Decimal("0.01"),
-    )
     exec_svc.execute.return_value = _exec_result(
         accepted=True, filled=Decimal("5"), status="filled", order_id="ord-sell-min"
     )
     ctx = _make_context(
         db_path,
         execution_service=exec_svc,
+        market_data_service=_FakeMDS(_make_bundle(min_order_size=Decimal("5.0"))),
     )
 
     from storage.sqlite.positions_repo import PositionRecord
@@ -1022,16 +1085,13 @@ async def test_sell_bumps_tiny_request_to_executable_minimum(tmp_path):
 async def test_sell_below_minimum_sells_largest_remaining_amount(tmp_path):
     db_path = _init_db(tmp_path)
     exec_svc = AsyncMock()
-    exec_svc.market_meta_service.get.return_value = SimpleNamespace(
-        min_order_size=Decimal("5.0"),
-        tick_size=Decimal("0.01"),
-    )
     exec_svc.execute.return_value = _exec_result(
         accepted=True, filled=Decimal("3"), status="filled", order_id="ord-sell-largest"
     )
     ctx = _make_context(
         db_path,
         execution_service=exec_svc,
+        market_data_service=_FakeMDS(_make_bundle(min_order_size=Decimal("5.0"))),
     )
 
     from storage.sqlite.positions_repo import PositionRecord
