@@ -77,6 +77,7 @@ METRIC_ORDERS_SUBMISSION_AMBIGUOUS = "orders_submission_ambiguous_total"
 METRIC_RECONCILIATION_DELTA_APPLIED = "reconciliation_delta_applied_total"
 METRIC_RECONCILIATION_NEGATIVE_DELTA = "reconciliation_negative_delta_total"
 METRIC_RECONCILIATION_AUTO_RELEASE_AMBIGUOUS = "reconciliation_auto_release_ambiguous_total"
+METRIC_COORDINATOR_MISSING_SKIP = "coordinator_missing_skip_total"
 METRIC_RISK_EXIT_TRIGGERED = "risk_exits_total"  # legacy site already emits this name
 METRIC_WSS_RECONNECT = "wss_reconnect_total"
 METRIC_WSS_HEARTBEAT_STALL = "wss_heartbeat_stall_total"

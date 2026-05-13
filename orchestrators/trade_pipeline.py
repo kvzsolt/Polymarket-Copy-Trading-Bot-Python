@@ -100,11 +100,54 @@ async def _submit_copy_through_coordinator(
 ):
     """Route copy BUY/SELL through ExecutionCoordinator when wired.
 
-    Falls back to the ExecutionService primitive (via ``getattr`` alias) so
-    test contexts that don't wire the coordinator continue to work unchanged.
+    Live mode requires the coordinator: a missing coordinator fails closed
+    with status=``execution_coordinator_missing`` so we never silently bypass
+    ReservationService + PositionActionCoordinator. Paper / dry-run / test
+    contexts fall back to the ExecutionService primitive (via ``getattr``
+    alias) so existing tests that don't wire the coordinator keep working.
     """
+    from services.execution.coordinator import is_live_mode
+
     coordinator = getattr(context, "execution_coordinator", None)
     if coordinator is None:
+        if is_live_mode(getattr(context, "config", None)):
+            logger.error(
+                "execution_coordinator_missing | live mode requires coordinator | "
+                "user=%s leader=%s cond=%s token=%s side=%s",
+                context.user_id, leader_id, signal.condition_id,
+                signal.token_id, exec_req.side,
+                extra={
+                    "type": "execution_coordinator_missing",
+                    "user_id": context.user_id,
+                    "leader_id": leader_id,
+                    "condition_id": signal.condition_id,
+                    "token_id": signal.token_id,
+                    "side": exec_req.side,
+                },
+            )
+            try:
+                from services.metrics import (
+                    METRIC_COORDINATOR_MISSING_SKIP, metrics,
+                )
+
+                metrics.inc_sync(
+                    METRIC_COORDINATOR_MISSING_SKIP,
+                    labels={"side": exec_req.side, "source": "copy_trade"},
+                )
+            except Exception:
+                pass
+            from services.executionService import ExecutionResult as _ER
+
+            return _ER(
+                accepted=False,
+                order_id=None,
+                status="execution_coordinator_missing",
+                requested_amount=Decimal(str(exec_req.amount)),
+                filled_amount=Decimal("0"),
+                avg_price=None,
+                fees_paid=Decimal("0"),
+                error="ExecutionCoordinator not wired in live mode",
+            )
         submitter = getattr(context.execution_service, "execute")
         return await submitter(exec_req)
 
