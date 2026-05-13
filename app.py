@@ -374,16 +374,50 @@ def _attach_market_data_runtime_to_contexts(
             context.market_data_runtime = runtime
 
 
+def _build_reconcile_wake_closure(context):
+    """Return an async wake closure that converges ReconciliationService.
+
+    Throttled by a per-context asyncio.Lock so that a burst of WSS fill events
+    cannot stack reconcile passes. The closure delegates to the canonical
+    ``reconcile_submitted_unconfirmed``; it never touches positions directly.
+    """
+    from orchestrators.trade_pipeline import reconcile_submitted_unconfirmed
+
+    lock = asyncio.Lock()
+
+    async def _wake(event):
+        if lock.locked():
+            return
+        async with lock:
+            try:
+                await reconcile_submitted_unconfirmed(context)
+            except Exception as exc:
+                logger.warning(
+                    "user_wss_wake_reconcile_error",
+                    extra={
+                        "user_id": context.user_id,
+                        "error": redact_error_detail(exc),
+                    },
+                )
+
+    return _wake
+
+
 async def _start_user_data_runtimes(
     *,
     runtime_users: list[RuntimeUser],
     user_states: dict[str, UserRuntimeState],
     readiness,
+    risk_contexts_by_user: dict[str, "TradingContext"] | None = None,
 ) -> list[UserDataRuntime]:
     """Start user WSS runtimes.
 
     User WSS is authenticated with CLOB API credentials derived by
     create_clob_client(). It sets wss_user_ok=True only after auth success.
+
+    When ``risk_contexts_by_user`` is provided, each user's runtime gets a
+    wake-reconciler closure so own fills converge through the canonical
+    ReconciliationService without waiting for the next polled cycle.
     """
     user_data_runtimes: list[UserDataRuntime] = []
 
@@ -413,11 +447,18 @@ async def _start_user_data_runtimes(
 
         api_creds = _user_ws_api_creds(user_state)
 
+        wake_closure = None
+        if risk_contexts_by_user is not None:
+            user_context = risk_contexts_by_user.get(runtime_user.user_id)
+            if user_context is not None:
+                wake_closure = _build_reconcile_wake_closure(user_context)
+
         runtime = UserDataRuntime(
             market_store=market_store,
             readiness=readiness,
             api_creds=api_creds,
             user_id=runtime_user.user_id,
+            on_reconcile_signal=wake_closure,
         )
 
         await runtime.start()
@@ -683,6 +724,7 @@ async def main():
         runtime_users=runtime_users,
         user_states=user_states,
         readiness=application.readiness,
+        risk_contexts_by_user=risk_contexts_by_user,
     )
 
     startup_reconciled = await startup_reconcile_unconfirmed(
