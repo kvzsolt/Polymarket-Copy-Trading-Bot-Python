@@ -5,7 +5,7 @@ import asyncio
 from web3 import Web3
 
 from config.env import ENV
-from network.web3_adapter import AsyncWeb3Adapter
+from clients.network.web3_adapter import AsyncWeb3Adapter
 from utils.logger import get_logger
 
 logger = get_logger("Balance")

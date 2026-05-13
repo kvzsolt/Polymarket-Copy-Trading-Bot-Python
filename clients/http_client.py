@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 from domain.ports.clients import AbstractHttpClient
-from network.http_client import AsyncHttpClient
+from clients.network.http_client import AsyncHttpClient
 
 
 class HttpClient(AbstractHttpClient):

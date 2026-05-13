@@ -14,7 +14,7 @@ import logging
 from web3 import Web3
 
 from domain.ports.clients import AbstractBalanceClient
-from network.web3_adapter import AsyncWeb3Adapter
+from clients.network.web3_adapter import AsyncWeb3Adapter
 
 _USDC_ABI = [
     {
