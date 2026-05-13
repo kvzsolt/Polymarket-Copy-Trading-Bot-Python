@@ -897,6 +897,7 @@ async def main():
                         readiness=application.readiness,
                         user_id=runtime_user.user_id,
                         funder_address=runtime_user.wallet.funder_address,
+                        execution_coordinator=getattr(user_state, "execution_coordinator", None),
                     ).loop(),
                     name=f"near-one-exit-{runtime_user.user_id}",
                 )

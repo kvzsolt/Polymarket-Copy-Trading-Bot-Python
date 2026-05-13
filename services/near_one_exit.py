@@ -29,6 +29,7 @@ from utils.logger import get_logger
 
 if TYPE_CHECKING:
     from config.app_config import AppConfig
+    from services.execution.coordinator import ExecutionCoordinator
     from services.executionService import ExecutionService
     from services.healthServer import ReadinessTracker
     from services.market_data_service import MarketDataService
@@ -68,6 +69,7 @@ class NearOneExitService:
         readiness: "ReadinessTracker",
         user_id: str,
         funder_address: str,
+        execution_coordinator: "ExecutionCoordinator | None" = None,
     ) -> None:
         self._pm = position_manager
         self._exec = execution_service
@@ -76,6 +78,7 @@ class NearOneExitService:
         self._readiness = readiness
         self._user_id = user_id
         self._funder = funder_address
+        self._coordinator = execution_coordinator
         self._dwell: dict[str, _DwellState] = {}
         # Tokens already firing this session — prevents re-emit while the
         # SELL is in-flight or partially filled. Cleared on terminal close
@@ -250,7 +253,39 @@ class NearOneExitService:
             dwell_elapsed,
         )
         try:
-            result = await self._exec.execute(req)
+            if self._coordinator is not None:
+                from services.execution.coordinator import ExecutionIntent
+
+                intent = ExecutionIntent(
+                    user_id=self._funder,
+                    condition_id=condition_id,
+                    token_id=token_id,
+                    side="SELL",
+                    size=Decimal(str(decision.effective_size)),
+                    price=Decimal(str(live_price)),
+                    notional_usdc=Decimal(str(live_price)) * Decimal(str(decision.effective_size)),
+                    idempotency_key=signal_id,
+                    source="near_one_exit",
+                    signal_id=signal_id,
+                    leader_wallet="near-one-exit",
+                    max_slippage_bps=int(slippage_bps),
+                    reason="near_one_exit",
+                    recovery_metadata=req.recovery_metadata,
+                )
+                coord_result = await self._coordinator.submit_near_one_exit(intent)
+                result = coord_result.raw_result
+                if result is None:
+                    # Reservation conflict / insufficient — no submission happened.
+                    logger.info(
+                        "near_one_exit_skipped_pre_submit token=%s status=%s skip=%s",
+                        token_id[:12],
+                        coord_result.status,
+                        coord_result.skip_code,
+                    )
+                    self._firing.discard(token_id)
+                    return
+            else:
+                result = await self._exec.execute(req)
         except Exception as exc:
             logger.warning(
                 "near_one_exit_execute_error token=%s error=%r",

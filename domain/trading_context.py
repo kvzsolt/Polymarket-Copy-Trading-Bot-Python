@@ -14,6 +14,7 @@ from services.positionActionCoordinator import PositionActionCoordinator
 
 if TYPE_CHECKING:
     from orchestrators.market_data_runtime import MarketDataRuntime
+    from services.execution.coordinator import ExecutionCoordinator
     from services.market_data_service import MarketDataService
 
 
@@ -52,6 +53,11 @@ class TradingContext:
     # signal tokens before placing orders.
     market_data_service: "MarketDataService | None" = None
     market_data_runtime: "MarketDataRuntime | None" = None
+    # Production execution funnel — set by ``build_trading_context``. The
+    # trade pipeline, risk monitor, and near-one exit route through this so
+    # ReservationService and the PositionActionCoordinator apply universally.
+    # See PR6 plan in `.claude/plans/replicated-leaping-breeze.md`.
+    execution_coordinator: "ExecutionCoordinator | None" = None
 
     def __post_init__(self) -> None:
         # Fail fast: these dependencies are required in production contexts.

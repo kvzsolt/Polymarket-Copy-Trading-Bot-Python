@@ -2,18 +2,34 @@ from __future__ import annotations
 
 import logging
 import time
-from dataclasses import dataclass
+from contextlib import asynccontextmanager, nullcontext
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Any, Awaitable, Callable, Dict, Protocol
+from typing import Any, Awaitable, Callable, Dict, Optional, Protocol
 
-from domain.order_lifecycle import OrderIntent, OrderLifecycleStatus, classify_venue_status
+from domain.order_lifecycle import (
+    IntentReason,
+    IntentSide,
+    OrderIntent,
+    OrderIntentKey,
+    OrderLifecycleStatus,
+    classify_venue_status,
+)
 from integrations.polymarket.errors import (
     RetryableVenueError,
     TerminalVenueError,
     VenueRateLimitError,
     VenueUnavailableError,
 )
-from services.execution.reservation_service import ReservationService, Clock, DefaultClock
+from services.execution.reservation_service import (
+    Clock,
+    DefaultClock,
+    InsufficientFreeQuote,
+    InsufficientFreeShares,
+    ReservationConflict,
+    ReservationService,
+)
 from services.execution.state_machine import assert_transition_allowed
 
 logger = logging.getLogger(__name__)
@@ -29,6 +45,71 @@ _INSUFFICIENT_BALANCE_PATTERNS = (
 def _is_insufficient_balance_error(msg: str) -> bool:
     lower = msg.lower()
     return any(p in lower for p in _INSUFFICIENT_BALANCE_PATTERNS)
+
+
+@dataclass(frozen=True)
+class ExecutionIntent:
+    """Production execution intent.
+
+    Carries everything the coordinator needs to build a production
+    ``ExecutionRequest`` and a ``services.execution.reservation_service``
+    ``OrderIntent``. ``source`` drives the ``IntentReason`` mapping used by
+    the reservation key. Distinct from the V2-shaped ``OrderIntent`` consumed
+    by ``ExecutionCoordinator.execute_intent``.
+    """
+
+    user_id: str
+    condition_id: str
+    token_id: str
+    side: str  # "BUY" | "SELL"
+    size: Decimal
+    price: Decimal
+    notional_usdc: Decimal
+    idempotency_key: str | None = None
+    source: str = "copy_trade"  # copy_trade | risk_exit | near_one_exit | protective_exit | manual
+    signal_id: str | None = None
+    leader_wallet: str | None = None
+    max_slippage_bps: int = 200
+    reason: str | None = None
+    recovery_metadata: dict[str, Any] | None = None
+    metadata: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class ExecutionCoordinatorResult:
+    """Structured result returned by every production coordinator submit_*."""
+
+    accepted: bool
+    status: str
+    skip_code: str | None = None
+    reason: str | None = None
+    order_id: str | None = None
+    reservation_id: str | None = None
+    submission_state: str | None = None
+    lifecycle_status: str = ""
+    raw_result: Any | None = None
+
+
+_SOURCE_TO_REASON: dict[str, IntentReason] = {
+    "copy_trade": IntentReason.COPY_BUY,  # overridden for SELL below
+    "risk_exit": IntentReason.RISK_EXIT,
+    "near_one_exit": IntentReason.NEAR_ONE_EXIT,
+    "protective_exit": IntentReason.RISK_EXIT,
+    "manual": IntentReason.RISK_EXIT,
+}
+
+
+_NON_TERMINAL_SUBMIT_STATUSES = frozenset({
+    "submitted_unconfirmed", "submitted_delayed", "delayed",
+    "live", "order_live", "matched", "matched_pending_confirmation",
+    "mined", "trade_mined", "retrying", "trade_retrying",
+})
+
+_TERMINAL_FAILURE_SUBMIT_STATUSES = frozenset({
+    "rejected", "failed", "cancelled", "canceled", "expired",
+    "book_no_liquidity", "book_spread_wide",
+    "stale_market_data", "market_not_ready", "circuit_open",
+})
 
 
 @dataclass(frozen=True)
@@ -88,12 +169,14 @@ class ExecutionCoordinator:
         orders_repo: Any,
         fills_repo: Any,
         positions_repo: Any,
-        clob_gateway: OrderSubmitter,
-        reconciler: Reconciler,
-        audit_logger: AuditLogger,
+        clob_gateway: OrderSubmitter | None = None,
+        reconciler: Reconciler | None = None,
+        audit_logger: AuditLogger | None = None,
         clock: Clock = DefaultClock(),
         reconciliation_service: Any | None = None,
         live_position_fetcher: Callable[[str, str], Awaitable[Decimal | None]] | None = None,
+        execution_service: Any | None = None,
+        position_coordinator: Any | None = None,
     ):
         self.reservation_service = reservation_service
         self.orders_repo = orders_repo
@@ -105,6 +188,11 @@ class ExecutionCoordinator:
         self.clock = clock
         self.reconciliation_service = reconciliation_service
         self.live_position_fetcher = live_position_fetcher
+        # Production wrapper deps. ``execute_intent`` (V2) does not use these.
+        self.execution_service = execution_service
+        self.position_coordinator = position_coordinator
+        # Cache the underlying reservations repo for direct order-id lookups.
+        self.reservations_repo = getattr(reservation_service, "reservations_repo", None)
 
     async def execute_intent(self, intent: OrderIntent) -> ExecutionResult:
         reservation = await self.reservation_service.reserve_for_intent(intent)
@@ -293,3 +381,267 @@ class ExecutionCoordinator:
             )
         except Exception:
             logger.debug("coordinator_drift_reconciliation_failed", exc_info=True)
+
+    # ------------------------------------------------------------------
+    # Production wrapper around the existing ExecutionService primitive.
+    # ``execute_intent`` is the future V2 intent-shaped path; the methods
+    # below are the current production compatibility surface.
+    # ------------------------------------------------------------------
+    async def submit_copy_trade(self, intent: ExecutionIntent) -> ExecutionCoordinatorResult:
+        return await self._submit_with_reservation(intent, source_override="copy_trade")
+
+    async def submit_risk_exit(self, intent: ExecutionIntent) -> ExecutionCoordinatorResult:
+        return await self._submit_with_reservation(intent, source_override="risk_exit")
+
+    async def submit_protective_exit(self, intent: ExecutionIntent) -> ExecutionCoordinatorResult:
+        return await self._submit_with_reservation(intent, source_override="protective_exit")
+
+    async def submit_near_one_exit(self, intent: ExecutionIntent) -> ExecutionCoordinatorResult:
+        # Near-one is the only path whose caller does not already hold the
+        # PositionActionCoordinator scope. Acquire it here when available so
+        # this SELL serialises against copy SELL and risk SELL on the same
+        # (user, condition, token).
+        if self.position_coordinator is None:
+            return await self._submit_with_reservation(intent, source_override="near_one_exit")
+        try:
+            from services.positionActionCoordinator import PositionScope
+        except Exception:
+            PositionScope = None  # type: ignore[assignment]
+        if PositionScope is None:
+            return await self._submit_with_reservation(intent, source_override="near_one_exit")
+        scope = PositionScope(
+            user_id=intent.user_id,
+            condition_id=intent.condition_id,
+            token_id=intent.token_id,
+        )
+        async with self.position_coordinator.acquire(scope):
+            return await self._submit_with_reservation(intent, source_override="near_one_exit")
+
+    # ------------------------------------------------------------------
+    # Internal — single production funnel.
+    # ------------------------------------------------------------------
+    async def _submit_with_reservation(
+        self,
+        intent: ExecutionIntent,
+        *,
+        source_override: str,
+    ) -> ExecutionCoordinatorResult:
+        if self.execution_service is None:
+            raise RuntimeError(
+                "ExecutionCoordinator.submit_*: execution_service is required for production submits"
+            )
+
+        order_intent = self._build_order_intent(intent, source=source_override)
+
+        # ---- Reservation acquire (dup-guard layer #1) -----------------
+        try:
+            reservation = await self.reservation_service.reserve_for_intent(order_intent)
+        except ReservationConflict as exc:
+            self._safe_audit(
+                "coordinator_duplicate_reservation_conflict",
+                {
+                    "user_id": intent.user_id,
+                    "condition_id": intent.condition_id,
+                    "token_id": intent.token_id,
+                    "side": intent.side,
+                    "source": source_override,
+                    "error": str(exc),
+                },
+            )
+            return ExecutionCoordinatorResult(
+                accepted=False,
+                status="duplicate_ignored",
+                skip_code="reservation_conflict",
+                reason=str(exc),
+                lifecycle_status="duplicate_ignored",
+            )
+        except (InsufficientFreeQuote, InsufficientFreeShares) as exc:
+            self._safe_audit(
+                "coordinator_reservation_insufficient",
+                {
+                    "user_id": intent.user_id,
+                    "side": intent.side,
+                    "source": source_override,
+                    "error": str(exc),
+                },
+            )
+            return ExecutionCoordinatorResult(
+                accepted=False,
+                status="reservation_failed",
+                skip_code="reservation_insufficient",
+                reason=str(exc),
+                lifecycle_status="failed",
+            )
+
+        reservation_id = reservation.id
+        logger.info(
+            "coordinator.production_reserved id=%s side=%s source=%s scope=%s/%s",
+            reservation_id, intent.side, source_override,
+            intent.condition_id, intent.token_id,
+        )
+
+        # ---- Build ExecutionRequest, thread reservation_id ------------
+        from services.execution.types import ExecutionRequest
+
+        recovery_metadata = dict(intent.recovery_metadata or {})
+        recovery_metadata["reservation_id"] = reservation_id
+        recovery_metadata.setdefault("source", source_override)
+
+        exec_request = ExecutionRequest(
+            user_id=intent.user_id,
+            leader_id=intent.leader_wallet or "",
+            token_id=intent.token_id,
+            side=intent.side.upper(),
+            amount=Decimal(str(intent.size)),
+            max_slippage_bps=int(intent.max_slippage_bps),
+            reason=intent.reason or source_override,
+            signal_id=intent.signal_id,
+            condition_id=intent.condition_id,
+            recovery_metadata=recovery_metadata,
+        )
+
+        # ---- Submit through ExecutionService (dup-guard layer #2) -----
+        try:
+            result = await self.execution_service.execute(exec_request)
+        except Exception as exc:
+            self._release_reservation(reservation_id, reason="execute_exception")
+            self._safe_audit(
+                "coordinator_execute_exception",
+                {
+                    "reservation_id": reservation_id,
+                    "side": intent.side,
+                    "source": source_override,
+                    "error": repr(exc),
+                },
+            )
+            raise
+
+        status = (getattr(result, "status", "") or "").lower()
+        order_id = getattr(result, "order_id", None)
+
+        if status == "duplicate_ignored":
+            # ExecutionService found a pre-existing in-flight order via
+            # idempotency-key lookup. Release the just-taken reservation;
+            # never touch a pre-existing one that may already be linked.
+            self._release_reservation(reservation_id, reason="idempotency_duplicate")
+            self._safe_audit(
+                "coordinator_duplicate_idempotency",
+                {
+                    "reservation_id": reservation_id,
+                    "existing_order_id": order_id,
+                    "source": source_override,
+                },
+            )
+            return ExecutionCoordinatorResult(
+                accepted=False,
+                status="duplicate_ignored",
+                skip_code="idempotency_duplicate",
+                reason="existing in-flight order",
+                order_id=order_id,
+                reservation_id=reservation_id,
+                lifecycle_status="duplicate_ignored",
+                raw_result=result,
+            )
+
+        if status == "inflight_lock":
+            self._release_reservation(reservation_id, reason="inflight_lock")
+            return ExecutionCoordinatorResult(
+                accepted=False,
+                status="inflight_lock",
+                skip_code="inflight_lock",
+                reason=getattr(result, "error", None),
+                reservation_id=reservation_id,
+                lifecycle_status="duplicate_ignored",
+                raw_result=result,
+            )
+
+        if status in _TERMINAL_FAILURE_SUBMIT_STATUSES:
+            self._release_reservation(reservation_id, reason=status)
+            return ExecutionCoordinatorResult(
+                accepted=False,
+                status=status,
+                skip_code=status,
+                reason=getattr(result, "error", None),
+                order_id=order_id,
+                reservation_id=reservation_id,
+                lifecycle_status="failed",
+                raw_result=result,
+            )
+
+        # Non-terminal venue ack — leave reservation active. Reconciler
+        # releases on terminal status (PR5 _release_reservation_if_present).
+        if status in _NON_TERMINAL_SUBMIT_STATUSES or getattr(result, "accepted", False):
+            if order_id and self.reservations_repo is not None:
+                try:
+                    self.reservations_repo.link_order(reservation_id, order_id=order_id)
+                except Exception as exc:
+                    logger.debug(
+                        "coordinator_link_reservation_failed | reservation_id=%s order_id=%s error=%r",
+                        reservation_id, order_id, exc,
+                    )
+            return ExecutionCoordinatorResult(
+                accepted=True,
+                status=status or "submitted_unconfirmed",
+                order_id=order_id,
+                reservation_id=reservation_id,
+                submission_state=status or "submitted_unconfirmed",
+                lifecycle_status=status or "submitted_unconfirmed",
+                raw_result=result,
+            )
+
+        # Catch-all: status not recognised — treat as failure, release.
+        self._release_reservation(reservation_id, reason=status or "unknown")
+        return ExecutionCoordinatorResult(
+            accepted=False,
+            status=status or "unknown",
+            skip_code=status or "unknown",
+            reason=getattr(result, "error", None),
+            order_id=order_id,
+            reservation_id=reservation_id,
+            lifecycle_status="failed",
+            raw_result=result,
+        )
+
+    # ------------------------------------------------------------------
+    # Helpers for the production wrapper.
+    # ------------------------------------------------------------------
+    def _build_order_intent(self, intent: ExecutionIntent, *, source: str) -> OrderIntent:
+        side = IntentSide.BUY if intent.side.upper() == "BUY" else IntentSide.SELL
+        if source == "copy_trade":
+            reason = IntentReason.COPY_BUY if side == IntentSide.BUY else IntentReason.COPY_SELL
+        else:
+            reason = _SOURCE_TO_REASON.get(source, IntentReason.RISK_EXIT)
+        key = OrderIntentKey(
+            user_id=intent.user_id,
+            leader_wallet=intent.leader_wallet,
+            condition_id=intent.condition_id,
+            token_id=intent.token_id,
+            side=side,
+            reason=reason,
+        )
+        return OrderIntent(
+            key=key,
+            size=Decimal(str(intent.size)),
+            price=Decimal(str(intent.price)),
+            max_slippage_bps=int(intent.max_slippage_bps),
+            created_at=datetime.fromtimestamp(self.clock.utcnow_timestamp(), tz=timezone.utc),
+            source_signal_id=intent.signal_id,
+        )
+
+    def _release_reservation(self, reservation_id: str, *, reason: str) -> None:
+        try:
+            self.reservation_service.release_terminal(reservation_id, reason=reason)
+        except Exception as exc:
+            logger.warning(
+                "coordinator_release_failed reservation_id=%s reason=%s error=%r",
+                reservation_id, reason, exc,
+            )
+
+    def _safe_audit(self, event: str, payload: dict[str, Any]) -> None:
+        if self.audit_logger is None:
+            return
+        try:
+            self.audit_logger.log_event(event, payload)
+        except Exception:
+            # Audit failures must never break execution.
+            pass
