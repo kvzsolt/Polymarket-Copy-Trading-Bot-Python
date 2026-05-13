@@ -106,6 +106,62 @@ class JsonFormatter(logging.Formatter):
         return json.dumps(payload, ensure_ascii=False)
 
 
+_ORDER_LIFECYCLE_PANEL: dict[str, tuple[str, str, str]] = {
+    # status -> (title, border_style, icon)
+    "submitted_unconfirmed": ("ORDER UNCONFIRMED", "yellow", "⏳"),
+    "delayed": ("ORDER DELAYED", "yellow", "⏳"),
+    "submitted_delayed": ("ORDER DELAYED", "yellow", "⏳"),
+    "live": ("ORDER LIVE", "cyan", "📘"),
+    "order_live": ("ORDER LIVE", "cyan", "📘"),
+    "matched": ("ORDER MATCHED", "cyan", "🔄"),
+    "matched_pending_confirmation": ("ORDER MATCHED", "cyan", "🔄"),
+    "mined": ("TRADE MINED", "cyan", "⛏️"),
+    "trade_mined": ("TRADE MINED", "cyan", "⛏️"),
+    "retrying": ("TRADE RETRYING", "yellow", "🔁"),
+    "trade_retrying": ("TRADE RETRYING", "yellow", "🔁"),
+    "confirmed": ("TRADE CONFIRMED", "green", "✅"),
+    "trade_confirmed": ("TRADE CONFIRMED", "green", "✅"),
+    "filled": ("TRADE CONFIRMED", "green", "✅"),
+    "failed": ("ORDER FAILED", "red", "❌"),
+    "rejected": ("ORDER FAILED", "red", "❌"),
+    "expired": ("ORDER FAILED", "red", "❌"),
+    "cancelled": ("ORDER CANCELLED", "red", "❌"),
+    "canceled": ("ORDER CANCELLED", "red", "❌"),
+    "ambiguous_timeout": ("ORDER AMBIGUOUS — TIMEOUT", "magenta", "⚠️"),
+    "auto_released_ambiguous": ("ORDER AUTO-RELEASED", "magenta", "♻️"),
+}
+
+
+_ORDER_LIFECYCLE_LAST: dict[str, str] = {}
+_ORDER_LIFECYCLE_LAST_MAX = 1024
+
+
+def _lifecycle_dedup_key(
+    order_id: str | None,
+    signal_id: str | None,
+    condition_id: str | None,
+) -> str:
+    return order_id or signal_id or condition_id or ""
+
+
+def _lifecycle_should_emit(key: str, status: str) -> bool:
+    if not key:
+        return True
+    prev = _ORDER_LIFECYCLE_LAST.get(key)
+    if prev == status:
+        return False
+    if len(_ORDER_LIFECYCLE_LAST) >= _ORDER_LIFECYCLE_LAST_MAX:
+        # Drop oldest insertion. Python dicts preserve insertion order so this
+        # popitem(last=False) equivalent works via next(iter(...)).
+        try:
+            oldest = next(iter(_ORDER_LIFECYCLE_LAST))
+            _ORDER_LIFECYCLE_LAST.pop(oldest, None)
+        except StopIteration:
+            pass
+    _ORDER_LIFECYCLE_LAST[key] = status
+    return True
+
+
 class RichConsoleHandler(logging.Handler):
     """Console handler with Rich-styled rendering for structured log types."""
 
@@ -176,6 +232,9 @@ class RichConsoleHandler(logging.Handler):
             return True
         if log_type == "trade_submitted":
             self._render_submitted(record, ts)
+            return True
+        if log_type == "order_lifecycle":
+            self._render_order_lifecycle(record, ts)
             return True
         if log_type == "risk_exit":
             self._render_risk_exit(record, ts)
@@ -369,6 +428,56 @@ class RichConsoleHandler(logging.Handler):
                 border_style="cyan",
                 padding=(1, 2),
             ))
+
+    def _render_order_lifecycle(self, record: LogRecord, ts: str) -> None:
+        status = (getattr(record, "status", "") or "").lower()
+        side = (getattr(record, "side", "") or "?").upper()
+        venue_status = getattr(record, "venueStatus", None)
+        submission_state = getattr(record, "submissionState", None)
+        size_raw = getattr(record, "size", None)
+        price_raw = getattr(record, "price", None)
+        usdc_raw = getattr(record, "usdcValue", None)
+        cond = shorten_addr(getattr(record, "conditionId", None), 8, 6)
+        asset = shorten_addr(getattr(record, "asset", None), 8, 6)
+        order_id = shorten_addr(getattr(record, "copyOrderId", None), 8, 6)
+        tx = shorten_addr(getattr(record, "txHash", None), 8, 6)
+
+        title_text, border, icon = _ORDER_LIFECYCLE_PANEL.get(
+            status,
+            ("ORDER LIFECYCLE", "white", "📋"),
+        )
+        side_style = "trade.buy" if side == "BUY" else "trade.sell" if side == "SELL" else "info"
+
+        def _fmt_float(v: Any, fmt: str) -> str | None:
+            try:
+                return format(float(v), fmt) if v is not None else None
+            except (TypeError, ValueError):
+                return None
+
+        size_str = _fmt_float(size_raw, ".4f")
+        price_str = _fmt_float(price_raw, ".4f")
+        usdc_str = _fmt_float(usdc_raw, ".2f")
+
+        lines = _build_panel_lines(
+            Side=f"[{side_style}]{side}[/{side_style}]",
+            Status=status or None,
+            VenueStatus=str(venue_status) if venue_status else None,
+            State=str(submission_state) if submission_state else None,
+            Size=f"{size_str} tokens" if size_str else None,
+            Price=price_str,
+            Value=f"[money]${usdc_str}[/money]" if usdc_str else None,
+            Condition=cond if cond != "N/A" else None,
+            Asset=asset if asset != "N/A" else None,
+            OrderID=order_id if order_id != "N/A" else None,
+            Tx=tx if tx != "N/A" else None,
+        )
+        console.print()
+        console.print(Panel(
+            "\n".join(lines),
+            title=f"{icon} [bold {border}]{title_text} — {side}[/bold {border}]  [muted][{ts}][/muted]",
+            border_style=border,
+            padding=(1, 2),
+        ))
 
     def _render_risk_exit(self, record: LogRecord, ts: str) -> None:
         cond = shorten_addr(getattr(record, "conditionId", None), 8, 6)
@@ -1336,6 +1445,71 @@ def log_trade_submitted(
         asset=asset, size=size, price=price, usdc_value=usdc_value,
         meta=meta,
     )
+
+
+def log_order_lifecycle(
+    logger: logging.Logger,
+    *,
+    status: str,
+    side: str,
+    condition_id: str | None,
+    asset: str | None,
+    order_id: str | None,
+    size: float | None = None,
+    price: float | None = None,
+    usdc_value: float | None = None,
+    venue_status: str | None = None,
+    submission_state: str | None = None,
+    tx_hash: str | None = None,
+    event_slug: str | None = None,
+    signal_id: str | None = None,
+    meta: dict[str, Any] | None = None,
+    force: bool = False,
+) -> None:
+    """Emit a transition-only structured log for order lifecycle progress.
+
+    The handler renders this as a Rich panel (status → color/icon defined in
+    _ORDER_LIFECYCLE_PANEL). Repeat calls with the same dedup key + status are
+    suppressed unless ``force=True``.
+    """
+    canonical = (status or "").strip().lower()
+    key = _lifecycle_dedup_key(order_id, signal_id, condition_id)
+    if not force and not _lifecycle_should_emit(key, canonical):
+        return
+
+    payload: dict[str, Any] = {
+        "type": "order_lifecycle",
+        "status": canonical,
+        "side": (side or "").upper(),
+        "venueStatus": venue_status,
+        "submissionState": submission_state,
+        "conditionId": condition_id,
+        "asset": asset,
+        "copyOrderId": order_id,
+        "size": size,
+        "price": price,
+        "usdcValue": usdc_value,
+        "txHash": tx_hash,
+        "signalId": signal_id,
+    }
+    ev_url = event_link(event_slug)
+    if ev_url:
+        payload["eventUrl"] = ev_url
+    if meta:
+        payload.update(meta)
+
+    _f = lambda v, fmt=".4f": format(float(v), fmt) if v is not None else "0"
+    msg = (
+        f"LIFECYCLE {canonical} | side={(side or '').upper()} | "
+        f"cond={condition_id} | asset={asset} | order_id={order_id} | "
+        f"size={_f(size)} price={_f(price)} {format_usdc(usdc_value)}"
+    )
+    logger.info(msg, extra=payload)
+
+
+def _reset_lifecycle_dedup_for_tests() -> None:
+    """Test helper — clears the per-key dedup map."""
+    _ORDER_LIFECYCLE_LAST.clear()
 
 
 def log_trade_decision(
