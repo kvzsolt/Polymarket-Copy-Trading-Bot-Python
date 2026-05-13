@@ -227,6 +227,64 @@ class ReconciliationService:
             # Audit logging must never break reconciliation.
             pass
 
+    def _record_negative_delta_anomaly(
+        self,
+        *,
+        side: str,
+        order_id: str,
+        current_matched: Decimal,
+        previous_matched: Decimal,
+        logger: Any = None,
+    ) -> None:
+        """Surface a venue-state regression.
+
+        ``current_matched < previous_matched`` means the venue reported a
+        cumulative matched size smaller than what we have already applied
+        locally. This should never happen in normal operation — Polymarket
+        only increments cumulative matched. Clamp to zero (caller does that)
+        but make the anomaly observable so operators can investigate.
+        """
+        emit_logger = logger if logger is not None else _log
+        try:
+            emit_logger.warning(
+                "reconciliation_negative_delta_anomaly | order_id=%s side=%s "
+                "current_matched=%s previous_matched=%s",
+                order_id,
+                side,
+                str(current_matched),
+                str(previous_matched),
+                extra={
+                    "type": "reconciliation_negative_delta_anomaly",
+                    "order_id": order_id,
+                    "side": side,
+                    "current_matched": str(current_matched),
+                    "previous_matched": str(previous_matched),
+                },
+            )
+        except Exception:
+            pass
+        self._audit(
+            "reconciliation_negative_delta_anomaly",
+            {
+                "order_id": order_id,
+                "side": side,
+                "current_matched": str(current_matched),
+                "previous_matched": str(previous_matched),
+            },
+        )
+        try:
+            from services.metrics import (
+                METRIC_RECONCILIATION_NEGATIVE_DELTA,
+                metrics,
+            )
+
+            metrics.inc_sync(
+                METRIC_RECONCILIATION_NEGATIVE_DELTA,
+                labels={"side": str(side or "unknown")},
+            )
+        except Exception:
+            pass
+
     @staticmethod
     def _previous_matched_for_order(orders_repo: Any, order_id: str) -> Decimal:
         if not order_id:
@@ -376,6 +434,15 @@ class ReconciliationService:
 
         previous_matched = self._previous_matched_for_order(self.orders_repo, order_id)
         delta_matched = current_matched - previous_matched
+
+        if current_matched < previous_matched:
+            self._record_negative_delta_anomaly(
+                side=side,
+                order_id=order_id,
+                current_matched=current_matched,
+                previous_matched=previous_matched,
+                logger=logger,
+            )
 
         # Terminal no-fill — unlock the trade key for retry.
         if current_matched <= 0 and order_status in _TERMINAL_NO_FILL_STATUSES:
@@ -633,6 +700,14 @@ class ReconciliationService:
         current_matched = _matched_amount_from_response(fill_info)
         previous_matched = _matched_amount_from_response(record.get("response"))
         delta_matched = current_matched - previous_matched
+        if current_matched < previous_matched:
+            self._record_negative_delta_anomaly(
+                side="SELL",
+                order_id=order_id,
+                current_matched=current_matched,
+                previous_matched=previous_matched,
+                logger=logger,
+            )
         if delta_matched < 0:
             delta_matched = Decimal("0")
 

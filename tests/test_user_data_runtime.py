@@ -463,3 +463,63 @@ class TestUpdateReadiness:
         snap = readiness.snapshot()
         assert snap["wss_user_ok"] is True
         assert snap["wss_user_connecting"] is False
+
+# ---------------------------------------------------------------------------
+# Wake-reconciler (PR 4)
+# ---------------------------------------------------------------------------
+
+
+def _make_runtime_with_signal(callback) -> UserDataRuntime:
+    return UserDataRuntime(
+        market_store=MarketStateStore(),
+        readiness=ReadinessTracker(),
+        api_creds=dict(VALID_CREDS),
+        user_id=USER_ID,
+        on_reconcile_signal=callback,
+    )
+
+
+class TestReconcileSignalWake:
+    @pytest.mark.asyncio
+    async def test_on_fill_invokes_reconcile_signal(self) -> None:
+        callback = AsyncMock()
+        rt = _make_runtime_with_signal(callback)
+        event = {"asset_id": "0xtok", "order_id": "ord-pr4-fill", "side": "BUY"}
+
+        await rt._on_fill(event)
+
+        callback.assert_awaited_once_with(event)
+
+    @pytest.mark.asyncio
+    async def test_on_order_update_invokes_reconcile_signal(self) -> None:
+        callback = AsyncMock()
+        rt = _make_runtime_with_signal(callback)
+        event = {"order_id": "ord-pr4-ou", "status": "filled"}
+
+        await rt._on_order_update(event)
+
+        callback.assert_awaited_once_with(event)
+
+    @pytest.mark.asyncio
+    async def test_failing_callback_does_not_propagate(self) -> None:
+        async def _raise(_event):
+            raise RuntimeError("boom")
+
+        rt = _make_runtime_with_signal(_raise)
+
+        # Must not raise — WSS loop must keep running.
+        await rt._on_fill({"asset_id": "0xtok"})
+        await rt._on_order_update({"order_id": "ord-pr4-err"})
+
+    @pytest.mark.asyncio
+    async def test_no_callback_is_a_noop(self) -> None:
+        rt = _make_runtime_with_signal(None)
+        await rt._on_fill({"asset_id": "0xtok"})
+        await rt._on_order_update({"order_id": "ord-pr4-none"})
+
+    def test_user_data_runtime_does_not_carry_positions_or_reservations(self) -> None:
+        """Structural pin: settlement stays with ReconciliationService."""
+        rt = _make_runtime_with_signal(None)
+        assert not hasattr(rt, "positions_repo")
+        assert not hasattr(rt, "fills_repo")
+        assert not hasattr(rt, "reservation_service")

@@ -15,6 +15,7 @@ It does not settle positions directly.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -22,6 +23,8 @@ from cache.market_state_store import MarketStateStore
 from clients.user_ws import DEFAULT_USER_WS_URL, UserWebSocket
 from services.healthServer import ReadinessTracker
 from utils.logger import get_logger, redact_error_detail
+
+ReconcileSignal = Callable[[dict[str, Any]], Awaitable[None]]
 
 logger = get_logger("UserDataRuntime")
 
@@ -40,6 +43,12 @@ class UserDataRuntime:
     api_creds: dict[str, str]
     user_id: str
     ws_url: str = DEFAULT_USER_WS_URL
+    # Optional wake-reconciler callback. Fired on own fills and order updates
+    # so the canonical ReconciliationService converges immediately instead of
+    # waiting for the next polled cycle. UserDataRuntime never mutates
+    # positions/reservations directly — settlement remains owned by the
+    # reconciler.
+    on_reconcile_signal: ReconcileSignal | None = None
 
     _ws_client: UserWebSocket | None = field(default=None, init=False)
     _ws_task: asyncio.Task | None = field(default=None, init=False)
@@ -179,7 +188,6 @@ class UserDataRuntime:
         logger.warning("user_wss_disconnected", extra={"user_id": self.user_id})
 
     async def _on_fill(self, event: dict[str, Any]) -> None:
-        # Future PR: forward to reconciliation/order lifecycle owner.
         logger.debug(
             "user_wss_fill_event",
             extra={
@@ -188,9 +196,9 @@ class UserDataRuntime:
                 "asset_id": event.get("asset_id") or event.get("token_id"),
             },
         )
+        await self._wake_reconciler(event)
 
     async def _on_order_update(self, event: dict[str, Any]) -> None:
-        # Future PR: forward to reconciliation/order lifecycle owner.
         logger.debug(
             "user_wss_order_update",
             extra={
@@ -199,6 +207,28 @@ class UserDataRuntime:
                 "status": event.get("status") or event.get("state"),
             },
         )
+        await self._wake_reconciler(event)
+
+    async def _wake_reconciler(self, event: dict[str, Any]) -> None:
+        """Fire the optional reconcile-wake hook.
+
+        A slow or failing callback must not break the WSS message loop. The
+        callback may run the canonical reconcile_submitted_unconfirmed for
+        the user — but it never settles positions itself; that stays inside
+        ReconciliationService.
+        """
+        if self.on_reconcile_signal is None:
+            return
+        try:
+            await self.on_reconcile_signal(event)
+        except Exception as exc:
+            logger.warning(
+                "user_wss_reconcile_signal_failed",
+                extra={
+                    "user_id": self.user_id,
+                    "error": redact_error_detail(exc),
+                },
+            )
 
     def _update_readiness(self, **fields: Any) -> None:
         try:

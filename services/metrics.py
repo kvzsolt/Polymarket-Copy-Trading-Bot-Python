@@ -75,6 +75,7 @@ METRIC_ORDERS_SUBMITTED = "orders_submitted_total"
 METRIC_ORDERS_REJECTED = "orders_rejected_total"
 METRIC_ORDERS_SUBMISSION_AMBIGUOUS = "orders_submission_ambiguous_total"
 METRIC_RECONCILIATION_DELTA_APPLIED = "reconciliation_delta_applied_total"
+METRIC_RECONCILIATION_NEGATIVE_DELTA = "reconciliation_negative_delta_total"
 METRIC_RISK_EXIT_TRIGGERED = "risk_exits_total"  # legacy site already emits this name
 METRIC_WSS_RECONNECT = "wss_reconnect_total"
 METRIC_WSS_HEARTBEAT_STALL = "wss_heartbeat_stall_total"
