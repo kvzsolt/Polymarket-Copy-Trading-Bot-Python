@@ -91,6 +91,38 @@ def _build_context(*, user_id: str, db_path: str) -> TradingContext:
         extra={"slippage_tolerance_bps": 50},
     )
     ctx.market_data_runtime = AsyncMock()
+
+    # PR6.1 — coordinator mandatory in live mode. Pass-through to the fake
+    # ExecutionService used by these tests.
+    fake_exec = ctx.execution_service
+
+    class _PassThrough:
+        async def submit_copy_trade(self, intent):
+            from services.execution.coordinator import ExecutionCoordinatorResult
+            from services.execution.types import ExecutionRequest
+
+            req = ExecutionRequest(
+                user_id=intent.user_id,
+                leader_id=intent.leader_wallet or "",
+                token_id=intent.token_id,
+                side=intent.side,
+                amount=intent.size,
+                max_slippage_bps=intent.max_slippage_bps,
+                reason=intent.reason or intent.source,
+                signal_id=intent.signal_id,
+                condition_id=intent.condition_id,
+                recovery_metadata=dict(intent.recovery_metadata or {}),
+            )
+            result = await fake_exec.execute(req)
+            return ExecutionCoordinatorResult(
+                accepted=getattr(result, "accepted", False),
+                status=getattr(result, "status", ""),
+                order_id=getattr(result, "order_id", None),
+                lifecycle_status=getattr(result, "status", ""),
+                raw_result=result,
+            )
+
+    ctx.execution_coordinator = _PassThrough()
     return ctx
 
 
