@@ -1,0 +1,118 @@
+clients/market_ws.py
+  s_62bfb689d71971::t_523cc51eee7fc5 343
+  s_62bfb689d71971::t_96421537b1ee05 363
+  s_62bfb689d71971::t_a3d16c08b41fe7 434-446
+  s_62bfb689d71971::t_dfdc1ee54e8fac 67,85
+  s_62bfb689d71971::t_de89544cd707fa 377
+  s_62bfb689d71971::t_4197d4a0d2e11d 330
+  s_62bfb689d71971::t_707aea01fdaaae 287
+integrations/polymarket/clob_v2_gateway.py
+  s_62bfb689d71971::t_da0d90655b1bd6 335
+integrations/polymarket/models.py
+  s_62bfb689d71971::t_76837604b7c27a 114
+tests/test_trade_pipeline_market_data_authority.py
+  s_62bfb689d71971::t_ae9f22fb836b71 1-7,12-161,163-193,195-316
+services/near_one_exit.py
+  s_62bfb689d71971::t_d4a8cf8fa9b39b 198-207
+tests/test_execution_market_data_service.py
+  s_62bfb689d71971::t_f2926d986ce2a3 361
+  s_62bfb689d71971::t_423079a5d61ff6 269
+orchestrators/market_data_runtime.py
+  s_62bfb689d71971::t_2a84d3160f9d94 95
+  s_62bfb689d71971::t_1c9005870dd57c 350-376,380-384,390,400-415
+tests/test_multi_user_isolation.py
+  s_62bfb689d71971::t_c61e5e907bb88c 52-57,61-72,90,93-94
+tests/test_market_data_service.py
+  s_62bfb689d71971::t_fdfa2e8cea7855 365-431
+cache/market_state_store.py
+  s_62bfb689d71971::t_ebf8701c3f0684 575-578
+  s_62bfb689d71971::t_9118afe0974fdb 194
+  s_62bfb689d71971::t_0c10cfd20d3cd0 274-275
+  s_62bfb689d71971::t_eb90d0a56cacb0 106-110,112-115
+  s_62bfb689d71971::t_67145cbcdd3f75 227
+  s_62bfb689d71971::t_dd0d17eb0c651e 447-448
+  s_62bfb689d71971::t_2141d6a05e5793 322-323
+  s_62bfb689d71971::t_c9ee3180c6862d 474
+  s_62bfb689d71971::t_ed75dc3161d459 675-694
+  s_62bfb689d71971::t_662bbab76270f6 732-735
+  s_62bfb689d71971::t_009868f3d31ead 351
+  s_62bfb689d71971::t_d9dbe8088ce922 211
+  s_62bfb689d71971::t_bbc8373dd6e749 414-417
+tests/test_trade_pipeline_tiers.py
+  s_62bfb689d71971::t_9b557cb071311b 8
+  s_62bfb689d71971::t_48c9dd1cc57dea 95-139,141,159,162-163
+services/executionService.py
+  s_62bfb689d71971::t_5a82d18b2b8531 188-189
+app.py
+  s_62bfb689d71971::t_43a703adc2715b 289-290,293-295,297,342,355-374
+  s_62bfb689d71971::t_0d6535edb008b1 461-462,472,489
+  s_62bfb689d71971::t_4cd53086b4520a 839,844-861
+  s_62bfb689d71971::t_035cf8041cf5c1 431,446
+  s_62bfb689d71971::t_7b0bca78db32fe 676-681
+  s_62bfb689d71971::t_08c8d46ab77fae 901
+tests/test_trade_pipeline_safety.py
+  s_62bfb689d71971::t_00db991976ffa8 1060
+  s_62bfb689d71971::t_48b666a5c817b8 940-943
+  s_62bfb689d71971::t_d02188eb3a588d 92-162,164-166,183,186-187
+  s_62bfb689d71971::t_d75b30472dced5 1094
+tests/test_market_data_runtime.py
+  s_62bfb689d71971::t_ff41a053d383b8 257-362
+tests/test_issue66_gateway_isolation.py
+  s_62bfb689d71971::t_b1c470e008e10d 194,218,238,261,279,306,327
+docs/architecture.md
+  s_62bfb689d71971::t_e7ee3dee159d29 138-140
+  s_62bfb689d71971::t_5528c16c851563 141-142
+tests/release_gate/test_near_one_exit.py
+  s_62bfb689d71971::t_1cf256def5a0c8 195
+  s_62bfb689d71971::t_6a36c26d1f17a4 167,177-178
+  s_62bfb689d71971::t_546a454cd09486 105,116
+  s_62bfb689d71971::t_458a83541a901e 133
+  s_62bfb689d71971::t_733a39e3e1e142 49,51,78-87,97
+  s_62bfb689d71971::t_fe586040dc6bb5 17
+  s_62bfb689d71971::t_a069a12a6dd5d5 149
+  s_62bfb689d71971::t_1afb9285e8a8ae 213,217
+  s_62bfb689d71971::t_3b3733c84a404a 231
+  s_62bfb689d71971::t_9213293cfd353b 255
+tests/release_gate/test_e2e_dry_run_sell.py
+  s_62bfb689d71971::t_c2501fe64ee1a4 92
+tests/test_execution_atomic_lock.py
+  s_62bfb689d71971::t_7474e8a576ed14 141
+docs/full-rework-progress.md
+  s_62bfb689d71971::t_de0cc5c2f0d595 96-97
+orchestrators/runtime_bootstrap.py
+  s_62bfb689d71971::t_8e4ae78d7d71bc 280
+domain/trading_context.py
+  s_62bfb689d71971::t_bdf78b2a74861d 47-49,51-54
+  s_62bfb689d71971::t_95c00ce303d592 50
+  s_62bfb689d71971::t_1bf0a757a51a7c 5,15-17
+tests/test_production_services.py
+  s_62bfb689d71971::t_be5e3325d7bc22 160,178,200,228,352,378,405,441,477,527
+services/market_data_service.py
+  s_62bfb689d71971::t_a85baa2971dc3c 182-188,193-196,200-225
+tests/release_gate/test_e2e_dry_run_buy.py
+  s_62bfb689d71971::t_2bc040e9153287 93
+tests/test_position_action_coordinator_integration.py
+  s_62bfb689d71971::t_01ea2aa0fa8f6a 104-147,150,167,170-171
+tests/test_execution_idempotency_extended.py
+  s_62bfb689d71971::t_7474e8a576ed14 204,221,238,314,372,386,399,437
+orchestrators/trade_pipeline.py
+  s_62bfb689d71971::t_784cd55d29dfe6 905,907-908,910-918
+  s_62bfb689d71971::t_23cce6c0cde4ae 939-980
+  s_62bfb689d71971::t_d488864fd0f7fd 111-118,120-191,193-238,240-256
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.7",
+  "base_commit_sha": "4ee96351f938023e1fcfee1b7e85fe3bec46974a",
+  "prompts": {},
+  "sessions": {
+    "s_62bfb689d71971": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6e021f73-964d-4111-864c-59d2e303c15b",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
