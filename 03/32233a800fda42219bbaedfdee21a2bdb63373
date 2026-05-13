@@ -1,0 +1,36 @@
+services/riskMonitor.py
+  s_62bfb689d71971::t_7bc5de70b34acb 383-424
+services/metrics.py
+  s_62bfb689d71971::t_3dee1cadfb2b70 80
+services/near_one_exit.py
+  s_62bfb689d71971::t_3067c4b156930f 255-284
+tests/test_trade_pipeline_safety.py
+  s_62bfb689d71971::t_5c9ccd3999000d 155-192
+  s_62bfb689d71971::t_c32e3ac5522d68 225
+tests/test_execution_coordinator_live_failclosed.py
+  s_62bfb689d71971::t_cc01347c6ed429 1-334
+tests/test_multi_user_isolation.py
+  s_62bfb689d71971::t_309829a7533ba9 94-125
+services/execution/coordinator.py
+  s_62bfb689d71971::t_879b202a6df517 93-113
+orchestrators/trade_pipeline.py
+  s_62bfb689d71971::t_8993a39eb914cd 103-107,109-110,113-150
+tests/test_trade_pipeline_market_data_authority.py
+  s_62bfb689d71971::t_cf5036aba0107d 239-267
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.7",
+  "base_commit_sha": "0332233a800fda42219bbaedfdee21a2bdb63373",
+  "prompts": {},
+  "sessions": {
+    "s_62bfb689d71971": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6e021f73-964d-4111-864c-59d2e303c15b",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
