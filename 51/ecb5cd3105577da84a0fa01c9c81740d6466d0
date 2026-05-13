@@ -1,0 +1,36 @@
+services/execution/reconciliation_service.py
+  s_62bfb689d71971::t_e8138bc38b04d8 230-287
+  s_62bfb689d71971::t_2e7dfd9d4d8c97 438-446
+  s_62bfb689d71971::t_3874713e87ff50 703-710
+app.py
+  s_62bfb689d71971::t_365c0ba86eaa35 727
+  s_62bfb689d71971::t_b9f056647933d5 377-405,411,417-420,450-455,461
+orchestrators/user_data_runtime.py
+  s_62bfb689d71971::t_952d224d44bd43 46-51
+  s_62bfb689d71971::t_ad6e9893d75ce8 199,210-231
+  s_62bfb689d71971::t_e0b7305d006dce 18,27
+tests/test_reconciliation_delta_anomaly.py
+  s_62bfb689d71971::t_37e1fd86733fd3 1-233
+services/metrics.py
+  s_62bfb689d71971::t_934bc1710e2544 78
+tests/test_user_data_runtime.py
+  s_62bfb689d71971::t_5072e8c6df21d9 465-525
+tests/release_gate/test_startup_recovery.py
+  s_62bfb689d71971::t_8294932be66879 30-83
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.7",
+  "base_commit_sha": "51ecb5cd3105577da84a0fa01c9c81740d6466d0",
+  "prompts": {},
+  "sessions": {
+    "s_62bfb689d71971": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6e021f73-964d-4111-864c-59d2e303c15b",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
