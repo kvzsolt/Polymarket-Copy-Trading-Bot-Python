@@ -1,0 +1,49 @@
+domain/trading_context.py
+  s_62bfb689d71971::t_fda93e2a1f0ef5 17
+  s_62bfb689d71971::t_af5aff82ec5cad 56-60
+services/execution/reconciliation_service.py
+  s_62bfb689d71971::t_af5526c9d63e93 304-307,312,315-320
+orchestrators/runtime_bootstrap.py
+  s_62bfb689d71971::t_1e916713f848e9 124-125
+  s_62bfb689d71971::t_ec4020cda95f54 346-353
+  s_62bfb689d71971::t_0b571eb676cfc5 235-246,263-306
+app.py
+  s_62bfb689d71971::t_46100a77bae69f 900
+services/riskMonitor.py
+  s_62bfb689d71971::t_98191455912929 340-341
+  s_62bfb689d71971::t_21061a4068b961 322-339,342-382,385-388
+  s_62bfb689d71971::t_03d84ced784a2e 383-384
+  s_62bfb689d71971::t_ae7dfbb3bd31bb 513-526
+  s_62bfb689d71971::t_d4c4e7ea1e103d 897-910
+orchestrators/trade_pipeline.py
+  s_62bfb689d71971::t_bb6dfe35607034 94-102,105-107,110-159
+  s_62bfb689d71971::t_e4226d5fda7f03 103-104,108-109
+  s_62bfb689d71971::t_88f24f6ee4ddc8 1704-1706
+services/execution/coordinator.py
+  s_62bfb689d71971::t_8b7933a2bcd539 5-7,9-18,25-31
+  s_62bfb689d71971::t_3fc8151dded91a 383-647
+  s_62bfb689d71971::t_adf825995e8fd6 172-174,178-179,191-195
+  s_62bfb689d71971::t_383d5fb6b008f9 51-114
+services/near_one_exit.py
+  s_62bfb689d71971::t_c66fc9db8b9dc9 72,81
+  s_62bfb689d71971::t_c36571ebafd050 256-288
+  s_62bfb689d71971::t_401ce26ac19ab2 32
+tests/test_execution_coordinator_production.py
+  s_62bfb689d71971::t_44d474777f91e9 1-306
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.7",
+  "base_commit_sha": "01c17713072987023065aa2614ce165034f30c6d",
+  "prompts": {},
+  "sessions": {
+    "s_62bfb689d71971": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6e021f73-964d-4111-864c-59d2e303c15b",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
