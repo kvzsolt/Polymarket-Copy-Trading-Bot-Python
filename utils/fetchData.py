@@ -6,7 +6,7 @@ import warnings
 
 import aiohttp
 
-from network.http_client import AsyncHttpClient, HttpRetryPolicy
+from clients.network.http_client import AsyncHttpClient, HttpRetryPolicy
 from utils.logger import get_logger, log_api_response
 
 logger = get_logger("FetchData")
