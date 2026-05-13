@@ -252,6 +252,36 @@ class NearOneExitService:
             live_price,
             dwell_elapsed,
         )
+        # Live mode: coordinator is mandatory. A missing coordinator must
+        # fail closed so we never bypass ReservationService.
+        if self._coordinator is None:
+            from services.execution.coordinator import is_live_mode
+
+            if is_live_mode(self._config):
+                logger.error(
+                    "execution_coordinator_missing | near_one_exit live mode requires coordinator | token=%s",
+                    token_id[:12],
+                    extra={
+                        "type": "execution_coordinator_missing",
+                        "user_id": self._user_id,
+                        "condition_id": condition_id,
+                        "token_id": token_id,
+                        "source": "near_one_exit",
+                    },
+                )
+                try:
+                    from services.metrics import (
+                        METRIC_COORDINATOR_MISSING_SKIP, metrics,
+                    )
+
+                    metrics.inc_sync(
+                        METRIC_COORDINATOR_MISSING_SKIP,
+                        labels={"side": "SELL", "source": "near_one_exit"},
+                    )
+                except Exception:
+                    pass
+                self._firing.discard(token_id)
+                return
         try:
             if self._coordinator is not None:
                 from services.execution.coordinator import ExecutionIntent

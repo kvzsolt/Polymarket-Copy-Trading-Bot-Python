@@ -380,8 +380,48 @@ async def _dispatch_risk_exit(
             fees_paid=_D2("0"),
             error=coord_result.reason,
         )
-    # Fallback for legacy paths without a coordinator. ``getattr`` keeps the
-    # call indirect so the PR6 grep gate remains clean.
+    # Fallback path — coordinator missing. Live mode must fail closed.
+    from services.execution.coordinator import is_live_mode
+
+    cfg = getattr(execution_service, "_config", None)
+    if is_live_mode(cfg):
+        logger.error(
+            "execution_coordinator_missing | risk path live mode requires coordinator | "
+            "user=%s cond=%s token=%s side=%s source=%s",
+            user_id, condition_id, token_id, side, source,
+            extra={
+                "type": "execution_coordinator_missing",
+                "user_id": user_id,
+                "condition_id": condition_id,
+                "token_id": token_id,
+                "side": side,
+                "source": source,
+            },
+        )
+        try:
+            from services.metrics import (
+                METRIC_COORDINATOR_MISSING_SKIP, metrics,
+            )
+
+            metrics.inc_sync(
+                METRIC_COORDINATOR_MISSING_SKIP,
+                labels={"side": side, "source": source},
+            )
+        except Exception:
+            pass
+        from services.executionService import ExecutionResult as _ER
+        from decimal import Decimal as _D
+
+        return _ER(
+            accepted=False,
+            order_id=None,
+            status="execution_coordinator_missing",
+            requested_amount=_D(str(exec_req.amount)),
+            filled_amount=_D("0"),
+            avg_price=None,
+            fees_paid=_D("0"),
+            error="ExecutionCoordinator not wired in live mode",
+        )
     submitter = getattr(execution_service, "execute")
     return await submitter(exec_req)
 

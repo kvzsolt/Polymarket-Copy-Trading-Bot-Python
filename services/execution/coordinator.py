@@ -90,6 +90,27 @@ class ExecutionCoordinatorResult:
     raw_result: Any | None = None
 
 
+def is_live_mode(config: Any) -> bool:
+    """Return True when the bot is configured for real venue submissions.
+
+    Convention matches the rest of the codebase: ``config.execution.paper_trade_only``
+    and ``config.dry_run``. A missing / None config is treated as non-live so
+    test fixtures that build partial TradingContexts keep their direct
+    ExecutionService fallback.
+    """
+    if config is None:
+        return False
+    try:
+        if bool(getattr(config, "dry_run", False)):
+            return False
+        execution = getattr(config, "execution", None)
+        if execution is not None and bool(getattr(execution, "paper_trade_only", False)):
+            return False
+    except Exception:
+        return False
+    return True
+
+
 _SOURCE_TO_REASON: dict[str, IntentReason] = {
     "copy_trade": IntentReason.COPY_BUY,  # overridden for SELL below
     "risk_exit": IntentReason.RISK_EXIT,
