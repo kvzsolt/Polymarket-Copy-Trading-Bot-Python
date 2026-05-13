@@ -121,6 +121,8 @@ class UserRuntimeState:
     # Freshness-aware market data — issue #hardening PR-1.
     market_data_service: MarketDataService | None = None
     market_store: MarketStateStore | None = None
+    # PR6 — production execution funnel.
+    execution_coordinator: "object | None" = None
 
 
 def configured_leaders(config: AppConfig) -> list[str]:
@@ -230,6 +232,18 @@ def build_user_state(
         market_data_service=market_data_svc,
     )
 
+    # PR6 — production execution funnel. ReservationService + ExecutionCoordinator
+    # are wired per user so trade pipeline, risk monitor, and near-one exits
+    # all share reservation + collision scope.
+    execution_coordinator = _build_execution_coordinator(
+        db_path=db_path,
+        positions_repo=positions_repo,
+        order_repo=order_repo,
+        fills_repo=fills_repo,
+        execution_service=execution_service,
+        funder_address=runtime_user.wallet.funder_address,
+    )
+
     return UserRuntimeState(
         user=runtime_user,
         client=client,
@@ -246,6 +260,50 @@ def build_user_state(
         risk_triggers_repo=risk_triggers_repo,
         market_data_service=market_data_svc,
         market_store=market_store,
+        execution_coordinator=execution_coordinator,
+    )
+
+
+def _build_execution_coordinator(
+    *,
+    db_path: str,
+    positions_repo: PositionsRepo,
+    order_repo,
+    fills_repo: FillsRepo,
+    execution_service: ExecutionService,
+    funder_address: str,
+):
+    """Build the production ExecutionCoordinator for a user.
+
+    Wraps ReservationService around ExecutionService so every production
+    submit path applies reservation + collision semantics. Returns None when
+    the funder address is missing so test contexts that build a partial state
+    keep working.
+    """
+    if not funder_address:
+        return None
+    try:
+        from services.execution.coordinator import ExecutionCoordinator
+        from services.execution.reservation_service import ReservationService
+        from storage.sqlite.reservations_repo import ReservationsRepo
+        from utils.getMyBalance import get_my_balance
+    except Exception as exc:
+        logger.warning("execution_coordinator_unwired error=%r", exc)
+        return None
+    reservations_repo = ReservationsRepo(db_path)
+    reservation_service = ReservationService(
+        reservations_repo=reservations_repo,
+        positions_repo=positions_repo,
+        get_balance_func=get_my_balance,
+        funder_address=funder_address,
+        ttl_seconds=120,
+    )
+    return ExecutionCoordinator(
+        reservation_service=reservation_service,
+        orders_repo=order_repo,
+        fills_repo=fills_repo,
+        positions_repo=positions_repo,
+        execution_service=execution_service,
     )
 
 
@@ -285,6 +343,14 @@ def build_trading_context(
     )
     if user_state.risk_triggers_repo is not None:
         context.risk_triggers_repo = user_state.risk_triggers_repo
+    # PR6 — bind execution coordinator and give it the per-context scope lock.
+    coord = getattr(user_state, "execution_coordinator", None)
+    if coord is not None:
+        try:
+            coord.position_coordinator = context.position_coordinator
+        except Exception:
+            pass
+        context.execution_coordinator = coord
     rehydrate_position_manager(context)
     return context
 

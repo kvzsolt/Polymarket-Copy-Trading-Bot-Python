@@ -91,6 +91,72 @@ def get_reconciliation_service(context: TradingContext) -> ReconciliationService
     return svc
 
 
+async def _submit_copy_through_coordinator(
+    context: TradingContext,
+    exec_req,
+    signal,
+    *,
+    leader_id: str,
+):
+    """Route copy BUY/SELL through ExecutionCoordinator when wired.
+
+    Falls back to the ExecutionService primitive (via ``getattr`` alias) so
+    test contexts that don't wire the coordinator continue to work unchanged.
+    """
+    coordinator = getattr(context, "execution_coordinator", None)
+    if coordinator is None:
+        submitter = getattr(context.execution_service, "execute")
+        return await submitter(exec_req)
+
+    from services.execution.coordinator import ExecutionIntent
+
+    side = (exec_req.side or "BUY").upper()
+    try:
+        price = Decimal(str(signal.price or 0))
+    except Exception:
+        price = Decimal("0")
+    try:
+        notional = Decimal(str(signal.usdc_size or 0))
+    except Exception:
+        notional = exec_req.amount * price if price > 0 else Decimal("0")
+
+    intent = ExecutionIntent(
+        user_id=context.user_id,
+        condition_id=exec_req.condition_id or signal.condition_id,
+        token_id=exec_req.token_id,
+        side=side,
+        size=Decimal(str(exec_req.amount)),
+        price=price,
+        notional_usdc=notional,
+        idempotency_key=signal.tx_hash,
+        source="copy_trade",
+        signal_id=exec_req.signal_id or signal.tx_hash,
+        leader_wallet=leader_id,
+        max_slippage_bps=int(exec_req.max_slippage_bps),
+        reason=exec_req.reason or "copy_trade",
+        recovery_metadata=exec_req.recovery_metadata,
+    )
+    coord_result = await coordinator.submit_copy_trade(intent)
+    raw = coord_result.raw_result
+    if raw is not None:
+        return raw
+    # Build a minimal ExecutionResult so downstream code (which reads status,
+    # filled_amount, etc.) continues to work.
+    from services.executionService import ExecutionResult
+
+    skip_status = coord_result.skip_code or coord_result.status or "rejected"
+    return ExecutionResult(
+        accepted=coord_result.accepted,
+        order_id=coord_result.order_id,
+        status=skip_status,
+        requested_amount=Decimal(str(exec_req.amount)),
+        filled_amount=Decimal("0"),
+        avg_price=None,
+        fees_paid=Decimal("0"),
+        error=coord_result.reason,
+    )
+
+
 def _decimal_or_zero(value: Any) -> Decimal:
     try:
         return Decimal(str(value))
@@ -1635,7 +1701,9 @@ async def execute_trades(
                 )
 
             print_executing_strategy(signal.side)
-            exec_result = await context.execution_service.execute(exec_req)
+            exec_result = await _submit_copy_through_coordinator(
+                context, exec_req, signal, leader_id=leader_id
+            )
 
             if exec_result.status == "duplicate_ignored":
                 metrics.inc("duplicate_order_prevented_total", labels=labels)
