@@ -64,6 +64,7 @@ class MarketWebSocket:
         reconnect_max_delay: float = _MAX_RECONNECT_DELAY,
         on_connected: Callable[[], Coroutine[Any, Any, None]] | None = None,
         on_disconnected: Callable[[], Coroutine[Any, Any, None]] | None = None,
+        on_state_change: Callable[[str, str], Coroutine[Any, Any, None]] | None = None,
     ) -> None:
         self._cache = cache
         self._ws_url = ws_url
@@ -81,6 +82,7 @@ class MarketWebSocket:
         )
         self._on_connected = on_connected
         self._on_disconnected = on_disconnected
+        self._on_state_change = on_state_change
 
     async def connect(self, asset_ids: list[str]) -> None:
         self._asset_ids = _dedupe_asset_ids(asset_ids)
@@ -282,6 +284,7 @@ class MarketWebSocket:
             self._mark_asset_fresh(asset_id, "book_snapshot")
         else:
             self._mark_asset_dirty(asset_id, "book_snapshot_not_replaced")
+        self._notify_state_change(asset_id, "book")
 
     def _handle_price_change(self, event: dict[str, Any]) -> None:
         asset_id = _asset_id(event)
@@ -324,6 +327,7 @@ class MarketWebSocket:
         if best_bid is not None or best_ask is not None:
             self._on_price_update(asset_id, best_bid, best_ask)
         self._touch_asset(asset_id, "price_change")
+        self._notify_state_change(asset_id, "price_change")
 
     def _handle_best_bid_ask(self, event: dict[str, Any]) -> None:
         asset_id = _asset_id(event)
@@ -336,6 +340,7 @@ class MarketWebSocket:
         self._on_price_update(asset_id, best_bid, best_ask)
         self._call_cache_optional("on_best_bid_ask", asset_id, best_bid, best_ask, event)
         self._touch_asset(asset_id, "best_bid_ask")
+        self._notify_state_change(asset_id, "best_bid_ask")
 
     def _handle_last_trade_price(self, event: dict[str, Any]) -> None:
         asset_id = _asset_id(event)
@@ -355,6 +360,7 @@ class MarketWebSocket:
         self._on_tick_size_change(asset_id, tick)
         self._mark_asset_dirty(asset_id, "tick_size_change")
         self._call_cache_optional("invalidate_sizing_decision", asset_id)
+        self._notify_state_change(asset_id, "tick_size_change")
 
     def _handle_new_market(self, event: dict[str, Any]) -> None:
         self._call_cache_optional("on_new_market", event)
@@ -368,6 +374,7 @@ class MarketWebSocket:
             self._call_cache_optional("on_market_resolved", asset_id, event)
             self._mark_asset_dirty(asset_id, "market_resolved")
             self._mark_asset_stale(asset_id, "market_resolved")
+            self._notify_state_change(asset_id, "market_resolved")
         else:
             self._call_cache_optional("on_market_resolved", event)
 
@@ -423,6 +430,19 @@ class MarketWebSocket:
 
     def _on_tick_size_change(self, asset_id: str, tick: Decimal) -> None:
         self._call_cache_optional("on_tick_size_change", asset_id, tick)
+
+    def _notify_state_change(self, asset_id: str, event_type: str) -> None:
+        if self._on_state_change is None or not asset_id:
+            return
+        try:
+            coro = self._on_state_change(asset_id, event_type)
+            if asyncio.iscoroutine(coro):
+                asyncio.create_task(coro)
+        except Exception as exc:
+            logger.warning(
+                "MarketWS: on_state_change callback failed: %s",
+                exc,
+            )
 
     def _call_cache_optional(self, method_name: str, *args: Any) -> bool:
         method = getattr(self._cache, method_name, None)

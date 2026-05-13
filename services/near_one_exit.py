@@ -29,7 +29,6 @@ from utils.logger import get_logger
 
 if TYPE_CHECKING:
     from config.app_config import AppConfig
-    from cache.market_state_store import MarketStateStore
     from services.executionService import ExecutionService
     from services.healthServer import ReadinessTracker
     from services.market_data_service import MarketDataService
@@ -64,7 +63,6 @@ class NearOneExitService:
         *,
         position_manager: "PositionManager",
         execution_service: "ExecutionService",
-        cache: "MarketStateStore",
         market_data_service: "MarketDataService",
         config: "AppConfig",
         readiness: "ReadinessTracker",
@@ -73,7 +71,6 @@ class NearOneExitService:
     ) -> None:
         self._pm = position_manager
         self._exec = execution_service
-        self._cache = cache
         self._mds = market_data_service
         self._config = config
         self._readiness = readiness
@@ -198,10 +195,16 @@ class NearOneExitService:
         dwell_elapsed: float,
         slippage_bps: int,
     ) -> None:
-        # Pull venue min-size from cache; size_sell_order enforces both
-        # min-size and held-shares clamps consistently with risk exits.
-        tick = self._cache.get_tick(token_id)
-        venue_min = float(tick.min_order_size) if tick else 0.0
+        # Pull venue min-size through MarketDataService — the canonical
+        # freshness-aware authority. Fail closed on missing/stale tick.
+        tick = await self._mds.get_tick_or_none(token_id)
+        if tick is None:
+            logger.info(
+                "near_one_exit_no_tick token=%s reason=missing_or_stale_tick",
+                token_id[:12],
+            )
+            return
+        venue_min = float(tick.min_order_size)
 
         decision = size_sell_order(
             sell_tokens=size_tokens,

@@ -179,16 +179,50 @@ class MarketDataService:
         if not self._tick_executable(tick, policy):
             return None
 
-        source = self._source_of(token_id)
+        # Component-level source gating. Live execution requires quote and book
+        # to be WSS-fresh; tick/metadata may be REST-sourced if fresh and valid
+        # (Polymarket metadata changes are reflected by ``tick_size_change``
+        # but the canonical baseline is REST).
+        quote_source = self._coerce_source(quote.source)
+        book_source = self._coerce_source(book.source)
+        tick_source = self._coerce_source(tick.source)
 
         if (
             policy.require_wss_fresh
-            and source != MarketDataSource.WSS
             and not policy.allow_rest_snapshot_for_execution
+            and (
+                quote_source != MarketDataSource.WSS
+                or book_source != MarketDataSource.WSS
+            )
         ):
             return None
 
-        return MarketDataBundle(token_id=token_id, quote=quote, book=book, tick=tick, source=source)
+        # Aggregate bundle source for downstream observability.
+        if quote_source == MarketDataSource.WSS and book_source == MarketDataSource.WSS:
+            bundle_source = MarketDataSource.WSS
+        elif (
+            quote_source == MarketDataSource.REST_SNAPSHOT
+            or book_source == MarketDataSource.REST_SNAPSHOT
+            or tick_source == MarketDataSource.REST_SNAPSHOT
+        ):
+            bundle_source = MarketDataSource.REST_SNAPSHOT
+        else:
+            bundle_source = MarketDataSource.UNKNOWN
+
+        return MarketDataBundle(
+            token_id=token_id,
+            quote=quote,
+            book=book,
+            tick=tick,
+            source=bundle_source,
+        )
+
+    @staticmethod
+    def _coerce_source(raw: Any) -> MarketDataSource:
+        try:
+            return MarketDataSource(str(raw))
+        except Exception:
+            return MarketDataSource.UNKNOWN
 
     def _quote_executable(self, quote: QuoteSnapshot, policy: MarketDataPolicy) -> bool:
         best_bid = getattr(quote, "best_bid", None)

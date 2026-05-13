@@ -103,7 +103,16 @@ class TokenMarketState:
     dirty_reason: str | None = "not_initialized"
     stale_reason: str | None = "not_initialized"
 
+    # Aggregate ``source`` kept for back-compat with callers that just want a
+    # last-touched hint. Component-specific sources are authoritative for
+    # executable freshness checks. They are NOT promoted by tick-size changes
+    # — a WSS ``tick_size_change`` event must not make a REST-only quote/book
+    # appear WSS-fresh.
     source: str = "unknown"
+    quote_source: str = "unknown"
+    book_source: str = "unknown"
+    tick_source: str = "unknown"
+    metadata_source: str = "unknown"
 
     last_update_monotonic: float = 0.0
     last_book_monotonic: float = 0.0
@@ -182,7 +191,7 @@ class MarketStateStore:
                 best_bid=state.best_bid,
                 best_ask=state.best_ask,
                 last_trade_price=state.last_trade_price,
-                source=state.source,
+                source=state.quote_source if state.quote_source != "unknown" else state.source,
                 monotonic_ts=state.last_quote_monotonic or state.last_update_monotonic,
             )
 
@@ -199,7 +208,7 @@ class MarketStateStore:
                 asks=dict(state.asks),
                 best_bid=state.best_bid,
                 best_ask=state.best_ask,
-                source=state.source,
+                source=state.book_source if state.book_source != "unknown" else state.source,
                 monotonic_ts=state.last_book_monotonic or state.last_update_monotonic,
             )
 
@@ -215,7 +224,7 @@ class MarketStateStore:
                 tick_size=state.tick_size,
                 min_order_size=state.min_order_size,
                 neg_risk=state.neg_risk,
-                source=state.source,
+                source=state.tick_source if state.tick_source != "unknown" else state.source,
                 monotonic_ts=state.last_tick_monotonic or state.last_update_monotonic,
             )
 
@@ -262,6 +271,8 @@ class MarketStateStore:
 
             source = self._source_from_raw(raw_event, default="wss")
             state.source = source
+            state.book_source = source
+            state.quote_source = source
 
             # A full book makes the book clean. Tick may still be missing, but
             # MarketDataService will reject that separately.
@@ -308,6 +319,8 @@ class MarketStateStore:
             state.last_quote_monotonic = now
             state.last_update_monotonic = now
             state.source = "wss"
+            state.book_source = "wss"
+            state.quote_source = "wss"
 
             if not state.resolved:
                 state.stale = False
@@ -335,6 +348,7 @@ class MarketStateStore:
             state.last_quote_monotonic = now
             state.last_update_monotonic = now
             state.source = "wss"
+            state.quote_source = "wss"
 
             if not state.resolved:
                 state.stale = False
@@ -397,6 +411,10 @@ class MarketStateStore:
             state.last_tick_monotonic = now
             state.last_update_monotonic = now
             state.source = "wss"
+            # Tick-only WSS event — do not mutate quote/book sources. A
+            # ``tick_size_change`` must not make a REST-bootstrapped book
+            # appear WSS-fresh for execution.
+            state.tick_source = "wss"
 
             # A tick-size change invalidates prepared sizing/idempotency
             # decisions. It should force recompute before next trade.
@@ -426,6 +444,8 @@ class MarketStateStore:
             state.last_tick_monotonic = now
             state.last_update_monotonic = now
             state.source = source
+            state.tick_source = source
+            state.metadata_source = source
 
             if not state.resolved:
                 state.stale = False
@@ -451,6 +471,7 @@ class MarketStateStore:
             state.last_quote_monotonic = now
             state.last_update_monotonic = now
             state.source = source
+            state.quote_source = source
 
     def set_book(
         self,
@@ -551,6 +572,10 @@ class MarketStateStore:
             state = self._ensure_state_locked(token_id)
             now = monotonic_ts if monotonic_ts is not None else time.monotonic()
             state.source = source
+            state.quote_source = source
+            state.book_source = source
+            state.tick_source = source
+            state.metadata_source = source
             state.stale = False
             state.stale_reason = None
             state.last_update_monotonic = now
@@ -647,6 +672,26 @@ class MarketStateStore:
             state = self._states.get(token_id)
             return "unknown" if state is None else state.source
 
+    def quote_source_of(self, token_id: str) -> str:
+        with self._lock:
+            state = self._states.get(token_id)
+            return "unknown" if state is None else state.quote_source
+
+    def book_source_of(self, token_id: str) -> str:
+        with self._lock:
+            state = self._states.get(token_id)
+            return "unknown" if state is None else state.book_source
+
+    def tick_source_of(self, token_id: str) -> str:
+        with self._lock:
+            state = self._states.get(token_id)
+            return "unknown" if state is None else state.tick_source
+
+    def metadata_source_of(self, token_id: str) -> str:
+        with self._lock:
+            state = self._states.get(token_id)
+            return "unknown" if state is None else state.metadata_source
+
     def touch(self, token_id: str, source: str, monotonic_ts: float | None = None) -> None:
         with self._lock:
             state = self._ensure_state_locked(token_id)
@@ -684,6 +729,10 @@ class MarketStateStore:
             dirty_reason=state.dirty_reason,
             stale_reason=state.stale_reason,
             source=state.source,
+            quote_source=state.quote_source,
+            book_source=state.book_source,
+            tick_source=state.tick_source,
+            metadata_source=state.metadata_source,
             last_update_monotonic=state.last_update_monotonic,
             last_book_monotonic=state.last_book_monotonic,
             last_quote_monotonic=state.last_quote_monotonic,

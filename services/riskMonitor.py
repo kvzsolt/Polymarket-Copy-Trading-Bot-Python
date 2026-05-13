@@ -18,7 +18,6 @@ from services.accountingService import AccountingService, PositionLot
 from services.executionService import ExecutionRequest, ExecutionService
 from services.feeService import FeeService
 from services.healthServer import ReadinessTracker
-from services.marketMetaService import MarketMetaService
 from services.metrics import metrics
 from services.orderRepository import OrderRepository
 from services.positionActionCoordinator import PositionScope
@@ -356,7 +355,6 @@ async def risk_monitor_loop(
     # disabled risk-management run does not allocate venue clients/repos.
     execution_service = ExecutionService(
         clob_client=clob_client,
-        market_meta_service=MarketMetaService(clob_client),
         fee_service=FeeService(clob_client, default_fee_bps=fee_bps),
         order_repo=OrderRepository(),
         config=config,

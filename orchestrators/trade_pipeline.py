@@ -108,23 +108,152 @@ def _matched_amount_from_response(response: dict[str, Any] | None) -> Decimal:
     )
 
 
-async def _resolve_market_meta(context: TradingContext, token_id: str) -> tuple[float, float]:
-    """Returns (min_order_size, tick_size) for the token."""
-    market_min_size = 0.0
-    tick_size = 0.0
+_MDS_RETRY_INTERVAL_S = 0.2
+_MDS_DEFAULT_TIMEOUT_S = 2.0
+
+
+def _market_data_subscribe_timeout(context: TradingContext) -> float:
+    raw = None
+    if context.config is not None:
+        raw = context.config.raw.get("MARKET_DATA_SUBSCRIBE_TIMEOUT_SECONDS")
     try:
-        if hasattr(context, 'execution_service') and context.execution_service:
-            meta = await context.execution_service.market_meta_service.get(token_id)
-            market_min_size = float(getattr(meta, "min_order_size", 0) or 0)
-            tick_size = float(getattr(meta, "tick_size", 0) or 0)
-    except Exception:
-        pass
-    return market_min_size, tick_size
+        value = float(raw) if raw is not None else _MDS_DEFAULT_TIMEOUT_S
+    except (TypeError, ValueError):
+        value = _MDS_DEFAULT_TIMEOUT_S
+    return max(0.2, value)
 
 
-async def _resolve_market_min_size(context: TradingContext, token_id: str) -> float:
-    min_size, _ = await _resolve_market_meta(context, token_id)
-    return min_size
+async def _ensure_token_subscribed(context: TradingContext, token_id: str) -> None:
+    """Subscribe ``token_id`` to the market WSS if a runtime is wired.
+
+    Best-effort: a missing runtime (e.g. test contexts) is not fatal — sizing
+    will still attempt to read MDS, which fails closed if data is unavailable.
+    """
+    runtime = getattr(context, "market_data_runtime", None)
+    if runtime is None:
+        return
+    try:
+        await runtime.subscribe_tokens([token_id])
+    except Exception as exc:
+        logger.warning(
+            "trade_pipeline_subscribe_failed | token=%s error=%s",
+            token_id,
+            repr(exc),
+        )
+
+
+async def _resolve_market_bundle(
+    context: TradingContext,
+    token_id: str,
+    *,
+    timeout_seconds: float,
+):
+    """Wait up to ``timeout_seconds`` for fresh executable market data.
+
+    Returns a ``MarketDataBundle`` or ``None`` if the token stays stale past
+    the timeout. ``None`` triggers a per-signal ``market_data_stale`` skip in
+    the caller; the trade is never placed off stale data.
+    """
+    mds = getattr(context, "market_data_service", None)
+    if mds is None:
+        return None
+
+    # Imported lazily to keep the module independent of the MDS error types
+    # at import time (and to avoid circular imports through trade_pipeline).
+    from services.market_data_service import (  # noqa: WPS433  local import
+        MarketDataError,
+        MarketDataNotReady,
+        StaleDataError,
+    )
+
+    deadline = time.monotonic() + max(0.0, timeout_seconds)
+    last_error: Exception | None = None
+
+    while True:
+        try:
+            return await mds.require_fresh_data(token_id)
+        except MarketDataNotReady as exc:
+            # Resolved markets / not-executable states will not recover within
+            # the wait window. Fail closed immediately.
+            last_error = exc
+            break
+        except StaleDataError as exc:
+            last_error = exc
+        except MarketDataError as exc:
+            last_error = exc
+            break
+        except Exception as exc:  # pragma: no cover - defensive
+            last_error = exc
+            break
+
+        if time.monotonic() >= deadline:
+            break
+        await asyncio.sleep(_MDS_RETRY_INTERVAL_S)
+
+    logger.info(
+        "trade_pipeline_market_data_stale | token=%s reason=%s",
+        token_id,
+        repr(last_error) if last_error else "timeout",
+    )
+    return None
+
+
+async def _prefetch_market_data_for_signals(
+    context: TradingContext,
+    normalized: list,
+) -> tuple[dict[str, Any], set[str]]:
+    """Subscribe each unique signal token and resolve a fresh bundle.
+
+    Returns:
+        bundles_by_token: token_id -> MarketDataBundle for tokens that
+            became WSS-fresh within the configured timeout.
+        stale_tokens: token_ids that timed out; the per-signal loop must
+            skip these with ``skip_code="market_data_stale"``.
+    """
+    unique_tokens: list[str] = []
+    seen: set[str] = set()
+    for signal, _ in normalized:
+        token_id = signal.token_id
+        if token_id and token_id not in seen:
+            seen.add(token_id)
+            unique_tokens.append(token_id)
+
+    if not unique_tokens:
+        return {}, set()
+
+    timeout_seconds = _market_data_subscribe_timeout(context)
+    bundles_by_token: dict[str, Any] = {}
+    stale_tokens: set[str] = set()
+
+    analysis_sem = _analysis_semaphore(context)
+
+    async def _resolve_one(token_id: str) -> tuple[str, Any]:
+        async with analysis_sem:
+            await _ensure_token_subscribed(context, token_id)
+            bundle = await _resolve_market_bundle(
+                context,
+                token_id,
+                timeout_seconds=timeout_seconds,
+            )
+            return token_id, bundle
+
+    results = await asyncio.gather(
+        *(_resolve_one(token_id) for token_id in unique_tokens),
+        return_exceptions=True,
+    )
+    for entry in results:
+        if isinstance(entry, Exception):
+            logger.warning(
+                "trade_pipeline_market_data_prefetch_error | error=%s",
+                repr(entry),
+            )
+            continue
+        token_id, bundle = entry
+        if bundle is None:
+            stale_tokens.add(token_id)
+        else:
+            bundles_by_token[token_id] = bundle
+    return bundles_by_token, stale_tokens
 
 
 async def _fetch_live_position_size(
@@ -773,32 +902,20 @@ async def execute_trades(
 
     market_min_size_by_token: dict[str, float] = {}
     tick_size_by_token: dict[str, float] = {}
+    market_data_stale_tokens: set[str] = set()
     if normalized:
-        analysis_sem = _analysis_semaphore(context)
-
-        async def _prefetch_market_min(signal: TradeSignal) -> tuple[str, float, float]:
-            async with analysis_sem:
-                min_size, tick = await _resolve_market_meta(context, signal.token_id)
-                return signal.token_id, min_size, tick
-
-        prefetch_results = await asyncio.gather(
-            *(_prefetch_market_min(signal) for signal, _ in normalized),
-            return_exceptions=True,
+        bundles_by_token, market_data_stale_tokens = await _prefetch_market_data_for_signals(
+            context, normalized
         )
-        for item, result in zip(normalized, prefetch_results):
-            signal, _ = item
-            if isinstance(result, Exception):
-                logger.warning(
-                    "market_min_prefetch_error | token=%s error=%s",
-                    signal.token_id,
-                    repr(result),
-                )
-                market_min_size_by_token[signal.token_id] = 0.0
-                tick_size_by_token[signal.token_id] = 0.0
-                continue
-            token_id, market_min_size, tick_size = result
-            market_min_size_by_token[token_id] = market_min_size
-            tick_size_by_token[token_id] = tick_size
+        for token_id, bundle in bundles_by_token.items():
+            try:
+                market_min_size_by_token[token_id] = float(bundle.tick.min_order_size)
+                tick_size_by_token[token_id] = float(bundle.tick.tick_size)
+            except (TypeError, ValueError, AttributeError):
+                # Defensive: a malformed bundle should not crash the loop.
+                market_data_stale_tokens.add(token_id)
+                market_min_size_by_token.pop(token_id, None)
+                tick_size_by_token.pop(token_id, None)
 
     for signal, raw in normalized:
         labels = {"user_id": context.user_id, "leader_id": leader_id}
@@ -813,6 +930,49 @@ async def execute_trades(
                     trade_key=trade_key,
                     status="skipped",
                     reason="already_processed",
+                    order_id=None,
+                )
+            )
+            continue
+
+        # ------------------------------------------------------------------
+        # Market-data freshness gate — fail closed when WSS is not ready
+        # ------------------------------------------------------------------
+        # MarketDataService is the sole authority for executable market data.
+        # If subscription + WSS handshake did not converge inside the
+        # configured window, skip the signal rather than trade on stale or
+        # REST-only prices/books.
+        if signal.token_id in market_data_stale_tokens:
+            skip_code = "market_data_stale"
+            log_trade_skip(
+                logger,
+                side=signal.side,
+                condition_id=signal.condition_id,
+                asset=signal.token_id,
+                size=float(signal.size) if signal.size else None,
+                price=float(signal.price) if signal.price else None,
+                usdc_value=float(signal.usdc_size),
+                skip_code=skip_code,
+                reason="market data not WSS-fresh within timeout",
+                event_slug=signal.event_slug,
+                meta={"user_id": context.user_id, "leader_id": leader_id},
+            )
+            metrics.inc("trades_skipped_total", labels={**labels, "reason": skip_code})
+            context.orders_repo.mark_processed_trade(
+                trade_key=trade_key,
+                user_id=context.user_id,
+                leader_id=leader_id,
+                tx_hash=signal.tx_hash,
+                side=signal.side,
+                asset=signal.token_id,
+                condition_id=signal.condition_id,
+                status=f"skipped_{skip_code}",
+            )
+            results.append(
+                TradePipelineResult(
+                    trade_key=trade_key,
+                    status="skipped",
+                    reason=skip_code,
                     order_id=None,
                 )
             )

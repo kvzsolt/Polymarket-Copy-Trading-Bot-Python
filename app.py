@@ -286,13 +286,15 @@ async def _start_market_data_runtimes(
     contexts_by_leader: dict[str, list["TradingContext"]],
     readiness,
     config,
-) -> list[MarketDataRuntime]:
-    """Start WSS-backed market data runtimes.
+) -> dict[str, MarketDataRuntime]:
+    """Start WSS-backed market data runtimes, keyed by user_id.
 
     Trade detection remains HTTP polling. These runtimes only keep market
-    quote/book/tick state fresh for execution, risk, and near-one exits.
+    quote/book/tick state fresh for execution, risk, and near-one exits. The
+    caller must attach the matching runtime to each user's TradingContext so
+    the trade pipeline can subscribe new signal tokens dynamically.
     """
-    market_data_runtimes: list[MarketDataRuntime] = []
+    market_data_runtimes: dict[str, MarketDataRuntime] = {}
     context_tokens = extract_token_ids_from_contexts(
         _flatten_contexts(contexts_by_leader)
     )
@@ -337,7 +339,7 @@ async def _start_market_data_runtimes(
         )
 
         await market_runtime.start(initial_tokens)
-        market_data_runtimes.append(market_runtime)
+        market_data_runtimes[runtime_user.user_id] = market_runtime
 
         logger.info(
             "market_data_runtime_started_for_user",
@@ -348,6 +350,28 @@ async def _start_market_data_runtimes(
         )
 
     return market_data_runtimes
+
+
+def _attach_market_data_runtime_to_contexts(
+    *,
+    contexts_by_leader: dict[str, list["TradingContext"]],
+    risk_contexts_by_user: dict[str, "TradingContext"],
+    runtimes_by_user: dict[str, MarketDataRuntime],
+) -> None:
+    """Bind each user's MarketDataRuntime onto their TradingContext.
+
+    Trade pipeline reads ``context.market_data_runtime.subscribe_tokens`` to
+    register new signal tokens with WSS before placing orders.
+    """
+    for contexts in contexts_by_leader.values():
+        for context in contexts:
+            runtime = runtimes_by_user.get(context.user_id)
+            if runtime is not None:
+                context.market_data_runtime = runtime
+    for context in risk_contexts_by_user.values():
+        runtime = runtimes_by_user.get(context.user_id)
+        if runtime is not None:
+            context.market_data_runtime = runtime
 
 
 async def _start_user_data_runtimes(
@@ -404,7 +428,7 @@ async def _start_user_data_runtimes(
 
 async def _subscribe_context_tokens(
     *,
-    market_data_runtimes: list[MarketDataRuntime],
+    market_data_runtimes: dict[str, MarketDataRuntime],
     contexts_by_leader: dict[str, list],
 ) -> None:
     """Subscribe tokens visible from runtime contexts.
@@ -419,7 +443,7 @@ async def _subscribe_context_tokens(
     if not token_ids:
         return
 
-    for runtime in market_data_runtimes:
+    for runtime in market_data_runtimes.values():
         try:
             await runtime.subscribe_tokens(token_ids)
         except Exception as exc:
@@ -434,8 +458,8 @@ async def _shutdown_runtime(
     monitor_tasks: list[asyncio.Task],
     discovery_task: asyncio.Task | None,
     risk_task: asyncio.Task | None,
-    near_one_task: asyncio.Task | None,
-    market_data_runtimes: list[MarketDataRuntime],
+    near_one_tasks: list[asyncio.Task],
+    market_data_runtimes: dict[str, MarketDataRuntime],
     user_data_runtimes: list[UserDataRuntime],
     metrics_runner,
 ) -> None:
@@ -445,8 +469,7 @@ async def _shutdown_runtime(
         shutdown_tasks.append(discovery_task)
     if risk_task:
         shutdown_tasks.append(risk_task)
-    if near_one_task:
-        shutdown_tasks.append(near_one_task)
+    shutdown_tasks.extend(near_one_tasks)
 
     for task in shutdown_tasks:
         task.cancel()
@@ -463,7 +486,7 @@ async def _shutdown_runtime(
                 extra={"error": redact_error_detail(exc)},
             )
 
-    for runtime in market_data_runtimes:
+    for runtime in market_data_runtimes.values():
         try:
             await runtime.stop()
         except Exception as exc:
@@ -650,6 +673,12 @@ async def main():
         config=application.config,
     )
 
+    _attach_market_data_runtime_to_contexts(
+        contexts_by_leader=contexts_by_leader,
+        risk_contexts_by_user=risk_contexts_by_user,
+        runtimes_by_user=market_data_runtimes,
+    )
+
     user_data_runtimes = await _start_user_data_runtimes(
         runtime_users=runtime_users,
         user_states=user_states,
@@ -807,24 +836,29 @@ async def main():
             )
         )
 
-    near_one_task = None
+    near_one_tasks: list[asyncio.Task] = []
 
     if application.config.near_one_exit.enable_near_one_exit:
         from services.near_one_exit import NearOneExitService
 
-        first_state = user_states[first_user.user_id]
-        near_one_task = asyncio.create_task(
-            NearOneExitService(
-                position_manager=first_state.position_manager,
-                execution_service=first_state.execution_service,
-                cache=first_state.market_store,
-                market_data_service=first_state.market_data_service,
-                config=application.config,
-                readiness=application.readiness,
-                user_id=first_user.user_id,
-                funder_address=first_state.user.wallet.funder_address,
-            ).loop()
-        )
+        for runtime_user in runtime_users:
+            user_state = user_states.get(runtime_user.user_id)
+            if user_state is None or user_state.market_data_service is None:
+                continue
+            near_one_tasks.append(
+                asyncio.create_task(
+                    NearOneExitService(
+                        position_manager=user_state.position_manager,
+                        execution_service=user_state.execution_service,
+                        market_data_service=user_state.market_data_service,
+                        config=application.config,
+                        readiness=application.readiness,
+                        user_id=runtime_user.user_id,
+                        funder_address=runtime_user.wallet.funder_address,
+                    ).loop(),
+                    name=f"near-one-exit-{runtime_user.user_id}",
+                )
+            )
 
     monitor_tasks.extend(
         asyncio.create_task(
@@ -864,7 +898,7 @@ async def main():
             monitor_tasks=monitor_tasks,
             discovery_task=discovery_task,
             risk_task=risk_task,
-            near_one_task=near_one_task,
+            near_one_tasks=near_one_tasks,
             market_data_runtimes=market_data_runtimes,
             user_data_runtimes=user_data_runtimes,
             metrics_runner=metrics_runner,

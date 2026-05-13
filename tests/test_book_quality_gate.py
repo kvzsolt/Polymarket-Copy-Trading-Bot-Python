@@ -111,7 +111,6 @@ def _make_execution_service(bid: str | None, ask: str | None, quote_price: str =
 
     return ExecutionService(
         clob,
-        None,
         AsyncMock(get_fee_bps=AsyncMock(return_value=Decimal("0"))),
         order_repo,
         config=mock_cfg,

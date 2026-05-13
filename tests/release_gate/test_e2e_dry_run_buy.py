@@ -90,7 +90,7 @@ async def test_dry_run_buy_routes_through_gateway(
         )
     )
     svc = ExecutionService(
-        stub_clob_client, None, _FeeSvc(), repo,
+        stub_clob_client, _FeeSvc(), repo,
         config=exec_config,
         clob_gateway=gateway,
         market_data_service=_mock_mds(),

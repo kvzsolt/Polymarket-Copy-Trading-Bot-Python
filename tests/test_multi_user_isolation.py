@@ -49,11 +49,27 @@ class _FakePnlTracker:
 
 def _build_context(*, user_id: str, db_path: str) -> TradingContext:
     import config.app_config as app_config_mod
-    from unittest.mock import patch
+    import time
+    from decimal import Decimal as _D
+    from unittest.mock import AsyncMock, patch
+    from cache.market_state_store import BookSnapshot, QuoteSnapshot, TickSnapshot
+    from services.market_data_service import MarketDataBundle, MarketDataSource
+
     with patch.object(app_config_mod, "_runtime_python_supported", return_value=True):
         cfg = load_config()
 
-    return TradingContext(
+    now = time.monotonic()
+    bundle = MarketDataBundle(
+        token_id=FAKE_TOKEN_ID,
+        quote=QuoteSnapshot(token_id=FAKE_TOKEN_ID, best_bid=_D("0.49"), best_ask=_D("0.51"), last_trade_price=None, source="wss", monotonic_ts=now),
+        book=BookSnapshot(token_id=FAKE_TOKEN_ID, bids={_D("0.49"): _D("100")}, asks={_D("0.51"): _D("100")}, best_bid=_D("0.49"), best_ask=_D("0.51"), source="wss", monotonic_ts=now),
+        tick=TickSnapshot(token_id=FAKE_TOKEN_ID, tick_size=_D("0.01"), min_order_size=_D("0.001"), neg_risk=False, source="wss", monotonic_ts=now),
+        source=MarketDataSource.WSS,
+    )
+    mds = AsyncMock()
+    mds.require_fresh_data = AsyncMock(return_value=bundle)
+
+    ctx = TradingContext(
         user_id=user_id,
         wallet_address=("0x" + ("a" if user_id.endswith("a") else "b") * 40),
         client=object(),
@@ -71,8 +87,11 @@ def _build_context(*, user_id: str, db_path: str) -> TradingContext:
         buy_min_amount=1.0,
         buy_max_amount=1000.0,
         max_market_exposure_usdc=1000.0,
+        market_data_service=mds,
         extra={"slippage_tolerance_bps": 50},
     )
+    ctx.market_data_runtime = AsyncMock()
+    return ctx
 
 
 @pytest.mark.asyncio

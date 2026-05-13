@@ -6,7 +6,6 @@ Tests:
   - resolved market blocks execution
   - missing tick blocks execution
   - missing min_order_size blocks execution
-  - ExecutionService does not call MarketMetaService
   - ExecutionService does not call get_price
   - quote/book/tick all come from MarketDataBundle
 """
@@ -102,7 +101,6 @@ def _make_svc(
     gateway = make_clob_gateway(submit_result=submit_result)
     svc = ExecutionService(
         object(),  # clob_client — not used in PR 2 path
-        None,      # market_meta_service — intentionally None
         _FeeSvc(),
         repo,
         config=exec_config,
@@ -250,33 +248,6 @@ class TestMissingMinOrderSizeBlocks:
 
 
 # ---------------------------------------------------------------------------
-# ExecutionService does not call MarketMetaService
-# ---------------------------------------------------------------------------
-
-class TestNoMarketMetaServiceUsage:
-    def test_market_meta_service_not_referenced_in_execute(self) -> None:
-        """execute() source must not reference market_meta_service."""
-        source = inspect.getsource(ExecutionService.execute)
-        assert "market_meta_service" not in source
-
-    @pytest.mark.asyncio
-    async def test_meta_svc_mock_never_called(self, fresh_db_path) -> None:
-        mds = AsyncMock()
-        mds.require_fresh_data = AsyncMock(return_value=_make_bundle())
-        repo = OrderRepository(fresh_db_path)
-        meta_svc = MagicMock()
-        gateway = make_clob_gateway()
-        svc = ExecutionService(
-            object(), meta_svc, _FeeSvc(), repo,
-            config=make_exec_config(),
-            clob_gateway=gateway,
-            market_data_service=mds,
-        )
-        await svc.execute(_request())
-        meta_svc.get.assert_not_called()
-
-
-# ---------------------------------------------------------------------------
 # ExecutionService does not call get_price
 # ---------------------------------------------------------------------------
 
@@ -295,7 +266,7 @@ class TestNoGetPriceCall:
         repo = OrderRepository(fresh_db_path)
         gateway = make_clob_gateway()
         svc = ExecutionService(
-            clob_client, None, _FeeSvc(), repo,
+            clob_client, _FeeSvc(), repo,
             config=make_exec_config(),
             clob_gateway=gateway,
             market_data_service=mds,
@@ -387,7 +358,7 @@ class TestMdsNotWiredFailsClosed:
         repo = OrderRepository(fresh_db_path)
         gateway = make_clob_gateway()
         svc = ExecutionService(
-            object(), None, _FeeSvc(), repo,
+            object(), _FeeSvc(), repo,
             config=make_exec_config(),
             clob_gateway=gateway,
             market_data_service=None,

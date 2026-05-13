@@ -61,7 +61,6 @@ class TestExecutionCircuitBreakerDI:
     def test_default_uses_module_breaker(self) -> None:
         svc = ExecutionService(
             clob_client=object(),
-            market_meta_service=object(),
             fee_service=object(),
             order_repo=object(),
             config=_make_config(),
@@ -72,7 +71,6 @@ class TestExecutionCircuitBreakerDI:
         custom = CircuitBreaker(name="t", failure_threshold=1, cooldown_seconds=1)
         svc = ExecutionService(
             clob_client=object(),
-            market_meta_service=object(),
             fee_service=object(),
             order_repo=object(),
             circuit_breaker=custom,
