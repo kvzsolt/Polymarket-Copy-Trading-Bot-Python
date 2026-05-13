@@ -1,0 +1,19 @@
+tests/test_execution_market_data_service.py
+  s_1303f4a59c3deb::t_eb585ecb3df935 401-474
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.7",
+  "base_commit_sha": "d971f196f82f67d36d760ece7e04a8dbf896a669",
+  "prompts": {},
+  "sessions": {
+    "s_1303f4a59c3deb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0da33ae6-215a-47cb-9415-9aaf6706e1dc",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
