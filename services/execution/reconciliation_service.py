@@ -301,16 +301,23 @@ class ReconciliationService:
     ) -> None:
         """Release a reservation when the record carries reservation_id.
 
-        Coordinator-path orders populate this; the direct trade-pipeline path
-        leaves it empty. Safe no-op when ``reservation_service`` is unset.
+        Coordinator-path orders populate this either at the top level of
+        ``request`` or inside ``request.recovery_metadata`` (PR6). Falls back
+        to the top-level ``record["reservation_id"]`` if neither is present.
+        Safe no-op when ``reservation_service`` is unset.
         """
         if self.reservation_service is None:
             return
         request = record.get("request") if isinstance(record, dict) else None
-        reservation_id = None
+        reservation_id: Any = None
         if isinstance(request, dict):
             reservation_id = request.get("reservation_id")
-        reservation_id = reservation_id or record.get("reservation_id")
+            if not reservation_id:
+                recovery = request.get("recovery_metadata")
+                if isinstance(recovery, dict):
+                    reservation_id = recovery.get("reservation_id")
+        if not reservation_id:
+            reservation_id = record.get("reservation_id")
         if not reservation_id:
             return
         try:
