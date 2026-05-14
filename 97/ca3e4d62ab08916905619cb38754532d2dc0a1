@@ -1,0 +1,52 @@
+tests/test_doctor_app_startup.py
+  s_62bfb689d71971::t_0cd234d2ee57b3 1-57,62
+  s_62bfb689d71971::t_c624756810fef3 58-61
+orchestrators/runtime_bootstrap.py
+  s_62bfb689d71971::t_5e567f61def665 247
+  s_62bfb689d71971::t_7a35781ede94d7 351-355
+  s_62bfb689d71971::t_d3242b76417458 317
+  s_62bfb689d71971::t_8916ca50cfe90a 344,356
+tests/test_live_canary_coordinator.py
+  s_62bfb689d71971::t_88d11a922e26ea 1-152
+bot_cli/commands/doctor.py
+  s_62bfb689d71971::t_4bf1dbf66cca50 391-392
+  s_62bfb689d71971::t_2a8943cd5b997d 418-419
+  s_62bfb689d71971::t_496b9f270bfb5d 262-267
+  s_62bfb689d71971::t_ea603f8ba85a33 496-498,500-502,505,518,524,527
+  s_62bfb689d71971::t_552690872dd132 1-18,22,25-27,29-34,39-55,59-87,90,92-95,97,99-172,175-211,219-223,229-255,268-272,274-282,284-313,315-338,342,344-356,358-360,362,366,369-374,376-382,384,386,388-390,393-399,401,403-417,420-428,430,432-495,499,503-504,506-512,514-517,519-523,525-526,528-601,603-615,617-624,626,631-635,637-641,643-675,681-682,684-685
+  s_62bfb689d71971::t_3d10a237a8a9a2 56-58
+  s_62bfb689d71971::t_cedea5d7c5a91b 256-261
+app.py
+  s_62bfb689d71971::t_9aa8ae3bd47145 579-589,594-605
+services/execution/coordinator.py
+  s_62bfb689d71971::t_cea815c366f913 522
+  s_62bfb689d71971::t_e9dc74f1f9ffa5 217-219
+  s_62bfb689d71971::t_236bac654c7930 487-521,523-544
+  s_62bfb689d71971::t_d7bbaa4b7f6f3a 693-695
+config/app_config.py
+  s_62bfb689d71971::t_0a6929d29dc4e3 918-925
+  s_62bfb689d71971::t_8e22cd4ca92394 525
+  s_62bfb689d71971::t_d0ecc4218a8935 1010
+  s_62bfb689d71971::t_7dead5436c6e47 51,54
+  s_62bfb689d71971::t_45f958028e60c1 389-407
+tests/test_doctor_live.py
+  s_62bfb689d71971::t_e8313880273809 48,54-57,63
+  s_62bfb689d71971::t_4a04f155b68603 1-46,49,65,74-184
+  s_62bfb689d71971::t_f9cb3a2cc75f00 47,50-53,58-62,64,66-73
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.7",
+  "base_commit_sha": "97ca3e4d62ab08916905619cb38754532d2dc0a1",
+  "prompts": {},
+  "sessions": {
+    "s_62bfb689d71971": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6e021f73-964d-4111-864c-59d2e303c15b",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
