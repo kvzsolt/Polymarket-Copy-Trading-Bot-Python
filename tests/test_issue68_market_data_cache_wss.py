@@ -354,9 +354,8 @@ class TestSizeZeroDeletesLevel:
 
         event = json.dumps({
             "event_type": "price_change",
-            "asset_id": TOKEN_A,
-            "changes": [
-                {"side": "BUY", "price": "0.50", "size": "0"},
+            "price_changes": [
+                {"asset_id": TOKEN_A, "side": "BUY", "price": "0.50", "size": "0"},
             ],
         })
         market_ws._handle_message(event)
@@ -370,10 +369,9 @@ class TestSizeZeroDeletesLevel:
     ) -> None:
         event = json.dumps({
             "event_type": "price_change",
-            "asset_id": TOKEN_A,
-            "changes": [
-                {"side": "BUY", "price": "0.50", "size": "150"},
-                {"side": "SELL", "price": "0.55", "size": "80"},
+            "price_changes": [
+                {"asset_id": TOKEN_A, "side": "BUY", "price": "0.50", "size": "150"},
+                {"asset_id": TOKEN_A, "side": "SELL", "price": "0.55", "size": "80"},
             ],
         })
         market_ws._handle_message(event)

@@ -250,7 +250,7 @@ class MarketWebSocket:
                 self._dispatch_event(event)
 
     def _dispatch_event(self, event: dict[str, Any]) -> None:
-        event_type = event.get("event_type") or event.get("type")
+        event_type = str(event.get("event_type") or event.get("type") or "").strip()
 
         if event_type == "book":
             self._handle_book(event)
@@ -267,7 +267,11 @@ class MarketWebSocket:
         elif event_type == "market_resolved":
             self._handle_market_resolved(event)
         else:
-            logger.debug("MarketWS: unhandled event_type=%r event=%s", event_type, event)
+            logger.debug(
+                "market_wss_event_ignored | eventType=%r rawKeys=%s",
+                event_type,
+                list(event.keys()),
+            )
 
     def _handle_book(self, event: dict[str, Any]) -> None:
         asset_id = _asset_id(event)
@@ -277,7 +281,17 @@ class MarketWebSocket:
         bids = _parse_levels(event.get("bids") or event.get("buys") or [])
         asks = _parse_levels(event.get("asks") or event.get("sells") or [])
 
-        replaced = self._replace_book_snapshot(asset_id, bids, asks, event)
+        if not bids and not asks:
+            logger.debug(
+                "market_wss_event_ignored | type=book assetId=%s reason=empty_book",
+                asset_id,
+            )
+            self._notify_state_change(asset_id, "book")
+            return
+
+        condition_id = str(event.get("market") or "").strip() or None
+        replaced = self._replace_book_snapshot(asset_id, bids, asks, event, condition_id=condition_id)
+
         best_bid = max(bids) if bids else _to_decimal(event.get("best_bid") or event.get("bid"))
         best_ask = min(asks) if asks else _to_decimal(event.get("best_ask") or event.get("ask"))
 
@@ -288,54 +302,69 @@ class MarketWebSocket:
         if tick is not None:
             self._on_tick_size_change(asset_id, tick)
 
-        if replaced:
-            self._mark_asset_fresh(asset_id, "book_snapshot")
-        else:
+        if not replaced:
             self._mark_asset_dirty(asset_id, "book_snapshot_not_replaced")
+
+        logger.debug(
+            "market_wss_book_received | assetId=%s conditionId=%s bidCount=%d askCount=%d"
+            " bestBid=%s bestAsk=%s hash=%s ts=%s",
+            asset_id,
+            condition_id,
+            len(bids),
+            len(asks),
+            best_bid,
+            best_ask,
+            event.get("hash"),
+            event.get("timestamp"),
+        )
         self._notify_state_change(asset_id, "book")
 
     def _handle_price_change(self, event: dict[str, Any]) -> None:
-        asset_id = _asset_id(event)
-        if not asset_id:
-            return
-
         changes = event.get("price_changes") or event.get("changes") or []
         if not isinstance(changes, list):
-            changes = []
+            logger.debug(
+                "market_wss_event_ignored | type=price_change reason=price_changes_not_list"
+            )
+            return
 
-        changed_best_bid: Decimal | None = None
-        changed_best_ask: Decimal | None = None
+        condition_id = str(event.get("market") or "").strip() or None
+        touched: set[str] = set()
 
         for change in changes:
             if not isinstance(change, dict):
                 continue
+            asset_id = _asset_id(change)
+            if not asset_id:
+                continue
             side = _normalize_side(change.get("side"))
             price = _to_decimal(change.get("price"))
-            if side is None or price is None:
-                continue
-
             size = _to_decimal(change.get("size"))
-            if size is None:
-                if side == "BUY":
-                    changed_best_bid = _max_decimal(changed_best_bid, price)
-                else:
-                    changed_best_ask = _min_decimal(changed_best_ask, price)
+            if side is None or price is None or size is None:
+                logger.debug(
+                    "market_wss_event_ignored | type=price_change_item assetId=%s"
+                    " reason=missing_side_or_price_or_size",
+                    asset_id,
+                )
                 continue
 
             self._apply_book_delta(asset_id, side, price, size)
-            if size > 0:
-                if side == "BUY":
-                    changed_best_bid = _max_decimal(changed_best_bid, price)
-                else:
-                    changed_best_ask = _min_decimal(changed_best_ask, price)
+            touched.add(asset_id)
 
-        best_bid = _to_decimal(event.get("best_bid") or event.get("bid")) or changed_best_bid
-        best_ask = _to_decimal(event.get("best_ask") or event.get("ask")) or changed_best_ask
+            best_bid = _to_decimal(change.get("best_bid"))
+            best_ask = _to_decimal(change.get("best_ask"))
+            if best_bid is not None or best_ask is not None:
+                self._on_price_update(asset_id, best_bid, best_ask)
 
-        if best_bid is not None or best_ask is not None:
-            self._on_price_update(asset_id, best_bid, best_ask)
-        self._touch_asset(asset_id, "price_change")
-        self._notify_state_change(asset_id, "price_change")
+            self._touch_asset(asset_id, "price_change")
+            self._notify_state_change(asset_id, "price_change")
+
+        logger.debug(
+            "market_wss_price_change_received | conditionId=%s changeCount=%d assetIds=%s ts=%s",
+            condition_id,
+            len(changes),
+            list(touched),
+            event.get("timestamp"),
+        )
 
     def _handle_best_bid_ask(self, event: dict[str, Any]) -> None:
         asset_id = _asset_id(event)
@@ -348,6 +377,16 @@ class MarketWebSocket:
         self._on_price_update(asset_id, best_bid, best_ask)
         self._call_cache_optional("on_best_bid_ask", asset_id, best_bid, best_ask, event)
         self._touch_asset(asset_id, "best_bid_ask")
+        logger.debug(
+            "market_wss_best_bid_ask_received | assetId=%s conditionId=%s"
+            " bestBid=%s bestAsk=%s spread=%s ts=%s",
+            asset_id,
+            str(event.get("market") or "").strip() or None,
+            best_bid,
+            best_ask,
+            event.get("spread"),
+            event.get("timestamp"),
+        )
         self._notify_state_change(asset_id, "best_bid_ask")
 
     def _handle_last_trade_price(self, event: dict[str, Any]) -> None:
@@ -430,10 +469,15 @@ class MarketWebSocket:
         bids: dict[Decimal, Decimal],
         asks: dict[Decimal, Decimal],
         raw_event: dict[str, Any],
+        *,
+        condition_id: str | None = None,
     ) -> bool:
-        if self._call_cache_optional("replace_book_snapshot", asset_id, bids, asks, raw_event):
+        event_with_meta = dict(raw_event)
+        if condition_id:
+            event_with_meta["condition_id"] = condition_id
+        if self._call_cache_optional("replace_book_snapshot", asset_id, bids, asks, event_with_meta):
             return True
-        if self._call_cache_optional("on_book_snapshot", asset_id, bids, asks, raw_event):
+        if self._call_cache_optional("on_book_snapshot", asset_id, bids, asks, event_with_meta):
             return True
         logger.warning(
             "MarketWS: cache lacks replace_book_snapshot/on_book_snapshot; "

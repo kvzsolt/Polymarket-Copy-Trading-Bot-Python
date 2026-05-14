@@ -190,6 +190,34 @@ def get_funder_address() -> str:
     return _ensure_no_inline_comment('PROXY_WALLET', _raw('PROXY_WALLET', ''))
 
 
+def _derive_signer_address_sync(private_key: str) -> str | None:
+    try:
+        from web3 import Web3
+        return str(Web3().eth.account.from_key(private_key).address)
+    except Exception:
+        return None
+
+
+def get_signature_type() -> SignatureType:
+    """Return a synchronous best-guess signature type without RPC probing.
+
+    For production use, prefer ``detect_wallet_signature_type()`` which
+    performs RPC contract-code detection.  This fallback is kept for
+    config building where async is not available.
+    """
+    from services.wallet_signature_detector import _classify_wallet_signature_type
+
+    pk = get_private_key()
+    signer = _derive_signer_address_sync(pk) if pk else None
+    funder = get_funder_address()
+    st, _label = _classify_wallet_signature_type(
+        signer_address=signer,
+        funder_address=funder,
+        funder_has_code=False,
+    )
+    return st
+
+
 def get_metrics_bind_host() -> str:
     return _ensure_no_inline_comment('METRICS_BIND_HOST', _raw('METRICS_BIND_HOST', '127.0.0.1'))
 
@@ -200,6 +228,7 @@ def build_wallet_config() -> WalletConfig:
         chain_id=get_chain_id(),
         funder_address=get_funder_address(),
         polygon_rpc_url=_ensure_no_inline_comment('RPC_URL', _raw('RPC_URL', '')),
+        signature_type=get_signature_type(),
     )
 
 
