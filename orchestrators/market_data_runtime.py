@@ -64,13 +64,19 @@ class MarketDataRuntime:
         init=False,
     )
     _last_wss_message_at: float = field(default=0.0, init=False)
+    _wss_connected: bool = field(default=False, init=False)
     _wss_degraded_log_last: float = field(default=0.0, init=False)
 
     async def start(self, initial_token_ids: list[str]) -> None:
         """Start market WSS runtime.
 
-        If no token ids are available, the runtime stays not-ready. That is
-        safer than marking market data healthy without subscriptions.
+        The WSS connection is opened unconditionally, even with zero initial
+        tokens. Trade detection is HTTP-polled, so token ids only become known
+        when a trade is observed; the connection must already be live so that
+        dynamic ``subscribe_tokens`` / ``ensure_token_ready_or_bootstrapped``
+        calls can attach tokens and REST-bootstrap them. Returning early on an
+        empty token set would leave ``_ws_client`` unset and permanently block
+        every new market.
         """
         token_ids = _normalize_token_ids(initial_token_ids)
 
@@ -80,14 +86,7 @@ class MarketDataRuntime:
         self._status.last_error = None
 
         if not token_ids:
-            logger.warning("market_data_runtime_start_empty_token_set")
-            self._update_readiness(
-                wss_market_ok=False,
-                wss_market_connecting=False,
-                market_data_ready=False,
-                last_error="no tokens subscribed",
-            )
-            return
+            logger.info("market_data_runtime_start_empty_token_set")
 
         self._ws_client = MarketWebSocket(
             cache=self.market_store,
@@ -118,6 +117,7 @@ class MarketDataRuntime:
     async def stop(self) -> None:
         """Stop market WSS runtime."""
         self._status.running = False
+        self._wss_connected = False
 
         if self._ws_client is not None:
             try:
@@ -199,6 +199,14 @@ class MarketDataRuntime:
         cfg = self._bootstrap_config()
         if not cfg["enable"]:
             return self._token_executable(token_id)
+
+        if cfg["require_wss_connected"] and self.is_wss_down():
+            # A trade can arrive in the startup window before ``on_connected``
+            # fires. Connecting is not the same as down -- wait briefly within
+            # the bootstrap budget before failing closed.
+            await self._await_wss_connected(
+                timeout_seconds=min(cfg["total_budget_ms"] / 2000.0, 0.5)
+            )
 
         if cfg["require_wss_connected"] and self.is_wss_down():
             debug = self.market_store.get_debug_state(token_id)
@@ -468,6 +476,8 @@ class MarketDataRuntime:
             raise
 
     async def _on_wss_connected(self) -> None:
+        self._wss_connected = True
+        self._last_wss_message_at = time.monotonic()
         self._status.last_error = None
         self._update_readiness(
             wss_market_ok=True,
@@ -481,6 +491,7 @@ class MarketDataRuntime:
         )
 
     async def _on_wss_disconnected(self) -> None:
+        self._wss_connected = False
         self.market_store.mark_all_stale("market_wss_disconnected")
         self._update_readiness(
             wss_market_ok=False,
@@ -617,16 +628,45 @@ class MarketDataRuntime:
         )
 
     def is_wss_down(self, threshold_seconds: float = 15.0) -> bool:
-        """Return True when market WSS has been silent beyond threshold_seconds.
+        """Return True when the market WSS connection is down or silent.
 
-        Used by MarketDataService to gate REST degraded fallback. Returns True
-        immediately if the runtime is not running or has never received a message.
+        Used by MarketDataService to gate REST degraded fallback, and by
+        ``ensure_token_ready_or_bootstrapped`` to gate REST bootstrap. Down means:
+          - runtime not running, or
+          - WSS not connected (explicit connection state), or
+          - connected but silent beyond ``threshold_seconds``.
+
+        A connected stream that has not yet delivered a message is NOT down --
+        ``_on_wss_connected`` sets ``_last_wss_message_at``, so a live connection
+        always has a non-zero timestamp.
         """
         if not self._status.running:
             return True
-        if self._last_wss_message_at == 0.0:
+        if not self._wss_connected:
             return True
+        if self._last_wss_message_at == 0.0:
+            return False
         return (time.monotonic() - self._last_wss_message_at) > threshold_seconds
+
+    async def _await_wss_connected(self, timeout_seconds: float) -> bool:
+        """Wait up to ``timeout_seconds`` for the market WSS to report connected.
+
+        Absorbs the startup race where a trade arrives before the
+        ``on_connected`` callback has fired. Returns True if connected within
+        the window, False if it gave up or the runtime stopped.
+        """
+        if self._wss_connected:
+            return True
+        if timeout_seconds <= 0:
+            return False
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            if self._wss_connected:
+                return True
+            if not self._status.running:
+                return False
+            await asyncio.sleep(0.05)
+        return self._wss_connected
 
     async def _on_market_state_change(self, token_id: str, event_type: str) -> None:
         """WSS-driven recompute hook.

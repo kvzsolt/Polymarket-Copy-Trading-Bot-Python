@@ -73,15 +73,166 @@ def _make_runtime(
 # Start with no tokens
 # ---------------------------------------------------------------------------
 
+class _FakeMarketWebSocket:
+    """Stand-in for MarketWebSocket that never touches the network."""
+
+    def __init__(self, *args, on_connected=None, **kwargs) -> None:
+        self._on_connected = on_connected
+        self.connected_with: list[str] | None = None
+        self.subscribed: list[str] = []
+
+    async def connect(self, asset_ids: list[str]) -> None:
+        self.connected_with = list(asset_ids)
+        if self._on_connected is not None:
+            await self._on_connected()
+
+    async def subscribe(self, asset_ids: list[str]) -> None:
+        self.subscribed.extend(asset_ids)
+
+    async def unsubscribe(self, asset_ids: list[str]) -> None:
+        for a in asset_ids:
+            if a in self.subscribed:
+                self.subscribed.remove(a)
+
+    async def stop(self) -> None:
+        return None
+
+
 class TestStartNoTokens:
     @pytest.mark.asyncio
-    async def test_start_empty_tokens_market_data_not_ready(self) -> None:
+    async def test_start_empty_tokens_market_data_not_ready(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            "orchestrators.market_data_runtime.MarketWebSocket",
+            _FakeMarketWebSocket,
+        )
         readiness = ReadinessTracker()
         rt = _make_runtime(readiness=readiness)
         await rt.start([])
 
         snap = readiness.snapshot()
         assert snap.get("market_data_ready") is False
+        await rt.stop()
+
+    @pytest.mark.asyncio
+    async def test_start_empty_tokens_still_opens_wss_connection(
+        self, monkeypatch
+    ) -> None:
+        """Regression: empty initial token set must NOT skip WSS startup.
+
+        Trade detection is HTTP-polled, so the runtime routinely starts with
+        zero tokens. If start() returns early, _ws_client/_ws_task never exist
+        and every dynamically-added token is permanently un-bootstrappable.
+        """
+        monkeypatch.setattr(
+            "orchestrators.market_data_runtime.MarketWebSocket",
+            _FakeMarketWebSocket,
+        )
+        rt = _make_runtime()
+        await rt.start([])
+
+        assert rt._ws_client is not None
+        assert rt._ws_task is not None
+        assert rt._status.running is True
+        await rt.stop()
+
+    @pytest.mark.asyncio
+    async def test_start_empty_then_ensure_token_subscribes_via_ws_client(
+        self, monkeypatch
+    ) -> None:
+        """After an empty start, a new token must reach the live WS client."""
+        monkeypatch.setattr(
+            "orchestrators.market_data_runtime.MarketWebSocket",
+            _FakeMarketWebSocket,
+        )
+        gw = _make_bootstrap_gateway()
+        rt = _make_runtime_with_config(gateway=gw)
+        await rt.start([])
+        # let the fake connect() callback run
+        import asyncio as _asyncio
+        await _asyncio.sleep(0)
+
+        result = await rt.ensure_token_ready_or_bootstrapped(TOKEN_A)
+
+        assert TOKEN_A in rt._subscribed_tokens
+        assert TOKEN_A in rt._ws_client.subscribed
+        assert result is True
+        await rt.stop()
+
+
+class TestWssConnectionState:
+    @pytest.mark.asyncio
+    async def test_is_wss_down_true_before_running(self) -> None:
+        rt = _make_runtime()
+        assert rt.is_wss_down() is True
+
+    @pytest.mark.asyncio
+    async def test_is_wss_down_true_when_running_but_not_connected(self) -> None:
+        rt = _make_runtime()
+        rt._status.running = True
+        rt._wss_connected = False
+        assert rt.is_wss_down() is True
+
+    @pytest.mark.asyncio
+    async def test_is_wss_down_false_when_connected_no_message_yet(self) -> None:
+        """A connected stream with no message yet is NOT down (connecting race)."""
+        rt = _make_runtime()
+        rt._status.running = True
+        rt._wss_connected = True
+        rt._last_wss_message_at = 0.0
+        assert rt.is_wss_down() is False
+
+    @pytest.mark.asyncio
+    async def test_is_wss_down_true_when_connected_but_silent(self) -> None:
+        import time as _time
+
+        rt = _make_runtime()
+        rt._status.running = True
+        rt._wss_connected = True
+        rt._last_wss_message_at = _time.monotonic() - 999.0
+        assert rt.is_wss_down(threshold_seconds=15.0) is True
+
+    @pytest.mark.asyncio
+    async def test_on_wss_connected_sets_connected_flag(self) -> None:
+        rt = _make_runtime()
+        await rt._on_wss_connected()
+        assert rt._wss_connected is True
+
+    @pytest.mark.asyncio
+    async def test_on_wss_disconnected_clears_connected_flag(self) -> None:
+        rt = _make_runtime()
+        rt._wss_connected = True
+        await rt._on_wss_disconnected()
+        assert rt._wss_connected is False
+
+    @pytest.mark.asyncio
+    async def test_await_wss_connected_returns_immediately_when_connected(self) -> None:
+        rt = _make_runtime()
+        rt._wss_connected = True
+        assert await rt._await_wss_connected(timeout_seconds=1.0) is True
+
+    @pytest.mark.asyncio
+    async def test_await_wss_connected_gives_up_when_not_running(self) -> None:
+        rt = _make_runtime()
+        rt._status.running = False
+        rt._wss_connected = False
+        assert await rt._await_wss_connected(timeout_seconds=1.0) is False
+
+    @pytest.mark.asyncio
+    async def test_await_wss_connected_waits_then_succeeds(self) -> None:
+        import asyncio as _asyncio
+
+        rt = _make_runtime()
+        rt._status.running = True
+        rt._wss_connected = False
+
+        async def _connect_soon() -> None:
+            await _asyncio.sleep(0.06)
+            rt._wss_connected = True
+
+        task = _asyncio.create_task(_connect_soon())
+        result = await rt._await_wss_connected(timeout_seconds=1.0)
+        await task
+        assert result is True
 
 
 # ---------------------------------------------------------------------------
