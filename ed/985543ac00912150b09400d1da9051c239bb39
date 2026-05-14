@@ -1,0 +1,35 @@
+docs/rc1_validation.md
+  s_62bfb689d71971::t_23ccfd41242a51 1-122
+tests/test_rc1_release_artifacts.py
+  s_62bfb689d71971::t_48cff9646d672c 1-56,58,60-64,66-110
+  s_62bfb689d71971::t_e977904088e51d 57,59,65
+docs/emergency_shutdown.md
+  s_62bfb689d71971::t_1e9857ac937964 1-93
+docs/known_limitations.md
+  s_62bfb689d71971::t_38c06ea67638fa 1-86
+docs/live_runbook.md
+  s_62bfb689d71971::t_8945d57b5e270f 1-145
+scripts/rc1_check.sh
+  s_62bfb689d71971::t_2986697d30cb29 1-22,26,30-77
+  s_62bfb689d71971::t_8c0402321ab380 23-25,27-29
+docs/recovery_playbook.md
+  s_62bfb689d71971::t_79f492091a6205 1-90
+docs/live_canary_checklist.md
+  s_62bfb689d71971::t_bff1671d9143e3 1-76
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.7",
+  "base_commit_sha": "ed985543ac00912150b09400d1da9051c239bb39",
+  "prompts": {},
+  "sessions": {
+    "s_62bfb689d71971": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6e021f73-964d-4111-864c-59d2e303c15b",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
