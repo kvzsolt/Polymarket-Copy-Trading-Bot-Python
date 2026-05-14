@@ -1,0 +1,21 @@
+config/app_config.py
+  s_da67abad73cfe6::t_66da7fc1ad1bfd 392
+tests/test_doctor_live.py
+  s_da67abad73cfe6::t_b15a4e0083297e 56-59,66
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.8",
+  "base_commit_sha": "a796154596d1c1a4afd57629e6d9f1e945e6958c",
+  "prompts": {},
+  "sessions": {
+    "s_da67abad73cfe6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f8117930-4f8c-49e7-bf28-a8c53be871f7",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
