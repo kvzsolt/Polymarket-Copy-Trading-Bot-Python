@@ -483,6 +483,17 @@ class FeatureFlagConfig:
 
 
 @dataclass(frozen=True)
+class MarketDataConfig:
+    """Market data WSS health monitoring and REST degraded fallback policy."""
+
+    allow_rest_when_wss_down: bool = False
+    wss_down_after_seconds: float = 15.0
+    rest_degraded_max_age_seconds: float = 2.0
+    rest_degraded_max_spread_bps: int = 500
+    rest_degraded_log_every_seconds: float = 30.0
+
+
+@dataclass(frozen=True)
 class AppConfig:
     """Root configuration object. Immutable after construction."""
 
@@ -502,6 +513,7 @@ class AppConfig:
     position_drift: PositionDriftConfig
     discovery: DiscoveryConfig
     features: FeatureFlagConfig
+    market_data: MarketDataConfig = field(default_factory=MarketDataConfig)
     # Global safety: when True the bot runs in paper-only / dry-run mode.
     dry_run: bool = False
     # The raw mapping is kept for transitional backwards compatibility
@@ -672,6 +684,15 @@ def _validate_semantics(cfg: AppConfig, errors: list[str]) -> None:
         errors.append("MIN_ACTIVE_POSITIONS must be > 0.")
     if d.discovery_max_results <= 0:
         errors.append("DISCOVERY_MAX_RESULTS must be > 0.")
+
+    # Market data
+    md = cfg.market_data
+    if md.wss_down_after_seconds <= 0:
+        errors.append("MARKET_DATA_WSS_DOWN_AFTER_SECONDS must be > 0.")
+    if md.rest_degraded_max_age_seconds <= 0:
+        errors.append("MARKET_DATA_REST_DEGRADED_MAX_AGE_SECONDS must be > 0.")
+    if md.rest_degraded_max_spread_bps < 0:
+        errors.append("MARKET_DATA_REST_DEGRADED_MAX_SPREAD_BPS must be non-negative.")
 
 
 def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
@@ -978,6 +999,13 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         position_drift=position_drift,
         discovery=discovery,
         features=features,
+        market_data=MarketDataConfig(
+            allow_rest_when_wss_down=p.bool_("MARKET_DATA_ALLOW_REST_WHEN_WSS_DOWN", False),
+            wss_down_after_seconds=p.float_("MARKET_DATA_WSS_DOWN_AFTER_SECONDS", 15.0),
+            rest_degraded_max_age_seconds=p.float_("MARKET_DATA_REST_DEGRADED_MAX_AGE_SECONDS", 2.0),
+            rest_degraded_max_spread_bps=p.int_("MARKET_DATA_REST_DEGRADED_MAX_SPREAD_BPS", 500),
+            rest_degraded_log_every_seconds=p.float_("MARKET_DATA_REST_DEGRADED_LOG_EVERY_SECONDS", 30.0),
+        ),
         dry_run=p.bool_("PAPER_TRADE_ONLY", False),
         raw=dict(env),
     )

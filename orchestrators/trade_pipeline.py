@@ -363,6 +363,13 @@ async def _prefetch_market_data_for_signals(
             stale_tokens.add(token_id)
         else:
             bundles_by_token[token_id] = bundle
+            bundle_source = getattr(getattr(bundle, "source", None), "value", None) or str(getattr(bundle, "source", ""))
+            if bundle_source == "rest_degraded":
+                logger.warning(
+                    "market_data_rest_degraded_used | token_id=%s source=%s",
+                    token_id,
+                    bundle_source,
+                )
     return bundles_by_token, stale_tokens
 
 
