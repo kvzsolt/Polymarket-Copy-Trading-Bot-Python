@@ -19,8 +19,6 @@ Print this page. Tick each box. Don't skip.
 - [ ] `LIVE_CANARY_MODE=true`
 - [ ] `LIVE_CANARY_MAX_NOTIONAL_USDC=1.00` (or another small number you can lose)
 - [ ] `LIVE_CANARY_MAX_ORDERS=1`
-- [ ] `LIVE_CANARY_REQUIRE_OPERATOR_ACK=true`
-- [ ] `LIVE_CANARY_ACK_TEXT=I_UNDERSTAND_LIVE_TRADING_RISK`
 
 ## Safety env
 
@@ -69,7 +67,6 @@ OR one of:
 
 ## Common gotchas
 
-- Ack text typo blocks doctor — must be exactly `I_UNDERSTAND_LIVE_TRADING_RISK`.
 - `LIVE_CANARY_MAX_ORDERS=0` blocks every submit. That's the "dry live" mode.
 - The canary counter is per-process. Don't expect it to survive restarts.
 - Polymarket sometimes returns `delayed` for several seconds. Read the

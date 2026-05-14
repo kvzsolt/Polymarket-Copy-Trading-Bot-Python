@@ -27,8 +27,6 @@ When to use: about to start the bot against real money on Polymarket. Read
 | `LIVE_CANARY_MODE` | `true` for the first run |
 | `LIVE_CANARY_MAX_NOTIONAL_USDC` | Cap per submit (e.g. `1.00`) |
 | `LIVE_CANARY_MAX_ORDERS` | Cap on total submitted orders (e.g. `1`) |
-| `LIVE_CANARY_REQUIRE_OPERATOR_ACK` | `true` |
-| `LIVE_CANARY_ACK_TEXT` | Exactly `I_UNDERSTAND_LIVE_TRADING_RISK` |
 | `POSITION_DRIFT_CHECK_ON_STARTUP` | `true` |
 | `ENABLE_METRICS_SERVER` | Recommended `true` for live observability |
 

@@ -20,8 +20,6 @@ def _canary(*, enabled: bool = True, max_notional: float = 5.0, max_orders: int 
         enabled=enabled,
         max_notional_usdc=max_notional,
         max_orders=max_orders,
-        require_operator_ack=True,
-        ack_text="I_UNDERSTAND_LIVE_TRADING_RISK",
     )
 
 

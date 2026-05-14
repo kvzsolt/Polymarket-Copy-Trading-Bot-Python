@@ -22,8 +22,6 @@ _BASE_LIVE_ENV = {
     "CLOB_V2_READY": "true",
     "KILL_SWITCH": "false",
     "LIVE_CANARY_MODE": "true",
-    "LIVE_CANARY_REQUIRE_OPERATOR_ACK": "true",
-    "LIVE_CANARY_ACK_TEXT": "I_UNDERSTAND_LIVE_TRADING_RISK",
     "LIVE_CANARY_MAX_NOTIONAL_USDC": "1.00",
     "LIVE_CANARY_MAX_ORDERS": "1",
     "POSITION_DRIFT_CHECK_ON_STARTUP": "true",
@@ -55,12 +53,17 @@ async def _run_doctor(mode: str, env_overrides: dict[str, str] | None = None, *,
         from types import SimpleNamespace
         return SimpleNamespace(allowed=True, reason="stub")
 
+    async def _fake_wallet_sig(_wallet, **_kw):
+        from config.env import SignatureType
+        return (SignatureType.EOA, "EOA", "0x" + "a" * 40)
+
     patches = [
         patch.object(doctor_mod, "load_config", new=lambda *a, **kw: loader()),
         patch.dict("config.env.ENV", env, clear=False),
         patch.object(doctor_mod, "_check_wss_endpoint", return_value=(True, "ok")),
         patch.object(startup_health_mod, "_check_rpc", new=_fake_rpc),
         patch.object(compliance_mod, "check_geoblock", new=_fake_geoblock),
+        patch.object(doctor_mod, "detect_wallet_signature_type", new=_fake_wallet_sig),
     ]
     if tmp_log is not None:
         patches.append(patch.object(doctor_mod, "_resolve_log_dir", return_value=tmp_log))
@@ -110,14 +113,6 @@ async def test_doctor_live_blocked_when_kill_switch_on(tmp_path):
     rec = _checks_by_name(out)["kill_switch_off"]
     assert rec["status"] == "blocked"
     assert out["status"] == "blocked"
-
-
-@pytest.mark.asyncio
-async def test_doctor_live_blocked_when_canary_ack_missing(tmp_path):
-    out = await _run_doctor("live", {"LIVE_CANARY_ACK_TEXT": ""}, tmp_log=tmp_path)
-    rec = _checks_by_name(out)["canary_ack"]
-    assert rec["status"] == "blocked"
-    assert "I_UNDERSTAND_LIVE_TRADING_RISK" in rec["fix"]
 
 
 @pytest.mark.asyncio
