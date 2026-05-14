@@ -1,0 +1,46 @@
+orchestrators/trade_pipeline.py
+  s_53b20b553a7c98::t_eea98c9f21bdc3 342-376
+config/app_config.py
+  s_53b20b553a7c98::t_d4b24c46122aa1 494-499
+  s_53b20b553a7c98::t_0c2fd7f68beacf 702-709
+  s_53b20b553a7c98::t_912bc951dd6c79 1022-1027
+tests/test_market_data_runtime.py
+  s_53b20b553a7c98::t_ed3092e40653ab 431-434
+  s_53b20b553a7c98::t_9f1fdec2fe171f 392-430,435-656,658-666,669-670
+  s_53b20b553a7c98::t_93718e87807141 657,667-668,671
+clients/market_ws.py
+  s_53b20b553a7c98::t_3897a9422af42e 361,363-367
+  s_53b20b553a7c98::t_1ebe64c82484bb 508-514
+  s_53b20b553a7c98::t_bfd729d1af69db 293,295-299
+tests/test_trade_pipeline_market_data_authority.py
+  s_53b20b553a7c98::t_29845b1d0b9cb3 378,393,395-396,400,412,414-415
+  s_53b20b553a7c98::t_01bd816e80efd8 348-377,379-392,394,397-399,401-411,413,416-460
+  s_53b20b553a7c98::t_c50619edb023ae 279,292-295,304,319-320
+orchestrators/runtime_bootstrap.py
+  s_53b20b553a7c98::t_ce9d6c1608a659 218,226-231
+cache/market_state_store.py
+  s_53b20b553a7c98::t_3f71fda0e020b6 726-744,748
+orchestrators/market_data_runtime.py
+  s_53b20b553a7c98::t_4ee63bc78fde9b 173-388
+tests/test_market_data_service.py
+  s_53b20b553a7c98::t_6d26955bc4d98e 432-540
+services/market_data_service.py
+  s_53b20b553a7c98::t_1bdd645c0f0d56 55,67-68
+  s_53b20b553a7c98::t_2c06b680f79043 229-255,258,260-261
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.8",
+  "base_commit_sha": "a39f58744f1e0c7cb22cd71e413d360a03018108",
+  "prompts": {},
+  "sessions": {
+    "s_53b20b553a7c98": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c6ea9f46-5288-4b79-8edb-230c1c04bb51",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
