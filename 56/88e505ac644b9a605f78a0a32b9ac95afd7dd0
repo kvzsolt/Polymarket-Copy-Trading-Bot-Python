@@ -1,0 +1,39 @@
+tests/test_issue68_market_data_cache_wss.py
+  s_7dcea5ea633622::t_416b4803c9b5b1 80
+clients/user_ws.py
+  s_7dcea5ea633622::t_1b9d89b76e4df7 46,48
+  s_7dcea5ea633622::t_6b00afcc111685 193
+  s_7dcea5ea633622::t_70123a598fef04 182-187,189
+  s_7dcea5ea633622::t_accd4ae410f0b7 151-156,160-163
+clients/ws_constants.py
+  s_7dcea5ea633622::t_19d556e60c36e9 1-4
+tests/test_phase5_hardening.py
+  s_7dcea5ea633622::t_92990116b5f30e 215,218
+  s_7dcea5ea633622::t_3a032f6efb84df 26
+  s_7dcea5ea633622::t_024b21c192b5fa 214,217
+clients/market_ws.py
+  s_7dcea5ea633622::t_a7742e1f4b1802 27,29
+  s_7dcea5ea633622::t_66921508e36d9d 202-203
+  s_7dcea5ea633622::t_c8893c35722353 83
+  s_7dcea5ea633622::t_2db20f146c0acc 302
+  s_7dcea5ea633622::t_b9487edf748547 31
+  s_7dcea5ea633622::t_40c129809ca513 226-230,232,236
+  s_7dcea5ea633622::t_378fa86c443baf 112
+  s_7dcea5ea633622::t_da8636cd32a46a 380-393,398-399
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.8",
+  "base_commit_sha": "5688e505ac644b9a605f78a0a32b9ac95afd7dd0",
+  "prompts": {},
+  "sessions": {
+    "s_7dcea5ea633622": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8711ad74-c9ed-42e6-a83d-9481d7e9f2f2",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
