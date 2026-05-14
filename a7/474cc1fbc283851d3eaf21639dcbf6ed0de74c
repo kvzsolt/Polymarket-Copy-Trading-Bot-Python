@@ -1,0 +1,38 @@
+orchestrators/market_data_runtime.py
+  s_df04477c55ce58::t_95b9321b78ddb6 479
+  s_09c3458c554023::t_01dde90f258626 480
+  s_df04477c55ce58::t_54a4969e0ca97e 120
+  s_df04477c55ce58::t_4d2e0e1ffdfdab 494
+  s_df04477c55ce58::t_4d061c69fdd90a 651-670
+  s_df04477c55ce58::t_e2c330136182e8 631-637,639-641,645,647-648
+  s_df04477c55ce58::t_0bdc3093431ce2 67,73-79,89
+  s_df04477c55ce58::t_95e860ccd4dcee 204-210
+tests/test_market_wss_schema_and_degraded.py
+  s_df04477c55ce58::t_1fdaaa2cc94083 462,476
+tests/test_market_data_runtime.py
+  s_df04477c55ce58::t_7099a65fb8eae9 76-100,103-107,114-235
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.8",
+  "base_commit_sha": "a7474cc1fbc283851d3eaf21639dcbf6ed0de74c",
+  "prompts": {},
+  "sessions": {
+    "s_09c3458c554023": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6a728678-163e-494b-8909-7224e6892825",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    },
+    "s_df04477c55ce58": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c5c83239-acb6-426c-a032-c9439ef6e170",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
