@@ -18,12 +18,15 @@ import asyncio
 import inspect
 import json
 from decimal import Decimal
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from cache.market_state_store import MarketStateStore
 from clients.market_ws import MarketWebSocket, HEARTBEAT_INTERVAL, _asset_id
+
+FIXTURE_DIR = Path(__file__).parent / "fixtures" / "market_wss"
 
 # ---------------------------------------------------------------------------
 # Real Polymarket sample payloads
@@ -778,3 +781,334 @@ class TestCodeQuality:
         import cache.market_state_store as mss_module
         src = inspect.getsource(mss_module)
         assert "canary" not in src.lower()
+
+
+# ---------------------------------------------------------------------------
+# PR10.2: Fixture-based tests (real observed and docs-shaped payloads)
+# ---------------------------------------------------------------------------
+
+class TestFixtureLoading:
+    """Load fixture files and verify parsing against MarketStateStore."""
+
+    @staticmethod
+    def _load(filename: str) -> dict:
+        return json.loads((FIXTURE_DIR / filename).read_text())
+
+    def test_live_book_fixture_accepted(
+        self, market_ws: MarketWebSocket, cache: MarketStateStore
+    ) -> None:
+        event = self._load("book_live_one_sided_asks.json")
+        market_ws._handle_message(json.dumps(event))
+        book = cache.get_book(_ASSET_A)
+        assert book is not None
+        assert cache.book_source_of(_ASSET_A) == "wss"
+
+    def test_live_price_change_fixture_touches_both_assets(
+        self, market_ws: MarketWebSocket, cache: MarketStateStore
+    ) -> None:
+        event = self._load("price_change_live_nested.json")
+        market_ws._handle_message(json.dumps(event))
+        assert cache.quote_source_of(_ASSET_A) == "wss"
+        assert cache.quote_source_of(_ASSET_B) == "wss"
+
+    def test_live_best_bid_ask_fixture_updates_quote_only(
+        self, market_ws: MarketWebSocket, cache: MarketStateStore
+    ) -> None:
+        event = self._load("best_bid_ask_live.json")
+        market_ws._handle_message(json.dumps(event))
+        assert cache.quote_source_of(_ASSET_A) == "wss"
+        assert cache.book_source_of(_ASSET_A) != "wss"
+
+    def test_book_docs_shape_accepted(
+        self, market_ws: MarketWebSocket, cache: MarketStateStore
+    ) -> None:
+        event = self._load("book_docs_shape.json")
+        market_ws._handle_message(json.dumps(event))
+        assert cache.book_source_of(_ASSET_A) == "wss"
+
+    def test_tick_size_change_docs_shape_updates_tick(
+        self, market_ws: MarketWebSocket, cache: MarketStateStore
+    ) -> None:
+        event = self._load("tick_size_change_docs_shape.json")
+        market_ws._handle_message(json.dumps(event))
+        state = cache.get_state(_ASSET_A)
+        assert state is not None
+        assert state.tick_size == Decimal("0.001")
+        assert state.tick_source == "wss"
+
+    def test_last_trade_price_docs_shape_does_not_set_book(
+        self, market_ws: MarketWebSocket, cache: MarketStateStore
+    ) -> None:
+        event = self._load("last_trade_price_docs_shape.json")
+        market_ws._handle_message(json.dumps(event))
+        assert cache.get_book(_ASSET_A) is None
+
+    def test_new_market_docs_shape_does_not_set_book(
+        self, market_ws: MarketWebSocket, cache: MarketStateStore
+    ) -> None:
+        event = self._load("new_market_docs_shape.json")
+        market_ws._handle_message(json.dumps(event))
+        assert cache.get_book(_ASSET_A) is None
+
+    def test_market_resolved_docs_shape_marks_resolved(
+        self, market_ws: MarketWebSocket, cache: MarketStateStore
+    ) -> None:
+        event = self._load("market_resolved_docs_shape.json")
+        market_ws._handle_message(json.dumps(event))
+        assert cache.is_resolved(_ASSET_A)
+        assert cache.is_resolved(_ASSET_B)
+
+
+# ---------------------------------------------------------------------------
+# PR10.2: Book event tick_size metadata (test 7, test 8)
+# ---------------------------------------------------------------------------
+
+class TestBookTickSizeHandling:
+    """Tick_size from book snapshot updates tick metadata without dirtying state."""
+
+    def test_book_tick_size_sets_tick_source_wss(
+        self, market_ws: MarketWebSocket, cache: MarketStateStore
+    ) -> None:
+        market_ws._handle_message(json.dumps(BOOK_EVENT_TWO_SIDED))
+        state = cache.get_state(_ASSET_A)
+        assert state is not None
+        assert state.tick_source == "wss"
+        assert state.tick_size == Decimal("0.01")
+
+    def test_book_tick_size_does_not_dirty_state(
+        self, market_ws: MarketWebSocket, cache: MarketStateStore
+    ) -> None:
+        market_ws._handle_message(json.dumps(BOOK_EVENT_TWO_SIDED))
+        assert not cache.is_dirty(_ASSET_A)
+
+    def test_book_tick_size_does_not_affect_book_or_quote_source(
+        self, market_ws: MarketWebSocket, cache: MarketStateStore
+    ) -> None:
+        market_ws._handle_message(json.dumps(BOOK_EVENT_TWO_SIDED))
+        assert cache.book_source_of(_ASSET_A) == "wss"
+        assert cache.quote_source_of(_ASSET_A) == "wss"
+
+    def test_book_last_trade_price_field_does_not_change_sources(
+        self, market_ws: MarketWebSocket, cache: MarketStateStore
+    ) -> None:
+        event = {**BOOK_EVENT_TWO_SIDED, "last_trade_price": "0.50"}
+        market_ws._handle_message(json.dumps(event))
+        assert cache.book_source_of(_ASSET_A) == "wss"
+        assert cache.quote_source_of(_ASSET_A) == "wss"
+
+    def test_book_without_tick_size_does_not_dirty(
+        self, market_ws: MarketWebSocket, cache: MarketStateStore
+    ) -> None:
+        event = {k: v for k, v in BOOK_EVENT_TWO_SIDED.items() if k != "tick_size"}
+        market_ws._handle_message(json.dumps(event))
+        assert not cache.is_dirty(_ASSET_A)
+
+
+# ---------------------------------------------------------------------------
+# PR10.2: One-sided book quote derivation (test 6)
+# ---------------------------------------------------------------------------
+
+class TestOneSidedBookQuote:
+    """One-sided WSS book derives best_ask / best_bid from the populated side."""
+
+    def test_asks_only_sets_best_ask_from_min_asks(
+        self, market_ws: MarketWebSocket, cache: MarketStateStore
+    ) -> None:
+        market_ws._handle_message(json.dumps(BOOK_EVENT_ONE_SIDED))
+        state = cache.get_state(_ASSET_A)
+        assert state is not None
+        assert state.best_ask == Decimal("0.999")
+        assert state.quote_source == "wss"
+
+    def test_bids_only_sets_best_bid_from_max_bids(
+        self, market_ws: MarketWebSocket, cache: MarketStateStore
+    ) -> None:
+        event = {**BOOK_EVENT_ONE_SIDED, "bids": [{"price": "0.49", "size": "500"}], "asks": []}
+        market_ws._handle_message(json.dumps(event))
+        state = cache.get_state(_ASSET_A)
+        assert state is not None
+        assert state.best_bid == Decimal("0.49")
+        assert state.quote_source == "wss"
+
+
+# ---------------------------------------------------------------------------
+# PR10.2: new_market event (test 19)
+# ---------------------------------------------------------------------------
+
+class TestNewMarketHandling:
+    """new_market events may store metadata but must not create quote/book."""
+
+    def test_new_market_does_not_set_book(
+        self, market_ws: MarketWebSocket, cache: MarketStateStore
+    ) -> None:
+        event = {"event_type": "new_market", "asset_id": _ASSET_A, "condition_id": _MARKET}
+        market_ws._handle_message(json.dumps(event))
+        assert cache.get_book(_ASSET_A) is None
+
+    def test_new_market_does_not_set_quote(
+        self, market_ws: MarketWebSocket, cache: MarketStateStore
+    ) -> None:
+        event = {"event_type": "new_market", "asset_id": _ASSET_A, "condition_id": _MARKET}
+        market_ws._handle_message(json.dumps(event))
+        assert cache.get_quote(_ASSET_A) is None
+
+    def test_new_market_stores_condition_id(
+        self, market_ws: MarketWebSocket, cache: MarketStateStore
+    ) -> None:
+        event = {"event_type": "new_market", "asset_id": _ASSET_A, "condition_id": _MARKET}
+        market_ws._handle_message(json.dumps(event))
+        state = cache.get_state(_ASSET_A)
+        assert state is not None
+        assert state.condition_id == _MARKET
+
+
+# ---------------------------------------------------------------------------
+# PR10.2: End-to-end executability (tests 21, 22)
+# ---------------------------------------------------------------------------
+
+class TestTokenExecutability:
+    """WSS book + pre-set tick → clean state; quote-only → no book."""
+
+    def test_wss_book_with_pretick_leaves_clean_state(
+        self, market_ws: MarketWebSocket, cache: MarketStateStore
+    ) -> None:
+        cache.set_tick(_ASSET_A, tick_size=Decimal("0.01"), min_order_size=Decimal("1"))
+        market_ws._handle_message(json.dumps(BOOK_EVENT_TWO_SIDED))
+
+        assert not cache.is_dirty(_ASSET_A)
+        assert cache.book_source_of(_ASSET_A) == "wss"
+        assert cache.quote_source_of(_ASSET_A) == "wss"
+        assert cache.get_book(_ASSET_A) is not None
+        assert cache.get_tick(_ASSET_A) is not None
+
+    def test_quote_only_no_book_returns_no_book(
+        self, market_ws: MarketWebSocket, cache: MarketStateStore
+    ) -> None:
+        market_ws._handle_message(json.dumps(BEST_BID_ASK_EVENT))
+        assert cache.get_book(_ASSET_A) is None
+
+    def test_wss_book_without_min_order_size_returns_no_tick(
+        self, market_ws: MarketWebSocket, cache: MarketStateStore
+    ) -> None:
+        market_ws._handle_message(json.dumps(BOOK_EVENT_TWO_SIDED))
+        # update_tick_size_from_book sets tick_size but not min_order_size
+        # → get_tick() returns None until min_order_size is provided
+        assert cache.get_tick(_ASSET_A) is None
+
+
+# ---------------------------------------------------------------------------
+# PR10.2: get_debug_state includes tick_size (Part E)
+# ---------------------------------------------------------------------------
+
+class TestDebugStateTick:
+    """get_debug_state returns tick_size field."""
+
+    def test_debug_state_has_tick_size_when_set(
+        self, cache: MarketStateStore
+    ) -> None:
+        cache.set_tick(_ASSET_A, tick_size=Decimal("0.01"), min_order_size=Decimal("1"))
+        debug = cache.get_debug_state(_ASSET_A)
+        assert "tick_size" in debug
+        assert debug["tick_size"] == "0.01"
+
+    def test_debug_state_tick_size_none_when_not_set(
+        self, cache: MarketStateStore
+    ) -> None:
+        cache.ensure_state(_ASSET_A)
+        debug = cache.get_debug_state(_ASSET_A)
+        assert "tick_size" in debug
+        assert debug["tick_size"] is None
+
+
+# ---------------------------------------------------------------------------
+# PR10.2: canonical mark_resolved in market_resolved handler
+# ---------------------------------------------------------------------------
+
+class TestMarketResolvedCanonical:
+    """_handle_market_resolved stores condition_id via mark_resolved."""
+
+    def test_resolved_stores_condition_id_from_market_field(
+        self, market_ws: MarketWebSocket, cache: MarketStateStore
+    ) -> None:
+        event = {
+            "event_type": "market_resolved",
+            "market": _MARKET,
+            "assets_ids": [_ASSET_A],
+        }
+        market_ws._handle_message(json.dumps(event))
+        state = cache.get_state(_ASSET_A)
+        assert state is not None
+        assert state.condition_id == _MARKET
+        assert cache.is_resolved(_ASSET_A)
+
+
+# ---------------------------------------------------------------------------
+# PR10.2: tick_size_change prefers new_tick_size field
+# ---------------------------------------------------------------------------
+
+class TestTickSizeChangePriority:
+    """_handle_tick_size_change prefers new_tick_size over tick_size."""
+
+    def test_new_tick_size_field_takes_priority(
+        self, market_ws: MarketWebSocket, cache: MarketStateStore
+    ) -> None:
+        event = {
+            "event_type": "tick_size_change",
+            "asset_id": _ASSET_A,
+            "new_tick_size": "0.001",
+            "tick_size": "0.01",
+        }
+        market_ws._handle_message(json.dumps(event))
+        state = cache.get_state(_ASSET_A)
+        assert state is not None
+        assert state.tick_size == Decimal("0.001")
+
+    def test_tick_size_field_used_when_no_new_tick_size(
+        self, market_ws: MarketWebSocket, cache: MarketStateStore
+    ) -> None:
+        event = {
+            "event_type": "tick_size_change",
+            "asset_id": _ASSET_A,
+            "tick_size": "0.01",
+        }
+        market_ws._handle_message(json.dumps(event))
+        state = cache.get_state(_ASSET_A)
+        assert state is not None
+        assert state.tick_size == Decimal("0.01")
+
+
+# ---------------------------------------------------------------------------
+# PR10.2: capture script quality checks (test 24)
+# ---------------------------------------------------------------------------
+
+class TestCaptureScriptQuality:
+    """capture_market_wss_events.py is a safe read-only diagnostic script."""
+
+    SCRIPT_PATH = Path(__file__).parent.parent / "scripts" / "capture_market_wss_events.py"
+
+    @classmethod
+    def _src(cls) -> str:
+        return cls.SCRIPT_PATH.read_text()
+
+    def test_capture_script_exists(self) -> None:
+        assert self.SCRIPT_PATH.exists()
+
+    def test_capture_script_no_app_import(self) -> None:
+        src = self._src()
+        assert "import app" not in src
+        assert "from app" not in src
+
+    def test_capture_script_no_trading_services(self) -> None:
+        src = self._src()
+        for forbidden in ("ExecutionService", "TradingContext", "TradeDecisionEngine"):
+            assert forbidden not in src, f"Forbidden import '{forbidden}' found in capture script"
+
+    def test_capture_script_print_goes_to_stderr(self) -> None:
+        src = self._src()
+        offending = [
+            ln for ln in src.splitlines()
+            if "print(" in ln
+            and "sys.stderr" not in ln
+            and not ln.strip().startswith("#")
+        ]
+        assert offending == [], f"print() without stderr= in capture script: {offending}"
