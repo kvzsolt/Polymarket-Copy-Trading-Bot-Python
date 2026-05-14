@@ -52,6 +52,7 @@ class MarketDataSource(str, Enum):
     WSS = "wss"
     REST_SNAPSHOT = "rest_snapshot"
     REST_DEGRADED = "rest_degraded"
+    REST_BOOTSTRAP = "rest_bootstrap"
     UNKNOWN = "unknown"
 
 
@@ -63,6 +64,8 @@ class MarketDataPolicy:
     require_wss_fresh: bool = True
     allow_rest_fallback: bool = False
     allow_rest_snapshot_for_execution: bool = False
+    allow_rest_bootstrap_for_execution: bool = False
+    rest_bootstrap_max_age_ms: int = 500
     require_book_depth: bool = True
 
 
@@ -223,19 +226,39 @@ class MarketDataService:
         book_source = self._coerce_source(book.source)
         tick_source = self._coerce_source(tick.source)
 
-        if (
-            policy.require_wss_fresh
-            and not policy.allow_rest_snapshot_for_execution
-            and (
-                quote_source != MarketDataSource.WSS
-                or book_source != MarketDataSource.WSS
-            )
-        ):
-            return None
+        wss_fresh = (
+            quote_source == MarketDataSource.WSS and book_source == MarketDataSource.WSS
+        )
+        rest_bootstrap_ok = False
+
+        if not wss_fresh:
+            if (
+                policy.allow_rest_bootstrap_for_execution
+                and quote_source == MarketDataSource.REST_BOOTSTRAP
+                and book_source == MarketDataSource.REST_BOOTSTRAP
+            ):
+                import time as _time
+
+                quote_age_ms = (_time.monotonic() - quote.monotonic_ts) * 1000
+                book_age_ms = (_time.monotonic() - book.monotonic_ts) * 1000
+                if (
+                    quote_age_ms <= policy.rest_bootstrap_max_age_ms
+                    and book_age_ms <= policy.rest_bootstrap_max_age_ms
+                ):
+                    rest_bootstrap_ok = True
+
+            if not rest_bootstrap_ok:
+                if (
+                    policy.require_wss_fresh
+                    and not policy.allow_rest_snapshot_for_execution
+                ):
+                    return None
 
         # Aggregate bundle source for downstream observability.
-        if quote_source == MarketDataSource.WSS and book_source == MarketDataSource.WSS:
+        if wss_fresh:
             bundle_source = MarketDataSource.WSS
+        elif rest_bootstrap_ok:
+            bundle_source = MarketDataSource.REST_BOOTSTRAP
         elif (
             quote_source == MarketDataSource.REST_DEGRADED
             or book_source == MarketDataSource.REST_DEGRADED

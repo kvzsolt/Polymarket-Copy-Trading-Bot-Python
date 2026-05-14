@@ -429,3 +429,112 @@ class TestComponentSourceGating:
 
         assert bundle.source == MarketDataSource.WSS
         assert bundle.tick.source == "rest_snapshot"
+
+
+# ---------------------------------------------------------------------------
+# REST bootstrap policy
+# ---------------------------------------------------------------------------
+
+def _make_rest_bootstrap_cache(token_id: str = TOKEN, *, stale: bool = False) -> MarketStateStore:
+    """Return a cache with rest_bootstrap-sourced quote + book (fresh unless stale=True)."""
+    import time as _time
+
+    cache = MarketStateStore()
+    ts = _time.monotonic() - (10.0 if stale else 0.0)
+    bid = Decimal("0.45")
+    ask = Decimal("0.55")
+    cache.replace_book_snapshot(
+        token_id,
+        {bid: Decimal("100")},
+        {ask: Decimal("100")},
+        {"source": "rest_bootstrap"},
+    )
+    cache.set_quote(token_id, best_bid=bid, best_ask=ask, source="rest_bootstrap")
+    cache.set_tick(
+        token_id,
+        tick_size=Decimal("0.01"),
+        min_order_size=Decimal("5"),
+        neg_risk=False,
+        source="rest_bootstrap",
+    )
+    if stale:
+        # Backdate monotonic_ts on book/quote by patching the internal state.
+        with cache._lock:
+            state = cache._states[token_id]
+            state.last_book_monotonic = ts
+            state.last_quote_monotonic = ts
+    return cache
+
+
+class TestRestBootstrapPolicy:
+    @pytest.mark.asyncio
+    async def test_bootstrap_policy_fresh_returns_bundle(self) -> None:
+        cache = _make_rest_bootstrap_cache()
+        policy = MarketDataPolicy(
+            max_quote_age_seconds=10.0,
+            max_book_age_seconds=10.0,
+            max_tick_age_seconds=300.0,
+            require_wss_fresh=True,
+            allow_rest_fallback=False,
+            allow_rest_snapshot_for_execution=False,
+            allow_rest_bootstrap_for_execution=True,
+            rest_bootstrap_max_age_ms=5000,
+        )
+        svc = _make_service(cache, policy=policy)
+
+        bundle = await svc.require_fresh_data(TOKEN)
+
+        assert bundle is not None
+        assert bundle.source == MarketDataSource.REST_BOOTSTRAP
+
+    @pytest.mark.asyncio
+    async def test_bootstrap_policy_stale_returns_none(self) -> None:
+        cache = _make_rest_bootstrap_cache(stale=True)
+        policy = MarketDataPolicy(
+            max_quote_age_seconds=30.0,
+            max_book_age_seconds=30.0,
+            max_tick_age_seconds=300.0,
+            require_wss_fresh=True,
+            allow_rest_bootstrap_for_execution=True,
+            rest_bootstrap_max_age_ms=50,  # 50ms — stale data is 10 seconds old
+        )
+        svc = _make_service(cache, policy=policy)
+
+        with pytest.raises(Exception):
+            await svc.require_fresh_data(TOKEN)
+
+    @pytest.mark.asyncio
+    async def test_bootstrap_disabled_returns_none(self) -> None:
+        cache = _make_rest_bootstrap_cache()
+        policy = MarketDataPolicy(
+            max_quote_age_seconds=10.0,
+            max_book_age_seconds=10.0,
+            max_tick_age_seconds=300.0,
+            require_wss_fresh=True,
+            allow_rest_bootstrap_for_execution=False,
+        )
+        svc = _make_service(cache, policy=policy)
+
+        with pytest.raises(Exception):
+            await svc.require_fresh_data(TOKEN)
+
+    @pytest.mark.asyncio
+    async def test_wss_preferred_over_bootstrap(self) -> None:
+        cache = _make_fresh_cache()
+        policy = MarketDataPolicy(
+            max_quote_age_seconds=10.0,
+            max_book_age_seconds=10.0,
+            max_tick_age_seconds=300.0,
+            require_wss_fresh=True,
+            allow_rest_bootstrap_for_execution=True,
+            rest_bootstrap_max_age_ms=5000,
+        )
+        svc = _make_service(cache, policy=policy)
+
+        bundle = await svc.require_fresh_data(TOKEN)
+
+        assert bundle.source == MarketDataSource.WSS
+
+    def test_rest_bootstrap_enum_value(self) -> None:
+        assert MarketDataSource.REST_BOOTSTRAP == "rest_bootstrap"
+        assert MarketDataSource.REST_BOOTSTRAP.value == "rest_bootstrap"

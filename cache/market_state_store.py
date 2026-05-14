@@ -723,11 +723,29 @@ class MarketStateStore:
         with self._lock:
             state = self._states.get(token_id)
             if state is None:
-                return {"token_id": token_id, "exists": False}
+                return {
+                    "token_id": token_id,
+                    "known": False,
+                    "has_quote": False,
+                    "quote_source": None,
+                    "quote_age_ms": None,
+                    "best_bid": None,
+                    "best_ask": None,
+                    "has_book": False,
+                    "book_source": None,
+                    "book_age_ms": None,
+                    "bid_count": 0,
+                    "ask_count": 0,
+                    "tick_source": None,
+                    "tick_size": None,
+                    "active": None,
+                    "resolved": None,
+                    "condition_id": None,
+                }
             now = time.monotonic()
             return {
                 "token_id": token_id,
-                "exists": True,
+                "known": True,
                 "has_quote": state.best_bid is not None or state.best_ask is not None,
                 "quote_source": state.quote_source,
                 "quote_age": round(now - state.last_quote_monotonic, 2) if state.last_quote_monotonic else None,

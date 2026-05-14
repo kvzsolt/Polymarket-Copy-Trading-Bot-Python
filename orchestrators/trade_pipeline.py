@@ -339,7 +339,41 @@ async def _prefetch_market_data_for_signals(
 
     async def _resolve_one(token_id: str) -> tuple[str, Any]:
         async with analysis_sem:
-            await _ensure_token_subscribed(context, token_id)
+            runtime = getattr(context, "market_data_runtime", None)
+
+            logger.info(
+                "trade_pipeline_market_data_prefetch_start | token_id=%s",
+                token_id,
+            )
+
+            if runtime is None:
+                await _ensure_token_subscribed(context, token_id)
+                logger.warning(
+                    "trade_pipeline_market_data_prefetch_no_runtime | token_id=%s",
+                    token_id,
+                )
+            else:
+                try:
+                    ready = await runtime.ensure_token_ready_or_bootstrapped(token_id)
+                    if ready:
+                        logger.info(
+                            "trade_pipeline_market_data_prefetch_ready | token_id=%s",
+                            token_id,
+                        )
+                    else:
+                        logger.info(
+                            "trade_pipeline_market_data_prefetch_timeout | token_id=%s",
+                            token_id,
+                        )
+                        return token_id, None
+                except Exception as exc:
+                    logger.warning(
+                        "trade_pipeline_market_data_prefetch_timeout | token_id=%s error=%r",
+                        token_id,
+                        exc,
+                    )
+                    return token_id, None
+
             bundle = await _resolve_market_bundle(
                 context,
                 token_id,
