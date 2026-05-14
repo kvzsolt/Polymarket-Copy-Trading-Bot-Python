@@ -1,0 +1,46 @@
+scripts/capture_market_wss_events.py
+  s_d3f9a6ba4a4cf6::t_a388816bf21c14 4-5
+  s_d3f9a6ba4a4cf6::t_ca2d79659d9a7b 1-3,6-53,55-174
+  s_d3f9a6ba4a4cf6::t_f3fa931d83baef 54
+tests/fixtures/market_wss/book_docs_shape.json
+  s_d3f9a6ba4a4cf6::t_2c4f7942e98132 1-10
+tests/fixtures/market_wss/tick_size_change_docs_shape.json
+  s_d3f9a6ba4a4cf6::t_64a5864154cc92 1-7
+tests/fixtures/market_wss/price_change_live_nested.json
+  s_d3f9a6ba4a4cf6::t_29037897870ba8 1-25
+tests/fixtures/market_wss/last_trade_price_docs_shape.json
+  s_d3f9a6ba4a4cf6::t_99e6f567d21b2a 1-7
+cache/market_state_store.py
+  s_d3f9a6ba4a4cf6::t_4546592f3a0c20 742,750-764
+clients/market_ws.py
+  s_d3f9a6ba4a4cf6::t_5f92262df81733 303-308
+  s_d3f9a6ba4a4cf6::t_b4c035555726b0 409
+  s_d3f9a6ba4a4cf6::t_312366f6ced0cb 437,439-442
+tests/fixtures/market_wss/best_bid_ask_live.json
+  s_d3f9a6ba4a4cf6::t_c91da23b109a81 1-9
+tests/fixtures/market_wss/new_market_docs_shape.json
+  s_d3f9a6ba4a4cf6::t_75516fd3a5e6d8 1-11
+tests/fixtures/market_wss/market_resolved_docs_shape.json
+  s_d3f9a6ba4a4cf6::t_c7dd88e98619f1 1-9
+tests/test_market_ws.py
+  s_d3f9a6ba4a4cf6::t_b799689a6966e7 21,29
+  s_d3f9a6ba4a4cf6::t_23f35852a373ee 783-1114
+tests/fixtures/market_wss/book_live_one_sided_asks.json
+  s_d3f9a6ba4a4cf6::t_577488762003cf 1-10
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.8",
+  "base_commit_sha": "e8729a9a2745354281c580a0a8e2d3f2f1db57ae",
+  "prompts": {},
+  "sessions": {
+    "s_d3f9a6ba4a4cf6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a921ef9d-8da7-4ef9-a509-c864f85c7b2d",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
