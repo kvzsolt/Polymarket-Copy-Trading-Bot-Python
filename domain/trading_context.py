@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from orchestrators.market_data_runtime import MarketDataRuntime
     from services.execution.coordinator import ExecutionCoordinator
     from services.market_data_service import MarketDataService
+    from services.position_drift_service import PositionDriftService
 
 
 @dataclass
@@ -58,6 +59,9 @@ class TradingContext:
     # ReservationService and the PositionActionCoordinator apply universally.
     # See PR6 plan in `.claude/plans/replicated-leaping-breeze.md`.
     execution_coordinator: "ExecutionCoordinator | None" = None
+    # PR7 — proactive manual/off-bot position drift detection. Coordinator
+    # checks ``is_scope_paused`` before every production submit.
+    position_drift_service: "PositionDriftService | None" = None
 
     def __post_init__(self) -> None:
         # Fail fast: these dependencies are required in production contexts.

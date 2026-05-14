@@ -123,6 +123,8 @@ class UserRuntimeState:
     market_store: MarketStateStore | None = None
     # PR6 — production execution funnel.
     execution_coordinator: "object | None" = None
+    # PR7 — manual / off-bot position drift sweep.
+    position_drift_service: "object | None" = None
 
 
 def configured_leaders(config: AppConfig) -> list[str]:
@@ -244,6 +246,13 @@ def build_user_state(
         funder_address=runtime_user.wallet.funder_address,
     )
 
+    # PR7 — proactive position drift sweep.
+    position_drift_service = _build_position_drift_service(
+        db_path=db_path,
+        positions_repo=positions_repo,
+        config=config,
+    )
+
     return UserRuntimeState(
         user=runtime_user,
         client=client,
@@ -261,6 +270,38 @@ def build_user_state(
         market_data_service=market_data_svc,
         market_store=market_store,
         execution_coordinator=execution_coordinator,
+        position_drift_service=position_drift_service,
+    )
+
+
+def _build_position_drift_service(
+    *,
+    db_path: str,
+    positions_repo: PositionsRepo,
+    config: AppConfig,
+):
+    """Build the per-user PositionDriftService (PR7).
+
+    Returns None when the service cannot be constructed; runtime then runs
+    without a drift sweep (paper / dry-run modes). In live mode the bootstrap
+    must ensure this is wired.
+    """
+    try:
+        from services.position_drift_service import PositionDriftService
+        from storage.sqlite.reservations_repo import ReservationsRepo
+    except Exception as exc:
+        logger.warning("position_drift_service_unwired error=%r", exc)
+        return None
+    reservations_repo = ReservationsRepo(db_path)
+
+    async def _fetcher(wallet: str):
+        return await fetch_live_positions(wallet)
+
+    return PositionDriftService(
+        positions_repo=positions_repo,
+        reservations_repo=reservations_repo,
+        live_positions_fetcher=_fetcher,
+        config=config.position_drift,
     )
 
 
@@ -351,8 +392,73 @@ def build_trading_context(
         except Exception:
             pass
         context.execution_coordinator = coord
+    # PR7 — bind position drift service so the coordinator can check
+    # ``is_scope_paused`` before submission.
+    drift_svc = getattr(user_state, "position_drift_service", None)
+    if drift_svc is not None:
+        context.position_drift_service = drift_svc
+        if coord is not None:
+            try:
+                coord.position_drift_service = drift_svc
+            except Exception:
+                pass
     rehydrate_position_manager(context)
     return context
+
+
+async def startup_drift_check(
+    *,
+    runtime_users,
+    user_states: dict,
+    config: AppConfig,
+    readiness,
+) -> dict[str, bool]:
+    """Run position drift sweep for every user before monitors start.
+
+    Updates ``readiness.drift_ok`` to the overall result and returns a per
+    user dict for observability. Each unresolved scope pauses through the
+    PositionDriftService's internal state — the coordinator gate honours it.
+    """
+    all_clean = True
+    per_user: dict[str, bool] = {}
+
+    if not config.position_drift.check_on_startup:
+        readiness.update(drift_ok=True)
+        return per_user
+
+    for runtime_user in runtime_users:
+        user_state = user_states.get(runtime_user.user_id)
+        if user_state is None:
+            continue
+        drift_svc = getattr(user_state, "position_drift_service", None)
+        if drift_svc is None:
+            # No drift service wired (e.g. partial test state). Skip
+            # gracefully; in production this is unreachable.
+            per_user[runtime_user.user_id] = True
+            continue
+        try:
+            report = await drift_svc.scan_user(
+                user_id=runtime_user.user_id,
+                wallet=runtime_user.wallet.funder_address,
+            )
+        except Exception as exc:
+            logger.warning(
+                "startup_drift_check_failed | user=%s error=%r",
+                runtime_user.user_id, exc,
+            )
+            per_user[runtime_user.user_id] = False
+            all_clean = False
+            continue
+        per_user[runtime_user.user_id] = bool(report.clean)
+        if not report.clean:
+            all_clean = False
+            logger.warning(
+                "startup_drift_check_unresolved | user=%s paused_scopes=%d",
+                runtime_user.user_id, len(report.paused_scopes),
+            )
+
+    readiness.update(drift_ok=all_clean)
+    return per_user
 
 
 def build_context_maps(
