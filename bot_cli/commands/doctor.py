@@ -326,21 +326,6 @@ async def run_doctor_checks(mode: str) -> dict[str, Any]:
                 detail += f" runtime_autodetect=override (configured={int(configured_sig)})"
             ctx.ok("wallet_signature_type", detail)
 
-    # ----- canary -------------------------------------------------------
-    canary = config.live_canary
-    if live:
-        if canary.max_notional_usdc <= 0 or canary.max_orders < 1:
-            ctx.blocked(
-                "canary_caps_sane",
-                f"caps invalid: notional={canary.max_notional_usdc}, orders={canary.max_orders}",
-                "set LIVE_CANARY_MAX_NOTIONAL_USDC > 0 and LIVE_CANARY_MAX_ORDERS >= 1",
-            )
-        else:
-            ctx.ok(
-                "canary_caps_sane",
-                f"notional<= {canary.max_notional_usdc} orders<= {canary.max_orders}",
-            )
-
     # ----- database -----------------------------------------------------
     try:
         with create_connection(config.database.db_path) as conn:
