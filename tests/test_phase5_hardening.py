@@ -23,7 +23,7 @@ from decimal import Decimal
 
 import pytest
 
-from clients.ws_constants import HEARTBEAT_INTERVAL
+from clients.ws_constants import MARKET_HEARTBEAT_INTERVAL, USER_HEARTBEAT_INTERVAL
 from services.intentRegistry import (
     DuplicateIntentError,
     IllegalTransitionError,
@@ -211,11 +211,11 @@ class TestCacheFreshness:
 
 
 class TestHeartbeatInterval:
-    def test_market_ws_heartbeat_is_five_seconds(self) -> None:
-        assert HEARTBEAT_INTERVAL == 5
+    def test_market_ws_heartbeat_is_ten_seconds(self) -> None:
+        assert MARKET_HEARTBEAT_INTERVAL == 10
 
-    def test_user_ws_heartbeat_is_five_seconds(self) -> None:
-        assert HEARTBEAT_INTERVAL == 5
+    def test_user_ws_heartbeat_is_ten_seconds(self) -> None:
+        assert USER_HEARTBEAT_INTERVAL == 10
 
 
 # ---------------------------------------------------------------------------

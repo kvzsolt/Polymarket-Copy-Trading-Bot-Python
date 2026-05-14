@@ -1,1 +1,4 @@
-HEARTBEAT_INTERVAL = 5  # Polymarket WSS heartbeat interval spec
+MARKET_HEARTBEAT_INTERVAL: int = 10
+USER_HEARTBEAT_INTERVAL: int = 10
+# Backwards-compat alias; prefer the named constants above
+HEARTBEAT_INTERVAL = MARKET_HEARTBEAT_INTERVAL
