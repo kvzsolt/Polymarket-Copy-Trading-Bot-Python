@@ -24,9 +24,11 @@ from services.metrics import METRIC_WSS_HEARTBEAT_STALL, METRIC_WSS_RECONNECT, m
 from utils.logger import get_logger
 
 try:
-    from clients.ws_constants import HEARTBEAT_INTERVAL
+    from clients.ws_constants import MARKET_HEARTBEAT_INTERVAL
 except Exception:  # pragma: no cover
-    HEARTBEAT_INTERVAL = 5.0
+    MARKET_HEARTBEAT_INTERVAL = 10
+
+HEARTBEAT_INTERVAL = MARKET_HEARTBEAT_INTERVAL
 
 if TYPE_CHECKING:
     from cache.market_state_store import MarketStateStore
@@ -78,7 +80,7 @@ class MarketWebSocket:
         self._heartbeat_interval = (
             float(heartbeat_interval)
             if heartbeat_interval is not None
-            else float(HEARTBEAT_INTERVAL)
+            else float(MARKET_HEARTBEAT_INTERVAL)
         )
         self._on_connected = on_connected
         self._on_disconnected = on_disconnected
@@ -107,6 +109,7 @@ class MarketWebSocket:
             await self._ws.send(json.dumps({
                 "assets_ids": new_ids,
                 "operation": "subscribe",
+                "level": 2,
                 "custom_feature_enabled": True,
             }))
             logger.info("MarketWS: dynamically subscribed to %d asset(s)", len(new_ids))
@@ -196,6 +199,8 @@ class MarketWebSocket:
         payload = {
             "type": "market",
             "assets_ids": self._asset_ids,
+            "initial_dump": True,
+            "level": 2,
             "custom_feature_enabled": True,
         }
         await ws.send(json.dumps(payload))
@@ -218,14 +223,17 @@ class MarketWebSocket:
         async for raw_msg in ws:
             if not self._running:
                 break
+            msg = raw_msg.decode("utf-8", errors="replace") if isinstance(raw_msg, bytes) else raw_msg
+            if msg in ("PING", "ping"):
+                with contextlib.suppress(Exception):
+                    await ws.send("PONG")
+                continue
             try:
-                self._handle_message(raw_msg)
+                self._handle_message(msg)
             except Exception as exc:
                 logger.warning("MarketWS: message handling error: %s", exc)
 
-    def _handle_message(self, raw_msg: str | bytes) -> None:
-        if isinstance(raw_msg, bytes):
-            raw_msg = raw_msg.decode("utf-8", errors="replace")
+    def _handle_message(self, raw_msg: str) -> None:
         if raw_msg in ("PONG", "pong", ""):
             self._call_cache_optional("on_market_ws_pong", time.monotonic())
             return
@@ -291,7 +299,7 @@ class MarketWebSocket:
         if not asset_id:
             return
 
-        changes = event.get("changes") or []
+        changes = event.get("price_changes") or event.get("changes") or []
         if not isinstance(changes, list):
             changes = []
 
@@ -369,13 +377,26 @@ class MarketWebSocket:
             self._touch_asset(asset_id, "new_market")
 
     def _handle_market_resolved(self, event: dict[str, Any]) -> None:
-        asset_id = _asset_id(event)
-        if asset_id:
+        assets_ids: list[str] = []
+        raw_list = event.get("assets_ids") or []
+        if isinstance(raw_list, str):
+            raw_list = [raw_list]
+        for item in raw_list:
+            s = str(item).strip()
+            if s:
+                assets_ids.append(s)
+
+        single = _asset_id(event)
+        if single and single not in assets_ids:
+            assets_ids.append(single)
+
+        for asset_id in assets_ids:
             self._call_cache_optional("on_market_resolved", asset_id, event)
             self._mark_asset_dirty(asset_id, "market_resolved")
             self._mark_asset_stale(asset_id, "market_resolved")
             self._notify_state_change(asset_id, "market_resolved")
-        else:
+
+        if not assets_ids:
             self._call_cache_optional("on_market_resolved", event)
 
     # Cache adapter methods -------------------------------------------------
