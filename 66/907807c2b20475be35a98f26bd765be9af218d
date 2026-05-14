@@ -1,0 +1,21 @@
+tests/test_clients.py
+  s_db478d43a45300::t_848182e1c12669 22-26,55,62-71,73,75-78,82-91,93,95-98,220,257,270
+tests/test_clob_client_detection.py
+  s_db478d43a45300::t_8cdfa17a8596c2 6,62,69,83,87,105,109
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.8",
+  "base_commit_sha": "66907807c2b20475be35a98f26bd765be9af218d",
+  "prompts": {},
+  "sessions": {
+    "s_db478d43a45300": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e04884d4-e55d-47bf-9048-a009559c187a",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
