@@ -21,9 +21,6 @@ _BASE_LIVE_ENV = {
     "PAPER_TRADE_ONLY": "false",
     "CLOB_V2_READY": "true",
     "KILL_SWITCH": "false",
-    "LIVE_CANARY_MODE": "true",
-    "LIVE_CANARY_MAX_NOTIONAL_USDC": "1.00",
-    "LIVE_CANARY_MAX_ORDERS": "1",
     "POSITION_DRIFT_CHECK_ON_STARTUP": "true",
     "ENFORCE_GEOBLOCK": "false",
 }
@@ -113,13 +110,6 @@ async def test_doctor_live_blocked_when_kill_switch_on(tmp_path):
     rec = _checks_by_name(out)["kill_switch_off"]
     assert rec["status"] == "blocked"
     assert out["status"] == "blocked"
-
-
-@pytest.mark.asyncio
-async def test_doctor_live_blocked_when_canary_max_orders_zero(tmp_path):
-    out = await _run_doctor("live", {"LIVE_CANARY_MAX_ORDERS": "0"}, tmp_log=tmp_path)
-    rec = _checks_by_name(out)["canary_caps_sane"]
-    assert rec["status"] == "blocked"
 
 
 @pytest.mark.asyncio

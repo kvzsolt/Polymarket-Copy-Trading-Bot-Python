@@ -348,11 +348,6 @@ def _build_execution_coordinator(
         positions_repo=positions_repo,
         execution_service=execution_service,
     )
-    if config is not None:
-        try:
-            coord.live_canary = getattr(config, "live_canary", None)
-        except Exception:
-            pass
     return coord
 
 

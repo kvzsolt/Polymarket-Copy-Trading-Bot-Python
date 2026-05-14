@@ -17,7 +17,6 @@ _DOCS = (
     "docs/emergency_shutdown.md",
     "docs/recovery_playbook.md",
     "docs/known_limitations.md",
-    "docs/live_canary_checklist.md",
     "docs/rc1_validation.md",
 )
 
@@ -32,11 +31,6 @@ def test_runbook_mentions_doctor_live(repo_root: Path) -> None:
     text = (repo_root / "docs/live_runbook.md").read_text(encoding="utf-8")
     assert "doctor" in text.lower()
     assert "--live" in text
-
-
-def test_runbook_mentions_canary(repo_root: Path) -> None:
-    text = (repo_root / "docs/live_runbook.md").read_text(encoding="utf-8")
-    assert "canary" in text.lower()
 
 
 def test_emergency_doc_mentions_kill_switch_and_shutdown(repo_root: Path) -> None:
@@ -57,22 +51,11 @@ def test_known_limitations_lists_expected_items(repo_root: Path) -> None:
     lowered = text.lower()
     for token in (
         "http polling",
-        "canary counter",
         "execute_intent",
         "risk_monitor_loop",
         "external",
     ):
         assert token in lowered, token
-
-
-def test_canary_checklist_lists_required_env(repo_root: Path) -> None:
-    text = (repo_root / "docs/live_canary_checklist.md").read_text(encoding="utf-8")
-    for token in (
-        "LIVE_CANARY_MODE",
-        "LIVE_CANARY_MAX_NOTIONAL_USDC",
-        "LIVE_CANARY_MAX_ORDERS",
-    ):
-        assert token in text, token
 
 
 def test_rc1_validation_doc_includes_forbid_scans(repo_root: Path) -> None:
