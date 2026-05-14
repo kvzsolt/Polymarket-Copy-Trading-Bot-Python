@@ -214,6 +214,9 @@ class ExecutionCoordinator:
         self.position_coordinator = position_coordinator
         # PR7 — wired per-context by ``build_trading_context``.
         self.position_drift_service: Any | None = None
+        # PR8 — live canary cap. Wired by bootstrap from ``AppConfig.live_canary``.
+        self.live_canary: Any | None = None
+        self._canary_submit_count: int = 0
         # Cache the underlying reservations repo for direct order-id lookups.
         self.reservations_repo = getattr(reservation_service, "reservations_repo", None)
 
@@ -481,6 +484,64 @@ class ExecutionCoordinator:
                 lifecycle_status="duplicate_ignored",
             )
 
+        # PR8 — live canary cap. Notional + order-count limits enforced
+        # BEFORE reservation acquisition so a canary block leaves no state.
+        canary = self.live_canary
+        if canary is not None and bool(getattr(canary, "enabled", False)):
+            try:
+                notional = float(intent.notional_usdc or 0)
+            except (TypeError, ValueError):
+                notional = 0.0
+            max_notional = float(getattr(canary, "max_notional_usdc", 0.0) or 0.0)
+            max_orders = int(getattr(canary, "max_orders", 0) or 0)
+            if max_notional > 0 and notional > max_notional:
+                logger.warning(
+                    "LIVE CANARY LIMIT REACHED notional=%.4f cap=%.4f source=%s",
+                    notional, max_notional, source_override,
+                )
+                self._safe_audit(
+                    "coordinator_live_canary_limit",
+                    {
+                        "user_id": intent.user_id,
+                        "condition_id": intent.condition_id,
+                        "token_id": intent.token_id,
+                        "side": intent.side,
+                        "source": source_override,
+                        "reason": "notional_cap",
+                        "notional": notional,
+                        "cap": max_notional,
+                    },
+                )
+                return ExecutionCoordinatorResult(
+                    accepted=False,
+                    status="live_canary_limit",
+                    skip_code="live_canary_limit",
+                    reason=f"notional {notional} > canary cap {max_notional}",
+                    lifecycle_status="failed",
+                )
+            if max_orders >= 0 and self._canary_submit_count >= max_orders:
+                logger.warning(
+                    "LIVE CANARY LIMIT REACHED submitted=%d/%d source=%s",
+                    self._canary_submit_count, max_orders, source_override,
+                )
+                self._safe_audit(
+                    "coordinator_live_canary_limit",
+                    {
+                        "user_id": intent.user_id,
+                        "source": source_override,
+                        "reason": "order_count_cap",
+                        "submitted": self._canary_submit_count,
+                        "cap": max_orders,
+                    },
+                )
+                return ExecutionCoordinatorResult(
+                    accepted=False,
+                    status="live_canary_limit",
+                    skip_code="live_canary_limit",
+                    reason="canary order count exhausted",
+                    lifecycle_status="failed",
+                )
+
         order_intent = self._build_order_intent(intent, source=source_override)
 
         # ---- Reservation acquire (dup-guard layer #1) -----------------
@@ -629,6 +690,9 @@ class ExecutionCoordinator:
                         "coordinator_link_reservation_failed | reservation_id=%s order_id=%s error=%r",
                         reservation_id, order_id, exc,
                     )
+            # PR8 — count this towards the canary cap.
+            if self.live_canary is not None and bool(getattr(self.live_canary, "enabled", False)):
+                self._canary_submit_count += 1
             return ExecutionCoordinatorResult(
                 accepted=True,
                 status=status or "submitted_unconfirmed",
