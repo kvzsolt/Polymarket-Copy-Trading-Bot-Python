@@ -1,0 +1,49 @@
+clients/market_ws.py
+  s_d3f9a6ba4a4cf6::t_7db6808220df49 284-294,305,307-319
+  s_d3f9a6ba4a4cf6::t_24aa4d53f2df4e 325-328,330-331,336-338,342-347,351-367
+  s_d3f9a6ba4a4cf6::t_e0c003a4407630 380-389
+  s_d3f9a6ba4a4cf6::t_e003ed22d3c9c5 472-473,475-478,480
+  s_d3f9a6ba4a4cf6::t_3b968e031d7c4f 253,270-274
+config/env.py
+  ai_agent 193-220,231
+cache/market_state_store.py
+  s_d3f9a6ba4a4cf6::t_f53b360c4ab815 710-748
+  s_d3f9a6ba4a4cf6::t_249a5135f3a457 277-285
+tests/test_issue68_market_data_cache_wss.py
+  s_d3f9a6ba4a4cf6::t_6b4037047023d9 357-358,372-374
+tests/test_market_ws.py
+  s_d3f9a6ba4a4cf6::t_418f4b95d6443d 210,213-216,218,232,236-238
+  s_d3f9a6ba4a4cf6::t_ac51bb45111a03 3,5-13,18,26-103
+  s_d3f9a6ba4a4cf6::t_a5a5cde8fe6a2d 409-780
+tests/test_user_ws.py
+  s_7dcea5ea633622::t_0ce3c1db0e6fb2 40
+  s_7dcea5ea633622::t_e77d344a447c52 176-179
+tests/test_market_wss_schema_and_degraded.py
+  s_d3f9a6ba4a4cf6::t_f6e188fc641c65 155,177,199
+services/market_data_service.py
+  s_d3f9a6ba4a4cf6::t_d930e19c320cad 112-127,129
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.8",
+  "base_commit_sha": "8c55a684e5ddc435592a2dcb777c3a39073797b6",
+  "prompts": {},
+  "sessions": {
+    "s_7dcea5ea633622": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8711ad74-c9ed-42e6-a83d-9481d7e9f2f2",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    },
+    "s_d3f9a6ba4a4cf6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a921ef9d-8da7-4ef9-a509-c864f85c7b2d",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
