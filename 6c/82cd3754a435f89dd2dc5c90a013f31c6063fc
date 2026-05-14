@@ -1,0 +1,21 @@
+clients/__init__.py
+  s_da67abad73cfe6::t_d08f7a5accf1b3 1,3-11,14-25,30-31,38-80
+utils/createClobClient.py
+  s_da67abad73cfe6::t_d08f7a5accf1b3 25
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.8",
+  "base_commit_sha": "6c82cd3754a435f89dd2dc5c90a013f31c6063fc",
+  "prompts": {},
+  "sessions": {
+    "s_da67abad73cfe6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f8117930-4f8c-49e7-bf28-a8c53be871f7",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
