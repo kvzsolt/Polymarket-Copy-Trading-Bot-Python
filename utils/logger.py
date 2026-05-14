@@ -106,6 +106,18 @@ class JsonFormatter(logging.Formatter):
         return json.dumps(payload, ensure_ascii=False)
 
 
+_POSITION_DRIFT_PANEL: dict[str, tuple[str, str, str]] = {
+    # status -> (title, border, icon)
+    "clean": ("POSITION DRIFT CLEAN", "green", "✅"),
+    "local_missing_venue_position": ("POSITION DRIFT DETECTED", "yellow", "⚠️"),
+    "venue_missing_local_position": ("POSITION DRIFT DETECTED", "yellow", "⚠️"),
+    "size_mismatch_positive": ("POSITION DRIFT DETECTED", "yellow", "⚠️"),
+    "size_mismatch_negative": ("POSITION DRIFT DETECTED", "yellow", "⚠️"),
+    "reservation_orphaned": ("POSITION DRIFT DETECTED", "yellow", "⚠️"),
+    "unresolved": ("TRADING PAUSED FOR POSITION", "red", "🛑"),
+}
+
+
 _ORDER_LIFECYCLE_PANEL: dict[str, tuple[str, str, str]] = {
     # status -> (title, border_style, icon)
     "submitted_unconfirmed": ("ORDER UNCONFIRMED", "yellow", "⏳"),
@@ -235,6 +247,9 @@ class RichConsoleHandler(logging.Handler):
             return True
         if log_type == "order_lifecycle":
             self._render_order_lifecycle(record, ts)
+            return True
+        if log_type == "position_drift":
+            self._render_position_drift(record, ts)
             return True
         if log_type == "risk_exit":
             self._render_risk_exit(record, ts)
@@ -475,6 +490,52 @@ class RichConsoleHandler(logging.Handler):
         console.print(Panel(
             "\n".join(lines),
             title=f"{icon} [bold {border}]{title_text} — {side}[/bold {border}]  [muted][{ts}][/muted]",
+            border_style=border,
+            padding=(1, 2),
+        ))
+
+    def _render_position_drift(self, record: LogRecord, ts: str) -> None:
+        status = (getattr(record, "status", "") or "").lower()
+        action = (getattr(record, "action", "") or "").lower()
+        user_id = getattr(record, "userId", None)
+        cond = shorten_addr(getattr(record, "conditionId", None), 8, 6)
+        asset = shorten_addr(getattr(record, "asset", None), 8, 6)
+        local = getattr(record, "localSize", None)
+        venue = getattr(record, "venueSize", None)
+        drift = getattr(record, "driftSize", None)
+        reason = getattr(record, "reason", None)
+
+        title, border, icon = _POSITION_DRIFT_PANEL.get(
+            status,
+            ("POSITION DRIFT DETECTED", "yellow", "⚠️"),
+        )
+        # Action overrides for clearer operator signal.
+        if action == "prune_local_zero_position":
+            title, border, icon = "LOCAL POSITION PRUNED", "cyan", "🧹"
+        elif action in {"pause_scope", "require_operator_review"}:
+            title, border, icon = "TRADING PAUSED FOR POSITION", "red", "🛑"
+
+        def _fmt(v: Any) -> str | None:
+            try:
+                return f"{float(v):.4f}"
+            except (TypeError, ValueError):
+                return None
+
+        lines = _build_panel_lines(
+            User=user_id or None,
+            Status=status or None,
+            Action=action or None,
+            Condition=cond if cond != "N/A" else None,
+            Asset=asset if asset != "N/A" else None,
+            LocalSize=_fmt(local),
+            VenueSize=_fmt(venue),
+            DriftSize=_fmt(drift),
+            Reason=reason or None,
+        )
+        console.print()
+        console.print(Panel(
+            "\n".join(lines),
+            title=f"{icon} [bold {border}]{title}[/bold {border}]  [muted][{ts}][/muted]",
             border_style=border,
             padding=(1, 2),
         ))
@@ -1510,6 +1571,56 @@ def log_order_lifecycle(
 def _reset_lifecycle_dedup_for_tests() -> None:
     """Test helper — clears the per-key dedup map."""
     _ORDER_LIFECYCLE_LAST.clear()
+
+
+def log_position_drift(
+    logger: logging.Logger,
+    *,
+    status: str,
+    action: str,
+    user_id: str,
+    condition_id: str | None,
+    asset: str | None,
+    local_size: float | None = None,
+    venue_size: float | None = None,
+    drift_size: float | None = None,
+    reason: str | None = None,
+    reservation_ids: list[str] | None = None,
+    meta: dict[str, Any] | None = None,
+) -> None:
+    """Emit a structured ``position_drift`` log (PR7).
+
+    Renders via ``RichConsoleHandler._render_position_drift`` and writes a
+    JSONL record. No dedup — every drift observation is operator-visible.
+    """
+    payload: dict[str, Any] = {
+        "type": "position_drift",
+        "status": (status or "").lower(),
+        "action": (action or "").lower(),
+        "userId": user_id,
+        "conditionId": condition_id,
+        "asset": asset,
+        "localSize": local_size,
+        "venueSize": venue_size,
+        "driftSize": drift_size,
+        "reason": reason,
+        "reservationIds": reservation_ids or [],
+    }
+    if meta:
+        payload.update(meta)
+    logger.info(
+        "POSITION_DRIFT %s/%s | user=%s | cond=%s | asset=%s | local=%s venue=%s drift=%s | %s",
+        payload["status"],
+        payload["action"],
+        user_id,
+        condition_id,
+        asset,
+        local_size,
+        venue_size,
+        drift_size,
+        reason or "",
+        extra=payload,
+    )
 
 
 def log_trade_decision(
