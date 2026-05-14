@@ -1,0 +1,59 @@
+domain/position_drift.py
+  s_62bfb689d71971::t_a93ee353ac60b1 1-73
+config/app_config.py
+  s_62bfb689d71971::t_dfa76b9f8fe408 387-400
+  s_62bfb689d71971::t_7b35bd7bce4b96 52
+  s_62bfb689d71971::t_923dec07fb32b6 502
+  s_62bfb689d71971::t_0f436855b9c091 895-909
+  s_62bfb689d71971::t_74c29b3457d11a 978
+app.py
+  s_62bfb689d71971::t_506c0255820c2b 736-751
+tests/test_position_drift_coordinator_integration.py
+  s_62bfb689d71971::t_1279ef4ad0c8eb 1-113
+services/position_drift_service.py
+  s_62bfb689d71971::t_d798fc0d42cf0b 1-444
+services/healthServer.py
+  s_62bfb689d71971::t_407a8221302dc8 21-22
+  s_62bfb689d71971::t_deb01cef6239f0 60-61
+services/execution/coordinator.py
+  s_62bfb689d71971::t_5fa0a80b0d0866 457-483
+  s_62bfb689d71971::t_da4cc0f98ce80a 215-216
+tests/release_gate/test_startup_recovery.py
+  s_62bfb689d71971::t_b634cb952d48bd 84-114
+domain/trading_context.py
+  s_62bfb689d71971::t_c1f7dad2ed8d46 19
+  s_62bfb689d71971::t_ab776b4ff1e06c 62-64
+tests/test_health_readiness_drift.py
+  s_62bfb689d71971::t_aefd42bf6c23ea 1-50
+tests/test_position_drift_startup.py
+  s_62bfb689d71971::t_fbcf47626c19ab 1-150
+orchestrators/runtime_bootstrap.py
+  s_62bfb689d71971::t_d29c2146d7e8e5 395-404,409-461
+  s_62bfb689d71971::t_b118d39a342515 249-255
+  s_62bfb689d71971::t_c706e707e10d1a 126-127
+  s_62bfb689d71971::t_b05da10acef6d1 277-304
+  s_62bfb689d71971::t_93c175d1d62a9e 273
+tests/test_position_drift_service.py
+  s_62bfb689d71971::t_dafe989d5c4939 1-186
+utils/logger.py
+  s_62bfb689d71971::t_f60d3b09715cb7 109-120
+  s_62bfb689d71971::t_06d375c9f493b5 251-253
+  s_62bfb689d71971::t_9b6ce8f358abb4 1576-1625
+  s_62bfb689d71971::t_9c1881640c259e 497-542
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.7",
+  "base_commit_sha": "0dd8b74278d980a100fac9a3a2bd43e9295542bb",
+  "prompts": {},
+  "sessions": {
+    "s_62bfb689d71971": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6e021f73-964d-4111-864c-59d2e303c15b",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
