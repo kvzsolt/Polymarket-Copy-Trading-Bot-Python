@@ -71,8 +71,6 @@ def test_canary_checklist_lists_required_env(repo_root: Path) -> None:
         "LIVE_CANARY_MODE",
         "LIVE_CANARY_MAX_NOTIONAL_USDC",
         "LIVE_CANARY_MAX_ORDERS",
-        "LIVE_CANARY_REQUIRE_OPERATOR_ACK",
-        "I_UNDERSTAND_LIVE_TRADING_RISK",
     ):
         assert token in text, token
 

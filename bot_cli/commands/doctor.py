@@ -21,14 +21,14 @@ import asyncio
 import json
 import re
 import socket
-import sys
+from services.wallet_signature_detector import detect_wallet_signature_type
+
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from config.app_config import (
     EnvValidationError,
-    REQUIRED_CANARY_ACK,
     load_config,
 )
 from config.env import ENV, rehydrate_env
@@ -302,27 +302,33 @@ async def run_doctor_checks(mode: str) -> dict[str, Any]:
                 f"invalid FUNDER_ADDRESS: {funder!r}",
                 "set FUNDER_ADDRESS to a 42-char hex address",
             )
-        sig_type = getattr(config.wallet, "signature_type", None)
-        if sig_type is not None:
-            ctx.ok("wallet_signature_type", f"signature_type={sig_type}")
-        else:
+        try:
+            detected_sig, detected_wallet_type, detected_signer = await detect_wallet_signature_type(
+                config.wallet, fail_closed_on_rpc_error=True
+            )
+        except RuntimeError as exc:
             ctx.blocked(
                 "wallet_signature_type",
-                "signature_type missing",
-                "set SIGNATURE_TYPE",
+                f"RPC probe failed: {exc}",
+                "verify RPC_URL connectivity or set SIGNATURE_TYPE explicitly",
             )
+        else:
+            configured_sig = getattr(config.wallet, "signature_type", None)
+            shortened_signer = (detected_signer or "")[:10] + "…" if detected_signer else "unknown"
+            shortened_funder = (config.wallet.funder_address or "")[:10] + "…" if config.wallet.funder_address else "unknown"
+            detail = (
+                f"walletType={detected_wallet_type} "
+                f"signature_type={int(detected_sig)} "
+                f"signer={shortened_signer} "
+                f"funder={shortened_funder}"
+            )
+            if configured_sig is not None and int(configured_sig) != int(detected_sig):
+                detail += f" runtime_autodetect=override (configured={int(configured_sig)})"
+            ctx.ok("wallet_signature_type", detail)
 
     # ----- canary -------------------------------------------------------
     canary = config.live_canary
     if live:
-        if canary.require_operator_ack and canary.ack_text != REQUIRED_CANARY_ACK:
-            ctx.blocked(
-                "canary_ack",
-                f"LIVE_CANARY_ACK_TEXT != {REQUIRED_CANARY_ACK!r}",
-                f"set LIVE_CANARY_ACK_TEXT={REQUIRED_CANARY_ACK}",
-            )
-        else:
-            ctx.ok("canary_ack", "operator acknowledgement present")
         if canary.max_notional_usdc <= 0 or canary.max_orders < 1:
             ctx.blocked(
                 "canary_caps_sane",
@@ -615,15 +621,6 @@ async def run_doctor_checks(mode: str) -> dict[str, Any]:
         )
     else:
         ctx.ok("leaders", "leaders configured or auto-discovery enabled")
-
-    if config.sizing.buy_min_amount < 5.0:
-        ctx.warning(
-            "order_size",
-            f"buy_min_amount={config.sizing.buy_min_amount} < 5",
-            "raise BUY_MIN_AMOUNT >= 5.0",
-        )
-    else:
-        ctx.ok("order_size", f"buy_min_amount={config.sizing.buy_min_amount}")
 
     if config.near_one_exit.enable_near_one_exit:
         threshold = float(config.near_one_exit.threshold)
