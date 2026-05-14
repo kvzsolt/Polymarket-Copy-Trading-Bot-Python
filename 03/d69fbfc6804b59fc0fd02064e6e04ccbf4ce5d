@@ -1,0 +1,21 @@
+tests/test_market_wss_schema_and_degraded.py
+  s_7dcea5ea633622::t_42e8add8d72a60 318-320,322-333
+  s_7dcea5ea633622::t_0d371a99ea02a8 1-317,334-574
+  s_7dcea5ea633622::t_47464b99d80b25 321
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.8",
+  "base_commit_sha": "03d69fbfc6804b59fc0fd02064e6e04ccbf4ce5d",
+  "prompts": {},
+  "sessions": {
+    "s_7dcea5ea633622": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8711ad74-c9ed-42e6-a83d-9481d7e9f2f2",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
