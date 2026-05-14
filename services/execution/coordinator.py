@@ -212,6 +212,8 @@ class ExecutionCoordinator:
         # Production wrapper deps. ``execute_intent`` (V2) does not use these.
         self.execution_service = execution_service
         self.position_coordinator = position_coordinator
+        # PR7 — wired per-context by ``build_trading_context``.
+        self.position_drift_service: Any | None = None
         # Cache the underlying reservations repo for direct order-id lookups.
         self.reservations_repo = getattr(reservation_service, "reservations_repo", None)
 
@@ -450,6 +452,33 @@ class ExecutionCoordinator:
         if self.execution_service is None:
             raise RuntimeError(
                 "ExecutionCoordinator.submit_*: execution_service is required for production submits"
+            )
+
+        # PR7 — drift gate. Pause acts at the per-scope level; honoured by
+        # every production submit path before reservation acquisition so an
+        # unresolved drift never converts into venue activity.
+        drift_svc = self.position_drift_service
+        if drift_svc is not None and drift_svc.is_scope_paused(
+            user_id=intent.user_id,
+            condition_id=intent.condition_id,
+            token_id=intent.token_id,
+        ):
+            self._safe_audit(
+                "coordinator_position_drift_blocked",
+                {
+                    "user_id": intent.user_id,
+                    "condition_id": intent.condition_id,
+                    "token_id": intent.token_id,
+                    "side": intent.side,
+                    "source": source_override,
+                },
+            )
+            return ExecutionCoordinatorResult(
+                accepted=False,
+                status="position_drift_unresolved",
+                skip_code="position_drift_unresolved",
+                reason="scope paused by position drift policy",
+                lifecycle_status="duplicate_ignored",
             )
 
         order_intent = self._build_order_intent(intent, source=source_override)

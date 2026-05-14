@@ -733,6 +733,22 @@ async def main():
 
     application.readiness.update(reconciler_ok=True)
 
+    # PR7 — proactive position drift sweep. Must complete before monitors start.
+    from orchestrators.runtime_bootstrap import startup_drift_check
+
+    drift_per_user = await startup_drift_check(
+        runtime_users=runtime_users,
+        user_states=user_states,
+        config=application.config,
+        readiness=application.readiness,
+    )
+    if drift_per_user and not all(drift_per_user.values()):
+        unresolved = [u for u, ok in drift_per_user.items() if not ok]
+        logger.warning(
+            "startup_drift_unresolved | users=%s — affected scopes are paused",
+            unresolved,
+        )
+
     if startup_reconciled:
         application.readiness.update(
             startup_reconciled_orders=sum(startup_reconciled.values()),

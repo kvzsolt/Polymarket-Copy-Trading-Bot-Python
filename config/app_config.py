@@ -49,6 +49,7 @@ __all__ = [
     "LoggingConfig",
     "NetworkConfig",
     "OrderConfirmationConfig",
+    "PositionDriftConfig",
     "PollingConfig",
     "NearOneExitConfig",
     "ReconciliationConfig",
@@ -383,6 +384,21 @@ class ReconciliationConfig:
 
 
 @dataclass(frozen=True)
+class PositionDriftConfig:
+    """PR7 — manual / off-bot position drift policy.
+
+    Proactive cross-check between local position state and venue truth.
+    """
+
+    check_on_startup: bool
+    fail_closed: bool
+    allow_auto_prune_zero: bool
+    allow_external_position_tracking: bool
+    pause_scope_on_unresolved: bool
+    max_size_epsilon: Decimal
+
+
+@dataclass(frozen=True)
 class OrderConfirmationConfig:
     """Confirmation-delay and ambiguous-timeout policy (PR5).
 
@@ -483,6 +499,7 @@ class AppConfig:
     near_one_exit: NearOneExitConfig
     reconciliation: ReconciliationConfig
     order_confirmation: OrderConfirmationConfig
+    position_drift: PositionDriftConfig
     discovery: DiscoveryConfig
     features: FeatureFlagConfig
     # Global safety: when True the bot runs in paper-only / dry-run mode.
@@ -875,6 +892,21 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         auto_cancel_stale=p.bool_("RECONCILE_AUTO_CANCEL", False),
     )
 
+    position_drift = PositionDriftConfig(
+        check_on_startup=p.bool_("POSITION_DRIFT_CHECK_ON_STARTUP", True),
+        fail_closed=p.bool_("POSITION_DRIFT_FAIL_CLOSED", True),
+        allow_auto_prune_zero=p.bool_("POSITION_DRIFT_ALLOW_AUTO_PRUNE_ZERO", True),
+        allow_external_position_tracking=p.bool_(
+            "POSITION_DRIFT_ALLOW_EXTERNAL_POSITION_TRACKING", False
+        ),
+        pause_scope_on_unresolved=p.bool_(
+            "POSITION_DRIFT_PAUSE_SCOPE_ON_UNRESOLVED", True
+        ),
+        max_size_epsilon=Decimal(
+            p.string("POSITION_DRIFT_MAX_SIZE_EPSILON", "0.000001")
+        ),
+    )
+
     order_confirmation = OrderConfirmationConfig(
         initial_delay_seconds=p.float_("ORDER_CONFIRMATION_INITIAL_DELAY_SECONDS", "2"),
         poll_interval_seconds=p.float_("ORDER_CONFIRMATION_POLL_INTERVAL_SECONDS", "3"),
@@ -943,6 +975,7 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         near_one_exit=near_one_exit,
         reconciliation=reconciliation,
         order_confirmation=order_confirmation,
+        position_drift=position_drift,
         discovery=discovery,
         features=features,
         dry_run=p.bool_("PAPER_TRADE_ONLY", False),

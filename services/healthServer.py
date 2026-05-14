@@ -18,7 +18,8 @@ _STRICT_REQUIRED_KEYS: tuple[str, ...] = (
     "wss_market_ok",
     "wss_user_ok",
     "reconciler_ok",
-    "market_data_ready"
+    "market_data_ready",
+    "drift_ok",
 )
 
 
@@ -56,6 +57,8 @@ class ReadinessTracker:
             "stale_locks_count": 0,
             "last_reconcile_ts": 0,
             "last_wss_message_ts": 0,
+            # PR7 — position drift sweep status.
+            "drift_ok": False,
         }
         if initial:
             self._state.update(initial)

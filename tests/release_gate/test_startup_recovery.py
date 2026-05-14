@@ -81,3 +81,34 @@ def test_app_main_calls_startup_reconcile_before_monitors() -> None:
             f"startup_reconcile_unconfirmed (line {reconcile_line}) must precede "
             f"{label} (line {line}) in app.py"
         )
+
+
+def test_app_main_runs_drift_check_after_reconcile_before_monitors() -> None:
+    """startup_drift_check must run after the reconciler and before monitors (PR7)."""
+    import ast
+    from pathlib import Path
+
+    source = (Path(__file__).resolve().parents[2] / "app.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    reconcile_line = _line_of_first_call(tree, "startup_reconcile_unconfirmed")
+    drift_line = _line_of_first_call(tree, "startup_drift_check")
+    risk_line = _line_of_first_call(tree, "risk_monitor_loop_for_contexts")
+    near_one_line = _line_of_first_call(tree, "NearOneExitService")
+    leader_line = _line_of_first_call(tree, "run_leader_monitor")
+
+    assert drift_line is not None, "app.py must call startup_drift_check"
+    assert reconcile_line is not None
+    assert drift_line > reconcile_line, (
+        f"startup_drift_check (line {drift_line}) must follow "
+        f"startup_reconcile_unconfirmed (line {reconcile_line})"
+    )
+    for label, line in [
+        ("risk_monitor_loop_for_contexts", risk_line),
+        ("NearOneExitService", near_one_line),
+        ("run_leader_monitor", leader_line),
+    ]:
+        assert line is not None
+        assert drift_line < line, (
+            f"startup_drift_check (line {drift_line}) must precede {label} (line {line})"
+        )
