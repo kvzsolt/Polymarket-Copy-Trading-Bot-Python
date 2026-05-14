@@ -16,6 +16,7 @@ market-state data.
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -62,6 +63,8 @@ class MarketDataRuntime:
         default_factory=MarketDataRuntimeStatus,
         init=False,
     )
+    _last_wss_message_at: float = field(default=0.0, init=False)
+    _wss_degraded_log_last: float = field(default=0.0, init=False)
 
     async def start(self, initial_token_ids: list[str]) -> None:
         """Start market WSS runtime.
@@ -397,6 +400,18 @@ class MarketDataRuntime:
             dirty_token_count=self._status.dirty_token_count,
         )
 
+    def is_wss_down(self, threshold_seconds: float = 15.0) -> bool:
+        """Return True when market WSS has been silent beyond threshold_seconds.
+
+        Used by MarketDataService to gate REST degraded fallback. Returns True
+        immediately if the runtime is not running or has never received a message.
+        """
+        if not self._status.running:
+            return True
+        if self._last_wss_message_at == 0.0:
+            return True
+        return (time.monotonic() - self._last_wss_message_at) > threshold_seconds
+
     async def _on_market_state_change(self, token_id: str, event_type: str) -> None:
         """WSS-driven recompute hook.
 
@@ -404,6 +419,7 @@ class MarketDataRuntime:
         tick_size_change / market_resolved events. Cheap; just recomputes the
         readiness gate from the store snapshot.
         """
+        self._last_wss_message_at = time.monotonic()
         try:
             self._update_readiness_from_store()
         except Exception as exc:
