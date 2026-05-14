@@ -77,7 +77,7 @@ def mock_gateway():
 @pytest.fixture
 def mds(cache: MarketStateStore, mock_gateway) -> MarketDataService:
     policy = MarketDataPolicy(allow_rest_fallback=True, require_wss_fresh=False)
-    return MarketDataService(cache, mock_gateway, policy=policy)
+    return MarketDataService(cache, mock_gateway, policy=policy, is_wss_down_fn=lambda: True)
 
 
 @pytest.fixture

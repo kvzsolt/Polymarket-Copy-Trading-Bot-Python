@@ -43,9 +43,9 @@ _MIN_RECONNECT_DELAY = 1.0
 _MAX_RECONNECT_DELAY = 30.0
 
 try:
-    from clients.ws_constants import HEARTBEAT_INTERVAL
+    from clients.ws_constants import USER_HEARTBEAT_INTERVAL as HEARTBEAT_INTERVAL
 except Exception:  # pragma: no cover
-    HEARTBEAT_INTERVAL = 5.0
+    HEARTBEAT_INTERVAL = 10
 
 
 LifecycleCallback = Callable[[], Awaitable[None] | None]
@@ -148,11 +148,19 @@ class UserWebSocket:
 
     async def _authenticate(self, ws: Any) -> None:
         auth_payload = {
-            "type": "auth",
-            **self._api_creds,
+            "type": "user",
+            "auth": {
+                "apiKey": self._api_creds.get("api_key", ""),
+                "secret": self._api_creds.get("api_secret", ""),
+                "passphrase": self._api_creds.get("api_passphrase", ""),
+            },
         }
         await ws.send(json.dumps(auth_payload))
         logger.info("UserWS: authentication sent")
+        # Polymarket user WS has no auth-ack response; connection alive = authenticated.
+        if not self._authenticated:
+            self._authenticated = True
+            self._fire_lifecycle_callback(self._on_authenticated)
 
     async def _heartbeat(self, ws: Any) -> None:
         while self._running:
@@ -171,15 +179,18 @@ class UserWebSocket:
             if not self._running:
                 break
 
+            msg = raw_msg.decode("utf-8", errors="replace") if isinstance(raw_msg, bytes) else raw_msg
+            if msg in ("PING", "ping"):
+                with contextlib.suppress(Exception):
+                    await ws.send("PONG")
+                continue
+
             try:
-                self._handle_message(raw_msg)
+                self._handle_message(msg)
             except Exception as exc:
                 logger.warning("UserWS: message handling error: %s", exc)
 
-    def _handle_message(self, raw_msg: str | bytes) -> None:
-        if isinstance(raw_msg, bytes):
-            raw_msg = raw_msg.decode("utf-8", errors="replace")
-
+    def _handle_message(self, raw_msg: str) -> None:
         if raw_msg in ("PONG", "pong", ""):
             return
 
