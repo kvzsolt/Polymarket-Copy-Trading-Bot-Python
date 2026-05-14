@@ -170,6 +170,222 @@ class MarketDataRuntime:
             len(self._subscribed_tokens),
         )
 
+    async def ensure_token_ready_or_bootstrapped(
+        self,
+        token_id: str,
+        *,
+        condition_id: str | None = None,
+        side: str | None = None,
+    ) -> bool:
+        """Subscribe token and bootstrap from REST /book if WSS state is missing.
+
+        Returns True when the token has executable data (WSS or fresh rest_bootstrap).
+        Does NOT mark dirty — rest_bootstrap data is immediately usable if policy allows.
+        """
+        t_start = time.monotonic()
+
+        if self._token_executable(token_id):
+            return True
+
+        if token_id not in self._subscribed_tokens:
+            self._subscribed_tokens.add(token_id)
+            self._status.subscribed_token_count = len(self._subscribed_tokens)
+            if self._ws_client is not None:
+                await self._ws_client.subscribe([token_id])
+            logger.info("market_data_runtime_subscribe_sent | token_id=%s", token_id)
+        else:
+            logger.info("market_data_wss_bootstrap_repair_start | token_id=%s", token_id)
+
+        cfg = self._bootstrap_config()
+        if not cfg["enable"]:
+            return self._token_executable(token_id)
+
+        if cfg["require_wss_connected"] and self.is_wss_down():
+            debug = self.market_store.get_debug_state(token_id)
+            logger.warning(
+                "market_data_rest_bootstrap_rejected | token_id=%s reason=wss_disconnected debug=%s",
+                token_id,
+                debug,
+            )
+            return False
+
+        elapsed_ms = (time.monotonic() - t_start) * 1000
+        if elapsed_ms >= cfg["total_budget_ms"]:
+            logger.warning(
+                "market_data_bootstrap_timeout | token_id=%s elapsed_ms=%.1f",
+                token_id,
+                elapsed_ms,
+            )
+            return False
+
+        logger.info(
+            "market_data_rest_bootstrap_start | token_id=%s cond=%s", token_id, condition_id
+        )
+        fetch_start = time.monotonic()
+
+        try:
+            book = await asyncio.wait_for(
+                self.gateway.get_orderbook(token_id),
+                timeout=cfg["request_timeout_ms"] / 1000.0,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "market_data_rest_bootstrap_rejected | token_id=%s reason=request_timeout",
+                token_id,
+            )
+            return False
+        except Exception as exc:
+            logger.warning(
+                "market_data_rest_bootstrap_rejected | token_id=%s reason=fetch_error error=%r",
+                token_id,
+                exc,
+            )
+            return False
+
+        request_ms = (time.monotonic() - fetch_start) * 1000
+
+        bids: dict[Decimal, Decimal] = {}
+        asks: dict[Decimal, Decimal] = {}
+        for level in getattr(book, "bids", []) or []:
+            price = _to_decimal(getattr(level, "price", None))
+            size = _to_decimal(getattr(level, "size", None))
+            if price is not None and size is not None and size > 0:
+                bids[price] = size
+        for level in getattr(book, "asks", []) or []:
+            price = _to_decimal(getattr(level, "price", None))
+            size = _to_decimal(getattr(level, "size", None))
+            if price is not None and size is not None and size > 0:
+                asks[price] = size
+
+        if not bids or not asks:
+            logger.warning(
+                "market_data_rest_bootstrap_rejected | token_id=%s reason=empty_book",
+                token_id,
+            )
+            return False
+
+        data_age_ms = request_ms
+        if data_age_ms > cfg["max_age_ms"]:
+            logger.warning(
+                "market_data_rest_bootstrap_rejected | token_id=%s reason=stale"
+                " age_ms=%.1f max_ms=%d",
+                token_id,
+                data_age_ms,
+                cfg["max_age_ms"],
+            )
+            return False
+
+        best_bid = max(bids)
+        best_ask = min(asks)
+        if best_bid >= best_ask or best_ask <= 0:
+            logger.warning(
+                "market_data_rest_bootstrap_rejected | token_id=%s reason=invalid_spread",
+                token_id,
+            )
+            return False
+        spread_bps = int(((best_ask - best_bid) / best_ask) * 10000)
+        if spread_bps > cfg["max_spread_bps"]:
+            logger.warning(
+                "market_data_rest_bootstrap_rejected | token_id=%s reason=spread_too_wide"
+                " spread_bps=%d max_bps=%d",
+                token_id,
+                spread_bps,
+                cfg["max_spread_bps"],
+            )
+            return False
+
+        self.market_store.replace_book_snapshot(
+            token_id,
+            bids=bids,
+            asks=asks,
+            raw_event={"source": "rest_bootstrap", "condition_id": condition_id},
+        )
+
+        prefetch_elapsed_ms = (time.monotonic() - t_start) * 1000
+        tick = self.market_store.get_tick(token_id)
+        if tick is None:
+            remaining_ms = cfg["total_budget_ms"] - prefetch_elapsed_ms
+            if remaining_ms > 10:
+                try:
+                    info = await asyncio.wait_for(
+                        self.gateway.get_market_info(token_id),
+                        timeout=min(
+                            remaining_ms / 1000.0,
+                            cfg["request_timeout_ms"] / 1000.0,
+                        ),
+                    )
+                    tick_size = _to_decimal(
+                        info.get("tick_size") or info.get("minimum_tick_size")
+                    )
+                    min_order_size = _to_decimal(
+                        info.get("min_order_size")
+                        or info.get("minimum_order_size")
+                        or info.get("order_min_size")
+                    )
+                    neg_risk = bool(info.get("neg_risk", False))
+                    if (
+                        tick_size is not None
+                        and tick_size > 0
+                        and min_order_size is not None
+                        and min_order_size > 0
+                    ):
+                        self.market_store.set_tick(
+                            token_id,
+                            tick_size=tick_size,
+                            min_order_size=min_order_size,
+                            neg_risk=neg_risk,
+                            source="rest_bootstrap",
+                        )
+                except Exception:
+                    pass  # tick missing → MDS rejects; acceptable
+
+        prefetch_elapsed_ms = (time.monotonic() - t_start) * 1000
+
+        if prefetch_elapsed_ms > cfg["total_budget_ms"]:
+            logger.warning(
+                "market_data_bootstrap_timeout | token_id=%s elapsed_ms=%.1f budget_ms=%d",
+                token_id,
+                prefetch_elapsed_ms,
+                cfg["total_budget_ms"],
+            )
+            return False
+
+        logger.info(
+            "market_data_rest_bootstrap_used | token_id=%s cond=%s"
+            " request_ms=%.1f data_age_ms=%.1f prefetch_elapsed_ms=%.1f"
+            " bid_count=%d ask_count=%d best_bid=%s best_ask=%s spread_bps=%d source=rest_bootstrap",
+            token_id,
+            condition_id,
+            request_ms,
+            data_age_ms,
+            prefetch_elapsed_ms,
+            len(bids),
+            len(asks),
+            best_bid,
+            best_ask,
+            spread_bps,
+        )
+        return True
+
+    def _bootstrap_config(self) -> dict:
+        cfg_obj = getattr(self.config, "market_data", None)
+        return {
+            "enable": bool(getattr(cfg_obj, "enable_rest_bootstrap", True)),
+            "max_age_ms": int(getattr(cfg_obj, "rest_bootstrap_max_age_ms", 500)),
+            "request_timeout_ms": int(
+                getattr(cfg_obj, "rest_bootstrap_request_timeout_ms", 750)
+            ),
+            "total_budget_ms": int(
+                getattr(cfg_obj, "rest_bootstrap_total_budget_ms", 1000)
+            ),
+            "max_spread_bps": int(
+                getattr(cfg_obj, "rest_bootstrap_max_spread_bps", 300)
+            ),
+            "require_wss_connected": bool(
+                getattr(cfg_obj, "rest_bootstrap_require_wss_connected", True)
+            ),
+        }
+
     async def unsubscribe_tokens(self, token_ids: list[str]) -> None:
         """Unsubscribe token ids.
 

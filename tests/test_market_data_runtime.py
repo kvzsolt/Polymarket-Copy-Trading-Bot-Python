@@ -389,3 +389,283 @@ class TestExtractTokenIds:
 
     def test_empty_list_returns_empty(self) -> None:
         assert extract_token_ids_from_live_positions([]) == []
+
+
+# ---------------------------------------------------------------------------
+# ensure_token_ready_or_bootstrapped
+# ---------------------------------------------------------------------------
+
+def _make_runtime_with_config(
+    store: MarketStateStore | None = None,
+    gateway=None,
+    *,
+    enable: bool = True,
+    max_age_ms: int = 500,
+    request_timeout_ms: int = 750,
+    total_budget_ms: int = 1000,
+    max_spread_bps: int = 300,
+    require_wss_connected: bool = False,
+) -> MarketDataRuntime:
+    cfg = SimpleNamespace(
+        market_data=SimpleNamespace(
+            enable_rest_bootstrap=enable,
+            rest_bootstrap_max_age_ms=max_age_ms,
+            rest_bootstrap_request_timeout_ms=request_timeout_ms,
+            rest_bootstrap_total_budget_ms=total_budget_ms,
+            rest_bootstrap_max_spread_bps=max_spread_bps,
+            rest_bootstrap_require_wss_connected=require_wss_connected,
+        )
+    )
+    return MarketDataRuntime(
+        market_store=store or MarketStateStore(),
+        gateway=gateway or _make_gateway(),
+        readiness=ReadinessTracker(),
+        config=cfg,
+    )
+
+
+def _make_good_book(token_id: str = TOKEN_A):
+    from integrations.polymarket.models import OrderBook, OrderBookLevel
+    return OrderBook(
+        token_id=token_id,
+        bids=[OrderBookLevel(price=Decimal("0.49"), size=Decimal("200"))],
+        asks=[OrderBookLevel(price=Decimal("0.50"), size=Decimal("150"))],
+        best_bid=Decimal("0.49"),
+        best_ask=Decimal("0.50"),
+    )
+
+
+def _make_bootstrap_gateway(token_id: str = TOKEN_A) -> AsyncMock:
+    gw = AsyncMock()
+    gw.get_orderbook = AsyncMock(return_value=_make_good_book(token_id))
+    gw.get_market_info = AsyncMock(return_value={
+        "tick_size": "0.01",
+        "min_order_size": "5",
+        "neg_risk": False,
+    })
+    return gw
+
+
+class TestEnsureTokenReadyOrBootstrapped:
+    @pytest.mark.asyncio
+    async def test_already_executable_returns_true_immediately(self) -> None:
+        store = MarketStateStore()
+        store.replace_book_snapshot(
+            TOKEN_A,
+            {Decimal("0.49"): Decimal("100")},
+            {Decimal("0.51"): Decimal("100")},
+            {"source": "wss"},
+        )
+        store.set_quote(TOKEN_A, best_bid=Decimal("0.49"), best_ask=Decimal("0.51"), source="wss")
+        store.set_tick(TOKEN_A, tick_size=Decimal("0.01"), min_order_size=Decimal("5"), neg_risk=False, source="wss")
+        gw = _make_bootstrap_gateway()
+        rt = _make_runtime_with_config(store=store, gateway=gw)
+
+        result = await rt.ensure_token_ready_or_bootstrapped(TOKEN_A)
+
+        assert result is True
+        gw.get_orderbook.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_new_token_subscribe_sent_and_bootstrap_fetched(self) -> None:
+        store = MarketStateStore()
+        gw = _make_bootstrap_gateway()
+        rt = _make_runtime_with_config(store=store, gateway=gw)
+
+        result = await rt.ensure_token_ready_or_bootstrapped(TOKEN_A)
+
+        assert TOKEN_A in rt._subscribed_tokens
+        gw.get_orderbook.assert_awaited_once()
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_token_subscribed_but_no_book_attempts_bootstrap(self) -> None:
+        store = MarketStateStore()
+        gw = _make_bootstrap_gateway()
+        rt = _make_runtime_with_config(store=store, gateway=gw)
+        rt._subscribed_tokens.add(TOKEN_A)
+
+        result = await rt.ensure_token_ready_or_bootstrapped(TOKEN_A)
+
+        gw.get_orderbook.assert_awaited_once()
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_bootstrap_writes_rest_bootstrap_book_source(self) -> None:
+        store = MarketStateStore()
+        gw = _make_bootstrap_gateway()
+        rt = _make_runtime_with_config(store=store, gateway=gw)
+
+        await rt.ensure_token_ready_or_bootstrapped(TOKEN_A)
+
+        assert store.book_source_of(TOKEN_A) == "rest_bootstrap"
+
+    @pytest.mark.asyncio
+    async def test_bootstrap_writes_rest_bootstrap_quote_source(self) -> None:
+        store = MarketStateStore()
+        gw = _make_bootstrap_gateway()
+        rt = _make_runtime_with_config(store=store, gateway=gw)
+
+        await rt.ensure_token_ready_or_bootstrapped(TOKEN_A)
+
+        assert store.quote_source_of(TOKEN_A) == "rest_bootstrap"
+
+    @pytest.mark.asyncio
+    async def test_bootstrap_does_not_write_wss_source(self) -> None:
+        store = MarketStateStore()
+        gw = _make_bootstrap_gateway()
+        rt = _make_runtime_with_config(store=store, gateway=gw)
+
+        await rt.ensure_token_ready_or_bootstrapped(TOKEN_A)
+
+        assert store.book_source_of(TOKEN_A) != "wss"
+        assert store.quote_source_of(TOKEN_A) != "wss"
+
+    @pytest.mark.asyncio
+    async def test_bootstrap_accepted_when_fresh_and_spread_good(self) -> None:
+        store = MarketStateStore()
+        gw = _make_bootstrap_gateway()
+        rt = _make_runtime_with_config(store=store, gateway=gw, max_age_ms=2000)
+
+        result = await rt.ensure_token_ready_or_bootstrapped(TOKEN_A)
+
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_bootstrap_rejected_when_stale(self) -> None:
+        import asyncio as _asyncio
+
+        async def _slow_book(token_id):
+            await _asyncio.sleep(0.05)
+            return _make_good_book(token_id)
+
+        gw = AsyncMock()
+        gw.get_orderbook = _slow_book
+        gw.get_market_info = AsyncMock(return_value={"tick_size": "0.01", "min_order_size": "5"})
+
+        rt = _make_runtime_with_config(gateway=gw, max_age_ms=1)
+
+        result = await rt.ensure_token_ready_or_bootstrapped(TOKEN_A)
+
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_bootstrap_rejected_when_request_times_out(self) -> None:
+        import asyncio as _asyncio
+
+        async def _timeout_book(token_id):
+            await _asyncio.sleep(10)
+            return _make_good_book(token_id)
+
+        gw = AsyncMock()
+        gw.get_orderbook = _timeout_book
+        gw.get_market_info = AsyncMock(return_value={})
+
+        rt = _make_runtime_with_config(gateway=gw, request_timeout_ms=50)
+
+        result = await rt.ensure_token_ready_or_bootstrapped(TOKEN_A)
+
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_bootstrap_rejected_when_budget_exceeded_before_fetch(self) -> None:
+        gw = _make_bootstrap_gateway()
+        rt = _make_runtime_with_config(gateway=gw, total_budget_ms=0)
+
+        result = await rt.ensure_token_ready_or_bootstrapped(TOKEN_A)
+
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_bootstrap_rejected_when_spread_too_wide(self) -> None:
+        from integrations.polymarket.models import OrderBook, OrderBookLevel
+
+        wide_book = OrderBook(
+            token_id=TOKEN_A,
+            bids=[OrderBookLevel(price=Decimal("0.10"), size=Decimal("100"))],
+            asks=[OrderBookLevel(price=Decimal("0.90"), size=Decimal("100"))],
+            best_bid=Decimal("0.10"),
+            best_ask=Decimal("0.90"),
+        )
+        gw = AsyncMock()
+        gw.get_orderbook = AsyncMock(return_value=wide_book)
+        gw.get_market_info = AsyncMock(return_value={"tick_size": "0.01", "min_order_size": "5"})
+
+        rt = _make_runtime_with_config(gateway=gw, max_spread_bps=100)
+
+        result = await rt.ensure_token_ready_or_bootstrapped(TOKEN_A)
+
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_bootstrap_rejected_when_wss_required_and_disconnected(self) -> None:
+        gw = _make_bootstrap_gateway()
+        rt = _make_runtime_with_config(gateway=gw, require_wss_connected=True)
+
+        result = await rt.ensure_token_ready_or_bootstrapped(TOKEN_A)
+
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_wss_book_event_overrides_rest_bootstrap_source(self) -> None:
+        store = MarketStateStore()
+        gw = _make_bootstrap_gateway()
+        rt = _make_runtime_with_config(store=store, gateway=gw)
+
+        await rt.ensure_token_ready_or_bootstrapped(TOKEN_A)
+        assert store.book_source_of(TOKEN_A) == "rest_bootstrap"
+
+        store.replace_book_snapshot(
+            TOKEN_A,
+            {Decimal("0.50"): Decimal("50")},
+            {Decimal("0.52"): Decimal("50")},
+            {"source": "wss"},
+        )
+
+        assert store.book_source_of(TOKEN_A) == "wss"
+
+    @pytest.mark.asyncio
+    async def test_apply_book_delta_after_bootstrap_sets_wss_source(self) -> None:
+        store = MarketStateStore()
+        gw = _make_bootstrap_gateway()
+        rt = _make_runtime_with_config(store=store, gateway=gw)
+
+        await rt.ensure_token_ready_or_bootstrapped(TOKEN_A)
+        assert store.book_source_of(TOKEN_A) == "rest_bootstrap"
+
+        store.apply_book_delta(TOKEN_A, "buy", Decimal("0.50"), Decimal("10"))
+
+        assert store.book_source_of(TOKEN_A) == "wss"
+
+    @pytest.mark.asyncio
+    async def test_bootstrap_rejected_when_empty_book(self) -> None:
+        from integrations.polymarket.models import OrderBook
+
+        empty_book = OrderBook(token_id=TOKEN_A, bids=[], asks=[], best_bid=None, best_ask=None)
+        gw = AsyncMock()
+        gw.get_orderbook = AsyncMock(return_value=empty_book)
+        gw.get_market_info = AsyncMock(return_value={})
+
+        rt = _make_runtime_with_config(gateway=gw)
+
+        result = await rt.ensure_token_ready_or_bootstrapped(TOKEN_A)
+
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_bootstrap_uses_defaults_when_no_market_data_config(self) -> None:
+        """Missing market_data config must not raise; defaults are applied."""
+        store = MarketStateStore()
+        gw = _make_bootstrap_gateway()
+        rt = MarketDataRuntime(
+            market_store=store,
+            gateway=gw,
+            readiness=ReadinessTracker(),
+            config=SimpleNamespace(),
+        )
+
+        # Default require_wss_connected=True with WSS not started → bootstrap
+        # is gated, returns False (not an error). Just verify no crash.
+        result = await rt.ensure_token_ready_or_bootstrapped(TOKEN_A)
+
+        assert isinstance(result, bool)

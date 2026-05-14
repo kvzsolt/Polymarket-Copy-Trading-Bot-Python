@@ -491,6 +491,12 @@ class MarketDataConfig:
     rest_degraded_max_age_seconds: float = 2.0
     rest_degraded_max_spread_bps: int = 500
     rest_degraded_log_every_seconds: float = 30.0
+    enable_rest_bootstrap: bool = True
+    rest_bootstrap_max_age_ms: int = 500
+    rest_bootstrap_request_timeout_ms: int = 750
+    rest_bootstrap_total_budget_ms: int = 1000
+    rest_bootstrap_max_spread_bps: int = 300
+    rest_bootstrap_require_wss_connected: bool = True
 
 
 @dataclass(frozen=True)
@@ -693,6 +699,14 @@ def _validate_semantics(cfg: AppConfig, errors: list[str]) -> None:
         errors.append("MARKET_DATA_REST_DEGRADED_MAX_AGE_SECONDS must be > 0.")
     if md.rest_degraded_max_spread_bps < 0:
         errors.append("MARKET_DATA_REST_DEGRADED_MAX_SPREAD_BPS must be non-negative.")
+    if md.rest_bootstrap_max_age_ms <= 0:
+        errors.append("MARKET_DATA_REST_BOOTSTRAP_MAX_AGE_MS must be > 0.")
+    if md.rest_bootstrap_request_timeout_ms <= 0:
+        errors.append("MARKET_DATA_REST_BOOTSTRAP_REQUEST_TIMEOUT_MS must be > 0.")
+    if md.rest_bootstrap_total_budget_ms <= 0:
+        errors.append("MARKET_DATA_REST_BOOTSTRAP_TOTAL_BUDGET_MS must be > 0.")
+    if md.rest_bootstrap_max_spread_bps < 0:
+        errors.append("MARKET_DATA_REST_BOOTSTRAP_MAX_SPREAD_BPS must be non-negative.")
 
 
 def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
@@ -1005,6 +1019,12 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
             rest_degraded_max_age_seconds=p.float_("MARKET_DATA_REST_DEGRADED_MAX_AGE_SECONDS", 2.0),
             rest_degraded_max_spread_bps=p.int_("MARKET_DATA_REST_DEGRADED_MAX_SPREAD_BPS", 500),
             rest_degraded_log_every_seconds=p.float_("MARKET_DATA_REST_DEGRADED_LOG_EVERY_SECONDS", 30.0),
+            enable_rest_bootstrap=p.bool_("MARKET_DATA_ENABLE_REST_BOOTSTRAP", True),
+            rest_bootstrap_max_age_ms=p.int_("MARKET_DATA_REST_BOOTSTRAP_MAX_AGE_MS", 500),
+            rest_bootstrap_request_timeout_ms=p.int_("MARKET_DATA_REST_BOOTSTRAP_REQUEST_TIMEOUT_MS", 750),
+            rest_bootstrap_total_budget_ms=p.int_("MARKET_DATA_REST_BOOTSTRAP_TOTAL_BUDGET_MS", 1000),
+            rest_bootstrap_max_spread_bps=p.int_("MARKET_DATA_REST_BOOTSTRAP_MAX_SPREAD_BPS", 300),
+            rest_bootstrap_require_wss_connected=p.bool_("MARKET_DATA_REST_BOOTSTRAP_REQUIRE_WSS_CONNECTED", True),
         ),
         dry_run=p.bool_("PAPER_TRADE_ONLY", False),
         raw=dict(env),
