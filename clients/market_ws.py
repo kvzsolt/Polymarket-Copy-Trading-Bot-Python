@@ -300,7 +300,12 @@ class MarketWebSocket:
 
         tick = _to_decimal(event.get("tick_size") or event.get("minimum_tick_size"))
         if tick is not None:
-            self._on_tick_size_change(asset_id, tick)
+            if not self._call_cache_optional("update_tick_size_from_book", asset_id, tick):
+                self._on_tick_size_change(asset_id, tick)
+
+        ltp = _to_decimal(event.get("last_trade_price"))
+        if ltp is not None:
+            self._call_cache_optional("on_last_trade_price", asset_id, ltp, event)
 
         if not replaced:
             self._mark_asset_dirty(asset_id, "book_snapshot_not_replaced")
@@ -401,7 +406,7 @@ class MarketWebSocket:
 
     def _handle_tick_size_change(self, event: dict[str, Any]) -> None:
         asset_id = _asset_id(event)
-        tick = _to_decimal(event.get("tick_size") or event.get("new_tick_size"))
+        tick = _to_decimal(event.get("new_tick_size") or event.get("tick_size"))
         if not asset_id or tick is None:
             return
         self._on_tick_size_change(asset_id, tick)
@@ -429,10 +434,12 @@ class MarketWebSocket:
         if single and single not in assets_ids:
             assets_ids.append(single)
 
+        condition_id = str(event.get("market") or "").strip() or None
         for asset_id in assets_ids:
-            self._call_cache_optional("on_market_resolved", asset_id, event)
-            self._mark_asset_dirty(asset_id, "market_resolved")
-            self._mark_asset_stale(asset_id, "market_resolved")
+            if not self._call_cache_optional("mark_resolved", asset_id, condition_id):
+                self._call_cache_optional("on_market_resolved", asset_id, event)
+                self._mark_asset_dirty(asset_id, "market_resolved")
+                self._mark_asset_stale(asset_id, "market_resolved")
             self._notify_state_change(asset_id, "market_resolved")
 
         if not assets_ids:

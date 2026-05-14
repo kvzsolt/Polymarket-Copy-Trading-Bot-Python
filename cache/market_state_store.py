@@ -739,12 +739,29 @@ class MarketStateStore:
                 "bid_count": len(state.bids),
                 "ask_count": len(state.asks),
                 "tick_source": state.tick_source,
+                "tick_size": str(state.tick_size) if state.tick_size is not None else None,
                 "active": state.active,
                 "resolved": state.resolved,
                 "condition_id": state.condition_id,
                 "dirty": state.dirty,
                 "stale": state.stale,
             }
+
+    def update_tick_size_from_book(self, token_id: str, tick_size: Decimal) -> None:
+        """Update tick_size metadata from a WSS book snapshot without dirtying state.
+
+        Book events carry the current tick_size as informational metadata, not as a
+        change notification. Unlike on_tick_size_change, this does not dirty the state
+        or reset min_order_size — those side effects are appropriate only for an actual
+        tick_size_change event where the tick has changed.
+        """
+        with self._lock:
+            state = self._ensure_state_locked(token_id)
+            state.tick_size = Decimal(str(tick_size))
+            now = time.monotonic()
+            state.last_tick_monotonic = now
+            state.last_update_monotonic = now
+            state.tick_source = "wss"
 
     def on_market_ws_heartbeat(self, monotonic_ts: float) -> None:
         with self._lock:

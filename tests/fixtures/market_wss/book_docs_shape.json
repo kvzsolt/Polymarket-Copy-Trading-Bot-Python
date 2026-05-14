@@ -1,0 +1,10 @@
+{
+  "event_type": "book",
+  "asset_id": "81105658394977909179248100227432049093597910573611715290070739967741990478395",
+  "market": "0x860230aabe261b85f0689dda7a2ab1f70f30e5eff55026f3a5ce0fdf243d076f",
+  "bids": [{"price": "0.49", "size": "500"}],
+  "asks": [{"price": "0.51", "size": "500"}],
+  "tick_size": "0.01",
+  "timestamp": "1778759360028",
+  "hash": "a1b2c3d4e5f6a1b2c3d4e5f6"
+}
