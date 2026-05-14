@@ -459,6 +459,7 @@ class TestIsWssDown:
             config=MagicMock(),
         )
         rt._status.running = True
+        rt._wss_connected = True
         rt._last_wss_message_at = time.monotonic()
         assert rt.is_wss_down(threshold_seconds=15.0) is False
 
@@ -472,6 +473,7 @@ class TestIsWssDown:
             config=MagicMock(),
         )
         rt._status.running = True
+        rt._wss_connected = True
         rt._last_wss_message_at = time.monotonic() - 30.0
         assert rt.is_wss_down(threshold_seconds=15.0) is True
 
