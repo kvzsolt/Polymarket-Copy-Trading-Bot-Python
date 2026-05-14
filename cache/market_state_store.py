@@ -274,6 +274,15 @@ class MarketStateStore:
             state.book_source = source
             state.quote_source = source
 
+            if raw_event:
+                cid = (
+                    raw_event.get("condition_id")
+                    or raw_event.get("market")
+                    or raw_event.get("conditionId")
+                )
+                if cid:
+                    state.condition_id = str(cid).strip() or state.condition_id
+
             # A full book makes the book clean. Tick may still be missing, but
             # MarketDataService will reject that separately.
             state.stale = False
@@ -697,6 +706,45 @@ class MarketStateStore:
             state = self._ensure_state_locked(token_id)
             state.source = source
             state.last_update_monotonic = monotonic_ts or time.monotonic()
+
+    def mark_resolved(self, token_id: str, condition_id: str | None = None) -> None:
+        """Mark a token as resolved and non-executable.
+
+        Thin wrapper over on_market_resolved that also stores condition_id.
+        """
+        self.on_market_resolved(token_id)
+        if condition_id:
+            with self._lock:
+                state = self._ensure_state_locked(token_id)
+                state.condition_id = str(condition_id).strip() or state.condition_id
+
+    def get_debug_state(self, token_id: str) -> dict[str, Any]:
+        """Return a snapshot of token state for logging and error messages."""
+        with self._lock:
+            state = self._states.get(token_id)
+            if state is None:
+                return {"token_id": token_id, "exists": False}
+            now = time.monotonic()
+            return {
+                "token_id": token_id,
+                "exists": True,
+                "has_quote": state.best_bid is not None or state.best_ask is not None,
+                "quote_source": state.quote_source,
+                "quote_age": round(now - state.last_quote_monotonic, 2) if state.last_quote_monotonic else None,
+                "best_bid": str(state.best_bid) if state.best_bid is not None else None,
+                "best_ask": str(state.best_ask) if state.best_ask is not None else None,
+                "has_book": bool(state.bids or state.asks),
+                "book_source": state.book_source,
+                "book_age": round(now - state.last_book_monotonic, 2) if state.last_book_monotonic else None,
+                "bid_count": len(state.bids),
+                "ask_count": len(state.asks),
+                "tick_source": state.tick_source,
+                "active": state.active,
+                "resolved": state.resolved,
+                "condition_id": state.condition_id,
+                "dirty": state.dirty,
+                "stale": state.stale,
+            }
 
     def on_market_ws_heartbeat(self, monotonic_ts: float) -> None:
         with self._lock:
