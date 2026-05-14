@@ -1,0 +1,33 @@
+docs/known_limitations.md
+  s_d110d9ac49b19a::t_096a3dff7868b7 57
+tests/test_wallet_signature_detector.py
+  s_da67abad73cfe6::t_d08f7a5accf1b3 1,6-9,13-26,30-34,36-37,40-44,46-54,56-57,61-65,67-68,70-73,75-78,82-90,92-94,96-98,102-115,117-120,124-142,146-165
+docs/live_runbook.md
+  s_d110d9ac49b19a::t_31cf4b22640912 58,60,66-68,70-72
+services/wallet_signature_detector.py
+  ai_agent 1-114
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.8",
+  "base_commit_sha": "8773299193b44759b3df15edd91c6039445bd674",
+  "prompts": {},
+  "sessions": {
+    "s_d110d9ac49b19a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1f3139fa-ad94-45e0-a8cb-1633e5efaa58",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    },
+    "s_da67abad73cfe6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f8117930-4f8c-49e7-bf28-a8c53be871f7",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
