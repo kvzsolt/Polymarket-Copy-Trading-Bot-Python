@@ -290,7 +290,13 @@ class MarketWebSocket:
             return
 
         condition_id = str(event.get("market") or "").strip() or None
+        prior_book_source = self._get_book_source(asset_id)
         replaced = self._replace_book_snapshot(asset_id, bids, asks, event, condition_id=condition_id)
+        if replaced and prior_book_source == "rest_bootstrap":
+            logger.info(
+                "market_data_rest_bootstrap_wss_override | token_id=%s event_type=book",
+                asset_id,
+            )
 
         best_bid = max(bids) if bids else _to_decimal(event.get("best_bid") or event.get("bid"))
         best_ask = min(asks) if asks else _to_decimal(event.get("best_ask") or event.get("ask"))
@@ -352,7 +358,13 @@ class MarketWebSocket:
                 )
                 continue
 
+            prior_source = self._get_book_source(asset_id)
             self._apply_book_delta(asset_id, side, price, size)
+            if prior_source == "rest_bootstrap":
+                logger.info(
+                    "market_data_rest_bootstrap_wss_override | token_id=%s event_type=price_change",
+                    asset_id,
+                )
             touched.add(asset_id)
 
             best_bid = _to_decimal(change.get("best_bid"))
@@ -492,6 +504,13 @@ class MarketWebSocket:
             asset_id,
         )
         return False
+
+    def _get_book_source(self, asset_id: str) -> str | None:
+        """Return current book_source for *asset_id* from cache, or None."""
+        try:
+            return getattr(self._cache, "book_source_of", lambda _: None)(asset_id)
+        except Exception:
+            return None
 
     def _apply_book_delta(self, asset_id: str, side: str, price: Decimal, size: Decimal) -> None:
         if not self._call_cache_optional("apply_book_delta", asset_id, side, price, size):

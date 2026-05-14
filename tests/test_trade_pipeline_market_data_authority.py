@@ -276,6 +276,7 @@ async def test_trade_pipeline_subscribes_new_token_before_decision(tmp_path):
     exec_svc = AsyncMock()
     exec_svc.execute.return_value = _exec_result_filled()
     runtime = AsyncMock()
+    runtime.ensure_token_ready_or_bootstrapped = AsyncMock(return_value=True)
     decision_svc = _RecordingDecisionService()
 
     ctx = _make_context(
@@ -288,10 +289,10 @@ async def test_trade_pipeline_subscribes_new_token_before_decision(tmp_path):
 
     await execute_trades(ctx, "leader1", [_signal()], time.time())
 
-    # Token must be subscribed before any execute() call lands.
-    runtime.subscribe_tokens.assert_awaited()
-    subscribed = runtime.subscribe_tokens.await_args.args[0]
-    assert FAKE_TOKEN_ID in subscribed
+    # Pipeline calls ensure_token_ready_or_bootstrapped (which internally subscribes).
+    runtime.ensure_token_ready_or_bootstrapped.assert_awaited()
+    call_arg = runtime.ensure_token_ready_or_bootstrapped.await_args.args[0]
+    assert call_arg == FAKE_TOKEN_ID
     exec_svc.execute.assert_awaited_once()
 
 
@@ -300,6 +301,7 @@ async def test_trade_pipeline_skips_when_market_data_stale_after_subscribe(tmp_p
     db_path = _init_db(tmp_path)
     exec_svc = AsyncMock()
     runtime = AsyncMock()
+    runtime.ensure_token_ready_or_bootstrapped = AsyncMock(return_value=True)
 
     ctx = _make_context(
         db_path,
@@ -314,8 +316,8 @@ async def test_trade_pipeline_skips_when_market_data_stale_after_subscribe(tmp_p
     assert results[0].status == "skipped"
     assert results[0].reason == "market_data_stale"
     exec_svc.execute.assert_not_awaited()
-    # Subscribe was still attempted — the runtime gets a chance to converge.
-    runtime.subscribe_tokens.assert_awaited()
+    # Bootstrap was attempted before MDS resolution.
+    runtime.ensure_token_ready_or_bootstrapped.assert_awaited()
 
 
 @pytest.mark.asyncio
@@ -343,3 +345,116 @@ async def test_trade_pipeline_sizing_uses_bundle_tick_and_min_order_size(tmp_pat
     assert decision_svc.last_call is not None
     assert decision_svc.last_call["market_min_size"] == pytest.approx(7.5)
     assert decision_svc.last_call["tick_size"] == pytest.approx(0.001)
+
+
+# ---------------------------------------------------------------------------
+# PR10.3: ensure_token_ready_or_bootstrapped integration
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_pipeline_calls_ensure_token_ready_for_each_signal(tmp_path):
+    db_path = _init_db(tmp_path)
+    exec_svc = AsyncMock()
+    exec_svc.execute.return_value = _exec_result_filled()
+
+    runtime = AsyncMock()
+    runtime.ensure_token_ready_or_bootstrapped = AsyncMock(return_value=True)
+
+    ctx = _make_context(
+        db_path,
+        exec_svc=exec_svc,
+        mds=_FakeMDS(_make_bundle()),
+        runtime=runtime,
+    )
+
+    await execute_trades(ctx, "leader1", [_signal()], time.time())
+
+    runtime.ensure_token_ready_or_bootstrapped.assert_awaited_once()
+    call_arg = runtime.ensure_token_ready_or_bootstrapped.await_args.args[0]
+    assert call_arg == FAKE_TOKEN_ID
+
+
+@pytest.mark.asyncio
+async def test_pipeline_logs_prefetch_start_for_each_token(tmp_path, capsys):
+    db_path = _init_db(tmp_path)
+    exec_svc = AsyncMock()
+    exec_svc.execute.return_value = _exec_result_filled()
+
+    runtime = AsyncMock()
+    runtime.ensure_token_ready_or_bootstrapped = AsyncMock(return_value=True)
+
+    ctx = _make_context(
+        db_path,
+        exec_svc=exec_svc,
+        mds=_FakeMDS(_make_bundle()),
+        runtime=runtime,
+    )
+
+    await execute_trades(ctx, "leader1", [_signal()], time.time())
+
+    out = capsys.readouterr().out
+    assert "trade_pipeline_market_data_prefetch_start" in out
+
+
+@pytest.mark.asyncio
+async def test_pipeline_with_no_runtime_logs_prefetch_no_runtime(tmp_path, capsys):
+    db_path = _init_db(tmp_path)
+    exec_svc = AsyncMock()
+    exec_svc.execute.return_value = _exec_result_filled()
+
+    ctx = _make_context(
+        db_path,
+        exec_svc=exec_svc,
+        mds=_FakeMDS(_make_bundle()),
+        runtime=None,
+    )
+
+    await execute_trades(ctx, "leader1", [_signal()], time.time())
+
+    out = capsys.readouterr().out
+    assert "trade_pipeline_market_data_prefetch_no_runtime" in out
+
+
+@pytest.mark.asyncio
+async def test_pipeline_skips_token_when_bootstrap_returns_false(tmp_path):
+    db_path = _init_db(tmp_path)
+    exec_svc = AsyncMock()
+
+    runtime = AsyncMock()
+    runtime.ensure_token_ready_or_bootstrapped = AsyncMock(return_value=False)
+
+    ctx = _make_context(
+        db_path,
+        exec_svc=exec_svc,
+        mds=_FakeMDS(_make_bundle()),
+        runtime=runtime,
+    )
+
+    results = await execute_trades(ctx, "leader1", [_signal()], time.time())
+
+    assert len(results) == 1
+    assert results[0].status == "skipped"
+    exec_svc.execute.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_pipeline_executes_when_bootstrap_returns_true_and_mds_fresh(tmp_path):
+    db_path = _init_db(tmp_path)
+    exec_svc = AsyncMock()
+    exec_svc.execute.return_value = _exec_result_filled()
+
+    runtime = AsyncMock()
+    runtime.ensure_token_ready_or_bootstrapped = AsyncMock(return_value=True)
+
+    ctx = _make_context(
+        db_path,
+        exec_svc=exec_svc,
+        mds=_FakeMDS(_make_bundle()),
+        runtime=runtime,
+    )
+
+    results = await execute_trades(ctx, "leader1", [_signal()], time.time())
+
+    assert len(results) == 1
+    assert results[0].status != "skipped"
+    exec_svc.execute.assert_awaited_once()

@@ -215,6 +215,7 @@ def build_user_state(
     # gateway when cache is stale/missing. ExecutionService uses MDS so that
     # live execution never runs on stale data.
     market_store = MarketStateStore()
+    md_cfg = getattr(config, "market_data", None)
     market_data_svc = MarketDataService(
         market_store,
         clob_gateway,
@@ -222,6 +223,12 @@ def build_user_state(
             require_wss_fresh=True,
             allow_rest_fallback=False,
             allow_rest_snapshot_for_execution=False,
+            allow_rest_bootstrap_for_execution=bool(
+                getattr(md_cfg, "enable_rest_bootstrap", False)
+            ),
+            rest_bootstrap_max_age_ms=int(
+                getattr(md_cfg, "rest_bootstrap_max_age_ms", 500)
+            ),
         ),
     )
 
