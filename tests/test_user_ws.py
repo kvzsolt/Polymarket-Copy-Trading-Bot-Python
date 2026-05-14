@@ -37,7 +37,7 @@ def user_ws(cache: MarketStateStore) -> UserWebSocket:
 
 
 TOKEN_A = "0xaaa_token_yes"
-API_CREDS = {"api_key": "test_key", "api_secret": "test_secret"}
+API_CREDS = {"api_key": "test_key", "api_secret": "test_secret", "api_passphrase": "test_passphrase"}
 
 
 # ---------------------------------------------------------------------------
@@ -173,9 +173,10 @@ class TestAuthentication:
 
         mock_ws.send.assert_called_once()
         sent = json.loads(mock_ws.send.call_args[0][0])
-        assert sent["type"] == "auth"
-        assert sent["api_key"] == "test_key"
-        assert sent["api_secret"] == "test_secret"
+        assert sent["type"] == "user"
+        assert sent["auth"]["apiKey"] == "test_key"
+        assert sent["auth"]["secret"] == "test_secret"
+        assert sent["auth"]["passphrase"] == "test_passphrase"
 
     def test_auth_success_logged(
         self,

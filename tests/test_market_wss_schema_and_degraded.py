@@ -151,9 +151,8 @@ class TestPriceChangeField:
 
         event = json.dumps({
             "event_type": "price_change",
-            "asset_id": TOKEN_A,
             "price_changes": [
-                {"side": "BUY", "price": "0.52", "size": "50"},
+                {"asset_id": TOKEN_A, "side": "BUY", "price": "0.52", "size": "50"},
             ],
         })
         ws._handle_message(event)
@@ -174,9 +173,8 @@ class TestPriceChangeField:
 
         event = json.dumps({
             "event_type": "price_change",
-            "asset_id": TOKEN_A,
             "changes": [
-                {"side": "SELL", "price": "0.57", "size": "30"},
+                {"asset_id": TOKEN_A, "side": "SELL", "price": "0.57", "size": "30"},
             ],
         })
         ws._handle_message(event)
@@ -197,9 +195,8 @@ class TestPriceChangeField:
 
         event = json.dumps({
             "event_type": "price_change",
-            "asset_id": TOKEN_A,
             "price_changes": [
-                {"side": "BUY", "price": "0.50", "size": "0"},
+                {"asset_id": TOKEN_A, "side": "BUY", "price": "0.50", "size": "0"},
             ],
         })
         ws._handle_message(event)

@@ -109,8 +109,24 @@ class MarketDataService:
             return bundle
 
         if not active_policy.allow_rest_fallback:
+            debug = ""
+            get_debug = getattr(self._cache, "get_debug_state", None)
+            if callable(get_debug):
+                try:
+                    d = get_debug(token_id)
+                    debug = (
+                        f"; quote_source={d.get('quote_source')}"
+                        f" book_source={d.get('book_source')}"
+                        f" has_book={d.get('has_book')}"
+                        f" bid_count={d.get('bid_count')}"
+                        f" ask_count={d.get('ask_count')}"
+                        f" active={d.get('active')}"
+                        f" resolved={d.get('resolved')}"
+                    )
+                except Exception:
+                    pass
             raise StaleDataError(
-                f"market data not executable for {token_id}; REST fallback disabled"
+                f"market data not executable for {token_id}; REST fallback disabled{debug}"
             )
 
         # REST fallback is configured. Only enter degraded path when WSS is
