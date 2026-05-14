@@ -48,8 +48,10 @@ __all__ = [
     "LeaderConfig",
     "LoggingConfig",
     "NetworkConfig",
+    "LiveCanaryConfig",
     "OrderConfirmationConfig",
     "PositionDriftConfig",
+    "REQUIRED_CANARY_ACK",
     "PollingConfig",
     "NearOneExitConfig",
     "ReconciliationConfig",
@@ -384,6 +386,26 @@ class ReconciliationConfig:
 
 
 @dataclass(frozen=True)
+class LiveCanaryConfig:
+    """PR8 — first-run live trading risk cap.
+
+    When ``enabled`` is True and live mode is active, ExecutionCoordinator
+    caps per-submit notional and total submitted order count. ``ack_text``
+    must exactly equal ``"I_UNDERSTAND_LIVE_TRADING_RISK"`` when
+    ``require_operator_ack`` is True; otherwise the doctor refuses live.
+    """
+
+    enabled: bool
+    max_notional_usdc: float
+    max_orders: int
+    require_operator_ack: bool
+    ack_text: str
+
+
+REQUIRED_CANARY_ACK = "I_UNDERSTAND_LIVE_TRADING_RISK"
+
+
+@dataclass(frozen=True)
 class PositionDriftConfig:
     """PR7 — manual / off-bot position drift policy.
 
@@ -500,6 +522,7 @@ class AppConfig:
     reconciliation: ReconciliationConfig
     order_confirmation: OrderConfirmationConfig
     position_drift: PositionDriftConfig
+    live_canary: LiveCanaryConfig
     discovery: DiscoveryConfig
     features: FeatureFlagConfig
     # Global safety: when True the bot runs in paper-only / dry-run mode.
@@ -892,6 +915,14 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         auto_cancel_stale=p.bool_("RECONCILE_AUTO_CANCEL", False),
     )
 
+    live_canary = LiveCanaryConfig(
+        enabled=p.bool_("LIVE_CANARY_MODE", False),
+        max_notional_usdc=p.float_("LIVE_CANARY_MAX_NOTIONAL_USDC", "1.00"),
+        max_orders=p.int_("LIVE_CANARY_MAX_ORDERS", "1"),
+        require_operator_ack=p.bool_("LIVE_CANARY_REQUIRE_OPERATOR_ACK", True),
+        ack_text=p.string("LIVE_CANARY_ACK_TEXT", ""),
+    )
+
     position_drift = PositionDriftConfig(
         check_on_startup=p.bool_("POSITION_DRIFT_CHECK_ON_STARTUP", True),
         fail_closed=p.bool_("POSITION_DRIFT_FAIL_CLOSED", True),
@@ -976,6 +1007,7 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         reconciliation=reconciliation,
         order_confirmation=order_confirmation,
         position_drift=position_drift,
+        live_canary=live_canary,
         discovery=discovery,
         features=features,
         dry_run=p.bool_("PAPER_TRADE_ONLY", False),

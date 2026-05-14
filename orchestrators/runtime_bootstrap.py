@@ -244,6 +244,7 @@ def build_user_state(
         fills_repo=fills_repo,
         execution_service=execution_service,
         funder_address=runtime_user.wallet.funder_address,
+        config=config,
     )
 
     # PR7 — proactive position drift sweep.
@@ -313,6 +314,7 @@ def _build_execution_coordinator(
     fills_repo: FillsRepo,
     execution_service: ExecutionService,
     funder_address: str,
+    config: "AppConfig | None" = None,
 ):
     """Build the production ExecutionCoordinator for a user.
 
@@ -339,13 +341,19 @@ def _build_execution_coordinator(
         funder_address=funder_address,
         ttl_seconds=120,
     )
-    return ExecutionCoordinator(
+    coord = ExecutionCoordinator(
         reservation_service=reservation_service,
         orders_repo=order_repo,
         fills_repo=fills_repo,
         positions_repo=positions_repo,
         execution_service=execution_service,
     )
+    if config is not None:
+        try:
+            coord.live_canary = getattr(config, "live_canary", None)
+        except Exception:
+            pass
+    return coord
 
 
 def build_trading_context(

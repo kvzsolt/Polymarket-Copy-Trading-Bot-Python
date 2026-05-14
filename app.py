@@ -576,10 +576,33 @@ async def main():
         doctor_result = await run_doctor_checks("live")
         if doctor_result.get("status") == "blocked":
             print_error("Live mode doctor check failed. Refusing to start.")
+            blocked = [
+                c for c in doctor_result.get("checks", [])
+                if isinstance(c, dict) and c.get("status") == "blocked"
+            ]
+            for check in blocked:
+                print_error(
+                    f"  ❌ {check.get('name')}: {check.get('detail', '')}"
+                )
+                fix = check.get("fix")
+                if fix:
+                    print_error(f"     fix: {fix}")
             import json
 
             print(json.dumps(doctor_result, indent=2))
             return
+        if doctor_result.get("status") == "warning":
+            warnings = [
+                c for c in doctor_result.get("checks", [])
+                if isinstance(c, dict) and c.get("status") == "warning"
+            ]
+            for check in warnings:
+                logger.warning(
+                    "doctor_warning | name=%s detail=%s fix=%s",
+                    check.get("name"),
+                    check.get("detail"),
+                    check.get("fix"),
+                )
     elif application.config.network.enforce_geoblock:
         decision = await check_geoblock()
         if not decision.allowed:
