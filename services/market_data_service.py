@@ -19,6 +19,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from enum import Enum
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from cache.market_state_store import (
@@ -50,6 +51,7 @@ class MarketDataNotReady(MarketDataError):
 class MarketDataSource(str, Enum):
     WSS = "wss"
     REST_SNAPSHOT = "rest_snapshot"
+    REST_DEGRADED = "rest_degraded"
     UNKNOWN = "unknown"
 
 
@@ -87,10 +89,12 @@ class MarketDataService:
         gateway: ClobGateway,
         *,
         policy: MarketDataPolicy | None = None,
+        is_wss_down_fn: Callable[[], bool] | None = None,
     ) -> None:
         self._cache = cache
         self._gateway = gateway
         self._policy = policy or MarketDataPolicy()
+        self._is_wss_down_fn = is_wss_down_fn
 
     async def require_fresh_data(
         self,
@@ -109,6 +113,19 @@ class MarketDataService:
                 f"market data not executable for {token_id}; REST fallback disabled"
             )
 
+        # REST fallback is configured. Only enter degraded path when WSS is
+        # actually globally down — not merely stale for this one token.
+        wss_down = self._is_wss_down_fn() if self._is_wss_down_fn is not None else False
+        if not wss_down:
+            raise StaleDataError(
+                f"market data not executable for {token_id}; "
+                "REST fallback configured but market WSS is healthy"
+            )
+
+        logger.warning(
+            "market_data_rest_degraded_enabled | token_id=%s", token_id
+        )
+
         await self._rest_resync(token_id)
 
         bundle = self._bundle_from_cache(token_id, active_policy)
@@ -120,12 +137,15 @@ class MarketDataService:
         if (
             active_policy.require_wss_fresh
             and not active_policy.allow_rest_snapshot_for_execution
-            and bundle.source != MarketDataSource.WSS
+            and bundle.source not in (MarketDataSource.WSS, MarketDataSource.REST_DEGRADED)
         ):
             raise StaleDataError(
                 f"market data for {token_id} came from {bundle.source}; WSS fresh required"
             )
 
+        logger.warning(
+            "market_data_rest_degraded_used | token_id=%s source=%s", token_id, bundle.source
+        )
         return bundle
 
     async def require_fresh_quote(self, token_id: str) -> QuoteSnapshot:
@@ -200,6 +220,11 @@ class MarketDataService:
         # Aggregate bundle source for downstream observability.
         if quote_source == MarketDataSource.WSS and book_source == MarketDataSource.WSS:
             bundle_source = MarketDataSource.WSS
+        elif (
+            quote_source == MarketDataSource.REST_DEGRADED
+            or book_source == MarketDataSource.REST_DEGRADED
+        ):
+            bundle_source = MarketDataSource.REST_DEGRADED
         elif (
             quote_source == MarketDataSource.REST_SNAPSHOT
             or book_source == MarketDataSource.REST_SNAPSHOT
