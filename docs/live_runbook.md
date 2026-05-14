@@ -9,7 +9,6 @@ When to use: about to start the bot against real money on Polymarket. Read
 - All dependencies installed (`pip install -e .[dev]`).
 - A funded Polygon wallet and matching Polymarket account.
 - Latest `pytest` green on this branch.
-- `docs/live_canary_checklist.md` worked through end to end.
 
 ## Required environment variables
 
@@ -24,9 +23,6 @@ When to use: about to start the bot against real money on Polymarket. Read
 | `PAPER_TRADE_ONLY` | Must be `false` for live |
 | `CLOB_V2_READY` | Must be `true` to unlock the V2 SDK gate |
 | `KILL_SWITCH` | Must be `false` to trade |
-| `LIVE_CANARY_MODE` | `true` for the first run |
-| `LIVE_CANARY_MAX_NOTIONAL_USDC` | Cap per submit (e.g. `1.00`) |
-| `LIVE_CANARY_MAX_ORDERS` | Cap on total submitted orders (e.g. `1`) |
 | `POSITION_DRIFT_CHECK_ON_STARTUP` | `true` |
 | `ENABLE_METRICS_SERVER` | Recommended `true` for live observability |
 
@@ -59,31 +55,21 @@ with a `fix:` line. JSON dump follows for parsing.
 Expected `status: ok` or `status: warning`. Treat any `blocked` line as a hard
 stop.
 
-## Step 3 — Live canary start
+## Step 3 — Start the bot
 
-With canary env set, start the bot:
+When ready:
 
 ```bash
 python -m bot_cli.main run
 ```
 
-The coordinator will accept at most `LIVE_CANARY_MAX_ORDERS` submissions and
-caps each at `LIVE_CANARY_MAX_NOTIONAL_USDC`. After the cap fires you'll see:
+For a low-risk first live run, use conservative sizing config (small
+`EXECUTION_MAX_NOTIONAL_USDC`, `SIZING_MAX_POSITION_USDC`) and monitor the
+first order manually before widening limits.
 
-```
-LIVE CANARY LIMIT REACHED submitted=1/1 ...
-```
-
-Skip code on subsequent attempts: `live_canary_limit`.
-
-## Step 4 — Normal live start (after canary)
-
-When the canary order completes cleanly:
-
-1. Stop the bot (`Ctrl+C`).
-2. Verify the trade in your wallet history + `data/bot_state.db` `fills` table.
-3. Set `LIVE_CANARY_MODE=false`.
-4. Restart with `python -m bot_cli.main run`.
+1. Verify the first trade in your wallet history + `data/bot_state.db` `fills` table.
+2. Confirm `position_drift` JSONL shows `clean` for the scope.
+3. Widen limits and restart as confidence grows.
 
 ## Reading order_lifecycle logs
 

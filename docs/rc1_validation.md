@@ -116,7 +116,6 @@ RC1 validation
 ## Related docs
 
 - `live_runbook.md` — paper / live startup.
-- `live_canary_checklist.md` — first live order walkthrough.
 - `emergency_shutdown.md` — kill switch + cleanup.
 - `recovery_playbook.md` — restart after crash.
 - `known_limitations.md` — RC1 deferred items.

@@ -11,13 +11,6 @@ out of scope for RC1 — the market WSS runtime only fuels market data, not
 trade discovery. Expect a 1–5 second floor on copy latency depending on poll
 interval and venue HTTP latency.
 
-## Canary counter is per-process, not persisted
-
-`LIVE_CANARY_MAX_ORDERS` counts submitted orders against a counter on the
-ExecutionCoordinator instance. The counter resets when the process restarts.
-Operators must stop the bot between canary runs if they want a fresh count
-budget. RC1 does not yet persist the counter into SQLite.
-
 ## V2 `execute_intent` is the future path
 
 `services/execution/coordinator.py:ExecutionCoordinator.execute_intent` is
@@ -61,7 +54,7 @@ The coordinator never retries blindly. The reconciler is the single source
 of terminal settlement, and the strict probe path is the only auto-release
 permitted in RC1. Operators should expect some signals to result in
 `skip_code="market_data_stale"`, `book_no_liquidity`, `book_spread_wide`,
-`stale_market_data`, `live_canary_limit`, or `position_drift_unresolved`.
+`stale_market_data`, or `position_drift_unresolved`.
 
 ## Forbidden legacy symbols (informational)
 
