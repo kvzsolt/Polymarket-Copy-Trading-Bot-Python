@@ -51,7 +51,6 @@ __all__ = [
     "LiveCanaryConfig",
     "OrderConfirmationConfig",
     "PositionDriftConfig",
-    "REQUIRED_CANARY_ACK",
     "PollingConfig",
     "NearOneExitConfig",
     "ReconciliationConfig",
@@ -390,19 +389,12 @@ class LiveCanaryConfig:
     """PR8 — first-run live trading risk cap.
 
     When ``enabled`` is True and live mode is active, ExecutionCoordinator
-    caps per-submit notional and total submitted order count. ``ack_text``
-    must exactly equal ``"I_UNDERSTAND_LIVE_TRADING_RISK"`` when
-    ``require_operator_ack`` is True; otherwise the doctor refuses live.
+    caps per-submit notional and total submitted order count.
     """
 
     enabled: bool
     max_notional_usdc: float
     max_orders: int
-    require_operator_ack: bool
-    ack_text: str
-
-
-REQUIRED_CANARY_ACK = "I_UNDERSTAND_LIVE_TRADING_RISK"
 
 
 @dataclass(frozen=True)
@@ -919,8 +911,6 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         enabled=p.bool_("LIVE_CANARY_MODE", False),
         max_notional_usdc=p.float_("LIVE_CANARY_MAX_NOTIONAL_USDC", "1.00"),
         max_orders=p.int_("LIVE_CANARY_MAX_ORDERS", "1"),
-        require_operator_ack=p.bool_("LIVE_CANARY_REQUIRE_OPERATOR_ACK", True),
-        ack_text=p.string("LIVE_CANARY_ACK_TEXT", ""),
     )
 
     position_drift = PositionDriftConfig(
