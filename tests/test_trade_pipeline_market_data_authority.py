@@ -627,7 +627,9 @@ async def test_rest_primary_calls_require_execution_snapshot_once_per_pair(tmp_p
     assert token_id == FAKE_TOKEN_ID
     assert side == "BUY"
     assert condition_id == "cond-pr3"
-    # MUST NOT wait for WSS dynamic subscribe / bootstrap in REST primary mode.
+    # REST primary seeds from `/book`, then best-effort subscribes WSS for
+    # ongoing store updates. It must NOT wait for WSS bootstrap/readiness here.
+    runtime.subscribe_tokens.assert_awaited_once_with([FAKE_TOKEN_ID])
     runtime.ensure_token_ready_or_bootstrapped.assert_not_awaited()
 
 
@@ -684,7 +686,7 @@ async def test_rest_primary_decision_meta_carries_rest_snapshot_source(tmp_path,
 
 
 @pytest.mark.asyncio
-async def test_rest_primary_does_not_wait_for_wss_dynamic_subscribe(tmp_path):
+async def test_rest_primary_subscribes_wss_without_waiting_for_readiness(tmp_path):
     db_path = _init_db(tmp_path)
     exec_svc = AsyncMock()
     exec_svc.execute.return_value = _exec_result_filled()
@@ -703,5 +705,6 @@ async def test_rest_primary_does_not_wait_for_wss_dynamic_subscribe(tmp_path):
 
     await execute_trades(ctx, "leader1", [_signal()], time.time())
 
+    runtime.subscribe_tokens.assert_awaited_once_with([FAKE_TOKEN_ID])
     runtime.ensure_token_ready_or_bootstrapped.assert_not_awaited()
     exec_svc.execute.assert_awaited_once()
