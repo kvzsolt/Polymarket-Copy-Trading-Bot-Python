@@ -287,13 +287,20 @@ class TestBootstrap:
         assert store.is_dirty(TOKEN_A)
 
     @pytest.mark.asyncio
-    async def test_bootstrap_after_rest_token_stays_dirty_awaiting_wss(self) -> None:
-        """After REST bootstrap, token must remain dirty until WSS provides fresh data."""
+    async def test_bootstrap_after_rest_token_immediately_executable(self) -> None:
+        """PR10.4: REST bootstrap is the primary execution source.
+
+        A healthy REST bootstrap must leave the token clean and not gated on
+        a follow-up WSS event — execution proceeds against the REST book.
+        """
         store = MarketStateStore()
         rt = _make_runtime(store=store, gateway=_make_gateway())
         await rt.bootstrap_tokens([TOKEN_A])
 
-        assert store.is_dirty(TOKEN_A)
+        assert not store.is_dirty(TOKEN_A)
+        assert not store.is_stale(TOKEN_A)
+        assert store.book_source_of(TOKEN_A) == "rest_snapshot"
+        assert store.quote_source_of(TOKEN_A) == "rest_snapshot"
 
 
 # ---------------------------------------------------------------------------

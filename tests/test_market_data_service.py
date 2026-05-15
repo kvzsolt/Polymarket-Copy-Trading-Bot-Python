@@ -538,3 +538,377 @@ class TestRestBootstrapPolicy:
     def test_rest_bootstrap_enum_value(self) -> None:
         assert MarketDataSource.REST_BOOTSTRAP == "rest_bootstrap"
         assert MarketDataSource.REST_BOOTSTRAP.value == "rest_bootstrap"
+
+    @pytest.mark.asyncio
+    async def test_bootstrap_past_age_cap_still_executable_when_wss_live(self) -> None:
+        """REST bootstrap stays executable past its 500ms cap while WSS connection live.
+
+        Polymarket WSS only sends deltas on changes. Quiet markets get no WSS
+        updates for many seconds. After we bootstrap from REST and subscribe to
+        WSS, the bootstrap data IS the current book until WSS delivers a delta —
+        same liveness rule as for WSS-sourced data.
+        """
+        import time as _time
+
+        cache = _make_rest_bootstrap_cache()
+        # Backdate bootstrap so it's well past the 500ms cap.
+        with cache._lock:
+            state = cache._states[TOKEN]
+            old = _time.monotonic() - 3.0
+            state.last_book_monotonic = old
+            state.last_quote_monotonic = old
+        # WSS connection proven live via recent heartbeat.
+        cache.on_market_ws_heartbeat(_time.monotonic())
+
+        policy = MarketDataPolicy(
+            max_quote_age_seconds=2.0,
+            max_book_age_seconds=2.0,
+            max_tick_age_seconds=300.0,
+            require_wss_fresh=True,
+            allow_rest_fallback=False,
+            allow_rest_snapshot_for_execution=False,
+            allow_rest_bootstrap_for_execution=True,
+            rest_bootstrap_max_age_ms=500,
+            wss_connection_max_silence_seconds=20.0,
+        )
+        svc = _make_service(cache, policy=policy)
+
+        bundle = await svc.require_fresh_data(TOKEN)
+
+        assert bundle.source == MarketDataSource.REST_BOOTSTRAP
+
+    @pytest.mark.asyncio
+    async def test_bootstrap_past_age_cap_rejected_when_wss_dead(self) -> None:
+        """Without WSS liveness proof, the 500ms bootstrap cap still applies."""
+        import time as _time
+
+        cache = _make_rest_bootstrap_cache()
+        with cache._lock:
+            state = cache._states[TOKEN]
+            old = _time.monotonic() - 3.0
+            state.last_book_monotonic = old
+            state.last_quote_monotonic = old
+        # No heartbeat → WSS connection not proven live.
+
+        policy = MarketDataPolicy(
+            max_quote_age_seconds=10.0,
+            max_book_age_seconds=10.0,
+            max_tick_age_seconds=300.0,
+            require_wss_fresh=True,
+            allow_rest_bootstrap_for_execution=True,
+            rest_bootstrap_max_age_ms=500,
+            wss_connection_max_silence_seconds=20.0,
+        )
+        svc = _make_service(cache, policy=policy)
+
+        with pytest.raises(StaleDataError):
+            await svc.require_fresh_data(TOKEN)
+
+
+class TestWssConnectionLivenessFreshness:
+    """Option B: a quiet but connected WSS book stays executable.
+
+    A WSS-sourced quote/book past its own age window is still the current
+    state while the WSS connection is proven live (recent heartbeat/pong). A
+    dead connection fails both the age and liveness paths and is rejected.
+    """
+
+    def _aged_wss_cache(self, age_seconds: float) -> MarketStateStore:
+        cache = _make_fresh_cache()
+        state = cache.ensure_state(TOKEN)
+        old = time.monotonic() - age_seconds
+        state.last_quote_monotonic = old
+        state.last_book_monotonic = old
+        state.last_update_monotonic = old
+        return cache
+
+    def _tight_policy(self, *, silence: float = 20.0) -> MarketDataPolicy:
+        return MarketDataPolicy(
+            max_quote_age_seconds=2.0,
+            max_book_age_seconds=2.0,
+            max_tick_age_seconds=300.0,
+            require_wss_fresh=True,
+            allow_rest_fallback=False,
+            wss_connection_max_silence_seconds=silence,
+        )
+
+    @pytest.mark.asyncio
+    async def test_quiet_wss_book_executable_while_connection_live(self) -> None:
+        cache = self._aged_wss_cache(age_seconds=8.0)
+        cache.on_market_ws_heartbeat(time.monotonic())
+        svc = _make_service(cache, policy=self._tight_policy())
+
+        bundle = await svc.require_fresh_data(TOKEN)
+
+        assert bundle.source == MarketDataSource.WSS
+
+    @pytest.mark.asyncio
+    async def test_quiet_wss_book_executable_on_recent_pong(self) -> None:
+        cache = self._aged_wss_cache(age_seconds=8.0)
+        cache.on_market_ws_pong(time.monotonic())
+        svc = _make_service(cache, policy=self._tight_policy())
+
+        bundle = await svc.require_fresh_data(TOKEN)
+
+        assert bundle.source == MarketDataSource.WSS
+
+    @pytest.mark.asyncio
+    async def test_aged_wss_book_rejected_when_no_heartbeat_seen(self) -> None:
+        cache = self._aged_wss_cache(age_seconds=8.0)
+        svc = _make_service(cache, policy=self._tight_policy())
+
+        with pytest.raises(StaleDataError):
+            await svc.require_fresh_data(TOKEN)
+
+    @pytest.mark.asyncio
+    async def test_aged_wss_book_rejected_when_heartbeat_stale(self) -> None:
+        cache = self._aged_wss_cache(age_seconds=30.0)
+        cache.on_market_ws_heartbeat(time.monotonic() - 25.0)
+        svc = _make_service(cache, policy=self._tight_policy(silence=20.0))
+
+        with pytest.raises(StaleDataError):
+            await svc.require_fresh_data(TOKEN)
+
+    @pytest.mark.asyncio
+    async def test_fresh_wss_book_executable_without_heartbeat(self) -> None:
+        cache = _make_fresh_cache()
+        svc = _make_service(cache, policy=self._tight_policy())
+
+        bundle = await svc.require_fresh_data(TOKEN)
+
+        assert bundle.source == MarketDataSource.WSS
+
+    @pytest.mark.asyncio
+    async def test_liveness_path_disabled_when_silence_window_non_positive(self) -> None:
+        cache = self._aged_wss_cache(age_seconds=8.0)
+        cache.on_market_ws_heartbeat(time.monotonic())
+        svc = _make_service(cache, policy=self._tight_policy(silence=0.0))
+
+        with pytest.raises(StaleDataError):
+            await svc.require_fresh_data(TOKEN)
+
+    def test_store_connection_age_none_before_any_heartbeat(self) -> None:
+        cache = MarketStateStore()
+        assert cache.wss_connection_age_seconds() is None
+
+    def test_store_connection_age_tracks_most_recent_signal(self) -> None:
+        cache = MarketStateStore()
+        cache.on_market_ws_heartbeat(time.monotonic() - 12.0)
+        cache.on_market_ws_pong(time.monotonic() - 1.0)
+        age = cache.wss_connection_age_seconds()
+        assert age is not None and age < 3.0
+
+
+# ---------------------------------------------------------------------------
+# PR10.4 — require_execution_snapshot
+# ---------------------------------------------------------------------------
+
+
+import asyncio  # noqa: E402  (kept local to the PR10.4 section)
+from types import SimpleNamespace  # noqa: E402
+
+from services.market_data_service import MarketDataError  # noqa: E402
+
+
+def _rest_policy(**overrides) -> MarketDataPolicy:
+    return MarketDataPolicy(
+        primary_source="rest_snapshot",
+        require_wss_fresh=False,
+        allow_rest_snapshot_for_execution=True,
+        rest_snapshot_max_age_ms=overrides.pop("rest_snapshot_max_age_ms", 500),
+        rest_snapshot_request_timeout_ms=overrides.pop(
+            "rest_snapshot_request_timeout_ms", 750
+        ),
+        rest_snapshot_total_budget_ms=overrides.pop(
+            "rest_snapshot_total_budget_ms", 1000
+        ),
+        rest_snapshot_max_spread_bps=overrides.pop(
+            "rest_snapshot_max_spread_bps", 300
+        ),
+    )
+
+
+def _book(bids: dict[Decimal, Decimal], asks: dict[Decimal, Decimal]):
+    bid_levels = [SimpleNamespace(price=str(p), size=str(s)) for p, s in bids.items()]
+    ask_levels = [SimpleNamespace(price=str(p), size=str(s)) for p, s in asks.items()]
+    return SimpleNamespace(
+        bids=bid_levels,
+        asks=ask_levels,
+        tick_size="0.01",
+        min_order_size="5",
+        neg_risk=False,
+    )
+
+
+def _gateway_returning(book) -> MagicMock:
+    gw = MagicMock()
+
+    async def _get(_token):
+        return book
+
+    async def _info(_token):
+        return {"tick_size": "0.01", "min_order_size": "5", "neg_risk": False}
+
+    gw.get_orderbook = _get
+    gw.get_market_info = _info
+    return gw
+
+
+class TestRequireExecutionSnapshot:
+    @pytest.mark.asyncio
+    async def test_happy_path_returns_rest_snapshot_bundle(self) -> None:
+        store = MarketStateStore()
+        gw = _gateway_returning(
+            _book({Decimal("0.495"): Decimal("100")}, {Decimal("0.505"): Decimal("100")})
+        )
+        svc = MarketDataService(store, gw, policy=_rest_policy())
+
+        bundle = await svc.require_execution_snapshot(TOKEN, side="BUY")
+
+        assert bundle.source == MarketDataSource.REST_SNAPSHOT
+        assert bundle.quote.source == "rest_snapshot"
+        assert bundle.book.source == "rest_snapshot"
+        assert bundle.tick.source == "rest_snapshot"
+
+    @pytest.mark.asyncio
+    async def test_timeout_yields_market_data_timeout(self) -> None:
+        store = MarketStateStore()
+        gw = MagicMock()
+
+        async def _slow(_token):
+            raise asyncio.TimeoutError()
+
+        gw.get_orderbook = _slow
+        svc = MarketDataService(store, gw, policy=_rest_policy())
+
+        with pytest.raises(StaleDataError) as exc:
+            await svc.require_execution_snapshot(TOKEN, side="BUY")
+        assert exc.value.skip_code == "market_data_timeout"
+
+    @pytest.mark.asyncio
+    async def test_http_error_yields_market_data_stale(self) -> None:
+        store = MarketStateStore()
+        gw = MagicMock()
+
+        async def _boom(_token):
+            raise RuntimeError("502 bad gateway")
+
+        gw.get_orderbook = _boom
+        svc = MarketDataService(store, gw, policy=_rest_policy())
+
+        with pytest.raises(StaleDataError) as exc:
+            await svc.require_execution_snapshot(TOKEN, side="BUY")
+        assert exc.value.skip_code == "market_data_stale"
+
+    @pytest.mark.asyncio
+    async def test_buy_requires_ask_liquidity(self) -> None:
+        store = MarketStateStore()
+        gw = _gateway_returning(_book({Decimal("0.495"): Decimal("100")}, {}))
+        svc = MarketDataService(store, gw, policy=_rest_policy())
+
+        with pytest.raises(StaleDataError) as exc:
+            await svc.require_execution_snapshot(TOKEN, side="BUY")
+        assert exc.value.skip_code == "book_no_liquidity"
+
+    @pytest.mark.asyncio
+    async def test_sell_requires_bid_liquidity(self) -> None:
+        store = MarketStateStore()
+        gw = _gateway_returning(_book({}, {Decimal("0.505"): Decimal("100")}))
+        svc = MarketDataService(store, gw, policy=_rest_policy())
+
+        with pytest.raises(StaleDataError) as exc:
+            await svc.require_execution_snapshot(TOKEN, side="SELL")
+        assert exc.value.skip_code == "book_no_liquidity"
+
+    @pytest.mark.asyncio
+    async def test_empty_book_rejected(self) -> None:
+        store = MarketStateStore()
+        gw = _gateway_returning(_book({}, {}))
+        svc = MarketDataService(store, gw, policy=_rest_policy())
+
+        with pytest.raises(StaleDataError) as exc:
+            await svc.require_execution_snapshot(TOKEN, side="BUY")
+        assert exc.value.skip_code == "market_data_stale"
+
+    @pytest.mark.asyncio
+    async def test_wide_spread_rejected(self) -> None:
+        store = MarketStateStore()
+        gw = _gateway_returning(
+            _book(
+                {Decimal("0.10"): Decimal("100")},
+                {Decimal("0.90"): Decimal("100")},
+            )
+        )
+        svc = MarketDataService(
+            store, gw, policy=_rest_policy(rest_snapshot_max_spread_bps=300)
+        )
+
+        with pytest.raises(StaleDataError) as exc:
+            await svc.require_execution_snapshot(TOKEN, side="BUY")
+        assert exc.value.skip_code == "book_spread_wide"
+
+    @pytest.mark.asyncio
+    async def test_total_budget_exceeded(self) -> None:
+        store = MarketStateStore()
+
+        async def _slow_book(_token):
+            await asyncio.sleep(0.02)
+            return _book(
+                {Decimal("0.495"): Decimal("100")},
+                {Decimal("0.505"): Decimal("100")},
+            )
+
+        gw = MagicMock()
+        gw.get_orderbook = _slow_book
+        svc = MarketDataService(
+            store,
+            gw,
+            policy=_rest_policy(
+                rest_snapshot_request_timeout_ms=750,
+                rest_snapshot_total_budget_ms=1,
+            ),
+        )
+
+        with pytest.raises(StaleDataError) as exc:
+            await svc.require_execution_snapshot(TOKEN, side="BUY")
+        assert exc.value.skip_code == "market_data_timeout"
+
+    @pytest.mark.asyncio
+    async def test_resolved_token_raises_not_ready(self) -> None:
+        store = MarketStateStore()
+        store.on_market_resolved(TOKEN, {"asset_id": TOKEN})
+        gw = _gateway_returning(
+            _book({Decimal("0.495"): Decimal("100")}, {Decimal("0.505"): Decimal("100")})
+        )
+        svc = MarketDataService(store, gw, policy=_rest_policy())
+
+        with pytest.raises(MarketDataNotReady) as exc:
+            await svc.require_execution_snapshot(TOKEN, side="BUY")
+        assert exc.value.skip_code == "market_resolved"
+
+    @pytest.mark.asyncio
+    async def test_bundle_components_never_marked_wss(self) -> None:
+        store = MarketStateStore()
+        gw = _gateway_returning(
+            _book({Decimal("0.495"): Decimal("100")}, {Decimal("0.505"): Decimal("100")})
+        )
+        svc = MarketDataService(store, gw, policy=_rest_policy())
+
+        bundle = await svc.require_execution_snapshot(TOKEN, side="BUY")
+        assert bundle.quote.source != "wss"
+        assert bundle.book.source != "wss"
+        assert bundle.tick.source != "wss"
+
+    @pytest.mark.asyncio
+    async def test_require_fresh_data_routes_to_snapshot_when_side_provided(
+        self,
+    ) -> None:
+        """REST primary mode + ``side`` → ``require_execution_snapshot`` path."""
+        store = MarketStateStore()
+        gw = _gateway_returning(
+            _book({Decimal("0.495"): Decimal("100")}, {Decimal("0.505"): Decimal("100")})
+        )
+        svc = MarketDataService(store, gw, policy=_rest_policy())
+
+        bundle = await svc.require_fresh_data(TOKEN, side="BUY")
+        assert bundle.source == MarketDataSource.REST_SNAPSHOT

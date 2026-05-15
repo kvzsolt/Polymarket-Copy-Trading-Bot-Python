@@ -343,3 +343,39 @@ class TestImmutability:
         cfg = load_config(valid_env)
         with pytest.raises(FrozenInstanceError):
             cfg.database = None  # type: ignore[misc]
+
+
+class TestMarketDataFreshnessConfig:
+    """Market-data execution freshness + WSS liveness knobs are env-tunable."""
+
+    def test_defaults(self, valid_env: dict[str, str]) -> None:
+        md = load_config(valid_env).market_data
+        assert md.executable_quote_max_age_seconds == 2.0
+        assert md.executable_book_max_age_seconds == 2.0
+        assert md.executable_tick_max_age_seconds == 300.0
+        assert md.wss_connection_max_silence_seconds == 20.0
+        assert md.rest_bootstrap_max_spread_bps == 300
+
+    def test_overrides(self, valid_env: dict[str, str]) -> None:
+        env = dict(valid_env)
+        env.update(
+            {
+                "MARKET_DATA_EXECUTABLE_QUOTE_MAX_AGE_SECONDS": "5.5",
+                "MARKET_DATA_EXECUTABLE_BOOK_MAX_AGE_SECONDS": "6.0",
+                "MARKET_DATA_EXECUTABLE_TICK_MAX_AGE_SECONDS": "120.0",
+                "MARKET_DATA_WSS_CONNECTION_MAX_SILENCE_SECONDS": "45.0",
+                "MARKET_DATA_REST_BOOTSTRAP_MAX_SPREAD_BPS": "800",
+            }
+        )
+        md = load_config(env).market_data
+        assert md.executable_quote_max_age_seconds == 5.5
+        assert md.executable_book_max_age_seconds == 6.0
+        assert md.executable_tick_max_age_seconds == 120.0
+        assert md.wss_connection_max_silence_seconds == 45.0
+        assert md.rest_bootstrap_max_spread_bps == 800
+
+    def test_rejects_non_positive_silence_window(self, valid_env: dict[str, str]) -> None:
+        env = dict(valid_env)
+        env["MARKET_DATA_WSS_CONNECTION_MAX_SILENCE_SECONDS"] = "0"
+        with pytest.raises(EnvValidationError):
+            load_config(env)

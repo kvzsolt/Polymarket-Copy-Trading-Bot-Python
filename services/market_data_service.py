@@ -3,12 +3,16 @@
 Single production entry point for execution/sizing/risk to obtain executable
 market data for one Polymarket token.
 
-Design:
-  - Prefer WSS-fed MarketStateStore.
+Design (PR10.4):
+  - When ``policy.primary_source == "rest_snapshot"`` (default), copy-trade
+    execution calls :meth:`MarketDataService.require_execution_snapshot` which
+    fetches a fresh REST `/book` immediately before sizing, validates it
+    against millisecond budgets and book-quality gates, and writes it into
+    :class:`MarketStateStore` for downstream sizing/execution.
+  - When ``policy.primary_source == "wss"``, the legacy WSS-first path is
+    used: :meth:`require_fresh_data` validates the WSS-fed cache and falls
+    back to REST resync if explicitly allowed.
   - Fail closed when state is stale, dirty, missing, resolved, or incomplete.
-  - Optionally allow REST bootstrap/resync fallback.
-  - In live mode, prefer `require_wss_fresh=True` so REST cannot silently mask a
-    dead market WebSocket.
 
 Polymarket market data is keyed by token/asset id. Do not key this cache only by
 condition id because YES and NO tokens have separate books.
@@ -16,6 +20,8 @@ condition id because YES and NO tokens have separate books.
 
 from __future__ import annotations
 
+import asyncio
+import time
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from enum import Enum
@@ -37,7 +43,16 @@ logger = get_logger("MarketDataService")
 
 
 class MarketDataError(Exception):
-    """Base market-data error."""
+    """Base market-data error.
+
+    Carries an optional ``skip_code`` so callers (e.g. the trade pipeline)
+    can map a rejection back to a structured ``log_trade_skip`` reason
+    without re-deriving it from the message string.
+    """
+
+    def __init__(self, *args: Any, skip_code: str | None = None) -> None:
+        super().__init__(*args)
+        self.skip_code: str | None = skip_code
 
 
 class StaleDataError(MarketDataError):
@@ -67,6 +82,17 @@ class MarketDataPolicy:
     allow_rest_bootstrap_for_execution: bool = False
     rest_bootstrap_max_age_ms: int = 500
     require_book_depth: bool = True
+    # PR10.4: REST snapshot as primary execution source.
+    primary_source: str = "rest_snapshot"
+    rest_snapshot_max_age_ms: int = 500
+    rest_snapshot_request_timeout_ms: int = 750
+    rest_snapshot_total_budget_ms: int = 1000
+    rest_snapshot_max_spread_bps: int = 300
+    # A WSS-sourced quote/book past its own age window is still executable
+    # while the WSS connection is proven live within this silence window. A
+    # quiet book is not a stale book; a dead connection is. Set <= 0 to
+    # disable the liveness path and require strict per-snapshot age.
+    wss_connection_max_silence_seconds: float = 20.0
 
 
 @dataclass(frozen=True)
@@ -104,8 +130,23 @@ class MarketDataService:
         token_id: str,
         *,
         policy: MarketDataPolicy | None = None,
+        side: str | None = None,
+        condition_id: str | None = None,
     ) -> MarketDataBundle:
         active_policy = policy or self._policy
+
+        if active_policy.primary_source == "rest_snapshot":
+            # In REST primary mode, the trade pipeline is responsible for
+            # passing the trade side so the snapshot's side-specific
+            # liquidity check is meaningful. Callers without a side fall
+            # back to the legacy WSS-cache path below.
+            if side is not None:
+                return await self.require_execution_snapshot(
+                    token_id,
+                    side=side,
+                    condition_id=condition_id,
+                    policy=active_policy,
+                )
 
         bundle = self._bundle_from_cache(token_id, active_policy)
         if bundle is not None:
@@ -129,7 +170,8 @@ class MarketDataService:
                 except Exception:
                     pass
             raise StaleDataError(
-                f"market data not executable for {token_id}; REST fallback disabled{debug}"
+                f"market data not executable for {token_id}; REST fallback disabled{debug}",
+                skip_code="market_data_stale",
             )
 
         # REST fallback is configured. Only enter degraded path when WSS is
@@ -138,7 +180,8 @@ class MarketDataService:
         if not wss_down:
             raise StaleDataError(
                 f"market data not executable for {token_id}; "
-                "REST fallback configured but market WSS is healthy"
+                "REST fallback configured but market WSS is healthy",
+                skip_code="market_data_stale",
             )
 
         logger.warning(
@@ -150,7 +193,8 @@ class MarketDataService:
         bundle = self._bundle_from_cache(token_id, active_policy)
         if bundle is None:
             raise StaleDataError(
-                f"market data still not executable after REST resync for {token_id}"
+                f"market data still not executable after REST resync for {token_id}",
+                skip_code="market_data_stale",
             )
 
         if (
@@ -159,13 +203,300 @@ class MarketDataService:
             and bundle.source not in (MarketDataSource.WSS, MarketDataSource.REST_DEGRADED)
         ):
             raise StaleDataError(
-                f"market data for {token_id} came from {bundle.source}; WSS fresh required"
+                f"market data for {token_id} came from {bundle.source}; WSS fresh required",
+                skip_code="market_data_stale",
             )
 
         logger.warning(
             "market_data_rest_degraded_used | token_id=%s source=%s", token_id, bundle.source
         )
         return bundle
+
+    async def require_execution_snapshot(
+        self,
+        token_id: str,
+        *,
+        side: str,
+        condition_id: str | None = None,
+        policy: MarketDataPolicy | None = None,
+    ) -> MarketDataBundle:
+        """Fetch a fresh REST `/book` snapshot and gate it for execution.
+
+        Used as the primary execution market-data path when
+        ``policy.primary_source == "rest_snapshot"``. Everything is measured
+        on :func:`time.monotonic` so wall-clock drift cannot inflate the
+        freshness budget.
+
+        Raises:
+            MarketDataNotReady: token is resolved/inactive
+                (``skip_code="market_resolved"``).
+            StaleDataError: REST fetch timed out, errored, or returned a
+                book that fails the gate. ``skip_code`` is one of
+                ``market_data_stale``, ``market_data_timeout``,
+                ``book_no_liquidity``, ``book_spread_wide``.
+        """
+        active_policy = policy or self._policy
+        normalized_side = self._normalize_side(side)
+
+        if self._is_resolved(token_id):
+            raise MarketDataNotReady(
+                f"market/token resolved: {token_id}",
+                skip_code="market_resolved",
+            )
+
+        t_start = time.monotonic()
+        max_age_ms = int(active_policy.rest_snapshot_max_age_ms)
+        request_timeout_s = active_policy.rest_snapshot_request_timeout_ms / 1000.0
+        total_budget_ms = int(active_policy.rest_snapshot_total_budget_ms)
+        max_spread_bps = int(active_policy.rest_snapshot_max_spread_bps)
+
+        logger.info(
+            "market_data_rest_snapshot_start | token_id=%s cond=%s side=%s",
+            token_id,
+            condition_id,
+            normalized_side,
+        )
+
+        fetch_start = time.monotonic()
+        try:
+            book_payload = await asyncio.wait_for(
+                self._gateway.get_orderbook(token_id),
+                timeout=request_timeout_s,
+            )
+        except asyncio.TimeoutError as exc:
+            logger.warning(
+                "market_data_rest_snapshot_timeout | token_id=%s timeout_ms=%d",
+                token_id,
+                active_policy.rest_snapshot_request_timeout_ms,
+            )
+            raise StaleDataError(
+                f"REST snapshot timeout for {token_id}",
+                skip_code="market_data_timeout",
+            ) from exc
+        except Exception as exc:
+            logger.warning(
+                "market_data_rest_snapshot_rejected | token_id=%s reason=fetch_error error=%r",
+                token_id,
+                exc,
+            )
+            raise StaleDataError(
+                f"REST snapshot fetch failed for {token_id}: {exc!r}",
+                skip_code="market_data_stale",
+            ) from exc
+
+        request_ms = (time.monotonic() - fetch_start) * 1000.0
+        fetched_at = time.monotonic()
+
+        bids: dict[Decimal, Decimal] = {}
+        asks: dict[Decimal, Decimal] = {}
+        for level in getattr(book_payload, "bids", []) or []:
+            price = _to_decimal(getattr(level, "price", None))
+            size = _to_decimal(getattr(level, "size", None))
+            if price is not None and size is not None and size > 0:
+                bids[price] = size
+        for level in getattr(book_payload, "asks", []) or []:
+            price = _to_decimal(getattr(level, "price", None))
+            size = _to_decimal(getattr(level, "size", None))
+            if price is not None and size is not None and size > 0:
+                asks[price] = size
+
+        if not bids and not asks:
+            logger.warning(
+                "market_data_rest_snapshot_rejected | token_id=%s reason=empty_book",
+                token_id,
+            )
+            raise StaleDataError(
+                f"REST snapshot empty book for {token_id}",
+                skip_code="market_data_stale",
+            )
+
+        if normalized_side == "BUY" and not asks:
+            logger.warning(
+                "market_data_rest_snapshot_rejected | token_id=%s reason=no_ask_liquidity",
+                token_id,
+            )
+            raise StaleDataError(
+                f"REST snapshot has no ask liquidity for BUY on {token_id}",
+                skip_code="book_no_liquidity",
+            )
+        if normalized_side == "SELL" and not bids:
+            logger.warning(
+                "market_data_rest_snapshot_rejected | token_id=%s reason=no_bid_liquidity",
+                token_id,
+            )
+            raise StaleDataError(
+                f"REST snapshot has no bid liquidity for SELL on {token_id}",
+                skip_code="book_no_liquidity",
+            )
+
+        best_bid = max(bids) if bids else None
+        best_ask = min(asks) if asks else None
+        spread_bps: int | None = None
+        if best_bid is not None and best_ask is not None:
+            if best_bid >= best_ask or best_ask <= 0:
+                logger.warning(
+                    "market_data_rest_snapshot_rejected | token_id=%s reason=invalid_spread"
+                    " best_bid=%s best_ask=%s",
+                    token_id,
+                    best_bid,
+                    best_ask,
+                )
+                raise StaleDataError(
+                    f"REST snapshot invalid spread for {token_id}",
+                    skip_code="market_data_stale",
+                )
+            spread_bps = int(((best_ask - best_bid) / best_ask) * 10000)
+            if spread_bps > max_spread_bps:
+                logger.warning(
+                    "market_data_rest_snapshot_rejected | token_id=%s reason=spread_too_wide"
+                    " spread_bps=%d max_bps=%d",
+                    token_id,
+                    spread_bps,
+                    max_spread_bps,
+                )
+                raise StaleDataError(
+                    f"REST snapshot spread {spread_bps}bps exceeds {max_spread_bps}bps for {token_id}",
+                    skip_code="book_spread_wide",
+                )
+
+        data_age_ms = (time.monotonic() - fetched_at) * 1000.0
+        if data_age_ms > max_age_ms:
+            logger.warning(
+                "market_data_rest_snapshot_rejected | token_id=%s reason=stale"
+                " age_ms=%.1f max_ms=%d",
+                token_id,
+                data_age_ms,
+                max_age_ms,
+            )
+            raise StaleDataError(
+                f"REST snapshot age {data_age_ms:.1f}ms exceeds {max_age_ms}ms for {token_id}",
+                skip_code="market_data_stale",
+            )
+
+        total_elapsed_ms = (time.monotonic() - t_start) * 1000.0
+        if total_elapsed_ms > total_budget_ms:
+            logger.warning(
+                "market_data_rest_snapshot_timeout | token_id=%s reason=total_budget_exceeded"
+                " elapsed_ms=%.1f budget_ms=%d",
+                token_id,
+                total_elapsed_ms,
+                total_budget_ms,
+            )
+            raise StaleDataError(
+                f"REST snapshot total budget exceeded for {token_id}",
+                skip_code="market_data_timeout",
+            )
+
+        # Tick metadata: prefer book payload, fall back to existing cache, then
+        # consult the gateway only when no tick is known and there is still
+        # budget left.
+        tick_size = _to_decimal(
+            getattr(book_payload, "tick_size", None)
+            or getattr(book_payload, "minimum_tick_size", None)
+        )
+        min_order_size = _to_decimal(
+            getattr(book_payload, "min_order_size", None)
+            or getattr(book_payload, "minimum_order_size", None)
+            or getattr(book_payload, "order_min_size", None)
+        )
+        neg_risk = bool(getattr(book_payload, "neg_risk", False))
+
+        cached_tick = self._cache.get_tick(token_id)
+        if (tick_size is None or min_order_size is None) and cached_tick is None:
+            remaining_ms = total_budget_ms - (time.monotonic() - t_start) * 1000.0
+            if remaining_ms > 10:
+                try:
+                    info = await asyncio.wait_for(
+                        self._gateway.get_market_info(token_id),
+                        timeout=min(
+                            remaining_ms / 1000.0,
+                            request_timeout_s,
+                        ),
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "market_data_rest_snapshot_rejected | token_id=%s reason=meta_fetch_error"
+                        " error=%r",
+                        token_id,
+                        exc,
+                    )
+                    raise StaleDataError(
+                        f"REST snapshot meta fetch failed for {token_id}: {exc!r}",
+                        skip_code="market_data_stale",
+                    ) from exc
+                tick_size = tick_size or _to_decimal(
+                    info.get("tick_size") or info.get("minimum_tick_size")
+                )
+                min_order_size = min_order_size or _to_decimal(
+                    info.get("min_order_size")
+                    or info.get("minimum_order_size")
+                    or info.get("order_min_size")
+                )
+                neg_risk = neg_risk or bool(info.get("neg_risk", False))
+
+        self._cache.store_rest_snapshot(
+            token_id,
+            condition_id=condition_id,
+            bids=bids,
+            asks=asks,
+            tick_size=tick_size,
+            min_order_size=min_order_size,
+            neg_risk=neg_risk,
+            fetched_at_monotonic=fetched_at,
+        )
+
+        quote = self._cache.get_quote(token_id)
+        book = self._cache.get_book(token_id)
+        tick = self._cache.get_tick(token_id)
+        if quote is None or book is None or tick is None:
+            logger.warning(
+                "market_data_rest_snapshot_rejected | token_id=%s reason=missing_components"
+                " has_quote=%s has_book=%s has_tick=%s",
+                token_id,
+                quote is not None,
+                book is not None,
+                tick is not None,
+            )
+            raise StaleDataError(
+                f"REST snapshot missing components for {token_id}",
+                skip_code="market_data_stale",
+            )
+
+        logger.info(
+            "market_data_rest_snapshot_used | token_id=%s cond=%s side=%s"
+            " request_ms=%.1f data_age_ms=%.1f total_elapsed_ms=%.1f"
+            " bid_count=%d ask_count=%d best_bid=%s best_ask=%s spread_bps=%s"
+            " source=rest_snapshot",
+            token_id,
+            condition_id,
+            normalized_side,
+            request_ms,
+            data_age_ms,
+            total_elapsed_ms,
+            len(bids),
+            len(asks),
+            best_bid,
+            best_ask,
+            spread_bps,
+        )
+
+        return MarketDataBundle(
+            token_id=token_id,
+            quote=quote,
+            book=book,
+            tick=tick,
+            source=MarketDataSource.REST_SNAPSHOT,
+            reason="rest_snapshot",
+        )
+
+    @staticmethod
+    def _normalize_side(side: str | None) -> str:
+        value = str(side or "").upper()
+        if value in {"BUY", "BID"}:
+            return "BUY"
+        if value in {"SELL", "ASK"}:
+            return "SELL"
+        return "BUY"
 
     async def require_fresh_quote(self, token_id: str) -> QuoteSnapshot:
         return (await self.require_fresh_data(token_id)).quote
@@ -200,7 +531,10 @@ class MarketDataService:
         policy: MarketDataPolicy,
     ) -> MarketDataBundle | None:
         if self._is_resolved(token_id):
-            raise MarketDataNotReady(f"market/token resolved: {token_id}")
+            raise MarketDataNotReady(
+                f"market/token resolved: {token_id}",
+                skip_code="market_resolved",
+            )
 
         if self._is_dirty(token_id):
             return None
@@ -241,9 +575,17 @@ class MarketDataService:
 
                 quote_age_ms = (_time.monotonic() - quote.monotonic_ts) * 1000
                 book_age_ms = (_time.monotonic() - book.monotonic_ts) * 1000
-                if (
+                within_cap = (
                     quote_age_ms <= policy.rest_bootstrap_max_age_ms
                     and book_age_ms <= policy.rest_bootstrap_max_age_ms
+                )
+                # REST bootstrap is the current state of the book until WSS
+                # sends a delta. While the WSS connection is proven live, a
+                # quiet stream is not a stale book — same rule as WSS-sourced
+                # silence path. Without WSS liveness, fall back to the strict
+                # bootstrap age cap.
+                if within_cap or self._wss_connection_live(
+                    policy.wss_connection_max_silence_seconds
                 ):
                     rest_bootstrap_ok = True
 
@@ -297,7 +639,7 @@ class MarketDataService:
             return False
         if best_bid >= best_ask:
             return False
-        return self._fresh_enough(quote, policy.max_quote_age_seconds)
+        return self._snapshot_fresh(quote, policy.max_quote_age_seconds, policy)
 
     def _book_executable(self, book: BookSnapshot, policy: MarketDataPolicy) -> bool:
         bids = getattr(book, "bids", None)
@@ -310,7 +652,43 @@ class MarketDataService:
         if best_bid is not None and best_ask is not None and best_bid >= best_ask:
             return False
 
-        return self._fresh_enough(book, policy.max_book_age_seconds)
+        return self._snapshot_fresh(book, policy.max_book_age_seconds, policy)
+
+    def _snapshot_fresh(
+        self,
+        snapshot: Any,
+        max_age_seconds: float,
+        policy: MarketDataPolicy,
+    ) -> bool:
+        """Freshness for a quote/book snapshot.
+
+        Fast path: the snapshot's own timestamp is within ``max_age_seconds``.
+        Liveness path: a WSS-sourced snapshot past that window is still the
+        current state while the WSS connection is proven live. Illiquid markets
+        legitimately go many seconds without a delta — silence on a healthy
+        stream is not staleness. A dead stream fails both paths and is rejected.
+        """
+        if self._fresh_enough(snapshot, max_age_seconds):
+            return True
+
+        if policy.wss_connection_max_silence_seconds <= 0:
+            return False
+        snap_src = self._coerce_source(getattr(snapshot, "source", None))
+        if snap_src not in (MarketDataSource.WSS, MarketDataSource.REST_BOOTSTRAP):
+            return False
+        return self._wss_connection_live(policy.wss_connection_max_silence_seconds)
+
+    def _wss_connection_live(self, max_silence_seconds: float) -> bool:
+        fn = getattr(self._cache, "wss_connection_age_seconds", None)
+        if not callable(fn):
+            return False
+        try:
+            age = fn()
+        except Exception:
+            return False
+        if age is None:
+            return False
+        return age <= max_silence_seconds
 
     def _tick_executable(self, tick: TickSnapshot, policy: MarketDataPolicy) -> bool:
         tick_size = getattr(tick, "tick_size", None)
@@ -401,14 +779,21 @@ class MarketDataService:
 
         if not bids or not asks:
             self._mark_dirty(token_id, "rest_empty_book")
-            raise StaleDataError(f"REST returned empty/incomplete book for {token_id}")
+            raise StaleDataError(
+                f"REST returned empty/incomplete book for {token_id}",
+                skip_code="market_data_stale",
+            )
 
         if not self._replace_book_snapshot(token_id, bids, asks):
-            self._cache.set_book(token_id, bids=bids, asks=asks)
+            self._cache.set_book(
+                token_id, bids=bids, asks=asks, source="rest_snapshot"
+            )
 
         best_bid = max(bids)
         best_ask = min(asks)
-        self._cache.set_quote(token_id, best_bid=best_bid, best_ask=best_ask)
+        self._cache.set_quote(
+            token_id, best_bid=best_bid, best_ask=best_ask, source="rest_snapshot"
+        )
 
         info = await self._gateway.get_market_info(token_id)
         tick_size = _to_decimal(info.get("tick_size") or info.get("minimum_tick_size"))
@@ -421,17 +806,24 @@ class MarketDataService:
 
         if tick_size is None or tick_size <= 0:
             self._mark_dirty(token_id, "rest_tick_missing")
-            raise StaleDataError(f"REST missing valid tick_size for {token_id}")
+            raise StaleDataError(
+                f"REST missing valid tick_size for {token_id}",
+                skip_code="market_data_stale",
+            )
 
         if min_order_size is None or min_order_size <= 0:
             self._mark_dirty(token_id, "rest_min_order_missing")
-            raise StaleDataError(f"REST missing valid min_order_size for {token_id}")
+            raise StaleDataError(
+                f"REST missing valid min_order_size for {token_id}",
+                skip_code="market_data_stale",
+            )
 
         self._cache.set_tick(
             token_id,
             tick_size=tick_size,
             min_order_size=min_order_size,
             neg_risk=neg_risk,
+            source="rest_snapshot",
         )
         self._mark_fresh(token_id, MarketDataSource.REST_SNAPSHOT)
 
