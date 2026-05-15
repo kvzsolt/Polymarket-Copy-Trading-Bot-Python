@@ -306,6 +306,9 @@ class ClobV2Gateway:
             best_ask=best_ask,
             spread_bps=spread_bps,
             timestamp=datetime.now(timezone.utc),
+            tick_size=_safe_decimal(getattr(raw_book, "tick_size", None)),
+            min_order_size=_safe_decimal(getattr(raw_book, "min_order_size", None)),
+            neg_risk=bool(getattr(raw_book, "neg_risk", False)),
         )
 
     # --- Order submission ------------------------------------------------------

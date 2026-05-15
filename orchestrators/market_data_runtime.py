@@ -292,15 +292,14 @@ class MarketDataRuntime:
             )
             return False
         spread_bps = int(((best_ask - best_bid) / best_ask) * 10000)
-        if spread_bps > cfg["max_spread_bps"]:
-            logger.warning(
-                "market_data_rest_bootstrap_rejected | token_id=%s reason=spread_too_wide"
-                " spread_bps=%d max_bps=%d",
+        if cfg["max_spread_bps"] > 0 and spread_bps > cfg["max_spread_bps"]:
+            logger.info(
+                "market_data_rest_bootstrap_wide_spread_allowed | token_id=%s"
+                " spread_bps=%d configured_max_bps=%d",
                 token_id,
                 spread_bps,
                 cfg["max_spread_bps"],
             )
-            return False
 
         self.market_store.replace_book_snapshot(
             token_id,

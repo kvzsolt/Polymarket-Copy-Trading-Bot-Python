@@ -346,17 +346,13 @@ class MarketDataService:
                     skip_code="market_data_stale",
                 )
             spread_bps = int(((best_ask - best_bid) / best_ask) * 10000)
-            if spread_bps > max_spread_bps:
-                logger.warning(
-                    "market_data_rest_snapshot_rejected | token_id=%s reason=spread_too_wide"
-                    " spread_bps=%d max_bps=%d",
+            if max_spread_bps > 0 and spread_bps > max_spread_bps:
+                logger.info(
+                    "market_data_rest_snapshot_wide_spread_allowed | token_id=%s"
+                    " spread_bps=%d configured_max_bps=%d",
                     token_id,
                     spread_bps,
                     max_spread_bps,
-                )
-                raise StaleDataError(
-                    f"REST snapshot spread {spread_bps}bps exceeds {max_spread_bps}bps for {token_id}",
-                    skip_code="book_spread_wide",
                 )
 
         data_age_ms = (time.monotonic() - fetched_at) * 1000.0

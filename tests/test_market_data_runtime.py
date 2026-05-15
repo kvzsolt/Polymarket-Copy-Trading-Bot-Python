@@ -735,7 +735,7 @@ class TestEnsureTokenReadyOrBootstrapped:
         assert result is False
 
     @pytest.mark.asyncio
-    async def test_bootstrap_rejected_when_spread_too_wide(self) -> None:
+    async def test_bootstrap_allows_wide_spread(self) -> None:
         from integrations.polymarket.models import OrderBook, OrderBookLevel
 
         wide_book = OrderBook(
@@ -753,7 +753,7 @@ class TestEnsureTokenReadyOrBootstrapped:
 
         result = await rt.ensure_token_ready_or_bootstrapped(TOKEN_A)
 
-        assert result is False
+        assert result is True
 
     @pytest.mark.asyncio
     async def test_bootstrap_rejected_when_wss_required_and_disconnected(self) -> None:
