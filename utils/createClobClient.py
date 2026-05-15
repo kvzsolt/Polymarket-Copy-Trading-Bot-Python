@@ -125,11 +125,22 @@ def _top_of_book_from_levels(levels: list[Any], *, side: str) -> Decimal | None:
 
 class _RawBook:
     """Minimal book object returned by the HTTP fallback so gateway attribute access works."""
-    __slots__ = ("bids", "asks")
+    __slots__ = ("bids", "asks", "tick_size", "min_order_size", "neg_risk")
 
-    def __init__(self, bids: list, asks: list) -> None:
+    def __init__(
+        self,
+        bids: list,
+        asks: list,
+        *,
+        tick_size: object | None = None,
+        min_order_size: object | None = None,
+        neg_risk: object | None = None,
+    ) -> None:
         self.bids = bids
         self.asks = asks
+        self.tick_size = tick_size
+        self.min_order_size = min_order_size
+        self.neg_risk = bool(neg_risk) if neg_risk is not None else False
 
 
 class ClobClientWrapper:
@@ -176,7 +187,17 @@ class ClobClientWrapper:
                 bids = data.get("bids") or []
                 asks = data.get("asks") or []
                 log_api_response(logger, method="GET", url=url, status=resp.status, data=data)
-                return _RawBook(bids=bids, asks=asks)
+                return _RawBook(
+                    bids=bids,
+                    asks=asks,
+                    tick_size=data.get("tick_size") or data.get("minimum_tick_size"),
+                    min_order_size=(
+                        data.get("min_order_size")
+                        or data.get("minimum_order_size")
+                        or data.get("order_min_size")
+                    ),
+                    neg_risk=data.get("neg_risk", False),
+                )
         except Exception as exc:
             logger.warning("HTTP fallback (book) failed for %s: %s", asset, redact_error_detail(exc))
             return None

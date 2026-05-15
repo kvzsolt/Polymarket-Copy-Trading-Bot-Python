@@ -76,7 +76,13 @@ class VenueCancelResult:
 
 @dataclass(frozen=True)
 class OrderBook:
-    """Snapshotted order book for a token."""
+    """Snapshotted order book for a token.
+
+    CLOB `/book` responses also carry execution metadata (`tick_size`,
+    `min_order_size`, `neg_risk`). Keep it attached to the canonical book so
+    REST-snapshot execution does not need a second metadata round-trip and,
+    more importantly, does not drop tick metadata on the floor.
+    """
 
     token_id: str
     bids: list[OrderBookLevel] = field(default_factory=list)
@@ -85,6 +91,9 @@ class OrderBook:
     best_ask: Decimal | None = None
     spread_bps: int | None = None
     timestamp: datetime | None = None
+    tick_size: Decimal | None = None
+    min_order_size: Decimal | None = None
+    neg_risk: bool = False
 
 
 @dataclass(frozen=True)

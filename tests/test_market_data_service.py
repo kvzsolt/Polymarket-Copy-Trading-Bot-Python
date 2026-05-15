@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import time
 from decimal import Decimal
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -771,6 +771,30 @@ class TestRequireExecutionSnapshot:
         assert bundle.tick.source == "rest_snapshot"
 
     @pytest.mark.asyncio
+    async def test_rest_snapshot_uses_canonical_book_tick_metadata(self) -> None:
+        """Gateway OrderBook metadata should be enough; no extra meta fetch needed."""
+        from integrations.polymarket.models import OrderBook, OrderBookLevel
+
+        store = MarketStateStore()
+        gw = MagicMock()
+        gw.get_orderbook = AsyncMock(return_value=OrderBook(
+            token_id=TOKEN,
+            bids=[OrderBookLevel(price=Decimal("0.495"), size=Decimal("100"))],
+            asks=[OrderBookLevel(price=Decimal("0.505"), size=Decimal("100"))],
+            tick_size=Decimal("0.001"),
+            min_order_size=Decimal("5"),
+            neg_risk=False,
+        ))
+        gw.get_market_info = AsyncMock(side_effect=AssertionError("metadata fetch should not be needed"))
+        svc = MarketDataService(store, gw, policy=_rest_policy())
+
+        bundle = await svc.require_execution_snapshot(TOKEN, side="BUY")
+
+        assert bundle.tick.tick_size == Decimal("0.001")
+        assert bundle.tick.min_order_size == Decimal("5")
+        gw.get_market_info.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_timeout_yields_market_data_timeout(self) -> None:
         store = MarketStateStore()
         gw = MagicMock()
@@ -831,7 +855,7 @@ class TestRequireExecutionSnapshot:
         assert exc.value.skip_code == "market_data_stale"
 
     @pytest.mark.asyncio
-    async def test_wide_spread_rejected(self) -> None:
+    async def test_wide_spread_is_allowed_for_rest_snapshot(self) -> None:
         store = MarketStateStore()
         gw = _gateway_returning(
             _book(
@@ -843,9 +867,11 @@ class TestRequireExecutionSnapshot:
             store, gw, policy=_rest_policy(rest_snapshot_max_spread_bps=300)
         )
 
-        with pytest.raises(StaleDataError) as exc:
-            await svc.require_execution_snapshot(TOKEN, side="BUY")
-        assert exc.value.skip_code == "book_spread_wide"
+        bundle = await svc.require_execution_snapshot(TOKEN, side="BUY")
+
+        assert bundle.source == MarketDataSource.REST_SNAPSHOT
+        assert bundle.book.best_bid == Decimal("0.10")
+        assert bundle.book.best_ask == Decimal("0.90")
 
     @pytest.mark.asyncio
     async def test_total_budget_exceeded(self) -> None:
