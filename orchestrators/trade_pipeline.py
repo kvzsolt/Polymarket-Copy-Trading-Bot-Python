@@ -322,9 +322,12 @@ async def _prefetch_market_data_for_signals(
 
     In REST primary mode (``MARKET_DATA_PRIMARY_SOURCE=rest_snapshot``) this
     calls :meth:`MarketDataService.require_execution_snapshot` once per unique
-    ``(token_id, side)`` pair, immediately before sizing. No WSS subscribe wait,
-    no retry loop — one fresh REST `/book` per pair, gated against the
-    millisecond budgets configured on :class:`MarketDataPolicy`.
+    ``(token_id, side)`` pair, immediately before sizing. After the REST
+    snapshot has seeded ``MarketStateStore``, the token is best-effort
+    subscribed to market WSS so later book/quote updates can overwrite the
+    REST source in the same store. No WSS readiness wait, no retry loop — one
+    fresh REST `/book` per pair, gated against the millisecond budgets
+    configured on :class:`MarketDataPolicy`.
 
     In WSS primary mode the legacy path is used: subscribe → wait for
     ``ensure_token_ready_or_bootstrapped`` → ``require_fresh_data`` retry loop.
@@ -357,7 +360,13 @@ async def _prefetch_market_data_rest_snapshot(
     context: TradingContext,
     normalized: list,
 ) -> tuple[dict[str, Any], set[str], dict[tuple[str, str], str]]:
-    """REST-primary path. One fresh `/book` per unique (token_id, side)."""
+    """REST-primary path. One fresh `/book` per unique (token_id, side).
+
+    This path intentionally does not wait for WSS readiness before sizing, but
+    it still subscribes the token after the REST snapshot write. That preserves
+    the intended handoff: REST seeds ``MarketStateStore`` immediately; WSS then
+    owns ongoing quote/book updates in the same token-keyed store.
+    """
     mds = getattr(context, "market_data_service", None)
     if mds is None:
         # No MDS → fail closed: every signal will skip with market_data_stale.
@@ -511,6 +520,13 @@ async def _prefetch_market_data_rest_snapshot(
     # Attach per-pair bundles on the context so the per-signal loop can pull
     # the exact side's bundle when constructing decision/execute metadata.
     context.__dict__["_md_bundles_by_pair"] = bundles_by_pair
+
+    # REST-primary execution seeds the store from `/book`, then immediately
+    # hands the token to WSS for ongoing updates. Do not call
+    # ensure_token_ready_or_bootstrapped() here: that would reintroduce a WSS
+    # readiness wait on the latency-critical copy-trade path.
+    for token_id in {token_id for token_id, _side, _condition_id in unique_pairs}:
+        await _ensure_token_subscribed(context, token_id)
 
     return bundles_by_token, stale_tokens, stale_codes
 
