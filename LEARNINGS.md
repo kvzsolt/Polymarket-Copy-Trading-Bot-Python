@@ -128,3 +128,8 @@
 - Observation: Reusing BUY-side `COPY_MIN_SHARES` / `COPY_MIN_NOTIONAL_USDC` in `decide_sell(...)` makes the engine over-reject tiny SELLs that should instead be bumped to the venue minimum when the held position can cover it.
 - Action: For SELL decisions, derive the executable minimum from venue `market_min_size` and available held size; bump to that minimum when possible, and only skip when the full held position still cannot satisfy it.
 - Confidence: high
+
+**[2026-05-15] — REST snapshot tick metadata + spread gate**
+- Observation: REST `/book` snapshots include execution metadata, but dropping `tick_size`/`min_order_size` in the fallback path caused false `missing_components has_tick=False` rejects. The `rest_snapshot_max_spread_bps=300` hard gate also rejected real live markets at ~306–322 bps before the actual execution price/slippage logic could decide.
+- Action: Keep `/book` metadata attached to the canonical `OrderBook`, hydrate tick snapshots from it, and log wide REST snapshot spreads instead of hard-rejecting; retain fail-closed handling for empty/inverted books and missing true execution metadata.
+- Confidence: high
