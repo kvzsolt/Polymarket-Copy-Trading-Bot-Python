@@ -484,8 +484,20 @@ class FeatureFlagConfig:
 
 @dataclass(frozen=True)
 class MarketDataConfig:
-    """Market data WSS health monitoring and REST degraded fallback policy."""
+    """Market data WSS health monitoring and REST fallback policy.
 
+    PR10.4: REST `/book` snapshot is the primary execution source when
+    ``primary_source == "rest_snapshot"``. WSS keeps running for background
+    cache, prewarm, diagnostics, and resolved-market events, but copy-trade
+    execution no longer waits for WSS subscribe/bootstrap.
+    """
+
+    primary_source: str = "rest_snapshot"
+    rest_snapshot_enable: bool = True
+    rest_snapshot_max_age_ms: int = 500
+    rest_snapshot_request_timeout_ms: int = 750
+    rest_snapshot_total_budget_ms: int = 1000
+    rest_snapshot_max_spread_bps: int = 300
     allow_rest_when_wss_down: bool = False
     wss_down_after_seconds: float = 15.0
     rest_degraded_max_age_seconds: float = 2.0
@@ -497,6 +509,14 @@ class MarketDataConfig:
     rest_bootstrap_total_budget_ms: int = 1000
     rest_bootstrap_max_spread_bps: int = 300
     rest_bootstrap_require_wss_connected: bool = True
+    # Execution-time freshness policy for the WSS-fed market-data cache.
+    # quote/book age windows apply to the snapshot's own timestamp; a quiet
+    # WSS book past that window is still executable while the WSS connection
+    # is proven live (heartbeat/pong within wss_connection_max_silence_seconds).
+    executable_quote_max_age_seconds: float = 2.0
+    executable_book_max_age_seconds: float = 2.0
+    executable_tick_max_age_seconds: float = 300.0
+    wss_connection_max_silence_seconds: float = 20.0
 
 
 @dataclass(frozen=True)
@@ -693,6 +713,18 @@ def _validate_semantics(cfg: AppConfig, errors: list[str]) -> None:
 
     # Market data
     md = cfg.market_data
+    if md.primary_source not in ("rest_snapshot", "wss"):
+        errors.append(
+            'MARKET_DATA_PRIMARY_SOURCE must be one of: "rest_snapshot", "wss".'
+        )
+    if md.rest_snapshot_max_age_ms <= 0:
+        errors.append("MARKET_DATA_REST_SNAPSHOT_MAX_AGE_MS must be > 0.")
+    if md.rest_snapshot_request_timeout_ms <= 0:
+        errors.append("MARKET_DATA_REST_SNAPSHOT_REQUEST_TIMEOUT_MS must be > 0.")
+    if md.rest_snapshot_total_budget_ms <= 0:
+        errors.append("MARKET_DATA_REST_SNAPSHOT_TOTAL_BUDGET_MS must be > 0.")
+    if md.rest_snapshot_max_spread_bps < 0:
+        errors.append("MARKET_DATA_REST_SNAPSHOT_MAX_SPREAD_BPS must be non-negative.")
     if md.wss_down_after_seconds <= 0:
         errors.append("MARKET_DATA_WSS_DOWN_AFTER_SECONDS must be > 0.")
     if md.rest_degraded_max_age_seconds <= 0:
@@ -707,6 +739,14 @@ def _validate_semantics(cfg: AppConfig, errors: list[str]) -> None:
         errors.append("MARKET_DATA_REST_BOOTSTRAP_TOTAL_BUDGET_MS must be > 0.")
     if md.rest_bootstrap_max_spread_bps < 0:
         errors.append("MARKET_DATA_REST_BOOTSTRAP_MAX_SPREAD_BPS must be non-negative.")
+    if md.executable_quote_max_age_seconds <= 0:
+        errors.append("MARKET_DATA_EXECUTABLE_QUOTE_MAX_AGE_SECONDS must be > 0.")
+    if md.executable_book_max_age_seconds <= 0:
+        errors.append("MARKET_DATA_EXECUTABLE_BOOK_MAX_AGE_SECONDS must be > 0.")
+    if md.executable_tick_max_age_seconds <= 0:
+        errors.append("MARKET_DATA_EXECUTABLE_TICK_MAX_AGE_SECONDS must be > 0.")
+    if md.wss_connection_max_silence_seconds <= 0:
+        errors.append("MARKET_DATA_WSS_CONNECTION_MAX_SILENCE_SECONDS must be > 0.")
 
 
 def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
@@ -1014,6 +1054,12 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         discovery=discovery,
         features=features,
         market_data=MarketDataConfig(
+            primary_source=p.string("MARKET_DATA_PRIMARY_SOURCE", "rest_snapshot").lower(),
+            rest_snapshot_enable=p.bool_("MARKET_DATA_REST_SNAPSHOT_ENABLE", True),
+            rest_snapshot_max_age_ms=p.int_("MARKET_DATA_REST_SNAPSHOT_MAX_AGE_MS", "500"),
+            rest_snapshot_request_timeout_ms=p.int_("MARKET_DATA_REST_SNAPSHOT_REQUEST_TIMEOUT_MS", "750"),
+            rest_snapshot_total_budget_ms=p.int_("MARKET_DATA_REST_SNAPSHOT_TOTAL_BUDGET_MS", "1000"),
+            rest_snapshot_max_spread_bps=p.int_("MARKET_DATA_REST_SNAPSHOT_MAX_SPREAD_BPS", "300"),
             allow_rest_when_wss_down=p.bool_("MARKET_DATA_ALLOW_REST_WHEN_WSS_DOWN", False),
             wss_down_after_seconds=p.float_("MARKET_DATA_WSS_DOWN_AFTER_SECONDS", 15.0),
             rest_degraded_max_age_seconds=p.float_("MARKET_DATA_REST_DEGRADED_MAX_AGE_SECONDS", 2.0),
@@ -1025,6 +1071,10 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
             rest_bootstrap_total_budget_ms=p.int_("MARKET_DATA_REST_BOOTSTRAP_TOTAL_BUDGET_MS", 1000),
             rest_bootstrap_max_spread_bps=p.int_("MARKET_DATA_REST_BOOTSTRAP_MAX_SPREAD_BPS", 300),
             rest_bootstrap_require_wss_connected=p.bool_("MARKET_DATA_REST_BOOTSTRAP_REQUIRE_WSS_CONNECTED", True),
+            executable_quote_max_age_seconds=p.float_("MARKET_DATA_EXECUTABLE_QUOTE_MAX_AGE_SECONDS", 2.0),
+            executable_book_max_age_seconds=p.float_("MARKET_DATA_EXECUTABLE_BOOK_MAX_AGE_SECONDS", 2.0),
+            executable_tick_max_age_seconds=p.float_("MARKET_DATA_EXECUTABLE_TICK_MAX_AGE_SECONDS", 300.0),
+            wss_connection_max_silence_seconds=p.float_("MARKET_DATA_WSS_CONNECTION_MAX_SILENCE_SECONDS", 20.0),
         ),
         dry_run=p.bool_("PAPER_TRADE_ONLY", False),
         raw=dict(env),

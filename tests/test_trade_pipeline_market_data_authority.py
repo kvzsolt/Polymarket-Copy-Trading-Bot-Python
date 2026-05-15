@@ -77,6 +77,9 @@ def _config(**overrides):
         "MAX_MARKET_EXPOSURE_USDC": "300",
         "SLIPPAGE_TOLERANCE": "2.0",
         "MARKET_DATA_SUBSCRIBE_TIMEOUT_SECONDS": "0.4",
+        # Legacy regression tests pin to WSS primary mode. PR10.4-specific
+        # tests below opt into ``rest_snapshot`` explicitly.
+        "MARKET_DATA_PRIMARY_SOURCE": "wss",
     }
     env.update(overrides)
     with patch.object(app_config_mod, "_runtime_python_supported", return_value=True):
@@ -457,4 +460,248 @@ async def test_pipeline_executes_when_bootstrap_returns_true_and_mds_fresh(tmp_p
 
     assert len(results) == 1
     assert results[0].status != "skipped"
+    exec_svc.execute.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# PR10.4: REST snapshot primary mode
+# ---------------------------------------------------------------------------
+
+
+def _rest_bundle(
+    *,
+    token_id: str = FAKE_TOKEN_ID,
+    min_order_size: Decimal = Decimal("3"),
+    tick_size: Decimal = Decimal("0.01"),
+) -> MarketDataBundle:
+    now = time.monotonic()
+    return MarketDataBundle(
+        token_id=token_id,
+        quote=QuoteSnapshot(
+            token_id=token_id,
+            best_bid=Decimal("0.49"),
+            best_ask=Decimal("0.51"),
+            last_trade_price=None,
+            source="rest_snapshot",
+            monotonic_ts=now,
+        ),
+        book=BookSnapshot(
+            token_id=token_id,
+            bids={Decimal("0.49"): Decimal("100")},
+            asks={Decimal("0.51"): Decimal("100")},
+            best_bid=Decimal("0.49"),
+            best_ask=Decimal("0.51"),
+            source="rest_snapshot",
+            monotonic_ts=now,
+        ),
+        tick=TickSnapshot(
+            token_id=token_id,
+            tick_size=tick_size,
+            min_order_size=min_order_size,
+            neg_risk=False,
+            source="rest_snapshot",
+            monotonic_ts=now,
+        ),
+        source=MarketDataSource.REST_SNAPSHOT,
+        reason="rest_snapshot",
+    )
+
+
+def _rest_config(**overrides):
+    env = {
+        "PRIVATE_KEY": "0x" + "a" * 64,
+        "FUNDER_ADDRESS": "0x" + "b" * 40,
+        "USER_ADDRESS": "0x" + "c" * 40,
+        "LEADER_WALLETS": "0x" + "d" * 40,
+        "RPC_URL": "https://polygon-rpc.example.com",
+        "CHAIN_ID": "137",
+        "BUY_MIN_AMOUNT": "0.01",
+        "BUY_MAX_AMOUNT": "1000",
+        "MAX_MARKET_EXPOSURE_USDC": "300",
+        "SLIPPAGE_TOLERANCE": "2.0",
+        "MARKET_DATA_PRIMARY_SOURCE": "rest_snapshot",
+    }
+    env.update(overrides)
+    with patch.object(app_config_mod, "_runtime_python_supported", return_value=True):
+        return load_config(env)
+
+
+class _FakeRestMDS:
+    def __init__(self, bundle=None, *, raise_exc=None):
+        self._bundle = bundle
+        self._raise = raise_exc
+        self.snapshot_calls: list[tuple[str, str, str | None]] = []
+        self.fresh_calls: list[str] = []
+
+    async def require_execution_snapshot(self, token_id, *, side, condition_id=None):
+        self.snapshot_calls.append((token_id, side, condition_id))
+        if self._raise is not None:
+            raise self._raise
+        return self._bundle
+
+    async def require_fresh_data(self, token_id, **kwargs):
+        self.fresh_calls.append(token_id)
+        if self._raise is not None:
+            raise self._raise
+        return self._bundle
+
+
+def _make_rest_context(db_path, *, exec_svc, mds, runtime, decision_svc=None):
+    ctx = TradingContext(
+        user_id="user1",
+        wallet_address="0x" + "a" * 40,
+        client=MagicMock(),
+        positions_repo=PositionsRepo(db_path),
+        fills_repo=FillsRepo(db_path),
+        orders_repo=OrdersRepo(db_path),
+        risk_blocks_repo=RiskBlocksRepo(db_path),
+        pnl_tracker=PnLTracker(log_path=str(db_path) + ".pnl"),
+        risk_engine=RiskEngine(),
+        accounting_service=AccountingService(),
+        position_manager=PositionManager(),
+        execution_service=exec_svc,
+        config=_rest_config(),
+        allocation_pct=1.0,
+        buy_min_amount=0.01,
+        buy_max_amount=1000.0,
+        market_data_service=mds,
+        extra={"slippage_tolerance_bps": 200},
+    )
+    ctx.market_data_runtime = runtime
+
+    class _PassThrough:
+        async def submit_copy_trade(self, intent):
+            from services.execution.coordinator import ExecutionCoordinatorResult
+            from services.execution.types import ExecutionRequest
+
+            req = ExecutionRequest(
+                user_id=intent.user_id,
+                leader_id=intent.leader_wallet or "",
+                token_id=intent.token_id,
+                side=intent.side,
+                amount=intent.size,
+                max_slippage_bps=intent.max_slippage_bps,
+                reason=intent.reason or intent.source,
+                signal_id=intent.signal_id,
+                condition_id=intent.condition_id,
+                recovery_metadata=dict(intent.recovery_metadata or {}),
+            )
+            result = await exec_svc.execute(req)
+            return ExecutionCoordinatorResult(
+                accepted=getattr(result, "accepted", False),
+                status=getattr(result, "status", ""),
+                order_id=getattr(result, "order_id", None),
+                lifecycle_status=getattr(result, "status", ""),
+                raw_result=result,
+            )
+
+    ctx.execution_coordinator = _PassThrough()
+    if decision_svc is not None:
+        ctx.copy_decision_service = decision_svc
+    return ctx
+
+
+@pytest.mark.asyncio
+async def test_rest_primary_calls_require_execution_snapshot_once_per_pair(tmp_path):
+    db_path = _init_db(tmp_path)
+    exec_svc = AsyncMock()
+    exec_svc.execute.return_value = _exec_result_filled()
+
+    mds = _FakeRestMDS(_rest_bundle())
+    runtime = AsyncMock()
+    runtime.ensure_token_ready_or_bootstrapped = AsyncMock(return_value=True)
+    runtime.subscribe_tokens = AsyncMock()
+
+    ctx = _make_rest_context(
+        db_path,
+        exec_svc=exec_svc,
+        mds=mds,
+        runtime=runtime,
+        decision_svc=_RecordingDecisionService(),
+    )
+
+    await execute_trades(ctx, "leader1", [_signal()], time.time())
+
+    assert len(mds.snapshot_calls) == 1
+    token_id, side, condition_id = mds.snapshot_calls[0]
+    assert token_id == FAKE_TOKEN_ID
+    assert side == "BUY"
+    assert condition_id == "cond-pr3"
+    # MUST NOT wait for WSS dynamic subscribe / bootstrap in REST primary mode.
+    runtime.ensure_token_ready_or_bootstrapped.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_rest_primary_skips_with_specific_skip_code(tmp_path):
+    db_path = _init_db(tmp_path)
+    exec_svc = AsyncMock()
+
+    err = StaleDataError("wide", skip_code="book_spread_wide")
+    mds = _FakeRestMDS(raise_exc=err)
+    runtime = AsyncMock()
+
+    ctx = _make_rest_context(
+        db_path,
+        exec_svc=exec_svc,
+        mds=mds,
+        runtime=runtime,
+    )
+
+    results = await execute_trades(ctx, "leader1", [_signal()], time.time())
+
+    assert len(results) == 1
+    assert results[0].status == "skipped"
+    assert results[0].reason == "book_spread_wide"
+    exec_svc.execute.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_rest_primary_decision_meta_carries_rest_snapshot_source(tmp_path, capsys):
+    db_path = _init_db(tmp_path)
+    exec_svc = AsyncMock()
+    exec_svc.execute.return_value = _exec_result_filled()
+
+    mds = _FakeRestMDS(_rest_bundle())
+    runtime = AsyncMock()
+
+    ctx = _make_rest_context(
+        db_path,
+        exec_svc=exec_svc,
+        mds=mds,
+        runtime=runtime,
+        decision_svc=_RecordingDecisionService(),
+    )
+
+    await execute_trades(ctx, "leader1", [_signal()], time.time())
+
+    out = capsys.readouterr().out
+    assert "trade_pipeline_market_data_snapshot_start" in out
+    assert "trade_pipeline_market_data_snapshot_ready" in out
+    # The ready log carries source=rest_snapshot directly; the decision meta
+    # is also threaded through ``log_trade_decision`` when the copy-decision
+    # gate is enabled. Both paths refer to the same source label.
+    assert "source=rest_snapshot" in out
+
+
+@pytest.mark.asyncio
+async def test_rest_primary_does_not_wait_for_wss_dynamic_subscribe(tmp_path):
+    db_path = _init_db(tmp_path)
+    exec_svc = AsyncMock()
+    exec_svc.execute.return_value = _exec_result_filled()
+
+    mds = _FakeRestMDS(_rest_bundle())
+    runtime = AsyncMock()
+    runtime.ensure_token_ready_or_bootstrapped = AsyncMock(return_value=False)
+    runtime.subscribe_tokens = AsyncMock()
+
+    ctx = _make_rest_context(
+        db_path,
+        exec_svc=exec_svc,
+        mds=mds,
+        runtime=runtime,
+    )
+
+    await execute_trades(ctx, "leader1", [_signal()], time.time())
+
+    runtime.ensure_token_ready_or_bootstrapped.assert_not_awaited()
     exec_svc.execute.assert_awaited_once()

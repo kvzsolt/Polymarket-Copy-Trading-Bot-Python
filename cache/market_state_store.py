@@ -1,6 +1,11 @@
-"""WSS-backed market state store.
+"""Shared market state store.
 
-Shared market-data cache keyed by Polymarket token/asset id.
+Token-keyed cache written by both REST `/book` snapshots and WSS deltas. Under
+PR10.4, REST snapshot is the primary execution source: trade-pipeline fetches a
+fresh REST book, writes it via :meth:`MarketStateStore.store_rest_snapshot`, and
+hands the resulting cached state to sizing/execution. WSS continues to overwrite
+component sources to ``"wss"`` when its events land — those upgrades are logged
+via ``market_data_rest_snapshot_wss_override`` for observability.
 
 Important:
   - Key this store by token_id, not condition_id.
@@ -9,6 +14,9 @@ Important:
         user + condition_id + token_id
   - This store contains market state only:
         book, best bid/ask, tick size, min order size, resolved/stale/dirty flags.
+  - Component-level sources (``quote_source``, ``book_source``, ``tick_source``,
+    ``metadata_source``) are authoritative for executable freshness checks and
+    are only set by the dedicated setters / REST-snapshot helper / WSS handlers.
 
 Used by:
   - clients.market_ws.MarketWebSocket
@@ -19,11 +27,14 @@ Used by:
 
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass, field
 from decimal import Decimal
 from threading import RLock
 from typing import Any
+
+_logger = logging.getLogger("MarketStateStore")
 
 
 # ---------------------------------------------------------------------------
@@ -238,17 +249,27 @@ class MarketStateStore:
         bids: dict[Decimal, Decimal],
         asks: dict[Decimal, Decimal],
         raw_event: dict[str, Any] | None = None,
+        *,
+        fetched_at_monotonic: float | None = None,
     ) -> None:
         """Replace the entire book for token_id.
 
         Use this for:
           - WSS `book`
-          - REST snapshot bootstrap/resync
+          - REST snapshot writes
 
         This must clear old levels. Do not implement book snapshots as deltas.
+
+        When ``fetched_at_monotonic`` is supplied (REST snapshot path), the
+        cached freshness timestamps reflect the actual fetch instant rather
+        than the write-back instant. WSS deltas omit it and fall back to
+        ``time.monotonic()``.
         """
         with self._lock:
             state = self._ensure_state_locked(token_id)
+
+            prev_book_src = state.book_source
+            prev_quote_src = state.quote_source
 
             state.bids = {
                 Decimal(str(price)): Decimal(str(size))
@@ -263,7 +284,11 @@ class MarketStateStore:
 
             state.recompute_top_of_book()
 
-            now = time.monotonic()
+            now = (
+                fetched_at_monotonic
+                if fetched_at_monotonic is not None
+                else time.monotonic()
+            )
             state.last_book_monotonic = now
             state.last_quote_monotonic = now
             state.last_update_monotonic = now
@@ -290,6 +315,17 @@ class MarketStateStore:
             state.dirty = False
             state.dirty_reason = None
 
+            if source == "wss" and (
+                prev_book_src == "rest_snapshot" or prev_quote_src == "rest_snapshot"
+            ):
+                _logger.info(
+                    "market_data_rest_snapshot_wss_override | token_id=%s "
+                    "prev_book=%s prev_quote=%s",
+                    token_id,
+                    prev_book_src,
+                    prev_quote_src,
+                )
+
     def apply_book_delta(
         self,
         token_id: str,
@@ -313,6 +349,9 @@ class MarketStateStore:
             state = self._ensure_state_locked(token_id)
             book = state.bids if normalized_side == "BUY" else state.asks
 
+            prev_book_src = state.book_source
+            prev_quote_src = state.quote_source
+
             price = Decimal(str(price))
             size = Decimal(str(size))
 
@@ -334,6 +373,15 @@ class MarketStateStore:
             if not state.resolved:
                 state.stale = False
                 state.stale_reason = None
+
+            if prev_book_src == "rest_snapshot" or prev_quote_src == "rest_snapshot":
+                _logger.info(
+                    "market_data_rest_snapshot_wss_override | token_id=%s "
+                    "prev_book=%s prev_quote=%s event=apply_book_delta",
+                    token_id,
+                    prev_book_src,
+                    prev_quote_src,
+                )
 
     # ------------------------------------------------------------------
     # Quote / tick / metadata updates
@@ -442,14 +490,25 @@ class MarketStateStore:
         min_order_size: Decimal,
         neg_risk: bool = False,
         source: str = "rest_snapshot",
+        fetched_at_monotonic: float | None = None,
     ) -> None:
+        """Update tick + metadata for token_id.
+
+        Only ``tick_source``, ``metadata_source``, and ``state.source`` move.
+        Quote/book component sources are not mutated — a tick-only update
+        must not promote a REST-only quote/book to appear WSS-fresh.
+        """
         with self._lock:
             state = self._ensure_state_locked(token_id)
             state.tick_size = Decimal(str(tick_size))
             state.min_order_size = Decimal(str(min_order_size))
             state.neg_risk = bool(neg_risk)
 
-            now = time.monotonic()
+            now = (
+                fetched_at_monotonic
+                if fetched_at_monotonic is not None
+                else time.monotonic()
+            )
             state.last_tick_monotonic = now
             state.last_update_monotonic = now
             state.source = source
@@ -467,7 +526,13 @@ class MarketStateStore:
         best_bid: Decimal | None,
         best_ask: Decimal | None,
         source: str = "rest_snapshot",
+        fetched_at_monotonic: float | None = None,
     ) -> None:
+        """Update top-of-book only.
+
+        ``book_source`` is intentionally untouched — a quote-only update
+        must not promote a REST-only book to WSS or vice versa.
+        """
         with self._lock:
             state = self._ensure_state_locked(token_id)
 
@@ -476,7 +541,11 @@ class MarketStateStore:
             if best_ask is not None:
                 state.best_ask = Decimal(str(best_ask))
 
-            now = time.monotonic()
+            now = (
+                fetched_at_monotonic
+                if fetched_at_monotonic is not None
+                else time.monotonic()
+            )
             state.last_quote_monotonic = now
             state.last_update_monotonic = now
             state.source = source
@@ -489,13 +558,70 @@ class MarketStateStore:
         bids: dict[Decimal, Decimal],
         asks: dict[Decimal, Decimal],
         source: str = "rest_snapshot",
+        condition_id: str | None = None,
+        fetched_at_monotonic: float | None = None,
     ) -> None:
+        """Replace the full book and derive top-of-book quote.
+
+        Quote source is set to the same value because the top-of-book is
+        derived directly from this book. Tick metadata is untouched.
+        """
+        raw: dict[str, Any] = {"source": source}
+        if condition_id:
+            raw["condition_id"] = condition_id
         self.replace_book_snapshot(
             token_id,
             bids=bids,
             asks=asks,
-            raw_event={"source": source},
+            raw_event=raw,
+            fetched_at_monotonic=fetched_at_monotonic,
         )
+
+    def store_rest_snapshot(
+        self,
+        token_id: str,
+        *,
+        condition_id: str | None,
+        bids: dict[Decimal, Decimal],
+        asks: dict[Decimal, Decimal],
+        tick_size: Decimal | None,
+        min_order_size: Decimal | None,
+        neg_risk: bool = False,
+        fetched_at_monotonic: float,
+    ) -> dict[str, Any]:
+        """Write a fresh REST `/book` snapshot atomically.
+
+        Quote/book/tick all land with ``source="rest_snapshot"`` and the
+        same ``fetched_at_monotonic`` for downstream age accounting.
+        ``tick_size`` and ``min_order_size`` are written only when both are
+        present and positive — partial tick state must not be considered
+        executable.
+
+        Returns ``get_debug_state(token_id)`` for caller logging.
+        """
+        self.set_book(
+            token_id,
+            bids=bids,
+            asks=asks,
+            source="rest_snapshot",
+            condition_id=condition_id,
+            fetched_at_monotonic=fetched_at_monotonic,
+        )
+        if (
+            tick_size is not None
+            and tick_size > 0
+            and min_order_size is not None
+            and min_order_size > 0
+        ):
+            self.set_tick(
+                token_id,
+                tick_size=Decimal(str(tick_size)),
+                min_order_size=Decimal(str(min_order_size)),
+                neg_risk=neg_risk,
+                source="rest_snapshot",
+                fetched_at_monotonic=fetched_at_monotonic,
+            )
+        return self.get_debug_state(token_id)
 
     # ------------------------------------------------------------------
     # Market lifecycle
@@ -577,14 +703,19 @@ class MarketStateStore:
         source: str = "wss",
         monotonic_ts: float | None = None,
     ) -> None:
+        """Touch aggregate freshness without mutating component sources.
+
+        Component-level sources (``quote_source``, ``book_source``,
+        ``tick_source``, ``metadata_source``) are authoritative for executable
+        freshness checks. They are only set by the dedicated setters, WSS
+        handlers, and ``replace_book_snapshot``/``apply_book_delta``.
+        ``mark_fresh`` must not promote them blindly — doing so allowed a
+        single touch to make a REST-only quote/book appear WSS-fresh.
+        """
         with self._lock:
             state = self._ensure_state_locked(token_id)
             now = monotonic_ts if monotonic_ts is not None else time.monotonic()
             state.source = source
-            state.quote_source = source
-            state.book_source = source
-            state.tick_source = source
-            state.metadata_source = source
             state.stale = False
             state.stale_reason = None
             state.last_update_monotonic = now
@@ -719,7 +850,11 @@ class MarketStateStore:
                 state.condition_id = str(condition_id).strip() or state.condition_id
 
     def get_debug_state(self, token_id: str) -> dict[str, Any]:
-        """Return a snapshot of token state for logging and error messages."""
+        """Return a snapshot of token state for logging and error messages.
+
+        Field names are stable across known/unknown branches so callers can
+        format them uniformly. Ages are reported in milliseconds (``*_ms``).
+        """
         with self._lock:
             state = self._states.get(token_id)
             if state is None:
@@ -727,42 +862,62 @@ class MarketStateStore:
                     "token_id": token_id,
                     "known": False,
                     "has_quote": False,
+                    "has_book": False,
                     "quote_source": None,
+                    "book_source": None,
+                    "tick_source": None,
+                    "metadata_source": None,
+                    "source": None,
                     "quote_age_ms": None,
+                    "book_age_ms": None,
                     "best_bid": None,
                     "best_ask": None,
-                    "has_book": False,
-                    "book_source": None,
-                    "book_age_ms": None,
                     "bid_count": 0,
                     "ask_count": 0,
-                    "tick_source": None,
                     "tick_size": None,
                     "active": None,
                     "resolved": None,
                     "condition_id": None,
+                    "dirty": None,
+                    "stale": None,
+                    "dirty_reason": None,
+                    "stale_reason": None,
                 }
             now = time.monotonic()
+            quote_age_ms = (
+                round((now - state.last_quote_monotonic) * 1000.0, 1)
+                if state.last_quote_monotonic
+                else None
+            )
+            book_age_ms = (
+                round((now - state.last_book_monotonic) * 1000.0, 1)
+                if state.last_book_monotonic
+                else None
+            )
             return {
                 "token_id": token_id,
                 "known": True,
                 "has_quote": state.best_bid is not None or state.best_ask is not None,
+                "has_book": bool(state.bids or state.asks),
                 "quote_source": state.quote_source,
-                "quote_age": round(now - state.last_quote_monotonic, 2) if state.last_quote_monotonic else None,
+                "book_source": state.book_source,
+                "tick_source": state.tick_source,
+                "metadata_source": state.metadata_source,
+                "source": state.source,
+                "quote_age_ms": quote_age_ms,
+                "book_age_ms": book_age_ms,
                 "best_bid": str(state.best_bid) if state.best_bid is not None else None,
                 "best_ask": str(state.best_ask) if state.best_ask is not None else None,
-                "has_book": bool(state.bids or state.asks),
-                "book_source": state.book_source,
-                "book_age": round(now - state.last_book_monotonic, 2) if state.last_book_monotonic else None,
                 "bid_count": len(state.bids),
                 "ask_count": len(state.asks),
-                "tick_source": state.tick_source,
                 "tick_size": str(state.tick_size) if state.tick_size is not None else None,
                 "active": state.active,
                 "resolved": state.resolved,
                 "condition_id": state.condition_id,
                 "dirty": state.dirty,
                 "stale": state.stale,
+                "dirty_reason": state.dirty_reason,
+                "stale_reason": state.stale_reason,
             }
 
     def update_tick_size_from_book(self, token_id: str, tick_size: Decimal) -> None:
@@ -788,6 +943,27 @@ class MarketStateStore:
     def on_market_ws_pong(self, monotonic_ts: float) -> None:
         with self._lock:
             self._last_ws_pong_monotonic = monotonic_ts
+
+    def wss_connection_age_seconds(self) -> float | None:
+        """Seconds since the most recent market WSS heartbeat or pong.
+
+        Connection liveness, not data freshness. MarketDataService uses this so
+        a quiet-but-connected WSS stream stays executable: an unchanged book is
+        still the current book while the WSS pipe is proven alive. Returns None
+        when no heartbeat/pong has been observed yet (e.g. pre-connect).
+        """
+        with self._lock:
+            timestamps = [
+                ts
+                for ts in (
+                    self._last_ws_heartbeat_monotonic,
+                    self._last_ws_pong_monotonic,
+                )
+                if ts is not None
+            ]
+            if not timestamps:
+                return None
+            return time.monotonic() - max(timestamps)
 
     # ------------------------------------------------------------------
     # Helpers

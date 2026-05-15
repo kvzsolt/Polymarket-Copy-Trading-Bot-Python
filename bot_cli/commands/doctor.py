@@ -405,7 +405,7 @@ async def run_doctor_checks(mode: str) -> dict[str, Any]:
         )
 
     # ----- geoblock -----------------------------------------------------
-    if config.network.enforce_geoblock or live:
+    if config.network.enforce_geoblock:
         from services.compliance import check_geoblock
 
         decision = await check_geoblock()

@@ -71,6 +71,10 @@ def _config(**overrides):
         "COPY_MIN_SHARES": "0.001",
         "COPY_MIN_NOTIONAL_USDC": "0.01",
         "ENABLE_BALANCE_TIERED_POLICY": "false",
+        # These safety tests rely on the legacy WSS-mode prefetch path with a
+        # ``_FakeMDS`` exposing only ``require_fresh_data``. Pin WSS primary
+        # mode so the trade pipeline keeps using that path.
+        "MARKET_DATA_PRIMARY_SOURCE": "wss",
     }
     env.update(overrides)
     with patch.object(app_config_mod, "_runtime_python_supported", return_value=True):
