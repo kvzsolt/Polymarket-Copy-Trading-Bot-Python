@@ -216,18 +216,48 @@ def build_user_state(
     # live execution never runs on stale data.
     market_store = MarketStateStore()
     md_cfg = getattr(config, "market_data", None)
+    primary_source = str(getattr(md_cfg, "primary_source", "rest_snapshot")).lower()
     market_data_svc = MarketDataService(
         market_store,
         clob_gateway,
         policy=MarketDataPolicy(
-            require_wss_fresh=True,
+            # In REST primary mode, copy-trade execution gets its quote/book
+            # from a fresh REST `/book` snapshot fetched right before sizing.
+            # The legacy WSS-fresh gate is intentionally relaxed; the snapshot
+            # path enforces its own millisecond budgets and book-quality gates.
+            primary_source=primary_source,
+            require_wss_fresh=primary_source == "wss",
             allow_rest_fallback=False,
-            allow_rest_snapshot_for_execution=False,
+            allow_rest_snapshot_for_execution=primary_source == "rest_snapshot",
             allow_rest_bootstrap_for_execution=bool(
                 getattr(md_cfg, "enable_rest_bootstrap", False)
             ),
             rest_bootstrap_max_age_ms=int(
                 getattr(md_cfg, "rest_bootstrap_max_age_ms", 500)
+            ),
+            rest_snapshot_max_age_ms=int(
+                getattr(md_cfg, "rest_snapshot_max_age_ms", 500)
+            ),
+            rest_snapshot_request_timeout_ms=int(
+                getattr(md_cfg, "rest_snapshot_request_timeout_ms", 750)
+            ),
+            rest_snapshot_total_budget_ms=int(
+                getattr(md_cfg, "rest_snapshot_total_budget_ms", 1000)
+            ),
+            rest_snapshot_max_spread_bps=int(
+                getattr(md_cfg, "rest_snapshot_max_spread_bps", 300)
+            ),
+            max_quote_age_seconds=float(
+                getattr(md_cfg, "executable_quote_max_age_seconds", 2.0)
+            ),
+            max_book_age_seconds=float(
+                getattr(md_cfg, "executable_book_max_age_seconds", 2.0)
+            ),
+            max_tick_age_seconds=float(
+                getattr(md_cfg, "executable_tick_max_age_seconds", 300.0)
+            ),
+            wss_connection_max_silence_seconds=float(
+                getattr(md_cfg, "wss_connection_max_silence_seconds", 20.0)
             ),
         ),
     )

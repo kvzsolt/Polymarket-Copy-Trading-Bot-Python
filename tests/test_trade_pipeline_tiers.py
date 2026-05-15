@@ -45,6 +45,9 @@ def _config(**overrides):
         "SLIPPAGE_TOLERANCE": "1.5",
         "ENABLE_TIER_GATE_WATCHLIST": "true",
         "ENABLE_TIER_GATE_WATCHLIST_LOG": "true",
+        # Legacy WSS-prefetch path; PR10.4 REST primary path is covered by
+        # tests in test_trade_pipeline_market_data_authority.py.
+        "MARKET_DATA_PRIMARY_SOURCE": "wss",
     }
     env.update(overrides)
     with pytest.MonkeyPatch.context() as mp:

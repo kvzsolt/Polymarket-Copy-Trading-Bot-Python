@@ -233,6 +233,12 @@ def _market_data_subscribe_timeout(context: TradingContext) -> float:
     return max(0.2, value)
 
 
+def _market_data_primary_source(context: TradingContext) -> str:
+    cfg = getattr(context, "config", None)
+    md_cfg = getattr(cfg, "market_data", None) if cfg is not None else None
+    return str(getattr(md_cfg, "primary_source", "rest_snapshot")).lower()
+
+
 async def _ensure_token_subscribed(context: TradingContext, token_id: str) -> None:
     """Subscribe ``token_id`` to the market WSS if a runtime is wired.
 
@@ -311,15 +317,209 @@ async def _resolve_market_bundle(
 async def _prefetch_market_data_for_signals(
     context: TradingContext,
     normalized: list,
-) -> tuple[dict[str, Any], set[str]]:
-    """Subscribe each unique signal token and resolve a fresh bundle.
+) -> tuple[dict[str, Any], set[str], dict[tuple[str, str], str]]:
+    """Resolve a fresh executable market bundle for each signal token.
+
+    In REST primary mode (``MARKET_DATA_PRIMARY_SOURCE=rest_snapshot``) this
+    calls :meth:`MarketDataService.require_execution_snapshot` once per unique
+    ``(token_id, side)`` pair, immediately before sizing. No WSS subscribe wait,
+    no retry loop — one fresh REST `/book` per pair, gated against the
+    millisecond budgets configured on :class:`MarketDataPolicy`.
+
+    In WSS primary mode the legacy path is used: subscribe → wait for
+    ``ensure_token_ready_or_bootstrapped`` → ``require_fresh_data`` retry loop.
 
     Returns:
-        bundles_by_token: token_id -> MarketDataBundle for tokens that
-            became WSS-fresh within the configured timeout.
-        stale_tokens: token_ids that timed out; the per-signal loop must
-            skip these with ``skip_code="market_data_stale"``.
+        bundles_by_token: token_id -> MarketDataBundle for any token that
+            resolved successfully. Used by the per-signal loop to extract
+            ``tick_size`` / ``min_order_size`` for sizing.
+        stale_tokens: token_ids whose primary-mode lookup failed at least
+            once. Retained for back-compat with callers that key off the
+            token only.
+        stale_skip_codes: ``(token_id, side)`` -> ``skip_code`` for each
+            failed lookup. Used by the per-signal loop to surface a
+            specific reason (``market_data_stale``,
+            ``market_data_timeout``, ``book_no_liquidity``,
+            ``book_spread_wide``, ``market_resolved``).
     """
+    if not normalized:
+        return {}, set(), {}
+
+    primary_source = _market_data_primary_source(context)
+
+    if primary_source == "rest_snapshot":
+        return await _prefetch_market_data_rest_snapshot(context, normalized)
+
+    return await _prefetch_market_data_wss(context, normalized)
+
+
+async def _prefetch_market_data_rest_snapshot(
+    context: TradingContext,
+    normalized: list,
+) -> tuple[dict[str, Any], set[str], dict[tuple[str, str], str]]:
+    """REST-primary path. One fresh `/book` per unique (token_id, side)."""
+    mds = getattr(context, "market_data_service", None)
+    if mds is None:
+        # No MDS → fail closed: every signal will skip with market_data_stale.
+        stale_tokens: set[str] = set()
+        stale_codes: dict[tuple[str, str], str] = {}
+        for signal, _ in normalized:
+            token_id = getattr(signal, "token_id", None)
+            side = str(getattr(signal, "side", "") or "").upper()
+            if not token_id:
+                continue
+            stale_tokens.add(token_id)
+            stale_codes[(token_id, side)] = "market_data_stale"
+        return {}, stale_tokens, stale_codes
+
+    from services.market_data_service import (  # noqa: WPS433  local import
+        MarketDataError,
+        MarketDataNotReady,
+        StaleDataError,
+    )
+
+    unique_pairs: list[tuple[str, str, str | None]] = []
+    seen: set[tuple[str, str]] = set()
+    for signal, _ in normalized:
+        token_id = getattr(signal, "token_id", None)
+        side = str(getattr(signal, "side", "") or "").upper()
+        condition_id = getattr(signal, "condition_id", None)
+        if not token_id or not side:
+            continue
+        key = (token_id, side)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique_pairs.append((token_id, side, condition_id))
+
+    if not unique_pairs:
+        return {}, set(), {}
+
+    analysis_sem = _analysis_semaphore(context)
+    bundles_by_token: dict[str, Any] = {}
+    bundles_by_pair: dict[tuple[str, str], Any] = {}
+    stale_tokens: set[str] = set()
+    stale_codes: dict[tuple[str, str], str] = {}
+
+    async def _resolve_one(
+        token_id: str,
+        side: str,
+        condition_id: str | None,
+    ) -> tuple[str, str, Any, str | None]:
+        async with analysis_sem:
+            logger.info(
+                "trade_pipeline_market_data_snapshot_start | token_id=%s side=%s cond=%s",
+                token_id,
+                side,
+                condition_id,
+            )
+            try:
+                bundle = await mds.require_execution_snapshot(
+                    token_id,
+                    side=side,
+                    condition_id=condition_id,
+                )
+            except MarketDataNotReady as exc:
+                code = exc.skip_code or "market_resolved"
+                logger.info(
+                    "trade_pipeline_market_data_snapshot_rejected | token_id=%s side=%s reason=%s",
+                    token_id,
+                    side,
+                    code,
+                )
+                return token_id, side, None, code
+            except StaleDataError as exc:
+                code = exc.skip_code or "market_data_stale"
+                if code == "market_data_timeout":
+                    logger.info(
+                        "trade_pipeline_market_data_snapshot_timeout | token_id=%s side=%s",
+                        token_id,
+                        side,
+                    )
+                logger.info(
+                    "trade_pipeline_market_data_snapshot_rejected | token_id=%s side=%s reason=%s",
+                    token_id,
+                    side,
+                    code,
+                )
+                return token_id, side, None, code
+            except MarketDataError as exc:
+                code = getattr(exc, "skip_code", None) or "market_data_stale"
+                logger.info(
+                    "trade_pipeline_market_data_snapshot_rejected | token_id=%s side=%s reason=%s",
+                    token_id,
+                    side,
+                    code,
+                )
+                return token_id, side, None, code
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.warning(
+                    "trade_pipeline_market_data_snapshot_rejected | token_id=%s side=%s reason=unexpected error=%r",
+                    token_id,
+                    side,
+                    exc,
+                )
+                return token_id, side, None, "market_data_stale"
+
+            quote = getattr(bundle, "quote", None)
+            book = getattr(bundle, "book", None)
+            best_bid = getattr(quote, "best_bid", None) if quote is not None else None
+            best_ask = getattr(quote, "best_ask", None) if quote is not None else None
+            spread_bps: int | None = None
+            if best_bid is not None and best_ask is not None and best_ask > 0:
+                try:
+                    spread_bps = int(((best_ask - best_bid) / best_ask) * 10000)
+                except Exception:
+                    spread_bps = None
+            bid_count = len(getattr(book, "bids", {}) or {}) if book is not None else 0
+            ask_count = len(getattr(book, "asks", {}) or {}) if book is not None else 0
+            logger.info(
+                "trade_pipeline_market_data_snapshot_ready | token_id=%s side=%s source=rest_snapshot"
+                " bid_count=%d ask_count=%d spread_bps=%s",
+                token_id,
+                side,
+                bid_count,
+                ask_count,
+                spread_bps,
+            )
+            return token_id, side, bundle, None
+
+    results = await asyncio.gather(
+        *(
+            _resolve_one(token_id, side, condition_id)
+            for token_id, side, condition_id in unique_pairs
+        ),
+        return_exceptions=True,
+    )
+    for entry in results:
+        if isinstance(entry, Exception):
+            logger.warning(
+                "trade_pipeline_market_data_snapshot_rejected | reason=gather_error error=%r",
+                entry,
+            )
+            continue
+        token_id, side, bundle, skip_code = entry
+        if bundle is None:
+            stale_tokens.add(token_id)
+            stale_codes[(token_id, side)] = skip_code or "market_data_stale"
+            continue
+        bundles_by_pair[(token_id, side)] = bundle
+        # Any per-token sizing data (tick/min_order_size) is side-independent;
+        # keep one bundle keyed by token for downstream sizing inputs.
+        bundles_by_token.setdefault(token_id, bundle)
+
+    # Attach per-pair bundles on the context so the per-signal loop can pull
+    # the exact side's bundle when constructing decision/execute metadata.
+    context.__dict__["_md_bundles_by_pair"] = bundles_by_pair
+
+    return bundles_by_token, stale_tokens, stale_codes
+
+
+async def _prefetch_market_data_wss(
+    context: TradingContext,
+    normalized: list,
+) -> tuple[dict[str, Any], set[str], dict[tuple[str, str], str]]:
+    """Legacy WSS-primary path. Subscribe → bootstrap → require_fresh_data."""
     unique_tokens: list[str] = []
     seen: set[str] = set()
     for signal, _ in normalized:
@@ -329,11 +529,12 @@ async def _prefetch_market_data_for_signals(
             unique_tokens.append(token_id)
 
     if not unique_tokens:
-        return {}, set()
+        return {}, set(), {}
 
     timeout_seconds = _market_data_subscribe_timeout(context)
     bundles_by_token: dict[str, Any] = {}
     stale_tokens: set[str] = set()
+    stale_codes: dict[tuple[str, str], str] = {}
 
     analysis_sem = _analysis_semaphore(context)
 
@@ -385,6 +586,12 @@ async def _prefetch_market_data_for_signals(
         *(_resolve_one(token_id) for token_id in unique_tokens),
         return_exceptions=True,
     )
+    sides_by_token: dict[str, set[str]] = {}
+    for signal, _ in normalized:
+        side = str(getattr(signal, "side", "") or "").upper()
+        if signal.token_id and side:
+            sides_by_token.setdefault(signal.token_id, set()).add(side)
+
     for entry in results:
         if isinstance(entry, Exception):
             logger.warning(
@@ -395,6 +602,8 @@ async def _prefetch_market_data_for_signals(
         token_id, bundle = entry
         if bundle is None:
             stale_tokens.add(token_id)
+            for side in sides_by_token.get(token_id, {""}):
+                stale_codes[(token_id, side)] = "market_data_stale"
         else:
             bundles_by_token[token_id] = bundle
             bundle_source = getattr(getattr(bundle, "source", None), "value", None) or str(getattr(bundle, "source", ""))
@@ -404,7 +613,7 @@ async def _prefetch_market_data_for_signals(
                     token_id,
                     bundle_source,
                 )
-    return bundles_by_token, stale_tokens
+    return bundles_by_token, stale_tokens, stale_codes
 
 
 async def _fetch_live_position_size(
@@ -1054,10 +1263,13 @@ async def execute_trades(
     market_min_size_by_token: dict[str, float] = {}
     tick_size_by_token: dict[str, float] = {}
     market_data_stale_tokens: set[str] = set()
+    market_data_stale_codes: dict[tuple[str, str], str] = {}
     if normalized:
-        bundles_by_token, market_data_stale_tokens = await _prefetch_market_data_for_signals(
-            context, normalized
-        )
+        (
+            bundles_by_token,
+            market_data_stale_tokens,
+            market_data_stale_codes,
+        ) = await _prefetch_market_data_for_signals(context, normalized)
         for token_id, bundle in bundles_by_token.items():
             try:
                 market_min_size_by_token[token_id] = float(bundle.tick.min_order_size)
@@ -1067,6 +1279,12 @@ async def execute_trades(
                 market_data_stale_tokens.add(token_id)
                 market_min_size_by_token.pop(token_id, None)
                 tick_size_by_token.pop(token_id, None)
+                for sig, _raw in normalized:
+                    if sig.token_id == token_id:
+                        side = str(getattr(sig, "side", "") or "").upper()
+                        market_data_stale_codes.setdefault(
+                            (token_id, side), "market_data_stale"
+                        )
 
     for signal, raw in normalized:
         labels = {"user_id": context.user_id, "leader_id": leader_id}
@@ -1093,8 +1311,22 @@ async def execute_trades(
         # If subscription + WSS handshake did not converge inside the
         # configured window, skip the signal rather than trade on stale or
         # REST-only prices/books.
-        if signal.token_id in market_data_stale_tokens:
-            skip_code = "market_data_stale"
+        _signal_side_norm = str(getattr(signal, "side", "") or "").upper()
+        _stale_pair_key = (signal.token_id, _signal_side_norm)
+        _bundle_for_pair = None
+        if normalized:
+            _bundle_for_pair = (
+                getattr(context, "_md_bundles_by_pair", {}).get(_stale_pair_key)
+                if hasattr(context, "_md_bundles_by_pair")
+                else None
+            )
+        if (
+            _stale_pair_key in market_data_stale_codes
+            or (_bundle_for_pair is None and signal.token_id in market_data_stale_tokens)
+        ):
+            skip_code = market_data_stale_codes.get(
+                _stale_pair_key, "market_data_stale"
+            )
             log_trade_skip(
                 logger,
                 side=signal.side,
@@ -1104,7 +1336,7 @@ async def execute_trades(
                 price=float(signal.price) if signal.price else None,
                 usdc_value=float(signal.usdc_size),
                 skip_code=skip_code,
-                reason="market data not WSS-fresh within timeout",
+                reason="REST snapshot not executable: " + skip_code,
                 event_slug=signal.event_slug,
                 meta={"user_id": context.user_id, "leader_id": leader_id},
             )
@@ -1496,6 +1728,27 @@ async def execute_trades(
                     tick_size=market_tick_size,
                 )
 
+                _decision_meta: dict[str, Any] = {
+                    "user_id": context.user_id,
+                    "leader_id": leader_id,
+                    "leader_score": leader_score.score,
+                    "trade_score": decision.trade_score,
+                    "price_drift_pct": decision.price_drift_pct,
+                    "edge_decay_pct": decision.edge_decay_pct,
+                    "leader_notional": float(signal.usdc_size),
+                    "tx_hash": signal.tx_hash,
+                }
+                if _bundle_for_pair is not None:
+                    _bsrc = getattr(_bundle_for_pair, "source", None)
+                    _decision_meta["market_data_source"] = (
+                        getattr(_bsrc, "value", None) or str(_bsrc or "")
+                    )
+                    _q = getattr(_bundle_for_pair, "quote", None)
+                    _b = getattr(_bundle_for_pair, "book", None)
+                    if _q is not None:
+                        _decision_meta["quote_source"] = getattr(_q, "source", None)
+                    if _b is not None:
+                        _decision_meta["book_source"] = getattr(_b, "source", None)
                 log_trade_decision(
                     logger,
                     side=signal.side,
@@ -1505,16 +1758,7 @@ async def execute_trades(
                     allow=decision.allow,
                     reason=decision.reason,
                     event_slug=signal.event_slug,
-                    meta={
-                        "user_id": context.user_id,
-                        "leader_id": leader_id,
-                        "leader_score": leader_score.score,
-                        "trade_score": decision.trade_score,
-                        "price_drift_pct": decision.price_drift_pct,
-                        "edge_decay_pct": decision.edge_decay_pct,
-                        "leader_notional": float(signal.usdc_size),
-                        "tx_hash": signal.tx_hash,
-                    },
+                    meta=_decision_meta,
                 )
 
                 if not decision.allow:

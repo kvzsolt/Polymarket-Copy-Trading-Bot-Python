@@ -207,8 +207,11 @@ class MarketWebSocket:
         logger.info("MarketWS: subscribed to %d asset(s)", len(self._asset_ids))
 
     async def _heartbeat(self, ws: Any) -> None:
+        # First PING is sent immediately on connect, not after the interval.
+        # This records connection liveness inside the startup window so the
+        # market-data freshness gate does not reject a freshly-connected
+        # stream that has not yet had a full heartbeat cycle.
         while self._running:
-            await asyncio.sleep(self._heartbeat_interval)
             try:
                 await ws.send("PING")
                 self._call_cache_optional("on_market_ws_heartbeat", time.monotonic())
@@ -218,6 +221,7 @@ class MarketWebSocket:
                 with contextlib.suppress(Exception):
                     await ws.close()
                 return
+            await asyncio.sleep(self._heartbeat_interval)
 
     async def _message_loop(self, ws: Any) -> None:
         async for raw_msg in ws:

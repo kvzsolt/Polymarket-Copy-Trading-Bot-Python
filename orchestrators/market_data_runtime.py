@@ -558,10 +558,9 @@ class MarketDataRuntime:
             source="rest_snapshot",
         )
 
-        # REST bootstrap gives a baseline only. It must not satisfy WSS-fresh
-        # execution policy. The next WSS `book` / price event must make the token
-        # executable.
-        self.market_store.mark_dirty(token_id, "awaiting_wss_after_rest_bootstrap")
+        # PR10.4: REST snapshot is the primary execution source. A healthy
+        # REST bootstrap leaves the token executable immediately; we no
+        # longer hold it dirty waiting for a WSS upgrade.
 
     def _refresh_counts(self) -> None:
         stale = 0
