@@ -72,6 +72,7 @@ class AbstractOrderRepository(ABC):
         asset: str | None,
         condition_id: str | None,
         status: str = "in_progress",
+        stale_claim_ttl_seconds: float = 300.0,
     ) -> bool: ...
 
     @abstractmethod
