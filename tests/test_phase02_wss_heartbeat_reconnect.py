@@ -86,9 +86,14 @@ class TestPongTimeout:
         assert ws._is_pong_missed() is True
 
     def test_no_pong_ever_after_ping_is_missed_if_aged(self) -> None:
+        # Real loop seeds _last_pong_monotonic at connect time as the
+        # "alive" marker. If a long time elapses between that marker and
+        # the most recent PING send with no inbound activity, the
+        # detector must fire.
         ws = MarketWebSocket(MarketStateStore())
-        ws._last_ping_monotonic = time.monotonic() - 30.0
-        ws._last_pong_monotonic = None
+        now = time.monotonic()
+        ws._last_pong_monotonic = now - 30.0  # connection established 30s ago, silent since
+        ws._last_ping_monotonic = now
         assert ws._is_pong_missed() is True
 
     @pytest.mark.asyncio
