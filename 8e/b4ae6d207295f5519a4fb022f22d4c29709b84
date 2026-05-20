@@ -1,0 +1,36 @@
+tests/test_phase02_wss_heartbeat_reconnect.py
+  s_ff7681420a3a04::t_e741f3a6c58e0b 1-287
+cache/price_cache.py
+  s_ff7681420a3a04::t_da4ffa273d30f0 1-192
+clients/ws_constants.py
+  s_ff7681420a3a04::t_8fdbb8acde4059 1-11
+tests/test_market_wss_schema_and_degraded.py
+  s_ff7681420a3a04::t_c373ad91f31d72 273-275,277-278
+clients/market_ws.py
+  s_ff7681420a3a04::t_ed86a2d719032b 239-241,248-262,265-273
+  s_ff7681420a3a04::t_14e446bcc2510c 202-209,217-218
+  s_ff7681420a3a04::t_50acb301f98fc1 27,29-30
+  s_ff7681420a3a04::t_a52a4ee61613b2 146-147
+  s_ff7681420a3a04::t_9eba11a0679aea 66,87-94
+  s_ff7681420a3a04::t_8fa5b704e18182 280-282,294-296
+tests/test_phase5_hardening.py
+  s_ff7681420a3a04::t_45a9de1b0ddb61 214-216,218-219
+tests/test_phase02_price_cache.py
+  s_ff7681420a3a04::t_8520d13b04be4d 1-226
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.11",
+  "base_commit_sha": "8eb4ae6d207295f5519a4fb022f22d4c29709b84",
+  "prompts": {},
+  "sessions": {
+    "s_ff7681420a3a04": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7dfb4b64-bee2-4e43-b956-7509a9aba85d",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
