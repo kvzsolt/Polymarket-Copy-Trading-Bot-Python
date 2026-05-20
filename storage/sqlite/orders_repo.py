@@ -27,6 +27,17 @@ _RETRYABLE_FAILED_STATUS = "retryable_failed"
 # Legacy prefixes for backward compat with pre-migration data
 _LEGACY_RETRY_PREFIXES = ("retryable_failed_", "retry_pending_")
 
+# Terminal processed_trade statuses that must never be overwritten by a
+# later mark_processed_trade call (e.g. a late retryable_failed wouldn't
+# resurrect a confirmed fill). Used by the guard in mark_processed_trade.
+_PROCESSED_TRADE_TERMINAL_STATES = (
+    "executed",
+    "processed",
+    "filled_reconciled",
+    "duplicate_ignored",
+    "terminal_failed",
+)
+
 
 @dataclass
 class OrderSubmissionRecord:
@@ -412,9 +423,10 @@ class OrdersRepo(AbstractOrderRepository):
     ) -> None:
         if not trade_key:
             return
+        terminal_placeholders = ",".join(["?"] * len(_PROCESSED_TRADE_TERMINAL_STATES))
         with create_connection(self.db_path) as conn:
             conn.execute(
-                """
+                f"""
                 INSERT INTO processed_trades (
                     trade_key, user_id, leader_id, tx_hash, side, asset, condition_id, status, processed_at, retry_attempt, order_id
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -423,6 +435,7 @@ class OrdersRepo(AbstractOrderRepository):
                     processed_at = excluded.processed_at,
                     retry_attempt = excluded.retry_attempt,
                     order_id = COALESCE(excluded.order_id, processed_trades.order_id)
+                WHERE processed_trades.status NOT IN ({terminal_placeholders})
                 """,
                 (
                     trade_key,
@@ -436,6 +449,7 @@ class OrdersRepo(AbstractOrderRepository):
                     time.time(),
                     retry_attempt,
                     order_id,
+                    *_PROCESSED_TRADE_TERMINAL_STATES,
                 ),
             )
             conn.commit()
