@@ -1,0 +1,24 @@
+tests/test_phase02_wss_heartbeat_reconnect.py
+  s_c398250637fcd5::t_b31bd5f45de719 89-92,94-96
+clients/market_ws.py
+  s_c398250637fcd5::t_42508b1a323a8c 161-164
+  s_c398250637fcd5::t_00e39d0ab6eb06 98
+  s_c398250637fcd5::t_e576ca21862a36 241-245,259-260,280-281
+  s_c398250637fcd5::t_d5ab8a79bbaf5b 598,612,618-623
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.11",
+  "base_commit_sha": "9ad4c5717c4d1beff9cb02ed16a7c6d73025b480",
+  "prompts": {},
+  "sessions": {
+    "s_c398250637fcd5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5b64fae2-52eb-4473-9d62-ded8bc23109d",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
