@@ -10,8 +10,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from decimal import Decimal
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -235,6 +236,47 @@ class TestHeartbeat:
         with patch("clients.user_ws.asyncio.sleep", new_callable=AsyncMock):
             await user_ws._heartbeat(mock_ws)
             # Should return without raising
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_closes_socket_on_missed_pong(
+        self,
+        cache: MarketStateStore,
+    ) -> None:
+        """Parity with market WS: missing inbound activity within the
+        pong-timeout window closes the socket so the reconnect loop fires."""
+        ws_client = UserWebSocket(cache, pong_timeout_seconds=10.0)
+        ws_client._running = True
+        # Seed a very stale alive-anchor to mimic a dead remote stream.
+        ws_client._last_pong_monotonic = time.monotonic() - 100.0
+
+        sock = MagicMock()
+        sock.send = AsyncMock()
+        sock.close = AsyncMock()
+
+        async def fake_sleep(_secs: float) -> None:
+            ws_client._running = False
+
+        with patch("clients.user_ws.asyncio.sleep", side_effect=fake_sleep):
+            await ws_client._heartbeat(sock)
+
+        sock.close.assert_awaited()
+
+    def test_pong_detector_unit(self, cache: MarketStateStore) -> None:
+        """Direct unit check on the pong-missed predicate."""
+        ws_client = UserWebSocket(cache, pong_timeout_seconds=10.0)
+        assert ws_client._is_pong_missed() is False  # no ping yet
+
+        ws_client._last_ping_monotonic = 200.0
+        ws_client._last_pong_monotonic = 100.0  # 100s gap
+        assert ws_client._is_pong_missed() is True
+
+        ws_client._last_pong_monotonic = 195.0  # 5s gap — fresh
+        assert ws_client._is_pong_missed() is False
+
+        # Fallback: no pong ever, but last ping aged past timeout.
+        ws_client._last_ping_monotonic = time.monotonic() - 30.0
+        ws_client._last_pong_monotonic = None
+        assert ws_client._is_pong_missed() is True
 
 
 # ---------------------------------------------------------------------------
