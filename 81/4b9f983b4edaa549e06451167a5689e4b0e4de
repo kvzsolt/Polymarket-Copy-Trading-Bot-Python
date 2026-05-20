@@ -1,0 +1,29 @@
+services/orderRepository.py
+  s_e10a53c1445022::t_988c85b42accce 71,82
+  s_e10a53c1445022::t_e1a883c6823e6f 60-70,72-81,83-84
+orchestrators/trade_pipeline.py
+  s_e10a53c1445022::t_158b33f29c390c 1331-1349
+tests/test_phase03_atomic_idempotency.py
+  s_e10a53c1445022::t_1398e272b1ae26 1-239
+domain/ports/repositories.py
+  s_e10a53c1445022::t_320c770aa9d67b 64-76
+storage/sqlite/orders_repo.py
+  s_e10a53c1445022::t_c5531b1a7c10a2 322-332,334-347,350-353,356-358,361-375,378-388,391-398
+  s_e10a53c1445022::t_e14ba8b7939be6 333,348-349,354-355,359-360,376-377,389-390
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.11",
+  "base_commit_sha": "814b9f983b4edaa549e06451167a5689e4b0e4de",
+  "prompts": {},
+  "sessions": {
+    "s_e10a53c1445022": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "927fdc5f-5b72-41fc-862e-2822e8a8ae6e",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
