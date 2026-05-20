@@ -1,0 +1,37 @@
+tests/test_user_ws.py
+  s_6c0b443b2b3221::t_2d7a8ad01b9601 13,15
+  s_6c0b443b2b3221::t_2e9f49773a0049 240-280
+clients/user_ws.py
+  s_6c0b443b2b3221::t_4bcda9140d99b1 124-125,135-138
+  s_6c0b443b2b3221::t_79938fcb141594 323,334-344
+  s_6c0b443b2b3221::t_ff5572b1657e24 18
+  s_6c0b443b2b3221::t_f7c926de607813 191,194,202-223
+  s_6c0b443b2b3221::t_0fa14f180fe318 48,50-51
+  s_6c0b443b2b3221::t_d3ab0f40b72644 71-72,85-97
+  s_6c0b443b2b3221::t_e51306db7c7037 231-233
+clients/market_ws.py
+  s_6c0b443b2b3221::t_18da185126706e 8-10
+  s_6c0b443b2b3221::t_685b2a85f3b852 278-283,288-290
+test.py
+  s_6c0b443b2b3221::t_0abfcc21ecc652 29
+tests/test_phase02_wss_heartbeat_reconnect.py
+  s_6c0b443b2b3221::t_cb3d8065b4a9ff 135,144-147,150-155,157-162,191-213
+  s_6c0b443b2b3221::t_83f44c3f7e82d7 136-143,148-149,156,163-190
+  s_6c0b443b2b3221::t_f789ff09c56b38 266-291
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.11",
+  "base_commit_sha": "69ff3810582c84919ac7cd9c45295b32aadcdf05",
+  "prompts": {},
+  "sessions": {
+    "s_6c0b443b2b3221": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "05ddc6f4-6991-4406-a594-c4d762a23418",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
