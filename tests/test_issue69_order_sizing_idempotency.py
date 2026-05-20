@@ -24,26 +24,30 @@ class TestBuySizing:
     """BUY effective-size computation via size_buy_order."""
 
     def test_buy_below_venue_min_upsizes_when_cap_allows(self):
-        """Small BUY below venue min is upsized to venue min when cap covers it."""
+        """Small BUY below taker min is upsized when cap covers it."""
+        # live_price=0.50 => taker_min_tokens = ceil(1/0.50) = 2
+        # base_notional=0.50 => desired_size=1 token < 2 => upsize to 2
         result = size_buy_order(
             live_price=0.50,
-            base_notional_usdc=2.0,     # 4 tokens at 0.50
-            max_notional_usdc=20.0,
-            market_min_size=5.0,          # venue min = 5 tokens
+            base_notional_usdc=0.50,
+            max_notional_usdc=2.0,
+            market_min_size=5.0,          # ignored for taker orders
             tick_size=0.01,
             slippage_ratio=0.02,
         )
         assert result.accept is True
         assert result.upsized is True
-        assert result.effective_size >= Decimal("5")  # upsized to venue min
+        assert result.effective_size == Decimal("2")  # upsized to taker min
         assert result.reason == "upsized"
 
     def test_buy_below_venue_min_skips_when_cap_insufficient(self):
-        """Small BUY below venue min is skipped when cap cannot cover upsize."""
+        """Small BUY below taker min is skipped when cap cannot cover upsize."""
+        # live_price=0.50 => taker_min=2 tokens => worst_notional ~ 2*0.51=1.02
+        # cap=1.0 < 1.02 => can't afford upsize
         result = size_buy_order(
             live_price=0.50,
-            base_notional_usdc=0.5,      # 1 token at 0.50
-            max_notional_usdc=1.0,        # can't cover 5 tokens at worst price
+            base_notional_usdc=0.5,
+            max_notional_usdc=1.0,
             market_min_size=5.0,
             tick_size=0.01,
             slippage_ratio=0.02,
@@ -52,7 +56,7 @@ class TestBuySizing:
         assert result.reason == "buy_cap_blocks_upsize_to_venue_min"
 
     def test_buy_above_venue_min_accepts(self):
-        """Normal BUY above venue min is accepted without upsize."""
+        """Normal BUY above taker min is accepted without upsize."""
         result = size_buy_order(
             live_price=0.50,
             base_notional_usdc=10.0,     # 20 tokens
@@ -63,7 +67,7 @@ class TestBuySizing:
         )
         assert result.accept is True
         assert result.upsized is False
-        assert result.effective_size >= Decimal("5")
+        assert result.effective_size >= Decimal("2")
 
     def test_buy_invalid_price_rejects(self):
         result = size_buy_order(
@@ -130,23 +134,27 @@ class TestBuySizing:
         assert result.effective_size <= max_size + Decimal("0.01")  # small rounding tolerance
 
     def test_buy_risk_cap_too_low_for_min_order(self):
-        """Cap is too low to even buy venue-min tokens at worst price."""
+        """Cap is too low to even buy taker-min tokens at worst price."""
+        # live_price=10.0 => taker_min = ceil(1/10) = 0.1 token
+        # worst_price ~ 10.20 => worst_notional ~ 1.02
+        # cap=0.50 < 1.02 => can't fill minimum
         result = size_buy_order(
             live_price=10.0,
             base_notional_usdc=100.0,
-            max_notional_usdc=5.0,         # $5 cap
-            market_min_size=5.0,             # 5 tokens * $10+ = $50+ needed
+            max_notional_usdc=0.5,         # $0.5 cap
+            market_min_size=5.0,             # ignored
             tick_size=0.01,
             slippage_ratio=0.02,
         )
         assert result.accept is False
-        # Either cap blocks upsize or cap too low for min order
         assert result.reason in ("buy_cap_blocks_upsize_to_venue_min", "risk_cap_too_low_for_min_order")
 
     def test_buy_no_venue_min_skips_upsize(self):
-        """When market_min_size=0, no upsize logic applies."""
+        """When live price is high enough that taker min is tiny, no upsize applies."""
+        # live_price=2.0 => taker_min = ceil(1/2) = 0.5 tokens
+        # base_notional=10 => desired_size=5 tokens >= 0.5 => no upsize
         result = size_buy_order(
-            live_price=0.50,
+            live_price=2.0,
             base_notional_usdc=10.0,
             max_notional_usdc=50.0,
             market_min_size=0.0,
@@ -154,7 +162,7 @@ class TestBuySizing:
         )
         assert result.accept is True
         assert result.upsized is False
-        assert result.venue_min_size == Decimal("0")
+        assert result.venue_min_size == Decimal("0.5")  # taker min from $1 notional / 2.0 price
 
     def test_buy_tick_size_rounding(self):
         """Worst price is rounded up to tick."""
@@ -198,10 +206,12 @@ class TestSellSizing:
     """SELL effective-size computation via size_sell_order."""
 
     def test_sell_below_venue_min_skips_insufficient_held(self):
-        """SELL below venue min is skipped when held shares < venue min."""
+        """SELL below taker min is skipped when held shares < taker min."""
+        # live_price=0.50 => taker_min=2 tokens
+        # held=1.0 < 2 => skip
         result = size_sell_order(
-            sell_tokens=2.0,
-            held_size=3.0,
+            sell_tokens=1.0,
+            held_size=1.0,
             live_price=0.50,
             market_min_size=5.0,
         )
@@ -209,19 +219,21 @@ class TestSellSizing:
         assert result.reason == "sell_held_below_venue_min"
 
     def test_sell_upsizes_when_held_supports(self):
-        """SELL below venue min is upsized when held shares >= venue min."""
+        """SELL below taker min is upsized when held shares >= taker min."""
+        # live_price=0.50 => taker_min=2 tokens
+        # sell=1 < 2, held=10 >= 2 => upsize to 2
         result = size_sell_order(
-            sell_tokens=2.0,
+            sell_tokens=1.0,
             held_size=10.0,
             live_price=0.50,
             market_min_size=5.0,
         )
         assert result.accept is True
         assert result.upsized is True
-        assert result.effective_size >= Decimal("5")
+        assert result.effective_size == Decimal("2")
 
     def test_sell_normal_accepts(self):
-        """Normal SELL above venue min is accepted without upsize."""
+        """Normal SELL above taker min is accepted without upsize."""
         result = size_sell_order(
             sell_tokens=10.0,
             held_size=20.0,
@@ -254,26 +266,28 @@ class TestSellSizing:
         assert result.reason == "sell_size_zero"
 
     def test_sell_no_venue_min(self):
-        """Without venue min, no upsize logic applies."""
+        """Without venue min, taker minimum still applies."""
         result = size_sell_order(
             sell_tokens=3.0,
             held_size=10.0,
             live_price=0.50,
             market_min_size=0.0,
         )
+        # taker min at price 0.50 = 2 tokens; sell=3 >= 2 => accept
         assert result.accept is True
         assert result.upsized is False
 
     def test_sell_venue_min_exact_held(self):
-        """SELL with held exactly at venue min is accepted."""
+        """SELL with held exactly at taker min is accepted."""
+        # live_price=0.50 => taker_min=2
         result = size_sell_order(
-            sell_tokens=5.0,
-            held_size=5.0,
+            sell_tokens=2.0,
+            held_size=2.0,
             live_price=0.50,
             market_min_size=5.0,
         )
         assert result.accept is True
-        assert result.effective_size >= Decimal("5")
+        assert result.effective_size == Decimal("2")
 
     def test_sell_rounding_ceiling(self):
         """SELL size is rounded up (ceiling) to 4 decimal places."""
@@ -545,7 +559,7 @@ class TestSizingIdempotencyRoundTrip:
         )
         upsized = size_buy_order(
             live_price=0.50,
-            base_notional_usdc=2.0,
+            base_notional_usdc=0.50,
             max_notional_usdc=50.0,
             market_min_size=5.0,
             tick_size=0.01,
@@ -624,8 +638,8 @@ class TestWorstNotionalConsistency:
     def test_buy_upsized_worst_notional_consistent(self):
         result = size_buy_order(
             live_price=0.50,
-            base_notional_usdc=2.0,
-            max_notional_usdc=20.0,
+            base_notional_usdc=0.50,
+            max_notional_usdc=2.0,
             market_min_size=5.0,
             tick_size=0.01,
             slippage_ratio=0.02,
@@ -637,7 +651,7 @@ class TestWorstNotionalConsistency:
 
     def test_sell_upsized_worst_notional_consistent(self):
         result = size_sell_order(
-            sell_tokens=2.0,
+            sell_tokens=1.0,
             held_size=10.0,
             live_price=0.50,
             market_min_size=5.0,

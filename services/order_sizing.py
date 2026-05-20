@@ -26,6 +26,9 @@ from utils.logger import get_logger
 
 logger = get_logger("OrderSizing")
 
+# Polymarket taker (FOK/IOC/marketable) minimum order notional in USDC.
+_TAKER_MIN_NOTIONAL_USDC = Decimal("1")
+
 
 @dataclass(frozen=True)
 class SizingDecision:
@@ -38,6 +41,16 @@ class SizingDecision:
     reason: str
     upsized: bool
     worst_notional: Decimal = Decimal("0")
+
+
+def _taker_min_tokens(live_price: float) -> Decimal:
+    """Compute minimum token count for a taker order given the $1 USDC floor."""
+    if live_price <= 0:
+        return Decimal("0")
+    # Minimum token count = ceil($1 / live_price), quantized to 4 decimals.
+    return (Decimal("1") / Decimal(str(live_price))).quantize(
+        Decimal("0.0001"), rounding=ROUND_CEILING
+    )
 
 
 def size_buy_order(
@@ -60,7 +73,9 @@ def size_buy_order(
     max_notional_usdc:
         Hard cap on USDC notional (account cap, per-trade cap, etc.).
     market_min_size:
-        Venue minimum order size in tokens (from market metadata).
+        **Ignored for taker orders.**  Kept for backward-compatible
+        signatures; the actual floor is derived from the Polymarket
+        taker-minimum of **$1 USDC notional**.
     tick_size:
         Tick size for price rounding (from market metadata).
     slippage_ratio:
@@ -74,7 +89,7 @@ def size_buy_order(
         final token count and ``effective_price`` is the worst-case price
         rounded up to the tick.
     """
-    d_market_min = Decimal(str(market_min_size)) if market_min_size > 0 else Decimal("0")
+    d_market_min = _taker_min_tokens(live_price)
     d_tick_size = Decimal(str(tick_size)) if tick_size > 0 else Decimal("0")
 
     if live_price <= 0:
@@ -154,7 +169,9 @@ def size_sell_order(
     live_price:
         Current mid/bid price.
     market_min_size:
-        Venue minimum order size in tokens.
+        **Ignored for taker orders.**  Kept for backward-compatible
+        signatures; the actual floor is derived from the Polymarket
+        taker-minimum of **$1 USDC notional**.
 
     Returns
     -------
@@ -162,7 +179,7 @@ def size_sell_order(
         ``accept=True`` when the order should proceed; ``accept=False``
         when it must be skipped.
     """
-    d_market_min = Decimal(str(market_min_size)) if market_min_size > 0 else Decimal("0")
+    d_market_min = _taker_min_tokens(live_price)
     d_live_price = Decimal(str(live_price)) if live_price > 0 else Decimal("0")
 
     if sell_tokens <= 0:
@@ -176,7 +193,7 @@ def size_sell_order(
 
     upsized = False
     # Below venue minimum — try to upsize to venue min if held shares allow
-    if d_market_min > 0 and d_sell < d_market_min:
+    if d_market_min >0 and d_sell < d_market_min:
         if d_held < d_market_min:
             return SizingDecision(
                 False, Decimal("0"), d_live_price, d_market_min,
