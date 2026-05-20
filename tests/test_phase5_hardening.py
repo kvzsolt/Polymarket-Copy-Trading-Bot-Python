@@ -211,11 +211,12 @@ class TestCacheFreshness:
 
 
 class TestHeartbeatInterval:
-    def test_market_ws_heartbeat_is_ten_seconds(self) -> None:
-        assert MARKET_HEARTBEAT_INTERVAL == 10
+    def test_market_ws_heartbeat_is_five_seconds(self) -> None:
+        # Phase 2 spec: 5-second cadence with 10s pong timeout.
+        assert MARKET_HEARTBEAT_INTERVAL == 5
 
-    def test_user_ws_heartbeat_is_ten_seconds(self) -> None:
-        assert USER_HEARTBEAT_INTERVAL == 10
+    def test_user_ws_heartbeat_is_five_seconds(self) -> None:
+        assert USER_HEARTBEAT_INTERVAL == 5
 
 
 # ---------------------------------------------------------------------------
