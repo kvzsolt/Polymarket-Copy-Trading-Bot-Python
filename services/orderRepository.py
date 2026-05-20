@@ -57,6 +57,31 @@ class OrderRepository:
     def has_processed_trade(self, trade_key: str) -> bool:
         return self._repo.has_processed_trade(trade_key)
 
+    def try_claim_processed_trade(
+        self,
+        *,
+        trade_key: str,
+        user_id: str,
+        leader_id: str | None,
+        tx_hash: str | None,
+        side: str | None,
+        asset: str | None,
+        condition_id: str | None,
+        status: str = "in_progress",
+        stale_claim_ttl_seconds: float = 300.0,
+    ) -> bool:
+        return self._repo.try_claim_processed_trade(
+            trade_key=trade_key,
+            user_id=user_id,
+            leader_id=leader_id,
+            tx_hash=tx_hash,
+            side=side,
+            asset=asset,
+            condition_id=condition_id,
+            status=status,
+            stale_claim_ttl_seconds=stale_claim_ttl_seconds,
+        )
+
     def get_processed_trade(self, trade_key: str) -> dict[str, Any] | None:
         return self._repo.get_processed_trade(trade_key)
 

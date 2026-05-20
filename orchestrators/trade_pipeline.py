@@ -1328,7 +1328,25 @@ async def execute_trades(
         metrics.inc("trades_detected_total", labels=labels)
 
         trade_key = build_trade_key(context.user_id, leader_id, raw)
-        if context.orders_repo.has_processed_trade(trade_key):
+        # Phase 3: atomic claim replaces the prior non-atomic
+        # has_processed_trade → mark_processed_trade check-then-set. A
+        # concurrent worker that races on the same trade_key sees the row
+        # already inserted and gets False, so only one pipeline run can
+        # advance past this point per trade_key.
+        _raw_tx_hash = raw.get("transactionHash") or raw.get("txHash") or ""
+        _raw_side = str(raw.get("side") or "").strip().upper()
+        _raw_asset = raw.get("tokenID") or raw.get("token_id") or raw.get("asset") or ""
+        _raw_condition = raw.get("conditionId") or raw.get("condition_id") or ""
+        if not context.orders_repo.try_claim_processed_trade(
+            trade_key=trade_key,
+            user_id=context.user_id,
+            leader_id=leader_id,
+            tx_hash=str(_raw_tx_hash),
+            side=_raw_side,
+            asset=str(_raw_asset),
+            condition_id=str(_raw_condition),
+            status="in_progress",
+        ):
             metrics.inc("duplicate_order_prevented_total", labels=labels)
             results.append(
                 TradePipelineResult(
