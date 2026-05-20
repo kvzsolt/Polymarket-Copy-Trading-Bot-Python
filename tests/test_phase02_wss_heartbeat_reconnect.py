@@ -132,6 +132,85 @@ class TestPongTimeout:
         ws_client._handle_message("PONG")
         assert ws_client._last_pong_monotonic is not None
 
+    @pytest.mark.asyncio
+    async def test_heartbeat_loop_detects_silent_server_with_seed(self) -> None:
+        """Silent-server regression: server sends ZERO frames after connect.
+
+        Prior bug: ``_last_ping_monotonic`` was refreshed every iteration and
+        the missed-pong check ran immediately after, so the elapsed gap was
+        always ~0. The fix seeds ``_last_pong_monotonic`` at connect time so
+        the anchor is stable and the gap grows each iteration until it
+        exceeds the pong-timeout window.
+        """
+        ws_client = MarketWebSocket(MarketStateStore(), pong_timeout_seconds=10.0)
+        ws_client._asset_ids = [TOK]
+        ws_client._running = True
+        # Mimic what _reconnect_loop does on a successful connect.
+        ws_client._last_pong_monotonic = time.monotonic() - 100.0  # very stale
+
+        sock = MagicMock()
+        sock.send = AsyncMock()
+        sock.close = AsyncMock()
+
+        async def fake_sleep(_secs: float) -> None:
+            ws_client._running = False  # one iteration only
+
+        with patch("clients.market_ws.asyncio.sleep", side_effect=fake_sleep):
+            await ws_client._heartbeat(sock)
+
+        sock.close.assert_awaited()
+        assert sock.send.await_count >= 1
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_loop_detects_silent_server_no_seed(self) -> None:
+        """Silent-server regression: no anchor seeded, no inbound ever.
+
+        Defence in depth: even when ``_last_pong_monotonic`` never gets set,
+        ``_is_pong_missed`` must fall back to time-since-last-ping rather
+        than returning False forever.
+        """
+        ws_client = MarketWebSocket(MarketStateStore(), pong_timeout_seconds=10.0)
+        ws_client._asset_ids = [TOK]
+        ws_client._running = True
+        ws_client._last_pong_monotonic = None  # explicit: no seed
+
+        sock = MagicMock()
+        sock.send = AsyncMock()
+        sock.close = AsyncMock()
+
+        async def fake_sleep(_secs: float) -> None:
+            # Age the recorded PING into the past so the fallback branch trips.
+            if ws_client._last_ping_monotonic is not None:
+                ws_client._last_ping_monotonic -= 30.0
+            ws_client._running = False
+
+        with patch("clients.market_ws.asyncio.sleep", side_effect=fake_sleep):
+            await ws_client._heartbeat(sock)
+
+        sock.close.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_user_ws_pong_detector_fires(self) -> None:
+        """User WS must have the same pong-timeout detector as market WS."""
+        from cache.market_state_store import MarketStateStore as _S
+        from clients.user_ws import UserWebSocket
+
+        ws_client = UserWebSocket(_S(), pong_timeout_seconds=10.0)
+        ws_client._running = True
+        ws_client._last_pong_monotonic = time.monotonic() - 100.0
+
+        sock = MagicMock()
+        sock.send = AsyncMock()
+        sock.close = AsyncMock()
+
+        async def fake_sleep(_secs: float) -> None:
+            ws_client._running = False  # one iteration only
+
+        with patch("clients.user_ws.asyncio.sleep", side_effect=fake_sleep):
+            await ws_client._heartbeat(sock)
+
+        sock.close.assert_awaited()
+
 
 # ---------------------------------------------------------------------------
 # REST-bootstrap dedupe
@@ -183,6 +262,32 @@ class TestBootstrapDedupe:
         await ws._run_rest_bootstrap()
         await ws._run_rest_bootstrap()
         assert calls == 2
+
+    @pytest.mark.asyncio
+    async def test_bootstrap_in_flight_clears_after_exception(self) -> None:
+        """Even when the bootstrap callable raises, the in-flight flag must
+        clear so the next reconnect can issue a fresh resync."""
+        cache = MarketStateStore()
+
+        async def boom(asset_ids: list[str]) -> None:
+            raise RuntimeError("rest blew up")
+
+        ws = MarketWebSocket(cache, rest_bootstrap=boom)
+        ws._asset_ids = [TOK]
+
+        await ws._run_rest_bootstrap()
+        assert ws._bootstrap_in_flight is False
+
+        # A subsequent call must not be silently skipped.
+        called_again = 0
+
+        async def ok(asset_ids: list[str]) -> None:
+            nonlocal called_again
+            called_again += 1
+
+        ws._rest_bootstrap = ok
+        await ws._run_rest_bootstrap()
+        assert called_again == 1
 
 
 # ---------------------------------------------------------------------------

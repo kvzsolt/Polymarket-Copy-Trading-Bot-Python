@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import time
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
@@ -44,8 +45,10 @@ _MAX_RECONNECT_DELAY = 30.0
 
 try:
     from clients.ws_constants import USER_HEARTBEAT_INTERVAL as HEARTBEAT_INTERVAL
+    from clients.ws_constants import PONG_TIMEOUT_SECONDS
 except Exception:  # pragma: no cover
-    HEARTBEAT_INTERVAL = 10
+    HEARTBEAT_INTERVAL = 5
+    PONG_TIMEOUT_SECONDS = 10.0
 
 
 LifecycleCallback = Callable[[], Awaitable[None] | None]
@@ -65,6 +68,8 @@ class UserWebSocket:
         cache: MarketStateStore,
         *,
         ws_url: str = DEFAULT_USER_WS_URL,
+        heartbeat_interval: float | None = None,
+        pong_timeout_seconds: float | None = None,
         on_authenticated: LifecycleCallback | None = None,
         on_disconnected: LifecycleCallback | None = None,
         on_fill: EventCallback | None = None,
@@ -77,6 +82,19 @@ class UserWebSocket:
         self._running = False
         self._authenticated = False
         self._reconnect_delay = _MIN_RECONNECT_DELAY
+        self._heartbeat_interval = (
+            float(heartbeat_interval)
+            if heartbeat_interval is not None
+            else float(HEARTBEAT_INTERVAL)
+        )
+        self._pong_timeout_seconds = (
+            float(pong_timeout_seconds)
+            if pong_timeout_seconds is not None
+            else float(PONG_TIMEOUT_SECONDS)
+        )
+        self._last_ping_monotonic: float | None = None
+        self._last_pong_monotonic: float | None = None
+        self._tasks: set[asyncio.Task] = set()
 
         self._on_authenticated = on_authenticated
         self._on_disconnected = on_disconnected
@@ -103,6 +121,8 @@ class UserWebSocket:
         while self._running:
             try:
                 self._authenticated = False
+                self._last_ping_monotonic = None
+                self._last_pong_monotonic = None
 
                 async with websockets.connect(
                     self._ws_url,
@@ -112,6 +132,10 @@ class UserWebSocket:
                 ) as ws:
                     self._ws = ws
                     self._reconnect_delay = _MIN_RECONNECT_DELAY
+                    # Seed an "alive" marker at connect time so the missed-pong
+                    # detector has a stable anchor even when no inbound frame
+                    # ever arrives (silent server case).
+                    self._last_pong_monotonic = time.monotonic()
                     logger.info("UserWS: connected to %s", self._ws_url)
 
                     await self._authenticate(ws)
@@ -164,9 +188,10 @@ class UserWebSocket:
 
     async def _heartbeat(self, ws: Any) -> None:
         while self._running:
-            await asyncio.sleep(HEARTBEAT_INTERVAL)
+            await asyncio.sleep(self._heartbeat_interval)
             try:
                 await ws.send("PING")
+                self._last_ping_monotonic = time.monotonic()
             except Exception as exc:
                 logger.warning("UserWS: heartbeat send failed: %s", exc)
                 self._inc_metric(METRIC_WSS_HEARTBEAT_STALL, {"stream": "user"})
@@ -174,12 +199,38 @@ class UserWebSocket:
                     await ws.close()
                 return
 
+            # Missed-pong detector: if a PING was sent and no inbound frame
+            # arrived within the pong-timeout window, close the socket and
+            # let the reconnect loop bring up a fresh authenticated stream.
+            if self._pong_timeout_seconds > 0 and self._is_pong_missed():
+                logger.warning(
+                    "UserWS: pong timeout (no inbound activity within %.1fs) — reconnecting",
+                    self._pong_timeout_seconds,
+                )
+                self._inc_metric(METRIC_WSS_HEARTBEAT_STALL, {"stream": "user"})
+                with contextlib.suppress(Exception):
+                    await ws.close()
+                return
+
+    def _is_pong_missed(self) -> bool:
+        if self._last_ping_monotonic is None:
+            return False
+        last_alive = self._last_pong_monotonic
+        if last_alive is None:
+            elapsed = time.monotonic() - self._last_ping_monotonic
+        else:
+            elapsed = self._last_ping_monotonic - last_alive
+        return elapsed > self._pong_timeout_seconds
+
     async def _message_loop(self, ws: Any) -> None:
         async for raw_msg in ws:
             if not self._running:
                 break
 
             msg = raw_msg.decode("utf-8", errors="replace") if isinstance(raw_msg, bytes) else raw_msg
+            # Any inbound frame proves the pipe is alive; treat as a pong
+            # for the missed-pong detector.
+            self._last_pong_monotonic = time.monotonic()
             if msg in ("PING", "ping"):
                 with contextlib.suppress(Exception):
                     await ws.send("PONG")
@@ -269,10 +320,7 @@ class UserWebSocket:
             return
         result = callback()
         if asyncio.iscoroutine(result):
-            try:
-                asyncio.get_running_loop().create_task(result)
-            except RuntimeError:
-                pass
+            self._spawn(result)
 
     def _fire_event_callback(
         self,
@@ -283,10 +331,17 @@ class UserWebSocket:
             return
         result = callback(event)
         if asyncio.iscoroutine(result):
-            try:
-                asyncio.get_running_loop().create_task(result)
-            except RuntimeError:
-                pass
+            self._spawn(result)
+
+    def _spawn(self, coro: Any) -> None:
+        # Hold a strong reference so background tasks aren't GC'd mid-flight.
+        try:
+            task = asyncio.get_running_loop().create_task(coro)
+        except RuntimeError:
+            coro.close()
+            return
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
 
     async def _run_lifecycle_callback(
         self,

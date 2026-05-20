@@ -5,7 +5,9 @@ Intended production rule: execution reads market state only from this
 WSS-backed store and fails closed if state is stale, dirty, missing,
 or resolved.
 
-Polymarket market/user docs specify a literal "PING" heartbeat every 10 seconds.
+Polymarket market/user docs specify a literal "PING" heartbeat every 5 seconds,
+paired with a 10-second pong-timeout window; missing the window closes the
+socket so the reconnect loop performs a fresh bootstrap + resync.
 """
 
 from __future__ import annotations
@@ -273,12 +275,19 @@ class MarketWebSocket:
                 return
 
     def _is_pong_missed(self) -> bool:
+        # Silent-server detection: compare last sent PING against the most
+        # recent inbound activity (seeded at connect time so the anchor is
+        # never None in real flow). When no inbound has ever been observed
+        # (e.g. unit tests, or a connection that never seeded the anchor),
+        # fall back to time-since-last-ping so a stuck loop still detects
+        # the stall instead of returning False forever.
         if self._last_ping_monotonic is None:
             return False
         last_alive = self._last_pong_monotonic
         if last_alive is None:
-            return False
-        elapsed = self._last_ping_monotonic - last_alive
+            elapsed = time.monotonic() - self._last_ping_monotonic
+        else:
+            elapsed = self._last_ping_monotonic - last_alive
         return elapsed > self._pong_timeout_seconds
 
     async def _message_loop(self, ws: Any) -> None:
