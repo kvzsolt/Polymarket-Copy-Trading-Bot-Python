@@ -560,6 +560,7 @@ class MarketDataService:
             quote_source == MarketDataSource.WSS and book_source == MarketDataSource.WSS
         )
         rest_bootstrap_ok = False
+        rest_snapshot_ok = False
 
         if not wss_fresh:
             if (
@@ -585,11 +586,29 @@ class MarketDataService:
                 ):
                     rest_bootstrap_ok = True
 
-            if not rest_bootstrap_ok:
+            # REST snapshot freshness path: active only when the policy
+            # designates rest_snapshot as primary. Both components must be
+            # rest_snapshot-sourced and within the millisecond age cap.
+            # Used when WSS has not yet upgraded the cache (e.g. in the
+            # window between a REST fetch and the first WSS delta landing).
+            if (
+                not rest_bootstrap_ok
+                and policy.allow_rest_snapshot_for_execution
+                and quote_source == MarketDataSource.REST_SNAPSHOT
+                and book_source == MarketDataSource.REST_SNAPSHOT
+            ):
+                import time as _time
+
+                quote_age_ms = (_time.monotonic() - quote.monotonic_ts) * 1000.0
+                book_age_ms = (_time.monotonic() - book.monotonic_ts) * 1000.0
                 if (
-                    policy.require_wss_fresh
-                    and not policy.allow_rest_snapshot_for_execution
+                    quote_age_ms <= policy.rest_snapshot_max_age_ms
+                    and book_age_ms <= policy.rest_snapshot_max_age_ms
                 ):
+                    rest_snapshot_ok = True
+
+            if not rest_bootstrap_ok and not rest_snapshot_ok:
+                if policy.require_wss_fresh or policy.allow_rest_snapshot_for_execution:
                     return None
 
         # Aggregate bundle source for downstream observability.
@@ -597,6 +616,8 @@ class MarketDataService:
             bundle_source = MarketDataSource.WSS
         elif rest_bootstrap_ok:
             bundle_source = MarketDataSource.REST_BOOTSTRAP
+        elif rest_snapshot_ok:
+            bundle_source = MarketDataSource.REST_SNAPSHOT
         elif (
             quote_source == MarketDataSource.REST_DEGRADED
             or book_source == MarketDataSource.REST_DEGRADED

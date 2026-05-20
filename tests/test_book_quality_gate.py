@@ -253,7 +253,7 @@ class TestBookQualityGate:
         svc._config.execution.execution_require_fresh_book = True
         req = _req()
         asyncio.new_event_loop().run_until_complete(svc.execute(req))
-        svc._market_data_service.require_fresh_data.assert_awaited_once_with("0xabc")
+        svc._market_data_service.require_fresh_data.assert_awaited_once_with("0xabc", side="BUY", condition_id=None)
 
     def test_sell_side_also_gated(self):
         """Spread gate applies to SELL orders too."""

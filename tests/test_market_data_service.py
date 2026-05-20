@@ -938,3 +938,89 @@ class TestRequireExecutionSnapshot:
 
         bundle = await svc.require_fresh_data(TOKEN, side="BUY")
         assert bundle.source == MarketDataSource.REST_SNAPSHOT
+
+
+# ---------------------------------------------------------------------------
+# REST_SNAPSHOT path in _bundle_from_cache (Fix 4)
+# ---------------------------------------------------------------------------
+
+
+class TestBundleFromCacheRestSnapshot:
+    """_bundle_from_cache returns a REST_SNAPSHOT bundle when both components
+    are rest_snapshot-sourced and within the millisecond age cap."""
+
+    def _make_rest_snapshot_cache(self, *, stale_ms: float = 0.0) -> MarketStateStore:
+        cache = MarketStateStore()
+        ts = time.monotonic() - stale_ms / 1000.0
+        cache.store_rest_snapshot(
+            TOKEN,
+            condition_id=None,
+            bids={Decimal("0.84"): Decimal("100")},
+            asks={Decimal("0.87"): Decimal("50")},
+            tick_size=Decimal("0.01"),
+            min_order_size=Decimal("5"),
+            neg_risk=False,
+            fetched_at_monotonic=ts,
+        )
+        return cache
+
+    def _rest_snap_policy(self, **overrides) -> MarketDataPolicy:
+        defaults = dict(
+            primary_source="rest_snapshot",
+            require_wss_fresh=True,
+            allow_rest_snapshot_for_execution=True,
+            rest_snapshot_max_age_ms=500,
+            max_quote_age_seconds=10.0,
+            max_book_age_seconds=10.0,
+            max_tick_age_seconds=300.0,
+        )
+        defaults.update(overrides)
+        return MarketDataPolicy(**defaults)
+
+    @pytest.mark.asyncio
+    async def test_fresh_rest_snapshot_returns_bundle(self) -> None:
+        cache = self._make_rest_snapshot_cache(stale_ms=10.0)
+        svc = _make_service(cache, policy=self._rest_snap_policy())
+
+        bundle = await svc.require_fresh_data(TOKEN)
+
+        assert bundle is not None
+        assert bundle.source == MarketDataSource.REST_SNAPSHOT
+
+    @pytest.mark.asyncio
+    async def test_stale_rest_snapshot_raises(self) -> None:
+        cache = self._make_rest_snapshot_cache(stale_ms=600.0)
+        svc = _make_service(cache, policy=self._rest_snap_policy())
+
+        with pytest.raises(StaleDataError):
+            await svc.require_fresh_data(TOKEN)
+
+    @pytest.mark.asyncio
+    async def test_rest_snapshot_blocked_when_not_allowed(self) -> None:
+        cache = self._make_rest_snapshot_cache(stale_ms=10.0)
+        svc = _make_service(
+            cache,
+            policy=self._rest_snap_policy(allow_rest_snapshot_for_execution=False),
+        )
+
+        with pytest.raises(StaleDataError):
+            await svc.require_fresh_data(TOKEN)
+
+    @pytest.mark.asyncio
+    async def test_wss_preferred_over_rest_snapshot(self) -> None:
+        cache = self._make_rest_snapshot_cache(stale_ms=10.0)
+        cache.replace_book_snapshot(
+            TOKEN,
+            {Decimal("0.85"): Decimal("100")},
+            {Decimal("0.88"): Decimal("50")},
+            {"source": "wss"},
+        )
+        cache.set_quote(
+            TOKEN, best_bid=Decimal("0.85"), best_ask=Decimal("0.88"), source="wss"
+        )
+        policy = self._rest_snap_policy()
+        svc = _make_service(cache, policy=policy)
+
+        bundle = await svc.require_fresh_data(TOKEN)
+
+        assert bundle.source == MarketDataSource.WSS

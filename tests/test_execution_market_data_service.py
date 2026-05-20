@@ -232,8 +232,12 @@ class TestMissingMinOrderSizeBlocks:
         assert result.status == "stale_market_data"
 
     @pytest.mark.asyncio
-    async def test_amount_below_min_order_size_rejected(self, fresh_db_path) -> None:
-        """Execution is rejected when req.amount < bundle.tick.min_order_size."""
+    async def test_small_amount_not_rejected_for_taker_orders(self, fresh_db_path) -> None:
+        """ExecutionService no longer rejects BUY orders below tick min_order_size.
+
+        Taker (marketable) orders have a $1 USDC notional minimum, not the 5-token
+        GTC limit minimum.  Upstream sizing already handles the taker floor, so
+        ExecutionService must accept small BUY orders."""
         mds = AsyncMock()
         mds.require_fresh_data = AsyncMock(
             return_value=_make_bundle(min_order_size=Decimal("10"))
@@ -241,10 +245,8 @@ class TestMissingMinOrderSizeBlocks:
         svc, gateway = _make_svc(mds, fresh_db_path=fresh_db_path)
         result = await svc.execute(_request(amount=Decimal("3")))
 
-        assert result.accepted is False
-        assert result.status == "rejected"
-        assert "min_order_size" in result.error
-        gateway.submit_marketable_order.assert_not_awaited()
+        assert result.accepted is True
+        gateway.submit_marketable_order.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
@@ -345,7 +347,7 @@ class TestBundleDataFlows:
         svc, _ = _make_svc(mds, fresh_db_path=fresh_db_path)
         await svc.execute(_request())
 
-        mds.require_fresh_data.assert_awaited_once_with(TOKEN)
+        mds.require_fresh_data.assert_awaited_once_with(TOKEN, side="BUY", condition_id=None)
 
 
 # ---------------------------------------------------------------------------
@@ -443,3 +445,42 @@ class TestSpreadGateUsesBundle:
         assert result.accepted is False
         assert result.status == "book_spread_wide"
         gateway.submit_marketable_order.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Fix 1: ExecutionService passes side + condition_id to require_fresh_data
+# ---------------------------------------------------------------------------
+
+
+class TestExecutionServicePassesSideToMDS:
+    """execute() must forward side= and condition_id= to require_fresh_data so
+    MarketDataService can route to require_execution_snapshot in REST primary mode."""
+
+    @pytest.mark.asyncio
+    async def test_require_fresh_data_called_with_side(self, fresh_db_path) -> None:
+        mds = AsyncMock()
+        mds.require_fresh_data = AsyncMock(return_value=_make_bundle())
+        svc, _ = _make_svc(mds, fresh_db_path=fresh_db_path)
+
+        req = _request(side="BUY")
+        await svc.execute(req)
+
+        mds.require_fresh_data.assert_awaited_once()
+        call_kwargs = mds.require_fresh_data.call_args
+        assert call_kwargs.kwargs.get("side") == "BUY", (
+            "require_fresh_data must receive side= so REST snapshot fast path is entered"
+        )
+
+    @pytest.mark.asyncio
+    async def test_require_fresh_data_called_with_sell_side(self, fresh_db_path) -> None:
+        mds = AsyncMock()
+        mds.require_fresh_data = AsyncMock(
+            return_value=_make_bundle(best_bid=Decimal("0.51"), best_ask=Decimal("0.53"))
+        )
+        svc, _ = _make_svc(mds, fresh_db_path=fresh_db_path)
+
+        req = _request(side="SELL", amount=Decimal("10"))
+        await svc.execute(req)
+
+        call_kwargs = mds.require_fresh_data.call_args
+        assert call_kwargs.kwargs.get("side") == "SELL"
