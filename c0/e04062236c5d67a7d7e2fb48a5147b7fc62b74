@@ -1,0 +1,46 @@
+services/execution/book_spread.py
+  s_7ad61c953ec819::t_5fd7737d93d759 4,6,11-34
+  s_7ad61c953ec819::t_df8dacf257295f 67-167
+tests/test_balance_regime.py
+  s_7ad61c953ec819::t_fde2d2e8d63947 1-186
+tests/test_book_depth_gate.py
+  s_7ad61c953ec819::t_875599f8bf6222 1-249
+services/executionService.py
+  s_7ad61c953ec819::t_a944f07220eaf0 485-537
+  s_7ad61c953ec819::t_822b30694747b9 46
+config/app_config.py
+  s_7ad61c953ec819::t_019f1e9368b91f 327-333
+  s_7ad61c953ec819::t_1d249f606515f3 899-905
+  s_7ad61c953ec819::t_cd3fe55e77fe5c 654-664
+services/balance_regime.py
+  s_7ad61c953ec819::t_97944203b3a088 1-236
+services/reconciliation.py
+  s_7ad61c953ec819::t_0949e800426311 65-99
+  s_7ad61c953ec819::t_2921f6857fad2b 182-184,228-248,270-276,278-286,294-297,301-404
+  s_7ad61c953ec819::t_c3fbc566d890f0 46-50
+domain/trading_context.py
+  s_7ad61c953ec819::t_61156e7af81cf6 66-68
+  s_7ad61c953ec819::t_f07bfe60ad933a 8
+  s_7ad61c953ec819::t_fa34c203bc9e70 103-104
+tests/test_reconcile_phase04.py
+  s_7ad61c953ec819::t_ed7b75da8899f4 1-236
+orchestrators/trade_pipeline.py
+  s_7ad61c953ec819::t_726050e61db014 1856-1910
+  s_7ad61c953ec819::t_0937281618a6e4 2168-2178
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.11",
+  "base_commit_sha": "c0e04062236c5d67a7d7e2fb48a5147b7fc62b74",
+  "prompts": {},
+  "sessions": {
+    "s_7ad61c953ec819": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "767381f1-5152-409b-8aa2-3d37a20c260e",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
