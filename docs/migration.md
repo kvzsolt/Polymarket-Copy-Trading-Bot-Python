@@ -17,7 +17,7 @@ see [`architecture.md`](architecture.md). For runbooks, see
 | Order placement | `utils/postOrder.py` called the SDK directly. | All execution flows through `interfaces.clob_gateway.ClobGateway`. SDK types are walled inside `integrations/polymarket/`. `utils/postOrder.py` is removed. |
 | CLOB SDK | `py_clob_client` v1. | `py_clob_client_v2` (CLOB V2). Requires `CLOB_V2_READY=true`. |
 | Position identity | `(condition_id, outcome)` in many places. | Canonical `domain.position_key.PositionKey(user_id, condition_id, token_id)` everywhere. |
-| Coordination | Implicit; race-prone for same-position actions. | `PositionCoordinator` + `IntentRegistry` serialise per-`PositionKey` actions. |
+| Coordination | Implicit; race-prone for same-position actions. | `PositionActionCoordinator` serialises per-`PositionKey` actions at runtime. `PositionCoordinator` + `IntentRegistry` are experimental, unwired in the live pipeline (only `recover_intents_from_db` is exercised in tests). |
 | Reservations | Pre-submit balance check only. | `ReservationService` holds BUY-quote / SELL-share reservations through the intent lifecycle, with restart recovery. |
 | Reconciliation | Spread across services; opportunistic. | `ReconciliationService` owns terminal settlement. Startup reconciliation runs before risk and trade loops. |
 | Market data | Ad-hoc REST polling. | `market_ws` + `user_ws` (5 s `PING`, REST snapshot on reconnect, subscribe via `assets_ids`); TTL-based `price_cache` and `marketMetaService` with explicit invalidation. |

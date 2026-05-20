@@ -228,7 +228,14 @@ class ExecutionCoordinator:
             return await self._execute_intent_locked(intent)
         try:
             from services.positionActionCoordinator import PositionScope
-        except Exception:
+        except Exception as exc:
+            # Fail-closed in live mode: serialization is a correctness
+            # requirement, never a best-effort optimization.
+            if is_live_mode(getattr(self.execution_service, "_config", None)):
+                raise RuntimeError(
+                    "ExecutionCoordinator.execute_intent: cannot import PositionScope; "
+                    "refusing to bypass per-scope serialization in live mode"
+                ) from exc
             return await self._execute_intent_locked(intent)
         scope = PositionScope(
             user_id=intent.key.user_id,
@@ -495,7 +502,15 @@ class ExecutionCoordinator:
             return await self._submit_with_reservation(intent, source_override="near_one_exit")
         try:
             from services.positionActionCoordinator import PositionScope
-        except Exception:
+        except Exception as exc:
+            # Fail-closed in live mode — SELL submitter must hold the
+            # per-scope lock, never silently downgrade to no-lock.
+            if is_live_mode(getattr(self.execution_service, "_config", None)):
+                raise RuntimeError(
+                    "ExecutionCoordinator.submit_near_one_exit: cannot import "
+                    "PositionScope; refusing to bypass per-scope serialization "
+                    "in live mode"
+                ) from exc
             PositionScope = None  # type: ignore[assignment]
         if PositionScope is None:
             return await self._submit_with_reservation(intent, source_override="near_one_exit")

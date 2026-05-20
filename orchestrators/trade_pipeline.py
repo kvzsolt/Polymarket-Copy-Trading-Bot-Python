@@ -1203,11 +1203,31 @@ async def reconcile_submitted_unconfirmed(
             try:
                 _scope = PositionKey.from_reconciliation_record(record)
             except ValueError:
-                logger.warning(
-                    "reconcile_skip_missing_scope | order_id=%s trade_key=%s side=%s",
-                    record.get("order_id"), record.get("trade_key"), side,
+                # Legacy rows predating issue #67 may have NULL/empty
+                # user_id, condition_id, or asset. Emit a hard metric so
+                # ops can detect them, then fall back to a sentinel scope
+                # so the row still reconciles (else it stays permanently
+                # stuck and skews equity).
+                metrics.inc(
+                    "reconcile_missing_scope_total",
+                    labels={"side": side},
                 )
-                return False
+                logger.warning(
+                    "reconcile_legacy_scope_fallback | order_id=%s trade_key=%s side=%s "
+                    "user_id=%r condition_id=%r asset=%r",
+                    record.get("order_id"), record.get("trade_key"), side,
+                    record.get("user_id"), record.get("condition_id"),
+                    record.get("asset") or record.get("token_id"),
+                )
+                _scope = PositionKey(
+                    user_id=record.get("user_id") or "__legacy_user__",
+                    condition_id=record.get("condition_id") or "__legacy_cond__",
+                    token_id=(
+                        record.get("asset")
+                        or record.get("token_id")
+                        or "__legacy_token__"
+                    ),
+                )
             async with sem:
                 async with context.position_coordinator.acquire(_scope):
                     return await _reconcile_one(context, record, side)
