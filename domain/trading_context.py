@@ -5,6 +5,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 from config.app_config import AppConfig
+from services.balance_regime import BalanceRegime
 from services.copyDecisionService import CopyDecisionService
 from services.copyStrategy import CopySizingResult, calculate_copy_notional
 from services.entryPermissionService import EntryPermissionService
@@ -62,6 +63,9 @@ class TradingContext:
     # PR7 — proactive manual/off-bot position drift detection. Coordinator
     # checks ``is_scope_paused`` before every production submit.
     position_drift_service: "PositionDriftService | None" = None
+    # Phase 4 — balance regime gate (per-position cap, daily spend ceiling,
+    # min headroom floor). Built from ``config.execution`` when ``None``.
+    balance_regime: BalanceRegime | None = None
 
     def __post_init__(self) -> None:
         # Fail fast: these dependencies are required in production contexts.
@@ -96,6 +100,8 @@ class TradingContext:
             self.copy_decision_service.leader_scorer = self.leader_scorer
         if self.entry_permission_service is None and self.risk_blocks_repo is not None:
             self.entry_permission_service = EntryPermissionService(self.risk_blocks_repo)
+        if self.balance_regime is None and isinstance(self.config, AppConfig):
+            self.balance_regime = BalanceRegime.from_config(self.config.execution)
 
     def copy_notional(self, leader_notional: Decimal) -> CopySizingResult:
         """Return the full sizing result so callers can inspect reasoning."""

@@ -43,6 +43,11 @@ class ReconciliationResult:
     open_orders_on_exchange: int
     locally_unknown_orders: int
     stale_orders_cancelled: int
+    # Phase 4 — exchange-side reconciliation observations.
+    partial_fills_observed: int = 0
+    partial_fill_deltas: tuple[tuple[str, str], ...] = ()
+    unexpected_fills_observed: int = 0
+    unexpected_cancellations: int = 0
     errors: list[str] = field(default_factory=list)
 
 
@@ -55,6 +60,41 @@ def _safe_int(val: Any, default: int = 0) -> int:
         return int(val)
     except (TypeError, ValueError):
         return default
+
+
+_TERMINAL_FILLED_STATUSES = {"matched", "filled", "complete", "settled"}
+_TERMINAL_CANCELLED_STATUSES = {"cancelled", "canceled", "expired", "rejected"}
+
+
+def _safe_decimal(value: Any, default: str = "0") -> Any:
+    """Parse a value as Decimal without importing Decimal at module top.
+
+    Kept lightweight so call sites in the reconciler do not pay an import
+    every loop iteration.
+    """
+    from decimal import Decimal
+
+    try:
+        return Decimal(str(value))
+    except Exception:
+        return Decimal(default)
+
+
+def _matched_size(order: dict[str, Any]) -> Any:
+    """Extract cumulative matched size from a venue order payload.
+
+    Polymarket exposes ``size_matched`` on the CLOB; other shapes seen in the
+    wild include ``filled`` and ``matched_size``. We accept all three so the
+    reconciler is robust to schema drift.
+    """
+    for key in ("size_matched", "filled", "matched_size", "filled_size"):
+        if key in order and order[key] is not None:
+            return _safe_decimal(order[key])
+    return _safe_decimal("0")
+
+
+def _order_status(order: dict[str, Any]) -> str:
+    return str(order.get("status") or "").strip().lower()
 
 
 def _order_age_seconds(order: dict[str, Any], now: float) -> float:
@@ -139,6 +179,9 @@ class ReconciliationService:
         open_count = 0
         unknown_count = 0
         cancelled_count = 0
+        partial_fills: list[tuple[str, Any]] = []  # (order_id, delta)
+        unexpected_fills = 0
+        unexpected_cancellations = 0
 
         # 1. Fetch open orders from exchange
         exchange_orders: list[dict[str, Any]] = []
@@ -182,6 +225,27 @@ class ReconciliationService:
                 if local_record is None:
                     unknown_count += 1
 
+            # Phase 4 — partial-fill / unexpected-fill / cancellation detection.
+            try:
+                delta = self._classify_order_state(
+                    order=order,
+                    local_record=local_record,
+                )
+            except Exception as exc:  # pragma: no cover — defensive
+                logger.error(
+                    "reconcile_classify_failed | order_id=%s err=%s",
+                    order_id, exc,
+                )
+                delta = None
+            if delta is not None:
+                kind = delta.get("kind")
+                if kind == "partial_fill":
+                    partial_fills.append((order_id, str(delta.get("delta"))))
+                elif kind == "unexpected_fill":
+                    unexpected_fills += 1
+                elif kind == "unexpected_cancellation":
+                    unexpected_cancellations += 1
+
             # Check staleness
             age = _order_age_seconds(order, now)
             if age > self.stale_threshold:
@@ -203,11 +267,23 @@ class ReconciliationService:
                     logger.error(msg)
                     errors.append(msg)
 
-        if open_count > 0 or stale_order_ids:
+        if (
+            open_count > 0
+            or stale_order_ids
+            or partial_fills
+            or unexpected_fills
+            or unexpected_cancellations
+        ):
             logger.info(
-                "Reconciliation: %d open on exchange, %d locally unknown, "
-                "%d stale (%d cancelled)",
-                open_count, unknown_count, len(stale_order_ids), cancelled_count,
+                "Reconciliation: %d open, %d unknown, %d stale (%d cancelled), "
+                "%d partial-fill, %d unexpected-fill, %d unexpected-cancel",
+                open_count,
+                unknown_count,
+                len(stale_order_ids),
+                cancelled_count,
+                len(partial_fills),
+                unexpected_fills,
+                unexpected_cancellations,
             )
 
         return ReconciliationResult(
@@ -215,8 +291,117 @@ class ReconciliationService:
             open_orders_on_exchange=open_count,
             locally_unknown_orders=unknown_count,
             stale_orders_cancelled=cancelled_count,
+            partial_fills_observed=len(partial_fills),
+            partial_fill_deltas=tuple(partial_fills),
+            unexpected_fills_observed=unexpected_fills,
+            unexpected_cancellations=unexpected_cancellations,
             errors=errors,
         )
+
+    # ------------------------------------------------------------------
+    # Phase 4 — order-state classification + repo update helpers.
+    # ------------------------------------------------------------------
+    def _classify_order_state(
+        self,
+        *,
+        order: dict[str, Any],
+        local_record: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        """Compare a venue order against the locally persisted record.
+
+        Returns a dict describing the transition the reconciler observed, or
+        ``None`` when there is nothing to report. The classification is
+        deliberately conservative: it never invents fills the venue did not
+        report, and it never overwrites a richer local terminal status.
+        """
+        venue_status = _order_status(order)
+        venue_matched = _matched_size(order)
+        order_id = str(order.get("id") or "")
+        if not order_id:
+            return None
+
+        # Unexpected venue terminal states — local record absent or still
+        # thinks the order is in-flight.
+        if local_record is None:
+            if venue_status in _TERMINAL_FILLED_STATUSES and venue_matched > 0:
+                logger.warning(
+                    "reconcile_unexpected_fill | order_id=%s status=%s matched=%s "
+                    "(no local record)",
+                    order_id, venue_status, venue_matched,
+                )
+                return {"kind": "unexpected_fill", "matched": venue_matched}
+            if venue_status in _TERMINAL_CANCELLED_STATUSES:
+                logger.info(
+                    "reconcile_unexpected_cancellation | order_id=%s status=%s "
+                    "(no local record)",
+                    order_id, venue_status,
+                )
+                return {"kind": "unexpected_cancellation"}
+            return None
+
+        # Local record exists — see what changed since last observation.
+        local_matched = _safe_decimal(local_record.get("matched_total") or "0")
+
+        if venue_status in _TERMINAL_CANCELLED_STATUSES and local_matched <= 0:
+            # A cancellation we did not initiate locally.
+            local_status = str(local_record.get("status") or "").lower()
+            if local_status not in _TERMINAL_CANCELLED_STATUSES:
+                logger.info(
+                    "reconcile_unexpected_cancellation | order_id=%s "
+                    "venue_status=%s local_status=%s",
+                    order_id, venue_status, local_status,
+                )
+                return {"kind": "unexpected_cancellation"}
+
+        if venue_matched > local_matched:
+            delta = venue_matched - local_matched
+            self._record_partial_fill(
+                order_id=order_id,
+                local_record=local_record,
+                venue_matched=venue_matched,
+                venue_status=venue_status,
+            )
+            logger.info(
+                "reconcile_partial_fill | order_id=%s status=%s "
+                "local_matched=%s venue_matched=%s delta=%s",
+                order_id, venue_status, local_matched, venue_matched, delta,
+            )
+            return {
+                "kind": "partial_fill",
+                "local": local_matched,
+                "venue": venue_matched,
+                "delta": delta,
+            }
+        return None
+
+    def _record_partial_fill(
+        self,
+        *,
+        order_id: str,
+        local_record: dict[str, Any],
+        venue_matched: Any,
+        venue_status: str,
+    ) -> None:
+        """Persist the latest cumulative ``matched_total`` from the venue.
+
+        Settlement state-transitions are still owned by the dedicated trade
+        pipeline reconciler (see module docstring). This helper just makes
+        sure the local row reflects the most recent venue-confirmed cumulative
+        size so the next pass can compute a correct delta.
+        """
+        if not self.orders_repo:
+            return
+        try:
+            if hasattr(self.orders_repo, "upsert_matched_total"):
+                self.orders_repo.upsert_matched_total(
+                    order_id=order_id,
+                    matched=str(venue_matched),
+                )
+        except Exception as exc:
+            logger.error(
+                "reconcile_partial_fill_persist_failed | order_id=%s err=%s",
+                order_id, exc,
+            )
 
     async def _fetch_open_orders(self) -> list[dict[str, Any]]:
         """Fetch all open orders from the CLOB."""
