@@ -57,9 +57,12 @@ PositionScope = PositionKey
 class PositionActionCoordinator:
     """Serializes contradictory actions on a single scoped position.
 
-    One instance per ``TradingContext`` (i.e. per user). Internally uses a
-    dict of ``asyncio.Lock`` keyed by ``(condition_id, token_id)``. Lock
-    creation itself is guarded by a registry lock so two tasks that race
+    One instance per ``TradingContext`` (i.e. per user) by convention. The
+    lock key includes ``user_id`` so a coordinator accidentally shared across
+    users still serializes correctly per canonical identity ``(user_id,
+    condition_id, token_id)`` — matching ``IntentRegistry._scope_key``.
+
+    Lock creation itself is guarded by a registry lock so two tasks that race
     to observe a brand-new scope cannot create two different locks for it.
 
     Idle scope locks are released after the final waiter drains so the
@@ -67,13 +70,13 @@ class PositionActionCoordinator:
     """
 
     def __init__(self) -> None:
-        self._locks: dict[tuple[str, str], asyncio.Lock] = {}
+        self._locks: dict[tuple[str, str, str], asyncio.Lock] = {}
         self._registry_lock = asyncio.Lock()
         self._prune_threshold = 128
 
     @staticmethod
-    def _scope_key(scope: PositionScope) -> tuple[str, str]:
-        return (scope.condition_id, scope.token_id)
+    def _scope_key(scope: PositionScope) -> tuple[str, str, str]:
+        return (scope.user_id, scope.condition_id, scope.token_id)
 
     @staticmethod
     def _has_waiters(lock: asyncio.Lock) -> bool:
