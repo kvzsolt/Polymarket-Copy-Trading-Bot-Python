@@ -1,0 +1,26 @@
+tests/test_phase03_atomic_idempotency.py
+  s_1eaf71b88bf7c4::t_ce0ac0151e8c1e 240-316
+storage/sqlite/orders_repo.py
+  s_1eaf71b88bf7c4::t_6a980342693f18 30-40
+  s_1eaf71b88bf7c4::t_5dcb7d761379ff 426,429,438,452
+domain/ports/repositories.py
+  s_1eaf71b88bf7c4::t_f6ece02c1ec97e 75
+services/orderRepository.py
+  s_1eaf71b88bf7c4::t_7bf7cb6d20da32 99-100,111-112
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.11",
+  "base_commit_sha": "15e9803641535e9c1a138922047cc6c79b155f6b",
+  "prompts": {},
+  "sessions": {
+    "s_1eaf71b88bf7c4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ba4eb5d2-3afd-4c6d-80b2-4e97ebe1f0ab",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
