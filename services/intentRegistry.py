@@ -68,6 +68,50 @@ SUBMITTER_ALLOWED_TRANSITIONS: frozenset[IntentState] = frozenset(
     }
 )
 
+# Per-state forward DAG. Submitter transitions may only move forward through
+# the lifecycle: IDLE → INTENT_PENDING → SUBMITTED → ACK_LIVE → PARTIAL →
+# FILLED → CONFIRMING → (DONE via reconciler). Forward leaps are permitted
+# (e.g. SUBMITTED → FILLED on synchronous fill, INTENT_PENDING → CONFIRMING
+# on crash recovery); going backward is not. PARTIAL may repeat itself for
+# successive partial fills.
+SUBMITTER_FORWARD_DAG: dict[IntentState, frozenset[IntentState]] = {
+    IntentState.IDLE: frozenset(
+        {
+            IntentState.INTENT_PENDING,
+            IntentState.SUBMITTED,
+            IntentState.ACK_LIVE,
+            IntentState.PARTIAL,
+            IntentState.FILLED,
+            IntentState.CONFIRMING,
+        }
+    ),
+    IntentState.INTENT_PENDING: frozenset(
+        {
+            IntentState.SUBMITTED,
+            IntentState.ACK_LIVE,
+            IntentState.PARTIAL,
+            IntentState.FILLED,
+            IntentState.CONFIRMING,
+        }
+    ),
+    IntentState.SUBMITTED: frozenset(
+        {
+            IntentState.ACK_LIVE,
+            IntentState.PARTIAL,
+            IntentState.FILLED,
+            IntentState.CONFIRMING,
+        }
+    ),
+    IntentState.ACK_LIVE: frozenset(
+        {IntentState.PARTIAL, IntentState.FILLED, IntentState.CONFIRMING}
+    ),
+    IntentState.PARTIAL: frozenset(
+        {IntentState.PARTIAL, IntentState.FILLED, IntentState.CONFIRMING}
+    ),
+    IntentState.FILLED: frozenset({IntentState.CONFIRMING}),
+    IntentState.CONFIRMING: frozenset(),
+}
+
 
 class IntentSide(str, Enum):
     BUY = "BUY"
@@ -160,17 +204,17 @@ class IntentRegistry:
     # --- introspection ------------------------------------------------------
 
     def open_intent_for(self, scope: PositionScope) -> Optional[IntentRecord]:
-        """Return a **copy** of the open intent record (mutable escape protection)."""
+        """Return a **deep copy** of the open intent record (mutable escape protection)."""
         intent_id = self._scope_open.get(_scope_key(scope))
         if intent_id is None:
             return None
         record = self._intents.get(intent_id)
-        return copy.copy(record) if record else None
+        return copy.deepcopy(record) if record else None
 
     def get(self, intent_id: str) -> Optional[IntentRecord]:
-        """Return a **copy** of the intent record (mutable escape protection)."""
+        """Return a **deep copy** of the intent record (mutable escape protection)."""
         record = self._intents.get(intent_id)
-        return copy.copy(record) if record else None
+        return copy.deepcopy(record) if record else None
 
     def reserved_for(self, scope: PositionScope) -> Reservation:
         agg = self._reserved.get(_scope_key(scope))
@@ -275,6 +319,13 @@ class IntentRegistry:
                 raise IllegalTransitionError(
                     f"Intent {intent_id} already in terminal "
                     f"state {record.state.value}"
+                )
+            allowed_next = SUBMITTER_FORWARD_DAG.get(record.state, frozenset())
+            if new_state not in allowed_next:
+                raise IllegalTransitionError(
+                    f"Illegal forward transition {record.state.value} -> "
+                    f"{new_state.value} (allowed: "
+                    f"{sorted(s.value for s in allowed_next)})"
                 )
             record.state = new_state
             record.updated_at = time.time()
