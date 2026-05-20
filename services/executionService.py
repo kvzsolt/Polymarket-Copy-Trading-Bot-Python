@@ -43,6 +43,7 @@ from services.execution.types import (
 from services.execution.book_spread import (
     resolve_book_spread_mode as _resolve_book_spread_mode,
     calculate_book_spread_metrics as _calculate_book_spread_metrics,
+    calculate_book_depth_metrics as _calculate_book_depth_metrics,
 )
 from services.execution.submission import (
     truncate_text as _truncate_text,
@@ -480,6 +481,59 @@ class ExecutionService:
                     "reason": "one-sided book — required side present, other side missing",
                 },
             )
+
+        # --- Book depth gate (Phase 4): require minimum side liquidity ---
+        min_book_depth_raw = getattr(ec, "min_book_depth_usdc", 0) or 0
+        try:
+            min_book_depth = Decimal(str(min_book_depth_raw))
+        except Exception:
+            min_book_depth = Decimal("0")
+        if min_book_depth > 0:
+            band_pct_raw = getattr(ec, "book_depth_band_pct", 5) or 5
+            try:
+                band_pct = Decimal(str(band_pct_raw))
+            except Exception:
+                band_pct = Decimal("5")
+            depth = _calculate_book_depth_metrics(
+                bids=getattr(bundle.book, "bids", {}),
+                asks=getattr(bundle.book, "asks", {}),
+                best_bid=best_bid,
+                best_ask=best_ask,
+                band_pct=band_pct,
+            )
+            side_notional = depth.side_notional_usdc(side)
+            if side_notional < min_book_depth:
+                logger.info(
+                    "book_quality_gate_thin_depth",
+                    extra={
+                        "type": "book_quality_gate_thin_depth",
+                        "token_id": req.token_id,
+                        "side": side,
+                        "band_pct": str(depth.band_pct),
+                        "band_low": str(depth.band_low),
+                        "band_high": str(depth.band_high),
+                        "side_notional_usdc": str(side_notional),
+                        "side_levels_in_band": depth.side_levels(side),
+                        "min_book_depth_usdc": str(min_book_depth),
+                        "best_bid": str(best_bid),
+                        "best_ask": str(best_ask),
+                    },
+                )
+                return ExecutionResult(
+                    accepted=False,
+                    order_id=None,
+                    status="book_thin_depth",
+                    requested_amount=req.amount,
+                    filled_amount=Decimal("0"),
+                    avg_price=None,
+                    fees_paid=Decimal("0"),
+                    error=(
+                        f"book depth too thin "
+                        f"(side={side} notional={side_notional} < {min_book_depth} "
+                        f"required within {depth.band_pct}% of mid; "
+                        f"levels_in_band={depth.side_levels(side)})"
+                    ),
+                )
 
         # Price from fresh quote bundle
         quote_price = best_ask if side == "BUY" else best_bid

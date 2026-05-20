@@ -1853,6 +1853,61 @@ async def execute_trades(
                 # Use decision-gated notional (may be adjusted by scoring)
                 gated_notional = Decimal(str(decision.target_notional_usdc)) if decision.target_notional_usdc > 0 else target_notional
 
+                # --- Phase 4 balance regime gate ---
+                regime = getattr(context, "balance_regime", None)
+                if regime is not None:
+                    regime_decision = regime.check_buy(
+                        notional_usdc=gated_notional,
+                        free_cash_usdc=snapshot.free_cash_usdc,
+                    )
+                    if not regime_decision.allow:
+                        reason = (
+                            f"balance regime [{regime_decision.policy_name}] blocked BUY: "
+                            f"{regime_decision.reason}"
+                        )
+                        print_skip_reason(
+                            f"Balance regime [{regime_decision.policy_name}] blocked BUY",
+                            regime_decision.reason,
+                        )
+                        log_trade_skip(
+                            logger,
+                            side=signal.side,
+                            condition_id=signal.condition_id,
+                            asset=signal.token_id,
+                            size=float(signal.size) if signal.size else None,
+                            price=live_price,
+                            usdc_value=float(gated_notional),
+                            skip_code=regime_decision.reason,
+                            reason=reason,
+                            event_slug=signal.event_slug,
+                            meta={
+                                "user_id": context.user_id,
+                                "leader_id": leader_id,
+                                "requested_usdc": str(regime_decision.requested_usdc),
+                                "daily_spent_usdc": str(regime_decision.daily_spent_usdc),
+                                "daily_remaining_usdc": str(regime_decision.daily_remaining_usdc),
+                                "headroom_usdc": str(regime_decision.headroom_usdc),
+                            },
+                        )
+                        metrics.inc(
+                            "trades_skipped_total",
+                            labels={**labels, "reason": regime_decision.reason},
+                        )
+                        context.orders_repo.mark_processed_trade(
+                            trade_key=trade_key,
+                            user_id=context.user_id,
+                            leader_id=leader_id,
+                            tx_hash=signal.tx_hash,
+                            side=signal.side,
+                            asset=signal.token_id,
+                            condition_id=signal.condition_id,
+                            status=f"skipped_{regime_decision.reason}",
+                        )
+                        results.append(
+                            TradePipelineResult(trade_key, "skipped", regime_decision.reason, None)
+                        )
+                        continue
+
                 # Log final execution sizing if decision gate changed the amount
                 if float(gated_notional) != float(target_notional):
                     logger.info(
@@ -2110,6 +2165,17 @@ async def execute_trades(
                 continue
 
             if exec_result.accepted and exec_result.filled_amount <= 0:
+                # Phase 4 — count the BUY against the rolling 24h spend ceiling
+                # at submission time (eagerly, before fills land). Duplicate
+                # submissions are filtered above; SELLs do not consume the
+                # daily-spend budget.
+                if signal.side == "BUY":
+                    regime = getattr(context, "balance_regime", None)
+                    if regime is not None:
+                        try:
+                            regime.record_buy(Decimal(str(exec_result.requested_amount or 0)))
+                        except Exception:  # pragma: no cover — defensive
+                            pass
                 context.orders_repo.mark_processed_trade(
                     trade_key=trade_key,
                     user_id=context.user_id,
