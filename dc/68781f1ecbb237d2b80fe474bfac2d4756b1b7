@@ -1,0 +1,38 @@
+tests/test_execution_market_data_service.py
+  s_9a575e4be2c28c::t_54e1a206dac0c6 448-486
+  s_9a575e4be2c28c::t_c29d9bb2c1263b 350
+services/executionService.py
+  s_9a575e4be2c28c::t_0632742940f36e 286-290
+cache/market_state_store.py
+  s_9a575e4be2c28c::t_c939e0d1029e67 444-454
+  s_9a575e4be2c28c::t_f30c745ce5fd48 376-383
+services/market_data_service.py
+  s_9a575e4be2c28c::t_b5d66b1a2341e9 589-590
+  s_9a575e4be2c28c::t_0b69838b02469a 563,591-595,597-603,605-606,608-610,619-620
+  s_9a575e4be2c28c::t_8b35c1f6e01197 611
+  s_9a575e4be2c28c::t_08b8cb6cd19cc8 596
+tests/test_market_data_service.py
+  s_9a575e4be2c28c::t_070cfd6153bb35 969
+  s_9a575e4be2c28c::t_f2fe6e9bdea006 967-968,971,977-983,993-1003,1021
+  s_9a575e4be2c28c::t_8b6fa2a22bd482 941-966,970,972-976,984-992,1004-1020,1022-1026
+tests/test_book_quality_gate.py
+  s_9a575e4be2c28c::t_74dd05462643a0 256
+tests/test_issue68_market_data_cache_wss.py
+  s_9a575e4be2c28c::t_7faeac63052ef3 678-795
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.11",
+  "base_commit_sha": "dc68781f1ecbb237d2b80fe474bfac2d4756b1b7",
+  "prompts": {},
+  "sessions": {
+    "s_9a575e4be2c28c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9333c2ef-de0b-402c-a14c-5c1d2548cdeb",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
