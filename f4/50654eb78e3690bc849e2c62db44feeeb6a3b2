@@ -1,0 +1,32 @@
+orchestrators/runtime_bootstrap.py
+  s_b2d1b6107dc993::t_44ae73518a113e 432-446
+README.md
+  s_b2d1b6107dc993::t_f6506fbb152c3d 58
+docs/migration.md
+  s_b2d1b6107dc993::t_e099d1f2cdc7b0 20
+tests/test_phase01_review_b_fixes.py
+  s_b2d1b6107dc993::t_c73f42d1f7d6fc 90
+  s_b2d1b6107dc993::t_9705a264213742 1-88,91-322
+  s_b2d1b6107dc993::t_3619e182a17cc9 89
+orchestrators/trade_pipeline.py
+  s_b2d1b6107dc993::t_41d282d3649f00 1206-1214,1216-1217,1219-1229
+services/execution/coordinator.py
+  s_b2d1b6107dc993::t_f4842ff3c7216c 231-238
+  s_b2d1b6107dc993::t_4e00a74745d442 505-513
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.11",
+  "base_commit_sha": "f450654eb78e3690bc849e2c62db44feeeb6a3b2",
+  "prompts": {},
+  "sessions": {
+    "s_b2d1b6107dc993": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "22f797f8-ddf1-4af2-bfd7-577ca58f4fd6",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
