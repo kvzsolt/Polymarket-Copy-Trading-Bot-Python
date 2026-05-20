@@ -55,7 +55,7 @@ Read these in order:
 - **Venue:** Polymarket CLOB V2 (`py_clob_client_v2`); requires `CLOB_V2_READY=true`.
 - **Composition root:** `bootstrap.py::build_app` (pure, no I/O) wires shared graph; `app.py::main` adds async / per-user wiring.
 - **Execution:** `interfaces.clob_gateway.ClobGateway` (port) → `integrations.polymarket.clob_v2_gateway` (adapter) → `services.executionService.ExecutionService` + `services/execution/` subsystem.
-- **Coordination:** canonical `domain.position_key.PositionKey` everywhere; `PositionCoordinator` + `IntentRegistry` serialise per-position actions; `ReservationService` holds BUY-quote / SELL-share reservations across intent lifecycle.
+- **Coordination:** canonical `domain.position_key.PositionKey` everywhere; `services.positionActionCoordinator.PositionActionCoordinator` serialises per-position actions at runtime (the historical `PositionCoordinator` + `IntentRegistry` modules remain in-tree as experimental / unwired); `ReservationService` holds BUY-quote / SELL-share reservations across intent lifecycle.
 - **Reconciliation:** `ReconciliationService` owns terminal settlement; startup reconciliation runs before risk and trade loops.
 - **Market data:** `clients/market_ws.py` + `clients/user_ws.py` with 5 s `PING`, REST snapshot on reconnect, `assets_ids` subscriptions; TTL-based `price_cache` and `marketMetaService`. Decisions fail closed on stale data.
 - **Config:** typed `config.app_config.AppConfig`; production paths fail closed without it.
