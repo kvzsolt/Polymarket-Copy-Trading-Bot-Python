@@ -1,0 +1,27 @@
+services/positionActionCoordinator.py
+  s_e4f289359bf6b2::t_65eba6cf4ad7fe 60-65,73,78-79
+services/intentRegistry.py
+  s_e4f289359bf6b2::t_da94b4f37adf86 323-329
+  s_e4f289359bf6b2::t_d08e80af790b6e 71-72,77,97-114
+  s_e4f289359bf6b2::t_f4af7b99e4e372 73-76,78-96
+  s_e4f289359bf6b2::t_0011275415faff 207,212,215,217
+services/execution/coordinator.py
+  s_e4f289359bf6b2::t_b44ddb0f956465 221-241,248-262,265-280,283-284,287-329,331-353,358,360,363-410
+  s_e4f289359bf6b2::t_98d755c4942426 435-436,448,450-454
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.11",
+  "base_commit_sha": "ccaa5794707d60e80c032dcabfbf02e9a9f4f833",
+  "prompts": {},
+  "sessions": {
+    "s_e4f289359bf6b2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4a02252f-0f0b-4c66-bc3c-cf25b906c152",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
