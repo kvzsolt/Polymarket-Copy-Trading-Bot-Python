@@ -218,135 +218,196 @@ class ExecutionCoordinator:
         self.reservations_repo = getattr(reservation_service, "reservations_repo", None)
 
     async def execute_intent(self, intent: OrderIntent) -> ExecutionResult:
+        """V2 entry point: acquire per-scope lock, then run the execution body.
+
+        Lock acquisition matches ``submit_near_one_exit`` so concurrent V2
+        intents on the same ``(user_id, condition_id, token_id)`` scope
+        serialize against each other and against the production wrapper paths.
+        """
+        if self.position_coordinator is None:
+            return await self._execute_intent_locked(intent)
+        try:
+            from services.positionActionCoordinator import PositionScope
+        except Exception:
+            return await self._execute_intent_locked(intent)
+        scope = PositionScope(
+            user_id=intent.key.user_id,
+            condition_id=intent.key.condition_id,
+            token_id=intent.key.token_id,
+        )
+        async with self.position_coordinator.acquire(scope):
+            return await self._execute_intent_locked(intent)
+
+    async def _execute_intent_locked(self, intent: OrderIntent) -> ExecutionResult:
         reservation = await self.reservation_service.reserve_for_intent(intent)
         logger.info(
             "coordinator.reservation_acquired reservation_id=%s key=%s side=%s",
             reservation.id, intent.key.stable_key(), intent.key.side.value,
         )
 
-        try:
-            order = await self.orders_repo.create_from_intent(
-                intent=intent,
-                reservation_id=reservation.id,
-                status=OrderLifecycleStatus.RESERVED,
-            )
-        except Exception as exc:
-            self.reservation_service.release_terminal(
-                reservation.id, f"create_failed:{exc}"
-            )
-            self._log_audit(
-                "execution_create_failed", intent, "none", reservation.id,
-                error=str(exc),
-            )
-            raise
+        # C2: track release state so a stray exception cannot leak the
+        # reservation. ``released`` flips true on every explicit release;
+        # ``keep_reservation`` marks non-release returns (retryable / pending
+        # reconciliation) so the cleanup branch knows not to release.
+        released = False
+        keep_reservation = False
 
-        self._link_reservation_order(reservation.id, order_id=order.id)
-
-        await self._transition_order(
-            order.id,
-            from_status=OrderLifecycleStatus.RESERVED,
-            to_status=OrderLifecycleStatus.SUBMITTING,
-        )
+        def _release(reason: str) -> None:
+            nonlocal released
+            if released:
+                return
+            try:
+                self.reservation_service.release_terminal(reservation.id, reason)
+            finally:
+                released = True
 
         try:
-            venue_result = await self.clob_gateway.submit_order(intent)
-        except RetryableVenueError as exc:
-            await self._transition_order(
-                order.id,
-                from_status=OrderLifecycleStatus.SUBMITTING,
-                to_status=OrderLifecycleStatus.RETRYABLE_FAILED,
-                metadata={"error": str(exc)},
-            )
-            self._log_audit("execution_retryable_failed", intent, order.id, reservation.id, str(exc))
-            return ExecutionResult.retryable_failed(order_id=order.id, error=str(exc))
-        except TerminalVenueError as exc:
-            await self._transition_order(
-                order.id,
-                from_status=OrderLifecycleStatus.SUBMITTING,
-                to_status=OrderLifecycleStatus.TERMINAL_FAILED,
-                metadata={"error": str(exc)},
-            )
-            self.reservation_service.release_terminal(reservation.id, "terminal_failed")
-            self._log_audit("execution_terminal_failed", intent, order.id, reservation.id, str(exc))
-            if (
-                intent.key.side.value == "SELL"
-                and self.reconciliation_service is not None
-                and self.live_position_fetcher is not None
-                and _is_insufficient_balance_error(str(exc))
-            ):
-                await self._reconcile_drift_from_intent(intent)
-            raise
-        except Exception as exc:
-            await self._transition_order(
-                order.id,
-                from_status=OrderLifecycleStatus.SUBMITTING,
-                to_status=OrderLifecycleStatus.TERMINAL_FAILED,
-                metadata={"error": str(exc)},
-            )
-            self.reservation_service.release_terminal(reservation.id, "terminal_failed")
-            self._log_audit("execution_terminal_failed", intent, order.id, reservation.id, str(exc))
-            raise  # Reraise unknown errors, but ensure reservation is released
+            try:
+                order = await self.orders_repo.create_from_intent(
+                    intent=intent,
+                    reservation_id=reservation.id,
+                    status=OrderLifecycleStatus.RESERVED,
+                )
+            except Exception as exc:
+                _release(f"create_failed:{exc}")
+                self._log_audit(
+                    "execution_create_failed", intent, "none", reservation.id,
+                    error=str(exc),
+                )
+                raise
 
-        self._link_reservation_order(
-            reservation.id, order_id=order.id, venue_order_id=venue_result.order_id
-        )
+            self._link_reservation_order(reservation.id, order_id=order.id)
 
-        status = classify_venue_status(venue_result.status)
+            await self._transition_order(
+                order.id,
+                from_status=OrderLifecycleStatus.RESERVED,
+                to_status=OrderLifecycleStatus.SUBMITTING,
+            )
 
-        if status == OrderLifecycleStatus.FILLED:
-            fill = await self.fills_repo.persist_from_venue_result(
-                order_id=order.id,
-                venue_result=venue_result,
+            try:
+                venue_result = await self.clob_gateway.submit_order(intent)
+            except RetryableVenueError as exc:
+                await self._transition_order(
+                    order.id,
+                    from_status=OrderLifecycleStatus.SUBMITTING,
+                    to_status=OrderLifecycleStatus.RETRYABLE_FAILED,
+                    metadata={"error": str(exc)},
+                )
+                self._log_audit("execution_retryable_failed", intent, order.id, reservation.id, str(exc))
+                keep_reservation = True
+                return ExecutionResult.retryable_failed(order_id=order.id, error=str(exc))
+            except TerminalVenueError as exc:
+                await self._transition_order(
+                    order.id,
+                    from_status=OrderLifecycleStatus.SUBMITTING,
+                    to_status=OrderLifecycleStatus.TERMINAL_FAILED,
+                    metadata={"error": str(exc)},
+                )
+                _release("terminal_failed")
+                self._log_audit("execution_terminal_failed", intent, order.id, reservation.id, str(exc))
+                if (
+                    intent.key.side.value == "SELL"
+                    and self.reconciliation_service is not None
+                    and self.live_position_fetcher is not None
+                    and _is_insufficient_balance_error(str(exc))
+                ):
+                    await self._reconcile_drift_from_intent(intent)
+                raise
+            except Exception as exc:
+                await self._transition_order(
+                    order.id,
+                    from_status=OrderLifecycleStatus.SUBMITTING,
+                    to_status=OrderLifecycleStatus.TERMINAL_FAILED,
+                    metadata={"error": str(exc)},
+                )
+                _release("terminal_failed")
+                self._log_audit("execution_terminal_failed", intent, order.id, reservation.id, str(exc))
+                raise  # Reraise unknown errors, but ensure reservation is released
+
+            self._link_reservation_order(
+                reservation.id, order_id=order.id, venue_order_id=venue_result.order_id
             )
-            self.positions_repo.upsert_position(fill) # Simplified position repo usage
-            self.reservation_service.release_terminal(
-                reservation.id,
-                reason="filled",
-            )
+
+            status = classify_venue_status(venue_result.status)
+
+            if status == OrderLifecycleStatus.FILLED:
+                fill = await self.fills_repo.persist_from_venue_result(
+                    order_id=order.id,
+                    venue_result=venue_result,
+                )
+                self.positions_repo.upsert_position(fill)
+                _release("filled")
+                await self._transition_order(
+                    order.id,
+                    from_status=OrderLifecycleStatus.SUBMITTING,
+                    to_status=OrderLifecycleStatus.FILLED,
+                    venue_order_id=venue_result.order_id,
+                )
+                self._log_audit("execution_filled", intent, order.id, reservation.id, venue_order_id=venue_result.order_id)
+                return ExecutionResult.filled(order_id=order.id)
+
+            # Preserve UNKNOWN_UNCONFIRMED distinctly from ordinary submitted/live
+            # statuses. Unknown venue responses are ambiguous and must stay visible
+            # to reconciliation/telemetry instead of being collapsed into
+            # SUBMITTED_UNCONFIRMED.
+            unresolved_status = status
+
             await self._transition_order(
                 order.id,
                 from_status=OrderLifecycleStatus.SUBMITTING,
-                to_status=OrderLifecycleStatus.FILLED,
+                to_status=unresolved_status,
                 venue_order_id=venue_result.order_id,
-            )
-            self._log_audit("execution_filled", intent, order.id, reservation.id, venue_order_id=venue_result.order_id)
-            return ExecutionResult.filled(order_id=order.id)
-
-        # Preserve UNKNOWN_UNCONFIRMED distinctly from ordinary submitted/live
-        # statuses. Unknown venue responses are ambiguous and must stay visible
-        # to reconciliation/telemetry instead of being collapsed into
-        # SUBMITTED_UNCONFIRMED.
-        unresolved_status = status
-
-        await self._transition_order(
-            order.id,
-            from_status=OrderLifecycleStatus.SUBMITTING,
-            to_status=unresolved_status,
-            venue_order_id=venue_result.order_id,
-            metadata={"raw_status": venue_result.status},
-        )
-        
-        # If terminal status (e.g. REJECTED), we release the reservation
-        if unresolved_status in {OrderLifecycleStatus.CANCELLED, OrderLifecycleStatus.REJECTED, OrderLifecycleStatus.EXPIRED, OrderLifecycleStatus.TERMINAL_FAILED}:
-            self.reservation_service.release_terminal(reservation.id, str(unresolved_status.value))
-            logger.info(
-                "coordinator.reservation_released reservation_id=%s reason=%s",
-                reservation.id, unresolved_status.value,
-            )
-        else:
-            await self.reconciler.enqueue(order.id)
-            logger.info(
-                "coordinator.reservation_pending reservation_id=%s "
-                "status=%s — awaiting reconciliation",
-                reservation.id, unresolved_status.value,
+                metadata={"raw_status": venue_result.status},
             )
 
-        self._log_audit(f"execution_{unresolved_status.value}", intent, order.id, reservation.id, venue_order_id=venue_result.order_id)
-        
-        return ExecutionResult.unconfirmed(
-            order_id=order.id,
-            status=unresolved_status,
-        )
+            if unresolved_status in {
+                OrderLifecycleStatus.CANCELLED,
+                OrderLifecycleStatus.REJECTED,
+                OrderLifecycleStatus.EXPIRED,
+                OrderLifecycleStatus.TERMINAL_FAILED,
+            }:
+                _release(str(unresolved_status.value))
+                logger.info(
+                    "coordinator.reservation_released reservation_id=%s reason=%s",
+                    reservation.id, unresolved_status.value,
+                )
+            else:
+                # C4: reconciler may be unset in test/partial wiring contexts.
+                if self.reconciler is not None:
+                    await self.reconciler.enqueue(order.id)
+                else:
+                    logger.warning(
+                        "coordinator.reconciler_missing order_id=%s status=%s — "
+                        "reservation will remain pending without reconciliation",
+                        order.id, unresolved_status.value,
+                    )
+                keep_reservation = True
+                logger.info(
+                    "coordinator.reservation_pending reservation_id=%s "
+                    "status=%s — awaiting reconciliation",
+                    reservation.id, unresolved_status.value,
+                )
+
+            self._log_audit(f"execution_{unresolved_status.value}", intent, order.id, reservation.id, venue_order_id=venue_result.order_id)
+
+            return ExecutionResult.unconfirmed(
+                order_id=order.id,
+                status=unresolved_status,
+            )
+        except BaseException:
+            # C2 safety net: any path that escapes via exception must not leak
+            # the reservation unless we explicitly chose to keep it (retryable).
+            if not released and not keep_reservation:
+                try:
+                    self.reservation_service.release_terminal(
+                        reservation.id, "execute_intent_unexpected_failure"
+                    )
+                except Exception:
+                    logger.warning(
+                        "coordinator.cleanup_release_failed reservation_id=%s",
+                        reservation.id, exc_info=True,
+                    )
+            raise
 
     def _link_reservation_order(
         self,
@@ -371,6 +432,8 @@ class ExecutionCoordinator:
         )
         
     def _log_audit(self, event_name: str, intent: OrderIntent, order_id: str, reservation_id: str, error: str = "", venue_order_id: str = ""):
+        if self.audit_logger is None:
+            return
         payload = {
             "user_id": intent.key.user_id,
             "leader_wallet": intent.key.leader_wallet,
@@ -382,9 +445,13 @@ class ExecutionCoordinator:
             "reservation_id": reservation_id,
             "venue_order_id": venue_order_id,
             "source_signal_id": intent.source_signal_id,
-            "error": error
+            "error": error,
         }
-        self.audit_logger.log_event(event_name, payload)
+        try:
+            self.audit_logger.log_event(event_name, payload)
+        except Exception:
+            # Audit failures must never break execution.
+            logger.debug("coordinator_audit_failed event=%s", event_name, exc_info=True)
 
     async def _reconcile_drift_from_intent(self, intent: OrderIntent) -> None:
         try:
