@@ -96,6 +96,8 @@ class OrderRepository:
         asset: str | None,
         condition_id: str | None,
         status: str,
+        retry_attempt: int = 0,
+        order_id: str | None = None,
     ) -> None:
         self._repo.mark_processed_trade(
             trade_key=trade_key,
@@ -106,4 +108,6 @@ class OrderRepository:
             asset=asset,
             condition_id=condition_id,
             status=status,
+            retry_attempt=retry_attempt,
+            order_id=order_id,
         )

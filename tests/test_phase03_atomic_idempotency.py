@@ -237,3 +237,80 @@ class TestPipelineIntegration:
         assert src.count("has_processed_trade(trade_key)") == 0, (
             "expected legacy check-then-set call to be removed from the gate"
         )
+
+
+class TestWrapperForwarding:
+    """Ensures OrderRepository wrapper forwards retry_attempt + order_id.
+
+    Regression: prior wrapper hardcoded the kwargs it forwarded to the
+    underlying OrdersRepo, silently dropping retry_attempt and order_id.
+    The pipeline persisted ``retry_attempt=0`` on every failure, the
+    retry counter never advanced, the budget never exhausted, and stale
+    rows were re-claimable → duplicate live submissions.
+    """
+
+    def test_retry_attempt_persists_through_wrapper(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        kwargs = _claim_kwargs("retry-fwd-key")
+        # Initial claim creates the row.
+        assert repo.try_claim_processed_trade(**kwargs) is True
+
+        repo.mark_processed_trade(
+            **kwargs,
+            status="retryable_failed",
+            retry_attempt=3,
+            order_id="ord-xyz",
+        )
+
+        rec = repo.get_processed_trade("retry-fwd-key")
+        assert rec is not None
+        assert rec["retry_attempt"] == 3, (
+            "wrapper must forward retry_attempt — silent drop causes infinite retry"
+        )
+        # order_id should also persist via the COALESCE path.
+        with create_connection(repo._repo.db_path) as conn:
+            row = conn.execute(
+                "SELECT order_id FROM processed_trades WHERE trade_key = ?",
+                ("retry-fwd-key",),
+            ).fetchone()
+        assert row["order_id"] == "ord-xyz"
+
+
+class TestTerminalStateGuard:
+    """mark_processed_trade must never downgrade a terminal row."""
+
+    @pytest.mark.parametrize(
+        "terminal_status",
+        ["executed", "processed", "filled_reconciled", "duplicate_ignored", "terminal_failed"],
+    )
+    def test_terminal_row_not_overwritten_by_retryable(self, tmp_path, terminal_status):
+        repo = _make_repo(tmp_path)
+        kwargs = _claim_kwargs(f"term-{terminal_status}")
+        assert repo.try_claim_processed_trade(**kwargs) is True
+
+        # Land a terminal status.
+        repo.mark_processed_trade(**kwargs, status=terminal_status, order_id="ord-1")
+
+        # A late retryable_failed write must NOT overwrite the terminal row.
+        repo.mark_processed_trade(
+            **kwargs, status="retryable_failed", retry_attempt=7
+        )
+
+        rec = repo.get_processed_trade(f"term-{terminal_status}")
+        assert rec is not None
+        assert rec["status"] == terminal_status, (
+            f"terminal status {terminal_status!r} was clobbered by a late retryable_failed"
+        )
+
+        # The guarded row must also reject reclaim attempts via try_claim.
+        assert repo.try_claim_processed_trade(**kwargs) is False
+
+    def test_non_terminal_row_is_still_overwritable(self, tmp_path):
+        repo = _make_repo(tmp_path)
+        kwargs = _claim_kwargs("non-term-key")
+        assert repo.try_claim_processed_trade(**kwargs) is True
+        # in_progress → submitted_unconfirmed should still flow through.
+        repo.mark_processed_trade(**kwargs, status="submitted_unconfirmed", order_id="ord-2")
+        rec = repo.get_processed_trade("non-term-key")
+        assert rec is not None
+        assert rec["status"] == "submitted_unconfirmed"
