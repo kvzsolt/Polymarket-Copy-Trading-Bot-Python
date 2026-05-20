@@ -95,6 +95,7 @@ class MarketWebSocket:
         self._on_connected = on_connected
         self._on_disconnected = on_disconnected
         self._on_state_change = on_state_change
+        self._tasks: set[asyncio.Task] = set()
 
     async def connect(self, asset_ids: list[str]) -> None:
         self._asset_ids = _dedupe_asset_ids(asset_ids)
@@ -157,6 +158,10 @@ class MarketWebSocket:
                 ) as ws:
                     self._ws = ws
                     self._reconnect_delay = self._reconnect_min_delay
+                    # Seed an "alive" marker at connect time so the missed-pong
+                    # detector has a stable anchor even when no inbound frame
+                    # ever arrives (silent server case).
+                    self._last_pong_monotonic = time.monotonic()
                     logger.info("MarketWS: connected to %s", self._ws_url)
 
                     await self._subscribe(ws)
@@ -233,6 +238,11 @@ class MarketWebSocket:
         # This records connection liveness inside the startup window so the
         # market-data freshness gate does not reject a freshly-connected
         # stream that has not yet had a full heartbeat cycle.
+        #
+        # The missed-pong detector runs AFTER the sleep (i.e. before sending
+        # the next PING) so a silent server is detected: comparing the
+        # most recent PING send against the most recent inbound activity
+        # (seeded at connect time) lets the gap grow each iteration.
         while self._running:
             try:
                 await ws.send("PING")
@@ -245,6 +255,8 @@ class MarketWebSocket:
                 with contextlib.suppress(Exception):
                     await ws.close()
                 return
+
+            await asyncio.sleep(self._heartbeat_interval)
 
             # Missed-pong detector: if a PING was sent and no PONG (or any
             # inbound frame, which proves the pipe is alive) arrived within
@@ -260,16 +272,13 @@ class MarketWebSocket:
                     await ws.close()
                 return
 
-            await asyncio.sleep(self._heartbeat_interval)
-
     def _is_pong_missed(self) -> bool:
         if self._last_ping_monotonic is None:
             return False
         last_alive = self._last_pong_monotonic
         if last_alive is None:
-            elapsed = time.monotonic() - self._last_ping_monotonic
-        else:
-            elapsed = self._last_ping_monotonic - last_alive
+            return False
+        elapsed = self._last_ping_monotonic - last_alive
         return elapsed > self._pong_timeout_seconds
 
     async def _message_loop(self, ws: Any) -> None:
@@ -586,7 +595,7 @@ class MarketWebSocket:
         try:
             coro = self._on_state_change(asset_id, event_type)
             if asyncio.iscoroutine(coro):
-                asyncio.create_task(coro)
+                self._spawn(coro)
         except Exception as exc:
             logger.warning(
                 "MarketWS: on_state_change callback failed: %s",
@@ -600,11 +609,18 @@ class MarketWebSocket:
         try:
             result = method(*args)
             if asyncio.iscoroutine(result):
-                asyncio.create_task(result)
+                self._spawn(result)
             return True
         except Exception as exc:
             logger.warning("MarketWS: cache hook %s failed: %s", method_name, exc)
             return False
+
+    def _spawn(self, coro: Coroutine[Any, Any, Any]) -> asyncio.Task:
+        # Hold a strong reference so background tasks aren't GC'd mid-flight.
+        task = asyncio.create_task(coro)
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+        return task
 
     @staticmethod
     def _inc_metric(metric_name: str, labels: dict[str, str]) -> None:
