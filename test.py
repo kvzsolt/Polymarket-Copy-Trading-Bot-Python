@@ -26,7 +26,7 @@ from utils.logger import get_logger
 try:
     from clients.ws_constants import MARKET_HEARTBEAT_INTERVAL
 except Exception:  # pragma: no cover
-    MARKET_HEARTBEAT_INTERVAL = 10
+    MARKET_HEARTBEAT_INTERVAL = 5
 
 HEARTBEAT_INTERVAL = MARKET_HEARTBEAT_INTERVAL
 
