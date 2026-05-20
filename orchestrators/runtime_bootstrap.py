@@ -429,8 +429,21 @@ def build_trading_context(
     if coord is not None:
         try:
             coord.position_coordinator = context.position_coordinator
-        except Exception:
-            pass
+        except Exception as exc:
+            # If coord is frozen/slotted the silent bypass would leave
+            # near-one-exit submitting with position_coordinator=None.
+            # Surface the wiring failure loudly so ops can fix it.
+            logger.error(
+                "runtime_bootstrap.coordinator_wiring_failed user_id=%s error=%r",
+                getattr(context, "user_id", "?"), exc,
+            )
+            raise RuntimeError(
+                "runtime_bootstrap: failed to attach position_coordinator to "
+                f"execution_coordinator for user {getattr(context, 'user_id', '?')}"
+            ) from exc
+        assert (
+            getattr(coord, "position_coordinator", None) is context.position_coordinator
+        ), "runtime_bootstrap: position_coordinator attach silently dropped"
         context.execution_coordinator = coord
     # PR7 — bind position drift service so the coordinator can check
     # ``is_scope_paused`` before submission.
