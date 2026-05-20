@@ -324,6 +324,13 @@ class ExecutionConfig:
     circuit_cooldown_seconds: float
     meta_cache_ttl_good: float
     meta_cache_ttl_thin: float
+    # Phase 4 — balance regime
+    max_position_size_usdc: float
+    max_daily_spend_usdc: float
+    min_balance_headroom_usdc: float
+    # Phase 4 — book depth gate
+    min_book_depth_usdc: float
+    book_depth_band_pct: float
 
 
 @dataclass(frozen=True)
@@ -644,6 +651,17 @@ def _validate_semantics(cfg: AppConfig, errors: list[str]) -> None:
         errors.append("RISK_BUFFER_PCT must be non-negative.")
     if e.pending_submission_ttl_seconds <= 0:
         errors.append("PENDING_SUBMISSION_TTL_SECONDS must be > 0.")
+    # Phase 4 — balance regime + book depth gate. ``0`` disables a knob.
+    if e.max_position_size_usdc < 0:
+        errors.append("MAX_POSITION_SIZE_USDC must be non-negative.")
+    if e.max_daily_spend_usdc < 0:
+        errors.append("MAX_DAILY_SPEND_USDC must be non-negative.")
+    if e.min_balance_headroom_usdc < 0:
+        errors.append("MIN_BALANCE_HEADROOM_USDC must be non-negative.")
+    if e.min_book_depth_usdc < 0:
+        errors.append("MIN_BOOK_DEPTH_USDC must be non-negative.")
+    if not (0 < e.book_depth_band_pct <= 100):
+        errors.append("BOOK_DEPTH_BAND_PCT must be in (0, 100].")
 
     # Risk
     r = cfg.risk
@@ -878,6 +896,13 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         circuit_cooldown_seconds=p.float_("CIRCUIT_COOLDOWN_SECONDS", "60"),
         meta_cache_ttl_good=p.float_("META_CACHE_TTL_GOOD", "300"),
         meta_cache_ttl_thin=p.float_("META_CACHE_TTL_THIN", "30"),
+        # Phase 4 — balance regime. ``0`` disables a knob.
+        max_position_size_usdc=p.float_("MAX_POSITION_SIZE_USDC", "0"),
+        max_daily_spend_usdc=p.float_("MAX_DAILY_SPEND_USDC", "0"),
+        min_balance_headroom_usdc=p.float_("MIN_BALANCE_HEADROOM_USDC", "0"),
+        # Phase 4 — book depth gate. ``MIN_BOOK_DEPTH_USDC=0`` disables.
+        min_book_depth_usdc=p.float_("MIN_BOOK_DEPTH_USDC", "0"),
+        book_depth_band_pct=p.float_("BOOK_DEPTH_BAND_PCT", "5"),
     )
 
     # Leader / discovery cascades — reproduce the same cascading defaults the legacy
