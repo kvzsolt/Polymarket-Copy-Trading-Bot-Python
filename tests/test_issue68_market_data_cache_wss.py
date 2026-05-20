@@ -676,3 +676,120 @@ class TestBookSnapshot:
             monotonic_ts=time.monotonic() - 100,
         )
         assert not book.is_fresh(10.0)
+
+
+# ---------------------------------------------------------------------------
+# Fix 2: on_best_bid_ask conflict detection (REST→WSS transition)
+# ---------------------------------------------------------------------------
+
+
+class TestOnBestBidAskConflictDetection:
+    """on_best_bid_ask must not mark dirty during REST→WSS source transition."""
+
+    TOKEN = "0xconflict_test"
+
+    def _make_rest_seeded_store(self) -> MarketStateStore:
+        store = MarketStateStore()
+        store.store_rest_snapshot(
+            self.TOKEN,
+            condition_id=None,
+            bids={Decimal("0.84"): Decimal("100")},
+            asks={Decimal("0.87"): Decimal("50")},
+            tick_size=Decimal("0.01"),
+            min_order_size=Decimal("5"),
+            neg_risk=False,
+            fetched_at_monotonic=time.monotonic(),
+        )
+        return store
+
+    def test_wss_bid_ask_mismatch_does_not_dirty_rest_book(self) -> None:
+        store = self._make_rest_seeded_store()
+        assert not store.is_dirty(self.TOKEN)
+
+        # WSS delivers a slightly different best_bid (market moved)
+        store.on_best_bid_ask(self.TOKEN, Decimal("0.85"), Decimal("0.87"))
+
+        assert not store.is_dirty(self.TOKEN), (
+            "on_best_bid_ask must not mark dirty when book_source is rest_snapshot"
+        )
+
+    def test_wss_bid_ask_mismatch_marks_dirty_when_book_is_wss(self) -> None:
+        store = MarketStateStore()
+        store.replace_book_snapshot(
+            self.TOKEN,
+            {Decimal("0.84"): Decimal("100")},
+            {Decimal("0.87"): Decimal("50")},
+            {"source": "wss"},
+        )
+        assert not store.is_dirty(self.TOKEN)
+
+        # WSS delivers a conflicting best_bid for a WSS-sourced book → should dirty
+        store.on_best_bid_ask(self.TOKEN, Decimal("0.85"), Decimal("0.87"))
+
+        assert store.is_dirty(self.TOKEN), (
+            "on_best_bid_ask must mark dirty when book_source is wss and top-of-book conflicts"
+        )
+
+    def test_matching_wss_bid_ask_does_not_dirty_wss_book(self) -> None:
+        store = MarketStateStore()
+        store.replace_book_snapshot(
+            self.TOKEN,
+            {Decimal("0.84"): Decimal("100")},
+            {Decimal("0.87"): Decimal("50")},
+            {"source": "wss"},
+        )
+        # Matching top-of-book — no conflict, must not dirty
+        store.on_best_bid_ask(self.TOKEN, Decimal("0.84"), Decimal("0.87"))
+
+        assert not store.is_dirty(self.TOKEN)
+
+
+# ---------------------------------------------------------------------------
+# Fix 3: apply_book_delta clears dirty on valid WSS update
+# ---------------------------------------------------------------------------
+
+
+class TestApplyBookDeltaClearsDirty:
+    """apply_book_delta clears dirty when the result has valid bids + asks."""
+
+    TOKEN = "0xdelta_dirty_test"
+
+    def test_delta_clears_dirty_when_book_valid(self) -> None:
+        store = MarketStateStore()
+        store.store_rest_snapshot(
+            self.TOKEN,
+            condition_id=None,
+            bids={Decimal("0.84"): Decimal("100")},
+            asks={Decimal("0.87"): Decimal("50")},
+            tick_size=Decimal("0.01"),
+            min_order_size=Decimal("5"),
+            neg_risk=False,
+            fetched_at_monotonic=time.monotonic(),
+        )
+        # Manually set dirty (simulating conflict from on_best_bid_ask)
+        store.mark_dirty(self.TOKEN, "test_setup")
+        assert store.is_dirty(self.TOKEN)
+
+        # WSS delta arrives — book remains valid after update
+        store.apply_book_delta(self.TOKEN, "BUY", Decimal("0.85"), Decimal("80"))
+
+        assert not store.is_dirty(self.TOKEN), (
+            "apply_book_delta must clear dirty when resulting book has valid bids and asks"
+        )
+
+    def test_delta_does_not_clear_dirty_when_one_side_empty(self) -> None:
+        store = MarketStateStore()
+        store.replace_book_snapshot(
+            self.TOKEN,
+            {Decimal("0.84"): Decimal("100")},
+            {Decimal("0.87"): Decimal("50")},
+            {"source": "wss"},
+        )
+        store.mark_dirty(self.TOKEN, "test_setup")
+
+        # Remove the only ask level — asks now empty, dirty must persist
+        store.apply_book_delta(self.TOKEN, "SELL", Decimal("0.87"), Decimal("0"))
+
+        assert store.is_dirty(self.TOKEN), (
+            "dirty must persist when asks are empty after apply_book_delta"
+        )

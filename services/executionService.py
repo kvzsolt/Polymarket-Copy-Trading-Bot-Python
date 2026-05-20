@@ -283,7 +283,11 @@ class ExecutionService:
 
         try:
             from services.market_data_service import MarketDataNotReady, StaleDataError
-            bundle = await self._market_data_service.require_fresh_data(req.token_id)
+            bundle = await self._market_data_service.require_fresh_data(
+                req.token_id,
+                side=req.side,
+                condition_id=getattr(req, "condition_id", None),
+            )
         except Exception as exc:
             from services.market_data_service import MarketDataNotReady, StaleDataError
             if isinstance(exc, MarketDataNotReady):
@@ -508,19 +512,6 @@ class ExecutionService:
                 avg_price=None,
                 fees_paid=Decimal("0"),
                 error=f"price above max_share_price ({quote_price} > {max_share_price})",
-            )
-
-        # Min order size gate (from tick metadata)
-        if min_order_size > 0 and req.amount < min_order_size:
-            return ExecutionResult(
-                accepted=False,
-                order_id=None,
-                status="rejected",
-                requested_amount=req.amount,
-                filled_amount=Decimal("0"),
-                avg_price=None,
-                fees_paid=Decimal("0"),
-                error=f"amount below min_order_size ({req.amount} < {min_order_size})",
             )
 
         slippage = Decimal(req.max_slippage_bps) / Decimal(10_000)

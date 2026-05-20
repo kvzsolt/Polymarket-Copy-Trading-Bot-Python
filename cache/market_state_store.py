@@ -373,6 +373,14 @@ class MarketStateStore:
             if not state.resolved:
                 state.stale = False
                 state.stale_reason = None
+                if (
+                    state.bids
+                    and state.asks
+                    and state.best_bid is not None
+                    and state.best_ask is not None
+                ):
+                    state.dirty = False
+                    state.dirty_reason = None
 
             if prev_book_src == "rest_snapshot" or prev_quote_src == "rest_snapshot":
                 _logger.info(
@@ -433,12 +441,17 @@ class MarketStateStore:
             book_bid = max(state.bids) if state.bids else None
             book_ask = min(state.asks) if state.asks else None
 
-            if book_bid is not None and best_bid is not None and book_bid != best_bid:
-                state.dirty = True
-                state.dirty_reason = "best_bid_conflicts_with_book"
-            if book_ask is not None and best_ask is not None and book_ask != best_ask:
-                state.dirty = True
-                state.dirty_reason = "best_ask_conflicts_with_book"
+            # Only flag conflict when the book is already WSS-authoritative.
+            # During REST→WSS transition the book is still "rest_snapshot"
+            # while the WSS top-of-book reflects a slightly newer market
+            # state; mismatches here are expected and must not trigger dirty.
+            if state.book_source == "wss":
+                if book_bid is not None and best_bid is not None and book_bid != best_bid:
+                    state.dirty = True
+                    state.dirty_reason = "best_bid_conflicts_with_book"
+                if book_ask is not None and best_ask is not None and book_ask != best_ask:
+                    state.dirty = True
+                    state.dirty_reason = "best_ask_conflicts_with_book"
 
     def on_last_trade_price(
         self,
