@@ -24,9 +24,10 @@ from services.metrics import METRIC_WSS_HEARTBEAT_STALL, METRIC_WSS_RECONNECT, m
 from utils.logger import get_logger
 
 try:
-    from clients.ws_constants import MARKET_HEARTBEAT_INTERVAL
+    from clients.ws_constants import MARKET_HEARTBEAT_INTERVAL, PONG_TIMEOUT_SECONDS
 except Exception:  # pragma: no cover
-    MARKET_HEARTBEAT_INTERVAL = 10
+    MARKET_HEARTBEAT_INTERVAL = 5
+    PONG_TIMEOUT_SECONDS = 10.0
 
 HEARTBEAT_INTERVAL = MARKET_HEARTBEAT_INTERVAL
 
@@ -62,6 +63,7 @@ class MarketWebSocket:
         ws_url: str = DEFAULT_MARKET_WS_URL,
         rest_bootstrap: RestBootstrap | None = None,
         heartbeat_interval: float | None = None,
+        pong_timeout_seconds: float | None = None,
         reconnect_min_delay: float = _MIN_RECONNECT_DELAY,
         reconnect_max_delay: float = _MAX_RECONNECT_DELAY,
         on_connected: Callable[[], Coroutine[Any, Any, None]] | None = None,
@@ -82,6 +84,14 @@ class MarketWebSocket:
             if heartbeat_interval is not None
             else float(MARKET_HEARTBEAT_INTERVAL)
         )
+        self._pong_timeout_seconds = (
+            float(pong_timeout_seconds)
+            if pong_timeout_seconds is not None
+            else float(PONG_TIMEOUT_SECONDS)
+        )
+        self._last_ping_monotonic: float | None = None
+        self._last_pong_monotonic: float | None = None
+        self._bootstrap_in_flight = False
         self._on_connected = on_connected
         self._on_disconnected = on_disconnected
         self._on_state_change = on_state_change
@@ -133,6 +143,8 @@ class MarketWebSocket:
         while self._running:
             try:
                 self._mark_all_stale("reconnecting")
+                self._last_ping_monotonic = None
+                self._last_pong_monotonic = None
 
                 if self._rest_bootstrap and self._asset_ids:
                     await self._run_rest_bootstrap()
@@ -187,6 +199,14 @@ class MarketWebSocket:
             self._reconnect_delay = min(self._reconnect_delay * 2, self._reconnect_max_delay)
 
     async def _run_rest_bootstrap(self) -> None:
+        # Dedupe overlapping resync triggers (e.g. cascading disconnects); a
+        # single in-flight bootstrap is enough to seed the next connect cycle.
+        if self._bootstrap_in_flight:
+            logger.info(
+                "MarketWS: REST bootstrap already in flight; skipping duplicate resync",
+            )
+            return
+        self._bootstrap_in_flight = True
         try:
             logger.info("MarketWS: REST bootstrap for %d asset(s)", len(self._asset_ids))
             self._call_cache_optional("invalidate_all")
@@ -194,6 +214,8 @@ class MarketWebSocket:
         except Exception as exc:
             logger.warning("MarketWS: REST bootstrap failed: %s", exc)
             self._mark_all_dirty("rest_bootstrap_failed")
+        finally:
+            self._bootstrap_in_flight = False
 
     async def _subscribe(self, ws: Any) -> None:
         payload = {
@@ -214,20 +236,50 @@ class MarketWebSocket:
         while self._running:
             try:
                 await ws.send("PING")
-                self._call_cache_optional("on_market_ws_heartbeat", time.monotonic())
+                now = time.monotonic()
+                self._last_ping_monotonic = now
+                self._call_cache_optional("on_market_ws_heartbeat", now)
             except Exception as exc:
                 logger.warning("MarketWS: heartbeat send failed: %s", exc)
                 self._inc_metric(METRIC_WSS_HEARTBEAT_STALL, {"stream": "market"})
                 with contextlib.suppress(Exception):
                     await ws.close()
                 return
+
+            # Missed-pong detector: if a PING was sent and no PONG (or any
+            # inbound frame, which proves the pipe is alive) arrived within
+            # the pong-timeout window, close the socket and let the
+            # reconnect loop trigger a fresh bootstrap + resync.
+            if self._pong_timeout_seconds > 0 and self._is_pong_missed():
+                logger.warning(
+                    "MarketWS: pong timeout (no inbound activity within %.1fs) — reconnecting",
+                    self._pong_timeout_seconds,
+                )
+                self._inc_metric(METRIC_WSS_HEARTBEAT_STALL, {"stream": "market"})
+                with contextlib.suppress(Exception):
+                    await ws.close()
+                return
+
             await asyncio.sleep(self._heartbeat_interval)
+
+    def _is_pong_missed(self) -> bool:
+        if self._last_ping_monotonic is None:
+            return False
+        last_alive = self._last_pong_monotonic
+        if last_alive is None:
+            elapsed = time.monotonic() - self._last_ping_monotonic
+        else:
+            elapsed = self._last_ping_monotonic - last_alive
+        return elapsed > self._pong_timeout_seconds
 
     async def _message_loop(self, ws: Any) -> None:
         async for raw_msg in ws:
             if not self._running:
                 break
             msg = raw_msg.decode("utf-8", errors="replace") if isinstance(raw_msg, bytes) else raw_msg
+            # Any inbound frame proves the pipe is alive; treat as a pong
+            # for the missed-pong detector.
+            self._last_pong_monotonic = time.monotonic()
             if msg in ("PING", "ping"):
                 with contextlib.suppress(Exception):
                     await ws.send("PONG")
@@ -239,7 +291,9 @@ class MarketWebSocket:
 
     def _handle_message(self, raw_msg: str) -> None:
         if raw_msg in ("PONG", "pong", ""):
-            self._call_cache_optional("on_market_ws_pong", time.monotonic())
+            now = time.monotonic()
+            self._last_pong_monotonic = now
+            self._call_cache_optional("on_market_ws_pong", now)
             return
 
         try:

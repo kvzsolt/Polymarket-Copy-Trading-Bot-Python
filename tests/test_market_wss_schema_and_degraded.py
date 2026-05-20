@@ -270,11 +270,12 @@ class TestMarketResolved:
 
 
 class TestHeartbeatConstants:
-    def test_market_heartbeat_constant_is_10(self) -> None:
-        assert MARKET_HEARTBEAT_INTERVAL == 10
+    def test_market_heartbeat_constant_is_5(self) -> None:
+        # Phase 2 spec — 5s cadence + 10s pong timeout.
+        assert MARKET_HEARTBEAT_INTERVAL == 5
 
-    def test_user_heartbeat_constant_is_10(self) -> None:
-        assert USER_HEARTBEAT_INTERVAL == 10
+    def test_user_heartbeat_constant_is_5(self) -> None:
+        assert USER_HEARTBEAT_INTERVAL == 5
 
 
 # ---------------------------------------------------------------------------
