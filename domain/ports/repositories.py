@@ -61,6 +61,20 @@ class AbstractOrderRepository(ABC):
     def has_processed_trade(self, trade_key: str) -> bool: ...
 
     @abstractmethod
+    def try_claim_processed_trade(
+        self,
+        *,
+        trade_key: str,
+        user_id: str,
+        leader_id: str | None,
+        tx_hash: str | None,
+        side: str | None,
+        asset: str | None,
+        condition_id: str | None,
+        status: str = "in_progress",
+    ) -> bool: ...
+
+    @abstractmethod
     def get_processed_trade(self, trade_key: str) -> dict[str, Any] | None: ...
 
     @abstractmethod

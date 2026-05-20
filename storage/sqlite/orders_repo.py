@@ -319,6 +319,83 @@ class OrdersRepo(AbstractOrderRepository):
             "retry_attempt": row["retry_attempt"],
         }
 
+    def try_claim_processed_trade(
+        self,
+        *,
+        trade_key: str,
+        user_id: str,
+        leader_id: str | None,
+        tx_hash: str | None,
+        side: str | None,
+        asset: str | None,
+        condition_id: str | None,
+        status: str = "in_progress",
+        stale_claim_ttl_seconds: float = 300.0,
+    ) -> bool:
+        """Atomically claim a trade_key for processing (Phase 3 idempotency).
+
+        Uses a single ``INSERT ... ON CONFLICT DO UPDATE ... WHERE ... RETURNING``
+        statement so the "is it new / is the existing row retryable" decision
+        and the row mutation are one indivisible DB operation. This eliminates
+        the previous non-atomic ``has_processed_trade`` → ``mark_processed_trade``
+        check-then-set race where two concurrent pipeline runs could each
+        pass the "already processed?" check and then both submit.
+
+        Semantics:
+        - No row exists → insert with ``status`` → return True (claimed).
+        - Row exists with retryable status → overwrite to ``status`` → return
+          True (re-claimed, preserves existing retry semantics).
+        - Row exists with ``in_progress`` status older than
+          ``stale_claim_ttl_seconds`` → re-claim (the prior worker crashed).
+        - Row exists with terminal status → no-op → return False (duplicate).
+
+        The whole operation runs inside a single transaction; on
+        ``sqlite3.IntegrityError`` or other failure the transaction is rolled
+        back and the exception is swallowed (treated as "not claimed") so
+        callers see ``False`` and skip rather than observe partial state.
+        """
+        if not trade_key:
+            return False
+        now = time.time()
+        stale_cutoff = now - max(0.0, stale_claim_ttl_seconds)
+        try:
+            with create_connection(self.db_path) as conn:
+                cur = conn.execute(
+                    """
+                    INSERT INTO processed_trades (
+                        trade_key, user_id, leader_id, tx_hash, side, asset,
+                        condition_id, status, processed_at, retry_attempt, order_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL)
+                    ON CONFLICT(trade_key) DO UPDATE SET
+                        status = excluded.status,
+                        processed_at = excluded.processed_at,
+                        retry_attempt = COALESCE(processed_trades.retry_attempt, 0) + 1
+                    WHERE processed_trades.status = 'retryable_failed'
+                       OR processed_trades.status LIKE 'retryable_failed_%'
+                       OR processed_trades.status LIKE 'retry_pending_%'
+                       OR (processed_trades.status = 'in_progress'
+                           AND processed_trades.processed_at < ?)
+                    RETURNING trade_key
+                    """,
+                    (
+                        trade_key,
+                        user_id,
+                        leader_id,
+                        tx_hash,
+                        side,
+                        asset,
+                        condition_id,
+                        status,
+                        now,
+                        stale_cutoff,
+                    ),
+                )
+                rows = cur.fetchall()
+                conn.commit()
+                return len(rows) == 1
+        except sqlite3.IntegrityError:
+            return False
+
     def mark_processed_trade(
         self,
         *,
