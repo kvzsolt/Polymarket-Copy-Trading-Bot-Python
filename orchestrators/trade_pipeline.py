@@ -4,6 +4,7 @@ import asyncio
 import sqlite3
 import time
 import traceback as _tb
+import uuid
 from dataclasses import dataclass
 from decimal import Decimal, ROUND_DOWN
 from typing import Any
@@ -1164,6 +1165,9 @@ async def _reconcile_one(
         pnl_tracker=context.pnl_tracker,
         get_position=context.positions_repo.get_position,
         logger=logger,
+        # Phase 4 — let the reconciler release the daily-cap reservation
+        # for BUYs that terminally cancelled without filling.
+        balance_regime=getattr(context, "balance_regime", None),
     )
 
 
@@ -1205,27 +1209,43 @@ async def reconcile_submitted_unconfirmed(
             except ValueError:
                 # Legacy rows predating issue #67 may have NULL/empty
                 # user_id, condition_id, or asset. Emit a hard metric so
-                # ops can detect them, then fall back to a sentinel scope
-                # so the row still reconciles (else it stays permanently
-                # stuck and skews equity).
+                # ops can detect them, then fall back to a *per-row unique*
+                # sentinel scope so the row still reconciles (else it stays
+                # permanently stuck and skews equity).
+                #
+                # Each legacy row must get its OWN PositionKey — collapsing
+                # unrelated rows under a single shared sentinel (`__legacy_*__`)
+                # would serialize them through the same coordinator slot and
+                # corrupt per-position attribution. We salt every missing
+                # field with the order_id (falling back to trade_key, then a
+                # uuid) so two unrelated legacy rows lock independently.
+                _legacy_salt = (
+                    str(record.get("order_id") or "").strip()
+                    or str(record.get("trade_key") or "").strip()
+                    or f"row-{uuid.uuid4().hex[:12]}"
+                )
                 metrics.inc(
                     "reconcile_missing_scope_total",
                     labels={"side": side},
                 )
                 logger.warning(
                     "reconcile_legacy_scope_fallback | order_id=%s trade_key=%s side=%s "
-                    "user_id=%r condition_id=%r asset=%r",
+                    "user_id=%r condition_id=%r asset=%r salt=%s",
                     record.get("order_id"), record.get("trade_key"), side,
                     record.get("user_id"), record.get("condition_id"),
                     record.get("asset") or record.get("token_id"),
+                    _legacy_salt,
                 )
                 _scope = PositionKey(
-                    user_id=record.get("user_id") or "__legacy_user__",
-                    condition_id=record.get("condition_id") or "__legacy_cond__",
+                    user_id=record.get("user_id") or f"__legacy_user__{_legacy_salt}",
+                    condition_id=(
+                        record.get("condition_id")
+                        or f"__legacy_cond__{_legacy_salt}"
+                    ),
                     token_id=(
                         record.get("asset")
                         or record.get("token_id")
-                        or "__legacy_token__"
+                        or f"__legacy_token__{_legacy_salt}"
                     ),
                 )
             async with sem:
@@ -1854,6 +1874,17 @@ async def execute_trades(
                 gated_notional = Decimal(str(decision.target_notional_usdc)) if decision.target_notional_usdc > 0 else target_notional
 
                 # --- Phase 4 balance regime gate ---
+                # Refresh the balance snapshot immediately before the regime
+                # check so that any prior fill/cancel in this batch (and any
+                # upstream balance movement since the first fetch at the top
+                # of the BUY branch) is reflected. The earlier snapshot is
+                # still used by sizing/cap resolvers above; only the regime
+                # gate needs the freshest possible free_cash reading.
+                _refreshed = await _fetch_balance_snapshot(
+                    context, signal.condition_id, leader_id,
+                )
+                if _refreshed is not None:
+                    snapshot = _refreshed
                 regime = getattr(context, "balance_regime", None)
                 if regime is not None:
                     regime_decision = regime.check_buy(
@@ -2164,18 +2195,34 @@ async def execute_trades(
                 )
                 continue
 
+            # Phase 4 — record BUY notional against the rolling 24h spend ceiling
+            # at submission time. Fires on BOTH the immediate-fill path and the
+            # accepted-no-fill path so every submitted BUY consumes the daily
+            # cap. Duplicate submissions are filtered above (`continue`); a
+            # rejection (`not exec_result.accepted`) never enters the ledger.
+            # SELLs do not consume the daily-spend budget.
+            if exec_result.accepted and signal.side == "BUY":
+                regime = getattr(context, "balance_regime", None)
+                if regime is not None:
+                    try:
+                        _filled_amt = Decimal(str(exec_result.filled_amount or 0))
+                        if _filled_amt > 0:
+                            _fill_px = Decimal(
+                                str(exec_result.avg_price or signal.price or 0)
+                            )
+                            regime.record_buy(
+                                _filled_amt * _fill_px,
+                                order_id=exec_result.order_id,
+                            )
+                        else:
+                            regime.record_buy(
+                                Decimal(str(exec_result.requested_amount or 0)),
+                                order_id=exec_result.order_id,
+                            )
+                    except Exception:  # pragma: no cover — defensive
+                        pass
+
             if exec_result.accepted and exec_result.filled_amount <= 0:
-                # Phase 4 — count the BUY against the rolling 24h spend ceiling
-                # at submission time (eagerly, before fills land). Duplicate
-                # submissions are filtered above; SELLs do not consume the
-                # daily-spend budget.
-                if signal.side == "BUY":
-                    regime = getattr(context, "balance_regime", None)
-                    if regime is not None:
-                        try:
-                            regime.record_buy(Decimal(str(exec_result.requested_amount or 0)))
-                        except Exception:  # pragma: no cover — defensive
-                            pass
                 context.orders_repo.mark_processed_trade(
                     trade_key=trade_key,
                     user_id=context.user_id,
@@ -2424,6 +2471,23 @@ async def execute_trades(
                 raise
 
             if signal.side == "BUY":
+                # Phase 4 — count the BUY against the rolling 24h spend
+                # ceiling on the immediately-filled path too. The submitted-
+                # unconfirmed branch (above) only fires when filled_amount<=0,
+                # so without this hook fast fills bypass the daily ledger.
+                regime = getattr(context, "balance_regime", None)
+                if regime is not None:
+                    try:
+                        filled_notional = fill_size * Decimal(str(fill_price or 0))
+                        regime.record_buy(
+                            filled_notional,
+                            order_id=exec_result.order_id,
+                        )
+                    except Exception:  # pragma: no cover — defensive
+                        logger.exception(
+                            "balance_regime_record_buy_failed | order_id=%s",
+                            exec_result.order_id,
+                        )
                 if context.pnl_tracker is not None:
                     context.pnl_tracker.record_buy(
                         condition_id=signal.condition_id,

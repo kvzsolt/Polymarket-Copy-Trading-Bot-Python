@@ -712,6 +712,33 @@ class ReconciliationService:
             return Decimal("0")
         return _matched_amount_from_response(existing.get("response"))
 
+    def _resolve_buy_requested_amount(self, order_id: str) -> Decimal:
+        """Return the requested BUY notional from the persisted orders row.
+
+        Used by the terminal-no-fill branch to release the eagerly recorded
+        daily-cap spend back to the regime ledger. Reads ``request_json.amount``
+        (falling back to ``size``) on the local orders row.
+        """
+        if not order_id:
+            return Decimal("0")
+        getter = getattr(self.orders_repo, "get_by_order_id", None)
+        if getter is None:
+            return Decimal("0")
+        try:
+            row = getter(order_id)
+        except Exception:
+            return Decimal("0")
+        if not isinstance(row, dict):
+            return Decimal("0")
+        request = row.get("request") or {}
+        if not isinstance(request, dict):
+            return Decimal("0")
+        raw = request.get("amount") if request.get("amount") is not None else request.get("size")
+        try:
+            return Decimal(str(raw or 0))
+        except Exception:
+            return Decimal("0")
+
     @staticmethod
     def _avg_price_from_fill(fill_info: dict[str, Any]) -> Decimal:
         raw = (
@@ -802,6 +829,7 @@ class ReconciliationService:
         pnl_tracker: Any | None = None,
         get_position: Callable[..., Any] | None = None,
         logger: Any | None = None,
+        balance_regime: Any | None = None,
     ) -> bool:
         """Reconcile one BUY/SELL processed_trade order.
 
@@ -901,6 +929,32 @@ class ReconciliationService:
                         "order_status": order_status,
                     },
                 )
+            # Phase 4 — release the BUY's reserved spend on the rolling
+            # daily-cap ledger before we drop the processed-trade row. The
+            # BUY was recorded eagerly at submit time (see
+            # ``orchestrators.trade_pipeline``); a terminal no-fill cancel
+            # means the venue is returning the budget, so we must too.
+            # SELLs do not participate in the daily-spend ledger.
+            if (
+                balance_regime is not None
+                and str(side).upper() == "BUY"
+                and hasattr(balance_regime, "record_cancel")
+            ):
+                cancel_amt = self._resolve_buy_requested_amount(order_id)
+                if cancel_amt > 0:
+                    try:
+                        balance_regime.record_cancel(
+                            cancel_amt,
+                            order_id=order_id,
+                        )
+                    except TypeError:
+                        # Back-compat: older signature without order_id.
+                        try:
+                            balance_regime.record_cancel(cancel_amt)
+                        except Exception:  # pragma: no cover — defensive
+                            pass
+                    except Exception:  # pragma: no cover — defensive
+                        pass
             self.orders_repo.delete_processed_trade(record["trade_key"])
             self._audit(
                 "reconciliation_no_fill_unlock",
