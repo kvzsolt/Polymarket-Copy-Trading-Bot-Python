@@ -1,0 +1,72 @@
+reviews/phase04_fix_balance_regime.md
+  s_3bcc54a898cc1a::t_1e5b21e4ef5b30 1-176
+tests/test_phase01_review_b_fixes.py
+  s_028e5a104de131::t_7e81ce7cba0b32 103-106,109-114
+orchestrators/trade_pipeline.py
+  s_028e5a104de131::t_8f8537cb1a6d6f 7
+  s_028e5a104de131::t_2df0ae9c07ee90 1168-1170
+  s_028e5a104de131::t_204ce86aa31c39 1212-1226,1233,1237,1240-1244,1248
+  s_028e5a104de131::t_f5e0ffcd8f0bdb 1877-1887
+  s_3bcc54a898cc1a::t_9d731d12b46bee 2474-2490
+  s_028e5a104de131::t_2b34017c2f7693 2198-2217,2222-2224
+  s_3bcc54a898cc1a::t_a991c11c12ce1d 2218-2221
+services/balance_regime.py
+  s_3bcc54a898cc1a::t_a9be330cbc1115 14-36,41,46,74-80,82-87,89-95,101-111,127-135,140-142,161-164,179-185,200-212,214-215,217-275,279-280,337-352,374-438
+reviews/phase04_review_a.md
+  s_257a12d5a55340::t_b3ff511f0953e0 1-172
+reviews/phase04_fix_pipeline_recon.md
+  s_028e5a104de131::t_fb982111fd369e 1-302
+services/reconciliation.py
+  s_028e5a104de131::t_c7049bdb316fbc 473-497
+  s_3bcc54a898cc1a::t_60f13e7ac19576 511-549
+  s_028e5a104de131::t_bfe85e875fa523 354-368
+  s_028e5a104de131::t_bd660ac9b5736f 265-268
+  s_028e5a104de131::t_e42d8ba8eb274b 287-346
+  s_3bcc54a898cc1a::t_d369acc34747ff 273-276
+  s_028e5a104de131::t_8df800f7f1feac 51-52
+  s_028e5a104de131::t_889e79ede5bf5e 85-97
+  s_3bcc54a898cc1a::t_616ee3297d8dbb 146,150-153
+  s_028e5a104de131::t_831a720a0a5bf2 203
+  s_028e5a104de131::t_c94a06bb9895f9 579-647
+  s_028e5a104de131::t_b2d0df3f32f123 378,384-385,391,405-406
+services/execution/reconciliation_service.py
+  s_028e5a104de131::t_98960cd017cab2 715-741
+  s_028e5a104de131::t_b938e537e05a2c 832
+  s_028e5a104de131::t_3963ef810f93e5 932-957
+tests/test_balance_regime.py
+  s_3bcc54a898cc1a::t_e5ea714d2f6233 47-48,50,54-61
+  s_3bcc54a898cc1a::t_966c1c629a90da 4,15
+  s_3bcc54a898cc1a::t_a69f9789e34fb1 199-360
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.11",
+  "base_commit_sha": "d9855689ad16b5dfb2e3fecd97de25187969d9b9",
+  "prompts": {},
+  "sessions": {
+    "s_028e5a104de131": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2dacbad8-064e-40c1-8470-6db2e6f54952",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    },
+    "s_257a12d5a55340": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "eeee4f05-0f36-4229-8388-537c32f3574d",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    },
+    "s_3bcc54a898cc1a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c70ba44f-c5d9-426d-aa4d-14f9854a5433",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
