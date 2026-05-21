@@ -1,0 +1,29 @@
+reviews/phase04_rereview_a_retry.md
+  s_bc3eb5104ea9e4::t_1935e1b23db35e 1-145
+reviews/phase04_rereview_b.md
+  s_b28f51cb6fe673::t_240d8591e4c546 1-355
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "63f7b0358c6794f7e964e48a263dab89ca2cd09c",
+  "prompts": {},
+  "sessions": {
+    "s_b28f51cb6fe673": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "296ff1bd-b4c7-47bc-b218-caee4e0e6c01",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    },
+    "s_bc3eb5104ea9e4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "296735d7-f67f-47ce-ad70-605a82c60189",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
