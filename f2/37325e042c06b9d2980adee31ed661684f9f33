@@ -1,0 +1,33 @@
+services/reconciliation.py
+  s_73e3679734e5c0::t_bdf2d3f1a46eed 315-320,325-328
+  s_73e3679734e5c0::t_2d7bb0ccd76bae 365-371,378-383
+  s_73e3679734e5c0::t_3b71e8ee0b9c0f 505-527
+  s_73e3679734e5c0::t_a6b82bd440386a 574-607,613,617-625,639-640,642-654
+  s_73e3679734e5c0::t_9806689330df17 814-822
+  s_73e3679734e5c0::t_77b8ee6012f461 287-293
+  s_73e3679734e5c0::t_079c039fab3521 175-184
+tests/test_phase05_reconcile_hardening.py
+  s_73e3679734e5c0::t_2983eb3c111991 1-31,33-52,54-107
+  s_73e3679734e5c0::t_b087f4a5b63b74 32
+  s_73e3679734e5c0::t_068c6c7bb29463 53
+tests/test_reconcile_phase04.py
+  s_73e3679734e5c0::t_e95c1bc58006b3 208-346
+tests/test_trade_pipeline_safety.py
+  s_73e3679734e5c0::t_cafa8dd14b91fc 1477-1502
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "f237325e042c06b9d2980adee31ed661684f9f33",
+  "prompts": {},
+  "sessions": {
+    "s_73e3679734e5c0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f4bbbe78-ed43-4ec4-aab6-9aefe80d1d8b",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
