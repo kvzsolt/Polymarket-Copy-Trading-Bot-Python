@@ -100,12 +100,18 @@ async def test_reconcile_emits_metric_and_fallback_for_empty_identity(monkeypatc
         for name, labels in metric_calls
     ), f"missing reconcile_missing_scope_total metric in {metric_calls!r}"
 
-    # Sentinel scope was used so the lock could still serialise.
+    # Sentinel scope was used so the lock could still serialise. Each legacy
+    # row must get its OWN scope (salted by order_id / trade_key) so two
+    # unrelated rows do not collapse into the same coordinator slot and
+    # corrupt per-position attribution.
     assert len(acquired_scopes) == 1
     scope = acquired_scopes[0]
-    assert scope.user_id == "__legacy_user__"
-    assert scope.condition_id == "__legacy_cond__"
-    assert scope.token_id == "__legacy_token__"
+    assert scope.user_id.startswith("__legacy_user__")
+    assert "ord-legacy-1" in scope.user_id
+    assert scope.condition_id.startswith("__legacy_cond__")
+    assert "ord-legacy-1" in scope.condition_id
+    assert scope.token_id.startswith("__legacy_token__")
+    assert "ord-legacy-1" in scope.token_id
 
 
 # ---------------------------------------------------------------------------

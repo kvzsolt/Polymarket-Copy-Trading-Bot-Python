@@ -48,6 +48,8 @@ class ReconciliationResult:
     partial_fill_deltas: tuple[tuple[str, str], ...] = ()
     unexpected_fills_observed: int = 0
     unexpected_cancellations: int = 0
+    complete_fills_observed: int = 0
+    complete_fill_deltas: tuple[tuple[str, str], ...] = ()
     errors: list[str] = field(default_factory=list)
 
 
@@ -78,6 +80,19 @@ def _safe_decimal(value: Any, default: str = "0") -> Any:
         return Decimal(str(value))
     except Exception:
         return Decimal(default)
+
+
+def _original_size(order: dict[str, Any]) -> Any:
+    """Extract the original requested size from a venue order payload.
+
+    Various venue schemas expose this as ``original_size``, ``size``,
+    ``order_size``, or ``original_amount``. Returns ``0`` when none of those
+    fields are present so callers can fall back on ``status``-based detection.
+    """
+    for key in ("original_size", "order_size", "original_amount", "size"):
+        if key in order and order[key] is not None:
+            return _safe_decimal(order[key])
+    return _safe_decimal("0")
 
 
 def _matched_size(order: dict[str, Any]) -> Any:
@@ -128,9 +143,14 @@ class ReconciliationService:
         auto_cancel_stale: bool | None = None,
         *,
         config: Any | None = None,
+        balance_regime: Any | None = None,
     ):
         self.clob_client = clob_client
         self.orders_repo = orders_repo
+        # Phase 4 — optional handle on the balance-regime ledger so the
+        # reconciler can roll back daily-spend when the venue confirms an
+        # unexpected cancellation/rejection for a previously submitted BUY.
+        self.balance_regime = balance_regime
 
         # Priority: explicit arg > AppConfig > ENV fallback
         if stale_threshold_seconds is not None:
@@ -180,6 +200,7 @@ class ReconciliationService:
         unknown_count = 0
         cancelled_count = 0
         partial_fills: list[tuple[str, Any]] = []  # (order_id, delta)
+        complete_fills: list[tuple[str, Any]] = []  # (order_id, delta)
         unexpected_fills = 0
         unexpected_cancellations = 0
 
@@ -241,10 +262,18 @@ class ReconciliationService:
                 kind = delta.get("kind")
                 if kind == "partial_fill":
                     partial_fills.append((order_id, str(delta.get("delta"))))
+                elif kind == "filled":
+                    # Distinct from partial_fill so downstream consumers don't
+                    # double-apply the delta on a subsequent reconcile pass.
+                    complete_fills.append((order_id, str(delta.get("delta"))))
                 elif kind == "unexpected_fill":
                     unexpected_fills += 1
                 elif kind == "unexpected_cancellation":
                     unexpected_cancellations += 1
+                    self._rollback_balance_regime_on_cancel(
+                        order_id=order_id,
+                        local_record=local_record,
+                    )
 
             # Check staleness
             age = _order_age_seconds(order, now)
@@ -255,6 +284,66 @@ class ReconciliationService:
                     order_id, age, self.stale_threshold,
                 )
 
+        # 2b. Detect terminal states (fills / cancels) on orders we believe
+        # are still in-flight but the venue did NOT return in the open set.
+        # ``get_orders()`` only returns OPEN orders, so any order that filled
+        # or was cancelled would otherwise stay invisible to this pass. We
+        # walk the local in-flight set, look up each missing-from-open order
+        # individually, and classify it the same way as if it had appeared
+        # in the open list.
+        try:
+            seen_open_ids = {
+                str(o.get("id") or "") for o in exchange_orders if o.get("id")
+            }
+            for local_row in self._local_in_flight_orders():
+                local_oid = str(local_row.get("order_id") or "")
+                if not local_oid or local_oid in seen_open_ids:
+                    continue
+                probed = await self._fetch_single_order(local_oid)
+                if probed is None:
+                    continue
+                try:
+                    delta = self._classify_order_state(
+                        order=probed,
+                        local_record=local_row,
+                    )
+                except Exception as exc:  # pragma: no cover — defensive
+                    logger.error(
+                        "reconcile_classify_failed_closed | order_id=%s err=%s",
+                        local_oid, exc,
+                    )
+                    delta = None
+                if delta is None:
+                    continue
+                kind = delta.get("kind")
+                if kind in ("unexpected_fill", "partial_fill"):
+                    # A "partial_fill" delta against an order that has fallen
+                    # off the open list is now a real fill we never observed
+                    # locally — count it as an unexpected fill so downstream
+                    # alerting fires and book-keeping reconciles.
+                    unexpected_fills += 1
+                    logger.warning(
+                        "reconcile_unexpected_fill_closed | order_id=%s "
+                        "matched=%s status=%s",
+                        local_oid,
+                        str(delta.get("venue") or delta.get("matched")),
+                        _order_status(probed),
+                    )
+                elif kind == "unexpected_cancellation":
+                    unexpected_cancellations += 1
+                    self._rollback_balance_regime_on_cancel(
+                        order_id=local_oid,
+                        local_record=local_row,
+                    )
+                elif kind == "filled":
+                    unexpected_fills += 1
+                    logger.warning(
+                        "reconcile_filled_off_open | order_id=%s matched=%s",
+                        local_oid, str(delta.get("venue") or delta.get("matched")),
+                    )
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.error("reconcile_closed_order_probe_failed | err=%s", exc)
+
         # 3. Cancel stale orders if configured
         if self.auto_cancel and stale_order_ids:
             for oid in stale_order_ids:
@@ -262,6 +351,21 @@ class ReconciliationService:
                     await self._cancel_order(oid)
                     cancelled_count += 1
                     logger.info("Cancelled stale order: %s", oid)
+                    # Phase 4 — auto-cancel of a stale BUY must release the
+                    # daily-cap reservation. Look the local row up again so
+                    # ``_rollback_balance_regime_on_cancel`` can resolve the
+                    # original requested notional.
+                    if self.balance_regime is not None and self.orders_repo:
+                        local_row = None
+                        try:
+                            if hasattr(self.orders_repo, "get_by_order_id"):
+                                local_row = self.orders_repo.get_by_order_id(oid)
+                        except Exception:
+                            local_row = None
+                        self._rollback_balance_regime_on_cancel(
+                            order_id=oid,
+                            local_record=local_row,
+                        )
                 except Exception as exc:
                     msg = f"Failed to cancel stale order {oid}: {exc}"
                     logger.error(msg)
@@ -271,17 +375,20 @@ class ReconciliationService:
             open_count > 0
             or stale_order_ids
             or partial_fills
+            or complete_fills
             or unexpected_fills
             or unexpected_cancellations
         ):
             logger.info(
                 "Reconciliation: %d open, %d unknown, %d stale (%d cancelled), "
-                "%d partial-fill, %d unexpected-fill, %d unexpected-cancel",
+                "%d partial-fill, %d complete-fill, %d unexpected-fill, "
+                "%d unexpected-cancel",
                 open_count,
                 unknown_count,
                 len(stale_order_ids),
                 cancelled_count,
                 len(partial_fills),
+                len(complete_fills),
                 unexpected_fills,
                 unexpected_cancellations,
             )
@@ -295,6 +402,8 @@ class ReconciliationService:
             partial_fill_deltas=tuple(partial_fills),
             unexpected_fills_observed=unexpected_fills,
             unexpected_cancellations=unexpected_cancellations,
+            complete_fills_observed=len(complete_fills),
+            complete_fill_deltas=tuple(complete_fills),
             errors=errors,
         )
 
@@ -361,6 +470,31 @@ class ReconciliationService:
                 venue_matched=venue_matched,
                 venue_status=venue_status,
             )
+            # Tag as a *complete* fill (kind="filled") when the venue reports
+            # a terminal-filled status, or when the cumulative matched size
+            # has reached the original requested size. Without this guard,
+            # a complete fill is mislabeled as "partial_fill" and downstream
+            # logic (which expects partial → more fills to come) ends up
+            # double-counting on the next reconcile pass.
+            original_size = _original_size(order)
+            is_complete = (
+                venue_status in _TERMINAL_FILLED_STATUSES
+                or (original_size > 0 and venue_matched >= original_size)
+            )
+            if is_complete:
+                logger.info(
+                    "reconcile_filled | order_id=%s status=%s "
+                    "local_matched=%s venue_matched=%s delta=%s original=%s",
+                    order_id, venue_status, local_matched, venue_matched,
+                    delta, original_size,
+                )
+                return {
+                    "kind": "filled",
+                    "local": local_matched,
+                    "venue": venue_matched,
+                    "delta": delta,
+                    "original": original_size,
+                }
             logger.info(
                 "reconcile_partial_fill | order_id=%s status=%s "
                 "local_matched=%s venue_matched=%s delta=%s",
@@ -373,6 +507,45 @@ class ReconciliationService:
                 "delta": delta,
             }
         return None
+
+    def _rollback_balance_regime_on_cancel(
+        self,
+        *,
+        order_id: str,
+        local_record: dict[str, Any] | None,
+    ) -> None:
+        """Hand a cancel back to the balance regime so daily-spend rolls back.
+
+        The venue has confirmed the order is terminal-cancelled (or rejected)
+        and we never observed a fill on it. Whatever the gate provisionally
+        recorded at submit time has to come back to the daily budget,
+        otherwise the cap can lock the bot out for the rest of the window.
+        """
+        regime = self.balance_regime
+        if regime is None:
+            return
+        if not order_id:
+            return
+        side = (
+            (local_record or {}).get("side")
+            or (local_record or {}).get("Side")
+            or ""
+        )
+        if isinstance(side, str) and side.upper() == "SELL":
+            return  # SELLs do not consume the daily-spend budget
+        amount = "0"
+        if local_record:
+            for key in ("notional_usdc", "size_usdc", "requested_usdc", "size"):
+                if local_record.get(key) is not None:
+                    amount = str(local_record[key])
+                    break
+        try:
+            regime.record_cancel(amount, order_id=order_id)
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.error(
+                "balance_regime_rollback_failed | order_id=%s err=%s",
+                order_id, exc,
+            )
 
     def _record_partial_fill(
         self,
@@ -402,6 +575,75 @@ class ReconciliationService:
                 "reconcile_partial_fill_persist_failed | order_id=%s err=%s",
                 order_id, exc,
             )
+
+    def _local_in_flight_orders(self) -> list[dict[str, Any]]:
+        """Return locally persisted orders that we still believe are open.
+
+        Used to detect terminal venue states for orders that have fallen off
+        the open-orders list (filled, cancelled) but our local view has not
+        caught up yet.
+        """
+        repo = self.orders_repo
+        if repo is None:
+            return []
+        getter = getattr(repo, "get_unconfirmed_order_submissions", None)
+        if not callable(getter):
+            return []
+        try:
+            rows = getter() or []
+        except Exception as exc:
+            logger.error("reconcile_local_in_flight_lookup_failed | err=%s", exc)
+            return []
+        return [r for r in rows if isinstance(r, dict)]
+
+    async def _fetch_single_order(self, order_id: str) -> dict[str, Any] | None:
+        """Probe the venue for a single order by id.
+
+        Returns a dict in the same shape as entries from ``get_orders()`` so
+        ``_classify_order_state`` can reuse its logic. Returns ``None`` on
+        any error (we never want a single bad lookup to abort the pass).
+        """
+        client = self._orders_client()
+        getter = getattr(client, "get_order", None)
+        if not callable(getter):
+            return None
+        try:
+            loop = asyncio.get_running_loop()
+            raw = await loop.run_in_executor(
+                None, lambda: getter(order_id)
+            )
+        except Exception as exc:
+            logger.debug(
+                "reconcile_single_order_fetch_failed | order_id=%s err=%s",
+                order_id, exc,
+            )
+            return None
+        if raw is None:
+            return None
+        if isinstance(raw, dict):
+            # Ensure ``id`` is populated so downstream classification works.
+            raw.setdefault("id", order_id)
+            return raw
+        # Handle a venue VenueOrderState-style object: copy attrs into a dict.
+        try:
+            out: dict[str, Any] = {"id": order_id}
+            for attr in (
+                "status",
+                "size_matched",
+                "filled",
+                "matched_size",
+                "filled_size",
+                "original_size",
+                "size",
+                "timestamp",
+                "created_at",
+            ):
+                val = getattr(raw, attr, None)
+                if val is not None:
+                    out[attr] = val
+            return out
+        except Exception:
+            return None
 
     async def _fetch_open_orders(self) -> list[dict[str, Any]]:
         """Fetch all open orders from the CLOB."""
