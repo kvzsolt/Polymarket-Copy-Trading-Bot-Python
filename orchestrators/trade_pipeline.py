@@ -2475,19 +2475,6 @@ async def execute_trades(
                 # ceiling on the immediately-filled path too. The submitted-
                 # unconfirmed branch (above) only fires when filled_amount<=0,
                 # so without this hook fast fills bypass the daily ledger.
-                regime = getattr(context, "balance_regime", None)
-                if regime is not None:
-                    try:
-                        filled_notional = fill_size * Decimal(str(fill_price or 0))
-                        regime.record_buy(
-                            filled_notional,
-                            order_id=exec_result.order_id,
-                        )
-                    except Exception:  # pragma: no cover — defensive
-                        logger.exception(
-                            "balance_regime_record_buy_failed | order_id=%s",
-                            exec_result.order_id,
-                        )
                 if context.pnl_tracker is not None:
                     context.pnl_tracker.record_buy(
                         condition_id=signal.condition_id,
