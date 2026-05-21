@@ -172,6 +172,16 @@ class ReconciliationService:
                 str(ENV.get("RECONCILE_AUTO_CANCEL", "false")).lower() in ("1", "true", "yes")
             )
 
+        # Cap on per-pass closed-order venue probes (N+1 protection). The
+        # venue rate-limits order lookups, so an unbounded local in-flight
+        # backlog must not translate into an unbounded probe storm.
+        try:
+            self.max_closed_probes = max(
+                1, int(ENV.get("RECONCILE_MAX_CLOSED_PROBES", 10) or 10)
+            )
+        except (TypeError, ValueError):
+            self.max_closed_probes = 10
+
     @staticmethod
     def _supports_order_management(candidate: Any) -> bool:
         if candidate is None:
@@ -274,6 +284,13 @@ class ReconciliationService:
                         order_id=order_id,
                         local_record=local_record,
                     )
+                elif kind == "cancel_after_partial":
+                    unexpected_cancellations += 1
+                    self._rollback_balance_regime_on_cancel(
+                        order_id=order_id,
+                        local_record=local_record,
+                        venue_matched=delta.get("venue"),
+                    )
 
             # Check staleness
             age = _order_age_seconds(order, now)
@@ -295,10 +312,20 @@ class ReconciliationService:
             seen_open_ids = {
                 str(o.get("id") or "") for o in exchange_orders if o.get("id")
             }
+            # Bound the per-pass venue probes. ``_fetch_single_order`` is one
+            # venue call each; an unbounded backlog of stale-but-open local
+            # rows would otherwise turn into an N+1 storm against the venue's
+            # rate-limited order endpoints.
+            probes_done = 0
+            probe_cap_hit = False
             for local_row in self._local_in_flight_orders():
                 local_oid = str(local_row.get("order_id") or "")
                 if not local_oid or local_oid in seen_open_ids:
                     continue
+                if probes_done >= self.max_closed_probes:
+                    probe_cap_hit = True
+                    break
+                probes_done += 1
                 probed = await self._fetch_single_order(local_oid)
                 if probed is None:
                     continue
@@ -335,12 +362,25 @@ class ReconciliationService:
                         order_id=local_oid,
                         local_record=local_row,
                     )
+                elif kind == "cancel_after_partial":
+                    unexpected_cancellations += 1
+                    self._rollback_balance_regime_on_cancel(
+                        order_id=local_oid,
+                        local_record=local_row,
+                        venue_matched=delta.get("venue"),
+                    )
                 elif kind == "filled":
                     unexpected_fills += 1
                     logger.warning(
                         "reconcile_filled_off_open | order_id=%s matched=%s",
                         local_oid, str(delta.get("venue") or delta.get("matched")),
                     )
+            if probe_cap_hit:
+                logger.warning(
+                    "reconcile_closed_order_probe_cap_hit | cap=%d "
+                    "(remaining in-flight orders deferred to next pass)",
+                    self.max_closed_probes,
+                )
         except Exception as exc:  # pragma: no cover — defensive
             logger.error("reconcile_closed_order_probe_failed | err=%s", exc)
 
@@ -462,6 +502,29 @@ class ReconciliationService:
                 )
                 return {"kind": "unexpected_cancellation"}
 
+        if (
+            venue_status in _TERMINAL_CANCELLED_STATUSES
+            and local_matched > 0
+            and venue_matched <= local_matched
+        ):
+            # Order filled partially, then terminally cancelled with no new
+            # matched delta since the last pass. The filled portion stays;
+            # only the *unfilled* remainder must roll back against the daily
+            # cap. Without this branch the remainder leaks forever (it falls
+            # through ``venue_matched > local_matched`` below and returns None).
+            local_status = str(local_record.get("status") or "").lower()
+            if local_status not in _TERMINAL_CANCELLED_STATUSES:
+                logger.info(
+                    "reconcile_cancel_after_partial | order_id=%s "
+                    "venue_status=%s local_matched=%s venue_matched=%s",
+                    order_id, venue_status, local_matched, venue_matched,
+                )
+                return {
+                    "kind": "cancel_after_partial",
+                    "local": local_matched,
+                    "venue": venue_matched,
+                }
+
         if venue_matched > local_matched:
             delta = venue_matched - local_matched
             self._record_partial_fill(
@@ -508,18 +571,58 @@ class ReconciliationService:
             }
         return None
 
+    @staticmethod
+    def _resolve_requested_notional(local_record: dict[str, Any] | None) -> Any:
+        """Resolve the submitted BUY notional from a persisted orders row.
+
+        Canonical schema stores it under ``request.amount`` (falling back to
+        ``request.size``), matching ``_resolve_buy_requested_amount`` in
+        ``services/execution/reconciliation_service.py``. Top-level keys are
+        probed last for back-compat with older/mocked row shapes.
+        """
+        if not local_record:
+            return _safe_decimal("0")
+        request = local_record.get("request")
+        if isinstance(request, dict):
+            raw = request.get("amount")
+            if raw is None:
+                raw = request.get("size")
+            if raw is not None:
+                return _safe_decimal(raw)
+        for key in ("notional_usdc", "size_usdc", "requested_usdc", "size"):
+            if local_record.get(key) is not None:
+                return _safe_decimal(local_record[key])
+        return _safe_decimal("0")
+
+    @staticmethod
+    def _resolve_request_price(local_record: dict[str, Any] | None) -> Any:
+        if not local_record:
+            return _safe_decimal("0")
+        request = local_record.get("request")
+        if isinstance(request, dict) and request.get("price") is not None:
+            return _safe_decimal(request["price"])
+        if local_record.get("price") is not None:
+            return _safe_decimal(local_record["price"])
+        return _safe_decimal("0")
+
     def _rollback_balance_regime_on_cancel(
         self,
         *,
         order_id: str,
         local_record: dict[str, Any] | None,
+        venue_matched: Any | None = None,
     ) -> None:
         """Hand a cancel back to the balance regime so daily-spend rolls back.
 
-        The venue has confirmed the order is terminal-cancelled (or rejected)
-        and we never observed a fill on it. Whatever the gate provisionally
-        recorded at submit time has to come back to the daily budget,
-        otherwise the cap can lock the bot out for the rest of the window.
+        The venue has confirmed the order is terminal-cancelled (or rejected).
+        Whatever the gate provisionally recorded at submit time has to come
+        back to the daily budget, otherwise the cap can lock the bot out for
+        the rest of the window.
+
+        When ``venue_matched`` is supplied (cancel-after-partial), only the
+        *unfilled* remainder is refunded — the filled tokens genuinely spent
+        cash and must stay on the ledger. The filled notional is estimated as
+        ``venue_matched * request.price``.
         """
         regime = self.balance_regime
         if regime is None:
@@ -533,14 +636,22 @@ class ReconciliationService:
         )
         if isinstance(side, str) and side.upper() == "SELL":
             return  # SELLs do not consume the daily-spend budget
-        amount = "0"
-        if local_record:
-            for key in ("notional_usdc", "size_usdc", "requested_usdc", "size"):
-                if local_record.get(key) is not None:
-                    amount = str(local_record[key])
-                    break
+
+        requested = self._resolve_requested_notional(local_record)
         try:
-            regime.record_cancel(amount, order_id=order_id)
+            matched = _safe_decimal(venue_matched) if venue_matched is not None else None
+            if matched is not None and matched > 0:
+                # Partial-then-cancel: refund only the unfilled remainder.
+                price = self._resolve_request_price(local_record)
+                filled_notional = matched * price
+                if hasattr(regime, "record_partial_fill"):
+                    regime.record_partial_fill(
+                        recorded_usdc=requested,
+                        actual_usdc=filled_notional,
+                        order_id=order_id,
+                    )
+                    return
+            regime.record_cancel(str(requested), order_id=order_id)
         except Exception as exc:  # pragma: no cover — defensive
             logger.error(
                 "balance_regime_rollback_failed | order_id=%s err=%s",
@@ -700,4 +811,13 @@ async def reconciliation_loop(
                 logger.warning("Reconciliation completed with %d errors", len(result.errors))
         except Exception as exc:
             logger.error("Reconciliation loop error: %s", exc)
+        # Sleep interruptibly: wake immediately when shutdown is requested
+        # instead of blocking for the full interval (up to 300s by default).
+        if shutdown_event is not None:
+            try:
+                await asyncio.wait_for(shutdown_event.wait(), timeout=interval)
+                logger.info("Reconciliation loop: shutdown requested")
+                break
+            except asyncio.TimeoutError:
+                continue
         await asyncio.sleep(interval)
