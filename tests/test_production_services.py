@@ -124,6 +124,15 @@ class _Repo:
     def mark_fill(self, *, order_id, fill):
         self.fills[order_id] = fill
 
+    # Atomic submission lock stubs — issue #95: ExecutionService now requires
+    # ``try_acquire_submission_lock`` or fails closed.  These in-memory stubs
+    # are adequate for unit tests that don't exercise concurrent submissions.
+    def try_acquire_submission_lock(self, key, user_id, leader_id, request_payload):
+        return True  # always succeed in tests
+
+    def is_submission_locked(self, key):
+        return False
+
 
 @dataclass
 class _FeeSvc:

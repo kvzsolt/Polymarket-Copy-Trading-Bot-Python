@@ -686,8 +686,29 @@ class ExecutionService:
                 idem_key, req.user_id, req.leader_id, request_doc
             )
         else:
-            lock_acquired = existing is None or not _is_retry_blocking_existing(
-                existing, config=self._config
+            # Non-atomic locking is unsafe for live trading: two concurrent
+            # tasks can both observe no blocking row and both submit signed
+            # orders, causing duplicate submissions and potential double-exposure.
+            # Fail closed to prevent that silent data-corruption path (issue #95).
+            logger.error(
+                "Order repository lacks atomic submission lock — failing closed "
+                "to prevent duplicate submissions | idem_key=%s user_id=%s leader_id=%s",
+                idem_key,
+                req.user_id,
+                req.leader_id,
+            )
+            return ExecutionResult(
+                accepted=False,
+                order_id=None,
+                status="atomic_lock_unavailable",
+                requested_amount=req.amount,
+                filled_amount=Decimal("0"),
+                avg_price=None,
+                fees_paid=Decimal("0"),
+                error=(
+                    "order repository does not support atomic submission locking; "
+                    "cannot safely submit orders without it"
+                ),
             )
 
         if not lock_acquired:
