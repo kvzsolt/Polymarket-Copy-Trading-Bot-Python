@@ -294,6 +294,12 @@ class ExecutionCoordinator:
             try:
                 venue_result = await self.clob_gateway.submit_order(intent)
             except RetryableVenueError as exc:
+                # Issue #98: RetryableVenueError before a live venue_order_id
+                # exists means there is no durable retry owner for the
+                # reservation — leaving it locked would strand capital/shares
+                # indefinitely. Release immediately; the order stays in
+                # RETRYABLE_FAILED for telemetry/sweeper pickup.
+                _release(f"retryable_venue_error:{exc}")
                 await self._transition_order(
                     order.id,
                     from_status=OrderLifecycleStatus.SUBMITTING,
@@ -301,7 +307,6 @@ class ExecutionCoordinator:
                     metadata={"error": str(exc)},
                 )
                 self._log_audit("execution_retryable_failed", intent, order.id, reservation.id, str(exc))
-                keep_reservation = True
                 return ExecutionResult.retryable_failed(order_id=order.id, error=str(exc))
             except TerminalVenueError as exc:
                 await self._transition_order(

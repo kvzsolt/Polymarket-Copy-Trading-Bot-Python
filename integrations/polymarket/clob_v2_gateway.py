@@ -497,6 +497,11 @@ class ClobV2Gateway:
 
         Never raises. Caller (``orchestrators/startup_health.py``) decides
         whether to fail closed in live mode based on ``sdk_available``.
+
+        Issue #93 (high): Extended to validate exchange address presence,
+        chain ID, and negative-risk method availability. These are the
+        minimum viable checks that prove the SDK is wired to the correct
+        chain and contract family before any signed order is attempted.
         """
         report: dict[str, Any] = {
             "sdk_available": False,
@@ -532,9 +537,33 @@ class ClobV2Gateway:
             except Exception:  # pragma: no cover — best-effort discovery
                 continue
 
-        report["negative_risk_supported"] = hasattr(
-            client, "create_market_order"
-        ) or hasattr(client, "create_and_post_order")
+        # Issue #93: check negative-risk support and exchange address presence.
+        # An empty exchange address means the SDK is not correctly wired to
+        # a real CLOB endpoint — fail closed rather than proceeding to signing.
+        has_neg_risk_method = (
+            hasattr(client, "create_market_order")
+            or hasattr(client, "create_and_post_order")
+        )
+        report["negative_risk_supported"] = has_neg_risk_method
+
+        if report["exchange_address"] is None:
+            report["sdk_available"] = False
+            report[
+                "error"
+            ] = "exchange_address is unknown — SDK may not be connected to a CLOB endpoint"
+            return report
+
+        # Chain ID 137 = Polygon mainnet. Issue #93: if chain ID is absent or
+        # unexpected, the signer will use the wrong domain separator and orders
+        # will be rejected at the venue. Warn but do not hard-fail here — the
+        # startup health gate is the authoritative fail-closed point.
+        if report["chain_id"] not in (137, "137"):
+            logger.warning(
+                "check_compatibility: unexpected chain_id=%s (expected 137/Polygon). "
+                "Orders may be signed for the wrong domain.",
+                report.get("chain_id"),
+            )
+
         return report
 
 

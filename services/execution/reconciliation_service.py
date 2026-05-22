@@ -776,6 +776,13 @@ class ReconciliationService:
         if venue_fills:
             async with self.db.transaction():
                 for venue_fill in venue_fills:
+                    # Issue #97: filter fills to the exact venue_order_id before
+                    # applying. get_fills(market=...) returns ALL fills for the
+                    # market — applying every one to the target order corrupts
+                    # position state and can trigger premature reservation release.
+                    fill_order_id = venue_fill.get("order_id") or venue_fill.get("orderID")
+                    if fill_order_id and fill_order_id != order.venue_order_id:
+                        continue
                     fill = await self.fills_repo.upsert_venue_fill(order, venue_fill)
                     self.positions_repo.upsert_position(fill)
 
