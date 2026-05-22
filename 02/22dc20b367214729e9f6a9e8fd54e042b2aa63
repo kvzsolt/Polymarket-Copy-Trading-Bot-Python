@@ -1,0 +1,19 @@
+services/execution/coordinator.py
+  s_e4f289359bf6b2::t_b44ddb0f956465 143-150
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "0222dc20b367214729e9f6a9e8fd54e042b2aa63",
+  "prompts": {},
+  "sessions": {
+    "s_e4f289359bf6b2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4a02252f-0f0b-4c66-bc3c-cf25b906c152",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
