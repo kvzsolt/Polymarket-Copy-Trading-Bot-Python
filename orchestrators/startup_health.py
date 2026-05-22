@@ -347,6 +347,36 @@ def _summarize_order_status_counts(order_status_counts: dict[str, int]) -> dict[
     }
 
 
+def _check_atomic_lock(orders_repo) -> StartupHealthCheckItem:
+    """Verify the orders repo supports atomic submission locking (issue #95).
+
+    Live trading without ``try_acquire_submission_lock`` can result in
+    duplicate order submissions from concurrent tasks. This check gates
+    startup if the lock is missing in live mode.
+    """
+    if orders_repo is None:
+        return StartupHealthCheckItem(
+            status="warning",
+            message="orders_repo not supplied to health check",
+            details={},
+        )
+    has_lock = hasattr(orders_repo, "try_acquire_submission_lock")
+    if not has_lock:
+        return StartupHealthCheckItem(
+            status="error",
+            message=(
+                "order repository lacks atomic submission lock — "
+                "duplicate order submissions possible in live trading"
+            ),
+            details={"method": "try_acquire_submission_lock"},
+        )
+    return StartupHealthCheckItem(
+        status="ok",
+        message="atomic submission lock available",
+        details={"method": "try_acquire_submission_lock"},
+    )
+
+
 def _orders_check(
     order_status_counts: dict[str, int],
     order_cleanup: OrderStartupCleanupResult,
@@ -447,6 +477,7 @@ async def perform_startup_health_check(
     user_id: str,
     db_path: str,
     positions_repo: PositionsRepo,
+    orders_repo=None,  # type: ignore[assignment] | OrdersRepo | None
     live_positions: list[dict[str, Any]],
     available_cash: float,
     database_ok: bool,
@@ -487,6 +518,7 @@ async def perform_startup_health_check(
         "clobGateway": clob_check,
         "positionSync": _position_sync_check(position_sync),
         "orders": _orders_check(order_status_counts, order_cleanup),
+        "atomicLock": _check_atomic_lock(orders_repo),
     }
 
     statuses = [item.status for item in checks.values()]

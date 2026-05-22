@@ -94,6 +94,14 @@ except (ImportError, Exception):  # pragma: no cover
         """Placeholder when SDK is not installed."""
         pass
 
+try:
+    from utils.numeric import quantize_and_convert_to_float  # type: ignore[import-untyped]
+except (ImportError, Exception):  # pragma: no cover
+    # Graceful fallback — the adapter is used only at the SDK boundary so
+    # tests that mock the SDK client do not need it.
+    def quantize_and_convert_to_float(value, tick_size, *, epsilon=None):  # type: ignore[misc]
+        return float(value)
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -352,12 +360,31 @@ class ClobV2Gateway:
         price_limit = request.price_limit
         if price_limit is None:
             raise VenueInvalidOrderError("price_limit is required for marketable orders")
+
+        # Canonical Decimal→float conversion at the SDK boundary.
+        # ``quantize_and_convert_to_float`` rounds to the nearest tick and
+        # rejects (raises) if the rounding delta is suspiciously large.
+        # This is intentional: silently dropping precision at this boundary
+        # is the root cause of audit issue #92.
+        try:
+            quantized_size = quantize_and_convert_to_float(
+                Decimal(str(request.size)),
+                tick_size_str,
+            )
+            quantized_price = quantize_and_convert_to_float(
+                Decimal(str(price_limit)),
+                tick_size_str,
+            )
+        except ValueError as exc:
+            logger.error("submit_marketable_order quantization rejected: %s", exc)
+            raise VenueInvalidOrderError(str(exc)) from exc
+
         try:
             signed = await self._client.create_market_order(
                 token_id=request.token_id,
                 side=request.side,
-                amount=float(request.size),
-                max_price=float(price_limit),
+                amount=quantized_size,
+                max_price=quantized_price,
                 tick_size=tick_size_str,
                 neg_risk=neg_risk,
             )
