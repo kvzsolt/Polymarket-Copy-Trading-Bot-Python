@@ -578,6 +578,19 @@ class ExecutionService:
         # Effective idempotency key computed after sizing/rounding so
         # duplicate suppression represents the final executable order
         # (condition_id, token_id, effective worst price, tick_size, side).
+        # Issue #94 (high): intent_id must be unique per distinct signal.
+        # If signal_id is absent, generate a UUID so two distinct leader
+        # signals with the same effective order parameters do not silently
+        # collide in the idempotency table.
+        resolved_intent_id = req.signal_id or ""
+        if not resolved_intent_id:
+            import uuid as _uuid
+            resolved_intent_id = str(_uuid.uuid4())
+            logger.debug(
+                "execute: signal_id missing — generated intent_id=%s to "
+                "prevent idempotency collision across distinct signals",
+                resolved_intent_id,
+            )
         idem_key = _effective_idempotency_key(
             user=req.user_id,
             condition_id=getattr(req, "condition_id", None),
@@ -586,7 +599,7 @@ class ExecutionService:
             effective_size=req.amount,
             effective_price=worst_price,
             tick_size=tick_size,
-            intent_id=req.signal_id or "",
+            intent_id=resolved_intent_id,
             policy_version=getattr(self._config, "policy_version", "") or "",
         )
 
