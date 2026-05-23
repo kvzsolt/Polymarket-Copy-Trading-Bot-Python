@@ -736,3 +736,81 @@ class TestBlankSignalIdFallback:
         assert result1.accepted is True
         assert result2.status == "duplicate_ignored"
         assert clob.post_signed_order.await_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Issue #95 — duplicate-order protection must be atomic. A repo without
+# ``try_acquire_submission_lock`` is unsafe for live trading: two concurrent
+# tasks could both observe no blocking row and both submit signed orders.
+# The fix removes the non-atomic fallback and fails closed.
+# ---------------------------------------------------------------------------
+
+
+class _NoCASRepo:
+    """OrderRepository-shaped fake WITHOUT ``try_acquire_submission_lock``.
+
+    Mimics a misconfigured runtime where an older repo without atomic
+    submission locking is wired in. ExecutionService must refuse to call
+    the gateway in this case.
+    """
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def get_by_idempotency_key(self, key: str):
+        self.calls.append(f"get_by_idempotency_key:{key}")
+        return None
+
+    # Deliberately NO try_acquire_submission_lock / is_submission_locked.
+
+
+class TestAtomicLockFailClosed:
+    @pytest.mark.asyncio
+    async def test_repo_without_atomic_lock_fails_closed_before_gateway(self, tmp_path):
+        """No try_acquire_submission_lock → reject with atomic_lock_unavailable;
+        the gateway must never be called."""
+        clob = _SimpleClob()
+        repo = _NoCASRepo()
+        svc = ExecutionService(
+            clob, _FeeSvc(), repo,
+            config=_make_exec_config(),
+            market_data_service=_make_mds(),
+        )
+        req = _make_req(signal_id="sig-no-cas")
+
+        result = await svc.execute(req)
+
+        assert result.accepted is False
+        assert result.status == "atomic_lock_unavailable"
+        assert "atomic" in (result.error or "")
+        # Critical invariant: no signed order ever reached the venue.
+        assert clob.post_signed_order.await_count == 0
+        assert clob.create_market_order.await_count == 0 if hasattr(clob.create_market_order, "await_count") else True
+
+
+class TestAtomicLockConcurrencyStress:
+    @pytest.mark.asyncio
+    async def test_n_concurrent_identical_intents_yield_exactly_one_submission(self, tmp_path):
+        """The real SQLite OrderRepository must serialize duplicate-identity
+        submissions atomically: ``N`` simultaneous execute() calls with the
+        same effective idempotency key produce exactly one venue submission.
+        """
+        db_path = tmp_path / "state.db"
+        _prepare_db(db_path)
+        repo = OrderRepository(str(db_path))
+        clob = _SimpleClob()
+        svc = ExecutionService(
+            clob, _FeeSvc(), repo,
+            config=_make_exec_config(),
+            market_data_service=_make_mds(),
+        )
+        req = _make_req(signal_id="sig-race")
+
+        N = 25  # keep under the asyncio default concurrency without burning the suite
+        results = await asyncio.gather(*[svc.execute(req) for _ in range(N)])
+
+        # Exactly one venue submission across all concurrent tasks.
+        assert clob.post_signed_order.await_count == 1
+        accepted_unique = [r for r in results if r.status not in ("duplicate_ignored",)]
+        # One winner + (N-1) duplicate_ignored or atomic-lock losers.
+        assert len(accepted_unique) <= 1
