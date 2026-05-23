@@ -582,7 +582,7 @@ async def discovery_background_loop(discovery: TraderDiscoveryService) -> None:
                 await discovery.persist_discovered()
                 top3 = candidates[:3]
                 logger.info(
-                    f"Top 3 discovered: "
+                    "Top 3 discovered: "
                     + ", ".join(
                         f"{p.name or p.wallet[:12]}… (score={p.composite_score:.2f}, "
                         f"PnL=${p.overall_gain:,.0f}, WR={p.win_rate:.0%})"
