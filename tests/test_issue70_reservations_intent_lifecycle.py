@@ -255,7 +255,8 @@ class TestStaleReservationExpiry:
         from storage.sqlite.reservations_repo import ReservationsRepo
         from storage.sqlite.connection import create_connection
         from storage.sqlite.migrations import apply_migrations
-        import tempfile, os
+        import tempfile
+        import os
 
         db_path = tempfile.mktemp(suffix=".db")
         try:
@@ -285,7 +286,8 @@ class TestStaleReservationExpiry:
         from storage.sqlite.reservations_repo import ReservationsRepo
         from storage.sqlite.connection import create_connection
         from storage.sqlite.migrations import apply_migrations
-        import tempfile, os
+        import tempfile
+        import os
 
         db_path = tempfile.mktemp(suffix=".db")
         try:
@@ -424,7 +426,8 @@ class TestReservationAuditLogging:
         from storage.sqlite.connection import create_connection
         from storage.sqlite.migrations import apply_migrations
         from storage.sqlite.positions_repo import PositionsRepo
-        import tempfile, os
+        import tempfile
+        import os
 
         db_path = tempfile.mktemp(suffix=".db")
         try:
@@ -462,7 +465,8 @@ class TestReservationAuditLogging:
         from storage.sqlite.connection import create_connection
         from storage.sqlite.migrations import apply_migrations
         from storage.sqlite.positions_repo import PositionsRepo
-        import tempfile, os
+        import tempfile
+        import os
 
         db_path = tempfile.mktemp(suffix=".db")
         try:
