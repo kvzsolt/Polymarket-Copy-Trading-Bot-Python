@@ -747,18 +747,39 @@ async def main():
         runtimes_by_user=market_data_runtimes,
     )
 
+    # CLAUDE.md non-negotiable: startup reconciliation MUST run before risk /
+    # trade loops AND before the user WSS attaches its on_reconcile_signal
+    # callback. Pre-fix the WSS runtime started first and could fire
+    # reconcile-wake events while startup_reconcile_unconfirmed was still
+    # running on the same orders, double-applying fills under the race.
+    reconcile_failures: list[str] = []
+    startup_reconciled = await startup_reconcile_unconfirmed(
+        list(risk_contexts_by_user.values()),
+        failures_out=reconcile_failures,
+    )
+
+    if reconcile_failures:
+        # Refuse to advertise readiness; downstream monitors will see
+        # reconciler_ok=False and stay closed. Operators must inspect the
+        # WARNING logs emitted by startup_reconcile_unconfirmed for the
+        # affected users.
+        logger.error(
+            "startup_reconcile_partial_failure | failed_users=%s — "
+            "reconciler_ok stays False, monitors will not advance",
+            reconcile_failures,
+        )
+        application.readiness.update(reconciler_ok=False)
+    else:
+        application.readiness.update(reconciler_ok=True)
+
+    # User WSS runtimes are started AFTER reconciler readiness is set so the
+    # on_reconcile_signal closure cannot fire on still-pending orders.
     user_data_runtimes = await _start_user_data_runtimes(
         runtime_users=runtime_users,
         user_states=user_states,
         readiness=application.readiness,
         risk_contexts_by_user=risk_contexts_by_user,
     )
-
-    startup_reconciled = await startup_reconcile_unconfirmed(
-        list(risk_contexts_by_user.values()),
-    )
-
-    application.readiness.update(reconciler_ok=True)
 
     # PR7 — proactive position drift sweep. Must complete before monitors start.
     from orchestrators.runtime_bootstrap import startup_drift_check
