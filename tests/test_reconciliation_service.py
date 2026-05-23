@@ -115,7 +115,11 @@ async def test_restart_with_pending_order_preserves_reservation():
 @pytest.mark.asyncio
 async def test_venue_fill_resolves_unconfirmed_order():
     order = MockOrder("o1", "v1", "r1", "submitted_unconfirmed")
-    gateway = MockClobGateway(order_status="matched", fills=[{"size": "10"}])
+    # Issue #97: fills must carry order_id matching order.venue_order_id; the
+    # legacy lenient behavior (apply fills missing order_id) was the bug.
+    gateway = MockClobGateway(
+        order_status="matched", fills=[{"size": "10", "order_id": "v1"}]
+    )
     svc = make_service(order, gateway)
     
     res = await svc.reconcile_order("o1")
@@ -214,7 +218,8 @@ async def test_cumulative_matched_delta_only_applies_increment():
     order = MockOrder("oDt", "vDt", "rDt", "submitted_unconfirmed")
     order.matched_total = "10"
 
-    fills = [{"size": "10"}]
+    # Issue #97: fills must carry order_id matching order.venue_order_id.
+    fills = [{"size": "10", "order_id": "vDt"}]
     gateway = MockClobGateway(order_status="matched", fills=fills)
     svc = make_service(order, gateway)
 
@@ -252,7 +257,9 @@ async def test_filled_terminal_transitions_and_releases_once():
     """Filled terminal order transitions to FILLED exactly once, releases
     reservation, and writes a fill/position."""
     order = MockOrder("oFx", "vFx", "rFx", "submitted_unconfirmed")
-    gateway = MockClobGateway(order_status="matched", fills=[{"size": "55"}])
+    gateway = MockClobGateway(
+        order_status="matched", fills=[{"size": "55", "order_id": "vFx"}]
+    )
     svc = make_service(order, gateway)
 
     res = await svc.reconcile_order("oFx")
@@ -322,3 +329,75 @@ async def test_reconciler_releases_reservation_on_terminal_state():
             f"Expected release reason '{venue_status}', got {mock_reservation.released[0]}"
         )
         mock_reservation.released.clear()  # clean for next iteration
+
+
+# ---------------------------------------------------------------------------
+# Issue #97 — legacy reconcile_order MUST filter venue fills by exact
+# order_id. get_fills(market=...) returns every fill in the market; applying
+# them all corrupts position state for the target order.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_fills_from_unrelated_orders_are_skipped():
+    """Two fills returned by get_fills, one belongs to a different order_id;
+    only the matching fill must be applied to the target order."""
+    order = MockOrder("oFilter", "v-target", "rFilter", "submitted_unconfirmed")
+    gateway = MockClobGateway(
+        order_status="matched",
+        fills=[
+            {"size": "3", "order_id": "v-other"},   # different order — must skip
+            {"size": "7", "order_id": "v-target"},  # matching — must apply
+            {"size": "2", "order_id": "v-third"},   # different — must skip
+        ],
+    )
+    svc = make_service(order, gateway)
+
+    res = await svc.reconcile_order("oFilter")
+
+    assert res.is_resolved is True
+    assert res.status == OrderLifecycleStatus.FILLED
+    # Exactly one upsert from the single matching fill.
+    assert len(svc.positions_repo.upserted) == 1
+    assert svc.positions_repo.upserted[0] == {"fill": {"size": "7", "order_id": "v-target"}}
+
+
+@pytest.mark.asyncio
+async def test_fills_without_order_id_are_inconclusive_not_applied():
+    """A fill missing order_id cannot be safely attributed to the target
+    order. The invariant: every applied fill must carry a matching order_id."""
+    order = MockOrder("oNoId", "v-target", "rNoId", "submitted_unconfirmed")
+    gateway = MockClobGateway(
+        order_status="matched",
+        fills=[{"size": "9"}],  # no order_id field
+    )
+    svc = make_service(order, gateway)
+
+    res = await svc.reconcile_order("oNoId")
+
+    # Inconclusive — no position upsert, no reservation release, no filled mark.
+    assert res.is_resolved is False
+    assert len(svc.positions_repo.upserted) == 0
+    assert len(svc.reservation_service.released) == 0
+    assert ("filled", "oNoId") not in svc.orders_repo.marked
+
+
+@pytest.mark.asyncio
+async def test_all_fills_belong_to_other_orders_no_apply():
+    """venue_fills is non-empty but every fill belongs to a different order.
+    Reconciler must NOT mark this order filled or release its reservation."""
+    order = MockOrder("oStranger", "v-target", "rStranger", "submitted_unconfirmed")
+    gateway = MockClobGateway(
+        order_status="matched",
+        fills=[
+            {"size": "5", "order_id": "v-someoneElse"},
+            {"size": "3", "order_id": "v-anotherone"},
+        ],
+    )
+    svc = make_service(order, gateway)
+
+    res = await svc.reconcile_order("oStranger")
+
+    assert res.is_resolved is False
+    assert len(svc.positions_repo.upserted) == 0
+    assert len(svc.reservation_service.released) == 0
