@@ -1,0 +1,21 @@
+integrations/polymarket/clob_v2_gateway.py
+  s_73e3679734e5c0::t_4653e870d1da5e 495-500,507-517,519-521,525-527,530,543-563,568-569,573,578-580,583-585,588-596,598-606
+tests/test_clob_v2_compat_probe.py
+  s_73e3679734e5c0::t_c78a2d3d929adc 1-128
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "c67fda350c2d9c612ec6a0a8e0529fcad44ab135",
+  "prompts": {},
+  "sessions": {
+    "s_73e3679734e5c0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f4bbbe78-ed43-4ec4-aab6-9aefe80d1d8b",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
