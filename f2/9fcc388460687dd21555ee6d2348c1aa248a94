@@ -1,0 +1,21 @@
+services/reconciliation.py
+  s_0634fd1b10250c::t_b0f55071d3ca45 644-646,648-659,668-676
+tests/test_reconcile_phase04.py
+  s_0634fd1b10250c::t_3f024cc7416f28 315-397
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "f29fcc388460687dd21555ee6d2348c1aa248a94",
+  "prompts": {},
+  "sessions": {
+    "s_0634fd1b10250c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2ea4030f-52b1-4f0c-a67d-6689f339d563",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
