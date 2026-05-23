@@ -1294,7 +1294,14 @@ class ReconciliationService:
 
         venue_status = _normalize_venue_status(fill_info.get("status", ""))
         current_matched = _matched_amount_from_response(fill_info)
-        previous_matched = _matched_amount_from_response(record.get("response"))
+        # CRITICAL: read previous matched from the persisted orders row,
+        # not the in-memory ``record["response"]``. Pre-fix, on restart
+        # the in-memory record was rebuilt without the prior fill
+        # response and ``previous_matched`` would silently fall back to
+        # zero — re-applying the entire cumulative venue size as a
+        # fresh delta and double-counting every risk SELL fill that was
+        # in-flight across the restart.
+        previous_matched = self._previous_matched_for_order(self.orders_repo, order_id)
         delta_matched = current_matched - previous_matched
         if current_matched < previous_matched:
             self._record_negative_delta_anomaly(
