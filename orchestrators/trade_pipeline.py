@@ -1887,6 +1887,18 @@ async def execute_trades(
                     snapshot = _refreshed
                 regime = getattr(context, "balance_regime", None)
                 if regime is not None:
+                    # CRITICAL TODO (review #24): replace check_buy here with
+                    # ``await regime.reserve(order_id=trade_key, notional=...,
+                    # free_cash=...)`` and drop the post-submit record_buy
+                    # calls at the two sites below (search for ``record_buy``).
+                    # The current check-then-submit-then-record sequence is
+                    # NON-ATOMIC: two concurrent BUYs observing the same
+                    # daily_spent snapshot can both pass and double the cap.
+                    # See tests/test_balance_regime_atomic_reserve.py for the
+                    # proven atomic alternative; the wire-up is held back to
+                    # a focused follow-up because it cascades to the two
+                    # later record_buy sites + their failure/cancel branches
+                    # which must be converted to release()/commit().
                     regime_decision = regime.check_buy(
                         notional_usdc=gated_notional,
                         free_cash_usdc=snapshot.free_cash_usdc,
