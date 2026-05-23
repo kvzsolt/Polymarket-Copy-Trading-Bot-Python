@@ -1,0 +1,24 @@
+services/execution/coordinator.py
+  s_ec106305ec2a70::t_1680d1f98e59ee 162-168,172-175
+  7c9d7d3647885c58 1-2,4-6,10-11,14,16-17,33-34,48-75,78-161,169-171,178-192,194-196,201-209,219-249,253,256-267,270-271,273-276,278-282,284-285,287-292,295,299,319,336-347,357-359,366-372,374,401-421,423,436-446,449-462,483-774,776-781
+  s_ec106305ec2a70::t_f735aebe444c5d 193
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "f2a152a80d7ca2fc63c01949855c2143b3e2c561",
+  "prompts": {
+    "7c9d7d3647885c58": {
+      "agent_id": {
+        "tool": "gemini",
+        "id": "5525dcf5-4c56-4c24-b726-c91be4feadc2",
+        "model": "unknown"
+      },
+      "human_author": "kvzsolt",
+      "total_additions": 1787,
+      "total_deletions": 226,
+      "accepted_lines": 588,
+      "overriden_lines": 0
+    }
+  }
+}
