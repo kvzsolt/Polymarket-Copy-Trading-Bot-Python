@@ -75,8 +75,20 @@ run "scripts/rc1_check.sh"
 if [[ -n "$CANARY_NOTIONAL" ]]; then
   log "phase 6/6 — entering canary mode (BUY_MAX_AMOUNT=$CANARY_NOTIONAL, MAX_DAILY_SPEND_USDC=$CANARY_NOTIONAL)"
   if [[ "$DRY_RUN" == 0 ]]; then
-    sed -i "s/^BUY_MAX_AMOUNT=.*/BUY_MAX_AMOUNT=$CANARY_NOTIONAL/" secrets.env || true
-    sed -i "s/^MAX_DAILY_SPEND_USDC=.*/MAX_DAILY_SPEND_USDC=$CANARY_NOTIONAL/" secrets.env || true
+    # PR #105 review: ``sed -i || true`` is a no-op when the key is absent
+    # from secrets.env — operator believes caps are active when they are
+    # not. Mirror phase-1's pattern: replace in place when present, append
+    # when missing.
+    set_or_append_cap() {
+      local key="$1" value="$2"
+      if grep -q "^${key}=" secrets.env 2>/dev/null; then
+        sed -i "s/^${key}=.*/${key}=${value}/" secrets.env
+      else
+        echo "${key}=${value}" >> secrets.env
+      fi
+    }
+    set_or_append_cap BUY_MAX_AMOUNT "$CANARY_NOTIONAL"
+    set_or_append_cap MAX_DAILY_SPEND_USDC "$CANARY_NOTIONAL"
   fi
 else
   log "phase 6/6 — no canary requested; live trading still paused"
