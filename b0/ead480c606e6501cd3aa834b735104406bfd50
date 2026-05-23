@@ -1,0 +1,23 @@
+orchestrators/startup_health.py
+  s_0634fd1b10250c::t_0c2b454b580ee2 355-360,364-369
+tests/test_startup_health.py
+  s_0634fd1b10250c::t_836ddc85d1fec5 303,321-359
+app.py
+  s_0634fd1b10250c::t_3f544fec3f1c40 700-703
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "b0ead480c606e6501cd3aa834b735104406bfd50",
+  "prompts": {},
+  "sessions": {
+    "s_0634fd1b10250c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2ea4030f-52b1-4f0c-a67d-6689f339d563",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
