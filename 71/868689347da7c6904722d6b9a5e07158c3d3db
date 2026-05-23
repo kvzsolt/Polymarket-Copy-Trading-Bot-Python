@@ -1,0 +1,23 @@
+services/riskMonitor.py
+  s_40eab60fc22f44::t_f46d2dec228f2f 629,636-644
+scripts/find_followable_traders.py
+  s_40eab60fc22f44::t_56bce00f3dd8f0 13
+.github/workflows/ci.yml
+  s_40eab60fc22f44::t_3530a8daf9b7a2 91-95
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "71868689347da7c6904722d6b9a5e07158c3d3db",
+  "prompts": {},
+  "sessions": {
+    "s_40eab60fc22f44": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "75ccb144-a9df-45dd-bd80-c6e6ed5d9e12",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
