@@ -52,6 +52,17 @@ def _ensure_orders_table(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "orders", "updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
     _ensure_column(conn, "orders", "matched_total TEXT DEFAULT '0'")  # issue-71: reconciler delta tracking
 
+    # Reconciliation joins by venue order_id every cycle. Without this
+    # partial unique index the lookup full-scans the orders table and a
+    # duplicate order_id can land silently (wrong-row read on the
+    # ORDER BY updated_at DESC LIMIT 1 query). Partial WHERE order_id IS
+    # NOT NULL because rows in pending/INTENT_PENDING state carry NULL
+    # until the venue ack arrives.
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_order_id "
+        "ON orders(order_id) WHERE order_id IS NOT NULL"
+    )
+
     # Backfill user/leader from request payload where possible.
     conn.execute(
         """
