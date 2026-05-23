@@ -79,14 +79,21 @@ def compute_effective_key(
     str
         SHA-256 hex digest representing the executable order identity.
     """
+    # Issue #102: canonical Decimal form so that benign formatting
+    # differences (10 vs 10.00, 0.5 vs 0.50) produce identical keys.
+    # ``Decimal.normalize()`` strips trailing zeros and ``format(..., "f")``
+    # converts any scientific intermediate back to fixed-point.
+    def _canon(value: Decimal) -> str:
+        return format(value.normalize(), "f")
+
     payload_dict = {
         "user": user,
         "condition_id": condition_id,
         "token_id": token_id,
         "side": side.upper(),
-        "effective_size": format(effective_size, "f"),
-        "effective_price": format(effective_price, "f"),
-        "tick_size": format(tick_size, "f"),
+        "effective_size": _canon(effective_size),
+        "effective_price": _canon(effective_price),
+        "tick_size": _canon(tick_size),
         "intent_id": intent_id,
     }
     if policy_version:

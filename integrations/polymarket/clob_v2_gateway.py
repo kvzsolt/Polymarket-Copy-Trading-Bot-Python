@@ -94,6 +94,25 @@ except (ImportError, Exception):  # pragma: no cover
         """Placeholder when SDK is not installed."""
         pass
 
+try:
+    from utils.numeric import quantize_and_convert_to_float  # type: ignore[import-untyped]
+except (ImportError, Exception):  # pragma: no cover
+    # Graceful fallback — the adapter is used only at the SDK boundary so
+    # tests that mock the SDK client do not need it.
+    def quantize_and_convert_to_float(value, tick_size, *, epsilon=None):  # type: ignore[misc]
+        return float(value)
+
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+# Polymarket py-clob-client-v2 ROUNDING_CONFIG fixes order size precision to
+# 2 decimals regardless of the market's price tick_size (which only affects
+# price precision: "0.1" | "0.01" | "0.001" | "0.0001"). Quantizing size
+# with the price tick is incorrect — see PR #105 review.
+_SIZE_QUANTIZATION: str = "0.01"
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -168,7 +187,17 @@ def _classify_error(exc: Exception) -> tuple[bool, str]:
 
 
 def _raise_classified(exc: Exception) -> None:
-    """Raise the appropriate typed venue error based on classification."""
+    """Raise the appropriate typed venue error based on classification.
+
+    Issue #100: an *unknown* exception (no substring match in
+    ``_classify_error``) is ambiguous, not terminal. After a SDK call,
+    the order may have landed on the venue even though the call raised.
+    Treating unknown as ``VenueInvalidOrderError`` (terminal) would let
+    the upstream coordinator release the reservation and allow a duplicate
+    submission. Default unknowns to ``VenueUnavailableError`` (ambiguous,
+    retryable / submitted-unconfirmed safety net) so duplicate locks and
+    reservations stay active until reconciliation proves the state.
+    """
     retryable, reason = _classify_error(exc)
     safe_detail = redact_error_detail(exc)
     if retryable:
@@ -177,6 +206,23 @@ def _raise_classified(exc: Exception) -> None:
         raise VenueUnavailableError(f"{reason}: {safe_detail}") from exc
     if "auth" in reason:
         raise VenueAuthError(f"{reason}: {safe_detail}") from exc
+    if reason == "unknown":
+        # Best-effort observability — never fatal.
+        try:
+            from services.metrics import metrics
+            metrics.inc_sync(
+                "clob_error_classification_unknown_total",
+                labels={"exc": type(exc).__name__},
+            )
+        except Exception:  # pragma: no cover — defensive
+            pass
+        logger.error(
+            "clob_error_classification_unknown | exc=%s detail=%s — "
+            "treating as ambiguous (VenueUnavailableError) to preserve "
+            "duplicate-lock / submitted-unconfirmed safety",
+            type(exc).__name__, safe_detail,
+        )
+        raise VenueUnavailableError(f"unknown_ambiguous: {safe_detail}") from exc
     raise VenueInvalidOrderError(f"{reason}: {safe_detail}") from exc
 
 
@@ -352,12 +398,37 @@ class ClobV2Gateway:
         price_limit = request.price_limit
         if price_limit is None:
             raise VenueInvalidOrderError("price_limit is required for marketable orders")
+
+        # Canonical Decimal→float conversion at the SDK boundary.
+        # ``quantize_and_convert_to_float`` rounds to the nearest tick and
+        # rejects (raises) if the rounding delta is suspiciously large.
+        # This is intentional: silently dropping precision at this boundary
+        # is the root cause of audit issue #92.
+        #
+        # PR #105 review (Cubic P1): ``tick_size`` is the *price* precision
+        # ("0.1" | "0.01" | "0.001" | "0.0001" per Polymarket SDK). Order
+        # *size* always uses 2-decimal precision regardless of the market's
+        # price tick — quantizing size with a coarse price tick (e.g. "0.1")
+        # rejects valid sizes like 10.55. Use the fixed SDK size step here.
+        try:
+            quantized_size = quantize_and_convert_to_float(
+                Decimal(str(request.size)),
+                _SIZE_QUANTIZATION,
+            )
+            quantized_price = quantize_and_convert_to_float(
+                Decimal(str(price_limit)),
+                tick_size_str,
+            )
+        except ValueError as exc:
+            logger.error("submit_marketable_order quantization rejected: %s", exc)
+            raise VenueInvalidOrderError(str(exc)) from exc
+
         try:
             signed = await self._client.create_market_order(
                 token_id=request.token_id,
                 side=request.side,
-                amount=float(request.size),
-                max_price=float(price_limit),
+                amount=quantized_size,
+                max_price=quantized_price,
                 tick_size=tick_size_str,
                 neg_risk=neg_risk,
             )
@@ -465,17 +536,42 @@ class ClobV2Gateway:
 
     # --- Startup compatibility probe ------------------------------------------
 
+    # Required minimum for live trading: every key in this set must be
+    # populated and (where applicable) match an expected value, otherwise
+    # ``sdk_available`` flips False and the startup health gate fails closed.
+    _REQUIRED_COMPAT_FIELDS = ("exchange_address", "chain_id", "negative_risk_supported")
+    _EXPECTED_CHAIN_ID = 137  # Polygon mainnet
+
     async def check_compatibility(self) -> dict[str, Any]:
         """Return a venue/SDK readiness summary for startup health gating.
 
         Never raises. Caller (``orchestrators/startup_health.py``) decides
         whether to fail closed in live mode based on ``sdk_available``.
+
+        Issue #93 (high): probes every SDK-exposed contract/identity field
+        and reports each structurally. The **hard-required** minimum
+        (``_REQUIRED_COMPAT_FIELDS`` + ``chain_id == _EXPECTED_CHAIN_ID``)
+        flips ``sdk_available`` to False when violated — that is the
+        fail-closed contract the startup gate keys on.
+
+        Per-trade live state (collateral/conditional-token **balance** and
+        **allowance**) is intentionally NOT probed here: that data is
+        wallet/RPC-bound and already gated on the per-trade balance-regime
+        / balance-client path. This probe answers "is the SDK wired to the
+        right contract family on the right chain" — process-startup scope.
         """
+        # Structured discovery: keys with value None mean "not exposed by
+        # this SDK build" (informational), not "broken". The required-set
+        # check below converts the subset that must be present into errors.
         report: dict[str, Any] = {
             "sdk_available": False,
             "exchange_address": None,
+            "neg_risk_exchange_address": None,
+            "collateral_address": None,
+            "conditional_token_address": None,
             "chain_id": None,
             "negative_risk_supported": False,
+            "fee_rate_bps": None,
             "error": None,
         }
         try:
@@ -488,26 +584,71 @@ class ClobV2Gateway:
             return report
 
         report["sdk_available"] = True
-        for attr, key in (
-            ("exchange_address", "exchange_address"),
-            ("get_exchange_address", "exchange_address"),
-            ("chain_id", "chain_id"),
-            ("get_chain_id", "chain_id"),
-        ):
+
+        # Best-effort attribute discovery — each tuple is (sdk_attr, report_key,
+        # is_int). Callable attrs are invoked. Missing attrs leave the field
+        # at None (informational, not an error unless required below).
+        probes: tuple[tuple[str, str, bool], ...] = (
+            ("exchange_address", "exchange_address", False),
+            ("get_exchange_address", "exchange_address", False),
+            ("neg_risk_exchange_address", "neg_risk_exchange_address", False),
+            ("get_neg_risk_exchange_address", "neg_risk_exchange_address", False),
+            ("collateral_address", "collateral_address", False),
+            ("get_collateral_address", "collateral_address", False),
+            ("conditional_token_address", "conditional_token_address", False),
+            ("get_conditional_token_address", "conditional_token_address", False),
+            ("chain_id", "chain_id", True),
+            ("get_chain_id", "chain_id", True),
+            ("fee_rate_bps", "fee_rate_bps", True),
+            ("get_fee_rate_bps", "fee_rate_bps", True),
+        )
+        for attr, key, is_int in probes:
+            if report.get(key) is not None:
+                continue
             try:
                 value = getattr(client, attr, None)
                 if callable(value):
                     value = value()
-                if value is not None and report.get(key) is None:
-                    report[key] = (
-                        int(value) if key == "chain_id" else str(value)
-                    )
+                if value is not None:
+                    report[key] = int(value) if is_int else str(value)
             except Exception:  # pragma: no cover — best-effort discovery
                 continue
 
-        report["negative_risk_supported"] = hasattr(
-            client, "create_market_order"
-        ) or hasattr(client, "create_and_post_order")
+        report["negative_risk_supported"] = (
+            hasattr(client, "create_market_order")
+            or hasattr(client, "create_and_post_order")
+        )
+
+        # Hard fail-closed: exchange_address missing → SDK not wired to a
+        # real CLOB endpoint. Stop here so the startup gate marks the
+        # runtime unhealthy in live mode.
+        if report["exchange_address"] is None:
+            report["sdk_available"] = False
+            report["error"] = (
+                "exchange_address is unknown — SDK may not be connected to a CLOB endpoint"
+            )
+            return report
+
+        # Hard fail-closed: wrong/missing chain id means the signer would use
+        # the wrong domain separator and the venue would reject every order.
+        # Previously this was only a log warning; #93 makes it terminal.
+        if report["chain_id"] != self._EXPECTED_CHAIN_ID:
+            report["sdk_available"] = False
+            report["error"] = (
+                f"unexpected chain_id={report['chain_id']!r} "
+                f"(expected {self._EXPECTED_CHAIN_ID}/Polygon). "
+                "Orders would be signed for the wrong domain."
+            )
+            return report
+
+        if not report["negative_risk_supported"]:
+            report["sdk_available"] = False
+            report["error"] = (
+                "SDK does not expose create_market_order / create_and_post_order — "
+                "marketable order path unavailable."
+            )
+            return report
+
         return report
 
 

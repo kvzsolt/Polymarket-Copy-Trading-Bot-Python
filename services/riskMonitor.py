@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import TYPE_CHECKING
@@ -153,8 +155,20 @@ class CachedRiskPrice:
 
 
 class RiskPriceCache:
-    def __init__(self) -> None:
-        self._entries: dict[str, CachedRiskPrice] = {}
+    # Issue #99: bound the per-process price cache to prevent unbounded
+    # memory growth on a long-running bot. Oldest-inserted entries are
+    # evicted first; active tokens are unaffected because each set() bumps
+    # them back to the MRU end.
+    def __init__(self, *, max_size: int | None = None) -> None:
+        if max_size is None:
+            try:
+                max_size = int(os.environ.get("RISK_PRICE_CACHE_MAX_SIZE", "5000"))
+            except (TypeError, ValueError):
+                max_size = 5000
+            if max_size <= 0:
+                max_size = 5000
+        self._max_size = max_size
+        self._entries: OrderedDict[str, CachedRiskPrice] = OrderedDict()
 
     def get_fresh(self, token_id: str, *, stale_after: float, now: float | None = None) -> CachedRiskPrice | None:
         entry = self._entries.get(token_id)
@@ -163,6 +177,8 @@ class RiskPriceCache:
         current_ts = now if now is not None else time.time()
         if current_ts - entry.fetched_at > stale_after:
             return None
+        # Touch on hit: cold tokens drift toward the eviction edge.
+        self._entries.move_to_end(token_id)
         return entry
 
     def set(self, token_id: str, *, price: Decimal, size: Decimal | None = None, fetched_at: float | None = None) -> None:
@@ -171,6 +187,9 @@ class RiskPriceCache:
             size=size,
             fetched_at=fetched_at if fetched_at is not None else time.time(),
         )
+        self._entries.move_to_end(token_id)
+        while len(self._entries) > self._max_size:
+            self._entries.popitem(last=False)
 
 
 def _risk_cache_stale_after(refresh_interval: float) -> float:
@@ -259,7 +278,18 @@ def _ensure_context_price_cache(context: TradingContext) -> RiskPriceCache:
     cache = context.extra.get("risk_price_cache")
     if isinstance(cache, RiskPriceCache):
         return cache
-    cache = RiskPriceCache()
+    # PR #105 review: prefer the typed cap from AppConfig.risk when a config
+    # is in scope; the legacy env-driven default inside RiskPriceCache still
+    # applies when no config is available.
+    max_size: int | None = None
+    config = getattr(context, "config", None)
+    if config is not None:
+        risk_cfg = getattr(config, "risk", None)
+        if risk_cfg is not None:
+            cap = getattr(risk_cfg, "risk_price_cache_max_size", None)
+            if isinstance(cap, int) and cap > 0:
+                max_size = cap
+    cache = RiskPriceCache(max_size=max_size)
     context.extra["risk_price_cache"] = cache
     return cache
 
@@ -473,7 +503,12 @@ async def risk_monitor_loop(
         f"interval={interval}s"
     )
 
-    price_cache = RiskPriceCache()
+    # PR #105 review: prefer typed cap from AppConfig.risk so production
+    # paths never depend on a raw env read for the cache bound.
+    _risk_cache_cap = getattr(config.risk, "risk_price_cache_max_size", None)
+    price_cache = RiskPriceCache(
+        max_size=_risk_cache_cap if isinstance(_risk_cache_cap, int) and _risk_cache_cap > 0 else None
+    )
     venue_breaker = VenueCircuitBreaker()
 
     while True:

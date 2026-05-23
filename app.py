@@ -697,6 +697,10 @@ async def main():
             user_id=runtime_user.user_id,
             db_path=db_path,
             positions_repo=user_states[runtime_user.user_id].positions_repo,
+            # PR #105 review: must pass orders_repo so the atomic-lock gate
+            # actually probes the repo. Without it the check fails closed
+            # (was a silent warning previously).
+            orders_repo=user_states[runtime_user.user_id].orders_repo,
             live_positions=live_positions,
             available_cash=float(user_balances.get(runtime_user.user_id, 0.0)),
             database_ok=True,

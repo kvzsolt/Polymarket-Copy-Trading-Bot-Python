@@ -120,9 +120,13 @@ async def test_coordinator_retryable_failed():
     # Verify transitions
     assert (OrderLifecycleStatus.RESERVED, OrderLifecycleStatus.SUBMITTING) in orders_repo.transitions
     assert (OrderLifecycleStatus.SUBMITTING, OrderLifecycleStatus.RETRYABLE_FAILED) in orders_repo.transitions
-    
-    # Reservation should NOT be released on retryable error
-    assert len(res_svc.released) == 0
+
+    # Issue #98: reservation MUST be released on RetryableVenueError when no
+    # live venue_order_id exists — leaving capital/shares locked indefinitely
+    # is the bug this fix addresses. The sweeper/owner is the retry durable path.
+    assert len(res_svc.released) == 1
+    assert res_svc.released[0][0] == "res1"  # reservation id
+    assert "retryable_venue_error" in res_svc.released[0][1]
 
 
 @pytest.mark.asyncio

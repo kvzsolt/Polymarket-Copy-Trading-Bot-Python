@@ -389,8 +389,14 @@ class TestAmbiguousPostHandling:
         assert result.status == "submitted_unconfirmed"
 
     @pytest.mark.asyncio
-    async def test_create_exception_is_normal_failure(self, tmp_path):
-        """If create_market_order throws, it's NOT ambiguous — normal failure."""
+    async def test_create_exception_unknown_is_ambiguous(self, tmp_path):
+        """Issue #100: an unknown SDK exception type (here ValueError with
+        a message the substring classifier doesn't recognize) must be
+        treated as **ambiguous**, not terminal — the call may have already
+        touched the wire before raising. Releasing the duplicate-lock on
+        terminal classification was the old unsafe behavior; the safe
+        outcome is ``submitted_unconfirmed`` so reconciliation owns the
+        resolution."""
         db_path = tmp_path / "state.db"
         _prepare_db(db_path)
         repo = OrderRepository(str(db_path))
@@ -399,8 +405,7 @@ class TestAmbiguousPostHandling:
         svc = ExecutionService(clob, _FeeSvc(), repo, config=_make_exec_config(), market_data_service=_make_mds())
         req = _make_req(signal_id="sig-create-fail")
         result = await svc.execute(req)
-        assert result.accepted is False
-        assert result.status == "failed"
+        assert result.status == "submitted_unconfirmed"
 
 
 # ---------------------------------------------------------------------------
@@ -655,3 +660,183 @@ class TestRetryBlocking:
             },
         }
         assert _is_retry_blocking_existing(existing, now_ts=now) is False
+
+
+# ---------------------------------------------------------------------------
+# Issue #94 + PR #105 review — when signal_id is absent, intent_id MUST be
+# derived deterministically from the request shape. A per-call uuid4()
+# (the previous fix) broke retry safety: a network retry generated a fresh
+# key, missed the dedup row, and could POST a duplicate signed order.
+# The deterministic-hash form keeps retries safe; callers that need to
+# distinguish genuinely-different intents must supply their own signal_id.
+# ---------------------------------------------------------------------------
+
+
+class TestBlankSignalIdFallback:
+    @pytest.mark.asyncio
+    async def test_retry_with_blank_signal_id_collapses_to_one_submission(self, tmp_path):
+        """A retry of the same request shape (signal_id absent) must collide on
+        the idempotency table — i.e. the second attempt is duplicate-ignored.
+        Otherwise a network-level retry could submit a duplicate signed order
+        because the venue saw the first POST but the caller did not."""
+        db_path = tmp_path / "state.db"
+        _prepare_db(db_path)
+        repo = OrderRepository(str(db_path))
+        clob = _SimpleClob()
+        svc = ExecutionService(
+            clob, _FeeSvc(), repo,
+            config=_make_exec_config(),
+            market_data_service=_make_mds(),
+        )
+
+        req1 = _make_req(signal_id=None)
+        req2 = _make_req(signal_id=None)
+
+        result1 = await svc.execute(req1)
+        result2 = await svc.execute(req2)
+
+        assert result1.accepted is True
+        assert result2.status == "duplicate_ignored"
+        assert clob.post_signed_order.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_empty_string_signal_id_also_retry_safe(self, tmp_path):
+        """``signal_id == ""`` and ``signal_id is None`` must both route through
+        the deterministic-hash branch — neither generates a fresh per-call id."""
+        db_path = tmp_path / "state.db"
+        _prepare_db(db_path)
+        repo = OrderRepository(str(db_path))
+        clob = _SimpleClob()
+        svc = ExecutionService(
+            clob, _FeeSvc(), repo,
+            config=_make_exec_config(),
+            market_data_service=_make_mds(),
+        )
+
+        req1 = _make_req(signal_id="")
+        req2 = _make_req(signal_id="")
+        await svc.execute(req1)
+        await svc.execute(req2)
+        # Retry-safe: second call collides on dedup, venue saw only one POST.
+        assert clob.post_signed_order.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_distinct_intents_with_blank_signal_id_must_set_signal_id(self, tmp_path):
+        """When a caller genuinely needs to submit two distinct trade intents
+        with the same shape in the same window, it must disambiguate via
+        ``signal_id``. With distinct signal_ids both reach the venue."""
+        db_path = tmp_path / "state.db"
+        _prepare_db(db_path)
+        repo = OrderRepository(str(db_path))
+        clob = _SimpleClob()
+        svc = ExecutionService(
+            clob, _FeeSvc(), repo,
+            config=_make_exec_config(),
+            market_data_service=_make_mds(),
+        )
+
+        req1 = _make_req(signal_id="sig-A")
+        req2 = _make_req(signal_id="sig-B")
+        await svc.execute(req1)
+        await svc.execute(req2)
+        assert clob.post_signed_order.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_explicit_signal_id_still_collapses_duplicates(self, tmp_path):
+        """The deterministic branch must NOT degrade intentional dedupe: when
+        an explicit signal_id is provided, two identical-key requests still
+        collapse (existing duplicate-ignored behavior unchanged)."""
+        db_path = tmp_path / "state.db"
+        _prepare_db(db_path)
+        repo = OrderRepository(str(db_path))
+        clob = _SimpleClob()
+        svc = ExecutionService(
+            clob, _FeeSvc(), repo,
+            config=_make_exec_config(),
+            market_data_service=_make_mds(),
+        )
+
+        req = _make_req(signal_id="sig-explicit")
+        result1 = await svc.execute(req)
+        result2 = await svc.execute(req)
+        assert result1.accepted is True
+        assert result2.status == "duplicate_ignored"
+        assert clob.post_signed_order.await_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Issue #95 — duplicate-order protection must be atomic. A repo without
+# ``try_acquire_submission_lock`` is unsafe for live trading: two concurrent
+# tasks could both observe no blocking row and both submit signed orders.
+# The fix removes the non-atomic fallback and fails closed.
+# ---------------------------------------------------------------------------
+
+
+class _NoCASRepo:
+    """OrderRepository-shaped fake WITHOUT ``try_acquire_submission_lock``.
+
+    Mimics a misconfigured runtime where an older repo without atomic
+    submission locking is wired in. ExecutionService must refuse to call
+    the gateway in this case.
+    """
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def get_by_idempotency_key(self, key: str):
+        self.calls.append(f"get_by_idempotency_key:{key}")
+        return None
+
+    # Deliberately NO try_acquire_submission_lock / is_submission_locked.
+
+
+class TestAtomicLockFailClosed:
+    @pytest.mark.asyncio
+    async def test_repo_without_atomic_lock_fails_closed_before_gateway(self, tmp_path):
+        """No try_acquire_submission_lock → reject with atomic_lock_unavailable;
+        the gateway must never be called."""
+        clob = _SimpleClob()
+        repo = _NoCASRepo()
+        svc = ExecutionService(
+            clob, _FeeSvc(), repo,
+            config=_make_exec_config(),
+            market_data_service=_make_mds(),
+        )
+        req = _make_req(signal_id="sig-no-cas")
+
+        result = await svc.execute(req)
+
+        assert result.accepted is False
+        assert result.status == "atomic_lock_unavailable"
+        assert "atomic" in (result.error or "")
+        # Critical invariant: no signed order ever reached the venue.
+        assert clob.post_signed_order.await_count == 0
+        assert clob.create_market_order.await_count == 0 if hasattr(clob.create_market_order, "await_count") else True
+
+
+class TestAtomicLockConcurrencyStress:
+    @pytest.mark.asyncio
+    async def test_n_concurrent_identical_intents_yield_exactly_one_submission(self, tmp_path):
+        """The real SQLite OrderRepository must serialize duplicate-identity
+        submissions atomically: ``N`` simultaneous execute() calls with the
+        same effective idempotency key produce exactly one venue submission.
+        """
+        db_path = tmp_path / "state.db"
+        _prepare_db(db_path)
+        repo = OrderRepository(str(db_path))
+        clob = _SimpleClob()
+        svc = ExecutionService(
+            clob, _FeeSvc(), repo,
+            config=_make_exec_config(),
+            market_data_service=_make_mds(),
+        )
+        req = _make_req(signal_id="sig-race")
+
+        N = 25  # keep under the asyncio default concurrency without burning the suite
+        results = await asyncio.gather(*[svc.execute(req) for _ in range(N)])
+
+        # Exactly one venue submission across all concurrent tasks.
+        assert clob.post_signed_order.await_count == 1
+        accepted_unique = [r for r in results if r.status not in ("duplicate_ignored",)]
+        # One winner + (N-1) duplicate_ignored or atomic-lock losers.
+        assert len(accepted_unique) <= 1

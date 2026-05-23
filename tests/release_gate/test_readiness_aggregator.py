@@ -22,6 +22,10 @@ def _all_ready() -> ReadinessTracker:
         wss_user_ok=True,
         reconciler_ok=True,
         market_data_ready=True,
+        # Issue #76 added drift_ok to the strict required set; the helper
+        # must mirror the full _STRICT_REQUIRED_KEYS tuple or the
+        # all-green case fails closed in the strict check.
+        drift_ok=True,
         circuit_breaker_state="closed",
     )
     return tracker
