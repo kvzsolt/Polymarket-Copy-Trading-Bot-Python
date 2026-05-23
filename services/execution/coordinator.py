@@ -228,6 +228,17 @@ class ExecutionCoordinator:
         serialize against each other and against the production wrapper paths.
         """
         if self.position_coordinator is None:
+            # Fail-closed in live mode: serialization is a correctness
+            # requirement, never a best-effort optimization. Two
+            # concurrent same-scope intents on the V2 path with no
+            # coordinator would race through reserve_for_intent and both
+            # POST to the venue (review finding #15). Mirror the
+            # PositionScope-import fail-closed branch below.
+            if is_live_mode(getattr(self.execution_service, "_config", None)):
+                raise RuntimeError(
+                    "ExecutionCoordinator.execute_intent: position_coordinator is None; "
+                    "refusing to bypass per-scope serialization in live mode"
+                )
             return await self._execute_intent_locked(intent)
         try:
             from services.positionActionCoordinator import PositionScope
