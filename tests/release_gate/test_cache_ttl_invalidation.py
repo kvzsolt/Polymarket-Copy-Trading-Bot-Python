@@ -43,7 +43,18 @@ def test_tick_size_change_marks_dirty() -> None:
     assert tick.tick_size == Decimal("0.001")
 
 
-def test_invalidate_clears_all_snapshots() -> None:
+def test_evict_clears_all_snapshots() -> None:
+    """Full state-removal contract.
+
+    ``invalidate(token)`` deliberately keeps tick metadata (see
+    ``test_invalidate_on_fill_clears_quote_and_book`` above and the
+    matching production assertion in ``test_price_cache.py`` — tick is
+    market-static and survives quote/book invalidation).
+
+    The "clear every snapshot" use case (own-fill cache hygiene, reconciler
+    full-clear) is owned by ``evict(token)``, which pops the whole token
+    state. This is what ``clients/user_ws.py`` actually calls on fills.
+    """
     cache = MarketStateStore()
     cache.set_quote("tok", best_bid=Decimal("0.5"), best_ask=Decimal("0.5"))
     cache.set_book("tok", bids={}, asks={})
@@ -53,7 +64,7 @@ def test_invalidate_clears_all_snapshots() -> None:
         min_order_size=Decimal("1"),
         neg_risk=False,
     )
-    cache.invalidate("tok")
+    cache.evict("tok")
     assert cache.get_quote("tok") is None
     assert cache.get_book("tok") is None
     assert cache.get_tick("tok") is None
