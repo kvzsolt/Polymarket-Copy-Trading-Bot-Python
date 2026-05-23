@@ -889,6 +889,29 @@ async def main():
             contexts_by_leader=contexts_by_leader,
         )
 
+        # CLAUDE.md non-negotiable: startup reconciliation MUST run before
+        # risk / trade loops for every context — including those wired
+        # dynamically by the discovery refresh loop. Pre-fix, the new
+        # monitor task started without ever running reconcile, leaving any
+        # unconfirmed fills from the prior session unobserved.
+        new_contexts: list["TradingContext"] = []
+        for wallet in started_wallets:
+            new_contexts.extend(contexts_by_leader.get(wallet, []))
+        if new_contexts:
+            dynamic_recon_failures: list[str] = []
+            await startup_reconcile_unconfirmed(
+                new_contexts,
+                failures_out=dynamic_recon_failures,
+            )
+            if dynamic_recon_failures:
+                logger.error(
+                    "dynamic_leader_reconcile_failed | leaders=%s users=%s — "
+                    "monitor will start anyway; affected users may carry "
+                    "stale position state",
+                    started_wallets,
+                    dynamic_recon_failures,
+                )
+
         for wallet in started_wallets:
             monitor_tasks.append(
                 asyncio.create_task(
