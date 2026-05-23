@@ -83,6 +83,7 @@ def _policy_from_config(config: AppConfig) -> AccountCapPolicy:
 
 # Module-level cached policy (set via init_risk_engine)
 _cached_config: AppConfig | None = None
+_env_fallback_warned: bool = False
 
 
 def init_risk_engine(config: AppConfig) -> None:
@@ -96,7 +97,18 @@ def active_policy() -> AccountCapPolicy:
         return _policy_from_config(_cached_config)
 
     # Compatibility fallback for legacy callers/tests that still patch ENV
-    # without explicitly injecting typed AppConfig.
+    # without explicitly injecting typed AppConfig. In production this
+    # branch should never run — surface a WARNING once per process so an
+    # operator running a misbuilt process sees the warning in logs.
+    global _env_fallback_warned
+    if not _env_fallback_warned:
+        _env_fallback_warned = True
+        logger.warning(
+            "risk_engine_env_fallback_active | typed AppConfig was never "
+            "injected via init_risk_engine() — falling back to BALANCE_POLICY_* "
+            "env vars. Production paths MUST call init_risk_engine(config) "
+            "at startup; this warning indicates a misconfigured bootstrap."
+        )
     try:
         return AccountCapPolicy(
             name="account_cap",
