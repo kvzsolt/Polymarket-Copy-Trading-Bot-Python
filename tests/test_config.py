@@ -197,7 +197,13 @@ class TestMalformedValues:
         with pytest.raises(EnvValidationError, match="PRIVATE_KEY must be a 66-char hex key"):
             load_config(valid_env)
 
-    def test_private_key_file_requires_exact_0600_permissions(self, tmp_path, valid_env: dict[str, str]) -> None:
+    def test_private_key_file_requires_exact_0600_permissions(
+        self, tmp_path, monkeypatch, valid_env: dict[str, str]
+    ) -> None:
+        # Path-traversal guard requires the key file to live under $HOME
+        # or cwd; chdir into tmp_path so the test exercises the mode
+        # branch rather than the location branch.
+        monkeypatch.chdir(tmp_path)
         key_path = tmp_path / "pk.txt"
         key_path.write_text(_VALID_PRIVATE_KEY, encoding="utf-8")
         key_path.chmod(0o700)
