@@ -1,0 +1,26 @@
+services/riskMonitor.py
+  s_73e3679734e5c0::t_7eecea79496abb 6,8
+  s_73e3679734e5c0::t_96a7a7e08fde7c 158-171,180-181,190-192
+cache/market_state_store.py
+  s_73e3679734e5c0::t_8747e2adbef969 209-219
+  s_73e3679734e5c0::t_27120a76bb1666 174-183
+  s_73e3679734e5c0::t_a4c731af68f5b9 31,33,39-49
+tests/test_issue99_bounded_caches.py
+  s_73e3679734e5c0::t_31ed40a3260554 1-68
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "d5e529f97f4815e1b004ce8e6ac5f921bdae4b69",
+  "prompts": {},
+  "sessions": {
+    "s_73e3679734e5c0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f4bbbe78-ed43-4ec4-aab6-9aefe80d1d8b",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
