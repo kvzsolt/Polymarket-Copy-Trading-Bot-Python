@@ -336,6 +336,9 @@ class ExecutionConfig:
     # Phase 4 — book depth gate
     min_book_depth_usdc: float
     book_depth_band_pct: float
+    # Submission concurrency: typed cap so production paths do not depend on
+    # raw env reads inside ExecutionService.
+    execution_submit_concurrency: int
 
 
 @dataclass(frozen=True)
@@ -913,6 +916,7 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         # Phase 4 — book depth gate. ``MIN_BOOK_DEPTH_USDC=0`` disables.
         min_book_depth_usdc=p.float_("MIN_BOOK_DEPTH_USDC", "0"),
         book_depth_band_pct=p.float_("BOOK_DEPTH_BAND_PCT", "5"),
+        execution_submit_concurrency=p.int_("EXECUTION_SUBMIT_CONCURRENCY", "2"),
     )
 
     # Leader / discovery cascades — reproduce the same cascading defaults the legacy
