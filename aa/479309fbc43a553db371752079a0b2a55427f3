@@ -1,0 +1,25 @@
+tests/test_execution_idempotency_extended.py
+  s_73e3679734e5c0::t_ff1c3084a99f94 392-399,408
+integrations/polymarket/clob_v2_gateway.py
+  s_73e3679734e5c0::t_9dddf3fc4d4492 179-189,198-214
+tests/test_issue100_unknown_classification.py
+  s_73e3679734e5c0::t_8499d981d817ab 1-51
+tests/test_production_services.py
+  s_73e3679734e5c0::t_2af4a8de253480 279-283
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "aa479309fbc43a553db371752079a0b2a55427f3",
+  "prompts": {},
+  "sessions": {
+    "s_73e3679734e5c0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f4bbbe78-ed43-4ec4-aab6-9aefe80d1d8b",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
