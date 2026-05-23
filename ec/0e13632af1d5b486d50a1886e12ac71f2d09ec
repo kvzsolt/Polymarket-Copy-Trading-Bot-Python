@@ -1,0 +1,22 @@
+tests/test_market_data_service.py
+  s_40eab60fc22f44::t_d0ef4bff898547 858-860,872-874
+services/market_data_service.py
+  s_40eab60fc22f44::t_8c07474f569e43 288-294
+  s_40eab60fc22f44::t_6733ceed5a3ba1 356-363,369-372
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "ec0e13632af1d5b486d50a1886e12ac71f2d09ec",
+  "prompts": {},
+  "sessions": {
+    "s_40eab60fc22f44": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "75ccb144-a9df-45dd-bd80-c6e6ed5d9e12",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
