@@ -130,19 +130,53 @@ def _check_sync(
     )
 
 
+# Addresses that have appeared as hard-coded defaults at some point in
+# the project history but are NOT Polymarket collateral / CTF contracts.
+# Any caller passing one of these is fail-closed at the boundary so a
+# stale env-file or accidental default cannot silently pass the
+# collateral probe by reading the wrong contract.
+KNOWN_INCORRECT_ADDRESSES: frozenset[str] = frozenset(
+    addr.lower()
+    for addr in (
+        "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB",  # Synthetix SNX on Polygon
+        "0xE111180000d2663C0091e4f400237545B87B996B",  # placeholder / non-canonical
+    )
+)
+
+
+def _validate_address(label: str, address: str) -> None:
+    """Reject empty addresses and any in the known-incorrect set."""
+    if not address:
+        raise ValueError(f"{label} is required — pass from typed AppConfig, no defaults")
+    if address.lower() in KNOWN_INCORRECT_ADDRESSES:
+        raise ValueError(
+            f"{label}={address!r} is a known-incorrect contract address "
+            f"(see services.collateral_readiness.KNOWN_INCORRECT_ADDRESSES). "
+            f"Fix your typed config; refusing fail-open."
+        )
+
+
 async def check_collateral_readiness(
     *,
     wallet_address: str,
     rpc_url: str,
-    pusd_address: str = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB",
-    ctf_exchange_address: str = "0xE111180000d2663C0091e4f400237545B87B996B",
+    pusd_address: str,
+    ctf_exchange_address: str,
     min_pusd_balance: Decimal = Decimal("1.0"),
 ) -> CollateralStatus:
     """Run pUSD collateral readiness checks.
 
     Returns a ``CollateralStatus`` with structured details.
     Logs a summary and any failures at WARNING level.
+
+    Addresses must be passed explicitly from typed ``AppConfig`` — the
+    previous hard-coded defaults pointed at non-Polymarket contracts
+    (Synthetix SNX) and silently let the probe report success while
+    reading the wrong balance.
     """
+    _validate_address("pusd_address", pusd_address)
+    _validate_address("ctf_exchange_address", ctf_exchange_address)
+
     status = await asyncio.to_thread(
         _check_sync,
         wallet_address=wallet_address,

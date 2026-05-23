@@ -611,9 +611,23 @@ async def create_clob_client(
 
     funder_or_signer = runtime_cfg.funder_address or signer_address or ""
     if funder_or_signer:
+        # Addresses must be set in typed config / env (no defaults). The
+        # collateral check fail-closes on the historically wrong defaults
+        # (Synthetix SNX masquerading as pUSD). Operator-supplied values
+        # are validated by check_collateral_readiness itself.
+        from config.env import ENV as _ENV
+
+        _pusd_addr = (
+            _ENV.get("PUSD_CONTRACT_ADDRESS")
+            or _ENV.get("COLLATERAL_CONTRACT_ADDRESS")
+            or ""
+        )
+        _ctf_addr = _ENV.get("CTF_EXCHANGE_V2_ADDRESS") or ""
         collateral_status = await check_collateral_readiness(
             wallet_address=funder_or_signer,
             rpc_url=runtime_cfg.polygon_rpc_url,
+            pusd_address=_pusd_addr,
+            ctf_exchange_address=_ctf_addr,
         )
         if not collateral_status.ready:
             reasons = "; ".join(collateral_status.failures)
