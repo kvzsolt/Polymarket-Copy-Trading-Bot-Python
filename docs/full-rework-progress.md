@@ -365,3 +365,39 @@ of the 13 commits in this session. Tracked separately.
 the audit-fix slices all landed on the same branch per user direction
 (logged here as a deliberate deviation from CLAUDE.md's one-issue-per-
 branch rule).
+
+## PR #105 review remediation (10 commits, suite ends 2254 passed, 5 skipped)
+
+**Status:** CI green; all P1 + P2 review findings from Greptile and Cubic
+addressed on top of the audit-fix baseline.
+
+**CI failure** — `tests/test_doctor_live.py::test_doctor_live_passes_when_all_subsystems_wired`
+was blocked because `db_schema_ok` checked the live DB for required
+tables but a fresh CI runner has no `data/bot_state.db`. Local passed
+only because prior dev runs had created and migrated the file.
+`_run_doctor` now builds a per-test migrated SQLite and points
+`BOT_STATE_DB` at it (`b77d367`).
+
+| Finding | Severity | Source | Commit | Outcome |
+|---|---|---|---|---|
+| CI fail | — | unit-tests | `b77d367` | migrated tmp DB in `_run_doctor`; 9/9 doctor tests pass on a no-DB host |
+| 92 (tick math) | P1 | Cubic | `a1bf53d` | `utils/numeric` quantizes by tick directly; works for non-power-of-10 ticks; +1 parametrized test |
+| 94 (UUID retry) | P1 | Greptile | `778b9a4` | deterministic intent_id derived from request shape replaces per-call `uuid4()`; retry-safe; existing `TestBlankSignalIdFallback` inverted to encode new policy |
+| 97 (over-refund) | P1 | Greptile + Cubic | `f29fcc3` | partial-cancel rollback refunds only `requested - filled_notional` when `record_partial_fill` is absent; zero-price guard skips refund (manual reconcile owns it); +2 tests |
+| 95 (atomic lock) | P1 | Cubic + Greptile | `b0ead48` | `_check_atomic_lock(None)` now returns `error`; `app.py` wires `orders_repo` through to `perform_startup_health_check`; +1 regression test |
+| 99 (max_tokens) | P1 | Cubic | `19e7632` | `MarketStateStore.__init__` validates explicit `max_tokens` > 0; +1 parametrized test |
+| 92 (size tick) | P1 | Cubic | `a5ad12f` | `clob_v2_gateway.submit_marketable_order` quantizes size with fixed `0.01` (`_SIZE_QUANTIZATION`), price with market tick; +1 regression test |
+| 103 (canary sed) | P1 | Cubic | `7490cc6` | `set_or_append_cap` helper replaces or appends missing `BUY_MAX_AMOUNT` / `MAX_DAILY_SPEND_USDC`; +2 sandboxed tests |
+| 103 (eval) | P2 | Cubic | `23d2d19` | `run()` uses `"$@"` instead of `eval "$*"`; call sites converted to positional args |
+| 99 (typed config) | P2 | Cubic | `645300f` | `RiskConfig.risk_price_cache_max_size` exposes typed cap; both `RiskPriceCache()` call sites in `riskMonitor.py` read it; env fallback kept as legacy adapter inside `RiskPriceCache.__init__`; +3 tests |
+
+**Real safety bugs caught by the review (5):**
+- ephemeral UUID broke retry idempotency (#94)
+- partial-cancel fallback over-refunded full notional including filled portion (#97 Greptile)
+- partial-cancel with unresolved price over-refunded too (#97 Cubic)
+- atomic-lock gate silently degraded to warning when `orders_repo` not wired (#95)
+- canary mode silently failed to set caps when secrets.env lacked the keys (#103)
+
+**Tests run.** Full suite: 2254 passed, 5 skipped. `compileall` clean.
+CI-shape verification (with `data/bot_state.db` moved aside): all 119
+tests across the 8 touched test files pass.
