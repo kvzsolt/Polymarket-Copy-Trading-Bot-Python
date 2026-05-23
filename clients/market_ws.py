@@ -275,19 +275,24 @@ class MarketWebSocket:
                 return
 
     def _is_pong_missed(self) -> bool:
-        # Silent-server detection: compare last sent PING against the most
-        # recent inbound activity (seeded at connect time so the anchor is
-        # never None in real flow). When no inbound has ever been observed
-        # (e.g. unit tests, or a connection that never seeded the anchor),
-        # fall back to time-since-last-ping so a stuck loop still detects
-        # the stall instead of returning False forever.
+        # Silent-server detection: compare NOW against the most recent
+        # inbound activity. Pre-fix the formula was
+        # ``last_ping - last_pong`` which produced a negative or
+        # falsely-small value whenever an inbound frame arrived between
+        # two PING sends, causing the detector to miss real stalls and
+        # only catch them on the next PING cycle (15s+ latency for a
+        # 10s threshold). The correct formula is ``now - last_alive``:
+        # any inbound activity within the timeout window keeps the
+        # connection healthy, anything beyond it trips reconnect.
         if self._last_ping_monotonic is None:
             return False
         last_alive = self._last_pong_monotonic
         if last_alive is None:
+            # No inbound observed yet — fall back to time-since-last-ping
+            # so a stuck loop still detects the stall.
             elapsed = time.monotonic() - self._last_ping_monotonic
         else:
-            elapsed = self._last_ping_monotonic - last_alive
+            elapsed = time.monotonic() - last_alive
         return elapsed > self._pong_timeout_seconds
 
     async def _message_loop(self, ws: Any) -> None:
