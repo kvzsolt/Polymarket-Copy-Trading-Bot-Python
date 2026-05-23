@@ -84,16 +84,12 @@ def load_runtime_env(
             secrets_path=resolved_secrets,
         )
 
-        # Only set allowlisted sensitive keys from secrets.env into os.environ.
-        # Non-sensitive keys must live in runtime.env / runtime.local.env.
+        # Allowlisted sensitive keys: set when missing, or force-set when
+        # override_secrets is True. Non-sensitive keys must live in
+        # runtime.env / runtime.local.env.
         for key in _SECRETS_OVERRIDE_KEYS:
             value = secret_values.get(key)
-            if value is not None and key not in os.environ:
+            if value is None:
+                continue
+            if override_secrets or key not in os.environ:
                 os.environ[key] = value
-
-        # Then explicitly override sensitive keys (even if already set).
-        if override_secrets:
-            for key in _SECRETS_OVERRIDE_KEYS:
-                value = secret_values.get(key)
-                if value is not None:
-                    os.environ[key] = value
