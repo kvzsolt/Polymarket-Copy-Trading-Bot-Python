@@ -1,0 +1,22 @@
+clients/balance_client.py
+  s_40eab60fc22f44::t_60c78263bf5fd0 13,30-32,46,58-61,66
+domain/ports/clients.py
+  s_40eab60fc22f44::t_2e103284bb67ca 46
+  s_40eab60fc22f44::t_c3cf2cc21f2c78 14
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "c48f7b88811e8ae2a2bf7cf665f10a2f539590df",
+  "prompts": {},
+  "sessions": {
+    "s_40eab60fc22f44": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "75ccb144-a9df-45dd-bd80-c6e6ed5d9e12",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
