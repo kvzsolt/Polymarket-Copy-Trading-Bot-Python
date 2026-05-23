@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from decimal import Decimal
 
 from web3 import Web3
 
@@ -9,6 +10,9 @@ from clients.network.web3_adapter import AsyncWeb3Adapter
 from utils.logger import get_logger
 
 logger = get_logger("Balance")
+
+# USDC has 6 decimals — wei-style raw int → human balance.
+_USDC_SCALE = Decimal(10**6)
 
 USDC_ABI = [{
     "constant": True,
@@ -28,7 +32,7 @@ def _masked_address(address: str | None) -> str:
 
 
 
-def _get_balance_sync(address: str) -> float | None:
+def _get_balance_sync(address: str) -> Decimal | None:
     rpc_url = ENV.get('RPC_URL')
 
     if not rpc_url:
@@ -83,9 +87,12 @@ def _get_balance_sync(address: str) -> float | None:
 
             token_contract = w3.eth.contract(address=checksum_contract, abi=USDC_ABI)
             raw_balance = token_contract.functions.balanceOf(checksum_address).call()
-            bal = float(raw_balance / 10**6)
+            # ``raw_balance`` is uint256 microUSDC. ``Decimal(int) / Decimal(int)``
+            # stays exact; the previous ``float(raw / 10**6)`` lost cent precision
+            # above 2^53 microUSDC and corrupted downstream risk-cap math.
+            bal = Decimal(int(raw_balance)) / _USDC_SCALE
             logger.debug(
-                "Collateral balance for %s=%0.2f via %s",
+                "Collateral balance for %s=%s via %s",
                 _masked_address(checksum_address),
                 bal,
                 _masked_address(checksum_contract),
@@ -104,7 +111,7 @@ def _get_balance_sync(address: str) -> float | None:
     return None
 
 
-async def get_my_balance(address: str) -> float | None:
+async def get_my_balance(address: str) -> Decimal | None:
     if not address:
         logger.error("Balance lookup failed: wallet address is missing")
         return None
