@@ -1,0 +1,24 @@
+tests/test_research_capture_task_tracked.py
+  s_40eab60fc22f44::t_6b4f8f20eab5b7 53-55,60-62,66-73
+  s_40eab60fc22f44::t_b591805899ded9 63-64
+  s_40eab60fc22f44::t_fd1be49174b23d 1-52,56-59,65,74
+services/tradeMonitor.py
+  s_40eab60fc22f44::t_46d2da7317439a 166-201
+  s_40eab60fc22f44::t_b8a71db0254c2c 548
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "a27aeb52e05143916e5137b32a1bba23fddf81e2",
+  "prompts": {},
+  "sessions": {
+    "s_40eab60fc22f44": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "75ccb144-a9df-45dd-bd80-c6e6ed5d9e12",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
