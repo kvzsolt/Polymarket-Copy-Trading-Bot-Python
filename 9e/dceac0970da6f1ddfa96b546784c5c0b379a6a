@@ -1,0 +1,22 @@
+orchestrators/trade_pipeline.py
+  s_40eab60fc22f44::t_055d183c56f247 1890-1901
+tests/test_balance_regime_atomic_reserve.py
+  s_40eab60fc22f44::t_017eca635eda41 44-45,58,61,63,75,79,81
+  s_40eab60fc22f44::t_1f6493f16d7f99 1-43,46-57,59-60,62,64-74,76-78,80,82
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "9edceac0970da6f1ddfa96b546784c5c0b379a6a",
+  "prompts": {},
+  "sessions": {
+    "s_40eab60fc22f44": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "75ccb144-a9df-45dd-bd80-c6e6ed5d9e12",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
