@@ -39,7 +39,17 @@ while [[ $# -gt 0 ]]; do
 done
 
 log()  { printf "[rollback] %s\n" "$*"; }
-run()  { if [[ "$DRY_RUN" == 1 ]]; then log "DRY-RUN: $*"; else eval "$*"; fi }
+# PR #105 review: drop ``eval`` from run(). Passing a single string to
+# eval is fragile against spaces, globs, and shell metacharacters in
+# resolved paths (a snapshot filename like ``audit/2026 q2.jsonl`` would
+# break). Use positional arguments so each token stays quoted.
+run()  {
+  if [[ "$DRY_RUN" == 1 ]]; then
+    log "DRY-RUN: $*"
+  else
+    "$@"
+  fi
+}
 
 ts="$(date -u +%Y%m%dT%H%M%SZ)"
 BACKUP_DIR="backups/$ts"
@@ -53,24 +63,24 @@ fi
 log "  → LIVE_TRADING_ENABLED=false"
 
 log "phase 2/6 — snapshot SQLite + logs to $BACKUP_DIR"
-run "mkdir -p \"$BACKUP_DIR\""
+run mkdir -p "$BACKUP_DIR"
 for f in data/*.db data/*.sqlite logs/*.log audit/*.jsonl; do
-  [[ -e "$f" ]] && run "cp -a \"$f\" \"$BACKUP_DIR/\""
+  [[ -e "$f" ]] && run cp -a "$f" "$BACKUP_DIR/"
 done
 
 if [[ -n "$TARGET_SHA" ]]; then
   log "phase 3/6 — revert working tree to $TARGET_SHA"
-  run "git fetch --quiet"
-  run "git checkout \"$TARGET_SHA\""
+  run git fetch --quiet
+  run git checkout "$TARGET_SHA"
 else
   log "phase 3/6 — no SHA supplied; keeping current tree (use for snapshot-only)"
 fi
 
 log "phase 4/6 — startup reconciliation (bot doctor live)"
-run "python -m bot_cli.doctor --live --no-trade"
+run python -m bot_cli.doctor --live --no-trade
 
 log "phase 5/6 — smoke checks"
-run "scripts/rc1_check.sh"
+run scripts/rc1_check.sh
 
 if [[ -n "$CANARY_NOTIONAL" ]]; then
   log "phase 6/6 — entering canary mode (BUY_MAX_AMOUNT=$CANARY_NOTIONAL, MAX_DAILY_SPEND_USDC=$CANARY_NOTIONAL)"
