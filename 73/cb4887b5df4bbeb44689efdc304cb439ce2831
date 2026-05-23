@@ -1,0 +1,20 @@
+app.py
+  s_40eab60fc22f44::t_0d843cb4a10b1e 892-896,898-914
+  s_40eab60fc22f44::t_a35d6a56db8ffe 897
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "73cb4887b5df4bbeb44689efdc304cb439ce2831",
+  "prompts": {},
+  "sessions": {
+    "s_40eab60fc22f44": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "75ccb144-a9df-45dd-bd80-c6e6ed5d9e12",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
