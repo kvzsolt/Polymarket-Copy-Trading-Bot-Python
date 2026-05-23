@@ -104,6 +104,17 @@ except (ImportError, Exception):  # pragma: no cover
 
 
 # ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+# Polymarket py-clob-client-v2 ROUNDING_CONFIG fixes order size precision to
+# 2 decimals regardless of the market's price tick_size (which only affects
+# price precision: "0.1" | "0.01" | "0.001" | "0.0001"). Quantizing size
+# with the price tick is incorrect — see PR #105 review.
+_SIZE_QUANTIZATION: str = "0.01"
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -393,10 +404,16 @@ class ClobV2Gateway:
         # rejects (raises) if the rounding delta is suspiciously large.
         # This is intentional: silently dropping precision at this boundary
         # is the root cause of audit issue #92.
+        #
+        # PR #105 review (Cubic P1): ``tick_size`` is the *price* precision
+        # ("0.1" | "0.01" | "0.001" | "0.0001" per Polymarket SDK). Order
+        # *size* always uses 2-decimal precision regardless of the market's
+        # price tick — quantizing size with a coarse price tick (e.g. "0.1")
+        # rejects valid sizes like 10.55. Use the fixed SDK size step here.
         try:
             quantized_size = quantize_and_convert_to_float(
                 Decimal(str(request.size)),
-                tick_size_str,
+                _SIZE_QUANTIZATION,
             )
             quantized_price = quantize_and_convert_to_float(
                 Decimal(str(price_limit)),
