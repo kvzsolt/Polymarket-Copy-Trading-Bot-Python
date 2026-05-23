@@ -1,0 +1,24 @@
+cache/price_cache.py
+  s_40eab60fc22f44::t_641c410bcdf29f 25,32-35
+  s_40eab60fc22f44::t_d22b9f485137c5 111-117
+  s_40eab60fc22f44::t_44e15ada2490f3 134-135,139,141-142
+  s_40eab60fc22f44::t_554e7ee5efa889 60-65,68-69,71-76
+tests/test_price_cache_lru_bound.py
+  s_40eab60fc22f44::t_f4e2ec2c29d6d8 1-44
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "c515d5e2e96bb9dad110db5085ea882ac431aa38",
+  "prompts": {},
+  "sessions": {
+    "s_40eab60fc22f44": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "75ccb144-a9df-45dd-bd80-c6e6ed5d9e12",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
