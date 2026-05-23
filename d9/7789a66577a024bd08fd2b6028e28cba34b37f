@@ -1,0 +1,24 @@
+cache/market_state_store.py
+  s_40eab60fc22f44::t_80b683565f0b33 815,817-820,841-845,851-853
+  s_40eab60fc22f44::t_806c8292b5a735 816,821-840,846-850
+tests/test_invalidate_sizing_decision.py
+  s_40eab60fc22f44::t_717c9e2dadb09c 30,36
+  s_40eab60fc22f44::t_9fc37b87a73b1f 1-21,28-29,31-35,37,44-49
+  s_40eab60fc22f44::t_a8be8ace1295c5 22-27,38-43
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "d97789a66577a024bd08fd2b6028e28cba34b37f",
+  "prompts": {},
+  "sessions": {
+    "s_40eab60fc22f44": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "75ccb144-a9df-45dd-bd80-c6e6ed5d9e12",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
