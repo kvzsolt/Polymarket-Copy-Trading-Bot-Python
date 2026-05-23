@@ -373,6 +373,53 @@ async def test_check_compatibility_when_sdk_available_returns_ok_report():
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.asyncio
+async def test_submit_marketable_order_quantizes_size_with_fixed_step_not_price_tick():
+    """PR #105 review (Cubic P1): order *size* uses a fixed 2-decimal step
+    per the Polymarket SDK ROUNDING_CONFIG. Quantizing size with the price
+    ``tick_size`` (e.g. ``"0.1"``) used to reject valid 2-decimal sizes
+    such as ``10.55`` because the rounding delta against a 0.1 grid
+    exceeded the adapter's epsilon.
+
+    With the fix, submit_marketable_order quantizes size at ``"0.01"`` and
+    price at the supplied tick_size, so a 10.55 / tick=0.1 order goes
+    through and the SDK receives ``size=10.55`` unchanged.
+    """
+    seen: dict[str, object] = {}
+
+    async def _capture_signed(**kwargs):
+        seen.update(kwargs)
+        return {"signed": True}
+
+    async def _post(_signed):
+        return {"success": True, "data": {"orderID": "ord-quant", "status": "submitted"}}
+
+    wrapper = SimpleNamespace(
+        create_market_order=_capture_signed,
+        post_signed_order=_post,
+    )
+    gw = ClobV2Gateway(wrapper)
+
+    req = MarketableOrderRequest(
+        token_id="t1",
+        side="BUY",
+        size=Decimal("10.55"),
+        price_limit=Decimal("0.40"),
+        tick_size=Decimal("0.1"),
+        neg_risk=False,
+    )
+
+    result = await gw.submit_marketable_order(req)
+
+    assert isinstance(result, VenueSubmitResult)
+    assert result.success is True
+    # The SDK call must have received size=10.55 (quantized at 0.01) and
+    # price=0.4 (quantized at the price tick 0.1).
+    assert seen["amount"] == pytest.approx(10.55)
+    assert seen["max_price"] == pytest.approx(0.4)
+    assert seen["tick_size"] == "0.1"
+
+
 def test_build_submit_result_surfaces_ambiguous_and_non_retryable_flags():
     result = _build_submit_result({
         "success": False,
