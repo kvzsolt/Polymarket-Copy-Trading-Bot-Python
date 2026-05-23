@@ -1,0 +1,22 @@
+tests/test_issue66_gateway_isolation.py
+  s_0634fd1b10250c::t_b8b42afb895254 376-422
+integrations/polymarket/clob_v2_gateway.py
+  s_0634fd1b10250c::t_8b152a82b3c49c 107-116
+  s_0634fd1b10250c::t_fbfea60f645eb8 407-412,416
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "a5ad12fe27fb70f6fd29b3ae22290fbbbf5e66ba",
+  "prompts": {},
+  "sessions": {
+    "s_0634fd1b10250c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2ea4030f-52b1-4f0c-a67d-6689f339d563",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
