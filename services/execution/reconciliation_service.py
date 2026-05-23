@@ -864,6 +864,21 @@ class ReconciliationService:
         if not order_id:
             return False
 
+        # Fail closed on malformed rows. Terminal branches dereference these
+        # keys with bracket access — a missing key would raise KeyError inside
+        # the outer try/except and the caller would silently retry forever.
+        required_keys = ("user_id", "trade_key", "asset", "condition_id")
+        missing_keys = [k for k in required_keys if not record.get(k)]
+        if missing_keys:
+            if logger is not None:
+                logger.error(
+                    "reconcile_trade_record_malformed | order_id=%s missing=%s keys=%s",
+                    order_id,
+                    missing_keys,
+                    list(record.keys()),
+                )
+            return False
+
         try:
             fill_info = await confirm_fill(order_id)
         except Exception as exc:
@@ -1118,14 +1133,17 @@ class ReconciliationService:
                         )
                     entry_price = float(avg_price)
                     realized_source = "fill_price_fallback"
-                realized = (float(avg_price) - entry_price) * float(delta_matched)
+                # Compute realized PnL in Decimal to avoid IEEE-754 drift on
+                # tick-granular subtractions; cast at the tracker boundary only.
+                entry_d = Decimal(str(entry_price))
+                realized_d = (avg_price - entry_d) * delta_matched
                 pnl_tracker.record_sell(
                     condition_id=record["condition_id"],
                     price=float(avg_price),
                     size_tokens=float(delta_matched),
                     usdc_value=float(delta_matched * avg_price),
                     entry_price=entry_price,
-                    realized_pnl=realized,
+                    realized_pnl=float(realized_d),
                     exit_reason="reconciled_sell",
                     leader_wallet=record.get("leader_id", ""),
                     event_slug="",
@@ -1496,14 +1514,17 @@ class ReconciliationService:
                 _log.debug("risk_trigger_record_error order_id=%s", order_id, exc_info=True)
 
         if pnl_tracker is not None and hasattr(pnl_tracker, "record_sell"):
-            realized = (float(avg_price) - entry_price) * float(delta_matched)
+            # Realized PnL in Decimal to avoid float subtraction drift; cast
+            # at the tracker boundary only.
+            entry_d = Decimal(str(entry_price))
+            realized_d = (avg_price - entry_d) * delta_matched
             pnl_tracker.record_sell(
                 condition_id=condition_id,
                 price=float(avg_price),
                 size_tokens=float(delta_matched),
                 usdc_value=float(delta_matched * avg_price),
                 entry_price=entry_price,
-                realized_pnl=realized,
+                realized_pnl=float(realized_d),
                 exit_reason=reason,
                 leader_wallet=leader_id,
             )
