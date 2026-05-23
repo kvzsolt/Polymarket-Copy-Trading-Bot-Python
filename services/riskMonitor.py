@@ -141,8 +141,10 @@ async def _fetch_live_risk_position_size(
             break
     return live_size
 
-# Track token_ids we've already warned about to avoid log spam every cycle.
-_warned_invalid_tokens: set[str] = set()
+# Per-context "already warned about this token" set lives in context.extra
+# under this key. Module-level state would leak warning suppression across
+# users in multi-user runtimes and grow unbounded.
+_WARNED_INVALID_TOKENS_KEY = "warned_invalid_tokens"
 _DEFAULT_RISK_PRICE_SEMAPHORE = 8
 _MIN_RISK_CACHE_STALE_SECONDS = 0.75
 
@@ -555,12 +557,14 @@ async def risk_monitor_loop(
                                 )
                                 fraction = 1.0
 
-                        sell_size = pos.size_tokens * max(0.0, min(1.0, fraction))
+                        # Decimal sizing to avoid float drift on tick-granular sizes.
+                        fraction_d = max(Decimal("0"), min(Decimal("1"), Decimal(str(fraction))))
+                        sell_size = (Decimal(str(pos.size_tokens)) * fraction_d).quantize(Decimal("0.00000001"))
                         if sell_size <= 0:
                             continue
                         logger.info(
                             f"Executing risk {trigger} for {condition_id[:12]}…/{token_id[:12]} "
-                            f"tokens={sell_size:.4f}"
+                            f"tokens={sell_size}"
                         )
                         if not funder_address:
                             logger.error(
@@ -572,7 +576,7 @@ async def risk_monitor_loop(
                             leader_id=pos.leader_wallet or "risk-monitor",
                             token_id=token_id,
                             side="SELL",
-                            amount=Decimal(str(sell_size)),
+                            amount=sell_size,
                             max_slippage_bps=slippage_bps,
                             reason=trigger,
                             signal_id=f"risk:{trigger}:{condition_id}:{int(time.time())}",
@@ -866,10 +870,11 @@ async def run_risk_check_for_context(context: TradingContext) -> None:
     # Read enable_tiered from context extra (set by bootstrap from config)
     enable_tiered = str(context.extra.get("enable_balance_tiered_policy", "false")).lower() in ("1", "true", "yes")
 
+    warned_tokens: set[str] = context.extra.setdefault(_WARNED_INVALID_TOKENS_KEY, set())
     for pos in context.positions_repo.list_open_positions(context.user_id):
         if not is_valid_clob_token_id(pos.token_id):
-            if pos.token_id not in _warned_invalid_tokens:
-                _warned_invalid_tokens.add(pos.token_id)
+            if pos.token_id not in warned_tokens:
+                warned_tokens.add(pos.token_id)
                 logger.warning(
                     "Skipping position with invalid token_id=%r (condition=%s) — "
                     "likely stale placeholder; close or delete manually",
