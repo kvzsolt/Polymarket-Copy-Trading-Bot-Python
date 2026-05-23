@@ -1,0 +1,24 @@
+services/execution/reservation_service.py
+  s_40eab60fc22f44::t_b66a81e6733019 52,54,62-66
+  s_40eab60fc22f44::t_2bfc1d327984d6 166-167,170-175
+services/execution/coordinator.py
+  s_40eab60fc22f44::t_97bc6cb2d6a2b2 196,209-212
+tests/test_reservation_service_decimal_balance.py
+  s_40eab60fc22f44::t_d08b9bb43098dd 1-57
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "3ccbf26ea7b714c7d204458d94604ea7e0727e95",
+  "prompts": {},
+  "sessions": {
+    "s_40eab60fc22f44": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "75ccb144-a9df-45dd-bd80-c6e6ed5d9e12",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
