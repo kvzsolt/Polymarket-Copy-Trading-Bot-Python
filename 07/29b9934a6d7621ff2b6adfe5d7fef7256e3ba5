@@ -1,0 +1,24 @@
+orchestrators/runtime_bootstrap.py
+  s_40eab60fc22f44::t_a3a2701dc6b48c 105-106
+  s_40eab60fc22f44::t_e2fc0f09ee5515 37-38,53-68
+tests/test_startup_reconcile_failures_surface.py
+  s_40eab60fc22f44::t_6f374eba7511f6 1-89
+app.py
+  s_40eab60fc22f44::t_33ed92b2e21a35 750-776
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "0729b9934a6d7621ff2b6adfe5d7fef7256e3ba5",
+  "prompts": {},
+  "sessions": {
+    "s_40eab60fc22f44": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "75ccb144-a9df-45dd-bd80-c6e6ed5d9e12",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
