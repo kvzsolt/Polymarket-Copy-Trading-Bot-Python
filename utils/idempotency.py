@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 
 from config.env import ENV
@@ -10,8 +11,26 @@ from utils.logger import get_logger
 
 logger = get_logger("Idempotency")
 
-_DB_PATH = Path(str(ENV.get("BOT_STATE_DB", "data/bot_state.db")))
+# Schema-init guard. Pre-fix the check-then-add was unlocked, so two
+# concurrent callers could both observe ``db_path not in _SCHEMA_READY``
+# and both run ``apply_migrations`` against the same SQLite file. With
+# the wrapping BEGIN IMMEDIATE landed in this branch the second migrate
+# would block on the writer lock and re-run idempotently, but the lock
+# below removes the racy double-init at the Python layer regardless.
 _SCHEMA_READY: set[str] = set()
+_SCHEMA_LOCK = threading.Lock()
+
+
+def _current_db_path() -> Path:
+    """Resolve the SQLite path on every call.
+
+    Pre-fix this was a module-level constant resolved at import time. Test
+    harnesses that point ``BOT_STATE_DB`` at a tmp file AFTER import (or
+    multi-user configs that swap the path mid-run) silently kept the
+    first-imported path, so the second user's processed_trades landed in
+    the first user's DB. Re-resolve from ENV on every call.
+    """
+    return Path(str(ENV.get("BOT_STATE_DB", "data/bot_state.db")))
 
 
 
@@ -33,12 +52,16 @@ def build_trade_key(leader_wallet: str, trade: dict) -> str:
 
 
 def _repo() -> OrdersRepo:
-    db_path = str(_DB_PATH)
+    db_path = str(_current_db_path())
+    # Double-checked locking: cheap read first, then the (mutating) init
+    # under the lock with a second read to handle a racing first init.
     if db_path not in _SCHEMA_READY:
-        with create_connection(db_path) as conn:
-            apply_migrations(conn)
-            conn.commit()
-        _SCHEMA_READY.add(db_path)
+        with _SCHEMA_LOCK:
+            if db_path not in _SCHEMA_READY:
+                with create_connection(db_path) as conn:
+                    apply_migrations(conn)
+                    conn.commit()
+                _SCHEMA_READY.add(db_path)
     return OrdersRepo(db_path)
 
 
@@ -104,4 +127,5 @@ def purge_stale_records(max_age_seconds: float | None = None) -> int:
 
 
 def reset_cache_for_tests() -> None:
-    _SCHEMA_READY.clear()
+    with _SCHEMA_LOCK:
+        _SCHEMA_READY.clear()

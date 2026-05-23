@@ -23,7 +23,7 @@ class TestIdempotencyStore:
     def test_mark_and_has_processed(self, tmp_path, monkeypatch):
         import utils.idempotency as idem
 
-        monkeypatch.setattr(idem, "_DB_PATH", tmp_path / "state.db")
+        monkeypatch.setitem(idem.ENV, "BOT_STATE_DB", str(tmp_path / "state.db"))
         idem.reset_cache_for_tests()
 
         trade = {
@@ -41,7 +41,7 @@ class TestIdempotencyStore:
     def test_mark_processed_all_tx_hashes_marks_aggregated(self, tmp_path, monkeypatch):
         import utils.idempotency as idem
 
-        monkeypatch.setattr(idem, "_DB_PATH", tmp_path / "state.db")
+        monkeypatch.setitem(idem.ENV, "BOT_STATE_DB", str(tmp_path / "state.db"))
         idem.reset_cache_for_tests()
 
         trade = {
