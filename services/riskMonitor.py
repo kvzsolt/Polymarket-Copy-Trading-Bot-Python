@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import TYPE_CHECKING
@@ -153,8 +155,20 @@ class CachedRiskPrice:
 
 
 class RiskPriceCache:
-    def __init__(self) -> None:
-        self._entries: dict[str, CachedRiskPrice] = {}
+    # Issue #99: bound the per-process price cache to prevent unbounded
+    # memory growth on a long-running bot. Oldest-inserted entries are
+    # evicted first; active tokens are unaffected because each set() bumps
+    # them back to the MRU end.
+    def __init__(self, *, max_size: int | None = None) -> None:
+        if max_size is None:
+            try:
+                max_size = int(os.environ.get("RISK_PRICE_CACHE_MAX_SIZE", "5000"))
+            except (TypeError, ValueError):
+                max_size = 5000
+            if max_size <= 0:
+                max_size = 5000
+        self._max_size = max_size
+        self._entries: OrderedDict[str, CachedRiskPrice] = OrderedDict()
 
     def get_fresh(self, token_id: str, *, stale_after: float, now: float | None = None) -> CachedRiskPrice | None:
         entry = self._entries.get(token_id)
@@ -163,6 +177,8 @@ class RiskPriceCache:
         current_ts = now if now is not None else time.time()
         if current_ts - entry.fetched_at > stale_after:
             return None
+        # Touch on hit: cold tokens drift toward the eviction edge.
+        self._entries.move_to_end(token_id)
         return entry
 
     def set(self, token_id: str, *, price: Decimal, size: Decimal | None = None, fetched_at: float | None = None) -> None:
@@ -171,6 +187,9 @@ class RiskPriceCache:
             size=size,
             fetched_at=fetched_at if fetched_at is not None else time.time(),
         )
+        self._entries.move_to_end(token_id)
+        while len(self._entries) > self._max_size:
+            self._entries.popitem(last=False)
 
 
 def _risk_cache_stale_after(refresh_interval: float) -> float:
