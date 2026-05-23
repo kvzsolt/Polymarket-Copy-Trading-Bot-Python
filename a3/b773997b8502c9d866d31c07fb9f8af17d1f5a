@@ -1,0 +1,21 @@
+utils/dayEquity.py
+  s_40eab60fc22f44::t_53bd310c51f697 54-55,58-63,66-68,72-73
+tests/test_day_equity_decimal_persist.py
+  s_40eab60fc22f44::t_f10686b32678ac 1-53
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "a3b773997b8502c9d866d31c07fb9f8af17d1f5a",
+  "prompts": {},
+  "sessions": {
+    "s_40eab60fc22f44": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "75ccb144-a9df-45dd-bd80-c6e6ed5d9e12",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
