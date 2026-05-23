@@ -11,6 +11,7 @@ Async methods mirror the real adapters' call shape (``aiohttp`` /
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from decimal import Decimal
 from typing import Any
 
 
@@ -42,7 +43,7 @@ class AbstractBalanceClient(ABC):
     """Wallet balance queries (USDC + native gas token)."""
 
     @abstractmethod
-    async def get_usdc_balance(self, address: str) -> float | None: ...
+    async def get_usdc_balance(self, address: str) -> Decimal | None: ...
 
     @abstractmethod
     async def get_native_balance_wei(self, address: str) -> int | None: ...
