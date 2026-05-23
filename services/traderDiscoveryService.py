@@ -245,7 +245,7 @@ class TraderDiscoveryService:
         schema_warnings = 0
 
         try:
-            data = await asyncio.get_event_loop().run_in_executor(None, _fetch_json, url)
+            data = await asyncio.to_thread(_fetch_json, url)
             rows = data.get("data", []) if isinstance(data, dict) else []
 
             if not rows:
@@ -403,7 +403,7 @@ class TraderDiscoveryService:
 
         url = f"{_BASE_URL}/traders-tag-performance?tag=Overall&sortDirection=ASC&limit=1&offset=0&searchQuery={wallet}"
         try:
-            data = await asyncio.get_event_loop().run_in_executor(None, _fetch_json, url)
+            data = await asyncio.to_thread(_fetch_json, url)
         except Exception as exc:
             logger.warning(f"Trader lookup failed for {wallet[:12]}…: {exc}")
             return None
@@ -437,7 +437,7 @@ class TraderDiscoveryService:
         wallet = wallet.strip().lower()
         url = f"{_BASE_URL}/traders-positions?trader_id={wallet}"
         try:
-            data = await asyncio.get_event_loop().run_in_executor(None, _fetch_json, url)
+            data = await asyncio.to_thread(_fetch_json, url)
         except Exception as exc:
             logger.warning(f"Position fetch failed for {wallet[:12]}…: {exc}")
             return []
