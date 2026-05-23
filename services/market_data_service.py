@@ -285,7 +285,13 @@ class MarketDataService:
             ) from exc
 
         request_ms = (time.monotonic() - fetch_start) * 1000.0
-        fetched_at = time.monotonic()
+        # ``fetched_at`` anchors the freshness gate. Pre-fix this was set
+        # AFTER the book fetch completed, which made ``data_age_ms``
+        # measure "post-fetch processing latency" (always sub-millisecond)
+        # rather than "how old is the book by the time we use it". The
+        # anchor must be ``fetch_start`` so that a slow network round-trip
+        # actually counts against the freshness budget.
+        fetched_at = fetch_start
 
         bids: dict[Decimal, Decimal] = {}
         asks: dict[Decimal, Decimal] = {}
@@ -347,12 +353,23 @@ class MarketDataService:
                 )
             spread_bps = int(((best_ask - best_bid) / best_ask) * 10000)
             if max_spread_bps > 0 and spread_bps > max_spread_bps:
-                logger.info(
-                    "market_data_rest_snapshot_wide_spread_allowed | token_id=%s"
+                # FAIL CLOSED. Pre-fix this gate logged "allowed" and
+                # let the order proceed — orders could land in 1000bps
+                # books while the configured cap was 300bps. The
+                # ``rest_snapshot_max_spread_bps`` config exists
+                # specifically to refuse trade-through against
+                # illiquid / manipulated books, so log + raise.
+                logger.warning(
+                    "market_data_rest_snapshot_rejected | token_id=%s reason=wide_spread"
                     " spread_bps=%d configured_max_bps=%d",
                     token_id,
                     spread_bps,
                     max_spread_bps,
+                )
+                raise StaleDataError(
+                    f"REST snapshot spread {spread_bps}bps exceeds "
+                    f"max {max_spread_bps}bps for {token_id}",
+                    skip_code="book_spread_wide",
                 )
 
         data_age_ms = (time.monotonic() - fetched_at) * 1000.0
