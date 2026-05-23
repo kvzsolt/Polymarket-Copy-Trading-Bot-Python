@@ -774,26 +774,38 @@ class ReconciliationService:
             )
 
         if venue_fills:
-            async with self.db.transaction():
-                for venue_fill in venue_fills:
-                    # Issue #97: filter fills to the exact venue_order_id before
-                    # applying. get_fills(market=...) returns ALL fills for the
-                    # market — applying every one to the target order corrupts
-                    # position state and can trigger premature reservation release.
-                    fill_order_id = venue_fill.get("order_id") or venue_fill.get("orderID")
-                    if fill_order_id and fill_order_id != order.venue_order_id:
-                        continue
-                    fill = await self.fills_repo.upsert_venue_fill(order, venue_fill)
-                    self.positions_repo.upsert_position(fill)
+            # Issue #97: filter fills to the exact venue_order_id before
+            # applying. get_fills(market=...) returns ALL fills for the
+            # market — applying every one to the target order corrupts
+            # position state and can trigger premature reservation release.
+            # Invariant: every applied fill MUST carry an order_id that
+            # matches order.venue_order_id. Fills missing an order_id are
+            # inconclusive and must NOT be attributed to this order.
+            matching_fills = [
+                f for f in venue_fills
+                if (f.get("order_id") or f.get("orderID")) == order.venue_order_id
+            ]
+            if matching_fills:
+                async with self.db.transaction():
+                    for venue_fill in matching_fills:
+                        fill = await self.fills_repo.upsert_venue_fill(order, venue_fill)
+                        self.positions_repo.upsert_position(fill)
 
-                await self.orders_repo.mark_filled_or_partially_filled(order.id)
-                if self.reservation_service is not None:
-                    self.reservation_service.release_terminal(
-                        order.reservation_id,
-                        reason="venue_fill_confirmed",
-                    )
-            self._audit("reconciliation_resolved_filled", {"order_id": order.id})
-            return ReconciliationResult.resolved(order.id, OrderLifecycleStatus.FILLED)
+                    await self.orders_repo.mark_filled_or_partially_filled(order.id)
+                    if self.reservation_service is not None:
+                        self.reservation_service.release_terminal(
+                            order.reservation_id,
+                            reason="venue_fill_confirmed",
+                        )
+                self._audit("reconciliation_resolved_filled", {"order_id": order.id})
+                return ReconciliationResult.resolved(order.id, OrderLifecycleStatus.FILLED)
+            # venue_fills was non-empty but none matched this order — treat
+            # as inconclusive (fills belong to a different order in the same
+            # market, or lack order_id and cannot be safely attributed).
+            self._audit(
+                "reconciliation_no_matching_fill",
+                {"order_id": order.id, "total_fills": len(venue_fills)},
+            )
 
         if venue_order and venue_order.status.lower() in {"live", "open", "pending"}:
             await self.orders_repo.mark_submitted_unconfirmed(order.id)
