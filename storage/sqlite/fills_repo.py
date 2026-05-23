@@ -42,9 +42,17 @@ class FillsRepo(AbstractFillRepository):
         }
 
         with create_connection(self.db_path) as conn:
+            # ``INSERT OR IGNORE`` against the ``idx_fills_unique`` index
+            # on (user_id, order_id, condition_id, side, fill_ts).
+            # Pre-fix: bare INSERT raised sqlite3.IntegrityError on a
+            # duplicate fill — the persist_execution_atomically path
+            # caught it but direct callers of FillsRepo did not. The
+            # two fill-writing paths now share consistent dedup
+            # semantics: returns 0 when the row already exists,
+            # lastrowid otherwise.
             cur = conn.execute(
                 """
-                INSERT INTO fills (
+                INSERT OR IGNORE INTO fills (
                     user_id, leader_id, order_id, condition_id, token_id, side,
                     size_tokens, price, fee, fill_ts, fill_json, created_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
@@ -64,6 +72,11 @@ class FillsRepo(AbstractFillRepository):
                 ),
             )
             conn.commit()
+            # rowcount==0 → duplicate; return 0 so callers can distinguish
+            # "newly persisted" from "already known". lastrowid is the
+            # auto-id of the row that just landed.
+            if cur.rowcount == 0:
+                return 0
             return int(cur.lastrowid)
 
     def list_fills_for_user(self, user_id: str) -> list[dict]:
