@@ -775,6 +775,30 @@ def _validate_semantics(cfg: AppConfig, errors: list[str]) -> None:
         errors.append("MARKET_DATA_WSS_CONNECTION_MAX_SILENCE_SECONDS must be > 0.")
 
 
+_RAW_SENSITIVE_KEYS: frozenset[str] = frozenset(
+    {
+        "PRIVATE_KEY",
+        "PRIVATE_KEY_FILE",
+        "CLOB_API_KEY",
+        "CLOB_SECRET",
+        "CLOB_PASSPHRASE",
+    }
+)
+
+
+def _strip_sensitive(env: Mapping[str, str]) -> dict[str, str]:
+    """Build a copy of *env* with credential keys removed.
+
+    AppConfig.raw is accessed by ``runtime_summary``, ``trade_pipeline``,
+    and ``executionService`` for structured logging / debug surfacing. Any
+    of those sites that logged ``config.raw`` wholesale used to leak the
+    private key. Filter at the boundary so the in-memory AppConfig.raw
+    physically does not carry the values, and ``raw.get("PRIVATE_KEY")``
+    returns None — typed accessors must be used for those keys instead.
+    """
+    return {k: v for k, v in env.items() if k not in _RAW_SENSITIVE_KEYS}
+
+
 def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
     """Build and validate an :class:`AppConfig` from *env* (defaults to ``os.environ``).
 
@@ -1116,7 +1140,7 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
             wss_connection_max_silence_seconds=p.float_("MARKET_DATA_WSS_CONNECTION_MAX_SILENCE_SECONDS", 20.0),
         ),
         dry_run=p.bool_("PAPER_TRADE_ONLY", False),
-        raw=dict(env),
+        raw=_strip_sensitive(env),
     )
 
     _validate_semantics(cfg, p.errors)
