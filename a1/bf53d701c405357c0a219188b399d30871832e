@@ -1,0 +1,21 @@
+tests/test_numeric_adapter.py
+  s_0634fd1b10250c::t_5c68c1b87d8796 87-112
+utils/numeric.py
+  s_0634fd1b10250c::t_4d582c6e305a16 66-72
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "a1bf53d701c405357c0a219188b399d30871832e",
+  "prompts": {},
+  "sessions": {
+    "s_0634fd1b10250c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2ea4030f-52b1-4f0c-a67d-6689f339d563",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
