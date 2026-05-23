@@ -1,0 +1,24 @@
+config/app_config.py
+  s_40eab60fc22f44::t_7f049aa6f6caa3 1143
+  s_40eab60fc22f44::t_cadb1e758a1367 778-801
+tests/test_app_config_raw_no_secrets.py
+  s_40eab60fc22f44::t_6661452d8ebfbd 1-63
+tests/test_config.py
+  s_40eab60fc22f44::t_35b65d35b4b779 110-112,114-119
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "d08d3dd555253868e61aab3a1f210a6ebe047437",
+  "prompts": {},
+  "sessions": {
+    "s_40eab60fc22f44": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "75ccb144-a9df-45dd-bd80-c6e6ed5d9e12",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
