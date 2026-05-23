@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import time
+from decimal import Decimal
 
 from config.db import get_db_path
 from storage.sqlite.connection import create_connection
@@ -131,12 +132,17 @@ class MarketStructureService:
                     ).fetchall()
                     if not rows:
                         continue
-                    total_tokens = 0.0
-                    weighted_cost = 0.0
+                    # Decimal accumulation. Pre-fix the cost-basis aggregation
+                    # ran on Python float; for many-row merges the IEEE-754
+                    # rounding error accumulated into the stored
+                    # avg_entry_price and corrupted PnL / re-entry decisions.
+                    # str() coercion preserves the on-disk Decimal exactly.
+                    total_tokens = Decimal("0")
+                    weighted_cost = Decimal("0")
                     leader_id = None
                     for row in rows:
-                        size = float(row["size_tokens"] or 0.0)
-                        entry = float(row["avg_entry_price"] or 0.0)
+                        size = Decimal(str(row["size_tokens"] or "0"))
+                        entry = Decimal(str(row["avg_entry_price"] or "0"))
                         total_tokens += size
                         weighted_cost += size * entry
                         leader_id = leader_id or row["leader_id"]
