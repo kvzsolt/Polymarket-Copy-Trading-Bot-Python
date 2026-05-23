@@ -193,7 +193,7 @@ class ExecutionCoordinator:
         clob_gateway: OrderSubmitter | None = None,
         reconciler: Reconciler | None = None,
         audit_logger: AuditLogger | None = None,
-        clock: Clock = DefaultClock(),
+        clock: Clock | None = None,
         reconciliation_service: Any | None = None,
         live_position_fetcher: Callable[[str, str], Awaitable[Decimal | None]] | None = None,
         execution_service: Any | None = None,
@@ -206,7 +206,10 @@ class ExecutionCoordinator:
         self.clob_gateway = clob_gateway
         self.reconciler = reconciler
         self.audit_logger = audit_logger
-        self.clock = clock
+        # Mutable default DefaultClock() removed — Python anti-pattern. If
+        # Clock ever gains state, the shared instance would silently leak
+        # across constructors.
+        self.clock = clock if clock is not None else DefaultClock()
         self.reconciliation_service = reconciliation_service
         self.live_position_fetcher = live_position_fetcher
         # Production wrapper deps. ``execute_intent`` (V2) does not use these.
