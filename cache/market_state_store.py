@@ -177,9 +177,16 @@ class MarketStateStore:
         # inserted entries are evicted first (insertion-order LRU). Active
         # tokens are unaffected because each WSS/REST update re-touches the
         # state via _ensure_state_locked which re-inserts at the back.
-        self._max_tokens = max_tokens if max_tokens is not None else _env_int(
-            "MARKET_STATE_MAX_TOKENS", 5000
-        )
+        if max_tokens is not None:
+            # PR #105 review: validate explicit overrides. max_tokens=0
+            # evicts every insert; negative values crash the eviction loop.
+            if not isinstance(max_tokens, int) or max_tokens <= 0:
+                raise ValueError(
+                    f"max_tokens must be a positive int, got {max_tokens!r}"
+                )
+            self._max_tokens = max_tokens
+        else:
+            self._max_tokens = _env_int("MARKET_STATE_MAX_TOKENS", 5000)
         self._states: OrderedDict[str, TokenMarketState] = OrderedDict()
         self._lock = RLock()
         self._last_ws_heartbeat_monotonic: float | None = None
