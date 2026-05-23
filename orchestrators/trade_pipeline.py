@@ -2325,42 +2325,38 @@ async def execute_trades(
                 fail_reason = exec_result.error or exec_result.status
                 live_synced_size: Decimal | None = None
                 if signal.side == "SELL" and "insufficient_balance" in str(fail_reason).lower():
-                    existing = context.positions_repo.get_position(
-                        context.user_id,
-                        signal.condition_id,
-                        token_id=signal.token_id,
-                    )
-                    previous_local_size = getattr(existing, "size_tokens", Decimal("0")) if existing else Decimal("0")
-                    
-                    live_synced_size = await _sync_sell_position_from_live_holdings(
-                        context,
-                        leader_id=leader_id,
+                    # CLAUDE.md non-negotiable: SELL drift reconciliation must
+                    # release the stranded SELL reservation in addition to
+                    # syncing the local position. Pre-fix this branch called
+                    # _sync_sell_position_from_live_holdings, which updates
+                    # the position table but does NOT release any active
+                    # reservation — leaving the SELL reservation "active"
+                    # forever and blocking all future SELLs on the scope.
+                    #
+                    # Route through ReconciliationService.reconcile_position_drift
+                    # which owns both the position update AND the
+                    # reservation release on its drift-deleted path.
+                    drift_reconciler = get_reconciliation_service(context)
+                    drift_result = await drift_reconciler.reconcile_position_drift(
+                        user_id=context.user_id,
                         condition_id=signal.condition_id,
                         token_id=signal.token_id,
+                        leader_id=leader_id,
+                        live_position_fetcher=lambda: _fetch_live_position_size(
+                            context, token_id=signal.token_id
+                        ),
+                        reservation_service=context.extra.get("reservation_service"),
                     )
-                    if live_synced_size is not None:
+                    live_synced_size = drift_result.get("live_size")
+                    if drift_result.get("reconciled"):
                         fail_reason = (
-                            f"{fail_reason} | local position synced to live holdings={float(live_synced_size):.4f}"
+                            f"{fail_reason} | drift_reconciled action={drift_result.get('action')} "
+                            f"live_size={live_synced_size}"
                         )
-                        audit = getattr(context, "audit_logger", None)
-                        if audit is not None:
-                            try:
-                                action = "deleted" if live_synced_size <= Decimal("1e-12") else "shrunk"
-                                audit.log_event(
-                                    "manual_position_drift_reconciled",
-                                    {
-                                        "user_id": context.user_id,
-                                        "leader_id": leader_id,
-                                        "condition_id": signal.condition_id,
-                                        "token_id": signal.token_id,
-                                        "previous_local_size": str(previous_local_size),
-                                        "live_size": str(live_synced_size),
-                                        "action": action,
-                                        "source": "trade_pipeline",
-                                    },
-                                )
-                            except Exception:
-                                pass
+                    elif drift_result.get("action") == "no_drift":
+                        fail_reason = f"{fail_reason} | no_local_drift_detected"
+                    # ReconciliationService emits the manual_position_drift_*
+                    # audit events itself; no second emit here.
                 if non_terminal_retry_exhausted:
                     fail_reason = (
                         f"{fail_reason} "

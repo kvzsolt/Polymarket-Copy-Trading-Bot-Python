@@ -1251,7 +1251,13 @@ async def test_sell_insufficient_balance_syncs_local_position_from_live_holdings
 
     assert len(results) == 1
     assert results[0].status == "failed"
-    assert "local position synced to live holdings=4.5180" in str(results[0].reason)
+    # Post-fix the drift reason is emitted by reconcile_position_drift, not
+    # the legacy _sync_sell_position_from_live_holdings helper. The new
+    # contract: ``drift_reconciled action=shrunk live_size=<live>``.
+    reason = str(results[0].reason)
+    assert "drift_reconciled" in reason
+    assert "action=shrunk" in reason
+    assert "live_size=4.518" in reason
 
     pos = ctx.positions_repo.get_position("user1", "cond1", token_id=FAKE_TOKEN_ID)
     assert pos is not None
