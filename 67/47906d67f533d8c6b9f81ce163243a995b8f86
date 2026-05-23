@@ -1,0 +1,22 @@
+services/intentRegistry.py
+  s_40eab60fc22f44::t_19066c6390d8f2 290-294
+tests/test_intent_registry_begin_deepcopy.py
+  s_40eab60fc22f44::t_11e0b09a5efff6 10-11,19-25,31,40,44-45,47,49
+  s_40eab60fc22f44::t_1171d3bb3b2d21 1-9,12-18,26-30,32-39,41-43,46,48,50-53
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "6747906d67f533d8c6b9f81ce163243a995b8f86",
+  "prompts": {},
+  "sessions": {
+    "s_40eab60fc22f44": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "75ccb144-a9df-45dd-bd80-c6e6ed5d9e12",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
