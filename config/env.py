@@ -440,6 +440,12 @@ def _build_env_snapshot() -> dict[str, object]:
 
     private_key_file_configured = _configured_if_valid('PRIVATE_KEY_FILE')
     private_key_configured = private_key_file_configured or _configured_if_valid('PRIVATE_KEY')
+    # CLOB credentials are equally sensitive as PRIVATE_KEY — they sign
+    # API requests. Mirror the REDACTED treatment so an ENV-dump
+    # cannot leak them.
+    clob_api_key_configured = bool(os.getenv('CLOB_API_KEY'))
+    clob_secret_configured = bool(os.getenv('CLOB_SECRET'))
+    clob_passphrase_configured = bool(os.getenv('CLOB_PASSPHRASE'))
 
     return {
     # --- Wallet / auth ---
@@ -453,7 +459,12 @@ def _build_env_snapshot() -> dict[str, object]:
 
     # --- CLOB ---
     'CLOB_HTTP_URL': os.getenv('CLOB_HTTP_URL', 'https://clob.polymarket.com/'),
-    'CLOB_API_KEY': os.getenv('CLOB_API_KEY', ''),
+    # CLOB credentials redacted in the in-memory snapshot — retrieve via
+    # os.getenv() at the actual call site (signing path) instead of from
+    # the cached ENV dict.
+    'CLOB_API_KEY': '***REDACTED***' if clob_api_key_configured else '',
+    'CLOB_SECRET': '***REDACTED***' if clob_secret_configured else '',
+    'CLOB_PASSPHRASE': '***REDACTED***' if clob_passphrase_configured else '',
 
     # --- Polling ---
     'FETCH_INTERVAL': _float('FETCH_INTERVAL', '0.25'),

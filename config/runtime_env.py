@@ -11,7 +11,10 @@ _NON_SENSITIVE_ENV_PATH = _REPO_ROOT / "config" / "runtime.env"
 _LOCAL_NON_SENSITIVE_ENV_PATH = _REPO_ROOT / "config" / "runtime.local.env"
 
 # Keys that are expected to live in secrets.env and should override the
-# public/local runtime lanes when present.
+# public/local runtime lanes when present. Only true credentials —
+# FUNDER_ADDRESS is a public on-chain address and was removed from
+# this set so accidental placement in secrets.env does not silently
+# override the per-user runtime.local.env wallet config without warning.
 _SECRETS_OVERRIDE_KEYS = {
     "RPC_URL",
     "CLOB_API_KEY",
@@ -19,7 +22,6 @@ _SECRETS_OVERRIDE_KEYS = {
     "CLOB_PASSPHRASE",
     "PRIVATE_KEY",
     "PRIVATE_KEY_FILE",
-    "FUNDER_ADDRESS",
 }
 
 
