@@ -63,10 +63,13 @@ def quantize_and_convert_to_float(
     if tick <= 0:
         raise ValueError(f"tick_size must be positive, got {tick}")
 
-    # Quantize to nearest tick using ROUND_HALF_UP
-    tick_inverse = (Decimal("1") / tick).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
-    scaled = (value * tick_inverse).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
-    rounded = scaled / tick_inverse
+    # Quantize to nearest tick using ROUND_HALF_UP.
+    # Divide directly by tick so the algorithm is correct for any positive
+    # tick (not only powers of 10): the previous form derived an integer
+    # ``tick_inverse = round(1/tick)`` which silently broke for ticks where
+    # 1/tick is not an integer (e.g. "0.07", "0.15").
+    multiples = (value / tick).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+    rounded = multiples * tick
 
     delta = abs(value - rounded)
     if delta > epsilon:

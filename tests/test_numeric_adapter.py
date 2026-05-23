@@ -84,3 +84,29 @@ class TestIdempotentQuantization:
         # Feeding the result back in must not drift.
         second = quantize_and_convert_to_float(Decimal(str(first)), "0.01")
         assert first == second
+
+
+class TestArbitraryTickSize:
+    """Tick math must be correct for any positive tick, not only powers of 10.
+
+    The previous algorithm derived ``tick_inverse = round(1/tick)`` which
+    silently broke when ``1/tick`` was not an integer (e.g. ``"0.07"`` → 14
+    instead of 14.2857…). Audit follow-up (PR #105 review).
+    """
+
+    @pytest.mark.parametrize(
+        "value, tick, expected",
+        [
+            # 0.05 tick — power-of-10 numerator but not 10^n; on-grid passes.
+            ("0.55", "0.05", 0.55),
+            ("0.5", "0.05", 0.50),
+            # 0.25 tick — fractional tick that previously rejected on-grid
+            # values because tick_inverse rounded 4.0 → 4 (lucky), but
+            # higher precision multiples drifted.
+            ("0.75", "0.25", 0.75),
+            ("1.50", "0.25", 1.50),
+        ],
+    )
+    def test_on_grid_non_power_of_ten_tick_passes(self, value, tick, expected):
+        out = quantize_and_convert_to_float(Decimal(value), tick)
+        assert out == pytest.approx(expected)
