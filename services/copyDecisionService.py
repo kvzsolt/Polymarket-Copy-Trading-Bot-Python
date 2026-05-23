@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
 from dataclasses import dataclass, field
 from decimal import Decimal, ROUND_CEILING
 from typing import Any, TYPE_CHECKING
@@ -96,21 +95,12 @@ class CopyDecisionService:
 
         self._decision_gate_enabled = config.execution.enable_copy_decision_gate
         self._min_decision_score = config.leader.copy_decision_min_score
-        self._slippage_ratio = config.execution.slippage_tolerance / 100.0
-
-    @staticmethod
-    def _ceil(value: float, decimals: int) -> float:
-        if value <= 0:
-            return 0.0
-        factor = 10 ** max(decimals, 0)
-        return math.ceil(value * factor) / factor
-
-    @staticmethod
-    def _floor(value: float, decimals: int) -> float:
-        if value <= 0:
-            return 0.0
-        factor = 10 ** max(decimals, 0)
-        return math.floor(value * factor) / factor
+        # Round-trip through ``Decimal(str(...))`` so a Decimal-typed config
+        # value never enters a float division (the previous ``/ 100.0`` cast
+        # silently demoted Decimal back to float and burned precision).
+        # Kept as Decimal so downstream size_buy_order receives it without
+        # another lossy conversion.
+        self._slippage_ratio = Decimal(str(config.execution.slippage_tolerance)) / Decimal("100")
 
     def decide_buy(
         self,
