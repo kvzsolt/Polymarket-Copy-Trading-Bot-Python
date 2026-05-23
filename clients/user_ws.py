@@ -187,8 +187,12 @@ class UserWebSocket:
             self._fire_lifecycle_callback(self._on_authenticated)
 
     async def _heartbeat(self, ws: Any) -> None:
+        # Mirror MarketWS: send PING first, then sleep, then check for
+        # missed pong. Pre-fix the order was sleep-then-send, which left
+        # _last_ping_monotonic unset for the first heartbeat_interval
+        # seconds; during that window _is_pong_missed always returned
+        # False and a silent-server scenario went undetected.
         while self._running:
-            await asyncio.sleep(self._heartbeat_interval)
             try:
                 await ws.send("PING")
                 self._last_ping_monotonic = time.monotonic()
@@ -198,6 +202,8 @@ class UserWebSocket:
                 with contextlib.suppress(Exception):
                     await ws.close()
                 return
+
+            await asyncio.sleep(self._heartbeat_interval)
 
             # Missed-pong detector: if a PING was sent and no inbound frame
             # arrived within the pong-timeout window, close the socket and
@@ -213,13 +219,17 @@ class UserWebSocket:
                 return
 
     def _is_pong_missed(self) -> bool:
+        # Pre-fix the formula was ``last_ping - last_pong`` which goes
+        # negative whenever an inbound frame arrives between two PING
+        # sends. Correct formula: ``now - last_alive`` — any inbound
+        # activity within the timeout keeps the connection healthy.
         if self._last_ping_monotonic is None:
             return False
         last_alive = self._last_pong_monotonic
         if last_alive is None:
             elapsed = time.monotonic() - self._last_ping_monotonic
         else:
-            elapsed = self._last_ping_monotonic - last_alive
+            elapsed = time.monotonic() - last_alive
         return elapsed > self._pong_timeout_seconds
 
     async def _message_loop(self, ws: Any) -> None:

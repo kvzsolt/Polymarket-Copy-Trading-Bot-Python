@@ -262,15 +262,23 @@ class TestHeartbeat:
         sock.close.assert_awaited()
 
     def test_pong_detector_unit(self, cache: MarketStateStore) -> None:
-        """Direct unit check on the pong-missed predicate."""
+        """Direct unit check on the pong-missed predicate.
+
+        Semantics (post-fix): elapsed = now - last_alive. Pre-fix used
+        last_ping - last_pong which silently went negative on inbound
+        between pings — the tests below were locked to that wrong
+        formula; updated to anchor on time.monotonic() like the real
+        code now does.
+        """
         ws_client = UserWebSocket(cache, pong_timeout_seconds=10.0)
         assert ws_client._is_pong_missed() is False  # no ping yet
 
-        ws_client._last_ping_monotonic = 200.0
-        ws_client._last_pong_monotonic = 100.0  # 100s gap
+        now = time.monotonic()
+        ws_client._last_ping_monotonic = now - 100.0
+        ws_client._last_pong_monotonic = now - 100.0  # 100s stale → MISSED
         assert ws_client._is_pong_missed() is True
 
-        ws_client._last_pong_monotonic = 195.0  # 5s gap — fresh
+        ws_client._last_pong_monotonic = now - 5.0  # 5s ago — fresh
         assert ws_client._is_pong_missed() is False
 
         # Fallback: no pong ever, but last ping aged past timeout.
