@@ -1,0 +1,21 @@
+services/pnlTracker.py
+  s_40eab60fc22f44::t_f13531c43458c5 1-8,15,17,23-42,48-51,56-57,62,68-71,76-78,83,88-90,96,102-106,112,117-121,128,143-144,147,150-159,166-174,180-187
+tests/test_pnl_tracker_decimal.py
+  s_40eab60fc22f44::t_9f4d98e2d7019f 1-99
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "024836fe677bcb1b20490cef79f61c45a87d3c3f",
+  "prompts": {},
+  "sessions": {
+    "s_40eab60fc22f44": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "75ccb144-a9df-45dd-bd80-c6e6ed5d9e12",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
