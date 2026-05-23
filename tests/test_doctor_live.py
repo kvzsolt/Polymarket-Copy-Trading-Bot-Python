@@ -9,6 +9,8 @@ from unittest.mock import patch
 import pytest
 
 import config.app_config as app_config_mod
+from storage.sqlite.connection import create_connection
+from storage.sqlite.migrations import apply_migrations
 
 
 _BASE_LIVE_ENV = {
@@ -26,6 +28,20 @@ _BASE_LIVE_ENV = {
 }
 
 
+def _make_migrated_db(tmp_path: Path) -> Path:
+    """Create a per-test SQLite file with the production schema applied.
+
+    Required because the doctor's ``db_schema_ok`` check probes the live DB
+    for every required table; a fresh CI runner has no ``data/bot_state.db``,
+    so without this the check blocks every live test (audit #105).
+    """
+    db_path = tmp_path / "doctor.db"
+    with create_connection(str(db_path)) as conn:
+        apply_migrations(conn)
+        conn.commit()
+    return db_path
+
+
 def _patch_env(env_overrides: dict[str, str] | None = None):
     env = {**_BASE_LIVE_ENV, **(env_overrides or {})}
 
@@ -36,8 +52,20 @@ def _patch_env(env_overrides: dict[str, str] | None = None):
     return env, _load
 
 
-async def _run_doctor(mode: str, env_overrides: dict[str, str] | None = None, *, tmp_log: Path | None = None):
-    env, loader = _patch_env(env_overrides)
+async def _run_doctor(
+    mode: str,
+    env_overrides: dict[str, str] | None = None,
+    *,
+    tmp_log: Path | None = None,
+    tmp_path: Path | None = None,
+):
+    overrides = dict(env_overrides or {})
+    # Always point BOT_STATE_DB at a migrated tmp DB so db_schema_ok is not
+    # blocked by the doctor's required-table probe.
+    if tmp_path is not None and "BOT_STATE_DB" not in overrides:
+        db_path = _make_migrated_db(tmp_path)
+        overrides["BOT_STATE_DB"] = str(db_path)
+    env, loader = _patch_env(overrides)
     from bot_cli.commands import doctor as doctor_mod
     import orchestrators.startup_health as startup_health_mod
     import services.compliance as compliance_mod
@@ -80,7 +108,7 @@ def _checks_by_name(result: dict) -> dict[str, dict]:
 
 @pytest.mark.asyncio
 async def test_doctor_paper_returns_structured_list(tmp_path):
-    out = await _run_doctor("paper", tmp_log=tmp_path)
+    out = await _run_doctor("paper", tmp_log=tmp_path, tmp_path=tmp_path)
     assert isinstance(out["checks"], list)
     assert out["mode"] == "paper"
     for c in out["checks"]:
@@ -89,7 +117,9 @@ async def test_doctor_paper_returns_structured_list(tmp_path):
 
 @pytest.mark.asyncio
 async def test_doctor_live_blocked_when_clob_v2_ready_missing(tmp_path):
-    out = await _run_doctor("live", {"CLOB_V2_READY": "false"}, tmp_log=tmp_path)
+    out = await _run_doctor(
+        "live", {"CLOB_V2_READY": "false"}, tmp_log=tmp_path, tmp_path=tmp_path
+    )
     assert out["status"] == "blocked"
     rec = _checks_by_name(out)["clob_v2_ready"]
     assert rec["status"] == "blocked"
@@ -98,7 +128,9 @@ async def test_doctor_live_blocked_when_clob_v2_ready_missing(tmp_path):
 
 @pytest.mark.asyncio
 async def test_doctor_live_blocked_when_paper_trade_only_true(tmp_path):
-    out = await _run_doctor("live", {"PAPER_TRADE_ONLY": "true"}, tmp_log=tmp_path)
+    out = await _run_doctor(
+        "live", {"PAPER_TRADE_ONLY": "true"}, tmp_log=tmp_path, tmp_path=tmp_path
+    )
     rec = _checks_by_name(out)["paper_trade_only_false"]
     assert rec["status"] == "blocked"
     assert out["status"] == "blocked"
@@ -106,7 +138,9 @@ async def test_doctor_live_blocked_when_paper_trade_only_true(tmp_path):
 
 @pytest.mark.asyncio
 async def test_doctor_live_blocked_when_kill_switch_on(tmp_path):
-    out = await _run_doctor("live", {"KILL_SWITCH": "true"}, tmp_log=tmp_path)
+    out = await _run_doctor(
+        "live", {"KILL_SWITCH": "true"}, tmp_log=tmp_path, tmp_path=tmp_path
+    )
     rec = _checks_by_name(out)["kill_switch_off"]
     assert rec["status"] == "blocked"
     assert out["status"] == "blocked"
@@ -114,7 +148,7 @@ async def test_doctor_live_blocked_when_kill_switch_on(tmp_path):
 
 @pytest.mark.asyncio
 async def test_doctor_live_logs_path_writable(tmp_path):
-    out = await _run_doctor("live", tmp_log=tmp_path)
+    out = await _run_doctor("live", tmp_log=tmp_path, tmp_path=tmp_path)
     rec = _checks_by_name(out)["log_directory_writable"]
     assert rec["status"] == "ok"
     rec_j = _checks_by_name(out)["jsonl_log_writable"]
@@ -127,7 +161,7 @@ async def test_doctor_live_logs_path_unwritable_blocks(tmp_path, monkeypatch):
     bad.mkdir()
     bad.chmod(0o400)
     try:
-        out = await _run_doctor("live", tmp_log=bad)
+        out = await _run_doctor("live", tmp_log=bad, tmp_path=tmp_path)
     finally:
         bad.chmod(0o700)
     rec = _checks_by_name(out)["log_directory_writable"]
@@ -137,7 +171,7 @@ async def test_doctor_live_logs_path_unwritable_blocks(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_doctor_live_returns_structured_checks_list(tmp_path):
-    out = await _run_doctor("live", tmp_log=tmp_path)
+    out = await _run_doctor("live", tmp_log=tmp_path, tmp_path=tmp_path)
     assert isinstance(out["checks"], list)
     for c in out["checks"]:
         assert isinstance(c, dict)
@@ -147,7 +181,7 @@ async def test_doctor_live_returns_structured_checks_list(tmp_path):
 
 @pytest.mark.asyncio
 async def test_doctor_live_passes_when_all_subsystems_wired(tmp_path):
-    out = await _run_doctor("live", tmp_log=tmp_path)
+    out = await _run_doctor("live", tmp_log=tmp_path, tmp_path=tmp_path)
     # status may be ok or warning (e.g. metrics disabled); should NOT be blocked
     assert out["status"] in {"ok", "warning"}, [c for c in out["checks"] if c["status"] == "blocked"]
 
