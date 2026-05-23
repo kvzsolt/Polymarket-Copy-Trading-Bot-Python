@@ -1,0 +1,25 @@
+tests/test_risk_blocks_repo_toctou.py
+  s_40eab60fc22f44::t_ba3e55b7585608 1-112
+tests/test_risk_blocks_repo_operator_clear_persists.py
+  s_40eab60fc22f44::t_277b4a595e3fc6 1-96
+storage/sqlite/risk_blocks_repo.py
+  s_40eab60fc22f44::t_41e8fdf92a91d5 111-136,139-163
+  s_40eab60fc22f44::t_d0d7e49b73ba6d 47-60
+  s_40eab60fc22f44::t_98fefb33bd1488 7-14
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "d5eb747bc6adfccc5d7ff934e2c671cb9f5f7dcd",
+  "prompts": {},
+  "sessions": {
+    "s_40eab60fc22f44": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "75ccb144-a9df-45dd-bd80-c6e6ed5d9e12",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
