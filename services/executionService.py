@@ -153,6 +153,28 @@ def _idempotency_key(req: ExecutionRequest) -> str:
     return sha256(payload.encode("utf-8")).hexdigest()
 
 
+def _derive_intent_id_from_request(req: ExecutionRequest) -> str:
+    """Stable hash of the request shape, used as intent_id when signal_id is absent.
+
+    Two retries of the same logical request produce the same hash and collide
+    on the idempotency table, blocking duplicate submission. Distinct trade
+    intents must carry distinct ``signal_id`` (the canonical disambiguator).
+    """
+    payload = "|".join(
+        [
+            req.user_id,
+            req.leader_id or "",
+            getattr(req, "condition_id", "") or "",
+            req.token_id,
+            req.side.upper(),
+            str(req.amount),
+            str(req.max_slippage_bps),
+            req.reason or "",
+        ]
+    )
+    return sha256(payload.encode("utf-8")).hexdigest()
+
+
 def _effective_idempotency_key(
     *,
     user: str,
@@ -578,6 +600,19 @@ class ExecutionService:
         # Effective idempotency key computed after sizing/rounding so
         # duplicate suppression represents the final executable order
         # (condition_id, token_id, effective worst price, tick_size, side).
+        # Issue #94 + PR #105 review: intent_id must be deterministic per
+        # request shape. A per-call uuid4() broke retry idempotency — a
+        # network retry generated a fresh key, missed the dedup row, and
+        # could POST a duplicate signed order. Derive a stable hash from
+        # the request fields when signal_id is absent so the second
+        # attempt collides with the first.
+        resolved_intent_id = req.signal_id or ""
+        if not resolved_intent_id:
+            resolved_intent_id = _derive_intent_id_from_request(req)
+            logger.debug(
+                "execute: signal_id missing — derived deterministic intent_id=%s",
+                resolved_intent_id,
+            )
         idem_key = _effective_idempotency_key(
             user=req.user_id,
             condition_id=getattr(req, "condition_id", None),
@@ -586,7 +621,7 @@ class ExecutionService:
             effective_size=req.amount,
             effective_price=worst_price,
             tick_size=tick_size,
-            intent_id=req.signal_id or "",
+            intent_id=resolved_intent_id,
             policy_version=getattr(self._config, "policy_version", "") or "",
         )
 
@@ -686,8 +721,29 @@ class ExecutionService:
                 idem_key, req.user_id, req.leader_id, request_doc
             )
         else:
-            lock_acquired = existing is None or not _is_retry_blocking_existing(
-                existing, config=self._config
+            # Non-atomic locking is unsafe for live trading: two concurrent
+            # tasks can both observe no blocking row and both submit signed
+            # orders, causing duplicate submissions and potential double-exposure.
+            # Fail closed to prevent that silent data-corruption path (issue #95).
+            logger.error(
+                "Order repository lacks atomic submission lock — failing closed "
+                "to prevent duplicate submissions | idem_key=%s user_id=%s leader_id=%s",
+                idem_key,
+                req.user_id,
+                req.leader_id,
+            )
+            return ExecutionResult(
+                accepted=False,
+                order_id=None,
+                status="atomic_lock_unavailable",
+                requested_amount=req.amount,
+                filled_amount=Decimal("0"),
+                avg_price=None,
+                fees_paid=Decimal("0"),
+                error=(
+                    "order repository does not support atomic submission locking; "
+                    "cannot safely submit orders without it"
+                ),
             )
 
         if not lock_acquired:

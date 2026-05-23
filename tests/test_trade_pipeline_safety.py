@@ -1474,3 +1474,29 @@ async def test_full_flow_persisted_token_id(tmp_path):
     assert pos is not None
     assert pos.token_id == FAKE_TOKEN_ID
     assert pos.token_id != HEX_ASSET
+
+
+@pytest.mark.asyncio
+async def test_immediate_fill_buys_record_daily_spend_once_each(tmp_path):
+    """N1 regression — two immediately-filled BUYs must each consume the daily
+    ledger exactly once. The old double-``record_buy`` bug counted each fill
+    twice, so the daily cap read 2x actual spend on the dominant fast-fill
+    path. Each fill is 10 tokens * 0.50 = 5.0 USDC → two BUYs must total 10,
+    never 20."""
+    db_path = _init_db(tmp_path)
+    exec_svc = AsyncMock()
+    exec_svc.execute.side_effect = [
+        _exec_result(accepted=True, filled=Decimal("10"), status="filled", order_id="ord-a"),
+        _exec_result(accepted=True, filled=Decimal("10"), status="filled", order_id="ord-b"),
+    ]
+    ctx = _make_context(db_path)
+    ctx.execution_coordinator = _PassThroughCoordinator(exec_svc)
+    ctx.execution_service = exec_svc
+
+    assert ctx.balance_regime is not None
+
+    await execute_trades(ctx, "leader1", [_signal(tx_hash="0xfill-a")], time.time())
+    await execute_trades(ctx, "leader1", [_signal(tx_hash="0xfill-b")], time.time())
+
+    # 2 * (10 tokens * 0.50) = 10.0 ; the double-count regression would be 20.0
+    assert ctx.balance_regime.daily_spent_usdc == Decimal("10.00")

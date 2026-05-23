@@ -300,6 +300,7 @@ async def test_perform_startup_health_check_warns_after_self_healing(monkeypatch
         user_id="u1",
         db_path=db_path,
         positions_repo=positions_repo,
+        orders_repo=orders_repo,
         live_positions=[],
         available_cash=3.25,
         database_ok=True,
@@ -317,4 +318,43 @@ async def test_perform_startup_health_check_warns_after_self_healing(monkeypatch
     assert report.order_cleanup.normalized_pending == 1
     assert report.order_cleanup.normalized_total == 1
     assert report.order_cleanup.purged_failed == 1
+
+
+@pytest.mark.asyncio
+async def test_perform_startup_health_check_fails_when_orders_repo_missing(
+    monkeypatch, db_path: str
+) -> None:
+    """PR #105 review: ``orders_repo=None`` must mark the run unhealthy.
+
+    The atomic-submission lock check is the gate against duplicate orders in
+    live mode. If the caller forgot to wire ``orders_repo`` through, the
+    previous behavior was a silent warning — which left the live report
+    looking healthy with no atomic-lock verification. Audit it as an error.
+    """
+    positions_repo = PositionsRepo(db_path)
+
+    async def _ok_rpc(_rpc_url: str):
+        return StartupHealthCheckItem(status="ok", message="RPC endpoint responding")
+
+    async def _ok_api():
+        return StartupHealthCheckItem(status="ok", message="Polymarket API responding")
+
+    monkeypatch.setattr("orchestrators.startup_health._check_rpc", _ok_rpc)
+    monkeypatch.setattr("orchestrators.startup_health._check_polymarket_api", _ok_api)
+
+    report = await perform_startup_health_check(
+        wallet="0xabc",
+        user_id="u1",
+        db_path=db_path,
+        positions_repo=positions_repo,
+        # orders_repo intentionally omitted to exercise the fail-closed gate.
+        live_positions=[],
+        available_cash=100.0,
+        database_ok=True,
+        rpc_url="https://polygon-rpc.example.com",
+    )
+
+    assert report.checks["atomicLock"].status == "error"
+    assert report.status == "error"
+    assert report.healthy is False
     assert positions_repo.get_position("u1", "cond-stale", token_id="22222222222222222222") is None

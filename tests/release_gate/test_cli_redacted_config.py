@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import json
 from types import SimpleNamespace
+from unittest.mock import patch
 
+import config.app_config as app_config_mod
 from bot_cli.commands.config import _config_to_dict, _redact_value, run_config
 from config.app_config import load_config
 
@@ -28,6 +30,14 @@ def _env() -> dict[str, str]:
     }
 
 
+def _load_cfg():
+    """Load AppConfig while bypassing the runtime-version guard so the test
+    runs on any Python the harness happens to provide (dev may be 3.13;
+    CI is 3.11/3.12). The redaction contract is version-independent."""
+    with patch.object(app_config_mod, "_runtime_python_supported", return_value=True):
+        return app_config_mod.load_config(_env())
+
+
 def test_redact_value_masks_private_key() -> None:
     assert _redact_value("PRIVATE_KEY", _SECRET_KEY) == "***REDACTED***"
     assert _redact_value("private_key", _SECRET_KEY) == "***REDACTED***"
@@ -36,7 +46,7 @@ def test_redact_value_masks_private_key() -> None:
 
 
 def test_config_to_dict_redacts_secrets() -> None:
-    cfg = load_config(_env())
+    cfg = _load_cfg()
     out = _config_to_dict(cfg, redacted=True)
     rendered = json.dumps(out)
     assert _SECRET_KEY not in rendered
@@ -44,7 +54,7 @@ def test_config_to_dict_redacts_secrets() -> None:
 
 
 def test_run_config_print_does_not_leak_secret(capsys, monkeypatch) -> None:
-    cfg = load_config(_env())
+    cfg = _load_cfg()
 
     monkeypatch.setattr(
         "bot_cli.commands.config.load_config",

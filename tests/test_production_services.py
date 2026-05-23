@@ -124,6 +124,15 @@ class _Repo:
     def mark_fill(self, *, order_id, fill):
         self.fills[order_id] = fill
 
+    # Atomic submission lock stubs — issue #95: ExecutionService now requires
+    # ``try_acquire_submission_lock`` or fails closed.  These in-memory stubs
+    # are adequate for unit tests that don't exercise concurrent submissions.
+    def try_acquire_submission_lock(self, key, user_id, leader_id, request_payload):
+        return True  # always succeed in tests
+
+    def is_submission_locked(self, key):
+        return False
+
 
 @dataclass
 class _FeeSvc:
@@ -267,10 +276,11 @@ class TestExecutionService:
 
         res = await svc.execute(req)
 
-        # The executable order guard was removed; tiny orders now go through
-        # to execution and fail through the normal mechanism
-        assert res.accepted is False
-        assert res.error is not None
+        # The executable order guard was removed; tiny orders go through to
+        # execution. The clob mock lacks create_market_order → AttributeError
+        # → classified as unknown → ambiguous (issue #100). Reconciliation
+        # owns the resolution; the duplicate-lock stays.
+        assert res.status == "submitted_unconfirmed"
 
     @pytest.mark.asyncio
     async def test_executable_order_guard_can_be_disabled_for_small_buy(self):
