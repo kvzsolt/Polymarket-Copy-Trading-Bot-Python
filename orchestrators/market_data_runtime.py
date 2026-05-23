@@ -343,8 +343,16 @@ class MarketDataRuntime:
                             neg_risk=neg_risk,
                             source="rest_bootstrap",
                         )
-                except Exception:
-                    pass  # tick missing → MDS rejects; acceptable
+                except Exception as exc:
+                    # Tick missing → MDS rejects on the read side; the bot
+                    # still fails closed via the freshness gate. Log so
+                    # operators see chronic tick-fetch failures (e.g. SDK
+                    # auth issue, network partition) instead of silent drop.
+                    logger.debug(
+                        "market_data_bootstrap_tick_fetch_failed | token_id=%s error=%r",
+                        token_id,
+                        exc,
+                    )
 
         prefetch_elapsed_ms = (time.monotonic() - t_start) * 1000
 
