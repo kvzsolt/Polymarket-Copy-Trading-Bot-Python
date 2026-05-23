@@ -232,7 +232,8 @@ async def test_discovery_loop_refresh_exception_resilience():
 # ---------------------------------------------------------------------------
 def test_get_leaders_by_tier():
     """Verify get_leaders_by_tier returns correct wallets for a given tier."""
-    import tempfile, os
+    import tempfile
+    import os
     from storage.sqlite.leaders_repo import LeadersRepo
     from storage.sqlite.migrations import apply_migrations as run_migrations
     from storage.sqlite.connection import create_connection

@@ -55,7 +55,6 @@ def reservation_service(reservations_repo, positions_repo, mock_clock):
         clock=mock_clock,
         ttl_seconds=60,
     )
-    import asyncio
     async def fake_reconciler(res_id: str) -> bool:
         return True
     svc.reconciler_callback = fake_reconciler
