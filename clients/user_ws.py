@@ -446,10 +446,13 @@ def _emit_lifecycle_for_event(event: dict[str, Any], *, token_id: str | None) ->
 
 
 def _token_id_from_event(event: dict[str, Any]) -> str | None:
+    # ``event["market"]`` is a CONDITION id in Polymarket's protocol, not
+    # a token / asset id. Pre-fix the fallback chain accepted it and the
+    # cache eviction at the call sites would silently miss (wrong key) —
+    # stale book/quote data could survive own-fill events. Drop it.
     raw = (
         event.get("asset_id")
         or event.get("asset")
-        or event.get("market")
         or event.get("token_id")
         or event.get("tokenId")
     )
