@@ -1,0 +1,19 @@
+scripts/rollback.sh
+  s_0634fd1b10250c::t_6d5444a3cef644 42-52,66,68,73-74,80,83
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "23d2d192ad9cd3a1cc6297eaad9efc66c47f9cde",
+  "prompts": {},
+  "sessions": {
+    "s_0634fd1b10250c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2ea4030f-52b1-4f0c-a67d-6689f339d563",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
