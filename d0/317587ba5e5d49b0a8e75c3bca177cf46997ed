@@ -1,0 +1,21 @@
+tests/test_coordinator_v2_fail_closed_no_coordinator.py
+  s_40eab60fc22f44::t_ff41cd0cdbea33 1-81
+services/execution/coordinator.py
+  s_40eab60fc22f44::t_7530dbf9e51026 231-241
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "d0317587ba5e5d49b0a8e75c3bca177cf46997ed",
+  "prompts": {},
+  "sessions": {
+    "s_40eab60fc22f44": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "75ccb144-a9df-45dd-bd80-c6e6ed5d9e12",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
