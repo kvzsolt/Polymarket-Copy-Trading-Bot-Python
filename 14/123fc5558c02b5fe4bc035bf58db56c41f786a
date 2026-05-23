@@ -1,0 +1,19 @@
+storage/sqlite/cursors_repo.py
+  s_40eab60fc22f44::t_944124cba8d13a 46-64,66-74,76-97
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "14123fc5558c02b5fe4bc035bf58db56c41f786a",
+  "prompts": {},
+  "sessions": {
+    "s_40eab60fc22f44": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "75ccb144-a9df-45dd-bd80-c6e6ed5d9e12",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
