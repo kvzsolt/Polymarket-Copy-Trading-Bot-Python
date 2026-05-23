@@ -663,20 +663,22 @@ class TestRetryBlocking:
 
 
 # ---------------------------------------------------------------------------
-# Issue #94 — UUID intent_id fallback prevents idempotency collision
-# when signal_id is missing (two distinct signals with identical effective
-# parameters used to collapse into one key, silently suppressing the second).
+# Issue #94 + PR #105 review — when signal_id is absent, intent_id MUST be
+# derived deterministically from the request shape. A per-call uuid4()
+# (the previous fix) broke retry safety: a network retry generated a fresh
+# key, missed the dedup row, and could POST a duplicate signed order.
+# The deterministic-hash form keeps retries safe; callers that need to
+# distinguish genuinely-different intents must supply their own signal_id.
 # ---------------------------------------------------------------------------
 
 
 class TestBlankSignalIdFallback:
     @pytest.mark.asyncio
-    async def test_two_blank_signal_id_requests_both_submit(self, tmp_path):
-        """Without the UUID fallback, two ExecutionRequest with signal_id=None
-        and identical effective params would produce the same effective
-        idempotency key — the second would be reported as ``duplicate_ignored``
-        and never reach the venue. With the fix, each call generates its own
-        intent_id so both submit."""
+    async def test_retry_with_blank_signal_id_collapses_to_one_submission(self, tmp_path):
+        """A retry of the same request shape (signal_id absent) must collide on
+        the idempotency table — i.e. the second attempt is duplicate-ignored.
+        Otherwise a network-level retry could submit a duplicate signed order
+        because the venue saw the first POST but the caller did not."""
         db_path = tmp_path / "state.db"
         _prepare_db(db_path)
         repo = OrderRepository(str(db_path))
@@ -694,16 +696,13 @@ class TestBlankSignalIdFallback:
         result2 = await svc.execute(req2)
 
         assert result1.accepted is True
-        assert result2.accepted is True
-        assert result1.status != "duplicate_ignored"
-        assert result2.status != "duplicate_ignored"
-        # Both must have reached the venue — collapse would yield 1.
-        assert clob.post_signed_order.await_count == 2
+        assert result2.status == "duplicate_ignored"
+        assert clob.post_signed_order.await_count == 1
 
     @pytest.mark.asyncio
-    async def test_empty_string_signal_id_also_treated_as_blank(self, tmp_path):
-        """``req.signal_id or ""`` covers both ``None`` and ``""``; both
-        must trigger the UUID fallback."""
+    async def test_empty_string_signal_id_also_retry_safe(self, tmp_path):
+        """``signal_id == ""`` and ``signal_id is None`` must both route through
+        the deterministic-hash branch — neither generates a fresh per-call id."""
         db_path = tmp_path / "state.db"
         _prepare_db(db_path)
         repo = OrderRepository(str(db_path))
@@ -718,12 +717,34 @@ class TestBlankSignalIdFallback:
         req2 = _make_req(signal_id="")
         await svc.execute(req1)
         await svc.execute(req2)
+        # Retry-safe: second call collides on dedup, venue saw only one POST.
+        assert clob.post_signed_order.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_distinct_intents_with_blank_signal_id_must_set_signal_id(self, tmp_path):
+        """When a caller genuinely needs to submit two distinct trade intents
+        with the same shape in the same window, it must disambiguate via
+        ``signal_id``. With distinct signal_ids both reach the venue."""
+        db_path = tmp_path / "state.db"
+        _prepare_db(db_path)
+        repo = OrderRepository(str(db_path))
+        clob = _SimpleClob()
+        svc = ExecutionService(
+            clob, _FeeSvc(), repo,
+            config=_make_exec_config(),
+            market_data_service=_make_mds(),
+        )
+
+        req1 = _make_req(signal_id="sig-A")
+        req2 = _make_req(signal_id="sig-B")
+        await svc.execute(req1)
+        await svc.execute(req2)
         assert clob.post_signed_order.await_count == 2
 
     @pytest.mark.asyncio
     async def test_explicit_signal_id_still_collapses_duplicates(self, tmp_path):
-        """The UUID fallback must NOT degrade intentional dedupe: when an
-        explicit signal_id is provided, two identical-key requests still
+        """The deterministic branch must NOT degrade intentional dedupe: when
+        an explicit signal_id is provided, two identical-key requests still
         collapse (existing duplicate-ignored behavior unchanged)."""
         db_path = tmp_path / "state.db"
         _prepare_db(db_path)
