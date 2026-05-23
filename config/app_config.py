@@ -297,6 +297,11 @@ class RiskConfig:
     staged_tp_fractions: str
     stop_loss_threshold: float
     stop_loss_grace_period_seconds: float
+    # PR #105 review: bound the in-memory risk price cache via typed config
+    # so the production sizing/risk path no longer relies on a raw env read.
+    # ``services.riskMonitor.RiskPriceCache`` still honours its env fallback
+    # as a legacy adapter (issue #73 allows raw env in legacy/test paths only).
+    risk_price_cache_max_size: int
 
 
 @dataclass(frozen=True)
@@ -869,6 +874,11 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         staged_tp_fractions=p.string("STAGED_TP_FRACTIONS", "0.25,0.35"),
         stop_loss_threshold=p.float_("STOP_LOSS_THRESHOLD", "0.15"),
         stop_loss_grace_period_seconds=p.float_("STOP_LOSS_GRACE_PERIOD_SECONDS", "180"),
+        # PR #105 review: typed cap for the per-process risk price cache. The
+        # legacy adapter (RiskPriceCache.__init__) still reads the env var
+        # directly when no explicit value is passed; this typed value is the
+        # production wiring path used when AppConfig is in scope.
+        risk_price_cache_max_size=p.int_("RISK_PRICE_CACHE_MAX_SIZE", "5000"),
     )
 
     # Execution
