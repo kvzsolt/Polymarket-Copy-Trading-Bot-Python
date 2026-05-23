@@ -1,0 +1,23 @@
+scripts/rollback.sh
+  s_73e3679734e5c0::t_7201f2bca77a02 1-86
+tests/test_issue103_rollback_script.py
+  s_73e3679734e5c0::t_7fedf5dbfe53c0 1-78
+docs/runbooks/rollback.md
+  s_73e3679734e5c0::t_c8e85f706d3faf 1-62
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "12fb9be5858a434841c260f61cb88c46bb6e5663",
+  "prompts": {},
+  "sessions": {
+    "s_73e3679734e5c0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f4bbbe78-ed43-4ec4-aab6-9aefe80d1d8b",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
