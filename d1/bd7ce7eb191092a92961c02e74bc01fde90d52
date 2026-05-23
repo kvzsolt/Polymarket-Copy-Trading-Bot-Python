@@ -1,0 +1,23 @@
+tests/release_gate/test_dockerfile_safety_defaults.py
+  s_40eab60fc22f44::t_84e3b1ba1b25fc 1-70
+.dockerignore
+  s_40eab60fc22f44::t_3a5bae60f08ba6 1-50
+Dockerfile
+  s_40eab60fc22f44::t_dc39e174c1c38e 16-20,27-28,31-34,38-54,57
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "d1bd7ce7eb191092a92961c02e74bc01fde90d52",
+  "prompts": {},
+  "sessions": {
+    "s_40eab60fc22f44": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "75ccb144-a9df-45dd-bd80-c6e6ed5d9e12",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
