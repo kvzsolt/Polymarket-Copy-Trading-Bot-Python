@@ -492,22 +492,42 @@ class ClobV2Gateway:
 
     # --- Startup compatibility probe ------------------------------------------
 
+    # Required minimum for live trading: every key in this set must be
+    # populated and (where applicable) match an expected value, otherwise
+    # ``sdk_available`` flips False and the startup health gate fails closed.
+    _REQUIRED_COMPAT_FIELDS = ("exchange_address", "chain_id", "negative_risk_supported")
+    _EXPECTED_CHAIN_ID = 137  # Polygon mainnet
+
     async def check_compatibility(self) -> dict[str, Any]:
         """Return a venue/SDK readiness summary for startup health gating.
 
         Never raises. Caller (``orchestrators/startup_health.py``) decides
         whether to fail closed in live mode based on ``sdk_available``.
 
-        Issue #93 (high): Extended to validate exchange address presence,
-        chain ID, and negative-risk method availability. These are the
-        minimum viable checks that prove the SDK is wired to the correct
-        chain and contract family before any signed order is attempted.
+        Issue #93 (high): probes every SDK-exposed contract/identity field
+        and reports each structurally. The **hard-required** minimum
+        (``_REQUIRED_COMPAT_FIELDS`` + ``chain_id == _EXPECTED_CHAIN_ID``)
+        flips ``sdk_available`` to False when violated — that is the
+        fail-closed contract the startup gate keys on.
+
+        Per-trade live state (collateral/conditional-token **balance** and
+        **allowance**) is intentionally NOT probed here: that data is
+        wallet/RPC-bound and already gated on the per-trade balance-regime
+        / balance-client path. This probe answers "is the SDK wired to the
+        right contract family on the right chain" — process-startup scope.
         """
+        # Structured discovery: keys with value None mean "not exposed by
+        # this SDK build" (informational), not "broken". The required-set
+        # check below converts the subset that must be present into errors.
         report: dict[str, Any] = {
             "sdk_available": False,
             "exchange_address": None,
+            "neg_risk_exchange_address": None,
+            "collateral_address": None,
+            "conditional_token_address": None,
             "chain_id": None,
             "negative_risk_supported": False,
+            "fee_rate_bps": None,
             "error": None,
         }
         try:
@@ -520,49 +540,70 @@ class ClobV2Gateway:
             return report
 
         report["sdk_available"] = True
-        for attr, key in (
-            ("exchange_address", "exchange_address"),
-            ("get_exchange_address", "exchange_address"),
-            ("chain_id", "chain_id"),
-            ("get_chain_id", "chain_id"),
-        ):
+
+        # Best-effort attribute discovery — each tuple is (sdk_attr, report_key,
+        # is_int). Callable attrs are invoked. Missing attrs leave the field
+        # at None (informational, not an error unless required below).
+        probes: tuple[tuple[str, str, bool], ...] = (
+            ("exchange_address", "exchange_address", False),
+            ("get_exchange_address", "exchange_address", False),
+            ("neg_risk_exchange_address", "neg_risk_exchange_address", False),
+            ("get_neg_risk_exchange_address", "neg_risk_exchange_address", False),
+            ("collateral_address", "collateral_address", False),
+            ("get_collateral_address", "collateral_address", False),
+            ("conditional_token_address", "conditional_token_address", False),
+            ("get_conditional_token_address", "conditional_token_address", False),
+            ("chain_id", "chain_id", True),
+            ("get_chain_id", "chain_id", True),
+            ("fee_rate_bps", "fee_rate_bps", True),
+            ("get_fee_rate_bps", "fee_rate_bps", True),
+        )
+        for attr, key, is_int in probes:
+            if report.get(key) is not None:
+                continue
             try:
                 value = getattr(client, attr, None)
                 if callable(value):
                     value = value()
-                if value is not None and report.get(key) is None:
-                    report[key] = (
-                        int(value) if key == "chain_id" else str(value)
-                    )
+                if value is not None:
+                    report[key] = int(value) if is_int else str(value)
             except Exception:  # pragma: no cover — best-effort discovery
                 continue
 
-        # Issue #93: check negative-risk support and exchange address presence.
-        # An empty exchange address means the SDK is not correctly wired to
-        # a real CLOB endpoint — fail closed rather than proceeding to signing.
-        has_neg_risk_method = (
+        report["negative_risk_supported"] = (
             hasattr(client, "create_market_order")
             or hasattr(client, "create_and_post_order")
         )
-        report["negative_risk_supported"] = has_neg_risk_method
 
+        # Hard fail-closed: exchange_address missing → SDK not wired to a
+        # real CLOB endpoint. Stop here so the startup gate marks the
+        # runtime unhealthy in live mode.
         if report["exchange_address"] is None:
             report["sdk_available"] = False
-            report[
-                "error"
-            ] = "exchange_address is unknown — SDK may not be connected to a CLOB endpoint"
+            report["error"] = (
+                "exchange_address is unknown — SDK may not be connected to a CLOB endpoint"
+            )
             return report
 
-        # Chain ID 137 = Polygon mainnet. Issue #93: if chain ID is absent or
-        # unexpected, the signer will use the wrong domain separator and orders
-        # will be rejected at the venue. Warn but do not hard-fail here — the
-        # startup health gate is the authoritative fail-closed point.
-        if report["chain_id"] not in (137, "137"):
-            logger.warning(
-                "check_compatibility: unexpected chain_id=%s (expected 137/Polygon). "
-                "Orders may be signed for the wrong domain.",
-                report.get("chain_id"),
+        # Hard fail-closed: wrong/missing chain id means the signer would use
+        # the wrong domain separator and the venue would reject every order.
+        # Previously this was only a log warning; #93 makes it terminal.
+        if report["chain_id"] != self._EXPECTED_CHAIN_ID:
+            report["sdk_available"] = False
+            report["error"] = (
+                f"unexpected chain_id={report['chain_id']!r} "
+                f"(expected {self._EXPECTED_CHAIN_ID}/Polygon). "
+                "Orders would be signed for the wrong domain."
             )
+            return report
+
+        if not report["negative_risk_supported"]:
+            report["sdk_available"] = False
+            report["error"] = (
+                "SDK does not expose create_market_order / create_and_post_order — "
+                "marketable order path unavailable."
+            )
+            return report
 
         return report
 
