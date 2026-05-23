@@ -579,7 +579,7 @@ async def risk_monitor_loop(
                             amount=sell_size,
                             max_slippage_bps=slippage_bps,
                             reason=trigger,
-                            signal_id=f"risk:{trigger}:{condition_id}:{int(time.time())}",
+                            signal_id=f"risk:{trigger}:{condition_id}:{time.time_ns()}",
                             condition_id=condition_id,
                             recovery_metadata={
                                 "leader_notional_at_trigger": float(Decimal(str(pos.size_tokens)) * Decimal(str(current_price))),
@@ -968,7 +968,7 @@ async def run_risk_check_for_context(context: TradingContext) -> None:
                     amount=sell_size,
                     max_slippage_bps=slippage_bps,
                     reason=reason,
-                    signal_id=f"risk:{reason}:{pos.condition_id}:{int(time.time())}",
+                    signal_id=f"risk:{reason}:{pos.condition_id}:{time.time_ns()}",
                     condition_id=pos.condition_id,
                     recovery_metadata=_block_metadata,
                 )
