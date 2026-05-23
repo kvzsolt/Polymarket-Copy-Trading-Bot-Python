@@ -307,3 +307,61 @@ release gate. NearOne itself routes its full-position SELL through
 **Branch.** `live-trading` (per user direction; logged here as a deliberate
 deviation from `CLAUDE.md`'s one-issue-per-branch rule).
 
+
+
+## Phase 5 — Proof & Hardening (commit `f237325`)
+
+**Status:** complete on branch `feat/phase01-position-key-coordinator`.
+
+**Summary.** Closed four small non-architectural reconciler findings flagged
+in `reviews/phase04_*.md` and added the matrix-coverage tests reviewers
+named. No architectural detours.
+
+- `services/reconciliation.py` — H1 cancel-after-partial classify + partial
+  refund via existing `record_partial_fill`; H2 closed-order probe cap
+  (`RECONCILE_MAX_CLOSED_PROBES`, default 10); H3 interruptible loop sleep on
+  `shutdown_event`; H4 rollback resolves `request.amount`/`request.size`
+  first (canonical schema).
+- `tests/test_reconcile_phase04.py` +5 — N6 terminal-fill-with-local-record,
+  cancel-after-partial refund + SELL-ignored.
+- `tests/test_phase05_reconcile_hardening.py` *(new)* — probe cap + loop
+  shutdown.
+- `tests/test_trade_pipeline_safety.py` +1 — N1 regression: two
+  immediate-fill BUYs record once each (10 not 20).
+
+**Tests run.** Full suite: 2007 passed, 5 skipped.
+
+## Audit issues #92–#103 (13 commits, suite ends 2237 passed, 5 skipped)
+
+**Status:** all 12 closed via code + tests; issues remain OPEN per CLAUDE.md
+(operator-gated closure after acceptance review).
+
+| # | Severity | Commit(s) | Outcome |
+|---|---|---|---|
+| 92 | CRITICAL | `cce5deb`, `995513f` | `SdkNumericAdapter` boundary + 12 adapter tests |
+| 93 | HIGH | `f2a152a`, `c67fda3` | structured live-readiness probe; hard chain_id fail; +6 tests |
+| 94 | HIGH | `f2a152a`, `c612102` | UUID intent_id fallback; +3 tests |
+| 95 | CRITICAL | `cce5deb`, `032a66f` | fail-closed without atomic lock; +2 tests incl. real-SQLite stress |
+| 96 | HIGH | `ac2b6f7` | chaos tests for unsupported / erroring probes |
+| 97 | HIGH | `f2a152a`, `d342ba6` | fills missing order_id rejected; +3 tests |
+| 98 | MED | `f2a152a` | reservation released on RetryableVenueError |
+| 99 | MED | `d5e529f` | `OrderedDict` LRU cap on both caches; +5 tests |
+| 100 | MED | `aa47930` | unknown CLOB errors → ambiguous, not terminal; +4 tests |
+| 101 | MED | `32f965a` | `test_live_execution_invariants.py` real-SQLite e2e |
+| 102 | MED | `762be93` | canonical Decimal normalize() in `compute_effective_key` (real bug fixed); +187 boundary cases |
+| 103 | MED | `12fb9be` | `scripts/rollback.sh` + runbook + canary mode + CI check |
+
+**Real bugs uncovered by the audit work (4):** #97 unattributable fills,
+#99 unbounded caches, #100 terminal-misclassification, #102 trailing-zero
+idempotency collision.
+
+**Tests run.** Full suite: 2237 passed, 5 skipped. `compileall` clean.
+
+**Pre-existing release-gate failures (7, unrelated):** sizing, cache TTL,
+CLI redaction, near-one exit, readiness aggregator. None touched by any
+of the 13 commits in this session. Tracked separately.
+
+**Branch.** `feat/phase01-position-key-coordinator` — phase 5 work and
+the audit-fix slices all landed on the same branch per user direction
+(logged here as a deliberate deviation from CLAUDE.md's one-issue-per-
+branch rule).
