@@ -27,6 +27,7 @@ REQUIRED_MODULES = (
     "tests.release_gate.test_e2e_dry_run_buy",
     "tests.release_gate.test_e2e_dry_run_sell",
     "tests.release_gate.test_protective_exit_integration",
+    "tests.release_gate.test_live_execution_invariants",
 )
 
 
