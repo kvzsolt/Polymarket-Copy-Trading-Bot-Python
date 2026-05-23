@@ -1,0 +1,19 @@
+tests/test_ambiguous_timeout_auto_release.py
+  s_73e3679734e5c0::t_1c52b713f35a05 243-311
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "ac2b6f76cbb3769e7bd80799b5884303ca3c62d6",
+  "prompts": {},
+  "sessions": {
+    "s_73e3679734e5c0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f4bbbe78-ed43-4ec4-aab6-9aefe80d1d8b",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
