@@ -585,10 +585,10 @@ class MarketDataService:
                 and quote_source == MarketDataSource.REST_BOOTSTRAP
                 and book_source == MarketDataSource.REST_BOOTSTRAP
             ):
-                import time as _time
 
-                quote_age_ms = (_time.monotonic() - quote.monotonic_ts) * 1000
-                book_age_ms = (_time.monotonic() - book.monotonic_ts) * 1000
+
+                quote_age_ms = (time.monotonic() - quote.monotonic_ts) * 1000
+                book_age_ms = (time.monotonic() - book.monotonic_ts) * 1000
                 within_cap = (
                     quote_age_ms <= policy.rest_bootstrap_max_age_ms
                     and book_age_ms <= policy.rest_bootstrap_max_age_ms
@@ -614,10 +614,10 @@ class MarketDataService:
                 and quote_source == MarketDataSource.REST_SNAPSHOT
                 and book_source == MarketDataSource.REST_SNAPSHOT
             ):
-                import time as _time
 
-                quote_age_ms = (_time.monotonic() - quote.monotonic_ts) * 1000.0
-                book_age_ms = (_time.monotonic() - book.monotonic_ts) * 1000.0
+
+                quote_age_ms = (time.monotonic() - quote.monotonic_ts) * 1000.0
+                book_age_ms = (time.monotonic() - book.monotonic_ts) * 1000.0
                 if (
                     quote_age_ms <= policy.rest_snapshot_max_age_ms
                     and book_age_ms <= policy.rest_snapshot_max_age_ms
@@ -752,7 +752,7 @@ class MarketDataService:
             value = getattr(snapshot, name, None)
             if value is not None:
                 try:
-                    import time
+
                     return (time.monotonic() - float(value)) <= max_age_seconds
                 except (TypeError, ValueError):
                     return False
@@ -881,7 +881,7 @@ class MarketDataService:
     def _mark_fresh(self, token_id: str, source: MarketDataSource) -> None:
         method = getattr(self._cache, "mark_fresh", None)
         if callable(method):
-            import time
+
             method(token_id, source.value, time.monotonic())
 
 
