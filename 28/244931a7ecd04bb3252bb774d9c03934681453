@@ -1,0 +1,19 @@
+config/runtime_env.py
+  s_d9ce089777e19c::t_a97e4c13bfb840 87-89,92-94
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "28244931a7ecd04bb3252bb774d9c03934681453",
+  "prompts": {},
+  "sessions": {
+    "s_d9ce089777e19c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d59c48df-336c-476a-98ec-682b852ed18b",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}

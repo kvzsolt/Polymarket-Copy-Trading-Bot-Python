@@ -1,0 +1,22 @@
+services/riskMonitor.py
+  s_d9ce089777e19c::t_8362ddaf6e8b10 144-147
+  s_d9ce089777e19c::t_027c49393dee22 560-562,567
+  s_d9ce089777e19c::t_80248d9343484c 579
+  s_d9ce089777e19c::t_2eb0986af56792 873,876-877
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "3d72c74e65d96f3cd7cf452b77f4ca860a87059c",
+  "prompts": {},
+  "sessions": {
+    "s_d9ce089777e19c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d59c48df-336c-476a-98ec-682b852ed18b",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
