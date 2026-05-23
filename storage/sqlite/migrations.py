@@ -500,9 +500,12 @@ def _ensure_legacy_tables(conn: sqlite3.Connection) -> None:
             side TEXT,
             title TEXT,
             outcome TEXT,
-            price REAL,
-            size REAL,
-            usdc_size REAL,
+            -- Money columns stored as TEXT to round-trip Decimal losslessly.
+            -- SQLite's REAL is IEEE-754 double and corrupts cent precision
+            -- once any Decimal arithmetic happens upstream.
+            price TEXT,
+            size TEXT,
+            usdc_size TEXT,
             event_timestamp REAL,
             result TEXT,
             reason TEXT,
