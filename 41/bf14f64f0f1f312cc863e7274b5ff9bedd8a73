@@ -1,0 +1,24 @@
+tests/test_migrations_atomic.py
+  s_40eab60fc22f44::t_5bef1dc1158994 1-70
+storage/sqlite/migrations.py
+  s_40eab60fc22f44::t_c6addeab209a9c 490-491
+  s_40eab60fc22f44::t_5f311eb09f4917 13-27
+  s_40eab60fc22f44::t_f007163bcf1de6 686-717
+  s_40eab60fc22f44::t_eb8044dda970f6 590-591
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "41bf14f64f0f1f312cc863e7274b5ff9bedd8a73",
+  "prompts": {},
+  "sessions": {
+    "s_40eab60fc22f44": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "75ccb144-a9df-45dd-bd80-c6e6ed5d9e12",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
