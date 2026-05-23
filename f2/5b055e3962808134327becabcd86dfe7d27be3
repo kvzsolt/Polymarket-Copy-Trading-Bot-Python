@@ -1,0 +1,23 @@
+config/runtime_env.py
+  s_40eab60fc22f44::t_507230e907da72 14-17
+config/env.py
+  s_40eab60fc22f44::t_e86604514d4353 443-448,462-467
+bot_cli/commands/doctor.py
+  s_40eab60fc22f44::t_b7dc80806140a5 379-389
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "f25b055e3962808134327becabcd86dfe7d27be3",
+  "prompts": {},
+  "sessions": {
+    "s_40eab60fc22f44": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "75ccb144-a9df-45dd-bd80-c6e6ed5d9e12",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
