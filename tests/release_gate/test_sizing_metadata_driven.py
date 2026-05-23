@@ -98,26 +98,35 @@ def test_sell_below_min_rejected() -> None:
 
 
 def test_sell_below_min_upsized_when_held_allows() -> None:
-    """SELL below taker min upsizes to taker min if held shares cover it."""
-    # live_price=0.99 => taker_min = ceil(1/0.99) = 2 tokens
+    """SELL below taker min upsizes to taker min if held shares cover it.
+
+    ``_taker_min_tokens`` quantizes to 4 decimals (not whole tokens), so the
+    floor at live_price=0.99 is ``ceil(1/0.99, 4dp) = 1.0102`` tokens, not 2.
+    Pick a requested size strictly below that floor to exercise the upsize.
+    """
+    # live_price=0.99 => taker_min = 1.0102 tokens
     decision = size_sell_order(
-        sell_tokens=2.0,
+        sell_tokens=1.0,
         held_size=12.0,
         live_price=0.99,
         market_min_size=5.0,  # ignored
     )
     assert decision.accept is True
     assert decision.upsized is True
-    assert decision.effective_size == Decimal("2")
+    assert decision.effective_size == Decimal("1.0102")
     assert decision.reason == "upsized"
 
 
 def test_sell_below_min_skipped_when_held_short() -> None:
-    """SELL below taker min and held shares can't cover upsize → skip."""
-    # live_price=0.99 => taker_min = ceil(1/0.99) = 2 tokens
+    """SELL below taker min and held shares can't cover upsize → skip.
+
+    ``held_size`` must be strictly below the taker minimum (1.0102 tokens
+    at 0.99) to trip the held-below-min branch; previously 2.0 covered it
+    and the sizer (correctly) upsized to the floor.
+    """
     decision = size_sell_order(
         sell_tokens=1.0,
-        held_size=2.0,
+        held_size=1.0,  # below taker_min 1.0102
         live_price=0.99,
         market_min_size=10.0,  # ignored
     )
