@@ -1,0 +1,24 @@
+storage/sqlite/positions_repo.py
+  s_40eab60fc22f44::t_d8434a7a38e81f 59-91
+  s_40eab60fc22f44::t_b9f76e87634efa 135,138-163,166,169-182
+  s_40eab60fc22f44::t_43c47375f8cd81 200-211,213-287
+tests/test_apply_fill_atomic.py
+  s_40eab60fc22f44::t_2394a7f45d79fb 1-46,48-68,70-76,78-88,90-96,98-111
+  s_40eab60fc22f44::t_21e33217b51229 47,69,77,89,97
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "02c5f4301ec29f477efae3c3daac6d33d098cc55",
+  "prompts": {},
+  "sessions": {
+    "s_40eab60fc22f44": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "75ccb144-a9df-45dd-bd80-c6e6ed5d9e12",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
