@@ -176,7 +176,17 @@ def _classify_error(exc: Exception) -> tuple[bool, str]:
 
 
 def _raise_classified(exc: Exception) -> None:
-    """Raise the appropriate typed venue error based on classification."""
+    """Raise the appropriate typed venue error based on classification.
+
+    Issue #100: an *unknown* exception (no substring match in
+    ``_classify_error``) is ambiguous, not terminal. After a SDK call,
+    the order may have landed on the venue even though the call raised.
+    Treating unknown as ``VenueInvalidOrderError`` (terminal) would let
+    the upstream coordinator release the reservation and allow a duplicate
+    submission. Default unknowns to ``VenueUnavailableError`` (ambiguous,
+    retryable / submitted-unconfirmed safety net) so duplicate locks and
+    reservations stay active until reconciliation proves the state.
+    """
     retryable, reason = _classify_error(exc)
     safe_detail = redact_error_detail(exc)
     if retryable:
@@ -185,6 +195,23 @@ def _raise_classified(exc: Exception) -> None:
         raise VenueUnavailableError(f"{reason}: {safe_detail}") from exc
     if "auth" in reason:
         raise VenueAuthError(f"{reason}: {safe_detail}") from exc
+    if reason == "unknown":
+        # Best-effort observability — never fatal.
+        try:
+            from services.metrics import metrics
+            metrics.inc_sync(
+                "clob_error_classification_unknown_total",
+                labels={"exc": type(exc).__name__},
+            )
+        except Exception:  # pragma: no cover — defensive
+            pass
+        logger.error(
+            "clob_error_classification_unknown | exc=%s detail=%s — "
+            "treating as ambiguous (VenueUnavailableError) to preserve "
+            "duplicate-lock / submitted-unconfirmed safety",
+            type(exc).__name__, safe_detail,
+        )
+        raise VenueUnavailableError(f"unknown_ambiguous: {safe_detail}") from exc
     raise VenueInvalidOrderError(f"{reason}: {safe_detail}") from exc
 
 

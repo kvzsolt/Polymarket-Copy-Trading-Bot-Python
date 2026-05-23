@@ -276,10 +276,11 @@ class TestExecutionService:
 
         res = await svc.execute(req)
 
-        # The executable order guard was removed; tiny orders now go through
-        # to execution and fail through the normal mechanism
-        assert res.accepted is False
-        assert res.error is not None
+        # The executable order guard was removed; tiny orders go through to
+        # execution. The clob mock lacks create_market_order → AttributeError
+        # → classified as unknown → ambiguous (issue #100). Reconciliation
+        # owns the resolution; the duplicate-lock stays.
+        assert res.status == "submitted_unconfirmed"
 
     @pytest.mark.asyncio
     async def test_executable_order_guard_can_be_disabled_for_small_buy(self):

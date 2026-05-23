@@ -389,8 +389,14 @@ class TestAmbiguousPostHandling:
         assert result.status == "submitted_unconfirmed"
 
     @pytest.mark.asyncio
-    async def test_create_exception_is_normal_failure(self, tmp_path):
-        """If create_market_order throws, it's NOT ambiguous — normal failure."""
+    async def test_create_exception_unknown_is_ambiguous(self, tmp_path):
+        """Issue #100: an unknown SDK exception type (here ValueError with
+        a message the substring classifier doesn't recognize) must be
+        treated as **ambiguous**, not terminal — the call may have already
+        touched the wire before raising. Releasing the duplicate-lock on
+        terminal classification was the old unsafe behavior; the safe
+        outcome is ``submitted_unconfirmed`` so reconciliation owns the
+        resolution."""
         db_path = tmp_path / "state.db"
         _prepare_db(db_path)
         repo = OrderRepository(str(db_path))
@@ -399,8 +405,7 @@ class TestAmbiguousPostHandling:
         svc = ExecutionService(clob, _FeeSvc(), repo, config=_make_exec_config(), market_data_service=_make_mds())
         req = _make_req(signal_id="sig-create-fail")
         result = await svc.execute(req)
-        assert result.accepted is False
-        assert result.status == "failed"
+        assert result.status == "submitted_unconfirmed"
 
 
 # ---------------------------------------------------------------------------
