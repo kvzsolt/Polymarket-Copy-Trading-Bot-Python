@@ -1,0 +1,25 @@
+utils/idempotency.py
+  s_40eab60fc22f44::t_81f83868005edf 3,14-19,21-33
+  s_40eab60fc22f44::t_f5efb3a86807b7 55-57,59-64
+  s_40eab60fc22f44::t_67c8e4963601d1 130-131
+tests/test_idempotency_dynamic_db_path.py
+  s_40eab60fc22f44::t_5e2e1bd6b869b7 1-55
+tests/test_idempotency.py
+  s_40eab60fc22f44::t_ab30af7a0e2c86 26,44
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "5ee40aa3491dc2c3d0f709a98fb07c798c2196e6",
+  "prompts": {},
+  "sessions": {
+    "s_40eab60fc22f44": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "75ccb144-a9df-45dd-bd80-c6e6ed5d9e12",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
