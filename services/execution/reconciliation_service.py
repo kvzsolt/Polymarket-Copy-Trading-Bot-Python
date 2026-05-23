@@ -783,7 +783,11 @@ class ReconciliationService:
             # inconclusive and must NOT be attributed to this order.
             matching_fills = [
                 f for f in venue_fills
-                if (f.get("order_id") or f.get("orderID")) == order.venue_order_id
+                if (
+                    f.get("order_id") or f.get("orderID")
+                    if isinstance(f, dict)
+                    else getattr(f, "order_id", None)
+                ) == order.venue_order_id
             ]
             if matching_fills:
                 async with self.db.transaction():
