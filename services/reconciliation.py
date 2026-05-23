@@ -641,8 +641,22 @@ class ReconciliationService:
         try:
             matched = _safe_decimal(venue_matched) if venue_matched is not None else None
             if matched is not None and matched > 0:
-                # Partial-then-cancel: refund only the unfilled remainder.
+                # Partial-then-cancel: refund only the unfilled remainder. The
+                # filled tokens genuinely spent cash; that portion stays on the
+                # ledger.
                 price = self._resolve_request_price(local_record)
+                if price <= 0:
+                    # PR #105 review (Cubic P1): price unresolved → we cannot
+                    # estimate the filled notional. Refunding *anything* here
+                    # risks under-counting actual spend on the daily cap.
+                    # Refuse the refund and log so manual reconciliation owns
+                    # the cleanup. The cap stays conservative.
+                    logger.warning(
+                        "partial_cancel_price_unresolved | order_id=%s matched=%s "
+                        "requested=%s — skipping refund (manual reconcile required)",
+                        order_id, str(matched), str(requested),
+                    )
+                    return
                 filled_notional = matched * price
                 if hasattr(regime, "record_partial_fill"):
                     regime.record_partial_fill(
@@ -651,6 +665,15 @@ class ReconciliationService:
                         order_id=order_id,
                     )
                     return
+                # PR #105 review (Greptile P1): regime lacks record_partial_fill.
+                # Falling through to record_cancel(requested) would refund the
+                # full requested notional including the filled portion — over-
+                # refund. Refund only the unfilled remainder.
+                unfilled = requested - filled_notional
+                if unfilled <= 0:
+                    return
+                regime.record_cancel(str(unfilled), order_id=order_id)
+                return
             regime.record_cancel(str(requested), order_id=order_id)
         except Exception as exc:  # pragma: no cover — defensive
             logger.error(
