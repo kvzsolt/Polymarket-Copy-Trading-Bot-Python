@@ -211,7 +211,12 @@ class ClobClientWrapper:
                 meta, expiry = cached
                 if time.monotonic() < expiry:
                     return meta
-                del self._market_meta_cache[asset]
+                # ``.pop(..., None)`` rather than ``del`` so two
+                # concurrent coroutines that both observed the expired
+                # entry cannot race on the same delete and raise
+                # ``KeyError``. The asyncio.gather call below means
+                # the race is real, not theoretical.
+                self._market_meta_cache.pop(asset, None)
 
         loop = asyncio.get_running_loop()
 
