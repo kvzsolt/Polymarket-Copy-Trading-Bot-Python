@@ -1,0 +1,27 @@
+services/order_sizing.py
+  s_40eab60fc22f44::t_cdb693554bb969 183-187,203-206,213-219,221-224,226,229-230,237,246-248,250-251,254
+  s_40eab60fc22f44::t_bcfe4cf6a54e5e 23,32-45
+  s_40eab60fc22f44::t_a2676a4ca1f976 61-67,69-71
+  s_40eab60fc22f44::t_19e3645ea49987 111-118,120,122,124,131-133,135-137,139-142,160-161,167
+  s_40eab60fc22f44::t_2266cb52c126fc 76-82
+tests/test_order_sizing_decimal_and_floor.py
+  s_40eab60fc22f44::t_d15bab82b59afe 50,57,60
+  s_40eab60fc22f44::t_506255afac5091 103,107,110
+  s_40eab60fc22f44::t_23eafd311abfc7 1-49,51-56,58-59,61-102,104-106,108-109,111
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "152ce911e30da743c50793b39bedd5eb419f1afb",
+  "prompts": {},
+  "sessions": {
+    "s_40eab60fc22f44": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "75ccb144-a9df-45dd-bd80-c6e6ed5d9e12",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
