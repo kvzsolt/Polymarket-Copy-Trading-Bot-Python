@@ -1207,9 +1207,25 @@ async def risk_monitor_loop_for_contexts(
         for context, result in zip(contexts, refresh_results, strict=False):
             if isinstance(result, Exception):
                 logger.error(f"Risk price cache refresh failed user={context.user_id}: {result}")
-        for context in contexts:
-            try:
-                await run_risk_check_for_context(context)
-            except Exception as exc:
-                logger.error(f"Risk loop error user={context.user_id}: {exc}")
+        # Pre-fix: sequential iteration blocked every context behind a
+        # stalled venue call for any single one. Parallel gather mirrors
+        # the refresh-tasks path above so one slow context never starves
+        # the others. asyncio.wait_for per context puts a hard ceiling
+        # on any single per-context check so a hung venue call cannot
+        # block the loop indefinitely — the timeout budget is the same
+        # poll_interval, which is the maximum any one cycle can take.
+        ceiling = max(poll_interval, 5.0)
+        check_tasks = [
+            asyncio.wait_for(run_risk_check_for_context(c), timeout=ceiling)
+            for c in contexts
+        ]
+        check_results = await asyncio.gather(*check_tasks, return_exceptions=True)
+        for context, result in zip(contexts, check_results, strict=False):
+            if isinstance(result, asyncio.TimeoutError):
+                logger.error(
+                    f"Risk loop TIMEOUT user={context.user_id} "
+                    f"after {ceiling:.1f}s — context skipped this cycle"
+                )
+            elif isinstance(result, Exception):
+                logger.error(f"Risk loop error user={context.user_id}: {result}")
         await asyncio.sleep(poll_interval)
