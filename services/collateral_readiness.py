@@ -82,6 +82,11 @@ def _check_sync(
     checksum_wallet = Web3.to_checksum_address(wallet_address)
     pusd_contract = Web3.to_checksum_address(pusd_address)
 
+    # Lazy import — utils.logger pulls in a lot; only needed in the
+    # exception paths below to redact RPC URL / auth tokens that
+    # Web3's HTTPProvider embeds in connection error messages.
+    from utils.logger import redact_error_detail
+
     # 1. pUSD balance
     try:
         raw_balance = _erc20_read(
@@ -93,7 +98,12 @@ def _check_sync(
         pusd_balance = Decimal(raw_balance) / Decimal(10**6)
     except Exception as exc:
         pusd_balance = Decimal("0")
-        failures.append(f"pUSD balance check failed: {exc}")
+        # Pre-fix: ``f"... failed: {exc}"`` interpolated the raw exception
+        # str(), which for Web3 connection errors carries the full
+        # provider URL including any embedded API key (Alchemy / Infura).
+        # ``redact_error_detail`` returns a category label
+        # (``network_error`` / ``http_<code>`` / etc) — safe to log.
+        failures.append(f"pUSD balance check failed: {redact_error_detail(exc)}")
 
     if pusd_balance < min_pusd_balance:
         failures.append(
@@ -111,7 +121,9 @@ def _check_sync(
         pusd_allowance_ctf = Decimal(raw_allowance) / Decimal(10**6)
     except Exception as exc:
         pusd_allowance_ctf = Decimal("0")
-        failures.append(f"CTF exchange allowance check failed: {exc}")
+        failures.append(
+            f"CTF exchange allowance check failed: {redact_error_detail(exc)}"
+        )
 
     if pusd_allowance_ctf <= 0:
         failures.append(
