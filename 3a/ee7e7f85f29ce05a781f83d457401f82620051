@@ -1,0 +1,19 @@
+tests/release_gate/test_sizing_metadata_driven.py
+  s_0634fd1b10250c::t_c55e447b741f52 101-107,109,116,121-126,129
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "3aee7e7f85f29ce05a781f83d457401f82620051",
+  "prompts": {},
+  "sessions": {
+    "s_0634fd1b10250c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2ea4030f-52b1-4f0c-a67d-6689f339d563",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
