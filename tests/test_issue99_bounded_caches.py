@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from decimal import Decimal
 
+import pytest
+
 from cache.market_state_store import MarketStateStore
 from services.riskMonitor import RiskPriceCache
 
@@ -38,6 +40,14 @@ class TestMarketStateStoreBounded:
 
         assert store.get_state("t2") is None  # cold token evicted
         assert store.get_state("t1") is not None  # active token survives
+
+    @pytest.mark.parametrize("bad", [0, -1, -1000])
+    def test_explicit_non_positive_max_tokens_rejected(self, bad):
+        """PR #105 review: max_tokens=0 evicts every insert; negative crashes
+        the eviction loop. Reject explicit non-positive values rather than
+        silently misbehaving."""
+        with pytest.raises(ValueError):
+            MarketStateStore(max_tokens=bad)
 
 
 class TestRiskPriceCacheBounded:
