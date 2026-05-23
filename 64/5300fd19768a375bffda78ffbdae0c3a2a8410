@@ -1,0 +1,26 @@
+tests/test_issue99_bounded_caches.py
+  s_0634fd1b10250c::t_3223a12eaf13a3 79-86,100,109-111,113-119,121-129
+  s_0634fd1b10250c::t_9fc927e506e0b5 87-99,101-108,112,120
+services/riskMonitor.py
+  s_0634fd1b10250c::t_5bcaef4cf0ab6a 281-292
+  s_0634fd1b10250c::t_6bd372895ce921 506-511
+config/app_config.py
+  s_0634fd1b10250c::t_dc13b00cccc64b 300-304
+  s_0634fd1b10250c::t_5e729ce04f8ea1 877-881
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "645300fd19768a375bffda78ffbdae0c3a2a8410",
+  "prompts": {},
+  "sessions": {
+    "s_0634fd1b10250c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2ea4030f-52b1-4f0c-a67d-6689f339d563",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
