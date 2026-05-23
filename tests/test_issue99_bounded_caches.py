@@ -76,3 +76,54 @@ class TestRiskPriceCacheBounded:
         # Sanity: default cap is well above any sensible bot's working set.
         cache = RiskPriceCache()
         assert cache._max_size >= 1000
+
+
+class TestRiskPriceCacheTypedConfig:
+    """PR #105 review: typed AppConfig.risk.risk_price_cache_max_size is
+    the production wiring path. The raw env read inside RiskPriceCache
+    stays as a legacy adapter for callers that don't have a config in
+    scope (e.g. ad-hoc test harnesses)."""
+
+    _MIN_ENV = {
+        "PRIVATE_KEY": "0x" + "a" * 64,
+        "FUNDER_ADDRESS": "0x" + "b" * 40,
+        "USER_ADDRESS": "0x" + "c" * 40,
+        "LEADER_WALLETS": "0x" + "d" * 40,
+        "RPC_URL": "https://polygon-rpc.example.com",
+        "CHAIN_ID": "137",
+    }
+
+    def _load_config(self, overrides=None):
+        from unittest.mock import patch
+
+        import config.app_config as app_config_mod
+
+        env = {**self._MIN_ENV, **(overrides or {})}
+        with patch.object(
+            app_config_mod, "_runtime_python_supported", return_value=True
+        ):
+            return app_config_mod.load_config(env)
+
+    def test_app_config_exposes_typed_field(self):
+        config = self._load_config({"RISK_PRICE_CACHE_MAX_SIZE": "777"})
+        assert config.risk.risk_price_cache_max_size == 777
+
+    def test_app_config_falls_back_to_default_when_env_absent(self):
+        config = self._load_config()
+        assert config.risk.risk_price_cache_max_size == 5000
+
+    def test_ensure_context_price_cache_uses_typed_cap(self):
+        """A TradingContext carrying an AppConfig must construct the cache
+        with the typed cap, not whatever the env happens to say."""
+        from unittest.mock import MagicMock
+
+        config = self._load_config({"RISK_PRICE_CACHE_MAX_SIZE": "42"})
+
+        ctx = MagicMock()
+        ctx.extra = {}
+        ctx.config = config
+
+        from services.riskMonitor import _ensure_context_price_cache
+
+        cache = _ensure_context_price_cache(ctx)
+        assert cache._max_size == 42

@@ -278,7 +278,18 @@ def _ensure_context_price_cache(context: TradingContext) -> RiskPriceCache:
     cache = context.extra.get("risk_price_cache")
     if isinstance(cache, RiskPriceCache):
         return cache
-    cache = RiskPriceCache()
+    # PR #105 review: prefer the typed cap from AppConfig.risk when a config
+    # is in scope; the legacy env-driven default inside RiskPriceCache still
+    # applies when no config is available.
+    max_size: int | None = None
+    config = getattr(context, "config", None)
+    if config is not None:
+        risk_cfg = getattr(config, "risk", None)
+        if risk_cfg is not None:
+            cap = getattr(risk_cfg, "risk_price_cache_max_size", None)
+            if isinstance(cap, int) and cap > 0:
+                max_size = cap
+    cache = RiskPriceCache(max_size=max_size)
     context.extra["risk_price_cache"] = cache
     return cache
 
@@ -492,7 +503,12 @@ async def risk_monitor_loop(
         f"interval={interval}s"
     )
 
-    price_cache = RiskPriceCache()
+    # PR #105 review: prefer typed cap from AppConfig.risk so production
+    # paths never depend on a raw env read for the cache bound.
+    _risk_cache_cap = getattr(config.risk, "risk_price_cache_max_size", None)
+    price_cache = RiskPriceCache(
+        max_size=_risk_cache_cap if isinstance(_risk_cache_cap, int) and _risk_cache_cap > 0 else None
+    )
     venue_breaker = VenueCircuitBreaker()
 
     while True:
