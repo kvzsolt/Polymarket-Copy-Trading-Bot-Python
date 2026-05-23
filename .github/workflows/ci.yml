@@ -88,10 +88,11 @@ jobs:
           # (E741), and lambda-assignment (E731). Those land in the soft scan below
           # until cleanup batch.
           #
-          # TEMPORARY ignores (remove once corresponding fix batch lands):
-          #   F821 — 5 undefined-name bugs: scripts/find_followable_traders.py (Batch 11)
-          #          and services/riskMonitor.py legacy loop (Batch 4 — delete loop).
-          ruff check --select=F,E --ignore=E501,F401,F841,E402,E741,E731,F821 --exclude=legacy,test.py,bootstrap.py .
+          # F821 (undefined name) was temporarily ignored on first ci-gate
+          # landing; the 5 sites have all been fixed (riskMonitor legacy
+          # loop block removed in Batch 4, scripts/find_followable_traders.py
+          # imports added). Removed.
+          ruff check --select=F,E --ignore=E501,F401,F841,E402,E741,E731 --exclude=legacy,test.py,bootstrap.py .
       - name: ruff (full scan — soft fail until lint debt cleared)
         continue-on-error: true
         run: ruff check --exclude=legacy,test.py,bootstrap.py .
