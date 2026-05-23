@@ -163,6 +163,42 @@ async def _run_research_capture(
         )
 
 
+# Strong references for fire-and-forget research-capture tasks. Without
+# this set the asyncio event loop holds only a weak reference and the
+# task can be garbage-collected mid-execution, surfacing as
+# "Task was destroyed but it is pending!" warnings and silently
+# dropping the capture. Tasks remove themselves on completion via
+# the done_callback registered in _spawn_research_capture.
+_research_capture_tasks: set[asyncio.Task] = set()
+
+
+def _spawn_research_capture(
+    research_capture_service: Any,
+    raw_trades: list[dict],
+) -> asyncio.Task:
+    """Fire-and-forget the research-capture coroutine with a strong ref
+    + a done-callback that logs any unhandled exception so the task is
+    never silently lost."""
+    task = asyncio.create_task(
+        _run_research_capture(research_capture_service, raw_trades)
+    )
+    _research_capture_tasks.add(task)
+
+    def _on_done(t: asyncio.Task) -> None:
+        _research_capture_tasks.discard(t)
+        if t.cancelled():
+            return
+        exc = t.exception()
+        if exc is not None:
+            logger.warning(
+                "research_trade_capture_task_crashed",
+                extra={"error": redact_error_detail(exc)},
+            )
+
+    task.add_done_callback(_on_done)
+    return task
+
+
 
 
 
@@ -509,9 +545,7 @@ async def fetch_trade_data(
             window_s=config.polling.aggregate_signal_window_seconds
         )
         if trade_candidates and research_capture_service is not None:
-            asyncio.create_task(
-                _run_research_capture(research_capture_service, list(trade_candidates))
-            )
+            _spawn_research_capture(research_capture_service, list(trade_candidates))
         if trade_list:
             await _annotate_sell_fractions(trade_list, user_address)
         # Execute all detected trades immediately — no queue
