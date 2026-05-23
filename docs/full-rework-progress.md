@@ -307,3 +307,118 @@ release gate. NearOne itself routes its full-position SELL through
 **Branch.** `live-trading` (per user direction; logged here as a deliberate
 deviation from `CLAUDE.md`'s one-issue-per-branch rule).
 
+
+
+## Phase 5 — Proof & Hardening (commit `f237325`)
+
+**Status:** complete on branch `feat/phase01-position-key-coordinator`.
+
+**Summary.** Closed four small non-architectural reconciler findings flagged
+in `reviews/phase04_*.md` and added the matrix-coverage tests reviewers
+named. No architectural detours.
+
+- `services/reconciliation.py` — H1 cancel-after-partial classify + partial
+  refund via existing `record_partial_fill`; H2 closed-order probe cap
+  (`RECONCILE_MAX_CLOSED_PROBES`, default 10); H3 interruptible loop sleep on
+  `shutdown_event`; H4 rollback resolves `request.amount`/`request.size`
+  first (canonical schema).
+- `tests/test_reconcile_phase04.py` +5 — N6 terminal-fill-with-local-record,
+  cancel-after-partial refund + SELL-ignored.
+- `tests/test_phase05_reconcile_hardening.py` *(new)* — probe cap + loop
+  shutdown.
+- `tests/test_trade_pipeline_safety.py` +1 — N1 regression: two
+  immediate-fill BUYs record once each (10 not 20).
+
+**Tests run.** Full suite: 2007 passed, 5 skipped.
+
+## Audit issues #92–#103 (13 commits, suite ends 2237 passed, 5 skipped)
+
+**Status:** all 12 closed via code + tests; issues remain OPEN per CLAUDE.md
+(operator-gated closure after acceptance review).
+
+| # | Severity | Commit(s) | Outcome |
+|---|---|---|---|
+| 92 | CRITICAL | `cce5deb`, `995513f` | `SdkNumericAdapter` boundary + 12 adapter tests |
+| 93 | HIGH | `f2a152a`, `c67fda3` | structured live-readiness probe; hard chain_id fail; +6 tests |
+| 94 | HIGH | `f2a152a`, `c612102` | UUID intent_id fallback; +3 tests |
+| 95 | CRITICAL | `cce5deb`, `032a66f` | fail-closed without atomic lock; +2 tests incl. real-SQLite stress |
+| 96 | HIGH | `ac2b6f7` | chaos tests for unsupported / erroring probes |
+| 97 | HIGH | `f2a152a`, `d342ba6` | fills missing order_id rejected; +3 tests |
+| 98 | MED | `f2a152a` | reservation released on RetryableVenueError |
+| 99 | MED | `d5e529f` | `OrderedDict` LRU cap on both caches; +5 tests |
+| 100 | MED | `aa47930` | unknown CLOB errors → ambiguous, not terminal; +4 tests |
+| 101 | MED | `32f965a` | `test_live_execution_invariants.py` real-SQLite e2e |
+| 102 | MED | `762be93` | canonical Decimal normalize() in `compute_effective_key` (real bug fixed); +187 boundary cases |
+| 103 | MED | `12fb9be` | `scripts/rollback.sh` + runbook + canary mode + CI check |
+
+**Real bugs uncovered by the audit work (4):** #97 unattributable fills,
+#99 unbounded caches, #100 terminal-misclassification, #102 trailing-zero
+idempotency collision.
+
+**Tests run.** Full suite: 2237 passed, 5 skipped. `compileall` clean.
+
+**Pre-existing release-gate failures (7, unrelated):** sizing, cache TTL,
+CLI redaction, near-one exit, readiness aggregator. None touched by any
+of the 13 commits in this session. Tracked separately.
+
+**Branch.** `feat/phase01-position-key-coordinator` — phase 5 work and
+the audit-fix slices all landed on the same branch per user direction
+(logged here as a deliberate deviation from CLAUDE.md's one-issue-per-
+branch rule).
+
+## PR #105 review remediation (10 commits, suite ends 2254 passed, 5 skipped)
+
+**Status:** CI green; all P1 + P2 review findings from Greptile and Cubic
+addressed on top of the audit-fix baseline.
+
+**CI failure** — `tests/test_doctor_live.py::test_doctor_live_passes_when_all_subsystems_wired`
+was blocked because `db_schema_ok` checked the live DB for required
+tables but a fresh CI runner has no `data/bot_state.db`. Local passed
+only because prior dev runs had created and migrated the file.
+`_run_doctor` now builds a per-test migrated SQLite and points
+`BOT_STATE_DB` at it (`b77d367`).
+
+| Finding | Severity | Source | Commit | Outcome |
+|---|---|---|---|---|
+| CI fail | — | unit-tests | `b77d367` | migrated tmp DB in `_run_doctor`; 9/9 doctor tests pass on a no-DB host |
+| 92 (tick math) | P1 | Cubic | `a1bf53d` | `utils/numeric` quantizes by tick directly; works for non-power-of-10 ticks; +1 parametrized test |
+| 94 (UUID retry) | P1 | Greptile | `778b9a4` | deterministic intent_id derived from request shape replaces per-call `uuid4()`; retry-safe; existing `TestBlankSignalIdFallback` inverted to encode new policy |
+| 97 (over-refund) | P1 | Greptile + Cubic | `f29fcc3` | partial-cancel rollback refunds only `requested - filled_notional` when `record_partial_fill` is absent; zero-price guard skips refund (manual reconcile owns it); +2 tests |
+| 95 (atomic lock) | P1 | Cubic + Greptile | `b0ead48` | `_check_atomic_lock(None)` now returns `error`; `app.py` wires `orders_repo` through to `perform_startup_health_check`; +1 regression test |
+| 99 (max_tokens) | P1 | Cubic | `19e7632` | `MarketStateStore.__init__` validates explicit `max_tokens` > 0; +1 parametrized test |
+| 92 (size tick) | P1 | Cubic | `a5ad12f` | `clob_v2_gateway.submit_marketable_order` quantizes size with fixed `0.01` (`_SIZE_QUANTIZATION`), price with market tick; +1 regression test |
+| 103 (canary sed) | P1 | Cubic | `7490cc6` | `set_or_append_cap` helper replaces or appends missing `BUY_MAX_AMOUNT` / `MAX_DAILY_SPEND_USDC`; +2 sandboxed tests |
+| 103 (eval) | P2 | Cubic | `23d2d19` | `run()` uses `"$@"` instead of `eval "$*"`; call sites converted to positional args |
+| 99 (typed config) | P2 | Cubic | `645300f` | `RiskConfig.risk_price_cache_max_size` exposes typed cap; both `RiskPriceCache()` call sites in `riskMonitor.py` read it; env fallback kept as legacy adapter inside `RiskPriceCache.__init__`; +3 tests |
+
+**Real safety bugs caught by the review (5):**
+- ephemeral UUID broke retry idempotency (#94)
+- partial-cancel fallback over-refunded full notional including filled portion (#97 Greptile)
+- partial-cancel with unresolved price over-refunded too (#97 Cubic)
+- atomic-lock gate silently degraded to warning when `orders_repo` not wired (#95)
+- canary mode silently failed to set caps when secrets.env lacked the keys (#103)
+
+**Tests run.** Full suite: 2254 passed, 5 skipped. `compileall` clean.
+CI-shape verification (with `data/bot_state.db` moved aside): all 119
+tests across the 8 touched test files pass.
+
+## Release-gate cleanup (5 commits, suite all green)
+
+**Status:** PR #105 fully green on all 8 CI checks — unit, lint, docker
+smoke, release-gate, Greptile, cubic. The release-gate failures
+documented earlier as "pre-existing, unrelated" were unblocked once
+the unit fix landed and CI ran release-gate for the first time on the
+branch. All 7 failures were stale-test issues against stricter
+production code; no production logic changed.
+
+| Failure | Commit | Cause |
+|---|---|---|
+| `test_cache_ttl_invalidation::test_invalidate_clears_all_snapshots` | `2d5800b` | Test called `invalidate()` and expected tick cleared; `invalidate()` deliberately keeps tick (own-fill semantic), `evict()` is the full-clear contract |
+| `test_cli_redacted_config` x2 | `bd7f192` | `load_config` rejected Python 3.13; patched `_runtime_python_supported` like other tests do |
+| `test_near_one_exit::test_tick_fires_sell_after_dwell_elapsed` | `0df3bd3` | Live-mode coordinator gate (issue #70) requires a coordinator; test now marks config as paper to exercise the direct `ExecutionService.execute` path |
+| `test_readiness_aggregator::test_strict_passes_when_all_subsystems_ok` | `c03717e` | `_STRICT_REQUIRED_KEYS` gained `drift_ok`; helper now sets it |
+| `test_sizing_metadata_driven` x2 | `3aee7e7` | Tests assumed integer taker_min; `_taker_min_tokens` quantizes to 4 decimals (1.0102 at price 0.99) so inputs were tweaked to actually exercise upsize/below-min branches |
+
+**Tests run.** `pytest -m release_gate`: 133 passed, 1 skipped. Full
+suite: 2254 passed, 5 skipped. CI: all 8 checks green on push
+`3aee7e7`.

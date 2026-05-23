@@ -28,11 +28,25 @@ Used by:
 from __future__ import annotations
 
 import logging
+import os
 import time
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from decimal import Decimal
 from threading import RLock
 from typing import Any
+
+
+def _env_int(name: str, default: int) -> int:
+    """Read a non-negative int env override, falling back to ``default``."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+        return value if value > 0 else default
+    except (TypeError, ValueError):
+        return default
 
 _logger = logging.getLogger("MarketStateStore")
 
@@ -157,8 +171,23 @@ class MarketStateStore:
     behind an async service, but keeping the store sync is simple and safe.
     """
 
-    def __init__(self) -> None:
-        self._states: dict[str, TokenMarketState] = {}
+    def __init__(self, *, max_tokens: int | None = None) -> None:
+        # Issue #99: bound the per-process token state to prevent unbounded
+        # memory growth on a long-running bot watching many markets. Oldest-
+        # inserted entries are evicted first (insertion-order LRU). Active
+        # tokens are unaffected because each WSS/REST update re-touches the
+        # state via _ensure_state_locked which re-inserts at the back.
+        if max_tokens is not None:
+            # PR #105 review: validate explicit overrides. max_tokens=0
+            # evicts every insert; negative values crash the eviction loop.
+            if not isinstance(max_tokens, int) or max_tokens <= 0:
+                raise ValueError(
+                    f"max_tokens must be a positive int, got {max_tokens!r}"
+                )
+            self._max_tokens = max_tokens
+        else:
+            self._max_tokens = _env_int("MARKET_STATE_MAX_TOKENS", 5000)
+        self._states: OrderedDict[str, TokenMarketState] = OrderedDict()
         self._lock = RLock()
         self._last_ws_heartbeat_monotonic: float | None = None
         self._last_ws_pong_monotonic: float | None = None
@@ -184,6 +213,17 @@ class MarketStateStore:
         if state is None:
             state = TokenMarketState(token_id=token_id)
             self._states[token_id] = state
+            # Issue #99: bounded cache — evict oldest insertion when over cap.
+            while len(self._states) > self._max_tokens:
+                evicted_id, _ = self._states.popitem(last=False)
+                _logger.debug(
+                    "market_state_store_evicted | token_id=%s reason=max_tokens cap=%d",
+                    evicted_id, self._max_tokens,
+                )
+        else:
+            # Touch on access: move to MRU end so eviction targets truly cold
+            # tokens, not active ones that happen to have been seen first.
+            self._states.move_to_end(token_id)
         return state
 
     # ------------------------------------------------------------------

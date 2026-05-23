@@ -26,7 +26,12 @@ def _make_config(*, threshold: str = "0.99", dwell: int = 60, check: int = 1) ->
             dwell_seconds=dwell,
             check_interval=check,
         ),
-        execution=SimpleNamespace(slippage_tolerance=2.0),
+        # ``paper_trade_only=True`` keeps the service in non-live mode so the
+        # ExecutionService fallback path (the one this test exercises) is
+        # taken instead of the coordinator-required live path that landed
+        # with issue #70.
+        execution=SimpleNamespace(slippage_tolerance=2.0, paper_trade_only=True),
+        dry_run=True,
     )
 
 
