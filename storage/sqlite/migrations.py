@@ -10,6 +10,21 @@ def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
     return {str(r[1]) for r in rows}
 
 
+def _exec_each(conn: sqlite3.Connection, script: str) -> None:
+    """Run each ``;``-terminated statement in *script* via ``conn.execute``.
+
+    ``conn.executescript`` issues an implicit COMMIT before executing,
+    which breaks any outer transaction (e.g. the BEGIN IMMEDIATE wrapping
+    ``apply_migrations``). Splitting and dispatching per-statement keeps
+    the outer transaction intact so the whole migration is atomic.
+    """
+    # Naive ``;`` split is safe for our DDL — no embedded semicolons in
+    # string literals here. If that ever changes, switch to a real parser.
+    for stmt in script.split(";"):
+        if stmt.strip():
+            conn.execute(stmt)
+
+
 def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
     row = conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1",
@@ -472,7 +487,8 @@ def _ensure_risk_triggers_table(conn: sqlite3.Connection) -> None:
 
 def _ensure_legacy_tables(conn: sqlite3.Connection) -> None:
     """Keep legacy tables available while active path is migrated."""
-    conn.executescript(
+    _exec_each(
+        conn,
         """
         CREATE TABLE IF NOT EXISTS user_positions (
             wallet_address TEXT NOT NULL,
@@ -571,7 +587,8 @@ def _ensure_legacy_tables(conn: sqlite3.Connection) -> None:
 
 
 def _ensure_order_reservations_table(conn: sqlite3.Connection) -> None:
-    conn.executescript(
+    _exec_each(
+        conn,
         """
         CREATE TABLE IF NOT EXISTS order_reservations (
             id TEXT PRIMARY KEY,
@@ -666,18 +683,35 @@ def _ensure_positions_ledger_pk(conn: sqlite3.Connection) -> None:
 
 
 def apply_migrations(conn: sqlite3.Connection) -> None:
-    _ensure_order_reservations_table(conn)
-    _ensure_orders_table(conn)
-    _ensure_fills_table(conn)
-    _ensure_positions_table(conn)
-    _ensure_processed_trades_table(conn)
-    _ensure_cursors_table(conn)
-    _ensure_leaders_table(conn)
-    _drop_redemptions_table(conn)
-    _ensure_market_structure_events_table(conn)
-    _ensure_risk_blocks_table(conn)
-    _ensure_risk_triggers_table(conn)
-    _ensure_legacy_tables(conn)
-    _ensure_positions_ledger_pk(conn)
-    apply_discovery_migrations(conn)
-    conn.commit()
+    """Apply the full schema migration atomically.
+
+    Wrapped in BEGIN IMMEDIATE so the whole pipeline is one transaction:
+    if any step raises, every CREATE / ALTER / INSERT from this call is
+    rolled back. A half-applied schema is impossible — a crashed boot
+    leaves the DB in its pre-call state, and the next boot starts the
+    pipeline from scratch.
+    """
+    # sqlite3 in PEP 249 mode opens an implicit transaction on the first
+    # write; flush anything pending so our BEGIN IMMEDIATE is clean.
+    if conn.in_transaction:
+        conn.commit()
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        _ensure_order_reservations_table(conn)
+        _ensure_orders_table(conn)
+        _ensure_fills_table(conn)
+        _ensure_positions_table(conn)
+        _ensure_processed_trades_table(conn)
+        _ensure_cursors_table(conn)
+        _ensure_leaders_table(conn)
+        _drop_redemptions_table(conn)
+        _ensure_market_structure_events_table(conn)
+        _ensure_risk_blocks_table(conn)
+        _ensure_risk_triggers_table(conn)
+        _ensure_legacy_tables(conn)
+        _ensure_positions_ledger_pk(conn)
+        apply_discovery_migrations(conn)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
