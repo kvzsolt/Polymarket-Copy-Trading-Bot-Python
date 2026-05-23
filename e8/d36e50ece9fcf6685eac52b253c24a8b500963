@@ -1,0 +1,26 @@
+tests/test_config.py
+  s_40eab60fc22f44::t_074e5de9b38c02 200-206
+config/app_config.py
+  s_40eab60fc22f44::t_09978697b1058e 187-208,215-233
+  s_40eab60fc22f44::t_a0bf63128966ff 823-838
+tests/test_private_key_file_path_guard.py
+  s_40eab60fc22f44::t_b87d1d0b745f28 1-21,24-30,32-46,48-60,62-71,73-74
+  s_40eab60fc22f44::t_c69f8bc0deb34b 31,47,61,72
+  s_40eab60fc22f44::t_6fe7c5e947f2ba 22-23
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "e8d36e50ece9fcf6685eac52b253c24a8b500963",
+  "prompts": {},
+  "sessions": {
+    "s_40eab60fc22f44": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "75ccb144-a9df-45dd-bd80-c6e6ed5d9e12",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
