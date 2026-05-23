@@ -401,3 +401,24 @@ only because prior dev runs had created and migrated the file.
 **Tests run.** Full suite: 2254 passed, 5 skipped. `compileall` clean.
 CI-shape verification (with `data/bot_state.db` moved aside): all 119
 tests across the 8 touched test files pass.
+
+## Release-gate cleanup (5 commits, suite all green)
+
+**Status:** PR #105 fully green on all 8 CI checks — unit, lint, docker
+smoke, release-gate, Greptile, cubic. The release-gate failures
+documented earlier as "pre-existing, unrelated" were unblocked once
+the unit fix landed and CI ran release-gate for the first time on the
+branch. All 7 failures were stale-test issues against stricter
+production code; no production logic changed.
+
+| Failure | Commit | Cause |
+|---|---|---|
+| `test_cache_ttl_invalidation::test_invalidate_clears_all_snapshots` | `2d5800b` | Test called `invalidate()` and expected tick cleared; `invalidate()` deliberately keeps tick (own-fill semantic), `evict()` is the full-clear contract |
+| `test_cli_redacted_config` x2 | `bd7f192` | `load_config` rejected Python 3.13; patched `_runtime_python_supported` like other tests do |
+| `test_near_one_exit::test_tick_fires_sell_after_dwell_elapsed` | `0df3bd3` | Live-mode coordinator gate (issue #70) requires a coordinator; test now marks config as paper to exercise the direct `ExecutionService.execute` path |
+| `test_readiness_aggregator::test_strict_passes_when_all_subsystems_ok` | `c03717e` | `_STRICT_REQUIRED_KEYS` gained `drift_ok`; helper now sets it |
+| `test_sizing_metadata_driven` x2 | `3aee7e7` | Tests assumed integer taker_min; `_taker_min_tokens` quantizes to 4 decimals (1.0102 at price 0.99) so inputs were tweaked to actually exercise upsize/below-min branches |
+
+**Tests run.** `pytest -m release_gate`: 133 passed, 1 skipped. Full
+suite: 2254 passed, 5 skipped. CI: all 8 checks green on push
+`3aee7e7`.
