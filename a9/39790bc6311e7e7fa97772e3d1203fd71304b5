@@ -1,0 +1,26 @@
+services/accountingService.py
+  s_40eab60fc22f44::t_749f13be12cc13 89
+  s_40eab60fc22f44::t_ef7695e0a33edb 110-123,125-135
+tests/test_positions_ledger_token_id_pk.py
+  s_40eab60fc22f44::t_cf802f06eaa9d2 44,46,49-84,86,89-101,103-111
+  s_40eab60fc22f44::t_ce88cecc962f5a 1-43,45,47-48,85,87-88,102
+storage/sqlite/migrations.py
+  s_40eab60fc22f44::t_ecc2f295b52181 594-653,667
+  s_40eab60fc22f44::t_318c22efc17379 534
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "a939790bc6311e7e7fa97772e3d1203fd71304b5",
+  "prompts": {},
+  "sessions": {
+    "s_40eab60fc22f44": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "75ccb144-a9df-45dd-bd80-c6e6ed5d9e12",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
