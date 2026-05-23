@@ -83,6 +83,17 @@ class AsyncHttpClient:
                             "error": repr(exc),
                         },
                     )
+                # Don't burn the retry budget on terminal 4xx responses.
+                # 4xx (except 429 rate-limit) is the venue saying "this
+                # request is wrong" — retrying with the same payload
+                # produces the same 4xx 4 attempts later, burning
+                # ~7 seconds and clouding logs. Status 429 stays in the
+                # retry loop because backoff is the prescribed response
+                # to rate-limit signals.
+                if isinstance(exc, aiohttp.ClientResponseError):
+                    status = exc.status
+                    if 400 <= status < 500 and status != 429:
+                        raise
                 if attempt == self.retry_policy.attempts:
                     raise
                 delay = min(
