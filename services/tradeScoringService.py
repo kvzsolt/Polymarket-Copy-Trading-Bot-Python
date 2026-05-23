@@ -5,9 +5,13 @@ from dataclasses import dataclass
 from typing import Any, TYPE_CHECKING
 
 from config import env as env_mod
+from utils.logger import get_logger
 
 if TYPE_CHECKING:
     from config.app_config import AppConfig
+
+
+logger = get_logger("TradeScoringService")
 
 
 def _clamp(value: float, low: float = 0.0, high: float = 1.0) -> float:
@@ -35,8 +39,19 @@ class TradeScore:
     details: dict[str, Any]
 
 
+_ENV_FALLBACK_WARNED = False
+
+
 class TradeScoringService:
-    """Score trade quality before copy execution."""
+    """Score trade quality before copy execution.
+
+    Production code MUST pass typed ``AppConfig``. The ``config=None``
+    fallback exists only for legacy test fixtures that still construct
+    the service without DI; it loads the same scoring constants from
+    ``env_mod.ENV``. Hitting that branch in a live process emits a
+    once-per-process WARNING so operators see the misconfigured
+    bootstrap in logs rather than silently running on env defaults.
+    """
 
     def __init__(self, config: AppConfig | None = None) -> None:
         self._config = config
@@ -49,6 +64,15 @@ class TradeScoringService:
             self._near_res_price = config.execution.near_resolution_gate_price
             self._near_res_max_age = config.execution.near_resolution_max_age_seconds
         else:
+            global _ENV_FALLBACK_WARNED
+            if not _ENV_FALLBACK_WARNED:
+                _ENV_FALLBACK_WARNED = True
+                logger.warning(
+                    "trade_scoring_env_fallback_active | typed AppConfig was "
+                    "not injected; reading COPY_* / NEAR_RESOLUTION_* env vars "
+                    "directly. Production bootstrap must construct "
+                    "TradeScoringService(config=<AppConfig>)."
+                )
             env = env_mod.ENV
             self._max_age_seconds = float(env.get("COPY_MAX_SIGNAL_AGE_SECONDS", 120.0))
             self._max_drift_pct = float(env.get("COPY_MAX_PRICE_DRIFT_PCT", 6.0))
