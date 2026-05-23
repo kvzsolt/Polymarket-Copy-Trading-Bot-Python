@@ -812,6 +812,45 @@ class MarketStateStore:
         with self._lock:
             self._states.pop(token_id, None)
 
+    def invalidate_sizing_decision(self, token_id: str) -> None:
+        """Mark token's sizing-derived state stale after a tick-size change.
+
+        Pre-fix: ``clients/market_ws.py:_handle_tick_size_change`` called
+        ``_call_cache_optional("invalidate_sizing_decision", asset_id)``
+        but no method by that name existed on MarketStateStore — the
+        helper silently returned ``False`` and any sizing decision derived
+        from the old tick could be reused unchanged.
+
+        The handler order is:
+          (1) on_tick_size_change(asset_id, tick)   — store new tick
+          (2) _mark_asset_dirty(asset_id, ...)      — sets state.dirty
+          (3) invalidate_sizing_decision(asset_id)  — THIS METHOD
+
+        Because step 1 has already landed the FRESH tick, this method
+        must NOT clear ``tick_size`` or ``min_order_size``. Instead it
+        documents the contract: the dirty flag set in step 2 signals to
+        sizing-derived caches (e.g. PriceCache, idempotency keystore)
+        that any decision computed with the previous tick is now invalid
+        and must be re-derived from the freshly-stored tick.
+
+        Today this is effectively a marker / wiring point — the method
+        EXISTS so ``_call_cache_optional`` returns True (and the
+        existing dirty flag carries the freshness signal). Future
+        sizing-derived caches can plug into this hook without changing
+        the WSS handler.
+        """
+        with self._lock:
+            state = self._states.get(token_id)
+            if state is None:
+                return
+            # Defensive: ensure the dirty flag is set with a sizing-
+            # specific reason so any downstream consumer reading
+            # ``dirty_reason`` can attribute the invalidation correctly.
+            if not state.dirty:
+                state.dirty = True
+            state.dirty_reason = "tick_size_change_invalidate_sizing"
+            state.mark_updated()
+
     def invalidate_all(self) -> None:
         """Full wipe for reconnect bootstrap — clears quote, book, and tick."""
         with self._lock:
