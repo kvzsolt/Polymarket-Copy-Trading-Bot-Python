@@ -240,3 +240,72 @@ async def test_auto_release_aborted_when_position_size_matches_order():
 
     assert released is False
     assert reservation.releases == []
+
+
+# ---------------------------------------------------------------------------
+# Issue #96 — unsupported / inconclusive probes must not auto-release.
+# The audit specifically called out get_orders_for_market being optional:
+# when the SDK does not expose it, the probe is inconclusive and (with the
+# default require_all_probes_clean=True) the reservation must stay locked.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_auto_release_aborts_when_get_orders_for_market_unsupported():
+    """When the SDK lacks get_orders_for_market the probe is inconclusive;
+    require_all_probes_clean=True (the default) must abort the release so
+    the reservation stays locked rather than being freed off partial evidence."""
+    orders = _OrdersRepo()
+    positions = _PositionsRepo(local_size="0")
+    reservation = _ReservationService()
+    # list_orders=None → _gateway() deletes get_orders_for_market so the
+    # probe reports "not_supported" and is counted as inconclusive.
+    gw = _gateway(order_status="absent", fills=[], list_orders=None)
+    assert not hasattr(gw, "get_orders_for_market")
+
+    svc = ReconciliationService(
+        orders_repo=orders,
+        fills_repo=None,
+        positions_repo=positions,
+        reservation_service=reservation,
+        clob_gateway=gw,
+    )
+    released = await svc._maybe_auto_release_ambiguous(
+        _record(),
+        side="BUY",
+        order_confirmation_cfg=_cfg(),
+    )
+
+    assert released is False
+    assert reservation.releases == []
+    # The order row must NOT have been transitioned to auto_released_ambiguous.
+    assert not any(c["status"] == "auto_released_ambiguous" for c in orders.update_calls)
+
+
+@pytest.mark.asyncio
+async def test_auto_release_aborts_when_fills_throw_delayed_api():
+    """get_fills timing out / raising counts as a probe error; with
+    auto_release_max_probe_errors=0 (default safe stance) the release
+    aborts and the reservation stays locked. Models a delayed venue fills
+    endpoint that would otherwise be silently treated as 'clean'."""
+    orders = _OrdersRepo()
+    positions = _PositionsRepo(local_size="0")
+    reservation = _ReservationService()
+    gw = _gateway(order_status="absent", list_orders=[])
+    gw.get_fills = AsyncMock(side_effect=TimeoutError("fills_endpoint_slow"))
+
+    svc = ReconciliationService(
+        orders_repo=orders,
+        fills_repo=None,
+        positions_repo=positions,
+        reservation_service=reservation,
+        clob_gateway=gw,
+    )
+    released = await svc._maybe_auto_release_ambiguous(
+        _record(),
+        side="BUY",
+        order_confirmation_cfg=_cfg(),
+    )
+
+    assert released is False
+    assert reservation.releases == []
