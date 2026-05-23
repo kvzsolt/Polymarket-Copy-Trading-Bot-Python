@@ -1,0 +1,26 @@
+tests/test_collateral_address_validation.py
+  s_40eab60fc22f44::t_c7cc7466ed83e5 1-77
+tests/test_collateral_readiness.py
+  s_40eab60fc22f44::t_692f69432c06a2 60-61,74-75,87-88,100-101,146-147
+  s_40eab60fc22f44::t_1fbf756f4b7597 118-119,130-131
+services/collateral_readiness.py
+  s_40eab60fc22f44::t_6802b5a42afe80 133-158,163-164,171-175,177-179
+utils/createClobClient.py
+  s_40eab60fc22f44::t_5f90fde913130f 614-625,629-630
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "b6d5a0bca806abafd4dd7d5af79001a5d03d2c07",
+  "prompts": {},
+  "sessions": {
+    "s_40eab60fc22f44": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "75ccb144-a9df-45dd-bd80-c6e6ed5d9e12",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
