@@ -626,24 +626,22 @@ async def risk_monitor_loop(
                                     "runtimeKey": runtime_key,
                                 },
                             )
-                            closed_pos = pm.track_sell(
+                            pm.track_sell(
                                 condition_id,
                                 fill_price,
                                 fill_tokens,
                                 asset=token_id,
                                 reason=trigger,
                             )
-                            if closed_pos is not None and hasattr(context, "position_coordinator"):
-                                try:
-                                    context.position_coordinator.release_scope(
-                                        PositionScope(
-                                            user_id=context.user_id,
-                                            condition_id=condition_id,
-                                            token_id=token_id,
-                                        )
-                                    )
-                                except Exception:
-                                    pass
+                            # NOTE: coordinator-scope release belongs to
+                            # risk_monitor_loop_for_contexts (which receives
+                            # a TradingContext). The pre-fix block here
+                            # referenced an undefined ``context`` name and
+                            # only "worked" because the outer bare
+                            # ``except Exception`` silently swallowed the
+                            # NameError on every full close. Removed —
+                            # the new context-aware loop is the only path
+                            # that should hold a coordinator scope.
                             tracker.record_sell(
                                 condition_id=condition_id,
                                 price=fill_price,
