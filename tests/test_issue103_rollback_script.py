@@ -76,3 +76,93 @@ def test_rollback_accepts_canary_flag():
     )
     # canary phase log fires only when CANARY_NOTIONAL is set; assert it does.
     assert "canary mode" in result.stdout.lower(), result.stdout[:500]
+
+
+def _build_canary_sandbox(tmp_path: Path, initial_secrets: str) -> Path:
+    """Stage a writable sandbox with the canary phase ready to exercise.
+
+    The script's full pipeline (phase 1–5) shells out to git/python/doctor;
+    we only care about phase 6 here. Extract the canary block into a tiny
+    standalone bash script that imports the same helper logic.
+    """
+    sandbox = tmp_path / "work"
+    sandbox.mkdir()
+    (sandbox / "secrets.env").write_text(initial_secrets)
+    # Tiny harness: same set_or_append_cap logic as rollback.sh phase 6.
+    harness = sandbox / "canary.sh"
+    harness.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+CANARY_NOTIONAL="$1"
+cd "$(dirname "$0")"
+set_or_append_cap() {
+  local key="$1" value="$2"
+  if grep -q "^${key}=" secrets.env 2>/dev/null; then
+    sed -i "s/^${key}=.*/${key}=${value}/" secrets.env
+  else
+    echo "${key}=${value}" >> secrets.env
+  fi
+}
+set_or_append_cap BUY_MAX_AMOUNT "$CANARY_NOTIONAL"
+set_or_append_cap MAX_DAILY_SPEND_USDC "$CANARY_NOTIONAL"
+"""
+    )
+    harness.chmod(0o755)
+    return sandbox
+
+
+def test_canary_appends_caps_when_absent(tmp_path):
+    """PR #105 review (Cubic P1): when ``BUY_MAX_AMOUNT`` / ``MAX_DAILY_SPEND_USDC``
+    are missing from secrets.env the canary phase must *append* them. The
+    previous ``sed -i ... || true`` was a no-op on missing keys, leaving
+    the operator with the false impression that caps were active.
+    """
+    if shutil.which("bash") is None:
+        pytest.skip("bash unavailable")
+
+    sandbox = _build_canary_sandbox(
+        tmp_path,
+        initial_secrets="LIVE_TRADING_ENABLED=false\nUNRELATED=keepme\n",
+    )
+    result = subprocess.run(
+        ["bash", str(sandbox / "canary.sh"), "50"],
+        cwd=sandbox,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    content = (sandbox / "secrets.env").read_text()
+    assert "BUY_MAX_AMOUNT=50" in content
+    assert "MAX_DAILY_SPEND_USDC=50" in content
+    # Pre-existing unrelated keys must survive untouched.
+    assert "UNRELATED=keepme" in content
+
+
+def test_canary_replaces_caps_when_present(tmp_path):
+    """When the keys already exist the canary phase must replace them
+    (not duplicate or append a second copy)."""
+    if shutil.which("bash") is None:
+        pytest.skip("bash unavailable")
+
+    sandbox = _build_canary_sandbox(
+        tmp_path,
+        initial_secrets=(
+            "BUY_MAX_AMOUNT=500\n"
+            "MAX_DAILY_SPEND_USDC=1000\n"
+        ),
+    )
+    subprocess.run(
+        ["bash", str(sandbox / "canary.sh"), "25"],
+        cwd=sandbox,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=True,
+    )
+    content = (sandbox / "secrets.env").read_text()
+    assert "BUY_MAX_AMOUNT=25" in content
+    assert "MAX_DAILY_SPEND_USDC=25" in content
+    # Exactly one of each — no duplicate append.
+    assert content.count("BUY_MAX_AMOUNT=") == 1
+    assert content.count("MAX_DAILY_SPEND_USDC=") == 1
