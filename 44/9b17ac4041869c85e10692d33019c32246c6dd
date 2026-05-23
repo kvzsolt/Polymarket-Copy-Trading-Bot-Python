@@ -1,0 +1,13 @@
+tests/test_issue70_reservations_intent_lifecycle.py
+  ai_agent 258-259,289-290,429-430,468-469
+services/traderDiscoveryService.py
+  ai_agent 585
+tests/test_discovery_wiring.py
+  ai_agent 235-236
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "449b17ac4041869c85e10692d33019c32246c6dd",
+  "prompts": {}
+}
