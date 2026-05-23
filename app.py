@@ -20,8 +20,17 @@ try:
     rehydrate_env()
 except Exception as exc:  # pragma: no cover
     import sys
+    import traceback
 
-    print(f"[WARNING] Failed to load runtime env: {exc}", file=sys.stderr)
+    # Pre-fix this was a WARNING-and-continue. A secrets-load failure
+    # (missing python-dotenv, permission error on secrets.env, malformed
+    # runtime env file) silently let the bot proceed with un-hydrated
+    # ENV; in the worst case a partial env from a prior process let
+    # validate_runtime_env appear to pass on a stale snapshot. Boot
+    # failure is the correct fail-closed response.
+    print(f"[FATAL] Failed to load runtime env: {exc}", file=sys.stderr)
+    traceback.print_exc(file=sys.stderr)
+    sys.exit(1)
 
 from bootstrap import build_app
 from config.app_config import EnvValidationError
