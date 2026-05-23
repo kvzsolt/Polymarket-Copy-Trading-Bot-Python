@@ -304,9 +304,14 @@ class ClobClientWrapper:
             logger.warning("HTTP fallback failed for %s: %s", asset, redact_error_detail(exc))
             return None
 
-    async def get_min_order_size(self, asset: str) -> float:
+    async def get_min_order_size(self, asset: str) -> Decimal:
+        # Return Decimal. ``MarketMeta.min_order_size`` is already
+        # Decimal; the previous ``float()`` cast lost precision at the
+        # boundary and violated CLAUDE.md "no floats in sizing logic".
+        # No callers exist today (grep clean), so this is a free type
+        # tightening.
         meta = await self.get_market_meta(asset)
-        return float(meta.min_order_size)
+        return meta.min_order_size
 
     def get_orders(self, *args: Any, **kwargs: Any) -> Any:
         return self.client.get_orders(*args, **kwargs)
