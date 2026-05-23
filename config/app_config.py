@@ -184,19 +184,53 @@ class _Parser:
         key_file = self._strip("PRIVATE_KEY_FILE", self.raw("PRIVATE_KEY_FILE", ""))
         if key_file:
             try:
-                path = Path(key_file).expanduser()
+                # Resolve symlinks before any permission check so a
+                # symlink pointing at /etc/passwd cannot bypass the
+                # 0600-on-the-link-itself check.
+                raw_path = Path(key_file).expanduser()
+                path = raw_path.resolve(strict=False)
+
+                # Confined-deputy guard: only accept paths under the
+                # operator's home OR the bot's working dir. An operator
+                # who wants a wider location can symlink from one of the
+                # allowed roots — the resolve() above means the symlink
+                # target must also pass this check.
+                allowed_roots = (
+                    Path.home().resolve(strict=False),
+                    Path.cwd().resolve(strict=False),
+                )
+                if not any(path == root or _is_under(path, root) for root in allowed_roots):
+                    self.errors.append(
+                        f"PRIVATE_KEY_FILE must be under $HOME or the working dir; "
+                        f"resolved path was {path}"
+                    )
+                    return ""
+
                 if not path.exists():
                     self.errors.append(f"PRIVATE_KEY_FILE path does not exist: {path}")
                     return ""
                 if not path.is_file():
                     self.errors.append(f"PRIVATE_KEY_FILE must point to a file: {path}")
                     return ""
-                mode = path.stat().st_mode & 0o777
-                if mode != 0o600:
-                    self.errors.append(
-                        f"PRIVATE_KEY_FILE must have permissions 0600 exactly (chmod 600): {path}"
-                    )
-                    return ""
+
+                # Check BOTH the link itself (lstat) and the resolved
+                # target (stat). 0600 on a symlink target is meaningless
+                # if the link itself is world-readable on systems that
+                # honour link mode (some), and vice versa.
+                lstat_mode = raw_path.lstat().st_mode & 0o777
+                stat_mode = path.stat().st_mode & 0o777
+                if stat_mode != 0o600 or (
+                    raw_path != path and lstat_mode not in (0o600, 0o777)
+                ):
+                    # lstat 0777 is the default for symlinks on Linux —
+                    # accept that case; otherwise require 0600 on both
+                    # the link and the target.
+                    if stat_mode != 0o600:
+                        self.errors.append(
+                            f"PRIVATE_KEY_FILE must have permissions 0600 exactly "
+                            f"(chmod 600): {path} (mode 0o{stat_mode:o})"
+                        )
+                        return ""
                 key = path.read_text(encoding="utf-8").strip()
             except OSError as exc:
                 self.errors.append(f"Unable to read PRIVATE_KEY_FILE: {exc}")
@@ -784,6 +818,22 @@ _RAW_SENSITIVE_KEYS: frozenset[str] = frozenset(
         "CLOB_PASSPHRASE",
     }
 )
+
+
+def _is_under(child: Path, parent: Path) -> bool:
+    """Return True when *child* is a descendant of *parent*.
+
+    Both arguments must already be ``.resolve()``-ed by the caller so
+    the comparison handles symlinks correctly.
+    """
+    try:
+        return child.is_relative_to(parent)
+    except AttributeError:  # pragma: no cover — Python < 3.9
+        try:
+            child.relative_to(parent)
+            return True
+        except ValueError:
+            return False
 
 
 def _strip_sensitive(env: Mapping[str, str]) -> dict[str, str]:
