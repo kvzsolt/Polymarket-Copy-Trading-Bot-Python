@@ -1,0 +1,21 @@
+storage/sqlite/fills_repo.py
+  s_40eab60fc22f44::t_cf873fa500f01d 45-52,55,75-79
+tests/test_fills_repo_idempotent_insert.py
+  s_40eab60fc22f44::t_0a5bc98e351420 1-69
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "4cbf6d6814e1cd04d7f12bbb38eeb717aa55eb1d",
+  "prompts": {},
+  "sessions": {
+    "s_40eab60fc22f44": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "75ccb144-a9df-45dd-bd80-c6e6ed5d9e12",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
