@@ -358,3 +358,12 @@ class NearOneExitService:
                 getattr(result, "error", None),
             )
             self._firing.discard((condition_id, token_id))
+            # Reset the dwell timer too. Pre-fix only _firing was cleared;
+            # the dwell state's ``first_seen_above_ts`` stayed set, so the
+            # very next _tick would immediately exceed dwell_seconds and
+            # call _fire again. On a non-retryable rejection that becomes
+            # a tight retry loop bounded only by check_interval (e.g. 10s).
+            # Require a fresh dwell window before the next attempt.
+            dwell_state = self._dwell.get((condition_id, token_id))
+            if dwell_state is not None:
+                dwell_state.first_seen_above_ts = None
