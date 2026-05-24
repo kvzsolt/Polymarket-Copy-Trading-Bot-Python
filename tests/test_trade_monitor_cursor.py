@@ -15,7 +15,7 @@ from services.tradeMonitor import (
     init,
     trade_monitor,
 )
-from storage.sqlite.cursors_repo import TradeCursor
+from storage.postgres.cursors_repo import TradeCursor
 
 # Shared test fixtures for DI refactor
 _MOCK_READINESS = MagicMock()
@@ -299,9 +299,12 @@ async def test_trade_monitor_emits_heartbeat_when_monitor_is_healthy():
     leader_wallet = "0x1111111111111111111111111111111111111111"
     on_trade = AsyncMock()
     cursor_store = MagicMock()
-    cursor_store.get_cursor.return_value = TradeCursor(timestamp=0, tx_hash="", trade_id=None)
+    cursor_store.get_cursor = AsyncMock(
+        return_value=TradeCursor(timestamp=0, tx_hash="", trade_id=None)
+    )
+    cursor_store.set_cursor = AsyncMock()
 
-    with patch("services.tradeMonitor.LeaderCursorStore", return_value=cursor_store), \
+    with patch("services.tradeMonitor.LeaderCursorStore.create", new_callable=AsyncMock, return_value=cursor_store), \
          patch("services.tradeMonitor.init", new_callable=AsyncMock), \
          patch("services.tradeMonitor.fetch_trade_data", new_callable=AsyncMock, return_value=(True, 17)), \
          patch("services.tradeMonitor._monitor_loop_healthy", return_value=True), \
@@ -329,9 +332,12 @@ async def test_trade_monitor_skips_heartbeat_when_monitor_is_unhealthy():
     leader_wallet = "0x1111111111111111111111111111111111111111"
     on_trade = AsyncMock()
     cursor_store = MagicMock()
-    cursor_store.get_cursor.return_value = TradeCursor(timestamp=0, tx_hash="", trade_id=None)
+    cursor_store.get_cursor = AsyncMock(
+        return_value=TradeCursor(timestamp=0, tx_hash="", trade_id=None)
+    )
+    cursor_store.set_cursor = AsyncMock()
 
-    with patch("services.tradeMonitor.LeaderCursorStore", return_value=cursor_store), \
+    with patch("services.tradeMonitor.LeaderCursorStore.create", new_callable=AsyncMock, return_value=cursor_store), \
          patch("services.tradeMonitor.init", new_callable=AsyncMock), \
          patch("services.tradeMonitor.fetch_trade_data", new_callable=AsyncMock, return_value=(False, 0)), \
          patch("services.tradeMonitor._monitor_loop_healthy", return_value=False), \
