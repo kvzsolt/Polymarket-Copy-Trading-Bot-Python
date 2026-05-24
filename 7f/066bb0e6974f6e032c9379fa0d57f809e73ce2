@@ -1,0 +1,20 @@
+services/order_sizing.py
+  s_93e0a4797804d9::t_b4e0ee181d5a17 116-121
+  s_93e0a4797804d9::t_b914515bf9f654 226-230
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "7f066bb0e6974f6e032c9379fa0d57f809e73ce2",
+  "prompts": {},
+  "sessions": {
+    "s_93e0a4797804d9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a8782b68-4941-47de-a34c-6d351fdda0ef",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
