@@ -8,7 +8,7 @@ from typing import Any, TYPE_CHECKING
 from config.env import ENV, get_funder_address
 from services.leaderCursorStore import LeaderCursorStore
 from services.metrics import metrics
-from storage.sqlite.cursors_repo import TradeCursor
+from storage.postgres.cursors_repo import TradeCursor
 from utils.fetchData import fetch_data
 
 if TYPE_CHECKING:
