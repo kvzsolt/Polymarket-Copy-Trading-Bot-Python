@@ -422,3 +422,46 @@ production code; no production logic changed.
 **Tests run.** `pytest -m release_gate`: 133 passed, 1 skipped. Full
 suite: 2254 passed, 5 skipped. CI: all 8 checks green on push
 `3aee7e7`.
+
+## Postgres cutover Phase A + Bootup banner Phase B (PR #107, 12 commits)
+
+**Status:** `feat/postgres-migration` opened as PR #107 against `develop-fix`. Phase A foundation (asyncpg pool + full schema + 12/12 repo ports) complete. Phase B (boot snapshot + banner + history persistence) complete. Phase A5 (call-site sweep across remaining ~70 files) deferred to follow-up — dual-stack `connect_db()` keeps SQLite live during transition.
+
+### Phase A — Postgres cutover
+
+| Slice | Commit | What |
+|---|---|---|
+| PG-A1 | `5e44153` | `docker-compose.yml` (postgres:16-alpine + bot service), `asyncpg>=0.30`, `testcontainers[postgres]>=4.0`, `DATABASE_URL` env + `DatabaseConfig.dsn/pool_min/pool_max/command_timeout` |
+| PG-A2 | `140abdf` | `storage/postgres/connection.py` (singleton pool, idempotent init), dual-stack `connect_db()` (PG primary, SQLite legacy fallback) |
+| PG-A3+A8 | `7a38be4` | `storage/postgres/migrations.py` (28 tables / 14 indexes / partial unique on `orders(order_id)`, 3-col PK on `positions`, native PG `boolean`, `jsonb`, `timestamptz DEFAULT now()`), `tests/release_gate/test_postgres_migration.py` (4 release-gate tests) |
+| PG-A4 (cursors/fills/risk_blocks) | `89656d5` | Async ports with `SELECT FOR UPDATE` (cursors regress-guard), `ON CONFLICT DO NOTHING RETURNING id` (fills dedup), CASE-preserved operator clears (risk_blocks Batch 4 invariant) |
+| PG-A4 (positions) | `0f093ef` | `async with conn.transaction()` + `SELECT FOR UPDATE` replaces SQLite `BEGIN IMMEDIATE` — verified 4×SELL-5 concurrent from size=20 → 0 (would be 15 without serialisation) |
+| PG-A4 (risk_triggers/market_structure/leaders/reservations) | `8def69b` | Bool conversion for `discovered_leaders.active`, `market_structure_events.remapped`, `discovery_markets.{active,resolved,neg_risk}`; reservations concurrent capacity test: 2 concurrent \$150 vs \$200 cap → exactly 1 accepts |
+| PG-A4 (orders, 780 LOC) | `4fd9755` | Atomic submission-lock (1/5 concurrent winners), lost-update guard on `update_submission_status` (2 concurrent patches both land in merged jsonb), terminal-state guard on `mark_processed_trade`, full `persist_execution_atomically` with rollback on duplicate fill |
+| PG-A4 (discovery, 613 LOC) | `b9ac51b` | jsonb tolerance (dict or str), `IN(...)` → `= ANY($N::text[])`, dynamic WHERE with explicit `$N` index tracking, `MAX` → `GREATEST` for monotonic `last_seen_ts` guard |
+
+### Phase B — Bootup banner + history
+
+| Slice | Commit | What |
+|---|---|---|
+| PG-B1+B2 | `6b4c085` | `discovery_position_snapshots.wallet_role` ('leader' \| 'own') + idempotent `ADD COLUMN IF NOT EXISTS` migration + `(wallet_role, snapshot_ts DESC)` index. `services/discovery/position_snapshot_service.py` (fetch + persist + return in-memory `SnapshotResult`, fail-soft per wallet) |
+| PG-B3 | `bb8d08e` | `print_traders_youre_copying` + `print_your_positions` panels in `runtime_summary.py`. Math helpers: `_safe_pct` (zero-denom guard), `_leader_aggregate_gain`. Rich-coloured PnL, cents formatting, top-N truncation |
+| PG-B4 | `27a46c2` | Wired into `app.py` between health check + legacy banner. Reuses `_guarded_leader_fetch` for rate-limited boot fetch. Fail-soft fall-through to legacy panels on any pipeline failure |
+| PG-B5 | `272e765` | 25 new tests across `tests/test_position_snapshot_service.py` (12) + `tests/test_runtime_summary_banner.py` (13). Math verified by hand: +26.67%, +40%, +67.59%, +62.50%, -14.29%, +133.33%, -25.00% |
+
+### Verification
+
+| Check | Result |
+|---|---|
+| `pytest -q` (unit) | 2343 passed (+25 from baseline), 5 skipped, 2 pre-existing errors unchanged |
+| `pytest -m release_gate -o asyncio_mode=auto -q` | 160 passed, 1 skipped |
+| `ruff check --select=F,E --ignore=E501,F401,F841,E402,E741,E731 --exclude=legacy,test.py,bootstrap.py .` | clean |
+| `bandit -r services/discovery/position_snapshot_service.py orchestrators/runtime_summary.py` | 0 medium+ |
+| End-to-end against `postgres:16-alpine` testcontainer | every repo verified, atomicity invariants explicitly exercised |
+| Banner smoke test on canned data | math matches hand calc |
+
+### Deferred to follow-up
+
+- **PG-A5**: sweep remaining ~70 files that import `storage.sqlite.*` directly. Dual-stack `connect_db()` keeps SQLite live so existing call-sites continue working during transition.
+- **PG-A6**: test-fixture cutover via `testcontainers` conftest — mechanical but voluminous.
+- **PG-A7**: delete `storage/sqlite/` + remove `sqlite3` imports — gated on PG-A5 + PG-A6.
