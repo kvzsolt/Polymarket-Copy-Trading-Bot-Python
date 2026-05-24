@@ -5,12 +5,15 @@ import argparse
 import asyncio
 import json
 from decimal import Decimal
+from typing import TYPE_CHECKING
 
 from config.app_config import EnvValidationError, load_config
 from config.env import rehydrate_env
 from config.runtime_env import load_runtime_env
 from services.multiUserConfig import load_runtime_users
-from storage.sqlite.connection import create_connection
+
+if TYPE_CHECKING:
+    import asyncpg
 
 
 def register_drift_command(subparsers: argparse._SubParsersAction) -> None:
@@ -41,23 +44,26 @@ def _load_config_or_fail():
         return None
 
 
-def _list_persisted_positions(db_path: str, *, user_id: str | None) -> list[dict]:
+async def _list_persisted_positions(
+    pool: "asyncpg.Pool", *, user_id: str | None
+) -> list[dict]:
+    """List persisted positions for the optional user filter.
+
+    Takes the asyncpg pool so callers (CLI entry + tests) own pool
+    lifecycle. The bot's long-running process owns schema lifecycle via
+    ``connect_db()`` so no existence check is needed here.
+    """
     query = """
         SELECT user_id, condition_id, token_id, leader_id, size_tokens, avg_entry_price
         FROM positions
     """
     params: list = []
     if user_id is not None:
-        query += " WHERE user_id = ?"
+        query += " WHERE user_id = $1"
         params.append(user_id)
 
-    with create_connection(db_path) as conn:
-        exists = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='positions'"
-        ).fetchone()
-        if not exists:
-            return []
-        rows = conn.execute(query, tuple(params)).fetchall()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(query, *params)
 
     persisted: list[dict] = []
     for row in rows:
@@ -142,61 +148,71 @@ async def _run_check_async(args: argparse.Namespace) -> int:
     checked_users: list[str] = []
 
     from orchestrators.runtime_bootstrap import fetch_live_positions
+    from storage.postgres.connection import init_pool, shutdown_pool
 
-    for runtime_user in runtime_users:
-        wallet_addr = runtime_user.wallet.funder_address or ""
-        if not wallet_addr:
-            continue
-        checked_users.append(runtime_user.user_id)
-
-        persisted = _list_persisted_positions(
-            config.database.db_path, user_id=runtime_user.user_id
-        )
-        try:
-            live = await fetch_live_positions(wallet_addr)
-        except Exception:
-            live = []
-
-        live_index = _live_size_index(live)
-        seen_keys: set[tuple[str, str]] = set()
-
-        for record in persisted:
-            key = (record["condition_id"], record["token_id"])
-            seen_keys.add(key)
-            persisted_size = Decimal(record["size_tokens"])
-            live_size = live_index.get(key, Decimal("0"))
-            drift_kind = _classify_drift(persisted_size, live_size, epsilon)
-            if drift_kind is None:
+    pool = await init_pool(
+        config.database.dsn,
+        min_size=1,
+        max_size=2,
+        command_timeout_seconds=15.0,
+    )
+    try:
+        for runtime_user in runtime_users:
+            wallet_addr = runtime_user.wallet.funder_address or ""
+            if not wallet_addr:
                 continue
-            drifts.append(
-                {
-                    "user_id": record["user_id"],
-                    "condition_id": record["condition_id"],
-                    "token_id": record["token_id"],
-                    "leader_id": record["leader_id"],
-                    "persisted_size": str(persisted_size),
-                    "live_size": str(live_size),
-                    "delta": str(persisted_size - live_size),
-                    "kind": drift_kind,
-                }
-            )
+            checked_users.append(runtime_user.user_id)
 
-        for key, live_size in live_index.items():
-            if key in seen_keys or live_size <= epsilon:
-                continue
-            condition_id, token_id = key
-            drifts.append(
-                {
-                    "user_id": runtime_user.user_id,
-                    "condition_id": condition_id,
-                    "token_id": token_id,
-                    "leader_id": None,
-                    "persisted_size": "0",
-                    "live_size": str(live_size),
-                    "delta": str(-live_size),
-                    "kind": "untracked_live",
-                }
+            persisted = await _list_persisted_positions(
+                pool, user_id=runtime_user.user_id
             )
+            try:
+                live = await fetch_live_positions(wallet_addr)
+            except Exception:
+                live = []
+
+            live_index = _live_size_index(live)
+            seen_keys: set[tuple[str, str]] = set()
+
+            for record in persisted:
+                key = (record["condition_id"], record["token_id"])
+                seen_keys.add(key)
+                persisted_size = Decimal(record["size_tokens"])
+                live_size = live_index.get(key, Decimal("0"))
+                drift_kind = _classify_drift(persisted_size, live_size, epsilon)
+                if drift_kind is None:
+                    continue
+                drifts.append(
+                    {
+                        "user_id": record["user_id"],
+                        "condition_id": record["condition_id"],
+                        "token_id": record["token_id"],
+                        "leader_id": record["leader_id"],
+                        "persisted_size": str(persisted_size),
+                        "live_size": str(live_size),
+                        "delta": str(persisted_size - live_size),
+                        "kind": drift_kind,
+                    }
+                )
+
+            for key, live_size in live_index.items():
+                if key in seen_keys or live_size <= epsilon:
+                    continue
+                condition_id, token_id = key
+                drifts.append(
+                    {
+                        "user_id": runtime_user.user_id,
+                        "condition_id": condition_id,
+                        "token_id": token_id,
+                        "leader_id": None,
+                        "persisted_size": "0",
+                        "live_size": str(live_size),
+                        "delta": str(-live_size),
+                        "kind": "untracked_live",
+                    }
+                )
+    finally:
+        await shutdown_pool()
 
     output = {
         "checked_users": len(checked_users),
