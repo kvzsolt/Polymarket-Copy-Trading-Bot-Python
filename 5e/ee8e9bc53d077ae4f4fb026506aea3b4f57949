@@ -1,0 +1,34 @@
+services/discovery/reconstructed_positions_service.py
+  s_40eab60fc22f44::t_8d5af86df3045c 6,22,31,40
+services/discovery/scoring_input_service.py
+  s_93e0a4797804d9::t_794189b7f5d741 39,48,55-59,61,63,77-78,87,97,103-104
+  s_40eab60fc22f44::t_cda28fccab2972 20
+services/discovery/raw_feature_joiner.py
+  s_93e0a4797804d9::t_914067e4e2eb2d 28
+  s_93e0a4797804d9::t_82e797d5600465 46,65,72,80,85
+  s_93e0a4797804d9::t_fb8a321f530365 86
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "5eee8e9bc53d077ae4f4fb026506aea3b4f57949",
+  "prompts": {},
+  "sessions": {
+    "s_40eab60fc22f44": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "75ccb144-a9df-45dd-bd80-c6e6ed5d9e12",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    },
+    "s_93e0a4797804d9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a8782b68-4941-47de-a34c-6d351fdda0ef",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
