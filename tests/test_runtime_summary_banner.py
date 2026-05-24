@@ -124,9 +124,9 @@ def test_traders_panel_renders_canonical_header(capture_console) -> None:
 
 def test_traders_panel_marks_failed_leader(capture_console) -> None:
     result = SnapshotResult(
-        leader_snapshots={"0xfail": []},
+        leader_snapshots={"0xbroken": []},
         own_snapshots=[],
-        leaders_failed=["0xfail"],
+        leaders_failed=["0xbroken"],
         own_failed=False,
     )
     runtime_summary.print_traders_youre_copying(result)
