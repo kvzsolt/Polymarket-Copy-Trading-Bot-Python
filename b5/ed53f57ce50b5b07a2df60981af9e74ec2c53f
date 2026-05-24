@@ -1,0 +1,9 @@
+docs/full-rework-progress.md
+  ai_agent 468-489
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "b5ed53f57ce50b5b07a2df60981af9e74ec2c53f",
+  "prompts": {}
+}
