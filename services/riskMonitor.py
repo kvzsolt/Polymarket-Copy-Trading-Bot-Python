@@ -141,8 +141,10 @@ async def _fetch_live_risk_position_size(
             break
     return live_size
 
-# Track token_ids we've already warned about to avoid log spam every cycle.
-_warned_invalid_tokens: set[str] = set()
+# Per-context "already warned about this token" set lives in context.extra
+# under this key. Module-level state would leak warning suppression across
+# users in multi-user runtimes and grow unbounded.
+_WARNED_INVALID_TOKENS_KEY = "warned_invalid_tokens"
 _DEFAULT_RISK_PRICE_SEMAPHORE = 8
 _MIN_RISK_CACHE_STALE_SECONDS = 0.75
 
@@ -218,7 +220,7 @@ async def _fetch_and_store_price(
     async with semaphore:
         try:
             price_data = await client.get_price(token_id, "SELL")
-        except Exception as exc:
+        except Exception:
             if circuit_breaker is not None:
                 circuit_breaker.record_failure()
             raise
@@ -555,12 +557,14 @@ async def risk_monitor_loop(
                                 )
                                 fraction = 1.0
 
-                        sell_size = pos.size_tokens * max(0.0, min(1.0, fraction))
+                        # Decimal sizing to avoid float drift on tick-granular sizes.
+                        fraction_d = max(Decimal("0"), min(Decimal("1"), Decimal(str(fraction))))
+                        sell_size = (Decimal(str(pos.size_tokens)) * fraction_d).quantize(Decimal("0.00000001"))
                         if sell_size <= 0:
                             continue
                         logger.info(
                             f"Executing risk {trigger} for {condition_id[:12]}…/{token_id[:12]} "
-                            f"tokens={sell_size:.4f}"
+                            f"tokens={sell_size}"
                         )
                         if not funder_address:
                             logger.error(
@@ -572,10 +576,10 @@ async def risk_monitor_loop(
                             leader_id=pos.leader_wallet or "risk-monitor",
                             token_id=token_id,
                             side="SELL",
-                            amount=Decimal(str(sell_size)),
+                            amount=sell_size,
                             max_slippage_bps=slippage_bps,
                             reason=trigger,
-                            signal_id=f"risk:{trigger}:{condition_id}:{int(time.time())}",
+                            signal_id=f"risk:{trigger}:{condition_id}:{time.time_ns()}",
                             condition_id=condition_id,
                             recovery_metadata={
                                 "leader_notional_at_trigger": float(Decimal(str(pos.size_tokens)) * Decimal(str(current_price))),
@@ -622,24 +626,22 @@ async def risk_monitor_loop(
                                     "runtimeKey": runtime_key,
                                 },
                             )
-                            closed_pos = pm.track_sell(
+                            pm.track_sell(
                                 condition_id,
                                 fill_price,
                                 fill_tokens,
                                 asset=token_id,
                                 reason=trigger,
                             )
-                            if closed_pos is not None and hasattr(context, "position_coordinator"):
-                                try:
-                                    context.position_coordinator.release_scope(
-                                        PositionScope(
-                                            user_id=context.user_id,
-                                            condition_id=condition_id,
-                                            token_id=token_id,
-                                        )
-                                    )
-                                except Exception:
-                                    pass
+                            # NOTE: coordinator-scope release belongs to
+                            # risk_monitor_loop_for_contexts (which receives
+                            # a TradingContext). The pre-fix block here
+                            # referenced an undefined ``context`` name and
+                            # only "worked" because the outer bare
+                            # ``except Exception`` silently swallowed the
+                            # NameError on every full close. Removed —
+                            # the new context-aware loop is the only path
+                            # that should hold a coordinator scope.
                             tracker.record_sell(
                                 condition_id=condition_id,
                                 price=fill_price,
@@ -866,10 +868,11 @@ async def run_risk_check_for_context(context: TradingContext) -> None:
     # Read enable_tiered from context extra (set by bootstrap from config)
     enable_tiered = str(context.extra.get("enable_balance_tiered_policy", "false")).lower() in ("1", "true", "yes")
 
+    warned_tokens: set[str] = context.extra.setdefault(_WARNED_INVALID_TOKENS_KEY, set())
     for pos in context.positions_repo.list_open_positions(context.user_id):
         if not is_valid_clob_token_id(pos.token_id):
-            if pos.token_id not in _warned_invalid_tokens:
-                _warned_invalid_tokens.add(pos.token_id)
+            if pos.token_id not in warned_tokens:
+                warned_tokens.add(pos.token_id)
                 logger.warning(
                     "Skipping position with invalid token_id=%r (condition=%s) — "
                     "likely stale placeholder; close or delete manually",
@@ -965,7 +968,7 @@ async def run_risk_check_for_context(context: TradingContext) -> None:
                     amount=sell_size,
                     max_slippage_bps=slippage_bps,
                     reason=reason,
-                    signal_id=f"risk:{reason}:{pos.condition_id}:{int(time.time())}",
+                    signal_id=f"risk:{reason}:{pos.condition_id}:{time.time_ns()}",
                     condition_id=pos.condition_id,
                     recovery_metadata=_block_metadata,
                 )
@@ -1204,9 +1207,25 @@ async def risk_monitor_loop_for_contexts(
         for context, result in zip(contexts, refresh_results, strict=False):
             if isinstance(result, Exception):
                 logger.error(f"Risk price cache refresh failed user={context.user_id}: {result}")
-        for context in contexts:
-            try:
-                await run_risk_check_for_context(context)
-            except Exception as exc:
-                logger.error(f"Risk loop error user={context.user_id}: {exc}")
+        # Pre-fix: sequential iteration blocked every context behind a
+        # stalled venue call for any single one. Parallel gather mirrors
+        # the refresh-tasks path above so one slow context never starves
+        # the others. asyncio.wait_for per context puts a hard ceiling
+        # on any single per-context check so a hung venue call cannot
+        # block the loop indefinitely — the timeout budget is the same
+        # poll_interval, which is the maximum any one cycle can take.
+        ceiling = max(poll_interval, 5.0)
+        check_tasks = [
+            asyncio.wait_for(run_risk_check_for_context(c), timeout=ceiling)
+            for c in contexts
+        ]
+        check_results = await asyncio.gather(*check_tasks, return_exceptions=True)
+        for context, result in zip(contexts, check_results, strict=False):
+            if isinstance(result, asyncio.TimeoutError):
+                logger.error(
+                    f"Risk loop TIMEOUT user={context.user_id} "
+                    f"after {ceiling:.1f}s — context skipped this cycle"
+                )
+            elif isinstance(result, Exception):
+                logger.error(f"Risk loop error user={context.user_id}: {result}")
         await asyncio.sleep(poll_interval)

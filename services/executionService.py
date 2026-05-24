@@ -245,9 +245,18 @@ class ExecutionService:
         else:
             self.circuit_breaker = _CLOB_CIRCUIT
 
-        self._submit_semaphore = asyncio.Semaphore(
-            _positive_int(config.raw.get("EXECUTION_SUBMIT_CONCURRENCY", 2), 2)
+        # Typed concurrency cap; raw env fallback survives only for legacy
+        # callers that bypass AppConfig.execution.
+        submit_concurrency = getattr(
+            getattr(config, "execution", None),
+            "execution_submit_concurrency",
+            None,
         )
+        if not isinstance(submit_concurrency, int) or submit_concurrency <= 0:
+            submit_concurrency = _positive_int(
+                config.raw.get("EXECUTION_SUBMIT_CONCURRENCY", 2), 2
+            )
+        self._submit_semaphore = asyncio.Semaphore(submit_concurrency)
 
     def _save_submission(
         self,
@@ -772,9 +781,16 @@ class ExecutionService:
                 )
 
         if not hasattr(self, "_submit_semaphore"):
-            self._submit_semaphore = asyncio.Semaphore(
-                _positive_int(self._config.raw.get("EXECUTION_SUBMIT_CONCURRENCY"), 2)
+            cap = getattr(
+                getattr(self._config, "execution", None),
+                "execution_submit_concurrency",
+                None,
             )
+            if not isinstance(cap, int) or cap <= 0:
+                cap = _positive_int(
+                    self._config.raw.get("EXECUTION_SUBMIT_CONCURRENCY"), 2
+                )
+            self._submit_semaphore = asyncio.Semaphore(cap)
 
         async with self._submit_semaphore:
             pending_since = time.time()

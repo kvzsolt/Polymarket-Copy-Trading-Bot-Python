@@ -1,12 +1,10 @@
 """Tests for permission ladder tier evaluation."""
 from __future__ import annotations
 
-import pytest
 
 from services.discovery.permission_ladder import (
     FollowTier,
     PromotionThresholds,
-    TierDecision,
     evaluate_tier,
 )
 

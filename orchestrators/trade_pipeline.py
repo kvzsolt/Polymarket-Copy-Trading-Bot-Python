@@ -19,7 +19,6 @@ from services.metrics import metrics
 from domain.position_key import PositionKey
 from services.positionActionCoordinator import PositionScope  # noqa: F401  back-compat alias
 from services.riskEngine import headroom_for_buy
-from services.riskEngine import active_policy
 from storage.sqlite.fills_repo import FillRecord
 from storage.sqlite.positions_repo import PositionRecord
 from utils import is_valid_clob_token_id
@@ -1887,7 +1886,19 @@ async def execute_trades(
                     snapshot = _refreshed
                 regime = getattr(context, "balance_regime", None)
                 if regime is not None:
-                    regime_decision = regime.check_buy(
+                    # Greptile P1 (PR #106 review): replace the non-atomic
+                    # ``check_buy → submit → record_buy`` triple with the
+                    # atomic ``await regime.reserve(...)`` so two concurrent
+                    # BUYs cannot both pass the cap against the same
+                    # ``daily_spent`` snapshot. ``reserve`` atomically checks
+                    # the cap AND records the hold under ``order_id=trade_key``;
+                    # the post-submit branches below either ``commit`` (on
+                    # accepted submission) or ``release`` (on
+                    # duplicate_ignored / not accepted / exception paths) the
+                    # held reservation. The proven atomic semantics live in
+                    # ``tests/test_balance_regime_atomic_reserve.py``.
+                    regime_decision = await regime.reserve(
+                        order_id=trade_key,
                         notional_usdc=gated_notional,
                         free_cash_usdc=snapshot.free_cash_usdc,
                     )
@@ -2175,6 +2186,16 @@ async def execute_trades(
 
             if exec_result.status == "duplicate_ignored":
                 metrics.inc("duplicate_order_prevented_total", labels=labels)
+                # Greptile P1: roll back the regime reservation taken at the
+                # pre-submit ``reserve()`` so the daily cap is not double-
+                # consumed when the coordinator dedup-fires.
+                if signal.side == "BUY":
+                    _regime = getattr(context, "balance_regime", None)
+                    if _regime is not None:
+                        try:
+                            await _regime.release(order_id=trade_key)
+                        except Exception:  # pragma: no cover — defensive
+                            pass
                 context.orders_repo.mark_processed_trade(
                     trade_key=trade_key,
                     user_id=context.user_id,
@@ -2195,12 +2216,14 @@ async def execute_trades(
                 )
                 continue
 
-            # Phase 4 — record BUY notional against the rolling 24h spend ceiling
-            # at submission time. Fires on BOTH the immediate-fill path and the
-            # accepted-no-fill path so every submitted BUY consumes the daily
-            # cap. Duplicate submissions are filtered above (`continue`); a
-            # rejection (`not exec_result.accepted`) never enters the ledger.
-            # SELLs do not consume the daily-spend budget.
+            # Phase 4 — commit the BUY reservation held by the pre-submit
+            # ``reserve()`` against the rolling 24h spend ceiling. Fires on
+            # BOTH the immediate-fill path and the accepted-no-fill path so
+            # every submitted BUY consumes the daily cap; ``commit`` with
+            # ``actual_filled_usdc`` returns any unfilled remainder. A
+            # rejection (``not exec_result.accepted``) instead RELEASES the
+            # reservation a few lines below. SELLs do not consume the
+            # daily-spend budget.
             if exec_result.accepted and signal.side == "BUY":
                 regime = getattr(context, "balance_regime", None)
                 if regime is not None:
@@ -2210,15 +2233,16 @@ async def execute_trades(
                             _fill_px = Decimal(
                                 str(exec_result.avg_price or signal.price or 0)
                             )
-                            regime.record_buy(
-                                _filled_amt * _fill_px,
-                                order_id=exec_result.order_id,
+                            await regime.commit(
+                                order_id=trade_key,
+                                actual_filled_usdc=_filled_amt * _fill_px,
                             )
                         else:
-                            regime.record_buy(
-                                Decimal(str(exec_result.requested_amount or 0)),
-                                order_id=exec_result.order_id,
-                            )
+                            # Accepted but no immediate fill — keep the full
+                            # reservation in place (commit with None preserves
+                            # the held notional until a later reconciliation
+                            # path resolves the order).
+                            await regime.commit(order_id=trade_key)
                     except Exception:  # pragma: no cover — defensive
                         pass
 
@@ -2261,6 +2285,17 @@ async def execute_trades(
                 continue
 
             if not exec_result.accepted:
+                # Greptile P1: roll back the regime reservation taken at the
+                # pre-submit ``reserve()`` so a rejected BUY does not consume
+                # the daily cap. SELLs never reserved against the cap so the
+                # release is BUY-only.
+                if signal.side == "BUY":
+                    _regime = getattr(context, "balance_regime", None)
+                    if _regime is not None:
+                        try:
+                            await _regime.release(order_id=trade_key)
+                        except Exception:  # pragma: no cover — defensive
+                            pass
                 metrics.inc("execution_failures_total", labels={**labels, "reason": exec_result.status})
                 log_trade_skip(
                     logger,
@@ -2313,42 +2348,38 @@ async def execute_trades(
                 fail_reason = exec_result.error or exec_result.status
                 live_synced_size: Decimal | None = None
                 if signal.side == "SELL" and "insufficient_balance" in str(fail_reason).lower():
-                    existing = context.positions_repo.get_position(
-                        context.user_id,
-                        signal.condition_id,
-                        token_id=signal.token_id,
-                    )
-                    previous_local_size = getattr(existing, "size_tokens", Decimal("0")) if existing else Decimal("0")
-                    
-                    live_synced_size = await _sync_sell_position_from_live_holdings(
-                        context,
-                        leader_id=leader_id,
+                    # CLAUDE.md non-negotiable: SELL drift reconciliation must
+                    # release the stranded SELL reservation in addition to
+                    # syncing the local position. Pre-fix this branch called
+                    # _sync_sell_position_from_live_holdings, which updates
+                    # the position table but does NOT release any active
+                    # reservation — leaving the SELL reservation "active"
+                    # forever and blocking all future SELLs on the scope.
+                    #
+                    # Route through ReconciliationService.reconcile_position_drift
+                    # which owns both the position update AND the
+                    # reservation release on its drift-deleted path.
+                    drift_reconciler = get_reconciliation_service(context)
+                    drift_result = await drift_reconciler.reconcile_position_drift(
+                        user_id=context.user_id,
                         condition_id=signal.condition_id,
                         token_id=signal.token_id,
+                        leader_id=leader_id,
+                        live_position_fetcher=lambda: _fetch_live_position_size(
+                            context, token_id=signal.token_id
+                        ),
+                        reservation_service=context.extra.get("reservation_service"),
                     )
-                    if live_synced_size is not None:
+                    live_synced_size = drift_result.get("live_size")
+                    if drift_result.get("reconciled"):
                         fail_reason = (
-                            f"{fail_reason} | local position synced to live holdings={float(live_synced_size):.4f}"
+                            f"{fail_reason} | drift_reconciled action={drift_result.get('action')} "
+                            f"live_size={live_synced_size}"
                         )
-                        audit = getattr(context, "audit_logger", None)
-                        if audit is not None:
-                            try:
-                                action = "deleted" if live_synced_size <= Decimal("1e-12") else "shrunk"
-                                audit.log_event(
-                                    "manual_position_drift_reconciled",
-                                    {
-                                        "user_id": context.user_id,
-                                        "leader_id": leader_id,
-                                        "condition_id": signal.condition_id,
-                                        "token_id": signal.token_id,
-                                        "previous_local_size": str(previous_local_size),
-                                        "live_size": str(live_synced_size),
-                                        "action": action,
-                                        "source": "trade_pipeline",
-                                    },
-                                )
-                            except Exception:
-                                pass
+                    elif drift_result.get("action") == "no_drift":
+                        fail_reason = f"{fail_reason} | no_local_drift_detected"
+                    # ReconciliationService emits the manual_position_drift_*
+                    # audit events itself; no second emit here.
                 if non_terminal_retry_exhausted:
                     fail_reason = (
                         f"{fail_reason} "

@@ -24,12 +24,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from services.executionService import (
     ExecutionRequest,
-    ExecutionResult,
     ExecutionService,
     _idempotency_key,
     _is_pending_submission_expired,
     _is_retry_blocking_existing,
-    _build_pending_response,
     _sanitize_submission_request,
     _sanitize_submission_response,
     _truncate_text,

@@ -1,8 +1,6 @@
 """PR 8: structured doctor live readiness gate."""
 from __future__ import annotations
 
-import io
-from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -187,7 +185,6 @@ async def test_doctor_live_passes_when_all_subsystems_wired(tmp_path):
 
 
 def test_console_summary_renders_fix_line(tmp_path):
-    import asyncio
     from bot_cli.commands.doctor import _render_console_summary
 
     fake = {

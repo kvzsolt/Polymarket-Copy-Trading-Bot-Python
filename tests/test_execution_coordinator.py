@@ -1,12 +1,10 @@
 import pytest
-import asyncio
-from typing import Any, Dict
+from typing import Any
 from decimal import Decimal
 from datetime import datetime, timezone
 
 from domain.order_lifecycle import OrderIntent, OrderIntentKey, IntentSide, IntentReason, OrderLifecycleStatus
 from services.execution.coordinator import ExecutionCoordinator, VenueSubmitResult, RetryableVenueError
-from services.execution.state_machine import assert_transition_allowed
 
 class MockReservation:
     def __init__(self, res_id):

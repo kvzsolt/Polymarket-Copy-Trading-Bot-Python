@@ -733,7 +733,6 @@ class TestStaleErrorDebugState:
 
     @pytest.mark.asyncio
     async def test_stale_error_includes_debug_state(self, cache: MarketStateStore) -> None:
-        from unittest.mock import MagicMock
         from services.market_data_service import MarketDataService, MarketDataPolicy, StaleDataError
 
         gateway = MagicMock()

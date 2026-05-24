@@ -112,8 +112,9 @@ def test_observe_price_arms_above_threshold() -> None:
         positions={},
         quote_midpoint=Decimal("0.995"),
     )
+    # observe_price defaults condition_id="" so the key is ("", token).
     svc.observe_price("tok-1", Decimal("0.995"), ts=100.0)
-    assert svc._dwell["tok-1"].first_seen_above_ts == 100.0
+    assert svc._dwell[("", "tok-1")].first_seen_above_ts == 100.0
 
 
 def test_observe_price_clears_below_threshold() -> None:
@@ -123,9 +124,9 @@ def test_observe_price_clears_below_threshold() -> None:
         positions={},
         quote_midpoint=Decimal("0.5"),
     )
-    svc._dwell["tok-1"] = _DwellState(first_seen_above_ts=10.0)
+    svc._dwell[("", "tok-1")] = _DwellState(first_seen_above_ts=10.0)
     svc.observe_price("tok-1", Decimal("0.5"), ts=20.0)
-    assert svc._dwell["tok-1"].first_seen_above_ts is None
+    assert svc._dwell[("", "tok-1")].first_seen_above_ts is None
 
 
 # --- _tick: threshold not crossed → no SELL ---------------------------------
@@ -158,7 +159,7 @@ async def test_tick_no_sell_before_dwell_elapsed() -> None:
     )
     await svc._tick(slippage_bps=200)  # arm
     execute.assert_not_awaited()
-    state = svc._dwell["tok-1"]
+    state = svc._dwell[("0xcond", "tok-1")]
     assert state.first_seen_above_ts is not None
 
 
@@ -175,7 +176,9 @@ async def test_tick_fires_sell_after_dwell_elapsed() -> None:
         quote_midpoint=Decimal("0.995"),
     )
     # Pre-seed dwell so the tick is already past dwell_seconds.
-    svc._dwell["tok-1"] = _DwellState(first_seen_above_ts=time.monotonic() - 120.0)
+    svc._dwell[("0xcond-abc", "tok-1")] = _DwellState(
+        first_seen_above_ts=time.monotonic() - 120.0
+    )
 
     await svc._tick(slippage_bps=200)
     execute.assert_awaited_once()
@@ -202,9 +205,11 @@ async def test_tick_resets_dwell_when_price_drops() -> None:
         positions=positions,
         quote_midpoint=Decimal("0.80"),
     )
-    svc._dwell["tok-1"] = _DwellState(first_seen_above_ts=time.monotonic() - 30.0)
+    svc._dwell[("0xcond", "tok-1")] = _DwellState(
+        first_seen_above_ts=time.monotonic() - 30.0
+    )
     await svc._tick(slippage_bps=200)
-    assert svc._dwell["tok-1"].first_seen_above_ts is None
+    assert svc._dwell[("0xcond", "tok-1")].first_seen_above_ts is None
     execute.assert_not_awaited()
 
 
@@ -222,7 +227,9 @@ async def test_tick_skips_when_held_below_venue_min() -> None:
         tick_min_order_size=Decimal("10"),
     )
     # Arm dwell at exactly now → 0-second dwell is "elapsed".
-    svc._dwell["tok-1"] = _DwellState(first_seen_above_ts=time.monotonic() - 0.001)
+    svc._dwell[("0xcond", "tok-1")] = _DwellState(
+        first_seen_above_ts=time.monotonic() - 0.001
+    )
     await svc._tick(slippage_bps=200)
     execute.assert_not_awaited()
 
@@ -238,11 +245,16 @@ async def test_tick_cleans_dwell_for_closed_positions() -> None:
         positions={},
         quote_midpoint=Decimal("0.995"),
     )
-    svc._dwell["tok-stale"] = _DwellState(first_seen_above_ts=time.monotonic())
-    svc._firing.add("tok-stale")
+    # Stale key must carry a non-empty condition so the cleanup branch
+    # treats it as a tick-seeded entry (cleanup filter preserves
+    # observe_price entries with condition_id="").
+    svc._dwell[("0xstale", "tok-stale")] = _DwellState(
+        first_seen_above_ts=time.monotonic()
+    )
+    svc._firing.add(("0xstale", "tok-stale"))
     await svc._tick(slippage_bps=200)
-    assert "tok-stale" not in svc._dwell
-    assert "tok-stale" not in svc._firing
+    assert ("0xstale", "tok-stale") not in svc._dwell
+    assert ("0xstale", "tok-stale") not in svc._firing
 
 
 # --- loop() short-circuits when disabled ------------------------------------

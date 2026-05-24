@@ -18,7 +18,6 @@ through review but did not pin down with executable assertions.
 from __future__ import annotations
 
 import asyncio
-import time
 from decimal import Decimal
 
 import pytest

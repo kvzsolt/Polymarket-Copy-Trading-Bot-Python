@@ -25,7 +25,6 @@ from domain.order_lifecycle import (
 from integrations.polymarket.errors import TerminalVenueError
 from services.execution.coordinator import (
     ExecutionCoordinator,
-    VenueSubmitResult,
     _is_insufficient_balance_error,
 )
 from services.execution.reconciliation_service import ReconciliationService

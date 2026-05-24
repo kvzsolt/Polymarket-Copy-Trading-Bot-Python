@@ -211,7 +211,12 @@ class ClobClientWrapper:
                 meta, expiry = cached
                 if time.monotonic() < expiry:
                     return meta
-                del self._market_meta_cache[asset]
+                # ``.pop(..., None)`` rather than ``del`` so two
+                # concurrent coroutines that both observed the expired
+                # entry cannot race on the same delete and raise
+                # ``KeyError``. The asyncio.gather call below means
+                # the race is real, not theoretical.
+                self._market_meta_cache.pop(asset, None)
 
         loop = asyncio.get_running_loop()
 
@@ -304,9 +309,14 @@ class ClobClientWrapper:
             logger.warning("HTTP fallback failed for %s: %s", asset, redact_error_detail(exc))
             return None
 
-    async def get_min_order_size(self, asset: str) -> float:
+    async def get_min_order_size(self, asset: str) -> Decimal:
+        # Return Decimal. ``MarketMeta.min_order_size`` is already
+        # Decimal; the previous ``float()`` cast lost precision at the
+        # boundary and violated CLAUDE.md "no floats in sizing logic".
+        # No callers exist today (grep clean), so this is a free type
+        # tightening.
         meta = await self.get_market_meta(asset)
-        return float(meta.min_order_size)
+        return meta.min_order_size
 
     def get_orders(self, *args: Any, **kwargs: Any) -> Any:
         return self.client.get_orders(*args, **kwargs)
@@ -611,9 +621,23 @@ async def create_clob_client(
 
     funder_or_signer = runtime_cfg.funder_address or signer_address or ""
     if funder_or_signer:
+        # Addresses must be set in typed config / env (no defaults). The
+        # collateral check fail-closes on the historically wrong defaults
+        # (Synthetix SNX masquerading as pUSD). Operator-supplied values
+        # are validated by check_collateral_readiness itself.
+        from config.env import ENV as _ENV
+
+        _pusd_addr = (
+            _ENV.get("PUSD_CONTRACT_ADDRESS")
+            or _ENV.get("COLLATERAL_CONTRACT_ADDRESS")
+            or ""
+        )
+        _ctf_addr = _ENV.get("CTF_EXCHANGE_V2_ADDRESS") or ""
         collateral_status = await check_collateral_readiness(
             wallet_address=funder_or_signer,
             rpc_url=runtime_cfg.polygon_rpc_url,
+            pusd_address=_pusd_addr,
+            ctf_exchange_address=_ctf_addr,
         )
         if not collateral_status.ready:
             reasons = "; ".join(collateral_status.failures)

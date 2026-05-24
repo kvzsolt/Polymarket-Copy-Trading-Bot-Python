@@ -18,11 +18,9 @@ from decimal import Decimal
 import pytest
 
 from cache.market_state_store import (
-    BookSnapshot,
     MarketStateStore,
     QuoteSnapshot,
     TickSnapshot,
-    TokenMarketState,
 )
 
 

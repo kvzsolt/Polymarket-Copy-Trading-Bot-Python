@@ -211,11 +211,17 @@ async def test_negative_delta_clamps_to_zero_logs_and_audits(caplog) -> None:
 
 @pytest.mark.asyncio
 async def test_risk_path_flags_negative_delta_anomaly() -> None:
-    svc, orders, fills, positions, audit = _make_service(previous_matched="0")
+    # previous_matched MUST come from the persisted orders row (the
+    # _previous_matched_for_order helper) — not from record["response"].
+    # Pre-fix this test asserted the buggy in-memory source by setting
+    # the orders_repo to "0" and the record to "8"; the fix flipped the
+    # source of truth so the test setup flips too.
+    svc, orders, fills, positions, audit = _make_service(previous_matched="8")
     record = {
         "order_id": ORDER_ID,
         "request": {"signal_id": "risk:abc", "token_id": TOKEN_ID, "reason": "stop_loss"},
-        "response": {"size_matched": "8"},  # previous matched stored on record
+        # ``response`` is intentionally absent — proves we no longer read
+        # previous_matched from the in-memory record on the risk path.
     }
     confirm_fill = await _confirm_factory("5", status="matched")
 

@@ -12,10 +12,9 @@ Coverage:
 
 from __future__ import annotations
 
-import asyncio
 import json
 from decimal import Decimal
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -308,7 +307,7 @@ class TestMarketDataConfig:
             cfg.allow_rest_when_wss_down = True  # type: ignore[misc]
 
     def test_app_config_has_market_data_field(self) -> None:
-        from config.app_config import AppConfig, MarketDataConfig
+        from config.app_config import AppConfig
         import dataclasses
         field_names = {f.name for f in dataclasses.fields(AppConfig)}
         assert "market_data" in field_names

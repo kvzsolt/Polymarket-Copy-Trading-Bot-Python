@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import time
 
-import pytest
 
 from config.app_config import OrderConfirmationConfig
 from services.execution.reconciliation_service import ReconciliationService

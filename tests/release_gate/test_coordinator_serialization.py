@@ -45,10 +45,21 @@ async def test_same_scope_actions_are_serialized() -> None:
     task1 = asyncio.create_task(first())
     task2 = asyncio.create_task(second())
     await enter_a.wait()
+    # Pre-fix the gate only checked ordering; add the locked-state
+    # invariant so a future refactor that replaces asyncio.Lock with a
+    # non-locking primitive (or simply forgets to acquire) is caught
+    # even when execution happens to interleave correctly.
+    assert coord.is_locked(_scope()) is True, (
+        "scope must report locked while task1 holds it"
+    )
     assert order == ["a-enter"]
     leave_a.set()
     await asyncio.gather(task1, task2)
     assert order == ["a-enter", "a-leave", "b-enter", "b-leave"]
+    # After both tasks drain, the scope lock must be released (idle
+    # cleanup tested separately below — re-asserting here ties the
+    # serialization contract to the cleanup contract).
+    assert coord.is_locked(_scope()) is False
 
 
 @pytest.mark.asyncio

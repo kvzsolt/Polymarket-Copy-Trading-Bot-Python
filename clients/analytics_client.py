@@ -7,6 +7,7 @@ so rate-limiting, retries, and timeouts are unified.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from domain.ports.clients import AbstractAnalyticsClient, AbstractHttpClient
@@ -19,10 +20,12 @@ class AnalyticsClient(AbstractAnalyticsClient):
         http: AbstractHttpClient,
         base_url: str = "https://polymarketanalytics.com/api",
         leaderboard_params: str = "",
+        logger: logging.Logger | None = None,
     ):
         self._http = http
         self._base_url = base_url.rstrip("/")
         self._leaderboard_params = leaderboard_params
+        self._logger = logger or logging.getLogger("AnalyticsClient")
 
     async def fetch_top_traders(
         self,
@@ -36,8 +39,18 @@ class AnalyticsClient(AbstractAnalyticsClient):
         sep = "&" if query else ""
         url = f"{self._base_url}/traders-tag-performance?{query}{sep}limit={limit}&offset=0"
         try:
-            data = await self._http.get_json(url, silent=True)
-        except Exception:
+            # Drop silent=True so the AsyncHttpClient retry / 4xx logs
+            # surface — a chronic analytics outage should be visible.
+            data = await self._http.get_json(url)
+        except Exception as exc:
+            # Pre-fix: bare ``except: return []`` masked network errors,
+            # auth failures, and contract changes. The bot would observe
+            # zero top-traders and silently halt discovery with no
+            # breadcrumb.
+            self._logger.warning(
+                "analytics_top_traders_fetch_failed | error=%r — returning empty list",
+                exc,
+            )
             return []
         rows = data.get("data", []) if isinstance(data, dict) else []
         filtered: list[dict[str, Any]] = []

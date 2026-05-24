@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import logging
 import sqlite3
 import time
 from dataclasses import dataclass
@@ -469,40 +468,57 @@ class OrdersRepo(AbstractOrderRepository):
         status: str,
         response_patch: dict[str, Any] | None = None,
     ) -> None:
-        """Update the durable status/response for a venue order submission row."""
+        """Update the durable status/response for a venue order submission row.
+
+        Wrapped in ``BEGIN IMMEDIATE`` so the SELECT-merge-UPDATE chain
+        is atomic against concurrent writers. Pre-fix, the reconciler
+        and the execution service could both read the same
+        ``response_json`` snapshot, merge their separate patches into
+        independent copies, and both UPDATE — last-writer-wins silently
+        dropped one set of merged fields and the final response_json
+        recorded the wrong terminal state.
+        """
         if not order_id:
             return
         response_patch = response_patch or {}
         with create_connection(self.db_path) as conn:
-            row = conn.execute(
-                """
-                SELECT response_json
-                FROM orders
-                WHERE order_id = ?
-                ORDER BY updated_at DESC
-                LIMIT 1
-                """,
-                (order_id,),
-            ).fetchone()
-            if row is None:
-                return
-            existing_response = json.loads(row["response_json"] or "{}") if row["response_json"] else {}
-            merged_response = {**existing_response, **response_patch, "status": status}
-            conn.execute(
-                """
-                UPDATE orders
-                SET status = ?,
-                    response_json = ?,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE order_id = ?
-                """,
-                (
-                    status,
-                    json.dumps(merged_response, sort_keys=True, separators=(",", ":"), default=str),
-                    order_id,
-                ),
-            )
-            conn.commit()
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = conn.execute(
+                    """
+                    SELECT response_json
+                    FROM orders
+                    WHERE order_id = ?
+                    ORDER BY updated_at DESC
+                    LIMIT 1
+                    """,
+                    (order_id,),
+                ).fetchone()
+                if row is None:
+                    conn.commit()
+                    return
+                existing_response = (
+                    json.loads(row["response_json"] or "{}") if row["response_json"] else {}
+                )
+                merged_response = {**existing_response, **response_patch, "status": status}
+                conn.execute(
+                    """
+                    UPDATE orders
+                    SET status = ?,
+                        response_json = ?,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE order_id = ?
+                    """,
+                    (
+                        status,
+                        json.dumps(merged_response, sort_keys=True, separators=(",", ":"), default=str),
+                        order_id,
+                    ),
+                )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
 
     def get_unconfirmed_order_submissions(
         self,
