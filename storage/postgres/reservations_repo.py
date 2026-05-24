@@ -92,6 +92,17 @@ class ReservationsRepo:
         created_at = int(intent.created_at.timestamp())
         async with self._pool.acquire() as conn:
             async with conn.transaction():
+                # greptile P1 + cubic P0/P1: serialise the check-and-
+                # insert window with a transaction-scoped advisory lock
+                # keyed on the user_id. Two concurrent BUY reservations
+                # for the same user serialise here; the second observes
+                # the first's already-committed-in-this-tx row when it
+                # re-reads ``order_reservations``. Released at COMMIT
+                # /ROLLBACK by Postgres automatically.
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1)::bigint)",
+                    f"buy_reservation:{intent.key.user_id}",
+                )
                 rows = await conn.fetch(
                     """
                     SELECT reserved_usdc FROM order_reservations
@@ -124,6 +135,15 @@ class ReservationsRepo:
         created_at = int(intent.created_at.timestamp())
         async with self._pool.acquire() as conn:
             async with conn.transaction():
+                # greptile P1: per-(user, condition, token) advisory
+                # lock serialises concurrent SELL reservations against
+                # the same held position so two cannot both pass the
+                # held-size capacity check.
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1)::bigint)",
+                    f"sell_reservation:{intent.key.user_id}:"
+                    f"{intent.key.condition_id}:{intent.key.token_id}",
+                )
                 rows = await conn.fetch(
                     """
                     SELECT reserved_size FROM order_reservations
