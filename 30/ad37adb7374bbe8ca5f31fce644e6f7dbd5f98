@@ -1,0 +1,19 @@
+bot_cli/commands/positions.py
+  s_93e0a4797804d9::t_0cf0635b9a17d0 1,7,31-33,38,40-42,46-54,67-72,75-76
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "30ad37adb7374bbe8ca5f31fce644e6f7dbd5f98",
+  "prompts": {},
+  "sessions": {
+    "s_93e0a4797804d9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a8782b68-4941-47de-a34c-6d351fdda0ef",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
