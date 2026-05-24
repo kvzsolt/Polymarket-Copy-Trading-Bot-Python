@@ -650,7 +650,7 @@ async def main():
     if purged:
         logger.info("Startup cleanup: purged %s stale records", purged)
 
-    research_capture_service = DiscoveryCaptureService(db_path)
+    research_capture_service = await DiscoveryCaptureService.create()
     leaders_repo = application.leaders_repo
     registry = application.registry
     refresh_interval = application.config.discovery.discovery_interval_seconds
