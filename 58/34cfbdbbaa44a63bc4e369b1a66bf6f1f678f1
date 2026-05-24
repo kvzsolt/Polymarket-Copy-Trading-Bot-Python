@@ -1,0 +1,31 @@
+config/app_config.py
+  s_93e0a4797804d9::t_6f063095980d67 876-896,904-905
+storage/postgres/fills_repo.py
+  s_93e0a4797804d9::t_4169d335a451d8 86-90
+tests/release_gate/test_postgres_migration.py
+  s_93e0a4797804d9::t_ac305f4d6538d7 145-152
+orchestrators/runtime_summary.py
+  s_93e0a4797804d9::t_d5220755925867 318-330
+storage/postgres/leaders_repo.py
+  s_93e0a4797804d9::t_ecf3a928904f2a 100-101,103-105
+services/discovery/position_snapshot_service.py
+  s_93e0a4797804d9::t_53496a87174136 181-184
+  s_93e0a4797804d9::t_bd68dc549c1272 211
+  s_93e0a4797804d9::t_de1f61e1bbb86f 118,123-128,139,146
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.1",
+  "base_commit_sha": "5834cfbdbbaa44a63bc4e369b1a66bf6f1f678f1",
+  "prompts": {},
+  "sessions": {
+    "s_93e0a4797804d9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a8782b68-4941-47de-a34c-6d351fdda0ef",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
