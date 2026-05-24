@@ -1,0 +1,21 @@
+storage/sqlite/reservations_repo.py
+  s_40eab60fc22f44::t_31cb07fde8af9a 242-253,255,257-280
+storage/sqlite/migrations.py
+  s_40eab60fc22f44::t_0630c7f0eefa16 142-149
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "0d1ea76f3ec89204be464a705b77c3702dfb5176",
+  "prompts": {},
+  "sessions": {
+    "s_40eab60fc22f44": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "75ccb144-a9df-45dd-bd80-c6e6ed5d9e12",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
