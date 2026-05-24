@@ -1,0 +1,21 @@
+tests/release_gate/test_postgres_migration.py
+  s_40eab60fc22f44::t_4f2f115728665a 1-176
+storage/postgres/migrations.py
+  s_40eab60fc22f44::t_a3b6ecb7512e84 1,3-8,12-24,32-559,563-569,571-575
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "7a38be414d8aab7e485db959d2407db38f561674",
+  "prompts": {},
+  "sessions": {
+    "s_40eab60fc22f44": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "75ccb144-a9df-45dd-bd80-c6e6ed5d9e12",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
