@@ -1,0 +1,83 @@
+services/execution/coordinator.py
+  s_40eab60fc22f44::t_b8496d5fc82c9c 4,7
+tests/release_gate/test_live_execution_invariants.py
+  s_40eab60fc22f44::t_b8496d5fc82c9c 23
+tests/test_issue70_reservations_intent_lifecycle.py
+  s_40eab60fc22f44::t_b8496d5fc82c9c 16
+tests/test_risk_loop_parallel_timeout.py
+  s_40eab60fc22f44::t_b8496d5fc82c9c 18
+tests/test_config_settings.py
+  s_40eab60fc22f44::t_b8496d5fc82c9c 13
+tests/test_position_math.py
+  s_40eab60fc22f44::t_b8496d5fc82c9c 24
+tests/test_issue68_market_data_cache_wss.py
+  s_40eab60fc22f44::t_b8496d5fc82c9c 19
+tests/test_trade_scoring.py
+  s_40eab60fc22f44::t_b8496d5fc82c9c 8
+services/entryPermissionService.py
+  s_40eab60fc22f44::t_b8496d5fc82c9c 26
+scripts/find_followable_traders.py
+  s_40eab60fc22f44::t_b8496d5fc82c9c 11
+tests/test_reservation_service.py
+  s_40eab60fc22f44::t_b8496d5fc82c9c 5
+tests/test_v2_metadata_and_order_options.py
+  s_40eab60fc22f44::t_b8496d5fc82c9c 14,18
+tests/test_execution_coordinator.py
+  s_40eab60fc22f44::t_b8496d5fc82c9c 2
+tests/test_legacy_env_migration.py
+  s_40eab60fc22f44::t_b8496d5fc82c9c 22
+services/discovery/permission_ladder.py
+  s_40eab60fc22f44::t_b8496d5fc82c9c 20
+tests/test_v31_features.py
+  s_40eab60fc22f44::t_b8496d5fc82c9c 14
+tests/test_entry_permission_service.py
+  s_40eab60fc22f44::t_b8496d5fc82c9c 17
+domain/models.py
+  s_40eab60fc22f44::t_b8496d5fc82c9c 3
+tests/test_clob_v2_market_meta.py
+  s_40eab60fc22f44::t_b8496d5fc82c9c 10
+tests/test_discovery_wiring.py
+  s_40eab60fc22f44::t_b8496d5fc82c9c 6
+tests/test_issue69_order_sizing_idempotency.py
+  s_40eab60fc22f44::t_b8496d5fc82c9c 13-14
+services/riskMonitor.py
+  s_40eab60fc22f44::t_b8496d5fc82c9c 223
+services/order_sizing.py
+  s_40eab60fc22f44::t_b8496d5fc82c9c 23
+tests/test_market_wss_schema_and_degraded.py
+  s_40eab60fc22f44::t_b8496d5fc82c9c 17,310
+tests/test_user_ws_lifecycle.py
+  s_40eab60fc22f44::t_b8496d5fc82c9c 11
+tests/test_reconciliation_service.py
+  s_40eab60fc22f44::t_b8496d5fc82c9c 5
+tests/test_startup_reconcile_failures_surface.py
+  s_40eab60fc22f44::t_b8496d5fc82c9c 19
+services/copyDecisionService.py
+  s_40eab60fc22f44::t_b8496d5fc82c9c 4
+tests/test_phase01_review_b_fixes.py
+  s_40eab60fc22f44::t_b8496d5fc82c9c 24
+services/multiUserConfig.py
+  s_40eab60fc22f44::t_b8496d5fc82c9c 112
+tests/test_trade_pipeline_tiers.py
+  s_40eab60fc22f44::t_b8496d5fc82c9c 14
+tests/test_trade_pipeline_safety.py
+  s_40eab60fc22f44::t_b8496d5fc82c9c 14
+tests/test_phase02_price_cache.py
+  s_40eab60fc22f44::t_b8496d5fc82c9c 21
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "0ce01dee74c364b82861ad6aff56861d2e93543f",
+  "prompts": {},
+  "sessions": {
+    "s_40eab60fc22f44": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "75ccb144-a9df-45dd-bd80-c6e6ed5d9e12",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
