@@ -1,0 +1,24 @@
+tests/test_runtime_summary_banner.py
+  s_40eab60fc22f44::t_43d78057a71efe 127,129
+services/marketStructureService.py
+  s_40eab60fc22f44::t_04be0622bd0a74 1-20,27-33,40-49,51-58,60-67,85,87-93,110,112-114,130,132-133,139-140,143,145-243,250-251,253-263
+tests/test_issue9_market_structure.py
+  s_40eab60fc22f44::t_fcd6b9b4ce869b 3,8-9,28-53
+  s_40eab60fc22f44::t_b1414c0c4937d7 136-222,224-235
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "c489f0bbbcc72173d01efbc56b6d343f3a53638f",
+  "prompts": {},
+  "sessions": {
+    "s_40eab60fc22f44": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "75ccb144-a9df-45dd-bd80-c6e6ed5d9e12",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
