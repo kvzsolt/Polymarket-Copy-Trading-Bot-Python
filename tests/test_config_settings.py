@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -11,7 +10,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from config.env import ENV, EnvValidationError, rehydrate_env
+from config.env import ENV, EnvValidationError
 from config.settings import (
     AppSettings,
     ExecutionSettings,

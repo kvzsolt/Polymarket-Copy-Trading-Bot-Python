@@ -1,9 +1,7 @@
 """Tests for services.circuitBreaker – state transitions and API guard."""
 
 import time
-from unittest.mock import patch
 
-import pytest
 
 from services.circuitBreaker import CircuitBreaker, CircuitOpen, CircuitState
 

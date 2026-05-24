@@ -376,7 +376,17 @@ async def run_doctor_checks(mode: str) -> dict[str, Any]:
             else:
                 ctx.skipped("stale_idempotency", "orders table missing")
     except Exception as exc:
-        ctx.warning("stale_idempotency", f"probe failed: {exc}", "")
+        # Pre-fix: ctx.warning() — a DB corruption / permissions error
+        # silently degraded to WARNING and the doctor's live gate
+        # (which blocks only on status='blocked') silently passed it.
+        # A DB probe failure that prevents us from counting stale
+        # orders is a fail-closed condition: we cannot prove the
+        # idempotency state is safe, therefore live is blocked.
+        ctx.blocked(
+            "stale_idempotency",
+            f"probe failed: {type(exc).__name__}",
+            "investigate DB connectivity + schema before live",
+        )
 
     # ----- RPC ----------------------------------------------------------
     from orchestrators.startup_health import _check_rpc

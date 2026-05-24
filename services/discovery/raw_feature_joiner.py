@@ -16,7 +16,6 @@ from decimal import Decimal
 from domain.discovery_models import (
     OrderbookSnapshot,
     ReconstructedPositionStatus,
-    ReconstructionConfidence,
 )
 from domain.raw_feature_models import (
     DelaySurvivalInputs,

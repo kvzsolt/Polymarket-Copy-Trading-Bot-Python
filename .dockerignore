@@ -1,0 +1,50 @@
+# Keep wallet credentials, local-only runtime overrides, and dev
+# artifacts out of the Docker image. Baking secrets.env into a
+# build layer leaves the key in layer history even if a later
+# step deletes the file.
+secrets.env
+.env
+config/runtime.local.env
+
+# VCS / CI metadata — image does not need them.
+.git/
+.github/
+.gitignore
+
+# Local dev state
+.venv/
+venv/
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Runtime data + logs — mount as volumes, do not embed.
+data/
+log/
+logs/
+
+# Tests + planning docs — not needed in runtime image.
+tests/
+docs/
+reviews/
+audit.md
+plan.md
+*.md
+
+# IDE
+.idea/
+.vscode/
+.kilo/
+.qodo/
+.proxyai/
+.codex
+
+# Misc
+0
+_handle_*
+*.egg-info/

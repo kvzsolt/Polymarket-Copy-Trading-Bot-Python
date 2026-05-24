@@ -287,7 +287,11 @@ class IntentRegistry:
                 reservation.token_shares,
                 extra=scope.log_fields(),
             )
-            return record
+            # Mutable-escape protection (mirror get() and open_intent_for()):
+            # the live ``record`` is held inside ``self._intents`` for
+            # subsequent state transitions, so returning the same object
+            # to the caller would let it mutate state outside the lock.
+            return copy.deepcopy(record)
 
     async def transition(
         self,

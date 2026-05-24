@@ -8,11 +8,10 @@ Validates:
 - Worst-price notional is consistent.
 - Idempotency key changes when effective size, price, tick, token, or condition changes.
 """
-import pytest
 from decimal import Decimal
 
-from services.order_sizing import SizingDecision, size_buy_order, size_sell_order
-from services.idempotency import compute_effective_key, compute_effective_identity, EffectiveOrderIdentity
+from services.order_sizing import size_buy_order, size_sell_order
+from services.idempotency import compute_effective_key, compute_effective_identity
 
 
 # ---------------------------------------------------------------------------

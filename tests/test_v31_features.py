@@ -11,7 +11,7 @@ import unittest
 import importlib.abc
 import importlib.machinery
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 

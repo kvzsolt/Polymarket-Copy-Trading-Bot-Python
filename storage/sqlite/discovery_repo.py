@@ -6,6 +6,7 @@ each public method opens a connection via ``create_connection()``.
 from __future__ import annotations
 
 import json
+import sqlite3
 import time
 from decimal import Decimal
 from typing import Any
@@ -199,7 +200,7 @@ class DiscoveryRepo(AbstractDiscoveryRepository):
                 )
                 conn.commit()
                 return int(cur.lastrowid)
-            except Exception:
+            except sqlite3.IntegrityError:
                 # UNIQUE constraint → duplicate
                 return None
 
@@ -275,7 +276,7 @@ class DiscoveryRepo(AbstractDiscoveryRepository):
                 )
                 conn.commit()
                 return int(cur.lastrowid)
-            except Exception:
+            except sqlite3.IntegrityError:
                 return None
 
     def latest_position_snapshot(
@@ -374,7 +375,7 @@ class DiscoveryRepo(AbstractDiscoveryRepository):
                 )
                 conn.commit()
                 return int(cur.lastrowid)
-            except Exception:
+            except sqlite3.IntegrityError:
                 return None
 
     # ------------------------------------------------------------------
@@ -402,7 +403,7 @@ class DiscoveryRepo(AbstractDiscoveryRepository):
                 )
                 conn.commit()
                 return int(cur.lastrowid)
-            except Exception:
+            except sqlite3.IntegrityError:
                 return None
 
     def list_orderbook_snapshots(

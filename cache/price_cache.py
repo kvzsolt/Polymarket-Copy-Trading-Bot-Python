@@ -22,12 +22,17 @@ Design notes:
 from __future__ import annotations
 
 import time
+from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from decimal import Decimal
 from threading import RLock
 
 DEFAULT_TTL_SECONDS: float = 30.0
+# Default LRU cap matches MarketStateStore.max_tokens so the two caches
+# are bounded similarly. Operators tracking thousands of tokens can
+# override via constructor.
+DEFAULT_MAX_ENTRIES: int = 5000
 
 PriceKey = tuple[str, str]
 FetchCallback = Callable[[str, str], Awaitable[Decimal | None]]
@@ -52,11 +57,23 @@ class PriceEntry:
 class PriceCache:
     """TTL-bounded ``(condition_id, token_id) -> price`` cache."""
 
-    def __init__(self, *, default_ttl_seconds: float = DEFAULT_TTL_SECONDS) -> None:
+    def __init__(
+        self,
+        *,
+        default_ttl_seconds: float = DEFAULT_TTL_SECONDS,
+        max_entries: int = DEFAULT_MAX_ENTRIES,
+    ) -> None:
         if default_ttl_seconds <= 0:
             raise ValueError("default_ttl_seconds must be > 0")
+        if max_entries <= 0:
+            raise ValueError("max_entries must be > 0")
         self._default_ttl = float(default_ttl_seconds)
-        self._entries: dict[PriceKey, PriceEntry] = {}
+        self._max_entries = int(max_entries)
+        # OrderedDict so we can do LRU eviction with O(1) move-to-end on
+        # set/touch. Pre-fix this was a plain dict with no upper bound —
+        # a long-running bot watching many markets accumulated entries
+        # indefinitely.
+        self._entries: OrderedDict[PriceKey, PriceEntry] = OrderedDict()
         self._lock = RLock()
 
     @property
@@ -91,7 +108,13 @@ class PriceCache:
             monotonic_ts=ts,
         )
         with self._lock:
-            self._entries[self._key(condition_id, token_id)] = entry
+            key = self._key(condition_id, token_id)
+            self._entries[key] = entry
+            # MRU position so cold tokens drift toward the eviction edge.
+            self._entries.move_to_end(key)
+            # LRU enforcement: trim from the oldest end if over cap.
+            while len(self._entries) > self._max_entries:
+                self._entries.popitem(last=False)
         return entry
 
     def get_price(
@@ -108,12 +131,15 @@ class PriceCache:
         """
         ttl = float(max_age_seconds if max_age_seconds is not None else self._default_ttl)
         with self._lock:
-            entry = self._entries.get(self._key(condition_id, token_id))
+            key = self._key(condition_id, token_id)
+            entry = self._entries.get(key)
             if entry is None:
                 return None
             if not entry.is_fresh(ttl):
-                self._entries.pop(self._key(condition_id, token_id), None)
+                self._entries.pop(key, None)
                 return None
+            # Touch on hit so frequently-read tokens stay MRU.
+            self._entries.move_to_end(key)
             return entry.price
 
     def get_entry(

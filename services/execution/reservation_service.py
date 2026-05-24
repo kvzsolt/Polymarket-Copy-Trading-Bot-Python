@@ -1,4 +1,3 @@
-import asyncio
 import logging
 import sqlite3
 import time
@@ -49,9 +48,9 @@ class ReservationService:
         self,
         reservations_repo: ReservationsRepo,
         positions_repo: PositionsRepo,
-        get_balance_func: Callable[[str], Awaitable[float | None]],
+        get_balance_func: Callable[[str], Awaitable[Decimal | None]],
         funder_address: str,
-        clock: Clock = DefaultClock(),
+        clock: Clock | None = None,
         ttl_seconds: int = 120,
         reconciler_callback: ReconcilerCallback | None = None,
     ):
@@ -59,7 +58,11 @@ class ReservationService:
         self.positions_repo = positions_repo
         self.get_balance_func = get_balance_func
         self.funder_address = funder_address
-        self.clock = clock
+        # Mutable default DefaultClock() was a Python anti-pattern: every
+        # caller relying on the default shared one instance, which would
+        # mask state-sharing bugs if Clock ever gained state. Build per
+        # instance.
+        self.clock = clock if clock is not None else DefaultClock()
         self.ttl_seconds = ttl_seconds
         self.reconciler_callback = reconciler_callback
 
@@ -159,11 +162,16 @@ class ReservationService:
         user_id: str,
         required_usdc: Decimal,
     ) -> Decimal:
-        balance_float = await self.get_balance_func(self.funder_address)
-        if balance_float is None:
+        raw_balance = await self.get_balance_func(self.funder_address)
+        if raw_balance is None:
             raise ValueError("failed to fetch available USDC balance")
 
-        balance = Decimal(str(balance_float))
+        # Contract is Decimal | None, but defensively coerce a legacy
+        # float caller via Decimal(str(x)) so a stale float-returning
+        # adapter cannot leak IEEE-754 representations into the gate.
+        balance = (
+            raw_balance if isinstance(raw_balance, Decimal) else Decimal(str(raw_balance))
+        )
         # Quote balance is account/funder-wide. Do not scope BUY reserved
         # USDC by condition/token, or two different markets can collectively
         # over-reserve the same wallet balance.

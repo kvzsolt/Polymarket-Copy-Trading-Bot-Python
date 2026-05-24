@@ -21,7 +21,6 @@ from utils.logger import (
     _parse_api_error,
     _build_panel_lines,
     configure_logging,
-    console,
     event_link,
     get_logger,
     log_api_response,

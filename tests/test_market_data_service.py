@@ -707,7 +707,6 @@ class TestWssConnectionLivenessFreshness:
 import asyncio  # noqa: E402  (kept local to the PR10.4 section)
 from types import SimpleNamespace  # noqa: E402
 
-from services.market_data_service import MarketDataError  # noqa: E402
 
 
 def _rest_policy(**overrides) -> MarketDataPolicy:
@@ -855,7 +854,9 @@ class TestRequireExecutionSnapshot:
         assert exc.value.skip_code == "market_data_stale"
 
     @pytest.mark.asyncio
-    async def test_wide_spread_is_allowed_for_rest_snapshot(self) -> None:
+    async def test_wide_spread_rejects_rest_snapshot(self) -> None:
+        """Post-fix the gate is FAIL CLOSED — wide spread above the cap
+        must raise StaleDataError with skip_code='book_spread_wide'."""
         store = MarketStateStore()
         gw = _gateway_returning(
             _book(
@@ -867,11 +868,9 @@ class TestRequireExecutionSnapshot:
             store, gw, policy=_rest_policy(rest_snapshot_max_spread_bps=300)
         )
 
-        bundle = await svc.require_execution_snapshot(TOKEN, side="BUY")
-
-        assert bundle.source == MarketDataSource.REST_SNAPSHOT
-        assert bundle.book.best_bid == Decimal("0.10")
-        assert bundle.book.best_ask == Decimal("0.90")
+        with pytest.raises(StaleDataError) as exc:
+            await svc.require_execution_snapshot(TOKEN, side="BUY")
+        assert exc.value.skip_code == "book_spread_wide"
 
     @pytest.mark.asyncio
     async def test_total_budget_exceeded(self) -> None:

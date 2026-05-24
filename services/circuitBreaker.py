@@ -45,7 +45,11 @@ class CircuitOpen(Exception):
 @dataclass
 class CircuitBreaker:
     name: str
-    failure_threshold: int = 30
+    # Lowered from 30 → 5. A trading breaker that takes 30 consecutive
+    # venue failures before tripping spends multiple seconds submitting
+    # orders against a degraded API. Operators that need a more permissive
+    # value can still override via constructor / config.
+    failure_threshold: int = 5
     cooldown_seconds: float = 60.0
     half_open_max_probes: int = 5
 
@@ -56,6 +60,19 @@ class CircuitBreaker:
 
     @property
     def state(self) -> CircuitState:
+        """Pure read. Use ``allow_request()`` to advance state on cooldown.
+
+        Pre-fix: the property mutated _state and reset _half_open_probes
+        as a side effect. Reading ``.state`` twice from a log/monitoring
+        site after cooldown would reset the probe counter and let more
+        probes through than configured. The OPEN→HALF_OPEN transition
+        now lives in ``_advance_state()`` and is only triggered by an
+        explicit decision point (``allow_request``).
+        """
+        return self._state
+
+    def _advance_state(self) -> None:
+        """OPEN → HALF_OPEN transition once cooldown has elapsed."""
         if self._state == CircuitState.OPEN:
             elapsed = time.monotonic() - self._last_failure_time
             if elapsed >= self.cooldown_seconds:
@@ -66,10 +83,10 @@ class CircuitBreaker:
                     self.name,
                     elapsed,
                 )
-        return self._state
 
     def allow_request(self) -> bool:
-        s = self.state
+        self._advance_state()
+        s = self._state
         if s == CircuitState.CLOSED:
             return True
         if s == CircuitState.HALF_OPEN:
