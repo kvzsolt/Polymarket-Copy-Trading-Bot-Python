@@ -239,22 +239,45 @@ class ReservationsRepo:
     def link_order(
         self, reservation_id: str, *, order_id: str | None = None, venue_order_id: str | None = None
     ) -> None:
-        assignments: list[str] = ["updated_at = CAST(strftime('%s','now') AS INTEGER)"]
-        params: list[str] = []
-        if order_id is not None:
-            assignments.append("order_id = ?")
-            params.append(order_id)
-        if venue_order_id is not None:
-            assignments.append("venue_order_id = ?")
-            params.append(venue_order_id)
-        if len(assignments) == 1:
+        """Attach venue identifiers to an existing reservation row.
+
+        Pre-fix: ``f"UPDATE ... SET {', '.join(assignments)} WHERE id = ?"``
+        built the SET clause from f-string fragments. All assignments
+        were hardcoded literals today, so no injection vector existed —
+        but the pattern was a foot-gun: a future caller passing a
+        column name from outside would silently enable injection.
+        Replaced with three explicit UPDATE statements covering the
+        cartesian {order_id?, venue_order_id?} combinations so the
+        SQL is fully static and cannot drift.
+        """
+        if order_id is None and venue_order_id is None:
             return
-        params.append(reservation_id)
+
         with create_connection(self._db_path) as conn:
-            conn.execute(
-                f"UPDATE order_reservations SET {', '.join(assignments)} WHERE id = ?",
-                params,
-            )
+            if order_id is not None and venue_order_id is not None:
+                conn.execute(
+                    "UPDATE order_reservations "
+                    "SET updated_at = CAST(strftime('%s','now') AS INTEGER), "
+                    "    order_id = ?, venue_order_id = ? "
+                    "WHERE id = ?",
+                    (order_id, venue_order_id, reservation_id),
+                )
+            elif order_id is not None:
+                conn.execute(
+                    "UPDATE order_reservations "
+                    "SET updated_at = CAST(strftime('%s','now') AS INTEGER), "
+                    "    order_id = ? "
+                    "WHERE id = ?",
+                    (order_id, reservation_id),
+                )
+            else:  # venue_order_id is not None
+                conn.execute(
+                    "UPDATE order_reservations "
+                    "SET updated_at = CAST(strftime('%s','now') AS INTEGER), "
+                    "    venue_order_id = ? "
+                    "WHERE id = ?",
+                    (venue_order_id, reservation_id),
+                )
             conn.commit()
 
     def mark_released(self, reservation_id: str, reason: str, released_at: int) -> None:

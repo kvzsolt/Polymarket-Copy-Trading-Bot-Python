@@ -139,7 +139,14 @@ def _rebuild_legacy_fills_table(conn: sqlite3.Connection) -> None:
         """
     )
     def _legacy_expr(column: str, *, default_sql: str = "NULL") -> str:
-        return column if column in columns else default_sql
+        # Quote the identifier so a column name with embedded SQL
+        # punctuation (theoretical — PRAGMA table_info read from the
+        # live DB) cannot fall into the surrounding INSERT statement.
+        # Allowlist sanity: column names are limited to the legacy
+        # schema set so any unexpected name is treated as missing.
+        if column not in columns:
+            return default_sql
+        return f'"{column}"'
 
     conn.execute(
         f"""
