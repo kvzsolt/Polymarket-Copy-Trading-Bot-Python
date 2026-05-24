@@ -285,7 +285,13 @@ class MarketDataService:
             ) from exc
 
         request_ms = (time.monotonic() - fetch_start) * 1000.0
-        fetched_at = time.monotonic()
+        # ``fetched_at`` anchors the freshness gate. Pre-fix this was set
+        # AFTER the book fetch completed, which made ``data_age_ms``
+        # measure "post-fetch processing latency" (always sub-millisecond)
+        # rather than "how old is the book by the time we use it". The
+        # anchor must be ``fetch_start`` so that a slow network round-trip
+        # actually counts against the freshness budget.
+        fetched_at = fetch_start
 
         bids: dict[Decimal, Decimal] = {}
         asks: dict[Decimal, Decimal] = {}
@@ -347,12 +353,23 @@ class MarketDataService:
                 )
             spread_bps = int(((best_ask - best_bid) / best_ask) * 10000)
             if max_spread_bps > 0 and spread_bps > max_spread_bps:
-                logger.info(
-                    "market_data_rest_snapshot_wide_spread_allowed | token_id=%s"
+                # FAIL CLOSED. Pre-fix this gate logged "allowed" and
+                # let the order proceed — orders could land in 1000bps
+                # books while the configured cap was 300bps. The
+                # ``rest_snapshot_max_spread_bps`` config exists
+                # specifically to refuse trade-through against
+                # illiquid / manipulated books, so log + raise.
+                logger.warning(
+                    "market_data_rest_snapshot_rejected | token_id=%s reason=wide_spread"
                     " spread_bps=%d configured_max_bps=%d",
                     token_id,
                     spread_bps,
                     max_spread_bps,
+                )
+                raise StaleDataError(
+                    f"REST snapshot spread {spread_bps}bps exceeds "
+                    f"max {max_spread_bps}bps for {token_id}",
+                    skip_code="book_spread_wide",
                 )
 
         data_age_ms = (time.monotonic() - fetched_at) * 1000.0
@@ -568,10 +585,10 @@ class MarketDataService:
                 and quote_source == MarketDataSource.REST_BOOTSTRAP
                 and book_source == MarketDataSource.REST_BOOTSTRAP
             ):
-                import time as _time
 
-                quote_age_ms = (_time.monotonic() - quote.monotonic_ts) * 1000
-                book_age_ms = (_time.monotonic() - book.monotonic_ts) * 1000
+
+                quote_age_ms = (time.monotonic() - quote.monotonic_ts) * 1000
+                book_age_ms = (time.monotonic() - book.monotonic_ts) * 1000
                 within_cap = (
                     quote_age_ms <= policy.rest_bootstrap_max_age_ms
                     and book_age_ms <= policy.rest_bootstrap_max_age_ms
@@ -597,10 +614,10 @@ class MarketDataService:
                 and quote_source == MarketDataSource.REST_SNAPSHOT
                 and book_source == MarketDataSource.REST_SNAPSHOT
             ):
-                import time as _time
 
-                quote_age_ms = (_time.monotonic() - quote.monotonic_ts) * 1000.0
-                book_age_ms = (_time.monotonic() - book.monotonic_ts) * 1000.0
+
+                quote_age_ms = (time.monotonic() - quote.monotonic_ts) * 1000.0
+                book_age_ms = (time.monotonic() - book.monotonic_ts) * 1000.0
                 if (
                     quote_age_ms <= policy.rest_snapshot_max_age_ms
                     and book_age_ms <= policy.rest_snapshot_max_age_ms
@@ -735,7 +752,7 @@ class MarketDataService:
             value = getattr(snapshot, name, None)
             if value is not None:
                 try:
-                    import time
+
                     return (time.monotonic() - float(value)) <= max_age_seconds
                 except (TypeError, ValueError):
                     return False
@@ -864,7 +881,7 @@ class MarketDataService:
     def _mark_fresh(self, token_id: str, source: MarketDataSource) -> None:
         method = getattr(self._cache, "mark_fresh", None)
         if callable(method):
-            import time
+
             method(token_id, source.value, time.monotonic())
 
 

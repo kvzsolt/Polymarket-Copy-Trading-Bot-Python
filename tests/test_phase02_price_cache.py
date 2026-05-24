@@ -13,13 +13,12 @@ Covers:
 
 from __future__ import annotations
 
-import asyncio
 import time
 from decimal import Decimal
 
 import pytest
 
-from cache.price_cache import DEFAULT_TTL_SECONDS, PriceCache, PriceEntry
+from cache.price_cache import DEFAULT_TTL_SECONDS, PriceCache
 
 
 COND_A = "0xcond_a"

@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from decimal import Decimal
 from typing import TYPE_CHECKING, Protocol
 
 from domain.order_lifecycle import OrderLifecycleStatus

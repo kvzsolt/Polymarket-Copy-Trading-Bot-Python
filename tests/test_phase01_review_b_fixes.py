@@ -21,11 +21,10 @@ from __future__ import annotations
 import asyncio
 import sys
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 
-from domain.position_key import PositionKey
 from services.positionActionCoordinator import (
     PositionActionCoordinator,
     PositionScope,

@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 import logging
-import time
-from contextlib import asynccontextmanager, nullcontext
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Any, Awaitable, Callable, Dict, Optional, Protocol
+from typing import Any, Awaitable, Callable, Dict, Protocol
 
 from domain.order_lifecycle import (
     IntentReason,
@@ -19,8 +17,6 @@ from domain.order_lifecycle import (
 from integrations.polymarket.errors import (
     RetryableVenueError,
     TerminalVenueError,
-    VenueRateLimitError,
-    VenueUnavailableError,
 )
 from services.execution.reservation_service import (
     Clock,
@@ -193,7 +189,7 @@ class ExecutionCoordinator:
         clob_gateway: OrderSubmitter | None = None,
         reconciler: Reconciler | None = None,
         audit_logger: AuditLogger | None = None,
-        clock: Clock = DefaultClock(),
+        clock: Clock | None = None,
         reconciliation_service: Any | None = None,
         live_position_fetcher: Callable[[str, str], Awaitable[Decimal | None]] | None = None,
         execution_service: Any | None = None,
@@ -206,7 +202,10 @@ class ExecutionCoordinator:
         self.clob_gateway = clob_gateway
         self.reconciler = reconciler
         self.audit_logger = audit_logger
-        self.clock = clock
+        # Mutable default DefaultClock() removed — Python anti-pattern. If
+        # Clock ever gains state, the shared instance would silently leak
+        # across constructors.
+        self.clock = clock if clock is not None else DefaultClock()
         self.reconciliation_service = reconciliation_service
         self.live_position_fetcher = live_position_fetcher
         # Production wrapper deps. ``execute_intent`` (V2) does not use these.
@@ -225,6 +224,17 @@ class ExecutionCoordinator:
         serialize against each other and against the production wrapper paths.
         """
         if self.position_coordinator is None:
+            # Fail-closed in live mode: serialization is a correctness
+            # requirement, never a best-effort optimization. Two
+            # concurrent same-scope intents on the V2 path with no
+            # coordinator would race through reserve_for_intent and both
+            # POST to the venue (review finding #15). Mirror the
+            # PositionScope-import fail-closed branch below.
+            if is_live_mode(getattr(self.execution_service, "_config", None)):
+                raise RuntimeError(
+                    "ExecutionCoordinator.execute_intent: position_coordinator is None; "
+                    "refusing to bypass per-scope serialization in live mode"
+                )
             return await self._execute_intent_locked(intent)
         try:
             from services.positionActionCoordinator import PositionScope

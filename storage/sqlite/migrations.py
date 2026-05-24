@@ -10,6 +10,21 @@ def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
     return {str(r[1]) for r in rows}
 
 
+def _exec_each(conn: sqlite3.Connection, script: str) -> None:
+    """Run each ``;``-terminated statement in *script* via ``conn.execute``.
+
+    ``conn.executescript`` issues an implicit COMMIT before executing,
+    which breaks any outer transaction (e.g. the BEGIN IMMEDIATE wrapping
+    ``apply_migrations``). Splitting and dispatching per-statement keeps
+    the outer transaction intact so the whole migration is atomic.
+    """
+    # Naive ``;`` split is safe for our DDL — no embedded semicolons in
+    # string literals here. If that ever changes, switch to a real parser.
+    for stmt in script.split(";"):
+        if stmt.strip():
+            conn.execute(stmt)
+
+
 def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
     row = conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1",
@@ -51,6 +66,17 @@ def _ensure_orders_table(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "orders", "last_error TEXT")
     _ensure_column(conn, "orders", "updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
     _ensure_column(conn, "orders", "matched_total TEXT DEFAULT '0'")  # issue-71: reconciler delta tracking
+
+    # Reconciliation joins by venue order_id every cycle. Without this
+    # partial unique index the lookup full-scans the orders table and a
+    # duplicate order_id can land silently (wrong-row read on the
+    # ORDER BY updated_at DESC LIMIT 1 query). Partial WHERE order_id IS
+    # NOT NULL because rows in pending/INTENT_PENDING state carry NULL
+    # until the venue ack arrives.
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_order_id "
+        "ON orders(order_id) WHERE order_id IS NOT NULL"
+    )
 
     # Backfill user/leader from request payload where possible.
     conn.execute(
@@ -113,7 +139,14 @@ def _rebuild_legacy_fills_table(conn: sqlite3.Connection) -> None:
         """
     )
     def _legacy_expr(column: str, *, default_sql: str = "NULL") -> str:
-        return column if column in columns else default_sql
+        # Quote the identifier so a column name with embedded SQL
+        # punctuation (theoretical — PRAGMA table_info read from the
+        # live DB) cannot fall into the surrounding INSERT statement.
+        # Allowlist sanity: column names are limited to the legacy
+        # schema set so any unexpected name is treated as missing.
+        if column not in columns:
+            return default_sql
+        return f'"{column}"'
 
     conn.execute(
         f"""
@@ -461,7 +494,8 @@ def _ensure_risk_triggers_table(conn: sqlite3.Connection) -> None:
 
 def _ensure_legacy_tables(conn: sqlite3.Connection) -> None:
     """Keep legacy tables available while active path is migrated."""
-    conn.executescript(
+    _exec_each(
+        conn,
         """
         CREATE TABLE IF NOT EXISTS user_positions (
             wallet_address TEXT NOT NULL,
@@ -489,9 +523,12 @@ def _ensure_legacy_tables(conn: sqlite3.Connection) -> None:
             side TEXT,
             title TEXT,
             outcome TEXT,
-            price REAL,
-            size REAL,
-            usdc_size REAL,
+            -- Money columns stored as TEXT to round-trip Decimal losslessly.
+            -- SQLite's REAL is IEEE-754 double and corrupts cent precision
+            -- once any Decimal arithmetic happens upstream.
+            price TEXT,
+            size TEXT,
+            usdc_size TEXT,
             event_timestamp REAL,
             result TEXT,
             reason TEXT,
@@ -531,7 +568,7 @@ def _ensure_legacy_tables(conn: sqlite3.Connection) -> None:
             category TEXT,
             created_at REAL NOT NULL,
             updated_at REAL NOT NULL,
-            PRIMARY KEY (user_id, condition_id)
+            PRIMARY KEY (user_id, condition_id, token_id)
         );
 
         CREATE TABLE IF NOT EXISTS daily_equity_snapshots (
@@ -557,7 +594,8 @@ def _ensure_legacy_tables(conn: sqlite3.Connection) -> None:
 
 
 def _ensure_order_reservations_table(conn: sqlite3.Connection) -> None:
-    conn.executescript(
+    _exec_each(
+        conn,
         """
         CREATE TABLE IF NOT EXISTS order_reservations (
             id TEXT PRIMARY KEY,
@@ -591,18 +629,96 @@ def _ensure_order_reservations_table(conn: sqlite3.Connection) -> None:
     )
 
 
+def _ensure_positions_ledger_pk(conn: sqlite3.Connection) -> None:
+    """Upgrade positions_ledger PK to (user_id, condition_id, token_id).
+
+    Pre-fix PK was (user_id, condition_id) which silently overwrote the
+    YES outcome with NO (or vice-versa) for the same condition because
+    binary markets share a condition_id across two distinct token_ids.
+
+    Idempotent: returns early if the 3-column PK is already present, or
+    if the table does not yet exist (fresh DBs get the correct schema
+    via _ensure_legacy_tables).
+    """
+    info = conn.execute("PRAGMA table_info(positions_ledger)").fetchall()
+    if not info:
+        return
+    pk_cols = sorted(str(row[1]) for row in info if int(row[5] or 0) > 0)
+    if pk_cols == ["condition_id", "token_id", "user_id"]:
+        return  # already migrated
+
+    conn.execute("ALTER TABLE positions_ledger RENAME TO positions_ledger_pk2_legacy")
+    conn.execute(
+        """
+        CREATE TABLE positions_ledger (
+            user_id TEXT NOT NULL,
+            condition_id TEXT NOT NULL,
+            token_id TEXT NOT NULL,
+            size_tokens TEXT NOT NULL,
+            avg_entry_price TEXT NOT NULL,
+            leader_id TEXT,
+            category TEXT,
+            created_at REAL NOT NULL,
+            updated_at REAL NOT NULL,
+            PRIMARY KEY (user_id, condition_id, token_id)
+        )
+        """
+    )
+    # Legacy rows had at most one row per (user, condition) under the old
+    # 2-col PK, so a direct copy never violates the new 3-col PK. Rows
+    # whose token_id was NULL/'' would silently collide; defensively
+    # fall back to '__unknown__' so the upgrade never fails mid-startup.
+    conn.execute(
+        """
+        INSERT INTO positions_ledger
+          (user_id, condition_id, token_id, size_tokens, avg_entry_price,
+           leader_id, category, created_at, updated_at)
+        SELECT
+          user_id,
+          condition_id,
+          CASE WHEN token_id IS NULL OR token_id = '' THEN '__unknown__' ELSE token_id END,
+          size_tokens,
+          avg_entry_price,
+          leader_id,
+          category,
+          created_at,
+          updated_at
+        FROM positions_ledger_pk2_legacy
+        """
+    )
+    conn.execute("DROP TABLE positions_ledger_pk2_legacy")
+
+
 def apply_migrations(conn: sqlite3.Connection) -> None:
-    _ensure_order_reservations_table(conn)
-    _ensure_orders_table(conn)
-    _ensure_fills_table(conn)
-    _ensure_positions_table(conn)
-    _ensure_processed_trades_table(conn)
-    _ensure_cursors_table(conn)
-    _ensure_leaders_table(conn)
-    _drop_redemptions_table(conn)
-    _ensure_market_structure_events_table(conn)
-    _ensure_risk_blocks_table(conn)
-    _ensure_risk_triggers_table(conn)
-    _ensure_legacy_tables(conn)
-    apply_discovery_migrations(conn)
-    conn.commit()
+    """Apply the full schema migration atomically.
+
+    Wrapped in BEGIN IMMEDIATE so the whole pipeline is one transaction:
+    if any step raises, every CREATE / ALTER / INSERT from this call is
+    rolled back. A half-applied schema is impossible — a crashed boot
+    leaves the DB in its pre-call state, and the next boot starts the
+    pipeline from scratch.
+    """
+    # sqlite3 in PEP 249 mode opens an implicit transaction on the first
+    # write; flush anything pending so our BEGIN IMMEDIATE is clean.
+    if conn.in_transaction:
+        conn.commit()
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        _ensure_order_reservations_table(conn)
+        _ensure_orders_table(conn)
+        _ensure_fills_table(conn)
+        _ensure_positions_table(conn)
+        _ensure_processed_trades_table(conn)
+        _ensure_cursors_table(conn)
+        _ensure_leaders_table(conn)
+        _drop_redemptions_table(conn)
+        _ensure_market_structure_events_table(conn)
+        _ensure_risk_blocks_table(conn)
+        _ensure_risk_triggers_table(conn)
+        _ensure_legacy_tables(conn)
+        _ensure_positions_ledger_pk(conn)
+        apply_discovery_migrations(conn)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise

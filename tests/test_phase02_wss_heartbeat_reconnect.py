@@ -74,15 +74,19 @@ class TestPongTimeout:
         assert ws._is_pong_missed() is False
 
     def test_pong_within_window_is_not_missed(self) -> None:
+        # Semantics (post-fix): elapsed = now - last_alive. Anchor on
+        # time.monotonic() instead of a stale ping marker.
         ws = MarketWebSocket(MarketStateStore())
-        ws._last_ping_monotonic = 100.0
-        ws._last_pong_monotonic = 95.0  # 5s gap — within 10s timeout
+        now = time.monotonic()
+        ws._last_ping_monotonic = now - 5.0
+        ws._last_pong_monotonic = now - 5.0  # 5s ago — within 10s window
         assert ws._is_pong_missed() is False
 
     def test_pong_older_than_timeout_is_missed(self) -> None:
         ws = MarketWebSocket(MarketStateStore())
-        ws._last_ping_monotonic = 200.0
-        ws._last_pong_monotonic = 100.0  # 100s gap — clearly missed
+        now = time.monotonic()
+        ws._last_ping_monotonic = now - 100.0
+        ws._last_pong_monotonic = now - 100.0  # 100s ago — clearly missed
         assert ws._is_pong_missed() is True
 
     def test_no_pong_ever_after_ping_is_missed_if_aged(self) -> None:

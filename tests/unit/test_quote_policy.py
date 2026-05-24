@@ -1,5 +1,4 @@
 """Unit tests for quote/spread validation policy."""
-import pytest
 from decimal import Decimal
 from services.execution.quote_policy import evaluate_quote_quality
 

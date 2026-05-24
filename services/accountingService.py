@@ -86,8 +86,7 @@ class AccountingService:
                 INSERT INTO positions_ledger
                 (user_id, condition_id, token_id, size_tokens, avg_entry_price, leader_id, category, created_at, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(user_id, condition_id) DO UPDATE SET
-                  token_id = excluded.token_id,
+                ON CONFLICT(user_id, condition_id, token_id) DO UPDATE SET
                   size_tokens = excluded.size_tokens,
                   avg_entry_price = excluded.avg_entry_price,
                   leader_id = excluded.leader_id,
@@ -108,12 +107,32 @@ class AccountingService:
             )
             conn.commit()
 
-    def close_position(self, *, user_id: str, condition_id: str) -> None:
+    def close_position(
+        self,
+        *,
+        user_id: str,
+        condition_id: str,
+        token_id: str | None = None,
+    ) -> None:
+        """Delete one position row.
+
+        ``token_id`` is required to delete a specific token's row; if omitted
+        (legacy callers), the entire condition is deleted across both YES and
+        NO outcomes. New callers must always pass ``token_id`` to avoid
+        collapsing positions on binary markets.
+        """
         with get_database() as conn:
-            conn.execute(
-                "DELETE FROM positions_ledger WHERE user_id = ? AND condition_id = ?",
-                (user_id, condition_id),
-            )
+            if token_id is None:
+                conn.execute(
+                    "DELETE FROM positions_ledger WHERE user_id = ? AND condition_id = ?",
+                    (user_id, condition_id),
+                )
+            else:
+                conn.execute(
+                    "DELETE FROM positions_ledger "
+                    "WHERE user_id = ? AND condition_id = ? AND token_id = ?",
+                    (user_id, condition_id, token_id),
+                )
             conn.commit()
 
     def snapshot_daily_equity(

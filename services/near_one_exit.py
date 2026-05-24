@@ -79,21 +79,37 @@ class NearOneExitService:
         self._user_id = user_id
         self._funder = funder_address
         self._coordinator = execution_coordinator
-        self._dwell: dict[str, _DwellState] = {}
+        # Dwell + firing state keyed by canonical (condition_id, token_id)
+        # tuple, not bare token_id — preserves PositionKey identity in case
+        # the same token_id ever appears under multiple conditions (CTF
+        # uint256 collision or split markets).
+        self._dwell: dict[tuple[str, str], _DwellState] = {}
         # Tokens already firing this session — prevents re-emit while the
         # SELL is in-flight or partially filled. Cleared on terminal close
         # (position deleted from PositionManager).
-        self._firing: set[str] = set()
+        self._firing: set[tuple[str, str]] = set()
 
     # ------------------------------------------------------------------ observers
-    def observe_price(self, token_id: str, price: Decimal, ts: float) -> None:
+    def observe_price(
+        self,
+        token_id: str,
+        price: Decimal,
+        ts: float,
+        *,
+        condition_id: str = "",
+    ) -> None:
         """External hook for WSS / cache to push price updates without RPC.
 
         Currently optional — the loop pulls via MarketDataService — but a
         future MDS hook can call this for sub-second responsiveness.
+
+        ``condition_id`` defaults to "" for legacy callers; the dwell
+        bucket lands under the ``("", token_id)`` tuple in that case
+        and does not conflict with _tick's canonical ``(condition_id,
+        token_id)`` keys.
         """
         threshold = self._config.near_one_exit.threshold
-        state = self._dwell.setdefault(token_id, _DwellState())
+        state = self._dwell.setdefault((condition_id, token_id), _DwellState())
         if price >= threshold:
             if state.first_seen_above_ts is None:
                 state.first_seen_above_ts = ts
@@ -131,16 +147,17 @@ class NearOneExitService:
         cfg = self._config.near_one_exit
         positions = self._pm.open_positions
         now = time.monotonic()
-        live_tokens: set[str] = set()
+        live_keys: set[tuple[str, str]] = set()
         for pos in positions.values():
             token_id = str(pos.asset or "")
             condition_id = str(pos.condition_id or "")
             if not token_id or not condition_id:
                 continue
-            live_tokens.add(token_id)
+            key = (condition_id, token_id)
+            live_keys.add(key)
 
-            if token_id in self._firing:
-                # Already submitted a SELL on this token; let
+            if key in self._firing:
+                # Already submitted a SELL on this scope; let
                 # reconciliation close it before we consider re-emit.
                 continue
 
@@ -150,7 +167,7 @@ class NearOneExitService:
                 continue
             price = (quote.best_bid + quote.best_ask) / 2
 
-            state = self._dwell.setdefault(token_id, _DwellState())
+            state = self._dwell.setdefault(key, _DwellState())
             if price >= cfg.threshold:
                 if state.first_seen_above_ts is None:
                     state.first_seen_above_ts = now
@@ -179,14 +196,19 @@ class NearOneExitService:
                     )
                 state.first_seen_above_ts = None
 
-        # Drop dwell state for tokens no longer in the open-position set.
+        # Drop dwell state for scopes no longer in the open-position set.
         # Firing set is cleared once the position closes (size goes to zero).
-        stale_dwell = set(self._dwell) - live_tokens
-        for tok in stale_dwell:
-            self._dwell.pop(tok, None)
-        stale_firing = self._firing - live_tokens
-        for tok in stale_firing:
-            self._firing.discard(tok)
+        # Preserve any observe_price()-seeded entries whose condition_id is
+        # the legacy "" placeholder; production _tick keys all carry a
+        # non-empty condition_id.
+        stale_dwell = {
+            k for k in self._dwell if k not in live_keys and k[0] != ""
+        }
+        for k in stale_dwell:
+            self._dwell.pop(k, None)
+        stale_firing = self._firing - live_keys
+        for k in stale_firing:
+            self._firing.discard(k)
 
     async def _fire(
         self,
@@ -243,7 +265,7 @@ class NearOneExitService:
                 "trigger_size_tokens": size_tokens,
             },
         )
-        self._firing.add(token_id)
+        self._firing.add((condition_id, token_id))
         logger.info(
             "near_one_exit_fire token=%s condition=%s size=%s price=%s dwell=%.1fs",
             token_id[:12],
@@ -280,7 +302,7 @@ class NearOneExitService:
                     )
                 except Exception:
                     pass
-                self._firing.discard(token_id)
+                self._firing.discard((condition_id, token_id))
                 return
         try:
             if self._coordinator is not None:
@@ -312,7 +334,7 @@ class NearOneExitService:
                         coord_result.status,
                         coord_result.skip_code,
                     )
-                    self._firing.discard(token_id)
+                    self._firing.discard((condition_id, token_id))
                     return
             else:
                 result = await self._exec.execute(req)
@@ -322,7 +344,7 @@ class NearOneExitService:
                 token_id[:12],
                 exc,
             )
-            self._firing.discard(token_id)
+            self._firing.discard((condition_id, token_id))
             return
 
         if not result.accepted:
@@ -335,4 +357,13 @@ class NearOneExitService:
                 getattr(result, "rejection_reason", "?"),
                 getattr(result, "error", None),
             )
-            self._firing.discard(token_id)
+            self._firing.discard((condition_id, token_id))
+            # Reset the dwell timer too. Pre-fix only _firing was cleared;
+            # the dwell state's ``first_seen_above_ts`` stayed set, so the
+            # very next _tick would immediately exceed dwell_seconds and
+            # call _fire again. On a non-retryable rejection that becomes
+            # a tight retry loop bounded only by check_interval (e.g. 10s).
+            # Require a fresh dwell window before the next attempt.
+            dwell_state = self._dwell.get((condition_id, token_id))
+            if dwell_state is not None:
+                dwell_state.first_seen_above_ts = None

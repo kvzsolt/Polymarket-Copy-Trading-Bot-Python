@@ -20,7 +20,6 @@ import pytest
 from config.app_config import (
     AppConfig,
     EnvValidationError,
-    SignatureType,
     load_config,
 )
 
@@ -107,9 +106,16 @@ class TestHappyPath:
         cfg = load_config(valid_env)
         assert cfg.discovery.min_active_positions == 1
 
-    def test_raw_env_preserved_for_transition(self, valid_env: dict[str, str]) -> None:
+    def test_raw_env_preserved_for_transition_excludes_secrets(
+        self, valid_env: dict[str, str]
+    ) -> None:
         cfg = load_config(valid_env)
-        assert cfg.raw["PRIVATE_KEY"] == _VALID_PRIVATE_KEY
+        # PRIVATE_KEY is in the documented sensitive set and must NOT
+        # land in AppConfig.raw — typed accessors (wallet.private_key)
+        # carry the secret instead.
+        assert "PRIVATE_KEY" not in cfg.raw
+        # Public-info keys (wallet addresses, RPC endpoint, etc.) stay
+        # in .raw for legacy callers still transitioning to typed config.
         assert cfg.raw["FUNDER_ADDRESS"] == _VALID_FUNDER
 
     def test_network_contract_prefers_collateral_then_pusd(self, valid_env: dict[str, str]) -> None:
@@ -190,7 +196,13 @@ class TestMalformedValues:
         with pytest.raises(EnvValidationError, match="PRIVATE_KEY must be a 66-char hex key"):
             load_config(valid_env)
 
-    def test_private_key_file_requires_exact_0600_permissions(self, tmp_path, valid_env: dict[str, str]) -> None:
+    def test_private_key_file_requires_exact_0600_permissions(
+        self, tmp_path, monkeypatch, valid_env: dict[str, str]
+    ) -> None:
+        # Path-traversal guard requires the key file to live under $HOME
+        # or cwd; chdir into tmp_path so the test exercises the mode
+        # branch rather than the location branch.
+        monkeypatch.chdir(tmp_path)
         key_path = tmp_path / "pk.txt"
         key_path.write_text(_VALID_PRIVATE_KEY, encoding="utf-8")
         key_path.chmod(0o700)

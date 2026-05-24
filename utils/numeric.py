@@ -68,6 +68,17 @@ def quantize_and_convert_to_float(
     # tick (not only powers of 10): the previous form derived an integer
     # ``tick_inverse = round(1/tick)`` which silently broke for ticks where
     # 1/tick is not an integer (e.g. "0.07", "0.15").
+    #
+    # Rounding-mode audit (review finding #8): the Polymarket CLOB's
+    # published docs do not specify whether the venue uses HALF_UP or
+    # HALF_EVEN. ROUND_HALF_UP is the conventional financial choice and
+    # matches what the rest of this codebase uses. In practice the
+    # epsilon gate above will reject any input whose rounding delta
+    # exceeds DEFAULT_EPSILON (1e-6 ≪ any real tick), so the mode choice
+    # only matters when the caller passes a value exactly on a half-tick
+    # boundary AND raises epsilon. If the venue ever documents a
+    # different rule, change the constant here and add a regression test
+    # asserting the new mode.
     multiples = (value / tick).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
     rounded = multiples * tick
 

@@ -34,6 +34,8 @@ logger = get_logger("RuntimeBootstrap")
 
 async def startup_reconcile_unconfirmed(
     contexts: list[TradingContext],
+    *,
+    failures_out: list[str] | None = None,
 ) -> dict[str, int]:
     """Reconcile all submitted_unconfirmed orders before starting runtime loops.
 
@@ -48,7 +50,22 @@ async def startup_reconcile_unconfirmed(
     After reconciliation, the in-memory PositionManager is re-rehydrated so
     all downstream consumers observe converged state.
 
-    Returns a dict mapping user_id → number of orders reconciled.
+    Returns a dict mapping user_id → number of orders reconciled. Users
+    whose per-user reconcile raised an exception are NOT in the result.
+    Callers must inspect ``failures_out`` (when supplied) to detect
+    partial failure and refuse to advertise the bot as ready.
+
+    Parameters
+    ----------
+    contexts:
+        Per-leader TradingContext list. Per-user uniqueness is enforced
+        internally so duplicate contexts for the same user run once.
+    failures_out:
+        Optional list the function appends each failed ``user_id`` to.
+        Pre-fix, exceptions were swallowed at WARNING with no observable
+        side effect and the bot proceeded to advertise readiness on a
+        stale position snapshot. Pass an empty list and refuse to set
+        ``reconciler_ok`` when it ends non-empty.
     """
     from orchestrators.trade_pipeline import reconcile_submitted_unconfirmed
 
@@ -85,6 +102,8 @@ async def startup_reconcile_unconfirmed(
                 context.user_id,
                 repr(exc),
             )
+            if failures_out is not None:
+                failures_out.append(context.user_id)
 
     if reconciled_by_user:
         total = sum(reconciled_by_user.values())

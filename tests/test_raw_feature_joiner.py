@@ -9,7 +9,6 @@ from __future__ import annotations
 from decimal import Decimal
 
 from domain.discovery_models import (
-    MarketMeta,
     ObservedTrade,
     OrderbookSnapshot,
     PositionSnapshotRecord,

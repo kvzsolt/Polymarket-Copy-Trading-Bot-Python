@@ -20,8 +20,17 @@ try:
     rehydrate_env()
 except Exception as exc:  # pragma: no cover
     import sys
+    import traceback
 
-    print(f"[WARNING] Failed to load runtime env: {exc}", file=sys.stderr)
+    # Pre-fix this was a WARNING-and-continue. A secrets-load failure
+    # (missing python-dotenv, permission error on secrets.env, malformed
+    # runtime env file) silently let the bot proceed with un-hydrated
+    # ENV; in the worst case a partial env from a prior process let
+    # validate_runtime_env appear to pass on a stale snapshot. Boot
+    # failure is the correct fail-closed response.
+    print(f"[FATAL] Failed to load runtime env: {exc}", file=sys.stderr)
+    traceback.print_exc(file=sys.stderr)
+    sys.exit(1)
 
 from bootstrap import build_app
 from config.app_config import EnvValidationError
@@ -747,18 +756,39 @@ async def main():
         runtimes_by_user=market_data_runtimes,
     )
 
+    # CLAUDE.md non-negotiable: startup reconciliation MUST run before risk /
+    # trade loops AND before the user WSS attaches its on_reconcile_signal
+    # callback. Pre-fix the WSS runtime started first and could fire
+    # reconcile-wake events while startup_reconcile_unconfirmed was still
+    # running on the same orders, double-applying fills under the race.
+    reconcile_failures: list[str] = []
+    startup_reconciled = await startup_reconcile_unconfirmed(
+        list(risk_contexts_by_user.values()),
+        failures_out=reconcile_failures,
+    )
+
+    if reconcile_failures:
+        # Refuse to advertise readiness; downstream monitors will see
+        # reconciler_ok=False and stay closed. Operators must inspect the
+        # WARNING logs emitted by startup_reconcile_unconfirmed for the
+        # affected users.
+        logger.error(
+            "startup_reconcile_partial_failure | failed_users=%s — "
+            "reconciler_ok stays False, monitors will not advance",
+            reconcile_failures,
+        )
+        application.readiness.update(reconciler_ok=False)
+    else:
+        application.readiness.update(reconciler_ok=True)
+
+    # User WSS runtimes are started AFTER reconciler readiness is set so the
+    # on_reconcile_signal closure cannot fire on still-pending orders.
     user_data_runtimes = await _start_user_data_runtimes(
         runtime_users=runtime_users,
         user_states=user_states,
         readiness=application.readiness,
         risk_contexts_by_user=risk_contexts_by_user,
     )
-
-    startup_reconciled = await startup_reconcile_unconfirmed(
-        list(risk_contexts_by_user.values()),
-    )
-
-    application.readiness.update(reconciler_ok=True)
 
     # PR7 — proactive position drift sweep. Must complete before monitors start.
     from orchestrators.runtime_bootstrap import startup_drift_check
@@ -867,6 +897,29 @@ async def main():
             market_data_runtimes=market_data_runtimes,
             contexts_by_leader=contexts_by_leader,
         )
+
+        # CLAUDE.md non-negotiable: startup reconciliation MUST run before
+        # risk / trade loops for every context — including those wired
+        # dynamically by the discovery refresh loop. Pre-fix, the new
+        # monitor task started without ever running reconcile, leaving any
+        # unconfirmed fills from the prior session unobserved.
+        new_contexts: list["TradingContext"] = []
+        for wallet in started_wallets:
+            new_contexts.extend(contexts_by_leader.get(wallet, []))
+        if new_contexts:
+            dynamic_recon_failures: list[str] = []
+            await startup_reconcile_unconfirmed(
+                new_contexts,
+                failures_out=dynamic_recon_failures,
+            )
+            if dynamic_recon_failures:
+                logger.error(
+                    "dynamic_leader_reconcile_failed | leaders=%s users=%s — "
+                    "monitor will start anyway; affected users may carry "
+                    "stale position state",
+                    started_wallets,
+                    dynamic_recon_failures,
+                )
 
         for wallet in started_wallets:
             monitor_tasks.append(

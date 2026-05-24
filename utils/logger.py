@@ -1340,7 +1340,8 @@ def _log_trade(
     tx_hash: str | None = None,
     meta: dict[str, Any] | None = None,
 ) -> None:
-    _f = lambda v, fmt=".4f": format(float(v), fmt) if v is not None else "0"
+    def _f(v, fmt=".4f"):
+        return format(float(v), fmt) if v is not None else "0"
     parts = [
         f"{label} {side.upper()}",
         f"cond={condition_id}",
@@ -1387,13 +1388,20 @@ def log_api_error(
     max_retries: int = 3,
     meta: dict[str, Any] | None = None,
 ) -> None:
-    error_str = str(error) if error else "Unknown error"
+    # ``error_detail`` lands in the JSONL audit log via the ``extra``
+    # payload below. Pre-fix it carried ``str(error)`` verbatim, which
+    # for aiohttp / CLOB SDK exceptions can embed the signed Authorization
+    # header, the HMAC signature, or the full RPC URL with embedded API
+    # key. Route through ``safe_error_detail`` to get a category-only
+    # representation (matches the structured ``error`` field above) so
+    # the JSONL line can never carry credentials.
     redacted_message = redact_error_detail(error)
+    redacted_detail = safe_error_detail(error) if error else "Unknown error"
     payload = {
         "type": "api_error",
         "side": side.upper(),
         "error": redacted_message,
-        "error_detail": error_str,
+        "error_detail": redacted_detail,
         "conditionId": condition_id,
         "asset": asset,
         "retry": retry,
@@ -1559,7 +1567,8 @@ def log_order_lifecycle(
     if meta:
         payload.update(meta)
 
-    _f = lambda v, fmt=".4f": format(float(v), fmt) if v is not None else "0"
+    def _f(v, fmt=".4f"):
+        return format(float(v), fmt) if v is not None else "0"
     msg = (
         f"LIFECYCLE {canonical} | side={(side or '').upper()} | "
         f"cond={condition_id} | asset={asset} | order_id={order_id} | "

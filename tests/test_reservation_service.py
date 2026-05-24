@@ -1,10 +1,8 @@
-import asyncio
-import time
 from decimal import Decimal
 from datetime import datetime, timezone
 import pytest
 
-from domain.order_lifecycle import OrderIntent, OrderIntentKey, IntentSide, IntentReason, Reservation
+from domain.order_lifecycle import OrderIntent, OrderIntentKey, IntentSide, IntentReason
 from services.execution.reservation_service import ReservationService, ReservationConflict, InsufficientFreeQuote, InsufficientFreeShares, Clock
 from storage.sqlite.reservations_repo import ReservationsRepo
 from storage.sqlite.positions_repo import PositionsRepo
@@ -55,7 +53,6 @@ def reservation_service(reservations_repo, positions_repo, mock_clock):
         clock=mock_clock,
         ttl_seconds=60,
     )
-    import asyncio
     async def fake_reconciler(res_id: str) -> bool:
         return True
     svc.reconciler_callback = fake_reconciler

@@ -4,6 +4,14 @@ from typing import Any
 
 from storage.sqlite.connection import create_connection
 
+# Prefix for clear_reason values that the UPSERT must preserve.
+# Operator clears (CLI ``bot positions --unblock``, manual SQL fix, etc.)
+# represent an authoritative override; a subsequent risk re-trigger
+# must NOT silently reactivate what the operator explicitly cleared.
+# System clears (``risk_monitor:*``, ``reconciler:*``, …) keep the
+# normal re-arm-on-retrigger semantics.
+OPERATOR_CLEAR_PREFIX = "operator:"
+
 
 class RiskBlocksRepo:
     def __init__(self, db_path: str):
@@ -36,8 +44,20 @@ class RiskBlocksRepo:
                     source = excluded.source,
                     triggered_at = excluded.triggered_at,
                     expires_at = excluded.expires_at,
-                    cleared_at = NULL,
-                    clear_reason = NULL,
+                    -- Operator clears are authoritative. If the existing
+                    -- clear_reason carries the OPERATOR_CLEAR_PREFIX,
+                    -- preserve cleared_at + clear_reason so a re-trigger
+                    -- does not silently reactivate what the operator
+                    -- manually cleared. System clears (no prefix) keep
+                    -- the historical re-arm semantics.
+                    cleared_at = CASE
+                        WHEN risk_blocks.clear_reason LIKE 'operator:%' THEN risk_blocks.cleared_at
+                        ELSE NULL
+                    END,
+                    clear_reason = CASE
+                        WHEN risk_blocks.clear_reason LIKE 'operator:%' THEN risk_blocks.clear_reason
+                        ELSE NULL
+                    END,
                     leader_anchor = COALESCE(excluded.leader_anchor, risk_blocks.leader_anchor),
                     metadata_json = excluded.metadata_json
                 """,
@@ -88,20 +108,59 @@ class RiskBlocksRepo:
             "metadata": json.loads(row["metadata_json"] or "{}"),
         }
 
-    def clear_risk_block(self, *, user_id: str, condition_id: str, token_id: str, clear_reason: str) -> bool:
-        """Clear an active risk block. Returns True if a block was cleared."""
+    def clear_risk_block(
+        self,
+        *,
+        user_id: str,
+        condition_id: str,
+        token_id: str,
+        clear_reason: str,
+        triggered_at: float | None = None,
+    ) -> bool:
+        """Clear an active risk block. Returns True if a block was cleared.
+
+        ``triggered_at`` (optional) pins the UPDATE to the exact row the
+        caller read from get_active_risk_block. Pre-fix the predicate
+        was ``user/condition/token + cleared_at IS NULL``; a concurrent
+        mark_risk_block landing between read and clear would reset
+        cleared_at=NULL on a NEW row and the unpinned clear would silently
+        clear that new active block — exposing a position that should
+        have stayed blocked.
+
+        Also adds ``expires_at > now`` so a clear cannot resurrect a
+        window-expired block by inverting it back to "cleared by us".
+
+        Legacy callers that omit ``triggered_at`` keep the old behaviour;
+        new callers (risk monitor, entry permission service) should
+        always pass the value they read alongside the block.
+        """
         now = time.time()
         with create_connection(self.db_path) as conn:
-            cursor = conn.execute(
-                """
-                UPDATE risk_blocks
-                SET cleared_at = ?,
-                    clear_reason = ?
-                WHERE user_id = ? AND condition_id = ? AND token_id = ?
-                  AND cleared_at IS NULL
-                """,
-                (now, clear_reason, user_id, condition_id, token_id),
-            )
+            if triggered_at is not None:
+                cursor = conn.execute(
+                    """
+                    UPDATE risk_blocks
+                    SET cleared_at = ?,
+                        clear_reason = ?
+                    WHERE user_id = ? AND condition_id = ? AND token_id = ?
+                      AND cleared_at IS NULL
+                      AND (expires_at IS NULL OR expires_at > ?)
+                      AND triggered_at = ?
+                    """,
+                    (now, clear_reason, user_id, condition_id, token_id, now, triggered_at),
+                )
+            else:
+                cursor = conn.execute(
+                    """
+                    UPDATE risk_blocks
+                    SET cleared_at = ?,
+                        clear_reason = ?
+                    WHERE user_id = ? AND condition_id = ? AND token_id = ?
+                      AND cleared_at IS NULL
+                      AND (expires_at IS NULL OR expires_at > ?)
+                    """,
+                    (now, clear_reason, user_id, condition_id, token_id, now),
+                )
             conn.commit()
             return cursor.rowcount > 0
 
