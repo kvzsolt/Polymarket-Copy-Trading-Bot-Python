@@ -487,3 +487,45 @@ CI green (lint-type-import + unit py3.11/3.12 + release-gate py3.11 PASS; docker
 - `services/discovery/ingestion_service.py`, `services/leaderRegistry`, `services/execution/*`, ~30 more files.
 
 PG-A5 is mechanical but voluminous. Dual-stack `connect_db()` keeps SQLite live so this can ship in incremental PRs without breaking the green baseline.
+
+## Post-PR #107 PG-A5 discovery slice (1 commit)
+
+Finished the in-flight discovery migration that had landed half-converted
+in the working tree before commit `c27a535`.
+
+`services/discovery/scoring_input_service.py` had its import flipped to
+`storage.postgres.discovery_repo.DiscoveryRepo` but the body still called
+four PG async methods synchronously — the service was broken in that
+state. Completed the conversion + ported the one production caller +
+ported the three test files that exercise the discovery scoring /
+reconstruction / raw-feature paths to a live `postgres:16-alpine`
+testcontainer using the proven `_pg_pool()` async context-manager
+pattern from `c489f0b`.
+
+| Slice | What |
+|---|---|
+| `scoring_input_service.py` body | `assemble_for_trader` + `_build_last_trade_ts_index` made `async def`; `await` added to `reconstruct_for_trader`, `list_latest_position_snapshots`, `get_market` (per-key, single fetch via cache check), `list_trades` (single batch fetch) |
+| `reconstructed_positions_service.py` | Committed the pre-existing fully-converted diff (sync→async + `storage.postgres.discovery_repo` import) |
+| `raw_feature_joiner.py` | `join` + `_build_one` made `async def`; `await` added to `list_orderbook_snapshots` + `list_trades`. Removed `trader_wallet=` kwarg (PG `list_trades` takes it positionally) |
+| `tests/test_repo_backed_reconstruction_service.py` | Rewritten: SQLite tmp_path → `_pg_pool()` testcontainer; all 4 tests `async def` with `pytestmark = pytest.mark.asyncio` for STRICT-mode compatibility |
+| `tests/test_discovery_scoring_input_service.py` | Same rewrite pattern. 4 tests |
+| `tests/test_raw_feature_joiner.py` | Same rewrite pattern. 17 tests across 5 classes |
+
+### Verification
+
+| Check | Result |
+|---|---|
+| `pytest tests/test_repo_backed_reconstruction_service.py tests/test_discovery_scoring_input_service.py tests/test_raw_feature_joiner.py -q` against live PG testcontainer | 25 passed in 73s |
+| `pytest -q` (full unit) | 2342 passed, 6 skipped, 206 deselected, 2 pre-existing errors (unchanged) |
+| `pytest -m release_gate -o asyncio_mode=auto -q` | 160 passed, 1 skipped |
+| `ruff check --select=F,E --ignore=E501,F401,F841,E402,E741,E731` on touched files | clean |
+| `compileall` on touched files | clean |
+| `grep -rn "from storage.sqlite.discovery_repo" --include='*.py' .` excluding `storage/sqlite/` | `tests/test_storage.py:29` only — pan-repo ABC-conformance test, exercises every SQLite adapter against its sync `domain/ports` ABC; out of slice (deferred until ABCs flip async with the broader sweep) |
+
+### Remaining PG-A5 surface (unchanged from prior section)
+
+Production callers of `storage.sqlite.*` (≈26 files) and the ~50 SQLite-
+backed test modules still rely on dual-stack `connect_db()`. Sweep
+deferred to follow-up PRs — full 5-slice roadmap covers idempotency /
+orderRepository / execution services / orchestrators / CLI / boot path /
+final cleanup.
