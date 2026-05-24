@@ -1,18 +1,43 @@
 from __future__ import annotations
 
+import contextlib
 from decimal import Decimal
+
+import pytest
 
 from domain.discovery_models import MarketMeta, ObservedTrade, PositionSnapshotRecord
 from services.discovery.scoring_input_service import ScoringInputAssemblerService
-from storage.sqlite.connection import create_connection
-from storage.sqlite.discovery_repo import DiscoveryRepo
-from storage.sqlite.migrations import apply_migrations
+from storage.postgres.discovery_repo import DiscoveryRepo
+
+pytestmark = pytest.mark.asyncio
 
 
-def _init_db(path) -> None:
-    with create_connection(str(path)) as conn:
-        apply_migrations(conn)
-        conn.commit()
+@contextlib.asynccontextmanager
+async def _pg_pool():
+    """Spin a Postgres testcontainer + return a pool with the full
+    schema applied. Auto-skips when Docker is unavailable."""
+    try:
+        from testcontainers.postgres import PostgresContainer
+        import asyncpg
+        from storage.postgres.migrations import apply_migrations as pg_apply
+
+        ctr = PostgresContainer("postgres:16-alpine")
+        ctr.start()
+    except Exception as exc:
+        pytest.skip(f"Docker / postgres image unavailable: {exc!r}")
+    try:
+        dsn = ctr.get_connection_url(driver="asyncpg").replace(
+            "postgresql+asyncpg://", "postgresql://"
+        )
+        pool = await asyncpg.create_pool(dsn, min_size=1, max_size=3)
+        async with pool.acquire() as conn:
+            await pg_apply(conn)
+        try:
+            yield pool
+        finally:
+            await pool.close()
+    finally:
+        ctr.stop()
 
 
 def _trade(
@@ -60,20 +85,18 @@ def _snapshot(
     )
 
 
-def test_scoring_input_assembles_stable_record_from_reconstructed_position(tmp_path):
-    db_path = tmp_path / "bot_state.db"
-    _init_db(db_path)
+async def test_scoring_input_assembles_stable_record_from_reconstructed_position():
+    async with _pg_pool() as pool:
+        repo = DiscoveryRepo(pool)
+        await repo.insert_trade(
+            _trade(side="BUY", size="10", price="0.40", event_ts=100, tx_hash="0x1")
+        )
+        await repo.insert_trade(
+            _trade(side="SELL", size="4", price="0.70", event_ts=200, tx_hash="0x2")
+        )
 
-    repo = DiscoveryRepo(str(db_path))
-    repo.insert_trade(
-        _trade(side="BUY", size="10", price="0.40", event_ts=100, tx_hash="0x1")
-    )
-    repo.insert_trade(
-        _trade(side="SELL", size="4", price="0.70", event_ts=200, tx_hash="0x2")
-    )
-
-    service = ScoringInputAssemblerService(repo)
-    records = service.assemble_for_trader("0xabc")
+        service = ScoringInputAssemblerService(repo)
+        records = await service.assemble_for_trader("0xabc")
 
     key = ("0xabc", "cond-1", "token-yes")
     assert key in records
@@ -94,32 +117,31 @@ def test_scoring_input_assembles_stable_record_from_reconstructed_position(tmp_p
     assert record.market_context.buckets == ()
 
 
-def test_scoring_input_attaches_market_context_and_buckets(tmp_path):
-    db_path = tmp_path / "bot_state.db"
-    _init_db(db_path)
-
-    repo = DiscoveryRepo(str(db_path))
-    repo.insert_trade(
-        _trade(side="BUY", size="5", price="0.35", event_ts=100, tx_hash="0x1")
-    )
-    repo.upsert_market(
-        MarketMeta(
-            condition_id="cond-1",
-            question="Will it rain tomorrow?",
-            slug="rain-tomorrow",
-            event_slug="weather",
-            category="Weather",
-            end_date_ts=100 + (3 * 86400),
-            active=True,
-            resolved=False,
-            neg_risk=True,
-            yes_token_id="token-yes",
-            no_token_id="token-no",
+async def test_scoring_input_attaches_market_context_and_buckets():
+    async with _pg_pool() as pool:
+        repo = DiscoveryRepo(pool)
+        await repo.insert_trade(
+            _trade(side="BUY", size="5", price="0.35", event_ts=100, tx_hash="0x1")
         )
-    )
+        await repo.upsert_market(
+            MarketMeta(
+                condition_id="cond-1",
+                question="Will it rain tomorrow?",
+                slug="rain-tomorrow",
+                event_slug="weather",
+                category="Weather",
+                end_date_ts=100 + (3 * 86400),
+                active=True,
+                resolved=False,
+                neg_risk=True,
+                yes_token_id="token-yes",
+                no_token_id="token-no",
+            )
+        )
 
-    service = ScoringInputAssemblerService(repo)
-    record = service.assemble_for_trader("0xabc")[("0xabc", "cond-1", "token-yes")]
+        service = ScoringInputAssemblerService(repo)
+        records = await service.assemble_for_trader("0xabc")
+    record = records[("0xabc", "cond-1", "token-yes")]
 
     assert record.market_context.has_market_meta is True
     assert record.market_context.question == "Will it rain tomorrow?"
@@ -138,17 +160,16 @@ def test_scoring_input_attaches_market_context_and_buckets(tmp_path):
     }
 
 
-def test_scoring_input_keeps_low_confidence_state_honest_when_history_is_missing(tmp_path):
-    db_path = tmp_path / "bot_state.db"
-    _init_db(db_path)
+async def test_scoring_input_keeps_low_confidence_state_honest_when_history_is_missing():
+    async with _pg_pool() as pool:
+        repo = DiscoveryRepo(pool)
+        await repo.insert_position_snapshot(
+            _snapshot(size="3", avg_price="0.44", snapshot_ts=300)
+        )
 
-    repo = DiscoveryRepo(str(db_path))
-    repo.insert_position_snapshot(
-        _snapshot(size="3", avg_price="0.44", snapshot_ts=300)
-    )
-
-    service = ScoringInputAssemblerService(repo)
-    record = service.assemble_for_trader("0xabc")[("0xabc", "cond-1", "token-yes")]
+        service = ScoringInputAssemblerService(repo)
+        records = await service.assemble_for_trader("0xabc")
+    record = records[("0xabc", "cond-1", "token-yes")]
 
     assert record.current_size == Decimal("0")
     assert record.avg_cost == Decimal("0")
@@ -161,35 +182,34 @@ def test_scoring_input_keeps_low_confidence_state_honest_when_history_is_missing
     assert record.evidence.last_observed_trade_ts is None
 
 
-def test_scoring_input_uses_newer_snapshot_ts_as_reference_ts(tmp_path):
-    db_path = tmp_path / "bot_state.db"
-    _init_db(db_path)
-
-    repo = DiscoveryRepo(str(db_path))
-    repo.insert_trade(
-        _trade(side="BUY", size="5", price="0.35", event_ts=100, tx_hash="0x1")
-    )
-    repo.insert_position_snapshot(
-        _snapshot(size="5", avg_price="0.35", snapshot_ts=250)
-    )
-    repo.upsert_market(
-        MarketMeta(
-            condition_id="cond-1",
-            question="Will it rain tomorrow?",
-            slug="rain-tomorrow",
-            event_slug="weather",
-            category="Weather",
-            end_date_ts=250 + (3 * 86400),
-            active=True,
-            resolved=False,
-            neg_risk=False,
-            yes_token_id="token-yes",
-            no_token_id="token-no",
+async def test_scoring_input_uses_newer_snapshot_ts_as_reference_ts():
+    async with _pg_pool() as pool:
+        repo = DiscoveryRepo(pool)
+        await repo.insert_trade(
+            _trade(side="BUY", size="5", price="0.35", event_ts=100, tx_hash="0x1")
         )
-    )
+        await repo.insert_position_snapshot(
+            _snapshot(size="5", avg_price="0.35", snapshot_ts=250)
+        )
+        await repo.upsert_market(
+            MarketMeta(
+                condition_id="cond-1",
+                question="Will it rain tomorrow?",
+                slug="rain-tomorrow",
+                event_slug="weather",
+                category="Weather",
+                end_date_ts=250 + (3 * 86400),
+                active=True,
+                resolved=False,
+                neg_risk=False,
+                yes_token_id="token-yes",
+                no_token_id="token-no",
+            )
+        )
 
-    service = ScoringInputAssemblerService(repo)
-    record = service.assemble_for_trader("0xabc")[("0xabc", "cond-1", "token-yes")]
+        service = ScoringInputAssemblerService(repo)
+        records = await service.assemble_for_trader("0xabc")
+    record = records[("0xabc", "cond-1", "token-yes")]
 
     assert record.evidence.last_observed_trade_ts == 100
     assert record.evidence.latest_snapshot_ts == 250
