@@ -1,0 +1,24 @@
+tests/release_gate/test_near_one_exit.py
+  s_40eab60fc22f44::t_1a81fd10dbdd05 248-254,256-257
+  s_40eab60fc22f44::t_bed2b52f34cc2a 208-210,212
+  s_40eab60fc22f44::t_9cacd2ed6ab13a 115,117,127,129
+  s_40eab60fc22f44::t_c78ad283826be6 162
+  s_40eab60fc22f44::t_72d4868f54d2b6 179-181
+  s_40eab60fc22f44::t_c492ce073a1a4c 230-232
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "94c5404359c4f0288e1b78417fb3def208da6720",
+  "prompts": {},
+  "sessions": {
+    "s_40eab60fc22f44": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "75ccb144-a9df-45dd-bd80-c6e6ed5d9e12",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
