@@ -1,0 +1,27 @@
+storage/postgres/reservations_repo.py
+  s_93e0a4797804d9::t_0740c9a5e27258 95-105,138-146
+storage/postgres/positions_repo.py
+  s_93e0a4797804d9::t_bae4c4e592192f 285-297
+  s_93e0a4797804d9::t_7e58d9804a8b12 258,260-283,298-344,347-349,351-369
+  s_93e0a4797804d9::t_cdad52d994318f 374-388,390-391,397-424
+storage/postgres/cursors_repo.py
+  s_93e0a4797804d9::t_f22094cc0956b9 86-91,103-108
+services/marketStructureService.py
+  s_93e0a4797804d9::t_6a32b2ee42402a 192-198,206
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.1",
+  "base_commit_sha": "86bec2336dba0ed2539dc6410deb41d8cb859f1f",
+  "prompts": {},
+  "sessions": {
+    "s_93e0a4797804d9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a8782b68-4941-47de-a34c-6d351fdda0ef",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
