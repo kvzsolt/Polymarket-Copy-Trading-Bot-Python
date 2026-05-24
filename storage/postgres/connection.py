@@ -31,6 +31,7 @@ logger = logging.getLogger("PostgresPool")
 # wrapping asyncio.Lock below only protects the lazy ``init_pool``
 # happy-path against concurrent first-callers.
 _pool: Optional[asyncpg.Pool] = None
+_pool_dsn: Optional[str] = None
 _init_lock = asyncio.Lock()
 
 
@@ -47,17 +48,18 @@ async def init_pool(
     ``RuntimeError`` if a previous call used a different DSN — the bot
     is single-pool by design.
     """
-    global _pool
+    global _pool, _pool_dsn
 
     if _pool is not None:
         # Defensive sanity: a second init with a different DSN is almost
-        # certainly a test fixture or hot-reload bug.
-        existing_dsn = getattr(_pool, "_polymarket_dsn", None)
-        if existing_dsn and existing_dsn != dsn:
+        # certainly a test fixture or hot-reload bug. asyncpg.Pool uses
+        # __slots__ in modern releases so the DSN is tracked at module
+        # level instead of stashed on the Pool object.
+        if _pool_dsn is not None and _pool_dsn != dsn:
             raise RuntimeError(
                 "init_pool called with a different DSN than the live pool; "
                 "shutdown_pool() must run between dsn changes "
-                f"(existing={existing_dsn!r}, new={dsn!r})"
+                f"(existing={_pool_dsn!r}, new={dsn!r})"
             )
         return _pool
 
@@ -70,9 +72,8 @@ async def init_pool(
             max_size=max_size,
             command_timeout=command_timeout_seconds,
         )
-        # Stash the DSN on the pool object so re-init can verify equivalence.
-        pool._polymarket_dsn = dsn  # type: ignore[attr-defined]
         _pool = pool
+        _pool_dsn = dsn
         logger.info(
             "asyncpg pool initialised | min=%s max=%s timeout=%ss",
             min_size,
@@ -98,11 +99,12 @@ async def get_pool() -> asyncpg.Pool:
 
 async def shutdown_pool() -> None:
     """Close the pool and clear the singleton. Idempotent."""
-    global _pool
+    global _pool, _pool_dsn
     if _pool is None:
         return
     pool = _pool
     _pool = None
+    _pool_dsn = None
     await pool.close()
     logger.info("asyncpg pool shut down")
 
@@ -110,5 +112,6 @@ async def shutdown_pool() -> None:
 def _reset_for_tests() -> None:
     """Hard-reset the module state. Test-only — tears down pool reference
     without closing (caller must close first to avoid leaking connections)."""
-    global _pool
+    global _pool, _pool_dsn
     _pool = None
+    _pool_dsn = None
