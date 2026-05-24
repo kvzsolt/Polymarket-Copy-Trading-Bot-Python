@@ -256,8 +256,15 @@ class _Parser:
 
 @dataclass(frozen=True)
 class DatabaseConfig:
-    db_path: str
+    # Postgres DSN. Legacy ``db_path`` is kept (empty default) only so
+    # any straggling SQLite references during the migration do not
+    # AttributeError; remove once storage/sqlite/ is deleted.
+    dsn: str = ""
+    db_path: str = ""
     enabled: bool = True
+    pool_min_size: int = 2
+    pool_max_size: int = 20
+    command_timeout_seconds: float = 30.0
 
 
 @dataclass(frozen=True)
@@ -863,10 +870,19 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
 
     p = _Parser(env)
 
-    # Database
+    # Database — Postgres via asyncpg. ``BOT_STATE_DB`` kept as legacy
+    # placeholder until storage/sqlite/ is fully deleted; new code must
+    # consume ``database.dsn``.
     database = DatabaseConfig(
+        dsn=p.string(
+            "DATABASE_URL",
+            "postgresql://bot:bot@localhost:5432/polymarket_bot",
+        ),
         db_path=p.string("BOT_STATE_DB", "data/bot_state.db"),
         enabled=_database_enabled(p),
+        pool_min_size=p.int_("DATABASE_POOL_MIN_SIZE", "2"),
+        pool_max_size=p.int_("DATABASE_POOL_MAX_SIZE", "20"),
+        command_timeout_seconds=p.float_("DATABASE_COMMAND_TIMEOUT_SECONDS", "30.0"),
     )
 
     # Wallet
