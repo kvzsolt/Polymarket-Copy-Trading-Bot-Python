@@ -113,7 +113,12 @@ def size_buy_order(
     d_max_notional = _to_decimal(max_notional_usdc)
     d_tick_size = _to_decimal(tick_size) if _to_decimal(tick_size) > 0 else Decimal("0")
     d_slippage = _to_decimal(slippage_ratio)
-    d_lot_size = _to_decimal(lot_size) if lot_size is not None else _DEFAULT_LOT_SIZE
+    # Greptile P1: an illiquid-market metadata response can legally set
+    # ``lot_size=0``; without this zero-guard, ``_quant_lot`` divides by
+    # zero and the sizing path crashes. Fall back to ``_DEFAULT_LOT_SIZE``
+    # so the order is still sized off the historical CTF lot.
+    _raw_lot = _to_decimal(lot_size) if lot_size is not None else _DEFAULT_LOT_SIZE
+    d_lot_size = _raw_lot if _raw_lot > 0 else _DEFAULT_LOT_SIZE
 
     d_market_min = _taker_min_tokens(d_live_price, d_lot_size)
 
@@ -218,7 +223,11 @@ def size_sell_order(
     SELL is to leave a tiny residual rather than risk attempting to
     submit more than the operator requested.
     """
-    d_lot_size = _to_decimal(lot_size) if lot_size is not None else _DEFAULT_LOT_SIZE
+    # Greptile P1: same zero-guard as the BUY path — ``lot_size=0`` from a
+    # bad market-metadata response would otherwise divide by zero inside
+    # ``_quant_lot`` and crash SELL sizing.
+    _raw_lot = _to_decimal(lot_size) if lot_size is not None else _DEFAULT_LOT_SIZE
+    d_lot_size = _raw_lot if _raw_lot > 0 else _DEFAULT_LOT_SIZE
     d_live_price = _to_decimal(live_price) if _to_decimal(live_price) > 0 else Decimal("0")
     d_market_min = _taker_min_tokens(d_live_price, d_lot_size)
     d_sell_in = _to_decimal(sell_tokens)
