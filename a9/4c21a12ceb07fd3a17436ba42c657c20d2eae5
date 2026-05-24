@@ -1,0 +1,23 @@
+tests/release_gate/test_coordinator_serialization.py
+  s_40eab60fc22f44::t_ee5898f1236929 48-54,59-62
+tests/release_gate/test_wss_after_reconcile_ordering.py
+  s_40eab60fc22f44::t_34101bd522c83e 1-83
+tests/release_gate/test_protective_exit_integration.py
+  s_40eab60fc22f44::t_dc14c398bcaa24 38-121
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "a94c21a12ceb07fd3a17436ba42c657c20d2eae5",
+  "prompts": {},
+  "sessions": {
+    "s_40eab60fc22f44": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "75ccb144-a9df-45dd-bd80-c6e6ed5d9e12",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
