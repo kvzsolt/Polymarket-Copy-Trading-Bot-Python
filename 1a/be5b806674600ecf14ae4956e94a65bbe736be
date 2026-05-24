@@ -1,0 +1,21 @@
+orchestrators/trade_pipeline.py
+  s_93e0a4797804d9::t_b0697abbd5c46f 1889-1901
+  s_93e0a4797804d9::t_13b7a8f458a20f 2288-2298
+  s_93e0a4797804d9::t_76b28fc8e51019 2189-2198,2219-2226,2236-2238,2241-2245
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "1abe5b806674600ecf14ae4956e94a65bbe736be",
+  "prompts": {},
+  "sessions": {
+    "s_93e0a4797804d9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a8782b68-4941-47de-a34c-6d351fdda0ef",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
