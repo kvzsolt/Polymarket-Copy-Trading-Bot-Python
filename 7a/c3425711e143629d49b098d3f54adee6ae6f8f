@@ -1,0 +1,19 @@
+bot_cli/commands/status.py
+  s_93e0a4797804d9::t_5ea10ffc941a72 40,43-60,62,66-68,70,72-73,75-76,78-79,81-82,84-93,96-103,109-110
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "7ac3425711e143629d49b098d3f54adee6ae6f8f",
+  "prompts": {},
+  "sessions": {
+    "s_93e0a4797804d9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a8782b68-4941-47de-a34c-6d351fdda0ef",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
