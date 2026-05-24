@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from domain.discovery_models import PositionSnapshotRecord, ReconstructedPosition
 from services.discovery.reconstruction_service import ReconstructionService
-from storage.sqlite.discovery_repo import DiscoveryRepo
+from storage.postgres.discovery_repo import DiscoveryRepo
 
 PositionKey = tuple[str, str, str]
 
@@ -19,7 +19,7 @@ class ReconstructedPositionsService:
         self._repo = repo
         self._reconstruction_service = reconstruction_service or ReconstructionService()
 
-    def reconstruct_for_trader(
+    async def reconstruct_for_trader(
         self,
         trader_wallet: str,
         *,
@@ -28,7 +28,7 @@ class ReconstructedPositionsService:
         since_ts: int | None = None,
         trade_limit: int = 5000,
     ) -> dict[PositionKey, ReconstructedPosition]:
-        trades = self._repo.list_trades(
+        trades = await self._repo.list_trades(
             trader_wallet,
             condition_id=condition_id,
             token_id=token_id,
@@ -37,7 +37,7 @@ class ReconstructedPositionsService:
         )
         snapshots_by_key = {
             self._snapshot_key(snapshot): snapshot
-            for snapshot in self._repo.list_latest_position_snapshots(
+            for snapshot in await self._repo.list_latest_position_snapshots(
                 trader_wallet,
                 condition_id=condition_id,
                 token_id=token_id,
