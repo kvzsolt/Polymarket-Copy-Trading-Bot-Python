@@ -1,0 +1,21 @@
+orchestrators/leader_registry.py
+  s_93e0a4797804d9::t_d43278f173990d 14
+orchestrators/trade_pipeline.py
+  s_93e0a4797804d9::t_c63d0b096c89dd 22-23
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.1",
+  "base_commit_sha": "d2cfab2ed58580e65071007c49e66928405fa906",
+  "prompts": {},
+  "sessions": {
+    "s_93e0a4797804d9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a8782b68-4941-47de-a34c-6d351fdda0ef",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
