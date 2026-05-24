@@ -1,0 +1,23 @@
+storage/postgres/risk_blocks_repo.py
+  s_40eab60fc22f44::t_41dfadc6ad3335 1-224
+storage/postgres/cursors_repo.py
+  s_40eab60fc22f44::t_42b85357c29045 1-111
+storage/postgres/fills_repo.py
+  s_40eab60fc22f44::t_a5fe7b8f83368d 1-120
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "89656d5fd1b3b32c1cf4ca64c4c6bfce2980b45b",
+  "prompts": {},
+  "sessions": {
+    "s_40eab60fc22f44": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "75ccb144-a9df-45dd-bd80-c6e6ed5d9e12",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
