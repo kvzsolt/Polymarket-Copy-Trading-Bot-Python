@@ -29,8 +29,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Ensure runtime paths are writable by the non-root user. data + log
-# are the only paths the bot writes; everything else is read-only.
-RUN mkdir -p /app/data /app/log && chown -R botuser:botuser /app
+# are the only paths the bot writes; everything else is read-only. We
+# narrow the chown to those two directories so the rest of /app stays
+# owned by root and ends up effectively read-only when the container
+# runs as ``botuser`` (cubic P2).
+RUN mkdir -p /app/data /app/log && chown -R botuser:botuser /app/data /app/log
 
 # Verify the install
 RUN python -c "from config.app_config import load_config; print('OK')"
