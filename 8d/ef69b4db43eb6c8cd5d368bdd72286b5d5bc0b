@@ -1,0 +1,29 @@
+storage/postgres/risk_triggers_repo.py
+  s_40eab60fc22f44::t_8956cbcfc7af55 1-147
+storage/postgres/market_structure_repo.py
+  s_40eab60fc22f44::t_2f2490252b2e75 1-145
+storage/postgres/migrations.py
+  s_40eab60fc22f44::t_61c87688801279 397-399
+  s_40eab60fc22f44::t_7f7d6e3fdea2fd 173
+  s_40eab60fc22f44::t_6bdf6aa8b7060f 153
+storage/postgres/leaders_repo.py
+  s_40eab60fc22f44::t_5bc5cc307b500d 1-131
+storage/postgres/reservations_repo.py
+  s_40eab60fc22f44::t_a46cc94d987cde 1-383
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "8def69b4db43eb6c8cd5d368bdd72286b5d5bc0b",
+  "prompts": {},
+  "sessions": {
+    "s_40eab60fc22f44": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "75ccb144-a9df-45dd-bd80-c6e6ed5d9e12",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
