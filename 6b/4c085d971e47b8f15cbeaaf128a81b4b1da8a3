@@ -1,0 +1,25 @@
+storage/postgres/migrations.py
+  s_40eab60fc22f44::t_7faccbecca5bed 466
+  s_40eab60fc22f44::t_046fee3b4b432c 454-458,464-465,467-468
+services/discovery/position_snapshot_service.py
+  s_40eab60fc22f44::t_ce0426f932ce86 1-234
+storage/postgres/discovery_repo.py
+  s_40eab60fc22f44::t_34d10c0b819bb3 379,389-391
+  s_40eab60fc22f44::t_fec4ea231a6a2b 311-314,316-319,326-328,341
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "6b4c085d971e47b8f15cbeaaf128a81b4b1da8a3",
+  "prompts": {},
+  "sessions": {
+    "s_40eab60fc22f44": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "75ccb144-a9df-45dd-bd80-c6e6ed5d9e12",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
