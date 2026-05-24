@@ -586,13 +586,13 @@ async def trade_monitor(
     _fetch_spacing_config = config
     fetch_interval = float(bot_params.get('FETCH_INTERVAL', config.polling.fetch_interval))
     state = LeaderMonitorState()
-    cursor_store = LeaderCursorStore()
+    cursor_store = await LeaderCursorStore.create()
     leader_wallet = bot_params['leaderWallet']
-    state.last_cursor = _normalize_cursor(cursor_store.get_cursor(leader_wallet))
+    state.last_cursor = _normalize_cursor(await cursor_store.get_cursor(leader_wallet))
     state.last_processed_ts = float(state.last_cursor.timestamp)
 
     await init(leader_wallet, state)
-    cursor_store.set_cursor(leader_wallet, state.last_cursor)
+    await cursor_store.set_cursor(leader_wallet, state.last_cursor)
     proxy_wallet = config.wallet.funder_address or get_funder_address()
     monitored_leader_count = int(bot_params.get('MONITORED_LEADER_COUNT', 1) or 1)
     while True:
@@ -610,7 +610,7 @@ async def trade_monitor(
             or state.last_cursor.tx_hash != previous_cursor.tx_hash
             or (state.last_cursor.trade_id or "") != (previous_cursor.trade_id or "")
         ):
-            cursor_store.set_cursor(leader_wallet, state.last_cursor)
+            await cursor_store.set_cursor(leader_wallet, state.last_cursor)
 
         if _monitor_loop_healthy(fetch_ok=fetch_ok, fetch_interval_s=fetch_interval, readiness_tracker=readiness_tracker):
             monitor_heartbeat_tick(
