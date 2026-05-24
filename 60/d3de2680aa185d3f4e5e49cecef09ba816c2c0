@@ -1,0 +1,25 @@
+storage/postgres/migrations.py
+  s_93e0a4797804d9::t_cf17133b921548 503-507,510-511
+  s_93e0a4797804d9::t_efe5c2a1045164 78-85
+  s_93e0a4797804d9::t_3eacebe6cf2821 466-471,476-502
+storage/postgres/orders_repo.py
+  s_93e0a4797804d9::t_7b2bfbb1f8896c 682-690,693-694
+  s_93e0a4797804d9::t_7c69c7bc25c6db 801-805,817-820
+  s_93e0a4797804d9::t_4151a902235c90 324-328,335
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.1",
+  "base_commit_sha": "60d3de2680aa185d3f4e5e49cecef09ba816c2c0",
+  "prompts": {},
+  "sessions": {
+    "s_93e0a4797804d9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a8782b68-4941-47de-a34c-6d351fdda0ef",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
