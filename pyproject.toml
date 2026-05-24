@@ -1,7 +1,7 @@
 [project]
 name = "polymarket-copy-trading-bot"
 version = "0.1.0"
-description = "Production-hardened Polymarket copy-trading bot with SQLite persistence."
+description = "Production-hardened Polymarket copy-trading bot with PostgreSQL persistence."
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
 dependencies = [
@@ -12,12 +12,14 @@ dependencies = [
   "py-clob-client-v2==1.0.0",
   "rich==14.3.3",
   "websockets>=13.0",
+  "asyncpg>=0.30.0",
 ]
 
 [project.optional-dependencies]
 dev = [
   "pytest==8.4.2",
   "pytest-asyncio==0.24.0",
+  "testcontainers[postgres]>=4.0.0",
 ]
 
 [build-system]
