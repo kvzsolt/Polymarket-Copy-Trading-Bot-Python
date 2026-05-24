@@ -1,0 +1,26 @@
+secrets.env.example
+  s_40eab60fc22f44::t_011038ece873bf 28-34
+pyproject.toml
+  s_40eab60fc22f44::t_7bd8959b5db0a6 4,15,22
+docker-compose.yml
+  s_40eab60fc22f44::t_57b0df7d2ccc79 1-56
+config/app_config.py
+  s_40eab60fc22f44::t_8aef2f211d451a 873-875,877-880,883-885
+  s_40eab60fc22f44::t_55fd73ff691c52 259-263,265-267
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "5e4415357aa8dbf7119bd97f7bb8be2b5e75d1f2",
+  "prompts": {},
+  "sessions": {
+    "s_40eab60fc22f44": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "75ccb144-a9df-45dd-bd80-c6e6ed5d9e12",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
