@@ -1,0 +1,22 @@
+bot_cli/commands/stale_locks.py
+  s_93e0a4797804d9::t_7356701b2b45ba 7,12-14,52-56,58-66,71-72,74-77,79-83,85,88-92,94-99,110-114,131-132,134-138,140-145
+tests/release_gate/test_cli_stale_locks.py
+  s_93e0a4797804d9::t_23b19776b0c1a9 7-11,15,20-22,24,27-34,36-60,67-68,70-71,75,77-79,82-83,90-91,93-96,100-103,109,111-113,120-123
+  s_93e0a4797804d9::t_64f871b6b26874 127-185
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "55c3f8e3ef17dcc9b885d2154f64b025fd7f1522",
+  "prompts": {},
+  "sessions": {
+    "s_93e0a4797804d9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a8782b68-4941-47de-a34c-6d351fdda0ef",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
