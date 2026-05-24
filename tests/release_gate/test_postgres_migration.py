@@ -142,8 +142,14 @@ async def test_positions_table_has_3col_pk(_pg_container) -> None:
             ORDER BY a.attnum
             """
         )
-        pk_cols = sorted(r["column_name"] for r in rows)
-        assert pk_cols == ["condition_id", "token_id", "user_id"], (
+        # cubic P2: the SQL already orders by ``a.attnum`` (definition
+        # order). ``sorted()`` here destroyed that ordering and turned
+        # the assertion into a set-equality check that would pass even
+        # if the PK columns were defined out of order (which changes the
+        # composite index storage). Compare against the canonical
+        # ``(user_id, condition_id, token_id)`` order instead.
+        pk_cols = [r["column_name"] for r in rows]
+        assert pk_cols == ["user_id", "condition_id", "token_id"], (
             f"positions PK must be (user_id, condition_id, token_id); got {pk_cols}"
         )
     finally:

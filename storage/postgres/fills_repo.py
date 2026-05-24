@@ -83,7 +83,11 @@ class FillsRepo(AbstractFillRepository):
                 str(record.size_tokens),
                 str(record.price),
                 str(record.fee),
-                int(record.fill_ts or time.time()),
+                # cubic P2: ``record.fill_ts or time.time()`` would
+                # overwrite a legitimate ``fill_ts == 0`` epoch with the
+                # current time. ``is None`` preserves a deliberately-set
+                # zero while still falling back when the field is unset.
+                int(record.fill_ts if record.fill_ts is not None else time.time()),
                 json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str),
             )
             return int(new_id) if new_id is not None else 0
