@@ -529,3 +529,47 @@ backed test modules still rely on dual-stack `connect_db()`. Sweep
 deferred to follow-up PRs — full 5-slice roadmap covers idempotency /
 orderRepository / execution services / orchestrators / CLI / boot path /
 final cleanup.
+
+## Post-PR #107 PG-A5 CLI + housekeeping sweep (11 commits)
+
+Follow-up to the discovery slice — drops every sqlite vestige from the
+read-only CLI surface plus a handful of safe leaf-node cleanups. Each
+commit keeps the green baseline (2342 unit + 160 release-gate).
+
+| Slice | Commit | What |
+|---|---|---|
+| chore: orphan idempotency shim | `7348880` | Delete `services/execution/idempotency.py` — re-export shim with zero callers across the repo |
+| tradeMonitor TradeCursor flip | `1a92935` | Flip import to `storage.postgres.cursors_repo.TradeCursor`; the frozen dataclass is structurally identical in both repos and the LeaderCursorStore runtime persistence already moved to async PG in `fba01c1` |
+| app.py purge rewire | `c769107` | Drop the last production caller of `utils.idempotency`. Startup-time `purge_old_processed_trades(RETENTION_MAX_AGE_SECONDS)` now uses the async PG `OrdersRepo` directly with a defensive `RuntimeError` catch for the transition window before `connect_db()` |
+| status CLI | `7ac3425` | `bot_cli/commands/status.py` async-rewritten. Opens own `init_pool`/`shutdown_pool` for the one-shot lifecycle, drops sqlite_master table-existence checks (long-running bot owns schema), `EXTRACT(EPOCH FROM ...)` replaces `strftime('%s', ...)` |
+| positions CLI | `30ad37a` | `bot_cli/commands/positions.py` same pattern — single SELECT against `positions`, param markers `$N`, timestamptz isoformat guard |
+| orders CLI pending | `1661329` | `bot orders pending` subcommand → async PG. The `reconcile` subcommand stays on the legacy SQLite `OrdersRepo` until `ReconciliationService` (1704 LOC) follows — inline comment documents the gap |
+| reconcile CLI SELECT | `63444c7` | `bot reconcile`'s candidate-order SELECT now reads from canonical PG. Action path still routes through legacy SQLite `ReconciliationService`. Scoped import to keep blast radius bounded |
+| asyncpg Pool DSN fix | `90aafd0` | `storage/postgres/connection.py` — asyncpg Pool uses `__slots__` in 0.30+, so `pool._polymarket_dsn = dsn` raised `AttributeError` once the new CLI tests started driving `init_pool`. Track DSN in a parallel module-level `_pool_dsn` instead; `shutdown_pool` + `_reset_for_tests` clear both |
+| stale_locks CLI + tests | `55c3f8e` | `bot stale-locks list` async-rewritten. The jsonb `pending_since` extract + epoch arithmetic ported to `(response_json->>'pending_since')::float8::bigint` + `EXTRACT(EPOCH FROM …)`. All 4 release-gate tests ported to live PG testcontainer via `_pg_pool()`; end-to-end test drives `_run_stale_locks_async` directly to avoid clashing with the outer asyncio loop |
+| drift CLI + tests | `af7a5fc` | `bot drift check` async-rewritten; sqlite_master check dropped, `_list_persisted_positions` takes asyncpg pool. 3 release-gate tests ported (2 pure-function tests stay sync) |
+| reservations CLI + tests | `5443176` | `bot reservations list` async-rewritten; PG `order_reservations` schema already uses `bigint` epoch columns matching sqlite semantics, no cast changes. All 4 release-gate tests ported |
+
+### Net effect
+
+- Prod sqlite callers (excluding `storage/sqlite/` itself and tests):
+  **26 → 14** files remaining.
+- Tests now backed by live `postgres:16-alpine` testcontainer for
+  every migrated CLI: stale_locks (4), drift (3), reservations (4),
+  + the existing discovery slice (25). All counted under
+  `pytest -m release_gate` (160 passed, 1 skipped — baseline unchanged
+  because the ported tests replaced the same count of sqlite tests).
+
+### Remaining prod sqlite surface
+
+`bootstrap.py`, `app.py` (one `LeadersRepo` import for type hints),
+`bot_cli/commands/doctor.py` (680 LOC, gates live trading per CLAUDE.md
+— deserves its own session), `services/orderRepository.py` (114 LOC
+wrapper + 9 forwarding methods, 7 test sites + ExecutionService
+ripples), `services/execution/{reservation_service,reconciliation_service}.py`,
+`services/riskMonitor.py`, `orchestrators/{trade_pipeline,
+runtime_bootstrap,startup_health,leader_registry}.py`, `config/db.py`
+(dual-stack rip is the last step), `utils/idempotency.py` (2 test
+files still use the free-function API), `scripts/find_followable_traders.py`.
+
+Plus ~47 sqlite-backed test modules to port.
