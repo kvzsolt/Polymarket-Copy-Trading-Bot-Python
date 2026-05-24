@@ -6,7 +6,10 @@ raw inputs without fabricating missing data.
 """
 from __future__ import annotations
 
+import contextlib
 from decimal import Decimal
+
+import pytest
 
 from domain.discovery_models import (
     ObservedTrade,
@@ -18,9 +21,9 @@ from domain.discovery_models import (
 from domain.raw_feature_models import RawFeatureRecord
 from services.discovery.raw_feature_joiner import RawFeatureJoiner
 from services.discovery.scoring_input_service import ScoringInputAssemblerService
-from storage.sqlite.connection import create_connection
-from storage.sqlite.discovery_repo import DiscoveryRepo
-from storage.sqlite.migrations import apply_migrations
+from storage.postgres.discovery_repo import DiscoveryRepo
+
+pytestmark = pytest.mark.asyncio
 
 
 # ---------------------------------------------------------------------------
@@ -33,10 +36,32 @@ TOKEN = "token-yes"
 REF_TS = 1_700_000_000
 
 
-def _init_db(path) -> None:
-    with create_connection(str(path)) as conn:
-        apply_migrations(conn)
-        conn.commit()
+@contextlib.asynccontextmanager
+async def _pg_pool():
+    """Spin a Postgres testcontainer + return a pool with the full
+    schema applied. Auto-skips when Docker is unavailable."""
+    try:
+        from testcontainers.postgres import PostgresContainer
+        import asyncpg
+        from storage.postgres.migrations import apply_migrations as pg_apply
+
+        ctr = PostgresContainer("postgres:16-alpine")
+        ctr.start()
+    except Exception as exc:
+        pytest.skip(f"Docker / postgres image unavailable: {exc!r}")
+    try:
+        dsn = ctr.get_connection_url(driver="asyncpg").replace(
+            "postgresql+asyncpg://", "postgresql://"
+        )
+        pool = await asyncpg.create_pool(dsn, min_size=1, max_size=3)
+        async with pool.acquire() as conn:
+            await pg_apply(conn)
+        try:
+            yield pool
+        finally:
+            await pool.close()
+    finally:
+        ctr.stop()
 
 
 def _trade(
@@ -115,12 +140,12 @@ def _orderbook(
     )
 
 
-def _assemble_and_join(repo, ref_ts=REF_TS):
+async def _assemble_and_join(repo, ref_ts=REF_TS):
     """Assemble scoring-input records and then join features."""
     assembler = ScoringInputAssemblerService(repo)
-    records = assembler.assemble_for_trader(WALLET)
+    records = await assembler.assemble_for_trader(WALLET)
     joiner = RawFeatureJoiner(repo)
-    return joiner.join(records, reference_ts=ref_ts)
+    return await joiner.join(records, reference_ts=ref_ts)
 
 
 # ---------------------------------------------------------------------------
@@ -130,15 +155,13 @@ def _assemble_and_join(repo, ref_ts=REF_TS):
 class TestScoringInputToRawFeature:
     """ScoringInputRecord transforms into a stable RawFeatureRecord."""
 
-    def test_basic_transform_produces_keyed_record(self, tmp_path):
-        db_path = tmp_path / "bot_state.db"
-        _init_db(db_path)
-        repo = DiscoveryRepo(str(db_path))
+    async def test_basic_transform_produces_keyed_record(self):
+        async with _pg_pool() as pool:
+            repo = DiscoveryRepo(pool)
+            trade = _trade(side="BUY", size="100", price="0.60", event_ts=REF_TS - 120, tx_hash="tx-1")
+            await repo.insert_trade(trade)
 
-        trade = _trade(side="BUY", size="100", price="0.60", event_ts=REF_TS - 120, tx_hash="tx-1")
-        repo.insert_trade(trade)
-
-        features = _assemble_and_join(repo)
+            features = await _assemble_and_join(repo)
 
         key = (WALLET, COND, TOKEN)
         assert key in features
@@ -149,32 +172,28 @@ class TestScoringInputToRawFeature:
         assert rec.condition_id == COND
         assert rec.token_id == TOKEN
 
-    def test_position_fundamentals_pass_through(self, tmp_path):
-        db_path = tmp_path / "bot_state.db"
-        _init_db(db_path)
-        repo = DiscoveryRepo(str(db_path))
+    async def test_position_fundamentals_pass_through(self):
+        async with _pg_pool() as pool:
+            repo = DiscoveryRepo(pool)
+            await repo.insert_trade(_trade(side="BUY", size="100", price="0.60", event_ts=REF_TS - 60, tx_hash="tx-1"))
 
-        repo.insert_trade(_trade(side="BUY", size="100", price="0.60", event_ts=REF_TS - 60, tx_hash="tx-1"))
-
-        features = _assemble_and_join(repo)
+            features = await _assemble_and_join(repo)
         rec = features[(WALLET, COND, TOKEN)]
 
         assert rec.current_size == Decimal("100")
         assert rec.avg_cost == Decimal("0.60")
         assert rec.position_status == ReconstructedPositionStatus.OPEN
 
-    def test_multiple_positions_produce_multiple_features(self, tmp_path):
-        db_path = tmp_path / "bot_state.db"
-        _init_db(db_path)
-        repo = DiscoveryRepo(str(db_path))
+    async def test_multiple_positions_produce_multiple_features(self):
+        async with _pg_pool() as pool:
+            repo = DiscoveryRepo(pool)
+            await repo.insert_trade(_trade(side="BUY", size="50", price="0.40", event_ts=REF_TS - 60, tx_hash="tx-a"))
+            await repo.insert_trade(_trade(
+                token_id="token-no", side="BUY", size="30", price="0.35",
+                event_ts=REF_TS - 30, tx_hash="tx-b",
+            ))
 
-        repo.insert_trade(_trade(side="BUY", size="50", price="0.40", event_ts=REF_TS - 60, tx_hash="tx-a"))
-        repo.insert_trade(_trade(
-            token_id="token-no", side="BUY", size="30", price="0.35",
-            event_ts=REF_TS - 30, tx_hash="tx-b",
-        ))
-
-        features = _assemble_and_join(repo)
+            features = await _assemble_and_join(repo)
         assert len(features) == 2
         assert (WALLET, COND, "token-no") in features
 
@@ -186,14 +205,12 @@ class TestScoringInputToRawFeature:
 class TestEvidenceAvailabilityHonesty:
     """Flags behave honestly — absent data produces False/None, never fabricated."""
 
-    def test_no_orderbook_produces_false_flags(self, tmp_path):
-        db_path = tmp_path / "bot_state.db"
-        _init_db(db_path)
-        repo = DiscoveryRepo(str(db_path))
+    async def test_no_orderbook_produces_false_flags(self):
+        async with _pg_pool() as pool:
+            repo = DiscoveryRepo(pool)
+            await repo.insert_trade(_trade(side="BUY", size="10", price="0.50", event_ts=REF_TS - 60, tx_hash="tx-1"))
 
-        repo.insert_trade(_trade(side="BUY", size="10", price="0.50", event_ts=REF_TS - 60, tx_hash="tx-1"))
-
-        features = _assemble_and_join(repo)
+            features = await _assemble_and_join(repo)
         rec = features[(WALLET, COND, TOKEN)]
 
         assert rec.slippage_copyability.has_orderbook_snapshot is False
@@ -204,27 +221,23 @@ class TestEvidenceAvailabilityHonesty:
         assert rec.evidence_flags.has_orderbook_snapshot is False
         assert rec.evidence_flags.orderbook_snapshot_count == 0
 
-    def test_price_history_always_absent(self, tmp_path):
+    async def test_price_history_always_absent(self):
         """No price-history table exists yet — flag must always be False."""
-        db_path = tmp_path / "bot_state.db"
-        _init_db(db_path)
-        repo = DiscoveryRepo(str(db_path))
+        async with _pg_pool() as pool:
+            repo = DiscoveryRepo(pool)
+            await repo.insert_trade(_trade(side="BUY", size="10", price="0.50", event_ts=REF_TS - 60, tx_hash="tx-1"))
 
-        repo.insert_trade(_trade(side="BUY", size="10", price="0.50", event_ts=REF_TS - 60, tx_hash="tx-1"))
-
-        features = _assemble_and_join(repo)
+            features = await _assemble_and_join(repo)
         rec = features[(WALLET, COND, TOKEN)]
         assert rec.evidence_flags.has_price_history is False
 
-    def test_orderbook_present_populates_slippage_inputs(self, tmp_path):
-        db_path = tmp_path / "bot_state.db"
-        _init_db(db_path)
-        repo = DiscoveryRepo(str(db_path))
+    async def test_orderbook_present_populates_slippage_inputs(self):
+        async with _pg_pool() as pool:
+            repo = DiscoveryRepo(pool)
+            await repo.insert_trade(_trade(side="BUY", size="10", price="0.50", event_ts=REF_TS - 120, tx_hash="tx-1"))
+            await repo.insert_orderbook_snapshot(_orderbook(snapshot_ts=REF_TS - 60))
 
-        repo.insert_trade(_trade(side="BUY", size="10", price="0.50", event_ts=REF_TS - 120, tx_hash="tx-1"))
-        repo.insert_orderbook_snapshot(_orderbook(snapshot_ts=REF_TS - 60))
-
-        features = _assemble_and_join(repo)
+            features = await _assemble_and_join(repo)
         rec = features[(WALLET, COND, TOKEN)]
 
         assert rec.slippage_copyability.has_orderbook_snapshot is True
@@ -237,44 +250,38 @@ class TestEvidenceAvailabilityHonesty:
         assert rec.evidence_flags.has_orderbook_snapshot is True
         assert rec.evidence_flags.orderbook_snapshot_count == 1
 
-    def test_empty_orderbook_book_depth_false(self, tmp_path):
+    async def test_empty_orderbook_book_depth_false(self):
         """Orderbook with empty bids/asks → depth flag is False."""
-        db_path = tmp_path / "bot_state.db"
-        _init_db(db_path)
-        repo = DiscoveryRepo(str(db_path))
+        async with _pg_pool() as pool:
+            repo = DiscoveryRepo(pool)
+            await repo.insert_trade(_trade(side="BUY", size="10", price="0.50", event_ts=REF_TS - 120, tx_hash="tx-1"))
+            await repo.insert_orderbook_snapshot(_orderbook(
+                bids_json="[]", asks_json="[]",
+                best_bid="0.55", best_ask="0.60",
+            ))
 
-        repo.insert_trade(_trade(side="BUY", size="10", price="0.50", event_ts=REF_TS - 120, tx_hash="tx-1"))
-        repo.insert_orderbook_snapshot(_orderbook(
-            bids_json="[]", asks_json="[]",
-            best_bid="0.55", best_ask="0.60",
-        ))
-
-        features = _assemble_and_join(repo)
+            features = await _assemble_and_join(repo)
         rec = features[(WALLET, COND, TOKEN)]
 
         assert rec.slippage_copyability.has_orderbook_snapshot is True
         assert rec.slippage_copyability.book_depth_available is False
 
-    def test_no_snapshot_yields_no_position_snapshot_flag(self, tmp_path):
-        db_path = tmp_path / "bot_state.db"
-        _init_db(db_path)
-        repo = DiscoveryRepo(str(db_path))
+    async def test_no_snapshot_yields_no_position_snapshot_flag(self):
+        async with _pg_pool() as pool:
+            repo = DiscoveryRepo(pool)
+            await repo.insert_trade(_trade(side="BUY", size="10", price="0.50", event_ts=REF_TS - 60, tx_hash="tx-1"))
 
-        repo.insert_trade(_trade(side="BUY", size="10", price="0.50", event_ts=REF_TS - 60, tx_hash="tx-1"))
-
-        features = _assemble_and_join(repo)
+            features = await _assemble_and_join(repo)
         rec = features[(WALLET, COND, TOKEN)]
         assert rec.evidence_flags.has_position_snapshot is False
 
-    def test_with_snapshot_flag_true(self, tmp_path):
-        db_path = tmp_path / "bot_state.db"
-        _init_db(db_path)
-        repo = DiscoveryRepo(str(db_path))
+    async def test_with_snapshot_flag_true(self):
+        async with _pg_pool() as pool:
+            repo = DiscoveryRepo(pool)
+            await repo.insert_trade(_trade(side="BUY", size="10", price="0.50", event_ts=REF_TS - 60, tx_hash="tx-1"))
+            await repo.insert_position_snapshot(_snapshot(size="10", avg_price="0.50", snapshot_ts=REF_TS - 30))
 
-        repo.insert_trade(_trade(side="BUY", size="10", price="0.50", event_ts=REF_TS - 60, tx_hash="tx-1"))
-        repo.insert_position_snapshot(_snapshot(size="10", avg_price="0.50", snapshot_ts=REF_TS - 30))
-
-        features = _assemble_and_join(repo)
+            features = await _assemble_and_join(repo)
         rec = features[(WALLET, COND, TOKEN)]
         assert rec.evidence_flags.has_position_snapshot is True
 
@@ -286,54 +293,48 @@ class TestEvidenceAvailabilityHonesty:
 class TestLowConfidenceVisibility:
     """Reconstruction uncertainty propagates into features — not hidden."""
 
-    def test_high_confidence_propagates(self, tmp_path):
-        db_path = tmp_path / "bot_state.db"
-        _init_db(db_path)
-        repo = DiscoveryRepo(str(db_path))
+    async def test_high_confidence_propagates(self):
+        async with _pg_pool() as pool:
+            repo = DiscoveryRepo(pool)
+            await repo.insert_trade(_trade(side="BUY", size="100", price="0.60", event_ts=REF_TS - 60, tx_hash="tx-1"))
+            await repo.insert_position_snapshot(_snapshot(size="100", avg_price="0.60", snapshot_ts=REF_TS - 30))
 
-        repo.insert_trade(_trade(side="BUY", size="100", price="0.60", event_ts=REF_TS - 60, tx_hash="tx-1"))
-        repo.insert_position_snapshot(_snapshot(size="100", avg_price="0.60", snapshot_ts=REF_TS - 30))
-
-        features = _assemble_and_join(repo)
+            features = await _assemble_and_join(repo)
         rec = features[(WALLET, COND, TOKEN)]
         assert rec.reconstruction_confidence == ReconstructionConfidence.HIGH
 
-    def test_mismatch_propagates_to_delay_survival(self, tmp_path):
+    async def test_mismatch_propagates_to_delay_survival(self):
         """Size mismatch between trades and snapshot → visible in delay_survival."""
-        db_path = tmp_path / "bot_state.db"
-        _init_db(db_path)
-        repo = DiscoveryRepo(str(db_path))
+        async with _pg_pool() as pool:
+            repo = DiscoveryRepo(pool)
+            await repo.insert_trade(_trade(side="BUY", size="100", price="0.60", event_ts=REF_TS - 60, tx_hash="tx-1"))
+            # Snapshot with different size → triggers mismatch
+            await repo.insert_position_snapshot(_snapshot(size="999", avg_price="0.60", snapshot_ts=REF_TS - 30))
 
-        repo.insert_trade(_trade(side="BUY", size="100", price="0.60", event_ts=REF_TS - 60, tx_hash="tx-1"))
-        # Snapshot with different size → triggers mismatch
-        repo.insert_position_snapshot(_snapshot(size="999", avg_price="0.60", snapshot_ts=REF_TS - 30))
-
-        features = _assemble_and_join(repo)
+            features = await _assemble_and_join(repo)
         rec = features[(WALLET, COND, TOKEN)]
         assert rec.delay_survival.has_mismatch is True
         assert rec.reconstruction_confidence != ReconstructionConfidence.HIGH
 
-    def test_no_trades_means_no_entry_alpha_windows(self, tmp_path):
+    async def test_no_trades_means_no_entry_alpha_windows(self):
         """When there are no trades, no entry-alpha windows should be available.
 
         We seed a position snapshot so the assembler creates a record, but
         we add NO trades.
         """
-        db_path = tmp_path / "bot_state.db"
-        _init_db(db_path)
-        repo = DiscoveryRepo(str(db_path))
+        async with _pg_pool() as pool:
+            repo = DiscoveryRepo(pool)
+            await repo.insert_position_snapshot(_snapshot(size="50", avg_price="0.40", snapshot_ts=REF_TS - 30))
 
-        repo.insert_position_snapshot(_snapshot(size="50", avg_price="0.40", snapshot_ts=REF_TS - 30))
+            assembler = ScoringInputAssemblerService(repo)
+            records = await assembler.assemble_for_trader(WALLET)
 
-        assembler = ScoringInputAssemblerService(repo)
-        records = assembler.assemble_for_trader(WALLET)
+            # If the assembler doesn't produce a record from snapshot-only, skip
+            if not records:
+                return
 
-        # If the assembler doesn't produce a record from snapshot-only, skip
-        if not records:
-            return
-
-        joiner = RawFeatureJoiner(repo)
-        features = joiner.join(records, reference_ts=REF_TS)
+            joiner = RawFeatureJoiner(repo)
+            features = await joiner.join(records, reference_ts=REF_TS)
         rec = features[(WALLET, COND, TOKEN)]
         assert rec.entry_alpha.window_5m_available is False
         assert rec.entry_alpha.window_30m_available is False
@@ -347,18 +348,16 @@ class TestLowConfidenceVisibility:
 class TestEntryAlphaWindows:
     """Entry-alpha windows compute from actual trades, not fabrication."""
 
-    def test_trade_within_5m_window(self, tmp_path):
-        db_path = tmp_path / "bot_state.db"
-        _init_db(db_path)
-        repo = DiscoveryRepo(str(db_path))
+    async def test_trade_within_5m_window(self):
+        async with _pg_pool() as pool:
+            repo = DiscoveryRepo(pool)
+            # Trade 2 minutes before ref_ts
+            await repo.insert_trade(_trade(
+                side="BUY", size="100", price="0.60",
+                event_ts=REF_TS - 120, tx_hash="tx-1",
+            ))
 
-        # Trade 2 minutes before ref_ts
-        repo.insert_trade(_trade(
-            side="BUY", size="100", price="0.60",
-            event_ts=REF_TS - 120, tx_hash="tx-1",
-        ))
-
-        features = _assemble_and_join(repo)
+            features = await _assemble_and_join(repo)
         rec = features[(WALLET, COND, TOKEN)]
 
         assert rec.entry_alpha.window_5m_available is True
@@ -368,28 +367,26 @@ class TestEntryAlphaWindows:
         assert rec.entry_alpha.window_30m_available is True
         assert rec.entry_alpha.window_4h_available is True
 
-    def test_two_trades_different_windows(self, tmp_path):
+    async def test_two_trades_different_windows(self):
         """Two BUY trades: one recent (within 5m of last) and one older.
 
         Windows are anchored on last_trade_ts.  An old trade 20 min before
         the last trade is outside the 5m window but inside 30m.
         """
-        db_path = tmp_path / "bot_state.db"
-        _init_db(db_path)
-        repo = DiscoveryRepo(str(db_path))
+        async with _pg_pool() as pool:
+            repo = DiscoveryRepo(pool)
+            # Old trade: 20 min before the last trade
+            await repo.insert_trade(_trade(
+                side="BUY", size="50", price="0.55",
+                event_ts=REF_TS - 1200, tx_hash="tx-old",
+            ))
+            # Recent trade: the "last" trade
+            await repo.insert_trade(_trade(
+                side="BUY", size="100", price="0.60",
+                event_ts=REF_TS - 60, tx_hash="tx-last",
+            ))
 
-        # Old trade: 20 min before the last trade
-        repo.insert_trade(_trade(
-            side="BUY", size="50", price="0.55",
-            event_ts=REF_TS - 1200, tx_hash="tx-old",
-        ))
-        # Recent trade: the "last" trade
-        repo.insert_trade(_trade(
-            side="BUY", size="100", price="0.60",
-            event_ts=REF_TS - 60, tx_hash="tx-last",
-        ))
-
-        features = _assemble_and_join(repo)
+            features = await _assemble_and_join(repo)
         rec = features[(WALLET, COND, TOKEN)]
 
         # 5m window anchored at last_trade_ts=REF_TS-60:
@@ -401,18 +398,16 @@ class TestEntryAlphaWindows:
         assert rec.entry_alpha.window_30m_available is True
         assert rec.entry_alpha.window_30m_trade_count == 2
 
-    def test_sell_trades_excluded_from_entry_alpha(self, tmp_path):
+    async def test_sell_trades_excluded_from_entry_alpha(self):
         """Only BUY trades contribute to entry-alpha windows."""
-        db_path = tmp_path / "bot_state.db"
-        _init_db(db_path)
-        repo = DiscoveryRepo(str(db_path))
+        async with _pg_pool() as pool:
+            repo = DiscoveryRepo(pool)
+            await repo.insert_trade(_trade(
+                side="SELL", size="100", price="0.70",
+                event_ts=REF_TS - 60, tx_hash="tx-1",
+            ))
 
-        repo.insert_trade(_trade(
-            side="SELL", size="100", price="0.70",
-            event_ts=REF_TS - 60, tx_hash="tx-1",
-        ))
-
-        features = _assemble_and_join(repo)
+            features = await _assemble_and_join(repo)
         rec = features[(WALLET, COND, TOKEN)]
 
         # SELL trade doesn't count for entry alpha
@@ -427,37 +422,33 @@ class TestEntryAlphaWindows:
 class TestDelaySurvival:
     """Delay-survival raw inputs are computed correctly."""
 
-    def test_delay_seconds_computed(self, tmp_path):
-        db_path = tmp_path / "bot_state.db"
-        _init_db(db_path)
-        repo = DiscoveryRepo(str(db_path))
+    async def test_delay_seconds_computed(self):
+        async with _pg_pool() as pool:
+            repo = DiscoveryRepo(pool)
+            await repo.insert_trade(_trade(
+                side="BUY", size="100", price="0.60",
+                event_ts=REF_TS - 300, tx_hash="tx-1",
+            ))
 
-        repo.insert_trade(_trade(
-            side="BUY", size="100", price="0.60",
-            event_ts=REF_TS - 300, tx_hash="tx-1",
-        ))
-
-        features = _assemble_and_join(repo)
+            features = await _assemble_and_join(repo)
         rec = features[(WALLET, COND, TOKEN)]
 
         assert rec.delay_survival.delay_seconds == 300
         assert rec.delay_survival.position_still_open is True
 
-    def test_closed_position_detected(self, tmp_path):
-        db_path = tmp_path / "bot_state.db"
-        _init_db(db_path)
-        repo = DiscoveryRepo(str(db_path))
+    async def test_closed_position_detected(self):
+        async with _pg_pool() as pool:
+            repo = DiscoveryRepo(pool)
+            await repo.insert_trade(_trade(
+                side="BUY", size="100", price="0.60",
+                event_ts=REF_TS - 300, tx_hash="tx-1",
+            ))
+            await repo.insert_trade(_trade(
+                side="SELL", size="100", price="0.70",
+                event_ts=REF_TS - 60, tx_hash="tx-2",
+            ))
 
-        repo.insert_trade(_trade(
-            side="BUY", size="100", price="0.60",
-            event_ts=REF_TS - 300, tx_hash="tx-1",
-        ))
-        repo.insert_trade(_trade(
-            side="SELL", size="100", price="0.70",
-            event_ts=REF_TS - 60, tx_hash="tx-2",
-        ))
-
-        features = _assemble_and_join(repo)
+            features = await _assemble_and_join(repo)
         rec = features[(WALLET, COND, TOKEN)]
 
         assert rec.delay_survival.position_still_open is False
