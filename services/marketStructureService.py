@@ -189,6 +189,13 @@ class MarketStructureService:
                             or not target_token_id
                         ):
                             continue
+                        # greptile P1: ``FOR UPDATE`` so a concurrent
+                        # ``apply_fill`` cannot commit a size change
+                        # between this SELECT and the merge UPDATE
+                        # below — without the lock, the merge could
+                        # overwrite a freshly-applied fill with stale
+                        # ``size_tokens`` / ``avg_entry_price`` and
+                        # corrupt cost basis.
                         rows = await conn.fetch(
                             """
                             SELECT user_id, condition_id, token_id, leader_id,
@@ -196,6 +203,7 @@ class MarketStructureService:
                             FROM positions
                             WHERE user_id = $1 AND condition_id = $2
                                   AND token_id = ANY($3::text[])
+                            FOR UPDATE
                             """,
                             user_id,
                             condition_id,
