@@ -308,16 +308,24 @@ class DiscoveryRepo(AbstractDiscoveryRepository):
     # ------------------------------------------------------------------
 
     async def insert_position_snapshot(
-        self, s: PositionSnapshotRecord
+        self,
+        s: PositionSnapshotRecord,
+        *,
+        wallet_role: str = "leader",
     ) -> int | None:
+        if wallet_role not in {"leader", "own"}:
+            raise ValueError(
+                f"wallet_role must be 'leader' or 'own'; got {wallet_role!r}"
+            )
         try:
             async with self._pool.acquire() as conn:
                 new_id = await conn.fetchval(
                     """
                     INSERT INTO discovery_position_snapshots
                         (trader_wallet, condition_id, token_id, size, avg_price,
-                         current_value, current_price, realized_pnl, snapshot_ts, raw_json)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)
+                         current_value, current_price, realized_pnl, snapshot_ts,
+                         raw_json, wallet_role)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11)
                     RETURNING id
                     """,
                     s.trader_wallet,
@@ -330,6 +338,7 @@ class DiscoveryRepo(AbstractDiscoveryRepository):
                     str(s.realized_pnl),
                     s.snapshot_ts,
                     _ensure_json_str(s.raw_json),
+                    wallet_role,
                 )
             return int(new_id) if new_id is not None else None
         except asyncpg.exceptions.UniqueViolationError:
@@ -367,6 +376,7 @@ class DiscoveryRepo(AbstractDiscoveryRepository):
         *,
         condition_id: str | None = None,
         token_id: str | None = None,
+        wallet_role: str | None = None,
     ) -> list[PositionSnapshotRecord]:
         clauses = ["trader_wallet = $1"]
         params: list[Any] = [trader_wallet]
@@ -376,6 +386,9 @@ class DiscoveryRepo(AbstractDiscoveryRepository):
         if token_id:
             params.append(token_id)
             clauses.append(f"token_id = ${len(params)}")
+        if wallet_role is not None:
+            params.append(wallet_role)
+            clauses.append(f"wallet_role = ${len(params)}")
         where = " AND ".join(clauses)
 
         async with self._pool.acquire() as conn:
