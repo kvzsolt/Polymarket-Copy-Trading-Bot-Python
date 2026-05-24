@@ -1,0 +1,21 @@
+storage/postgres/orders_repo.py
+  s_40eab60fc22f44::t_8d0f7e05e0d544 1-703,705-724,726-769,771-823
+  s_40eab60fc22f44::t_68ce46cbc92256 770
+  s_40eab60fc22f44::t_7c2313a43b0863 704,725
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "4fd97551956010121f0e2df8070ea565454d2c28",
+  "prompts": {},
+  "sessions": {
+    "s_40eab60fc22f44": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "75ccb144-a9df-45dd-bd80-c6e6ed5d9e12",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
