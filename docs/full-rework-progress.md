@@ -465,3 +465,25 @@ suite: 2254 passed, 5 skipped. CI: all 8 checks green on push
 - **PG-A5**: sweep remaining ~70 files that import `storage.sqlite.*` directly. Dual-stack `connect_db()` keeps SQLite live so existing call-sites continue working during transition.
 - **PG-A6**: test-fixture cutover via `testcontainers` conftest — mechanical but voluminous.
 - **PG-A7**: delete `storage/sqlite/` + remove `sqlite3` imports — gated on PG-A5 + PG-A6.
+
+## Post-PR #107 PG-A5 partial sweep (3 commits)
+
+After PR #107 opened, started incremental PG-A5 sweep on safe surface
+to prove the pattern + de-risk future cutover passes.
+
+| Slice | Commit | What |
+|---|---|---|
+| ci trigger | `2d5a6e9` | `.github/workflows/ci.yml` now triggers on `develop-fix` + `feat/*` so PR #107 actually runs CI |
+| LeaderCursorStore | `fba01c1` | `services/leaderCursorStore.py` ported to async asyncpg pool + classmethod `create()` factory; sole production caller (`services.tradeMonitor.trade_monitor`) updated to `await`; test mocks switched to `AsyncMock(create=...)` pattern. 13/13 cursor tests pass |
+| MarketStructureService | `c489f0b` | Full async rewrite incl. per-user `reconcile_positions` (single transaction wrap, `= ANY($N::text[])` for IN expansion, `now()` literal for timestamptz). 3 service tests migrated to live PG testcontainer via `_pg_pool()` async context manager — proves PG-A6 fixture pattern. 6/6 pass against real Postgres |
+
+CI green (lint-type-import + unit py3.11/3.12 + release-gate py3.11 PASS; docker-smoke + release-gate py3.12 running at last check).
+
+### Remaining PG-A5 surface (deferred to follow-up PR)
+
+- `services/orderRepository.py` wrapper — 9 forwarding methods, exercised by 7 sites in `test_issue66_gateway_isolation.py` + `test_phase03_atomic_idempotency.py` + 2 production callers (`riskMonitor`, `runtime_bootstrap`).
+- `utils/idempotency.py` — module-level helper used by ~10 sites for the legacy free-function `has_processed` / `mark_processed` API.
+- `orchestrators/runtime_bootstrap.py` — central wire-up that instantiates 5 repos with `db_path`; rewriting it touches every caller via `await build_user_state(...)`.
+- `services/discovery/ingestion_service.py`, `services/leaderRegistry`, `services/execution/*`, ~30 more files.
+
+PG-A5 is mechanical but voluminous. Dual-stack `connect_db()` keeps SQLite live so this can ship in incremental PRs without breaking the green baseline.
