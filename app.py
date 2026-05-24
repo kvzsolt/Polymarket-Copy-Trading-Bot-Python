@@ -644,9 +644,18 @@ async def main():
     db_path = application.db_path
     application.readiness.update(db_ok=True)
 
-    from utils.idempotency import purge_stale_records
+    from config.env import ENV as _ENV
+    from storage.postgres.connection import get_pool
+    from storage.postgres.orders_repo import OrdersRepo as _PgOrdersRepo
 
-    purged = purge_stale_records()
+    _max_age = float(_ENV.get("RETENTION_MAX_AGE_SECONDS", 30 * 86400))
+    try:
+        _pool = await get_pool()
+        purged = await _PgOrdersRepo(_pool).purge_old_processed_trades(_max_age)
+    except RuntimeError:
+        # PG pool not initialised yet (transition-mode startup before
+        # connect_db ran). Skip purge — non-critical cleanup.
+        purged = 0
     if purged:
         logger.info("Startup cleanup: purged %s stale records", purged)
 
