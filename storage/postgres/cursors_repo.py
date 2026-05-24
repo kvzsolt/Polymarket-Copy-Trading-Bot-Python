@@ -83,6 +83,12 @@ class CursorsRepo(AbstractCursorRepository):
                         # write. The FOR UPDATE lock releases on commit.
                         return
 
+                # cubic P1: ``WHERE`` guard makes the UPSERT monotonic
+                # even when two concurrent first-writers both observe
+                # "no row" under their FOR UPDATE (a non-existent row
+                # cannot be locked, so the lock above doesn't serialize
+                # them). With this WHERE clause, an older watermark
+                # arriving second is silently dropped at the row level.
                 await conn.execute(
                     """
                     INSERT INTO leader_cursors
@@ -94,6 +100,12 @@ class CursorsRepo(AbstractCursorRepository):
                         cursor_tx_hash  = excluded.cursor_tx_hash,
                         cursor_trade_id = excluded.cursor_trade_id,
                         updated_at      = excluded.updated_at
+                    WHERE (excluded.last_timestamp,
+                           excluded.cursor_tx_hash,
+                           COALESCE(excluded.cursor_trade_id, ''))
+                          > (leader_cursors.last_timestamp,
+                             leader_cursors.cursor_tx_hash,
+                             COALESCE(leader_cursors.cursor_trade_id, ''))
                     """,
                     leader_key,
                     float(cursor.timestamp),
