@@ -1886,19 +1886,19 @@ async def execute_trades(
                     snapshot = _refreshed
                 regime = getattr(context, "balance_regime", None)
                 if regime is not None:
-                    # CRITICAL TODO (review #24): replace check_buy here with
-                    # ``await regime.reserve(order_id=trade_key, notional=...,
-                    # free_cash=...)`` and drop the post-submit record_buy
-                    # calls at the two sites below (search for ``record_buy``).
-                    # The current check-then-submit-then-record sequence is
-                    # NON-ATOMIC: two concurrent BUYs observing the same
-                    # daily_spent snapshot can both pass and double the cap.
-                    # See tests/test_balance_regime_atomic_reserve.py for the
-                    # proven atomic alternative; the wire-up is held back to
-                    # a focused follow-up because it cascades to the two
-                    # later record_buy sites + their failure/cancel branches
-                    # which must be converted to release()/commit().
-                    regime_decision = regime.check_buy(
+                    # Greptile P1 (PR #106 review): replace the non-atomic
+                    # ``check_buy → submit → record_buy`` triple with the
+                    # atomic ``await regime.reserve(...)`` so two concurrent
+                    # BUYs cannot both pass the cap against the same
+                    # ``daily_spent`` snapshot. ``reserve`` atomically checks
+                    # the cap AND records the hold under ``order_id=trade_key``;
+                    # the post-submit branches below either ``commit`` (on
+                    # accepted submission) or ``release`` (on
+                    # duplicate_ignored / not accepted / exception paths) the
+                    # held reservation. The proven atomic semantics live in
+                    # ``tests/test_balance_regime_atomic_reserve.py``.
+                    regime_decision = await regime.reserve(
+                        order_id=trade_key,
                         notional_usdc=gated_notional,
                         free_cash_usdc=snapshot.free_cash_usdc,
                     )
@@ -2186,6 +2186,16 @@ async def execute_trades(
 
             if exec_result.status == "duplicate_ignored":
                 metrics.inc("duplicate_order_prevented_total", labels=labels)
+                # Greptile P1: roll back the regime reservation taken at the
+                # pre-submit ``reserve()`` so the daily cap is not double-
+                # consumed when the coordinator dedup-fires.
+                if signal.side == "BUY":
+                    _regime = getattr(context, "balance_regime", None)
+                    if _regime is not None:
+                        try:
+                            await _regime.release(order_id=trade_key)
+                        except Exception:  # pragma: no cover — defensive
+                            pass
                 context.orders_repo.mark_processed_trade(
                     trade_key=trade_key,
                     user_id=context.user_id,
@@ -2206,12 +2216,14 @@ async def execute_trades(
                 )
                 continue
 
-            # Phase 4 — record BUY notional against the rolling 24h spend ceiling
-            # at submission time. Fires on BOTH the immediate-fill path and the
-            # accepted-no-fill path so every submitted BUY consumes the daily
-            # cap. Duplicate submissions are filtered above (`continue`); a
-            # rejection (`not exec_result.accepted`) never enters the ledger.
-            # SELLs do not consume the daily-spend budget.
+            # Phase 4 — commit the BUY reservation held by the pre-submit
+            # ``reserve()`` against the rolling 24h spend ceiling. Fires on
+            # BOTH the immediate-fill path and the accepted-no-fill path so
+            # every submitted BUY consumes the daily cap; ``commit`` with
+            # ``actual_filled_usdc`` returns any unfilled remainder. A
+            # rejection (``not exec_result.accepted``) instead RELEASES the
+            # reservation a few lines below. SELLs do not consume the
+            # daily-spend budget.
             if exec_result.accepted and signal.side == "BUY":
                 regime = getattr(context, "balance_regime", None)
                 if regime is not None:
@@ -2221,15 +2233,16 @@ async def execute_trades(
                             _fill_px = Decimal(
                                 str(exec_result.avg_price or signal.price or 0)
                             )
-                            regime.record_buy(
-                                _filled_amt * _fill_px,
-                                order_id=exec_result.order_id,
+                            await regime.commit(
+                                order_id=trade_key,
+                                actual_filled_usdc=_filled_amt * _fill_px,
                             )
                         else:
-                            regime.record_buy(
-                                Decimal(str(exec_result.requested_amount or 0)),
-                                order_id=exec_result.order_id,
-                            )
+                            # Accepted but no immediate fill — keep the full
+                            # reservation in place (commit with None preserves
+                            # the held notional until a later reconciliation
+                            # path resolves the order).
+                            await regime.commit(order_id=trade_key)
                     except Exception:  # pragma: no cover — defensive
                         pass
 
@@ -2272,6 +2285,17 @@ async def execute_trades(
                 continue
 
             if not exec_result.accepted:
+                # Greptile P1: roll back the regime reservation taken at the
+                # pre-submit ``reserve()`` so a rejected BUY does not consume
+                # the daily cap. SELLs never reserved against the cap so the
+                # release is BUY-only.
+                if signal.side == "BUY":
+                    _regime = getattr(context, "balance_regime", None)
+                    if _regime is not None:
+                        try:
+                            await _regime.release(order_id=trade_key)
+                        except Exception:  # pragma: no cover — defensive
+                            pass
                 metrics.inc("execution_failures_total", labels={**labels, "reason": exec_result.status})
                 log_trade_skip(
                     logger,
