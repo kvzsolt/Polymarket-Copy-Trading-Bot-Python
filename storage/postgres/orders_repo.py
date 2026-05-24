@@ -321,12 +321,18 @@ class OrdersRepo(AbstractOrderRepository):
         leader_id: str | None = None,
     ) -> None:
         async with self._pool.acquire() as conn:
+            # greptile P1: ON CONFLICT DO NOTHING on the fill identity
+            # tuple so a reconciler-triggered second arrival of the same
+            # fill silently no-ops instead of raising
+            # ``UniqueViolationError``. Pairs with the
+            # ``idx_fills_dedup`` unique index in migrations.py.
             await conn.execute(
                 """
                 INSERT INTO fills (
                     user_id, leader_id, order_id, condition_id, token_id, side,
                     size_tokens, price, fee, fill_ts, fill_json
                 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb)
+                ON CONFLICT (user_id, order_id, condition_id, side, fill_ts) DO NOTHING
                 """,
                 user_id,
                 leader_id,
@@ -673,9 +679,19 @@ class OrdersRepo(AbstractOrderRepository):
                         raise
 
                     # 2. Update position (apply fill).
+                    # greptile P1 + cubic P1: ``FOR UPDATE`` serialises
+                    # concurrent fills against the same position row so
+                    # two partial fills cannot both read the same
+                    # snapshot and overwrite each other (lost-update).
+                    # A first-fill INSERT path is covered by the
+                    # ``ON CONFLICT`` UPDATE below, which re-reads the
+                    # current row via excluded — the lock here is what
+                    # prevents the second fill from issuing a stale
+                    # avg_entry_price calculation.
                     current = await conn.fetchrow(
                         "SELECT size_tokens, avg_entry_price FROM positions "
-                        "WHERE user_id = $1 AND condition_id = $2 AND token_id = $3",
+                        "WHERE user_id = $1 AND condition_id = $2 AND token_id = $3 "
+                        "FOR UPDATE",
                         user_id,
                         condition_id,
                         token_id,
@@ -782,6 +798,11 @@ class OrdersRepo(AbstractOrderRepository):
                                 )
 
                     # 3. Mark processed trade.
+                    # greptile P1: terminal-state guard so a later
+                    # non-terminal status update cannot overwrite a row
+                    # that already reached a terminal state. Mirrors the
+                    # legacy SQLite ``mark_processed_trade`` invariant
+                    # tracked in PR #105 audit-fix #102.
                     await conn.execute(
                         """
                         INSERT INTO processed_trades (
@@ -793,6 +814,10 @@ class OrdersRepo(AbstractOrderRepository):
                             retry_attempt = excluded.retry_attempt,
                             status        = excluded.status,
                             processed_at  = excluded.processed_at
+                        WHERE processed_trades.status NOT IN (
+                            'processed', 'terminal_failed', 'duplicate_ignored',
+                            'skipped_sell_size_zero'
+                        )
                         """,
                         trade_key,
                         user_id,
