@@ -315,7 +315,19 @@ def print_your_positions(
     if snapshot_result is None:
         return
 
-    own = snapshot_result.own_snapshots
+    # cubic P2: in multi-user runtime ``snapshot_result.own_snapshots``
+    # contains rows from every configured own_wallet. Without this
+    # filter, positions from all users render under the single
+    # ``own_wallet`` label passed in — visually misleading. Match on
+    # ``trader_wallet`` (case-insensitive) so the panel only shows
+    # positions actually belonging to the wallet whose address it
+    # advertises. Multi-wallet rendering (one panel per own wallet)
+    # is a separate follow-up.
+    _own_wallet_lc = (own_wallet or "").lower().strip()
+    own = [
+        s for s in snapshot_result.own_snapshots
+        if (s.trader_wallet or "").lower().strip() == _own_wallet_lc
+    ] if _own_wallet_lc else list(snapshot_result.own_snapshots)
     invested = sum(
         ((s.size or Decimal("0")) * (s.avg_price or Decimal("0")) for s in own),
         Decimal("0"),
