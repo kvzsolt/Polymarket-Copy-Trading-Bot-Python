@@ -1,0 +1,21 @@
+tests/release_gate/test_cli_reservations.py
+  s_93e0a4797804d9::t_c4402ce86a4569 3-6,10,14,16,18-49,51-52,59-61,63-64,68-71,76-79,90-95,99-101,103-104,106-128,131
+bot_cli/commands/reservations.py
+  s_93e0a4797804d9::t_a7c237c91afc2b 10,15-17,66-67,69-71,77,80,83-84,130-131,133-137,139-146
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "5443176f4544f935ebecbadbd980343e9e1ab60a",
+  "prompts": {},
+  "sessions": {
+    "s_93e0a4797804d9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a8782b68-4941-47de-a34c-6d351fdda0ef",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
