@@ -451,11 +451,21 @@ _DISCOVERY_DDL = [
         realized_pnl   text NOT NULL DEFAULT '0',
         snapshot_ts    bigint NOT NULL,
         raw_json       jsonb NOT NULL DEFAULT '{}'::jsonb,
+        -- Distinguishes leader-wallet snapshots from the bot's own
+        -- wallet snapshots so the bootup banner + analytics can split
+        -- them cleanly. Both share the same shape so the indexer
+        -- doesn't fork.
+        wallet_role    text NOT NULL DEFAULT 'leader',
         UNIQUE(trader_wallet, condition_id, token_id, snapshot_ts)
     )
     """,
     """CREATE INDEX IF NOT EXISTS idx_disc_pos_snap_wallet
        ON discovery_position_snapshots(trader_wallet)""",
+    """CREATE INDEX IF NOT EXISTS idx_disc_pos_snap_role_ts
+       ON discovery_position_snapshots(wallet_role, snapshot_ts DESC)""",
+    # Idempotent column add for DBs created before the column existed.
+    """ALTER TABLE discovery_position_snapshots
+       ADD COLUMN IF NOT EXISTS wallet_role text NOT NULL DEFAULT 'leader'""",
 
     """
     CREATE TABLE IF NOT EXISTS discovery_closed_positions (
