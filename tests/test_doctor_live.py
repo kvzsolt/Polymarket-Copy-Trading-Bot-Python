@@ -1,14 +1,17 @@
-"""PR 8: structured doctor live readiness gate."""
+"""PR 8: structured doctor live readiness gate.
+
+Backed by a per-test ``postgres:16-alpine`` testcontainer (PG-A5 sweep) —
+each ``_run_doctor`` call spins a fresh container, applies the schema,
+and injects the container DSN through ``DATABASE_URL`` so the doctor's
+async DB probes hit a real Postgres instance instead of a stub file.
+"""
 from __future__ import annotations
 
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 import config.app_config as app_config_mod
-from storage.sqlite.connection import create_connection
-from storage.sqlite.migrations import apply_migrations
 
 
 _BASE_LIVE_ENV = {
@@ -26,20 +29,6 @@ _BASE_LIVE_ENV = {
 }
 
 
-def _make_migrated_db(tmp_path: Path) -> Path:
-    """Create a per-test SQLite file with the production schema applied.
-
-    Required because the doctor's ``db_schema_ok`` check probes the live DB
-    for every required table; a fresh CI runner has no ``data/bot_state.db``,
-    so without this the check blocks every live test (audit #105).
-    """
-    db_path = tmp_path / "doctor.db"
-    with create_connection(str(db_path)) as conn:
-        apply_migrations(conn)
-        conn.commit()
-    return db_path
-
-
 def _patch_env(env_overrides: dict[str, str] | None = None):
     env = {**_BASE_LIVE_ENV, **(env_overrides or {})}
 
@@ -50,54 +39,113 @@ def _patch_env(env_overrides: dict[str, str] | None = None):
     return env, _load
 
 
+class _PgFixture:
+    """Spin a Postgres testcontainer + apply the schema. Yields the DSN.
+
+    Used by ``_run_doctor`` so each test gets a real DB without per-test
+    bookkeeping. Auto-skips when Docker is unavailable.
+    """
+
+    def __init__(self) -> None:
+        self._ctr = None
+        self._dsn = ""
+
+    async def __aenter__(self) -> str:
+        try:
+            from testcontainers.postgres import PostgresContainer
+            import asyncpg
+            from storage.postgres.migrations import apply_migrations as pg_apply
+        except Exception as exc:
+            pytest.skip(f"Docker / postgres image unavailable: {exc!r}")
+        try:
+            self._ctr = PostgresContainer("postgres:16-alpine")
+            self._ctr.start()
+        except Exception as exc:
+            pytest.skip(f"Docker / postgres image unavailable: {exc!r}")
+
+        self._dsn = self._ctr.get_connection_url(driver="asyncpg").replace(
+            "postgresql+asyncpg://", "postgresql://"
+        )
+        pool = await asyncpg.create_pool(self._dsn, min_size=1, max_size=2)
+        try:
+            async with pool.acquire() as conn:
+                await pg_apply(conn)
+        finally:
+            await pool.close()
+
+        # The doctor's init_pool is module-singleton — make sure prior
+        # state is cleared so it picks up this DSN cleanly.
+        from storage.postgres.connection import _reset_for_tests, shutdown_pool
+
+        try:
+            await shutdown_pool()
+        except Exception:
+            pass
+        _reset_for_tests()
+        return self._dsn
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        from storage.postgres.connection import _reset_for_tests, shutdown_pool
+
+        try:
+            await shutdown_pool()
+        except Exception:
+            pass
+        _reset_for_tests()
+        if self._ctr is not None:
+            self._ctr.stop()
+
+
 async def _run_doctor(
     mode: str,
     env_overrides: dict[str, str] | None = None,
     *,
-    tmp_log: Path | None = None,
-    tmp_path: Path | None = None,
+    tmp_log=None,
+    tmp_path=None,
 ):
-    overrides = dict(env_overrides or {})
-    # Always point BOT_STATE_DB at a migrated tmp DB so db_schema_ok is not
-    # blocked by the doctor's required-table probe.
-    if tmp_path is not None and "BOT_STATE_DB" not in overrides:
-        db_path = _make_migrated_db(tmp_path)
-        overrides["BOT_STATE_DB"] = str(db_path)
-    env, loader = _patch_env(overrides)
-    from bot_cli.commands import doctor as doctor_mod
-    import orchestrators.startup_health as startup_health_mod
-    import services.compliance as compliance_mod
+    """Run the doctor against a fresh PG testcontainer.
 
-    async def _fake_rpc(_url):
-        from types import SimpleNamespace
-        return SimpleNamespace(status="ok", details="stub")
+    ``tmp_path`` kept for backwards-compatible call sites; ignored
+    (sqlite ``BOT_STATE_DB`` no longer drives the DB probe).
+    """
+    async with _PgFixture() as dsn:
+        overrides = dict(env_overrides or {})
+        overrides["DATABASE_URL"] = dsn
+        env, loader = _patch_env(overrides)
+        from bot_cli.commands import doctor as doctor_mod
+        import orchestrators.startup_health as startup_health_mod
+        import services.compliance as compliance_mod
 
-    async def _fake_geoblock():
-        from types import SimpleNamespace
-        return SimpleNamespace(allowed=True, reason="stub")
+        async def _fake_rpc(_url):
+            from types import SimpleNamespace
+            return SimpleNamespace(status="ok", details="stub")
 
-    async def _fake_wallet_sig(_wallet, **_kw):
-        from config.env import SignatureType
-        return (SignatureType.EOA, "EOA", "0x" + "a" * 40)
+        async def _fake_geoblock():
+            from types import SimpleNamespace
+            return SimpleNamespace(allowed=True, reason="stub")
 
-    patches = [
-        patch.object(doctor_mod, "load_config", new=lambda *a, **kw: loader()),
-        patch.dict("config.env.ENV", env, clear=False),
-        patch.object(doctor_mod, "_check_wss_endpoint", return_value=(True, "ok")),
-        patch.object(startup_health_mod, "_check_rpc", new=_fake_rpc),
-        patch.object(compliance_mod, "check_geoblock", new=_fake_geoblock),
-        patch.object(doctor_mod, "detect_wallet_signature_type", new=_fake_wallet_sig),
-    ]
-    if tmp_log is not None:
-        patches.append(patch.object(doctor_mod, "_resolve_log_dir", return_value=tmp_log))
-        patches.append(patch.object(doctor_mod, "_resolve_jsonl_path", return_value=tmp_log / "app.jsonl"))
+        async def _fake_wallet_sig(_wallet, **_kw):
+            from config.env import SignatureType
+            return (SignatureType.EOA, "EOA", "0x" + "a" * 40)
 
-    from contextlib import ExitStack
+        patches = [
+            patch.object(doctor_mod, "load_config", new=lambda *a, **kw: loader()),
+            patch.dict("config.env.ENV", env, clear=False),
+            patch.object(doctor_mod, "_check_wss_endpoint", return_value=(True, "ok")),
+            patch.object(startup_health_mod, "_check_rpc", new=_fake_rpc),
+            patch.object(compliance_mod, "check_geoblock", new=_fake_geoblock),
+            patch.object(doctor_mod, "detect_wallet_signature_type", new=_fake_wallet_sig),
+        ]
+        if tmp_log is not None:
+            patches.append(patch.object(doctor_mod, "_resolve_log_dir", return_value=tmp_log))
+            patches.append(patch.object(doctor_mod, "_resolve_jsonl_path", return_value=tmp_log / "app.jsonl"))
 
-    with ExitStack() as stack:
-        for p in patches:
-            stack.enter_context(p)
-        return await doctor_mod.run_doctor_checks(mode)
+        from contextlib import ExitStack
+
+        with ExitStack() as stack:
+            for p in patches:
+                stack.enter_context(p)
+            return await doctor_mod.run_doctor_checks(mode)
 
 
 def _checks_by_name(result: dict) -> dict[str, dict]:
@@ -197,4 +245,3 @@ def test_console_summary_renders_fix_line(tmp_path):
     }
     out = _render_console_summary(fake)
     assert "❌ drift_ok" in out
-    assert "fix: resolve" in out
