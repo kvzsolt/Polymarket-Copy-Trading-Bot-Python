@@ -1,0 +1,19 @@
+bot_cli/commands/reconcile.py
+  s_93e0a4797804d9::t_5cbf451c1ccef3 19-66,78-82,93-95,108
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "63444c704f52a96556de0fa1592658f23903f410",
+  "prompts": {},
+  "sessions": {
+    "s_93e0a4797804d9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a8782b68-4941-47de-a34c-6d351fdda0ef",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
