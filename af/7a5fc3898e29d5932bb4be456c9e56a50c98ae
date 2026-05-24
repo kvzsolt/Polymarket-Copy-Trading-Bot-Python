@@ -1,0 +1,21 @@
+tests/release_gate/test_cli_drift.py
+  s_93e0a4797804d9::t_6d887d162523c6 6-9,13,16-17,23-52,55-57,61,63-64,78-82
+bot_cli/commands/drift.py
+  s_93e0a4797804d9::t_4c309b9e4f3888 8,14-16,47-55,62,65-66,151,153-162,164,166-167,169-215
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "af7a5fc3898e29d5932bb4be456c9e56a50c98ae",
+  "prompts": {},
+  "sessions": {
+    "s_93e0a4797804d9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a8782b68-4941-47de-a34c-6d351fdda0ef",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
