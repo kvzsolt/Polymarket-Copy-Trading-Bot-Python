@@ -422,3 +422,192 @@ production code; no production logic changed.
 **Tests run.** `pytest -m release_gate`: 133 passed, 1 skipped. Full
 suite: 2254 passed, 5 skipped. CI: all 8 checks green on push
 `3aee7e7`.
+
+## Postgres cutover Phase A + Bootup banner Phase B (PR #107, 12 commits)
+
+**Status:** `feat/postgres-migration` opened as PR #107 against `develop-fix`. Phase A foundation (asyncpg pool + full schema + 12/12 repo ports) complete. Phase B (boot snapshot + banner + history persistence) complete. Phase A5 (call-site sweep across remaining ~70 files) deferred to follow-up — dual-stack `connect_db()` keeps SQLite live during transition.
+
+### Phase A — Postgres cutover
+
+| Slice | Commit | What |
+|---|---|---|
+| PG-A1 | `5e44153` | `docker-compose.yml` (postgres:16-alpine + bot service), `asyncpg>=0.30`, `testcontainers[postgres]>=4.0`, `DATABASE_URL` env + `DatabaseConfig.dsn/pool_min/pool_max/command_timeout` |
+| PG-A2 | `140abdf` | `storage/postgres/connection.py` (singleton pool, idempotent init), dual-stack `connect_db()` (PG primary, SQLite legacy fallback) |
+| PG-A3+A8 | `7a38be4` | `storage/postgres/migrations.py` (28 tables / 14 indexes / partial unique on `orders(order_id)`, 3-col PK on `positions`, native PG `boolean`, `jsonb`, `timestamptz DEFAULT now()`), `tests/release_gate/test_postgres_migration.py` (4 release-gate tests) |
+| PG-A4 (cursors/fills/risk_blocks) | `89656d5` | Async ports with `SELECT FOR UPDATE` (cursors regress-guard), `ON CONFLICT DO NOTHING RETURNING id` (fills dedup), CASE-preserved operator clears (risk_blocks Batch 4 invariant) |
+| PG-A4 (positions) | `0f093ef` | `async with conn.transaction()` + `SELECT FOR UPDATE` replaces SQLite `BEGIN IMMEDIATE` — verified 4×SELL-5 concurrent from size=20 → 0 (would be 15 without serialisation) |
+| PG-A4 (risk_triggers/market_structure/leaders/reservations) | `8def69b` | Bool conversion for `discovered_leaders.active`, `market_structure_events.remapped`, `discovery_markets.{active,resolved,neg_risk}`; reservations concurrent capacity test: 2 concurrent \$150 vs \$200 cap → exactly 1 accepts |
+| PG-A4 (orders, 780 LOC) | `4fd9755` | Atomic submission-lock (1/5 concurrent winners), lost-update guard on `update_submission_status` (2 concurrent patches both land in merged jsonb), terminal-state guard on `mark_processed_trade`, full `persist_execution_atomically` with rollback on duplicate fill |
+| PG-A4 (discovery, 613 LOC) | `b9ac51b` | jsonb tolerance (dict or str), `IN(...)` → `= ANY($N::text[])`, dynamic WHERE with explicit `$N` index tracking, `MAX` → `GREATEST` for monotonic `last_seen_ts` guard |
+
+### Phase B — Bootup banner + history
+
+| Slice | Commit | What |
+|---|---|---|
+| PG-B1+B2 | `6b4c085` | `discovery_position_snapshots.wallet_role` ('leader' \| 'own') + idempotent `ADD COLUMN IF NOT EXISTS` migration + `(wallet_role, snapshot_ts DESC)` index. `services/discovery/position_snapshot_service.py` (fetch + persist + return in-memory `SnapshotResult`, fail-soft per wallet) |
+| PG-B3 | `bb8d08e` | `print_traders_youre_copying` + `print_your_positions` panels in `runtime_summary.py`. Math helpers: `_safe_pct` (zero-denom guard), `_leader_aggregate_gain`. Rich-coloured PnL, cents formatting, top-N truncation |
+| PG-B4 | `27a46c2` | Wired into `app.py` between health check + legacy banner. Reuses `_guarded_leader_fetch` for rate-limited boot fetch. Fail-soft fall-through to legacy panels on any pipeline failure |
+| PG-B5 | `272e765` | 25 new tests across `tests/test_position_snapshot_service.py` (12) + `tests/test_runtime_summary_banner.py` (13). Math verified by hand: +26.67%, +40%, +67.59%, +62.50%, -14.29%, +133.33%, -25.00% |
+
+### Verification
+
+| Check | Result |
+|---|---|
+| `pytest -q` (unit) | 2343 passed (+25 from baseline), 5 skipped, 2 pre-existing errors unchanged |
+| `pytest -m release_gate -o asyncio_mode=auto -q` | 160 passed, 1 skipped |
+| `ruff check --select=F,E --ignore=E501,F401,F841,E402,E741,E731 --exclude=legacy,test.py,bootstrap.py .` | clean |
+| `bandit -r services/discovery/position_snapshot_service.py orchestrators/runtime_summary.py` | 0 medium+ |
+| End-to-end against `postgres:16-alpine` testcontainer | every repo verified, atomicity invariants explicitly exercised |
+| Banner smoke test on canned data | math matches hand calc |
+
+### Deferred to follow-up
+
+- **PG-A5**: sweep remaining ~70 files that import `storage.sqlite.*` directly. Dual-stack `connect_db()` keeps SQLite live so existing call-sites continue working during transition.
+- **PG-A6**: test-fixture cutover via `testcontainers` conftest — mechanical but voluminous.
+- **PG-A7**: delete `storage/sqlite/` + remove `sqlite3` imports — gated on PG-A5 + PG-A6.
+
+## Post-PR #107 PG-A5 partial sweep (3 commits)
+
+After PR #107 opened, started incremental PG-A5 sweep on safe surface
+to prove the pattern + de-risk future cutover passes.
+
+| Slice | Commit | What |
+|---|---|---|
+| ci trigger | `2d5a6e9` | `.github/workflows/ci.yml` now triggers on `develop-fix` + `feat/*` so PR #107 actually runs CI |
+| LeaderCursorStore | `fba01c1` | `services/leaderCursorStore.py` ported to async asyncpg pool + classmethod `create()` factory; sole production caller (`services.tradeMonitor.trade_monitor`) updated to `await`; test mocks switched to `AsyncMock(create=...)` pattern. 13/13 cursor tests pass |
+| MarketStructureService | `c489f0b` | Full async rewrite incl. per-user `reconcile_positions` (single transaction wrap, `= ANY($N::text[])` for IN expansion, `now()` literal for timestamptz). 3 service tests migrated to live PG testcontainer via `_pg_pool()` async context manager — proves PG-A6 fixture pattern. 6/6 pass against real Postgres |
+
+CI green (lint-type-import + unit py3.11/3.12 + release-gate py3.11 PASS; docker-smoke + release-gate py3.12 running at last check).
+
+### Remaining PG-A5 surface (deferred to follow-up PR)
+
+- `services/orderRepository.py` wrapper — 9 forwarding methods, exercised by 7 sites in `test_issue66_gateway_isolation.py` + `test_phase03_atomic_idempotency.py` + 2 production callers (`riskMonitor`, `runtime_bootstrap`).
+- `utils/idempotency.py` — module-level helper used by ~10 sites for the legacy free-function `has_processed` / `mark_processed` API.
+- `orchestrators/runtime_bootstrap.py` — central wire-up that instantiates 5 repos with `db_path`; rewriting it touches every caller via `await build_user_state(...)`.
+- `services/discovery/ingestion_service.py`, `services/leaderRegistry`, `services/execution/*`, ~30 more files.
+
+PG-A5 is mechanical but voluminous. Dual-stack `connect_db()` keeps SQLite live so this can ship in incremental PRs without breaking the green baseline.
+
+## Post-PR #107 PG-A5 discovery slice (1 commit)
+
+Finished the in-flight discovery migration that had landed half-converted
+in the working tree before commit `c27a535`.
+
+`services/discovery/scoring_input_service.py` had its import flipped to
+`storage.postgres.discovery_repo.DiscoveryRepo` but the body still called
+four PG async methods synchronously — the service was broken in that
+state. Completed the conversion + ported the one production caller +
+ported the three test files that exercise the discovery scoring /
+reconstruction / raw-feature paths to a live `postgres:16-alpine`
+testcontainer using the proven `_pg_pool()` async context-manager
+pattern from `c489f0b`.
+
+| Slice | What |
+|---|---|
+| `scoring_input_service.py` body | `assemble_for_trader` + `_build_last_trade_ts_index` made `async def`; `await` added to `reconstruct_for_trader`, `list_latest_position_snapshots`, `get_market` (per-key, single fetch via cache check), `list_trades` (single batch fetch) |
+| `reconstructed_positions_service.py` | Committed the pre-existing fully-converted diff (sync→async + `storage.postgres.discovery_repo` import) |
+| `raw_feature_joiner.py` | `join` + `_build_one` made `async def`; `await` added to `list_orderbook_snapshots` + `list_trades`. Removed `trader_wallet=` kwarg (PG `list_trades` takes it positionally) |
+| `tests/test_repo_backed_reconstruction_service.py` | Rewritten: SQLite tmp_path → `_pg_pool()` testcontainer; all 4 tests `async def` with `pytestmark = pytest.mark.asyncio` for STRICT-mode compatibility |
+| `tests/test_discovery_scoring_input_service.py` | Same rewrite pattern. 4 tests |
+| `tests/test_raw_feature_joiner.py` | Same rewrite pattern. 17 tests across 5 classes |
+
+### Verification
+
+| Check | Result |
+|---|---|
+| `pytest tests/test_repo_backed_reconstruction_service.py tests/test_discovery_scoring_input_service.py tests/test_raw_feature_joiner.py -q` against live PG testcontainer | 25 passed in 73s |
+| `pytest -q` (full unit) | 2342 passed, 6 skipped, 206 deselected, 2 pre-existing errors (unchanged) |
+| `pytest -m release_gate -o asyncio_mode=auto -q` | 160 passed, 1 skipped |
+| `ruff check --select=F,E --ignore=E501,F401,F841,E402,E741,E731` on touched files | clean |
+| `compileall` on touched files | clean |
+| `grep -rn "from storage.sqlite.discovery_repo" --include='*.py' .` excluding `storage/sqlite/` | `tests/test_storage.py:29` only — pan-repo ABC-conformance test, exercises every SQLite adapter against its sync `domain/ports` ABC; out of slice (deferred until ABCs flip async with the broader sweep) |
+
+### Remaining PG-A5 surface (unchanged from prior section)
+
+Production callers of `storage.sqlite.*` (≈26 files) and the ~50 SQLite-
+backed test modules still rely on dual-stack `connect_db()`. Sweep
+deferred to follow-up PRs — full 5-slice roadmap covers idempotency /
+orderRepository / execution services / orchestrators / CLI / boot path /
+final cleanup.
+
+## Post-PR #107 PG-A5 CLI + housekeeping sweep (11 commits)
+
+Follow-up to the discovery slice — drops every sqlite vestige from the
+read-only CLI surface plus a handful of safe leaf-node cleanups. Each
+commit keeps the green baseline (2342 unit + 160 release-gate).
+
+| Slice | Commit | What |
+|---|---|---|
+| chore: orphan idempotency shim | `7348880` | Delete `services/execution/idempotency.py` — re-export shim with zero callers across the repo |
+| tradeMonitor TradeCursor flip | `1a92935` | Flip import to `storage.postgres.cursors_repo.TradeCursor`; the frozen dataclass is structurally identical in both repos and the LeaderCursorStore runtime persistence already moved to async PG in `fba01c1` |
+| app.py purge rewire | `c769107` | Drop the last production caller of `utils.idempotency`. Startup-time `purge_old_processed_trades(RETENTION_MAX_AGE_SECONDS)` now uses the async PG `OrdersRepo` directly with a defensive `RuntimeError` catch for the transition window before `connect_db()` |
+| status CLI | `7ac3425` | `bot_cli/commands/status.py` async-rewritten. Opens own `init_pool`/`shutdown_pool` for the one-shot lifecycle, drops sqlite_master table-existence checks (long-running bot owns schema), `EXTRACT(EPOCH FROM ...)` replaces `strftime('%s', ...)` |
+| positions CLI | `30ad37a` | `bot_cli/commands/positions.py` same pattern — single SELECT against `positions`, param markers `$N`, timestamptz isoformat guard |
+| orders CLI pending | `1661329` | `bot orders pending` subcommand → async PG. The `reconcile` subcommand stays on the legacy SQLite `OrdersRepo` until `ReconciliationService` (1704 LOC) follows — inline comment documents the gap |
+| reconcile CLI SELECT | `63444c7` | `bot reconcile`'s candidate-order SELECT now reads from canonical PG. Action path still routes through legacy SQLite `ReconciliationService`. Scoped import to keep blast radius bounded |
+| asyncpg Pool DSN fix | `90aafd0` | `storage/postgres/connection.py` — asyncpg Pool uses `__slots__` in 0.30+, so `pool._polymarket_dsn = dsn` raised `AttributeError` once the new CLI tests started driving `init_pool`. Track DSN in a parallel module-level `_pool_dsn` instead; `shutdown_pool` + `_reset_for_tests` clear both |
+| stale_locks CLI + tests | `55c3f8e` | `bot stale-locks list` async-rewritten. The jsonb `pending_since` extract + epoch arithmetic ported to `(response_json->>'pending_since')::float8::bigint` + `EXTRACT(EPOCH FROM …)`. All 4 release-gate tests ported to live PG testcontainer via `_pg_pool()`; end-to-end test drives `_run_stale_locks_async` directly to avoid clashing with the outer asyncio loop |
+| drift CLI + tests | `af7a5fc` | `bot drift check` async-rewritten; sqlite_master check dropped, `_list_persisted_positions` takes asyncpg pool. 3 release-gate tests ported (2 pure-function tests stay sync) |
+| reservations CLI + tests | `5443176` | `bot reservations list` async-rewritten; PG `order_reservations` schema already uses `bigint` epoch columns matching sqlite semantics, no cast changes. All 4 release-gate tests ported |
+
+### Net effect
+
+- Prod sqlite callers (excluding `storage/sqlite/` itself and tests):
+  **26 → 14** files remaining.
+- Tests now backed by live `postgres:16-alpine` testcontainer for
+  every migrated CLI: stale_locks (4), drift (3), reservations (4),
+  + the existing discovery slice (25). All counted under
+  `pytest -m release_gate` (160 passed, 1 skipped — baseline unchanged
+  because the ported tests replaced the same count of sqlite tests).
+
+### Remaining prod sqlite surface
+
+`bootstrap.py`, `app.py` (one `LeadersRepo` import for type hints),
+`bot_cli/commands/doctor.py` (680 LOC, gates live trading per CLAUDE.md
+— deserves its own session), `services/orderRepository.py` (114 LOC
+wrapper + 9 forwarding methods, 7 test sites + ExecutionService
+ripples), `services/execution/{reservation_service,reconciliation_service}.py`,
+`services/riskMonitor.py`, `orchestrators/{trade_pipeline,
+runtime_bootstrap,startup_health,leader_registry}.py`, `config/db.py`
+(dual-stack rip is the last step), `utils/idempotency.py` (2 test
+files still use the free-function API), `scripts/find_followable_traders.py`.
+
+Plus ~47 sqlite-backed test modules to port.
+
+## Post-PR #107 PG-A5 doctor slice (1 commit)
+
+The last sqlite-bound CLI surface migrated to async PG. Critically:
+``bot_cli/commands/doctor.py`` gates live trading per CLAUDE.md, so
+every fail-closed semantic from PR #105 audit-fix #95 is preserved:
+all three DB checks (``db_writable``, ``db_schema_ok``,
+``stale_idempotency``) still emit ``blocked`` (not ``warning``) on
+probe failure.
+
+| Slice | Commit | What |
+|---|---|---|
+| doctor.py DB checks + test_doctor_live.py | `858c8c2` | ``_missing_db_tables`` async, queries ``information_schema.tables``. ``db_writable`` runs ``SELECT 1`` via ``init_pool``. ``stale_idempotency`` rewrites the epoch math to ``EXTRACT(EPOCH FROM now())::bigint - EXTRACT(EPOCH FROM created_at)::bigint``. Single pool shared across all three checks via try/finally + ``shutdown_pool``. ``tests/test_doctor_live.py`` ported to a per-test ``postgres:16-alpine`` testcontainer via ``_PgFixture`` async context manager — ``DATABASE_URL`` env override drives the doctor through the testcontainer. Each test's ``__aenter__``/``__aexit__`` clears the ``storage.postgres.connection`` singleton so containers don't leak across tests |
+
+### Net effect after doctor slice
+
+- Prod sqlite callers (excluding `storage/sqlite/` itself and tests):
+  **14 → 13** files remaining.
+- All `bot_cli/commands/*.py` now PG-native (status, positions, orders,
+  reconcile, stale_locks, drift, reservations, doctor). The dual-stack
+  bridge is no longer touched by any CLI command.
+- 9 doctor tests pass against live PG testcontainer in ~24s.
+
+### Remaining prod sqlite surface (post-doctor)
+
+`bootstrap.py`, `app.py` (LeadersRepo type hint),
+`services/orderRepository.py`, `services/riskMonitor.py`,
+`services/execution/{reservation_service,reconciliation_service}.py`,
+`orchestrators/{trade_pipeline,runtime_bootstrap,startup_health,leader_registry}.py`,
+`config/db.py`, `utils/idempotency.py`, `scripts/find_followable_traders.py`.
+
+These form a tighter dependency mesh — ExecutionService consumes the
+order repo, ReservationService + ReconciliationService consume the
+reservations/positions repos, the orchestrators consume the leaders
+repo + wire everything. Incremental migration past this point requires
+either a coordinated cross-file slice (e.g. "all execution-path
+services in one pass") or a temporary async shim. Deferred to a
+dedicated focused session.

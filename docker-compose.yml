@@ -1,0 +1,56 @@
+# Local dev stack for the Polymarket copy-trading bot.
+#
+# Usage:
+#   docker compose up -d postgres                 # PG only (run bot via venv)
+#   docker compose up                             # full stack — bot + PG
+#
+# DATABASE_URL inside the compose network defaults to postgres:5432;
+# the host-side .venv runs read DATABASE_URL=postgresql://bot:bot@localhost:5432/polymarket_bot
+# (see secrets.env.example).
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: polymarket-bot-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: bot
+      POSTGRES_PASSWORD: bot
+      POSTGRES_DB: polymarket_bot
+      # Keep WAL retained briefly so a crashed bot can replay; tune in prod.
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bot -d polymarket_bot"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  bot:
+    build: .
+    container_name: polymarket-bot
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - secrets.env
+    environment:
+      # Inside the compose network the bot reaches PG via the service name.
+      DATABASE_URL: "postgresql://bot:bot@postgres:5432/polymarket_bot"
+      PAPER_TRADE_ONLY: "true"
+      ENABLE_METRICS_SERVER: "true"
+      METRICS_PORT: "9102"
+    ports:
+      - "9102:9102"
+    volumes:
+      # Persist bot logs to the host so operator can tail them.
+      - ./log:/app/log
+
+volumes:
+  postgres_data:
+    name: polymarket_bot_postgres_data
