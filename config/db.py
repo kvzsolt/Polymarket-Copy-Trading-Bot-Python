@@ -44,14 +44,69 @@ def _init_schema() -> None:
 
 
 async def connect_db() -> None:
+    """Bring the Postgres pool online and apply migrations.
+
+    Order:
+      1. Initialise the asyncpg pool (idempotent — second call is a no-op).
+      2. Apply Postgres migrations under a single asyncpg transaction.
+      3. Keep the SQLite path live as a transitional read-only fallback
+         until PG-A4..A7 finish moving every repo over. Once
+         storage/sqlite/ is deleted, the SQLite line + ``_init_schema``
+         go away.
+    """
+    # --- Postgres path (primary going forward) ---
+    try:
+        from config.app_config import load_config
+        from storage.postgres.connection import init_pool
+        from storage.postgres.migrations import apply_migrations as apply_pg_migrations
+
+        cfg = load_config()
+        pool = await init_pool(
+            cfg.database.dsn,
+            min_size=cfg.database.pool_min_size,
+            max_size=cfg.database.pool_max_size,
+            command_timeout_seconds=cfg.database.command_timeout_seconds,
+        )
+        async with pool.acquire() as conn:
+            await apply_pg_migrations(conn)
+        logger.info(
+            "PostgreSQL ready",
+            extra={
+                "dsn_host": _safe_dsn_host(cfg.database.dsn),
+                "pool_min": cfg.database.pool_min_size,
+                "pool_max": cfg.database.pool_max_size,
+            },
+        )
+    except Exception as exc:  # pragma: no cover — bootstrap path
+        # During the SQLite→PG transition, callers without a live PG
+        # still want the SQLite legacy ready. Log loudly so an actual
+        # PG misconfig is visible, then fall through to legacy init.
+        logger.warning(
+            "PostgreSQL init failed (transition mode — falling back to SQLite): %r",
+            exc,
+        )
+
+    # --- Legacy SQLite path (removed in PG-A7) ---
     _init_schema()
     logger.info(
-        "SQLite ready",
+        "SQLite legacy ready (transition mode)",
         extra={
             "db_path": str(_DB_PATH),
             "persistent": _DB_ENABLED,
         },
     )
+
+
+def _safe_dsn_host(dsn: str) -> str:
+    """Extract host:port for logging without leaking credentials."""
+    try:
+        from urllib.parse import urlparse
+        parsed = urlparse(dsn)
+        host = parsed.hostname or ""
+        port = parsed.port or ""
+        return f"{host}:{port}" if port else host
+    except Exception:
+        return "<unparseable>"
 
 
 def get_client():

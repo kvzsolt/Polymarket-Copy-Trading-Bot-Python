@@ -19,7 +19,7 @@ from domain.discovery_models import (
     PositionSnapshotRecord,
     TraderRecord,
 )
-from storage.sqlite.discovery_repo import DiscoveryRepo
+from storage.postgres.discovery_repo import DiscoveryRepo
 
 
 @dataclass(frozen=True)
@@ -40,17 +40,17 @@ class IngestionService:
     # Activity / trades
     # ------------------------------------------------------------------
 
-    def ingest_activity_batch(
+    async def ingest_activity_batch(
         self, raw_activities: list[dict[str, Any]]
     ) -> tuple[int, int]:
         """Normalise and store a batch of raw activity dicts.
 
         Returns (inserted_count, skipped_duplicate_count).
         """
-        result = self.ingest_activity_batch_detailed(raw_activities)
+        result = await self.ingest_activity_batch_detailed(raw_activities)
         return result.inserted_count, result.skipped_count
 
-    def ingest_activity_batch_detailed(
+    async def ingest_activity_batch_detailed(
         self, raw_activities: list[dict[str, Any]]
     ) -> ActivityBatchIngestResult:
         inserted = 0
@@ -61,11 +61,11 @@ class IngestionService:
             if trade is None:
                 skipped += 1
                 continue
-            result = self.repo.insert_trade(trade)
+            result = await self.repo.insert_trade(trade)
             if result is not None:
                 inserted += 1
                 inserted_trades.append(trade)
-                self._touch_trader(trade.trader_wallet, trade.event_ts)
+                await self._touch_trader(trade.trader_wallet, trade.event_ts)
             else:
                 skipped += 1
         return ActivityBatchIngestResult(
@@ -127,14 +127,14 @@ class IngestionService:
         except (TypeError, ValueError, KeyError):
             return None
 
-    def _touch_trader(self, wallet: str, ts: int) -> None:
-        existing = self.repo.get_trader(wallet)
+    async def _touch_trader(self, wallet: str, ts: int) -> None:
+        existing = await self.repo.get_trader(wallet)
         if existing is None:
-            self.repo.upsert_trader(
+            await self.repo.upsert_trader(
                 TraderRecord(wallet=wallet, first_seen_ts=ts, last_seen_ts=ts, trade_count=1)
             )
         else:
-            self.repo.upsert_trader(
+            await self.repo.upsert_trader(
                 TraderRecord(
                     wallet=wallet,
                     first_seen_ts=existing.first_seen_ts,
@@ -149,7 +149,7 @@ class IngestionService:
     # Position snapshots
     # ------------------------------------------------------------------
 
-    def ingest_position_snapshots(
+    async def ingest_position_snapshots(
         self,
         trader_wallet: str,
         raw_positions: list[dict[str, Any]],
@@ -162,7 +162,7 @@ class IngestionService:
             snap = self._normalise_position(trader_wallet, raw, ts)
             if snap is None:
                 continue
-            if self.repo.insert_position_snapshot(snap) is not None:
+            if await self.repo.insert_position_snapshot(snap) is not None:
                 count += 1
         return count
 
@@ -203,7 +203,7 @@ class IngestionService:
         except (TypeError, ValueError, KeyError):
             return None
 
-    def ingest_closed_position_snapshots(
+    async def ingest_closed_position_snapshots(
         self,
         trader_wallet: str,
         raw_positions: list[dict[str, Any]],
@@ -218,7 +218,7 @@ class IngestionService:
             snap = self._normalise_closed_position(trader_wallet, raw)
             if snap is None:
                 continue
-            if self.repo.insert_closed_position(snap) is not None:
+            if await self.repo.insert_closed_position(snap) is not None:
                 count += 1
         return count
 
@@ -268,12 +268,12 @@ class IngestionService:
     # Market metadata
     # ------------------------------------------------------------------
 
-    def ingest_market(self, raw: dict[str, Any]) -> bool:
+    async def ingest_market(self, raw: dict[str, Any]) -> bool:
         """Normalise and store market metadata.  Returns True on success."""
         cond_id = raw.get("condition_id") or raw.get("conditionId") or ""
         if not cond_id:
             return False
-        existing = self.repo.get_market(cond_id)
+        existing = await self.repo.get_market(cond_id)
         yes_token_id, no_token_id, tokens_json = _extract_token_ids(raw)
         question = str(raw.get("question") or raw.get("title") or "")
         slug = str(raw.get("slug") or raw.get("marketSlug") or "")
@@ -307,7 +307,7 @@ class IngestionService:
                 raw.get("end_date_iso") or raw.get("endDate") or raw.get("end_date")
             )
             neg_risk = _safe_bool(raw.get("negRisk") or raw.get("neg_risk"))
-        self.repo.upsert_market(
+        await self.repo.upsert_market(
             MarketMeta(
                 condition_id=cond_id,
                 question=question,
