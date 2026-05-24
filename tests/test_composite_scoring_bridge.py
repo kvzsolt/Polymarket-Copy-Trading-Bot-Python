@@ -16,8 +16,6 @@ import pytest
 
 from domain.composite_score_models import (
     CompositeAvailability,
-    CompositeScoreRecord,
-    FamilyContribution,
     FamilyWeights,
 )
 from domain.discovery_models import ReconstructionConfidence

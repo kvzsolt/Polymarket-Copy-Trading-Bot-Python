@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
-from typing import Any, Union
+from typing import Union
 
 from utils.logger import get_logger
 

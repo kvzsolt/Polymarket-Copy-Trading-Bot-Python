@@ -13,7 +13,7 @@ Validates:
 import time
 from datetime import datetime, timezone
 from decimal import Decimal
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -22,13 +22,9 @@ from domain.order_lifecycle import (
     IntentSide,
     OrderIntent,
     OrderIntentKey,
-    OrderLifecycleStatus,
     Reservation,
 )
 from services.execution.reservation_service import (
-    Clock,
-    DefaultClock,
-    ReservationConflict,
     ReservationService,
 )
 from services.intentRegistry import (

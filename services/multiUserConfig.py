@@ -109,7 +109,7 @@ def load_runtime_users(leader_wallets: list[str], config: AppConfig) -> list[Run
             f"MULTI_USER_CONFIG_FILE must point under $HOME or the working "
             f"directory; resolved path was {resolved}"
         )
-    if not resolved.suffix.lower() in {".json", ".jsonc"}:
+    if resolved.suffix.lower() not in {".json", ".jsonc"}:
         raise ValueError(
             f"MULTI_USER_CONFIG_FILE must be a .json file; got {resolved.suffix!r}"
         )

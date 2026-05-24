@@ -8,7 +8,7 @@ from config.runtime_env import load_runtime_env
 
 load_runtime_env(override_secrets=True)
 
-from config.env import ENV, rehydrate_env
+from config.env import rehydrate_env
 from config.db import connect_db, get_db_path
 from config.app_config import AppConfig, load_config
 from services.traderDiscoveryService import TraderDiscoveryService

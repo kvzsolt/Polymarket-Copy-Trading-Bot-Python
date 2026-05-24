@@ -1,11 +1,8 @@
 from __future__ import annotations
 
-import time
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from aiohttp import web
-from aiohttp.test_utils import make_mocked_request
 
 from services.healthServer import ReadinessTracker, start_health_server
 

@@ -17,7 +17,7 @@ Tier rules:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum, auto
+from enum import Enum
 
 
 class FollowTier(Enum):

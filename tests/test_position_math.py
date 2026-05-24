@@ -21,7 +21,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from config.settings import RiskSettings
-from services.positionManager import PositionManager, TrackedPosition
+from services.positionManager import PositionManager
 
 
 def _default_risk() -> RiskSettings:

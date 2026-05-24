@@ -1,4 +1,3 @@
-import asyncio
 import logging
 import sqlite3
 import time

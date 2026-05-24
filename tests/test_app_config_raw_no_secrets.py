@@ -10,7 +10,6 @@ sensitive values are physically absent from the object.
 """
 from __future__ import annotations
 
-import pytest
 
 from config.app_config import _RAW_SENSITIVE_KEYS, load_config
 

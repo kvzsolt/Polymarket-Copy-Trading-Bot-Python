@@ -21,7 +21,6 @@ from utils.logger import (
     log_trade_batch_summary,
     monitor_heartbeat_tick,
     print_new_trade_detected,
-    shorten_addr,
 )
 
 logger = get_logger("TradeMonitor")

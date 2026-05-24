@@ -21,13 +21,11 @@ from integrations.polymarket.clob_v2_gateway import ClobV2Gateway, _build_submit
 from integrations.polymarket.errors import (
     VenueAuthError,
     VenueInvalidOrderError,
-    VenueRateLimitError,
     VenueUnavailableError,
 )
 from integrations.polymarket.models import (
     MarketableOrderRequest,
     VenueCancelResult,
-    VenueFill,
     VenueOrderState,
     VenueSubmitResult,
 )

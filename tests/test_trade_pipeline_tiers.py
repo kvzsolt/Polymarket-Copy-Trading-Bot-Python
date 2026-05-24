@@ -11,7 +11,7 @@ import pytest
 
 import config.app_config as app_config_mod
 from config.app_config import load_config
-from config.env import ENV, rehydrate_env
+from config.env import rehydrate_env
 from domain.trading_context import TradingContext
 from orchestrators.trade_pipeline import execute_trades, _resolve_leader_tier
 from services.pnlTracker import PnLTracker

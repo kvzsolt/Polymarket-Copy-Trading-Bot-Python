@@ -5,7 +5,7 @@ import time
 
 import pytest
 
-from config.env import ENV, rehydrate_env
+from config.env import rehydrate_env
 from services.tradeScoringService import TradeScoringService
 
 
