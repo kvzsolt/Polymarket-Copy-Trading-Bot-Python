@@ -8,13 +8,60 @@ import json
 from config.runtime_env import load_runtime_env
 from config.env import rehydrate_env
 from config.app_config import load_config, EnvValidationError
-from storage.sqlite.connection import create_connection
 
 
 def register_reconcile_command(subparsers: argparse._SubParsersAction) -> None:
     parser = subparsers.add_parser("reconcile", help="Trigger reconciliation of unconfirmed orders")
     parser.add_argument("--dry-run", action="store_true", help="Show what would be reconciled without acting")
     parser.add_argument("--user-id", default=None, help="Reconcile orders for a specific user only")
+
+
+async def _fetch_unconfirmed_pg(dsn: str, user_id: str | None) -> list[dict]:
+    from storage.postgres.connection import init_pool, shutdown_pool
+
+    query = """
+        SELECT idempotency_key, user_id, leader_id, order_id, status, updated_at
+        FROM orders
+        WHERE status IN ('submitted_unconfirmed', 'submitted', 'unknown_unconfirmed',
+                         'reconciliation_required')
+          AND order_id IS NOT NULL
+    """
+    params: list = []
+    if user_id is not None:
+        query += " AND user_id = $1"
+        params.append(user_id)
+    query += " ORDER BY updated_at ASC"
+
+    pool = await init_pool(
+        dsn,
+        min_size=1,
+        max_size=2,
+        command_timeout_seconds=15.0,
+    )
+    try:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(query, *params)
+    finally:
+        await shutdown_pool()
+
+    def _ts(value):
+        if value is None:
+            return None
+        if hasattr(value, "isoformat"):
+            return value.isoformat()
+        return value
+
+    return [
+        {
+            "idempotency_key": r["idempotency_key"],
+            "user_id": r["user_id"],
+            "leader_id": r["leader_id"],
+            "order_id": r["order_id"],
+            "status": r["status"],
+            "updated_at": _ts(r["updated_at"]),
+        }
+        for r in rows
+    ]
 
 
 async def _run_reconcile_async(args: argparse.Namespace) -> int:
@@ -28,26 +75,11 @@ async def _run_reconcile_async(args: argparse.Namespace) -> int:
 
     dry_run = getattr(args, "dry_run", False)
     user_id = getattr(args, "user_id", None)
-    db_path = config.database.db_path
 
-    # Collect unconfirmed orders
-    unconfirmed: list[dict] = []
-    with create_connection(db_path) as conn:
-        query = """
-            SELECT idempotency_key, user_id, leader_id, order_id, status, updated_at
-            FROM orders
-            WHERE status IN ('submitted_unconfirmed', 'submitted', 'unknown_unconfirmed',
-                             'reconciliation_required')
-              AND order_id IS NOT NULL
-        """
-        params: list = []
-        if user_id is not None:
-            query += " AND user_id = ?"
-            params.append(user_id)
-        query += " ORDER BY updated_at ASC"
-
-        rows = conn.execute(query, tuple(params)).fetchall()
-        unconfirmed = [dict(r) for r in rows]
+    # Collect unconfirmed orders via PG. Even when the reconcile action
+    # path below routes through the legacy SQLite ReconciliationService,
+    # this SELECT now reads from the canonical PG source of truth.
+    unconfirmed = await _fetch_unconfirmed_pg(config.database.dsn, user_id)
 
     if dry_run:
         output = {
@@ -58,7 +90,9 @@ async def _run_reconcile_async(args: argparse.Namespace) -> int:
         print(json.dumps(output, indent=2))
         return 0
 
-    # Run actual reconciliation
+    # Run actual reconciliation. NOTE: ReconciliationService (1704 LOC) is
+    # gated on the broader execution-path PG migration; until that lands,
+    # the action path stays on the SQLite OrdersRepo.
     reconciled = 0
     errors: list[str] = []
     if unconfirmed:
@@ -71,7 +105,7 @@ async def _run_reconcile_async(args: argparse.Namespace) -> int:
             orders_repo = None
             try:
                 from storage.sqlite.orders_repo import OrdersRepo
-                orders_repo = OrdersRepo(db_path)
+                orders_repo = OrdersRepo(config.database.db_path)
             except Exception:
                 pass
 

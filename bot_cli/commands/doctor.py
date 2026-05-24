@@ -33,7 +33,6 @@ from config.app_config import (
 )
 from config.env import ENV, rehydrate_env
 from config.runtime_env import load_runtime_env
-from storage.sqlite.connection import create_connection
 
 
 # ---------------------------------------------------------------------------
@@ -110,12 +109,21 @@ _REQUIRED_DB_TABLES = (
 )
 
 
-def _missing_db_tables(db_path: str) -> list[str]:
-    with create_connection(db_path) as conn:
-        rows = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'"
-        ).fetchall()
-        present = {r["name"] for r in rows}
+async def _missing_db_tables(pool) -> list[str]:
+    """Return the list of required tables that are absent from PG.
+
+    Uses ``information_schema.tables`` against the active asyncpg pool
+    (long-running bot owns schema lifecycle via ``connect_db()``; the
+    doctor is a read-only probe).
+    """
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT table_name FROM information_schema.tables
+            WHERE table_schema = 'public'
+            """
+        )
+    present = {r["table_name"] for r in rows}
     return [t for t in _REQUIRED_DB_TABLES if t not in present]
 
 
@@ -327,18 +335,31 @@ async def run_doctor_checks(mode: str) -> dict[str, Any]:
             ctx.ok("wallet_signature_type", detail)
 
     # ----- database -----------------------------------------------------
+    from storage.postgres.connection import init_pool, shutdown_pool
+
+    pool = None
+    db_label = config.database.dsn or config.database.db_path
     try:
-        with create_connection(config.database.db_path) as conn:
-            conn.execute("PRAGMA user_version;")
-        ctx.ok("db_writable", config.database.db_path)
+        pool = await init_pool(
+            config.database.dsn,
+            min_size=1,
+            max_size=2,
+            command_timeout_seconds=15.0,
+        )
+        async with pool.acquire() as conn:
+            await conn.fetchval("SELECT 1")
+        ctx.ok("db_writable", db_label)
     except Exception as exc:
         ctx.blocked(
             "db_writable",
             f"db not writable: {exc}",
-            f"ensure {config.database.db_path} is writable",
+            f"ensure Postgres at {db_label} is reachable",
         )
+
     try:
-        missing = _missing_db_tables(config.database.db_path)
+        if pool is None:
+            raise RuntimeError("pool not initialised")
+        missing = await _missing_db_tables(pool)
         if missing:
             ctx.blocked(
                 "db_schema_ok",
@@ -352,29 +373,32 @@ async def run_doctor_checks(mode: str) -> dict[str, Any]:
 
     # ----- pending orders / stale idempotency ---------------------------
     try:
-        with create_connection(config.database.db_path) as conn:
-            row = conn.execute(
-                "SELECT COUNT(*) AS c FROM sqlite_master WHERE type='table' AND name='orders'"
-            ).fetchone()
-            if row and row["c"] > 0:
-                ttl = config.execution.pending_submission_ttl_seconds
-                stale = conn.execute(
-                    "SELECT COUNT(*) AS c FROM orders "
-                    "WHERE status IN ('submitted_unconfirmed','delayed','pending','pending_lock','submitting') "
-                    "AND (strftime('%s','now') - strftime('%s', created_at)) > ?",
-                    (ttl,),
-                ).fetchone()
-                count = stale["c"] if stale else 0
-                if count:
-                    ctx.warning(
-                        "stale_idempotency",
-                        f"{count} stale pending orders",
-                        "run stale-lock cleanup before live",
-                    )
-                else:
-                    ctx.ok("stale_idempotency", "no stale pending orders")
-            else:
-                ctx.skipped("stale_idempotency", "orders table missing")
+        if pool is None:
+            raise RuntimeError("pool not initialised")
+        # ``orders`` table existence is implied by db_schema_ok above;
+        # the long-running bot owns schema lifecycle. Skip the explicit
+        # table-presence probe (was sqlite_master-specific).
+        ttl = config.execution.pending_submission_ttl_seconds
+        async with pool.acquire() as conn:
+            count = await conn.fetchval(
+                """
+                SELECT COUNT(*) FROM orders
+                WHERE status IN ('submitted_unconfirmed','delayed','pending',
+                                 'pending_lock','submitting')
+                  AND (EXTRACT(EPOCH FROM now())::bigint
+                       - EXTRACT(EPOCH FROM created_at)::bigint) > $1
+                """,
+                int(ttl),
+            )
+        count = int(count or 0)
+        if count:
+            ctx.warning(
+                "stale_idempotency",
+                f"{count} stale pending orders",
+                "run stale-lock cleanup before live",
+            )
+        else:
+            ctx.ok("stale_idempotency", "no stale pending orders")
     except Exception as exc:
         # Pre-fix: ctx.warning() — a DB corruption / permissions error
         # silently degraded to WARNING and the doctor's live gate
@@ -387,6 +411,12 @@ async def run_doctor_checks(mode: str) -> dict[str, Any]:
             f"probe failed: {type(exc).__name__}",
             "investigate DB connectivity + schema before live",
         )
+    finally:
+        if pool is not None:
+            try:
+                await shutdown_pool()
+            except Exception:
+                pass
 
     # ----- RPC ----------------------------------------------------------
     from orchestrators.startup_health import _check_rpc

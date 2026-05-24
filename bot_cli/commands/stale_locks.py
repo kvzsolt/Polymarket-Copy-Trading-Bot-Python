@@ -4,11 +4,14 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+from typing import TYPE_CHECKING
 
 from config.app_config import EnvValidationError, load_config
 from config.env import rehydrate_env
 from config.runtime_env import load_runtime_env
-from storage.sqlite.connection import create_connection
+
+if TYPE_CHECKING:
+    import asyncpg
 
 
 _LOCKED_STATUSES = (
@@ -46,45 +49,54 @@ def _load_config_or_fail():
         return None
 
 
-def _list_stale_locks(
-    db_path: str, *, ttl_seconds: int, user_id: str | None
+async def _list_stale_locks(
+    pool: "asyncpg.Pool",
+    *,
+    ttl_seconds: int,
+    user_id: str | None,
 ) -> list[dict]:
-    placeholders = ",".join("?" for _ in _LOCKED_STATUSES)
-    query = f"""
+    """List orders whose effective lock age exceeds ``ttl_seconds``.
+
+    Effective lock age = ``now() - pending_since`` when
+    ``response_json.pending_since`` is set, else
+    ``now() - COALESCE(updated_at, created_at)``.
+
+    Takes the asyncpg pool so callers (CLI + tests) own pool lifecycle.
+    """
+    base = """
         SELECT idempotency_key, user_id, leader_id, order_id, status,
                attempt_count, last_error, created_at, updated_at,
                response_json,
                COALESCE(
-                   json_extract(response_json, '$.pending_since'),
-                   updated_at,
-                   created_at
+                   (response_json->>'pending_since')::float8::bigint,
+                   EXTRACT(EPOCH FROM COALESCE(updated_at, created_at))::bigint
                ) AS pending_since_ts,
-               (strftime('%s','now') - CASE
-                   WHEN json_extract(response_json, '$.pending_since') IS NOT NULL
-                   THEN json_extract(response_json, '$.pending_since')
-                   ELSE strftime('%s', COALESCE(updated_at, created_at))
-               END) AS age_seconds
+               (EXTRACT(EPOCH FROM now())::bigint - COALESCE(
+                   (response_json->>'pending_since')::float8::bigint,
+                   EXTRACT(EPOCH FROM COALESCE(updated_at, created_at))::bigint
+               )) AS age_seconds
         FROM orders
-        WHERE status IN ({placeholders})
-          AND (strftime('%s','now') - CASE
-               WHEN json_extract(response_json, '$.pending_since') IS NOT NULL
-               THEN json_extract(response_json, '$.pending_since')
-               ELSE strftime('%s', COALESCE(updated_at, created_at))
-           END) > ?
+        WHERE status = ANY($1::text[])
+          AND (EXTRACT(EPOCH FROM now())::bigint - COALESCE(
+               (response_json->>'pending_since')::float8::bigint,
+               EXTRACT(EPOCH FROM COALESCE(updated_at, created_at))::bigint
+           )) > $2
     """
-    params: list = list(_LOCKED_STATUSES) + [ttl_seconds]
+    params: list = [list(_LOCKED_STATUSES), int(ttl_seconds)]
     if user_id is not None:
-        query += " AND user_id = ?"
         params.append(user_id)
-    query += " ORDER BY age_seconds DESC"
+        base += f" AND user_id = ${len(params)}"
+    base += " ORDER BY age_seconds DESC"
 
-    with create_connection(db_path) as conn:
-        exists = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='orders'"
-        ).fetchone()
-        if not exists:
-            return []
-        rows = conn.execute(query, tuple(params)).fetchall()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(base, *params)
+
+    def _ts(value):
+        if value is None:
+            return None
+        if hasattr(value, "isoformat"):
+            return value.isoformat()
+        return value
 
     return [
         {
@@ -95,9 +107,11 @@ def _list_stale_locks(
             "status": row["status"],
             "attempt_count": row["attempt_count"],
             "last_error": row["last_error"],
-            "created_at": row["created_at"],
-            "updated_at": row["updated_at"],
-            "pending_since_ts": row["pending_since_ts"],
+            "created_at": _ts(row["created_at"]),
+            "updated_at": _ts(row["updated_at"]),
+            "pending_since_ts": int(row["pending_since_ts"])
+            if row["pending_since_ts"] is not None
+            else None,
             "age_seconds": int(row["age_seconds"] or 0),
         }
         for row in rows
@@ -114,10 +128,21 @@ async def _run_list_async(args: argparse.Namespace) -> int:
         ttl = config.execution.pending_submission_ttl_seconds
     user_id = getattr(args, "user_id", None)
 
+    from storage.postgres.connection import init_pool, shutdown_pool
+
     try:
-        rows = _list_stale_locks(
-            config.database.db_path, ttl_seconds=int(ttl), user_id=user_id
+        pool = await init_pool(
+            config.database.dsn,
+            min_size=1,
+            max_size=2,
+            command_timeout_seconds=15.0,
         )
+        try:
+            rows = await _list_stale_locks(
+                pool, ttl_seconds=int(ttl), user_id=user_id
+            )
+        finally:
+            await shutdown_pool()
     except Exception as exc:
         print(json.dumps({"error": "db_error", "details": str(exc)}))
         return 1
