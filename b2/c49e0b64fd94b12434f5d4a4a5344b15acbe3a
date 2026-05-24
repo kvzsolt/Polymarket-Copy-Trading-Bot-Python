@@ -1,0 +1,20 @@
+docs/full-rework-progress.md
+  s_93e0a4797804d9::t_1f860f066af8ac 523
+  s_93e0a4797804d9::t_afde70a4abf90f 490-522,524-531
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "b2c49e0b64fd94b12434f5d4a4a5344b15acbe3a",
+  "prompts": {},
+  "sessions": {
+    "s_93e0a4797804d9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a8782b68-4941-47de-a34c-6d351fdda0ef",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
