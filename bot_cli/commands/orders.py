@@ -5,10 +5,10 @@ import argparse
 import asyncio
 import json
 
+
 from config.runtime_env import load_runtime_env
 from config.env import rehydrate_env
 from config.app_config import load_config, EnvValidationError
-from storage.sqlite.connection import create_connection
 
 
 def register_orders_command(subparsers: argparse._SubParsersAction) -> None:
@@ -33,10 +33,11 @@ def _load_config_or_fail():
         return None
 
 
-def _list_pending_orders(config, user_id: str | None = None) -> list[dict]:
+async def _list_pending_orders(config, user_id: str | None = None) -> list[dict]:
     """Return orders with non-terminal status from the orders table."""
-    db_path = config.database.db_path
-    query = """
+    from storage.postgres.connection import init_pool, shutdown_pool
+
+    base_query = """
         SELECT idempotency_key, user_id, leader_id, order_id, status,
                attempt_count, last_error, created_at, updated_at
         FROM orders
@@ -47,12 +48,28 @@ def _list_pending_orders(config, user_id: str | None = None) -> list[dict]:
     """
     params: list = []
     if user_id is not None:
-        query += " AND user_id = ?"
+        base_query += " AND user_id = $1"
         params.append(user_id)
-    query += " ORDER BY updated_at ASC"
+    base_query += " ORDER BY updated_at ASC"
 
-    with create_connection(db_path) as conn:
-        rows = conn.execute(query, tuple(params)).fetchall()
+    pool = await init_pool(
+        config.database.dsn,
+        min_size=1,
+        max_size=2,
+        command_timeout_seconds=15.0,
+    )
+    try:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(base_query, *params)
+    finally:
+        await shutdown_pool()
+
+    def _ts(value):
+        if value is None:
+            return None
+        if hasattr(value, "isoformat"):
+            return value.isoformat()
+        return value
 
     return [
         {
@@ -63,8 +80,8 @@ def _list_pending_orders(config, user_id: str | None = None) -> list[dict]:
             "status": row["status"],
             "attempt_count": row["attempt_count"],
             "last_error": row["last_error"],
-            "created_at": row["created_at"],
-            "updated_at": row["updated_at"],
+            "created_at": _ts(row["created_at"]),
+            "updated_at": _ts(row["updated_at"]),
         }
         for row in rows
     ]
@@ -76,7 +93,7 @@ async def _run_orders_pending_async(args: argparse.Namespace) -> int:
         return 1
 
     user_id = getattr(args, "user_id", None)
-    pending = _list_pending_orders(config, user_id=user_id)
+    pending = await _list_pending_orders(config, user_id=user_id)
     output = {
         "count": len(pending),
         "orders": pending,
@@ -92,6 +109,12 @@ async def _run_orders_reconcile_async(args: argparse.Namespace) -> int:
 
     dry_run = getattr(args, "dry_run", False)
     db_path = config.database.db_path
+
+    # NOTE: reconcile subcommand still routes through the SQLite OrdersRepo +
+    # ReconciliationService until the broader execution-path PG migration
+    # lands (see PG-A5 follow-up plan). The pending subcommand above is
+    # already PG-native.
+    from storage.sqlite.connection import create_connection
 
     # Find unconfirmed orders that need reconciliation
     unconfirmed: list[dict] = []
