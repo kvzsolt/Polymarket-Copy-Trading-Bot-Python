@@ -7,11 +7,14 @@ import json
 import time
 from collections import defaultdict
 from decimal import Decimal
+from typing import TYPE_CHECKING
 
 from config.app_config import EnvValidationError, load_config
 from config.env import rehydrate_env
 from config.runtime_env import load_runtime_env
-from storage.sqlite.connection import create_connection
+
+if TYPE_CHECKING:
+    import asyncpg
 
 
 def register_reservations_command(subparsers: argparse._SubParsersAction) -> None:
@@ -60,27 +63,25 @@ def _row_to_dict(row) -> dict:
     }
 
 
-def _list_reservations(
-    db_path: str, *, user_id: str | None, include_expired: bool
+async def _list_reservations(
+    pool: "asyncpg.Pool", *, user_id: str | None, include_expired: bool
 ) -> list[dict]:
+    """List active reservations. Takes the asyncpg pool so callers
+    (CLI entry + tests) own pool lifecycle.
+    """
     now_ts = int(time.time())
     query = "SELECT * FROM order_reservations WHERE status = 'active'"
     params: list = []
     if user_id is not None:
-        query += " AND user_id = ?"
         params.append(user_id)
+        query += f" AND user_id = ${len(params)}"
     if not include_expired:
-        query += " AND expires_at > ?"
         params.append(now_ts)
+        query += f" AND expires_at > ${len(params)}"
     query += " ORDER BY created_at ASC"
 
-    with create_connection(db_path) as conn:
-        exists = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='order_reservations'"
-        ).fetchone()
-        if not exists:
-            return []
-        rows = conn.execute(query, tuple(params)).fetchall()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(query, *params)
 
     return [_row_to_dict(row) for row in rows]
 
@@ -126,12 +127,23 @@ async def _run_list_async(args: argparse.Namespace) -> int:
     user_id = getattr(args, "user_id", None)
     include_expired = bool(getattr(args, "include_expired", False))
 
+    from storage.postgres.connection import init_pool, shutdown_pool
+
     try:
-        reservations = _list_reservations(
-            config.database.db_path,
-            user_id=user_id,
-            include_expired=include_expired,
+        pool = await init_pool(
+            config.database.dsn,
+            min_size=1,
+            max_size=2,
+            command_timeout_seconds=15.0,
         )
+        try:
+            reservations = await _list_reservations(
+                pool,
+                user_id=user_id,
+                include_expired=include_expired,
+            )
+        finally:
+            await shutdown_pool()
     except Exception as exc:
         print(json.dumps({"error": "db_error", "details": str(exc)}))
         return 1
