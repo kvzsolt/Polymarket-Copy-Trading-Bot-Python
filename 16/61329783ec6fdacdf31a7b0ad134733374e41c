@@ -1,0 +1,19 @@
+bot_cli/commands/orders.py
+  s_93e0a4797804d9::t_7675fd1c723176 8,36,38-40,51,53-72,83-84,96,113-117
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "1661329783ec6fdacdf31a7b0ad134733374e41c",
+  "prompts": {},
+  "sessions": {
+    "s_93e0a4797804d9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a8782b68-4941-47de-a34c-6d351fdda0ef",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
