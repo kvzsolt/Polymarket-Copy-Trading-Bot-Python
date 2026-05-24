@@ -106,11 +106,11 @@ jobs:
           #          f-string SET builders)
           #   B108 — hardcoded /tmp path in config/db.py disabled-DB fallback
           #          (Batch 7 removes module-level constants)
-          #   B104 — bind 0.0.0.0 in services/observability/health_server.py
-          #          (Batch 9 deletes that orphan file)
           #   B310 — urlopen with Request — Polymarket API URLs are curated, not
           #          user-supplied; revisit if external URL ever flows here
-          bandit -r services orchestrators clients config utils cache storage interfaces domain integrations bot_cli app.py bootstrap.py -ll --skip B101,B311,B608,B108,B104,B310
+          # B104 dropped — orphan services/observability/health_server.py
+          # was deleted in Batch 9 logging hygiene work.
+          bandit -r services orchestrators clients config utils cache storage interfaces domain integrations bot_cli app.py bootstrap.py -ll --skip B101,B311,B608,B108,B310
       - name: mypy (type — soft fail until type debt cleared)
         continue-on-error: true
         run: |
