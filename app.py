@@ -644,6 +644,16 @@ async def main():
     db_path = application.db_path
     application.readiness.update(db_ok=True)
 
+    # Greptile P1 (PR #107): the bot used to reach
+    # ``DiscoveryCaptureService.create()`` without ever calling
+    # ``connect_db()`` — that service internally calls ``get_pool()``
+    # which would raise ``RuntimeError`` and crash startup. Call
+    # ``connect_db()`` here so the asyncpg pool exists before any
+    # downstream component asks for it.
+    from config.db import connect_db as _connect_db
+
+    await _connect_db()
+
     from config.env import ENV as _ENV
     from storage.postgres.connection import get_pool
     from storage.postgres.orders_repo import OrdersRepo as _PgOrdersRepo
@@ -653,8 +663,9 @@ async def main():
         _pool = await get_pool()
         purged = await _PgOrdersRepo(_pool).purge_old_processed_trades(_max_age)
     except RuntimeError:
-        # PG pool not initialised yet (transition-mode startup before
-        # connect_db ran). Skip purge — non-critical cleanup.
+        # Defensive: should not fire now that connect_db() runs above,
+        # but kept so a degraded PG init does not block startup on a
+        # non-critical purge.
         purged = 0
     if purged:
         logger.info("Startup cleanup: purged %s stale records", purged)
