@@ -2,9 +2,9 @@ name: ci
 
 on:
   push:
-    branches: ["main", "develop", "live-trading", "full-rework", "issue-*"]
+    branches: ["main", "develop", "develop-fix", "live-trading", "full-rework", "issue-*", "feat/*"]
   pull_request:
-    branches: ["main", "develop", "live-trading", "full-rework"]
+    branches: ["main", "develop", "develop-fix", "live-trading", "full-rework"]
 
 permissions:
   contents: read
