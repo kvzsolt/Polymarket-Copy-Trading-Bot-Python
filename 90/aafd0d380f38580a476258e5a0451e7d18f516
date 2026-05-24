@@ -1,0 +1,21 @@
+storage/postgres/connection.py
+  s_93e0a4797804d9::t_3122052113614a 51,55-58,62,76
+  s_93e0a4797804d9::t_d34181cd1f0378 34
+  s_93e0a4797804d9::t_350658134b2035 102,107,115,117
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "90aafd0d380f38580a476258e5a0451e7d18f516",
+  "prompts": {},
+  "sessions": {
+    "s_93e0a4797804d9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a8782b68-4941-47de-a34c-6d351fdda0ef",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
