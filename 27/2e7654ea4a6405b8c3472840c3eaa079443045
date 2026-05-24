@@ -1,0 +1,21 @@
+tests/test_position_snapshot_service.py
+  s_40eab60fc22f44::t_e458756872d112 1-287
+tests/test_runtime_summary_banner.py
+  s_40eab60fc22f44::t_dafecc02936e41 1-240
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "272e7654ea4a6405b8c3472840c3eaa079443045",
+  "prompts": {},
+  "sessions": {
+    "s_40eab60fc22f44": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "75ccb144-a9df-45dd-bd80-c6e6ed5d9e12",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
