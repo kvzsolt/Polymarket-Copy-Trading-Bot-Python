@@ -1,0 +1,23 @@
+config/db.py
+  s_40eab60fc22f44::t_31a23722386ceb 47-89,92,100-109
+storage/postgres/migrations.py
+  s_40eab60fc22f44::t_024d0581d962e3 1-37
+storage/postgres/connection.py
+  s_40eab60fc22f44::t_7760eca0ad21d4 1-114
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "140abdf843c117785c74df19e8c694f6bb65abfa",
+  "prompts": {},
+  "sessions": {
+    "s_40eab60fc22f44": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "75ccb144-a9df-45dd-bd80-c6e6ed5d9e12",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
