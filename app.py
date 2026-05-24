@@ -61,6 +61,11 @@ from orchestrators.startup_health import perform_startup_health_check
 from orchestrators.user_data_runtime import UserDataRuntime
 from services.compliance import check_geoblock
 from services.discovery.capture_service import DiscoveryCaptureService
+from services.discovery.position_snapshot_service import (
+    SnapshotResult,
+    snapshot_followed_leaders,
+)
+from services.tradeMonitor import _guarded_leader_fetch
 from services.healthServer import start_health_server
 from services.metrics import metrics
 from services.multiUserConfig import RuntimeUser, UserFollowConfig, load_runtime_users
@@ -852,6 +857,43 @@ async def main():
         startup_purged_failed_orders=startup_purged_failed_orders,
     )
 
+    # Boot-time position snapshot — persists leader + own wallet
+    # snapshots into discovery_position_snapshots tagged with
+    # wallet_role, and surfaces an in-memory tree so the new
+    # TRADERS YOU'RE COPYING + YOUR POSITIONS panels can render
+    # without re-fetching. Fail-soft so PG-pool-not-online (transition)
+    # / data-api degradation never blocks boot.
+    snapshot_result: SnapshotResult | None = None
+    try:
+        from storage.postgres.connection import get_pool
+        from storage.postgres.discovery_repo import DiscoveryRepo
+
+        pool = await get_pool()
+        discovery_repo = DiscoveryRepo(pool)
+
+        async def _boot_snapshot_fetcher(url: str):
+            # Reuse the rate-limited leader fetcher so a 20-leader
+            # watchlist does not 429 the data-api on boot. The kind
+            # tag separates the boot snapshot from the live trade
+            # monitor's positions probe.
+            wallet = url.split("user=")[-1].split("&")[0]
+            return await _guarded_leader_fetch("boot_positions", wallet, url)
+
+        snapshot_result = await snapshot_followed_leaders(
+            leader_wallets=list(monitored_leaders),
+            own_wallets=[u.wallet.funder_address for u in runtime_users],
+            repo=discovery_repo,
+            fetcher=_boot_snapshot_fetcher,
+        )
+    except Exception as exc:
+        logger.warning(
+            "boot_snapshot_skipped",
+            extra={
+                "reason": "snapshot_pipeline_unavailable",
+                "error": repr(exc),
+            },
+        )
+
     print_startup_summary(
         wallet=first_user.wallet.funder_address,
         available_cash=available_cash,
@@ -860,6 +902,7 @@ async def main():
         active_leaders=monitored_leaders,
         config=application.config,
         health_report=health_report,
+        snapshot_result=snapshot_result,
     )
 
     metrics_runner = None
