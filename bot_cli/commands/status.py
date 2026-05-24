@@ -9,7 +9,6 @@ import time
 from config.runtime_env import load_runtime_env
 from config.env import rehydrate_env
 from config.app_config import load_config, EnvValidationError
-from storage.sqlite.connection import create_connection
 
 
 def register_status_command(subparsers: argparse._SubParsersAction) -> None:
@@ -38,86 +37,77 @@ async def _gather_status() -> dict:
 
     result["running_mode"] = "paper" if config.execution.paper_trade_only else "live"
 
-    db_path = config.database.db_path
+    from storage.postgres.connection import init_pool, shutdown_pool
 
     try:
-        with create_connection(db_path) as conn:
-            # Open positions count
-            row = conn.execute(
-                "SELECT COUNT(*) as c FROM sqlite_master WHERE type='table' AND name='positions'"
-            ).fetchone()
-            if row and row["c"] > 0:
-                pos_row = conn.execute("SELECT COUNT(*) as c FROM positions").fetchone()
-                result["open_positions"] = pos_row["c"] if pos_row else 0
+        pool = await init_pool(
+            config.database.dsn,
+            min_size=1,
+            max_size=2,
+            command_timeout_seconds=15.0,
+        )
+        try:
+            async with pool.acquire() as conn:
+                # Apply migrations is idempotent + cheap; skip here, the
+                # bot process owns schema lifecycle. CLI is read-only.
 
-            # Pending orders count
-            row = conn.execute(
-                "SELECT COUNT(*) as c FROM sqlite_master WHERE type='table' AND name='orders'"
-            ).fetchone()
-            if row and row["c"] > 0:
-                pending_row = conn.execute(
+                # Open positions count
+                result["open_positions"] = await conn.fetchval(
+                    "SELECT COUNT(*) FROM positions"
+                ) or 0
+
+                # Pending orders count
+                result["pending_orders"] = await conn.fetchval(
                     """
-                    SELECT COUNT(*) as c FROM orders
+                    SELECT COUNT(*) FROM orders
                     WHERE status IN ('submitted_unconfirmed', 'delayed', 'pending',
                                      'pending_lock', 'submitting', 'submitted')
                     """
-                ).fetchone()
-                result["pending_orders"] = pending_row["c"] if pending_row else 0
+                ) or 0
 
-            # Active reservations count
-            row = conn.execute(
-                "SELECT COUNT(*) as c FROM sqlite_master WHERE type='table' AND name='order_reservations'"
-            ).fetchone()
-            if row and row["c"] > 0:
+                # Active reservations count
                 now_ts = int(time.time())
-                res_row = conn.execute(
+                result["active_reservations"] = await conn.fetchval(
                     """
-                    SELECT COUNT(*) as c FROM order_reservations
-                    WHERE status = 'active' AND expires_at > ?
+                    SELECT COUNT(*) FROM order_reservations
+                    WHERE status = 'active' AND expires_at > $1
                     """,
-                    (now_ts,),
-                ).fetchone()
-                result["active_reservations"] = res_row["c"] if res_row else 0
+                    now_ts,
+                ) or 0
 
-            # Geoblock last check — use risk_blocks as a proxy timestamp source
-            row = conn.execute(
-                "SELECT COUNT(*) as c FROM sqlite_master WHERE type='table' AND name='risk_blocks'"
-            ).fetchone()
-            if row and row["c"] > 0:
-                gb_row = conn.execute(
+                # Geoblock last check — use risk_blocks as a proxy timestamp source
+                result["geoblock_last_check"] = await conn.fetchval(
                     """
-                    SELECT MAX(triggered_at) as last_ts FROM risk_blocks
+                    SELECT MAX(triggered_at) FROM risk_blocks
                     WHERE source = 'geoblock'
                     """
-                ).fetchone()
-                if gb_row and gb_row["last_ts"]:
-                    result["geoblock_last_check"] = gb_row["last_ts"]
+                )
+                result["risk_last_check"] = await conn.fetchval(
+                    "SELECT MAX(triggered_at) FROM risk_blocks"
+                )
 
-                risk_row = conn.execute(
-                    """
-                    SELECT MAX(triggered_at) as last_ts FROM risk_blocks
-                    """
-                ).fetchone()
-                if risk_row and risk_row["last_ts"]:
-                    result["risk_last_check"] = risk_row["last_ts"]
-
-            # Uptime — best-effort: read earliest order created_at
-            row = conn.execute(
-                "SELECT COUNT(*) as c FROM sqlite_master WHERE type='table' AND name='orders'"
-            ).fetchone()
-            if row and row["c"] > 0:
-                up_row = conn.execute(
-                    "SELECT MIN(created_at) as first_ts FROM orders"
-                ).fetchone()
-                if up_row and up_row["first_ts"]:
+                # Uptime — best-effort: read earliest order created_at
+                first_ts = await conn.fetchval(
+                    "SELECT MIN(created_at) FROM orders"
+                )
+                if first_ts is not None:
                     try:
                         from datetime import datetime, timezone
-                        first_dt = datetime.fromisoformat(up_row["first_ts"]).replace(tzinfo=timezone.utc)
+                        if isinstance(first_ts, str):
+                            first_dt = datetime.fromisoformat(first_ts).replace(
+                                tzinfo=timezone.utc
+                            )
+                        else:
+                            first_dt = first_ts
+                            if first_dt.tzinfo is None:
+                                first_dt = first_dt.replace(tzinfo=timezone.utc)
                         result["uptime_seconds"] = int(
                             (datetime.now(timezone.utc) - first_dt).total_seconds()
                         )
                     except (ValueError, TypeError):
                         pass
+        finally:
+            await shutdown_pool()
     except Exception as exc:
         result["db_error"] = str(exc)
 
