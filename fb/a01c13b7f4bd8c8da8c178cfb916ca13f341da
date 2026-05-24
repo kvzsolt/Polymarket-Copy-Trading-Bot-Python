@@ -1,0 +1,26 @@
+services/leaderCursorStore.py
+  s_40eab60fc22f44::t_627fc8fe2e2735 1-15,18-21,28-41,43,45-46,51,53-54,65-66,68-71
+services/tradeMonitor.py
+  s_40eab60fc22f44::t_2bd8f940a908b0 613
+  s_40eab60fc22f44::t_6422885bd387c5 589,591,595
+tests/test_trade_monitor_cursor.py
+  s_40eab60fc22f44::t_2e00b42d0b3a2d 302-305,307
+  s_40eab60fc22f44::t_c47b9bca366118 335-338,340
+  s_40eab60fc22f44::t_dfcffec3175708 18
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "fba01c13b7f4bd8c8da8c178cfb916ca13f341da",
+  "prompts": {},
+  "sessions": {
+    "s_40eab60fc22f44": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "75ccb144-a9df-45dd-bd80-c6e6ed5d9e12",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
