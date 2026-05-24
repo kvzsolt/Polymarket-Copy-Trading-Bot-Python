@@ -28,7 +28,6 @@ from decimal import Decimal
 from types import SimpleNamespace
 import sys as _sys
 from dataclasses import dataclass, field
-from enum import IntEnum
 from pathlib import Path
 from typing import Any
 

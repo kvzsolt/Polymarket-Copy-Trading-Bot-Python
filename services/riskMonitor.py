@@ -220,7 +220,7 @@ async def _fetch_and_store_price(
     async with semaphore:
         try:
             price_data = await client.get_price(token_id, "SELL")
-        except Exception as exc:
+        except Exception:
             if circuit_breaker is not None:
                 circuit_breaker.record_failure()
             raise

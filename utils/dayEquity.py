@@ -7,7 +7,6 @@ Used by the account-cap policy to compute daily drawdown limits.
 from __future__ import annotations
 
 import json
-import time
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path

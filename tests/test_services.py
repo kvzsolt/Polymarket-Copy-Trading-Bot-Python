@@ -3,7 +3,6 @@ from __future__ import annotations
 import sys
 from decimal import Decimal
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest

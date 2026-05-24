@@ -1,4 +1,3 @@
-import pytest
 
 from domain.order_lifecycle import OrderLifecycleStatus, classify_venue_status
 

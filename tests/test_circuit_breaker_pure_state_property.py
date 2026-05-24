@@ -12,10 +12,8 @@ moves to a private ``_advance_state()`` called only by
 """
 from __future__ import annotations
 
-import time
 from unittest.mock import patch
 
-import pytest
 
 from services.circuitBreaker import CircuitBreaker, CircuitState
 

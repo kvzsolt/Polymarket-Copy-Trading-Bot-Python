@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import time
 from decimal import Decimal
-from typing import Any
 
 from domain.discovery_models import (
     DAYS_TO_RESOLUTION_BUCKETS,

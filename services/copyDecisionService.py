@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import hashlib
-import json
 from dataclasses import dataclass, field
-from decimal import Decimal, ROUND_CEILING
+from decimal import Decimal
 from typing import Any, TYPE_CHECKING
 
 from services.order_sizing import SizingDecision as _SizingDecision
@@ -11,8 +9,6 @@ from services.order_sizing import size_buy_order as _size_buy_order
 from services.order_sizing import size_sell_order as _size_sell_order
 from services.idempotency import (
     compute_effective_key as _compute_effective_key,
-    compute_effective_identity as _compute_effective_identity,
-    EffectiveOrderIdentity,
 )
 from services.leaderScoringService import LeaderScore, LeaderScoringService
 from services.tradeScoringService import TradeScore, TradeScoringService

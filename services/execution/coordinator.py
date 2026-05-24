@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 import logging
-import time
-from contextlib import asynccontextmanager, nullcontext
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Any, Awaitable, Callable, Dict, Optional, Protocol
+from typing import Any, Awaitable, Callable, Dict, Protocol
 
 from domain.order_lifecycle import (
     IntentReason,
@@ -19,8 +17,6 @@ from domain.order_lifecycle import (
 from integrations.polymarket.errors import (
     RetryableVenueError,
     TerminalVenueError,
-    VenueRateLimitError,
-    VenueUnavailableError,
 )
 from services.execution.reservation_service import (
     Clock,

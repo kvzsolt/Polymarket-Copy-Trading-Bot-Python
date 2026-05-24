@@ -15,7 +15,6 @@ excluded (weight is re-distributed).
 """
 from __future__ import annotations
 
-from decimal import Decimal
 
 from domain.composite_score_models import (
     CompositeAvailability,

@@ -1,8 +1,5 @@
 """Integration tests for SQLite repositories."""
 import pytest
-import tempfile
-import os
-from decimal import Decimal
 from storage.sqlite.connection import create_connection
 from storage.sqlite.migrations import apply_migrations
 

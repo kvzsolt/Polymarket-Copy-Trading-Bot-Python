@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from utils.createClobClient import ClobClientWrapper, MarketMeta, quantize_to_tick
+from utils.createClobClient import ClobClientWrapper, quantize_to_tick
 
 
 def _dummy_wallet():
