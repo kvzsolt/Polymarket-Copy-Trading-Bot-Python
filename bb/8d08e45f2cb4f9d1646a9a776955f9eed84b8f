@@ -1,0 +1,22 @@
+orchestrators/runtime_summary.py
+  s_40eab60fc22f44::t_9ffed25dc61677 139-279,284-374,379-397,407,411-422
+  s_40eab60fc22f44::t_14ca46a9b530ae 4-5,14-15
+  s_40eab60fc22f44::t_f6d073694ce828 280-283
+  s_40eab60fc22f44::t_c8b3393cd936c8 375-378
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "bb8d08e45f2cb4f9d1646a9a776955f9eed84b8f",
+  "prompts": {},
+  "sessions": {
+    "s_40eab60fc22f44": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "75ccb144-a9df-45dd-bd80-c6e6ed5d9e12",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
