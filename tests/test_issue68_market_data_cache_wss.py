@@ -13,19 +13,16 @@ Covers all acceptance criteria:
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import time
 from decimal import Decimal
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from cache.market_state_store import (
     BookSnapshot,
     MarketStateStore,
-    QuoteSnapshot,
-    TickSnapshot,
 )
 from clients.market_ws import MarketWebSocket, HEARTBEAT_INTERVAL
 from clients.user_ws import UserWebSocket

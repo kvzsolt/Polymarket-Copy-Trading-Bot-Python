@@ -12,7 +12,6 @@ from unittest.mock import patch
 
 import config.app_config as app_config_mod
 from bot_cli.commands.config import _config_to_dict, _redact_value, run_config
-from config.app_config import load_config
 
 
 _SECRET_KEY = "0x" + "a" * 64

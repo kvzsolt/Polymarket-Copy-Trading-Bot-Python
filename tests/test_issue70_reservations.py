@@ -12,12 +12,8 @@ Tests cover:
 from __future__ import annotations
 
 import asyncio
-import time
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Any
-from unittest.mock import AsyncMock
 
 import pytest
 
@@ -39,7 +35,6 @@ from services.execution.reservation_service import (
     ReservationConflict,
     ReservationService,
 )
-from services.execution.state_machine import assert_transition_allowed
 from services.intentRegistry import (
     DuplicateIntentError,
     IntentRegistry,

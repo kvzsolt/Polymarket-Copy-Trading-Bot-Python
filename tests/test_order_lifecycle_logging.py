@@ -9,7 +9,6 @@ import pytest
 
 from utils.logger import (
     RichConsoleHandler,
-    _ORDER_LIFECYCLE_LAST,
     _reset_lifecycle_dedup_for_tests,
     log_order_lifecycle,
 )

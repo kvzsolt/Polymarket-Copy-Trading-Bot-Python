@@ -1,5 +1,4 @@
 """Unit tests for venue status classification — P0 safety invariant."""
-import pytest
 from domain.order_lifecycle import classify_venue_status, OrderLifecycleStatus
 
 def test_missing_status_does_not_confirm_fill():

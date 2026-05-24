@@ -19,7 +19,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from config.env import ENV, EnvValidationError
+from config.env import ENV
 from config.settings import _DEFAULTS, _LEGACY_MAPPINGS, load_settings
 
 

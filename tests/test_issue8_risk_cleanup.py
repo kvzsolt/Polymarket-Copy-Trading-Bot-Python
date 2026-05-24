@@ -2,7 +2,6 @@
 
 from decimal import Decimal
 
-import pytest
 
 import sys
 from pathlib import Path

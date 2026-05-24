@@ -22,7 +22,6 @@ from domain.discovery_models import (
 )
 from domain.metric_models import (
     MetricAvailability,
-    MetricFamilyRecord,
 )
 from domain.raw_feature_models import (
     DelaySurvivalInputs,

@@ -8,7 +8,6 @@ Phase 2 test coverage:
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import time
 from decimal import Decimal

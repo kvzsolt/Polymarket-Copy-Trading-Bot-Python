@@ -1,15 +1,12 @@
 """Tests for trader-level score aggregation."""
 from __future__ import annotations
 
-import pytest
 
 from domain.composite_score_models import (
     CompositeAvailability,
     CompositeScoreRecord,
-    FamilyContribution,
 )
 from services.discovery.trader_score_aggregator import (
-    TraderAggregateScore,
     aggregate_trader_score,
 )
 

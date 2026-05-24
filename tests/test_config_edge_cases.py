@@ -21,7 +21,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from config.env import ENV, EnvValidationError
 from config.settings import load_settings
 from config.validation import (
-    validate_bps,
     validate_non_negative_float,
     validate_price_level,
     validate_positive_float,

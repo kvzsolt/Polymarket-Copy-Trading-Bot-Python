@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 import time
 import unittest
-from unittest.mock import MagicMock, call
+from unittest.mock import MagicMock
 
 from services.entryPermissionService import (
     REASON_ALLOWED,

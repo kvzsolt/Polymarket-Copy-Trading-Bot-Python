@@ -707,7 +707,6 @@ class TestWssConnectionLivenessFreshness:
 import asyncio  # noqa: E402  (kept local to the PR10.4 section)
 from types import SimpleNamespace  # noqa: E402
 
-from services.market_data_service import MarketDataError  # noqa: E402
 
 
 def _rest_policy(**overrides) -> MarketDataPolicy:
