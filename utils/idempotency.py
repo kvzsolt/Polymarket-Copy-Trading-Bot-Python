@@ -1,45 +1,30 @@
+"""Idempotency helpers — async PG (PG-A5 sweep).
+
+``build_trade_key`` is pure (no IO) and is also re-exported from
+``utils/__init__.py`` for the release-gate suite.
+
+The IO-touching helpers (``has_processed``, ``mark_processed``,
+``mark_processed_all_tx_hashes``, ``purge_stale_records``) now route
+through the canonical async ``storage.postgres.orders_repo.OrdersRepo``
+against the singleton asyncpg pool from
+``storage.postgres.connection.get_pool``. Callers must ``await`` them.
+"""
 from __future__ import annotations
 
-import threading
-from pathlib import Path
+from typing import Any
 
-from config.env import ENV
-from storage.sqlite.connection import create_connection
-from storage.sqlite.migrations import apply_migrations
-from storage.sqlite.orders_repo import OrdersRepo
 from utils.logger import get_logger
 
 logger = get_logger("Idempotency")
-
-# Schema-init guard. Pre-fix the check-then-add was unlocked, so two
-# concurrent callers could both observe ``db_path not in _SCHEMA_READY``
-# and both run ``apply_migrations`` against the same SQLite file. With
-# the wrapping BEGIN IMMEDIATE landed in this branch the second migrate
-# would block on the writer lock and re-run idempotently, but the lock
-# below removes the racy double-init at the Python layer regardless.
-_SCHEMA_READY: set[str] = set()
-_SCHEMA_LOCK = threading.Lock()
-
-
-def _current_db_path() -> Path:
-    """Resolve the SQLite path on every call.
-
-    Pre-fix this was a module-level constant resolved at import time. Test
-    harnesses that point ``BOT_STATE_DB`` at a tmp file AFTER import (or
-    multi-user configs that swap the path mid-run) silently kept the
-    first-imported path, so the second user's processed_trades landed in
-    the first user's DB. Re-resolve from ENV on every call.
-    """
-    return Path(str(ENV.get("BOT_STATE_DB", "data/bot_state.db")))
-
 
 
 def _normalize(value: str | None) -> str:
     return str(value or '').strip().lower()
 
 
-
 def build_trade_key(leader_wallet: str, trade: dict) -> str:
+    """Pure helper — namespace + canonicalise trade identity into a
+    stable string key. Pre-PG-A5 behaviour preserved."""
     tx_hash = trade.get('transactionHash') or trade.get('txHash') or ''
     side = str(trade.get('side') or '').strip().upper()
     asset = trade.get('asset') or trade.get('tokenID') or trade.get('token_id') or ''
@@ -50,33 +35,33 @@ def build_trade_key(leader_wallet: str, trade: dict) -> str:
     return f'{_normalize(leader_wallet)}|{_normalize(tx_hash)}|{side}|{_normalize(asset)}'
 
 
+async def _repo():
+    """Return an async PG ``OrdersRepo`` bound to the live pool.
 
-def _repo() -> OrdersRepo:
-    db_path = str(_current_db_path())
-    # Double-checked locking: cheap read first, then the (mutating) init
-    # under the lock with a second read to handle a racing first init.
-    if db_path not in _SCHEMA_READY:
-        with _SCHEMA_LOCK:
-            if db_path not in _SCHEMA_READY:
-                with create_connection(db_path) as conn:
-                    apply_migrations(conn)
-                    conn.commit()
-                _SCHEMA_READY.add(db_path)
-    return OrdersRepo(db_path)
+    Fails closed when the pool is uninit — callers must ensure
+    ``await connect_db()`` ran during boot.
+    """
+    from storage.postgres.connection import get_pool
+    from storage.postgres.orders_repo import OrdersRepo
+
+    pool = await get_pool()
+    return OrdersRepo(pool)
 
 
+async def has_processed(trade_key: str) -> bool:
+    repo = await _repo()
+    return await repo.has_processed_trade(trade_key)
 
-def has_processed(trade_key: str) -> bool:
-    return _repo().has_processed_trade(trade_key)
 
-
-
-def mark_processed(leader_wallet: str, trade: dict, *, status: str = 'processed') -> str:
+async def mark_processed(
+    leader_wallet: str, trade: dict, *, status: str = 'processed'
+) -> str:
     trade_key = build_trade_key(leader_wallet, trade)
     if not trade_key:
         return ''
 
-    _repo().mark_processed_trade(
+    repo = await _repo()
+    await repo.mark_processed_trade(
         trade_key=trade_key,
         user_id=str(trade.get('user_id') or trade.get('userId') or ''),
         leader_id=_normalize(leader_wallet),
@@ -89,10 +74,11 @@ def mark_processed(leader_wallet: str, trade: dict, *, status: str = 'processed'
     return trade_key
 
 
-
-def mark_processed_all_tx_hashes(leader_wallet: str, trade: dict, *, status: str = 'processed') -> list[str]:
+async def mark_processed_all_tx_hashes(
+    leader_wallet: str, trade: dict, *, status: str = 'processed'
+) -> list[str]:
     keys: list[str] = []
-    primary = mark_processed(leader_wallet, trade, status=status)
+    primary = await mark_processed(leader_wallet, trade, status=status)
     if primary:
         keys.append(primary)
 
@@ -101,7 +87,7 @@ def mark_processed_all_tx_hashes(leader_wallet: str, trade: dict, *, status: str
         for txh in tx_hashes:
             if not txh:
                 continue
-            t2 = {
+            t2: dict[str, Any] = {
                 'user_id': trade.get('user_id') or trade.get('userId') or '',
                 'transactionHash': txh,
                 'txHash': txh,
@@ -109,23 +95,19 @@ def mark_processed_all_tx_hashes(leader_wallet: str, trade: dict, *, status: str
                 'asset': trade.get('asset') or trade.get('tokenID') or trade.get('token_id'),
                 'conditionId': trade.get('conditionId') or trade.get('condition_id'),
             }
-            k = mark_processed(leader_wallet, t2, status=status)
+            k = await mark_processed(leader_wallet, t2, status=status)
             if k and k not in keys:
                 keys.append(k)
     return keys
 
 
-
-def purge_stale_records(max_age_seconds: float | None = None) -> int:
+async def purge_stale_records(max_age_seconds: float | None = None) -> int:
     """Delete old processed_trades. Returns total rows deleted."""
+    from config.env import ENV
+
     age = max_age_seconds or float(ENV.get("RETENTION_MAX_AGE_SECONDS", 30 * 86400))
-    repo = _repo()
-    n = repo.purge_old_processed_trades(age)
+    repo = await _repo()
+    n = await repo.purge_old_processed_trades(age)
     if n:
         logger.info(f"Purged {n} stale processed_trades (age > {age:.0f}s)")
     return n
-
-
-def reset_cache_for_tests() -> None:
-    with _SCHEMA_LOCK:
-        _SCHEMA_READY.clear()
