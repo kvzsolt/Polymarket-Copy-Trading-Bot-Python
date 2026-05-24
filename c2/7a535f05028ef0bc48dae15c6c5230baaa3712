@@ -1,0 +1,39 @@
+app.py
+  s_40eab60fc22f44::t_dcd426530b1d0f 653
+tests/test_discovery_capture_service.py
+  s_40eab60fc22f44::t_eebc3794b7c7b5 52,56-58
+  s_40eab60fc22f44::t_7d39657ff4a230 223-232
+  s_40eab60fc22f44::t_3d18c47df0507e 254-258,261
+  s_40eab60fc22f44::t_bb5fa81c95f2d0 15,26-27,40
+  s_40eab60fc22f44::t_81def948548023 1-2,10-11,17,28-39,41-48,53-55,121-122,160-161,193-194,235-236
+  s_40eab60fc22f44::t_5318feb083af0d 3-9,59-116,120,124-155,159,162-188,192,195-220,234,237-253,259-260,262-271
+  s_40eab60fc22f44::t_5635de1d94c6e5 16
+services/discovery/ingestion_service.py
+  s_40eab60fc22f44::t_868ee3eadb6056 130-131,133,137
+  s_40eab60fc22f44::t_ac678d8ce05e28 206,221
+  s_40eab60fc22f44::t_a364bb7eeedc67 310
+  s_40eab60fc22f44::t_8fd669eca417f3 22
+  s_40eab60fc22f44::t_c7664d528c44f6 152,165
+  s_40eab60fc22f44::t_5084b8fd0dd04a 43,50,53,64,68
+  s_40eab60fc22f44::t_58c54d9407c017 271,276
+services/discovery/capture_service.py
+  s_40eab60fc22f44::t_0ce46cc35581dc 23-24
+  s_40eab60fc22f44::t_933b09d991489d 36,41,47-65,72,76,99,102,115,118
+  s_40eab60fc22f44::t_24427fadcae4b6 156-157
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.0",
+  "base_commit_sha": "c27a535f05028ef0bc48dae15c6c5230baaa3712",
+  "prompts": {},
+  "sessions": {
+    "s_40eab60fc22f44": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "75ccb144-a9df-45dd-bd80-c6e6ed5d9e12",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
