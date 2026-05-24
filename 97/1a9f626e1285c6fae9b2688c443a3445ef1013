@@ -1,0 +1,24 @@
+tests/test_stale_cleanup.py
+  s_93e0a4797804d9::t_bb0818b5b649d2 1,4,9,12-35,37-49,52,54-63,68-97,101,103-105,107-109
+tests/test_idempotency.py
+  s_93e0a4797804d9::t_eea6d6fce1661a 1,4,8,12-57,73-111
+  s_93e0a4797804d9::t_ef33179d85538b 58-68
+utils/idempotency.py
+  s_93e0a4797804d9::t_059f68944ee524 1-11,14,26-27,38-39,41-45,47-48,51-53,56-58,63-64,77-79,81,90,98,104,106-107,109-110
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.1",
+  "base_commit_sha": "971a9f626e1285c6fae9b2688c443a3445ef1013",
+  "prompts": {},
+  "sessions": {
+    "s_93e0a4797804d9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a8782b68-4941-47de-a34c-6d351fdda0ef",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
