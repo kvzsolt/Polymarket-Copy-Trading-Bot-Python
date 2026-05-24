@@ -11,7 +11,7 @@ from services.discovery.permission_ladder import (
     evaluate_tier,
 )
 from services.metrics import metrics
-from storage.sqlite.leaders_repo import LeaderCandidateRecord
+from storage.postgres.leaders_repo import LeaderCandidateRecord
 from utils.logger import get_logger
 
 from services.healthServer import ReadinessTracker
