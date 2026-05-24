@@ -115,13 +115,17 @@ def normalise_position(
 async def _fetch_wallet_positions(
     wallet: str,
     fetcher: Callable[[str], Awaitable[Any]],
-) -> list[dict[str, Any]]:
+) -> list[dict[str, Any]] | None:
     """Fetch positions for a single wallet via the supplied async callable.
 
     The callable is supplied by the caller so the bot's main runtime
     can wire in the rate-limited ``_guarded_leader_fetch`` from
-    tradeMonitor while tests can inject a stub. Returns an empty list
-    on any fetch error or non-list payload.
+    tradeMonitor while tests can inject a stub.
+
+    cubic P2: returns ``None`` on fetch error or unexpected payload
+    shape (distinguishable failure) and ``[]`` only when the API
+    actually returns an empty list (valid empty result). Callers can
+    then tell "wallet has zero positions" apart from "fetch crashed".
     """
     url = DATA_API_POSITIONS_URL.format(wallet=wallet)
     try:
@@ -132,14 +136,14 @@ async def _fetch_wallet_positions(
             shorten_addr(wallet),
             exc,
         )
-        return []
+        return None
     if not isinstance(raw, list):
         logger.warning(
             "snapshot_fetch_unexpected_shape wallet=%s type=%s",
             shorten_addr(wallet),
             type(raw).__name__,
         )
-        return []
+        return None
     return raw
 
 
@@ -174,7 +178,10 @@ async def snapshot_followed_leaders(
     for leader in leader_wallets:
         leader_lc = leader.lower().strip()
         raw_rows = await _fetch_wallet_positions(leader_lc, fetcher)
-        if not raw_rows:
+        if raw_rows is None:
+            # cubic P2: ``None`` is the explicit fetch-failure signal.
+            # An empty list ``[]`` means the wallet legitimately has no
+            # open positions and should NOT be tagged as failed.
             leaders_failed.append(leader_lc)
             leader_snapshots[leader_lc] = []
             continue
@@ -201,7 +208,7 @@ async def snapshot_followed_leaders(
     for own in own_wallets:
         own_lc = own.lower().strip()
         raw_rows = await _fetch_wallet_positions(own_lc, fetcher)
-        if not raw_rows:
+        if raw_rows is None:
             own_failed = True
             continue
         for raw in raw_rows:

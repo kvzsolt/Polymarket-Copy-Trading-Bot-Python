@@ -97,8 +97,12 @@ class LeadersRepo(AbstractLeaderRepository):
         return LeaderTierRecord(
             wallet=str(row["wallet"]),
             follow_tier=str(row["follow_tier"]) if row["follow_tier"] else "watchlist",
+            # cubic P2: ``if row["tier_changed_at"]`` treats epoch 0
+                # as missing. ``is not None`` preserves a valid 0.0.
             tier_changed_at=(
-                float(row["tier_changed_at"]) if row["tier_changed_at"] else None
+                float(row["tier_changed_at"])
+                if row["tier_changed_at"] is not None
+                else None
             ),
         )
 

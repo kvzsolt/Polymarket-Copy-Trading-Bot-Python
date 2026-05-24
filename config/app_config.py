@@ -873,6 +873,27 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
     # Database — Postgres via asyncpg. ``BOT_STATE_DB`` kept as legacy
     # placeholder until storage/sqlite/ is fully deleted; new code must
     # consume ``database.dsn``.
+    # cubic P1: validate pool bounds before constructing DatabaseConfig.
+    # asyncpg.create_pool rejects negative or min>max values with an
+    # unhelpful error deep in the pool, which previously surfaced as a
+    # silent SQLite fallback during the dual-stack transition. Fail
+    # fast here with a clear EnvValidationError so the operator sees
+    # exactly which env var is wrong.
+    _pool_min = p.int_("DATABASE_POOL_MIN_SIZE", "2")
+    _pool_max = p.int_("DATABASE_POOL_MAX_SIZE", "20")
+    if _pool_min < 0:
+        raise EnvValidationError(
+            f"DATABASE_POOL_MIN_SIZE must be >= 0; got {_pool_min}"
+        )
+    if _pool_max <= 0:
+        raise EnvValidationError(
+            f"DATABASE_POOL_MAX_SIZE must be > 0; got {_pool_max}"
+        )
+    if _pool_min > _pool_max:
+        raise EnvValidationError(
+            f"DATABASE_POOL_MIN_SIZE ({_pool_min}) must be <= "
+            f"DATABASE_POOL_MAX_SIZE ({_pool_max})"
+        )
     database = DatabaseConfig(
         dsn=p.string(
             "DATABASE_URL",
@@ -880,8 +901,8 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         ),
         db_path=p.string("BOT_STATE_DB", "data/bot_state.db"),
         enabled=_database_enabled(p),
-        pool_min_size=p.int_("DATABASE_POOL_MIN_SIZE", "2"),
-        pool_max_size=p.int_("DATABASE_POOL_MAX_SIZE", "20"),
+        pool_min_size=_pool_min,
+        pool_max_size=_pool_max,
         command_timeout_seconds=p.float_("DATABASE_COMMAND_TIMEOUT_SECONDS", "30.0"),
     )
 
