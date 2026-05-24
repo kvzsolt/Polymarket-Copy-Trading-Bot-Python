@@ -56,9 +56,16 @@ def _decode_jsonb(value: Any) -> Any:
 def _ensure_json_str(value: Any) -> str:
     """Ensure a value lands on the wire as a JSON-encoded string,
     suitable for ``$N::jsonb`` casting. Accepts ``str`` (already
-    encoded), ``dict``, ``list``, or ``None``."""
+    encoded), ``dict``, ``list``, or ``None``.
+
+    cubic P2: ``None`` returns the JSON null literal rather than ``{}``
+    so an absent array-typed field doesn't end up stored as the wrong
+    shape (an empty object). Empty strings still default to ``{}`` so
+    DB columns whose schema expects an object are not surprised by a
+    naked null literal where they used to receive ``{}``.
+    """
     if value is None:
-        return "{}"
+        return "null"
     if isinstance(value, str):
         return value or "{}"
     return json.dumps(value, default=str)
