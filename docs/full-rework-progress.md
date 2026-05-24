@@ -573,3 +573,41 @@ runtime_bootstrap,startup_health,leader_registry}.py`, `config/db.py`
 files still use the free-function API), `scripts/find_followable_traders.py`.
 
 Plus ~47 sqlite-backed test modules to port.
+
+## Post-PR #107 PG-A5 doctor slice (1 commit)
+
+The last sqlite-bound CLI surface migrated to async PG. Critically:
+``bot_cli/commands/doctor.py`` gates live trading per CLAUDE.md, so
+every fail-closed semantic from PR #105 audit-fix #95 is preserved:
+all three DB checks (``db_writable``, ``db_schema_ok``,
+``stale_idempotency``) still emit ``blocked`` (not ``warning``) on
+probe failure.
+
+| Slice | Commit | What |
+|---|---|---|
+| doctor.py DB checks + test_doctor_live.py | `858c8c2` | ``_missing_db_tables`` async, queries ``information_schema.tables``. ``db_writable`` runs ``SELECT 1`` via ``init_pool``. ``stale_idempotency`` rewrites the epoch math to ``EXTRACT(EPOCH FROM now())::bigint - EXTRACT(EPOCH FROM created_at)::bigint``. Single pool shared across all three checks via try/finally + ``shutdown_pool``. ``tests/test_doctor_live.py`` ported to a per-test ``postgres:16-alpine`` testcontainer via ``_PgFixture`` async context manager — ``DATABASE_URL`` env override drives the doctor through the testcontainer. Each test's ``__aenter__``/``__aexit__`` clears the ``storage.postgres.connection`` singleton so containers don't leak across tests |
+
+### Net effect after doctor slice
+
+- Prod sqlite callers (excluding `storage/sqlite/` itself and tests):
+  **14 → 13** files remaining.
+- All `bot_cli/commands/*.py` now PG-native (status, positions, orders,
+  reconcile, stale_locks, drift, reservations, doctor). The dual-stack
+  bridge is no longer touched by any CLI command.
+- 9 doctor tests pass against live PG testcontainer in ~24s.
+
+### Remaining prod sqlite surface (post-doctor)
+
+`bootstrap.py`, `app.py` (LeadersRepo type hint),
+`services/orderRepository.py`, `services/riskMonitor.py`,
+`services/execution/{reservation_service,reconciliation_service}.py`,
+`orchestrators/{trade_pipeline,runtime_bootstrap,startup_health,leader_registry}.py`,
+`config/db.py`, `utils/idempotency.py`, `scripts/find_followable_traders.py`.
+
+These form a tighter dependency mesh — ExecutionService consumes the
+order repo, ReservationService + ReconciliationService consume the
+reservations/positions repos, the orchestrators consume the leaders
+repo + wire everything. Incremental migration past this point requires
+either a coordinated cross-file slice (e.g. "all execution-path
+services in one pass") or a temporary async shim. Deferred to a
+dedicated focused session.
