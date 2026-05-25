@@ -13,7 +13,8 @@ from config.db import connect_db, get_db_path
 from config.app_config import AppConfig, load_config
 from services.traderDiscoveryService import TraderDiscoveryService
 from orchestrators.leader_registry import LeaderRegistry
-from storage.sqlite.leaders_repo import LeadersRepo
+from storage.postgres.connection import get_pool
+from storage.postgres.leaders_repo import LeadersRepo
 
 OUTPUT_JSON = Path("data/followable_traders.json")
 OUTPUT_JSON.parent.mkdir(parents=True, exist_ok=True)
@@ -72,7 +73,8 @@ async def main():
 
     config = load_config()
     discovery = TraderDiscoveryService()
-    repo = LeadersRepo(get_db_path())
+    pool = await get_pool()
+    repo = LeadersRepo(pool)
     registry = LeaderRegistry(discovery, repo, config)
 
     print(f"[finder] started: target={TARGET_COUNT} refresh={REFRESH_SECONDS}s")
