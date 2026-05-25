@@ -17,15 +17,14 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from pathlib import Path
 
 from config.app_config import AppConfig, load_config
 from orchestrators.leader_registry import LeaderRegistry
 from services.healthServer import ReadinessTracker
 from services.traderDiscoveryService import TraderDiscoveryService
-from storage.sqlite.connection import create_connection
-from storage.sqlite.leaders_repo import LeadersRepo
-from storage.sqlite.migrations import apply_migrations
+from storage.postgres.connection import init_pool
+from storage.postgres.leaders_repo import LeadersRepo
+from storage.postgres.migrations import apply_migrations as apply_pg_migrations
 from utils.logger import get_logger
 
 __all__ = ["Application", "build_app"]
@@ -43,15 +42,7 @@ class Application:
     registry: LeaderRegistry
 
 
-def _init_database(db_path: str) -> None:
-    """Apply migrations against ``db_path`` exactly once per call."""
-    Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-    with create_connection(db_path) as conn:
-        apply_migrations(conn)
-        conn.commit()
-
-
-def build_app(env: Mapping[str, str] | None = None) -> Application:
+async def build_app(env: Mapping[str, str] | None = None) -> Application:
     """Construct the shared application graph.
 
     Parameters
@@ -65,17 +56,31 @@ def build_app(env: Mapping[str, str] | None = None) -> Application:
     Application
         A freshly wired, fully typed graph. Successive calls yield
         independent instances (no module-level caching).
+
+    Notes
+    -----
+    PG-A5: builds an async ``LeadersRepo`` against the singleton asyncpg
+    pool. The pool is brought online here (``init_pool`` is idempotent —
+    a second caller returns the same pool) and the canonical schema is
+    applied before any repo touches it. Sqlite legacy initialisation
+    continues to run via ``config.db.connect_db()`` at the runtime
+    entrypoint until the remaining sqlite callers migrate.
     """
     config = load_config(env)
 
-    db_path = config.database.db_path
-    if config.database.enabled:
-        _init_database(db_path)
+    pool = await init_pool(
+        config.database.dsn,
+        min_size=config.database.pool_min_size,
+        max_size=config.database.pool_max_size,
+        command_timeout_seconds=config.database.command_timeout_seconds,
+    )
+    async with pool.acquire() as conn:
+        await apply_pg_migrations(conn)
 
     readiness = ReadinessTracker()
     readiness.update(db_ok=config.database.enabled)
 
-    leaders_repo = LeadersRepo(db_path)
+    leaders_repo = LeadersRepo(pool)
     discovery_service = TraderDiscoveryService()
     registry = LeaderRegistry(
         discovery_service=discovery_service,
@@ -88,7 +93,7 @@ def build_app(env: Mapping[str, str] | None = None) -> Application:
     return Application(
         config=config,
         readiness=readiness,
-        db_path=db_path,
+        db_path=config.database.db_path,
         leaders_repo=leaders_repo,
         discovery_service=discovery_service,
         registry=registry,
