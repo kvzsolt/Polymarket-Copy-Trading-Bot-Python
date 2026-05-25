@@ -9,7 +9,7 @@ from config.runtime_env import load_runtime_env
 load_runtime_env(override_secrets=True)
 
 from config.env import rehydrate_env
-from config.db import connect_db, get_db_path
+from config.db import connect_db
 from config.app_config import AppConfig, load_config
 from services.traderDiscoveryService import TraderDiscoveryService
 from orchestrators.leader_registry import LeaderRegistry
@@ -44,7 +44,6 @@ def snapshot_payload(state, discovery, config: AppConfig):
     rows.sort(key=lambda r: ((not r["active"]), -(r["score"] or 0.0), -(r["recent_trades"] or 0), r["wallet"]))
     return {
         "generated_at": time.time(),
-        "db_path": get_db_path(),
         "target_count": TARGET_COUNT,
         "refresh_seconds": REFRESH_SECONDS,
         "filters_used_exactly_as_implemented": {

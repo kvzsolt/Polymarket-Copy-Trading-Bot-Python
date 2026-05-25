@@ -125,7 +125,7 @@ def _flatten_contexts(
     ]
 
 
-def _refresh_contexts_for_new_leaders(
+async def _refresh_contexts_for_new_leaders(
     *,
     new_wallets: list[str],
     runtime_users: list[RuntimeUser],
@@ -151,7 +151,7 @@ def _refresh_contexts_for_new_leaders(
             if not user_state or not follow or not follow.enabled:
                 continue
 
-            context = build_trading_context(
+            context = await build_trading_context(
                 user_state,
                 follow,
                 config,
@@ -641,7 +641,6 @@ async def main():
 
     application.readiness.update(runtime_user_count=len(runtime_users))
 
-    db_path = application.db_path
     application.readiness.update(db_ok=True)
 
     # Greptile P1 (PR #107): the bot used to reach
@@ -690,7 +689,7 @@ async def main():
         user_states[runtime_user.user_id] = build_user_state(
             runtime_user,
             client,
-            db_path,
+            _pool,
             application.config,
         )
 
@@ -729,7 +728,7 @@ async def main():
         health_reports_by_user[runtime_user.user_id] = await perform_startup_health_check(
             wallet=runtime_user.wallet.funder_address,
             user_id=runtime_user.user_id,
-            db_path=db_path,
+            pool=_pool,
             positions_repo=user_states[runtime_user.user_id].positions_repo,
             # PR #105 review: must pass orders_repo so the atomic-lock gate
             # actually probes the repo. Without it the check fails closed
@@ -743,7 +742,7 @@ async def main():
             require_live_clob=not application.config.dry_run,
         )
 
-    contexts_by_leader, risk_contexts_by_user = build_context_maps(
+    contexts_by_leader, risk_contexts_by_user = await build_context_maps(
         runtime_users,
         user_states,
         active_leaders,
@@ -938,7 +937,7 @@ async def main():
     fetch_interval = application.config.polling.fetch_interval
 
     async def _on_new_leaders(new_wallets: list[str]) -> None:
-        started_wallets = _refresh_contexts_for_new_leaders(
+        started_wallets = await _refresh_contexts_for_new_leaders(
             new_wallets=new_wallets,
             runtime_users=runtime_users,
             user_states=user_states,

@@ -256,12 +256,7 @@ class _Parser:
 
 @dataclass(frozen=True)
 class DatabaseConfig:
-    # Postgres DSN. Legacy ``db_path`` is kept (empty default) only so
-    # any straggling SQLite references during the migration do not
-    # AttributeError; remove once storage/sqlite/ is deleted.
     dsn: str = ""
-    db_path: str = ""
-    enabled: bool = True
     pool_min_size: int = 2
     pool_max_size: int = 20
     command_timeout_seconds: float = 30.0
@@ -616,12 +611,6 @@ def _runtime_python_supported() -> bool:
     return sys.version_info.major == 3 and 11 <= sys.version_info.minor < 13
 
 
-def _database_enabled(parser: _Parser) -> bool:
-    if parser.raw("BOT_STATE_DB_ENABLED", "") != "":
-        return parser.bool_("BOT_STATE_DB_ENABLED", True)
-    return parser.bool_("DB_ENABLED", True)
-
-
 def _validate_semantics(cfg: AppConfig, errors: list[str]) -> None:
     """Cross-field validation applied after parsing.
 
@@ -870,15 +859,8 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
 
     p = _Parser(env)
 
-    # Database — Postgres via asyncpg. ``BOT_STATE_DB`` kept as legacy
-    # placeholder until storage/sqlite/ is fully deleted; new code must
-    # consume ``database.dsn``.
-    # cubic P1: validate pool bounds before constructing DatabaseConfig.
-    # asyncpg.create_pool rejects negative or min>max values with an
-    # unhelpful error deep in the pool, which previously surfaced as a
-    # silent SQLite fallback during the dual-stack transition. Fail
-    # fast here with a clear EnvValidationError so the operator sees
-    # exactly which env var is wrong.
+    # Database — Postgres via asyncpg. Validate pool bounds up front so
+    # asyncpg.create_pool does not raise an unhelpful inner-pool error.
     _pool_min = p.int_("DATABASE_POOL_MIN_SIZE", "2")
     _pool_max = p.int_("DATABASE_POOL_MAX_SIZE", "20")
     if _pool_min < 0:
@@ -899,8 +881,6 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
             "DATABASE_URL",
             "postgresql://bot:bot@localhost:5432/polymarket_bot",
         ),
-        db_path=p.string("BOT_STATE_DB", "data/bot_state.db"),
-        enabled=_database_enabled(p),
         pool_min_size=_pool_min,
         pool_max_size=_pool_max,
         command_timeout_seconds=p.float_("DATABASE_COMMAND_TIMEOUT_SECONDS", "30.0"),

@@ -88,7 +88,7 @@ class ExpiryChecker:
                     "reservation.expiry.no_order id=%s — releasing immediately",
                     res_id,
                 )
-                self._reservation_service.release_terminal(res_id, "expired_no_order")
+                await self._reservation_service.release_terminal(res_id, "expired_no_order")
 
             reconciled += 1
 
@@ -112,4 +112,4 @@ class ExpiryChecker:
             "terminal=%s reason=%s",
             reservation_id, order_id, terminal_status.value, reason,
         )
-        self._reservation_service.release_terminal(reservation_id, reason)
+        await self._reservation_service.release_terminal(reservation_id, reason)

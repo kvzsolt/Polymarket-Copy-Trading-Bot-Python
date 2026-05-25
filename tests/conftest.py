@@ -28,8 +28,6 @@ from integrations.polymarket.models import (
     VenueSubmitResult,
 )
 from interfaces.clob_gateway import ClobGateway
-from storage.sqlite.connection import create_connection
-from storage.sqlite.migrations import apply_migrations
 
 
 def make_exec_config(
@@ -141,16 +139,6 @@ class StubClobClient:
 @pytest.fixture
 def stub_clob_client() -> StubClobClient:
     return StubClobClient()
-
-
-@pytest.fixture
-def fresh_db_path(tmp_path) -> str:
-    """Path to a per-test SQLite file with migrations pre-applied."""
-    path = tmp_path / "release_gate.db"
-    with create_connection(str(path)) as conn:
-        apply_migrations(conn)
-        conn.commit()
-    return str(path)
 
 
 class ScriptedWss:

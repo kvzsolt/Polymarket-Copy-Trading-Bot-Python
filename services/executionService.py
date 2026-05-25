@@ -258,14 +258,14 @@ class ExecutionService:
             )
         self._submit_semaphore = asyncio.Semaphore(submit_concurrency)
 
-    def _save_submission(
+    async def _save_submission(
         self,
         *,
         idempotency_key: str,
         request: dict[str, Any],
         response: dict[str, Any] | Any,
     ) -> None:
-        self.order_repo.save_submission(
+        await self.order_repo.save_submission_legacy(
             idempotency_key=idempotency_key,
             request=_sanitize_submission_request(request),
             response=_sanitize_submission_response(response),
@@ -636,7 +636,7 @@ class ExecutionService:
 
         # Legacy raw key for backward-compatible lookup of stored records.
         legacy_key = _idempotency_key(req)
-        existing = self.order_repo.get_by_idempotency_key(idem_key)
+        existing = await self.order_repo.get_by_idempotency_key(idem_key)
         if (
             existing
             and not existing.get("order_id")
@@ -672,7 +672,7 @@ class ExecutionService:
             pending_expires_at = _pending_expires_at(existing)
             if pending_expires_at is None:
                 pending_expires_at = pending_started_at + max(ttl_seconds, 0.0)
-            self._save_submission(
+            await self._save_submission(
                 idempotency_key=idem_key,
                 request=stale_request,
                 response={
@@ -685,9 +685,9 @@ class ExecutionService:
                     "pending_expires_at": pending_expires_at,
                 },
             )
-        existing = self.order_repo.get_by_idempotency_key(idem_key)
+        existing = await self.order_repo.get_by_idempotency_key(idem_key)
         if not existing and legacy_key != idem_key:
-            existing = self.order_repo.get_by_idempotency_key(legacy_key)
+            existing = await self.order_repo.get_by_idempotency_key(legacy_key)
 
         if _is_retry_blocking_existing(existing, config=self._config):
             existing_order_id = existing.get("order_id")
@@ -726,7 +726,7 @@ class ExecutionService:
         # and both submit distinct signed orders.
         has_atomic_lock = hasattr(self.order_repo, "try_acquire_submission_lock")
         if has_atomic_lock:
-            lock_acquired = self.order_repo.try_acquire_submission_lock(
+            lock_acquired = await self.order_repo.try_acquire_submission_lock(
                 idem_key, req.user_id, req.leader_id, request_doc
             )
         else:
@@ -756,7 +756,7 @@ class ExecutionService:
             )
 
         if not lock_acquired:
-            existing_now = self.order_repo.get_by_idempotency_key(idem_key)
+            existing_now = await self.order_repo.get_by_idempotency_key(idem_key)
             if existing_now and existing_now.get("order_id"):
                 return ExecutionResult(
                     accepted=True,
@@ -768,7 +768,7 @@ class ExecutionService:
                     fees_paid=Decimal("0"),
                     error=None,
                 )
-            if has_atomic_lock and self.order_repo.is_submission_locked(idem_key):
+            if has_atomic_lock and await self.order_repo.is_submission_locked(idem_key):
                 return ExecutionResult(
                     accepted=False,
                     order_id=None,
@@ -794,7 +794,7 @@ class ExecutionService:
 
         async with self._submit_semaphore:
             pending_since = time.time()
-            self._save_submission(
+            await self._save_submission(
                 idempotency_key=idem_key,
                 request=request_doc,
                 response=_build_pending_response(
@@ -820,7 +820,7 @@ class ExecutionService:
                     response = _submit_result_to_response(submit_result)
                     if submit_result.success:
                         self.circuit_breaker.record_success()
-                        self._save_submission(
+                        await self._save_submission(
                             idempotency_key=idem_key,
                             request=request_doc,
                             response=response,
@@ -837,7 +837,7 @@ class ExecutionService:
                     if submit_result.ambiguous_post_failure:
                         last_error = submit_result.error or "ambiguous post failure"
                         response["status"] = "submitted_unconfirmed"
-                        self._save_submission(
+                        await self._save_submission(
                             idempotency_key=idem_key,
                             request=request_doc,
                             response=response,
@@ -857,7 +857,7 @@ class ExecutionService:
                             "error": last_error,
                             "non_retryable": True,
                         }
-                        self._save_submission(
+                        await self._save_submission(
                             idempotency_key=idem_key,
                             request=request_doc,
                             response=response,
@@ -878,7 +878,7 @@ class ExecutionService:
                         "error": last_error,
                         "non_retryable": True,
                     }
-                    self._save_submission(
+                    await self._save_submission(
                         idempotency_key=idem_key,
                         request=request_doc,
                         response=response,
@@ -897,7 +897,7 @@ class ExecutionService:
                         "status": "submitted_unconfirmed",
                         "error": last_error,
                     }
-                    self._save_submission(
+                    await self._save_submission(
                         idempotency_key=idem_key,
                         request=request_doc,
                         response=response,
@@ -928,7 +928,7 @@ class ExecutionService:
                         "status": "submitted_unconfirmed",
                         "error": last_error,
                     }
-                    self._save_submission(
+                    await self._save_submission(
                         idempotency_key=idem_key,
                         request=request_doc,
                         response=response,
@@ -941,7 +941,7 @@ class ExecutionService:
                 await asyncio.sleep(min(0.15 * attempt, 0.30))
             else:
                 self.circuit_breaker.record_failure()
-                self._save_submission(
+                await self._save_submission(
                     idempotency_key=idem_key,
                     request=request_doc,
                     response=response

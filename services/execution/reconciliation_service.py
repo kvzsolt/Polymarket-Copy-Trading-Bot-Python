@@ -37,7 +37,7 @@ from typing import Any, Awaitable, Callable, Protocol
 
 from domain.order_lifecycle import OrderLifecycleStatus
 from utils.logger import get_logger, redact_error_detail
-from storage.sqlite.fills_repo import FillRecord
+from storage.postgres.fills_repo import FillRecord
 
 _log = get_logger("ReconciliationService")
 
@@ -225,7 +225,7 @@ class ReconciliationService:
     ``trade_pipeline`` and ``riskMonitor`` callers. The ``orders_repo`` /
     ``fills_repo`` / ``positions_repo`` arguments accept either the
     Protocol-based mocks (used by ``reconcile_order``) or the concrete
-    ``storage.sqlite.*`` repos (used by ``reconcile_trade_record`` and
+    ``storage.postgres.*`` repos (used by ``reconcile_trade_record`` and
     ``reconcile_risk_record``).
     """
 
@@ -293,7 +293,7 @@ class ReconciliationService:
             # Audit logging must never break reconciliation.
             pass
 
-    def _release_reservation_if_present(
+    async def _release_reservation_if_present(
         self,
         record: dict[str, Any],
         *,
@@ -321,7 +321,7 @@ class ReconciliationService:
         if not reservation_id:
             return
         try:
-            self.reservation_service.release_terminal(str(reservation_id), reason=reason)
+            await self.reservation_service.release_terminal(str(reservation_id), reason=reason)
         except Exception as exc:
             _log.warning(
                 "reconciliation_reservation_release_failed | reservation_id=%s reason=%s error=%r",
@@ -516,7 +516,7 @@ class ReconciliationService:
 
         # Probe 4: local position delta
         try:
-            pos = self.positions_repo.get_position(user_id, condition_id, token_id=token_id)
+            pos = await self.positions_repo.get_position(user_id, condition_id, token_id=token_id)
             local_size = Decimal(str(getattr(pos, "size_tokens", 0) or 0))
             if local_size >= expected_size > 0:
                 # Position already absorbed at least the expected size — order
@@ -593,7 +593,7 @@ class ReconciliationService:
 
         # All probes clean — release.
         try:
-            self.orders_repo.update_submission_status(
+            await self.orders_repo.update_submission_status(
                 order_id=order_id,
                 status="auto_released_ambiguous",
                 response_patch={"probe": probe},
@@ -604,7 +604,7 @@ class ReconciliationService:
         reservation_id = record.get("reservation_id") or request.get("reservation_id")
         if reservation_id and self.reservation_service is not None:
             try:
-                self.reservation_service.release_terminal(
+                await self.reservation_service.release_terminal(
                     str(reservation_id),
                     reason="auto_release_after_ambiguous_timeout",
                 )
@@ -698,21 +698,21 @@ class ReconciliationService:
             pass
 
     @staticmethod
-    def _previous_matched_for_order(orders_repo: Any, order_id: str) -> Decimal:
+    async def _previous_matched_for_order(orders_repo: Any, order_id: str) -> Decimal:
         if not order_id:
             return Decimal("0")
         getter = getattr(orders_repo, "get_by_order_id", None)
         if getter is None:
             return Decimal("0")
         try:
-            existing = getter(order_id)
+            existing = await getter(order_id)
         except Exception:
             return Decimal("0")
         if not isinstance(existing, dict):
             return Decimal("0")
         return _matched_amount_from_response(existing.get("response"))
 
-    def _resolve_buy_requested_amount(self, order_id: str) -> Decimal:
+    async def _resolve_buy_requested_amount(self, order_id: str) -> Decimal:
         """Return the requested BUY notional from the persisted orders row.
 
         Used by the terminal-no-fill branch to release the eagerly recorded
@@ -725,7 +725,7 @@ class ReconciliationService:
         if getter is None:
             return Decimal("0")
         try:
-            row = getter(order_id)
+            row = await getter(order_id)
         except Exception:
             return Decimal("0")
         if not isinstance(row, dict):
@@ -793,11 +793,11 @@ class ReconciliationService:
                 async with self.db.transaction():
                     for venue_fill in matching_fills:
                         fill = await self.fills_repo.upsert_venue_fill(order, venue_fill)
-                        self.positions_repo.upsert_position(fill)
+                        await self.positions_repo.upsert_position(fill)
 
                     await self.orders_repo.mark_filled_or_partially_filled(order.id)
                     if self.reservation_service is not None:
-                        self.reservation_service.release_terminal(
+                        await self.reservation_service.release_terminal(
                             order.reservation_id,
                             reason="venue_fill_confirmed",
                         )
@@ -819,7 +819,7 @@ class ReconciliationService:
             async with self.db.transaction():
                 await self.orders_repo.mark_terminal(order.id, venue_order.status.lower())
                 if self.reservation_service is not None:
-                    self.reservation_service.release_terminal(
+                    await self.reservation_service.release_terminal(
                         order.reservation_id,
                         reason=venue_order.status.lower(),
                     )
@@ -910,7 +910,7 @@ class ReconciliationService:
                 )
             return False
 
-        previous_matched = self._previous_matched_for_order(self.orders_repo, order_id)
+        previous_matched = await self._previous_matched_for_order(self.orders_repo, order_id)
         delta_matched = current_matched - previous_matched
 
         if current_matched < previous_matched:
@@ -935,7 +935,7 @@ class ReconciliationService:
                 current_local = str(record.get("status") or "")
                 if current_local != local_status:
                     try:
-                        self.orders_repo.update_submission_status(
+                        await self.orders_repo.update_submission_status(
                             order_id=order_id,
                             status=local_status,
                             response_patch=fill_info,
@@ -978,7 +978,7 @@ class ReconciliationService:
                 and str(side).upper() == "BUY"
                 and hasattr(balance_regime, "record_cancel")
             ):
-                cancel_amt = self._resolve_buy_requested_amount(order_id)
+                cancel_amt = await self._resolve_buy_requested_amount(order_id)
                 if cancel_amt > 0:
                     try:
                         balance_regime.record_cancel(
@@ -993,13 +993,13 @@ class ReconciliationService:
                             pass
                     except Exception:  # pragma: no cover — defensive
                         pass
-            self.orders_repo.delete_processed_trade(record["trade_key"])
+            await self.orders_repo.delete_processed_trade(record["trade_key"])
             self._audit(
                 "reconciliation_no_fill_unlock",
                 {"order_id": order_id, "side": side, "venue_status": order_status},
             )
             # Release reservation if the record carries one (coordinator path).
-            self._release_reservation_if_present(record, reason=order_status)
+            await self._release_reservation_if_present(record, reason=order_status)
             # Lifecycle log — render the canonical terminal-failure panel.
             mapped = _VENUE_TO_LIFECYCLE.get(order_status, ("failed", "failed"))
             self._emit_lifecycle(
@@ -1025,7 +1025,7 @@ class ReconciliationService:
                 # was updated by a previous pass.
                 stored_row = None
                 try:
-                    stored_row = self.orders_repo.get_by_order_id(order_id)
+                    stored_row = await self.orders_repo.get_by_order_id(order_id)
                 except Exception:
                     stored_row = None
                 stored_status = ""
@@ -1039,14 +1039,14 @@ class ReconciliationService:
                 # state without double-applying the fill.
                 if not already_terminal:
                     try:
-                        self.orders_repo.update_submission_status(
+                        await self.orders_repo.update_submission_status(
                             order_id=order_id,
                             status="filled_reconciled",
                             response_patch=fill_info,
                         )
                     except Exception:
                         pass
-                    self.orders_repo.mark_processed_trade(
+                    await self.orders_repo.mark_processed_trade(
                         trade_key=record["trade_key"],
                         user_id=record["user_id"],
                         leader_id=record.get("leader_id"),
@@ -1061,7 +1061,7 @@ class ReconciliationService:
                         "reconciliation_terminal_no_new_delta",
                         {"order_id": order_id, "side": side, "matched_total": str(current_matched)},
                     )
-                    self._release_reservation_if_present(record, reason="confirmed")
+                    await self._release_reservation_if_present(record, reason="confirmed")
                 # Lifecycle log fires once via the dedup map — idempotent.
                 self._emit_lifecycle(
                     status="confirmed",
@@ -1079,7 +1079,7 @@ class ReconciliationService:
             return False
 
         try:
-            self.fills_repo.append_fill(
+            await self.fills_repo.append_fill(
                 FillRecord(
                     user_id=record["user_id"],
                     leader_id=record.get("leader_id"),
@@ -1111,7 +1111,7 @@ class ReconciliationService:
                         except (TypeError, ValueError):
                             entry_price = None
 
-            self.positions_repo.apply_fill(
+            await self.positions_repo.apply_fill(
                 user_id=record["user_id"],
                 leader_id=record.get("leader_id"),
                 condition_id=record["condition_id"],
@@ -1161,7 +1161,7 @@ class ReconciliationService:
             return False
 
         if is_final_fill:
-            self.orders_repo.mark_processed_trade(
+            await self.orders_repo.mark_processed_trade(
                 trade_key=record["trade_key"],
                 user_id=record["user_id"],
                 leader_id=record.get("leader_id"),
@@ -1173,7 +1173,7 @@ class ReconciliationService:
                 order_id=order_id,
             )
             submission_status = "filled_reconciled"
-            self._release_reservation_if_present(record, reason="confirmed")
+            await self._release_reservation_if_present(record, reason="confirmed")
             self._emit_lifecycle(
                 status="confirmed",
                 side=side,
@@ -1200,7 +1200,7 @@ class ReconciliationService:
             )
 
         try:
-            self.orders_repo.update_submission_status(
+            await self.orders_repo.update_submission_status(
                 order_id=order_id,
                 status=submission_status,
                 response_patch=fill_info,
@@ -1301,7 +1301,7 @@ class ReconciliationService:
         # zero — re-applying the entire cumulative venue size as a
         # fresh delta and double-counting every risk SELL fill that was
         # in-flight across the restart.
-        previous_matched = self._previous_matched_for_order(self.orders_repo, order_id)
+        previous_matched = await self._previous_matched_for_order(self.orders_repo, order_id)
         delta_matched = current_matched - previous_matched
         if current_matched < previous_matched:
             self._record_negative_delta_anomaly(
@@ -1321,7 +1321,7 @@ class ReconciliationService:
             if mapped is not None:
                 local_status, lifecycle_status = mapped
                 try:
-                    self.orders_repo.update_submission_status(
+                    await self.orders_repo.update_submission_status(
                         order_id=order_id,
                         status=local_status,
                         response_patch=fill_info,
@@ -1345,7 +1345,7 @@ class ReconciliationService:
 
         # Terminal no-fill: persist status, drop the in-flight reservation.
         if current_matched <= 0 and venue_status in _TERMINAL_NO_FILL_STATUSES:
-            self.orders_repo.update_submission_status(
+            await self.orders_repo.update_submission_status(
                 order_id=order_id,
                 status=venue_status,
                 response_patch=fill_info,
@@ -1359,7 +1359,7 @@ class ReconciliationService:
                     recovery_metadata = request.get("recovery_metadata")
                     trigger_meta = dict(recovery_metadata) if isinstance(recovery_metadata, dict) else {}
                     trigger_meta["venue_status"] = venue_status
-                    self.risk_triggers_repo.record_trigger(
+                    await self.risk_triggers_repo.record_trigger(
                         user_id=user_id,
                         condition_id=condition_id,
                         token_id=token_id,
@@ -1371,7 +1371,7 @@ class ReconciliationService:
                     )
                 except Exception:
                     _log.debug("risk_trigger_record_error order_id=%s", order_id, exc_info=True)
-            self._release_reservation_if_present(record, reason=venue_status)
+            await self._release_reservation_if_present(record, reason=venue_status)
             mapped = _VENUE_TO_LIFECYCLE.get(venue_status, ("failed", "failed"))
             self._emit_lifecycle(
                 status=mapped[1],
@@ -1392,7 +1392,7 @@ class ReconciliationService:
         if delta_matched <= 0 and is_final_fill:
             already_terminal = str(record.get("status") or "") == "filled_reconciled"
             if not already_terminal:
-                self.orders_repo.update_submission_status(
+                await self.orders_repo.update_submission_status(
                     order_id=order_id,
                     status="filled_reconciled",
                     response_patch={
@@ -1406,7 +1406,7 @@ class ReconciliationService:
                     "reconciliation_risk_terminal_no_new_delta",
                     {"order_id": order_id, "matched_total": str(current_matched)},
                 )
-                self._release_reservation_if_present(record, reason="confirmed")
+                await self._release_reservation_if_present(record, reason="confirmed")
             self._emit_lifecycle(
                 status="confirmed",
                 side="SELL",
@@ -1435,7 +1435,7 @@ class ReconciliationService:
             entry_price = float(avg_price)
 
         try:
-            self.fills_repo.append_fill(
+            await self.fills_repo.append_fill(
                 FillRecord(
                     user_id=user_id,
                     leader_id=leader_id,
@@ -1455,7 +1455,7 @@ class ReconciliationService:
                     "side": "SELL",
                 },
             )
-            updated_pos = self.positions_repo.apply_fill(
+            updated_pos = await self.positions_repo.apply_fill(
                 user_id=user_id,
                 leader_id=leader_id,
                 condition_id=condition_id,
@@ -1485,7 +1485,7 @@ class ReconciliationService:
             and updated_pos is None
             and self.risk_blocks_repo is not None
         ):
-            self.risk_blocks_repo.mark_risk_block(
+            await self.risk_blocks_repo.mark_risk_block(
                 user_id=user_id,
                 condition_id=condition_id,
                 token_id=token_id,
@@ -1507,7 +1507,7 @@ class ReconciliationService:
         if self.risk_triggers_repo is not None:
             try:
                 trigger_fill_status = "filled" if (is_final_fill and updated_pos is None) else "partial"
-                self.risk_triggers_repo.record_trigger(
+                await self.risk_triggers_repo.record_trigger(
                     user_id=user_id,
                     condition_id=condition_id,
                     token_id=token_id,
@@ -1537,7 +1537,7 @@ class ReconciliationService:
             )
 
         submission_status = "filled_reconciled" if is_final_fill else "submitted_unconfirmed"
-        self.orders_repo.update_submission_status(
+        await self.orders_repo.update_submission_status(
             order_id=order_id,
             status=submission_status,
             response_patch={
@@ -1557,7 +1557,7 @@ class ReconciliationService:
             },
         )
         if is_final_fill:
-            self._release_reservation_if_present(record, reason="confirmed")
+            await self._release_reservation_if_present(record, reason="confirmed")
         self._emit_lifecycle(
             status="confirmed" if is_final_fill else "matched",
             side="SELL",
@@ -1618,7 +1618,7 @@ class ReconciliationService:
         if live_size is None:
             return result
 
-        existing = self.positions_repo.get_position(user_id, condition_id, token_id=token_id)
+        existing = await self.positions_repo.get_position(user_id, condition_id, token_id=token_id)
         local_size = getattr(existing, "size_tokens", Decimal("0")) if existing else Decimal("0")
 
         if local_size <= Decimal("1e-12") and live_size <= Decimal("1e-12"):
@@ -1632,7 +1632,7 @@ class ReconciliationService:
         avg_entry_price = getattr(existing, "avg_entry_price", Decimal("0")) if existing else Decimal("0")
 
         if live_size <= Decimal("1e-12"):
-            self.positions_repo.delete_position(user_id, condition_id, token_id=token_id)
+            await self.positions_repo.delete_position(user_id, condition_id, token_id=token_id)
             result["action"] = "deleted"
             result["reconciled"] = True
 
@@ -1640,21 +1640,21 @@ class ReconciliationService:
                 try:
                     reservations_repo = getattr(reservation_service, "reservations_repo", None)
                     if reservations_repo is not None:
-                        active_reservations = reservations_repo.list_active_for_scope(
+                        active_reservations = await reservations_repo.list_active_for_scope(
                             user_id=user_id,
                             condition_id=condition_id,
                             token_id=token_id,
                         )
                         for res in active_reservations:
                             if res.side.value == "SELL":
-                                reservation_service.release_terminal(
+                                await reservation_service.release_terminal(
                                     res.id, reason="manual_position_drift_deleted"
                                 )
                 except Exception:
                     _log.debug("drift_reservation_cleanup_failed", exc_info=True)
         else:
-            from storage.sqlite.positions_repo import PositionRecord
-            self.positions_repo.upsert_position(
+            from storage.postgres.positions_repo import PositionRecord
+            await self.positions_repo.upsert_position(
                 PositionRecord(
                     user_id=user_id,
                     condition_id=condition_id,
@@ -1671,14 +1671,14 @@ class ReconciliationService:
                 try:
                     reservations_repo = getattr(reservation_service, "reservations_repo", None)
                     if reservations_repo is not None:
-                        active_reservations = reservations_repo.list_active_for_scope(
+                        active_reservations = await reservations_repo.list_active_for_scope(
                             user_id=user_id,
                             condition_id=condition_id,
                             token_id=token_id,
                         )
                         for res in active_reservations:
                             if res.side.value == "SELL" and res.reserved_size > live_size:
-                                reservation_service.release_terminal(
+                                await reservation_service.release_terminal(
                                     res.id, reason="manual_position_drift_shrunk"
                                 )
                 except Exception:
