@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from orchestrators.leader_registry import LeaderRegistry
-from storage.sqlite.leaders_repo import LeaderTierRecord
+from storage.postgres.leaders_repo import LeaderTierRecord
 
 
 WALLET_A = "0x" + "a" * 40
@@ -65,14 +65,14 @@ class _MockLeadersRepo:
         self.records: list = []
         self._tiers: dict[str, tuple[str, float | None]] = {}
 
-    def upsert_candidates(self, records):
+    async def upsert_candidates(self, records):
         self.records.extend(records)
 
-    def get_tier(self, wallet):
+    async def get_tier(self, wallet):
         tier, changed_at = self._tiers.get(wallet.lower(), ("watchlist", None))
         return LeaderTierRecord(wallet=wallet.lower(), follow_tier=tier, tier_changed_at=changed_at)
 
-    def update_tier(self, wallet, follow_tier, tier_changed_at):
+    async def update_tier(self, wallet, follow_tier, tier_changed_at):
         self._tiers[wallet.lower()] = (follow_tier, tier_changed_at)
 
 
