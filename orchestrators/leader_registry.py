@@ -52,9 +52,9 @@ class LeaderRegistry:
         self.readiness = readiness_tracker or ReadinessTracker()
         self.logger = logger_instance or logger
 
-    def _evaluate_leader_tier(self, wallet: str, score: float, has_sufficient_coverage: bool) -> FollowTier:
+    async def _evaluate_leader_tier(self, wallet: str, score: float, has_sufficient_coverage: bool) -> FollowTier:
         """Evaluate and persist tier for a discovered leader."""
-        tier_rec = self.leaders_repo.get_tier(wallet)
+        tier_rec = await self.leaders_repo.get_tier(wallet)
         current_tier = FollowTier(tier_rec.follow_tier) if tier_rec.follow_tier in {t.value for t in FollowTier} else FollowTier.WATCHLIST
         seconds_in_tier = int(time.time() - tier_rec.tier_changed_at) if tier_rec.tier_changed_at else 0
 
@@ -76,7 +76,7 @@ class LeaderRegistry:
         )
 
         if decision.changed:
-            self.leaders_repo.update_tier(wallet, decision.recommended_tier.value, time.time())
+            await self.leaders_repo.update_tier(wallet, decision.recommended_tier.value, time.time())
             self.logger.info(
                 "leader_tier_changed",
                 extra={
@@ -135,7 +135,7 @@ class LeaderRegistry:
 
                 # Evaluate tier via permission ladder
                 has_coverage = profile.total_positions >= min_positions
-                tier = self._evaluate_leader_tier(
+                tier = await self._evaluate_leader_tier(
                     wallet=str(profile.wallet).lower(),
                     score=float(profile.composite_score),
                     has_sufficient_coverage=has_coverage and active,
@@ -152,7 +152,7 @@ class LeaderRegistry:
                     )
                 )
 
-            self.leaders_repo.upsert_candidates(
+            await self.leaders_repo.upsert_candidates(
                 [
                     LeaderCandidateRecord(
                         leader_id=c.leader_id,
