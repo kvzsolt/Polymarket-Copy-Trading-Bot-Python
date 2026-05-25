@@ -1,0 +1,151 @@
+services/execution/reservation_service.py
+  s_93e0a4797804d9::t_d9e20f1579d758 7-8,10-11,72,107,113,128,139,145,179,196,203,212,231,234,239,242,247,250,253,261,264,270,275,289,302,334
+bot_cli/commands/orders.py
+  s_93e0a4797804d9::t_09005941aaa719 112-132,135-146,148-166
+config/app_config.py
+  s_93e0a4797804d9::t_5349875eb62083 862-863
+services/accountingService.py
+  s_93e0a4797804d9::t_77e33da7ceaf4d 9,31,33,37-39,41-43,45-47,50,54-56,61,63-75,78,80-82,86,94-102,105,119-120,122-124,127,129-130,133,144-146,150,157-163
+tests/test_execution_atomic_lock.py
+  s_93e0a4797804d9::t_16a8061d8c926a 2-4
+services/riskMonitor.py
+  s_93e0a4797804d9::t_98ba9a6f3b84fb 26-27
+  s_93e0a4797804d9::t_c48375ddd528af 307,708,796,874,949,1025,1037,1055,1074,1095,1103,1117,1127
+  s_93e0a4797804d9::t_105bdbf82ad50c 663,680,682
+  s_93e0a4797804d9::t_73f8665fdef06b 702
+  s_93e0a4797804d9::t_61f7d7065cefad 495-496,500
+  s_93e0a4797804d9::t_51a7ba5ba41d8a 866
+config/__init__.py
+  s_93e0a4797804d9::t_49db918759e1b6 16
+domain/ports/repositories.py
+  s_93e0a4797804d9::t_03305fa22119a8 23-27
+  s_93e0a4797804d9::t_1c406a83333438 4,8-10
+tests/release_gate/test_e2e_dry_run_sell.py
+  s_93e0a4797804d9::t_16a8061d8c926a 7-9
+tests/test_issue70_reservations.py
+  s_93e0a4797804d9::t_16a8061d8c926a 13-15
+tests/test_position_action_coordinator_integration.py
+  s_93e0a4797804d9::t_16a8061d8c926a 16-18
+orchestrators/runtime_summary.py
+  s_93e0a4797804d9::t_87a51b1f01d618 14-23
+  s_93e0a4797804d9::t_aacc5297cef4ec 714
+tests/test_startup_health.py
+  s_93e0a4797804d9::t_16a8061d8c926a 2-4
+tests/test_trade_pipeline_safety.py
+  s_93e0a4797804d9::t_16a8061d8c926a 4-6
+orchestrators/startup_health.py
+  s_93e0a4797804d9::t_6abfac2355ea55 13,205,211,221,237-298,309-311,315,318-319,485,508,513-514
+services/execution/expiry_bridge.py
+  s_93e0a4797804d9::t_056d0f47cdcb17 91
+  s_93e0a4797804d9::t_b1220ed8b2efcc 115
+tests/release_gate/test_e2e_dry_run_buy.py
+  s_93e0a4797804d9::t_16a8061d8c926a 8-10
+tests/test_issue66_gateway_isolation.py
+  s_93e0a4797804d9::t_16a8061d8c926a 9-11
+tests/test_issue74_position_drift_reconciliation.py
+  s_93e0a4797804d9::t_16a8061d8c926a 11-13
+bot_cli/commands/reconcile.py
+  s_93e0a4797804d9::t_d781f07b830a70 96-104,111,124-125
+tests/test_domain.py
+  s_93e0a4797804d9::t_16a8061d8c926a 12-14
+tests/test_issue72_risk_block_correctness.py
+  s_93e0a4797804d9::t_16a8061d8c926a 2-4
+scripts/find_followable_traders.py
+  s_93e0a4797804d9::t_3ad1c428519b49 12
+tests/test_restart_rehydration_risk.py
+  s_93e0a4797804d9::t_16a8061d8c926a 2-4
+tests/test_execution_market_data_service.py
+  s_93e0a4797804d9::t_16a8061d8c926a 13-15
+tests/test_reservation_service.py
+  s_93e0a4797804d9::t_16a8061d8c926a 1-2
+orchestrators/runtime_bootstrap.py
+  s_93e0a4797804d9::t_51a7ba5ba41d8a 89,476
+  s_93e0a4797804d9::t_c47312163f35f9 335,347,351
+  s_93e0a4797804d9::t_3338176ff023f4 211,216-220
+  s_93e0a4797804d9::t_8d6e10ebc02162 20-24
+  s_93e0a4797804d9::t_b2a85c60fbb1b7 366,386,391
+  s_93e0a4797804d9::t_43e0a8fb9e2bcf 409
+  s_93e0a4797804d9::t_77481aa12a8a8c 535,553
+  s_93e0a4797804d9::t_358cd225c9e73a 286,296,307
+services/traderDiscoveryService.py
+  s_93e0a4797804d9::t_bfc3e21497f774 326-329,336,338-339,372,375,381
+  s_93e0a4797804d9::t_845abf07982d82 463,468-470,472,478,495-509,511
+models/userHistory.py
+  s_93e0a4797804d9::t_f9ab9e34cbb226 8,16,24,28-29,33,37,39-44,47,52-57,60,62,65-66,68-71,79-84,87,91-92,96,99,104-107,112-115,120-121,123-135,137-138
+tests/test_positions_ledger_token_id_pk.py
+  s_93e0a4797804d9::t_16a8061d8c926a 11-13
+tests/test_issue70_reservations_intent_lifecycle.py
+  s_93e0a4797804d9::t_16a8061d8c926a 1-2
+tests/test_execution_coordinator_live_failclosed.py
+  s_93e0a4797804d9::t_16a8061d8c926a 11-13
+tests/test_trade_pipeline_market_data_authority.py
+  s_93e0a4797804d9::t_16a8061d8c926a 9-11
+tests/test_trade_pipeline_tiers.py
+  s_93e0a4797804d9::t_16a8061d8c926a 4-6
+config/db.py
+  s_93e0a4797804d9::t_54438c472214a7 11-12,14-26,28,30-32
+services/execution/reconciliation_service.py
+  s_93e0a4797804d9::t_5b8ddd46835505 228
+  s_93e0a4797804d9::t_1bb5ad518dc544 701,708,715,728
+  s_93e0a4797804d9::t_99fa7e48ddc590 1656
+  s_93e0a4797804d9::t_2411b9aca495e0 40
+  s_93e0a4797804d9::t_f65a2bf3d0b4f8 607
+  s_93e0a4797804d9::t_6351a518c90560 800,822
+  s_93e0a4797804d9::t_91c94e7f1af29c 1643,1674
+  s_93e0a4797804d9::t_cec3346a4375ab 519,596,796,938,996,1028,1042,1049,1082,1114,1164,1203,1324,1348,1362,1395,1438,1458,1488,1510,1540,1621,1635,1650,1657,1681
+  s_93e0a4797804d9::t_57eb05459c88a0 913,981,1304
+  s_93e0a4797804d9::t_01d22b54345094 296,324
+  s_93e0a4797804d9::t_c2d760de12fd71 1002,1064,1176,1374,1409,1560
+services/tradeMonitor.py
+  s_93e0a4797804d9::t_a61f378533a8c8 568
+tests/test_execution_coordinator.py
+  s_93e0a4797804d9::t_a5d679eb971140 20
+  s_93e0a4797804d9::t_03e2b4a1537bc0 49
+services/execution/coordinator.py
+  s_93e0a4797804d9::t_7d86d07e25df8a 360
+  s_93e0a4797804d9::t_e151a414085428 778,780
+  s_93e0a4797804d9::t_b404c442a2566e 723
+  s_93e0a4797804d9::t_540b53d22ae171 272,277,289,312,328,345,361,391
+  s_93e0a4797804d9::t_a2d55c608de26c 424
+  s_93e0a4797804d9::t_a3ac00642877fe 654,673,694,706,740
+services/executionService.py
+  s_93e0a4797804d9::t_e7df7e5787aff4 675,688,690
+  s_93e0a4797804d9::t_9961ee756dfb89 771
+  s_93e0a4797804d9::t_3de2a96c681cf3 797,823,840,860,881,900,931,944
+  s_93e0a4797804d9::t_d73ce15647dbfc 729
+  s_93e0a4797804d9::t_8aef12daf91dbc 639
+  s_93e0a4797804d9::t_d13369e0a8f718 261,268
+  s_93e0a4797804d9::t_d18eba1dee86ac 759
+app.py
+  s_93e0a4797804d9::t_a3ecdbc185219b 745
+  s_93e0a4797804d9::t_47090dce432053 692
+  s_93e0a4797804d9::t_e06caf4f17d30d 128,154
+  s_93e0a4797804d9::t_5f2c251eebe153 940
+  s_93e0a4797804d9::t_936e4d8cf57923 731
+orchestrators/trade_pipeline.py
+  s_93e0a4797804d9::t_497708de58e6fb 7-8
+  s_93e0a4797804d9::t_cf995199ea822c 2459,2461
+  s_93e0a4797804d9::t_c48375ddd528af 691,699,709,1003,1194-1195,1360,1418,1463,1520,1584,1638,1678,1732,1860,1939,1984,1987,2020,2058,2103,2130,2200,2251,2321,2338,2431,2450,2472,2616,2639
+tests/test_multi_user_isolation.py
+  s_93e0a4797804d9::t_16a8061d8c926a 2-4
+tests/test_discovery_wiring.py
+  s_93e0a4797804d9::t_16a8061d8c926a 3-5
+tests/test_execution_idempotency_extended.py
+  s_93e0a4797804d9::t_16a8061d8c926a 12-14
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.1",
+  "base_commit_sha": "a7b30d84920d6534bde9167a2eb370c4b663edea",
+  "prompts": {},
+  "sessions": {
+    "s_93e0a4797804d9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a8782b68-4941-47de-a34c-6d351fdda0ef",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
