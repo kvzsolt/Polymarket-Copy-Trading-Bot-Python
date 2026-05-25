@@ -191,7 +191,14 @@ def test_print_startup_summary_emits_health_payload_with_reconciliation_state(
         "config.app_config.sys.version_info",
         SimpleNamespace(major=3, minor=12),
     )
-    app = build_app(env)
+    # PG-A5: ``build_app`` is async and now brings the asyncpg pool
+    # online. This test only reads ``app.config``, so call
+    # ``load_config`` directly to avoid the testcontainer requirement
+    # for what is fundamentally a config-shape assertion.
+    from config.app_config import load_config
+
+    _config = load_config(env)
+    app = SimpleNamespace(config=_config)
     report = StartupHealthReport(
         healthy=True,
         status="warning",
