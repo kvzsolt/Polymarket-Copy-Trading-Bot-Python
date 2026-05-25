@@ -1,0 +1,19 @@
+tests/test_phase03_atomic_idempotency.py
+  s_93e0a4797804d9::t_7663ca37522c1a 3,6-9,13-14,23-55,71-92,94-127,130-134,138-148,154-162,169-177,179-180,182-185,187,189-193,197-200,217-235,237-248,254,257-263,265-274,276-279,281-286,288-303
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.1",
+  "base_commit_sha": "1d067a3fe27c1ff15b443ff2809c416695780765",
+  "prompts": {},
+  "sessions": {
+    "s_93e0a4797804d9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a8782b68-4941-47de-a34c-6d351fdda0ef",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
