@@ -1,0 +1,25 @@
+app.py
+  s_93e0a4797804d9::t_700b429afca128 572
+  s_93e0a4797804d9::t_0dd652e64f4c51 72
+scripts/find_followable_traders.py
+  s_93e0a4797804d9::t_bc7635a867ba04 76-77
+  s_93e0a4797804d9::t_a4079fe0f1151d 16-17
+bootstrap.py
+  s_93e0a4797804d9::t_c37e153ded1d2a 25-27,45,59-67,71-78,83,96
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.1",
+  "base_commit_sha": "4e5e712bf58281a2e78820d8f13d782d042225dd",
+  "prompts": {},
+  "sessions": {
+    "s_93e0a4797804d9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a8782b68-4941-47de-a34c-6d351fdda0ef",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
