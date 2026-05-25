@@ -1,0 +1,19 @@
+tests/release_gate/test_protective_exit_integration.py
+  s_93e0a4797804d9::t_52262945df7299 13-17,21,24-25,27-29,61-91,93,100-101,104-106,109-110,116-118,121-122,126-128,131-132,135-144,147-148,151-161
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.1",
+  "base_commit_sha": "97e7a937103e73bc4d2eb4dbd2e4de02e9001fef",
+  "prompts": {},
+  "sessions": {
+    "s_93e0a4797804d9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a8782b68-4941-47de-a34c-6d351fdda0ef",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
