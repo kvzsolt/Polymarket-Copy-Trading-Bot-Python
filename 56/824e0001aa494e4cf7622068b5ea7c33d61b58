@@ -1,0 +1,101 @@
+services/riskMonitor.py
+  s_93e0a4797804d9::t_e3bdbb84be0f29 26
+tests/test_trade_pipeline_safety.py
+  s_93e0a4797804d9::t_da4593ed70f28a 5
+tests/test_issue70_reservations_intent_lifecycle.py
+  s_93e0a4797804d9::t_da4593ed70f28a 2
+tests/test_startup_health.py
+  s_93e0a4797804d9::t_da4593ed70f28a 3
+tests/test_positions_ledger_token_id_pk.py
+  s_93e0a4797804d9::t_da4593ed70f28a 12
+tests/test_phase01_review_b_fixes.py
+  s_93e0a4797804d9::t_57c724d63c6bed 81-82
+  s_93e0a4797804d9::t_b376ea08d7afd1 24
+tests/test_book_quality_gate.py
+  s_93e0a4797804d9::t_7c8540c83adbad 80-83
+tests/test_issue72_risk_block_correctness.py
+  s_93e0a4797804d9::t_da4593ed70f28a 3
+tests/test_execution_coordinator_live_failclosed.py
+  s_93e0a4797804d9::t_da4593ed70f28a 12
+tests/release_gate/test_e2e_dry_run_sell.py
+  s_93e0a4797804d9::t_da4593ed70f28a 8
+tests/test_issue70_reservations.py
+  s_93e0a4797804d9::t_da4593ed70f28a 14
+tests/test_restart_rehydration_risk.py
+  s_93e0a4797804d9::t_da4593ed70f28a 3
+tests/test_issue66_gateway_isolation.py
+  s_93e0a4797804d9::t_da4593ed70f28a 10
+tests/test_execution_market_data_service.py
+  s_93e0a4797804d9::t_da4593ed70f28a 14
+tests/test_position_action_coordinator_integration.py
+  s_93e0a4797804d9::t_da4593ed70f28a 17
+tests/test_ambiguous_timeout_auto_release.py
+  s_93e0a4797804d9::t_ced1fdfc9e5c06 56
+  s_93e0a4797804d9::t_ce63c38c6c52a7 40,48
+tests/test_execution_idempotency_extended.py
+  s_93e0a4797804d9::t_33c8dd27a23a67 13
+tests/test_reconciliation_delta_anomaly.py
+  s_93e0a4797804d9::t_069619fc9a3efe 42,47,50,53,61,69,73
+tests/release_gate/test_live_execution_invariants.py
+  s_93e0a4797804d9::t_92412e5833f5a4 22-25
+tests/test_discovery_wiring.py
+  s_93e0a4797804d9::t_da4593ed70f28a 4
+tests/test_execution_atomic_lock.py
+  s_93e0a4797804d9::t_d98fcbf561d239 3
+tests/test_reconciliation_service.py
+  s_93e0a4797804d9::t_27862b3d282c7e 43,49
+tests/test_production_services.py
+  s_93e0a4797804d9::t_31650a0c687845 113,116,124,130,133
+  s_93e0a4797804d9::t_31fdc2320a1d99 318-319,329
+tests/test_domain.py
+  s_93e0a4797804d9::t_da4593ed70f28a 13
+tests/test_risk_reconcile_previous_matched_from_db.py
+  s_93e0a4797804d9::t_68f9688eeee50d 22,24,32-34,37-39,50-52,55-57
+tests/test_reconciler_idempotent_transitions.py
+  s_93e0a4797804d9::t_2ed3bb8d35468f 93
+  s_93e0a4797804d9::t_643292cad22ceb 43,52,60,65,73,81,85
+tests/release_gate/test_e2e_dry_run_buy.py
+  s_93e0a4797804d9::t_da4593ed70f28a 9
+tests/test_reservation_service.py
+  s_93e0a4797804d9::t_da4593ed70f28a 2
+tests/test_config.py
+  s_93e0a4797804d9::t_51edcd9ef902dc 259-261,265
+tests/test_issue74_position_drift_reconciliation.py
+  s_93e0a4797804d9::t_da4593ed70f28a 12
+tests/test_trade_pipeline_market_data_authority.py
+  s_93e0a4797804d9::t_da4593ed70f28a 10
+tests/test_runtime_bootstrap_config.py
+  s_93e0a4797804d9::t_8569c1395250ad 156,158
+  s_93e0a4797804d9::t_ae82d071f79e2c 123-124
+  s_93e0a4797804d9::t_46e5a831e66e08 179
+  s_93e0a4797804d9::t_8f40cc581468c0 3,6
+tests/test_trade_pipeline_drift_releases_reservation.py
+  s_93e0a4797804d9::t_6a3b9b3b4ec02e 82,85-87,91,94
+  s_93e0a4797804d9::t_562b61042a260d 41,44-46,50,52
+  s_93e0a4797804d9::t_342d32d0cbd9ba 20
+tests/test_new_modules.py
+  s_93e0a4797804d9::t_c602c5d2f7f5f2 466-467
+  s_93e0a4797804d9::t_f41381f1e545df 414-415
+tests/test_book_depth_gate.py
+  s_93e0a4797804d9::t_936d2773ec6857 136-139
+tests/test_trade_pipeline_tiers.py
+  s_93e0a4797804d9::t_da4593ed70f28a 5
+tests/test_multi_user_isolation.py
+  s_93e0a4797804d9::t_fa63c63c8aef77 3
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.1",
+  "base_commit_sha": "56824e0001aa494e4cf7622068b5ea7c33d61b58",
+  "prompts": {},
+  "sessions": {
+    "s_93e0a4797804d9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a8782b68-4941-47de-a34c-6d351fdda0ef",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
