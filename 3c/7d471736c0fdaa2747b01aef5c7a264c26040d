@@ -1,0 +1,23 @@
+services/entryPermissionService.py
+  s_93e0a4797804d9::t_457a8d39057c37 30
+services/execution/expiry_bridge.py
+  s_93e0a4797804d9::t_660b160099d842 25-26
+services/execution/intent_recovery.py
+  s_93e0a4797804d9::t_5363a9894526a5 24
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.1",
+  "base_commit_sha": "3c7d471736c0fdaa2747b01aef5c7a264c26040d",
+  "prompts": {},
+  "sessions": {
+    "s_93e0a4797804d9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a8782b68-4941-47de-a34c-6d351fdda0ef",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
