@@ -1,0 +1,27 @@
+tests/test_fills_repo_idempotent_insert.py
+  s_93e0a4797804d9::t_6049f36c1a0951 3-11,15,21-23,26-53,71-75,78-87,90-97
+tests/test_risk_blocks_repo_toctou.py
+  s_93e0a4797804d9::t_451806aa124519 13,19,21,23-56,58-126,128-143
+tests/test_orders_repo_upsert.py
+  s_93e0a4797804d9::t_71d0ee90eb2192 3,5,7,9,11-29,31-39,41-70,73-78,86-125,127-136
+tests/test_apply_fill_atomic.py
+  s_93e0a4797804d9::t_ea90e8bbd71146 15-19,24,29-63,75,77-99,103,107-132
+tests/test_risk_blocks_repo_operator_clear_persists.py
+  s_93e0a4797804d9::t_0fa6d31b5b6f49 17-18,21,26-27,29-54,57,59-77,79-88,91-110,112-121
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.1",
+  "base_commit_sha": "38fc50ccbe9fae41c805e8054c6c09bcda8abb11",
+  "prompts": {},
+  "sessions": {
+    "s_93e0a4797804d9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a8782b68-4941-47de-a34c-6d351fdda0ef",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
