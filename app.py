@@ -69,7 +69,7 @@ from services.tradeMonitor import _guarded_leader_fetch
 from services.healthServer import start_health_server
 from services.metrics import metrics
 from services.multiUserConfig import RuntimeUser, UserFollowConfig, load_runtime_users
-from storage.sqlite.leaders_repo import LeadersRepo
+from storage.postgres.leaders_repo import LeadersRepo
 from utils.createClobClient import create_clob_client
 from utils.getMyBalance import get_my_balance
 from utils.logger import (
@@ -569,7 +569,7 @@ async def main():
 
     try:
         validate_runtime_env()
-        application = build_app()
+        application = await build_app()
     except EnvValidationError as exc:
         print_error(str(exc))
         return
