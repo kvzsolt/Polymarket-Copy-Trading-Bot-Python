@@ -1,13 +1,14 @@
 import logging
-import sqlite3
 import time
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Protocol, Awaitable, Callable, Any
 
+import asyncpg
+
 from domain.order_lifecycle import OrderIntent, IntentSide, Reservation
-from storage.sqlite.reservations_repo import ReservationsRepo
-from storage.sqlite.positions_repo import PositionsRepo
+from storage.postgres.reservations_repo import ReservationsRepo
+from storage.postgres.positions_repo import PositionsRepo
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +69,7 @@ class ReservationService:
 
     async def reserve_for_intent(self, intent: OrderIntent) -> Reservation:
         stable_key = intent.key.stable_key()
-        existing = self.reservations_repo.get_active_by_intent_key(stable_key)
+        existing = await self.reservations_repo.get_active_by_intent_key(stable_key)
 
         if existing:
             if existing.expires_at.timestamp() < self.clock.utcnow_timestamp():
@@ -103,13 +104,13 @@ class ReservationService:
                 stable_key, intent.size, intent.price, required_usdc, expires_at,
             )
             try:
-                result = self.reservations_repo.create_buy_reservation_checked(
+                result = await self.reservations_repo.create_buy_reservation_checked(
                     intent=intent,
                     reserved_usdc=required_usdc,
                     expires_at=expires_at,
                     available_balance=balance,
                 )
-            except sqlite3.IntegrityError as exc:
+            except asyncpg.exceptions.UniqueViolationError as exc:
                 raise ReservationConflict(
                     f"active reservation exists for intent={stable_key}"
                 ) from exc
@@ -124,7 +125,7 @@ class ReservationService:
             return result
 
         if intent.key.side == IntentSide.SELL:
-            held_size = self._get_held_size(
+            held_size = await self._get_held_size(
                 intent.key.user_id,
                 intent.key.condition_id,
                 intent.key.token_id,
@@ -135,13 +136,13 @@ class ReservationService:
                 stable_key, intent.size, expires_at,
             )
             try:
-                result = self.reservations_repo.create_sell_reservation_checked(
+                result = await self.reservations_repo.create_sell_reservation_checked(
                     intent=intent,
                     reserved_size=intent.size,
                     expires_at=expires_at,
                     held_size=held_size,
                 )
-            except sqlite3.IntegrityError as exc:
+            except asyncpg.exceptions.UniqueViolationError as exc:
                 raise ReservationConflict(
                     f"active reservation exists for intent={stable_key}"
                 ) from exc
@@ -175,7 +176,7 @@ class ReservationService:
         # Quote balance is account/funder-wide. Do not scope BUY reserved
         # USDC by condition/token, or two different markets can collectively
         # over-reserve the same wallet balance.
-        already_reserved = self.reservations_repo.sum_active_quote_for_user(user_id)
+        already_reserved = await self.reservations_repo.sum_active_quote_for_user(user_id)
         free_balance = balance - already_reserved
 
         logger.info(
@@ -192,14 +193,14 @@ class ReservationService:
             )
         return balance
 
-    def _get_held_size(
+    async def _get_held_size(
         self,
         user_id: str,
         condition_id: str,
         token_id: str,
         required_size: Decimal,
     ) -> Decimal:
-        matching_pos = self._find_position(user_id, condition_id, token_id)
+        matching_pos = await self._find_position(user_id, condition_id, token_id)
 
         if not matching_pos:
             raise InsufficientFreeShares(
@@ -208,7 +209,7 @@ class ReservationService:
             )
 
         held = Decimal(matching_pos.size_tokens)
-        already_reserved = self._get_reserved_size(
+        already_reserved = await self._get_reserved_size(
             user_id, condition_id, token_id
         )
         free_shares = held - already_reserved
@@ -227,29 +228,29 @@ class ReservationService:
             )
         return held
 
-    def _get_reserved_usdc(
+    async def _get_reserved_usdc(
         self, user_id: str, condition_id: str, token_id: str
     ) -> Decimal:
-        total_usdc, _ = self.reservations_repo.sum_active_for_scope(
+        total_usdc, _ = await self.reservations_repo.sum_active_for_scope(
             user_id, condition_id, token_id, IntentSide.BUY
         )
         return total_usdc
 
-    def _get_reserved_size(
+    async def _get_reserved_size(
         self, user_id: str, condition_id: str, token_id: str
     ) -> Decimal:
-        _, total_size = self.reservations_repo.sum_active_for_scope(
+        _, total_size = await self.reservations_repo.sum_active_for_scope(
             user_id, condition_id, token_id, IntentSide.SELL
         )
         return total_size
 
-    def get_scope_totals(
+    async def get_scope_totals(
         self, user_id: str, condition_id: str, token_id: str
     ) -> ReservationScopeTotals:
-        buy_usdc, _ = self.reservations_repo.sum_active_for_scope(
+        buy_usdc, _ = await self.reservations_repo.sum_active_for_scope(
             user_id, condition_id, token_id, IntentSide.BUY
         )
-        _, sell_size = self.reservations_repo.sum_active_for_scope(
+        _, sell_size = await self.reservations_repo.sum_active_for_scope(
             user_id, condition_id, token_id, IntentSide.SELL
         )
         return ReservationScopeTotals(
@@ -257,21 +258,21 @@ class ReservationService:
             reserved_size=sell_size,
         )
 
-    def _find_position(
+    async def _find_position(
         self, user_id: str, condition_id: str, token_id: str
     ) -> Any:
-        positions = self.positions_repo.list_open_positions(user_id)
+        positions = await self.positions_repo.list_open_positions(user_id)
         for pos in positions:
             if pos.condition_id == condition_id and pos.token_id == token_id:
                 return pos
         return None
 
-    def release_terminal(self, reservation_id: str, reason: str) -> None:
+    async def release_terminal(self, reservation_id: str, reason: str) -> None:
         logger.info(
             "reservation.release id=%s reason=%s",
             reservation_id, reason,
         )
-        self.reservations_repo.mark_released(
+        await self.reservations_repo.mark_released(
             reservation_id=reservation_id,
             reason=reason,
             released_at=self.clock.utcnow_timestamp(),
@@ -285,7 +286,7 @@ class ReservationService:
         ``release_terminal``.
         """
         now = self.clock.utcnow_timestamp()
-        expired = self.reservations_repo.list_expired_active(now)
+        expired = await self.reservations_repo.list_expired_active(now)
         enqueued_ids: list[str] = []
         for res in expired:
             logger.info(
@@ -298,7 +299,7 @@ class ReservationService:
                 try:
                     result = await self.reconciler_callback(res.id)
                     if result is True:
-                        self.reservations_repo.mark_released(
+                        await self.reservations_repo.mark_released(
                             res.id, "expired_terminal", now
                         )
                         enqueued_ids.append(res.id)
@@ -330,7 +331,7 @@ class ReservationService:
             try:
                 result = await self.reconciler_callback(res.id)
                 if result is True:
-                    self.reservations_repo.mark_released(
+                    await self.reservations_repo.mark_released(
                         res.id, "expired_terminal", self.clock.utcnow_timestamp()
                     )
                     return True

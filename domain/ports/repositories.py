@@ -1,12 +1,13 @@
 """Repository ports (ABCs).
 
 Each ABC captures the **service-facing** surface of a persistence adapter.
-Concrete implementations in ``storage/sqlite/`` inherit from these ABCs and
+Concrete implementations in ``storage/postgres/`` inherit from these ABCs and
 may expose additional helpers — services must only depend on the methods
 declared here.
 
-All methods are **synchronous** to match the existing sqlite adapters (Phase
-3 will wire the concrete classes to inherit from these ABCs).
+NOTE: the ABCs are declared synchronously here for historical reasons; the
+concrete Postgres adapters are async. Treat each method as a coroutine
+contract — callers must ``await`` them.
 """
 
 from __future__ import annotations
@@ -19,11 +20,11 @@ from typing import TYPE_CHECKING, Any
 # runtime — and so storage adapters can subclass these ABCs without creating
 # a circular import.
 if TYPE_CHECKING:
-    from storage.sqlite.cursors_repo import TradeCursor
-    from storage.sqlite.fills_repo import FillRecord
-    from storage.sqlite.leaders_repo import LeaderCandidateRecord, LeaderTierRecord
-    from storage.sqlite.orders_repo import OrderSubmissionRecord
-    from storage.sqlite.positions_repo import PositionRecord
+    from storage.postgres.cursors_repo import TradeCursor
+    from storage.postgres.fills_repo import FillRecord
+    from storage.postgres.leaders_repo import LeaderCandidateRecord, LeaderTierRecord
+    from storage.postgres.orders_repo import OrderSubmissionRecord
+    from storage.postgres.positions_repo import PositionRecord
 
 
 class AbstractOrderRepository(ABC):

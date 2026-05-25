@@ -13,7 +13,7 @@ from .env import (
     validate_runtime_env,
     validate_wallet_config,
 )
-from .db import connect_db, get_client, get_database
+from .db import connect_db
 from .app_config import (
     AppConfig,
     ClobConfig,
@@ -44,8 +44,6 @@ __all__ = [
     "validate_wallet_config",
     "get_private_key",
     "connect_db",
-    "get_client",
-    "get_database",
     "AppConfig",
     "ClobConfig",
     "DatabaseConfig",

@@ -565,7 +565,7 @@ async def fetch_trade_data(
             state.last_processed_ts = max(state.last_processed_ts, float(ts))
             try:
                 from models.userHistory import get_user_activity_model
-                get_user_activity_model(user_address).insert_many(new_trades)
+                await get_user_activity_model(user_address).insert_many(new_trades)
             except Exception as e:
                 logger.error(f'DB save activities: {e}')
     except Exception as e:

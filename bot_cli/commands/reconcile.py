@@ -90,24 +90,25 @@ async def _run_reconcile_async(args: argparse.Namespace) -> int:
         print(json.dumps(output, indent=2))
         return 0
 
-    # Run actual reconciliation. NOTE: ReconciliationService (1704 LOC) is
-    # gated on the broader execution-path PG migration; until that lands,
-    # the action path stays on the SQLite OrdersRepo.
     reconciled = 0
     errors: list[str] = []
     if unconfirmed:
+        from storage.postgres.connection import init_pool, shutdown_pool
+        from storage.postgres.orders_repo import OrdersRepo
+
+        pool = await init_pool(
+            config.database.dsn,
+            min_size=1,
+            max_size=2,
+            command_timeout_seconds=15.0,
+        )
         try:
             from utils.createClobClient import create_clob_client
             from services.reconciliation import ReconciliationService
 
             wallet = config.wallet
             client = await create_clob_client(wallet_config=wallet)
-            orders_repo = None
-            try:
-                from storage.sqlite.orders_repo import OrdersRepo
-                orders_repo = OrdersRepo(config.database.db_path)
-            except Exception:
-                pass
+            orders_repo = OrdersRepo(pool)
 
             svc = ReconciliationService(
                 clob_client=client,
@@ -120,6 +121,8 @@ async def _run_reconcile_async(args: argparse.Namespace) -> int:
                 errors = result.errors
         except Exception as exc:
             errors.append(str(exc))
+        finally:
+            await shutdown_pool()
 
     output = {
         "dry_run": False,

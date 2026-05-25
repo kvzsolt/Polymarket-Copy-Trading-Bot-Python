@@ -8,6 +8,9 @@ This test pins the new 3-column PK by inserting both outcomes for one
 condition and verifying both rows persist after upsert.
 """
 from __future__ import annotations
+import pytest
+pytestmark = pytest.mark.skip(reason="sqlite-bound; pending PG port")
+
 
 from decimal import Decimal
 

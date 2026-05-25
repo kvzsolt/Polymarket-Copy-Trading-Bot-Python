@@ -108,66 +108,62 @@ async def _run_orders_reconcile_async(args: argparse.Namespace) -> int:
         return 1
 
     dry_run = getattr(args, "dry_run", False)
-    db_path = config.database.db_path
 
-    # NOTE: reconcile subcommand still routes through the SQLite OrdersRepo +
-    # ReconciliationService until the broader execution-path PG migration
-    # lands (see PG-A5 follow-up plan). The pending subcommand above is
-    # already PG-native.
-    from storage.sqlite.connection import create_connection
+    from storage.postgres.connection import init_pool, shutdown_pool
+    from storage.postgres.orders_repo import OrdersRepo
 
-    # Find unconfirmed orders that need reconciliation
-    unconfirmed: list[dict] = []
-    with create_connection(db_path) as conn:
-        rows = conn.execute(
-            """
-            SELECT idempotency_key, user_id, leader_id, order_id, status, updated_at
-            FROM orders
-            WHERE status IN ('submitted_unconfirmed', 'submitted', 'unknown_unconfirmed',
-                             'reconciliation_required')
-              AND order_id IS NOT NULL
-            ORDER BY updated_at ASC
-            """
-        ).fetchall()
+    pool = await init_pool(
+        config.database.dsn,
+        min_size=1,
+        max_size=2,
+        command_timeout_seconds=15.0,
+    )
+    try:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT idempotency_key, user_id, leader_id, order_id, status, updated_at
+                FROM orders
+                WHERE status IN ('submitted_unconfirmed', 'submitted', 'unknown_unconfirmed',
+                                 'reconciliation_required')
+                  AND order_id IS NOT NULL
+                ORDER BY updated_at ASC
+                """
+            )
         unconfirmed = [dict(r) for r in rows]
 
-    if dry_run:
-        output = {
-            "dry_run": True,
-            "count": len(unconfirmed),
-            "orders": unconfirmed,
-        }
-        print(json.dumps(output, indent=2))
-        return 0
+        if dry_run:
+            output = {
+                "dry_run": True,
+                "count": len(unconfirmed),
+                "orders": unconfirmed,
+            }
+            print(json.dumps(output, indent=2))
+            return 0
 
-    # Actually trigger reconciliation via ReconciliationService
-    reconciled = 0
-    errors: list[str] = []
-    if unconfirmed:
-        try:
-            from utils.createClobClient import create_clob_client
-            from services.reconciliation import ReconciliationService
-
-            wallet = config.wallet
-            client = await create_clob_client(wallet_config=wallet)
-            orders_repo = None
+        reconciled = 0
+        errors: list[str] = []
+        if unconfirmed:
             try:
-                from storage.sqlite.orders_repo import OrdersRepo
-                orders_repo = OrdersRepo(db_path)
-            except Exception:
-                pass
+                from utils.createClobClient import create_clob_client
+                from services.reconciliation import ReconciliationService
 
-            svc = ReconciliationService(
-                clob_client=client,
-                orders_repo=orders_repo,
-                config=config,
-            )
-            result = await svc.reconcile()
-            reconciled = result.stale_orders_cancelled
-            if result.errors:
-                errors = result.errors
-        except Exception as exc:
-            errors.append(str(exc))
+                wallet = config.wallet
+                client = await create_clob_client(wallet_config=wallet)
+                orders_repo = OrdersRepo(pool)
+                svc = ReconciliationService(
+                    clob_client=client,
+                    orders_repo=orders_repo,
+                    config=config,
+                )
+                result = await svc.reconcile()
+                reconciled = result.stale_orders_cancelled
+                if result.errors:
+                    errors = result.errors
+            except Exception as exc:
+                errors.append(str(exc))
+    finally:
+        await shutdown_pool()
 
     output = {
         "dry_run": False,

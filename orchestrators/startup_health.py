@@ -10,8 +10,7 @@ from aiohttp import ClientSession
 if TYPE_CHECKING:
     from interfaces.clob_gateway import ClobGateway
 
-from storage.sqlite.connection import create_connection
-from storage.sqlite.positions_repo import PositionRecord, PositionsRepo
+from storage.postgres.positions_repo import PositionRecord, PositionsRepo
 from utils.logger import get_logger
 
 logger = get_logger("StartupHealth")
@@ -203,13 +202,13 @@ def _live_position_keys(live_positions: list[dict[str, Any]]) -> set[tuple[str, 
     return keys
 
 
-def reconcile_persisted_positions_to_live(
+async def reconcile_persisted_positions_to_live(
     positions_repo: PositionsRepo,
     *,
     user_id: str,
     live_positions: list[dict[str, Any]],
 ) -> PositionSyncResult:
-    persisted = positions_repo.list_open_positions(user_id)
+    persisted = await positions_repo.list_open_positions(user_id)
     live_keys = _live_position_keys(live_positions)
 
     stale: list[PositionRecord] = []
@@ -219,7 +218,7 @@ def reconcile_persisted_positions_to_live(
             stale.append(record)
 
     for record in stale:
-        positions_repo.delete_position(
+        await positions_repo.delete_position(
             user_id,
             record.condition_id,
             token_id=record.token_id,
@@ -235,68 +234,68 @@ def reconcile_persisted_positions_to_live(
     )
 
 
-def normalize_startup_order_statuses(db_path: str, *, user_id: str) -> OrderStartupCleanupResult:
-    with create_connection(db_path) as conn:
-        row = conn.execute(
-            """
-            SELECT
-                SUM(CASE WHEN status IN ('pending', 'pending_lock') THEN 1 ELSE 0 END) AS pending_count,
-                SUM(CASE WHEN status = 'delayed' THEN 1 ELSE 0 END) AS delayed_count,
-                SUM(CASE WHEN status LIKE 'retry_pending_%' THEN 1 ELSE 0 END) AS retry_pending_count
-            FROM orders
-            WHERE user_id = ?
-            """,
-            (user_id,),
-        ).fetchone()
+async def normalize_startup_order_statuses(pool, *, user_id: str) -> OrderStartupCleanupResult:
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            row = await conn.fetchrow(
+                """
+                SELECT
+                    COALESCE(SUM(CASE WHEN status IN ('pending', 'pending_lock') THEN 1 ELSE 0 END), 0) AS pending_count,
+                    COALESCE(SUM(CASE WHEN status = 'delayed' THEN 1 ELSE 0 END), 0) AS delayed_count,
+                    COALESCE(SUM(CASE WHEN status LIKE 'retry_pending_%' THEN 1 ELSE 0 END), 0) AS retry_pending_count
+                FROM orders
+                WHERE user_id = $1
+                """,
+                user_id,
+            )
 
-        pending_count = int((row["pending_count"] or 0) if row else 0)
-        delayed_count = int((row["delayed_count"] or 0) if row else 0)
-        retry_pending_count = int((row["retry_pending_count"] or 0) if row else 0)
+            pending_count = int(row["pending_count"] if row else 0)
+            delayed_count = int(row["delayed_count"] if row else 0)
+            retry_pending_count = int(row["retry_pending_count"] if row else 0)
 
-        conn.execute(
-            """
-            UPDATE orders
-            SET
-                status = 'terminal_failed',
-                last_error = COALESCE(last_error, 'startup_reset_after_restart'),
-                updated_at = CURRENT_TIMESTAMP
-            WHERE user_id = ?
-              AND (
-                status IN ('pending', 'pending_lock', 'delayed')
-                OR status LIKE 'retry_pending_%'
-              )
-            """,
-            (user_id,),
-        )
+            await conn.execute(
+                """
+                UPDATE orders
+                SET
+                    status = 'terminal_failed',
+                    last_error = COALESCE(last_error, 'startup_reset_after_restart'),
+                    updated_at = now()
+                WHERE user_id = $1
+                  AND (
+                    status IN ('pending', 'pending_lock', 'delayed')
+                    OR status LIKE 'retry_pending_%'
+                  )
+                """,
+                user_id,
+            )
 
-        purge_row = conn.execute(
-            """
-            SELECT COUNT(*) AS purge_count
-            FROM orders
-            WHERE user_id = ?
-              AND (
-                status IN ('failed', 'submission_failed', 'created', 'retryable_failed', 'terminal_failed')
-                OR status LIKE 'retryable_failed_%'
-                OR status LIKE 'retry_pending_%'
-              )
-            """,
-            (user_id,),
-        ).fetchone()
-        purged_failed = int((purge_row["purge_count"] or 0) if purge_row else 0)
+            purge_row = await conn.fetchrow(
+                """
+                SELECT COUNT(*) AS purge_count
+                FROM orders
+                WHERE user_id = $1
+                  AND (
+                    status IN ('failed', 'submission_failed', 'created', 'retryable_failed', 'terminal_failed')
+                    OR status LIKE 'retryable_failed_%'
+                    OR status LIKE 'retry_pending_%'
+                  )
+                """,
+                user_id,
+            )
+            purged_failed = int(purge_row["purge_count"] if purge_row else 0)
 
-        conn.execute(
-            """
-            DELETE FROM orders
-            WHERE user_id = ?
-              AND (
-                status IN ('failed', 'submission_failed', 'created', 'retryable_failed', 'terminal_failed')
-                OR status LIKE 'retryable_failed_%'
-                OR status LIKE 'retry_pending_%'
-              )
-            """,
-            (user_id,),
-        )
-        conn.commit()
+            await conn.execute(
+                """
+                DELETE FROM orders
+                WHERE user_id = $1
+                  AND (
+                    status IN ('failed', 'submission_failed', 'created', 'retryable_failed', 'terminal_failed')
+                    OR status LIKE 'retryable_failed_%'
+                    OR status LIKE 'retry_pending_%'
+                  )
+                """,
+                user_id,
+            )
 
     return OrderStartupCleanupResult(
         normalized_pending=pending_count,
@@ -307,17 +306,17 @@ def normalize_startup_order_statuses(db_path: str, *, user_id: str) -> OrderStar
     )
 
 
-def _load_order_status_counts(db_path: str, *, user_id: str) -> dict[str, int]:
-    with create_connection(db_path) as conn:
-        rows = conn.execute(
+async def _load_order_status_counts(pool, *, user_id: str) -> dict[str, int]:
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
             """
             SELECT status, COUNT(*) AS count
             FROM orders
-            WHERE user_id = ?
+            WHERE user_id = $1
             GROUP BY status
             """,
-            (user_id,),
-        ).fetchall()
+            user_id,
+        )
     return {str(row["status"] or "unknown"): int(row["count"] or 0) for row in rows}
 
 
@@ -483,7 +482,7 @@ async def perform_startup_health_check(
     *,
     wallet: str,
     user_id: str,
-    db_path: str,
+    pool,
     positions_repo: PositionsRepo,
     orders_repo=None,  # type: ignore[assignment] | OrdersRepo | None
     live_positions: list[dict[str, Any]],
@@ -506,13 +505,13 @@ async def perform_startup_health_check(
             message=clob_check.message,
             details=clob_check.details,
         )
-    position_sync = reconcile_persisted_positions_to_live(
+    position_sync = await reconcile_persisted_positions_to_live(
         positions_repo,
         user_id=user_id,
         live_positions=live_positions,
     )
-    order_cleanup = normalize_startup_order_statuses(db_path, user_id=user_id)
-    order_status_counts = _load_order_status_counts(db_path, user_id=user_id)
+    order_cleanup = await normalize_startup_order_statuses(pool, user_id=user_id)
+    order_status_counts = await _load_order_status_counts(pool, user_id=user_id)
     order_summary = _summarize_order_status_counts(order_status_counts)
 
     checks: dict[str, StartupHealthCheckItem] = {
