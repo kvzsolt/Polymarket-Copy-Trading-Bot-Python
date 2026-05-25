@@ -1,0 +1,21 @@
+orchestrators/leader_registry.py
+  s_93e0a4797804d9::t_1e61c80a7addd3 55,57,79
+  s_93e0a4797804d9::t_b396c23ce27066 155
+  s_93e0a4797804d9::t_2f9d12bb4da219 138
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.1",
+  "base_commit_sha": "49fe6da59c75a0d78842b2571361a544992099c5",
+  "prompts": {},
+  "sessions": {
+    "s_93e0a4797804d9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a8782b68-4941-47de-a34c-6d351fdda0ef",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
