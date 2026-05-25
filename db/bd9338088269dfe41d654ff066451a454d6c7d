@@ -1,0 +1,19 @@
+tests/release_gate/test_reservation_lifecycle.py
+  s_93e0a4797804d9::t_7c1a8807e92363 13,17-18,25-57,79-88,93-102,106-115,120-129,133-150
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.1",
+  "base_commit_sha": "dbbd9338088269dfe41d654ff066451a454d6c7d",
+  "prompts": {},
+  "sessions": {
+    "s_93e0a4797804d9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a8782b68-4941-47de-a34c-6d351fdda0ef",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
