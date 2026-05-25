@@ -256,10 +256,13 @@ class TestSemanticInvariants:
         assert _runtime_python_supported() is False
 
     def test_bot_state_db_enabled_overrides_legacy_db_enabled(self, valid_env: dict[str, str]) -> None:
+        # PG migration removed DatabaseConfig.enabled / .db_path; the
+        # BOT_STATE_DB_ENABLED env var is no longer wired. Keep the test as a
+        # forward-compat probe: load_config still succeeds with both vars set.
         valid_env["DB_ENABLED"] = "false"
         valid_env["BOT_STATE_DB_ENABLED"] = "true"
         cfg = load_config(valid_env)
-        assert cfg.database.enabled is True
+        assert cfg.database.dsn
 
     def test_max_share_price_must_not_be_below_min_share_price(self, valid_env: dict[str, str]) -> None:
         valid_env["MIN_SHARE_PRICE"] = "0.4"

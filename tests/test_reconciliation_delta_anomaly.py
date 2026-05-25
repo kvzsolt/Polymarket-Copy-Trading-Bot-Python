@@ -39,18 +39,18 @@ class _OrdersRepo:
         self.mark_processed_calls: list[dict[str, Any]] = []
         self.delete_processed_calls: list[str] = []
 
-    def get_by_order_id(self, order_id: str) -> dict[str, Any] | None:
+    async def get_by_order_id(self, order_id: str) -> dict[str, Any] | None:
         if order_id != ORDER_ID:
             return None
         return {"order_id": order_id, "response": {"size_matched": self._previous_matched}}
 
-    def update_submission_status(self, **kwargs) -> None:
+    async def update_submission_status(self, **kwargs) -> None:
         self.update_calls.append(kwargs)
 
-    def mark_processed_trade(self, **kwargs) -> None:
+    async def mark_processed_trade(self, **kwargs) -> None:
         self.mark_processed_calls.append(kwargs)
 
-    def delete_processed_trade(self, trade_key: str) -> None:
+    async def delete_processed_trade(self, trade_key: str) -> None:
         self.delete_processed_calls.append(trade_key)
 
 
@@ -58,7 +58,7 @@ class _FillsRepo:
     def __init__(self):
         self.fills: list[Any] = []
 
-    def append_fill(self, fill, *, raw_payload: dict[str, Any]) -> None:
+    async def append_fill(self, fill, *, raw_payload: dict[str, Any]) -> None:
         self.fills.append({"fill": fill, "raw_payload": raw_payload})
 
 
@@ -66,11 +66,11 @@ class _PositionsRepo:
     def __init__(self):
         self.applied: list[dict[str, Any]] = []
 
-    def apply_fill(self, **kwargs):
+    async def apply_fill(self, **kwargs):
         self.applied.append(kwargs)
         return None
 
-    def get_position(self, *args, **kwargs):
+    async def get_position(self, *args, **kwargs):
         return None
 
 

@@ -17,7 +17,7 @@ is wired, ``release_terminal`` is invoked for the SELL reservation.
 from __future__ import annotations
 
 from decimal import Decimal
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -38,15 +38,18 @@ async def test_drift_deleted_path_releases_sell_reservation():
     svc._audit = lambda *a, **kw: None  # silence audit emission
 
     positions_repo = MagicMock()
-    positions_repo.get_position.return_value = MagicMock(
+    positions_repo.get_position = AsyncMock(return_value=MagicMock(
         size_tokens=Decimal("5"),
         avg_entry_price=Decimal("0.5"),
-    )
+    ))
+    positions_repo.delete_position = AsyncMock(return_value=None)
+    positions_repo.upsert_position = AsyncMock(return_value=None)
     svc.positions_repo = positions_repo
 
     reservation_service = MagicMock()
+    reservation_service.release_terminal = AsyncMock(return_value=None)
     reservations_repo = MagicMock()
-    reservations_repo.list_active_for_scope.return_value = [_record(side="SELL")]
+    reservations_repo.list_active_for_scope = AsyncMock(return_value=[_record(side="SELL")])
     reservation_service.reservations_repo = reservations_repo
 
     async def live_fetcher():
@@ -76,16 +79,19 @@ async def test_drift_deleted_path_skips_non_sell_reservation():
     svc._audit = lambda *a, **kw: None
 
     positions_repo = MagicMock()
-    positions_repo.get_position.return_value = MagicMock(
+    positions_repo.get_position = AsyncMock(return_value=MagicMock(
         size_tokens=Decimal("3"),
         avg_entry_price=Decimal("0.5"),
-    )
+    ))
+    positions_repo.delete_position = AsyncMock(return_value=None)
+    positions_repo.upsert_position = AsyncMock(return_value=None)
     svc.positions_repo = positions_repo
 
     reservation_service = MagicMock()
+    reservation_service.release_terminal = AsyncMock(return_value=None)
     reservations_repo = MagicMock()
     # Only a BUY reservation — must NOT be released by a SELL-drift path.
-    reservations_repo.list_active_for_scope.return_value = [_record(side="BUY")]
+    reservations_repo.list_active_for_scope = AsyncMock(return_value=[_record(side="BUY")])
     reservation_service.reservations_repo = reservations_repo
 
     async def live_fetcher():

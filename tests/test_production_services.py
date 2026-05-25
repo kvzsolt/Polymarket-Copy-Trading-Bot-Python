@@ -110,10 +110,10 @@ class _Repo:
         self.fills = {}
         self.history = []
 
-    def get_by_idempotency_key(self, key):
+    async def get_by_idempotency_key(self, key):
         return self.store.get(key)
 
-    def save_submission(self, *, idempotency_key, request, response):
+    async def save_submission_legacy(self, *, idempotency_key, request, response):
         self.store[idempotency_key] = {"request": request, "response": response, "order_id": response.get("orderID")}
         self.history.append({
             "idempotency_key": idempotency_key,
@@ -121,16 +121,16 @@ class _Repo:
             "response": response,
         })
 
-    def mark_fill(self, *, order_id, fill):
+    async def mark_fill(self, *, order_id, fill):
         self.fills[order_id] = fill
 
     # Atomic submission lock stubs — issue #95: ExecutionService now requires
     # ``try_acquire_submission_lock`` or fails closed.  These in-memory stubs
     # are adequate for unit tests that don't exercise concurrent submissions.
-    def try_acquire_submission_lock(self, key, user_id, leader_id, request_payload):
+    async def try_acquire_submission_lock(self, key, user_id, leader_id, request_payload):
         return True  # always succeed in tests
 
-    def is_submission_locked(self, key):
+    async def is_submission_locked(self, key):
         return False
 
 
@@ -315,7 +315,8 @@ class TestExecutionService:
         assert res.order_id == "o-small"
         clob.create_market_order.assert_awaited_once()
 
-    def test_persists_sanitized_submission_payload(self):
+    @pytest.mark.asyncio
+    async def test_persists_sanitized_submission_payload(self):
         long_signal = "sig_" + ("x" * 600)
         repo = _Repo()
         svc = ExecutionService(
@@ -325,7 +326,7 @@ class TestExecutionService:
             config=_make_exec_config(),
         )
         idem_key = "persist-sanitized"
-        svc._save_submission(
+        await svc._save_submission(
             idempotency_key=idem_key,
             request={
                 "user_id": "u1",

@@ -7,7 +7,7 @@ without hitting the configless fail-closed short-circuit owned by issue #73.
 
 from __future__ import annotations
 import pytest
-pytestmark = pytest.mark.skip(reason="sqlite-bound; pending PG port")
+pytest.skip("sqlite-bound; pending PG port", allow_module_level=True)
 
 
 import sys
