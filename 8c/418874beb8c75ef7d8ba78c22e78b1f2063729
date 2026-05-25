@@ -1,0 +1,19 @@
+tests/test_execution_atomic_lock.py
+  s_93e0a4797804d9::t_93dbf7b2a8762f 4,6,25-54,146-147,153-160,162-165,167-170,175-180
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.1",
+  "base_commit_sha": "8c418874beb8c75ef7d8ba78c22e78b1f2063729",
+  "prompts": {},
+  "sessions": {
+    "s_93e0a4797804d9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a8782b68-4941-47de-a34c-6d351fdda0ef",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
