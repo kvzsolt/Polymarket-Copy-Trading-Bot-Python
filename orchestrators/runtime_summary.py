@@ -11,6 +11,16 @@ from rich.rule import Rule
 from orchestrators.startup_health import StartupHealthReport
 from utils.logger import console, get_logger, shorten_addr
 
+
+def _safe_dsn_host(dsn: str) -> str:
+    try:
+        parsed = urlparse(dsn)
+        host = parsed.hostname or ""
+        port = parsed.port or ""
+        return f"{host}:{port}" if port else host
+    except Exception:
+        return "<unparseable>"
+
 if TYPE_CHECKING:
     from services.discovery.position_snapshot_service import SnapshotResult
 
@@ -701,8 +711,7 @@ def print_startup_summary(
             "storage_and_persistence",
             "STORAGE & PERSISTENCE",
             {
-                "bot_state_db_enabled": config.database.enabled,
-                "bot_state_db": config.database.db_path,
+                "postgres_dsn_host": _safe_dsn_host(config.database.dsn),
                 "pnl_log_file": config.logging.pnl_log_file,
                 "multi_user_config_file": config.discovery.multi_user_config_file,
             },

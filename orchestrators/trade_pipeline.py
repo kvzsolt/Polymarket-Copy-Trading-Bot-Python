@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import asyncio
-import sqlite3
 import time
 import traceback as _tb
 import uuid
+
+import asyncpg
 from dataclasses import dataclass
 from decimal import Decimal, ROUND_DOWN
 from typing import Any
@@ -687,7 +688,7 @@ async def _sync_sell_position_from_live_holdings(
     if live_size is None:
         return None
 
-    existing = context.positions_repo.get_position(
+    existing = await context.positions_repo.get_position(
         context.user_id,
         condition_id,
         token_id=token_id,
@@ -695,7 +696,7 @@ async def _sync_sell_position_from_live_holdings(
     avg_entry_price = getattr(existing, "avg_entry_price", Decimal("0")) if existing else Decimal("0")
 
     if live_size <= Decimal("1e-12"):
-        context.positions_repo.delete_position(context.user_id, condition_id, token_id=token_id)
+        await context.positions_repo.delete_position(context.user_id, condition_id, token_id=token_id)
         logger.info(
             "live_position_sync_deleted_local_position | user_id=%s leader_id=%s condition_id=%s token=%s",
             context.user_id,
@@ -705,7 +706,7 @@ async def _sync_sell_position_from_live_holdings(
         )
         return Decimal("0")
 
-    context.positions_repo.upsert_position(
+    await context.positions_repo.upsert_position(
         PositionRecord(
             user_id=context.user_id,
             condition_id=condition_id,
@@ -999,7 +1000,7 @@ async def _fetch_balance_snapshot(
         return None
 
     free_cash_usdc = Decimal(str(balance_usdc))
-    open_positions = context.positions_repo.list_open_positions(context.user_id)
+    open_positions = await context.positions_repo.list_open_positions(context.user_id)
     total_exposure_usdc = Decimal("0")
     market_exposure_usdc = Decimal("0")
     leader_exposure_usdc = Decimal("0")
@@ -1190,8 +1191,8 @@ async def reconcile_submitted_unconfirmed(
     if context.execution_service is None:
         return 0
 
-    buy_pending = context.orders_repo.get_unconfirmed_buys(max_age_seconds=max_age_seconds)
-    sell_pending = context.orders_repo.get_unconfirmed_sells(max_age_seconds=max_age_seconds)
+    buy_pending = await context.orders_repo.get_unconfirmed_buys(max_age_seconds=max_age_seconds)
+    sell_pending = await context.orders_repo.get_unconfirmed_sells(max_age_seconds=max_age_seconds)
     if not buy_pending and not sell_pending:
         return 0
 
@@ -1356,7 +1357,7 @@ async def execute_trades(
         _raw_side = str(raw.get("side") or "").strip().upper()
         _raw_asset = raw.get("tokenID") or raw.get("token_id") or raw.get("asset") or ""
         _raw_condition = raw.get("conditionId") or raw.get("condition_id") or ""
-        if not context.orders_repo.try_claim_processed_trade(
+        if not await context.orders_repo.try_claim_processed_trade(
             trade_key=trade_key,
             user_id=context.user_id,
             leader_id=leader_id,
@@ -1414,7 +1415,7 @@ async def execute_trades(
                 meta={"user_id": context.user_id, "leader_id": leader_id},
             )
             metrics.inc("trades_skipped_total", labels={**labels, "reason": skip_code})
-            context.orders_repo.mark_processed_trade(
+            await context.orders_repo.mark_processed_trade(
                 trade_key=trade_key,
                 user_id=context.user_id,
                 leader_id=leader_id,
@@ -1459,7 +1460,7 @@ async def execute_trades(
                     )
                     skip_reason = "entry_policy_unavailable"
                     metrics.inc("trades_skipped_total", labels={**labels, "reason": skip_reason})
-                    context.orders_repo.mark_processed_trade(
+                    await context.orders_repo.mark_processed_trade(
                         trade_key=trade_key,
                         user_id=context.user_id,
                         leader_id=leader_id,
@@ -1516,7 +1517,7 @@ async def execute_trades(
                     )
                     metrics.inc("trades_skipped_total", labels={**labels, "reason": skip_reason})
                     metrics.inc("entry_denied_total", labels={**labels, "policy_reason": _decision.reason})
-                    context.orders_repo.mark_processed_trade(
+                    await context.orders_repo.mark_processed_trade(
                         trade_key=trade_key,
                         user_id=context.user_id,
                         leader_id=leader_id,
@@ -1580,7 +1581,7 @@ async def execute_trades(
                 )
                 print_skip_reason("Tier gate: paper follow", "Paper-tracking only — no live order submitted")
                 metrics.inc("trades_paper_total", labels=labels)
-                context.orders_repo.mark_processed_trade(
+                await context.orders_repo.mark_processed_trade(
                     trade_key=trade_key,
                     user_id=context.user_id,
                     leader_id=leader_id,
@@ -1634,7 +1635,7 @@ async def execute_trades(
                         "trades_skipped_total",
                         labels={**labels, "reason": reason},
                     )
-                    context.orders_repo.mark_processed_trade(
+                    await context.orders_repo.mark_processed_trade(
                         trade_key=trade_key,
                         user_id=context.user_id,
                         leader_id=leader_id,
@@ -1674,7 +1675,7 @@ async def execute_trades(
                         "trades_skipped_total",
                         labels={**labels, "reason": position_pct_cap.reason},
                     )
-                    context.orders_repo.mark_processed_trade(
+                    await context.orders_repo.mark_processed_trade(
                         trade_key=trade_key,
                         user_id=context.user_id,
                         leader_id=leader_id,
@@ -1728,7 +1729,7 @@ async def execute_trades(
                             "trades_skipped_total",
                             labels={**labels, "reason": buy_risk_cap.reason},
                         )
-                        context.orders_repo.mark_processed_trade(
+                        await context.orders_repo.mark_processed_trade(
                             trade_key=trade_key,
                             user_id=context.user_id,
                             leader_id=leader_id,
@@ -1856,7 +1857,7 @@ async def execute_trades(
                         meta={"user_id": context.user_id, "leader_id": leader_id},
                     )
                     metrics.inc("trades_skipped_total", labels={**labels, "reason": decision.skip_code})
-                    context.orders_repo.mark_processed_trade(
+                    await context.orders_repo.mark_processed_trade(
                         trade_key=trade_key,
                         user_id=context.user_id,
                         leader_id=leader_id,
@@ -1935,7 +1936,7 @@ async def execute_trades(
                             "trades_skipped_total",
                             labels={**labels, "reason": regime_decision.reason},
                         )
-                        context.orders_repo.mark_processed_trade(
+                        await context.orders_repo.mark_processed_trade(
                             trade_key=trade_key,
                             user_id=context.user_id,
                             leader_id=leader_id,
@@ -1980,10 +1981,10 @@ async def execute_trades(
                     condition_id=signal.condition_id,
                 )
             else:
-                pos = context.positions_repo.get_position(context.user_id, signal.condition_id, token_id=signal.token_id)
+                pos = await context.positions_repo.get_position(context.user_id, signal.condition_id, token_id=signal.token_id)
                 if pos is None:
                     # No exact (condition_id, token_id) match — check if we hold the *other* outcome token.
-                    candidates = context.positions_repo.list_positions_for_condition(
+                    candidates = await context.positions_repo.list_positions_for_condition(
                         context.user_id, signal.condition_id
                     )
                     wrong_token_held = any(p.token_id != signal.token_id for p in candidates)
@@ -2016,7 +2017,7 @@ async def execute_trades(
                         event_slug=signal.event_slug,
                         meta={"user_id": context.user_id, "leader_id": leader_id},
                     )
-                    context.orders_repo.mark_processed_trade(
+                    await context.orders_repo.mark_processed_trade(
                         trade_key=trade_key,
                         user_id=context.user_id,
                         leader_id=leader_id,
@@ -2054,7 +2055,7 @@ async def execute_trades(
                         event_slug=signal.event_slug,
                         meta={"user_id": context.user_id, "leader_id": leader_id},
                     )
-                    context.orders_repo.mark_processed_trade(
+                    await context.orders_repo.mark_processed_trade(
                         trade_key=trade_key,
                         user_id=context.user_id,
                         leader_id=leader_id,
@@ -2099,7 +2100,7 @@ async def execute_trades(
                             },
                         )
                         if venue_sell_cap <= Decimal("0") and live_sellable_tokens <= Decimal("0"):
-                            context.positions_repo.delete_position(context.user_id, signal.condition_id, token_id=signal.token_id)
+                            await context.positions_repo.delete_position(context.user_id, signal.condition_id, token_id=signal.token_id)
                         max_sell_tokens = venue_sell_cap
 
                 leader_sell_fraction = _extract_leader_sell_fraction(raw) or Decimal("1")
@@ -2126,7 +2127,7 @@ async def execute_trades(
                         meta={"user_id": context.user_id, "leader_id": leader_id},
                     )
                     metrics.inc("trades_skipped_total", labels={**labels, "reason": "sell_size_zero"})
-                    context.orders_repo.mark_processed_trade(
+                    await context.orders_repo.mark_processed_trade(
                         trade_key=trade_key,
                         user_id=context.user_id,
                         leader_id=leader_id,
@@ -2196,7 +2197,7 @@ async def execute_trades(
                             await _regime.release(order_id=trade_key)
                         except Exception:  # pragma: no cover — defensive
                             pass
-                context.orders_repo.mark_processed_trade(
+                await context.orders_repo.mark_processed_trade(
                     trade_key=trade_key,
                     user_id=context.user_id,
                     leader_id=leader_id,
@@ -2247,7 +2248,7 @@ async def execute_trades(
                         pass
 
             if exec_result.accepted and exec_result.filled_amount <= 0:
-                context.orders_repo.mark_processed_trade(
+                await context.orders_repo.mark_processed_trade(
                     trade_key=trade_key,
                     user_id=context.user_id,
                     leader_id=leader_id,
@@ -2317,7 +2318,7 @@ async def execute_trades(
                 )
                 is_terminal = exec_result.status == "rejected"
                 max_non_terminal_attempts = _max_non_terminal_failure_attempts(context)
-                prev_trade = context.orders_repo.get_processed_trade(trade_key) or {}
+                prev_trade = await context.orders_repo.get_processed_trade(trade_key) or {}
                 prev_retry_attempt = _retry_attempt_from_status(
                     prev_trade.get("status"), prev_trade.get("retry_attempt")
                 )
@@ -2334,7 +2335,7 @@ async def execute_trades(
                         else _RETRYABLE_FAILED_STATUS
                     )
                 )
-                context.orders_repo.mark_processed_trade(
+                await context.orders_repo.mark_processed_trade(
                     trade_key=trade_key,
                     user_id=context.user_id,
                     leader_id=leader_id,
@@ -2427,7 +2428,7 @@ async def execute_trades(
             fill_size = Decimal(str(exec_result.filled_amount))
             fee_paid = Decimal(str(exec_result.fees_paid or 0))
             try:
-                context.fills_repo.append_fill(
+                await context.fills_repo.append_fill(
                     FillRecord(
                         user_id=context.user_id,
                         leader_id=leader_id,
@@ -2446,7 +2447,7 @@ async def execute_trades(
                         "status": exec_result.status,
                     },
                 )
-                updated_position = context.positions_repo.apply_fill(
+                updated_position = await context.positions_repo.apply_fill(
                     user_id=context.user_id,
                     leader_id=leader_id,
                     condition_id=signal.condition_id,
@@ -2455,9 +2456,9 @@ async def execute_trades(
                     fill_size=fill_size,
                     fill_price=Decimal(str(fill_price or 0)),
                 )
-            except sqlite3.IntegrityError as ie:
+            except asyncpg.exceptions.UniqueViolationError as ie:
                 error_msg = str(ie)
-                if "idx_fills_unique" in error_msg or "UNIQUE constraint failed: fills" in error_msg:
+                if "idx_fills_unique" in error_msg or "fills" in error_msg.lower():
                     # Duplicate fill — idempotent, skip gracefully
                     logger.info(
                         "trade_pipeline_duplicate_fill_ignored",
@@ -2468,7 +2469,7 @@ async def execute_trades(
                             "order_id": exec_result.order_id,
                         },
                     )
-                    context.orders_repo.mark_processed_trade(
+                    await context.orders_repo.mark_processed_trade(
                         trade_key=trade_key,
                         user_id=context.user_id,
                         leader_id=leader_id,
@@ -2612,7 +2613,7 @@ async def execute_trades(
                 outcome=signal.outcome,
             )
 
-            context.orders_repo.mark_processed_trade(
+            await context.orders_repo.mark_processed_trade(
                 trade_key=trade_key,
                 user_id=context.user_id,
                 leader_id=leader_id,
@@ -2635,7 +2636,7 @@ async def execute_trades(
                             "asset": signal.token_id,
                         },
                     )
-                    context.orders_repo.mark_processed_trade(
+                    await context.orders_repo.mark_processed_trade(
                         trade_key=tx_key,
                         user_id=context.user_id,
                         leader_id=leader_id,

@@ -21,10 +21,10 @@ from services.executionService import ExecutionRequest, ExecutionService
 from services.feeService import FeeService
 from services.healthServer import ReadinessTracker
 from services.metrics import metrics
-from services.orderRepository import OrderRepository
 from services.positionActionCoordinator import PositionScope
 from services.riskEngine import active_policy
-from storage.sqlite.fills_repo import FillRecord
+from storage.postgres.fills_repo import FillRecord
+from storage.postgres.orders_repo import OrdersRepo as _PgOrdersRepo
 from utils import is_valid_clob_token_id
 from utils.fetchData import fetch_data
 
@@ -304,7 +304,7 @@ async def _refresh_context_price_cache(
 ) -> None:
     token_ids = [
         pos.token_id
-        for pos in context.positions_repo.list_open_positions(context.user_id)
+        for pos in await context.positions_repo.list_open_positions(context.user_id)
         if is_valid_clob_token_id(pos.token_id)
     ]
     if not token_ids:
@@ -492,10 +492,12 @@ async def risk_monitor_loop(
 
     # Construct execution-side services only after early-return guards so a
     # disabled risk-management run does not allocate venue clients/repos.
+    from storage.postgres.connection import get_pool
+    _pool = await get_pool()
     execution_service = ExecutionService(
         clob_client=clob_client,
         fee_service=FeeService(clob_client, default_fee_bps=fee_bps),
-        order_repo=OrderRepository(),
+        order_repo=_PgOrdersRepo(_pool),
         config=config,
     )
     accounting = AccountingService()
@@ -658,7 +660,7 @@ async def risk_monitor_loop(
                                 bot_params.get("proxyWallet")
                                 or funder_address
                             )
-                            accounting.book_fill(
+                            await accounting.book_fill(
                                 user_id=user_id,
                                 fill_doc={
                                     "order_id": result.order_id,
@@ -675,9 +677,9 @@ async def risk_monitor_loop(
                             )
                             remaining = pm.get_position(condition_id, token_id)
                             if remaining is None:
-                                accounting.close_position(user_id=user_id, condition_id=condition_id)
+                                await accounting.close_position(user_id=user_id, condition_id=condition_id)
                             else:
-                                accounting.upsert_position(
+                                await accounting.upsert_position(
                                     PositionLot(
                                         user_id=user_id,
                                         condition_id=condition_id,
@@ -697,13 +699,13 @@ async def risk_monitor_loop(
         await asyncio.sleep(interval)
 
 
-def rehydrate_position_manager(context: TradingContext) -> None:
+async def rehydrate_position_manager(context: TradingContext) -> None:
     """Load persisted open positions into the context position manager."""
     pm = context.position_manager
     if not hasattr(pm, "track_buy"):
         return
 
-    for pos in context.positions_repo.list_open_positions(context.user_id):
+    for pos in await context.positions_repo.list_open_positions(context.user_id):
         existing = None
         if hasattr(pm, "get_position"):
             try:
@@ -791,7 +793,7 @@ async def reconcile_unconfirmed_risk_orders(context: TradingContext) -> int:
 
     from orchestrators.trade_pipeline import get_reconciliation_service
 
-    records = context.orders_repo.get_unconfirmed_order_submissions(
+    records = await context.orders_repo.get_unconfirmed_order_submissions(
         user_id=context.user_id,
         side="SELL",
     )
@@ -861,7 +863,7 @@ async def run_risk_check_for_context(context: TradingContext) -> None:
     except Exception as exc:
         logger.warning("risk_monitor_pre_reconcile_error | %s", repr(exc))
 
-    rehydrate_position_manager(context)
+    await rehydrate_position_manager(context)
     slippage_bps = int(float(context.extra.get("slippage_tolerance_bps", 200)))
     refresh_interval = float(context.extra.get("risk_check_interval_seconds", 0.25) or 0.25)
 
@@ -869,7 +871,7 @@ async def run_risk_check_for_context(context: TradingContext) -> None:
     enable_tiered = str(context.extra.get("enable_balance_tiered_policy", "false")).lower() in ("1", "true", "yes")
 
     warned_tokens: set[str] = context.extra.setdefault(_WARNED_INVALID_TOKENS_KEY, set())
-    for pos in context.positions_repo.list_open_positions(context.user_id):
+    for pos in await context.positions_repo.list_open_positions(context.user_id):
         if not is_valid_clob_token_id(pos.token_id):
             if pos.token_id not in warned_tokens:
                 warned_tokens.add(pos.token_id)
@@ -944,7 +946,7 @@ async def run_risk_check_for_context(context: TradingContext) -> None:
                 _trigger_id: int | None = None
                 if context.risk_triggers_repo is not None:
                     try:
-                        _trigger_id = context.risk_triggers_repo.record_trigger(
+                        _trigger_id = await context.risk_triggers_repo.record_trigger(
                             user_id=context.user_id,
                             condition_id=pos.condition_id,
                             token_id=pos.token_id,
@@ -1020,7 +1022,7 @@ async def run_risk_check_for_context(context: TradingContext) -> None:
                                 )
                                 if _trigger_id is not None and context.risk_triggers_repo is not None:
                                     try:
-                                        context.risk_triggers_repo.update_fill_status(
+                                        await context.risk_triggers_repo.update_fill_status(
                                             _trigger_id,
                                             fill_status="rejected",
                                             fill_order_id=result.order_id,
@@ -1032,7 +1034,7 @@ async def run_risk_check_for_context(context: TradingContext) -> None:
                             logger.debug("risk_drift_reconciliation_error", exc_info=True)
                     if _trigger_id is not None and context.risk_triggers_repo is not None:
                         try:
-                            context.risk_triggers_repo.update_fill_status(
+                            await context.risk_triggers_repo.update_fill_status(
                                 _trigger_id,
                                 fill_status="rejected",
                                 fill_order_id=result.order_id,
@@ -1050,7 +1052,7 @@ async def run_risk_check_for_context(context: TradingContext) -> None:
                     )
                     if _trigger_id is not None and context.risk_triggers_repo is not None:
                         try:
-                            context.risk_triggers_repo.update_fill_status(
+                            await context.risk_triggers_repo.update_fill_status(
                                 _trigger_id,
                                 fill_status="pending",
                                 fill_order_id=result.order_id,
@@ -1069,7 +1071,7 @@ async def run_risk_check_for_context(context: TradingContext) -> None:
                     )
                     if _trigger_id is not None and context.risk_triggers_repo is not None:
                         try:
-                            context.risk_triggers_repo.update_fill_status(
+                            await context.risk_triggers_repo.update_fill_status(
                                 _trigger_id,
                                 fill_status="rejected",
                                 fill_order_id=result.order_id,
@@ -1090,7 +1092,7 @@ async def run_risk_check_for_context(context: TradingContext) -> None:
 
                 if _trigger_id is not None and context.risk_triggers_repo is not None:
                     try:
-                        context.risk_triggers_repo.update_fill_status(
+                        await context.risk_triggers_repo.update_fill_status(
                             _trigger_id,
                             fill_status="filled",
                             fill_order_id=result.order_id,
@@ -1098,7 +1100,7 @@ async def run_risk_check_for_context(context: TradingContext) -> None:
                     except Exception:
                         logger.debug("risk_trigger_update_error", exc_info=True)
 
-                context.fills_repo.append_fill(
+                await context.fills_repo.append_fill(
                     FillRecord(
                         user_id=context.user_id,
                         leader_id=pos.leader_id,
@@ -1112,7 +1114,7 @@ async def run_risk_check_for_context(context: TradingContext) -> None:
                         fill_ts=int(time.time()),
                     ),
                 )
-                updated_pos = context.positions_repo.apply_fill(
+                updated_pos = await context.positions_repo.apply_fill(
                     user_id=context.user_id,
                     leader_id=pos.leader_id,
                     condition_id=pos.condition_id,
@@ -1122,7 +1124,7 @@ async def run_risk_check_for_context(context: TradingContext) -> None:
                     fill_price=fill_price,
                 )
                 if _risk_exit_fully_closed_position(updated_pos):
-                    context.risk_blocks_repo.mark_risk_block(
+                    await context.risk_blocks_repo.mark_risk_block(
                         user_id=context.user_id,
                         condition_id=pos.condition_id,
                         token_id=pos.token_id,
