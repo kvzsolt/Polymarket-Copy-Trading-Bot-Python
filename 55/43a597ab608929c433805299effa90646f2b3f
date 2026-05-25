@@ -1,0 +1,21 @@
+tests/test_orders_order_id_index.py
+  s_93e0a4797804d9::t_b9059cfd485114 3-12,14-15,19,23-70,72-73,77,86-95,104-107,111-116,118-121,123-130,133,135-154
+  s_93e0a4797804d9::t_460a4782f0d0f2 96-103
+  s_93e0a4797804d9::t_1121c2401d290e 78-85
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.1",
+  "base_commit_sha": "5543a597ab608929c433805299effa90646f2b3f",
+  "prompts": {},
+  "sessions": {
+    "s_93e0a4797804d9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a8782b68-4941-47de-a34c-6d351fdda0ef",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
