@@ -10,8 +10,11 @@ Asserts:
 """
 from __future__ import annotations
 
+import contextlib
 from datetime import datetime, timezone
 from decimal import Decimal
+
+import pytest
 
 from domain.order_lifecycle import (
     IntentReason,
@@ -19,7 +22,39 @@ from domain.order_lifecycle import (
     OrderIntent,
     OrderIntentKey,
 )
-from storage.sqlite.reservations_repo import ReservationsRepo
+from storage.postgres.reservations_repo import ReservationsRepo
+
+pytestmark = [pytest.mark.asyncio, pytest.mark.release_gate]
+
+
+@contextlib.asynccontextmanager
+async def _pg_pool():
+    """Spin a Postgres testcontainer + return a pool with the full
+    schema applied. Auto-skips when Docker is unavailable."""
+    try:
+        from testcontainers.postgres import PostgresContainer
+        import asyncpg
+        from storage.postgres.migrations import apply_migrations as pg_apply
+    except Exception as exc:
+        pytest.skip(f"Docker / postgres image unavailable: {exc!r}")
+    try:
+        ctr = PostgresContainer("postgres:16-alpine")
+        ctr.start()
+    except Exception as exc:
+        pytest.skip(f"Docker / postgres image unavailable: {exc!r}")
+    try:
+        dsn = ctr.get_connection_url(driver="asyncpg").replace(
+            "postgresql+asyncpg://", "postgresql://"
+        )
+        pool = await asyncpg.create_pool(dsn, min_size=1, max_size=3)
+        async with pool.acquire() as conn:
+            await pg_apply(conn)
+        try:
+            yield pool
+        finally:
+            await pool.close()
+    finally:
+        ctr.stop()
 
 
 def _intent(side: IntentSide = IntentSide.BUY) -> OrderIntent:
@@ -41,69 +76,75 @@ def _intent(side: IntentSide = IntentSide.BUY) -> OrderIntent:
     )
 
 
-def test_buy_reservation_respects_available_balance(fresh_db_path: str) -> None:
-    repo = ReservationsRepo(fresh_db_path)
-    intent = _intent(IntentSide.BUY)
-    reservation = repo.create_buy_reservation_checked(
-        intent=intent,
-        reserved_usdc=Decimal("2.50"),
-        expires_at=int(intent.created_at.timestamp()) + 120,
-        available_balance=Decimal("10.00"),
-    )
+async def test_buy_reservation_respects_available_balance() -> None:
+    async with _pg_pool() as pool:
+        repo = ReservationsRepo(pool)
+        intent = _intent(IntentSide.BUY)
+        reservation = await repo.create_buy_reservation_checked(
+            intent=intent,
+            reserved_usdc=Decimal("2.50"),
+            expires_at=int(intent.created_at.timestamp()) + 120,
+            available_balance=Decimal("10.00"),
+        )
     assert reservation is not None
     assert reservation.reserved_usdc == Decimal("2.50")
 
 
-def test_buy_reservation_rejected_when_balance_short(fresh_db_path: str) -> None:
-    repo = ReservationsRepo(fresh_db_path)
-    intent = _intent(IntentSide.BUY)
-    reservation = repo.create_buy_reservation_checked(
-        intent=intent,
-        reserved_usdc=Decimal("100.00"),
-        expires_at=int(intent.created_at.timestamp()) + 120,
-        available_balance=Decimal("5.00"),
-    )
+async def test_buy_reservation_rejected_when_balance_short() -> None:
+    async with _pg_pool() as pool:
+        repo = ReservationsRepo(pool)
+        intent = _intent(IntentSide.BUY)
+        reservation = await repo.create_buy_reservation_checked(
+            intent=intent,
+            reserved_usdc=Decimal("100.00"),
+            expires_at=int(intent.created_at.timestamp()) + 120,
+            available_balance=Decimal("5.00"),
+        )
     assert reservation is None
 
 
-def test_sell_reservation_respects_held_shares(fresh_db_path: str) -> None:
-    repo = ReservationsRepo(fresh_db_path)
-    intent = _intent(IntentSide.SELL)
-    reservation = repo.create_sell_reservation_checked(
-        intent=intent,
-        reserved_size=Decimal("3"),
-        expires_at=int(intent.created_at.timestamp()) + 120,
-        held_size=Decimal("5"),
-    )
+async def test_sell_reservation_respects_held_shares() -> None:
+    async with _pg_pool() as pool:
+        repo = ReservationsRepo(pool)
+        intent = _intent(IntentSide.SELL)
+        reservation = await repo.create_sell_reservation_checked(
+            intent=intent,
+            reserved_size=Decimal("3"),
+            expires_at=int(intent.created_at.timestamp()) + 120,
+            held_size=Decimal("5"),
+        )
     assert reservation is not None
     assert reservation.reserved_size == Decimal("3")
 
 
-def test_sell_reservation_rejected_when_shares_short(fresh_db_path: str) -> None:
-    repo = ReservationsRepo(fresh_db_path)
-    intent = _intent(IntentSide.SELL)
-    reservation = repo.create_sell_reservation_checked(
-        intent=intent,
-        reserved_size=Decimal("10"),
-        expires_at=int(intent.created_at.timestamp()) + 120,
-        held_size=Decimal("4"),
-    )
+async def test_sell_reservation_rejected_when_shares_short() -> None:
+    async with _pg_pool() as pool:
+        repo = ReservationsRepo(pool)
+        intent = _intent(IntentSide.SELL)
+        reservation = await repo.create_sell_reservation_checked(
+            intent=intent,
+            reserved_size=Decimal("10"),
+            expires_at=int(intent.created_at.timestamp()) + 120,
+            held_size=Decimal("4"),
+        )
     assert reservation is None
 
 
-def test_mark_released_clears_active_lookup(fresh_db_path: str) -> None:
-    repo = ReservationsRepo(fresh_db_path)
-    intent = _intent(IntentSide.BUY)
-    reservation = repo.create_buy_reservation_checked(
-        intent=intent,
-        reserved_usdc=Decimal("2.50"),
-        expires_at=int(intent.created_at.timestamp()) + 120,
-        available_balance=Decimal("10.00"),
-    )
-    assert reservation is not None
-    repo.mark_released(
-        reservation.id,
-        reason="cancelled",
-        released_at=int(intent.created_at.timestamp()) + 5,
-    )
-    assert repo.get_active_by_intent_key(intent.key.stable_key()) is None
+async def test_mark_released_clears_active_lookup() -> None:
+    async with _pg_pool() as pool:
+        repo = ReservationsRepo(pool)
+        intent = _intent(IntentSide.BUY)
+        reservation = await repo.create_buy_reservation_checked(
+            intent=intent,
+            reserved_usdc=Decimal("2.50"),
+            expires_at=int(intent.created_at.timestamp()) + 120,
+            available_balance=Decimal("10.00"),
+        )
+        assert reservation is not None
+        await repo.mark_released(
+            reservation.id,
+            reason="cancelled",
+            released_at=int(intent.created_at.timestamp()) + 5,
+        )
+        active = await repo.get_active_by_intent_key(intent.key.stable_key())
+    assert active is None
