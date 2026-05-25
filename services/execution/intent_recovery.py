@@ -21,7 +21,7 @@ from services.intentRegistry import (
 from services.positionActionCoordinator import PositionScope
 
 if TYPE_CHECKING:
-    from storage.sqlite.reservations_repo import ReservationsRepo
+    from storage.postgres.reservations_repo import ReservationsRepo
 
 logger = logging.getLogger(__name__)
 
