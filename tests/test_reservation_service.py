@@ -1,5 +1,5 @@
 import pytest
-pytestmark = pytest.mark.skip(reason="sqlite-bound; pending PG port")
+pytest.skip("sqlite-bound; pending PG port", allow_module_level=True)
 from decimal import Decimal
 from datetime import datetime, timezone
 import pytest

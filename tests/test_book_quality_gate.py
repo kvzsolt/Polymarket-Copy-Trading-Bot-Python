@@ -77,7 +77,10 @@ def _make_execution_service(bid: str | None, ask: str | None, quote_price: str =
     )
 
     order_repo = MagicMock()
-    order_repo.get_by_idempotency_key = MagicMock(return_value=None)
+    order_repo.get_by_idempotency_key = AsyncMock(return_value=None)
+    order_repo.is_submission_locked = AsyncMock(return_value=False)
+    order_repo.try_acquire_submission_lock = AsyncMock(return_value=True)
+    order_repo.save_submission_legacy = AsyncMock(return_value=None)
 
     # Minimal AppConfig-shaped object with concrete values. MagicMock attributes
     # leak into the effective-idempotency payload and are not JSON serializable.

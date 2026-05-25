@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 from decimal import Decimal
 from types import SimpleNamespace
-from unittest.mock import ANY, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 import config.app_config as app_config_mod
@@ -119,8 +120,8 @@ def test_build_trading_context_uses_typed_sizing_execution_values():
         risk_triggers_repo=None,
     )
 
-    with patch("orchestrators.runtime_bootstrap.rehydrate_position_manager"):
-        ctx = build_trading_context(user_state, follow, cfg, readiness=object())
+    with patch("orchestrators.runtime_bootstrap.rehydrate_position_manager", new=AsyncMock(return_value=None)):
+        ctx = asyncio.run(build_trading_context(user_state, follow, cfg, readiness=object()))
 
     assert ctx.buy_min_amount == 3.0
     assert ctx.buy_max_amount == 42.0
@@ -152,9 +153,9 @@ def test_build_trading_context_constructs_copy_decision_service_only_with_inject
 
     with (
         patch("domain.trading_context.CopyDecisionService") as copy_decision_cls,
-        patch("orchestrators.runtime_bootstrap.rehydrate_position_manager"),
+        patch("orchestrators.runtime_bootstrap.rehydrate_position_manager", new=AsyncMock(return_value=None)),
     ):
-        build_trading_context(user_state, follow, cfg, readiness=object())
+        asyncio.run(build_trading_context(user_state, follow, cfg, readiness=object()))
 
     copy_decision_cls.assert_called_once_with(config=cfg, leader_scorer=ANY)
 
@@ -175,7 +176,7 @@ def test_build_user_state_injects_typed_config_into_runtime_services():
         state = runtime_bootstrap.build_user_state(
             runtime_user,
             client=object(),
-            db_path="/tmp/runtime-bootstrap-test.db",
+            pool=MagicMock(),
             config=cfg,
         )
 
