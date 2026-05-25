@@ -10,13 +10,23 @@ Asserts the durable re-entry block contract:
 The full lifecycle (trigger → confirmed SELL → block activation) is exercised
 in ``tests/test_issue72_risk_block_correctness.py``; this gate pins the
 surface so future refactors cannot lose the protective-exit contract.
+
+PG-A5: ported to async PG. The surface-inspection tests now probe the
+canonical ``storage.postgres.risk_blocks_repo.RiskBlocksRepo``; the
+behavioural lifecycle tests use the established ``_pg_pool`` async ctx
+mgr.
 """
 from __future__ import annotations
 
+import contextlib
 import inspect
 
+import pytest
+
 from services.entryPermissionService import EntryPermissionService
-from storage.sqlite.risk_blocks_repo import RiskBlocksRepo
+from storage.postgres.risk_blocks_repo import RiskBlocksRepo
+
+pytestmark = pytest.mark.release_gate
 
 
 def test_risk_blocks_repo_exposes_scope_aware_query() -> None:
@@ -48,74 +58,104 @@ def test_entry_permission_service_constructs_with_risk_blocks_repo() -> None:
 # --------------------------------------------------------------------------
 
 
-import pytest
+@contextlib.asynccontextmanager
+async def _pg_pool():
+    """Spin a Postgres testcontainer + return a pool with the full
+    schema applied. Auto-skips when Docker is unavailable."""
+    try:
+        from testcontainers.postgres import PostgresContainer
+        import asyncpg
+        from storage.postgres.migrations import apply_migrations as pg_apply
+    except Exception as exc:
+        pytest.skip(f"Docker / postgres image unavailable: {exc!r}")
+    try:
+        ctr = PostgresContainer("postgres:16-alpine")
+        ctr.start()
+    except Exception as exc:
+        pytest.skip(f"Docker / postgres image unavailable: {exc!r}")
+    try:
+        dsn = ctr.get_connection_url(driver="asyncpg").replace(
+            "postgresql+asyncpg://", "postgresql://"
+        )
+        pool = await asyncpg.create_pool(dsn, min_size=1, max_size=3)
+        async with pool.acquire() as conn:
+            await pg_apply(conn)
+        try:
+            yield pool
+        finally:
+            await pool.close()
+    finally:
+        ctr.stop()
 
-from storage.sqlite.connection import create_connection
-from storage.sqlite.migrations import apply_migrations
 
-
-@pytest.fixture()
-def risk_repo(tmp_path):
-    db_path = str(tmp_path / "risk.db")
-    with create_connection(db_path) as conn:
-        apply_migrations(conn)
-        conn.commit()
-    return RiskBlocksRepo(db_path)
-
-
-def _is_blocked(repo: RiskBlocksRepo, *, condition: str, token: str) -> bool:
+async def _is_blocked(repo: RiskBlocksRepo, *, condition: str, token: str) -> bool:
     return (
-        repo.get_active_risk_block(
+        await repo.get_active_risk_block(
             user_id="u", condition_id=condition, token_id=token
         )
         is not None
     )
 
 
-def test_no_block_when_trigger_only_fires_no_sell_lands(risk_repo) -> None:
+@pytest.mark.asyncio
+async def test_no_block_when_trigger_only_fires_no_sell_lands() -> None:
     # Trigger evaluation alone (no SELL persisted, no mark_risk_block
     # call) must leave the scope unblocked.
-    assert _is_blocked(risk_repo, condition="c1", token="t1") is False
+    async with _pg_pool() as pool:
+        repo = RiskBlocksRepo(pool)
+        assert await _is_blocked(repo, condition="c1", token="t1") is False
 
 
-def test_rejected_sell_does_not_activate_block(risk_repo) -> None:
+@pytest.mark.asyncio
+async def test_rejected_sell_does_not_activate_block() -> None:
     # The reconciler is the only caller of mark_risk_block — and only
     # after a confirmed full close. A SELL that the venue rejects
     # never reaches that call site; the scope must remain unblocked.
     # Verify the contract by *not* calling mark_risk_block here and
     # asserting the lookup stays None.
-    assert _is_blocked(risk_repo, condition="c1", token="t1") is False
+    async with _pg_pool() as pool:
+        repo = RiskBlocksRepo(pool)
+        assert await _is_blocked(repo, condition="c1", token="t1") is False
 
 
-def test_partial_fill_alone_does_not_activate_block(risk_repo) -> None:
+@pytest.mark.asyncio
+async def test_partial_fill_alone_does_not_activate_block() -> None:
     # Same contract: partial fill that does not zero the position must
     # not activate the durable block. The reconciler's full-close
     # branch is the only entry point for mark_risk_block.
-    assert _is_blocked(risk_repo, condition="c1", token="t1") is False
+    async with _pg_pool() as pool:
+        repo = RiskBlocksRepo(pool)
+        assert await _is_blocked(repo, condition="c1", token="t1") is False
 
 
-def test_full_close_activates_durable_block(risk_repo) -> None:
+@pytest.mark.asyncio
+async def test_full_close_activates_durable_block() -> None:
     # Simulate the reconciler's full-close branch reaching
     # mark_risk_block. The scope must now be blocked.
-    risk_repo.mark_risk_block(
-        user_id="u",
-        condition_id="c1",
-        token_id="t1",
-        reason="stop_loss",
-        source="risk_monitor",
-    )
-    assert _is_blocked(risk_repo, condition="c1", token="t1") is True
+    async with _pg_pool() as pool:
+        repo = RiskBlocksRepo(pool)
+        await repo.mark_risk_block(
+            user_id="u",
+            condition_id="c1",
+            token_id="t1",
+            reason="stop_loss",
+            source="risk_monitor",
+        )
+        assert await _is_blocked(repo, condition="c1", token="t1") is True
 
 
-def test_block_is_scoped_to_token_not_condition(risk_repo) -> None:
+@pytest.mark.asyncio
+async def test_block_is_scoped_to_token_not_condition() -> None:
     # Binary markets share a condition_id across two tokens. A block on
     # the YES token must NOT block the NO token.
-    risk_repo.mark_risk_block(
-        user_id="u",
-        condition_id="cBin",
-        token_id="tYES",
-        reason="stop_loss",
-        source="risk_monitor",
-    )
-    assert _is_blocked(risk_repo, condition="cBin", token="tYES") is True
-    assert _is_blocked(risk_repo, condition="cBin", token="tNO") is False
+    async with _pg_pool() as pool:
+        repo = RiskBlocksRepo(pool)
+        await repo.mark_risk_block(
+            user_id="u",
+            condition_id="cBin",
+            token_id="tYES",
+            reason="stop_loss",
+            source="risk_monitor",
+        )
+        assert await _is_blocked(repo, condition="cBin", token="tYES") is True
+        assert await _is_blocked(repo, condition="cBin", token="tNO") is False
