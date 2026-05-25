@@ -27,7 +27,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from storage.sqlite.risk_blocks_repo import RiskBlocksRepo
+    from storage.postgres.risk_blocks_repo import RiskBlocksRepo
 
 logger = logging.getLogger(__name__)
 

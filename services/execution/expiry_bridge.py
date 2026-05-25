@@ -22,8 +22,8 @@ from domain.order_lifecycle import OrderLifecycleStatus
 from services.execution.reservation_service import ReservationService
 
 if TYPE_CHECKING:
-    from storage.sqlite.orders_repo import OrdersRepo
-    from storage.sqlite.reservations_repo import ReservationsRepo
+    from storage.postgres.orders_repo import OrdersRepo
+    from storage.postgres.reservations_repo import ReservationsRepo
 
 logger = logging.getLogger(__name__)
 
