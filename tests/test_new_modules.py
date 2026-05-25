@@ -411,7 +411,8 @@ class TestRiskMonitor:
 
         import asyncio
         with patch("services.riskMonitor.asyncio.sleep", side_effect=patched_sleep), \
-             patch("services.riskMonitor.ExecutionService") as mock_exec_cls:
+             patch("services.riskMonitor.ExecutionService") as mock_exec_cls, \
+             patch("services.riskMonitor.get_pool", new=AsyncMock(return_value=MagicMock())):
             mock_exec = mock_exec_cls.return_value
             mock_exec.execute = AsyncMock(
                 return_value=MagicMock(
@@ -462,7 +463,8 @@ class TestRiskMonitor:
 
         import asyncio
         with patch("services.riskMonitor.asyncio.sleep", side_effect=patched_sleep), \
-             patch("services.riskMonitor.ExecutionService") as mock_exec_cls:
+             patch("services.riskMonitor.ExecutionService") as mock_exec_cls, \
+             patch("services.riskMonitor.get_pool", new=AsyncMock(return_value=MagicMock())):
             mock_exec = mock_exec_cls.return_value
             mock_exec.execute = AsyncMock(
                 return_value=MagicMock(

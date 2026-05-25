@@ -21,7 +21,7 @@ from __future__ import annotations
 import asyncio
 import sys
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -78,8 +78,8 @@ async def test_reconcile_emits_metric_and_fallback_for_empty_identity(monkeypatc
     monkeypatch.setattr(tp, "_reconcile_one", _fake_reconcile_one)
 
     orders_repo = MagicMock()
-    orders_repo.get_unconfirmed_buys.return_value = [legacy_record]
-    orders_repo.get_unconfirmed_sells.return_value = []
+    orders_repo.get_unconfirmed_buys = AsyncMock(return_value=[legacy_record])
+    orders_repo.get_unconfirmed_sells = AsyncMock(return_value=[])
 
     ctx = SimpleNamespace(
         execution_service=MagicMock(),

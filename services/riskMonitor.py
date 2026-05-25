@@ -23,6 +23,7 @@ from services.healthServer import ReadinessTracker
 from services.metrics import metrics
 from services.positionActionCoordinator import PositionScope
 from services.riskEngine import active_policy
+from storage.postgres.connection import get_pool
 from storage.postgres.fills_repo import FillRecord
 from storage.postgres.orders_repo import OrdersRepo as _PgOrdersRepo
 from utils import is_valid_clob_token_id
@@ -492,7 +493,6 @@ async def risk_monitor_loop(
 
     # Construct execution-side services only after early-return guards so a
     # disabled risk-management run does not allocate venue clients/repos.
-    from storage.postgres.connection import get_pool
     _pool = await get_pool()
     execution_service = ExecutionService(
         clob_client=clob_client,
