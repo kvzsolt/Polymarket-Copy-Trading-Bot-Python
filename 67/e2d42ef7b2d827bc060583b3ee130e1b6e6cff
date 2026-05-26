@@ -1,0 +1,19 @@
+tests/test_issue66_gateway_isolation.py
+  s_93e0a4797804d9::t_e9846835506d0e 1,10,12,22,38-39,135-160,178,197-207,214-227,231-240,244-253,262-268,272-278,282,287-293,295-299,303,307-312
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.1",
+  "base_commit_sha": "67e2d42ef7b2d827bc060583b3ee130e1b6e6cff",
+  "prompts": {},
+  "sessions": {
+    "s_93e0a4797804d9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a8782b68-4941-47de-a34c-6d351fdda0ef",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
