@@ -1,0 +1,28 @@
+services/executionService.py
+  s_b575af21b31eb4::t_c0d2a5b8320604 268-276,278-295,297
+tests/test_book_depth_gate.py
+  s_b575af21b31eb4::t_aabbc68da74e42 139
+tests/test_execution_idempotency_extended.py
+  s_b575af21b31eb4::t_f2d4ef0bcb2530 845
+  s_b575af21b31eb4::t_6e781b7702a816 540-555
+tests/test_book_quality_gate.py
+  s_b575af21b31eb4::t_542c9ccacb59d4 83
+tests/test_production_services.py
+  s_b575af21b31eb4::t_1468a1ffa36339 116-123,125-127
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.1",
+  "base_commit_sha": "d8875fc4945e125adae8a5594474e88f7aca7318",
+  "prompts": {},
+  "sessions": {
+    "s_b575af21b31eb4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "07691412-808e-482a-966d-b8c7cecadf2d",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
