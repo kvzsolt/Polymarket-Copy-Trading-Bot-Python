@@ -1,0 +1,35 @@
+orchestrators/trade_pipeline.py
+  s_93e0a4797804d9::t_a42196d71f56d3 796,801
+  s_93e0a4797804d9::t_d67b44812214c1 1297
+tests/test_execution_coordinator_live_failclosed.py
+  s_93e0a4797804d9::t_bc5c2a8026075a 298-327,331-346,349,353
+  s_93e0a4797804d9::t_f245be12b7dc0f 12
+tests/test_position_action_coordinator_integration.py
+  s_93e0a4797804d9::t_f7b0464615b67e 367-381,384-386,388-406
+  s_93e0a4797804d9::t_f87beaa7bea3f3 163-166
+  s_93e0a4797804d9::t_c5053b9919941c 170,172,177-181
+  s_93e0a4797804d9::t_c2526f001f618e 261-275,278-281,283-284,286-288,290,292-293,295-298
+  s_93e0a4797804d9::t_6c0f0d04138460 309-323,326-328,330-332,334-337,339-346,348,350-354,356-357
+  s_93e0a4797804d9::t_efed10bdf482ff 232-235,237-238,240-242,244,246,248-251
+  s_93e0a4797804d9::t_ccb7d1307a1d34 18,37-68
+tests/test_trade_pipeline_tiers.py
+  s_93e0a4797804d9::t_3f073fe634ccd0 174,434
+  s_93e0a4797804d9::t_90802ad1a3cb45 26
+  s_93e0a4797804d9::t_2fcb90e818bb71 1,5-6,23-25,34-61,110,158-161,165-166,171-173,175,208-255,262-268,273-279,285-292,300-310,315-325,332-355,363-377,383-395,403-420,425-433,435-448
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.1",
+  "base_commit_sha": "1c8ca88503633121ff20f0f23aea0754a529ab49",
+  "prompts": {},
+  "sessions": {
+    "s_93e0a4797804d9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a8782b68-4941-47de-a34c-6d351fdda0ef",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
