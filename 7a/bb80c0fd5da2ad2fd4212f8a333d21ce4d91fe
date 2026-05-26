@@ -1,0 +1,29 @@
+tests/test_account_cap_policy.py
+  s_b575af21b31eb4::t_64c307fbe6a806 229-233,235,237-240,242-245,247,250,252-255,257
+  s_b575af21b31eb4::t_bac190f3f44e26 9,19-54,61-70,79-80,83-84,89-90,93-94
+  s_b575af21b31eb4::t_b341a585b5925b 113-114
+  s_b575af21b31eb4::t_9555721720a15e 152-153,163-168
+tests/test_decision_engine.py
+  s_b575af21b31eb4::t_dff8a4b8f4ae58 283-285,288
+  s_b575af21b31eb4::t_129275a1ce356e 327-334
+tests/test_issue69_order_sizing_idempotency.py
+  s_b575af21b31eb4::t_d25ca2010817e0 728-741,743-746,748
+tests/test_collateral_readiness.py
+  s_b575af21b31eb4::t_fbe2e96dbc5e99 182-194,207
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.1",
+  "base_commit_sha": "7abb80c0fd5da2ad2fd4212f8a333d21ce4d91fe",
+  "prompts": {},
+  "sessions": {
+    "s_b575af21b31eb4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "07691412-808e-482a-966d-b8c7cecadf2d",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
