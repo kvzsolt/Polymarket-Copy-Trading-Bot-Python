@@ -269,16 +269,20 @@ class TestReconciliationService:
         wrapper.client.get_orders.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_env_defaults(self):
-        """Service reads from env when no explicit values."""
+    async def test_appconfig_defaults(self):
+        """Service reads from AppConfig.reconciliation when no explicit values."""
+        from types import SimpleNamespace
         clob = _make_mock_clob()
-        with patch.dict("config.env.ENV", {
-            "RECONCILE_STALE_SECONDS": "1800",
-            "RECONCILE_AUTO_CANCEL": "true",
-        }):
-            svc = ReconciliationService(clob_client=clob)
-            assert svc.stale_threshold == 1800.0
-            assert svc.auto_cancel is True
+        cfg = SimpleNamespace(
+            reconciliation=SimpleNamespace(
+                stale_threshold_seconds=1800.0,
+                auto_cancel_stale=True,
+                max_closed_probes=10,
+            ),
+        )
+        svc = ReconciliationService(clob_client=clob, config=cfg)
+        assert svc.stale_threshold == 1800.0
+        assert svc.auto_cancel is True
 
 
 class TestOrderIdentityResolution:
