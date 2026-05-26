@@ -653,11 +653,10 @@ async def main():
 
     await _connect_db()
 
-    from config.env import ENV as _ENV
     from storage.postgres.connection import get_pool
     from storage.postgres.orders_repo import OrdersRepo as _PgOrdersRepo
 
-    _max_age = float(_ENV.get("RETENTION_MAX_AGE_SECONDS", 30 * 86400))
+    _max_age = float(application.config.polling.retention_max_age_seconds)
     try:
         _pool = await get_pool()
         purged = await _PgOrdersRepo(_pool).purge_old_processed_trades(_max_age)
