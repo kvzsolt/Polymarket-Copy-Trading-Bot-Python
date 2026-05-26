@@ -1,0 +1,19 @@
+tests/test_trade_pipeline_market_data_authority.py
+  s_b575af21b31eb4::t_898097ec6fea28 10,34-37,42-69,233-234,245-249,298-312,314,316-320,325-336,338,340-345,350-358,360-367,369,371-373,382-395,397,399-401,406-419,421,423-424,429-439,441,443-444,449-461,463,465-467,472-485,487,489-491,577,582-586,634-650,652,654-662,667-680,682,684-687,692-706,708,710-716,721-736,738,740-742
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.1",
+  "base_commit_sha": "a64a7470002c23f3e1af208b16488b7bfa47e682",
+  "prompts": {},
+  "sessions": {
+    "s_b575af21b31eb4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "07691412-808e-482a-966d-b8c7cecadf2d",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
