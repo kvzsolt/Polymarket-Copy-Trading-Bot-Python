@@ -24,12 +24,16 @@ def _make_service(local_size: Decimal | None) -> tuple[ReconciliationService, Ma
     )
     positions_repo = MagicMock()
     if local_size is None:
-        positions_repo.get_position.return_value = None
+        positions_repo.get_position = AsyncMock(return_value=None)
     else:
-        positions_repo.get_position.return_value = SimpleNamespace(
-            size_tokens=local_size,
-            avg_entry_price=Decimal("0.50"),
+        positions_repo.get_position = AsyncMock(
+            return_value=SimpleNamespace(
+                size_tokens=local_size,
+                avg_entry_price=Decimal("0.50"),
+            )
         )
+    positions_repo.delete_position = AsyncMock(return_value=None)
+    positions_repo.upsert_position = AsyncMock(return_value=None)
     svc = ReconciliationService(
         orders_repo=MagicMock(),
         fills_repo=MagicMock(),
