@@ -1,0 +1,21 @@
+tests/test_issue70_reservations_intent_lifecycle.py
+  s_b575af21b31eb4::t_46583207d7c750 278-279,281,283-284,288,295,299-300,302,304-305,309,315
+  s_b575af21b31eb4::t_20b55de63eb8af 13,21-47
+  s_b575af21b31eb4::t_938b72b1140485 430-431,433-435,458-459,461-463,480
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.1",
+  "base_commit_sha": "80d875583c3b239ea00d104553f33f4b4aa627fe",
+  "prompts": {},
+  "sessions": {
+    "s_b575af21b31eb4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "07691412-808e-482a-966d-b8c7cecadf2d",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
