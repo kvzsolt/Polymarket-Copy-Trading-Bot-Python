@@ -1,0 +1,30 @@
+app.py
+  s_b575af21b31eb4::t_afc9479387400a 688
+bot_cli/commands/reconcile.py
+  s_b575af21b31eb4::t_239ef811352851 110
+orchestrators/runtime_bootstrap.py
+  s_b575af21b31eb4::t_b7407983a98925 216-221
+utils/createClobClient.py
+  s_b575af21b31eb4::t_4dacd3e4cf0354 64-65
+  s_b575af21b31eb4::t_f667a359cb1701 573,575-580,582-583
+  s_b575af21b31eb4::t_b43e6feb29369f 645,649,651-652,655
+  s_b575af21b31eb4::t_818a4471750c1f 35-51
+bot_cli/commands/orders.py
+  s_b575af21b31eb4::t_a6234e3729b48a 152
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.1",
+  "base_commit_sha": "a18ba97900446c2cbe37721f1ef7008cebb6db64",
+  "prompts": {},
+  "sessions": {
+    "s_b575af21b31eb4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "07691412-808e-482a-966d-b8c7cecadf2d",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
