@@ -677,7 +677,14 @@ async def risk_monitor_loop(
                             )
                             remaining = pm.get_position(condition_id, token_id)
                             if remaining is None:
-                                await accounting.close_position(user_id=user_id, condition_id=condition_id)
+                                # Pass token_id — omitting it wipes every
+                                # position for the condition (the opposite
+                                # leg of a binary market included).
+                                await accounting.close_position(
+                                    user_id=user_id,
+                                    condition_id=condition_id,
+                                    token_id=token_id,
+                                )
                             else:
                                 await accounting.upsert_position(
                                     PositionLot(
@@ -1100,7 +1107,14 @@ async def run_risk_check_for_context(context: TradingContext) -> None:
                     except Exception:
                         logger.debug("risk_trigger_update_error", exc_info=True)
 
-                await context.fills_repo.append_fill(
+                # Atomic fill insert + position update — closes the
+                # crash-window the protective-SELL path had between the
+                # two independent pool connections. ``append_fill_and_
+                # apply`` also short-circuits on duplicate fills (the
+                # ON CONFLICT DO NOTHING branch returns fill_id=0 and
+                # skips ``apply_fill``), preventing the double-count
+                # regression flagged in PR #108.
+                fill_id, updated_pos = await context.fills_repo.append_fill_and_apply(
                     FillRecord(
                         user_id=context.user_id,
                         leader_id=pos.leader_id,
@@ -1113,16 +1127,24 @@ async def run_risk_check_for_context(context: TradingContext) -> None:
                         fee=Decimal(str(result.fees_paid or 0)),
                         fill_ts=int(time.time()),
                     ),
+                    context.positions_repo,
                 )
-                updated_pos = await context.positions_repo.apply_fill(
-                    user_id=context.user_id,
-                    leader_id=pos.leader_id,
-                    condition_id=pos.condition_id,
-                    token_id=pos.token_id,
-                    side="SELL",
-                    fill_size=fill_size,
-                    fill_price=fill_price,
-                )
+                if fill_id == 0:
+                    # Duplicate protective SELL — fill was already persisted
+                    # on a prior call. Risk block, PnL, and position-manager
+                    # state were updated then; replaying them would create a
+                    # false-positive durable re-entry block (the duplicate
+                    # path returns updated_pos=None which would otherwise
+                    # trip ``_risk_exit_fully_closed_position`` → True) and
+                    # double-count realised PnL.
+                    logger.info(
+                        "risk_exit_duplicate_fill_ignored | user=%s condition=%s token=%s order=%s",
+                        context.user_id,
+                        pos.condition_id,
+                        pos.token_id,
+                        result.order_id,
+                    )
+                    continue
                 if _risk_exit_fully_closed_position(updated_pos):
                     await context.risk_blocks_repo.mark_risk_block(
                         user_id=context.user_id,

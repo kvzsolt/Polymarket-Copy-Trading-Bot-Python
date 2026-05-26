@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import time
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -196,7 +196,7 @@ class TestReconciliationService:
         orders = [{"id": "x1", "timestamp": now}]
         clob = _make_mock_clob(orders=orders)
         repo_mock = MagicMock()
-        repo_mock.get_by_order_id.return_value = None
+        repo_mock.get_by_order_id = AsyncMock(return_value=None)
 
         svc = ReconciliationService(
             clob_client=clob,
@@ -215,7 +215,7 @@ class TestReconciliationService:
         orders = [{"id": "k1", "timestamp": now}]
         clob = _make_mock_clob(orders=orders)
         repo_mock = MagicMock()
-        repo_mock.get_by_order_id.return_value = {"some": "record"}
+        repo_mock.get_by_order_id = AsyncMock(return_value={"some": "record"})
 
         svc = ReconciliationService(
             clob_client=clob,
@@ -313,10 +313,12 @@ class TestOrderIdentityResolution:
         orders = [{"id": "venue-999", "timestamp": now}]
         clob = _make_mock_clob(orders=orders)
         repo_mock = MagicMock()
-        repo_mock.get_by_order_id.return_value = {"idempotency_key": "idem-999", "order_id": "venue-999"}
-        repo_mock.get_by_idempotency_key.side_effect = AssertionError(
-            "reconciliation must not treat venue order_id as idempotency key"
+        repo_mock.get_by_order_id = AsyncMock(
+            return_value={"idempotency_key": "idem-999", "order_id": "venue-999"}
         )
+        repo_mock.get_by_idempotency_key = AsyncMock(side_effect=AssertionError(
+            "reconciliation must not treat venue order_id as idempotency key"
+        ))
 
         svc = ReconciliationService(
             clob_client=clob,

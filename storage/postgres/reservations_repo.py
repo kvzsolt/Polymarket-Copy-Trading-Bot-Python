@@ -124,6 +124,72 @@ class ReservationsRepo:
                 )
         return await self.get_by_id(res_id)
 
+    async def create_buy_reservation_checked_by_intent(
+        self,
+        intent: OrderIntent,
+        reserved_usdc: Decimal,
+        expires_at: int,
+        available_balance: Decimal,
+    ) -> tuple["Reservation | None", "Reservation | None"]:
+        """Atomic intent-key lookup + capacity check + insert.
+
+        Returns ``(existing, new)``:
+            * ``(active_row, None)`` — an active reservation for this
+              ``intent_key`` already exists. Caller should treat as
+              ``ReservationConflict``.
+            * ``(None, None)`` — no active row but capacity insufficient.
+            * ``(None, new_row)`` — created successfully.
+
+        Closes the Greptile finding from PR #108: the previous
+        ``get_active_by_intent_key`` + ``create_buy_reservation_checked``
+        sequence read the active row on a separate pool connection,
+        leaving a window in which the cleanup job could release an
+        expired row and a concurrent caller could insert against a stale
+        balance. This method serialises all three steps inside one
+        ``conn.transaction()`` guarded by the same per-user advisory
+        lock used by ``create_buy_reservation_checked``.
+        """
+        stable_key = intent.key.stable_key()
+        res_id = str(uuid.uuid4())
+        created_at = int(intent.created_at.timestamp())
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1)::bigint)",
+                    f"buy_reservation:{intent.key.user_id}",
+                )
+                existing_row = await conn.fetchrow(
+                    """
+                    SELECT * FROM order_reservations
+                    WHERE order_intent_key = $1 AND status = 'active'
+                    FOR UPDATE
+                    """,
+                    stable_key,
+                )
+                if existing_row:
+                    return self._row_to_reservation(existing_row), None
+                rows = await conn.fetch(
+                    """
+                    SELECT reserved_usdc FROM order_reservations
+                    WHERE user_id = $1 AND side = 'BUY' AND status = 'active'
+                    """,
+                    intent.key.user_id,
+                )
+                already_reserved = self._sum_decimal_rows(rows, "reserved_usdc")
+                if available_balance - already_reserved < reserved_usdc:
+                    return None, None
+                await self._insert_reservation(
+                    conn,
+                    res_id,
+                    intent,
+                    reserved_usdc,
+                    Decimal("0"),
+                    created_at,
+                    expires_at,
+                )
+        new_row = await self.get_by_id(res_id)
+        return None, new_row
+
     async def create_sell_reservation_checked(
         self,
         intent: OrderIntent,

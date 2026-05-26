@@ -790,17 +790,23 @@ class ReconciliationService:
                 ) == order.venue_order_id
             ]
             if matching_fills:
-                async with self.db.transaction():
-                    for venue_fill in matching_fills:
-                        fill = await self.fills_repo.upsert_venue_fill(order, venue_fill)
-                        await self.positions_repo.upsert_position(fill)
+                # PR #108 finding: the previous ``async with self.db.transaction()``
+                # was a no-op — production callers never pass ``db=``, and
+                # ``asyncpg.Pool`` does not expose ``.transaction()``. Each
+                # repo call already commits on its own pool connection, so
+                # we issue them in dependency order without a doomed outer
+                # wrap. If true cross-repo atomicity is needed here it
+                # requires a connection-aware repo path (out of scope).
+                for venue_fill in matching_fills:
+                    fill = await self.fills_repo.upsert_venue_fill(order, venue_fill)
+                    await self.positions_repo.upsert_position(fill)
 
-                    await self.orders_repo.mark_filled_or_partially_filled(order.id)
-                    if self.reservation_service is not None:
-                        await self.reservation_service.release_terminal(
-                            order.reservation_id,
-                            reason="venue_fill_confirmed",
-                        )
+                await self.orders_repo.mark_filled_or_partially_filled(order.id)
+                if self.reservation_service is not None:
+                    await self.reservation_service.release_terminal(
+                        order.reservation_id,
+                        reason="venue_fill_confirmed",
+                    )
                 self._audit("reconciliation_resolved_filled", {"order_id": order.id})
                 return ReconciliationResult.resolved(order.id, OrderLifecycleStatus.FILLED)
             # venue_fills was non-empty but none matched this order — treat
@@ -816,13 +822,14 @@ class ReconciliationService:
             return ReconciliationResult.pending(order.id, OrderLifecycleStatus.SUBMITTED_UNCONFIRMED)
 
         if venue_order and venue_order.status.lower() in {"cancelled", "expired", "rejected"}:
-            async with self.db.transaction():
-                await self.orders_repo.mark_terminal(order.id, venue_order.status.lower())
-                if self.reservation_service is not None:
-                    await self.reservation_service.release_terminal(
-                        order.reservation_id,
-                        reason=venue_order.status.lower(),
-                    )
+            # PR #108 finding: same as the matching_fills branch — the
+            # outer ``self.db.transaction()`` was a no-op in production.
+            await self.orders_repo.mark_terminal(order.id, venue_order.status.lower())
+            if self.reservation_service is not None:
+                await self.reservation_service.release_terminal(
+                    order.reservation_id,
+                    reason=venue_order.status.lower(),
+                )
             self._audit(
                 "reconciliation_resolved_terminal",
                 {"order_id": order.id, "status": venue_order.status.lower()},
