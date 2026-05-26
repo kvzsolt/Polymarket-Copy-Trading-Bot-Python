@@ -1,0 +1,27 @@
+tests/test_issue74_position_drift_reconciliation.py
+  s_b575af21b31eb4::t_5ed31dc62a9251 66
+  s_b575af21b31eb4::t_1e952a8e97ab7f 181,502,851
+  s_b575af21b31eb4::t_a4e1cb79d27d88 40,44,47
+  s_b575af21b31eb4::t_1225c02c02a5c6 148,312,540,605,756
+  s_b575af21b31eb4::t_1914d3a552ae89 725,727,819,821
+  s_b575af21b31eb4::t_763b5a7cf40020 131,164,198,270,484,523,560,738,832
+  s_b575af21b31eb4::t_3de572a61d2fa0 130,163,197,269,483,522,559,737,831
+  s_b575af21b31eb4::t_552020f79f5cce 717,811
+  s_b575af21b31eb4::t_f543a581f3f4dd 682,776
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.1",
+  "base_commit_sha": "ad748a2861ac83047911c02ea1c881f828870fef",
+  "prompts": {},
+  "sessions": {
+    "s_b575af21b31eb4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "07691412-808e-482a-966d-b8c7cecadf2d",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
