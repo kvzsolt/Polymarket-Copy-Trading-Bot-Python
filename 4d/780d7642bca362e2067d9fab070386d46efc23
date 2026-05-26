@@ -1,0 +1,21 @@
+services/positionManager.py
+  s_b575af21b31eb4::t_025a937dabe20e 432-433
+  s_b575af21b31eb4::t_28062941ffc2bb 188-195,200
+  s_b575af21b31eb4::t_6b80e588a67bc1 136
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.1",
+  "base_commit_sha": "4d780d7642bca362e2067d9fab070386d46efc23",
+  "prompts": {},
+  "sessions": {
+    "s_b575af21b31eb4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "07691412-808e-482a-966d-b8c7cecadf2d",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
