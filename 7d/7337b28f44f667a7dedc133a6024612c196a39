@@ -1,0 +1,19 @@
+tests/test_restart_rehydration_risk.py
+  s_b575af21b31eb4::t_64593ce5bdcd36 3,18-21,26-53,196-221,223-234,236-278,280-299,303,310-352,356-362,366,368-409,413-425,429-471,475-479,483-508,510-532,536-612,616-622,626-704,708,712-781,783-810,814-842,845-848,850-869,871,873-880,884,888-913,915-934
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.1",
+  "base_commit_sha": "7d7337b28f44f667a7dedc133a6024612c196a39",
+  "prompts": {},
+  "sessions": {
+    "s_b575af21b31eb4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "07691412-808e-482a-966d-b8c7cecadf2d",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
