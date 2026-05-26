@@ -1,0 +1,22 @@
+services/execution/reconciliation_service.py
+  s_93e0a4797804d9::t_183ad9d714ab92 1429
+  s_93e0a4797804d9::t_6b9e4d9fe67adf 1105
+tests/test_issue72_risk_block_correctness.py
+  s_93e0a4797804d9::t_593422dbef6554 1-10,13,26-30,43-70,164,169-173,184-186,188,192-193,195,198-200,203-207,210-237,239,241-253,257-270,272-291,293-294,297-300,302,304-307,309-310,314-327,329-348,350-351,354-357,359,361-364,366,368-369,371-372,376-394,396,398-402,404,406-416,420-438,440,442-447,449,451-457,459-461
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.1",
+  "base_commit_sha": "b153be1cb9e4e599bece2300c8f0c8d522f6b22a",
+  "prompts": {},
+  "sessions": {
+    "s_93e0a4797804d9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a8782b68-4941-47de-a34c-6d351fdda0ef",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
