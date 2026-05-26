@@ -1,0 +1,19 @@
+interfaces/__init__.py
+  s_b575af21b31eb4::t_ba85187ceec89e 1,3-7,10
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.1",
+  "base_commit_sha": "1aa0484f27a3eb758a9f9f36ab20db55a784b708",
+  "prompts": {},
+  "sessions": {
+    "s_b575af21b31eb4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "07691412-808e-482a-966d-b8c7cecadf2d",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
