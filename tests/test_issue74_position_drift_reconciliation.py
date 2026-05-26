@@ -8,9 +8,6 @@ Tests cover:
 """
 
 from __future__ import annotations
-import pytest
-pytest.skip("sqlite-bound; pending PG port", allow_module_level=True)
-
 
 import pytest
 from decimal import Decimal
@@ -40,14 +37,14 @@ class MockPositionsRepo:
     def __init__(self):
         self.positions = {}
 
-    def upsert_position(self, record):
+    async def upsert_position(self, record):
         key = (record.user_id, record.condition_id, getattr(record, "token_id", ""))
         self.positions[key] = record
 
-    def get_position(self, user_id, condition_id, *, token_id=""):
+    async def get_position(self, user_id, condition_id, *, token_id=""):
         return self.positions.get((user_id, condition_id, token_id))
 
-    def delete_position(self, user_id, condition_id, *, token_id=""):
+    async def delete_position(self, user_id, condition_id, *, token_id=""):
         self.positions.pop((user_id, condition_id, token_id), None)
 
 
@@ -66,7 +63,7 @@ class MockReservationService:
     async def reserve_for_intent(self, intent):
         return MockReservation("res1")
 
-    def release_terminal(self, reservation_id: str, reason: str):
+    async def release_terminal(self, reservation_id: str, reason: str):
         self.released.append((reservation_id, reason))
 
 
@@ -130,8 +127,8 @@ async def test_reconcile_drift_deletes_position_when_live_is_zero():
         audit_logger=audit,
     )
 
-    from storage.sqlite.positions_repo import PositionRecord
-    pos_repo.upsert_position(PositionRecord(
+    from storage.postgres.positions_repo import PositionRecord
+    await pos_repo.upsert_position(PositionRecord(
         user_id="u1", condition_id="c1", token_id="t1",
         leader_id="leader1", size_tokens=Decimal("50"),
         avg_entry_price=Decimal("0.45"),
@@ -148,7 +145,7 @@ async def test_reconcile_drift_deletes_position_when_live_is_zero():
 
     assert result["reconciled"] is True
     assert result["action"] == "deleted"
-    assert pos_repo.get_position("u1", "c1", token_id="t1") is None
+    assert await pos_repo.get_position("u1", "c1", token_id="t1") is None
     assert any(e[0] == "manual_position_drift_reconciled" for e in audit.events)
 
 
@@ -163,8 +160,8 @@ async def test_reconcile_drift_shrinks_position_when_live_is_smaller():
         audit_logger=audit,
     )
 
-    from storage.sqlite.positions_repo import PositionRecord
-    pos_repo.upsert_position(PositionRecord(
+    from storage.postgres.positions_repo import PositionRecord
+    await pos_repo.upsert_position(PositionRecord(
         user_id="u1", condition_id="c1", token_id="t1",
         leader_id="leader1", size_tokens=Decimal("100"),
         avg_entry_price=Decimal("0.50"),
@@ -181,7 +178,7 @@ async def test_reconcile_drift_shrinks_position_when_live_is_smaller():
 
     assert result["reconciled"] is True
     assert result["action"] == "shrunk"
-    pos = pos_repo.get_position("u1", "c1", token_id="t1")
+    pos = await pos_repo.get_position("u1", "c1", token_id="t1")
     assert pos is not None
     assert pos.size_tokens == Decimal("25")
 
@@ -197,8 +194,8 @@ async def test_reconcile_drift_no_drift_when_sizes_match():
         audit_logger=audit,
     )
 
-    from storage.sqlite.positions_repo import PositionRecord
-    pos_repo.upsert_position(PositionRecord(
+    from storage.postgres.positions_repo import PositionRecord
+    await pos_repo.upsert_position(PositionRecord(
         user_id="u1", condition_id="c1", token_id="t1",
         leader_id="leader1", size_tokens=Decimal("50"),
         avg_entry_price=Decimal("0.50"),
@@ -269,8 +266,8 @@ async def test_coordinator_sell_insufficient_balance_triggers_drift_reconciliati
         audit_logger=audit,
     )
 
-    from storage.sqlite.positions_repo import PositionRecord
-    pos_repo.upsert_position(PositionRecord(
+    from storage.postgres.positions_repo import PositionRecord
+    await pos_repo.upsert_position(PositionRecord(
         user_id="u1", condition_id="c1", token_id="t1",
         leader_id="0xleader", size_tokens=Decimal("50"),
         avg_entry_price=Decimal("0.50"),
@@ -312,7 +309,7 @@ async def test_coordinator_sell_insufficient_balance_triggers_drift_reconciliati
     with pytest.raises(TerminalVenueError):
         await coordinator.execute_intent(sell_intent)
 
-    assert pos_repo.get_position("u1", "c1", token_id="t1") is None
+    assert await pos_repo.get_position("u1", "c1", token_id="t1") is None
     assert any(e[0] == "manual_position_drift_reconciled" for e in audit.events)
     assert len(res_svc.released) == 1
 
@@ -483,8 +480,8 @@ async def test_reconcile_drift_subsequent_sell_uses_updated_size():
         audit_logger=audit,
     )
 
-    from storage.sqlite.positions_repo import PositionRecord
-    pos_repo.upsert_position(PositionRecord(
+    from storage.postgres.positions_repo import PositionRecord
+    await pos_repo.upsert_position(PositionRecord(
         user_id="u1", condition_id="c1", token_id="t1",
         leader_id="leader1", size_tokens=Decimal("100"),
         avg_entry_price=Decimal("0.50"),
@@ -502,7 +499,7 @@ async def test_reconcile_drift_subsequent_sell_uses_updated_size():
     assert result["reconciled"] is True
     assert result["action"] == "shrunk"
 
-    pos = pos_repo.get_position("u1", "c1", token_id="t1")
+    pos = await pos_repo.get_position("u1", "c1", token_id="t1")
     assert pos is not None
     assert pos.size_tokens == Decimal("30")
 
@@ -522,8 +519,8 @@ async def test_reconcile_drift_works_without_audit_logger():
         audit_logger=None,
     )
 
-    from storage.sqlite.positions_repo import PositionRecord
-    pos_repo.upsert_position(PositionRecord(
+    from storage.postgres.positions_repo import PositionRecord
+    await pos_repo.upsert_position(PositionRecord(
         user_id="u1", condition_id="c1", token_id="t1",
         leader_id="leader1", size_tokens=Decimal("50"),
         avg_entry_price=Decimal("0.50"),
@@ -540,7 +537,7 @@ async def test_reconcile_drift_works_without_audit_logger():
 
     assert result["reconciled"] is True
     assert result["action"] == "deleted"
-    assert pos_repo.get_position("u1", "c1", token_id="t1") is None
+    assert await pos_repo.get_position("u1", "c1", token_id="t1") is None
 
 
 # ---------------------------------------------------------------------------
@@ -559,8 +556,8 @@ async def test_coordinator_sell_allowance_only_triggers_drift():
         audit_logger=audit,
     )
 
-    from storage.sqlite.positions_repo import PositionRecord
-    pos_repo.upsert_position(PositionRecord(
+    from storage.postgres.positions_repo import PositionRecord
+    await pos_repo.upsert_position(PositionRecord(
         user_id="u1",
         condition_id="c1",
         token_id="t1",
@@ -605,7 +602,7 @@ async def test_coordinator_sell_allowance_only_triggers_drift():
     with pytest.raises(TerminalVenueError):
         await coordinator.execute_intent(sell_intent)
 
-    assert pos_repo.get_position("u1", "c1", token_id="t1") is None
+    assert await pos_repo.get_position("u1", "c1", token_id="t1") is None
     assert any(e[0] == "manual_position_drift_reconciled" for e in audit.events)
     assert len(res_svc.released) == 1
 
@@ -682,7 +679,7 @@ async def test_reconcile_drift_delete_path_cleans_reservations():
         def __init__(self):
             self.released = []
         
-        def list_active_for_scope(self, user_id, condition_id, token_id):
+        async def list_active_for_scope(self, user_id, condition_id, token_id):
             from domain.order_lifecycle import Reservation
             from datetime import datetime, timezone
             
@@ -717,7 +714,7 @@ async def test_reconcile_drift_delete_path_cleans_reservations():
                 ),
             ]
         
-        def mark_released(self, reservation_id, reason, released_at):
+        async def mark_released(self, reservation_id, reason, released_at):
             self.released.append((reservation_id, reason))
     
     class MockReservationServiceWithRepo:
@@ -725,9 +722,9 @@ async def test_reconcile_drift_delete_path_cleans_reservations():
             self.reservations_repo = MockReservationsRepo()
             self.release_calls = []
         
-        def release_terminal(self, reservation_id, reason):
+        async def release_terminal(self, reservation_id, reason):
             self.release_calls.append((reservation_id, reason))
-            self.reservations_repo.mark_released(reservation_id, reason, 0)
+            await self.reservations_repo.mark_released(reservation_id, reason, 0)
     
     res_svc = MockReservationServiceWithRepo()
     svc = ReconciliationService(
@@ -737,8 +734,8 @@ async def test_reconcile_drift_delete_path_cleans_reservations():
         audit_logger=audit,
     )
 
-    from storage.sqlite.positions_repo import PositionRecord
-    pos_repo.upsert_position(PositionRecord(
+    from storage.postgres.positions_repo import PositionRecord
+    await pos_repo.upsert_position(PositionRecord(
         user_id="u1", condition_id="c1", token_id="t1",
         leader_id="leader1", size_tokens=Decimal("100"),
         avg_entry_price=Decimal("0.50"),
@@ -756,7 +753,7 @@ async def test_reconcile_drift_delete_path_cleans_reservations():
 
     assert result["reconciled"] is True
     assert result["action"] == "deleted"
-    assert pos_repo.get_position("u1", "c1", token_id="t1") is None
+    assert await pos_repo.get_position("u1", "c1", token_id="t1") is None
     assert len(res_svc.reservations_repo.released) == 2
     assert len(res_svc.release_calls) == 2
 
@@ -776,7 +773,7 @@ async def test_reconcile_drift_shrink_path_coversized_reservations():
         def __init__(self):
             self.released = []
         
-        def list_active_for_scope(self, user_id, condition_id, token_id):
+        async def list_active_for_scope(self, user_id, condition_id, token_id):
             from domain.order_lifecycle import Reservation
             from datetime import datetime, timezone
             
@@ -811,7 +808,7 @@ async def test_reconcile_drift_shrink_path_coversized_reservations():
                 ),
             ]
         
-        def mark_released(self, reservation_id, reason, released_at):
+        async def mark_released(self, reservation_id, reason, released_at):
             self.released.append((reservation_id, reason))
     
     class MockReservationServiceWithRepo:
@@ -819,9 +816,9 @@ async def test_reconcile_drift_shrink_path_coversized_reservations():
             self.reservations_repo = MockReservationsRepo()
             self.release_calls = []
         
-        def release_terminal(self, reservation_id, reason):
+        async def release_terminal(self, reservation_id, reason):
             self.release_calls.append((reservation_id, reason))
-            self.reservations_repo.mark_released(reservation_id, reason, 0)
+            await self.reservations_repo.mark_released(reservation_id, reason, 0)
     
     res_svc = MockReservationServiceWithRepo()
     svc = ReconciliationService(
@@ -831,8 +828,8 @@ async def test_reconcile_drift_shrink_path_coversized_reservations():
         audit_logger=audit,
     )
 
-    from storage.sqlite.positions_repo import PositionRecord
-    pos_repo.upsert_position(PositionRecord(
+    from storage.postgres.positions_repo import PositionRecord
+    await pos_repo.upsert_position(PositionRecord(
         user_id="u1", condition_id="c1", token_id="t1",
         leader_id="leader1", size_tokens=Decimal("100"),
         avg_entry_price=Decimal("0.50"),
@@ -851,7 +848,7 @@ async def test_reconcile_drift_shrink_path_coversized_reservations():
     assert result["reconciled"] is True
     assert result["action"] == "shrunk"
     
-    pos = pos_repo.get_position("u1", "c1", token_id="t1")
+    pos = await pos_repo.get_position("u1", "c1", token_id="t1")
     assert pos is not None
     assert pos.size_tokens == Decimal("30")
     
