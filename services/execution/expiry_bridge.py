@@ -57,7 +57,7 @@ class ExpiryChecker:
         Returns the number of expired reservations found.
         """
         now_ts = int(datetime.now(timezone.utc).timestamp())
-        expired = self._reservations_repo.list_expired_active(now_ts)
+        expired = await self._reservations_repo.list_expired_active(now_ts)
         if not expired:
             return 0
 
