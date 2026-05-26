@@ -8,10 +8,8 @@ Pins:
   - runtime_bootstrap wires execution_coordinator for normal user contexts.
 """
 from __future__ import annotations
-import pytest
-pytest.skip("sqlite-bound; pending PG port", allow_module_level=True)
 
-
+import contextlib
 import time
 from decimal import Decimal
 from types import SimpleNamespace
@@ -297,37 +295,62 @@ async def test_live_near_one_exit_skips_when_coordinator_missing():
 # bootstrap wires coordinator
 # ---------------------------------------------------------------------------
 
-def test_runtime_bootstrap_helper_returns_coordinator(tmp_path):
+@contextlib.asynccontextmanager
+async def _pg_pool():
+    try:
+        from testcontainers.postgres import PostgresContainer
+        import asyncpg
+        from storage.postgres.migrations import apply_migrations as pg_apply
+    except Exception as exc:
+        pytest.skip(f"Docker / postgres image unavailable: {exc!r}")
+    ctr = PostgresContainer("postgres:16-alpine")
+    try:
+        ctr.start()
+    except Exception as exc:
+        pytest.skip(f"Docker / postgres image unavailable: {exc!r}")
+    try:
+        dsn = ctr.get_connection_url(driver="asyncpg").replace(
+            "postgresql+asyncpg://", "postgresql://"
+        )
+        pool = await asyncpg.create_pool(dsn, min_size=1, max_size=3)
+        async with pool.acquire() as conn:
+            await pg_apply(conn)
+        try:
+            yield pool
+        finally:
+            await pool.close()
+    finally:
+        ctr.stop()
+
+
+@pytest.mark.asyncio
+async def test_runtime_bootstrap_helper_returns_coordinator():
     """``_build_execution_coordinator`` must return a coordinator instance when
     funder_address is set so live runtime contexts are always guarded."""
     from orchestrators.runtime_bootstrap import _build_execution_coordinator
-    from storage.sqlite.connection import create_connection
-    from storage.sqlite.migrations import apply_migrations
-    from storage.sqlite.positions_repo import PositionsRepo
+    from storage.postgres.positions_repo import PositionsRepo
 
-    db_path = str(tmp_path / "bootstrap.db")
-    with create_connection(db_path) as conn:
-        apply_migrations(conn)
-    coord = _build_execution_coordinator(
-        db_path=db_path,
-        positions_repo=PositionsRepo(db_path),
-        order_repo=MagicMock(),
-        fills_repo=MagicMock(),
-        execution_service=MagicMock(),
-        funder_address="0xfunder",
-    )
-    assert coord is not None
-    assert hasattr(coord, "submit_copy_trade")
-    assert hasattr(coord, "submit_risk_exit")
-    assert hasattr(coord, "submit_near_one_exit")
-    assert hasattr(coord, "submit_protective_exit")
+    async with _pg_pool() as pool:
+        coord = _build_execution_coordinator(
+            pool=pool,
+            positions_repo=PositionsRepo(pool),
+            order_repo=MagicMock(),
+            fills_repo=MagicMock(),
+            execution_service=MagicMock(),
+            funder_address="0xfunder",
+        )
+        assert coord is not None
+        assert hasattr(coord, "submit_copy_trade")
+        assert hasattr(coord, "submit_risk_exit")
+        assert hasattr(coord, "submit_near_one_exit")
+        assert hasattr(coord, "submit_protective_exit")
 
 
-def test_runtime_bootstrap_helper_returns_none_without_funder(tmp_path):
+def test_runtime_bootstrap_helper_returns_none_without_funder():
     from orchestrators.runtime_bootstrap import _build_execution_coordinator
 
     coord = _build_execution_coordinator(
-        db_path=str(tmp_path / "x.db"),
+        pool=MagicMock(),
         positions_repo=MagicMock(),
         order_repo=MagicMock(),
         fills_repo=MagicMock(),
