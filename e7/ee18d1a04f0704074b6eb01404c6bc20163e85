@@ -1,0 +1,27 @@
+app.py
+  s_b575af21b31eb4::t_c1ca34a11c65cf 659
+bot_cli/commands/doctor.py
+  s_b575af21b31eb4::t_508ca420078c4a 264-273
+  s_b575af21b31eb4::t_9bbdad1ff39398 34
+utils/idempotency.py
+  s_b575af21b31eb4::t_80bb2ef4a96cb5 106-113
+services/tradeMonitor.py
+  s_b575af21b31eb4::t_6ea7890a57a177 61-64
+  s_b575af21b31eb4::t_760bcf0bc87813 8
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.1",
+  "base_commit_sha": "e7ee18d1a04f0704074b6eb01404c6bc20163e85",
+  "prompts": {},
+  "sessions": {
+    "s_b575af21b31eb4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "07691412-808e-482a-966d-b8c7cecadf2d",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
