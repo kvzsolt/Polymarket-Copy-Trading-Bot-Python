@@ -6,10 +6,8 @@ Covers:
   - decision-service receives min_order_size / tick_size from the MDS bundle
 """
 from __future__ import annotations
-import pytest
-pytest.skip("sqlite-bound; pending PG port", allow_module_level=True)
 
-
+import contextlib
 import time
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -33,14 +31,40 @@ from services.market_data_service import (
 from services.pnlTracker import PnLTracker
 from services.positionManager import PositionManager
 from services.riskEngine import RiskEngine
-from storage.sqlite.connection import create_connection
-from storage.sqlite.fills_repo import FillsRepo
-from storage.sqlite.migrations import apply_migrations
-from storage.sqlite.orders_repo import OrdersRepo
-from storage.sqlite.positions_repo import PositionsRepo
-from storage.sqlite.risk_blocks_repo import RiskBlocksRepo
+from storage.postgres.fills_repo import FillsRepo
+from storage.postgres.orders_repo import OrdersRepo
+from storage.postgres.positions_repo import PositionsRepo
+from storage.postgres.risk_blocks_repo import RiskBlocksRepo
 
 FAKE_TOKEN_ID = "71321045679252212594626385532706912750332728571942532223535764789812338637396"
+
+
+@contextlib.asynccontextmanager
+async def _pg_pool():
+    try:
+        from testcontainers.postgres import PostgresContainer
+        import asyncpg
+        from storage.postgres.migrations import apply_migrations as pg_apply
+    except Exception as exc:
+        pytest.skip(f"Docker / postgres image unavailable: {exc!r}")
+    ctr = PostgresContainer("postgres:16-alpine")
+    try:
+        ctr.start()
+    except Exception as exc:
+        pytest.skip(f"Docker / postgres image unavailable: {exc!r}")
+    try:
+        dsn = ctr.get_connection_url(driver="asyncpg").replace(
+            "postgresql+asyncpg://", "postgresql://"
+        )
+        pool = await asyncpg.create_pool(dsn, min_size=1, max_size=5)
+        async with pool.acquire() as conn:
+            await pg_apply(conn)
+        try:
+            yield pool
+        finally:
+            await pool.close()
+    finally:
+        ctr.stop()
 
 
 @pytest.fixture(autouse=True)
@@ -126,13 +150,6 @@ def _make_bundle(
     )
 
 
-def _init_db(tmp_path):
-    db_path = str(tmp_path / "pr3.db")
-    with create_connection(db_path) as conn:
-        apply_migrations(conn)
-    return db_path
-
-
 def _signal(*, side="BUY", tx_hash="0xpr3", price=0.50, size=10.0):
     return {
         "side": side,
@@ -213,7 +230,8 @@ class _FakeMDS:
 
 
 def _make_context(
-    db_path,
+    pool,
+    tmp_path,
     *,
     exec_svc,
     mds,
@@ -224,11 +242,11 @@ def _make_context(
         user_id="user1",
         wallet_address="0x" + "a" * 40,
         client=MagicMock(),
-        positions_repo=PositionsRepo(db_path),
-        fills_repo=FillsRepo(db_path),
-        orders_repo=OrdersRepo(db_path),
-        risk_blocks_repo=RiskBlocksRepo(db_path),
-        pnl_tracker=PnLTracker(log_path=str(db_path) + ".pnl"),
+        positions_repo=PositionsRepo(pool),
+        fills_repo=FillsRepo(pool),
+        orders_repo=OrdersRepo(pool),
+        risk_blocks_repo=RiskBlocksRepo(pool),
+        pnl_tracker=PnLTracker(log_path=str(tmp_path / "pr3.pnl")),
         risk_engine=RiskEngine(),
         accounting_service=AccountingService(),
         position_manager=PositionManager(),
@@ -277,79 +295,82 @@ def _make_context(
 
 @pytest.mark.asyncio
 async def test_trade_pipeline_subscribes_new_token_before_decision(tmp_path):
-    db_path = _init_db(tmp_path)
-    exec_svc = AsyncMock()
-    exec_svc.execute.return_value = _exec_result_filled()
-    runtime = AsyncMock()
-    runtime.ensure_token_ready_or_bootstrapped = AsyncMock(return_value=True)
-    decision_svc = _RecordingDecisionService()
+    async with _pg_pool() as pool:
+        exec_svc = AsyncMock()
+        exec_svc.execute.return_value = _exec_result_filled()
+        runtime = AsyncMock()
+        runtime.ensure_token_ready_or_bootstrapped = AsyncMock(return_value=True)
+        decision_svc = _RecordingDecisionService()
 
-    ctx = _make_context(
-        db_path,
-        exec_svc=exec_svc,
-        mds=_FakeMDS(_make_bundle()),
-        runtime=runtime,
-        decision_svc=decision_svc,
-    )
+        ctx = _make_context(
+            pool,
+            tmp_path,
+            exec_svc=exec_svc,
+            mds=_FakeMDS(_make_bundle()),
+            runtime=runtime,
+            decision_svc=decision_svc,
+        )
 
-    await execute_trades(ctx, "leader1", [_signal()], time.time())
+        await execute_trades(ctx, "leader1", [_signal()], time.time())
 
-    # Pipeline calls ensure_token_ready_or_bootstrapped (which internally subscribes).
-    runtime.ensure_token_ready_or_bootstrapped.assert_awaited()
-    call_arg = runtime.ensure_token_ready_or_bootstrapped.await_args.args[0]
-    assert call_arg == FAKE_TOKEN_ID
-    exec_svc.execute.assert_awaited_once()
+        # Pipeline calls ensure_token_ready_or_bootstrapped (which internally subscribes).
+        runtime.ensure_token_ready_or_bootstrapped.assert_awaited()
+        call_arg = runtime.ensure_token_ready_or_bootstrapped.await_args.args[0]
+        assert call_arg == FAKE_TOKEN_ID
+        exec_svc.execute.assert_awaited_once()
 
 
 @pytest.mark.asyncio
 async def test_trade_pipeline_skips_when_market_data_stale_after_subscribe(tmp_path):
-    db_path = _init_db(tmp_path)
-    exec_svc = AsyncMock()
-    runtime = AsyncMock()
-    runtime.ensure_token_ready_or_bootstrapped = AsyncMock(return_value=True)
+    async with _pg_pool() as pool:
+        exec_svc = AsyncMock()
+        runtime = AsyncMock()
+        runtime.ensure_token_ready_or_bootstrapped = AsyncMock(return_value=True)
 
-    ctx = _make_context(
-        db_path,
-        exec_svc=exec_svc,
-        mds=_FakeMDS(_make_bundle(), raise_stale=True),
-        runtime=runtime,
-    )
+        ctx = _make_context(
+            pool,
+            tmp_path,
+            exec_svc=exec_svc,
+            mds=_FakeMDS(_make_bundle(), raise_stale=True),
+            runtime=runtime,
+        )
 
-    results = await execute_trades(ctx, "leader1", [_signal()], time.time())
+        results = await execute_trades(ctx, "leader1", [_signal()], time.time())
 
-    assert len(results) == 1
-    assert results[0].status == "skipped"
-    assert results[0].reason == "market_data_stale"
-    exec_svc.execute.assert_not_awaited()
-    # Bootstrap was attempted before MDS resolution.
-    runtime.ensure_token_ready_or_bootstrapped.assert_awaited()
+        assert len(results) == 1
+        assert results[0].status == "skipped"
+        assert results[0].reason == "market_data_stale"
+        exec_svc.execute.assert_not_awaited()
+        # Bootstrap was attempted before MDS resolution.
+        runtime.ensure_token_ready_or_bootstrapped.assert_awaited()
 
 
 @pytest.mark.asyncio
 async def test_trade_pipeline_sizing_uses_bundle_tick_and_min_order_size(tmp_path):
-    db_path = _init_db(tmp_path)
-    exec_svc = AsyncMock()
-    exec_svc.execute.return_value = _exec_result_filled()
-    runtime = AsyncMock()
-    decision_svc = _RecordingDecisionService()
-    bundle = _make_bundle(
-        min_order_size=Decimal("7.5"),
-        tick_size=Decimal("0.001"),
-    )
+    async with _pg_pool() as pool:
+        exec_svc = AsyncMock()
+        exec_svc.execute.return_value = _exec_result_filled()
+        runtime = AsyncMock()
+        decision_svc = _RecordingDecisionService()
+        bundle = _make_bundle(
+            min_order_size=Decimal("7.5"),
+            tick_size=Decimal("0.001"),
+        )
 
-    ctx = _make_context(
-        db_path,
-        exec_svc=exec_svc,
-        mds=_FakeMDS(bundle),
-        runtime=runtime,
-        decision_svc=decision_svc,
-    )
+        ctx = _make_context(
+            pool,
+            tmp_path,
+            exec_svc=exec_svc,
+            mds=_FakeMDS(bundle),
+            runtime=runtime,
+            decision_svc=decision_svc,
+        )
 
-    await execute_trades(ctx, "leader1", [_signal()], time.time())
+        await execute_trades(ctx, "leader1", [_signal()], time.time())
 
-    assert decision_svc.last_call is not None
-    assert decision_svc.last_call["market_min_size"] == pytest.approx(7.5)
-    assert decision_svc.last_call["tick_size"] == pytest.approx(0.001)
+        assert decision_svc.last_call is not None
+        assert decision_svc.last_call["market_min_size"] == pytest.approx(7.5)
+        assert decision_svc.last_call["tick_size"] == pytest.approx(0.001)
 
 
 # ---------------------------------------------------------------------------
@@ -358,111 +379,116 @@ async def test_trade_pipeline_sizing_uses_bundle_tick_and_min_order_size(tmp_pat
 
 @pytest.mark.asyncio
 async def test_pipeline_calls_ensure_token_ready_for_each_signal(tmp_path):
-    db_path = _init_db(tmp_path)
-    exec_svc = AsyncMock()
-    exec_svc.execute.return_value = _exec_result_filled()
+    async with _pg_pool() as pool:
+        exec_svc = AsyncMock()
+        exec_svc.execute.return_value = _exec_result_filled()
 
-    runtime = AsyncMock()
-    runtime.ensure_token_ready_or_bootstrapped = AsyncMock(return_value=True)
+        runtime = AsyncMock()
+        runtime.ensure_token_ready_or_bootstrapped = AsyncMock(return_value=True)
 
-    ctx = _make_context(
-        db_path,
-        exec_svc=exec_svc,
-        mds=_FakeMDS(_make_bundle()),
-        runtime=runtime,
-    )
+        ctx = _make_context(
+            pool,
+            tmp_path,
+            exec_svc=exec_svc,
+            mds=_FakeMDS(_make_bundle()),
+            runtime=runtime,
+        )
 
-    await execute_trades(ctx, "leader1", [_signal()], time.time())
+        await execute_trades(ctx, "leader1", [_signal()], time.time())
 
-    runtime.ensure_token_ready_or_bootstrapped.assert_awaited_once()
-    call_arg = runtime.ensure_token_ready_or_bootstrapped.await_args.args[0]
-    assert call_arg == FAKE_TOKEN_ID
+        runtime.ensure_token_ready_or_bootstrapped.assert_awaited_once()
+        call_arg = runtime.ensure_token_ready_or_bootstrapped.await_args.args[0]
+        assert call_arg == FAKE_TOKEN_ID
 
 
 @pytest.mark.asyncio
 async def test_pipeline_logs_prefetch_start_for_each_token(tmp_path, capsys):
-    db_path = _init_db(tmp_path)
-    exec_svc = AsyncMock()
-    exec_svc.execute.return_value = _exec_result_filled()
+    async with _pg_pool() as pool:
+        exec_svc = AsyncMock()
+        exec_svc.execute.return_value = _exec_result_filled()
 
-    runtime = AsyncMock()
-    runtime.ensure_token_ready_or_bootstrapped = AsyncMock(return_value=True)
+        runtime = AsyncMock()
+        runtime.ensure_token_ready_or_bootstrapped = AsyncMock(return_value=True)
 
-    ctx = _make_context(
-        db_path,
-        exec_svc=exec_svc,
-        mds=_FakeMDS(_make_bundle()),
-        runtime=runtime,
-    )
+        ctx = _make_context(
+            pool,
+            tmp_path,
+            exec_svc=exec_svc,
+            mds=_FakeMDS(_make_bundle()),
+            runtime=runtime,
+        )
 
-    await execute_trades(ctx, "leader1", [_signal()], time.time())
+        await execute_trades(ctx, "leader1", [_signal()], time.time())
 
-    out = capsys.readouterr().out
-    assert "trade_pipeline_market_data_prefetch_start" in out
+        out = capsys.readouterr().out
+        assert "trade_pipeline_market_data_prefetch_start" in out
 
 
 @pytest.mark.asyncio
 async def test_pipeline_with_no_runtime_logs_prefetch_no_runtime(tmp_path, capsys):
-    db_path = _init_db(tmp_path)
-    exec_svc = AsyncMock()
-    exec_svc.execute.return_value = _exec_result_filled()
+    async with _pg_pool() as pool:
+        exec_svc = AsyncMock()
+        exec_svc.execute.return_value = _exec_result_filled()
 
-    ctx = _make_context(
-        db_path,
-        exec_svc=exec_svc,
-        mds=_FakeMDS(_make_bundle()),
-        runtime=None,
-    )
+        ctx = _make_context(
+            pool,
+            tmp_path,
+            exec_svc=exec_svc,
+            mds=_FakeMDS(_make_bundle()),
+            runtime=None,
+        )
 
-    await execute_trades(ctx, "leader1", [_signal()], time.time())
+        await execute_trades(ctx, "leader1", [_signal()], time.time())
 
-    out = capsys.readouterr().out
-    assert "trade_pipeline_market_data_prefetch_no_runtime" in out
+        out = capsys.readouterr().out
+        assert "trade_pipeline_market_data_prefetch_no_runtime" in out
 
 
 @pytest.mark.asyncio
 async def test_pipeline_skips_token_when_bootstrap_returns_false(tmp_path):
-    db_path = _init_db(tmp_path)
-    exec_svc = AsyncMock()
+    async with _pg_pool() as pool:
+        exec_svc = AsyncMock()
 
-    runtime = AsyncMock()
-    runtime.ensure_token_ready_or_bootstrapped = AsyncMock(return_value=False)
+        runtime = AsyncMock()
+        runtime.ensure_token_ready_or_bootstrapped = AsyncMock(return_value=False)
 
-    ctx = _make_context(
-        db_path,
-        exec_svc=exec_svc,
-        mds=_FakeMDS(_make_bundle()),
-        runtime=runtime,
-    )
+        ctx = _make_context(
+            pool,
+            tmp_path,
+            exec_svc=exec_svc,
+            mds=_FakeMDS(_make_bundle()),
+            runtime=runtime,
+        )
 
-    results = await execute_trades(ctx, "leader1", [_signal()], time.time())
+        results = await execute_trades(ctx, "leader1", [_signal()], time.time())
 
-    assert len(results) == 1
-    assert results[0].status == "skipped"
-    exec_svc.execute.assert_not_awaited()
+        assert len(results) == 1
+        assert results[0].status == "skipped"
+        exec_svc.execute.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_pipeline_executes_when_bootstrap_returns_true_and_mds_fresh(tmp_path):
-    db_path = _init_db(tmp_path)
-    exec_svc = AsyncMock()
-    exec_svc.execute.return_value = _exec_result_filled()
+    async with _pg_pool() as pool:
+        exec_svc = AsyncMock()
+        exec_svc.execute.return_value = _exec_result_filled()
 
-    runtime = AsyncMock()
-    runtime.ensure_token_ready_or_bootstrapped = AsyncMock(return_value=True)
+        runtime = AsyncMock()
+        runtime.ensure_token_ready_or_bootstrapped = AsyncMock(return_value=True)
 
-    ctx = _make_context(
-        db_path,
-        exec_svc=exec_svc,
-        mds=_FakeMDS(_make_bundle()),
-        runtime=runtime,
-    )
+        ctx = _make_context(
+            pool,
+            tmp_path,
+            exec_svc=exec_svc,
+            mds=_FakeMDS(_make_bundle()),
+            runtime=runtime,
+        )
 
-    results = await execute_trades(ctx, "leader1", [_signal()], time.time())
+        results = await execute_trades(ctx, "leader1", [_signal()], time.time())
 
-    assert len(results) == 1
-    assert results[0].status != "skipped"
-    exec_svc.execute.assert_awaited_once()
+        assert len(results) == 1
+        assert results[0].status != "skipped"
+        exec_svc.execute.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
@@ -548,16 +574,16 @@ class _FakeRestMDS:
         return self._bundle
 
 
-def _make_rest_context(db_path, *, exec_svc, mds, runtime, decision_svc=None):
+def _make_rest_context(pool, tmp_path, *, exec_svc, mds, runtime, decision_svc=None):
     ctx = TradingContext(
         user_id="user1",
         wallet_address="0x" + "a" * 40,
         client=MagicMock(),
-        positions_repo=PositionsRepo(db_path),
-        fills_repo=FillsRepo(db_path),
-        orders_repo=OrdersRepo(db_path),
-        risk_blocks_repo=RiskBlocksRepo(db_path),
-        pnl_tracker=PnLTracker(log_path=str(db_path) + ".pnl"),
+        positions_repo=PositionsRepo(pool),
+        fills_repo=FillsRepo(pool),
+        orders_repo=OrdersRepo(pool),
+        risk_blocks_repo=RiskBlocksRepo(pool),
+        pnl_tracker=PnLTracker(log_path=str(tmp_path / "pr3-rest.pnl")),
         risk_engine=RiskEngine(),
         accounting_service=AccountingService(),
         position_manager=PositionManager(),
@@ -605,108 +631,112 @@ def _make_rest_context(db_path, *, exec_svc, mds, runtime, decision_svc=None):
 
 @pytest.mark.asyncio
 async def test_rest_primary_calls_require_execution_snapshot_once_per_pair(tmp_path):
-    db_path = _init_db(tmp_path)
-    exec_svc = AsyncMock()
-    exec_svc.execute.return_value = _exec_result_filled()
+    async with _pg_pool() as pool:
+        exec_svc = AsyncMock()
+        exec_svc.execute.return_value = _exec_result_filled()
 
-    mds = _FakeRestMDS(_rest_bundle())
-    runtime = AsyncMock()
-    runtime.ensure_token_ready_or_bootstrapped = AsyncMock(return_value=True)
-    runtime.subscribe_tokens = AsyncMock()
+        mds = _FakeRestMDS(_rest_bundle())
+        runtime = AsyncMock()
+        runtime.ensure_token_ready_or_bootstrapped = AsyncMock(return_value=True)
+        runtime.subscribe_tokens = AsyncMock()
 
-    ctx = _make_rest_context(
-        db_path,
-        exec_svc=exec_svc,
-        mds=mds,
-        runtime=runtime,
-        decision_svc=_RecordingDecisionService(),
-    )
+        ctx = _make_rest_context(
+            pool,
+            tmp_path,
+            exec_svc=exec_svc,
+            mds=mds,
+            runtime=runtime,
+            decision_svc=_RecordingDecisionService(),
+        )
 
-    await execute_trades(ctx, "leader1", [_signal()], time.time())
+        await execute_trades(ctx, "leader1", [_signal()], time.time())
 
-    assert len(mds.snapshot_calls) == 1
-    token_id, side, condition_id = mds.snapshot_calls[0]
-    assert token_id == FAKE_TOKEN_ID
-    assert side == "BUY"
-    assert condition_id == "cond-pr3"
-    # REST primary seeds from `/book`, then best-effort subscribes WSS for
-    # ongoing store updates. It must NOT wait for WSS bootstrap/readiness here.
-    runtime.subscribe_tokens.assert_awaited_once_with([FAKE_TOKEN_ID])
-    runtime.ensure_token_ready_or_bootstrapped.assert_not_awaited()
+        assert len(mds.snapshot_calls) == 1
+        token_id, side, condition_id = mds.snapshot_calls[0]
+        assert token_id == FAKE_TOKEN_ID
+        assert side == "BUY"
+        assert condition_id == "cond-pr3"
+        # REST primary seeds from `/book`, then best-effort subscribes WSS for
+        # ongoing store updates. It must NOT wait for WSS bootstrap/readiness here.
+        runtime.subscribe_tokens.assert_awaited_once_with([FAKE_TOKEN_ID])
+        runtime.ensure_token_ready_or_bootstrapped.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_rest_primary_skips_with_specific_skip_code(tmp_path):
-    db_path = _init_db(tmp_path)
-    exec_svc = AsyncMock()
+    async with _pg_pool() as pool:
+        exec_svc = AsyncMock()
 
-    err = StaleDataError("wide", skip_code="book_spread_wide")
-    mds = _FakeRestMDS(raise_exc=err)
-    runtime = AsyncMock()
+        err = StaleDataError("wide", skip_code="book_spread_wide")
+        mds = _FakeRestMDS(raise_exc=err)
+        runtime = AsyncMock()
 
-    ctx = _make_rest_context(
-        db_path,
-        exec_svc=exec_svc,
-        mds=mds,
-        runtime=runtime,
-    )
+        ctx = _make_rest_context(
+            pool,
+            tmp_path,
+            exec_svc=exec_svc,
+            mds=mds,
+            runtime=runtime,
+        )
 
-    results = await execute_trades(ctx, "leader1", [_signal()], time.time())
+        results = await execute_trades(ctx, "leader1", [_signal()], time.time())
 
-    assert len(results) == 1
-    assert results[0].status == "skipped"
-    assert results[0].reason == "book_spread_wide"
-    exec_svc.execute.assert_not_awaited()
+        assert len(results) == 1
+        assert results[0].status == "skipped"
+        assert results[0].reason == "book_spread_wide"
+        exec_svc.execute.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_rest_primary_decision_meta_carries_rest_snapshot_source(tmp_path, capsys):
-    db_path = _init_db(tmp_path)
-    exec_svc = AsyncMock()
-    exec_svc.execute.return_value = _exec_result_filled()
+    async with _pg_pool() as pool:
+        exec_svc = AsyncMock()
+        exec_svc.execute.return_value = _exec_result_filled()
 
-    mds = _FakeRestMDS(_rest_bundle())
-    runtime = AsyncMock()
+        mds = _FakeRestMDS(_rest_bundle())
+        runtime = AsyncMock()
 
-    ctx = _make_rest_context(
-        db_path,
-        exec_svc=exec_svc,
-        mds=mds,
-        runtime=runtime,
-        decision_svc=_RecordingDecisionService(),
-    )
+        ctx = _make_rest_context(
+            pool,
+            tmp_path,
+            exec_svc=exec_svc,
+            mds=mds,
+            runtime=runtime,
+            decision_svc=_RecordingDecisionService(),
+        )
 
-    await execute_trades(ctx, "leader1", [_signal()], time.time())
+        await execute_trades(ctx, "leader1", [_signal()], time.time())
 
-    out = capsys.readouterr().out
-    assert "trade_pipeline_market_data_snapshot_start" in out
-    assert "trade_pipeline_market_data_snapshot_ready" in out
-    # The ready log carries source=rest_snapshot directly; the decision meta
-    # is also threaded through ``log_trade_decision`` when the copy-decision
-    # gate is enabled. Both paths refer to the same source label.
-    assert "source=rest_snapshot" in out
+        out = capsys.readouterr().out
+        assert "trade_pipeline_market_data_snapshot_start" in out
+        assert "trade_pipeline_market_data_snapshot_ready" in out
+        # The ready log carries source=rest_snapshot directly; the decision meta
+        # is also threaded through ``log_trade_decision`` when the copy-decision
+        # gate is enabled. Both paths refer to the same source label.
+        assert "source=rest_snapshot" in out
 
 
 @pytest.mark.asyncio
 async def test_rest_primary_subscribes_wss_without_waiting_for_readiness(tmp_path):
-    db_path = _init_db(tmp_path)
-    exec_svc = AsyncMock()
-    exec_svc.execute.return_value = _exec_result_filled()
+    async with _pg_pool() as pool:
+        exec_svc = AsyncMock()
+        exec_svc.execute.return_value = _exec_result_filled()
 
-    mds = _FakeRestMDS(_rest_bundle())
-    runtime = AsyncMock()
-    runtime.ensure_token_ready_or_bootstrapped = AsyncMock(return_value=False)
-    runtime.subscribe_tokens = AsyncMock()
+        mds = _FakeRestMDS(_rest_bundle())
+        runtime = AsyncMock()
+        runtime.ensure_token_ready_or_bootstrapped = AsyncMock(return_value=False)
+        runtime.subscribe_tokens = AsyncMock()
 
-    ctx = _make_rest_context(
-        db_path,
-        exec_svc=exec_svc,
-        mds=mds,
-        runtime=runtime,
-    )
+        ctx = _make_rest_context(
+            pool,
+            tmp_path,
+            exec_svc=exec_svc,
+            mds=mds,
+            runtime=runtime,
+        )
 
-    await execute_trades(ctx, "leader1", [_signal()], time.time())
+        await execute_trades(ctx, "leader1", [_signal()], time.time())
 
-    runtime.subscribe_tokens.assert_awaited_once_with([FAKE_TOKEN_ID])
-    runtime.ensure_token_ready_or_bootstrapped.assert_not_awaited()
-    exec_svc.execute.assert_awaited_once()
+        runtime.subscribe_tokens.assert_awaited_once_with([FAKE_TOKEN_ID])
+        runtime.ensure_token_ready_or_bootstrapped.assert_not_awaited()
+        exec_svc.execute.assert_awaited_once()
