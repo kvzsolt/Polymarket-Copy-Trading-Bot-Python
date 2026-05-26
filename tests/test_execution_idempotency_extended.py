@@ -28,7 +28,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from services.executionService import (
     ExecutionRequest,
     ExecutionService,
-    _idempotency_key,
     _is_pending_submission_expired,
     _is_retry_blocking_existing,
     _sanitize_submission_request,
@@ -249,17 +248,13 @@ class TestDuplicateSignalSuppression:
 
     @pytest.mark.asyncio
     async def test_same_idempotency_key_blocks(self, tmp_path):
-        """Two requests producing the same idempotency key -> second blocked."""
+        """Two identical requests -> second blocked by effective-idempotency."""
         async with _pg_pool() as pool:
             repo = OrdersRepo(pool)
             clob = _SimpleClob()
             svc = ExecutionService(clob, _FeeSvc(), repo, config=_make_exec_config(), market_data_service=_make_mds())
 
             req = _make_req(signal_id="same-key")
-            key1 = _idempotency_key(req)
-            key2 = _idempotency_key(req)
-            assert key1 == key2
-
             await svc.execute(req)
             result2 = await svc.execute(req)
             assert result2.status == "duplicate_ignored"
@@ -331,36 +326,41 @@ class TestStaleLockExpiry:
             svc = ExecutionService(clob, _FeeSvc(), repo, config=_make_exec_config(), market_data_service=_make_mds())
             req = _make_req(signal_id="sig-stale")
 
-            # Simulate a stuck pending submission directly in the repo
-            key = _idempotency_key(req)
+            # Pin the effective-idempotency key so we can seed the stale row
+            # under the exact key the service will compute on execute().
+            key = "test-stale-idem-key"
             now = time.time()
-            await svc._save_submission(
-                idempotency_key=key,
-                request={
-                    "user_id": req.user_id,
-                    "leader_id": req.leader_id,
-                    "token_id": req.token_id,
-                    "side": "BUY",
-                    "amount": str(req.amount),
-                    "reason": req.reason,
-                    "signal_id": req.signal_id,
-                },
-                response={
-                    "success": False,
-                    "status": "pending",
-                    "pending_since": now - 200,
-                    "pending_ttl_seconds": 120,
-                    "pending_expires_at": now - 80,
-                },
-            )
+            with patch(
+                "services.executionService._effective_idempotency_key",
+                return_value=key,
+            ):
+                await svc._save_submission(
+                    idempotency_key=key,
+                    request={
+                        "user_id": req.user_id,
+                        "leader_id": req.leader_id,
+                        "token_id": req.token_id,
+                        "side": "BUY",
+                        "amount": str(req.amount),
+                        "reason": req.reason,
+                        "signal_id": req.signal_id,
+                    },
+                    response={
+                        "success": False,
+                        "status": "pending",
+                        "pending_since": now - 200,
+                        "pending_ttl_seconds": 120,
+                        "pending_expires_at": now - 80,
+                    },
+                )
 
-            # Verify the stale submission exists
-            existing = await repo.get_by_idempotency_key(key)
-            assert existing is not None
-            assert existing.get("status") == "pending"
+                # Verify the stale submission exists
+                existing = await repo.get_by_idempotency_key(key)
+                assert existing is not None
+                assert existing.get("status") == "pending"
 
-            # Now execute — should detect the expired pending and proceed
-            result = await svc.execute(req)
+                # Now execute — should detect the expired pending and proceed
+                result = await svc.execute(req)
             # Should NOT be duplicate_ignored — the stale lock should be expired
             assert result.status != "duplicate_ignored"
             # Should have attempted a real submission (accepted)
@@ -582,27 +582,6 @@ class TestOrderRepoLockCycle:
             assert trade is not None
             assert trade["status"] == "executed"
             assert trade["user_id"] == "u1"
-
-
-# ---------------------------------------------------------------------------
-# Idempotency key generation
-# ---------------------------------------------------------------------------
-
-
-class TestIdempotencyKey:
-    def test_same_request_same_key(self):
-        req = _make_req()
-        assert _idempotency_key(req) == _idempotency_key(req)
-
-    def test_different_signal_different_key(self):
-        req1 = _make_req(signal_id="sig-A")
-        req2 = _make_req(signal_id="sig-B")
-        assert _idempotency_key(req1) != _idempotency_key(req2)
-
-    def test_different_amount_different_key(self):
-        req1 = _make_req(amount=Decimal("5"))
-        req2 = _make_req(amount=Decimal("10"))
-        assert _idempotency_key(req1) != _idempotency_key(req2)
 
 
 # ---------------------------------------------------------------------------

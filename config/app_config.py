@@ -266,6 +266,9 @@ class DatabaseConfig:
 class ClobConfig:
     http_url: str
     api_key: str
+    # CLOB V2 gate — fail-closed default. The bot will not attempt the
+    # py-clob-client-v2 surface unless this is explicitly enabled.
+    clob_v2_ready: bool = False
 
 
 @dataclass(frozen=True)
@@ -277,6 +280,11 @@ class PollingConfig:
     leader_positions_min_fetch_spacing_ms: int
     leader_activity_min_fetch_spacing_ms: int
     reconcile_interval_seconds: int
+    # Maximum age (seconds) for retained processed-trade rows before the
+    # background purge sweeper deletes them. Previously a raw
+    # ``ENV.get("RETENTION_MAX_AGE_SECONDS", 30*86400)`` read from app.py
+    # and utils/idempotency.py; promoted here so the purge path is typed.
+    retention_max_age_seconds: float = 30.0 * 86400.0
 
 
 @dataclass(frozen=True)
@@ -425,12 +433,25 @@ class NetworkConfig:
     enable_metrics_server: bool
     metrics_port: int
     metrics_bind_host: str
+    # Polymarket-side collateral / exchange contract addresses. These used
+    # to be read straight out of ``ENV`` by ``utils/createClobClient.py``
+    # and ``utils/getMyBalance.py``; promoted to typed config so the
+    # balance-check + CLOB-client paths can drop their raw env reads.
+    # Default-empty strings let the existing usdc_contract_address fallback
+    # chain in load_config keep working when these aren't set.
+    collateral_contract_address: str = ""
+    pusd_contract_address: str = ""
+    ctf_exchange_v2_address: str = ""
 
 
 @dataclass(frozen=True)
 class ReconciliationConfig:
     stale_threshold_seconds: float
     auto_cancel_stale: bool
+    # Per-tick cap on how many already-closed orders the reconciler is
+    # allowed to re-probe. Fail-closed default mirrors the previous
+    # ``ENV.get("RECONCILE_MAX_CLOSED_PROBES", 10)`` read.
+    max_closed_probes: int = 10
 
 
 @dataclass(frozen=True)
@@ -899,6 +920,7 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
     clob = ClobConfig(
         http_url=p.string("CLOB_HTTP_URL", "https://clob.polymarket.com/"),
         api_key=p.string("CLOB_API_KEY", ""),
+        clob_v2_ready=p.bool_("CLOB_V2_READY", False),
     )
 
     # Polling / cadence
@@ -910,6 +932,7 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         leader_positions_min_fetch_spacing_ms=p.int_("LEADER_POSITIONS_MIN_FETCH_SPACING_MS", "250"),
         leader_activity_min_fetch_spacing_ms=p.int_("LEADER_ACTIVITY_MIN_FETCH_SPACING_MS", "250"),
         reconcile_interval_seconds=p.int_("RECONCILE_INTERVAL_SECONDS", "300"),
+        retention_max_age_seconds=p.float_("RETENTION_MAX_AGE_SECONDS", str(30 * 86400)),
     )
 
     # Sizing
@@ -1089,11 +1112,15 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         enable_metrics_server=p.bool_("ENABLE_METRICS_SERVER", False),
         metrics_port=p.int_("METRICS_PORT", "9102"),
         metrics_bind_host=p.string("METRICS_BIND_HOST", "127.0.0.1"),
+        collateral_contract_address=p.string("COLLATERAL_CONTRACT_ADDRESS", ""),
+        pusd_contract_address=p.string("PUSD_CONTRACT_ADDRESS", ""),
+        ctf_exchange_v2_address=p.string("CTF_EXCHANGE_V2_ADDRESS", ""),
     )
 
     reconciliation = ReconciliationConfig(
         stale_threshold_seconds=p.float_("RECONCILE_STALE_SECONDS", "3600"),
         auto_cancel_stale=p.bool_("RECONCILE_AUTO_CANCEL", False),
+        max_closed_probes=p.int_("RECONCILE_MAX_CLOSED_PROBES", "10"),
     )
 
     position_drift = PositionDriftConfig(
