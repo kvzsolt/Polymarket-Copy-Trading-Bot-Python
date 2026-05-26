@@ -1,0 +1,20 @@
+services/riskEngine.py
+  s_b575af21b31eb4::t_468368e71109b5 178-185
+  s_b575af21b31eb4::t_123679df38f83c 69-72,77-79
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.1",
+  "base_commit_sha": "a81d45e0236b3f9985941a213acf2e05d3bc4b7b",
+  "prompts": {},
+  "sessions": {
+    "s_b575af21b31eb4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "07691412-808e-482a-966d-b8c7cecadf2d",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
