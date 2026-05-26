@@ -280,10 +280,12 @@ class TestCopyDecisionService:
 class TestTraderDiscoveryService:
     @pytest.mark.asyncio
     async def test_resolve_leaders_disabled_returns_configured(self):
+        # No-config TraderDiscoveryService defaults to disabled — see
+        # services/traderDiscoveryService.py:148 (legacy-kill #77 dropped
+        # the ENV.get fallback in favour of a hardcoded disabled default).
         svc = TraderDiscoveryService()
         configured = ["0x" + ("1" * 40)]
-        with patch.dict("services.traderDiscoveryService.ENV", {"AUTO_DISCOVER_LEADERS": False}, clear=False):
-            resolved = await svc.resolve_leaders(configured)
+        resolved = await svc.resolve_leaders(configured)
         assert resolved == configured
 
     @pytest.mark.asyncio
@@ -322,12 +324,14 @@ class TestTraderDiscoveryService:
                 },
             ]
         }
-        with patch("services.traderDiscoveryService._fetch_json", return_value=rows), \
-             patch.dict(
-                 "services.traderDiscoveryService.ENV",
-                 {"MIN_LEADER_PNL": 0, "MIN_LEADER_WIN_RATE": 0, "MIN_LEADER_POSITIONS": 0, "DISCOVERY_MAX_RESULTS": 50},
-                 clear=False,
-             ):
+        # Override the discovery-gate thresholds via the instance attrs —
+        # the legacy-kill slice dropped the ENV.get fallback that read
+        # MIN_LEADER_PNL / _WIN_RATE / _POSITIONS at construction time.
+        svc._min_pnl = 0.0
+        svc._min_win_rate = 0.0
+        svc._min_positions = 0
+        svc._max_results = 50
+        with patch("services.traderDiscoveryService._fetch_json", return_value=rows):
             cands = await svc.discover_candidates(max_results=2)
         assert len(cands) == 2
         assert cands[0].rank == 1
