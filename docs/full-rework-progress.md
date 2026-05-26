@@ -611,3 +611,55 @@ repo + wire everything. Incremental migration past this point requires
 either a coordinated cross-file slice (e.g. "all execution-path
 services in one pass") or a temporary async shim. Deferred to a
 dedicated focused session.
+
+## PG migration complete — final test-port slice (7 commits)
+
+The post-doctor "tighter dependency mesh" called out above was already
+silently resolved by commits ``b153be1`` (await get_position callbacks)
+and ``a7b30d8`` (``feat(pg-final): kill storage/sqlite/ + flip entire
+execution mesh to async PG``). All ``services/``, ``orchestrators/``,
+``bootstrap.py``, ``app.py``, ``config/db.py``, ``utils/idempotency.py``,
+and ``scripts/`` production code is now PG-native; remaining mentions
+of ``storage.sqlite.*`` in the live tree are docstring references in
+``storage/postgres/`` repos noting their historical translation source
+(harmless, kept for provenance).
+
+The only residual sqlite import surface lived in **5 module-skipped
+test files** (4,575 LOC, ~98 tests) and one latent async-mock bug in
+the release-gate suite. This slice closes them out.
+
+| Slice | Commit | What |
+|---|---|---|
+| Issue #74 drift reconciliation tests | `ad748a2` | Drop module-level ``pytest.skip("sqlite-bound; pending PG port")``; swap 9 inline ``PositionRecord`` imports → PG; convert ``MockPositionsRepo`` / ``MockReservationService`` / inline mock helper classes (``list_active_for_scope``, ``mark_released``, ``release_terminal``) to async to match awaited surface at ``reconciliation_service.py:1621/1635/1643/1657``. 15 tests pass in 0.15s |
+| Issue #70 reservation intent-lifecycle tests | `80d8755` | Finish the partial port from ``d932faf``. Drop module-level ``pytest.skip``; add canonical ``_pg_pool()`` testcontainer helper; port ``TestStaleReservationExpiry`` + ``TestReservationAuditLogging`` (4 ``@pytest.mark.integration`` tests) to async PG ``ReservationsRepo`` / ``PositionsRepo``; await ``svc.release_terminal``. 19 unit + 4 integration tests pass in 0.13s / 14.87s |
+| Restart-rehydration risk tests | `7d7337b` | Drop module-level ``pytest.skip``; swap 6 top-level imports → PG; add ``_pg_pool()``; wrap every test body in ``async with _pg_pool() as pool:``; convert ``test_rehydrate_preserves_token_distinct_positions`` to ``async def``; await every previously-sync repo call (``append_fill``, ``rebuild_user_positions_from_fills``, ``get_position``, ``upsert_position``, ``save_submission``, ``get_by_order_id``, ``mark_processed_trade``, ``get_processed_trade``, ``get_active_risk_block``, ``list_fills_for_user_condition``); ``await rehydrate_position_manager(context)`` (``riskMonitor.py:702`` is now async). 11 tests pass in 39s |
+| Trade-pipeline market-data authority tests | `a64a747` | Drop module-level ``pytest.skip``; swap 6 top-level imports → PG; drop ``_init_db(tmp_path)`` helper; change ``_make_context`` / ``_make_rest_context`` signature to ``(pool, tmp_path, ...)`` — pool drives repos, tmp_path stays only for the ``PnLTracker`` log file; wrap every test body in ``async with _pg_pool() as pool:``. 12 tests (WSS-primary + REST-snapshot) pass in 42s |
+| Trade-pipeline safety tests (largest) | `e755aed` | The 1,511-LOC end-to-end safety net (duplicate prevention, market risk quarantine, retry budget, reconciliation, position drift sync, daily-spend ledger, leader-fraction sizing, token-id field priority). Same mechanical pattern as above plus: port the one raw-SQL block (``UPDATE processed_trades SET processed_at = ?``) to async asyncpg with ``$1/$2`` params + integer epoch; flip the two ``MagicMock(return_value=...)`` overrides of ``ctx.positions_repo.get_position`` / ``.apply_fill`` to ``AsyncMock``. 41 tests pass in 118s (35 async trade-pipeline + 6 sync ``TestTokenIdFieldPriority``) |
+| Latent release-gate drift-mock fix | `35789ea` | ``tests/release_gate/test_manual_drift_reconciliation.py::_make_service`` still constructed ``positions_repo`` as a sync ``MagicMock`` with ``.get_position.return_value = SimpleNamespace(...)``. Service awaits ``get_position`` → ``TypeError: object types.SimpleNamespace can't be used in 'await' expression``. Pre-existing regression from ``a7b30d8`` that the release-gate gate's 68s smoke-run had been quietly failing on for the last 3 commits. Swap to ``AsyncMock`` for ``get_position`` / ``delete_position`` / ``upsert_position``. 4/4 pass in 0.11s |
+
+### Final verification
+
+| Check | Result |
+|---|---|
+| ``grep -rln "from storage.sqlite\|import storage.sqlite" --include='*.py' .`` excluding ``.venv``, ``build`` | **0 hits** — the only remaining ``storage.sqlite`` mentions in the tree are docstring comments inside ``storage/postgres/*.py`` noting "translated from ``storage/sqlite/<file>.py``" |
+| ``storage/sqlite/`` directory | gone — was already removed from git in ``a7b30d8``; leftover ``__pycache__`` cleaned this session |
+| ``pytest -q --ignore=tests/release_gate --ignore=tests/replay`` | **2,320 passed, 7 skipped, 46 deselected** in 846s (deselected = ``@pytest.mark.integration`` PG-container tests, run separately) |
+| ``pytest -m release_gate -o asyncio_mode=auto -q`` | **153 passed, 6 skipped, 2,372 deselected** in 78s |
+| ``python -m compileall -q`` on all ported files | clean |
+
+### Net effect
+
+- Production sqlite callers: **0**. Every ``services/``, ``orchestrators/``,
+  ``bootstrap.py``, ``app.py``, ``config/db.py``, ``utils/idempotency.py``,
+  ``scripts/``, and ``bot_cli/`` path is PG-native.
+- Test sqlite callers: **0**. Every test under ``tests/`` either drives a
+  live ``postgres:16-alpine`` testcontainer via the canonical
+  ``_pg_pool()`` helper or uses ``AsyncMock`` against the async-repo
+  surface.
+- ``storage/sqlite/`` package: removed from disk.
+- ``config/db.py`` is pure-PG (``connect_db()`` runs ``init_pool`` +
+  ``apply_pg_migrations``; no sqlite fallback).
+- CI gates green: 2,320 unit-suite passes + 153 release-gate passes.
+
+The SQLite → Postgres migration is complete. The branch is ready for
+review and merge into ``full-rework``.
