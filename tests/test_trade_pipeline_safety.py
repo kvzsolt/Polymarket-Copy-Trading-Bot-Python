@@ -1,10 +1,8 @@
 """Safety tests for the trade pipeline — duplicate prevention, failure handling, position updates."""
 
 from __future__ import annotations
-import pytest
-pytest.skip("sqlite-bound; pending PG port", allow_module_level=True)
 
-
+import contextlib
 import time
 from decimal import Decimal
 from types import SimpleNamespace
@@ -18,15 +16,14 @@ from config.env import rehydrate_env
 from domain.trading_context import TradingContext
 from orchestrators.runtime_bootstrap import startup_reconcile_unconfirmed
 from orchestrators.trade_pipeline import execute_trades, build_trade_key, reconcile_submitted_unconfirmed
-from storage.sqlite.risk_blocks_repo import RiskBlocksRepo
+from storage.postgres.risk_blocks_repo import RiskBlocksRepo
 from services.copyDecisionService import CopyDecision
 from services.executionService import ExecutionResult
 from services.pnlTracker import PnLTracker
 from services.positionManager import PositionManager
 from services.riskEngine import RiskEngine
 from services.accountingService import AccountingService
-from storage.sqlite.connection import create_connection
-from storage.sqlite.fills_repo import FillRecord, FillsRepo
+from storage.postgres.fills_repo import FillRecord, FillsRepo
 
 
 @pytest.fixture(autouse=True)
@@ -82,18 +79,39 @@ def _config(**overrides):
     env.update(overrides)
     with patch.object(app_config_mod, "_runtime_python_supported", return_value=True):
         return load_config(env)
-from storage.sqlite.migrations import apply_migrations
-from storage.sqlite.orders_repo import OrderSubmissionRecord, OrdersRepo
-from storage.sqlite.positions_repo import PositionsRepo
+from storage.postgres.orders_repo import OrderSubmissionRecord, OrdersRepo
+from storage.postgres.positions_repo import PositionsRepo
 
 FAKE_TOKEN_ID = "71321045679252212594626385532706912750332728571942532223535764789812338637396"
 
 
-def _init_db(tmp_path):
-    db_path = str(tmp_path / "test.db")
-    with create_connection(db_path) as conn:
-        apply_migrations(conn)
-    return db_path
+
+@contextlib.asynccontextmanager
+async def _pg_pool():
+    try:
+        from testcontainers.postgres import PostgresContainer
+        import asyncpg
+        from storage.postgres.migrations import apply_migrations as pg_apply
+    except Exception as exc:
+        pytest.skip(f"Docker / postgres image unavailable: {exc!r}")
+    ctr = PostgresContainer("postgres:16-alpine")
+    try:
+        ctr.start()
+    except Exception as exc:
+        pytest.skip(f"Docker / postgres image unavailable: {exc!r}")
+    try:
+        dsn = ctr.get_connection_url(driver="asyncpg").replace(
+            "postgresql+asyncpg://", "postgresql://"
+        )
+        pool = await asyncpg.create_pool(dsn, min_size=1, max_size=5)
+        async with pool.acquire() as conn:
+            await pg_apply(conn)
+        try:
+            yield pool
+        finally:
+            await pool.close()
+    finally:
+        ctr.stop()
 
 
 def _make_bundle(
@@ -198,7 +216,8 @@ class _PassThroughCoordinator:
 
 
 def _make_context(
-    db_path,
+    pool,
+    tmp_path,
     *,
     execution_service=None,
     config=None,
@@ -212,11 +231,11 @@ def _make_context(
         user_id="user1",
         wallet_address="0x" + "a" * 40,
         client=MagicMock(),
-        positions_repo=PositionsRepo(db_path),
-        fills_repo=FillsRepo(db_path),
-        orders_repo=OrdersRepo(db_path),
-        risk_blocks_repo=RiskBlocksRepo(db_path),
-        pnl_tracker=PnLTracker(log_path=str(db_path) + ".pnl"),
+        positions_repo=PositionsRepo(pool),
+        fills_repo=FillsRepo(pool),
+        orders_repo=OrdersRepo(pool),
+        risk_blocks_repo=RiskBlocksRepo(pool),
+        pnl_tracker=PnLTracker(log_path=str(tmp_path / "test.pnl")),
         risk_engine=RiskEngine(),
         accounting_service=AccountingService(),
         position_manager=PositionManager(),
@@ -307,1066 +326,1066 @@ class _RecordingDecisionService:
 @pytest.mark.asyncio
 async def test_market_risk_quarantine_skips_buy_copy_trades(tmp_path):
     """A risk block must block BUY re-entry on the quarantined position."""
-    db_path = _init_db(tmp_path)
-    exec_svc = AsyncMock()
-    ctx = _make_context(db_path, execution_service=exec_svc)
+    async with _pg_pool() as pool:
+        exec_svc = AsyncMock()
+        ctx = _make_context(pool, tmp_path, execution_service=exec_svc)
 
-    ctx.risk_blocks_repo.mark_risk_block(
-        user_id="user1",
-        condition_id="cond1",
-        token_id=FAKE_TOKEN_ID,
-        reason="stop_loss",
-        source="test",
-        leader_anchor="leader1",
-    )
+        await ctx.risk_blocks_repo.mark_risk_block(
+            user_id="user1",
+            condition_id="cond1",
+            token_id=FAKE_TOKEN_ID,
+            reason="stop_loss",
+            source="test",
+            leader_anchor="leader1",
+        )
 
-    signal = _signal(side="BUY", tx_hash="0xquarantine-buy")
-    results = await execute_trades(ctx, "leader1", [signal], time.time())
+        signal = _signal(side="BUY", tx_hash="0xquarantine-buy")
+        results = await execute_trades(ctx, "leader1", [signal], time.time())
 
-    assert len(results) == 1
-    assert results[0].status == "skipped"
-    assert results[0].reason == "market_risk_quarantined"
-    exec_svc.execute.assert_not_called()
+        assert len(results) == 1
+        assert results[0].status == "skipped"
+        assert results[0].reason == "market_risk_quarantined"
+        exec_svc.execute.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_sell_not_blocked_when_risk_block_active(tmp_path):
     """A risk block must NOT block SELL paths — exits must always be allowed."""
-    db_path = _init_db(tmp_path)
-    exec_svc = AsyncMock()
-    exec_svc.execute.return_value = _exec_result()
-    ctx = _make_context(db_path, execution_service=exec_svc)
+    async with _pg_pool() as pool:
+        exec_svc = AsyncMock()
+        exec_svc.execute.return_value = _exec_result()
+        ctx = _make_context(pool, tmp_path, execution_service=exec_svc)
 
-    ctx.risk_blocks_repo.mark_risk_block(
-        user_id="user1",
-        condition_id="cond1",
-        token_id=FAKE_TOKEN_ID,
-        reason="stop_loss",
-        source="test",
-        leader_anchor="leader1",
-    )
-
-    # Seed a position so the SELL has something to act on
-    from storage.sqlite.positions_repo import PositionRecord
-    ctx.positions_repo.upsert_position(
-        PositionRecord(
+        await ctx.risk_blocks_repo.mark_risk_block(
             user_id="user1",
             condition_id="cond1",
             token_id=FAKE_TOKEN_ID,
-            leader_id="leader1",
-            size_tokens=Decimal("10"),
-            avg_entry_price=Decimal("0.50"),
+            reason="stop_loss",
+            source="test",
+            leader_anchor="leader1",
         )
-    )
 
-    signal = _signal(side="SELL", tx_hash="0xquarantine-sell")
-    with patch("orchestrators.trade_pipeline._fetch_live_position_size", new_callable=AsyncMock, return_value=Decimal("10")):
-        results = await execute_trades(ctx, "leader1", [signal], time.time())
+        # Seed a position so the SELL has something to act on
+        from storage.postgres.positions_repo import PositionRecord
+        await ctx.positions_repo.upsert_position(
+            PositionRecord(
+                user_id="user1",
+                condition_id="cond1",
+                token_id=FAKE_TOKEN_ID,
+                leader_id="leader1",
+                size_tokens=Decimal("10"),
+                avg_entry_price=Decimal("0.50"),
+            )
+        )
 
-    assert len(results) == 1
-    exec_svc.execute.assert_awaited_once()
-    assert results[0].status == "executed"
-    # SELL must proceed — must NOT be skipped with market_risk_quarantined
-    assert results[0].reason != "market_risk_quarantined"
+        signal = _signal(side="SELL", tx_hash="0xquarantine-sell")
+        with patch("orchestrators.trade_pipeline._fetch_live_position_size", new_callable=AsyncMock, return_value=Decimal("10")):
+            results = await execute_trades(ctx, "leader1", [signal], time.time())
+
+        assert len(results) == 1
+        exec_svc.execute.assert_awaited_once()
+        assert results[0].status == "executed"
+        # SELL must proceed — must NOT be skipped with market_risk_quarantined
+        assert results[0].reason != "market_risk_quarantined"
 
 
 @pytest.mark.asyncio
 async def test_fresh_leader_rebuy_auto_clears_risk_block_in_live_pipeline(tmp_path):
-    db_path = _init_db(tmp_path)
-    exec_svc = AsyncMock()
-    exec_svc.execute.return_value = _exec_result()
-    ctx = _make_context(db_path, execution_service=exec_svc)
+    async with _pg_pool() as pool:
+        exec_svc = AsyncMock()
+        exec_svc.execute.return_value = _exec_result()
+        ctx = _make_context(pool, tmp_path, execution_service=exec_svc)
 
-    ctx.risk_blocks_repo.mark_risk_block(
-        user_id="user1",
-        condition_id="cond1",
-        token_id=FAKE_TOKEN_ID,
-        reason="stop_loss",
-        source="test",
-        leader_anchor="leader1",
-        metadata={"leader_notional_at_trigger": 100.0},
-    )
+        await ctx.risk_blocks_repo.mark_risk_block(
+            user_id="user1",
+            condition_id="cond1",
+            token_id=FAKE_TOKEN_ID,
+            reason="stop_loss",
+            source="test",
+            leader_anchor="leader1",
+            metadata={"leader_notional_at_trigger": 100.0},
+        )
 
-    # With leader_notional_usdc=None, the fresh_leader_buy_after_net_flat
-    # rule is intentionally disabled because the caller does not have the
-    # leader's total position. Small routine BUY signals should NOT
-    # auto-clear risk blocks (P1 PR #63). The rule will be re-enabled when
-    # leader position fetch is available on the BUY path.
-    signal = _signal(side="BUY", tx_hash="0xfresh-buy", size=10.0, price=0.5)
-    results = await execute_trades(ctx, "leader1", [signal], time.time())
+        # With leader_notional_usdc=None, the fresh_leader_buy_after_net_flat
+        # rule is intentionally disabled because the caller does not have the
+        # leader's total position. Small routine BUY signals should NOT
+        # auto-clear risk blocks (P1 PR #63). The rule will be re-enabled when
+        # leader position fetch is available on the BUY path.
+        signal = _signal(side="BUY", tx_hash="0xfresh-buy", size=10.0, price=0.5)
+        results = await execute_trades(ctx, "leader1", [signal], time.time())
 
-    assert len(results) == 1
-    assert results[0].status == "skipped"
-    assert results[0].reason == "market_risk_quarantined"
+        assert len(results) == 1
+        assert results[0].status == "skipped"
+        assert results[0].reason == "market_risk_quarantined"
 
 
 @pytest.mark.asyncio
 async def test_buy_fail_closed_when_entry_policy_service_missing(tmp_path):
-    db_path = _init_db(tmp_path)
-    exec_svc = AsyncMock()
-    ctx = _make_context(db_path, execution_service=exec_svc)
-    ctx.entry_permission_service = None
+    async with _pg_pool() as pool:
+        exec_svc = AsyncMock()
+        ctx = _make_context(pool, tmp_path, execution_service=exec_svc)
+        ctx.entry_permission_service = None
 
-    signal = _signal(side="BUY", tx_hash="0xpolicy-missing")
-    results = await execute_trades(ctx, "leader1", [signal], time.time())
+        signal = _signal(side="BUY", tx_hash="0xpolicy-missing")
+        results = await execute_trades(ctx, "leader1", [signal], time.time())
 
-    assert len(results) == 1
-    assert results[0].status == "skipped"
-    assert results[0].reason == "entry_policy_unavailable"
-    exec_svc.execute.assert_not_called()
+        assert len(results) == 1
+        assert results[0].status == "skipped"
+        assert results[0].reason == "entry_policy_unavailable"
+        exec_svc.execute.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_duplicate_trade_is_skipped(tmp_path):
-    db_path = _init_db(tmp_path)
-    exec_svc = AsyncMock()
-    ctx = _make_context(db_path, execution_service=exec_svc)
+    async with _pg_pool() as pool:
+        exec_svc = AsyncMock()
+        ctx = _make_context(pool, tmp_path, execution_service=exec_svc)
 
-    signal = _signal()
-    trade_key = build_trade_key("user1", "leader1", signal)
-    ctx.orders_repo.mark_processed_trade(
-        trade_key=trade_key, user_id="user1", leader_id="leader1",
-        tx_hash="0xabc", side="BUY", asset=FAKE_TOKEN_ID,
-        condition_id="cond1", status="executed",
-    )
+        signal = _signal()
+        trade_key = build_trade_key("user1", "leader1", signal)
+        await ctx.orders_repo.mark_processed_trade(
+            trade_key=trade_key, user_id="user1", leader_id="leader1",
+            tx_hash="0xabc", side="BUY", asset=FAKE_TOKEN_ID,
+            condition_id="cond1", status="executed",
+        )
 
-    results = await execute_trades(ctx, "leader1", [signal], time.time())
-    assert len(results) == 1
-    assert results[0].status == "skipped"
-    assert results[0].reason == "already_processed"
-    exec_svc.execute.assert_not_called()
+        results = await execute_trades(ctx, "leader1", [signal], time.time())
+        assert len(results) == 1
+        assert results[0].status == "skipped"
+        assert results[0].reason == "already_processed"
+        exec_svc.execute.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_transient_failure_not_marked_processed(tmp_path):
-    db_path = _init_db(tmp_path)
-    exec_svc = AsyncMock()
-    exec_svc.execute.return_value = _exec_result(
-        accepted=False, filled=Decimal("0"), status="failed", order_id=None, error="connection timeout"
-    )
-    ctx = _make_context(db_path, execution_service=exec_svc)
+    async with _pg_pool() as pool:
+        exec_svc = AsyncMock()
+        exec_svc.execute.return_value = _exec_result(
+            accepted=False, filled=Decimal("0"), status="failed", order_id=None, error="connection timeout"
+        )
+        ctx = _make_context(pool, tmp_path, execution_service=exec_svc)
 
-    signal = _signal()
-    results = await execute_trades(ctx, "leader1", [signal], time.time())
-    assert len(results) == 1
-    assert results[0].status == "failed"
+        signal = _signal()
+        results = await execute_trades(ctx, "leader1", [signal], time.time())
+        assert len(results) == 1
+        assert results[0].status == "failed"
 
-    # The trade should NOT be in processed_trades so it can be retried
-    trade_key = build_trade_key("user1", "leader1", signal)
-    assert ctx.orders_repo.has_processed_trade(trade_key) is False
+        # The trade should NOT be in processed_trades so it can be retried
+        trade_key = build_trade_key("user1", "leader1", signal)
+        assert await ctx.orders_repo.has_processed_trade(trade_key) is False
 
 
 @pytest.mark.asyncio
 async def test_transient_failure_marked_processed_after_retry_budget(tmp_path):
-    db_path = _init_db(tmp_path)
-    exec_svc = AsyncMock()
-    exec_svc.execute.return_value = _exec_result(
-        accepted=False, filled=Decimal("0"), status="failed", order_id=None, error="connection timeout"
-    )
-    ctx = _make_context(
-        db_path,
-        execution_service=exec_svc,
-        config=_config(NON_TERMINAL_FAILURE_MAX_ATTEMPTS="2"),
-    )
+    async with _pg_pool() as pool:
+        exec_svc = AsyncMock()
+        exec_svc.execute.return_value = _exec_result(
+            accepted=False, filled=Decimal("0"), status="failed", order_id=None, error="connection timeout"
+        )
+        ctx = _make_context(
+            pool, tmp_path,
+            execution_service=exec_svc,
+            config=_config(NON_TERMINAL_FAILURE_MAX_ATTEMPTS="2"),
+        )
 
-    signal = _signal(tx_hash="0xretry")
-    trade_key = build_trade_key("user1", "leader1", signal)
+        signal = _signal(tx_hash="0xretry")
+        trade_key = build_trade_key("user1", "leader1", signal)
 
-    first = await execute_trades(ctx, "leader1", [signal], time.time())
-    assert first[0].status == "failed"
-    assert "retry budget exhausted" not in str(first[0].reason or "")
-    assert ctx.orders_repo.has_processed_trade(trade_key) is False
+        first = await execute_trades(ctx, "leader1", [signal], time.time())
+        assert first[0].status == "failed"
+        assert "retry budget exhausted" not in str(first[0].reason or "")
+        assert await ctx.orders_repo.has_processed_trade(trade_key) is False
 
-    second = await execute_trades(ctx, "leader1", [signal], time.time())
-    assert second[0].status == "failed"
-    assert "retry budget exhausted" in str(second[0].reason or "")
-    assert ctx.orders_repo.has_processed_trade(trade_key) is True
+        second = await execute_trades(ctx, "leader1", [signal], time.time())
+        assert second[0].status == "failed"
+        assert "retry budget exhausted" in str(second[0].reason or "")
+        assert await ctx.orders_repo.has_processed_trade(trade_key) is True
 
-    third = await execute_trades(ctx, "leader1", [signal], time.time())
-    assert third[0].status == "skipped"
-    assert third[0].reason == "already_processed"
-    assert exec_svc.execute.await_count == 2
+        third = await execute_trades(ctx, "leader1", [signal], time.time())
+        assert third[0].status == "skipped"
+        assert third[0].reason == "already_processed"
+        assert exec_svc.execute.await_count == 2
 
 
 @pytest.mark.asyncio
 async def test_hard_rejection_is_marked_processed(tmp_path):
-    db_path = _init_db(tmp_path)
-    exec_svc = AsyncMock()
-    exec_svc.execute.return_value = _exec_result(
-        accepted=False, filled=Decimal("0"), status="rejected", order_id=None, error="amount below min_order_size"
-    )
-    ctx = _make_context(db_path, execution_service=exec_svc)
+    async with _pg_pool() as pool:
+        exec_svc = AsyncMock()
+        exec_svc.execute.return_value = _exec_result(
+            accepted=False, filled=Decimal("0"), status="rejected", order_id=None, error="amount below min_order_size"
+        )
+        ctx = _make_context(pool, tmp_path, execution_service=exec_svc)
 
-    signal = _signal()
-    results = await execute_trades(ctx, "leader1", [signal], time.time())
-    assert len(results) == 1
-    assert results[0].status == "failed"
+        signal = _signal()
+        results = await execute_trades(ctx, "leader1", [signal], time.time())
+        assert len(results) == 1
+        assert results[0].status == "failed"
 
-    trade_key = build_trade_key("user1", "leader1", signal)
-    assert ctx.orders_repo.has_processed_trade(trade_key) is True
+        trade_key = build_trade_key("user1", "leader1", signal)
+        assert await ctx.orders_repo.has_processed_trade(trade_key) is True
 
 
 @pytest.mark.asyncio
 async def test_submitted_unconfirmed_is_marked_processed(tmp_path):
-    db_path = _init_db(tmp_path)
-    exec_svc = AsyncMock()
-    exec_svc.execute.return_value = _exec_result(
-        accepted=True, filled=Decimal("0"), status="submitted_unconfirmed", order_id="ord1"
-    )
-    ctx = _make_context(db_path, execution_service=exec_svc)
+    async with _pg_pool() as pool:
+        exec_svc = AsyncMock()
+        exec_svc.execute.return_value = _exec_result(
+            accepted=True, filled=Decimal("0"), status="submitted_unconfirmed", order_id="ord1"
+        )
+        ctx = _make_context(pool, tmp_path, execution_service=exec_svc)
 
-    signal = _signal()
-    results = await execute_trades(ctx, "leader1", [signal], time.time())
-    assert len(results) == 1
-    assert results[0].status == "submitted_unconfirmed"
+        signal = _signal()
+        results = await execute_trades(ctx, "leader1", [signal], time.time())
+        assert len(results) == 1
+        assert results[0].status == "submitted_unconfirmed"
 
-    trade_key = build_trade_key("user1", "leader1", signal)
-    assert ctx.orders_repo.has_processed_trade(trade_key) is True
+        trade_key = build_trade_key("user1", "leader1", signal)
+        assert await ctx.orders_repo.has_processed_trade(trade_key) is True
 
 
 @pytest.mark.asyncio
 async def test_buy_terminal_no_fill_unlocks_retry(tmp_path):
-    db_path = _init_db(tmp_path)
+    async with _pg_pool() as pool:
 
-    # Provide a clob_gateway mock so ReconciliationService.confirm_fill
-    # can poll the venue (issue #71 migration).
-    gateway = AsyncMock()
-    gateway.get_order.return_value = {"status": "cancelled", "size_matched": "0"}
+        # Provide a clob_gateway mock so ReconciliationService.confirm_fill
+        # can poll the venue (issue #71 migration).
+        gateway = AsyncMock()
+        gateway.get_order.return_value = {"status": "cancelled", "size_matched": "0"}
 
-    ctx = _make_context(db_path)
-    ctx.extra["clob_gateway"] = gateway
-    signal = _signal(tx_hash="0xbuyretry")
-    trade_key = build_trade_key("user1", "leader1", signal)
-    ctx.orders_repo.mark_processed_trade(
-        trade_key=trade_key,
-        user_id="user1",
-        leader_id="leader1",
-        tx_hash=signal["transactionHash"],
-        side="BUY",
-        asset=signal["asset"],
-        condition_id=signal["conditionId"],
-        status="submitted_unconfirmed",
-        order_id="ord-buy-retry",
-    )
+        ctx = _make_context(pool, tmp_path)
+        ctx.extra["clob_gateway"] = gateway
+        signal = _signal(tx_hash="0xbuyretry")
+        trade_key = build_trade_key("user1", "leader1", signal)
+        await ctx.orders_repo.mark_processed_trade(
+            trade_key=trade_key,
+            user_id="user1",
+            leader_id="leader1",
+            tx_hash=signal["transactionHash"],
+            side="BUY",
+            asset=signal["asset"],
+            condition_id=signal["conditionId"],
+            status="submitted_unconfirmed",
+            order_id="ord-buy-retry",
+        )
 
-    reconciled = await reconcile_submitted_unconfirmed(ctx)
+        reconciled = await reconcile_submitted_unconfirmed(ctx)
 
-    assert reconciled == 1
-    assert ctx.orders_repo.has_processed_trade(trade_key) is False
+        assert reconciled == 1
+        assert await ctx.orders_repo.has_processed_trade(trade_key) is False
 
 
 @pytest.mark.asyncio
 async def test_stale_buy_unconfirmed_is_still_reconciled(tmp_path):
-    db_path = _init_db(tmp_path)
+    async with _pg_pool() as pool:
 
-    gateway = AsyncMock()
-    gateway.get_order.return_value = {"status": "expired", "size_matched": "0"}
+        gateway = AsyncMock()
+        gateway.get_order.return_value = {"status": "expired", "size_matched": "0"}
 
-    ctx = _make_context(db_path)
-    ctx.extra["clob_gateway"] = gateway
-    signal = _signal(tx_hash="0xstalebuy")
-    trade_key = build_trade_key("user1", "leader1", signal)
-    ctx.orders_repo.mark_processed_trade(
-        trade_key=trade_key,
-        user_id="user1",
-        leader_id="leader1",
-        tx_hash=signal["transactionHash"],
-        side="BUY",
-        asset=signal["asset"],
-        condition_id=signal["conditionId"],
-        status="submitted_unconfirmed",
-        order_id="ord-stale-buy",
-    )
-    with create_connection(db_path) as conn:
-        conn.execute(
-            "UPDATE processed_trades SET processed_at = ? WHERE trade_key = ?",
-            (time.time() - 3600, trade_key),
+        ctx = _make_context(pool, tmp_path)
+        ctx.extra["clob_gateway"] = gateway
+        signal = _signal(tx_hash="0xstalebuy")
+        trade_key = build_trade_key("user1", "leader1", signal)
+        await ctx.orders_repo.mark_processed_trade(
+            trade_key=trade_key,
+            user_id="user1",
+            leader_id="leader1",
+            tx_hash=signal["transactionHash"],
+            side="BUY",
+            asset=signal["asset"],
+            condition_id=signal["conditionId"],
+            status="submitted_unconfirmed",
+            order_id="ord-stale-buy",
         )
-        conn.commit()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE processed_trades SET processed_at = $1 WHERE trade_key = $2",
+                int(time.time() - 3600),
+                trade_key,
+            )
 
-    reconciled = await reconcile_submitted_unconfirmed(ctx, max_age_seconds=1)
+        reconciled = await reconcile_submitted_unconfirmed(ctx, max_age_seconds=1)
 
-    assert reconciled == 1
-    assert ctx.orders_repo.has_processed_trade(trade_key) is False
+        assert reconciled == 1
+        assert await ctx.orders_repo.has_processed_trade(trade_key) is False
 
 
 @pytest.mark.asyncio
 async def test_partial_progress_reconcile_applies_only_incremental_buy_delta(tmp_path):
-    db_path = _init_db(tmp_path)
+    async with _pg_pool() as pool:
 
-    gateway = AsyncMock()
-    gateway.get_order.return_value = {"status": "partially_filled", "size_matched": "5", "avg_price": "0.50"}
+        gateway = AsyncMock()
+        gateway.get_order.return_value = {"status": "partially_filled", "size_matched": "5", "avg_price": "0.50"}
 
-    ctx = _make_context(db_path)
-    ctx.extra["clob_gateway"] = gateway
-    signal = _signal(tx_hash="0xpartial-buy")
-    trade_key = build_trade_key("user1", "leader1", signal)
+        ctx = _make_context(pool, tmp_path)
+        ctx.extra["clob_gateway"] = gateway
+        signal = _signal(tx_hash="0xpartial-buy")
+        trade_key = build_trade_key("user1", "leader1", signal)
 
-    # Simulate a previous restart checkpoint where 2 tokens were already
-    # durably applied locally and recorded in the submission response.
-    ctx.fills_repo.append_fill(
-        FillRecord(
+        # Simulate a previous restart checkpoint where 2 tokens were already
+        # durably applied locally and recorded in the submission response.
+        await ctx.fills_repo.append_fill(
+            FillRecord(
+                user_id="user1",
+                leader_id="leader1",
+                order_id="ord-partial-buy",
+                condition_id=signal["conditionId"],
+                token_id=signal["asset"],
+                side="BUY",
+                size_tokens=Decimal("2"),
+                price=Decimal("0.50"),
+                fee=Decimal("0"),
+                fill_ts=1_700_000_000,
+            )
+        )
+        await ctx.positions_repo.rebuild_user_positions_from_fills("user1", ctx.fills_repo)
+        await ctx.orders_repo.mark_processed_trade(
+            trade_key=trade_key,
             user_id="user1",
             leader_id="leader1",
-            order_id="ord-partial-buy",
-            condition_id=signal["conditionId"],
-            token_id=signal["asset"],
+            tx_hash=signal["transactionHash"],
             side="BUY",
-            size_tokens=Decimal("2"),
-            price=Decimal("0.50"),
-            fee=Decimal("0"),
-            fill_ts=1_700_000_000,
-        )
-    )
-    ctx.positions_repo.rebuild_user_positions_from_fills("user1", ctx.fills_repo)
-    ctx.orders_repo.mark_processed_trade(
-        trade_key=trade_key,
-        user_id="user1",
-        leader_id="leader1",
-        tx_hash=signal["transactionHash"],
-        side="BUY",
-        asset=signal["asset"],
-        condition_id=signal["conditionId"],
-        status="submitted_unconfirmed",
-        order_id="ord-partial-buy",
-    )
-    ctx.orders_repo.save_submission(
-        OrderSubmissionRecord(
-            idempotency_key="idem-partial-buy",
-            user_id="user1",
-            leader_id="leader1",
-            order_id="ord-partial-buy",
+            asset=signal["asset"],
+            condition_id=signal["conditionId"],
             status="submitted_unconfirmed",
-            request_payload={"side": "BUY"},
-            response_payload={"status": "submitted_unconfirmed", "orderID": "ord-partial-buy", "size_matched": "2"},
+            order_id="ord-partial-buy",
         )
-    )
+        await ctx.orders_repo.save_submission(
+            OrderSubmissionRecord(
+                idempotency_key="idem-partial-buy",
+                user_id="user1",
+                leader_id="leader1",
+                order_id="ord-partial-buy",
+                status="submitted_unconfirmed",
+                request_payload={"side": "BUY"},
+                response_payload={"status": "submitted_unconfirmed", "orderID": "ord-partial-buy", "size_matched": "2"},
+            )
+        )
 
-    reconciled = await reconcile_submitted_unconfirmed(ctx)
+        reconciled = await reconcile_submitted_unconfirmed(ctx)
 
-    assert reconciled == 1
-    pos = ctx.positions_repo.get_position("user1", signal["conditionId"], token_id=signal["asset"])
-    assert pos is not None
-    assert pos.size_tokens == Decimal("5")
-    processed = ctx.orders_repo.get_processed_trade(trade_key)
-    assert processed is not None
-    assert processed["status"] == "submitted_unconfirmed"
-    submission = ctx.orders_repo.get_by_order_id("ord-partial-buy")
-    assert submission is not None
-    assert submission["status"] == "submitted_unconfirmed"
-    assert submission["response"].get("size_matched") == "5"
+        assert reconciled == 1
+        pos = await ctx.positions_repo.get_position("user1", signal["conditionId"], token_id=signal["asset"])
+        assert pos is not None
+        assert pos.size_tokens == Decimal("5")
+        processed = await ctx.orders_repo.get_processed_trade(trade_key)
+        assert processed is not None
+        assert processed["status"] == "submitted_unconfirmed"
+        submission = await ctx.orders_repo.get_by_order_id("ord-partial-buy")
+        assert submission is not None
+        assert submission["status"] == "submitted_unconfirmed"
+        assert submission["response"].get("size_matched") == "5"
 
 
 @pytest.mark.asyncio
 async def test_final_reconcile_with_no_new_delta_marks_buy_fully_reconciled(tmp_path):
-    db_path = _init_db(tmp_path)
+    async with _pg_pool() as pool:
 
-    gateway = AsyncMock()
-    gateway.get_order.return_value = {"status": "filled", "size_matched": "5", "avg_price": "0.50"}
+        gateway = AsyncMock()
+        gateway.get_order.return_value = {"status": "filled", "size_matched": "5", "avg_price": "0.50"}
 
-    ctx = _make_context(db_path)
-    ctx.extra["clob_gateway"] = gateway
-    signal = _signal(tx_hash="0xfinal-buy")
-    trade_key = build_trade_key("user1", "leader1", signal)
+        ctx = _make_context(pool, tmp_path)
+        ctx.extra["clob_gateway"] = gateway
+        signal = _signal(tx_hash="0xfinal-buy")
+        trade_key = build_trade_key("user1", "leader1", signal)
 
-    ctx.fills_repo.append_fill(
-        FillRecord(
+        await ctx.fills_repo.append_fill(
+            FillRecord(
+                user_id="user1",
+                leader_id="leader1",
+                order_id="ord-final-buy",
+                condition_id=signal["conditionId"],
+                token_id=signal["asset"],
+                side="BUY",
+                size_tokens=Decimal("5"),
+                price=Decimal("0.50"),
+                fee=Decimal("0"),
+                fill_ts=1_700_000_000,
+            )
+        )
+        await ctx.positions_repo.rebuild_user_positions_from_fills("user1", ctx.fills_repo)
+        await ctx.orders_repo.mark_processed_trade(
+            trade_key=trade_key,
             user_id="user1",
             leader_id="leader1",
-            order_id="ord-final-buy",
-            condition_id=signal["conditionId"],
-            token_id=signal["asset"],
+            tx_hash=signal["transactionHash"],
             side="BUY",
-            size_tokens=Decimal("5"),
-            price=Decimal("0.50"),
-            fee=Decimal("0"),
-            fill_ts=1_700_000_000,
-        )
-    )
-    ctx.positions_repo.rebuild_user_positions_from_fills("user1", ctx.fills_repo)
-    ctx.orders_repo.mark_processed_trade(
-        trade_key=trade_key,
-        user_id="user1",
-        leader_id="leader1",
-        tx_hash=signal["transactionHash"],
-        side="BUY",
-        asset=signal["asset"],
-        condition_id=signal["conditionId"],
-        status="submitted_unconfirmed",
-        order_id="ord-final-buy",
-    )
-    ctx.orders_repo.save_submission(
-        OrderSubmissionRecord(
-            idempotency_key="idem-final-buy",
-            user_id="user1",
-            leader_id="leader1",
-            order_id="ord-final-buy",
+            asset=signal["asset"],
+            condition_id=signal["conditionId"],
             status="submitted_unconfirmed",
-            request_payload={"side": "BUY"},
-            response_payload={"status": "submitted_unconfirmed", "orderID": "ord-final-buy", "size_matched": "5"},
+            order_id="ord-final-buy",
         )
-    )
+        await ctx.orders_repo.save_submission(
+            OrderSubmissionRecord(
+                idempotency_key="idem-final-buy",
+                user_id="user1",
+                leader_id="leader1",
+                order_id="ord-final-buy",
+                status="submitted_unconfirmed",
+                request_payload={"side": "BUY"},
+                response_payload={"status": "submitted_unconfirmed", "orderID": "ord-final-buy", "size_matched": "5"},
+            )
+        )
 
-    reconciled = await reconcile_submitted_unconfirmed(ctx)
+        reconciled = await reconcile_submitted_unconfirmed(ctx)
 
-    assert reconciled == 1
-    pos = ctx.positions_repo.get_position("user1", signal["conditionId"], token_id=signal["asset"])
-    assert pos is not None
-    assert pos.size_tokens == Decimal("5")
-    processed = ctx.orders_repo.get_processed_trade(trade_key)
-    assert processed is not None
-    assert processed["status"] == "filled_reconciled"
-    submission = ctx.orders_repo.get_by_order_id("ord-final-buy")
-    assert submission is not None
-    assert submission["status"] == "filled_reconciled"
+        assert reconciled == 1
+        pos = await ctx.positions_repo.get_position("user1", signal["conditionId"], token_id=signal["asset"])
+        assert pos is not None
+        assert pos.size_tokens == Decimal("5")
+        processed = await ctx.orders_repo.get_processed_trade(trade_key)
+        assert processed is not None
+        assert processed["status"] == "filled_reconciled"
+        submission = await ctx.orders_repo.get_by_order_id("ord-final-buy")
+        assert submission is not None
+        assert submission["status"] == "filled_reconciled"
 
 
 @pytest.mark.asyncio
 async def test_startup_reconciled_risk_sell_blocks_reentry_on_same_scope(tmp_path):
-    db_path = _init_db(tmp_path)
+    async with _pg_pool() as pool:
 
-    class _ReconcilingExecSvc:
-        def __init__(self):
-            self.execute = AsyncMock(return_value=_exec_result())
+        class _ReconcilingExecSvc:
+            def __init__(self):
+                self.execute = AsyncMock(return_value=_exec_result())
 
-    gateway = AsyncMock()
-    gateway.get_order.return_value = {
-        "status": "filled",
-        "size_matched": "10",
-        "avg_price": "0.30",
-    }
+        gateway = AsyncMock()
+        gateway.get_order.return_value = {
+            "status": "filled",
+            "size_matched": "10",
+            "avg_price": "0.30",
+        }
 
-    exec_svc = _ReconcilingExecSvc()
-    ctx = _make_context(db_path, execution_service=exec_svc)
-    ctx.extra["clob_gateway"] = gateway
+        exec_svc = _ReconcilingExecSvc()
+        ctx = _make_context(pool, tmp_path, execution_service=exec_svc)
+        ctx.extra["clob_gateway"] = gateway
 
-    sell_signal = _signal(
-        side="SELL",
-        tx_hash="0xrestart-sell",
-        price=0.97,
-        size=10.0,
-    )
+        sell_signal = _signal(
+            side="SELL",
+            tx_hash="0xrestart-sell",
+            price=0.97,
+            size=10.0,
+        )
 
-    ctx.fills_repo.append_fill(
-        FillRecord(
+        await ctx.fills_repo.append_fill(
+            FillRecord(
+                user_id="user1",
+                leader_id="leader1",
+                order_id="buy-seed-1",
+                condition_id=sell_signal["conditionId"],
+                token_id=sell_signal["asset"],
+                side="BUY",
+                size_tokens=Decimal("10"),
+                price=Decimal("0.60"),
+                fee=Decimal("0"),
+                fill_ts=1_700_000_000,
+            )
+        )
+        await ctx.positions_repo.rebuild_user_positions_from_fills("user1", ctx.fills_repo)
+        await ctx.orders_repo.save_submission(
+            OrderSubmissionRecord(
+                idempotency_key="idem-restart-sell",
+                user_id="user1",
+                leader_id="leader1",
+                order_id="venue-risk-1",
+                status="submitted_unconfirmed",
+                request_payload={
+                    "user_id": "user1",
+                    "leader_id": "leader1",
+                    "token_id": sell_signal["asset"],
+                    "condition_id": sell_signal["conditionId"],
+                    "side": "SELL",
+                    "amount": "10",
+                    "reason": "near_max_full_exit",
+                    "signal_id": "risk:near_max_full_exit:cond1:1700000001",
+                    "recovery_metadata": {
+                        "leader_notional_at_trigger": 9.7,
+                        "copied_position_notional_at_trigger": 9.7,
+                        "trigger_price": 0.97,
+                        "trigger_size_tokens": 10.0,
+                        "trigger_fraction": 1.0,
+                    },
+                },
+                response_payload={"status": "submitted_unconfirmed", "orderID": "venue-risk-1"},
+            )
+        )
+
+        reconciled = await startup_reconcile_unconfirmed([ctx])
+        assert reconciled == {"user1": 1}
+        assert await ctx.positions_repo.get_position("user1", sell_signal["conditionId"]) is None
+        assert await ctx.risk_blocks_repo.get_active_risk_block(
             user_id="user1",
-            leader_id="leader1",
-            order_id="buy-seed-1",
             condition_id=sell_signal["conditionId"],
             token_id=sell_signal["asset"],
-            side="BUY",
-            size_tokens=Decimal("10"),
-            price=Decimal("0.60"),
-            fee=Decimal("0"),
-            fill_ts=1_700_000_000,
-        )
-    )
-    ctx.positions_repo.rebuild_user_positions_from_fills("user1", ctx.fills_repo)
-    ctx.orders_repo.save_submission(
-        OrderSubmissionRecord(
-            idempotency_key="idem-restart-sell",
-            user_id="user1",
-            leader_id="leader1",
-            order_id="venue-risk-1",
-            status="submitted_unconfirmed",
-            request_payload={
-                "user_id": "user1",
-                "leader_id": "leader1",
-                "token_id": sell_signal["asset"],
-                "condition_id": sell_signal["conditionId"],
-                "side": "SELL",
-                "amount": "10",
-                "reason": "near_max_full_exit",
-                "signal_id": "risk:near_max_full_exit:cond1:1700000001",
-                "recovery_metadata": {
-                    "leader_notional_at_trigger": 9.7,
-                    "copied_position_notional_at_trigger": 9.7,
-                    "trigger_price": 0.97,
-                    "trigger_size_tokens": 10.0,
-                    "trigger_fraction": 1.0,
-                },
-            },
-            response_payload={"status": "submitted_unconfirmed", "orderID": "venue-risk-1"},
-        )
-    )
+        ) is not None
 
-    reconciled = await startup_reconcile_unconfirmed([ctx])
-    assert reconciled == {"user1": 1}
-    assert ctx.positions_repo.get_position("user1", sell_signal["conditionId"]) is None
-    assert ctx.risk_blocks_repo.get_active_risk_block(
-        user_id="user1",
-        condition_id=sell_signal["conditionId"],
-        token_id=sell_signal["asset"],
-    ) is not None
+        buy_results = await execute_trades(ctx, "leader1", [_signal(tx_hash="0xrestart-buy")], time.time())
 
-    buy_results = await execute_trades(ctx, "leader1", [_signal(tx_hash="0xrestart-buy")], time.time())
-
-    assert len(buy_results) == 1
-    assert buy_results[0].status == "skipped"
-    assert buy_results[0].reason == "market_risk_quarantined"
-    exec_svc.execute.assert_not_called()
+        assert len(buy_results) == 1
+        assert buy_results[0].status == "skipped"
+        assert buy_results[0].reason == "market_risk_quarantined"
+        exec_svc.execute.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_max_position_pct_enforced_even_when_balance_policy_disabled(tmp_path):
-    db_path = _init_db(tmp_path)
-    exec_svc = AsyncMock()
-    exec_svc.execute.return_value = _exec_result(
-        accepted=True, filled=Decimal("10"), status="filled", order_id="ord-balance-off"
-    )
-    ctx = _make_context(
-        db_path,
-        execution_service=exec_svc,
-        config=_config(ENABLE_BALANCE_TIERED_POLICY="false", MAX_POSITION_PCT="0.20"),
-    )
-    ctx.positions_repo.upsert_position(
-        SimpleNamespace(
-            user_id="user1",
-            condition_id="cond1",
-            token_id=FAKE_TOKEN_ID,
-            leader_id="leader1",
-            size_tokens=Decimal("20"),
-            avg_entry_price=Decimal("1.0"),
+    async with _pg_pool() as pool:
+        exec_svc = AsyncMock()
+        exec_svc.execute.return_value = _exec_result(
+            accepted=True, filled=Decimal("10"), status="filled", order_id="ord-balance-off"
         )
-    )
+        ctx = _make_context(
+            pool, tmp_path,
+            execution_service=exec_svc,
+            config=_config(ENABLE_BALANCE_TIERED_POLICY="false", MAX_POSITION_PCT="0.20"),
+        )
+        await ctx.positions_repo.upsert_position(
+            SimpleNamespace(
+                user_id="user1",
+                condition_id="cond1",
+                token_id=FAKE_TOKEN_ID,
+                leader_id="leader1",
+                size_tokens=Decimal("20"),
+                avg_entry_price=Decimal("1.0"),
+            )
+        )
 
-    with patch(
-        "orchestrators.trade_pipeline.get_my_balance",
-        new_callable=AsyncMock,
-        return_value=80.0,
-    ):
-        results = await execute_trades(ctx, "leader1", [_signal(tx_hash="0xbal-off")], time.time())
+        with patch(
+            "orchestrators.trade_pipeline.get_my_balance",
+            new_callable=AsyncMock,
+            return_value=80.0,
+        ):
+            results = await execute_trades(ctx, "leader1", [_signal(tx_hash="0xbal-off")], time.time())
 
-    assert results[0].status == "skipped"
-    assert results[0].reason == "max_position_pct_reached"
-    exec_svc.execute.assert_not_called()
+        assert results[0].status == "skipped"
+        assert results[0].reason == "max_position_pct_reached"
+        exec_svc.execute.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_balance_tiered_policy_blocks_buy_without_tradable_cash(tmp_path):
-    db_path = _init_db(tmp_path)
-    exec_svc = AsyncMock()
-    ctx = _make_context(
-        db_path,
-        execution_service=exec_svc,
-        config=_config(
-            ENABLE_BALANCE_TIERED_POLICY="true",
-            DAY_START_EQUITY_USDC="4",
-            BALANCE_POLICY_RESERVE_PCT="0.10",
-            BALANCE_POLICY_RESERVE_FLOOR="5",
-        ),
-    )
+    async with _pg_pool() as pool:
+        exec_svc = AsyncMock()
+        ctx = _make_context(
+            pool, tmp_path,
+            execution_service=exec_svc,
+            config=_config(
+                ENABLE_BALANCE_TIERED_POLICY="true",
+                DAY_START_EQUITY_USDC="4",
+                BALANCE_POLICY_RESERVE_PCT="0.10",
+                BALANCE_POLICY_RESERVE_FLOOR="5",
+            ),
+        )
 
-    with patch(
-        "orchestrators.trade_pipeline.get_my_balance",
-        new_callable=AsyncMock,
-        return_value=4.0,
-    ), patch(
-        "orchestrators.trade_pipeline.get_day_start_equity",
-        return_value=Decimal("4"),
-    ):
-        results = await execute_trades(ctx, "leader1", [_signal(tx_hash="0xbal-block")], time.time())
+        with patch(
+            "orchestrators.trade_pipeline.get_my_balance",
+            new_callable=AsyncMock,
+            return_value=4.0,
+        ), patch(
+            "orchestrators.trade_pipeline.get_day_start_equity",
+            return_value=Decimal("4"),
+        ):
+            results = await execute_trades(ctx, "leader1", [_signal(tx_hash="0xbal-block")], time.time())
 
-    assert results[0].status == "skipped"
-    assert results[0].reason == "no_tradable_cash_after_reserve"
-    exec_svc.execute.assert_not_called()
+        assert results[0].status == "skipped"
+        assert results[0].reason == "no_tradable_cash_after_reserve"
+        exec_svc.execute.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_max_position_pct_caps_additional_buy_on_same_market(tmp_path):
-    db_path = _init_db(tmp_path)
-    exec_svc = AsyncMock()
-    exec_svc.execute.return_value = _exec_result(
-        accepted=True, filled=Decimal("10"), status="filled", order_id="ord-pos-cap"
-    )
-    ctx = _make_context(
-        db_path,
-        execution_service=exec_svc,
-        config=_config(ENABLE_BALANCE_TIERED_POLICY="false", MAX_POSITION_PCT="0.20"),
-    )
-    ctx.positions_repo.upsert_position(
-        SimpleNamespace(
-            user_id="user1",
-            condition_id="cond1",
-            token_id=FAKE_TOKEN_ID,
-            leader_id="leader1",
-            size_tokens=Decimal("10"),
-            avg_entry_price=Decimal("1.0"),
+    async with _pg_pool() as pool:
+        exec_svc = AsyncMock()
+        exec_svc.execute.return_value = _exec_result(
+            accepted=True, filled=Decimal("10"), status="filled", order_id="ord-pos-cap"
         )
-    )
+        ctx = _make_context(
+            pool, tmp_path,
+            execution_service=exec_svc,
+            config=_config(ENABLE_BALANCE_TIERED_POLICY="false", MAX_POSITION_PCT="0.20"),
+        )
+        await ctx.positions_repo.upsert_position(
+            SimpleNamespace(
+                user_id="user1",
+                condition_id="cond1",
+                token_id=FAKE_TOKEN_ID,
+                leader_id="leader1",
+                size_tokens=Decimal("10"),
+                avg_entry_price=Decimal("1.0"),
+            )
+        )
 
-    decision_service = _RecordingDecisionService()
-    ctx.copy_decision_service = decision_service
+        decision_service = _RecordingDecisionService()
+        ctx.copy_decision_service = decision_service
 
-    with patch(
-        "orchestrators.trade_pipeline.get_my_balance",
-        new_callable=AsyncMock,
-        return_value=90.0,
-    ):
-        results = await execute_trades(ctx, "leader1", [_signal(tx_hash="0xpos-cap")], time.time())
+        with patch(
+            "orchestrators.trade_pipeline.get_my_balance",
+            new_callable=AsyncMock,
+            return_value=90.0,
+        ):
+            results = await execute_trades(ctx, "leader1", [_signal(tx_hash="0xpos-cap")], time.time())
 
-    assert results[0].status == "executed"
-    assert decision_service.buy_calls
-    # After fix: cap is against free_cash ($90 * 0.20 = $18), minus existing market
-    # exposure ($10) = $8. Strategy produces $5 (100% of $5 signal), but the
-    # decision layer may trust-upsize up to min($1000 buy_max, $8 pct_cap) = $8.
-    assert decision_service.buy_calls[0]["max_notional_usdc"] == pytest.approx(8.0)
+        assert results[0].status == "executed"
+        assert decision_service.buy_calls
+        # After fix: cap is against free_cash ($90 * 0.20 = $18), minus existing market
+        # exposure ($10) = $8. Strategy produces $5 (100% of $5 signal), but the
+        # decision layer may trust-upsize up to min($1000 buy_max, $8 pct_cap) = $8.
+        assert decision_service.buy_calls[0]["max_notional_usdc"] == pytest.approx(8.0)
 
-    req = exec_svc.execute.await_args.args[0]
-    assert req.side == "BUY"
-    assert req.amount == Decimal("8")
+        req = exec_svc.execute.await_args.args[0]
+        assert req.side == "BUY"
+        assert req.amount == Decimal("8")
 
 
 @pytest.mark.asyncio
 async def test_balance_tiered_policy_caps_buy_before_execution(tmp_path):
-    db_path = _init_db(tmp_path)
-    exec_svc = AsyncMock()
-    exec_svc.execute.return_value = _exec_result(
-        accepted=True, filled=Decimal("10"), status="filled", order_id="ord-balance-cap"
-    )
-    ctx = _make_context(
-        db_path,
-        execution_service=exec_svc,
-        config=_config(
-            ENABLE_BALANCE_TIERED_POLICY="true",
-            DAY_START_EQUITY_USDC="25",
-            BALANCE_POLICY_RESERVE_PCT="0.10",
-            BALANCE_POLICY_RESERVE_FLOOR="5",
-            BALANCE_POLICY_HARD_CAP_PCT="0.18",
-            BALANCE_POLICY_HARD_CAP_CEILING="4.5",
-        ),
-    )
+    async with _pg_pool() as pool:
+        exec_svc = AsyncMock()
+        exec_svc.execute.return_value = _exec_result(
+            accepted=True, filled=Decimal("10"), status="filled", order_id="ord-balance-cap"
+        )
+        ctx = _make_context(
+            pool, tmp_path,
+            execution_service=exec_svc,
+            config=_config(
+                ENABLE_BALANCE_TIERED_POLICY="true",
+                DAY_START_EQUITY_USDC="25",
+                BALANCE_POLICY_RESERVE_PCT="0.10",
+                BALANCE_POLICY_RESERVE_FLOOR="5",
+                BALANCE_POLICY_HARD_CAP_PCT="0.18",
+                BALANCE_POLICY_HARD_CAP_CEILING="4.5",
+            ),
+        )
 
-    decision_service = _RecordingDecisionService()
-    ctx.copy_decision_service = decision_service
+        decision_service = _RecordingDecisionService()
+        ctx.copy_decision_service = decision_service
 
-    with patch(
-        "orchestrators.trade_pipeline.get_my_balance",
-        new_callable=AsyncMock,
-        return_value=25.0,
-    ), patch(
-        "orchestrators.trade_pipeline.get_day_start_equity",
-        return_value=Decimal("25"),
-    ):
-        results = await execute_trades(ctx, "leader1", [_signal(tx_hash="0xbal-cap")], time.time())
+        with patch(
+            "orchestrators.trade_pipeline.get_my_balance",
+            new_callable=AsyncMock,
+            return_value=25.0,
+        ), patch(
+            "orchestrators.trade_pipeline.get_day_start_equity",
+            return_value=Decimal("25"),
+        ):
+            results = await execute_trades(ctx, "leader1", [_signal(tx_hash="0xbal-cap")], time.time())
 
-    assert results[0].status == "executed"
-    assert decision_service.buy_calls
-    assert decision_service.buy_calls[0]["max_notional_usdc"] == pytest.approx(4.5)
+        assert results[0].status == "executed"
+        assert decision_service.buy_calls
+        assert decision_service.buy_calls[0]["max_notional_usdc"] == pytest.approx(4.5)
 
-    req = exec_svc.execute.await_args.args[0]
-    assert req.side == "BUY"
-    assert req.amount == Decimal("4.5")
+        req = exec_svc.execute.await_args.args[0]
+        assert req.side == "BUY"
+        assert req.amount == Decimal("4.5")
 
 
 @pytest.mark.asyncio
 async def test_sell_with_no_position_skipped(tmp_path):
-    db_path = _init_db(tmp_path)
-    exec_svc = AsyncMock()
-    ctx = _make_context(db_path, execution_service=exec_svc)
+    async with _pg_pool() as pool:
+        exec_svc = AsyncMock()
+        ctx = _make_context(pool, tmp_path, execution_service=exec_svc)
 
-    signal = _signal(side="SELL")
-    results = await execute_trades(ctx, "leader1", [signal], time.time())
-    assert len(results) == 1
-    assert results[0].status == "skipped"
-    assert results[0].reason == "never_held"
+        signal = _signal(side="SELL")
+        results = await execute_trades(ctx, "leader1", [signal], time.time())
+        assert len(results) == 1
+        assert results[0].status == "skipped"
+        assert results[0].reason == "never_held"
 
-    trade_key = build_trade_key("user1", "leader1", signal)
-    assert ctx.orders_repo.has_processed_trade(trade_key) is True
-    exec_svc.execute.assert_not_called()
+        trade_key = build_trade_key("user1", "leader1", signal)
+        assert await ctx.orders_repo.has_processed_trade(trade_key) is True
+        exec_svc.execute.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_buy_can_raise_from_small_target_to_exchange_min_when_within_buy_max(tmp_path):
-    db_path = _init_db(tmp_path)
-    exec_svc = AsyncMock()
-    exec_svc.execute.return_value = _exec_result(
-        accepted=True, filled=Decimal("5"), status="filled", order_id="ord-buy-min-bump"
-    )
-    ctx = _make_context(
-        db_path,
-        execution_service=exec_svc,
-        market_data_service=_FakeMDS(_make_bundle(min_order_size=Decimal("5"))),
-    )
-    ctx.buy_min_amount = 1.0
-    ctx.buy_max_amount = 8.0
+    async with _pg_pool() as pool:
+        exec_svc = AsyncMock()
+        exec_svc.execute.return_value = _exec_result(
+            accepted=True, filled=Decimal("5"), status="filled", order_id="ord-buy-min-bump"
+        )
+        ctx = _make_context(
+            pool, tmp_path,
+            execution_service=exec_svc,
+            market_data_service=_FakeMDS(_make_bundle(min_order_size=Decimal("5"))),
+        )
+        ctx.buy_min_amount = 1.0
+        ctx.buy_max_amount = 8.0
 
-    signal = _signal(price=0.56, size=20.0, tx_hash="0xmin-bump")
-    results = await execute_trades(ctx, "leader1", [signal], time.time())
+        signal = _signal(price=0.56, size=20.0, tx_hash="0xmin-bump")
+        results = await execute_trades(ctx, "leader1", [signal], time.time())
 
-    assert len(results) == 1
-    assert results[0].status == "executed"
+        assert len(results) == 1
+        assert results[0].status == "executed"
 
-    req = exec_svc.execute.await_args.args[0]
-    assert req.side == "BUY"
-    # Exchange minimum is 5 shares, so the notional should be bumped above the
-    # tiny $1 strategy target but stay below the configured $8 max.
-    assert float(req.amount) > 2.80
-    assert float(req.amount) < 8.0
+        req = exec_svc.execute.await_args.args[0]
+        assert req.side == "BUY"
+        # Exchange minimum is 5 shares, so the notional should be bumped above the
+        # tiny $1 strategy target but stay below the configured $8 max.
+        assert float(req.amount) > 2.80
+        assert float(req.amount) < 8.0
 
 
 @pytest.mark.asyncio
 async def test_buy_fill_updates_position_repo(tmp_path):
-    db_path = _init_db(tmp_path)
-    exec_svc = AsyncMock()
-    exec_svc.execute.return_value = _exec_result(
-        accepted=True, filled=Decimal("10"), status="filled", order_id="ord1"
-    )
-    ctx = _make_context(db_path, execution_service=exec_svc)
+    async with _pg_pool() as pool:
+        exec_svc = AsyncMock()
+        exec_svc.execute.return_value = _exec_result(
+            accepted=True, filled=Decimal("10"), status="filled", order_id="ord1"
+        )
+        ctx = _make_context(pool, tmp_path, execution_service=exec_svc)
 
-    signal = _signal(price=0.50, size=20.0)
-    results = await execute_trades(ctx, "leader1", [signal], time.time())
-    assert len(results) == 1
-    assert results[0].status == "executed"
+        signal = _signal(price=0.50, size=20.0)
+        results = await execute_trades(ctx, "leader1", [signal], time.time())
+        assert len(results) == 1
+        assert results[0].status == "executed"
 
-    pos = ctx.positions_repo.get_position("user1", "cond1")
-    assert pos is not None
-    assert pos.size_tokens == Decimal("10")
-    assert pos.avg_entry_price == Decimal("0.50")
+        pos = await ctx.positions_repo.get_position("user1", "cond1")
+        assert pos is not None
+        assert pos.size_tokens == Decimal("10")
+        assert pos.avg_entry_price == Decimal("0.50")
 
 
 @pytest.mark.asyncio
 async def test_sell_reduces_position(tmp_path):
-    db_path = _init_db(tmp_path)
-    exec_svc = AsyncMock()
-    ctx = _make_context(db_path, execution_service=exec_svc)
+    async with _pg_pool() as pool:
+        exec_svc = AsyncMock()
+        ctx = _make_context(pool, tmp_path, execution_service=exec_svc)
 
-    # Set up existing position
-    from storage.sqlite.positions_repo import PositionRecord
-    ctx.positions_repo.upsert_position(PositionRecord(
-        user_id="user1", condition_id="cond1", token_id=FAKE_TOKEN_ID,
-        leader_id="leader1", size_tokens=Decimal("20"), avg_entry_price=Decimal("0.40"),
-    ))
+        # Set up existing position
+        from storage.postgres.positions_repo import PositionRecord
+        await ctx.positions_repo.upsert_position(PositionRecord(
+            user_id="user1", condition_id="cond1", token_id=FAKE_TOKEN_ID,
+            leader_id="leader1", size_tokens=Decimal("20"), avg_entry_price=Decimal("0.40"),
+        ))
 
-    exec_svc.execute.return_value = _exec_result(
-        accepted=True, filled=Decimal("10"), status="filled", order_id="ord2"
-    )
+        exec_svc.execute.return_value = _exec_result(
+            accepted=True, filled=Decimal("10"), status="filled", order_id="ord2"
+        )
 
-    signal = _signal(side="SELL", price=0.60, size=10.0)
-    signal["_leader_sell_fraction"] = 0.5  # sell 50% of our 20-token position = 10 tokens
-    with patch("orchestrators.trade_pipeline._fetch_live_position_size", new_callable=AsyncMock, return_value=Decimal("20")):
-        results = await execute_trades(ctx, "leader1", [signal], time.time())
-    assert len(results) == 1
-    assert results[0].status == "executed"
+        signal = _signal(side="SELL", price=0.60, size=10.0)
+        signal["_leader_sell_fraction"] = 0.5  # sell 50% of our 20-token position = 10 tokens
+        with patch("orchestrators.trade_pipeline._fetch_live_position_size", new_callable=AsyncMock, return_value=Decimal("20")):
+            results = await execute_trades(ctx, "leader1", [signal], time.time())
+        assert len(results) == 1
+        assert results[0].status == "executed"
 
-    pos = ctx.positions_repo.get_position("user1", "cond1")
-    assert pos is not None
-    assert pos.size_tokens == Decimal("10")
+        pos = await ctx.positions_repo.get_position("user1", "cond1")
+        assert pos is not None
+        assert pos.size_tokens == Decimal("10")
 
 
 @pytest.mark.asyncio
 async def test_sell_uses_leader_fraction_without_sell_decision_gate(tmp_path):
-    db_path = _init_db(tmp_path)
-    exec_svc = AsyncMock()
-    exec_svc.execute.return_value = _exec_result(
-        accepted=True, filled=Decimal("10"), status="filled", order_id="ord-sell-fraction"
-    )
-    ctx = _make_context(db_path, execution_service=exec_svc)
+    async with _pg_pool() as pool:
+        exec_svc = AsyncMock()
+        exec_svc.execute.return_value = _exec_result(
+            accepted=True, filled=Decimal("10"), status="filled", order_id="ord-sell-fraction"
+        )
+        ctx = _make_context(pool, tmp_path, execution_service=exec_svc)
 
-    from storage.sqlite.positions_repo import PositionRecord
-    ctx.positions_repo.upsert_position(PositionRecord(
-        user_id="user1", condition_id="cond1", token_id=FAKE_TOKEN_ID,
-        leader_id="leader1", size_tokens=Decimal("20"), avg_entry_price=Decimal("0.40"),
-    ))
+        from storage.postgres.positions_repo import PositionRecord
+        await ctx.positions_repo.upsert_position(PositionRecord(
+            user_id="user1", condition_id="cond1", token_id=FAKE_TOKEN_ID,
+            leader_id="leader1", size_tokens=Decimal("20"), avg_entry_price=Decimal("0.40"),
+        ))
 
-    class _SellAwareDecisionService:
-        def decide_buy(self, **_kwargs):
-            raise AssertionError("BUY path should not run in this SELL test")
+        class _SellAwareDecisionService:
+            def decide_buy(self, **_kwargs):
+                raise AssertionError("BUY path should not run in this SELL test")
 
-        def decide_sell(self, **_kwargs):
-            raise AssertionError("leader SELL path must not call decision gate")
+            def decide_sell(self, **_kwargs):
+                raise AssertionError("leader SELL path must not call decision gate")
 
-    ctx.copy_decision_service = _SellAwareDecisionService()
+        ctx.copy_decision_service = _SellAwareDecisionService()
 
-    signal = _signal(side="SELL", price=0.50, size=100.0)
-    signal["_leader_sell_fraction"] = 0.5
-    signal["_leader_position_size_after"] = 100.0
-    signal["_leader_position_size_before"] = 200.0
+        signal = _signal(side="SELL", price=0.50, size=100.0)
+        signal["_leader_sell_fraction"] = 0.5
+        signal["_leader_position_size_after"] = 100.0
+        signal["_leader_position_size_before"] = 200.0
 
-    with patch("orchestrators.trade_pipeline._fetch_live_position_size", new_callable=AsyncMock, return_value=Decimal("20")):
-        results = await execute_trades(ctx, "leader1", [signal], time.time())
-    assert len(results) == 1
-    assert results[0].status == "executed"
+        with patch("orchestrators.trade_pipeline._fetch_live_position_size", new_callable=AsyncMock, return_value=Decimal("20")):
+            results = await execute_trades(ctx, "leader1", [signal], time.time())
+        assert len(results) == 1
+        assert results[0].status == "executed"
 
-    req = exec_svc.execute.await_args.args[0]
-    assert req.side == "SELL"
-    assert req.amount == Decimal("10")
+        req = exec_svc.execute.await_args.args[0]
+        assert req.side == "SELL"
+        assert req.amount == Decimal("10")
 
 
 @pytest.mark.asyncio
 async def test_sell_bumps_tiny_request_to_executable_minimum(tmp_path):
-    db_path = _init_db(tmp_path)
-    exec_svc = AsyncMock()
-    exec_svc.execute.return_value = _exec_result(
-        accepted=True, filled=Decimal("5"), status="filled", order_id="ord-sell-min"
-    )
-    ctx = _make_context(
-        db_path,
-        execution_service=exec_svc,
-        market_data_service=_FakeMDS(_make_bundle(min_order_size=Decimal("5.0"))),
-    )
+    async with _pg_pool() as pool:
+        exec_svc = AsyncMock()
+        exec_svc.execute.return_value = _exec_result(
+            accepted=True, filled=Decimal("5"), status="filled", order_id="ord-sell-min"
+        )
+        ctx = _make_context(
+            pool, tmp_path,
+            execution_service=exec_svc,
+            market_data_service=_FakeMDS(_make_bundle(min_order_size=Decimal("5.0"))),
+        )
 
-    from storage.sqlite.positions_repo import PositionRecord
+        from storage.postgres.positions_repo import PositionRecord
 
-    ctx.positions_repo.upsert_position(PositionRecord(
-        user_id="user1", condition_id="cond1", token_id=FAKE_TOKEN_ID,
-        leader_id="leader1", size_tokens=Decimal("10"), avg_entry_price=Decimal("0.40"),
-    ))
+        await ctx.positions_repo.upsert_position(PositionRecord(
+            user_id="user1", condition_id="cond1", token_id=FAKE_TOKEN_ID,
+            leader_id="leader1", size_tokens=Decimal("10"), avg_entry_price=Decimal("0.40"),
+        ))
 
-    signal = _signal(side="SELL", price=0.50, size=1.0)
-    signal["_leader_sell_fraction"] = 0.1
+        signal = _signal(side="SELL", price=0.50, size=1.0)
+        signal["_leader_sell_fraction"] = 0.1
 
-    with patch("orchestrators.trade_pipeline._fetch_live_position_size", new_callable=AsyncMock, return_value=Decimal("10")):
-        results = await execute_trades(ctx, "leader1", [signal], time.time())
+        with patch("orchestrators.trade_pipeline._fetch_live_position_size", new_callable=AsyncMock, return_value=Decimal("10")):
+            results = await execute_trades(ctx, "leader1", [signal], time.time())
 
-    assert len(results) == 1
-    assert results[0].status == "executed"
+        assert len(results) == 1
+        assert results[0].status == "executed"
 
-    req = exec_svc.execute.await_args.args[0]
-    assert req.side == "SELL"
-    assert req.amount == Decimal("5")
+        req = exec_svc.execute.await_args.args[0]
+        assert req.side == "SELL"
+        assert req.amount == Decimal("5")
 
 
 @pytest.mark.asyncio
 async def test_sell_below_minimum_sells_largest_remaining_amount(tmp_path):
-    db_path = _init_db(tmp_path)
-    exec_svc = AsyncMock()
-    exec_svc.execute.return_value = _exec_result(
-        accepted=True, filled=Decimal("3"), status="filled", order_id="ord-sell-largest"
-    )
-    ctx = _make_context(
-        db_path,
-        execution_service=exec_svc,
-        market_data_service=_FakeMDS(_make_bundle(min_order_size=Decimal("5.0"))),
-    )
+    async with _pg_pool() as pool:
+        exec_svc = AsyncMock()
+        exec_svc.execute.return_value = _exec_result(
+            accepted=True, filled=Decimal("3"), status="filled", order_id="ord-sell-largest"
+        )
+        ctx = _make_context(
+            pool, tmp_path,
+            execution_service=exec_svc,
+            market_data_service=_FakeMDS(_make_bundle(min_order_size=Decimal("5.0"))),
+        )
 
-    from storage.sqlite.positions_repo import PositionRecord
+        from storage.postgres.positions_repo import PositionRecord
 
-    ctx.positions_repo.upsert_position(PositionRecord(
-        user_id="user1", condition_id="cond1", token_id=FAKE_TOKEN_ID,
-        leader_id="leader1", size_tokens=Decimal("3"), avg_entry_price=Decimal("0.40"),
-    ))
+        await ctx.positions_repo.upsert_position(PositionRecord(
+            user_id="user1", condition_id="cond1", token_id=FAKE_TOKEN_ID,
+            leader_id="leader1", size_tokens=Decimal("3"), avg_entry_price=Decimal("0.40"),
+        ))
 
-    signal = _signal(side="SELL", price=0.50, size=0.3)
-    signal["_leader_sell_fraction"] = 0.1
+        signal = _signal(side="SELL", price=0.50, size=0.3)
+        signal["_leader_sell_fraction"] = 0.1
 
-    with patch("orchestrators.trade_pipeline._fetch_live_position_size", new_callable=AsyncMock, return_value=Decimal("3")):
-        results = await execute_trades(ctx, "leader1", [signal], time.time())
+        with patch("orchestrators.trade_pipeline._fetch_live_position_size", new_callable=AsyncMock, return_value=Decimal("3")):
+            results = await execute_trades(ctx, "leader1", [signal], time.time())
 
-    assert len(results) == 1
-    assert results[0].status == "executed"
+        assert len(results) == 1
+        assert results[0].status == "executed"
 
-    req = exec_svc.execute.await_args.args[0]
-    assert req.side == "SELL"
-    assert req.amount == Decimal("3")
+        req = exec_svc.execute.await_args.args[0]
+        assert req.side == "SELL"
+        assert req.amount == Decimal("3")
 
 
 @pytest.mark.asyncio
 async def test_sell_uses_notional_when_size_missing(tmp_path):
     """SELL without _leader_sell_fraction defaults to full close (100% of held position)."""
-    db_path = _init_db(tmp_path)
-    exec_svc = AsyncMock()
-    exec_svc.execute.return_value = _exec_result(
-        accepted=True, filled=Decimal("20"), status="filled", order_id="ord-sell-full-close"
-    )
-    ctx = _make_context(db_path, execution_service=exec_svc)
+    async with _pg_pool() as pool:
+        exec_svc = AsyncMock()
+        exec_svc.execute.return_value = _exec_result(
+            accepted=True, filled=Decimal("20"), status="filled", order_id="ord-sell-full-close"
+        )
+        ctx = _make_context(pool, tmp_path, execution_service=exec_svc)
 
-    from storage.sqlite.positions_repo import PositionRecord
-    ctx.positions_repo.upsert_position(PositionRecord(
-        user_id="user1", condition_id="cond1", token_id=FAKE_TOKEN_ID,
-        leader_id="leader1", size_tokens=Decimal("20"), avg_entry_price=Decimal("0.40"),
-    ))
+        from storage.postgres.positions_repo import PositionRecord
+        await ctx.positions_repo.upsert_position(PositionRecord(
+            user_id="user1", condition_id="cond1", token_id=FAKE_TOKEN_ID,
+            leader_id="leader1", size_tokens=Decimal("20"), avg_entry_price=Decimal("0.40"),
+        ))
 
-    # No _leader_sell_fraction — pipeline defaults to selling 100% of the position
-    signal = _signal(side="SELL", price=0.50, size=0.0)
-    signal["usdcSize"] = 2.0
-    with patch("orchestrators.trade_pipeline._fetch_live_position_size", new_callable=AsyncMock, return_value=Decimal("20")):
-        results = await execute_trades(ctx, "leader1", [signal], time.time())
-    assert len(results) == 1
-    assert results[0].status == "executed"
+        # No _leader_sell_fraction — pipeline defaults to selling 100% of the position
+        signal = _signal(side="SELL", price=0.50, size=0.0)
+        signal["usdcSize"] = 2.0
+        with patch("orchestrators.trade_pipeline._fetch_live_position_size", new_callable=AsyncMock, return_value=Decimal("20")):
+            results = await execute_trades(ctx, "leader1", [signal], time.time())
+        assert len(results) == 1
+        assert results[0].status == "executed"
 
-    req = exec_svc.execute.await_args.args[0]
-    assert req.side == "SELL"
-    assert req.amount == Decimal("20")  # full position closed
+        req = exec_svc.execute.await_args.args[0]
+        assert req.side == "SELL"
+        assert req.amount == Decimal("20")  # full position closed
 
 
 @pytest.mark.asyncio
 async def test_sell_clamps_to_live_holdings_before_submit(tmp_path):
-    db_path = _init_db(tmp_path)
-    exec_svc = AsyncMock()
-    exec_svc.execute.return_value = _exec_result(
-        accepted=True, filled=Decimal("27.36"), status="filled", order_id="ord-sell-clamped"
-    )
-    ctx = _make_context(db_path, execution_service=exec_svc)
+    async with _pg_pool() as pool:
+        exec_svc = AsyncMock()
+        exec_svc.execute.return_value = _exec_result(
+            accepted=True, filled=Decimal("27.36"), status="filled", order_id="ord-sell-clamped"
+        )
+        ctx = _make_context(pool, tmp_path, execution_service=exec_svc)
 
-    from storage.sqlite.positions_repo import PositionRecord
-    ctx.positions_repo.upsert_position(PositionRecord(
-        user_id="user1", condition_id="cond1", token_id=FAKE_TOKEN_ID,
-        leader_id="leader1", size_tokens=Decimal("27.4623"), avg_entry_price=Decimal("0.40"),
-    ))
+        from storage.postgres.positions_repo import PositionRecord
+        await ctx.positions_repo.upsert_position(PositionRecord(
+            user_id="user1", condition_id="cond1", token_id=FAKE_TOKEN_ID,
+            leader_id="leader1", size_tokens=Decimal("27.4623"), avg_entry_price=Decimal("0.40"),
+        ))
 
-    signal = _signal(side="SELL", price=0.3773, size=27.4623)
-    signal["_leader_sell_fraction"] = 1.0
+        signal = _signal(side="SELL", price=0.3773, size=27.4623)
+        signal["_leader_sell_fraction"] = 1.0
 
-    with patch(
-        "orchestrators.trade_pipeline.fetch_data",
-        new_callable=AsyncMock,
-        return_value=[{"asset": FAKE_TOKEN_ID, "size": "27.367906", "currentValue": 10.33}],
-    ):
-        results = await execute_trades(ctx, "leader1", [signal], time.time())
+        with patch(
+            "orchestrators.trade_pipeline.fetch_data",
+            new_callable=AsyncMock,
+            return_value=[{"asset": FAKE_TOKEN_ID, "size": "27.367906", "currentValue": 10.33}],
+        ):
+            results = await execute_trades(ctx, "leader1", [signal], time.time())
 
-    assert len(results) == 1
-    assert results[0].status == "executed"
+        assert len(results) == 1
+        assert results[0].status == "executed"
 
-    req = exec_svc.execute.await_args.args[0]
-    assert req.side == "SELL"
-    assert req.amount == Decimal("27.36")
+        req = exec_svc.execute.await_args.args[0]
+        assert req.side == "SELL"
+        assert req.amount == Decimal("27.36")
 
 
 @pytest.mark.asyncio
 async def test_sell_insufficient_balance_syncs_local_position_from_live_holdings(tmp_path):
-    db_path = _init_db(tmp_path)
-    exec_svc = AsyncMock()
-    exec_svc.execute.return_value = _exec_result(
-        accepted=False,
-        filled=Decimal("0"),
-        status="rejected",
-        order_id=None,
-        error="insufficient_balance | {'error': 'not enough balance / allowance: the balance is not enough -> balance: 4518, order amount: 35870000'}",
-    )
-    ctx = _make_context(db_path, execution_service=exec_svc)
+    async with _pg_pool() as pool:
+        exec_svc = AsyncMock()
+        exec_svc.execute.return_value = _exec_result(
+            accepted=False,
+            filled=Decimal("0"),
+            status="rejected",
+            order_id=None,
+            error="insufficient_balance | {'error': 'not enough balance / allowance: the balance is not enough -> balance: 4518, order amount: 35870000'}",
+        )
+        ctx = _make_context(pool, tmp_path, execution_service=exec_svc)
 
-    from storage.sqlite.positions_repo import PositionRecord
-    ctx.positions_repo.upsert_position(PositionRecord(
-        user_id="user1", condition_id="cond1", token_id=FAKE_TOKEN_ID,
-        leader_id="leader1", size_tokens=Decimal("35.8759"), avg_entry_price=Decimal("0.40"),
-    ))
+        from storage.postgres.positions_repo import PositionRecord
+        await ctx.positions_repo.upsert_position(PositionRecord(
+            user_id="user1", condition_id="cond1", token_id=FAKE_TOKEN_ID,
+            leader_id="leader1", size_tokens=Decimal("35.8759"), avg_entry_price=Decimal("0.40"),
+        ))
 
-    signal = _signal(side="SELL", price=0.999, size=35.0)
-    signal["_leader_sell_fraction"] = 1.0
+        signal = _signal(side="SELL", price=0.999, size=35.0)
+        signal["_leader_sell_fraction"] = 1.0
 
-    with patch(
-        "orchestrators.trade_pipeline.fetch_data",
-        new_callable=AsyncMock,
-        return_value=[{"asset": FAKE_TOKEN_ID, "size": 4.518, "currentValue": 4.51}],
-    ):
-        results = await execute_trades(ctx, "leader1", [signal], time.time())
+        with patch(
+            "orchestrators.trade_pipeline.fetch_data",
+            new_callable=AsyncMock,
+            return_value=[{"asset": FAKE_TOKEN_ID, "size": 4.518, "currentValue": 4.51}],
+        ):
+            results = await execute_trades(ctx, "leader1", [signal], time.time())
 
-    assert len(results) == 1
-    assert results[0].status == "failed"
-    # Post-fix the drift reason is emitted by reconcile_position_drift, not
-    # the legacy _sync_sell_position_from_live_holdings helper. The new
-    # contract: ``drift_reconciled action=shrunk live_size=<live>``.
-    reason = str(results[0].reason)
-    assert "drift_reconciled" in reason
-    assert "action=shrunk" in reason
-    assert "live_size=4.518" in reason
+        assert len(results) == 1
+        assert results[0].status == "failed"
+        # Post-fix the drift reason is emitted by reconcile_position_drift, not
+        # the legacy _sync_sell_position_from_live_holdings helper. The new
+        # contract: ``drift_reconciled action=shrunk live_size=<live>``.
+        reason = str(results[0].reason)
+        assert "drift_reconciled" in reason
+        assert "action=shrunk" in reason
+        assert "live_size=4.518" in reason
 
-    pos = ctx.positions_repo.get_position("user1", "cond1", token_id=FAKE_TOKEN_ID)
-    assert pos is not None
-    assert pos.size_tokens == Decimal("4.518")
+        pos = await ctx.positions_repo.get_position("user1", "cond1", token_id=FAKE_TOKEN_ID)
+        assert pos is not None
+        assert pos.size_tokens == Decimal("4.518")
 
 
 @pytest.mark.asyncio
 async def test_sell_insufficient_balance_deletes_local_position_when_live_holding_is_zero(tmp_path):
-    db_path = _init_db(tmp_path)
-    exec_svc = AsyncMock()
-    exec_svc.execute.return_value = _exec_result(
-        accepted=False,
-        filled=Decimal("0"),
-        status="rejected",
-        order_id=None,
-        error="insufficient_balance | {'error': 'not enough balance / allowance: the balance is not enough -> balance: 0, order amount: 5000000'}",
-    )
-    ctx = _make_context(db_path, execution_service=exec_svc)
+    async with _pg_pool() as pool:
+        exec_svc = AsyncMock()
+        exec_svc.execute.return_value = _exec_result(
+            accepted=False,
+            filled=Decimal("0"),
+            status="rejected",
+            order_id=None,
+            error="insufficient_balance | {'error': 'not enough balance / allowance: the balance is not enough -> balance: 0, order amount: 5000000'}",
+        )
+        ctx = _make_context(pool, tmp_path, execution_service=exec_svc)
 
-    from storage.sqlite.positions_repo import PositionRecord
-    ctx.positions_repo.upsert_position(PositionRecord(
-        user_id="user1", condition_id="cond1", token_id=FAKE_TOKEN_ID,
-        leader_id="leader1", size_tokens=Decimal("5"), avg_entry_price=Decimal("0.40"),
-    ))
+        from storage.postgres.positions_repo import PositionRecord
+        await ctx.positions_repo.upsert_position(PositionRecord(
+            user_id="user1", condition_id="cond1", token_id=FAKE_TOKEN_ID,
+            leader_id="leader1", size_tokens=Decimal("5"), avg_entry_price=Decimal("0.40"),
+        ))
 
-    signal = _signal(side="SELL", price=0.981, size=5.0)
-    signal["_leader_sell_fraction"] = 1.0
+        signal = _signal(side="SELL", price=0.981, size=5.0)
+        signal["_leader_sell_fraction"] = 1.0
 
-    with patch(
-        "orchestrators.trade_pipeline.fetch_data",
-        new_callable=AsyncMock,
-        return_value=[],
-    ):
-        results = await execute_trades(ctx, "leader1", [signal], time.time())
+        with patch(
+            "orchestrators.trade_pipeline.fetch_data",
+            new_callable=AsyncMock,
+            return_value=[],
+        ):
+            results = await execute_trades(ctx, "leader1", [signal], time.time())
 
-    assert len(results) == 1
-    assert results[0].status == "skipped"
-    assert results[0].reason == "SELL size is zero"
-    assert ctx.positions_repo.get_position("user1", "cond1", token_id=FAKE_TOKEN_ID) is None
+        assert len(results) == 1
+        assert results[0].status == "skipped"
+        assert results[0].reason == "SELL size is zero"
+        assert await ctx.positions_repo.get_position("user1", "cond1", token_id=FAKE_TOKEN_ID) is None
 
 
 @pytest.mark.asyncio
 async def test_sell_realized_pnl_falls_back_to_updated_position_or_signal_price(tmp_path):
-    db_path = _init_db(tmp_path)
-    exec_svc = AsyncMock()
-    exec_svc.execute.return_value = _exec_result(
-        accepted=True, filled=Decimal("10"), status="filled", order_id="ord-sell-fallback"
-    )
-    ctx = _make_context(db_path, execution_service=exec_svc)
+    async with _pg_pool() as pool:
+        exec_svc = AsyncMock()
+        exec_svc.execute.return_value = _exec_result(
+            accepted=True, filled=Decimal("10"), status="filled", order_id="ord-sell-fallback"
+        )
+        ctx = _make_context(pool, tmp_path, execution_service=exec_svc)
 
-    pnl_tracker = MagicMock()
-    ctx.pnl_tracker = pnl_tracker
-    ctx.positions_repo.get_position = MagicMock(
-        return_value=SimpleNamespace(size_tokens=Decimal("20"), avg_entry_price=None)
-    )
-    ctx.positions_repo.apply_fill = MagicMock(
-        return_value=SimpleNamespace(avg_entry_price=Decimal("0.45"))
-    )
+        pnl_tracker = MagicMock()
+        ctx.pnl_tracker = pnl_tracker
+        ctx.positions_repo.get_position = AsyncMock(
+            return_value=SimpleNamespace(size_tokens=Decimal("20"), avg_entry_price=None)
+        )
+        ctx.positions_repo.apply_fill = AsyncMock(
+            return_value=SimpleNamespace(avg_entry_price=Decimal("0.45"))
+        )
 
-    signal = _signal(side="SELL", price=0.60, size=10.0)
-    signal["_leader_sell_fraction"] = 0.5  # sell 50% of 20-token position = 10 tokens
-    with patch("orchestrators.trade_pipeline._fetch_live_position_size", new_callable=AsyncMock, return_value=Decimal("20")):
-        results = await execute_trades(ctx, "leader1", [signal], time.time())
+        signal = _signal(side="SELL", price=0.60, size=10.0)
+        signal["_leader_sell_fraction"] = 0.5  # sell 50% of 20-token position = 10 tokens
+        with patch("orchestrators.trade_pipeline._fetch_live_position_size", new_callable=AsyncMock, return_value=Decimal("20")):
+            results = await execute_trades(ctx, "leader1", [signal], time.time())
 
-    assert len(results) == 1
-    assert results[0].status == "executed"
+        assert len(results) == 1
+        assert results[0].status == "executed"
 
-    record_sell_kwargs = pnl_tracker.record_sell.call_args.kwargs
-    assert record_sell_kwargs["entry_price"] == pytest.approx(0.45)
-    assert record_sell_kwargs["realized_pnl"] == pytest.approx(0.5)
+        record_sell_kwargs = pnl_tracker.record_sell.call_args.kwargs
+        assert record_sell_kwargs["entry_price"] == pytest.approx(0.45)
+        assert record_sell_kwargs["realized_pnl"] == pytest.approx(0.5)
 
 
 @pytest.mark.asyncio
 async def test_sell_realized_pnl_falls_back_to_signal_price_when_position_prices_missing(tmp_path):
-    db_path = _init_db(tmp_path)
-    exec_svc = AsyncMock()
-    exec_svc.execute.return_value = ExecutionResult(
-        accepted=True,
-        order_id="ord-sell-signal-fallback",
-        status="filled",
-        requested_amount=Decimal("10"),
-        filled_amount=Decimal("10"),
-        avg_price=Decimal("0.50"),
-        fees_paid=Decimal("0.01"),
-        error=None,
-    )
-    ctx = _make_context(db_path, execution_service=exec_svc)
+    async with _pg_pool() as pool:
+        exec_svc = AsyncMock()
+        exec_svc.execute.return_value = ExecutionResult(
+            accepted=True,
+            order_id="ord-sell-signal-fallback",
+            status="filled",
+            requested_amount=Decimal("10"),
+            filled_amount=Decimal("10"),
+            avg_price=Decimal("0.50"),
+            fees_paid=Decimal("0.01"),
+            error=None,
+        )
+        ctx = _make_context(pool, tmp_path, execution_service=exec_svc)
 
-    pnl_tracker = MagicMock()
-    ctx.pnl_tracker = pnl_tracker
-    ctx.positions_repo.get_position = MagicMock(
-        return_value=SimpleNamespace(size_tokens=Decimal("20"), avg_entry_price=None)
-    )
-    ctx.positions_repo.apply_fill = MagicMock(return_value=None)
+        pnl_tracker = MagicMock()
+        ctx.pnl_tracker = pnl_tracker
+        ctx.positions_repo.get_position = AsyncMock(
+            return_value=SimpleNamespace(size_tokens=Decimal("20"), avg_entry_price=None)
+        )
+        ctx.positions_repo.apply_fill = AsyncMock(return_value=None)
 
-    signal = _signal(side="SELL", price=0.60, size=10.0)
-    signal["_leader_sell_fraction"] = 0.5  # sell 50% of 20-token position = 10 tokens
-    with patch("orchestrators.trade_pipeline._fetch_live_position_size", new_callable=AsyncMock, return_value=Decimal("20")):
-        results = await execute_trades(ctx, "leader1", [signal], time.time())
+        signal = _signal(side="SELL", price=0.60, size=10.0)
+        signal["_leader_sell_fraction"] = 0.5  # sell 50% of 20-token position = 10 tokens
+        with patch("orchestrators.trade_pipeline._fetch_live_position_size", new_callable=AsyncMock, return_value=Decimal("20")):
+            results = await execute_trades(ctx, "leader1", [signal], time.time())
 
-    assert len(results) == 1
-    assert results[0].status == "executed"
+        assert len(results) == 1
+        assert results[0].status == "executed"
 
-    record_sell_kwargs = pnl_tracker.record_sell.call_args.kwargs
-    assert record_sell_kwargs["entry_price"] == pytest.approx(0.60)
-    assert record_sell_kwargs["realized_pnl"] == pytest.approx(-1.0)
+        record_sell_kwargs = pnl_tracker.record_sell.call_args.kwargs
+        assert record_sell_kwargs["entry_price"] == pytest.approx(0.60)
+        assert record_sell_kwargs["realized_pnl"] == pytest.approx(-1.0)
 
 
 # ---------------------------------------------------------------------------
@@ -1466,23 +1485,23 @@ class TestTokenIdFieldPriority:
 @pytest.mark.asyncio
 async def test_full_flow_persisted_token_id(tmp_path):
     """End-to-end: raw payload → normalize → execute → positions_repo stores correct token_id."""
-    db_path = _init_db(tmp_path)
-    exec_svc = AsyncMock()
-    exec_svc.execute = AsyncMock(return_value=_exec_result(filled=Decimal("5")))
-    ctx = _make_context(db_path, execution_service=exec_svc)
+    async with _pg_pool() as pool:
+        exec_svc = AsyncMock()
+        exec_svc.execute = AsyncMock(return_value=_exec_result(filled=Decimal("5")))
+        ctx = _make_context(pool, tmp_path, execution_service=exec_svc)
 
-    # Simulate a live payload where asset is a hex string but tokenID is correct
-    raw = _raw_trade(asset=HEX_ASSET, tokenID=FAKE_TOKEN_ID, size=100.0, price=0.50, usdcSize=50.0)
-    results = await execute_trades(ctx, "leader1", [raw], time.time())
+        # Simulate a live payload where asset is a hex string but tokenID is correct
+        raw = _raw_trade(asset=HEX_ASSET, tokenID=FAKE_TOKEN_ID, size=100.0, price=0.50, usdcSize=50.0)
+        results = await execute_trades(ctx, "leader1", [raw], time.time())
 
-    assert len(results) == 1
-    assert results[0].status == "executed"
+        assert len(results) == 1
+        assert results[0].status == "executed"
 
-    # Verify the persisted position uses the correct (numeric) token_id
-    pos = ctx.positions_repo.get_position("user1", "cond1")
-    assert pos is not None
-    assert pos.token_id == FAKE_TOKEN_ID
-    assert pos.token_id != HEX_ASSET
+        # Verify the persisted position uses the correct (numeric) token_id
+        pos = await ctx.positions_repo.get_position("user1", "cond1")
+        assert pos is not None
+        assert pos.token_id == FAKE_TOKEN_ID
+        assert pos.token_id != HEX_ASSET
 
 
 @pytest.mark.asyncio
@@ -1492,20 +1511,20 @@ async def test_immediate_fill_buys_record_daily_spend_once_each(tmp_path):
     twice, so the daily cap read 2x actual spend on the dominant fast-fill
     path. Each fill is 10 tokens * 0.50 = 5.0 USDC → two BUYs must total 10,
     never 20."""
-    db_path = _init_db(tmp_path)
-    exec_svc = AsyncMock()
-    exec_svc.execute.side_effect = [
-        _exec_result(accepted=True, filled=Decimal("10"), status="filled", order_id="ord-a"),
-        _exec_result(accepted=True, filled=Decimal("10"), status="filled", order_id="ord-b"),
-    ]
-    ctx = _make_context(db_path)
-    ctx.execution_coordinator = _PassThroughCoordinator(exec_svc)
-    ctx.execution_service = exec_svc
+    async with _pg_pool() as pool:
+        exec_svc = AsyncMock()
+        exec_svc.execute.side_effect = [
+            _exec_result(accepted=True, filled=Decimal("10"), status="filled", order_id="ord-a"),
+            _exec_result(accepted=True, filled=Decimal("10"), status="filled", order_id="ord-b"),
+        ]
+        ctx = _make_context(pool, tmp_path)
+        ctx.execution_coordinator = _PassThroughCoordinator(exec_svc)
+        ctx.execution_service = exec_svc
 
-    assert ctx.balance_regime is not None
+        assert ctx.balance_regime is not None
 
-    await execute_trades(ctx, "leader1", [_signal(tx_hash="0xfill-a")], time.time())
-    await execute_trades(ctx, "leader1", [_signal(tx_hash="0xfill-b")], time.time())
+        await execute_trades(ctx, "leader1", [_signal(tx_hash="0xfill-a")], time.time())
+        await execute_trades(ctx, "leader1", [_signal(tx_hash="0xfill-b")], time.time())
 
-    # 2 * (10 tokens * 0.50) = 10.0 ; the double-count regression would be 20.0
-    assert ctx.balance_regime.daily_spent_usdc == Decimal("10.00")
+        # 2 * (10 tokens * 0.50) = 10.0 ; the double-count regression would be 20.0
+        assert ctx.balance_regime.daily_spent_usdc == Decimal("10.00")
