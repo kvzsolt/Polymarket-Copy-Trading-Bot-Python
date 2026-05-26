@@ -213,6 +213,12 @@ def build_user_state(
 ) -> UserRuntimeState:
     init_risk_engine(config)
 
+    # Push typed config into the CLOB-client module so its CLOB_HTTP_URL +
+    # meta-cache TTLs follow AppConfig rather than the raw env (legacy-kill
+    # slice #77). Safe to call repeatedly per-user.
+    from utils.createClobClient import configure_from_appconfig as _configure_clob_module
+    _configure_clob_module(config)
+
     order_repo = OrdersRepo(pool)
     fills_repo = FillsRepo(pool)
     positions_repo = PositionsRepo(pool)
