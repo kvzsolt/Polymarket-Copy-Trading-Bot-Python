@@ -30,7 +30,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from config.env import ENV
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -152,34 +151,27 @@ class ReconciliationService:
         # unexpected cancellation/rejection for a previously submitted BUY.
         self.balance_regime = balance_regime
 
-        # Priority: explicit arg > AppConfig > ENV fallback
+        # Priority: explicit arg > AppConfig > fail-closed default.
         if stale_threshold_seconds is not None:
             self.stale_threshold = float(stale_threshold_seconds)
         elif config is not None and hasattr(config, 'reconciliation'):
             self.stale_threshold = config.reconciliation.stale_threshold_seconds
         else:
-            try:
-                self.stale_threshold = float(ENV.get("RECONCILE_STALE_SECONDS", 3600))
-            except (TypeError, ValueError):
-                self.stale_threshold = 3600.0
+            self.stale_threshold = 3600.0
 
         if auto_cancel_stale is not None:
             self.auto_cancel = auto_cancel_stale
         elif config is not None and hasattr(config, 'reconciliation'):
             self.auto_cancel = config.reconciliation.auto_cancel_stale
         else:
-            self.auto_cancel = (
-                str(ENV.get("RECONCILE_AUTO_CANCEL", "false")).lower() in ("1", "true", "yes")
-            )
+            self.auto_cancel = False
 
         # Cap on per-pass closed-order venue probes (N+1 protection). The
         # venue rate-limits order lookups, so an unbounded local in-flight
         # backlog must not translate into an unbounded probe storm.
-        try:
-            self.max_closed_probes = max(
-                1, int(ENV.get("RECONCILE_MAX_CLOSED_PROBES", 10) or 10)
-            )
-        except (TypeError, ValueError):
+        if config is not None and hasattr(config, 'reconciliation'):
+            self.max_closed_probes = max(1, int(config.reconciliation.max_closed_probes))
+        else:
             self.max_closed_probes = 10
 
     @staticmethod
@@ -819,9 +811,8 @@ async def reconciliation_loop(
     elif config is not None and hasattr(config, 'polling'):
         interval = float(config.polling.reconcile_interval_seconds)
     else:
-        interval = float(
-            ENV.get("RECONCILE_INTERVAL_SECONDS", 300) or 300
-        )
+        # Fail-closed default; production always passes config.polling.
+        interval = 300.0
     logger.info("Reconciliation loop started (interval=%.0fs)", interval)
 
     while True:
