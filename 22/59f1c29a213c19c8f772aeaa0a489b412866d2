@@ -1,0 +1,23 @@
+tests/test_startup_health.py
+  s_93e0a4797804d9::t_a5e6cc8ef9e21b 1,3-7,9,21,27-59,70-82,84-92,95-106,108-118,121-134,136-145,148,150-161,223,300-313,315-324,327-328,330-331,333-334,336-346,348-358,362-375,377-378,380-381,383-384,386-396,398-404
+orchestrators/runtime_discovery.py
+  s_93e0a4797804d9::t_abe0703dc46b57 72-73
+tests/test_discovery_wiring.py
+  s_93e0a4797804d9::t_80bfae003c3f41 1-8,12,15-17,23,25,48-55,57-63,117,230,232-262,264-291
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.1",
+  "base_commit_sha": "2259f1c29a213c19c8f772aeaa0a489b412866d2",
+  "prompts": {},
+  "sessions": {
+    "s_93e0a4797804d9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a8782b68-4941-47de-a34c-6d351fdda0ef",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
