@@ -406,7 +406,7 @@ class TestExecutionService:
         # Seed duplicate — must have order_id to block retry
         key = "d"
         repo.store = {key: {"order_id": "existing", "status": "filled"}}
-        with patch("services.executionService._idempotency_key", return_value=key):
+        with patch("services.executionService._effective_idempotency_key", return_value=key):
             res = await svc.execute(req)
         assert res.status == "duplicate_ignored"
 
@@ -439,7 +439,7 @@ class TestExecutionService:
             "response": {"status": "pending", "pending_since": 0},
         }
 
-        with patch("services.executionService._idempotency_key", return_value=key):
+        with patch("services.executionService._effective_idempotency_key", return_value=key):
             res = await svc.execute(req)
 
         assert res.accepted is True
@@ -475,7 +475,7 @@ class TestExecutionService:
             "response": {"status": "submitted_unconfirmed", "pending_since": 0},
         }
 
-        with patch("services.executionService._idempotency_key", return_value=key):
+        with patch("services.executionService._effective_idempotency_key", return_value=key):
             res = await svc.execute(req)
 
         assert res.accepted is True

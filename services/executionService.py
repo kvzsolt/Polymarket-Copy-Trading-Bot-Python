@@ -131,28 +131,6 @@ def _submit_result_to_response(submit_result) -> dict[str, Any]:
     }
 
 
-def _idempotency_key(req: ExecutionRequest) -> str:
-    """Legacy raw-request idempotency key (pre-sizing).
-
-    Kept for backward compatibility with stored records. New code should
-    use :func:`_effective_idempotency_key` which is computed after sizing
-    and tick rounding.
-    """
-    payload = "|".join(
-        [
-            req.signal_id or "",
-            req.user_id,
-            req.leader_id,
-            req.token_id,
-            req.side.upper(),
-            str(req.amount),
-            str(req.max_slippage_bps),
-            req.reason,
-        ]
-    )
-    return sha256(payload.encode("utf-8")).hexdigest()
-
-
 def _derive_intent_id_from_request(req: ExecutionRequest) -> str:
     """Stable hash of the request shape, used as intent_id when signal_id is absent.
 
@@ -659,8 +637,6 @@ class ExecutionService:
             policy_version=getattr(self._config, "policy_version", "") or "",
         )
 
-        # Legacy raw key for backward-compatible lookup of stored records.
-        legacy_key = _idempotency_key(req)
         existing = await self.order_repo.get_by_idempotency_key(idem_key)
         if (
             existing
@@ -711,8 +687,6 @@ class ExecutionService:
                 },
             )
         existing = await self.order_repo.get_by_idempotency_key(idem_key)
-        if not existing and legacy_key != idem_key:
-            existing = await self.order_repo.get_by_idempotency_key(legacy_key)
 
         if _is_retry_blocking_existing(existing, config=self._config):
             existing_order_id = existing.get("order_id")
