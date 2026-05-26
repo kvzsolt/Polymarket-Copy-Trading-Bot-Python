@@ -1,0 +1,74 @@
+storage/postgres/reservations_repo.py
+  s_3741d53a9b6124::t_4fc0267c21fd2d 127-192
+domain/ports/repositories.py
+  s_b575af21b31eb4::t_b4bb407afa368e 37,46,49,52,55,65,68,83,86,89,96,99,104,109,112,117,124,132,135,144,147,150,153,158,161,168,171,182,185,188,191,194,197,200,203,206,209
+  s_b575af21b31eb4::t_9a4a51f8bcacdd 8-13
+tests/release_gate/test_e2e_dry_run_buy.py
+  s_b575af21b31eb4::t_41b454f9590f97 9,23,27-54,103,112-117,119-143
+services/execution/reservation_service.py
+  s_3741d53a9b6124::t_20351c37c6f973 116-127,133-142
+  s_3741d53a9b6124::t_702a1605c13e17 72-80
+orchestrators/trade_pipeline.py
+  s_b575af21b31eb4::t_ff0f16adb96b16 2431-2440,2453
+  s_3741d53a9b6124::t_389bdd7149e546 2506-2539
+tests/release_gate/test_e2e_dry_run_sell.py
+  s_b575af21b31eb4::t_4afe0e8e531bfb 8,22,26-53,102,111-116,118-141
+services/execution/reconciliation_service.py
+  s_b575af21b31eb4::t_536c1a76cdd8e8 793-809
+  s_b575af21b31eb4::t_222c12149a7308 825-832
+services/riskMonitor.py
+  s_3741d53a9b6124::t_200b0db949536e 1132-1147
+  s_b575af21b31eb4::t_e5cb46817df90e 1110-1117,1130
+  s_b575af21b31eb4::t_c9086247545e99 680-687
+tests/test_reconciliation.py
+  s_b575af21b31eb4::t_426bc98de6f272 316-317,319
+  s_b575af21b31eb4::t_92c20adb087d62 321
+  s_b575af21b31eb4::t_9f2ce9645660b9 7
+  s_b575af21b31eb4::t_d303ec6f2d6a53 218
+  s_b575af21b31eb4::t_ad3b00b824846c 199
+app.py
+  s_b575af21b31eb4::t_ce04aab2c4ef02 660-664
+services/reconciliation.py
+  s_b575af21b31eb4::t_d4c344002fd1c2 445
+  s_b575af21b31eb4::t_a30b495064b412 253,325
+  s_b575af21b31eb4::t_a6d1320602680a 242,245
+  s_b575af21b31eb4::t_bb155e20090ab0 522
+  s_b575af21b31eb4::t_3b3b36b628e4b2 676,695
+  s_b575af21b31eb4::t_b870bb33820552 394
+tests/release_gate/test_live_execution_invariants.py
+  s_b575af21b31eb4::t_946f92d440071a 4,25-26,35,39,56,59-77,81,84-93,95-96,98-100,104,108-134
+  s_b575af21b31eb4::t_1517da8a8892e1 42-54
+storage/postgres/fills_repo.py
+  s_b575af21b31eb4::t_2508185fc2011f 21
+  s_b575af21b31eb4::t_68deddc8ac4a00 96-167
+models/userHistory.py
+  s_b575af21b31eb4::t_8416cfbb1f1eec 105-125
+  s_b575af21b31eb4::t_35053c503faa11 30-49,58-84
+tests/test_trade_pipeline_safety.py
+  s_b575af21b31eb4::t_39aeda840b5685 1338-1342
+  s_b575af21b31eb4::t_d3658278932044 1379-1382
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.1",
+  "base_commit_sha": "64326a625fc565cdbfe291167d834ecd6d5bb0d3",
+  "prompts": {},
+  "sessions": {
+    "s_3741d53a9b6124": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6652ec37-6035-4a4e-ab75-f0ccfa03070c",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    },
+    "s_b575af21b31eb4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "07691412-808e-482a-966d-b8c7cecadf2d",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
