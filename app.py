@@ -685,7 +685,7 @@ async def main():
     user_states: dict[str, UserRuntimeState] = {}
 
     for runtime_user in runtime_users:
-        client = await create_clob_client(wallet_config=runtime_user.wallet)
+        client = await create_clob_client(wallet_config=runtime_user.wallet, config=application.config)
         user_states[runtime_user.user_id] = build_user_state(
             runtime_user,
             client,
