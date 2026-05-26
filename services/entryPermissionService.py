@@ -21,7 +21,6 @@ Clear rules (evaluated in order before denying):
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -115,8 +114,7 @@ class EntryPermissionService:
                                   for the ``fresh_leader_buy_after_net_flat``
                                   clear rule.  Pass ``None`` to skip the rule.
         """
-        block = await asyncio.to_thread(
-            self._repo.get_active_risk_block,
+        block = await self._repo.get_active_risk_block(
             user_id=user_id,
             condition_id=condition_id,
             token_id=token_id,
@@ -132,8 +130,7 @@ class EntryPermissionService:
             leader_notional_usdc=leader_notional_usdc,
         )
         if clear_rule is not None:
-            cleared = await asyncio.to_thread(
-                self._repo.clear_risk_block,
+            cleared = await self._repo.clear_risk_block(
                 user_id=user_id,
                 condition_id=condition_id,
                 token_id=token_id,
@@ -251,7 +248,7 @@ class EntryPermissionService:
     # Convenience helpers for callers
     # ------------------------------------------------------------------
 
-    def is_blocked(
+    async def is_blocked(
         self,
         *,
         user_id: str,
@@ -260,7 +257,7 @@ class EntryPermissionService:
     ) -> bool:
         """Quick boolean probe without attempting any auto-clear."""
         return (
-            self._repo.get_active_risk_block(
+            await self._repo.get_active_risk_block(
                 user_id=user_id,
                 condition_id=condition_id,
                 token_id=token_id,
