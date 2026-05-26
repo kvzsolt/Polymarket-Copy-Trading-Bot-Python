@@ -10,8 +10,8 @@ Tests:
   - quote/book/tick all come from MarketDataBundle
 """
 from __future__ import annotations
-import pytest
-pytest.skip("sqlite-bound; pending PG port", allow_module_level=True)
+
+import contextlib
 
 
 import inspect
@@ -30,7 +30,7 @@ from services.market_data_service import (
     MarketDataSource,
     StaleDataError,
 )
-from services.orderRepository import OrderRepository
+from storage.postgres.orders_repo import OrdersRepo
 from tests.conftest import make_clob_gateway, make_exec_config
 
 
@@ -87,10 +87,38 @@ class _FeeSvc:
         return 0
 
 
+@contextlib.asynccontextmanager
+async def _pg_pool():
+    try:
+        from testcontainers.postgres import PostgresContainer
+        import asyncpg
+        from storage.postgres.migrations import apply_migrations as pg_apply
+    except Exception as exc:
+        pytest.skip(f"Docker / postgres image unavailable: {exc!r}")
+    ctr = PostgresContainer("postgres:16-alpine")
+    try:
+        ctr.start()
+    except Exception as exc:
+        pytest.skip(f"Docker / postgres image unavailable: {exc!r}")
+    try:
+        dsn = ctr.get_connection_url(driver="asyncpg").replace(
+            "postgresql+asyncpg://", "postgresql://"
+        )
+        pool = await asyncpg.create_pool(dsn, min_size=1, max_size=5)
+        async with pool.acquire() as conn:
+            await pg_apply(conn)
+        try:
+            yield pool
+        finally:
+            await pool.close()
+    finally:
+        ctr.stop()
+
+
 def _make_svc(
     mds,
     *,
-    fresh_db_path: str,
+    pool,
     exec_config=None,
     submit_result: VenueSubmitResult | None = None,
 ) -> tuple[ExecutionService, MagicMock]:
@@ -100,7 +128,7 @@ def _make_svc(
         submit_result = VenueSubmitResult(
             success=True, order_id="ord-test", status="submitted"
         )
-    repo = OrderRepository(fresh_db_path)
+    repo = OrdersRepo(pool)
     gateway = make_clob_gateway(submit_result=submit_result)
     svc = ExecutionService(
         object(),  # clob_client — not used in PR 2 path
@@ -143,17 +171,18 @@ def _reset_circuit():
 
 class TestDirtyMarketBlocks:
     @pytest.mark.asyncio
-    async def test_dirty_market_returns_stale_status(self, fresh_db_path) -> None:
-        mds = AsyncMock()
-        mds.require_fresh_data = AsyncMock(
-            side_effect=StaleDataError(f"market data not executable for {TOKEN}; dirty=True")
-        )
-        svc, _ = _make_svc(mds, fresh_db_path=fresh_db_path)
-        result = await svc.execute(_request())
+    async def test_dirty_market_returns_stale_status(self) -> None:
+        async with _pg_pool() as pool:
+            mds = AsyncMock()
+            mds.require_fresh_data = AsyncMock(
+                side_effect=StaleDataError(f"market data not executable for {TOKEN}; dirty=True")
+            )
+            svc, _ = _make_svc(mds, pool=pool)
+            result = await svc.execute(_request())
 
-        assert result.accepted is False
-        assert result.status == "stale_market_data"
-        assert "dirty" in result.error or "not executable" in result.error
+            assert result.accepted is False
+            assert result.status == "stale_market_data"
+            assert "dirty" in result.error or "not executable" in result.error
 
 
 # ---------------------------------------------------------------------------
@@ -162,18 +191,19 @@ class TestDirtyMarketBlocks:
 
 class TestStaleMarketBlocks:
     @pytest.mark.asyncio
-    async def test_stale_market_returns_stale_status(self, fresh_db_path) -> None:
-        mds = AsyncMock()
-        mds.require_fresh_data = AsyncMock(
-            side_effect=StaleDataError(
-                f"market data not executable for {TOKEN}; REST fallback disabled"
+    async def test_stale_market_returns_stale_status(self) -> None:
+        async with _pg_pool() as pool:
+            mds = AsyncMock()
+            mds.require_fresh_data = AsyncMock(
+                side_effect=StaleDataError(
+                    f"market data not executable for {TOKEN}; REST fallback disabled"
+                )
             )
-        )
-        svc, _ = _make_svc(mds, fresh_db_path=fresh_db_path)
-        result = await svc.execute(_request())
+            svc, _ = _make_svc(mds, pool=pool)
+            result = await svc.execute(_request())
 
-        assert result.accepted is False
-        assert result.status == "stale_market_data"
+            assert result.accepted is False
+            assert result.status == "stale_market_data"
 
 
 # ---------------------------------------------------------------------------
@@ -182,17 +212,18 @@ class TestStaleMarketBlocks:
 
 class TestResolvedMarketBlocks:
     @pytest.mark.asyncio
-    async def test_resolved_market_returns_not_ready(self, fresh_db_path) -> None:
-        mds = AsyncMock()
-        mds.require_fresh_data = AsyncMock(
-            side_effect=MarketDataNotReady(f"market/token resolved: {TOKEN}")
-        )
-        svc, _ = _make_svc(mds, fresh_db_path=fresh_db_path)
-        result = await svc.execute(_request())
+    async def test_resolved_market_returns_not_ready(self) -> None:
+        async with _pg_pool() as pool:
+            mds = AsyncMock()
+            mds.require_fresh_data = AsyncMock(
+                side_effect=MarketDataNotReady(f"market/token resolved: {TOKEN}")
+            )
+            svc, _ = _make_svc(mds, pool=pool)
+            result = await svc.execute(_request())
 
-        assert result.accepted is False
-        assert result.status == "market_not_ready"
-        assert "resolved" in result.error
+            assert result.accepted is False
+            assert result.status == "market_not_ready"
+            assert "resolved" in result.error
 
 
 # ---------------------------------------------------------------------------
@@ -201,18 +232,19 @@ class TestResolvedMarketBlocks:
 
 class TestMissingTickBlocks:
     @pytest.mark.asyncio
-    async def test_missing_tick_raises_stale_error(self, fresh_db_path) -> None:
-        mds = AsyncMock()
-        mds.require_fresh_data = AsyncMock(
-            side_effect=StaleDataError(
-                f"market data not executable for {TOKEN}; tick missing"
+    async def test_missing_tick_raises_stale_error(self) -> None:
+        async with _pg_pool() as pool:
+            mds = AsyncMock()
+            mds.require_fresh_data = AsyncMock(
+                side_effect=StaleDataError(
+                    f"market data not executable for {TOKEN}; tick missing"
+                )
             )
-        )
-        svc, _ = _make_svc(mds, fresh_db_path=fresh_db_path)
-        result = await svc.execute(_request())
+            svc, _ = _make_svc(mds, pool=pool)
+            result = await svc.execute(_request())
 
-        assert result.accepted is False
-        assert result.status == "stale_market_data"
+            assert result.accepted is False
+            assert result.status == "stale_market_data"
 
 
 # ---------------------------------------------------------------------------
@@ -221,35 +253,37 @@ class TestMissingTickBlocks:
 
 class TestMissingMinOrderSizeBlocks:
     @pytest.mark.asyncio
-    async def test_missing_min_order_size_raises_stale_error(self, fresh_db_path) -> None:
-        mds = AsyncMock()
-        mds.require_fresh_data = AsyncMock(
-            side_effect=StaleDataError(
-                f"market data not executable for {TOKEN}; min_order_size missing"
+    async def test_missing_min_order_size_raises_stale_error(self) -> None:
+        async with _pg_pool() as pool:
+            mds = AsyncMock()
+            mds.require_fresh_data = AsyncMock(
+                side_effect=StaleDataError(
+                    f"market data not executable for {TOKEN}; min_order_size missing"
+                )
             )
-        )
-        svc, _ = _make_svc(mds, fresh_db_path=fresh_db_path)
-        result = await svc.execute(_request())
+            svc, _ = _make_svc(mds, pool=pool)
+            result = await svc.execute(_request())
 
-        assert result.accepted is False
-        assert result.status == "stale_market_data"
+            assert result.accepted is False
+            assert result.status == "stale_market_data"
 
     @pytest.mark.asyncio
-    async def test_small_amount_not_rejected_for_taker_orders(self, fresh_db_path) -> None:
-        """ExecutionService no longer rejects BUY orders below tick min_order_size.
+    async def test_small_amount_not_rejected_for_taker_orders(self) -> None:
+        async with _pg_pool() as pool:
+            """ExecutionService no longer rejects BUY orders below tick min_order_size.
 
-        Taker (marketable) orders have a $1 USDC notional minimum, not the 5-token
-        GTC limit minimum.  Upstream sizing already handles the taker floor, so
-        ExecutionService must accept small BUY orders."""
-        mds = AsyncMock()
-        mds.require_fresh_data = AsyncMock(
-            return_value=_make_bundle(min_order_size=Decimal("10"))
-        )
-        svc, gateway = _make_svc(mds, fresh_db_path=fresh_db_path)
-        result = await svc.execute(_request(amount=Decimal("3")))
+            Taker (marketable) orders have a $1 USDC notional minimum, not the 5-token
+            GTC limit minimum.  Upstream sizing already handles the taker floor, so
+            ExecutionService must accept small BUY orders."""
+            mds = AsyncMock()
+            mds.require_fresh_data = AsyncMock(
+                return_value=_make_bundle(min_order_size=Decimal("10"))
+            )
+            svc, gateway = _make_svc(mds, pool=pool)
+            result = await svc.execute(_request(amount=Decimal("3")))
 
-        assert result.accepted is True
-        gateway.submit_marketable_order.assert_awaited_once()
+            assert result.accepted is True
+            gateway.submit_marketable_order.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
@@ -263,21 +297,22 @@ class TestNoGetPriceCall:
         assert "get_price" not in source
 
     @pytest.mark.asyncio
-    async def test_clob_client_get_price_never_called(self, fresh_db_path) -> None:
-        mds = AsyncMock()
-        mds.require_fresh_data = AsyncMock(return_value=_make_bundle())
-        clob_client = MagicMock()
-        clob_client.get_price = AsyncMock()
-        repo = OrderRepository(fresh_db_path)
-        gateway = make_clob_gateway()
-        svc = ExecutionService(
-            clob_client, _FeeSvc(), repo,
-            config=make_exec_config(),
-            clob_gateway=gateway,
-            market_data_service=mds,
-        )
-        await svc.execute(_request())
-        clob_client.get_price.assert_not_called()
+    async def test_clob_client_get_price_never_called(self) -> None:
+        async with _pg_pool() as pool:
+            mds = AsyncMock()
+            mds.require_fresh_data = AsyncMock(return_value=_make_bundle())
+            clob_client = MagicMock()
+            clob_client.get_price = AsyncMock()
+            repo = OrdersRepo(pool)
+            gateway = make_clob_gateway()
+            svc = ExecutionService(
+                clob_client, _FeeSvc(), repo,
+                config=make_exec_config(),
+                clob_gateway=gateway,
+                market_data_service=mds,
+            )
+            await svc.execute(_request())
+            clob_client.get_price.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -286,71 +321,76 @@ class TestNoGetPriceCall:
 
 class TestBundleDataFlows:
     @pytest.mark.asyncio
-    async def test_buy_price_comes_from_bundle_best_ask(self, fresh_db_path) -> None:
-        """BUY worst_price is derived from bundle.quote.best_ask (zero slippage)."""
-        best_ask = Decimal("0.72")
-        mds = AsyncMock()
-        mds.require_fresh_data = AsyncMock(
-            return_value=_make_bundle(best_ask=best_ask, best_bid=Decimal("0.70"))
-        )
-        svc, gateway = _make_svc(mds, fresh_db_path=fresh_db_path)
-        result = await svc.execute(_request(side="BUY", max_slippage_bps=0))
+    async def test_buy_price_comes_from_bundle_best_ask(self) -> None:
+        async with _pg_pool() as pool:
+            """BUY worst_price is derived from bundle.quote.best_ask (zero slippage)."""
+            best_ask = Decimal("0.72")
+            mds = AsyncMock()
+            mds.require_fresh_data = AsyncMock(
+                return_value=_make_bundle(best_ask=best_ask, best_bid=Decimal("0.70"))
+            )
+            svc, gateway = _make_svc(mds, pool=pool)
+            result = await svc.execute(_request(side="BUY", max_slippage_bps=0))
 
-        assert result.accepted is True
-        submitted = gateway.submit_marketable_order.await_args.args[0]
-        assert submitted.price_limit == best_ask
-
-    @pytest.mark.asyncio
-    async def test_sell_price_comes_from_bundle_best_bid(self, fresh_db_path) -> None:
-        """SELL worst_price is derived from bundle.quote.best_bid (zero slippage)."""
-        best_bid = Decimal("0.47")
-        mds = AsyncMock()
-        mds.require_fresh_data = AsyncMock(
-            return_value=_make_bundle(best_bid=best_bid, best_ask=Decimal("0.52"))
-        )
-        svc, gateway = _make_svc(mds, fresh_db_path=fresh_db_path)
-        result = await svc.execute(_request(side="SELL", max_slippage_bps=0))
-
-        assert result.accepted is True
-        submitted = gateway.submit_marketable_order.await_args.args[0]
-        assert submitted.price_limit == best_bid
+            assert result.accepted is True
+            submitted = gateway.submit_marketable_order.await_args.args[0]
+            assert submitted.price_limit == best_ask
 
     @pytest.mark.asyncio
-    async def test_tick_size_from_bundle_used_in_gateway_request(self, fresh_db_path) -> None:
-        """tick_size in the gateway request matches bundle.tick.tick_size."""
-        tick_size = Decimal("0.001")
-        mds = AsyncMock()
-        mds.require_fresh_data = AsyncMock(
-            return_value=_make_bundle(tick_size=tick_size)
-        )
-        svc, gateway = _make_svc(mds, fresh_db_path=fresh_db_path)
-        await svc.execute(_request())
+    async def test_sell_price_comes_from_bundle_best_bid(self) -> None:
+        async with _pg_pool() as pool:
+            """SELL worst_price is derived from bundle.quote.best_bid (zero slippage)."""
+            best_bid = Decimal("0.47")
+            mds = AsyncMock()
+            mds.require_fresh_data = AsyncMock(
+                return_value=_make_bundle(best_bid=best_bid, best_ask=Decimal("0.52"))
+            )
+            svc, gateway = _make_svc(mds, pool=pool)
+            result = await svc.execute(_request(side="SELL", max_slippage_bps=0))
 
-        submitted = gateway.submit_marketable_order.await_args.args[0]
-        assert submitted.tick_size == tick_size
-
-    @pytest.mark.asyncio
-    async def test_neg_risk_from_bundle_used_in_gateway_request(self, fresh_db_path) -> None:
-        """neg_risk in gateway request matches bundle.tick.neg_risk."""
-        mds = AsyncMock()
-        mds.require_fresh_data = AsyncMock(
-            return_value=_make_bundle(neg_risk=True)
-        )
-        svc, gateway = _make_svc(mds, fresh_db_path=fresh_db_path)
-        await svc.execute(_request())
-
-        submitted = gateway.submit_marketable_order.await_args.args[0]
-        assert submitted.neg_risk is True
+            assert result.accepted is True
+            submitted = gateway.submit_marketable_order.await_args.args[0]
+            assert submitted.price_limit == best_bid
 
     @pytest.mark.asyncio
-    async def test_require_fresh_data_called_once_with_token_id(self, fresh_db_path) -> None:
-        """require_fresh_data is called exactly once per execute() call."""
-        mds = AsyncMock()
-        mds.require_fresh_data = AsyncMock(return_value=_make_bundle())
-        svc, _ = _make_svc(mds, fresh_db_path=fresh_db_path)
-        await svc.execute(_request())
+    async def test_tick_size_from_bundle_used_in_gateway_request(self) -> None:
+        async with _pg_pool() as pool:
+            """tick_size in the gateway request matches bundle.tick.tick_size."""
+            tick_size = Decimal("0.001")
+            mds = AsyncMock()
+            mds.require_fresh_data = AsyncMock(
+                return_value=_make_bundle(tick_size=tick_size)
+            )
+            svc, gateway = _make_svc(mds, pool=pool)
+            await svc.execute(_request())
 
-        mds.require_fresh_data.assert_awaited_once_with(TOKEN, side="BUY", condition_id=None)
+            submitted = gateway.submit_marketable_order.await_args.args[0]
+            assert submitted.tick_size == tick_size
+
+    @pytest.mark.asyncio
+    async def test_neg_risk_from_bundle_used_in_gateway_request(self) -> None:
+        async with _pg_pool() as pool:
+            """neg_risk in gateway request matches bundle.tick.neg_risk."""
+            mds = AsyncMock()
+            mds.require_fresh_data = AsyncMock(
+                return_value=_make_bundle(neg_risk=True)
+            )
+            svc, gateway = _make_svc(mds, pool=pool)
+            await svc.execute(_request())
+
+            submitted = gateway.submit_marketable_order.await_args.args[0]
+            assert submitted.neg_risk is True
+
+    @pytest.mark.asyncio
+    async def test_require_fresh_data_called_once_with_token_id(self) -> None:
+        async with _pg_pool() as pool:
+            """require_fresh_data is called exactly once per execute() call."""
+            mds = AsyncMock()
+            mds.require_fresh_data = AsyncMock(return_value=_make_bundle())
+            svc, _ = _make_svc(mds, pool=pool)
+            await svc.execute(_request())
+
+            mds.require_fresh_data.assert_awaited_once_with(TOKEN, side="BUY", condition_id=None)
 
 
 # ---------------------------------------------------------------------------
@@ -359,21 +399,22 @@ class TestBundleDataFlows:
 
 class TestMdsNotWiredFailsClosed:
     @pytest.mark.asyncio
-    async def test_no_mds_returns_rejected(self, fresh_db_path) -> None:
-        repo = OrderRepository(fresh_db_path)
-        gateway = make_clob_gateway()
-        svc = ExecutionService(
-            object(), _FeeSvc(), repo,
-            config=make_exec_config(),
-            clob_gateway=gateway,
-            market_data_service=None,
-        )
-        result = await svc.execute(_request())
+    async def test_no_mds_returns_rejected(self) -> None:
+        async with _pg_pool() as pool:
+            repo = OrdersRepo(pool)
+            gateway = make_clob_gateway()
+            svc = ExecutionService(
+                object(), _FeeSvc(), repo,
+                config=make_exec_config(),
+                clob_gateway=gateway,
+                market_data_service=None,
+            )
+            result = await svc.execute(_request())
 
-        assert result.accepted is False
-        assert result.status == "rejected"
-        assert "market_data_service" in result.error
-        gateway.submit_marketable_order.assert_not_awaited()
+            assert result.accepted is False
+            assert result.status == "rejected"
+            assert "market_data_service" in result.error
+            gateway.submit_marketable_order.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -382,20 +423,21 @@ class TestMdsNotWiredFailsClosed:
 
 class TestMissingQuoteBlocks:
     @pytest.mark.asyncio
-    async def test_missing_quote_returns_stale_status(self, fresh_db_path) -> None:
-        mds = AsyncMock()
-        mds.require_fresh_data = AsyncMock(
-            side_effect=StaleDataError(
-                f"market data not executable for {TOKEN}; quote missing"
+    async def test_missing_quote_returns_stale_status(self) -> None:
+        async with _pg_pool() as pool:
+            mds = AsyncMock()
+            mds.require_fresh_data = AsyncMock(
+                side_effect=StaleDataError(
+                    f"market data not executable for {TOKEN}; quote missing"
+                )
             )
-        )
-        svc, gateway = _make_svc(mds, fresh_db_path=fresh_db_path)
-        result = await svc.execute(_request())
+            svc, gateway = _make_svc(mds, pool=pool)
+            result = await svc.execute(_request())
 
-        assert result.accepted is False
-        assert result.status == "stale_market_data"
-        assert "quote" in result.error
-        gateway.submit_marketable_order.assert_not_awaited()
+            assert result.accepted is False
+            assert result.status == "stale_market_data"
+            assert "quote" in result.error
+            gateway.submit_marketable_order.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -404,20 +446,21 @@ class TestMissingQuoteBlocks:
 
 class TestMissingBookBlocks:
     @pytest.mark.asyncio
-    async def test_missing_book_returns_stale_status(self, fresh_db_path) -> None:
-        mds = AsyncMock()
-        mds.require_fresh_data = AsyncMock(
-            side_effect=StaleDataError(
-                f"market data not executable for {TOKEN}; book missing"
+    async def test_missing_book_returns_stale_status(self) -> None:
+        async with _pg_pool() as pool:
+            mds = AsyncMock()
+            mds.require_fresh_data = AsyncMock(
+                side_effect=StaleDataError(
+                    f"market data not executable for {TOKEN}; book missing"
+                )
             )
-        )
-        svc, gateway = _make_svc(mds, fresh_db_path=fresh_db_path)
-        result = await svc.execute(_request())
+            svc, gateway = _make_svc(mds, pool=pool)
+            result = await svc.execute(_request())
 
-        assert result.accepted is False
-        assert result.status == "stale_market_data"
-        assert "book" in result.error
-        gateway.submit_marketable_order.assert_not_awaited()
+            assert result.accepted is False
+            assert result.status == "stale_market_data"
+            assert "book" in result.error
+            gateway.submit_marketable_order.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -426,28 +469,29 @@ class TestMissingBookBlocks:
 
 class TestSpreadGateUsesBundle:
     @pytest.mark.asyncio
-    async def test_wide_spread_from_bundle_rejects(self, fresh_db_path) -> None:
-        """Spread gate is driven by bundle.quote best_bid/best_ask + bundle.tick.tick_size."""
-        exec_config = make_exec_config()
-        exec_config.execution.book_spread_mode = "absolute_bps"
-        exec_config.execution.max_book_spread_bps = 100  # 1% max
+    async def test_wide_spread_from_bundle_rejects(self) -> None:
+        async with _pg_pool() as pool:
+            """Spread gate is driven by bundle.quote best_bid/best_ask + bundle.tick.tick_size."""
+            exec_config = make_exec_config()
+            exec_config.execution.book_spread_mode = "absolute_bps"
+            exec_config.execution.max_book_spread_bps = 100  # 1% max
 
-        mds = AsyncMock()
-        mds.require_fresh_data = AsyncMock(
-            return_value=_make_bundle(
-                best_bid=Decimal("0.20"),
-                best_ask=Decimal("0.90"),  # 70 cents wide → far above 100 bps
-                tick_size=Decimal("0.01"),
+            mds = AsyncMock()
+            mds.require_fresh_data = AsyncMock(
+                return_value=_make_bundle(
+                    best_bid=Decimal("0.20"),
+                    best_ask=Decimal("0.90"),  # 70 cents wide → far above 100 bps
+                    tick_size=Decimal("0.01"),
+                )
             )
-        )
-        svc, gateway = _make_svc(
-            mds, fresh_db_path=fresh_db_path, exec_config=exec_config
-        )
-        result = await svc.execute(_request())
+            svc, gateway = _make_svc(
+                mds, pool=pool, exec_config=exec_config
+            )
+            result = await svc.execute(_request())
 
-        assert result.accepted is False
-        assert result.status == "book_spread_wide"
-        gateway.submit_marketable_order.assert_not_awaited()
+            assert result.accepted is False
+            assert result.status == "book_spread_wide"
+            gateway.submit_marketable_order.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -460,30 +504,32 @@ class TestExecutionServicePassesSideToMDS:
     MarketDataService can route to require_execution_snapshot in REST primary mode."""
 
     @pytest.mark.asyncio
-    async def test_require_fresh_data_called_with_side(self, fresh_db_path) -> None:
-        mds = AsyncMock()
-        mds.require_fresh_data = AsyncMock(return_value=_make_bundle())
-        svc, _ = _make_svc(mds, fresh_db_path=fresh_db_path)
+    async def test_require_fresh_data_called_with_side(self) -> None:
+        async with _pg_pool() as pool:
+            mds = AsyncMock()
+            mds.require_fresh_data = AsyncMock(return_value=_make_bundle())
+            svc, _ = _make_svc(mds, pool=pool)
 
-        req = _request(side="BUY")
-        await svc.execute(req)
+            req = _request(side="BUY")
+            await svc.execute(req)
 
-        mds.require_fresh_data.assert_awaited_once()
-        call_kwargs = mds.require_fresh_data.call_args
-        assert call_kwargs.kwargs.get("side") == "BUY", (
-            "require_fresh_data must receive side= so REST snapshot fast path is entered"
-        )
+            mds.require_fresh_data.assert_awaited_once()
+            call_kwargs = mds.require_fresh_data.call_args
+            assert call_kwargs.kwargs.get("side") == "BUY", (
+                "require_fresh_data must receive side= so REST snapshot fast path is entered"
+            )
 
     @pytest.mark.asyncio
-    async def test_require_fresh_data_called_with_sell_side(self, fresh_db_path) -> None:
-        mds = AsyncMock()
-        mds.require_fresh_data = AsyncMock(
-            return_value=_make_bundle(best_bid=Decimal("0.51"), best_ask=Decimal("0.53"))
-        )
-        svc, _ = _make_svc(mds, fresh_db_path=fresh_db_path)
+    async def test_require_fresh_data_called_with_sell_side(self) -> None:
+        async with _pg_pool() as pool:
+            mds = AsyncMock()
+            mds.require_fresh_data = AsyncMock(
+                return_value=_make_bundle(best_bid=Decimal("0.51"), best_ask=Decimal("0.53"))
+            )
+            svc, _ = _make_svc(mds, pool=pool)
 
-        req = _request(side="SELL", amount=Decimal("10"))
-        await svc.execute(req)
+            req = _request(side="SELL", amount=Decimal("10"))
+            await svc.execute(req)
 
-        call_kwargs = mds.require_fresh_data.call_args
-        assert call_kwargs.kwargs.get("side") == "SELL"
+            call_kwargs = mds.require_fresh_data.call_args
+            assert call_kwargs.kwargs.get("side") == "SELL"
