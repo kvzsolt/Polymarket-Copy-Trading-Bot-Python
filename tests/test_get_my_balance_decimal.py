@@ -25,11 +25,15 @@ def web3_returns(monkeypatch):
     """Patch Web3 + ENV + bytecode so _get_balance_sync hits balanceOf cleanly."""
 
     def _go(raw_balance: int):
-        env = {
-            "RPC_URL": "https://rpc.example",
-            "COLLATERAL_CONTRACT_ADDRESS": "0x1111111111111111111111111111111111111111",
-        }
-        monkeypatch.setattr("utils.getMyBalance.ENV", env)
+        # Module-level config singletons (legacy-kill slice #77 replaced
+        # the previous ENV.get reads with these explicit module vars).
+        monkeypatch.setattr("utils.getMyBalance._RPC_URL", "https://rpc.example")
+        monkeypatch.setattr(
+            "utils.getMyBalance._COLLATERAL_CONTRACT_ADDRESS",
+            "0x1111111111111111111111111111111111111111",
+        )
+        monkeypatch.setattr("utils.getMyBalance._PUSD_CONTRACT_ADDRESS", "")
+        monkeypatch.setattr("utils.getMyBalance._USDC_CONTRACT_ADDRESS", "")
         w3_mock = MagicMock()
         w3_mock.eth.get_code.return_value = b"\x01"  # truthy bytecode = "contract exists"
         contract_mock = MagicMock()
