@@ -1102,7 +1102,7 @@ class ReconciliationService:
 
             entry_price: float | None = None
             if side == "SELL" and get_position is not None:
-                pos = get_position(record["user_id"], record["condition_id"], token_id=record["asset"])
+                pos = await get_position(record["user_id"], record["condition_id"], token_id=record["asset"])
                 if pos is not None:
                     entry_raw = getattr(pos, "avg_entry_price", None)
                     if entry_raw is not None:
@@ -1426,7 +1426,7 @@ class ReconciliationService:
         existing_pos = None
         if get_position is not None:
             try:
-                existing_pos = get_position(user_id, condition_id, token_id=token_id)
+                existing_pos = await get_position(user_id, condition_id, token_id=token_id)
             except Exception:
                 existing_pos = None
         try:

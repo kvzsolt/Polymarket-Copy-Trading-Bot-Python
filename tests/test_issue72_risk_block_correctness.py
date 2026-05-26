@@ -1,8 +1,16 @@
+"""Risk-block lifecycle correctness (PG-A6 port).
+
+Pins:
+  * mark_risk_block is idempotent (no duplicate rows).
+  * Blocks are token-scoped, not condition-scoped.
+  * Rejected SELL leaves no block.
+  * Reconciliation full-close creates exactly one block (no dup on
+    restart).
+  * Risk triggers recorded for full close + rejection.
+"""
 from __future__ import annotations
-import pytest
-pytest.skip("sqlite-bound; pending PG port", allow_module_level=True)
 
-
+import contextlib
 from decimal import Decimal
 
 import pytest
@@ -15,13 +23,11 @@ from services.riskMonitor import (
     rehydrate_position_manager,
     run_risk_check_for_context,
 )
-from storage.sqlite.connection import create_connection
-from storage.sqlite.fills_repo import FillRecord, FillsRepo
-from storage.sqlite.migrations import apply_migrations
-from storage.sqlite.orders_repo import OrderSubmissionRecord, OrdersRepo
-from storage.sqlite.positions_repo import PositionRecord, PositionsRepo
-from storage.sqlite.risk_blocks_repo import RiskBlocksRepo
-from storage.sqlite.risk_triggers_repo import RiskTriggersRepo
+from storage.postgres.fills_repo import FillRecord, FillsRepo
+from storage.postgres.orders_repo import OrderSubmissionRecord, OrdersRepo
+from storage.postgres.positions_repo import PositionRecord, PositionsRepo
+from storage.postgres.risk_blocks_repo import RiskBlocksRepo
+from storage.postgres.risk_triggers_repo import RiskTriggersRepo
 
 pytestmark = pytest.mark.integration
 
@@ -32,6 +38,34 @@ _FILL_RESPONSES = {
     "venue-risk-no-fill-1": {"status": "cancelled", "size_matched": "0", "avg_price": None, "orderID": "venue-risk-no-fill-1"},
     "venue-risk-dup-1": {"status": "filled", "size_matched": "10", "avg_price": "0.30", "orderID": "venue-risk-dup-1"},
 }
+
+
+@contextlib.asynccontextmanager
+async def _pg_pool():
+    try:
+        from testcontainers.postgres import PostgresContainer
+        import asyncpg
+        from storage.postgres.migrations import apply_migrations as pg_apply
+    except Exception as exc:
+        pytest.skip(f"Docker / postgres image unavailable: {exc!r}")
+    ctr = PostgresContainer("postgres:16-alpine")
+    try:
+        ctr.start()
+    except Exception as exc:
+        pytest.skip(f"Docker / postgres image unavailable: {exc!r}")
+    try:
+        dsn = ctr.get_connection_url(driver="asyncpg").replace(
+            "postgresql+asyncpg://", "postgresql://"
+        )
+        pool = await asyncpg.create_pool(dsn, min_size=1, max_size=5)
+        async with pool.acquire() as conn:
+            await pg_apply(conn)
+        try:
+            yield pool
+        finally:
+            await pool.close()
+    finally:
+        ctr.stop()
 
 
 class _FakeClobGateway:
@@ -127,23 +161,16 @@ class _ReconcilingNoFillExecutionService(_RejectingExecutionService):
         }
 
 
-def _setup_db(tmp_path):
-    db_path = str(tmp_path / "test.db")
-    with create_connection(db_path) as conn:
-        apply_migrations(conn)
-    return db_path
-
-
-def _make_context(db_path, *, execution_service=None, risk_triggers_repo=None, clob_gateway=None):
+def _make_context(pool, *, execution_service=None, risk_triggers_repo=None, clob_gateway=None):
     return TradingContext(
         user_id="u1",
         wallet_address="wallet-u1",
         client=_FakeClient(price="0.97"),
-        positions_repo=PositionsRepo(db_path),
-        fills_repo=FillsRepo(db_path),
-        orders_repo=OrdersRepo(db_path),
-        risk_blocks_repo=RiskBlocksRepo(db_path),
-        risk_triggers_repo=risk_triggers_repo or RiskTriggersRepo(db_path),
+        positions_repo=PositionsRepo(pool),
+        fills_repo=FillsRepo(pool),
+        orders_repo=OrdersRepo(pool),
+        risk_blocks_repo=RiskBlocksRepo(pool),
+        risk_triggers_repo=risk_triggers_repo or RiskTriggersRepo(pool),
         pnl_tracker=_FakePnlTracker(),
         risk_engine=object(),
         accounting_service=object(),
@@ -154,282 +181,281 @@ def _make_context(db_path, *, execution_service=None, risk_triggers_repo=None, c
 
 
 @pytest.mark.asyncio
-async def test_mark_risk_block_idempotent_on_duplicate_calls(tmp_path):
-    db_path = _setup_db(tmp_path)
-    repo = RiskBlocksRepo(db_path)
+async def test_mark_risk_block_idempotent_on_duplicate_calls():
+    async with _pg_pool() as pool:
+        repo = RiskBlocksRepo(pool)
 
-    repo.mark_risk_block(
-        user_id="u1",
-        condition_id="cond-1",
-        token_id=FAKE_TOKEN_ID,
-        reason="test",
-        source="test",
-    )
-    repo.mark_risk_block(
-        user_id="u1",
-        condition_id="cond-1",
-        token_id=FAKE_TOKEN_ID,
-        reason="test",
-        source="test",
-    )
-
-    blocks = repo.list_active_risk_blocks(user_id="u1")
-    assert len(blocks) == 1, f"expected exactly 1 block row, got {len(blocks)}"
-    assert blocks[0]["user_id"] == "u1"
-    assert blocks[0]["condition_id"] == "cond-1"
-    assert blocks[0]["token_id"] == FAKE_TOKEN_ID
-
-
-@pytest.mark.asyncio
-async def test_risk_block_is_token_scoped_not_condition_scoped(tmp_path):
-    db_path = _setup_db(tmp_path)
-    positions_repo = PositionsRepo(db_path)
-
-    positions_repo.upsert_position(
-        PositionRecord(
+        await repo.mark_risk_block(
             user_id="u1",
             condition_id="cond-1",
             token_id=FAKE_TOKEN_ID,
-            leader_id="l1",
-            size_tokens=Decimal("10"),
-            avg_entry_price=Decimal("0.60"),
+            reason="test",
+            source="test",
         )
-    )
-    positions_repo.upsert_position(
-        PositionRecord(
-            user_id="u1",
-            condition_id="cond-1",
-            token_id=TOKEN_B,
-            leader_id="l1",
-            size_tokens=Decimal("7"),
-            avg_entry_price=Decimal("0.42"),
-        )
-    )
-
-    context = _make_context(db_path)
-    rehydrate_position_manager(context)
-
-    await run_risk_check_for_context(context)
-
-    risk_blocks_repo = context.risk_blocks_repo
-    block_a = risk_blocks_repo.get_active_risk_block(
-        user_id="u1", condition_id="cond-1", token_id=FAKE_TOKEN_ID,
-    )
-    block_b = risk_blocks_repo.get_active_risk_block(
-        user_id="u1", condition_id="cond-1", token_id=TOKEN_B,
-    )
-
-    assert block_a is not None, "block should exist for token A (full close)"
-    assert block_b is not None, "block should exist for token B (full close)"
-
-    assert positions_repo.get_position("u1", "cond-1", token_id=FAKE_TOKEN_ID) is None
-    assert positions_repo.get_position("u1", "cond-1", token_id=TOKEN_B) is None
-
-
-@pytest.mark.asyncio
-async def test_reconciliation_rejected_risk_sell_no_block(tmp_path):
-    db_path = _setup_db(tmp_path)
-    positions_repo = PositionsRepo(db_path)
-    orders_repo = OrdersRepo(db_path)
-    fills_repo = FillsRepo(db_path)
-
-    positions_repo.upsert_position(
-        PositionRecord(
+        await repo.mark_risk_block(
             user_id="u1",
             condition_id="cond-1",
             token_id=FAKE_TOKEN_ID,
-            leader_id="l1",
-            size_tokens=Decimal("10"),
-            avg_entry_price=Decimal("0.60"),
+            reason="test",
+            source="test",
         )
-    )
-    orders_repo.save_submission(
-        OrderSubmissionRecord(
-            idempotency_key="risk-idem-no-fill",
-            user_id="u1",
-            leader_id="l1",
-            order_id="venue-risk-no-fill-1",
-            status="submitted_unconfirmed",
-            request_payload={
-                "user_id": "u1",
-                "leader_id": "l1",
-                "token_id": FAKE_TOKEN_ID,
-                "condition_id": "cond-1",
-                "side": "SELL",
-                "amount": "10",
-                "reason": "near_max_full_exit",
-                "signal_id": "risk:near_max_full_exit:cond-1:1700000003",
-                "recovery_metadata": {
-                    "trigger_price": 0.97,
-                    "trigger_size_tokens": 10.0,
+
+        blocks = await repo.list_active_risk_blocks(user_id="u1")
+        assert len(blocks) == 1, f"expected exactly 1 block row, got {len(blocks)}"
+        assert blocks[0]["user_id"] == "u1"
+        assert blocks[0]["condition_id"] == "cond-1"
+        assert blocks[0]["token_id"] == FAKE_TOKEN_ID
+
+
+@pytest.mark.asyncio
+async def test_risk_block_is_token_scoped_not_condition_scoped():
+    async with _pg_pool() as pool:
+        positions_repo = PositionsRepo(pool)
+
+        await positions_repo.upsert_position(
+            PositionRecord(
+                user_id="u1",
+                condition_id="cond-1",
+                token_id=FAKE_TOKEN_ID,
+                leader_id="l1",
+                size_tokens=Decimal("10"),
+                avg_entry_price=Decimal("0.60"),
+            )
+        )
+        await positions_repo.upsert_position(
+            PositionRecord(
+                user_id="u1",
+                condition_id="cond-1",
+                token_id=TOKEN_B,
+                leader_id="l1",
+                size_tokens=Decimal("7"),
+                avg_entry_price=Decimal("0.42"),
+            )
+        )
+
+        context = _make_context(pool)
+        await rehydrate_position_manager(context)
+
+        await run_risk_check_for_context(context)
+
+        risk_blocks_repo = context.risk_blocks_repo
+        block_a = await risk_blocks_repo.get_active_risk_block(
+            user_id="u1", condition_id="cond-1", token_id=FAKE_TOKEN_ID,
+        )
+        block_b = await risk_blocks_repo.get_active_risk_block(
+            user_id="u1", condition_id="cond-1", token_id=TOKEN_B,
+        )
+
+        assert block_a is not None, "block should exist for token A (full close)"
+        assert block_b is not None, "block should exist for token B (full close)"
+
+        assert await positions_repo.get_position("u1", "cond-1", token_id=FAKE_TOKEN_ID) is None
+        assert await positions_repo.get_position("u1", "cond-1", token_id=TOKEN_B) is None
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_rejected_risk_sell_no_block():
+    async with _pg_pool() as pool:
+        positions_repo = PositionsRepo(pool)
+        orders_repo = OrdersRepo(pool)
+
+        await positions_repo.upsert_position(
+            PositionRecord(
+                user_id="u1",
+                condition_id="cond-1",
+                token_id=FAKE_TOKEN_ID,
+                leader_id="l1",
+                size_tokens=Decimal("10"),
+                avg_entry_price=Decimal("0.60"),
+            )
+        )
+        await orders_repo.save_submission(
+            OrderSubmissionRecord(
+                idempotency_key="risk-idem-no-fill",
+                user_id="u1",
+                leader_id="l1",
+                order_id="venue-risk-no-fill-1",
+                status="submitted_unconfirmed",
+                request_payload={
+                    "user_id": "u1",
+                    "leader_id": "l1",
+                    "token_id": FAKE_TOKEN_ID,
+                    "condition_id": "cond-1",
+                    "side": "SELL",
+                    "amount": "10",
+                    "reason": "near_max_full_exit",
+                    "signal_id": "risk:near_max_full_exit:cond-1:1700000003",
+                    "recovery_metadata": {
+                        "trigger_price": 0.97,
+                        "trigger_size_tokens": 10.0,
+                    },
                 },
-            },
-            response_payload={"status": "submitted_unconfirmed", "orderID": "venue-risk-no-fill-1"},
+                response_payload={"status": "submitted_unconfirmed", "orderID": "venue-risk-no-fill-1"},
+            )
         )
-    )
 
-    context = _make_context(
-        db_path,
-        execution_service=_ReconcilingNoFillExecutionService(),
-    )
+        context = _make_context(
+            pool,
+            execution_service=_ReconcilingNoFillExecutionService(),
+        )
 
-    result = await startup_reconcile_unconfirmed([context])
+        result = await startup_reconcile_unconfirmed([context])
 
-    assert result == {"u1": 1}
-    assert context.risk_blocks_repo.get_active_risk_block(
-        user_id="u1", condition_id="cond-1", token_id=FAKE_TOKEN_ID,
-    ) is None
+        assert result == {"u1": 1}
+        assert await context.risk_blocks_repo.get_active_risk_block(
+            user_id="u1", condition_id="cond-1", token_id=FAKE_TOKEN_ID,
+        ) is None
 
-    pos = positions_repo.get_position("u1", "cond-1", token_id=FAKE_TOKEN_ID)
-    assert pos is not None, "position should remain when SELL was cancelled/rejected"
+        pos = await positions_repo.get_position("u1", "cond-1", token_id=FAKE_TOKEN_ID)
+        assert pos is not None, "position should remain when SELL was cancelled/rejected"
 
 
 @pytest.mark.asyncio
-async def test_restart_full_close_then_risk_recheck_no_duplicate_block(tmp_path):
-    db_path = _setup_db(tmp_path)
-    positions_repo = PositionsRepo(db_path)
-    orders_repo = OrdersRepo(db_path)
+async def test_restart_full_close_then_risk_recheck_no_duplicate_block():
+    async with _pg_pool() as pool:
+        positions_repo = PositionsRepo(pool)
+        orders_repo = OrdersRepo(pool)
 
-    positions_repo.upsert_position(
-        PositionRecord(
-            user_id="u1",
-            condition_id="cond-1",
-            token_id=FAKE_TOKEN_ID,
-            leader_id="l1",
-            size_tokens=Decimal("10"),
-            avg_entry_price=Decimal("0.60"),
+        await positions_repo.upsert_position(
+            PositionRecord(
+                user_id="u1",
+                condition_id="cond-1",
+                token_id=FAKE_TOKEN_ID,
+                leader_id="l1",
+                size_tokens=Decimal("10"),
+                avg_entry_price=Decimal("0.60"),
+            )
         )
-    )
-    orders_repo.save_submission(
-        OrderSubmissionRecord(
-            idempotency_key="risk-idem-dup",
-            user_id="u1",
-            leader_id="l1",
-            order_id="venue-risk-dup-1",
-            status="submitted_unconfirmed",
-            request_payload={
-                "user_id": "u1",
-                "leader_id": "l1",
-                "token_id": FAKE_TOKEN_ID,
-                "condition_id": "cond-1",
-                "side": "SELL",
-                "amount": "10",
-                "reason": "near_max_full_exit",
-                "signal_id": "risk:near_max_full_exit:cond-1:1700000004",
-                "recovery_metadata": {
-                    "trigger_price": 0.97,
-                    "trigger_size_tokens": 10.0,
+        await orders_repo.save_submission(
+            OrderSubmissionRecord(
+                idempotency_key="risk-idem-dup",
+                user_id="u1",
+                leader_id="l1",
+                order_id="venue-risk-dup-1",
+                status="submitted_unconfirmed",
+                request_payload={
+                    "user_id": "u1",
+                    "leader_id": "l1",
+                    "token_id": FAKE_TOKEN_ID,
+                    "condition_id": "cond-1",
+                    "side": "SELL",
+                    "amount": "10",
+                    "reason": "near_max_full_exit",
+                    "signal_id": "risk:near_max_full_exit:cond-1:1700000004",
+                    "recovery_metadata": {
+                        "trigger_price": 0.97,
+                        "trigger_size_tokens": 10.0,
+                    },
                 },
-            },
-            response_payload={"status": "submitted_unconfirmed", "orderID": "venue-risk-dup-1"},
+                response_payload={"status": "submitted_unconfirmed", "orderID": "venue-risk-dup-1"},
+            )
         )
-    )
 
-    context = _make_context(
-        db_path,
-        execution_service=_ReconcilingExecutionService(),
-    )
+        context = _make_context(
+            pool,
+            execution_service=_ReconcilingExecutionService(),
+        )
 
-    await startup_reconcile_unconfirmed([context])
+        await startup_reconcile_unconfirmed([context])
 
-    block = context.risk_blocks_repo.get_active_risk_block(
-        user_id="u1", condition_id="cond-1", token_id=FAKE_TOKEN_ID,
-    )
-    assert block is not None, "block should exist after reconciliation full close"
+        block = await context.risk_blocks_repo.get_active_risk_block(
+            user_id="u1", condition_id="cond-1", token_id=FAKE_TOKEN_ID,
+        )
+        assert block is not None, "block should exist after reconciliation full close"
 
-    assert positions_repo.get_position("u1", "cond-1", token_id=FAKE_TOKEN_ID) is None
+        assert await positions_repo.get_position("u1", "cond-1", token_id=FAKE_TOKEN_ID) is None
 
-    rehydrate_position_manager(context)
-    await run_risk_check_for_context(context)
+        await rehydrate_position_manager(context)
+        await run_risk_check_for_context(context)
 
-    blocks = context.risk_blocks_repo.list_active_risk_blocks(user_id="u1")
-    assert len(blocks) == 1, f"expected exactly 1 block after recheck, got {len(blocks)}"
+        blocks = await context.risk_blocks_repo.list_active_risk_blocks(user_id="u1")
+        assert len(blocks) == 1, f"expected exactly 1 block after recheck, got {len(blocks)}"
 
 
 @pytest.mark.asyncio
-async def test_risk_trigger_recorded_on_full_close(tmp_path):
-    db_path = _setup_db(tmp_path)
-    fills_repo = FillsRepo(db_path)
-    positions_repo = PositionsRepo(db_path)
-    risk_triggers_repo = RiskTriggersRepo(db_path)
+async def test_risk_trigger_recorded_on_full_close():
+    async with _pg_pool() as pool:
+        fills_repo = FillsRepo(pool)
+        positions_repo = PositionsRepo(pool)
+        risk_triggers_repo = RiskTriggersRepo(pool)
 
-    fills_repo.append_fill(
-        FillRecord(
-            user_id="u1",
-            leader_id="l1",
-            order_id="buy-1",
-            condition_id="cond-1",
-            token_id=FAKE_TOKEN_ID,
-            side="BUY",
-            size_tokens=Decimal("10"),
-            price=Decimal("0.60"),
-            fee=Decimal("0"),
-            fill_ts=1_700_000_000,
+        await fills_repo.append_fill(
+            FillRecord(
+                user_id="u1",
+                leader_id="l1",
+                order_id="buy-1",
+                condition_id="cond-1",
+                token_id=FAKE_TOKEN_ID,
+                side="BUY",
+                size_tokens=Decimal("10"),
+                price=Decimal("0.60"),
+                fee=Decimal("0"),
+                fill_ts=1_700_000_000,
+            )
         )
-    )
-    positions_repo.rebuild_user_positions_from_fills("u1", fills_repo)
+        await positions_repo.rebuild_user_positions_from_fills("u1", fills_repo)
 
-    context = _make_context(
-        db_path,
-        risk_triggers_repo=risk_triggers_repo,
-    )
-    rehydrate_position_manager(context)
+        context = _make_context(
+            pool,
+            risk_triggers_repo=risk_triggers_repo,
+        )
+        await rehydrate_position_manager(context)
 
-    await run_risk_check_for_context(context)
+        await run_risk_check_for_context(context)
 
-    triggers = risk_triggers_repo.list_triggers_for_position(
-        user_id="u1", condition_id="cond-1", token_id=FAKE_TOKEN_ID,
-    )
-    assert len(triggers) >= 1, "at least one trigger should be recorded on full close"
-    trigger = triggers[0]
-    assert trigger["fill_status"] == "filled"
-    assert trigger["source"] == "risk_monitor"
-    assert trigger["fill_order_id"] == f"risk-exit-{FAKE_TOKEN_ID[:8]}"
-    assert trigger["reason"] == "near_max_full_exit"
-    metadata = trigger.get("metadata") or {}
-    assert metadata.get("trigger_price") == pytest.approx(0.97)
+        triggers = await risk_triggers_repo.list_triggers_for_position(
+            user_id="u1", condition_id="cond-1", token_id=FAKE_TOKEN_ID,
+        )
+        assert len(triggers) >= 1, "at least one trigger should be recorded on full close"
+        trigger = triggers[0]
+        assert trigger["fill_status"] == "filled"
+        assert trigger["source"] == "risk_monitor"
+        assert trigger["fill_order_id"] == f"risk-exit-{FAKE_TOKEN_ID[:8]}"
+        assert trigger["reason"] == "near_max_full_exit"
+        metadata = trigger.get("metadata") or {}
+        assert metadata.get("trigger_price") == pytest.approx(0.97)
 
 
 @pytest.mark.asyncio
-async def test_risk_trigger_recorded_on_rejection(tmp_path):
-    db_path = _setup_db(tmp_path)
-    fills_repo = FillsRepo(db_path)
-    positions_repo = PositionsRepo(db_path)
-    risk_triggers_repo = RiskTriggersRepo(db_path)
+async def test_risk_trigger_recorded_on_rejection():
+    async with _pg_pool() as pool:
+        fills_repo = FillsRepo(pool)
+        positions_repo = PositionsRepo(pool)
+        risk_triggers_repo = RiskTriggersRepo(pool)
 
-    fills_repo.append_fill(
-        FillRecord(
-            user_id="u1",
-            leader_id="l1",
-            order_id="buy-1",
-            condition_id="cond-1",
-            token_id=FAKE_TOKEN_ID,
-            side="BUY",
-            size_tokens=Decimal("10"),
-            price=Decimal("0.60"),
-            fee=Decimal("0"),
-            fill_ts=1_700_000_000,
+        await fills_repo.append_fill(
+            FillRecord(
+                user_id="u1",
+                leader_id="l1",
+                order_id="buy-1",
+                condition_id="cond-1",
+                token_id=FAKE_TOKEN_ID,
+                side="BUY",
+                size_tokens=Decimal("10"),
+                price=Decimal("0.60"),
+                fee=Decimal("0"),
+                fill_ts=1_700_000_000,
+            )
         )
-    )
-    positions_repo.rebuild_user_positions_from_fills("u1", fills_repo)
+        await positions_repo.rebuild_user_positions_from_fills("u1", fills_repo)
 
-    context = _make_context(
-        db_path,
-        execution_service=_RejectingExecutionService(),
-        risk_triggers_repo=risk_triggers_repo,
-    )
-    rehydrate_position_manager(context)
+        context = _make_context(
+            pool,
+            execution_service=_RejectingExecutionService(),
+            risk_triggers_repo=risk_triggers_repo,
+        )
+        await rehydrate_position_manager(context)
 
-    await run_risk_check_for_context(context)
+        await run_risk_check_for_context(context)
 
-    triggers = risk_triggers_repo.list_triggers_for_position(
-        user_id="u1", condition_id="cond-1", token_id=FAKE_TOKEN_ID,
-    )
-    assert len(triggers) >= 1, "at least one trigger should be recorded on rejection"
-    trigger = triggers[0]
-    assert trigger["fill_status"] == "rejected"
-    assert trigger["source"] == "risk_monitor"
+        triggers = await risk_triggers_repo.list_triggers_for_position(
+            user_id="u1", condition_id="cond-1", token_id=FAKE_TOKEN_ID,
+        )
+        assert len(triggers) >= 1, "at least one trigger should be recorded on rejection"
+        trigger = triggers[0]
+        assert trigger["fill_status"] == "rejected"
+        assert trigger["source"] == "risk_monitor"
 
-    assert positions_repo.get_position("u1", "cond-1") is not None, (
-        "position should remain open after rejected SELL"
-    )
+        assert await positions_repo.get_position("u1", "cond-1") is not None, (
+            "position should remain open after rejected SELL"
+        )
