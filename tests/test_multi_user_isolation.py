@@ -1,8 +1,13 @@
+"""Per-user repo isolation under the trade-pipeline path (PG-A6 port).
+
+Both users share a single PG schema but every read/write is scoped by
+user_id. A SELL from one user must not touch another user's open
+positions. This pins that scoping invariant via the canonical
+``orchestrators.trade_pipeline.execute_trades`` entry point.
+"""
 from __future__ import annotations
-import pytest
-pytest.skip("sqlite-bound; pending PG port", allow_module_level=True)
 
-
+import contextlib
 import time
 from decimal import Decimal
 
@@ -13,14 +18,40 @@ from domain.trading_context import TradingContext
 from orchestrators.trade_pipeline import execute_trades
 from services.executionService import ExecutionResult
 from services.positionManager import PositionManager
-from storage.sqlite.connection import create_connection
-from storage.sqlite.fills_repo import FillsRepo
-from storage.sqlite.migrations import apply_migrations
-from storage.sqlite.orders_repo import OrdersRepo
-from storage.sqlite.positions_repo import PositionsRepo
-from storage.sqlite.risk_blocks_repo import RiskBlocksRepo
+from storage.postgres.fills_repo import FillsRepo
+from storage.postgres.orders_repo import OrdersRepo
+from storage.postgres.positions_repo import PositionsRepo
+from storage.postgres.risk_blocks_repo import RiskBlocksRepo
 
 FAKE_TOKEN_ID = "71321045679252212594626385532706912750332728571942532223535764789812338637396"
+
+
+@contextlib.asynccontextmanager
+async def _pg_pool():
+    try:
+        from testcontainers.postgres import PostgresContainer
+        import asyncpg
+        from storage.postgres.migrations import apply_migrations as pg_apply
+    except Exception as exc:
+        pytest.skip(f"Docker / postgres image unavailable: {exc!r}")
+    ctr = PostgresContainer("postgres:16-alpine")
+    try:
+        ctr.start()
+    except Exception as exc:
+        pytest.skip(f"Docker / postgres image unavailable: {exc!r}")
+    try:
+        dsn = ctr.get_connection_url(driver="asyncpg").replace(
+            "postgresql+asyncpg://", "postgresql://"
+        )
+        pool = await asyncpg.create_pool(dsn, min_size=1, max_size=5)
+        async with pool.acquire() as conn:
+            await pg_apply(conn)
+        try:
+            yield pool
+        finally:
+            await pool.close()
+    finally:
+        ctr.stop()
 
 
 class _FakeExecutionService:
@@ -49,7 +80,7 @@ class _FakePnlTracker:
         self.sells.append((condition_id, size_tokens))
 
 
-def _build_context(*, user_id: str, db_path: str) -> TradingContext:
+def _build_context(*, user_id: str, pool) -> TradingContext:
     import config.app_config as app_config_mod
     import time
     from decimal import Decimal as _D
@@ -75,10 +106,10 @@ def _build_context(*, user_id: str, db_path: str) -> TradingContext:
         user_id=user_id,
         wallet_address=("0x" + ("a" if user_id.endswith("a") else "b") * 40),
         client=object(),
-        positions_repo=PositionsRepo(db_path),
-        fills_repo=FillsRepo(db_path),
-        orders_repo=OrdersRepo(db_path),
-        risk_blocks_repo=RiskBlocksRepo(db_path),
+        positions_repo=PositionsRepo(pool),
+        fills_repo=FillsRepo(pool),
+        orders_repo=OrdersRepo(pool),
+        risk_blocks_repo=RiskBlocksRepo(pool),
         pnl_tracker=_FakePnlTracker(),
         risk_engine=object(),
         accounting_service=object(),
@@ -94,8 +125,6 @@ def _build_context(*, user_id: str, db_path: str) -> TradingContext:
     )
     ctx.market_data_runtime = AsyncMock()
 
-    # PR6.1 — coordinator mandatory in live mode. Pass-through to the fake
-    # ExecutionService used by these tests.
     fake_exec = ctx.execution_service
 
     class _PassThrough:
@@ -129,8 +158,7 @@ def _build_context(*, user_id: str, db_path: str) -> TradingContext:
 
 
 @pytest.mark.asyncio
-async def test_multi_user_positions_and_pnl_are_isolated(tmp_path, monkeypatch):
-    # Lower decision gates so test signals pass through
+async def test_multi_user_positions_and_pnl_are_isolated(monkeypatch):
     monkeypatch.setenv("COPY_DECISION_MIN_SCORE", "0.01")
     monkeypatch.setenv("COPY_MAX_SIGNAL_AGE_SECONDS", "999999")
     monkeypatch.setenv("COPY_MAX_PRICE_DRIFT_PCT", "100")
@@ -150,55 +178,52 @@ async def test_multi_user_positions_and_pnl_are_isolated(tmp_path, monkeypatch):
 
     monkeypatch.setattr(trade_pipeline, "get_my_balance", _fake_balance)
 
-    db_path = tmp_path / "state.db"
-    with create_connection(str(db_path)) as conn:
-        apply_migrations(conn)
+    async with _pg_pool() as pool:
+        leader_id = "0xleader"
+        buy_signal = [
+            {
+                "transactionHash": "0xtx-buy",
+                "timestamp": int(time.time()),
+                "type": "TRADE",
+                "side": "BUY",
+                "asset": FAKE_TOKEN_ID,
+                "conditionId": "cond-1",
+                "size": 10,
+                "price": 0.5,
+                "usdcSize": 10,
+            }
+        ]
 
-    leader_id = "0xleader"
-    buy_signal = [
-        {
-            "transactionHash": "0xtx-buy",
-            "timestamp": int(time.time()),
-            "type": "TRADE",
-            "side": "BUY",
-            "asset": FAKE_TOKEN_ID,
-            "conditionId": "cond-1",
-            "size": 10,
-            "price": 0.5,
-            "usdcSize": 10,
-        }
-    ]
+        ctx_a = _build_context(user_id="user-a", pool=pool)
+        ctx_b = _build_context(user_id="user-b", pool=pool)
 
-    ctx_a = _build_context(user_id="user-a", db_path=str(db_path))
-    ctx_b = _build_context(user_id="user-b", db_path=str(db_path))
+        await execute_trades(ctx_a, leader_id, buy_signal, now_ts=time.time())
+        await execute_trades(ctx_b, leader_id, buy_signal, now_ts=time.time())
 
-    await execute_trades(ctx_a, leader_id, buy_signal, now_ts=time.time())
-    await execute_trades(ctx_b, leader_id, buy_signal, now_ts=time.time())
+        pos_a = await ctx_a.positions_repo.get_position("user-a", "cond-1")
+        pos_b = await ctx_b.positions_repo.get_position("user-b", "cond-1")
+        assert pos_a is not None
+        assert pos_b is not None
+        assert pos_a.size_tokens > 0
+        assert pos_b.size_tokens > 0
 
-    pos_a = ctx_a.positions_repo.get_position("user-a", "cond-1")
-    pos_b = ctx_b.positions_repo.get_position("user-b", "cond-1")
-    assert pos_a is not None
-    assert pos_b is not None
-    assert pos_a.size_tokens > 0
-    assert pos_b.size_tokens > 0
+        sell_signal = [
+            {
+                "transactionHash": "0xtx-sell-a",
+                "timestamp": int(time.time()),
+                "type": "TRADE",
+                "side": "SELL",
+                "asset": FAKE_TOKEN_ID,
+                "conditionId": "cond-1",
+                "size": 0,
+                "price": 0.5,
+                "_leader_sell_fraction": 1.0,
+            }
+        ]
+        await execute_trades(ctx_a, leader_id, sell_signal, now_ts=time.time())
 
-    sell_signal = [
-        {
-            "transactionHash": "0xtx-sell-a",
-            "timestamp": int(time.time()),
-            "type": "TRADE",
-            "side": "SELL",
-            "asset": FAKE_TOKEN_ID,
-            "conditionId": "cond-1",
-            "size": 0,
-            "price": 0.5,
-            "_leader_sell_fraction": 1.0,  # full close
-        }
-    ]
-    await execute_trades(ctx_a, leader_id, sell_signal, now_ts=time.time())
-
-    pos_a_after = ctx_a.positions_repo.get_position("user-a", "cond-1")
-    pos_b_after = ctx_b.positions_repo.get_position("user-b", "cond-1")
-    assert pos_a_after is None
-    assert pos_b_after is not None
-    assert pos_b_after.size_tokens > 0
+        pos_a_after = await ctx_a.positions_repo.get_position("user-a", "cond-1")
+        pos_b_after = await ctx_b.positions_repo.get_position("user-b", "cond-1")
+        assert pos_a_after is None
+        assert pos_b_after is not None
+        assert pos_b_after.size_tokens > 0

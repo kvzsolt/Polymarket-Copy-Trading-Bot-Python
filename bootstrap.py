@@ -36,7 +36,6 @@ class Application:
 
     config: AppConfig
     readiness: ReadinessTracker
-    db_path: str
     leaders_repo: LeadersRepo
     discovery_service: TraderDiscoveryService
     registry: LeaderRegistry
@@ -78,7 +77,7 @@ async def build_app(env: Mapping[str, str] | None = None) -> Application:
         await apply_pg_migrations(conn)
 
     readiness = ReadinessTracker()
-    readiness.update(db_ok=config.database.enabled)
+    readiness.update(db_ok=True)
 
     leaders_repo = LeadersRepo(pool)
     discovery_service = TraderDiscoveryService()
@@ -93,7 +92,6 @@ async def build_app(env: Mapping[str, str] | None = None) -> Application:
     return Application(
         config=config,
         readiness=readiness,
-        db_path=config.database.db_path,
         leaders_repo=leaders_repo,
         discovery_service=discovery_service,
         registry=registry,
