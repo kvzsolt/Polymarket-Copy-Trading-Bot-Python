@@ -13,11 +13,9 @@ coordinator they must serialize on the scoped identity.
 """
 
 from __future__ import annotations
-import pytest
-pytest.skip("sqlite-bound; pending PG port", allow_module_level=True)
-
 
 import asyncio
+import contextlib
 import time
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -36,12 +34,38 @@ from services.positionManager import PositionManager
 from services.positionActionCoordinator import PositionScope
 from services.riskEngine import RiskEngine
 from services.riskMonitor import run_risk_check_for_context
-from storage.sqlite.connection import create_connection
-from storage.sqlite.fills_repo import FillsRepo
-from storage.sqlite.migrations import apply_migrations
-from storage.sqlite.orders_repo import OrdersRepo
-from storage.sqlite.positions_repo import PositionRecord, PositionsRepo
-from storage.sqlite.risk_blocks_repo import RiskBlocksRepo
+from storage.postgres.fills_repo import FillsRepo
+from storage.postgres.orders_repo import OrdersRepo
+from storage.postgres.positions_repo import PositionRecord, PositionsRepo
+from storage.postgres.risk_blocks_repo import RiskBlocksRepo
+
+
+@contextlib.asynccontextmanager
+async def _pg_pool():
+    try:
+        from testcontainers.postgres import PostgresContainer
+        import asyncpg
+        from storage.postgres.migrations import apply_migrations as pg_apply
+    except Exception as exc:
+        pytest.skip(f"Docker / postgres image unavailable: {exc!r}")
+    ctr = PostgresContainer("postgres:16-alpine")
+    try:
+        ctr.start()
+    except Exception as exc:
+        pytest.skip(f"Docker / postgres image unavailable: {exc!r}")
+    try:
+        dsn = ctr.get_connection_url(driver="asyncpg").replace(
+            "postgresql+asyncpg://", "postgresql://"
+        )
+        pool = await asyncpg.create_pool(dsn, min_size=1, max_size=5)
+        async with pool.acquire() as conn:
+            await pg_apply(conn)
+        try:
+            yield pool
+        finally:
+            await pool.close()
+    finally:
+        ctr.stop()
 
 
 pytestmark = pytest.mark.integration
@@ -96,13 +120,6 @@ def _config(**overrides):
         return load_config(env)
 
 
-def _init_db(tmp_path):
-    db_path = str(tmp_path / "coord.db")
-    with create_connection(db_path) as conn:
-        apply_migrations(conn)
-    return db_path
-
-
 def _make_fresh_bundle():
     from cache.market_state_store import BookSnapshot, QuoteSnapshot, TickSnapshot
     from services.market_data_service import MarketDataBundle, MarketDataSource
@@ -143,21 +160,25 @@ class _CoordFakeMDS:
     def __init__(self, bundle):
         self._bundle = bundle
 
-    async def require_fresh_data(self, token_id):
+    async def require_fresh_data(self, token_id, **_kwargs):
+        return self._bundle
+
+    async def require_execution_snapshot(self, token_id, **_kwargs):
         return self._bundle
 
 
-def _make_context(db_path, *, execution_service=None, config=None) -> TradingContext:
+def _make_context(pool, *, execution_service=None, config=None, tmp_path=None) -> TradingContext:
     exec_svc = execution_service or AsyncMock()
+    pnl_log = str((tmp_path or "/tmp") / "pnl.jsonl") if tmp_path else "/tmp/pnl.jsonl"
     ctx = TradingContext(
         user_id="user1",
         wallet_address="0x" + "a" * 40,
         client=MagicMock(),
-        positions_repo=PositionsRepo(db_path),
-        fills_repo=FillsRepo(db_path),
-        orders_repo=OrdersRepo(db_path),
-        risk_blocks_repo=RiskBlocksRepo(db_path),
-        pnl_tracker=PnLTracker(log_path=str(db_path) + ".pnl"),
+        positions_repo=PositionsRepo(pool),
+        fills_repo=FillsRepo(pool),
+        orders_repo=OrdersRepo(pool),
+        risk_blocks_repo=RiskBlocksRepo(pool),
+        pnl_tracker=PnLTracker(log_path=pnl_log),
         risk_engine=RiskEngine(),
         accounting_service=AccountingService(),
         position_manager=PositionManager(),
@@ -208,26 +229,26 @@ def _exec_ok(order_id="ord1"):
 
 @pytest.mark.asyncio
 async def test_execute_trades_acquires_scope_lock(tmp_path):
-    db_path = _init_db(tmp_path)
-    exec_svc = AsyncMock()
-    exec_svc.execute.return_value = _exec_ok()
-    ctx = _make_context(db_path, execution_service=exec_svc)
+    async with _pg_pool() as pool:
+        exec_svc = AsyncMock()
+        exec_svc.execute.return_value = _exec_ok()
+        ctx = _make_context(pool, execution_service=exec_svc, tmp_path=tmp_path)
 
-    acquired_scopes: list[PositionScope] = []
-    original_get_lock = ctx.position_coordinator.get_lock
+        acquired_scopes: list[PositionScope] = []
+        original_get_lock = ctx.position_coordinator.get_lock
 
-    async def _spy_get_lock(scope):
-        acquired_scopes.append(scope)
-        return await original_get_lock(scope)
+        async def _spy_get_lock(scope):
+            acquired_scopes.append(scope)
+            return await original_get_lock(scope)
 
-    ctx.position_coordinator.get_lock = _spy_get_lock  # type: ignore[assignment]
+        ctx.position_coordinator.get_lock = _spy_get_lock  # type: ignore[assignment]
 
-    await execute_trades(ctx, "leader1", [_buy_signal()], time.time())
+        await execute_trades(ctx, "leader1", [_buy_signal()], time.time())
 
-    assert any(
-        s.condition_id == "cond1" and s.token_id == FAKE_TOKEN_ID
-        for s in acquired_scopes
-    ), "execute_trades must acquire the scoped-position lock"
+        assert any(
+            s.condition_id == "cond1" and s.token_id == FAKE_TOKEN_ID
+            for s in acquired_scopes
+        ), "execute_trades must acquire the scoped-position lock"
 
 
 # ---------------------------------------------------------------------------
@@ -237,44 +258,44 @@ async def test_execute_trades_acquires_scope_lock(tmp_path):
 
 @pytest.mark.asyncio
 async def test_risk_monitor_acquires_scope_lock(tmp_path):
-    db_path = _init_db(tmp_path)
-    exec_svc = AsyncMock()
-    exec_svc.execute.return_value = _exec_ok(order_id="risk-ord")
-    ctx = _make_context(db_path, execution_service=exec_svc)
+    async with _pg_pool() as pool:
+        exec_svc = AsyncMock()
+        exec_svc.execute.return_value = _exec_ok(order_id="risk-ord")
+        ctx = _make_context(pool, execution_service=exec_svc, tmp_path=tmp_path)
 
-    # Seed a live position the risk monitor will iterate.
-    ctx.positions_repo.upsert_position(
-        PositionRecord(
-            user_id="user1",
-            condition_id="cond-risk",
-            token_id=FAKE_TOKEN_ID,
-            leader_id="leader1",
-            size_tokens=Decimal("10"),
-            avg_entry_price=Decimal("0.50"),
+        # Seed a live position the risk monitor will iterate.
+        await ctx.positions_repo.upsert_position(
+            PositionRecord(
+                user_id="user1",
+                condition_id="cond-risk",
+                token_id=FAKE_TOKEN_ID,
+                leader_id="leader1",
+                size_tokens=Decimal("10"),
+                avg_entry_price=Decimal("0.50"),
+            )
         )
-    )
 
-    # Force the risk-action gate to return an exit decision.
-    def _force_exit(_cid, _token, _price):
-        return {"reason": "stop_loss", "size_fraction": 1.0}
-    ctx.position_manager.evaluate_risk_action = _force_exit
+        # Force the risk-action gate to return an exit decision.
+        def _force_exit(_cid, _token, _price):
+            return {"reason": "stop_loss", "size_fraction": 1.0}
+        ctx.position_manager.evaluate_risk_action = _force_exit
 
-    acquired = []
-    original = ctx.position_coordinator.get_lock
+        acquired = []
+        original = ctx.position_coordinator.get_lock
 
-    async def _spy(scope):
-        acquired.append(scope)
-        return await original(scope)
+        async def _spy(scope):
+            acquired.append(scope)
+            return await original(scope)
 
-    ctx.position_coordinator.get_lock = _spy  # type: ignore[assignment]
+        ctx.position_coordinator.get_lock = _spy  # type: ignore[assignment]
 
-    with patch("services.riskMonitor._get_context_cached_price", new_callable=AsyncMock, return_value=Decimal("0.60")):
-        await run_risk_check_for_context(ctx)
+        with patch("services.riskMonitor._get_context_cached_price", new_callable=AsyncMock, return_value=Decimal("0.60")):
+            await run_risk_check_for_context(ctx)
 
-    assert any(
-        s.condition_id == "cond-risk" and s.token_id == FAKE_TOKEN_ID
-        for s in acquired
-    ), "risk monitor must acquire the scoped-position lock"
+        assert any(
+            s.condition_id == "cond-risk" and s.token_id == FAKE_TOKEN_ID
+            for s in acquired
+        ), "risk monitor must acquire the scoped-position lock"
 
 
 # ---------------------------------------------------------------------------
@@ -285,67 +306,55 @@ async def test_risk_monitor_acquires_scope_lock(tmp_path):
 
 @pytest.mark.asyncio
 async def test_same_scope_buy_and_risk_sell_serialize(tmp_path):
-    """Hold the pipeline's scope lock and prove the risk monitor must wait.
+    """Hold the pipeline's scope lock and prove the risk monitor must wait."""
+    async with _pg_pool() as pool:
+        exec_svc = AsyncMock()
+        exec_svc.execute.return_value = _exec_ok(order_id="risk-ord")
+        ctx = _make_context(pool, execution_service=exec_svc, tmp_path=tmp_path)
 
-    The race shape under test: trade_pipeline enters the scope's critical
-    section and is about to call ``execute(...)``. Concurrently the risk
-    monitor wants to protective-SELL the same scope. The risk monitor must
-    wait until the pipeline releases the scope lock — otherwise the two
-    tasks could both read state and submit contradictory orders.
-    """
-    db_path = _init_db(tmp_path)
-    exec_svc = AsyncMock()
-    exec_svc.execute.return_value = _exec_ok(order_id="risk-ord")
-    ctx = _make_context(db_path, execution_service=exec_svc)
-
-    ctx.positions_repo.upsert_position(
-        PositionRecord(
-            user_id="user1",
-            condition_id="cond-race",
-            token_id=FAKE_TOKEN_ID,
-            leader_id="leader1",
-            size_tokens=Decimal("10"),
-            avg_entry_price=Decimal("0.50"),
+        await ctx.positions_repo.upsert_position(
+            PositionRecord(
+                user_id="user1",
+                condition_id="cond-race",
+                token_id=FAKE_TOKEN_ID,
+                leader_id="leader1",
+                size_tokens=Decimal("10"),
+                avg_entry_price=Decimal("0.50"),
+            )
         )
-    )
 
-    def _force_exit(_cid, _token, _price):
-        return {"reason": "stop_loss", "size_fraction": 1.0}
-    ctx.position_manager.evaluate_risk_action = _force_exit
+        def _force_exit(_cid, _token, _price):
+            return {"reason": "stop_loss", "size_fraction": 1.0}
+        ctx.position_manager.evaluate_risk_action = _force_exit
 
-    scope = PositionScope(
-        user_id="user1", condition_id="cond-race", token_id=FAKE_TOKEN_ID,
-    )
+        scope = PositionScope(
+            user_id="user1", condition_id="cond-race", token_id=FAKE_TOKEN_ID,
+        )
 
-    # Pre-acquire the scope lock on behalf of a "virtual pipeline task" that
-    # is already inside its critical section. This simulates the exact window
-    # issue #28 is about: one task is mid-mutation, another arrives.
-    scope_lock = await ctx.position_coordinator.get_lock(scope)
-    await scope_lock.acquire()
-    try:
-        risk_done = asyncio.Event()
+        scope_lock = await ctx.position_coordinator.get_lock(scope)
+        await scope_lock.acquire()
+        try:
+            risk_done = asyncio.Event()
 
-        async def _run_risk() -> None:
-            with patch(
-                "services.riskMonitor._get_context_cached_price",
-                new_callable=AsyncMock,
-                return_value=Decimal("0.40"),
-            ):
-                await run_risk_check_for_context(ctx)
-            risk_done.set()
+            async def _run_risk() -> None:
+                with patch(
+                    "services.riskMonitor._get_context_cached_price",
+                    new_callable=AsyncMock,
+                    return_value=Decimal("0.40"),
+                ):
+                    await run_risk_check_for_context(ctx)
+                risk_done.set()
 
-        risk_task = asyncio.create_task(_run_risk())
+            risk_task = asyncio.create_task(_run_risk())
 
-        # The risk monitor should NOT be able to reach the execute() call
-        # while we still hold the scope lock.
-        await asyncio.sleep(0.05)
-        assert not risk_done.is_set(), "risk monitor must block on scope lock"
-        exec_svc.execute.assert_not_called()
-    finally:
-        scope_lock.release()
+            await asyncio.sleep(0.05)
+            assert not risk_done.is_set(), "risk monitor must block on scope lock"
+            exec_svc.execute.assert_not_called()
+        finally:
+            scope_lock.release()
 
-    await asyncio.wait_for(risk_task, timeout=2.0)
-    exec_svc.execute.assert_awaited()
+        await asyncio.wait_for(risk_task, timeout=2.0)
+        exec_svc.execute.assert_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -355,43 +364,43 @@ async def test_same_scope_buy_and_risk_sell_serialize(tmp_path):
 
 @pytest.mark.asyncio
 async def test_different_scopes_stay_concurrent(tmp_path):
-    db_path = _init_db(tmp_path)
-    exec_svc = AsyncMock()
-    exec_svc.execute.return_value = _exec_ok(order_id="risk-ord")
-    ctx = _make_context(db_path, execution_service=exec_svc)
+    async with _pg_pool() as pool:
+        exec_svc = AsyncMock()
+        exec_svc.execute.return_value = _exec_ok(order_id="risk-ord")
+        ctx = _make_context(pool, execution_service=exec_svc, tmp_path=tmp_path)
 
-    # Seed a position for scope B that risk monitor can iterate.
-    ctx.positions_repo.upsert_position(
-        PositionRecord(
-            user_id="user1",
-            condition_id="cond-b",
-            token_id=OTHER_TOKEN_ID,
-            leader_id="leader1",
-            size_tokens=Decimal("10"),
-            avg_entry_price=Decimal("0.50"),
+        # Seed a position for scope B that risk monitor can iterate.
+        await ctx.positions_repo.upsert_position(
+            PositionRecord(
+                user_id="user1",
+                condition_id="cond-b",
+                token_id=OTHER_TOKEN_ID,
+                leader_id="leader1",
+                size_tokens=Decimal("10"),
+                avg_entry_price=Decimal("0.50"),
+            )
         )
-    )
 
-    def _force_exit(_cid, _token, _price):
-        return {"reason": "stop_loss", "size_fraction": 1.0}
-    ctx.position_manager.evaluate_risk_action = _force_exit
+        def _force_exit(_cid, _token, _price):
+            return {"reason": "stop_loss", "size_fraction": 1.0}
+        ctx.position_manager.evaluate_risk_action = _force_exit
 
-    # Pre-acquire scope A (different condition + token than B).
-    scope_a = PositionScope(
-        user_id="user1",
-        condition_id="cond-a",
-        token_id=FAKE_TOKEN_ID,
-    )
-    lock_a = await ctx.position_coordinator.get_lock(scope_a)
-    await lock_a.acquire()
-    try:
-        with patch(
-            "services.riskMonitor._get_context_cached_price",
-            new_callable=AsyncMock,
-            return_value=Decimal("0.40"),
-        ):
-            # Risk monitor only sees scope B, so it must NOT block on A.
-            await asyncio.wait_for(run_risk_check_for_context(ctx), timeout=2.0)
-        exec_svc.execute.assert_awaited_once()
-    finally:
-        lock_a.release()
+        # Pre-acquire scope A (different condition + token than B).
+        scope_a = PositionScope(
+            user_id="user1",
+            condition_id="cond-a",
+            token_id=FAKE_TOKEN_ID,
+        )
+        lock_a = await ctx.position_coordinator.get_lock(scope_a)
+        await lock_a.acquire()
+        try:
+            with patch(
+                "services.riskMonitor._get_context_cached_price",
+                new_callable=AsyncMock,
+                return_value=Decimal("0.40"),
+            ):
+                # Risk monitor only sees scope B, so it must NOT block on A.
+                await asyncio.wait_for(run_risk_check_for_context(ctx), timeout=2.0)
+            exec_svc.execute.assert_awaited_once()
+        finally:
+            lock_a.release()
