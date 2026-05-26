@@ -113,12 +113,18 @@ class _Repo:
     async def get_by_idempotency_key(self, key):
         return self.store.get(key)
 
-    async def save_submission_legacy(self, *, idempotency_key, request, response):
-        self.store[idempotency_key] = {"request": request, "response": response, "order_id": response.get("orderID")}
+    async def save_submission(self, record):
+        # Mirror the production OrderSubmissionRecord dataclass shape: keep
+        # the inline-built request/response payloads for assertion access.
+        self.store[record.idempotency_key] = {
+            "request": record.request_payload,
+            "response": record.response_payload,
+            "order_id": record.order_id,
+        }
         self.history.append({
-            "idempotency_key": idempotency_key,
-            "request": request,
-            "response": response,
+            "idempotency_key": record.idempotency_key,
+            "request": record.request_payload,
+            "response": record.response_payload,
         })
 
     async def mark_fill(self, *, order_id, fill):
