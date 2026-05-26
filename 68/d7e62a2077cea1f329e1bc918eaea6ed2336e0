@@ -1,0 +1,20 @@
+tests/release_gate/test_no_legacy_imports.py
+  s_b575af21b31eb4::t_bcc10ddaa24dc6 137-144
+  s_b575af21b31eb4::t_0d380915f6092c 6-7,10-11
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.1",
+  "base_commit_sha": "68d7e62a2077cea1f329e1bc918eaea6ed2336e0",
+  "prompts": {},
+  "sessions": {
+    "s_b575af21b31eb4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "07691412-808e-482a-966d-b8c7cecadf2d",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
