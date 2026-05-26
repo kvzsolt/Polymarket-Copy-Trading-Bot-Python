@@ -793,12 +793,12 @@ def _extract_trade_submarket(raw: dict[str, Any]) -> str:
     )
 
 
-def _resolve_leader_tier(context: TradingContext, leader_id: str) -> str:
+async def _resolve_leader_tier(context: TradingContext, leader_id: str) -> str:
     """Look up the follow tier for a leader. Defaults to live_follow if no repo/record."""
     if not hasattr(context, "leaders_repo") or context.leaders_repo is None:
         return "live_follow"
     try:
-        rec = context.leaders_repo.get_tier(leader_id)
+        rec = await context.leaders_repo.get_tier(leader_id)
         tier = rec.follow_tier if rec and rec.follow_tier else None
     except Exception:
         return "live_follow"
@@ -1294,7 +1294,7 @@ async def execute_trades(
     normalized = normalize_signals(signals, leader_id)
     results: list[TradePipelineResult] = []
 
-    leader_tier_resolved = _resolve_leader_tier(context, leader_id)
+    leader_tier_resolved = await _resolve_leader_tier(context, leader_id)
     if _trade_config(context).execution.paper_trade_only and leader_tier_resolved == "live_follow":
         logger.info(
             "paper_trade_only_override_all",

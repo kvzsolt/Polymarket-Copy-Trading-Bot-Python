@@ -1,10 +1,9 @@
-"""Tests for tier-gating in the trade pipeline."""
+"""Tests for tier-gating in the trade pipeline (PG-A6 port)."""
 
 from __future__ import annotations
-import pytest
-pytest.skip("sqlite-bound; pending PG port", allow_module_level=True)
 
-
+import asyncio
+import contextlib
 import time
 from dataclasses import dataclass
 from decimal import Decimal
@@ -21,16 +20,43 @@ from services.pnlTracker import PnLTracker
 from services.riskEngine import RiskEngine
 from services.accountingService import AccountingService
 from services.positionManager import PositionManager
-from storage.sqlite.connection import create_connection
-from storage.sqlite.fills_repo import FillsRepo
-from storage.sqlite.migrations import apply_migrations
-from storage.sqlite.orders_repo import OrdersRepo
-from storage.sqlite.positions_repo import PositionsRepo
+from storage.postgres.fills_repo import FillsRepo
+from storage.postgres.orders_repo import OrdersRepo
+from storage.postgres.positions_repo import PositionsRepo
+from storage.postgres.risk_blocks_repo import RiskBlocksRepo
 
 FAKE_TOKEN_ID = "71321045679252212594626385532706912750332728571942532223535764789812338637396"
 _VALID_PRIVATE_KEY = "0x" + "a" * 64
 _VALID_FUNDER = "0x" + "b" * 40
 _VALID_USER = "0x" + "c" * 40
+
+
+@contextlib.asynccontextmanager
+async def _pg_pool():
+    try:
+        from testcontainers.postgres import PostgresContainer
+        import asyncpg
+        from storage.postgres.migrations import apply_migrations as pg_apply
+    except Exception as exc:
+        pytest.skip(f"Docker / postgres image unavailable: {exc!r}")
+    ctr = PostgresContainer("postgres:16-alpine")
+    try:
+        ctr.start()
+    except Exception as exc:
+        pytest.skip(f"Docker / postgres image unavailable: {exc!r}")
+    try:
+        dsn = ctr.get_connection_url(driver="asyncpg").replace(
+            "postgresql+asyncpg://", "postgresql://"
+        )
+        pool = await asyncpg.create_pool(dsn, min_size=1, max_size=5)
+        async with pool.acquire() as conn:
+            await pg_apply(conn)
+        try:
+            yield pool
+        finally:
+            await pool.close()
+    finally:
+        ctr.stop()
 
 
 def _config(**overrides):
@@ -48,8 +74,6 @@ def _config(**overrides):
         "SLIPPAGE_TOLERANCE": "1.5",
         "ENABLE_TIER_GATE_WATCHLIST": "true",
         "ENABLE_TIER_GATE_WATCHLIST_LOG": "true",
-        # Legacy WSS-prefetch path; PR10.4 REST primary path is covered by
-        # tests in test_trade_pipeline_market_data_authority.py.
         "MARKET_DATA_PRIMARY_SOURCE": "wss",
     }
     env.update(overrides)
@@ -67,7 +91,6 @@ def _reset_singletons(monkeypatch):
     monkeypatch.setenv("COPY_MIN_SHARES", "0.001")
     monkeypatch.setenv("COPY_MIN_NOTIONAL_USDC", "0.01")
     monkeypatch.setenv("BUY_MIN_AMOUNT", "0.01")
-    # Ensure tier gates are enabled so tier-gating tests actually gate
     monkeypatch.setenv("ENABLE_TIER_GATE_WATCHLIST", "true")
     monkeypatch.setenv("ENABLE_TIER_GATE_WATCHLIST_LOG", "true")
     rehydrate_env()
@@ -84,18 +107,11 @@ class _FakeLeadersRepo:
     def __init__(self, tier_map: dict[str, str] | None = None):
         self._tier_map = tier_map or {}
 
-    def get_tier(self, leader_id: str):
+    async def get_tier(self, leader_id: str):
         tier = self._tier_map.get(leader_id)
         if tier is None:
             return None
         return _FakeTierRecord(follow_tier=tier)
-
-
-def _init_db(tmp_path):
-    db_path = str(tmp_path / "test.db")
-    with create_connection(db_path) as conn:
-        apply_migrations(conn)
-    return db_path
 
 
 def _make_fresh_bundle():
@@ -139,20 +155,24 @@ class _TiersFakeMDS:
     def __init__(self, bundle):
         self._bundle = bundle
 
-    async def require_fresh_data(self, token_id):
+    async def require_fresh_data(self, token_id, **_kwargs):
+        return self._bundle
+
+    async def require_execution_snapshot(self, token_id, **_kwargs):
         return self._bundle
 
 
-def _make_context(db_path, *, leaders_repo=None, execution_service=None, config=None):
+def _make_context(pool, *, leaders_repo=None, execution_service=None, config=None, tmp_path=None):
+    pnl_log = str((tmp_path or "/tmp") / "pnl.jsonl") if tmp_path else "/tmp/pnl.jsonl"
     ctx = TradingContext(
         user_id="user1",
         wallet_address=_VALID_FUNDER,
         client=MagicMock(),
-        positions_repo=PositionsRepo(db_path),
-        fills_repo=FillsRepo(db_path),
-        orders_repo=OrdersRepo(db_path),
-        risk_blocks_repo=MagicMock(),
-        pnl_tracker=PnLTracker(log_path=str(db_path) + ".pnl"),
+        positions_repo=PositionsRepo(pool),
+        fills_repo=FillsRepo(pool),
+        orders_repo=OrdersRepo(pool),
+        risk_blocks_repo=RiskBlocksRepo(pool),
+        pnl_tracker=PnLTracker(log_path=pnl_log),
         risk_engine=RiskEngine(),
         accounting_service=AccountingService(),
         position_manager=PositionManager(),
@@ -185,138 +205,154 @@ def _signal(*, side="BUY", tx_hash="0xabc", asset=FAKE_TOKEN_ID, condition_id="c
 # --- _resolve_leader_tier unit tests ---
 
 class TestResolveLeaderTier:
-    def test_no_repo_returns_live(self, tmp_path):
-        ctx = _make_context(_init_db(tmp_path))
-        assert _resolve_leader_tier(ctx, "0xleader") == "live_follow"
+    @pytest.mark.asyncio
+    async def test_no_repo_returns_live(self, tmp_path):
+        async with _pg_pool() as pool:
+            ctx = _make_context(pool, tmp_path=tmp_path)
+            assert await _resolve_leader_tier(ctx, "0xleader") == "live_follow"
 
-    def test_repo_no_record_returns_live(self, tmp_path):
-        repo = _FakeLeadersRepo({})
-        ctx = _make_context(_init_db(tmp_path), leaders_repo=repo)
-        assert _resolve_leader_tier(ctx, "0xleader") == "live_follow"
+    @pytest.mark.asyncio
+    async def test_repo_no_record_returns_live(self, tmp_path):
+        async with _pg_pool() as pool:
+            repo = _FakeLeadersRepo({})
+            ctx = _make_context(pool, leaders_repo=repo, tmp_path=tmp_path)
+            assert await _resolve_leader_tier(ctx, "0xleader") == "live_follow"
 
-    def test_repo_watchlist(self, tmp_path):
-        repo = _FakeLeadersRepo({"0xleader": "watchlist"})
-        ctx = _make_context(_init_db(tmp_path), leaders_repo=repo)
-        assert _resolve_leader_tier(ctx, "0xleader") == "watchlist"
+    @pytest.mark.asyncio
+    async def test_repo_watchlist(self, tmp_path):
+        async with _pg_pool() as pool:
+            repo = _FakeLeadersRepo({"0xleader": "watchlist"})
+            ctx = _make_context(pool, leaders_repo=repo, tmp_path=tmp_path)
+            assert await _resolve_leader_tier(ctx, "0xleader") == "watchlist"
 
-    def test_repo_paper_follow(self, tmp_path):
-        repo = _FakeLeadersRepo({"0xleader": "paper_follow"})
-        ctx = _make_context(_init_db(tmp_path), leaders_repo=repo)
-        assert _resolve_leader_tier(ctx, "0xleader") == "paper_follow"
+    @pytest.mark.asyncio
+    async def test_repo_paper_follow(self, tmp_path):
+        async with _pg_pool() as pool:
+            repo = _FakeLeadersRepo({"0xleader": "paper_follow"})
+            ctx = _make_context(pool, leaders_repo=repo, tmp_path=tmp_path)
+            assert await _resolve_leader_tier(ctx, "0xleader") == "paper_follow"
 
-    def test_repo_live_follow(self, tmp_path):
-        repo = _FakeLeadersRepo({"0xleader": "live_follow"})
-        ctx = _make_context(_init_db(tmp_path), leaders_repo=repo)
-        assert _resolve_leader_tier(ctx, "0xleader") == "live_follow"
+    @pytest.mark.asyncio
+    async def test_repo_live_follow(self, tmp_path):
+        async with _pg_pool() as pool:
+            repo = _FakeLeadersRepo({"0xleader": "live_follow"})
+            ctx = _make_context(pool, leaders_repo=repo, tmp_path=tmp_path)
+            assert await _resolve_leader_tier(ctx, "0xleader") == "live_follow"
 
-    def test_repo_exception_returns_live(self, tmp_path):
-        repo = MagicMock()
-        repo.get_tier.side_effect = RuntimeError("db gone")
-        ctx = _make_context(_init_db(tmp_path), leaders_repo=repo)
-        assert _resolve_leader_tier(ctx, "0xleader") == "live_follow"
+    @pytest.mark.asyncio
+    async def test_repo_exception_returns_live(self, tmp_path):
+        async with _pg_pool() as pool:
+            repo = MagicMock()
+            repo.get_tier = AsyncMock(side_effect=RuntimeError("db gone"))
+            ctx = _make_context(pool, leaders_repo=repo, tmp_path=tmp_path)
+            assert await _resolve_leader_tier(ctx, "0xleader") == "live_follow"
 
-    def test_repo_unknown_tier_returns_live(self, tmp_path):
-        repo = _FakeLeadersRepo({"0xleader": "something_unknown"})
-        ctx = _make_context(_init_db(tmp_path), leaders_repo=repo)
-        assert _resolve_leader_tier(ctx, "0xleader") == "live_follow"
+    @pytest.mark.asyncio
+    async def test_repo_unknown_tier_returns_live(self, tmp_path):
+        async with _pg_pool() as pool:
+            repo = _FakeLeadersRepo({"0xleader": "something_unknown"})
+            ctx = _make_context(pool, leaders_repo=repo, tmp_path=tmp_path)
+            assert await _resolve_leader_tier(ctx, "0xleader") == "live_follow"
 
 
 # --- execute_trades tier-gating integration tests ---
 
 @pytest.mark.asyncio
 async def test_watchlist_tier_skips_trade(tmp_path):
-    repo = _FakeLeadersRepo({"0xleader": "watchlist"})
-    ctx = _make_context(_init_db(tmp_path), leaders_repo=repo, execution_service=MagicMock())
-    results = await execute_trades(ctx, "0xleader", [_signal()], time.time())
-    assert len(results) == 1
-    assert results[0].status == "skipped"
-    assert results[0].reason == "tier_watchlist"
+    async with _pg_pool() as pool:
+        repo = _FakeLeadersRepo({"0xleader": "watchlist"})
+        ctx = _make_context(pool, leaders_repo=repo, execution_service=MagicMock(), tmp_path=tmp_path)
+        results = await execute_trades(ctx, "0xleader", [_signal()], time.time())
+        assert len(results) == 1
+        assert results[0].status == "skipped"
+        assert results[0].reason == "tier_watchlist"
 
 
 @pytest.mark.asyncio
 async def test_paper_follow_tier_records_paper(tmp_path):
-    repo = _FakeLeadersRepo({"0xleader": "paper_follow"})
-    ctx = _make_context(_init_db(tmp_path), leaders_repo=repo, execution_service=MagicMock())
-    results = await execute_trades(ctx, "0xleader", [_signal()], time.time())
-    assert len(results) == 1
-    assert results[0].status == "paper"
-    assert results[0].reason == "tier_paper_follow"
+    async with _pg_pool() as pool:
+        repo = _FakeLeadersRepo({"0xleader": "paper_follow"})
+        ctx = _make_context(pool, leaders_repo=repo, execution_service=MagicMock(), tmp_path=tmp_path)
+        results = await execute_trades(ctx, "0xleader", [_signal()], time.time())
+        assert len(results) == 1
+        assert results[0].status == "paper"
+        assert results[0].reason == "tier_paper_follow"
 
 
 @pytest.mark.asyncio
 async def test_paper_follow_marks_processed(tmp_path):
     """Paper trades should be idempotent (marked processed)."""
-    repo = _FakeLeadersRepo({"0xleader": "paper_follow"})
-    db = _init_db(tmp_path)
-    ctx = _make_context(db, leaders_repo=repo, execution_service=MagicMock())
-    sig = _signal(tx_hash="0xpaper1")
-    await execute_trades(ctx, "0xleader", [sig], time.time())
-    # Second call with same signal should be deduped
-    results = await execute_trades(ctx, "0xleader", [sig], time.time())
-    assert results[0].status == "skipped"
-    assert results[0].reason == "already_processed"
+    async with _pg_pool() as pool:
+        repo = _FakeLeadersRepo({"0xleader": "paper_follow"})
+        ctx = _make_context(pool, leaders_repo=repo, execution_service=MagicMock(), tmp_path=tmp_path)
+        sig = _signal(tx_hash="0xpaper1")
+        await execute_trades(ctx, "0xleader", [sig], time.time())
+        results = await execute_trades(ctx, "0xleader", [sig], time.time())
+        assert results[0].status == "skipped"
+        assert results[0].reason == "already_processed"
 
 
 @pytest.mark.asyncio
 async def test_no_repo_allows_execution(tmp_path):
     """Without a leaders_repo, all trades proceed (backward compat for configured leaders)."""
-    from unittest.mock import AsyncMock
     from services.executionService import ExecutionResult
 
-    exec_svc = AsyncMock()
-    exec_svc.execute = AsyncMock(return_value=ExecutionResult(
-        accepted=True, order_id="ord123", status="filled",
-        requested_amount=Decimal("5"), filled_amount=Decimal("5"),
-        avg_price=Decimal("0.50"), fees_paid=Decimal("0.01"),
-    ))
-    ctx = _make_context(_init_db(tmp_path), leaders_repo=None, execution_service=exec_svc)
-    results = await execute_trades(ctx, "0xleader", [_signal()], time.time())
-    assert len(results) == 1
-    # Without tier gate, trade should actually execute (not skipped/paper)
-    assert results[0].status not in ("skipped", "paper") or results[0].reason not in ("tier_watchlist", "tier_paper_follow")
+    async with _pg_pool() as pool:
+        exec_svc = AsyncMock()
+        exec_svc.execute = AsyncMock(return_value=ExecutionResult(
+            accepted=True, order_id="ord123", status="filled",
+            requested_amount=Decimal("5"), filled_amount=Decimal("5"),
+            avg_price=Decimal("0.50"), fees_paid=Decimal("0.01"),
+        ))
+        ctx = _make_context(pool, leaders_repo=None, execution_service=exec_svc, tmp_path=tmp_path)
+        results = await execute_trades(ctx, "0xleader", [_signal()], time.time())
+        assert len(results) == 1
+        assert results[0].status not in ("skipped", "paper") or results[0].reason not in ("tier_watchlist", "tier_paper_follow")
 
 
 @pytest.mark.asyncio
 async def test_multiple_signals_tier_applied_to_all(tmp_path):
-    repo = _FakeLeadersRepo({"0xleader": "watchlist"})
-    ctx = _make_context(_init_db(tmp_path), leaders_repo=repo, execution_service=MagicMock())
-    signals = [
-        _signal(tx_hash="0x1", asset=FAKE_TOKEN_ID),
-        _signal(tx_hash="0x2", asset=FAKE_TOKEN_ID),
-        _signal(tx_hash="0x3", asset=FAKE_TOKEN_ID),
-    ]
-    results = await execute_trades(ctx, "0xleader", signals, time.time())
-    assert len(results) == 3
-    assert all(r.status == "skipped" and r.reason == "tier_watchlist" for r in results)
+    async with _pg_pool() as pool:
+        repo = _FakeLeadersRepo({"0xleader": "watchlist"})
+        ctx = _make_context(pool, leaders_repo=repo, execution_service=MagicMock(), tmp_path=tmp_path)
+        signals = [
+            _signal(tx_hash="0x1", asset=FAKE_TOKEN_ID),
+            _signal(tx_hash="0x2", asset=FAKE_TOKEN_ID),
+            _signal(tx_hash="0x3", asset=FAKE_TOKEN_ID),
+        ]
+        results = await execute_trades(ctx, "0xleader", signals, time.time())
+        assert len(results) == 3
+        assert all(r.status == "skipped" and r.reason == "tier_watchlist" for r in results)
 
 
 @pytest.mark.asyncio
 async def test_watchlist_gate_can_be_disabled(tmp_path):
-    from unittest.mock import AsyncMock
     from services.executionService import ExecutionResult
 
-    repo = _FakeLeadersRepo({"0xleader": "watchlist"})
-    exec_svc = AsyncMock()
-    exec_svc.execute = AsyncMock(return_value=ExecutionResult(
-        accepted=True, order_id="ord123", status="filled",
-        requested_amount=Decimal("5"), filled_amount=Decimal("5"),
-        avg_price=Decimal("0.50"), fees_paid=Decimal("0.01"),
-    ))
-    ctx = _make_context(
-        _init_db(tmp_path),
-        leaders_repo=repo,
-        execution_service=exec_svc,
-        config=_config(ENABLE_TIER_GATE_WATCHLIST="false", PERCENTAGE="100"),
-    )
-    results = await execute_trades(
-        ctx,
-        "0xleader",
-        [_signal(price=1.0, size=25.0)],
-        time.time(),
-    )
+    async with _pg_pool() as pool:
+        repo = _FakeLeadersRepo({"0xleader": "watchlist"})
+        exec_svc = AsyncMock()
+        exec_svc.execute = AsyncMock(return_value=ExecutionResult(
+            accepted=True, order_id="ord123", status="filled",
+            requested_amount=Decimal("5"), filled_amount=Decimal("5"),
+            avg_price=Decimal("0.50"), fees_paid=Decimal("0.01"),
+        ))
+        ctx = _make_context(
+            pool,
+            leaders_repo=repo,
+            execution_service=exec_svc,
+            config=_config(ENABLE_TIER_GATE_WATCHLIST="false", PERCENTAGE="100"),
+            tmp_path=tmp_path,
+        )
+        results = await execute_trades(
+            ctx,
+            "0xleader",
+            [_signal(price=1.0, size=25.0)],
+            time.time(),
+        )
 
-    assert len(results) == 1
-    assert results[0].reason != "tier_watchlist"
+        assert len(results) == 1
+        assert results[0].reason != "tier_watchlist"
 
 
 # --- PAPER_TRADE_ONLY global override tests ---
@@ -324,87 +360,89 @@ async def test_watchlist_gate_can_be_disabled(tmp_path):
 @pytest.mark.asyncio
 async def test_paper_trade_only_overrides_live_follow(tmp_path):
     """Typed paper_trade_only must demote live_follow leaders to paper without executing."""
-    repo = _FakeLeadersRepo({"0xleader": "live_follow"})
-    from unittest.mock import AsyncMock
-    exec_svc = AsyncMock()
-    ctx = _make_context(
-        _init_db(tmp_path),
-        leaders_repo=repo,
-        execution_service=exec_svc,
-        config=_config(PAPER_TRADE_ONLY="true"),
-    )
-    results = await execute_trades(ctx, "0xleader", [_signal()], time.time())
-    assert len(results) == 1
-    assert results[0].status == "paper"
-    assert results[0].reason == "tier_paper_follow"
-    # Real execution must never be called
-    exec_svc.execute.assert_not_awaited()
+    async with _pg_pool() as pool:
+        repo = _FakeLeadersRepo({"0xleader": "live_follow"})
+        exec_svc = AsyncMock()
+        ctx = _make_context(
+            pool,
+            leaders_repo=repo,
+            execution_service=exec_svc,
+            config=_config(PAPER_TRADE_ONLY="true"),
+            tmp_path=tmp_path,
+        )
+        results = await execute_trades(ctx, "0xleader", [_signal()], time.time())
+        assert len(results) == 1
+        assert results[0].status == "paper"
+        assert results[0].reason == "tier_paper_follow"
+        exec_svc.execute.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_paper_trade_only_does_not_affect_watchlist(tmp_path):
     """Typed paper_trade_only should not change watchlist behavior (still skipped)."""
-    repo = _FakeLeadersRepo({"0xleader": "watchlist"})
-    ctx = _make_context(
-        _init_db(tmp_path),
-        leaders_repo=repo,
-        execution_service=MagicMock(),
-        config=_config(PAPER_TRADE_ONLY="true"),
-    )
-    results = await execute_trades(ctx, "0xleader", [_signal()], time.time())
-    assert len(results) == 1
-    assert results[0].status == "skipped"
-    assert results[0].reason == "tier_watchlist"
+    async with _pg_pool() as pool:
+        repo = _FakeLeadersRepo({"0xleader": "watchlist"})
+        ctx = _make_context(
+            pool,
+            leaders_repo=repo,
+            execution_service=MagicMock(),
+            config=_config(PAPER_TRADE_ONLY="true"),
+            tmp_path=tmp_path,
+        )
+        results = await execute_trades(ctx, "0xleader", [_signal()], time.time())
+        assert len(results) == 1
+        assert results[0].status == "skipped"
+        assert results[0].reason == "tier_watchlist"
 
 
 @pytest.mark.asyncio
 async def test_paper_trade_only_false_allows_live(tmp_path):
     """Typed paper_trade_only=false must not interfere with live execution."""
-    from unittest.mock import AsyncMock
     from services.executionService import ExecutionResult
 
-    repo = _FakeLeadersRepo({"0xleader": "live_follow"})
-    exec_svc = AsyncMock()
-    exec_svc.execute = AsyncMock(return_value=ExecutionResult(
-        accepted=True, order_id="ord456", status="filled",
-        requested_amount=Decimal("5"), filled_amount=Decimal("5"),
-        avg_price=Decimal("0.50"), fees_paid=Decimal("0.01"),
-    ))
-    ctx = _make_context(
-        _init_db(tmp_path),
-        leaders_repo=repo,
-        execution_service=exec_svc,
-        config=_config(PAPER_TRADE_ONLY="false"),
-    )
-    results = await execute_trades(ctx, "0xleader", [_signal()], time.time())
-    assert len(results) == 1
-    # With paper_trade_only disabled, execution should be attempted (not forced to paper)
-    assert results[0].status != "paper"
+    async with _pg_pool() as pool:
+        repo = _FakeLeadersRepo({"0xleader": "live_follow"})
+        exec_svc = AsyncMock()
+        exec_svc.execute = AsyncMock(return_value=ExecutionResult(
+            accepted=True, order_id="ord456", status="filled",
+            requested_amount=Decimal("5"), filled_amount=Decimal("5"),
+            avg_price=Decimal("0.50"), fees_paid=Decimal("0.01"),
+        ))
+        ctx = _make_context(
+            pool,
+            leaders_repo=repo,
+            execution_service=exec_svc,
+            config=_config(PAPER_TRADE_ONLY="false"),
+            tmp_path=tmp_path,
+        )
+        results = await execute_trades(ctx, "0xleader", [_signal()], time.time())
+        assert len(results) == 1
+        assert results[0].status != "paper"
 
 
 @pytest.mark.asyncio
 async def test_watchlist_gate_requires_injected_config(tmp_path):
-    repo = _FakeLeadersRepo({"0xleader": "watchlist"})
-    db_path = _init_db(tmp_path)
-    ctx = TradingContext(
-        user_id="user1",
-        wallet_address=_VALID_FUNDER,
-        client=MagicMock(),
-        positions_repo=PositionsRepo(db_path),
-        fills_repo=FillsRepo(db_path),
-        orders_repo=OrdersRepo(db_path),
-        risk_blocks_repo=MagicMock(),
-        pnl_tracker=PnLTracker(log_path=str(db_path) + ".pnl"),
-        risk_engine=RiskEngine(),
-        accounting_service=AccountingService(),
-        position_manager=PositionManager(),
-        execution_service=MagicMock(),
-        leaders_repo=repo,
-        allocation_pct=1.0,
-        buy_min_amount=0.01,
-        buy_max_amount=1000.0,
-        extra={"slippage_tolerance_bps": 200},
-    )
+    async with _pg_pool() as pool:
+        repo = _FakeLeadersRepo({"0xleader": "watchlist"})
+        ctx = TradingContext(
+            user_id="user1",
+            wallet_address=_VALID_FUNDER,
+            client=MagicMock(),
+            positions_repo=PositionsRepo(pool),
+            fills_repo=FillsRepo(pool),
+            orders_repo=OrdersRepo(pool),
+            risk_blocks_repo=RiskBlocksRepo(pool),
+            pnl_tracker=PnLTracker(log_path=str(tmp_path / "pnl.jsonl")),
+            risk_engine=RiskEngine(),
+            accounting_service=AccountingService(),
+            position_manager=PositionManager(),
+            execution_service=MagicMock(),
+            leaders_repo=repo,
+            allocation_pct=1.0,
+            buy_min_amount=0.01,
+            buy_max_amount=1000.0,
+            extra={"slippage_tolerance_bps": 200},
+        )
 
-    with pytest.raises(RuntimeError, match="TradingContext.config is required for live tier gating"):
-        await execute_trades(ctx, "0xleader", [_signal()], time.time())
+        with pytest.raises(RuntimeError, match="TradingContext.config is required for live tier gating"):
+            await execute_trades(ctx, "0xleader", [_signal()], time.time())
