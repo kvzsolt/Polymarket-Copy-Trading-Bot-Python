@@ -1,0 +1,25 @@
+utils/getMyBalance.py
+  s_b575af21b31eb4::t_f0a307071cfa7c 65,72-74
+  s_b575af21b31eb4::t_83e6b96902a4e4 160
+  s_b575af21b31eb4::t_c7873aedbbfb10 5,17-44
+orchestrators/runtime_bootstrap.py
+  s_b575af21b31eb4::t_a5e727f16e8e6a 222-226
+tests/test_get_my_balance_decimal.py
+  s_b575af21b31eb4::t_adfed776841952 28-36
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.1",
+  "base_commit_sha": "5995e11940e34e2445e8bb277283f2a05457aca1",
+  "prompts": {},
+  "sessions": {
+    "s_b575af21b31eb4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "07691412-808e-482a-966d-b8c7cecadf2d",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
