@@ -663,3 +663,90 @@ the release-gate suite. This slice closes them out.
 
 The SQLite → Postgres migration is complete. The branch is ready for
 review and merge into ``full-rework``.
+
+## Nasty rework — legacy code kill (Phase A-E, 14 commits)
+
+Follow-on slice on the same branch (`feat/postgres-migration`) — user
+direction was "remove all legacy code and related path, migrate them
+to actual stuff". Deletes every compat-only surface and migrates every
+production ``ENV.get(...)`` callsite to typed ``AppConfig``.
+
+### Phase A — dead code (3 commits)
+
+| Slice | Commit | What |
+|---|---|---|
+| Drop `legacy/` package | `c75423c` | `rm -rf legacy/` (288-LOC `tradeExecutor.py` + empty `__init__.py`). Production never imported it (gate at `tests/release_gate/test_no_legacy_imports.py`). Delete sole consumers: `tests/test_services.py` (521 L) + `tests/test_copy_strategy.py` (143 L) |
+| Drop MongoDB-era interfaces | `1aa0484` | `interfaces/__init__.py` exported `UserActivityInterface` + `UserPositionInterface` (depended on optional `bson.ObjectId`). No production references. Reduce file to doc-only stub |
+| Tighten release-gate gate | `68d7e62` | Add `test_legacy_package_was_deleted` assertion that mirrors the existing `test_root_probe_scripts_were_deleted` — pins the directory absence, not just import absence |
+
+### Phase B — `config/settings.py` + `_profit_lock_mode == "legacy"` (2 commits)
+
+| Slice | Commit | What |
+|---|---|---|
+| Drop `_profit_lock_mode == "legacy"` branch | `4d780d7` | `services/positionManager.py` carried three init paths; only `config=AppConfig` was used in production. Drop the `risk_settings=` kwarg + the whole `elif risk_settings is not None:` block + the legacy `evaluate_exit` arm at lines 448-460. No-arg path defaults to `"disabled"`. Armed-then-retrace pattern is functionally subsumed by Priority 4 (trailing-stop) when configured via `AppConfig.features.enable_trailing_stop` |
+| Delete `config/settings.py` + 7 legacy-shim tests | `7ffd63a` | `config/settings.py` was an env-name translation layer (`STOP_LOSS_PCT → stop_loss_ratio`, 18 mappings) used only by pre-rewrite tests; production reads original env names via `config/app_config.py` directly so no env-name compatibility is lost. Delete + 7 test files (`test_config_settings`, `test_legacy_env_migration`, `test_issue8_risk_cleanup`, `test_config_edge_cases`, `test_risk_behavior`, `test_new_modules`, `test_position_math`) |
+
+### Phase C — `save_submission_legacy` + legacy idempotency probe (2 commits)
+
+| Slice | Commit | What |
+|---|---|---|
+| Drop `save_submission_legacy` wrapper | `d8875fc` | `storage/postgres/orders_repo.py:289` was a thin dict→`OrderSubmissionRecord` converter that internally called `save_submission(record)`. Inline the conversion in `ExecutionService._save_submission`; delete `save_submission_legacy`; update 4 test callers |
+| Drop pre-sizing idempotency probe | `5868dc2` | `services/executionService.py:663/714-715` looked up rows by the pre-sizing `_idempotency_key(req)` after the post-sizing `idem_key` missed — a transition shim from the post-sizing key migration. No real orders in prod DB (live blocked; per-test PG containers persist nothing) so no legacy keys exist on disk. Delete the probe + the `_idempotency_key(req)` helper itself; update three test patches from `_idempotency_key` → `_effective_idempotency_key` |
+
+### Phase D — `ENV.get(...)` → `AppConfig` migration (7 commits, ~98 callsites)
+
+| Slice | Commit | What |
+|---|---|---|
+| Add 6 missing AppConfig fields | `8784b40` | `ClobConfig.clob_v2_ready: bool` (fail-closed False), `NetworkConfig.{collateral,pusd,ctf_exchange_v2}_contract_address: str`, `ReconciliationConfig.max_closed_probes: int = 10`, `PollingConfig.retention_max_age_seconds: float = 30 * 86400`. All wired in `load_config` |
+| `riskEngine` | `a81d45e` | 11 `ENV.get` reads (BALANCE_POLICY_* + MAX_*_EXPOSURE_USDC + MAX_DAILY_DRAWDOWN_PCT) gone. The legacy fallback for callers that bypass `init_risk_engine(config)` now returns a hardcoded fail-closed default `AccountCapPolicy`; `compute_market_headroom` no-config branch uses the same hardcoded defaults the env reads used (300/600/500/0.20). Drops `_env_bool` / `_env_float` / `_env_decimal` helpers + `from config.env import ENV` import |
+| `traderDiscoveryService` | `b3b3dae` | 10 `ENV.get` reads (DISCOVERY_*, MIN_LEADER_*, AUTO_DISCOVER_*) gone. No-config init now sets `_enabled = False` + `_auto_discover = False` — service stays disabled on misconfigured bootstrap rather than running discovery on default values |
+| `createClobClient` | `a18ba97` | 7 `ENV.get` reads gone (CLOB_HTTP_URL + META_CACHE_TTL_* at import time, CLOB_V2_READY + PUSD/COLLATERAL/CTF contract addrs in `create_clob_client`). Add `configure_from_appconfig(config)` module setter, called from `runtime_bootstrap.py:218` at startup. `create_clob_client` accepts `config=` kwarg; reads gate from `config.clob.clob_v2_ready` + contract addresses from `config.network.*` |
+| `getMyBalance` | `5995e11` | 5 `ENV.get` reads gone. Same module-singleton + `configure_from_appconfig(config)` pattern as createClobClient; wired in `runtime_bootstrap.py:223`. Tests monkeypatch the new singletons (`_RPC_URL`, `_COLLATERAL_CONTRACT_ADDRESS`, …) instead of `ENV` |
+| `reconciliation` | `03a824e` | 4 `ENV.get` reads gone (RECONCILE_STALE_SECONDS, RECONCILE_AUTO_CANCEL, RECONCILE_MAX_CLOSED_PROBES, RECONCILE_INTERVAL_SECONDS). All three constructor settings had an `AppConfig`-first branch already; drop the env fallback in favour of hardcoded defaults. `max_closed_probes` now reads from the new `ReconciliationConfig.max_closed_probes` field |
+| Residual sweep (`app.py`, `tradeMonitor`, `doctor`, `idempotency`) | `e7ee18d` | Final 4 ENV.get callsites: `app.py:660` uses `application.config.polling.retention_max_age_seconds`; `services/tradeMonitor.py:67` hardcodes 0.25s default; `bot_cli/commands/doctor.py:269` reads `config.clob.clob_v2_ready`; `utils/idempotency.py:108` hardcodes 30-day retention. Drops 3 `from config.env import ENV` imports |
+
+### Phase E — close-out + test fixups (2 commits)
+
+| Slice | Commit | What |
+|---|---|---|
+| Fix 14 tests driving deleted ENV-fallback | `7abb80c` | `test_account_cap_policy.py` (10 fails) — patched `services.riskEngine.ENV`; replace with local `_policy(...)` builder that constructs `AccountCapPolicy` directly. `test_collateral_readiness.py` (1 fail) — replace `ENV` patch with `SimpleNamespace` AppConfig stub passed as `config=`. `test_decision_engine.py` (2 fails) — drop ENV patches; set discovery-gate thresholds via instance attrs. `test_issue69_order_sizing_idempotency.py` (1 fail) — rewrite `test_effective_key_different_from_legacy` against `_effective_idempotency_key` only |
+| Close-out doc + push | _this commit_ | docs/full-rework-progress.md update, final verification, push |
+
+### Final verification
+
+| Check | Result |
+|---|---|
+| `grep -rn "ENV\.get\|from config.env import ENV" --include='*.py' .` excluding `tests/` and `config/env.py` | **0 hits** in production code (the only remaining `ENV.get` callsites live inside `config/env.py` itself for the `validate_runtime_env()` legacy adapter, plus test files — both allowed by CLAUDE.md) |
+| `legacy/` package | gone |
+| `config/settings.py` | gone |
+| `save_submission_legacy` / `_idempotency_key` / `_profit_lock_mode == "legacy"` | gone |
+| `pytest -q --ignore=tests/release_gate --ignore=tests/replay` | **1998 passed, 3 skipped, 46 deselected** in 787s |
+| `pytest -m release_gate -o asyncio_mode=auto -q` | **154 passed, 6 skipped, 2046 deselected** in 62s |
+
+### Net effect
+
+- **Zero production `ENV.get(...)`** — every service / orchestrator /
+  CLI command / util / app.py path reads from typed `AppConfig`.
+- **Zero `legacy/` package** — production gate forbids re-introduction.
+- **Zero `config/settings.py`** — env-name translation shim deleted;
+  `config/app_config.py` reads original env names directly.
+- **Zero `save_submission_legacy`** + **zero pre-sizing
+  `_idempotency_key`** — effective post-sizing key is the only
+  idempotency contract.
+- **Zero `_profit_lock_mode == "legacy"` branch** — only `"advanced"`
+  (typed `AppConfig`) and `"disabled"` modes remain.
+- Six new typed `AppConfig` fields cover the previously-untyped env
+  keys (`clob_v2_ready`, three `network.*_contract_address` fields,
+  `reconciliation.max_closed_probes`, `polling.retention_max_age_seconds`).
+- ~3,750 LOC removed from the codebase (legacy package, settings shim,
+  7 legacy-shim test files, env-fallback branches across 9 production
+  files).
+- Test counts: 1998 unit + (release-gate, see push) passing.
+- CLAUDE.md non-negotiables held: live trading gate still blocked,
+  duplicate-order protection preserved, no float money types
+  introduced, sizing remains metadata-driven with effective
+  idempotency computed after sizing, every new AppConfig field has a
+  fail-closed default.
+
+The branch is now a clean handoff to `full-rework` with no compat
+layers left to chase.
