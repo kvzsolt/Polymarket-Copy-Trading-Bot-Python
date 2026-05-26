@@ -3,10 +3,12 @@
 Static AST scan over every production package root. Fails fast if anything
 under those roots imports:
 
-* the ``legacy`` package (still present, but tests-only),
+* the ``legacy`` package (deleted in the nasty-rework slice; this gate
+  guards against re-introduction),
 * any of the deleted root probe scripts (``test_probe*``, ``test_doctor_*``).
 
-Also asserts the deleted probe scripts no longer exist at repo root.
+Also asserts the ``legacy`` package directory itself stays gone, and that
+the deleted root probe scripts have not been resurrected.
 """
 from __future__ import annotations
 
@@ -129,6 +131,14 @@ def test_root_probe_scripts_were_deleted() -> None:
     assert not survivors, (
         "Probe scripts must not exist at repo root. "
         f"Found: {survivors}"
+    )
+
+
+def test_legacy_package_was_deleted() -> None:
+    """Nasty-rework slice deleted `legacy/` — guard against re-introduction."""
+    legacy_dir = REPO_ROOT / "legacy"
+    assert not legacy_dir.exists(), (
+        f"`legacy/` package must not exist at repo root. Found: {legacy_dir}"
     )
 
 
