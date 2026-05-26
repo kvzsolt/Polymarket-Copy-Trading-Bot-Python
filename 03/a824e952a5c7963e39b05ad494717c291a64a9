@@ -1,0 +1,22 @@
+services/reconciliation.py
+  s_b575af21b31eb4::t_a8933f666eeddd 814-815
+  s_b575af21b31eb4::t_0a39582905a456 154,160,167,172-174
+tests/test_reconciliation.py
+  s_b575af21b31eb4::t_30f64adff566bf 272-274,276-285
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.1",
+  "base_commit_sha": "03a824e952a5c7963e39b05ad494717c291a64a9",
+  "prompts": {},
+  "sessions": {
+    "s_b575af21b31eb4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "07691412-808e-482a-966d-b8c7cecadf2d",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
