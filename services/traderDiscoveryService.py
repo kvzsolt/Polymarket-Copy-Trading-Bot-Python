@@ -28,7 +28,6 @@ import urllib.request
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-from config.env import ENV
 from config.app_config import AppConfig
 from utils.logger import get_logger
 
@@ -146,17 +145,21 @@ class TraderDiscoveryService:
             self._auto_discover_top_n: int = l.auto_discover_top_n
             self._discovery_interval: int = d.discovery_interval_seconds
         else:
-            # Legacy fallback for tests that don't pass config
-            self._cache_ttl_s: float = float(ENV.get("DISCOVERY_CACHE_TTL_SECONDS", 3600) or 3600)
-            self._min_pnl: float = float(ENV.get("MIN_LEADER_PNL", 1000.0))
-            self._min_win_rate: float = float(ENV.get("MIN_LEADER_WIN_RATE", 0.55))
-            self._min_positions: int = int(ENV.get("MIN_LEADER_POSITIONS", 20))
-            self._max_results: int = int(ENV.get("DISCOVERY_MAX_RESULTS", 50))
-            self._enabled: bool = ENV.get("ENABLE_TRADER_DISCOVERY", False)
-            self._auto_discover: bool = ENV.get("AUTO_DISCOVER_LEADERS", False)
-            self._auto_discover_min_score: float = float(ENV.get("AUTO_DISCOVER_MIN_SCORE", 0.45) or 0.45)
-            self._auto_discover_top_n: int = int(ENV.get("AUTO_DISCOVER_TOP_N", 5) or 5)
-            self._discovery_interval: int = int(ENV.get("DISCOVERY_INTERVAL_SECONDS", 3600) or 3600)
+            # No typed config injected — fail-closed hardcoded defaults.
+            # Same values that were previously the ENV-read defaults; the
+            # service stays *disabled* by default so trader discovery never
+            # runs on a misconfigured bootstrap. Production paths always
+            # pass `config=AppConfig` per orchestrators/runtime_bootstrap.py.
+            self._cache_ttl_s: float = 3600.0
+            self._min_pnl: float = 1000.0
+            self._min_win_rate: float = 0.55
+            self._min_positions: int = 20
+            self._max_results: int = 50
+            self._enabled: bool = False
+            self._auto_discover: bool = False
+            self._auto_discover_min_score: float = 0.45
+            self._auto_discover_top_n: int = 5
+            self._discovery_interval: int = 3600
 
     def _score_trader(self, profile: TraderProfile) -> float:
         """Compute composite score from trader metrics.
