@@ -537,10 +537,22 @@ class TestOrderRepoLockCycle:
         async with _pg_pool() as pool:
             repo = OrdersRepo(pool)
 
-            await repo.save_submission_legacy(
-                idempotency_key="save-key",
-                request={"user_id": "u1", "side": "BUY", "amount": "10"},
-                response={"success": True, "orderID": "ord-1", "status": "submitted"},
+            from storage.postgres.orders_repo import OrderSubmissionRecord
+
+            await repo.save_submission(
+                OrderSubmissionRecord(
+                    idempotency_key="save-key",
+                    user_id="u1",
+                    leader_id=None,
+                    order_id="ord-1",
+                    status="submitted",
+                    request_payload={"user_id": "u1", "side": "BUY", "amount": "10"},
+                    response_payload={
+                        "success": True,
+                        "orderID": "ord-1",
+                        "status": "submitted",
+                    },
+                )
             )
             record = await repo.get_by_idempotency_key("save-key")
             assert record is not None
@@ -830,7 +842,7 @@ class TestAtomicLockConcurrencyStress:
             "ExecutionService where the existing-row check + try_acquire_submission_lock "
             "+ save_submission triple is not transactional. Multiple winners observe "
             "no existing row and INSERT pending_lock successfully via ON CONFLICT DO "
-            "UPDATE (save_submission_legacy upgrades pending_lock → pending). Fix "
+            "UPDATE (save_submission upgrades pending_lock → pending). Fix "
             "requires moving the entire pre-submit sequence inside a single asyncpg "
             "transaction or using a check-and-set primitive on get-or-insert. Tracked "
             "as follow-up."

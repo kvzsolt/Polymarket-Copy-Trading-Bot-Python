@@ -286,32 +286,6 @@ class OrdersRepo(AbstractOrderRepository):
                 record.last_error,
             )
 
-    async def save_submission_legacy(
-        self,
-        *,
-        idempotency_key: str,
-        request: dict[str, Any],
-        response: dict[str, Any],
-    ) -> None:
-        status = str(
-            response.get("status")
-            or ("submitted" if response.get("success") else "failed")
-        )
-        record = OrderSubmissionRecord(
-            idempotency_key=idempotency_key,
-            user_id=str(request.get("user_id") or request.get("userId") or ""),
-            leader_id=str(
-                request.get("leader_id") or request.get("leaderWallet") or ""
-            )
-            or None,
-            order_id=response.get("orderID"),
-            status=status,
-            request_payload=request,
-            response_payload=response,
-            last_error=str(response.get("error")) if response.get("error") else None,
-        )
-        await self.save_submission(record)
-
     async def mark_fill(
         self,
         *,
