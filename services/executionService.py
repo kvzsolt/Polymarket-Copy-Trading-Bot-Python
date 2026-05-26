@@ -265,11 +265,36 @@ class ExecutionService:
         request: dict[str, Any],
         response: dict[str, Any] | Any,
     ) -> None:
-        await self.order_repo.save_submission_legacy(
-            idempotency_key=idempotency_key,
-            request=_sanitize_submission_request(request),
-            response=_sanitize_submission_response(response),
+        from storage.postgres.orders_repo import OrderSubmissionRecord
+
+        sanitized_request = _sanitize_submission_request(request)
+        sanitized_response = _sanitize_submission_response(response)
+        status = str(
+            sanitized_response.get("status")
+            or ("submitted" if sanitized_response.get("success") else "failed")
         )
+        record = OrderSubmissionRecord(
+            idempotency_key=idempotency_key,
+            user_id=str(
+                sanitized_request.get("user_id")
+                or sanitized_request.get("userId")
+                or ""
+            ),
+            leader_id=str(
+                sanitized_request.get("leader_id")
+                or sanitized_request.get("leaderWallet")
+                or ""
+            )
+            or None,
+            order_id=sanitized_response.get("orderID"),
+            status=status,
+            request_payload=sanitized_request,
+            response_payload=sanitized_response,
+            last_error=str(sanitized_response.get("error"))
+            if sanitized_response.get("error")
+            else None,
+        )
+        await self.order_repo.save_submission(record)
 
     async def execute(self, req: ExecutionRequest) -> ExecutionResult:
         side = _normalize_side(req.side)

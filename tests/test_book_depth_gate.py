@@ -136,7 +136,7 @@ def _make_execution_service(bids: dict, asks: dict, *, min_depth: float = 0.0):
     order_repo.get_by_idempotency_key = AsyncMock(return_value=None)
     order_repo.is_submission_locked = AsyncMock(return_value=False)
     order_repo.try_acquire_submission_lock = AsyncMock(return_value=True)
-    order_repo.save_submission_legacy = AsyncMock(return_value=None)
+    order_repo.save_submission = AsyncMock(return_value=None)
 
     mock_cfg = SimpleNamespace(
         execution=SimpleNamespace(
