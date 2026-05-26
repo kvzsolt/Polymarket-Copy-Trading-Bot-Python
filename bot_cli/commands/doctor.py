@@ -31,7 +31,7 @@ from config.app_config import (
     EnvValidationError,
     load_config,
 )
-from config.env import ENV, rehydrate_env
+from config.env import rehydrate_env
 from config.runtime_env import load_runtime_env
 
 
@@ -261,17 +261,16 @@ async def run_doctor_checks(mode: str) -> dict[str, Any]:
             )
         else:
             ctx.ok("dry_run_false", "dry_run=false")
-        # Prefer config.raw (the parsed env mapping the doctor's load_config
-        # actually consumed) over the global ENV dict so test injections take
-        # effect without monkeypatching os.environ.
-        raw_clob = config.raw.get("CLOB_V2_READY") if hasattr(config, "raw") else None
-        if raw_clob is None:
-            raw_clob = ENV.get("CLOB_V2_READY", False)
-        clob_ready = (
-            bool(raw_clob)
-            if not isinstance(raw_clob, str)
-            else str(raw_clob).strip().lower() in {"1", "true", "yes"}
-        )
+        # Read CLOB V2 gate from typed config (added to ClobConfig in the
+        # legacy-kill slice #77). Fall back to `config.raw` for parity with
+        # any test injections that pre-date the typed field.
+        clob_ready = bool(getattr(getattr(config, "clob", None), "clob_v2_ready", False))
+        if not clob_ready and hasattr(config, "raw"):
+            raw_clob = config.raw.get("CLOB_V2_READY")
+            if isinstance(raw_clob, str):
+                clob_ready = raw_clob.strip().lower() in {"1", "true", "yes"}
+            else:
+                clob_ready = bool(raw_clob)
         if not clob_ready:
             ctx.blocked(
                 "clob_v2_ready",

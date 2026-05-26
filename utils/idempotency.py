@@ -103,9 +103,14 @@ async def mark_processed_all_tx_hashes(
 
 async def purge_stale_records(max_age_seconds: float | None = None) -> int:
     """Delete old processed_trades. Returns total rows deleted."""
-    from config.env import ENV
-
-    age = max_age_seconds or float(ENV.get("RETENTION_MAX_AGE_SECONDS", 30 * 86400))
+    if max_age_seconds is not None:
+        age = float(max_age_seconds)
+    else:
+        # Fail-closed default mirrors the previous
+        # ``ENV.get("RETENTION_MAX_AGE_SECONDS", 30*86400)`` read. Callers
+        # that need a different retention pass it explicitly (e.g. app.py
+        # reads ``application.config.polling.retention_max_age_seconds``).
+        age = float(30 * 86400)
     repo = await _repo()
     n = await repo.purge_old_processed_trades(age)
     if n:
