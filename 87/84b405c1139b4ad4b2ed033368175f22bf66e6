@@ -1,0 +1,27 @@
+config/app_config.py
+  s_b575af21b31eb4::t_14a8bd1b1fea8d 269-271
+  s_b575af21b31eb4::t_5d7171489fa705 283-287
+  s_b575af21b31eb4::t_999650fe821108 1115-1117,1123
+  s_b575af21b31eb4::t_721525a4d0e612 923,935
+  s_b575af21b31eb4::t_dab0ae18270490 436-444
+  s_b575af21b31eb4::t_9ffd877ac1c5ba 451-454
+tests/test_execution_idempotency_extended.py
+  s_b575af21b31eb4::t_0db6f9cfd3a5c6 329-331,333-355,357-360,362-363
+  s_b575af21b31eb4::t_fc93fa27bad2c7 251
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.1",
+  "base_commit_sha": "8784b405c1139b4ad4b2ed033368175f22bf66e6",
+  "prompts": {},
+  "sessions": {
+    "s_b575af21b31eb4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "07691412-808e-482a-966d-b8c7cecadf2d",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
