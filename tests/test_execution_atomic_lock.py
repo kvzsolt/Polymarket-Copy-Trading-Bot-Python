@@ -1,7 +1,10 @@
-from __future__ import annotations
-import pytest
-pytest.skip("sqlite-bound; pending PG port", allow_module_level=True)
+"""Atomic submission-lock semantics (PG-A6 port).
 
+Repo-level invariants live on the canonical async PG ``OrdersRepo``. The
+ExecutionService integration test runs against the same async repo so
+the lock contract is exercised end-to-end on the production code path.
+"""
+from __future__ import annotations
 
 import asyncio
 import contextlib
@@ -16,27 +19,23 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from services.executionService import ExecutionRequest, ExecutionService
-from services.orderRepository import OrderRepository
-from storage.sqlite.connection import create_connection
-from storage.sqlite.migrations import apply_migrations
-from utils.createClobClient import MarketMeta
 from cache.market_state_store import BookSnapshot, QuoteSnapshot, TickSnapshot
+from services.executionService import ExecutionRequest, ExecutionService
 from services.market_data_service import MarketDataBundle, MarketDataSource
+from storage.postgres.orders_repo import OrdersRepo as PgOrdersRepo
+from utils.createClobClient import MarketMeta
 
 
 @contextlib.asynccontextmanager
 async def _pg_pool():
-    """Spin a Postgres testcontainer + return a pool with the full
-    schema applied. Auto-skips when Docker is unavailable."""
     try:
         from testcontainers.postgres import PostgresContainer
         import asyncpg
         from storage.postgres.migrations import apply_migrations as pg_apply
     except Exception as exc:
         pytest.skip(f"Docker / postgres image unavailable: {exc!r}")
+    ctr = PostgresContainer("postgres:16-alpine")
     try:
-        ctr = PostgresContainer("postgres:16-alpine")
         ctr.start()
     except Exception as exc:
         pytest.skip(f"Docker / postgres image unavailable: {exc!r}")
@@ -44,7 +43,8 @@ async def _pg_pool():
         dsn = ctr.get_connection_url(driver="asyncpg").replace(
             "postgresql+asyncpg://", "postgresql://"
         )
-        pool = await asyncpg.create_pool(dsn, min_size=1, max_size=3)
+        # Give the ExecutionService integration test genuine concurrency.
+        pool = await asyncpg.create_pool(dsn, min_size=2, max_size=10)
         async with pool.acquire() as conn:
             await pg_apply(conn)
         try:
@@ -94,7 +94,7 @@ class _FeeSvc:
 
 
 class _MetaSvc:
-    async def get(self, token_id: str, refresh: bool = False):  # noqa: ARG002
+    async def get(self, token_id: str, refresh: bool = False):
         return MarketMeta(
             token_id=token_id,
             tick_size=Decimal("0.01"),
@@ -122,7 +122,7 @@ class _ConcurrentClob:
         self.release_first_create = asyncio.Event()
         self._first_create_seen = False
 
-    async def create_market_order(self, **kwargs):  # noqa: ARG002
+    async def create_market_order(self, **kwargs):
         if not self._first_create_seen:
             self._first_create_seen = True
             self.first_create_started.set()
@@ -145,23 +145,9 @@ def _make_mds(token_id: str = "t1") -> AsyncMock:
     return mds
 
 
-def _prepare_db(path: Path) -> None:
-    """Sqlite helper kept for the ExecutionService integration test
-    below until the execution mesh migrates to async PG."""
-    with create_connection(str(path)) as conn:
-        apply_migrations(conn)
-        conn.commit()
-
-
 @pytest.mark.asyncio
 async def test_order_repository_exposes_atomic_lock_methods():
-    """Pure repo-level lock semantics — migrated to async PG via
-    ``storage.postgres.orders_repo.OrdersRepo``. The sync
-    ``services.orderRepository.OrderRepository`` wrapper exposes the
-    same surface; this test pins the underlying invariants on the
-    canonical PG implementation."""
-    from storage.postgres.orders_repo import OrdersRepo as PgOrdersRepo
-
+    """Pure repo-level lock semantics on the canonical PG ``OrdersRepo``."""
     async with _pg_pool() as pool:
         repo = PgOrdersRepo(pool)
         key = "lock-key"
@@ -174,37 +160,39 @@ async def test_order_repository_exposes_atomic_lock_methods():
 
 
 @pytest.mark.asyncio
-async def test_atomic_lock_blocks_duplicate_concurrent_submission(tmp_path):
-    """ExecutionService integration test — still on the SQLite
-    ``OrderRepository`` wrapper because ``ExecutionService`` itself
-    still calls sync ``self.order_repo.X(...)`` methods. This test
-    will migrate to PG when the execution mesh (orderRepository →
-    riskMonitor → ExecutionService) flips to async.
+async def test_atomic_lock_blocks_duplicate_concurrent_submission():
+    """ExecutionService integration test on async PG ``OrdersRepo``.
+
+    Two concurrent ``execute()`` calls with identical request shape: the
+    first wins the submission lock and POSTs once; the second observes
+    the lock and returns ``duplicate_ignored`` / ``inflight_lock``.
     """
-    db_path = tmp_path / "state.db"
-    _prepare_db(db_path)
+    async with _pg_pool() as pool:
+        repo = PgOrdersRepo(pool)
+        clob = _ConcurrentClob()
+        svc = ExecutionService(
+            clob, _FeeSvc(), repo,
+            config=_make_exec_config(),
+            market_data_service=_make_mds(),
+        )
+        req = ExecutionRequest(
+            user_id="u1",
+            leader_id="l1",
+            token_id="t1",
+            side="BUY",
+            amount=Decimal("5"),
+            max_slippage_bps=100,
+            reason="copy_trade",
+            signal_id="sig-lock",
+        )
 
-    repo = OrderRepository(str(db_path))
-    clob = _ConcurrentClob()
-    svc = ExecutionService(clob, _FeeSvc(), repo, config=_make_exec_config(), market_data_service=_make_mds())
-    req = ExecutionRequest(
-        user_id="u1",
-        leader_id="l1",
-        token_id="t1",
-        side="BUY",
-        amount=Decimal("5"),
-        max_slippage_bps=100,
-        reason="copy_trade",
-        signal_id="sig-lock",
-    )
+        first_task = asyncio.create_task(svc.execute(req))
+        await clob.first_create_started.wait()
 
-    first_task = asyncio.create_task(svc.execute(req))
-    await clob.first_create_started.wait()
+        second_result = await svc.execute(req)
+        clob.release_first_create.set()
+        first_result = await first_task
 
-    second_result = await svc.execute(req)
-    clob.release_first_create.set()
-    first_result = await first_task
-
-    assert second_result.status in {"duplicate_ignored", "inflight_lock"}
-    assert first_result.accepted is True
-    assert clob.post_signed_order.await_count == 1
+        assert second_result.status in {"duplicate_ignored", "inflight_lock"}
+        assert first_result.accepted is True
+        assert clob.post_signed_order.await_count == 1
