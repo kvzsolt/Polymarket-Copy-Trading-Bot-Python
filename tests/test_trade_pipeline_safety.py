@@ -1335,8 +1335,11 @@ async def test_sell_realized_pnl_falls_back_to_updated_position_or_signal_price(
         ctx.positions_repo.get_position = AsyncMock(
             return_value=SimpleNamespace(size_tokens=Decimal("20"), avg_entry_price=None)
         )
-        ctx.positions_repo.apply_fill = AsyncMock(
-            return_value=SimpleNamespace(avg_entry_price=Decimal("0.45"))
+        # PR #108 fix: atomic append_fill + apply replaces the two-call
+        # sequence in `execute_trades`; the mock returns ``(fill_id,
+        # updated_position)``.
+        ctx.fills_repo.append_fill_and_apply = AsyncMock(
+            return_value=(1, SimpleNamespace(avg_entry_price=Decimal("0.45")))
         )
 
         signal = _signal(side="SELL", price=0.60, size=10.0)
@@ -1373,7 +1376,10 @@ async def test_sell_realized_pnl_falls_back_to_signal_price_when_position_prices
         ctx.positions_repo.get_position = AsyncMock(
             return_value=SimpleNamespace(size_tokens=Decimal("20"), avg_entry_price=None)
         )
-        ctx.positions_repo.apply_fill = AsyncMock(return_value=None)
+        # PR #108 fix: atomic append_fill + apply mock returns (fill_id,
+        # updated_position) — None updated_position triggers the signal-
+        # price fallback path under test.
+        ctx.fills_repo.append_fill_and_apply = AsyncMock(return_value=(1, None))
 
         signal = _signal(side="SELL", price=0.60, size=10.0)
         signal["_leader_sell_fraction"] = 0.5  # sell 50% of 20-token position = 10 tokens

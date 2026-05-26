@@ -657,8 +657,12 @@ async def main():
     from storage.postgres.orders_repo import OrdersRepo as _PgOrdersRepo
 
     _max_age = float(application.config.polling.retention_max_age_seconds)
+    # Acquire the pool first so it's available to the per-user wiring below
+    # even when the (non-critical) purge step fails. Previously `_pool` was
+    # scoped inside the try/except, so a degraded purge would NameError on
+    # the subsequent `build_user_state(..., _pool, ...)` reference.
+    _pool = await get_pool()
     try:
-        _pool = await get_pool()
         purged = await _PgOrdersRepo(_pool).purge_old_processed_trades(_max_age)
     except RuntimeError:
         # Defensive: should not fire now that connect_db() runs above,

@@ -18,6 +18,7 @@ import json
 import time
 from dataclasses import dataclass
 from decimal import Decimal
+from typing import Any
 
 import asyncpg
 
@@ -91,6 +92,78 @@ class FillsRepo(AbstractFillRepository):
                 json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str),
             )
             return int(new_id) if new_id is not None else 0
+
+    async def append_fill_and_apply(
+        self,
+        record: FillRecord,
+        positions_repo,
+        *,
+        raw_payload: dict | None = None,
+    ) -> tuple[int, Any]:
+        """Append a fill row and apply it to ``positions`` in a single transaction.
+
+        Returns ``(fill_id, updated_position)``. ``fill_id == 0`` means the
+        fill was a duplicate (existing ``(user_id, order_id, condition_id,
+        side, fill_ts)`` row), and the position is **not** updated — this
+        closes the double-count window where ``append_fill`` auto-commits
+        a no-op duplicate but ``apply_fill`` runs anyway on the next call.
+
+        This is the atomic alternative to calling ``append_fill`` and
+        ``positions_repo.apply_fill`` sequentially on separate pool
+        connections — required on the risk-monitor / trade-pipeline
+        execution success path so a process crash between the two writes
+        cannot leave the fill committed while the position is unchanged.
+        """
+        payload = raw_payload or {
+            "user_id": record.user_id,
+            "leader_id": record.leader_id,
+            "order_id": record.order_id,
+            "condition_id": record.condition_id,
+            "token_id": record.token_id,
+            "side": record.side,
+            "size_tokens": str(record.size_tokens),
+            "price": str(record.price),
+            "fee": str(record.fee),
+            "fill_ts": int(record.fill_ts or time.time()),
+        }
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                new_id = await conn.fetchval(
+                    """
+                    INSERT INTO fills (
+                        user_id, leader_id, order_id, condition_id, token_id, side,
+                        size_tokens, price, fee, fill_ts, fill_json
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb)
+                    ON CONFLICT DO NOTHING
+                    RETURNING id
+                    """,
+                    record.user_id,
+                    record.leader_id,
+                    record.order_id,
+                    record.condition_id,
+                    record.token_id,
+                    record.side,
+                    str(record.size_tokens),
+                    str(record.price),
+                    str(record.fee),
+                    int(record.fill_ts if record.fill_ts is not None else time.time()),
+                    json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str),
+                )
+                fill_id = int(new_id) if new_id is not None else 0
+                if fill_id == 0:
+                    # Duplicate fill — do NOT re-apply to the position.
+                    return 0, None
+                updated = await positions_repo._apply_fill_in_conn(
+                    conn,
+                    user_id=record.user_id,
+                    leader_id=record.leader_id,
+                    condition_id=record.condition_id,
+                    token_id=record.token_id,
+                    side=record.side,
+                    fill_size=record.size_tokens,
+                    fill_price=record.price,
+                )
+                return fill_id, updated
 
     async def list_fills_for_user(self, user_id: str) -> list[dict]:
         async with self._pool.acquire() as conn:

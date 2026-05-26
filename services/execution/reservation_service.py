@@ -69,6 +69,15 @@ class ReservationService:
 
     async def reserve_for_intent(self, intent: OrderIntent) -> Reservation:
         stable_key = intent.key.stable_key()
+        # Fast-path lookup: most callers hit this once with no prior
+        # reservation. The auto-committed read here is intentionally
+        # racy — it short-circuits the common no-contention path before
+        # acquiring an advisory lock. The BUY branch below closes the
+        # race window by re-reading inside ``create_buy_reservation_
+        # checked_by_intent``'s transaction; the SELL branch closes its
+        # equivalent window via the per-(user, condition, token) lock in
+        # ``create_sell_reservation_checked``. ``ReservationConflict``
+        # from ``UniqueViolationError`` covers the residual.
         existing = await self.reservations_repo.get_active_by_intent_key(stable_key)
 
         if existing:
@@ -104,16 +113,33 @@ class ReservationService:
                 stable_key, intent.size, intent.price, required_usdc, expires_at,
             )
             try:
-                result = await self.reservations_repo.create_buy_reservation_checked(
-                    intent=intent,
-                    reserved_usdc=required_usdc,
-                    expires_at=expires_at,
-                    available_balance=balance,
+                # Atomic intent-key check + capacity check + insert inside
+                # one advisory-lock transaction. Closes the race window the
+                # outer ``get_active_by_intent_key`` fast-path cannot cover
+                # (Greptile finding in PR #108).
+                existing_under_lock, result = (
+                    await self.reservations_repo
+                    .create_buy_reservation_checked_by_intent(
+                        intent=intent,
+                        reserved_usdc=required_usdc,
+                        expires_at=expires_at,
+                        available_balance=balance,
+                    )
                 )
             except asyncpg.exceptions.UniqueViolationError as exc:
                 raise ReservationConflict(
                     f"active reservation exists for intent={stable_key}"
                 ) from exc
+            if existing_under_lock is not None:
+                # A concurrent caller raced past the fast-path lookup and
+                # committed an active row before we acquired the lock.
+                logger.warning(
+                    "reservation.acquire.buy.race_lost key=%s existing_id=%s",
+                    stable_key, existing_under_lock.id,
+                )
+                raise ReservationConflict(
+                    f"active reservation exists for intent={stable_key}"
+                )
             if result is None:
                 raise InsufficientFreeQuote(
                     f"insufficient free USDC after atomic check: need {required_usdc}"

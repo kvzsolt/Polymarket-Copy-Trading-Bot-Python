@@ -27,22 +27,26 @@ class _UserActivityCollection:
         now = time.time()
         pool = await get_pool()
         async with pool.acquire() as conn:
-            for doc in docs:
-                external_id = str(doc.get("_id") or doc.get("id") or "")
-                tx_hash = str(doc.get("transactionHash") or doc.get("txHash") or "")
-                await conn.execute(
-                    """
-                    INSERT INTO user_activities
-                    (wallet_address, external_id, transaction_hash, data_json, created_at, updated_at)
-                    VALUES ($1, $2, $3, $4::jsonb, $5, $6)
-                    """,
-                    self.wallet_address,
-                    external_id,
-                    tx_hash,
-                    json.dumps(doc, separators=(",", ":"), default=str),
-                    now,
-                    now,
-                )
+            # PR #108 finding: wrap the batch in a single transaction so a
+            # mid-loop crash rolls back the whole batch instead of leaving
+            # a partially-committed activity history.
+            async with conn.transaction():
+                for doc in docs:
+                    external_id = str(doc.get("_id") or doc.get("id") or "")
+                    tx_hash = str(doc.get("transactionHash") or doc.get("txHash") or "")
+                    await conn.execute(
+                        """
+                        INSERT INTO user_activities
+                        (wallet_address, external_id, transaction_hash, data_json, created_at, updated_at)
+                        VALUES ($1, $2, $3, $4::jsonb, $5, $6)
+                        """,
+                        self.wallet_address,
+                        external_id,
+                        tx_hash,
+                        json.dumps(doc, separators=(",", ":"), default=str),
+                        now,
+                        now,
+                    )
 
     async def update_one(self, filt: dict[str, Any], update: dict[str, Any]) -> None:
         set_fields = update.get("$set") or {}
@@ -51,25 +55,33 @@ class _UserActivityCollection:
             return
         pool = await get_pool()
         async with pool.acquire() as conn:
-            row = await conn.fetchrow(
-                "SELECT data_json FROM user_activities WHERE id = $1 AND wallet_address = $2 LIMIT 1",
-                int(row_id), self.wallet_address,
-            )
-            if not row:
-                return
-            payload = json.loads(row["data_json"]) if isinstance(row["data_json"], str) else dict(row["data_json"])
-            payload.update(set_fields)
-            await conn.execute(
-                """
-                UPDATE user_activities
-                SET data_json = $1::jsonb, updated_at = $2
-                WHERE id = $3 AND wallet_address = $4
-                """,
-                json.dumps(payload, separators=(",", ":"), default=str),
-                time.time(),
-                int(row_id),
-                self.wallet_address,
-            )
+            # PR #108 finding: serialise the SELECT + UPDATE read-modify-
+            # write so two concurrent ``update_one`` calls on the same row
+            # cannot both observe the same ``data_json`` snapshot and have
+            # the second write silently overwrite the first. ``FOR UPDATE``
+            # on the row + the surrounding transaction restore the
+            # SQLite-era atomicity.
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    "SELECT data_json FROM user_activities "
+                    "WHERE id = $1 AND wallet_address = $2 FOR UPDATE",
+                    int(row_id), self.wallet_address,
+                )
+                if not row:
+                    return
+                payload = json.loads(row["data_json"]) if isinstance(row["data_json"], str) else dict(row["data_json"])
+                payload.update(set_fields)
+                await conn.execute(
+                    """
+                    UPDATE user_activities
+                    SET data_json = $1::jsonb, updated_at = $2
+                    WHERE id = $3 AND wallet_address = $4
+                    """,
+                    json.dumps(payload, separators=(",", ":"), default=str),
+                    time.time(),
+                    int(row_id),
+                    self.wallet_address,
+                )
 
 
 class _UserPositionCollection:
@@ -90,22 +102,27 @@ class _UserPositionCollection:
         now = time.time()
         pool = await get_pool()
         async with pool.acquire() as conn:
-            for doc in docs:
-                condition_id = str(doc.get("conditionId") or doc.get("condition_id") or "")
-                key = condition_id or str(doc.get("tokenId") or doc.get("token_id") or "")
-                await conn.execute(
-                    """
-                    INSERT INTO user_positions (wallet_address, condition_id, data_json, updated_at)
-                    VALUES ($1, $2, $3::jsonb, $4)
-                    ON CONFLICT(wallet_address, condition_id) DO UPDATE SET
-                      data_json = excluded.data_json,
-                      updated_at = excluded.updated_at
-                    """,
-                    self.wallet_address,
-                    key,
-                    json.dumps(doc, separators=(",", ":"), default=str),
-                    now,
-                )
+            # PR #108 finding: callers typically call ``delete_many`` then
+            # ``insert_many``. Wrap the batch in a single transaction so a
+            # crash mid-loop rolls back partial inserts; combine with the
+            # caller's transaction (if any) for delete+insert atomicity.
+            async with conn.transaction():
+                for doc in docs:
+                    condition_id = str(doc.get("conditionId") or doc.get("condition_id") or "")
+                    key = condition_id or str(doc.get("tokenId") or doc.get("token_id") or "")
+                    await conn.execute(
+                        """
+                        INSERT INTO user_positions (wallet_address, condition_id, data_json, updated_at)
+                        VALUES ($1, $2, $3::jsonb, $4)
+                        ON CONFLICT(wallet_address, condition_id) DO UPDATE SET
+                          data_json = excluded.data_json,
+                          updated_at = excluded.updated_at
+                        """,
+                        self.wallet_address,
+                        key,
+                        json.dumps(doc, separators=(",", ":"), default=str),
+                        now,
+                    )
 
 
 class _TradingCollection:

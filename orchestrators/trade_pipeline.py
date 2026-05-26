@@ -2428,7 +2428,16 @@ async def execute_trades(
             fill_size = Decimal(str(exec_result.filled_amount))
             fee_paid = Decimal(str(exec_result.fees_paid or 0))
             try:
-                await context.fills_repo.append_fill(
+                # Atomic fill + position write — PR #108 finding: the
+                # previous two-call sequence (append_fill auto-commit +
+                # apply_fill in a separate pool connection) left a
+                # crash-window where the fill was durably committed but
+                # the position never updated. ``append_fill_and_apply``
+                # serialises both in one ``conn.transaction()``; the
+                # duplicate-fill short-circuit (fill_id == 0) prevents
+                # double-counting when the ON CONFLICT DO NOTHING branch
+                # fires.
+                _fill_id, updated_position = await context.fills_repo.append_fill_and_apply(
                     FillRecord(
                         user_id=context.user_id,
                         leader_id=leader_id,
@@ -2441,20 +2450,12 @@ async def execute_trades(
                         fee=fee_paid,
                         fill_ts=int(now_ts),
                     ),
+                    context.positions_repo,
                     raw_payload={
                         "signal_tx_hash": signal.tx_hash,
                         "copy_order_id": exec_result.order_id,
                         "status": exec_result.status,
                     },
-                )
-                updated_position = await context.positions_repo.apply_fill(
-                    user_id=context.user_id,
-                    leader_id=leader_id,
-                    condition_id=signal.condition_id,
-                    token_id=signal.token_id,
-                    side=signal.side,
-                    fill_size=fill_size,
-                    fill_price=Decimal(str(fill_price or 0)),
                 )
             except asyncpg.exceptions.UniqueViolationError as ie:
                 error_msg = str(ie)
@@ -2501,6 +2502,40 @@ async def execute_trades(
                     },
                 )
                 raise
+
+            if _fill_id == 0:
+                # ON CONFLICT DO NOTHING fired — fill already persisted by a
+                # prior call. Position, risk-block, and PnL were updated in
+                # that call; replaying them here would double-count.
+                logger.info(
+                    "trade_pipeline_duplicate_fill_ignored",
+                    extra={
+                        "user_id": context.user_id,
+                        "leader_id": leader_id,
+                        "condition_id": signal.condition_id,
+                        "order_id": exec_result.order_id,
+                        "source": "on_conflict",
+                    },
+                )
+                await context.orders_repo.mark_processed_trade(
+                    trade_key=trade_key,
+                    user_id=context.user_id,
+                    leader_id=leader_id,
+                    tx_hash=signal.tx_hash,
+                    side=signal.side,
+                    asset=signal.token_id,
+                    condition_id=signal.condition_id,
+                    status="duplicate_ignored",
+                )
+                results.append(
+                    TradePipelineResult(
+                        trade_key=trade_key,
+                        status="skipped",
+                        reason="duplicate_ignored",
+                        order_id=exec_result.order_id,
+                    )
+                )
+                continue
 
             if signal.side == "BUY":
                 # Phase 4 — count the BUY against the rolling 24h spend

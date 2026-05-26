@@ -239,10 +239,10 @@ class ReconciliationService:
             if self.orders_repo:
                 try:
                     if hasattr(self.orders_repo, "get_by_order_id"):
-                        local_record = self.orders_repo.get_by_order_id(order_id)
+                        local_record = await self.orders_repo.get_by_order_id(order_id)
                     elif hasattr(self.orders_repo, "get_by_idempotency_key"):
                         # Backwards-compatible fallback for older mock repos.
-                        local_record = self.orders_repo.get_by_idempotency_key(order_id)
+                        local_record = await self.orders_repo.get_by_idempotency_key(order_id)
                 except Exception:
                     pass
                 if local_record is None:
@@ -250,7 +250,7 @@ class ReconciliationService:
 
             # Phase 4 — partial-fill / unexpected-fill / cancellation detection.
             try:
-                delta = self._classify_order_state(
+                delta = await self._classify_order_state(
                     order=order,
                     local_record=local_record,
                 )
@@ -322,7 +322,7 @@ class ReconciliationService:
                 if probed is None:
                     continue
                 try:
-                    delta = self._classify_order_state(
+                    delta = await self._classify_order_state(
                         order=probed,
                         local_record=local_row,
                     )
@@ -391,7 +391,7 @@ class ReconciliationService:
                         local_row = None
                         try:
                             if hasattr(self.orders_repo, "get_by_order_id"):
-                                local_row = self.orders_repo.get_by_order_id(oid)
+                                local_row = await self.orders_repo.get_by_order_id(oid)
                         except Exception:
                             local_row = None
                         self._rollback_balance_regime_on_cancel(
@@ -442,7 +442,7 @@ class ReconciliationService:
     # ------------------------------------------------------------------
     # Phase 4 — order-state classification + repo update helpers.
     # ------------------------------------------------------------------
-    def _classify_order_state(
+    async def _classify_order_state(
         self,
         *,
         order: dict[str, Any],
@@ -519,7 +519,7 @@ class ReconciliationService:
 
         if venue_matched > local_matched:
             delta = venue_matched - local_matched
-            self._record_partial_fill(
+            await self._record_partial_fill(
                 order_id=order_id,
                 local_record=local_record,
                 venue_matched=venue_matched,
@@ -673,7 +673,7 @@ class ReconciliationService:
                 order_id, exc,
             )
 
-    def _record_partial_fill(
+    async def _record_partial_fill(
         self,
         *,
         order_id: str,
@@ -692,7 +692,7 @@ class ReconciliationService:
             return
         try:
             if hasattr(self.orders_repo, "upsert_matched_total"):
-                self.orders_repo.upsert_matched_total(
+                await self.orders_repo.upsert_matched_total(
                     order_id=order_id,
                     matched=str(venue_matched),
                 )
