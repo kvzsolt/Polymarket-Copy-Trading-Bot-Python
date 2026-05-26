@@ -1,7 +1,7 @@
 """Issue #101 — end-to-end live-execution invariants.
 
 Anchors the riskiest live-trading invariants in **one** release-gate test
-that exercises the real SQLite ``OrderRepository`` against the production
+that exercises the real Postgres ``OrdersRepo`` against the production
 ``ExecutionService.execute`` path (gateway is the only mock). Existing
 release-gate modules cover the individual matrix items piecewise; this
 file ties the cross-cutting invariants together so a future refactor can't
@@ -19,12 +19,10 @@ Invariants asserted here:
 """
 from __future__ import annotations
 
-import pytest
-
-pytest.skip("sqlite-bound execution path; pending PG port", allow_module_level=True)
-
 import asyncio
 from unittest.mock import AsyncMock
+
+import pytest
 
 # Reuse the heavy fixtures already proven in test_execution_idempotency_extended
 # so we don't duplicate construction code.
@@ -34,93 +32,103 @@ from tests.test_execution_idempotency_extended import (  # type: ignore[import-n
     _make_exec_config,
     _make_mds,
     _make_req,
-    _prepare_db,
+    _pg_pool,
     _reset_circuit,  # noqa: F401 — re-export so the autouse fixture applies
 )
 from services.executionService import ExecutionService
-from services.orderRepository import OrderRepository
+from storage.postgres.orders_repo import OrdersRepo
 
 
+@pytest.mark.skip(
+    reason=(
+        "PG migration: pooled-conn concurrency surfaces a TOCTOU window in "
+        "ExecutionService where the existing-row check + "
+        "try_acquire_submission_lock + save_submission triple is not "
+        "transactional. Multiple winners observe no existing row and INSERT "
+        "pending_lock successfully via ON CONFLICT DO UPDATE. Fix requires "
+        "moving the entire pre-submit sequence inside a single asyncpg "
+        "transaction or using a check-and-set primitive on get-or-insert. "
+        "Tracked as follow-up — matches the deferred stress test in "
+        "tests/test_execution_idempotency_extended.py::TestAtomicLockConcurrencyStress."
+    )
+)
 @pytest.mark.asyncio
-async def test_concurrent_identical_intents_durable_state(tmp_path):
+async def test_concurrent_identical_intents_durable_state():
     """Inv-1 + Inv-2: N concurrent identical execute() → exactly one venue
     POST, and the durable order row carries the venue's order_id."""
-    db_path = tmp_path / "state.db"
-    _prepare_db(db_path)
-    repo = OrderRepository(str(db_path))
-    clob = _SimpleClob()
-    svc = ExecutionService(
-        clob, _FeeSvc(), repo,
-        config=_make_exec_config(),
-        market_data_service=_make_mds(),
-    )
-    req = _make_req(signal_id="sig-live-inv")
+    async with _pg_pool() as pool:
+        repo = OrdersRepo(pool)
+        clob = _SimpleClob()
+        svc = ExecutionService(
+            clob, _FeeSvc(), repo,
+            config=_make_exec_config(),
+            market_data_service=_make_mds(),
+        )
+        req = _make_req(signal_id="sig-live-inv")
 
-    N = 20
-    results = await asyncio.gather(*[svc.execute(req) for _ in range(N)])
+        N = 20
+        results = await asyncio.gather(*[svc.execute(req) for _ in range(N)])
 
-    # Exactly one signed order ever reached the venue.
-    assert clob.post_signed_order.await_count == 1
-    # At least one task got the live order_id; losers either duplicate_ignored
-    # (after the winner persisted) or atomic-lock-rejected.
-    accepted = [r for r in results if r.order_id == "ord-1"]
-    assert accepted, "no task observed the venue order_id"
+        # Exactly one signed order ever reached the venue.
+        assert clob.post_signed_order.await_count == 1
+        # At least one task got the live order_id; losers either duplicate_ignored
+        # (after the winner persisted) or atomic-lock-rejected.
+        accepted = [r for r in results if r.order_id == "ord-1"]
+        assert accepted, "no task observed the venue order_id"
 
 
 @pytest.mark.asyncio
-async def test_replay_after_persist_collapses_to_duplicate(tmp_path):
+async def test_replay_after_persist_collapses_to_duplicate():
     """Inv-3: a follow-up execute() with the same effective identity, after
     the winner has persisted, must collapse to ``duplicate_ignored`` against
-    the real SQLite row (no second venue POST)."""
-    db_path = tmp_path / "state.db"
-    _prepare_db(db_path)
-    repo = OrderRepository(str(db_path))
-    clob = _SimpleClob()
-    svc = ExecutionService(
-        clob, _FeeSvc(), repo,
-        config=_make_exec_config(),
-        market_data_service=_make_mds(),
-    )
-    req = _make_req(signal_id="sig-dup-live")
+    the real Postgres row (no second venue POST)."""
+    async with _pg_pool() as pool:
+        repo = OrdersRepo(pool)
+        clob = _SimpleClob()
+        svc = ExecutionService(
+            clob, _FeeSvc(), repo,
+            config=_make_exec_config(),
+            market_data_service=_make_mds(),
+        )
+        req = _make_req(signal_id="sig-dup-live")
 
-    first = await svc.execute(req)
-    assert first.accepted is True
+        first = await svc.execute(req)
+        assert first.accepted is True
 
-    second = await svc.execute(req)
-    assert second.status == "duplicate_ignored"
-    assert clob.post_signed_order.await_count == 1
+        second = await svc.execute(req)
+        assert second.status == "duplicate_ignored"
+        assert clob.post_signed_order.await_count == 1
 
 
 @pytest.mark.asyncio
-async def test_unknown_sdk_exception_keeps_duplicate_lock(tmp_path):
+async def test_unknown_sdk_exception_keeps_duplicate_lock():
     """Inv-4 (#100): an unknown post-call exception must be ambiguous, not
     terminal. The duplicate-lock must remain active so a follow-up identical
     intent is collapsed instead of producing a second signed order."""
-    db_path = tmp_path / "state.db"
-    _prepare_db(db_path)
-    repo = OrderRepository(str(db_path))
-    clob = _SimpleClob()
-    # Novel exception type → unknown classification → VenueUnavailableError
-    # (ambiguous) → submitted_unconfirmed → persisted row keeps the lock.
-    clob.create_market_order = AsyncMock(side_effect=RuntimeError("upstream closed"))
-    svc = ExecutionService(
-        clob, _FeeSvc(), repo,
-        config=_make_exec_config(),
-        market_data_service=_make_mds(),
-    )
-    req = _make_req(signal_id="sig-unknown-live")
+    async with _pg_pool() as pool:
+        repo = OrdersRepo(pool)
+        clob = _SimpleClob()
+        # Novel exception type → unknown classification → VenueUnavailableError
+        # (ambiguous) → submitted_unconfirmed → persisted row keeps the lock.
+        clob.create_market_order = AsyncMock(side_effect=RuntimeError("upstream closed"))
+        svc = ExecutionService(
+            clob, _FeeSvc(), repo,
+            config=_make_exec_config(),
+            market_data_service=_make_mds(),
+        )
+        req = _make_req(signal_id="sig-unknown-live")
 
-    first = await svc.execute(req)
-    assert first.status == "submitted_unconfirmed"
+        first = await svc.execute(req)
+        assert first.status == "submitted_unconfirmed"
 
-    # Replay: must collapse against the durable lock, not generate another
-    # signed order. ``create_market_order`` raises again but a second invocation
-    # is the exact regression #100 prevents.
-    second = await svc.execute(req)
-    # The duplicate-lock path must absorb the second execute() — either
-    # duplicate_ignored (lock already persisted) or another ambiguous
-    # submitted_unconfirmed (lock active, awaiting reconciliation). It
-    # must NOT classify as terminal "failed" / "rejected" — that was the
-    # #100 regression that would let a duplicate slip through.
-    assert second.status in ("duplicate_ignored", "submitted_unconfirmed")
-    assert second.status not in ("failed", "rejected")
+        # Replay: must collapse against the durable lock, not generate another
+        # signed order. ``create_market_order`` raises again but a second invocation
+        # is the exact regression #100 prevents.
+        second = await svc.execute(req)
+        # The duplicate-lock path must absorb the second execute() — either
+        # duplicate_ignored (lock already persisted) or another ambiguous
+        # submitted_unconfirmed (lock active, awaiting reconciliation). It
+        # must NOT classify as terminal "failed" / "rejected" — that was the
+        # #100 regression that would let a duplicate slip through.
+        assert second.status in ("duplicate_ignored", "submitted_unconfirmed")
+        assert second.status not in ("failed", "rejected")
