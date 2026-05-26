@@ -219,6 +219,11 @@ def build_user_state(
     from utils.createClobClient import configure_from_appconfig as _configure_clob_module
     _configure_clob_module(config)
 
+    # Same pattern for the balance-lookup module (RPC_URL + collateral
+    # contract addresses) so utils/getMyBalance.py drops its ENV reads.
+    from utils.getMyBalance import configure_from_appconfig as _configure_balance_module
+    _configure_balance_module(config)
+
     order_repo = OrdersRepo(pool)
     fills_repo = FillsRepo(pool)
     positions_repo = PositionsRepo(pool)
