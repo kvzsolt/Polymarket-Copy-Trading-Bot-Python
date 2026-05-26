@@ -9,9 +9,6 @@ Validates:
 """
 
 from __future__ import annotations
-import pytest
-pytest.skip("sqlite-bound; pending PG port", allow_module_level=True)
-
 
 import inspect
 from dataclasses import FrozenInstanceError
@@ -88,7 +85,7 @@ class _StubCursorRepo(AbstractCursorRepository):
         self.store: dict[str, Any] = {}
 
     def get_cursor(self, leader_id: str):  # type: ignore[override]
-        from storage.sqlite.cursors_repo import TradeCursor
+        from storage.postgres.cursors_repo import TradeCursor
 
         return self.store.get(leader_id.lower(), TradeCursor(timestamp=0, tx_hash=""))
 
