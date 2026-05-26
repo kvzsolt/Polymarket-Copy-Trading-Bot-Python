@@ -1,0 +1,23 @@
+tests/test_domain.py
+  s_93e0a4797804d9::t_2f5df082c4a07b 88
+tests/test_positions_ledger_token_id_pk.py
+  s_93e0a4797804d9::t_3f22aa72d1b4d0 7,9-12,16,22-37,39-66,72-73,78-117,122-138,140-146
+tests/test_reservation_service.py
+  s_93e0a4797804d9::t_d34ea6ccaa122b 1-4,6-7,10-53,58,61,65-66,68,72-74,80,83-84,86,90-95,103-107,115,117-127,130-150,153-161,164-170,173-179,182-194,197-207
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.1",
+  "base_commit_sha": "943ead2a7e9f0bd0bb76ac9263f16b57e96f7929",
+  "prompts": {},
+  "sessions": {
+    "s_93e0a4797804d9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a8782b68-4941-47de-a34c-6d351fdda0ef",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
