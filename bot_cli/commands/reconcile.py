@@ -16,9 +16,8 @@ def register_reconcile_command(subparsers: argparse._SubParsersAction) -> None:
     parser.add_argument("--user-id", default=None, help="Reconcile orders for a specific user only")
 
 
-async def _fetch_unconfirmed_pg(dsn: str, user_id: str | None) -> list[dict]:
-    from storage.postgres.connection import init_pool, shutdown_pool
-
+async def _fetch_unconfirmed_pg(pool, user_id: str | None) -> list[dict]:
+    """Read unconfirmed orders. Caller owns ``pool`` lifecycle (INF-03)."""
     query = """
         SELECT idempotency_key, user_id, leader_id, order_id, status, updated_at
         FROM orders
@@ -32,17 +31,8 @@ async def _fetch_unconfirmed_pg(dsn: str, user_id: str | None) -> list[dict]:
         params.append(user_id)
     query += " ORDER BY updated_at ASC"
 
-    pool = await init_pool(
-        dsn,
-        min_size=1,
-        max_size=2,
-        command_timeout_seconds=15.0,
-    )
-    try:
-        async with pool.acquire() as conn:
-            rows = await conn.fetch(query, *params)
-    finally:
-        await shutdown_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(query, *params)
 
     def _ts(value):
         if value is None:
@@ -76,53 +66,59 @@ async def _run_reconcile_async(args: argparse.Namespace) -> int:
     dry_run = getattr(args, "dry_run", False)
     user_id = getattr(args, "user_id", None)
 
-    # Collect unconfirmed orders via PG. Even when the reconcile action
-    # path below routes through the legacy SQLite ReconciliationService,
-    # this SELECT now reads from the canonical PG source of truth.
-    unconfirmed = await _fetch_unconfirmed_pg(config.database.dsn, user_id)
+    # INF-03: single ``init_pool`` → ``try/finally shutdown_pool`` covering
+    # both the read pass and the reconcile action. The pre-fix code took
+    # two lifecycles per invocation; the second ``init_pool`` would either
+    # raise on DSN-change guard or silently return a stale pool if the
+    # interleaved ``shutdown_pool`` failed.
+    from storage.postgres.connection import init_pool, shutdown_pool
+    from storage.postgres.orders_repo import OrdersRepo
 
-    if dry_run:
-        output = {
-            "dry_run": True,
-            "unconfirmed_count": len(unconfirmed),
-            "orders": unconfirmed,
-        }
-        print(json.dumps(output, indent=2))
-        return 0
-
+    pool = await init_pool(
+        config.database.dsn,
+        min_size=1,
+        max_size=2,
+        command_timeout_seconds=15.0,
+    )
     reconciled = 0
     errors: list[str] = []
-    if unconfirmed:
-        from storage.postgres.connection import init_pool, shutdown_pool
-        from storage.postgres.orders_repo import OrdersRepo
+    try:
+        # Collect unconfirmed orders via PG. Even when the reconcile action
+        # path below routes through the legacy SQLite ReconciliationService,
+        # this SELECT now reads from the canonical PG source of truth.
+        unconfirmed = await _fetch_unconfirmed_pg(pool, user_id)
 
-        pool = await init_pool(
-            config.database.dsn,
-            min_size=1,
-            max_size=2,
-            command_timeout_seconds=15.0,
-        )
-        try:
-            from utils.createClobClient import create_clob_client
-            from services.reconciliation import ReconciliationService
+        if dry_run:
+            output = {
+                "dry_run": True,
+                "unconfirmed_count": len(unconfirmed),
+                "orders": unconfirmed,
+            }
+            print(json.dumps(output, indent=2))
+            return 0
 
-            wallet = config.wallet
-            client = await create_clob_client(wallet_config=wallet, config=config)
-            orders_repo = OrdersRepo(pool)
+        if unconfirmed:
+            try:
+                from utils.createClobClient import create_clob_client
+                from services.reconciliation import ReconciliationService
 
-            svc = ReconciliationService(
-                clob_client=client,
-                orders_repo=orders_repo,
-                config=config,
-            )
-            result = await svc.reconcile()
-            reconciled = result.stale_orders_cancelled
-            if result.errors:
-                errors = result.errors
-        except Exception as exc:
-            errors.append(str(exc))
-        finally:
-            await shutdown_pool()
+                wallet = config.wallet
+                client = await create_clob_client(wallet_config=wallet, config=config)
+                orders_repo = OrdersRepo(pool)
+
+                svc = ReconciliationService(
+                    clob_client=client,
+                    orders_repo=orders_repo,
+                    config=config,
+                )
+                result = await svc.reconcile()
+                reconciled = result.stale_orders_cancelled
+                if result.errors:
+                    errors = result.errors
+            except Exception as exc:
+                errors.append(str(exc))
+    finally:
+        await shutdown_pool()
 
     output = {
         "dry_run": False,

@@ -866,7 +866,7 @@ async def run_risk_check_for_context(context: TradingContext) -> None:
 
                 # Concurrent-run dedup guard — PR #108 P1 finding.
                 #
-                # The ``idx_fills_unique`` index keys on
+                # The ``idx_fills_dedup`` index keys on
                 # ``(user_id, order_id, condition_id, side, fill_ts)``.
                 # ``fill_ts`` is the only field that varies between two
                 # concurrent ``run_risk_check_for_context`` invocations
