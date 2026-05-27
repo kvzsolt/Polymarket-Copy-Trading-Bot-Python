@@ -599,6 +599,23 @@ _DISCOVERY_DDL = [
     # NOTHING`` in ``discovery_repo.upsert_episode``. Without it that
     # clause is a no-op against the table's bigserial PK and duplicates
     # are silently inserted, skewing leader-event counts.
+    #
+    # Review fix (cubic P1 on PR #110): a redeployed environment that
+    # ran the prior ``ON CONFLICT DO NOTHING`` clause (which silently
+    # inserted duplicates) will already hold duplicate rows. Creating
+    # the unique index without first deduplicating would fail the
+    # migration. Keep the lowest-``id`` row per ``(episode_id, trade_id)``
+    # — that matches the "first event observed" semantic the table was
+    # always intended to hold — then add the unique index. Both
+    # statements are idempotent: the DELETE is a no-op on a clean DB,
+    # and ``CREATE UNIQUE INDEX IF NOT EXISTS`` skips on re-run.
+    """
+    DELETE FROM discovery_episode_events a
+    USING discovery_episode_events b
+    WHERE a.id > b.id
+      AND a.episode_id = b.episode_id
+      AND a.trade_id   = b.trade_id
+    """,
     """CREATE UNIQUE INDEX IF NOT EXISTS idx_disc_ep_ev_unique
        ON discovery_episode_events(episode_id, trade_id)""",
 
