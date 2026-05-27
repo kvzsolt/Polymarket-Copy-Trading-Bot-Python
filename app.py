@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import signal
 from collections.abc import Awaitable, Callable
+from decimal import Decimal, InvalidOperation
 
 # Load non-sensitive runtime config + local .env as early as possible.
 # IMPORTANT: importing from config triggers config/__init__.py which freezes
@@ -113,6 +114,23 @@ async def _discovery_refresh_loop(
         on_new_leaders=on_new_leaders,
         already_monitored=already_monitored,
     )
+
+
+def _to_decimal_balance(value: object) -> Decimal:
+    """Coerce a raw venue balance to Decimal at the startup boundary.
+
+    ``get_my_balance`` may return ``None`` (API down), a string, a float,
+    or already a Decimal. We normalise once so the entire startup health
+    pass holds money as Decimal — CLAUDE.md non-negotiable.
+    """
+    if value is None or value == "":
+        return Decimal("0")
+    if isinstance(value, Decimal):
+        return value
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return Decimal("0")
 
 
 def _flatten_contexts(
@@ -735,8 +753,11 @@ async def main():
         )
     )
 
-    user_balances = {
-        runtime_user.user_id: float(balance or 0.0)
+    # INF-01 (CLAUDE.md no-float-money): keep balances as ``Decimal`` for
+    # the entire startup health / cap / threshold pass; downstream
+    # consumers cast to float only at display boundaries.
+    user_balances: dict[str, Decimal] = {
+        runtime_user.user_id: _to_decimal_balance(balance)
         for runtime_user, balance in zip(runtime_users, user_balances_raw)
     }
 
@@ -762,7 +783,7 @@ async def main():
             # (was a silent warning previously).
             orders_repo=user_states[runtime_user.user_id].orders_repo,
             live_positions=live_positions,
-            available_cash=float(user_balances.get(runtime_user.user_id, 0.0)),
+            available_cash=user_balances.get(runtime_user.user_id, Decimal("0")),
             database_ok=True,
             rpc_url=application.config.wallet.polygon_rpc_url,
             clob_gateway=user_states[runtime_user.user_id].clob_gateway,
@@ -866,11 +887,15 @@ async def main():
     live_positions = live_positions_by_user.get(first_user.user_id, [])
     health_report = health_reports_by_user[first_user.user_id]
 
-    live_positions_value = sum(
-        float(position.get("currentValue") or 0.0)
-        for position in live_positions
+    # INF-01: keep portfolio totals as Decimal end-to-end. ``currentValue``
+    # is a venue-returned string/float; ``_to_decimal_balance`` normalises
+    # both representations before summing so a single bad row cannot
+    # silently coerce the running total back to float.
+    live_positions_value: Decimal = sum(
+        (_to_decimal_balance(position.get("currentValue")) for position in live_positions),
+        start=Decimal("0"),
     )
-    available_cash = float(user_balances.get(first_user.user_id, 0.0))
+    available_cash: Decimal = user_balances.get(first_user.user_id, Decimal("0"))
 
     all_health_reports = list(health_reports_by_user.values())
     startup_health_healthy = all(report.healthy for report in all_health_reports)

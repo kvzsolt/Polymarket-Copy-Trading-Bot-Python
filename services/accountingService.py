@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from storage.postgres.connection import get_pool
@@ -14,6 +14,26 @@ logger = get_logger("AccountingService")
 
 def _utc_now() -> datetime:
     return datetime.now(tz=timezone.utc)
+
+
+def _required_decimal_str(doc: dict[str, Any], key: str) -> str:
+    """Coerce a money-shaped doc field to a Decimal-validated string.
+
+    CLAUDE.md non-negotiable: a fill row in the accounting ledger must
+    not contain a non-numeric string (the prior ``str(doc.get(key, ""))``
+    happily persisted ``"None"`` or ``""`` when the upstream doc was
+    incomplete, then the next numeric cast fell over downstream). We
+    fail closed at insertion: garbage in raises before reaching SQL.
+    """
+    value = doc.get(key)
+    if value is None or value == "":
+        raise ValueError(f"book_fill missing required money field: {key!r}")
+    try:
+        return str(Decimal(str(value)))
+    except (InvalidOperation, ValueError) as exc:
+        raise ValueError(
+            f"book_fill field {key!r} is not a valid decimal: {value!r}"
+        ) from exc
 
 
 @dataclass(frozen=True)
@@ -50,6 +70,12 @@ class AccountingService:
     async def book_fill(self, *, user_id: str, fill_doc: dict[str, Any]) -> None:
         doc = dict(fill_doc)
         doc["user_id"] = user_id
+        # Fail closed on missing or non-decimal money fields before any
+        # SQL runs (SHP-10): we cannot let ``"None"`` or ``""`` land in
+        # the accounting ledger and corrupt downstream PnL replay.
+        size_tokens_str = _required_decimal_str(doc, "size_tokens")
+        price_str = _required_decimal_str(doc, "price")
+        usdc_value_str = _required_decimal_str(doc, "usdc_value")
         now = _utc_now().timestamp()
         pool = await get_pool()
         async with pool.acquire() as conn:
@@ -65,9 +91,9 @@ class AccountingService:
                 doc.get("condition_id"),
                 doc.get("token_id"),
                 doc.get("side"),
-                str(doc.get("size_tokens", "")),
-                str(doc.get("price", "")),
-                str(doc.get("usdc_value", "")),
+                size_tokens_str,
+                price_str,
+                usdc_value_str,
                 doc.get("leader_id"),
                 doc.get("category"),
                 doc.get("reason"),
