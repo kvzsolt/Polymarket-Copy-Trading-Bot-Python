@@ -478,9 +478,9 @@ async def rehydrate_position_manager(context: TradingContext) -> None:
             pm.track_buy(
                 condition_id=pos.condition_id,
                 asset=pos.token_id,
-                entry_price=float(pos.avg_entry_price),
-                size_tokens=float(pos.size_tokens),
-                usdc_cost=float(pos.size_tokens * pos.avg_entry_price),
+                entry_price=pos.avg_entry_price,
+                size_tokens=pos.size_tokens,
+                usdc_cost=pos.size_tokens * pos.avg_entry_price,
                 leader_wallet=pos.leader_id or "",
             )
         except Exception:
@@ -660,15 +660,19 @@ async def run_risk_check_for_context(context: TradingContext) -> None:
                 action = None
                 if hasattr(context.position_manager, "evaluate_risk_action"):
                     try:
+                        # Decimal-internal: evaluate_risk_action normalises
+                        # any numeric input via ``_to_dec`` so callers no
+                        # longer have to round-trip through float at the
+                        # boundary (Phase 2 / CLAUDE.md no-float-money).
                         action = context.position_manager.evaluate_risk_action(
                             pos.condition_id,
                             pos.token_id,
-                            float(current_price),
+                            current_price,
                         )
                     except TypeError:
                         action = context.position_manager.evaluate_risk_action(
                             pos.condition_id,
-                            float(current_price),
+                            current_price,
                         )
                 if not action:
                     action = _fallback_risk_decision(pos.avg_entry_price, current_price)
@@ -997,15 +1001,21 @@ async def run_risk_check_for_context(context: TradingContext) -> None:
                         getattr(updated_pos, "size_tokens", None),
                     )
                 if hasattr(context.pnl_tracker, "record_sell"):
-                    entry_price = float(pos.avg_entry_price)
-                    realized = (float(fill_price) - entry_price) * float(fill_size)
+                    # Realised PnL in Decimal — only round-trip through
+                    # float at the pnl_tracker boundary (the tracker's
+                    # public API still types these as float).
+                    entry_price_d = Decimal(str(pos.avg_entry_price))
+                    fill_price_d = Decimal(str(fill_price))
+                    fill_size_d = Decimal(str(fill_size))
+                    realized_d = (fill_price_d - entry_price_d) * fill_size_d
+                    usdc_value_d = fill_size_d * fill_price_d
                     context.pnl_tracker.record_sell(
                         condition_id=pos.condition_id,
-                        price=float(fill_price),
-                        size_tokens=float(fill_size),
-                        usdc_value=float(fill_size * fill_price),
-                        entry_price=entry_price,
-                        realized_pnl=realized,
+                        price=float(fill_price_d),
+                        size_tokens=float(fill_size_d),
+                        usdc_value=float(usdc_value_d),
+                        entry_price=float(entry_price_d),
+                        realized_pnl=float(realized_d),
                         exit_reason=reason,
                         leader_wallet=pos.leader_id or "",
                     )

@@ -311,8 +311,8 @@ def print_your_positions(
     snapshot_result: "SnapshotResult | None",
     *,
     own_wallet: str,
-    available_cash: float,
-    total_portfolio: float,
+    available_cash: "Decimal | float",
+    total_portfolio: "Decimal | float",
     max_positions: int = 8,
 ) -> None:
     """Render the YOUR POSITIONS panel from own-wallet snapshots.
@@ -420,8 +420,8 @@ def print_your_positions(
 def print_startup_summary(
     *,
     wallet: str,
-    available_cash: float,
-    total_portfolio: float,
+    available_cash: "Decimal | float",
+    total_portfolio: "Decimal | float",
     positions: list[dict],
     active_leaders: list[str],
     config,
@@ -786,8 +786,10 @@ def print_startup_summary(
             "type": "startup_summary",
             "wallet": shorten_addr(wallet, 8, 4),
             "activeLeadersCount": len(active_leaders),
-            "availableCash": available_cash,
-            "totalPortfolio": total_portfolio,
+            # JSON-log boundary: cast Decimal → float for the structured
+            # extra payload so the formatter never raises on a Decimal.
+            "availableCash": float(available_cash),
+            "totalPortfolio": float(total_portfolio),
             "openPositionCount": len(positions),
             "livePositions": sanitized_positions,
             "engineConfig": sanitized_engine_config,
