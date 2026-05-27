@@ -37,3 +37,26 @@ def test_required_decimal_str_rejects_empty_string() -> None:
 def test_required_decimal_str_rejects_garbage() -> None:
     with pytest.raises(ValueError, match="not a valid decimal"):
         _required_decimal_str({"x": "nope"}, "x")
+
+
+# Review fix (cubic P2 on PR #110): non-finite values parse via Decimal()
+# but must be rejected — a stray ``float('inf')`` or string literal
+# ``"NaN"`` would otherwise reach the accounting ledger.
+def test_required_decimal_str_rejects_nan() -> None:
+    with pytest.raises(ValueError, match="finite decimal"):
+        _required_decimal_str({"x": "NaN"}, "x")
+
+
+def test_required_decimal_str_rejects_infinity() -> None:
+    with pytest.raises(ValueError, match="finite decimal"):
+        _required_decimal_str({"x": "Infinity"}, "x")
+
+
+def test_required_decimal_str_rejects_negative_infinity() -> None:
+    with pytest.raises(ValueError, match="finite decimal"):
+        _required_decimal_str({"x": "-Infinity"}, "x")
+
+
+def test_required_decimal_str_rejects_float_inf() -> None:
+    with pytest.raises(ValueError, match="finite decimal"):
+        _required_decimal_str({"x": float("inf")}, "x")

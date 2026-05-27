@@ -130,6 +130,17 @@ def _to_decimal_balance(value: object) -> Decimal:
     try:
         return Decimal(str(value))
     except (InvalidOperation, ValueError):
+        # Review fix (greptile P2 on PR #110): surface the parse failure
+        # so an operator can spot a bad upstream payload (e.g. a venue
+        # rate-limit string instead of a numeric balance) rather than
+        # silently undercounting the portfolio at startup. We still
+        # return ``Decimal("0")`` so the ``_balance_check`` path can
+        # raise the "zero cash balance" health item — the warning makes
+        # the root cause observable instead of leaving it as a mystery.
+        logger.warning(
+            "balance_parse_failed | raw=%r — defaulting to 0",
+            value,
+        )
         return Decimal("0")
 
 
