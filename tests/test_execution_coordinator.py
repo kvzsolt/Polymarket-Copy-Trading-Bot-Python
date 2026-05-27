@@ -17,7 +17,7 @@ class MockReservationService:
     async def reserve_for_intent(self, intent: OrderIntent):
         return MockReservation("res1")
 
-    def release_terminal(self, reservation_id: str, reason: str):
+    async def release_terminal(self, reservation_id: str, reason: str):
         self.released.append((reservation_id, reason))
 
 
@@ -46,7 +46,7 @@ class MockPositionsRepo:
     def __init__(self):
         self.upserted = []
 
-    def upsert_position(self, fill):
+    async def upsert_position(self, fill):
         self.upserted.append(fill)
 
 

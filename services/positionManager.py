@@ -133,7 +133,7 @@ class PositionManager:
             return matches[0]
         return None
 
-    def __init__(self, config: AppConfig | None = None, *, risk_settings=None):
+    def __init__(self, config: AppConfig | None = None):
         self._positions: dict[str, TrackedPosition] = {}
         self._closed: list[TrackedPosition] = []
 
@@ -184,36 +184,20 @@ class PositionManager:
             self._enable_leader_divergence = _as_bool(getattr(fc, "enable_leader_divergence_exit", False), False)
             self._enabled = self._risk_master_enabled
 
-        elif risk_settings is not None:
-            # Legacy test-compatibility path: accept RiskSettings directly
-            rs = risk_settings
-            self._risk_master_enabled = True
-            self._enable_stop_loss = False
-            self._stop_loss_threshold = 0.15
-            self._stop_loss_grace_period_seconds = 180.0
-            self._profit_lock_mode = "legacy"
-            self._profit_lock_trigger = rs.profit_lock_trigger_ratio
-            self._profit_lock_sell_fraction = rs.profit_lock_sell_ratio
-            self._enable_near_max = True
-            self._near_max_exit = rs.near_max_price_level
-            self._near_max_warn = rs.near_max_warn_level
-            self._near_max_warn_ratio = 0.50
-            self._enable_trailing = False
-            self._trailing_activation_pct = rs.trailing_trigger_ratio
-            self._trailing_distance = rs.trailing_distance_ratio
-            self._enable_staged_tp = False
-            self._staged_levels = [0.30, 0.50]
-            self._staged_fractions = [0.25, 0.35]
-            self._enable_leader_divergence = False
-            self._enabled = self._risk_master_enabled
-
         else:
-            # Bare defaults for backward compat
+            # Bare defaults for tests that build a PositionManager() without
+            # a typed config. Profit-lock evaluation requires an explicit
+            # ``enable_profit_lock`` opt-in via AppConfig.features, so the
+            # no-config path leaves it disabled. The legacy "armed-then-
+            # retrace" profit-lock strategy was removed as part of the
+            # nasty-rework slice (issue #77); the trailing-stop priority
+            # (Priority 4 below) covers the same exit-on-retrace use case
+            # when configured via AppConfig.
             self._risk_master_enabled = True
             self._enable_stop_loss = False
             self._stop_loss_threshold = 0.15
             self._stop_loss_grace_period_seconds = 180.0
-            self._profit_lock_mode = "legacy"
+            self._profit_lock_mode = "disabled"
             self._profit_lock_trigger = 0.70
             self._profit_lock_sell_fraction = 0.50
             self._enable_near_max = True
@@ -444,21 +428,9 @@ class PositionManager:
                 return {"reason": "near_max_partial_trim", "size_fraction": self._near_max_warn_ratio}
 
         # ── Priority 2: PROFIT LOCK ──
-        # Legacy mode: arm above trigger, exit on fallback below trigger.
-        if self._profit_lock_mode == "legacy":
-            if pct_change >= self._profit_lock_trigger and not pos.profit_lock_armed:
-                pos.profit_lock_armed = True
-                # do not exit immediately
-                return None
-            if pos.profit_lock_armed and pct_change >= self._profit_lock_trigger and not pos.profit_lock_held_logged:
-                pos.profit_lock_held_logged = True
-                return None
-            if pos.profit_lock_armed and pct_change < self._profit_lock_trigger:
-                # Fallback below trigger: exit fully.
-                pos.profit_lock_armed = False
-                return {"reason": "profit_lock_fallback", "size_fraction": 1.0}
-
         # Advanced mode: partial sell at trigger then trail remainder.
+        # (The historical "legacy" armed-then-retrace strategy was removed in
+        # issue #77; the trailing-stop priority below covers exit-on-retrace.)
         if self._profit_lock_mode == "advanced" and pct_change >= self._profit_lock_trigger:
             if not es.profit_lock_sold:
                 es.profit_lock_triggered = True
