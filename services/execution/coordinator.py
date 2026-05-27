@@ -269,12 +269,12 @@ class ExecutionCoordinator:
         released = False
         keep_reservation = False
 
-        def _release(reason: str) -> None:
+        async def _release(reason: str) -> None:
             nonlocal released
             if released:
                 return
             try:
-                self.reservation_service.release_terminal(reservation.id, reason)
+                await self.reservation_service.release_terminal(reservation.id, reason)
             finally:
                 released = True
 
@@ -286,7 +286,7 @@ class ExecutionCoordinator:
                     status=OrderLifecycleStatus.RESERVED,
                 )
             except Exception as exc:
-                _release(f"create_failed:{exc}")
+                await _release(f"create_failed:{exc}")
                 self._log_audit(
                     "execution_create_failed", intent, "none", reservation.id,
                     error=str(exc),
@@ -309,7 +309,7 @@ class ExecutionCoordinator:
                 # reservation — leaving it locked would strand capital/shares
                 # indefinitely. Release immediately; the order stays in
                 # RETRYABLE_FAILED for telemetry/sweeper pickup.
-                _release(f"retryable_venue_error:{exc}")
+                await _release(f"retryable_venue_error:{exc}")
                 await self._transition_order(
                     order.id,
                     from_status=OrderLifecycleStatus.SUBMITTING,
@@ -325,7 +325,7 @@ class ExecutionCoordinator:
                     to_status=OrderLifecycleStatus.TERMINAL_FAILED,
                     metadata={"error": str(exc)},
                 )
-                _release("terminal_failed")
+                await _release("terminal_failed")
                 self._log_audit("execution_terminal_failed", intent, order.id, reservation.id, str(exc))
                 if (
                     intent.key.side.value == "SELL"
@@ -342,7 +342,7 @@ class ExecutionCoordinator:
                     to_status=OrderLifecycleStatus.TERMINAL_FAILED,
                     metadata={"error": str(exc)},
                 )
-                _release("terminal_failed")
+                await _release("terminal_failed")
                 self._log_audit("execution_terminal_failed", intent, order.id, reservation.id, str(exc))
                 raise  # Reraise unknown errors, but ensure reservation is released
 
@@ -357,8 +357,8 @@ class ExecutionCoordinator:
                     order_id=order.id,
                     venue_result=venue_result,
                 )
-                self.positions_repo.upsert_position(fill)
-                _release("filled")
+                await self.positions_repo.upsert_position(fill)
+                await _release("filled")
                 await self._transition_order(
                     order.id,
                     from_status=OrderLifecycleStatus.SUBMITTING,
@@ -388,7 +388,7 @@ class ExecutionCoordinator:
                 OrderLifecycleStatus.EXPIRED,
                 OrderLifecycleStatus.TERMINAL_FAILED,
             }:
-                _release(str(unresolved_status.value))
+                await _release(str(unresolved_status.value))
                 logger.info(
                     "coordinator.reservation_released reservation_id=%s reason=%s",
                     reservation.id, unresolved_status.value,
@@ -421,7 +421,7 @@ class ExecutionCoordinator:
             # the reservation unless we explicitly chose to keep it (retryable).
             if not released and not keep_reservation:
                 try:
-                    self.reservation_service.release_terminal(
+                    await self.reservation_service.release_terminal(
                         reservation.id, "execute_intent_unexpected_failure"
                     )
                 except Exception:
@@ -651,7 +651,7 @@ class ExecutionCoordinator:
         try:
             result = await self.execution_service.execute(exec_request)
         except Exception as exc:
-            self._release_reservation(reservation_id, reason="execute_exception")
+            await self._release_reservation(reservation_id, reason="execute_exception")
             self._safe_audit(
                 "coordinator_execute_exception",
                 {
@@ -670,7 +670,7 @@ class ExecutionCoordinator:
             # ExecutionService found a pre-existing in-flight order via
             # idempotency-key lookup. Release the just-taken reservation;
             # never touch a pre-existing one that may already be linked.
-            self._release_reservation(reservation_id, reason="idempotency_duplicate")
+            await self._release_reservation(reservation_id, reason="idempotency_duplicate")
             self._safe_audit(
                 "coordinator_duplicate_idempotency",
                 {
@@ -691,7 +691,7 @@ class ExecutionCoordinator:
             )
 
         if status == "inflight_lock":
-            self._release_reservation(reservation_id, reason="inflight_lock")
+            await self._release_reservation(reservation_id, reason="inflight_lock")
             return ExecutionCoordinatorResult(
                 accepted=False,
                 status="inflight_lock",
@@ -703,7 +703,7 @@ class ExecutionCoordinator:
             )
 
         if status in _TERMINAL_FAILURE_SUBMIT_STATUSES:
-            self._release_reservation(reservation_id, reason=status)
+            await self._release_reservation(reservation_id, reason=status)
             return ExecutionCoordinatorResult(
                 accepted=False,
                 status=status,
@@ -720,7 +720,7 @@ class ExecutionCoordinator:
         if status in _NON_TERMINAL_SUBMIT_STATUSES or getattr(result, "accepted", False):
             if order_id and self.reservations_repo is not None:
                 try:
-                    self.reservations_repo.link_order(reservation_id, order_id=order_id)
+                    await self.reservations_repo.link_order(reservation_id, order_id=order_id)
                 except Exception as exc:
                     logger.debug(
                         "coordinator_link_reservation_failed | reservation_id=%s order_id=%s error=%r",
@@ -737,7 +737,7 @@ class ExecutionCoordinator:
             )
 
         # Catch-all: status not recognised — treat as failure, release.
-        self._release_reservation(reservation_id, reason=status or "unknown")
+        await self._release_reservation(reservation_id, reason=status or "unknown")
         return ExecutionCoordinatorResult(
             accepted=False,
             status=status or "unknown",
@@ -775,9 +775,9 @@ class ExecutionCoordinator:
             source_signal_id=intent.signal_id,
         )
 
-    def _release_reservation(self, reservation_id: str, *, reason: str) -> None:
+    async def _release_reservation(self, reservation_id: str, *, reason: str) -> None:
         try:
-            self.reservation_service.release_terminal(reservation_id, reason=reason)
+            await self.reservation_service.release_terminal(reservation_id, reason=reason)
         except Exception as exc:
             logger.warning(
                 "coordinator_release_failed reservation_id=%s reason=%s error=%r",

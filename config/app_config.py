@@ -256,12 +256,7 @@ class _Parser:
 
 @dataclass(frozen=True)
 class DatabaseConfig:
-    # Postgres DSN. Legacy ``db_path`` is kept (empty default) only so
-    # any straggling SQLite references during the migration do not
-    # AttributeError; remove once storage/sqlite/ is deleted.
     dsn: str = ""
-    db_path: str = ""
-    enabled: bool = True
     pool_min_size: int = 2
     pool_max_size: int = 20
     command_timeout_seconds: float = 30.0
@@ -271,6 +266,9 @@ class DatabaseConfig:
 class ClobConfig:
     http_url: str
     api_key: str
+    # CLOB V2 gate — fail-closed default. The bot will not attempt the
+    # py-clob-client-v2 surface unless this is explicitly enabled.
+    clob_v2_ready: bool = False
 
 
 @dataclass(frozen=True)
@@ -282,6 +280,11 @@ class PollingConfig:
     leader_positions_min_fetch_spacing_ms: int
     leader_activity_min_fetch_spacing_ms: int
     reconcile_interval_seconds: int
+    # Maximum age (seconds) for retained processed-trade rows before the
+    # background purge sweeper deletes them. Previously a raw
+    # ``ENV.get("RETENTION_MAX_AGE_SECONDS", 30*86400)`` read from app.py
+    # and utils/idempotency.py; promoted here so the purge path is typed.
+    retention_max_age_seconds: float = 30.0 * 86400.0
 
 
 @dataclass(frozen=True)
@@ -430,12 +433,25 @@ class NetworkConfig:
     enable_metrics_server: bool
     metrics_port: int
     metrics_bind_host: str
+    # Polymarket-side collateral / exchange contract addresses. These used
+    # to be read straight out of ``ENV`` by ``utils/createClobClient.py``
+    # and ``utils/getMyBalance.py``; promoted to typed config so the
+    # balance-check + CLOB-client paths can drop their raw env reads.
+    # Default-empty strings let the existing usdc_contract_address fallback
+    # chain in load_config keep working when these aren't set.
+    collateral_contract_address: str = ""
+    pusd_contract_address: str = ""
+    ctf_exchange_v2_address: str = ""
 
 
 @dataclass(frozen=True)
 class ReconciliationConfig:
     stale_threshold_seconds: float
     auto_cancel_stale: bool
+    # Per-tick cap on how many already-closed orders the reconciler is
+    # allowed to re-probe. Fail-closed default mirrors the previous
+    # ``ENV.get("RECONCILE_MAX_CLOSED_PROBES", 10)`` read.
+    max_closed_probes: int = 10
 
 
 @dataclass(frozen=True)
@@ -614,12 +630,6 @@ sys = SimpleNamespace(version_info=_sys.version_info)
 
 def _runtime_python_supported() -> bool:
     return sys.version_info.major == 3 and 11 <= sys.version_info.minor < 13
-
-
-def _database_enabled(parser: _Parser) -> bool:
-    if parser.raw("BOT_STATE_DB_ENABLED", "") != "":
-        return parser.bool_("BOT_STATE_DB_ENABLED", True)
-    return parser.bool_("DB_ENABLED", True)
 
 
 def _validate_semantics(cfg: AppConfig, errors: list[str]) -> None:
@@ -870,15 +880,8 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
 
     p = _Parser(env)
 
-    # Database — Postgres via asyncpg. ``BOT_STATE_DB`` kept as legacy
-    # placeholder until storage/sqlite/ is fully deleted; new code must
-    # consume ``database.dsn``.
-    # cubic P1: validate pool bounds before constructing DatabaseConfig.
-    # asyncpg.create_pool rejects negative or min>max values with an
-    # unhelpful error deep in the pool, which previously surfaced as a
-    # silent SQLite fallback during the dual-stack transition. Fail
-    # fast here with a clear EnvValidationError so the operator sees
-    # exactly which env var is wrong.
+    # Database — Postgres via asyncpg. Validate pool bounds up front so
+    # asyncpg.create_pool does not raise an unhelpful inner-pool error.
     _pool_min = p.int_("DATABASE_POOL_MIN_SIZE", "2")
     _pool_max = p.int_("DATABASE_POOL_MAX_SIZE", "20")
     if _pool_min < 0:
@@ -899,8 +902,6 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
             "DATABASE_URL",
             "postgresql://bot:bot@localhost:5432/polymarket_bot",
         ),
-        db_path=p.string("BOT_STATE_DB", "data/bot_state.db"),
-        enabled=_database_enabled(p),
         pool_min_size=_pool_min,
         pool_max_size=_pool_max,
         command_timeout_seconds=p.float_("DATABASE_COMMAND_TIMEOUT_SECONDS", "30.0"),
@@ -919,6 +920,7 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
     clob = ClobConfig(
         http_url=p.string("CLOB_HTTP_URL", "https://clob.polymarket.com/"),
         api_key=p.string("CLOB_API_KEY", ""),
+        clob_v2_ready=p.bool_("CLOB_V2_READY", False),
     )
 
     # Polling / cadence
@@ -930,6 +932,7 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         leader_positions_min_fetch_spacing_ms=p.int_("LEADER_POSITIONS_MIN_FETCH_SPACING_MS", "250"),
         leader_activity_min_fetch_spacing_ms=p.int_("LEADER_ACTIVITY_MIN_FETCH_SPACING_MS", "250"),
         reconcile_interval_seconds=p.int_("RECONCILE_INTERVAL_SECONDS", "300"),
+        retention_max_age_seconds=p.float_("RETENTION_MAX_AGE_SECONDS", str(30 * 86400)),
     )
 
     # Sizing
@@ -1109,11 +1112,15 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         enable_metrics_server=p.bool_("ENABLE_METRICS_SERVER", False),
         metrics_port=p.int_("METRICS_PORT", "9102"),
         metrics_bind_host=p.string("METRICS_BIND_HOST", "127.0.0.1"),
+        collateral_contract_address=p.string("COLLATERAL_CONTRACT_ADDRESS", ""),
+        pusd_contract_address=p.string("PUSD_CONTRACT_ADDRESS", ""),
+        ctf_exchange_v2_address=p.string("CTF_EXCHANGE_V2_ADDRESS", ""),
     )
 
     reconciliation = ReconciliationConfig(
         stale_threshold_seconds=p.float_("RECONCILE_STALE_SECONDS", "3600"),
         auto_cancel_stale=p.bool_("RECONCILE_AUTO_CANCEL", False),
+        max_closed_probes=p.int_("RECONCILE_MAX_CLOSED_PROBES", "10"),
     )
 
     position_drift = PositionDriftConfig(

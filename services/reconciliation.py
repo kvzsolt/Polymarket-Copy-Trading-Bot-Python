@@ -28,9 +28,9 @@ mistaking it for the local submission idempotency key.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import time
-from config.env import ENV
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -56,6 +56,19 @@ class ReconciliationResult:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+async def _maybe_await(value: Any) -> Any:
+    """Await ``value`` only when it is awaitable.
+
+    The Postgres adapters are ``async def``; sync ``MagicMock`` repos in
+    older unit tests return the raw value. ``await <dict>`` raises
+    ``TypeError`` which is swallowed by the surrounding bare ``except``
+    and silently zeros out reconciliation observations.
+    """
+    if inspect.isawaitable(value):
+        return await value
+    return value
+
 
 def _safe_int(val: Any, default: int = 0) -> int:
     try:
@@ -152,34 +165,27 @@ class ReconciliationService:
         # unexpected cancellation/rejection for a previously submitted BUY.
         self.balance_regime = balance_regime
 
-        # Priority: explicit arg > AppConfig > ENV fallback
+        # Priority: explicit arg > AppConfig > fail-closed default.
         if stale_threshold_seconds is not None:
             self.stale_threshold = float(stale_threshold_seconds)
         elif config is not None and hasattr(config, 'reconciliation'):
             self.stale_threshold = config.reconciliation.stale_threshold_seconds
         else:
-            try:
-                self.stale_threshold = float(ENV.get("RECONCILE_STALE_SECONDS", 3600))
-            except (TypeError, ValueError):
-                self.stale_threshold = 3600.0
+            self.stale_threshold = 3600.0
 
         if auto_cancel_stale is not None:
             self.auto_cancel = auto_cancel_stale
         elif config is not None and hasattr(config, 'reconciliation'):
             self.auto_cancel = config.reconciliation.auto_cancel_stale
         else:
-            self.auto_cancel = (
-                str(ENV.get("RECONCILE_AUTO_CANCEL", "false")).lower() in ("1", "true", "yes")
-            )
+            self.auto_cancel = False
 
         # Cap on per-pass closed-order venue probes (N+1 protection). The
         # venue rate-limits order lookups, so an unbounded local in-flight
         # backlog must not translate into an unbounded probe storm.
-        try:
-            self.max_closed_probes = max(
-                1, int(ENV.get("RECONCILE_MAX_CLOSED_PROBES", 10) or 10)
-            )
-        except (TypeError, ValueError):
+        if config is not None and hasattr(config, 'reconciliation'):
+            self.max_closed_probes = max(1, int(config.reconciliation.max_closed_probes))
+        else:
             self.max_closed_probes = 10
 
     @staticmethod
@@ -247,10 +253,14 @@ class ReconciliationService:
             if self.orders_repo:
                 try:
                     if hasattr(self.orders_repo, "get_by_order_id"):
-                        local_record = self.orders_repo.get_by_order_id(order_id)
+                        local_record = await _maybe_await(
+                            self.orders_repo.get_by_order_id(order_id)
+                        )
                     elif hasattr(self.orders_repo, "get_by_idempotency_key"):
                         # Backwards-compatible fallback for older mock repos.
-                        local_record = self.orders_repo.get_by_idempotency_key(order_id)
+                        local_record = await _maybe_await(
+                            self.orders_repo.get_by_idempotency_key(order_id)
+                        )
                 except Exception:
                     pass
                 if local_record is None:
@@ -258,7 +268,7 @@ class ReconciliationService:
 
             # Phase 4 — partial-fill / unexpected-fill / cancellation detection.
             try:
-                delta = self._classify_order_state(
+                delta = await self._classify_order_state(
                     order=order,
                     local_record=local_record,
                 )
@@ -318,7 +328,7 @@ class ReconciliationService:
             # rate-limited order endpoints.
             probes_done = 0
             probe_cap_hit = False
-            for local_row in self._local_in_flight_orders():
+            for local_row in await self._local_in_flight_orders():
                 local_oid = str(local_row.get("order_id") or "")
                 if not local_oid or local_oid in seen_open_ids:
                     continue
@@ -330,7 +340,7 @@ class ReconciliationService:
                 if probed is None:
                     continue
                 try:
-                    delta = self._classify_order_state(
+                    delta = await self._classify_order_state(
                         order=probed,
                         local_record=local_row,
                     )
@@ -399,7 +409,9 @@ class ReconciliationService:
                         local_row = None
                         try:
                             if hasattr(self.orders_repo, "get_by_order_id"):
-                                local_row = self.orders_repo.get_by_order_id(oid)
+                                local_row = await _maybe_await(
+                                    self.orders_repo.get_by_order_id(oid)
+                                )
                         except Exception:
                             local_row = None
                         self._rollback_balance_regime_on_cancel(
@@ -450,7 +462,7 @@ class ReconciliationService:
     # ------------------------------------------------------------------
     # Phase 4 — order-state classification + repo update helpers.
     # ------------------------------------------------------------------
-    def _classify_order_state(
+    async def _classify_order_state(
         self,
         *,
         order: dict[str, Any],
@@ -527,7 +539,7 @@ class ReconciliationService:
 
         if venue_matched > local_matched:
             delta = venue_matched - local_matched
-            self._record_partial_fill(
+            await self._record_partial_fill(
                 order_id=order_id,
                 local_record=local_record,
                 venue_matched=venue_matched,
@@ -681,7 +693,7 @@ class ReconciliationService:
                 order_id, exc,
             )
 
-    def _record_partial_fill(
+    async def _record_partial_fill(
         self,
         *,
         order_id: str,
@@ -700,9 +712,11 @@ class ReconciliationService:
             return
         try:
             if hasattr(self.orders_repo, "upsert_matched_total"):
-                self.orders_repo.upsert_matched_total(
-                    order_id=order_id,
-                    matched=str(venue_matched),
+                await _maybe_await(
+                    self.orders_repo.upsert_matched_total(
+                        order_id=order_id,
+                        matched=str(venue_matched),
+                    )
                 )
         except Exception as exc:
             logger.error(
@@ -710,12 +724,18 @@ class ReconciliationService:
                 order_id, exc,
             )
 
-    def _local_in_flight_orders(self) -> list[dict[str, Any]]:
+    async def _local_in_flight_orders(self) -> list[dict[str, Any]]:
         """Return locally persisted orders that we still believe are open.
 
         Used to detect terminal venue states for orders that have fallen off
         the open-orders list (filled, cancelled) but our local view has not
         caught up yet.
+
+        ``OrdersRepo.get_unconfirmed_order_submissions`` is ``async def`` on
+        the Postgres adapter — calling it without ``await`` returns a
+        coroutine that the comprehension below would silently swallow via
+        the catch-all ``except``, returning ``[]``. That collapses every
+        venue-fallen-off probe to a no-op (cubic finding on PR #108).
         """
         repo = self.orders_repo
         if repo is None:
@@ -724,7 +744,10 @@ class ReconciliationService:
         if not callable(getter):
             return []
         try:
-            rows = getter() or []
+            result = getter()
+            if inspect.isawaitable(result):
+                result = await result
+            rows = result or []
         except Exception as exc:
             logger.error("reconcile_local_in_flight_lookup_failed | err=%s", exc)
             return []
@@ -819,9 +842,8 @@ async def reconciliation_loop(
     elif config is not None and hasattr(config, 'polling'):
         interval = float(config.polling.reconcile_interval_seconds)
     else:
-        interval = float(
-            ENV.get("RECONCILE_INTERVAL_SECONDS", 300) or 300
-        )
+        # Fail-closed default; production always passes config.polling.
+        interval = 300.0
     logger.info("Reconciliation loop started (interval=%.0fs)", interval)
 
     while True:

@@ -22,8 +22,8 @@ from domain.order_lifecycle import OrderLifecycleStatus
 from services.execution.reservation_service import ReservationService
 
 if TYPE_CHECKING:
-    from storage.sqlite.orders_repo import OrdersRepo
-    from storage.sqlite.reservations_repo import ReservationsRepo
+    from storage.postgres.orders_repo import OrdersRepo
+    from storage.postgres.reservations_repo import ReservationsRepo
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +57,7 @@ class ExpiryChecker:
         Returns the number of expired reservations found.
         """
         now_ts = int(datetime.now(timezone.utc).timestamp())
-        expired = self._reservations_repo.list_expired_active(now_ts)
+        expired = await self._reservations_repo.list_expired_active(now_ts)
         if not expired:
             return 0
 
@@ -88,7 +88,7 @@ class ExpiryChecker:
                     "reservation.expiry.no_order id=%s — releasing immediately",
                     res_id,
                 )
-                self._reservation_service.release_terminal(res_id, "expired_no_order")
+                await self._reservation_service.release_terminal(res_id, "expired_no_order")
 
             reconciled += 1
 
@@ -112,4 +112,4 @@ class ExpiryChecker:
             "terminal=%s reason=%s",
             reservation_id, order_id, terminal_status.value, reason,
         )
-        self._reservation_service.release_terminal(reservation_id, reason)
+        await self._reservation_service.release_terminal(reservation_id, reason)

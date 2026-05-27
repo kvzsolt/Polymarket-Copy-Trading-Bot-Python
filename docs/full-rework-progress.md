@@ -611,3 +611,142 @@ repo + wire everything. Incremental migration past this point requires
 either a coordinated cross-file slice (e.g. "all execution-path
 services in one pass") or a temporary async shim. Deferred to a
 dedicated focused session.
+
+## PG migration complete — final test-port slice (7 commits)
+
+The post-doctor "tighter dependency mesh" called out above was already
+silently resolved by commits ``b153be1`` (await get_position callbacks)
+and ``a7b30d8`` (``feat(pg-final): kill storage/sqlite/ + flip entire
+execution mesh to async PG``). All ``services/``, ``orchestrators/``,
+``bootstrap.py``, ``app.py``, ``config/db.py``, ``utils/idempotency.py``,
+and ``scripts/`` production code is now PG-native; remaining mentions
+of ``storage.sqlite.*`` in the live tree are docstring references in
+``storage/postgres/`` repos noting their historical translation source
+(harmless, kept for provenance).
+
+The only residual sqlite import surface lived in **5 module-skipped
+test files** (4,575 LOC, ~98 tests) and one latent async-mock bug in
+the release-gate suite. This slice closes them out.
+
+| Slice | Commit | What |
+|---|---|---|
+| Issue #74 drift reconciliation tests | `ad748a2` | Drop module-level ``pytest.skip("sqlite-bound; pending PG port")``; swap 9 inline ``PositionRecord`` imports → PG; convert ``MockPositionsRepo`` / ``MockReservationService`` / inline mock helper classes (``list_active_for_scope``, ``mark_released``, ``release_terminal``) to async to match awaited surface at ``reconciliation_service.py:1621/1635/1643/1657``. 15 tests pass in 0.15s |
+| Issue #70 reservation intent-lifecycle tests | `80d8755` | Finish the partial port from ``d932faf``. Drop module-level ``pytest.skip``; add canonical ``_pg_pool()`` testcontainer helper; port ``TestStaleReservationExpiry`` + ``TestReservationAuditLogging`` (4 ``@pytest.mark.integration`` tests) to async PG ``ReservationsRepo`` / ``PositionsRepo``; await ``svc.release_terminal``. 19 unit + 4 integration tests pass in 0.13s / 14.87s |
+| Restart-rehydration risk tests | `7d7337b` | Drop module-level ``pytest.skip``; swap 6 top-level imports → PG; add ``_pg_pool()``; wrap every test body in ``async with _pg_pool() as pool:``; convert ``test_rehydrate_preserves_token_distinct_positions`` to ``async def``; await every previously-sync repo call (``append_fill``, ``rebuild_user_positions_from_fills``, ``get_position``, ``upsert_position``, ``save_submission``, ``get_by_order_id``, ``mark_processed_trade``, ``get_processed_trade``, ``get_active_risk_block``, ``list_fills_for_user_condition``); ``await rehydrate_position_manager(context)`` (``riskMonitor.py:702`` is now async). 11 tests pass in 39s |
+| Trade-pipeline market-data authority tests | `a64a747` | Drop module-level ``pytest.skip``; swap 6 top-level imports → PG; drop ``_init_db(tmp_path)`` helper; change ``_make_context`` / ``_make_rest_context`` signature to ``(pool, tmp_path, ...)`` — pool drives repos, tmp_path stays only for the ``PnLTracker`` log file; wrap every test body in ``async with _pg_pool() as pool:``. 12 tests (WSS-primary + REST-snapshot) pass in 42s |
+| Trade-pipeline safety tests (largest) | `e755aed` | The 1,511-LOC end-to-end safety net (duplicate prevention, market risk quarantine, retry budget, reconciliation, position drift sync, daily-spend ledger, leader-fraction sizing, token-id field priority). Same mechanical pattern as above plus: port the one raw-SQL block (``UPDATE processed_trades SET processed_at = ?``) to async asyncpg with ``$1/$2`` params + integer epoch; flip the two ``MagicMock(return_value=...)`` overrides of ``ctx.positions_repo.get_position`` / ``.apply_fill`` to ``AsyncMock``. 41 tests pass in 118s (35 async trade-pipeline + 6 sync ``TestTokenIdFieldPriority``) |
+| Latent release-gate drift-mock fix | `35789ea` | ``tests/release_gate/test_manual_drift_reconciliation.py::_make_service`` still constructed ``positions_repo`` as a sync ``MagicMock`` with ``.get_position.return_value = SimpleNamespace(...)``. Service awaits ``get_position`` → ``TypeError: object types.SimpleNamespace can't be used in 'await' expression``. Pre-existing regression from ``a7b30d8`` that the release-gate gate's 68s smoke-run had been quietly failing on for the last 3 commits. Swap to ``AsyncMock`` for ``get_position`` / ``delete_position`` / ``upsert_position``. 4/4 pass in 0.11s |
+
+### Final verification
+
+| Check | Result |
+|---|---|
+| ``grep -rln "from storage.sqlite\|import storage.sqlite" --include='*.py' .`` excluding ``.venv``, ``build`` | **0 hits** — the only remaining ``storage.sqlite`` mentions in the tree are docstring comments inside ``storage/postgres/*.py`` noting "translated from ``storage/sqlite/<file>.py``" |
+| ``storage/sqlite/`` directory | gone — was already removed from git in ``a7b30d8``; leftover ``__pycache__`` cleaned this session |
+| ``pytest -q --ignore=tests/release_gate --ignore=tests/replay`` | **2,320 passed, 7 skipped, 46 deselected** in 846s (deselected = ``@pytest.mark.integration`` PG-container tests, run separately) |
+| ``pytest -m release_gate -o asyncio_mode=auto -q`` | **153 passed, 6 skipped, 2,372 deselected** in 78s |
+| ``python -m compileall -q`` on all ported files | clean |
+
+### Net effect
+
+- Production sqlite callers: **0**. Every ``services/``, ``orchestrators/``,
+  ``bootstrap.py``, ``app.py``, ``config/db.py``, ``utils/idempotency.py``,
+  ``scripts/``, and ``bot_cli/`` path is PG-native.
+- Test sqlite callers: **0**. Every test under ``tests/`` either drives a
+  live ``postgres:16-alpine`` testcontainer via the canonical
+  ``_pg_pool()`` helper or uses ``AsyncMock`` against the async-repo
+  surface.
+- ``storage/sqlite/`` package: removed from disk.
+- ``config/db.py`` is pure-PG (``connect_db()`` runs ``init_pool`` +
+  ``apply_pg_migrations``; no sqlite fallback).
+- CI gates green: 2,320 unit-suite passes + 153 release-gate passes.
+
+The SQLite → Postgres migration is complete. The branch is ready for
+review and merge into ``full-rework``.
+
+## Nasty rework — legacy code kill (Phase A-E, 14 commits)
+
+Follow-on slice on the same branch (`feat/postgres-migration`) — user
+direction was "remove all legacy code and related path, migrate them
+to actual stuff". Deletes every compat-only surface and migrates every
+production ``ENV.get(...)`` callsite to typed ``AppConfig``.
+
+### Phase A — dead code (3 commits)
+
+| Slice | Commit | What |
+|---|---|---|
+| Drop `legacy/` package | `c75423c` | `rm -rf legacy/` (288-LOC `tradeExecutor.py` + empty `__init__.py`). Production never imported it (gate at `tests/release_gate/test_no_legacy_imports.py`). Delete sole consumers: `tests/test_services.py` (521 L) + `tests/test_copy_strategy.py` (143 L) |
+| Drop MongoDB-era interfaces | `1aa0484` | `interfaces/__init__.py` exported `UserActivityInterface` + `UserPositionInterface` (depended on optional `bson.ObjectId`). No production references. Reduce file to doc-only stub |
+| Tighten release-gate gate | `68d7e62` | Add `test_legacy_package_was_deleted` assertion that mirrors the existing `test_root_probe_scripts_were_deleted` — pins the directory absence, not just import absence |
+
+### Phase B — `config/settings.py` + `_profit_lock_mode == "legacy"` (2 commits)
+
+| Slice | Commit | What |
+|---|---|---|
+| Drop `_profit_lock_mode == "legacy"` branch | `4d780d7` | `services/positionManager.py` carried three init paths; only `config=AppConfig` was used in production. Drop the `risk_settings=` kwarg + the whole `elif risk_settings is not None:` block + the legacy `evaluate_exit` arm at lines 448-460. No-arg path defaults to `"disabled"`. Armed-then-retrace pattern is functionally subsumed by Priority 4 (trailing-stop) when configured via `AppConfig.features.enable_trailing_stop` |
+| Delete `config/settings.py` + 7 legacy-shim tests | `7ffd63a` | `config/settings.py` was an env-name translation layer (`STOP_LOSS_PCT → stop_loss_ratio`, 18 mappings) used only by pre-rewrite tests; production reads original env names via `config/app_config.py` directly so no env-name compatibility is lost. Delete + 7 test files (`test_config_settings`, `test_legacy_env_migration`, `test_issue8_risk_cleanup`, `test_config_edge_cases`, `test_risk_behavior`, `test_new_modules`, `test_position_math`) |
+
+### Phase C — `save_submission_legacy` + legacy idempotency probe (2 commits)
+
+| Slice | Commit | What |
+|---|---|---|
+| Drop `save_submission_legacy` wrapper | `d8875fc` | `storage/postgres/orders_repo.py:289` was a thin dict→`OrderSubmissionRecord` converter that internally called `save_submission(record)`. Inline the conversion in `ExecutionService._save_submission`; delete `save_submission_legacy`; update 4 test callers |
+| Drop pre-sizing idempotency probe | `5868dc2` | `services/executionService.py:663/714-715` looked up rows by the pre-sizing `_idempotency_key(req)` after the post-sizing `idem_key` missed — a transition shim from the post-sizing key migration. No real orders in prod DB (live blocked; per-test PG containers persist nothing) so no legacy keys exist on disk. Delete the probe + the `_idempotency_key(req)` helper itself; update three test patches from `_idempotency_key` → `_effective_idempotency_key` |
+
+### Phase D — `ENV.get(...)` → `AppConfig` migration (7 commits, ~98 callsites)
+
+| Slice | Commit | What |
+|---|---|---|
+| Add 6 missing AppConfig fields | `8784b40` | `ClobConfig.clob_v2_ready: bool` (fail-closed False), `NetworkConfig.{collateral,pusd,ctf_exchange_v2}_contract_address: str`, `ReconciliationConfig.max_closed_probes: int = 10`, `PollingConfig.retention_max_age_seconds: float = 30 * 86400`. All wired in `load_config` |
+| `riskEngine` | `a81d45e` | 11 `ENV.get` reads (BALANCE_POLICY_* + MAX_*_EXPOSURE_USDC + MAX_DAILY_DRAWDOWN_PCT) gone. The legacy fallback for callers that bypass `init_risk_engine(config)` now returns a hardcoded fail-closed default `AccountCapPolicy`; `compute_market_headroom` no-config branch uses the same hardcoded defaults the env reads used (300/600/500/0.20). Drops `_env_bool` / `_env_float` / `_env_decimal` helpers + `from config.env import ENV` import |
+| `traderDiscoveryService` | `b3b3dae` | 10 `ENV.get` reads (DISCOVERY_*, MIN_LEADER_*, AUTO_DISCOVER_*) gone. No-config init now sets `_enabled = False` + `_auto_discover = False` — service stays disabled on misconfigured bootstrap rather than running discovery on default values |
+| `createClobClient` | `a18ba97` | 7 `ENV.get` reads gone (CLOB_HTTP_URL + META_CACHE_TTL_* at import time, CLOB_V2_READY + PUSD/COLLATERAL/CTF contract addrs in `create_clob_client`). Add `configure_from_appconfig(config)` module setter, called from `runtime_bootstrap.py:218` at startup. `create_clob_client` accepts `config=` kwarg; reads gate from `config.clob.clob_v2_ready` + contract addresses from `config.network.*` |
+| `getMyBalance` | `5995e11` | 5 `ENV.get` reads gone. Same module-singleton + `configure_from_appconfig(config)` pattern as createClobClient; wired in `runtime_bootstrap.py:223`. Tests monkeypatch the new singletons (`_RPC_URL`, `_COLLATERAL_CONTRACT_ADDRESS`, …) instead of `ENV` |
+| `reconciliation` | `03a824e` | 4 `ENV.get` reads gone (RECONCILE_STALE_SECONDS, RECONCILE_AUTO_CANCEL, RECONCILE_MAX_CLOSED_PROBES, RECONCILE_INTERVAL_SECONDS). All three constructor settings had an `AppConfig`-first branch already; drop the env fallback in favour of hardcoded defaults. `max_closed_probes` now reads from the new `ReconciliationConfig.max_closed_probes` field |
+| Residual sweep (`app.py`, `tradeMonitor`, `doctor`, `idempotency`) | `e7ee18d` | Final 4 ENV.get callsites: `app.py:660` uses `application.config.polling.retention_max_age_seconds`; `services/tradeMonitor.py:67` hardcodes 0.25s default; `bot_cli/commands/doctor.py:269` reads `config.clob.clob_v2_ready`; `utils/idempotency.py:108` hardcodes 30-day retention. Drops 3 `from config.env import ENV` imports |
+
+### Phase E — close-out + test fixups (2 commits)
+
+| Slice | Commit | What |
+|---|---|---|
+| Fix 14 tests driving deleted ENV-fallback | `7abb80c` | `test_account_cap_policy.py` (10 fails) — patched `services.riskEngine.ENV`; replace with local `_policy(...)` builder that constructs `AccountCapPolicy` directly. `test_collateral_readiness.py` (1 fail) — replace `ENV` patch with `SimpleNamespace` AppConfig stub passed as `config=`. `test_decision_engine.py` (2 fails) — drop ENV patches; set discovery-gate thresholds via instance attrs. `test_issue69_order_sizing_idempotency.py` (1 fail) — rewrite `test_effective_key_different_from_legacy` against `_effective_idempotency_key` only |
+| Close-out doc + push | _this commit_ | docs/full-rework-progress.md update, final verification, push |
+
+### Final verification
+
+| Check | Result |
+|---|---|
+| `grep -rn "ENV\.get\|from config.env import ENV" --include='*.py' .` excluding `tests/` and `config/env.py` | **0 hits** in production code (the only remaining `ENV.get` callsites live inside `config/env.py` itself for the `validate_runtime_env()` legacy adapter, plus test files — both allowed by CLAUDE.md) |
+| `legacy/` package | gone |
+| `config/settings.py` | gone |
+| `save_submission_legacy` / `_idempotency_key` / `_profit_lock_mode == "legacy"` | gone |
+| `pytest -q --ignore=tests/release_gate --ignore=tests/replay` | **1998 passed, 3 skipped, 46 deselected** in 787s |
+| `pytest -m release_gate -o asyncio_mode=auto -q` | **154 passed, 6 skipped, 2046 deselected** in 62s |
+
+### Net effect
+
+- **Zero production `ENV.get(...)`** — every service / orchestrator /
+  CLI command / util / app.py path reads from typed `AppConfig`.
+- **Zero `legacy/` package** — production gate forbids re-introduction.
+- **Zero `config/settings.py`** — env-name translation shim deleted;
+  `config/app_config.py` reads original env names directly.
+- **Zero `save_submission_legacy`** + **zero pre-sizing
+  `_idempotency_key`** — effective post-sizing key is the only
+  idempotency contract.
+- **Zero `_profit_lock_mode == "legacy"` branch** — only `"advanced"`
+  (typed `AppConfig`) and `"disabled"` modes remain.
+- Six new typed `AppConfig` fields cover the previously-untyped env
+  keys (`clob_v2_ready`, three `network.*_contract_address` fields,
+  `reconciliation.max_closed_probes`, `polling.retention_max_age_seconds`).
+- ~3,750 LOC removed from the codebase (legacy package, settings shim,
+  7 legacy-shim test files, env-fallback branches across 9 production
+  files).
+- Test counts: 1998 unit + (release-gate, see push) passing.
+- CLAUDE.md non-negotiables held: live trading gate still blocked,
+  duplicate-order protection preserved, no float money types
+  introduced, sizing remains metadata-driven with effective
+  idempotency computed after sizing, every new AppConfig field has a
+  fail-closed default.
+
+The branch is now a clean handoff to `full-rework` with no compat
+layers left to chase.

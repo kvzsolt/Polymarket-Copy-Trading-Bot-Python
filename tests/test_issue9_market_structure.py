@@ -10,15 +10,10 @@ import pytest
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from storage.sqlite.connection import create_connection
-from storage.sqlite.market_structure_repo import MarketStructureEvent, MarketStructureRepo
-from storage.sqlite.migrations import apply_migrations
-
-
-def _prepare_db(path: Path) -> None:
-    with create_connection(str(path)) as conn:
-        apply_migrations(conn)
-        conn.commit()
+from storage.postgres.market_structure_repo import (
+    MarketStructureEvent,
+    MarketStructureRepo,
+)
 
 
 def _token(n: int) -> str:
@@ -54,82 +49,85 @@ async def _pg_pool():
 
 
 class TestMarketStructureRepo:
-    def test_record_and_get_split_event(self, tmp_path):
-        db = tmp_path / "ms.db"
-        _prepare_db(db)
-        repo = MarketStructureRepo(str(db))
+    """PG-A5: legacy sqlite TestMarketStructureRepo dropped, replaced
+    with async PG-backed equivalents. Each test owns its own
+    testcontainer pool via the inline ``_pg_pool`` ctx mgr below."""
 
-        eid = repo.record_event(
-            MarketStructureEvent(
-                event_type="split",
-                condition_id="cond-1",
-                old_token_id=_token(1),
-                new_token_id=_token(2),
-                ratio="2:1",
-                timestamp=time.time(),
-                payload_json=repo.payload({"kind": "split"}),
+    @pytest.mark.asyncio
+    async def test_record_and_get_split_event(self) -> None:
+        async with _pg_pool() as pool:
+            repo = MarketStructureRepo(pool)
+            eid = await repo.record_event(
+                MarketStructureEvent(
+                    event_type="split",
+                    condition_id="cond-1",
+                    old_token_id=_token(1),
+                    new_token_id=_token(2),
+                    ratio="2:1",
+                    timestamp=time.time(),
+                    payload_json=repo.payload({"kind": "split"}),
+                )
             )
-        )
-        assert eid > 0
+            assert eid > 0
 
-        rows = repo.get_events_for_condition("cond-1")
+            rows = await repo.get_events_for_condition("cond-1")
         assert len(rows) == 1
         assert rows[0]["event_type"] == "split"
 
-    def test_record_merge_and_resolution(self, tmp_path):
-        db = tmp_path / "ms.db"
-        _prepare_db(db)
-        repo = MarketStructureRepo(str(db))
-
-        repo.record_event(
-            MarketStructureEvent(
-                event_type="merge",
-                condition_id="cond-2",
-                old_token_id=f"{_token(1)},{_token(2)}",
-                new_token_id=_token(3),
-                ratio=None,
-                timestamp=time.time(),
-                payload_json=repo.payload({"kind": "merge"}),
+    @pytest.mark.asyncio
+    async def test_record_merge_and_resolution(self) -> None:
+        async with _pg_pool() as pool:
+            repo = MarketStructureRepo(pool)
+            await repo.record_event(
+                MarketStructureEvent(
+                    event_type="merge",
+                    condition_id="cond-2",
+                    old_token_id=f"{_token(1)},{_token(2)}",
+                    new_token_id=_token(3),
+                    ratio=None,
+                    timestamp=time.time(),
+                    payload_json=repo.payload({"kind": "merge"}),
+                )
             )
-        )
-        repo.record_event(
-            MarketStructureEvent(
-                event_type="resolution",
-                condition_id="cond-2",
-                old_token_id=None,
-                new_token_id=None,
-                ratio=None,
-                timestamp=time.time(),
-                payload_json=repo.payload({"kind": "resolution", "winning_outcome": 1}),
+            await repo.record_event(
+                MarketStructureEvent(
+                    event_type="resolution",
+                    condition_id="cond-2",
+                    old_token_id=None,
+                    new_token_id=None,
+                    ratio=None,
+                    timestamp=time.time(),
+                    payload_json=repo.payload(
+                        {"kind": "resolution", "winning_outcome": 1}
+                    ),
+                )
             )
-        )
 
-        rows = repo.get_events_for_condition("cond-2")
+            rows = await repo.get_events_for_condition("cond-2")
         assert len(rows) == 2
         assert {r["event_type"] for r in rows} == {"merge", "resolution"}
 
-    def test_pending_remappings_and_mark(self, tmp_path):
-        db = tmp_path / "ms.db"
-        _prepare_db(db)
-        repo = MarketStructureRepo(str(db))
-
-        eid = repo.record_event(
-            MarketStructureEvent(
-                event_type="split",
-                condition_id="cond-3",
-                old_token_id=_token(1),
-                new_token_id=_token(2),
-                ratio="2:1",
-                timestamp=time.time(),
-                payload_json=repo.payload({"kind": "split"}),
+    @pytest.mark.asyncio
+    async def test_pending_remappings_and_mark(self) -> None:
+        async with _pg_pool() as pool:
+            repo = MarketStructureRepo(pool)
+            eid = await repo.record_event(
+                MarketStructureEvent(
+                    event_type="split",
+                    condition_id="cond-3",
+                    old_token_id=_token(1),
+                    new_token_id=_token(2),
+                    ratio="2:1",
+                    timestamp=time.time(),
+                    payload_json=repo.payload({"kind": "split"}),
+                )
             )
-        )
-        pending = repo.get_pending_remappings()
-        assert len(pending) == 1
-        assert pending[0]["id"] == eid
+            pending = await repo.get_pending_remappings()
+            assert len(pending) == 1
+            assert pending[0]["id"] == eid
 
-        assert repo.mark_remapped(eid) is True
-        assert repo.get_pending_remappings() == []
+            assert await repo.mark_remapped(eid) is True
+            assert await repo.get_pending_remappings() == []
 
 
 class TestMarketStructureService:

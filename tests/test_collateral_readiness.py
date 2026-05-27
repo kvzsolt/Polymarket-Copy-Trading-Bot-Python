@@ -179,8 +179,19 @@ class TestFailClosedStartup:
             bids=[], asks=[], tick_size="0.01", neg_risk=False, min_order_size="5"
         )
 
-        with _p("utils.createClobClient.ENV", {"CLOB_V2_READY": True}), \
-             _p("utils.createClobClient.build_wallet_config") as mock_bwc, \
+        # Build a minimal AppConfig stub with the CLOB V2 gate flipped.
+        # The legacy-kill slice (#77) moved the gate from ENV.get into
+        # ``config.clob.clob_v2_ready`` (typed AppConfig field).
+        from types import SimpleNamespace
+        mock_cfg = SimpleNamespace(
+            clob=SimpleNamespace(clob_v2_ready=True),
+            network=SimpleNamespace(
+                pusd_contract_address="",
+                collateral_contract_address="",
+                ctf_exchange_v2_address="",
+            ),
+        )
+        with _p("utils.createClobClient.build_wallet_config") as mock_bwc, \
              _p("utils.createClobClient.validate_wallet_config"), \
              _p("utils.createClobClient.ClobClient", return_value=mock_client), \
              _p("utils.createClobClient.detect_wallet_signature_type", return_value=(1, "EOA", "0x" + "a" * 40)):
@@ -193,4 +204,4 @@ class TestFailClosedStartup:
                 polygon_rpc_url="http://localhost",
             )
             with pytest.raises(RuntimeError, match="V2 collateral readiness FAILED"):
-                await create_clob_client(private_key="0x" + "a" * 64)
+                await create_clob_client(private_key="0x" + "a" * 64, config=mock_cfg)

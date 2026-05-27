@@ -10,12 +10,41 @@ Validates:
 - Startup recovery restores in-flight intents from DB.
 - Operator-visible reservation audit logs.
 """
+import contextlib
 import time
 from datetime import datetime, timezone
 from decimal import Decimal
 from unittest.mock import MagicMock
 
 import pytest
+
+
+@contextlib.asynccontextmanager
+async def _pg_pool():
+    try:
+        from testcontainers.postgres import PostgresContainer
+        import asyncpg
+        from storage.postgres.migrations import apply_migrations as pg_apply
+    except Exception as exc:
+        pytest.skip(f"Docker / postgres image unavailable: {exc!r}")
+    ctr = PostgresContainer("postgres:16-alpine")
+    try:
+        ctr.start()
+    except Exception as exc:
+        pytest.skip(f"Docker / postgres image unavailable: {exc!r}")
+    try:
+        dsn = ctr.get_connection_url(driver="asyncpg").replace(
+            "postgresql+asyncpg://", "postgresql://"
+        )
+        pool = await asyncpg.create_pool(dsn, min_size=1, max_size=5)
+        async with pool.acquire() as conn:
+            await pg_apply(conn)
+        try:
+            yield pool
+        finally:
+            await pool.close()
+    finally:
+        ctr.stop()
 
 from domain.order_lifecycle import (
     IntentReason,
@@ -246,65 +275,45 @@ class TestAmbiguousPost:
 class TestStaleReservationExpiry:
     """Expired reservations trigger reconciliation before release."""
 
-    def test_list_expired_active(self):
+    @pytest.mark.asyncio
+    async def test_list_expired_active(self):
         """Expired active reservations are found by list_expired_active."""
-        from storage.sqlite.reservations_repo import ReservationsRepo
-        from storage.sqlite.connection import create_connection
-        from storage.sqlite.migrations import apply_migrations
-        import tempfile
-        import os
+        from storage.postgres.reservations_repo import ReservationsRepo
 
-        db_path = tempfile.mktemp(suffix=".db")
-        try:
-            with create_connection(db_path) as conn:
-                apply_migrations(conn)
-                conn.commit()
-
-            repo = ReservationsRepo(db_path)
+        async with _pg_pool() as pool:
+            repo = ReservationsRepo(pool)
             intent = _intent()
             now = int(time.time())
             # Create a reservation that expires in the past
-            reservation = repo.create_buy_reservation(
+            reservation = await repo.create_buy_reservation(
                 intent=intent,
                 reserved_usdc=Decimal("100"),
                 expires_at=now - 10,  # Already expired
             )
             assert reservation.status == "active"
 
-            expired = repo.list_expired_active(now)
+            expired = await repo.list_expired_active(now)
             assert len(expired) >= 1
             assert expired[0].id == reservation.id
-        finally:
-            os.unlink(db_path)
 
-    def test_non_expired_not_listed(self):
+    @pytest.mark.asyncio
+    async def test_non_expired_not_listed(self):
         """Non-expired reservations are not in list_expired_active."""
-        from storage.sqlite.reservations_repo import ReservationsRepo
-        from storage.sqlite.connection import create_connection
-        from storage.sqlite.migrations import apply_migrations
-        import tempfile
-        import os
+        from storage.postgres.reservations_repo import ReservationsRepo
 
-        db_path = tempfile.mktemp(suffix=".db")
-        try:
-            with create_connection(db_path) as conn:
-                apply_migrations(conn)
-                conn.commit()
-
-            repo = ReservationsRepo(db_path)
+        async with _pg_pool() as pool:
+            repo = ReservationsRepo(pool)
             intent = _intent()
             now = int(time.time())
             # Create a reservation that expires in the future
-            reservation = repo.create_buy_reservation(
+            await repo.create_buy_reservation(
                 intent=intent,
                 reserved_usdc=Decimal("100"),
                 expires_at=now + 3600,  # Not expired
             )
 
-            expired = repo.list_expired_active(now)
+            expired = await repo.list_expired_active(now)
             assert len(expired) == 0
-        finally:
-            os.unlink(db_path)
 
 
 # ---------------------------------------------------------------------------
@@ -418,21 +427,12 @@ class TestReservationAuditLogging:
     @pytest.mark.asyncio
     async def test_buy_reservation_logs_acquire(self, caplog):
         """BUY reservation logs the acquire event."""
-        from storage.sqlite.reservations_repo import ReservationsRepo
-        from storage.sqlite.connection import create_connection
-        from storage.sqlite.migrations import apply_migrations
-        from storage.sqlite.positions_repo import PositionsRepo
-        import tempfile
-        import os
+        from storage.postgres.reservations_repo import ReservationsRepo
+        from storage.postgres.positions_repo import PositionsRepo
 
-        db_path = tempfile.mktemp(suffix=".db")
-        try:
-            with create_connection(db_path) as conn:
-                apply_migrations(conn)
-                conn.commit()
-
-            res_repo = ReservationsRepo(db_path)
-            pos_repo = PositionsRepo(db_path)
+        async with _pg_pool() as pool:
+            res_repo = ReservationsRepo(pool)
+            pos_repo = PositionsRepo(pool)
 
             async def mock_balance(addr: str) -> float | None:
                 return 1000.0
@@ -451,27 +451,16 @@ class TestReservationAuditLogging:
             # Verify reservation was created
             assert result is not None
             assert result.status == "active"
-        finally:
-            os.unlink(db_path)
 
     @pytest.mark.asyncio
     async def test_release_terminal_logs(self, caplog):
         """release_terminal logs the release event."""
-        from storage.sqlite.reservations_repo import ReservationsRepo
-        from storage.sqlite.connection import create_connection
-        from storage.sqlite.migrations import apply_migrations
-        from storage.sqlite.positions_repo import PositionsRepo
-        import tempfile
-        import os
+        from storage.postgres.reservations_repo import ReservationsRepo
+        from storage.postgres.positions_repo import PositionsRepo
 
-        db_path = tempfile.mktemp(suffix=".db")
-        try:
-            with create_connection(db_path) as conn:
-                apply_migrations(conn)
-                conn.commit()
-
-            res_repo = ReservationsRepo(db_path)
-            pos_repo = PositionsRepo(db_path)
+        async with _pg_pool() as pool:
+            res_repo = ReservationsRepo(pool)
+            pos_repo = PositionsRepo(pool)
 
             async def mock_balance(addr: str) -> float | None:
                 return 1000.0
@@ -488,11 +477,9 @@ class TestReservationAuditLogging:
             reservation = await svc.reserve_for_intent(intent)
 
             with caplog.at_level("INFO"):
-                svc.release_terminal(reservation.id, "filled")
+                await svc.release_terminal(reservation.id, "filled")
 
             # Release should succeed without error
-        finally:
-            os.unlink(db_path)
 
 
 # ---------------------------------------------------------------------------

@@ -77,6 +77,15 @@ def _clean_loggers(monkeypatch):
     yield
     _CONFIGURED_LOGGERS.clear()
     root.handlers.clear()
+    # Restore default APP_NAME logger config so cross-file test ordering
+    # doesn't end with subsequent tests inheriting a handler-less /
+    # WARNING-level logger. Without this, e.g.
+    # ``test_integer_level`` (which sets level=WARNING) used to leak
+    # the WARNING level into ``test_trade_pipeline_market_data_authority``
+    # downstream, dropping every ``logger.info`` line the trade pipeline
+    # tests assert on. Re-running ``configure_logging()`` with defaults
+    # rebuilds the standard handler set + restores INFO level.
+    configure_logging()
 
 
 @pytest.fixture()

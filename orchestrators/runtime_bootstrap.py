@@ -11,18 +11,17 @@ from services.executionService import ExecutionService
 from services.feeService import FeeService
 from services.market_data_service import MarketDataService, MarketDataPolicy
 from services.multiUserConfig import RuntimeUser, UserFollowConfig
-from services.orderRepository import OrderRepository
 from services.pnlTracker import PnLTracker
 from services.positionManager import PositionManager
 from services.riskEngine import RiskEngine, init_risk_engine
 from services.healthServer import ReadinessTracker
 from services.entryPermissionService import EntryPermissionService
 from services.riskMonitor import rehydrate_position_manager, reconcile_unconfirmed_risk_orders
-from storage.sqlite.fills_repo import FillsRepo
-from storage.sqlite.orders_repo import OrdersRepo
-from storage.sqlite.positions_repo import PositionsRepo
-from storage.sqlite.risk_blocks_repo import RiskBlocksRepo
-from storage.sqlite.risk_triggers_repo import RiskTriggersRepo
+from storage.postgres.fills_repo import FillsRepo
+from storage.postgres.orders_repo import OrdersRepo
+from storage.postgres.positions_repo import PositionsRepo
+from storage.postgres.risk_blocks_repo import RiskBlocksRepo
+from storage.postgres.risk_triggers_repo import RiskTriggersRepo
 from utils.fetchData import fetch_data
 from utils.logger import get_logger
 
@@ -87,7 +86,7 @@ async def startup_reconcile_unconfirmed(
             if total_n > 0:
                 # Position state changed — re-rehydrate so the risk monitor
                 # and trade loops observe the converged snapshot.
-                rehydrate_position_manager(context)
+                await rehydrate_position_manager(context)
                 reconciled_by_user[context.user_id] = total_n
                 logger.info(
                     "startup_reconcile_complete | user=%s reconciled=%d (trade=%d risk=%d)",
@@ -209,16 +208,27 @@ async def fetch_live_positions(wallet: str) -> list[dict]:
 def build_user_state(
     runtime_user: RuntimeUser,
     client: object,
-    db_path: str,
+    pool,
     config: AppConfig,
 ) -> UserRuntimeState:
     init_risk_engine(config)
 
-    order_repo = OrdersRepo(db_path)
-    fills_repo = FillsRepo(db_path)
-    positions_repo = PositionsRepo(db_path)
-    risk_blocks_repo = RiskBlocksRepo(db_path)
-    risk_triggers_repo = RiskTriggersRepo(db_path)
+    # Push typed config into the CLOB-client module so its CLOB_HTTP_URL +
+    # meta-cache TTLs follow AppConfig rather than the raw env (legacy-kill
+    # slice #77). Safe to call repeatedly per-user.
+    from utils.createClobClient import configure_from_appconfig as _configure_clob_module
+    _configure_clob_module(config)
+
+    # Same pattern for the balance-lookup module (RPC_URL + collateral
+    # contract addresses) so utils/getMyBalance.py drops its ENV reads.
+    from utils.getMyBalance import configure_from_appconfig as _configure_balance_module
+    _configure_balance_module(config)
+
+    order_repo = OrdersRepo(pool)
+    fills_repo = FillsRepo(pool)
+    positions_repo = PositionsRepo(pool)
+    risk_blocks_repo = RiskBlocksRepo(pool)
+    risk_triggers_repo = RiskTriggersRepo(pool)
     pnl_tracker = PnLTracker(log_path=f"log/pnl_{runtime_user.user_id}.jsonl")
     risk_engine = RiskEngine()
     accounting_service = AccountingService()
@@ -284,7 +294,7 @@ def build_user_state(
     execution_service = ExecutionService(
         clob_client=client,
         fee_service=FeeService(client),
-        order_repo=OrderRepository(db_path=db_path),
+        order_repo=order_repo,
         config=config,
         clob_gateway=clob_gateway,
         market_data_service=market_data_svc,
@@ -294,7 +304,7 @@ def build_user_state(
     # are wired per user so trade pipeline, risk monitor, and near-one exits
     # all share reservation + collision scope.
     execution_coordinator = _build_execution_coordinator(
-        db_path=db_path,
+        pool=pool,
         positions_repo=positions_repo,
         order_repo=order_repo,
         fills_repo=fills_repo,
@@ -305,7 +315,7 @@ def build_user_state(
 
     # PR7 — proactive position drift sweep.
     position_drift_service = _build_position_drift_service(
-        db_path=db_path,
+        pool=pool,
         positions_repo=positions_repo,
         config=config,
     )
@@ -333,7 +343,7 @@ def build_user_state(
 
 def _build_position_drift_service(
     *,
-    db_path: str,
+    pool,
     positions_repo: PositionsRepo,
     config: AppConfig,
 ):
@@ -345,11 +355,11 @@ def _build_position_drift_service(
     """
     try:
         from services.position_drift_service import PositionDriftService
-        from storage.sqlite.reservations_repo import ReservationsRepo
+        from storage.postgres.reservations_repo import ReservationsRepo
     except Exception as exc:
         logger.warning("position_drift_service_unwired error=%r", exc)
         return None
-    reservations_repo = ReservationsRepo(db_path)
+    reservations_repo = ReservationsRepo(pool)
 
     async def _fetcher(wallet: str):
         return await fetch_live_positions(wallet)
@@ -364,7 +374,7 @@ def _build_position_drift_service(
 
 def _build_execution_coordinator(
     *,
-    db_path: str,
+    pool,
     positions_repo: PositionsRepo,
     order_repo,
     fills_repo: FillsRepo,
@@ -384,12 +394,12 @@ def _build_execution_coordinator(
     try:
         from services.execution.coordinator import ExecutionCoordinator
         from services.execution.reservation_service import ReservationService
-        from storage.sqlite.reservations_repo import ReservationsRepo
+        from storage.postgres.reservations_repo import ReservationsRepo
         from utils.getMyBalance import get_my_balance
     except Exception as exc:
         logger.warning("execution_coordinator_unwired error=%r", exc)
         return None
-    reservations_repo = ReservationsRepo(db_path)
+    reservations_repo = ReservationsRepo(pool)
     reservation_service = ReservationService(
         reservations_repo=reservations_repo,
         positions_repo=positions_repo,
@@ -407,7 +417,7 @@ def _build_execution_coordinator(
     return coord
 
 
-def build_trading_context(
+async def build_trading_context(
     user_state: UserRuntimeState,
     follow: UserFollowConfig,
     config: AppConfig,
@@ -474,7 +484,7 @@ def build_trading_context(
                 coord.position_drift_service = drift_svc
             except Exception:
                 pass
-    rehydrate_position_manager(context)
+    await rehydrate_position_manager(context)
     return context
 
 
@@ -533,7 +543,7 @@ async def startup_drift_check(
     return per_user
 
 
-def build_context_maps(
+async def build_context_maps(
     runtime_users: list[RuntimeUser],
     user_states: dict[str, UserRuntimeState],
     active_leaders: list[str],
@@ -551,7 +561,7 @@ def build_context_maps(
             follow = runtime_user.follows.get(leader)
             if not follow or not follow.enabled:
                 continue
-            context = build_trading_context(
+            context = await build_trading_context(
                 user_state,
                 follow,
                 config,

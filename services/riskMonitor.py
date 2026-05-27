@@ -21,10 +21,11 @@ from services.executionService import ExecutionRequest, ExecutionService
 from services.feeService import FeeService
 from services.healthServer import ReadinessTracker
 from services.metrics import metrics
-from services.orderRepository import OrderRepository
 from services.positionActionCoordinator import PositionScope
 from services.riskEngine import active_policy
-from storage.sqlite.fills_repo import FillRecord
+from storage.postgres.connection import get_pool
+from storage.postgres.fills_repo import FillRecord
+from storage.postgres.orders_repo import OrdersRepo as _PgOrdersRepo
 from utils import is_valid_clob_token_id
 from utils.fetchData import fetch_data
 
@@ -304,7 +305,7 @@ async def _refresh_context_price_cache(
 ) -> None:
     token_ids = [
         pos.token_id
-        for pos in context.positions_repo.list_open_positions(context.user_id)
+        for pos in await context.positions_repo.list_open_positions(context.user_id)
         if is_valid_clob_token_id(pos.token_id)
     ]
     if not token_ids:
@@ -492,10 +493,11 @@ async def risk_monitor_loop(
 
     # Construct execution-side services only after early-return guards so a
     # disabled risk-management run does not allocate venue clients/repos.
+    _pool = await get_pool()
     execution_service = ExecutionService(
         clob_client=clob_client,
         fee_service=FeeService(clob_client, default_fee_bps=fee_bps),
-        order_repo=OrderRepository(),
+        order_repo=_PgOrdersRepo(_pool),
         config=config,
     )
     accounting = AccountingService()
@@ -658,7 +660,7 @@ async def risk_monitor_loop(
                                 bot_params.get("proxyWallet")
                                 or funder_address
                             )
-                            accounting.book_fill(
+                            await accounting.book_fill(
                                 user_id=user_id,
                                 fill_doc={
                                     "order_id": result.order_id,
@@ -675,9 +677,16 @@ async def risk_monitor_loop(
                             )
                             remaining = pm.get_position(condition_id, token_id)
                             if remaining is None:
-                                accounting.close_position(user_id=user_id, condition_id=condition_id)
+                                # Pass token_id — omitting it wipes every
+                                # position for the condition (the opposite
+                                # leg of a binary market included).
+                                await accounting.close_position(
+                                    user_id=user_id,
+                                    condition_id=condition_id,
+                                    token_id=token_id,
+                                )
                             else:
-                                accounting.upsert_position(
+                                await accounting.upsert_position(
                                     PositionLot(
                                         user_id=user_id,
                                         condition_id=condition_id,
@@ -697,13 +706,13 @@ async def risk_monitor_loop(
         await asyncio.sleep(interval)
 
 
-def rehydrate_position_manager(context: TradingContext) -> None:
+async def rehydrate_position_manager(context: TradingContext) -> None:
     """Load persisted open positions into the context position manager."""
     pm = context.position_manager
     if not hasattr(pm, "track_buy"):
         return
 
-    for pos in context.positions_repo.list_open_positions(context.user_id):
+    for pos in await context.positions_repo.list_open_positions(context.user_id):
         existing = None
         if hasattr(pm, "get_position"):
             try:
@@ -791,7 +800,7 @@ async def reconcile_unconfirmed_risk_orders(context: TradingContext) -> int:
 
     from orchestrators.trade_pipeline import get_reconciliation_service
 
-    records = context.orders_repo.get_unconfirmed_order_submissions(
+    records = await context.orders_repo.get_unconfirmed_order_submissions(
         user_id=context.user_id,
         side="SELL",
     )
@@ -861,7 +870,7 @@ async def run_risk_check_for_context(context: TradingContext) -> None:
     except Exception as exc:
         logger.warning("risk_monitor_pre_reconcile_error | %s", repr(exc))
 
-    rehydrate_position_manager(context)
+    await rehydrate_position_manager(context)
     slippage_bps = int(float(context.extra.get("slippage_tolerance_bps", 200)))
     refresh_interval = float(context.extra.get("risk_check_interval_seconds", 0.25) or 0.25)
 
@@ -869,7 +878,7 @@ async def run_risk_check_for_context(context: TradingContext) -> None:
     enable_tiered = str(context.extra.get("enable_balance_tiered_policy", "false")).lower() in ("1", "true", "yes")
 
     warned_tokens: set[str] = context.extra.setdefault(_WARNED_INVALID_TOKENS_KEY, set())
-    for pos in context.positions_repo.list_open_positions(context.user_id):
+    for pos in await context.positions_repo.list_open_positions(context.user_id):
         if not is_valid_clob_token_id(pos.token_id):
             if pos.token_id not in warned_tokens:
                 warned_tokens.add(pos.token_id)
@@ -944,7 +953,7 @@ async def run_risk_check_for_context(context: TradingContext) -> None:
                 _trigger_id: int | None = None
                 if context.risk_triggers_repo is not None:
                     try:
-                        _trigger_id = context.risk_triggers_repo.record_trigger(
+                        _trigger_id = await context.risk_triggers_repo.record_trigger(
                             user_id=context.user_id,
                             condition_id=pos.condition_id,
                             token_id=pos.token_id,
@@ -1020,7 +1029,7 @@ async def run_risk_check_for_context(context: TradingContext) -> None:
                                 )
                                 if _trigger_id is not None and context.risk_triggers_repo is not None:
                                     try:
-                                        context.risk_triggers_repo.update_fill_status(
+                                        await context.risk_triggers_repo.update_fill_status(
                                             _trigger_id,
                                             fill_status="rejected",
                                             fill_order_id=result.order_id,
@@ -1032,7 +1041,7 @@ async def run_risk_check_for_context(context: TradingContext) -> None:
                             logger.debug("risk_drift_reconciliation_error", exc_info=True)
                     if _trigger_id is not None and context.risk_triggers_repo is not None:
                         try:
-                            context.risk_triggers_repo.update_fill_status(
+                            await context.risk_triggers_repo.update_fill_status(
                                 _trigger_id,
                                 fill_status="rejected",
                                 fill_order_id=result.order_id,
@@ -1050,7 +1059,7 @@ async def run_risk_check_for_context(context: TradingContext) -> None:
                     )
                     if _trigger_id is not None and context.risk_triggers_repo is not None:
                         try:
-                            context.risk_triggers_repo.update_fill_status(
+                            await context.risk_triggers_repo.update_fill_status(
                                 _trigger_id,
                                 fill_status="pending",
                                 fill_order_id=result.order_id,
@@ -1069,7 +1078,7 @@ async def run_risk_check_for_context(context: TradingContext) -> None:
                     )
                     if _trigger_id is not None and context.risk_triggers_repo is not None:
                         try:
-                            context.risk_triggers_repo.update_fill_status(
+                            await context.risk_triggers_repo.update_fill_status(
                                 _trigger_id,
                                 fill_status="rejected",
                                 fill_order_id=result.order_id,
@@ -1090,7 +1099,7 @@ async def run_risk_check_for_context(context: TradingContext) -> None:
 
                 if _trigger_id is not None and context.risk_triggers_repo is not None:
                     try:
-                        context.risk_triggers_repo.update_fill_status(
+                        await context.risk_triggers_repo.update_fill_status(
                             _trigger_id,
                             fill_status="filled",
                             fill_order_id=result.order_id,
@@ -1098,31 +1107,126 @@ async def run_risk_check_for_context(context: TradingContext) -> None:
                     except Exception:
                         logger.debug("risk_trigger_update_error", exc_info=True)
 
-                context.fills_repo.append_fill(
-                    FillRecord(
-                        user_id=context.user_id,
-                        leader_id=pos.leader_id,
-                        order_id=result.order_id,
-                        condition_id=pos.condition_id,
-                        token_id=pos.token_id,
-                        side="SELL",
-                        size_tokens=fill_size,
-                        price=fill_price,
-                        fee=Decimal(str(result.fees_paid or 0)),
-                        fill_ts=int(time.time()),
-                    ),
+                # Concurrent-run dedup guard — PR #108 P1 finding.
+                #
+                # The ``idx_fills_unique`` index keys on
+                # ``(user_id, order_id, condition_id, side, fill_ts)``.
+                # ``fill_ts`` is the only field that varies between two
+                # concurrent ``run_risk_check_for_context`` invocations
+                # for the same protective SELL (wall-clock T vs T+1), so
+                # the unique index does NOT collapse them — both inserts
+                # succeed with distinct ``fill_id`` values, both call
+                # ``_apply_fill_in_conn`` (the second on size=0 because
+                # the first already closed the position), the second
+                # delete is a no-op, position state ends correct, but
+                # the fills table now holds TWO rows for ONE exchange
+                # fill. Downstream PnL replay (e.g. ``reconcile_trade_
+                # record``) double-counts.
+                #
+                # Anchor dedup to the exchange-sourced ``result.order_id``
+                # via ``try_claim_processed_trade`` — the same pattern
+                # the trade pipeline uses upstream of its fill insert.
+                # Only the winning coroutine reaches ``append_fill_and_
+                # apply``; the loser bails out before mutating fills /
+                # positions / blocks / PnL.
+                risk_trade_key = (
+                    f"risk_exit:{context.user_id}:{pos.condition_id}:"
+                    f"{pos.token_id}:{result.order_id}"
                 )
-                updated_pos = context.positions_repo.apply_fill(
+                claimed = await context.orders_repo.try_claim_processed_trade(
+                    trade_key=risk_trade_key,
                     user_id=context.user_id,
                     leader_id=pos.leader_id,
-                    condition_id=pos.condition_id,
-                    token_id=pos.token_id,
+                    tx_hash=None,
                     side="SELL",
-                    fill_size=fill_size,
-                    fill_price=fill_price,
+                    asset=pos.token_id,
+                    condition_id=pos.condition_id,
+                    status="in_progress",
                 )
+                if not claimed:
+                    logger.info(
+                        "risk_exit_concurrent_claim_lost | user=%s condition=%s token=%s order=%s",
+                        context.user_id,
+                        pos.condition_id,
+                        pos.token_id,
+                        result.order_id,
+                    )
+                    continue
+
+                # Freeze ``fill_ts`` once per claim so any retry within
+                # this coroutine reuses the same timestamp the unique
+                # index keys on, instead of re-sampling ``time.time()``.
+                _fill_ts = int(time.time())
+
+                # Atomic fill insert + position update — closes the
+                # crash-window the protective-SELL path had between the
+                # two independent pool connections. ``append_fill_and_
+                # apply`` also short-circuits on duplicate fills (the
+                # ON CONFLICT DO NOTHING branch returns fill_id=0 and
+                # skips ``apply_fill``), preventing the double-count
+                # regression flagged in PR #108.
+                try:
+                    fill_id, updated_pos = await context.fills_repo.append_fill_and_apply(
+                        FillRecord(
+                            user_id=context.user_id,
+                            leader_id=pos.leader_id,
+                            order_id=result.order_id,
+                            condition_id=pos.condition_id,
+                            token_id=pos.token_id,
+                            side="SELL",
+                            size_tokens=fill_size,
+                            price=fill_price,
+                            fee=Decimal(str(result.fees_paid or 0)),
+                            fill_ts=_fill_ts,
+                        ),
+                        context.positions_repo,
+                    )
+                except Exception:
+                    # Release the claim so a retry can re-attempt rather
+                    # than tombstoning the order_id behind a stale
+                    # in_progress row.
+                    try:
+                        await context.orders_repo.mark_processed_trade(
+                            trade_key=risk_trade_key,
+                            user_id=context.user_id,
+                            leader_id=pos.leader_id,
+                            tx_hash=None,
+                            side="SELL",
+                            asset=pos.token_id,
+                            condition_id=pos.condition_id,
+                            status="retryable_failed",
+                        )
+                    except Exception:
+                        logger.debug("risk_exit_claim_release_failed", exc_info=True)
+                    raise
+                if fill_id == 0:
+                    # Duplicate protective SELL — fill was already persisted
+                    # on a prior call. Risk block, PnL, and position-manager
+                    # state were updated then; replaying them would create a
+                    # false-positive durable re-entry block (the duplicate
+                    # path returns updated_pos=None which would otherwise
+                    # trip ``_risk_exit_fully_closed_position`` → True) and
+                    # double-count realised PnL.
+                    logger.info(
+                        "risk_exit_duplicate_fill_ignored | user=%s condition=%s token=%s order=%s",
+                        context.user_id,
+                        pos.condition_id,
+                        pos.token_id,
+                        result.order_id,
+                    )
+                    await context.orders_repo.mark_processed_trade(
+                        trade_key=risk_trade_key,
+                        user_id=context.user_id,
+                        leader_id=pos.leader_id,
+                        tx_hash=None,
+                        side="SELL",
+                        asset=pos.token_id,
+                        condition_id=pos.condition_id,
+                        status="duplicate_ignored",
+                    )
+                    continue
                 if _risk_exit_fully_closed_position(updated_pos):
-                    context.risk_blocks_repo.mark_risk_block(
+                    await context.risk_blocks_repo.mark_risk_block(
                         user_id=context.user_id,
                         condition_id=pos.condition_id,
                         token_id=pos.token_id,
@@ -1171,6 +1275,24 @@ async def run_risk_check_for_context(context: TradingContext) -> None:
                     # NOTE: no manual ``release_scope`` here — the surrounding
                     # ``async with context.position_coordinator.acquire(_scope)``
                     # context manager already releases on exit. (Greptile P2 PR #63.)
+
+                # Settle the dedup claim — any concurrent run that sampled
+                # ``time.time()`` one second later and would have inserted
+                # a phantom duplicate fill row now bounces off the claim
+                # short-circuit instead.
+                try:
+                    await context.orders_repo.mark_processed_trade(
+                        trade_key=risk_trade_key,
+                        user_id=context.user_id,
+                        leader_id=pos.leader_id,
+                        tx_hash=None,
+                        side="SELL",
+                        asset=pos.token_id,
+                        condition_id=pos.condition_id,
+                        status="completed",
+                    )
+                except Exception:
+                    logger.debug("risk_exit_claim_complete_failed", exc_info=True)
             except Exception as exc:
                 logger.error(f"Risk context check failed user={context.user_id} condition={pos.condition_id}: {exc}")
 

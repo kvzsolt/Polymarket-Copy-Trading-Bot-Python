@@ -28,7 +28,6 @@ import urllib.request
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-from config.env import ENV
 from config.app_config import AppConfig
 from utils.logger import get_logger
 
@@ -146,17 +145,21 @@ class TraderDiscoveryService:
             self._auto_discover_top_n: int = l.auto_discover_top_n
             self._discovery_interval: int = d.discovery_interval_seconds
         else:
-            # Legacy fallback for tests that don't pass config
-            self._cache_ttl_s: float = float(ENV.get("DISCOVERY_CACHE_TTL_SECONDS", 3600) or 3600)
-            self._min_pnl: float = float(ENV.get("MIN_LEADER_PNL", 1000.0))
-            self._min_win_rate: float = float(ENV.get("MIN_LEADER_WIN_RATE", 0.55))
-            self._min_positions: int = int(ENV.get("MIN_LEADER_POSITIONS", 20))
-            self._max_results: int = int(ENV.get("DISCOVERY_MAX_RESULTS", 50))
-            self._enabled: bool = ENV.get("ENABLE_TRADER_DISCOVERY", False)
-            self._auto_discover: bool = ENV.get("AUTO_DISCOVER_LEADERS", False)
-            self._auto_discover_min_score: float = float(ENV.get("AUTO_DISCOVER_MIN_SCORE", 0.45) or 0.45)
-            self._auto_discover_top_n: int = int(ENV.get("AUTO_DISCOVER_TOP_N", 5) or 5)
-            self._discovery_interval: int = int(ENV.get("DISCOVERY_INTERVAL_SECONDS", 3600) or 3600)
+            # No typed config injected — fail-closed hardcoded defaults.
+            # Same values that were previously the ENV-read defaults; the
+            # service stays *disabled* by default so trader discovery never
+            # runs on a misconfigured bootstrap. Production paths always
+            # pass `config=AppConfig` per orchestrators/runtime_bootstrap.py.
+            self._cache_ttl_s: float = 3600.0
+            self._min_pnl: float = 1000.0
+            self._min_win_rate: float = 0.55
+            self._min_positions: int = 20
+            self._max_results: int = 50
+            self._enabled: bool = False
+            self._auto_discover: bool = False
+            self._auto_discover_min_score: float = 0.45
+            self._auto_discover_top_n: int = 5
+            self._discovery_interval: int = 3600
 
     def _score_trader(self, profile: TraderProfile) -> float:
         """Compute composite score from trader metrics.
@@ -323,19 +326,20 @@ class TraderDiscoveryService:
 
         # Try persisted leaders first
         try:
-            from config.db import get_database
-            with get_database() as conn:
-                docs = conn.execute(
+            from storage.postgres.connection import get_pool
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                docs = await conn.fetch(
                     """
                     SELECT wallet, name, overall_gain, win_amount, loss_amount, win_rate,
                            total_positions, active_positions, event_count, win_count, rank,
                            total_current_value, composite_score, tags, updated_at
                     FROM discovered_leaders
                     ORDER BY composite_score DESC
-                    LIMIT ?
+                    LIMIT $1
                     """,
-                    (int(max_results),),
-                ).fetchall()
+                    int(max_results),
+                )
             if docs:
                 candidates = []
                 for doc in docs:
@@ -368,16 +372,16 @@ class TraderDiscoveryService:
                     self._cache[wallet] = profile
 
                 if candidates:
-                    self._last_discovery_source = "sqlite_fallback"
+                    self._last_discovery_source = "postgres_fallback"
                     age_s = time.time() - max((float(doc["updated_at"] or 0) for doc in docs), default=0)
                     logger.info(
-                        f"Fallback: loaded {len(candidates)} leaders from SQLite "
+                        f"Fallback: loaded {len(candidates)} leaders from Postgres "
                         f"(age={age_s/3600:.1f}h)"
                     )
                     candidates.sort(key=lambda p: (-p.composite_score, int(p.rank or 0), p.wallet))
                     return candidates
         except Exception as e:
-            logger.debug(f"SQLite fallback failed: {e}")
+            logger.debug(f"Postgres fallback failed: {e}")
 
         # Last resort: return whatever is in memory cache
         if self._cache:
@@ -459,21 +463,22 @@ class TraderDiscoveryService:
         return self._cache.get(wallet.strip().lower())
 
     async def persist_discovered(self) -> None:
-        """Save discovered leaders to SQLite."""
+        """Save discovered leaders to Postgres."""
         if not self._cache:
             return
 
         try:
-            from config.db import get_database
-            with get_database() as conn:
+            from storage.postgres.connection import get_pool
+            pool = await get_pool()
+            async with pool.acquire() as conn:
                 for wallet, profile in self._cache.items():
-                    conn.execute(
+                    await conn.execute(
                         """
                         INSERT INTO discovered_leaders
                         (wallet, name, overall_gain, win_amount, loss_amount, win_rate, total_positions,
                          active_positions, event_count, win_count, rank, total_current_value, tags,
                          composite_score, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
                         ON CONFLICT(wallet) DO UPDATE SET
                           name = excluded.name,
                           overall_gain = excluded.overall_gain,
@@ -490,26 +495,23 @@ class TraderDiscoveryService:
                           composite_score = excluded.composite_score,
                           updated_at = excluded.updated_at
                         """,
-                        (
-                            wallet,
-                            profile.name,
-                            profile.overall_gain,
-                            profile.win_amount,
-                            profile.loss_amount,
-                            profile.win_rate,
-                            profile.total_positions,
-                            profile.active_positions,
-                            profile.event_count,
-                            profile.win_count,
-                            profile.rank,
-                            profile.total_current_value,
-                            profile.tags,
-                            profile.composite_score,
-                            time.time(),
-                        ),
+                        wallet,
+                        profile.name,
+                        profile.overall_gain,
+                        profile.win_amount,
+                        profile.loss_amount,
+                        profile.win_rate,
+                        profile.total_positions,
+                        profile.active_positions,
+                        profile.event_count,
+                        profile.win_count,
+                        profile.rank,
+                        profile.total_current_value,
+                        profile.tags,
+                        profile.composite_score,
+                        time.time(),
                     )
-                conn.commit()
-            logger.info(f"Persisted {len(self._cache)} discovered leaders to SQLite")
+            logger.info(f"Persisted {len(self._cache)} discovered leaders to Postgres")
         except Exception as exc:
             logger.warning(f"Failed to persist discovered leaders: {exc}")
 

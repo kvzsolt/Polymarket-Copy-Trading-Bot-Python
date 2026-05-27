@@ -37,7 +37,7 @@ class _OrdersRepo:
     def __init__(self):
         self.update_calls: list[dict[str, Any]] = []
 
-    def update_submission_status(self, **kwargs) -> None:
+    async def update_submission_status(self, **kwargs) -> None:
         self.update_calls.append(kwargs)
 
 
@@ -45,7 +45,7 @@ class _PositionsRepo:
     def __init__(self, local_size: str = "0"):
         self._size = Decimal(local_size)
 
-    def get_position(self, *args, **kwargs):
+    async def get_position(self, *args, **kwargs):
         return MagicMock(size_tokens=self._size)
 
 
@@ -53,7 +53,7 @@ class _ReservationService:
     def __init__(self):
         self.releases: list[tuple[str, str]] = []
 
-    def release_terminal(self, reservation_id: str, reason: str) -> None:
+    async def release_terminal(self, reservation_id: str, reason: str) -> None:
         self.releases.append((reservation_id, reason))
 
 

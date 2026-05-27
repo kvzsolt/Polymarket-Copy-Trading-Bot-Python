@@ -5,7 +5,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, TYPE_CHECKING
 
-from config.env import ENV, get_funder_address
+from config.env import get_funder_address
 from services.leaderCursorStore import LeaderCursorStore
 from services.metrics import metrics
 from storage.postgres.cursors_repo import TradeCursor
@@ -58,18 +58,10 @@ def _leader_fetch_spacing_seconds(kind: str) -> float:
         )
         return max(0.0, ms / 1000.0)
 
-    # Legacy ENV fallback
-    env_name = (
-        "LEADER_POSITIONS_MIN_FETCH_SPACING_MS"
-        if kind == "positions"
-        else "LEADER_ACTIVITY_MIN_FETCH_SPACING_MS"
-    )
-    raw = ENV.get(env_name, 250)
-    try:
-        ms = int(raw)
-    except (TypeError, ValueError):
-        ms = 250
-    return max(0.0, ms / 1000.0)
+    # No typed config injected — fail-closed default mirroring the
+    # previous ``ENV.get(LEADER_*_MIN_FETCH_SPACING_MS, 250)`` defaults.
+    # Production calls `configure_fetch_spacing(config)` from bootstrap.
+    return 0.25
 
 
 async def _guarded_leader_fetch(kind: str, leader_wallet: str, url: str):
@@ -565,7 +557,7 @@ async def fetch_trade_data(
             state.last_processed_ts = max(state.last_processed_ts, float(ts))
             try:
                 from models.userHistory import get_user_activity_model
-                get_user_activity_model(user_address).insert_many(new_trades)
+                await get_user_activity_model(user_address).insert_many(new_trades)
             except Exception as e:
                 logger.error(f'DB save activities: {e}')
     except Exception as e:

@@ -1,23 +1,28 @@
-"""Tests for Phase 10: discovery → live monitoring wiring."""
+"""Tests for Phase 10: discovery → live monitoring wiring.
+
+PG-A6 port:
+* Mock leaders_repo.get_leaders_by_tier uses AsyncMock now that the
+  underlying PG repo method is a coroutine.
+* The schema-touching ``test_get_leaders_by_tier`` runs against a
+  per-test asyncpg testcontainer pool.
+"""
 from __future__ import annotations
 
 import asyncio
-import pytest
+import contextlib
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
 
 # ---------------------------------------------------------------------------
 # _discovery_refresh_loop
 # ---------------------------------------------------------------------------
 
-# We need to import the function under test.
-# It lives at module-level in app.py which has heavy side-effects at import
-# time.  To avoid that, we import it carefully.  If that proves fragile we
-# test indirectly via the callback contract.
-
 def _make_leaders_repo(tiers: dict[str, list[str]]):
-    """Return a mock leaders_repo whose get_leaders_by_tier returns from *tiers*."""
+    """Return a mock leaders_repo whose get_leaders_by_tier (async) returns from *tiers*."""
     repo = MagicMock()
-    repo.get_leaders_by_tier = MagicMock(side_effect=lambda t: list(tiers.get(t, [])))
+    repo.get_leaders_by_tier = AsyncMock(side_effect=lambda t: list(tiers.get(t, [])))
     return repo
 
 
@@ -40,27 +45,23 @@ async def test_discovery_loop_detects_new_leaders():
     repo = _make_leaders_repo(tiers)
     callback = AsyncMock()
 
-    async def _run():
-        task = asyncio.create_task(
-            _discovery_refresh_loop(
-                registry=registry,
-                configured_leaders=["0xAAA"],
-                refresh_interval=0,  # instant
-                leaders_repo=repo,
-                on_new_leaders=callback,
-                already_monitored=set(),
-            )
+    task = asyncio.create_task(
+        _discovery_refresh_loop(
+            registry=registry,
+            configured_leaders=["0xAAA"],
+            refresh_interval=0,
+            leaders_repo=repo,
+            on_new_leaders=callback,
+            already_monitored=set(),
         )
-        # Let two iterations run
-        await asyncio.sleep(0.05)
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
+    )
+    await asyncio.sleep(0.05)
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
 
-    await _run()
-    # Callback should have been called exactly once with ["0xAAA"]
     assert callback.call_count >= 1
     first_call_wallets = callback.call_args_list[0][0][0]
     assert "0xAAA" in first_call_wallets
@@ -93,7 +94,6 @@ async def test_discovery_loop_no_duplicate_callbacks():
     except asyncio.CancelledError:
         pass
 
-    # Should only be called once (first detection), not on subsequent iterations
     assert callback.call_count == 1
 
 
@@ -114,7 +114,7 @@ async def test_discovery_loop_already_monitored_skipped():
             refresh_interval=0,
             leaders_repo=repo,
             on_new_leaders=callback,
-            already_monitored={"0xCCC"},  # already being monitored
+            already_monitored={"0xCCC"},
         )
     )
     await asyncio.sleep(0.05)
@@ -222,44 +222,70 @@ async def test_discovery_loop_refresh_exception_resilience():
     except asyncio.CancelledError:
         pass
 
-    # Should have survived failures and eventually called callback
     assert call_count >= 3
     assert callback.call_count >= 1
 
 
 # ---------------------------------------------------------------------------
-# get_leaders_by_tier (sqlite)
+# get_leaders_by_tier (PG)
 # ---------------------------------------------------------------------------
-def test_get_leaders_by_tier():
+
+@contextlib.asynccontextmanager
+async def _pg_pool():
+    try:
+        from testcontainers.postgres import PostgresContainer
+        import asyncpg
+        from storage.postgres.migrations import apply_migrations as pg_apply
+    except Exception as exc:
+        pytest.skip(f"Docker / postgres image unavailable: {exc!r}")
+    ctr = PostgresContainer("postgres:16-alpine")
+    try:
+        ctr.start()
+    except Exception as exc:
+        pytest.skip(f"Docker / postgres image unavailable: {exc!r}")
+    try:
+        dsn = ctr.get_connection_url(driver="asyncpg").replace(
+            "postgresql+asyncpg://", "postgresql://"
+        )
+        pool = await asyncpg.create_pool(dsn, min_size=1, max_size=3)
+        async with pool.acquire() as conn:
+            await pg_apply(conn)
+        try:
+            yield pool
+        finally:
+            await pool.close()
+    finally:
+        ctr.stop()
+
+
+@pytest.mark.asyncio
+async def test_get_leaders_by_tier():
     """Verify get_leaders_by_tier returns correct wallets for a given tier."""
-    import tempfile
-    import os
-    from storage.sqlite.leaders_repo import LeadersRepo
-    from storage.sqlite.migrations import apply_migrations as run_migrations
-    from storage.sqlite.connection import create_connection
+    from storage.postgres.leaders_repo import LeadersRepo
 
-    db_path = os.path.join(tempfile.mkdtemp(), "test.db")
-    with create_connection(db_path) as conn:
-        run_migrations(conn)
-        # Insert some test leaders with different tiers
-        for wallet, tier in [("0x111", "live_follow"), ("0x222", "paper_follow"),
-                             ("0x333", "watchlist"), ("0x444", "live_follow")]:
-            conn.execute(
-                "INSERT INTO discovered_leaders (wallet, active, follow_tier, updated_at) "
-                "VALUES (?, 1, ?, 1000.0)",
-                (wallet, tier),
-            )
-        conn.commit()
+    async with _pg_pool() as pool:
+        async with pool.acquire() as conn:
+            for wallet, tier in [
+                ("0x111", "live_follow"),
+                ("0x222", "paper_follow"),
+                ("0x333", "watchlist"),
+                ("0x444", "live_follow"),
+            ]:
+                await conn.execute(
+                    "INSERT INTO discovered_leaders "
+                    "(wallet, active, follow_tier, updated_at) "
+                    "VALUES ($1, TRUE, $2, 1000.0)",
+                    wallet,
+                    tier,
+                )
 
-    repo = LeadersRepo(db_path)
-    live = repo.get_leaders_by_tier("live_follow")
-    paper = repo.get_leaders_by_tier("paper_follow")
-    watchlist = repo.get_leaders_by_tier("watchlist")
-    none = repo.get_leaders_by_tier("nonexistent")
+        repo = LeadersRepo(pool)
+        live = await repo.get_leaders_by_tier("live_follow")
+        paper = await repo.get_leaders_by_tier("paper_follow")
+        watchlist = await repo.get_leaders_by_tier("watchlist")
+        none = await repo.get_leaders_by_tier("nonexistent")
 
-    assert sorted(live) == ["0x111", "0x444"]
-    assert paper == ["0x222"]
-    assert watchlist == ["0x333"]
-    assert none == []
-
-    os.unlink(db_path)
+        assert sorted(live) == ["0x111", "0x444"]
+        assert paper == ["0x222"]
+        assert watchlist == ["0x333"]
+        assert none == []

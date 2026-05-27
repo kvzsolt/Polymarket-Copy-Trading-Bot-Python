@@ -69,8 +69,8 @@ async def discovery_refresh_loop(
         try:
             await registry.refresh(configured_leaders)
             if leaders_repo is not None and on_new_leaders is not None:
-                live = set(leaders_repo.get_leaders_by_tier("live_follow"))
-                paper = set(leaders_repo.get_leaders_by_tier("paper_follow"))
+                live = set(await leaders_repo.get_leaders_by_tier("live_follow"))
+                paper = set(await leaders_repo.get_leaders_by_tier("paper_follow"))
                 monitorable = live | paper
                 new_leaders = sorted(monitorable - monitored)
                 if new_leaders:
