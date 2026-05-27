@@ -1063,6 +1063,9 @@ class ExecutionService:
                 submission_state=lifecycle_status,
                 signal_id=getattr(req, "signal_id", None),
             )
-        except Exception:
-            # Logging must never break execution.
-            pass
+        except Exception as exc:
+            # SHP-08: logging must never break execution, but it shouldn't
+            # vanish either. Keep at debug so the failure is observable
+            # under ``--log-level=DEBUG`` without spamming production
+            # warn/error.
+            logger.debug("lifecycle_log_failed | %r", exc)
