@@ -15,6 +15,13 @@ from services.traderDiscoveryService import TraderDiscoveryService
 from orchestrators.leader_registry import LeaderRegistry
 from storage.postgres.connection import get_pool
 from storage.postgres.leaders_repo import LeadersRepo
+from utils.logger import get_logger
+
+# INF-06: structured logger so a long-running daemon doesn't bypass the
+# project's centralised logging configuration. The script can still be
+# tailed with ``-c "import logging; logging.basicConfig(level=logging.INFO)"``
+# during local development.
+logger = get_logger("TraderFinder")
 
 OUTPUT_JSON = Path("data/followable_traders.json")
 OUTPUT_JSON.parent.mkdir(parents=True, exist_ok=True)
@@ -76,8 +83,14 @@ async def main():
     repo = LeadersRepo(pool)
     registry = LeaderRegistry(discovery, repo, config)
 
-    print(f"[finder] started: target={TARGET_COUNT} refresh={REFRESH_SECONDS}s")
-    print("[finder] using implemented filters only: pnl / win rate / positions / active positions / composite score")
+    logger.info(
+        "finder started | target=%d refresh=%ds",
+        TARGET_COUNT, REFRESH_SECONDS,
+    )
+    logger.info(
+        "finder using implemented filters only: pnl / win rate / "
+        "positions / active positions / composite score"
+    )
 
     while True:
         state = await registry.refresh([])
@@ -85,18 +98,28 @@ async def main():
         OUTPUT_JSON.write_text(json.dumps(payload, indent=2))
 
         active = state.active_monitored
-        print(f"[finder] active={len(active)} candidates={len(state.discovered)} mode={state.mode}")
+        logger.info(
+            "finder snapshot | active=%d candidates=%d mode=%s",
+            len(active), len(state.discovered), state.mode,
+        )
         for wallet in active[:TARGET_COUNT]:
             profile = discovery.get_cached_profile(wallet)
             if profile:
                 wr = profile.win_rate if profile.win_rate <= 1.0 else profile.win_rate / 100.0
-                print(
-                    f"[finder] leader={wallet} score={profile.composite_score:.3f} "
-                    f"pnl={profile.overall_gain:.2f} wr={wr:.3f} positions={profile.total_positions}"
+                logger.info(
+                    "finder leader=%s score=%.3f pnl=%.2f wr=%.3f positions=%d",
+                    wallet,
+                    profile.composite_score,
+                    profile.overall_gain,
+                    wr,
+                    profile.total_positions,
                 )
 
         if len(active) >= TARGET_COUNT:
-            print(f"[finder] success: found {len(active)} active followable traders")
+            logger.info(
+                "finder success | found=%d active followable traders",
+                len(active),
+            )
             return
 
         await asyncio.sleep(REFRESH_SECONDS)

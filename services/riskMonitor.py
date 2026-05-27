@@ -1057,7 +1057,10 @@ async def run_risk_check_for_context(context: TradingContext) -> None:
                 except Exception:
                     logger.debug("risk_exit_claim_complete_failed", exc_info=True)
             except Exception as exc:
-                logger.error(f"Risk context check failed user={context.user_id} condition={pos.condition_id}: {exc}")
+                logger.error(
+                    "Risk context check failed user=%s condition=%s: %r",
+                    context.user_id, pos.condition_id, exc,
+                )
 
 
 async def risk_monitor_loop_for_contexts(
@@ -1091,7 +1094,10 @@ async def risk_monitor_loop_for_contexts(
         refresh_results = await asyncio.gather(*refresh_tasks, return_exceptions=True)
         for context, result in zip(contexts, refresh_results, strict=False):
             if isinstance(result, Exception):
-                logger.error(f"Risk price cache refresh failed user={context.user_id}: {result}")
+                logger.error(
+                    "Risk price cache refresh failed user=%s: %r",
+                    context.user_id, result,
+                )
         # Pre-fix: sequential iteration blocked every context behind a
         # stalled venue call for any single one. Parallel gather mirrors
         # the refresh-tasks path above so one slow context never starves
@@ -1112,5 +1118,8 @@ async def risk_monitor_loop_for_contexts(
                     f"after {ceiling:.1f}s — context skipped this cycle"
                 )
             elif isinstance(result, Exception):
-                logger.error(f"Risk loop error user={context.user_id}: {result}")
+                logger.error(
+                    "Risk loop error user=%s: %r",
+                    context.user_id, result,
+                )
         await asyncio.sleep(poll_interval)
