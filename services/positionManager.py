@@ -50,6 +50,17 @@ def _to_dec(value: object, default: Decimal = Decimal("0")) -> Decimal:
     CLAUDE.md non-negotiable: position state must not flow through float
     arithmetic. Callers may still pass float / int from legacy paths;
     we convert via ``str()`` to avoid IEEE-754 representation noise.
+
+    Review fix (cubic / greptile P1 on PR #110): on conversion failure we
+    now raise ``InvalidOperation`` instead of silently returning the
+    default. The prior broad ``except Exception: return default`` was
+    fail-open — a non-numeric ``entry_price`` slid through as
+    ``Decimal("0")`` and then either crashed the risk monitor with
+    ``DivisionByZero`` or produced a full-exit-price × size PnL on the
+    next sell. ``None`` is still treated as "no value" and returns the
+    default (kept for the evaluate_risk_action ``current_price=None``
+    short-circuit). Anything else that is not coercible to Decimal must
+    fail at the call site.
     """
     if value is None:
         return default
@@ -57,10 +68,9 @@ def _to_dec(value: object, default: Decimal = Decimal("0")) -> Decimal:
         return value
     if isinstance(value, bool):
         return Decimal(int(value))
-    try:
-        return Decimal(str(value))
-    except Exception:
-        return default
+    # ``Decimal(str(value))`` raises ``decimal.InvalidOperation`` (a
+    # subclass of ArithmeticError) on garbage — let it propagate.
+    return Decimal(str(value))
 
 
 def _parse_csv_floats(raw: str) -> list[float]:
@@ -264,6 +274,18 @@ class PositionManager:
         d_entry = _to_dec(entry_price)
         d_size = _to_dec(size_tokens)
         d_cost = _to_dec(usdc_cost)
+        # Defense-in-depth (cubic P1 on PR #110): even after the broad
+        # except removal in ``_to_dec`` above, a caller passing literal
+        # zero or a negative slips through as a valid Decimal. A zero
+        # ``entry_price`` then crashes ``evaluate_risk_action`` via
+        # ``pct_change = (cp - entry) / entry`` (DivisionByZero) and a
+        # zero ``size_tokens`` poisons ``track_sell``'s ``effective_size``
+        # clamp. Fail closed here.
+        if d_entry <= 0 or d_size <= 0 or d_cost <= 0:
+            raise ValueError(
+                "track_buy requires positive entry_price/size_tokens/usdc_cost, "
+                f"got entry={entry_price!r}, size={size_tokens!r}, cost={usdc_cost!r}"
+            )
 
         pos = TrackedPosition(
             condition_id=condition_id,

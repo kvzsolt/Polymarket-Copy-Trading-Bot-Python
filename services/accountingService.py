@@ -29,11 +29,20 @@ def _required_decimal_str(doc: dict[str, Any], key: str) -> str:
     if value is None or value == "":
         raise ValueError(f"book_fill missing required money field: {key!r}")
     try:
-        return str(Decimal(str(value)))
+        parsed = Decimal(str(value))
     except (InvalidOperation, ValueError) as exc:
         raise ValueError(
             f"book_fill field {key!r} is not a valid decimal: {value!r}"
         ) from exc
+    # Review fix (cubic P2 on PR #110): ``Decimal("NaN")`` and
+    # ``Decimal("Infinity")`` parse without raising, so an upstream
+    # ``float('inf')`` or string literal would slip past the try/except
+    # above and land in the ledger. Reject non-finite values explicitly.
+    if not parsed.is_finite():
+        raise ValueError(
+            f"book_fill field {key!r} must be a finite decimal: {value!r}"
+        )
+    return str(parsed)
 
 
 @dataclass(frozen=True)
