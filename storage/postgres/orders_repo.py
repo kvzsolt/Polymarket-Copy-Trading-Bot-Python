@@ -489,14 +489,15 @@ class OrdersRepo(AbstractOrderRepository):
                 # FOR UPDATE on the SELECT serialises against concurrent
                 # writers — Postgres equivalent of the SQLite BEGIN IMMEDIATE
                 # writer-lock. Two reconcilers cannot both observe the same
-                # response_json snapshot and lose-update each other.
+                # response_json snapshot and lose-update each other. The
+                # partial unique index ``idx_orders_order_id WHERE
+                # order_id IS NOT NULL`` already enforces at most one row
+                # per non-null ``order_id``, so no ORDER BY / LIMIT needed.
                 row = await conn.fetchrow(
                     """
                     SELECT response_json
                     FROM orders
                     WHERE order_id = $1
-                    ORDER BY updated_at DESC
-                    LIMIT 1
                     FOR UPDATE
                     """,
                     order_id,

@@ -125,6 +125,30 @@ def _flatten_contexts(
     ]
 
 
+def _wallets_blocked_by_reconcile_failures(
+    started_wallets: list[str],
+    contexts_by_leader: dict[str, list["TradingContext"]],
+    failed_user_ids: list[str],
+) -> list[str]:
+    """Return wallets whose downstream contexts include any failed user_id.
+
+    Used by the dynamic-leader discovery refresh to refuse starting a
+    leader monitor when startup reconciliation failed for a user under
+    that leader: starting the monitor on stale state is the same
+    double-fill exposure the cold-start path already gates against.
+    """
+    if not failed_user_ids:
+        return []
+    failed = set(failed_user_ids)
+    return [
+        wallet for wallet in started_wallets
+        if any(
+            ctx.user_id in failed
+            for ctx in contexts_by_leader.get(wallet, [])
+        )
+    ]
+
+
 async def _refresh_contexts_for_new_leaders(
     *,
     new_wallets: list[str],
@@ -971,20 +995,33 @@ async def main():
         new_contexts: list["TradingContext"] = []
         for wallet in started_wallets:
             new_contexts.extend(contexts_by_leader.get(wallet, []))
+        dynamic_recon_failures: list[str] = []
         if new_contexts:
-            dynamic_recon_failures: list[str] = []
             await startup_reconcile_unconfirmed(
                 new_contexts,
                 failures_out=dynamic_recon_failures,
             )
-            if dynamic_recon_failures:
-                logger.error(
-                    "dynamic_leader_reconcile_failed | leaders=%s users=%s — "
-                    "monitor will start anyway; affected users may carry "
-                    "stale position state",
-                    started_wallets,
-                    dynamic_recon_failures,
-                )
+
+        # SHP-11: drop any leader whose downstream contexts include a
+        # failed user_id. Starting a monitor on stale state is the same
+        # double-fill exposure the startup path already gates against —
+        # the dynamic-discovery path must match.
+        blocked_wallets = _wallets_blocked_by_reconcile_failures(
+            started_wallets, contexts_by_leader, dynamic_recon_failures,
+        )
+        if blocked_wallets:
+            logger.error(
+                "dynamic_leader_reconcile_failed | blocked_leaders=%s "
+                "failed_users=%s — monitors will NOT start for these "
+                "leaders; operators must inspect and re-trigger",
+                blocked_wallets,
+                dynamic_recon_failures,
+            )
+            blocked_set = set(blocked_wallets)
+            started_wallets = [
+                wallet for wallet in started_wallets
+                if wallet not in blocked_set
+            ]
 
         for wallet in started_wallets:
             monitor_tasks.append(
