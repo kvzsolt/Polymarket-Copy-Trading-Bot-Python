@@ -57,6 +57,19 @@ class ReconciliationResult:
 # Helpers
 # ---------------------------------------------------------------------------
 
+async def _maybe_await(value: Any) -> Any:
+    """Await ``value`` only when it is awaitable.
+
+    The Postgres adapters are ``async def``; sync ``MagicMock`` repos in
+    older unit tests return the raw value. ``await <dict>`` raises
+    ``TypeError`` which is swallowed by the surrounding bare ``except``
+    and silently zeros out reconciliation observations.
+    """
+    if inspect.isawaitable(value):
+        return await value
+    return value
+
+
 def _safe_int(val: Any, default: int = 0) -> int:
     try:
         return int(val)
@@ -240,10 +253,14 @@ class ReconciliationService:
             if self.orders_repo:
                 try:
                     if hasattr(self.orders_repo, "get_by_order_id"):
-                        local_record = await self.orders_repo.get_by_order_id(order_id)
+                        local_record = await _maybe_await(
+                            self.orders_repo.get_by_order_id(order_id)
+                        )
                     elif hasattr(self.orders_repo, "get_by_idempotency_key"):
                         # Backwards-compatible fallback for older mock repos.
-                        local_record = await self.orders_repo.get_by_idempotency_key(order_id)
+                        local_record = await _maybe_await(
+                            self.orders_repo.get_by_idempotency_key(order_id)
+                        )
                 except Exception:
                     pass
                 if local_record is None:
@@ -392,7 +409,9 @@ class ReconciliationService:
                         local_row = None
                         try:
                             if hasattr(self.orders_repo, "get_by_order_id"):
-                                local_row = await self.orders_repo.get_by_order_id(oid)
+                                local_row = await _maybe_await(
+                                    self.orders_repo.get_by_order_id(oid)
+                                )
                         except Exception:
                             local_row = None
                         self._rollback_balance_regime_on_cancel(
@@ -693,9 +712,11 @@ class ReconciliationService:
             return
         try:
             if hasattr(self.orders_repo, "upsert_matched_total"):
-                await self.orders_repo.upsert_matched_total(
-                    order_id=order_id,
-                    matched=str(venue_matched),
+                await _maybe_await(
+                    self.orders_repo.upsert_matched_total(
+                        order_id=order_id,
+                        matched=str(venue_matched),
+                    )
                 )
         except Exception as exc:
             logger.error(
