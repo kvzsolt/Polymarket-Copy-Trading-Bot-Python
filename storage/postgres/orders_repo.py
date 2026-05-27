@@ -379,7 +379,13 @@ class OrdersRepo(AbstractOrderRepository):
         asset: str | None,
         condition_id: str | None,
         status: str = "in_progress",
-        stale_claim_ttl_seconds: float = 300.0,
+        # DL-06: the prior 300s default let a reconciler reclaim while a
+        # submitter retry was still in flight. Match the database command
+        # timeout so a true stall (no progress for the full HTTP / SQL
+        # round-trip budget) is required before a reclaim can land. The
+        # value is overridable via the keyword for callers that need a
+        # tighter or looser window in tests.
+        stale_claim_ttl_seconds: float = 30.0,
     ) -> bool:
         if not trade_key:
             return False
@@ -489,14 +495,15 @@ class OrdersRepo(AbstractOrderRepository):
                 # FOR UPDATE on the SELECT serialises against concurrent
                 # writers — Postgres equivalent of the SQLite BEGIN IMMEDIATE
                 # writer-lock. Two reconcilers cannot both observe the same
-                # response_json snapshot and lose-update each other.
+                # response_json snapshot and lose-update each other. The
+                # partial unique index ``idx_orders_order_id WHERE
+                # order_id IS NOT NULL`` already enforces at most one row
+                # per non-null ``order_id``, so no ORDER BY / LIMIT needed.
                 row = await conn.fetchrow(
                     """
                     SELECT response_json
                     FROM orders
                     WHERE order_id = $1
-                    ORDER BY updated_at DESC
-                    LIMIT 1
                     FOR UPDATE
                     """,
                     order_id,

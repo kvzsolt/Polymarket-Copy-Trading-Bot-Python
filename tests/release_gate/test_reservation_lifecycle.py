@@ -130,6 +130,46 @@ async def test_sell_reservation_rejected_when_shares_short() -> None:
     assert reservation is None
 
 
+async def test_sell_by_intent_short_circuits_on_active_duplicate() -> None:
+    """SELL ``_by_intent`` returns the active row instead of inserting a
+    second; mirrors the BUY parity test that PR #108 shipped."""
+    async with _pg_pool() as pool:
+        repo = ReservationsRepo(pool)
+        intent = _intent(IntentSide.SELL)
+        existing_a, first = await repo.create_sell_reservation_checked_by_intent(
+            intent=intent,
+            reserved_size=Decimal("3"),
+            expires_at=int(intent.created_at.timestamp()) + 120,
+            held_size=Decimal("5"),
+        )
+        assert existing_a is None
+        assert first is not None
+
+        existing_b, second = await repo.create_sell_reservation_checked_by_intent(
+            intent=intent,
+            reserved_size=Decimal("3"),
+            expires_at=int(intent.created_at.timestamp()) + 120,
+            held_size=Decimal("5"),
+        )
+        assert existing_b is not None
+        assert existing_b.id == first.id
+        assert second is None
+
+
+async def test_sell_by_intent_rejects_when_held_short() -> None:
+    async with _pg_pool() as pool:
+        repo = ReservationsRepo(pool)
+        intent = _intent(IntentSide.SELL)
+        existing, result = await repo.create_sell_reservation_checked_by_intent(
+            intent=intent,
+            reserved_size=Decimal("10"),
+            expires_at=int(intent.created_at.timestamp()) + 120,
+            held_size=Decimal("4"),
+        )
+    assert existing is None
+    assert result is None
+
+
 async def test_mark_released_clears_active_lookup() -> None:
     async with _pg_pool() as pool:
         repo = ReservationsRepo(pool)

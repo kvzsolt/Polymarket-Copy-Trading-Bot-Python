@@ -302,7 +302,7 @@ class TraderDiscoveryService:
                 logger.warning(f"Discovery schema warnings: {schema_warnings}/{len(rows)} rows had missing fields")
 
         except Exception as exc:
-            logger.error(f"Primary discovery failed: {exc} — trying fallback")
+            logger.error("Primary discovery failed: %r — trying fallback", exc)
             return await self._fallback_discover(min_pnl, min_win_rate, min_positions, max_results)
 
         # Update health telemetry
@@ -381,7 +381,7 @@ class TraderDiscoveryService:
                     candidates.sort(key=lambda p: (-p.composite_score, int(p.rank or 0), p.wallet))
                     return candidates
         except Exception as e:
-            logger.debug(f"Postgres fallback failed: {e}")
+            logger.debug("Postgres fallback failed: %r", e)
 
         # Last resort: return whatever is in memory cache
         if self._cache:
@@ -409,7 +409,7 @@ class TraderDiscoveryService:
         try:
             data = await asyncio.to_thread(_fetch_json, url)
         except Exception as exc:
-            logger.warning(f"Trader lookup failed for {wallet[:12]}…: {exc}")
+            logger.warning("Trader lookup failed for %s…: %r", wallet[:12], exc)
             return None
 
         rows = data.get("data", []) if isinstance(data, dict) else []
@@ -443,7 +443,7 @@ class TraderDiscoveryService:
         try:
             data = await asyncio.to_thread(_fetch_json, url)
         except Exception as exc:
-            logger.warning(f"Position fetch failed for {wallet[:12]}…: {exc}")
+            logger.warning("Position fetch failed for %s…: %r", wallet[:12], exc)
             return []
 
         rows = data.get("data", []) if isinstance(data, dict) else []
@@ -513,7 +513,7 @@ class TraderDiscoveryService:
                     )
             logger.info(f"Persisted {len(self._cache)} discovered leaders to Postgres")
         except Exception as exc:
-            logger.warning(f"Failed to persist discovered leaders: {exc}")
+            logger.warning("Failed to persist discovered leaders: %r", exc)
 
     def get_health_status(self) -> dict:
         """Return discovery health telemetry for monitoring."""
@@ -592,6 +592,6 @@ async def discovery_background_loop(discovery: TraderDiscoveryService) -> None:
                     )
                 )
         except Exception as exc:
-            logger.error(f"Discovery loop error: {exc}")
+            logger.error("Discovery loop error: %r", exc)
 
         await asyncio.sleep(interval)

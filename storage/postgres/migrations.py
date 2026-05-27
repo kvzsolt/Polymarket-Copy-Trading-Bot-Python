@@ -90,10 +90,12 @@ _CORE_DDL = [
     """
     CREATE INDEX IF NOT EXISTS idx_fills_order ON fills(order_id)
     """,
-    """
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_fills_unique
-    ON fills(user_id, order_id, condition_id, side, fill_ts)
-    """,
+    # DL-03: ``idx_fills_unique`` was byte-identical to ``idx_fills_dedup``
+    # above. The duplicate index doubled the per-INSERT index-maintenance
+    # cost and made ``ON CONFLICT ON CONSTRAINT`` ambiguous. Drop it on
+    # both fresh and redeployed databases. ``idx_fills_dedup`` remains the
+    # canonical conflict target referenced by orders_repo.mark_fill.
+    """DROP INDEX IF EXISTS idx_fills_unique""",
 
     # ----- positions (canonical 3-col PK) ---------------------------------
     """
@@ -593,6 +595,29 @@ _DISCOVERY_DDL = [
     """,
     """CREATE INDEX IF NOT EXISTS idx_disc_ep_ev_episode
        ON discovery_episode_events(episode_id)""",
+    # Unique constraint backing ``ON CONFLICT (episode_id, trade_id) DO
+    # NOTHING`` in ``discovery_repo.upsert_episode``. Without it that
+    # clause is a no-op against the table's bigserial PK and duplicates
+    # are silently inserted, skewing leader-event counts.
+    #
+    # Review fix (cubic P1 on PR #110): a redeployed environment that
+    # ran the prior ``ON CONFLICT DO NOTHING`` clause (which silently
+    # inserted duplicates) will already hold duplicate rows. Creating
+    # the unique index without first deduplicating would fail the
+    # migration. Keep the lowest-``id`` row per ``(episode_id, trade_id)``
+    # — that matches the "first event observed" semantic the table was
+    # always intended to hold — then add the unique index. Both
+    # statements are idempotent: the DELETE is a no-op on a clean DB,
+    # and ``CREATE UNIQUE INDEX IF NOT EXISTS`` skips on re-run.
+    """
+    DELETE FROM discovery_episode_events a
+    USING discovery_episode_events b
+    WHERE a.id > b.id
+      AND a.episode_id = b.episode_id
+      AND a.trade_id   = b.trade_id
+    """,
+    """CREATE UNIQUE INDEX IF NOT EXISTS idx_disc_ep_ev_unique
+       ON discovery_episode_events(episode_id, trade_id)""",
 
     """
     CREATE TABLE IF NOT EXISTS discovery_context_buckets (

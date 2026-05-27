@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import signal
 from collections.abc import Awaitable, Callable
+from decimal import Decimal, InvalidOperation
 
 # Load non-sensitive runtime config + local .env as early as possible.
 # IMPORTANT: importing from config triggers config/__init__.py which freezes
@@ -115,6 +116,34 @@ async def _discovery_refresh_loop(
     )
 
 
+def _to_decimal_balance(value: object) -> Decimal:
+    """Coerce a raw venue balance to Decimal at the startup boundary.
+
+    ``get_my_balance`` may return ``None`` (API down), a string, a float,
+    or already a Decimal. We normalise once so the entire startup health
+    pass holds money as Decimal — CLAUDE.md non-negotiable.
+    """
+    if value is None or value == "":
+        return Decimal("0")
+    if isinstance(value, Decimal):
+        return value
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        # Review fix (greptile P2 on PR #110): surface the parse failure
+        # so an operator can spot a bad upstream payload (e.g. a venue
+        # rate-limit string instead of a numeric balance) rather than
+        # silently undercounting the portfolio at startup. We still
+        # return ``Decimal("0")`` so the ``_balance_check`` path can
+        # raise the "zero cash balance" health item — the warning makes
+        # the root cause observable instead of leaving it as a mystery.
+        logger.warning(
+            "balance_parse_failed | raw=%r — defaulting to 0",
+            value,
+        )
+        return Decimal("0")
+
+
 def _flatten_contexts(
     contexts_by_leader: dict[str, list["TradingContext"]],
 ) -> list["TradingContext"]:
@@ -122,6 +151,30 @@ def _flatten_contexts(
         context
         for contexts in contexts_by_leader.values()
         for context in contexts
+    ]
+
+
+def _wallets_blocked_by_reconcile_failures(
+    started_wallets: list[str],
+    contexts_by_leader: dict[str, list["TradingContext"]],
+    failed_user_ids: list[str],
+) -> list[str]:
+    """Return wallets whose downstream contexts include any failed user_id.
+
+    Used by the dynamic-leader discovery refresh to refuse starting a
+    leader monitor when startup reconciliation failed for a user under
+    that leader: starting the monitor on stale state is the same
+    double-fill exposure the cold-start path already gates against.
+    """
+    if not failed_user_ids:
+        return []
+    failed = set(failed_user_ids)
+    return [
+        wallet for wallet in started_wallets
+        if any(
+            ctx.user_id in failed
+            for ctx in contexts_by_leader.get(wallet, [])
+        )
     ]
 
 
@@ -711,8 +764,11 @@ async def main():
         )
     )
 
-    user_balances = {
-        runtime_user.user_id: float(balance or 0.0)
+    # INF-01 (CLAUDE.md no-float-money): keep balances as ``Decimal`` for
+    # the entire startup health / cap / threshold pass; downstream
+    # consumers cast to float only at display boundaries.
+    user_balances: dict[str, Decimal] = {
+        runtime_user.user_id: _to_decimal_balance(balance)
         for runtime_user, balance in zip(runtime_users, user_balances_raw)
     }
 
@@ -738,7 +794,7 @@ async def main():
             # (was a silent warning previously).
             orders_repo=user_states[runtime_user.user_id].orders_repo,
             live_positions=live_positions,
-            available_cash=float(user_balances.get(runtime_user.user_id, 0.0)),
+            available_cash=user_balances.get(runtime_user.user_id, Decimal("0")),
             database_ok=True,
             rpc_url=application.config.wallet.polygon_rpc_url,
             clob_gateway=user_states[runtime_user.user_id].clob_gateway,
@@ -842,11 +898,15 @@ async def main():
     live_positions = live_positions_by_user.get(first_user.user_id, [])
     health_report = health_reports_by_user[first_user.user_id]
 
-    live_positions_value = sum(
-        float(position.get("currentValue") or 0.0)
-        for position in live_positions
+    # INF-01: keep portfolio totals as Decimal end-to-end. ``currentValue``
+    # is a venue-returned string/float; ``_to_decimal_balance`` normalises
+    # both representations before summing so a single bad row cannot
+    # silently coerce the running total back to float.
+    live_positions_value: Decimal = sum(
+        (_to_decimal_balance(position.get("currentValue")) for position in live_positions),
+        start=Decimal("0"),
     )
-    available_cash = float(user_balances.get(first_user.user_id, 0.0))
+    available_cash: Decimal = user_balances.get(first_user.user_id, Decimal("0"))
 
     all_health_reports = list(health_reports_by_user.values())
     startup_health_healthy = all(report.healthy for report in all_health_reports)
@@ -971,20 +1031,33 @@ async def main():
         new_contexts: list["TradingContext"] = []
         for wallet in started_wallets:
             new_contexts.extend(contexts_by_leader.get(wallet, []))
+        dynamic_recon_failures: list[str] = []
         if new_contexts:
-            dynamic_recon_failures: list[str] = []
             await startup_reconcile_unconfirmed(
                 new_contexts,
                 failures_out=dynamic_recon_failures,
             )
-            if dynamic_recon_failures:
-                logger.error(
-                    "dynamic_leader_reconcile_failed | leaders=%s users=%s — "
-                    "monitor will start anyway; affected users may carry "
-                    "stale position state",
-                    started_wallets,
-                    dynamic_recon_failures,
-                )
+
+        # SHP-11: drop any leader whose downstream contexts include a
+        # failed user_id. Starting a monitor on stale state is the same
+        # double-fill exposure the startup path already gates against —
+        # the dynamic-discovery path must match.
+        blocked_wallets = _wallets_blocked_by_reconcile_failures(
+            started_wallets, contexts_by_leader, dynamic_recon_failures,
+        )
+        if blocked_wallets:
+            logger.error(
+                "dynamic_leader_reconcile_failed | blocked_leaders=%s "
+                "failed_users=%s — monitors will NOT start for these "
+                "leaders; operators must inspect and re-trigger",
+                blocked_wallets,
+                dynamic_recon_failures,
+            )
+            blocked_set = set(blocked_wallets)
+            started_wallets = [
+                wallet for wallet in started_wallets
+                if wallet not in blocked_set
+            ]
 
         for wallet in started_wallets:
             monitor_tasks.append(

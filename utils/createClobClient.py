@@ -395,7 +395,15 @@ class ClobClientWrapper:
         neg_risk: bool,
         order_type: OrderType = OrderType.FOK,
     ):
-        quantized_price = float(quantize_to_tick(Decimal(str(max_price)), Decimal(tick_size), side=side))
+        # INF-05 (CLAUDE.md no-float-money): keep the side-aware tick
+        # quantization (BUY→CEILING, SELL→FLOOR) so the order price never
+        # rounds against us at the venue, and route the final Decimal→float
+        # conversion through ``quantize_and_convert_to_float`` so the
+        # sanctioned epsilon guard fires at the SDK boundary instead of
+        # falling out via raw ``float(...)``.
+        quantized_d = quantize_to_tick(Decimal(str(max_price)), Decimal(tick_size), side=side)
+        from utils.numeric import quantize_and_convert_to_float
+        quantized_price = quantize_and_convert_to_float(quantized_d, tick_size)
         order_args = MarketOrderArgs(
             token_id=token_id,
             amount=amount,
