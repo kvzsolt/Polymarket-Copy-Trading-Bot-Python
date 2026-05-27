@@ -21,16 +21,6 @@ PR6 production methods (`submit_copy_trade`, `submit_risk_exit`,
 path to the V2 OrderSubmitter is a future PR; RC1 keeps both alive without
 mixing them.
 
-## Legacy `risk_monitor_loop` retained for back-compat
-
-`services/riskMonitor.py:risk_monitor_loop` is kept so older tests and
-external runners (if any) still import the symbol. `app.py` never invokes it
-in the main flow; the production risk path is
-`risk_monitor_loop_for_contexts` → `run_risk_check_for_context` →
-`_dispatch_risk_exit` → coordinator. The legacy block dispatches through the
-same `_dispatch_risk_exit` helper so the live fail-closed guard still
-applies, but it is undocumented for operators.
-
 ## External / manual positions pause by default
 
 When `PositionDriftService` observes a venue position the bot did not open,

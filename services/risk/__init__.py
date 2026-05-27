@@ -24,7 +24,6 @@ def __getattr__(name: str):
         "RiskPriceCache": "services.risk.risk_monitor",
         "VenueCircuitBreaker": "services.risk.risk_monitor",
         "reconcile_unconfirmed_risk_orders": "services.risk.risk_monitor",
-        "risk_monitor_loop": "services.risk.risk_monitor",
         "run_risk_check_for_context": "services.risk.risk_monitor",
     }
     if name in _lazy_map:
@@ -54,6 +53,5 @@ __all__ = [
     "init_risk_engine",
     "policy_from_config",
     "reconcile_unconfirmed_risk_orders",
-    "risk_monitor_loop",
     "run_risk_check_for_context",
 ]

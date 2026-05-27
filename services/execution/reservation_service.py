@@ -162,16 +162,31 @@ class ReservationService:
                 stable_key, intent.size, expires_at,
             )
             try:
-                result = await self.reservations_repo.create_sell_reservation_checked(
-                    intent=intent,
-                    reserved_size=intent.size,
-                    expires_at=expires_at,
-                    held_size=held_size,
+                # Atomic intent-key check + capacity check + insert under
+                # the per-(user, condition, token) advisory lock, closing
+                # the fast-path lookup race that the BUY branch already
+                # covers via ``create_buy_reservation_checked_by_intent``.
+                existing_under_lock, result = (
+                    await self.reservations_repo
+                    .create_sell_reservation_checked_by_intent(
+                        intent=intent,
+                        reserved_size=intent.size,
+                        expires_at=expires_at,
+                        held_size=held_size,
+                    )
                 )
             except asyncpg.exceptions.UniqueViolationError as exc:
                 raise ReservationConflict(
                     f"active reservation exists for intent={stable_key}"
                 ) from exc
+            if existing_under_lock is not None:
+                logger.warning(
+                    "reservation.acquire.sell.race_lost key=%s existing_id=%s",
+                    stable_key, existing_under_lock.id,
+                )
+                raise ReservationConflict(
+                    f"active reservation exists for intent={stable_key}"
+                )
             if result is None:
                 raise InsufficientFreeShares(
                     f"insufficient free shares after atomic check: need {intent.size}"

@@ -52,7 +52,6 @@ def test_known_limitations_lists_expected_items(repo_root: Path) -> None:
     for token in (
         "http polling",
         "execute_intent",
-        "risk_monitor_loop",
         "external",
     ):
         assert token in lowered, token

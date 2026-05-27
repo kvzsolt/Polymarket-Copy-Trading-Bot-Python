@@ -605,7 +605,7 @@ class DiscoveryRepo(AbstractDiscoveryRepository):
                         INSERT INTO discovery_episode_events
                             (episode_id, trade_id, side, size, price, usdc_size, ts, event_type)
                         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-                        ON CONFLICT DO NOTHING
+                        ON CONFLICT (episode_id, trade_id) DO NOTHING
                         """,
                         ep.episode_id,
                         ev.trade_id,

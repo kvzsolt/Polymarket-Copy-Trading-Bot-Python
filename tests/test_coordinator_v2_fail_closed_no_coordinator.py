@@ -21,6 +21,10 @@ from unittest.mock import MagicMock
 import pytest
 
 from services.execution.coordinator import ExecutionCoordinator
+from services.execution.reservation_service import ReservationService
+from storage.postgres.fills_repo import FillsRepo
+from storage.postgres.orders_repo import OrdersRepo
+from storage.postgres.positions_repo import PositionsRepo
 
 
 def _live_exec_service():
@@ -34,11 +38,17 @@ def _paper_exec_service():
 
 
 def _coord(execution_service):
+    # TST-03: spec=<class> so attribute typos surface as ``AttributeError``
+    # at test time instead of silently returning a child MagicMock. None
+    # of the awaitable repo methods are called in these tests (the live
+    # branch fails closed earlier; the paper branch monkey-patches
+    # ``_execute_intent_locked``) so plain spec is sufficient — no
+    # AsyncMock needed here.
     return ExecutionCoordinator(
-        reservation_service=MagicMock(),
-        orders_repo=MagicMock(),
-        fills_repo=MagicMock(),
-        positions_repo=MagicMock(),
+        reservation_service=MagicMock(spec=ReservationService),
+        orders_repo=MagicMock(spec=OrdersRepo),
+        fills_repo=MagicMock(spec=FillsRepo),
+        positions_repo=MagicMock(spec=PositionsRepo),
         execution_service=execution_service,
         position_coordinator=None,  # the bug surface
     )

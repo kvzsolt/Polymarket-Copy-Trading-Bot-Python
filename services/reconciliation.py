@@ -261,8 +261,11 @@ class ReconciliationService:
                         local_record = await _maybe_await(
                             self.orders_repo.get_by_idempotency_key(order_id)
                         )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning(
+                        "reconcile_repo_lookup_failed | order_id=%s err=%r",
+                        order_id, exc,
+                    )
                 if local_record is None:
                     unknown_count += 1
 
@@ -328,7 +331,20 @@ class ReconciliationService:
             # rate-limited order endpoints.
             probes_done = 0
             probe_cap_hit = False
-            for local_row in await self._local_in_flight_orders():
+            # SHP-02: surface the in-flight lookup failure separately
+            # from per-row probe failures. The pass already classified
+            # everything in the open list above; a pool/schema error
+            # here just means we skip the missing-from-open probe.
+            try:
+                in_flight_rows = await self._local_in_flight_orders()
+            except Exception as exc:
+                logger.warning(
+                    "reconcile_in_flight_lookup_failed | err=%r — "
+                    "skipping closed-order probe this pass",
+                    exc,
+                )
+                in_flight_rows = []
+            for local_row in in_flight_rows:
                 local_oid = str(local_row.get("order_id") or "")
                 if not local_oid or local_oid in seen_open_ids:
                     continue
@@ -412,7 +428,11 @@ class ReconciliationService:
                                 local_row = await _maybe_await(
                                     self.orders_repo.get_by_order_id(oid)
                                 )
-                        except Exception:
+                        except Exception as exc:
+                            logger.warning(
+                                "reconcile_repo_lookup_failed | order_id=%s err=%r",
+                                oid, exc,
+                            )
                             local_row = None
                         self._rollback_balance_regime_on_cancel(
                             order_id=oid,
@@ -799,7 +819,11 @@ class ReconciliationService:
                 if val is not None:
                     out[attr] = val
             return out
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "reconcile_single_order_extract_failed | order_id=%s err=%r",
+                order_id, exc,
+            )
             return None
 
     async def _fetch_open_orders(self) -> list[dict[str, Any]]:

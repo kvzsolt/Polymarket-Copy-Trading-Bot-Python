@@ -56,6 +56,15 @@ async def _pg_pool():
 # ---------------------------------------------------------------------------
 
 class TestDecimalPrecision:
+    # Phase 2 (Decimal sweep): TrackedPosition money fields are now
+    # ``Decimal``. The legacy ``pytest.approx(float)`` form raises
+    # ``TypeError`` against Decimal because the tolerance arithmetic
+    # (``approx.expected - actual``) crosses the float / Decimal type
+    # boundary. Cast Decimal → float at the assertion boundary so these
+    # precision-oriented tests still check what they intend to check
+    # (float-drift absence on the way out) without being sensitive to
+    # the internal storage type.
+
     def test_repeating_decimal_buy_sell_no_drift(self):
         """Buy at 0.333333, sell at 0.666667 — Decimal should avoid float drift."""
         pm = _make_pm()
@@ -63,7 +72,7 @@ class TestDecimalPrecision:
         result = pm.track_sell("cond-d1", 0.666667, 100.0)
         assert result is not None  # position closed
         # PnL should be (0.666667 - 0.333333) * 100 = 33.3334
-        assert result.realized_pnl == pytest.approx(33.3334, rel=1e-4)
+        assert float(result.realized_pnl) == pytest.approx(33.3334, rel=1e-4)
 
     def test_weighted_average_decimal_precision(self):
         """Multiple buys at different prices — weighted avg should be exact."""
@@ -72,8 +81,8 @@ class TestDecimalPrecision:
         pm.track_buy("cond-d2", "asset-1", 0.30, 100.0, 30.0)
         pos = pm.get_position("cond-d2")
         # Weighted avg = (0.10*100 + 0.30*100) / 200 = 40/200 = 0.20
-        assert pos.entry_price == pytest.approx(0.20, abs=1e-6)
-        assert pos.size_tokens == pytest.approx(200.0)
+        assert float(pos.entry_price) == pytest.approx(0.20, abs=1e-6)
+        assert float(pos.size_tokens) == pytest.approx(200.0)
 
     def test_partial_sell_preserves_avg_entry(self):
         """Partial sell should NOT change the average entry price."""
@@ -81,15 +90,15 @@ class TestDecimalPrecision:
         pm.track_buy("cond-d3", "asset-1", 0.40, 100.0, 40.0)
         pm.track_buy("cond-d3", "asset-1", 0.60, 100.0, 60.0)
         pos_before = pm.get_position("cond-d3")
-        avg_before = pos_before.entry_price  # 0.50
+        avg_before = float(pos_before.entry_price)  # 0.50
 
         # Partial sell 50 tokens
         pm.track_sell("cond-d3", 0.55, 50.0)
         pos_after = pm.get_position("cond-d3")
         assert pos_after is not None
         # Average entry should stay unchanged
-        assert pos_after.entry_price == pytest.approx(avg_before, abs=1e-6)
-        assert pos_after.size_tokens == pytest.approx(150.0)
+        assert float(pos_after.entry_price) == pytest.approx(avg_before, abs=1e-6)
+        assert float(pos_after.size_tokens) == pytest.approx(150.0)
 
     def test_many_buys_decimal_accumulation(self):
         """100 micro-buys should not accumulate float error."""
@@ -98,8 +107,8 @@ class TestDecimalPrecision:
             pm.track_buy("cond-d4", "asset-1", 0.33, 1.0, 0.33)
         pos = pm.get_position("cond-d4")
         # 100 buys at 0.33 → avg should be exactly 0.33
-        assert pos.entry_price == pytest.approx(0.33, abs=1e-4)
-        assert pos.size_tokens == pytest.approx(100.0)
+        assert float(pos.entry_price) == pytest.approx(0.33, abs=1e-4)
+        assert float(pos.size_tokens) == pytest.approx(100.0)
 
 
 _TOKEN = (
