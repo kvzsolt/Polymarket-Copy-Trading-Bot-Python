@@ -1107,6 +1107,57 @@ async def run_risk_check_for_context(context: TradingContext) -> None:
                     except Exception:
                         logger.debug("risk_trigger_update_error", exc_info=True)
 
+                # Concurrent-run dedup guard — PR #108 P1 finding.
+                #
+                # The ``idx_fills_unique`` index keys on
+                # ``(user_id, order_id, condition_id, side, fill_ts)``.
+                # ``fill_ts`` is the only field that varies between two
+                # concurrent ``run_risk_check_for_context`` invocations
+                # for the same protective SELL (wall-clock T vs T+1), so
+                # the unique index does NOT collapse them — both inserts
+                # succeed with distinct ``fill_id`` values, both call
+                # ``_apply_fill_in_conn`` (the second on size=0 because
+                # the first already closed the position), the second
+                # delete is a no-op, position state ends correct, but
+                # the fills table now holds TWO rows for ONE exchange
+                # fill. Downstream PnL replay (e.g. ``reconcile_trade_
+                # record``) double-counts.
+                #
+                # Anchor dedup to the exchange-sourced ``result.order_id``
+                # via ``try_claim_processed_trade`` — the same pattern
+                # the trade pipeline uses upstream of its fill insert.
+                # Only the winning coroutine reaches ``append_fill_and_
+                # apply``; the loser bails out before mutating fills /
+                # positions / blocks / PnL.
+                risk_trade_key = (
+                    f"risk_exit:{context.user_id}:{pos.condition_id}:"
+                    f"{pos.token_id}:{result.order_id}"
+                )
+                claimed = await context.orders_repo.try_claim_processed_trade(
+                    trade_key=risk_trade_key,
+                    user_id=context.user_id,
+                    leader_id=pos.leader_id,
+                    tx_hash=None,
+                    side="SELL",
+                    asset=pos.token_id,
+                    condition_id=pos.condition_id,
+                    status="in_progress",
+                )
+                if not claimed:
+                    logger.info(
+                        "risk_exit_concurrent_claim_lost | user=%s condition=%s token=%s order=%s",
+                        context.user_id,
+                        pos.condition_id,
+                        pos.token_id,
+                        result.order_id,
+                    )
+                    continue
+
+                # Freeze ``fill_ts`` once per claim so any retry within
+                # this coroutine reuses the same timestamp the unique
+                # index keys on, instead of re-sampling ``time.time()``.
+                _fill_ts = int(time.time())
+
                 # Atomic fill insert + position update — closes the
                 # crash-window the protective-SELL path had between the
                 # two independent pool connections. ``append_fill_and_
@@ -1114,21 +1165,40 @@ async def run_risk_check_for_context(context: TradingContext) -> None:
                 # ON CONFLICT DO NOTHING branch returns fill_id=0 and
                 # skips ``apply_fill``), preventing the double-count
                 # regression flagged in PR #108.
-                fill_id, updated_pos = await context.fills_repo.append_fill_and_apply(
-                    FillRecord(
-                        user_id=context.user_id,
-                        leader_id=pos.leader_id,
-                        order_id=result.order_id,
-                        condition_id=pos.condition_id,
-                        token_id=pos.token_id,
-                        side="SELL",
-                        size_tokens=fill_size,
-                        price=fill_price,
-                        fee=Decimal(str(result.fees_paid or 0)),
-                        fill_ts=int(time.time()),
-                    ),
-                    context.positions_repo,
-                )
+                try:
+                    fill_id, updated_pos = await context.fills_repo.append_fill_and_apply(
+                        FillRecord(
+                            user_id=context.user_id,
+                            leader_id=pos.leader_id,
+                            order_id=result.order_id,
+                            condition_id=pos.condition_id,
+                            token_id=pos.token_id,
+                            side="SELL",
+                            size_tokens=fill_size,
+                            price=fill_price,
+                            fee=Decimal(str(result.fees_paid or 0)),
+                            fill_ts=_fill_ts,
+                        ),
+                        context.positions_repo,
+                    )
+                except Exception:
+                    # Release the claim so a retry can re-attempt rather
+                    # than tombstoning the order_id behind a stale
+                    # in_progress row.
+                    try:
+                        await context.orders_repo.mark_processed_trade(
+                            trade_key=risk_trade_key,
+                            user_id=context.user_id,
+                            leader_id=pos.leader_id,
+                            tx_hash=None,
+                            side="SELL",
+                            asset=pos.token_id,
+                            condition_id=pos.condition_id,
+                            status="retryable_failed",
+                        )
+                    except Exception:
+                        logger.debug("risk_exit_claim_release_failed", exc_info=True)
+                    raise
                 if fill_id == 0:
                     # Duplicate protective SELL — fill was already persisted
                     # on a prior call. Risk block, PnL, and position-manager
@@ -1143,6 +1213,16 @@ async def run_risk_check_for_context(context: TradingContext) -> None:
                         pos.condition_id,
                         pos.token_id,
                         result.order_id,
+                    )
+                    await context.orders_repo.mark_processed_trade(
+                        trade_key=risk_trade_key,
+                        user_id=context.user_id,
+                        leader_id=pos.leader_id,
+                        tx_hash=None,
+                        side="SELL",
+                        asset=pos.token_id,
+                        condition_id=pos.condition_id,
+                        status="duplicate_ignored",
                     )
                     continue
                 if _risk_exit_fully_closed_position(updated_pos):
@@ -1195,6 +1275,24 @@ async def run_risk_check_for_context(context: TradingContext) -> None:
                     # NOTE: no manual ``release_scope`` here — the surrounding
                     # ``async with context.position_coordinator.acquire(_scope)``
                     # context manager already releases on exit. (Greptile P2 PR #63.)
+
+                # Settle the dedup claim — any concurrent run that sampled
+                # ``time.time()`` one second later and would have inserted
+                # a phantom duplicate fill row now bounces off the claim
+                # short-circuit instead.
+                try:
+                    await context.orders_repo.mark_processed_trade(
+                        trade_key=risk_trade_key,
+                        user_id=context.user_id,
+                        leader_id=pos.leader_id,
+                        tx_hash=None,
+                        side="SELL",
+                        asset=pos.token_id,
+                        condition_id=pos.condition_id,
+                        status="completed",
+                    )
+                except Exception:
+                    logger.debug("risk_exit_claim_complete_failed", exc_info=True)
             except Exception as exc:
                 logger.error(f"Risk context check failed user={context.user_id} condition={pos.condition_id}: {exc}")
 
