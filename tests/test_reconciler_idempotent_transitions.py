@@ -40,7 +40,7 @@ class _OrdersRepo:
         self.mark_processed_calls: list[dict[str, Any]] = []
         self.delete_calls: list[str] = []
 
-    def get_by_order_id(self, order_id: str):
+    async def get_by_order_id(self, order_id: str):
         if order_id != ORDER_ID:
             return None
         return {
@@ -49,7 +49,7 @@ class _OrdersRepo:
             "response": {"size_matched": self._previous_matched},
         }
 
-    def update_submission_status(self, **kwargs):
+    async def update_submission_status(self, **kwargs):
         self.update_calls.append(kwargs)
         if "status" in kwargs:
             self._status = str(kwargs["status"])
@@ -57,12 +57,12 @@ class _OrdersRepo:
         if size_matched is not None:
             self._previous_matched = str(size_matched)
 
-    def mark_processed_trade(self, **kwargs):
+    async def mark_processed_trade(self, **kwargs):
         self.mark_processed_calls.append(kwargs)
         if "status" in kwargs:
             self._status = str(kwargs["status"])
 
-    def delete_processed_trade(self, trade_key: str):
+    async def delete_processed_trade(self, trade_key: str):
         self.delete_calls.append(trade_key)
 
 
@@ -70,7 +70,7 @@ class _FillsRepo:
     def __init__(self):
         self.fills: list[Any] = []
 
-    def append_fill(self, fill, *, raw_payload):
+    async def append_fill(self, fill, *, raw_payload):
         self.fills.append(fill)
 
 
@@ -78,11 +78,11 @@ class _PositionsRepo:
     def __init__(self):
         self.applied: list[dict[str, Any]] = []
 
-    def apply_fill(self, **kwargs):
+    async def apply_fill(self, **kwargs):
         self.applied.append(kwargs)
         return None
 
-    def get_position(self, *args, **kwargs):
+    async def get_position(self, *args, **kwargs):
         return None
 
 
@@ -90,7 +90,7 @@ class _ReservationService:
     def __init__(self):
         self.releases: list[tuple[str, str]] = []
 
-    def release_terminal(self, reservation_id: str, reason: str) -> None:
+    async def release_terminal(self, reservation_id: str, reason: str) -> None:
         self.releases.append((reservation_id, reason))
 
 

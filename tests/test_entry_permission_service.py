@@ -52,9 +52,10 @@ def _make_block(
 
 
 def _make_repo(block: dict | None) -> MagicMock:
+    from unittest.mock import AsyncMock
     repo = MagicMock()
-    repo.get_active_risk_block.return_value = block
-    repo.clear_risk_block.return_value = True
+    repo.get_active_risk_block = AsyncMock(return_value=block)
+    repo.clear_risk_block = AsyncMock(return_value=True)
     return repo
 
 
@@ -282,12 +283,12 @@ class TestIsBlockedHelper(unittest.TestCase):
     def test_returns_true_when_block_exists(self):
         repo = _make_repo(block=_make_block())
         svc = EntryPermissionService(risk_blocks_repo=repo)
-        self.assertTrue(svc.is_blocked(user_id="user1", condition_id="cond-1", token_id="tok-1"))
+        self.assertTrue(asyncio.run(svc.is_blocked(user_id="user1", condition_id="cond-1", token_id="tok-1")))
 
     def test_returns_false_when_no_block(self):
         repo = _make_repo(block=None)
         svc = EntryPermissionService(risk_blocks_repo=repo)
-        self.assertFalse(svc.is_blocked(user_id="user1", condition_id="cond-1", token_id="tok-1"))
+        self.assertFalse(asyncio.run(svc.is_blocked(user_id="user1", condition_id="cond-1", token_id="tok-1")))
 
 
 if __name__ == "__main__":

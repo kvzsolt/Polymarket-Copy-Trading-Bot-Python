@@ -16,7 +16,6 @@ from py_clob_client_v2.clob_types import (
 )
 
 from config.env import (
-    ENV,
     SignatureType,
     WalletConfig,
     build_wallet_config,
@@ -33,7 +32,23 @@ from utils.logger import (
 
 logger = get_logger("ClobClient")
 
-CLOB_HTTP_URL = (ENV.get("CLOB_HTTP_URL") or "https://clob.polymarket.com").rstrip("/")
+# Module-level config. Hardcoded defaults match the previous env-read
+# defaults; production paths override via ``configure_from_appconfig(cfg)``
+# (called from ``orchestrators/runtime_bootstrap.py`` at startup).
+CLOB_HTTP_URL = "https://clob.polymarket.com"
+
+
+def configure_from_appconfig(config: Any) -> None:
+    """Override module-level CLOB constants from a typed AppConfig.
+
+    Production bootstrap calls this once at startup so the module's
+    ``CLOB_HTTP_URL`` + meta-cache TTLs follow the typed config rather
+    than the raw env. Tests can leave the defaults in place.
+    """
+    global CLOB_HTTP_URL, _META_CACHE_TTL_GOOD, _META_CACHE_TTL_THIN
+    CLOB_HTTP_URL = str(config.clob.http_url or "https://clob.polymarket.com").rstrip("/")
+    _META_CACHE_TTL_GOOD = float(config.execution.meta_cache_ttl_good)
+    _META_CACHE_TTL_THIN = float(config.execution.meta_cache_ttl_thin)
 
 
 @dataclass(frozen=True)
@@ -46,8 +61,8 @@ class MarketMeta:
     best_ask: Decimal | None = None
 
 
-_META_CACHE_TTL_GOOD = float(ENV.get("META_CACHE_TTL_GOOD", 300))
-_META_CACHE_TTL_THIN = float(ENV.get("META_CACHE_TTL_THIN", 30))
+_META_CACHE_TTL_GOOD = 300.0
+_META_CACHE_TTL_THIN = 30.0
 
 # Thresholds for detecting garbage/placeholder orderbook state.
 # bid <= this AND ask >= (1 - this) means the book is effectively empty.
@@ -555,11 +570,17 @@ async def create_clob_client(
     wallet_config: WalletConfig | None = None,
     private_key: str | None = None,
     proxy_wallet: str | None = None,
+    config: Any = None,
 ):
-    if not ENV.get("CLOB_V2_READY", False):
+    # CLOB V2 gate — typed `AppConfig.clob.clob_v2_ready` is the only
+    # source of truth; falls back to fail-closed False when no config
+    # is passed. Production paths thread `config=app_config` from
+    # `app.py:create_clob_client(wallet_config=..., config=app_config)`.
+    clob_v2_ready = bool(getattr(getattr(config, "clob", None), "clob_v2_ready", False))
+    if not clob_v2_ready:
         raise RuntimeError(
-            "CLOB V2 migration not finalized — CLOB_V2_READY is not set. "
-            "Set CLOB_V2_READY=true once smoke tests pass "
+            "CLOB V2 migration not finalized — config.clob.clob_v2_ready is False. "
+            "Set CLOB_V2_READY=true in your .env once smoke tests pass "
             "(see docs/v2_operator_runbook.md)."
         )
     host = CLOB_HTTP_URL
@@ -621,18 +642,17 @@ async def create_clob_client(
 
     funder_or_signer = runtime_cfg.funder_address or signer_address or ""
     if funder_or_signer:
-        # Addresses must be set in typed config / env (no defaults). The
+        # Addresses must be set in typed config (no defaults). The
         # collateral check fail-closes on the historically wrong defaults
         # (Synthetix SNX masquerading as pUSD). Operator-supplied values
         # are validated by check_collateral_readiness itself.
-        from config.env import ENV as _ENV
-
+        _network = getattr(config, "network", None) if config is not None else None
         _pusd_addr = (
-            _ENV.get("PUSD_CONTRACT_ADDRESS")
-            or _ENV.get("COLLATERAL_CONTRACT_ADDRESS")
+            (getattr(_network, "pusd_contract_address", "") if _network else "")
+            or (getattr(_network, "collateral_contract_address", "") if _network else "")
             or ""
         )
-        _ctf_addr = _ENV.get("CTF_EXCHANGE_V2_ADDRESS") or ""
+        _ctf_addr = (getattr(_network, "ctf_exchange_v2_address", "") if _network else "") or ""
         collateral_status = await check_collateral_readiness(
             wallet_address=funder_or_signer,
             rpc_url=runtime_cfg.polygon_rpc_url,

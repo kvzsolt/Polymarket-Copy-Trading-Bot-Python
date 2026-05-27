@@ -6,6 +6,7 @@ shape.
 """
 from __future__ import annotations
 
+import contextlib
 import time
 from decimal import Decimal
 from unittest.mock import AsyncMock
@@ -19,8 +20,36 @@ from integrations.polymarket.models import (
 )
 from services.executionService import ExecutionRequest, ExecutionService
 from services.market_data_service import MarketDataBundle, MarketDataSource
-from services.orderRepository import OrderRepository
+from storage.postgres.orders_repo import OrdersRepo
 from tests.conftest import make_clob_gateway
+
+
+@contextlib.asynccontextmanager
+async def _pg_pool():
+    try:
+        from testcontainers.postgres import PostgresContainer
+        import asyncpg
+        from storage.postgres.migrations import apply_migrations as pg_apply
+    except Exception as exc:
+        pytest.skip(f"Docker / postgres image unavailable: {exc!r}")
+    ctr = PostgresContainer("postgres:16-alpine")
+    try:
+        ctr.start()
+    except Exception as exc:
+        pytest.skip(f"Docker / postgres image unavailable: {exc!r}")
+    try:
+        dsn = ctr.get_connection_url(driver="asyncpg").replace(
+            "postgresql+asyncpg://", "postgresql://"
+        )
+        pool = await asyncpg.create_pool(dsn, min_size=1, max_size=5)
+        async with pool.acquire() as conn:
+            await pg_apply(conn)
+        try:
+            yield pool
+        finally:
+            await pool.close()
+    finally:
+        ctr.stop()
 
 
 class _FeeSvc:
@@ -70,47 +99,45 @@ def _mock_mds(token_id: str = "0xtok"):
 @pytest.fixture(autouse=True)
 def _reset_circuit():
     import services.executionService as _es
-    from unittest.mock import patch
     _es._CLOB_CIRCUIT.reset()
-    with patch.dict("config.env.ENV", {"MAX_BOOK_SPREAD_BPS": "5000"}, clear=False):
-        yield
+    yield
     _es._CLOB_CIRCUIT.reset()
 
 
 @pytest.mark.asyncio
 async def test_dry_run_buy_routes_through_gateway(
-    fresh_db_path,
     exec_config,
     stub_clob_client,
 ) -> None:
-    repo = OrderRepository(fresh_db_path)
-    gateway = make_clob_gateway(
-        submit_result=VenueSubmitResult(
-            success=True, order_id="ord-buy-e2e", status="submitted"
+    async with _pg_pool() as pool:
+        repo = OrdersRepo(pool)
+        gateway = make_clob_gateway(
+            submit_result=VenueSubmitResult(
+                success=True, order_id="ord-buy-e2e", status="submitted"
+            )
         )
-    )
-    svc = ExecutionService(
-        stub_clob_client, _FeeSvc(), repo,
-        config=exec_config,
-        clob_gateway=gateway,
-        market_data_service=_mock_mds(),
-    )
-    request = ExecutionRequest(
-        user_id="u1",
-        leader_id="leader-1",
-        token_id="0xtok",
-        side="BUY",
-        amount=Decimal("5"),
-        max_slippage_bps=100,
-        reason="copy_trade",
-        signal_id="sig-e2e-buy",
-    )
-    result = await svc.execute(request)
+        svc = ExecutionService(
+            stub_clob_client, _FeeSvc(), repo,
+            config=exec_config,
+            clob_gateway=gateway,
+            market_data_service=_mock_mds(),
+        )
+        request = ExecutionRequest(
+            user_id="u1",
+            leader_id="leader-1",
+            token_id="0xtok",
+            side="BUY",
+            amount=Decimal("5"),
+            max_slippage_bps=100,
+            reason="copy_trade",
+            signal_id="sig-e2e-buy",
+        )
+        result = await svc.execute(request)
 
-    assert result.accepted is True
-    gateway.submit_marketable_order.assert_awaited_once()
-    submitted = gateway.submit_marketable_order.await_args.args[0]
-    assert isinstance(submitted, MarketableOrderRequest)
-    assert submitted.token_id == "0xtok"
-    assert submitted.side == "BUY"
-    assert submitted.size == Decimal("5")
+        assert result.accepted is True
+        gateway.submit_marketable_order.assert_awaited_once()
+        submitted = gateway.submit_marketable_order.await_args.args[0]
+        assert isinstance(submitted, MarketableOrderRequest)
+        assert submitted.token_id == "0xtok"
+        assert submitted.side == "BUY"
+        assert submitted.size == Decimal("5")

@@ -1,4 +1,4 @@
-"""Issue #66 — CLOB V2 gateway isolation acceptance tests.
+"""Issue #66 — CLOB V2 gateway isolation acceptance tests (PG-A6 port).
 
 These tests use the canonical ``ClobGateway`` Protocol shape and a typed
 ``AppConfig``-shaped fixture so they exercise the gateway path end-to-end
@@ -7,7 +7,9 @@ without hitting the configless fail-closed short-circuit owned by issue #73.
 
 from __future__ import annotations
 
+import contextlib
 import sys
+import time as _time
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
@@ -17,6 +19,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from cache.market_state_store import BookSnapshot, QuoteSnapshot, TickSnapshot
 from integrations.polymarket.clob_v2_gateway import ClobV2Gateway, _build_submit_result
 from integrations.polymarket.errors import (
     VenueAuthError,
@@ -31,12 +34,9 @@ from integrations.polymarket.models import (
 )
 from interfaces.clob_gateway import ClobGateway
 from services.executionService import ExecutionRequest, ExecutionService
-from services.orderRepository import OrderRepository
-from storage.sqlite.connection import create_connection
-from storage.sqlite.migrations import apply_migrations
-from utils.createClobClient import MarketMeta
-from cache.market_state_store import BookSnapshot, QuoteSnapshot, TickSnapshot
 from services.market_data_service import MarketDataBundle, MarketDataSource
+from storage.postgres.orders_repo import OrdersRepo
+from utils.createClobClient import MarketMeta
 
 
 # ---------------------------------------------------------------------------
@@ -103,9 +103,6 @@ class _MetaSvc:
         )
 
 
-import time as _time
-
-
 def _make_mds(token_id: str = "t1", *, neg_risk: bool = False) -> AsyncMock:
     """Return a MarketDataService AsyncMock yielding a valid bundle."""
     now = _time.monotonic()
@@ -135,10 +132,32 @@ class _StubClob:
         )
 
 
-def _prepare_db(path: Path) -> None:
-    with create_connection(str(path)) as conn:
-        apply_migrations(conn)
-        conn.commit()
+@contextlib.asynccontextmanager
+async def _pg_pool():
+    try:
+        from testcontainers.postgres import PostgresContainer
+        import asyncpg
+        from storage.postgres.migrations import apply_migrations as pg_apply
+    except Exception as exc:
+        pytest.skip(f"Docker / postgres image unavailable: {exc!r}")
+    ctr = PostgresContainer("postgres:16-alpine")
+    try:
+        ctr.start()
+    except Exception as exc:
+        pytest.skip(f"Docker / postgres image unavailable: {exc!r}")
+    try:
+        dsn = ctr.get_connection_url(driver="asyncpg").replace(
+            "postgresql+asyncpg://", "postgresql://"
+        )
+        pool = await asyncpg.create_pool(dsn, min_size=1, max_size=5)
+        async with pool.acquire() as conn:
+            await pg_apply(conn)
+        try:
+            yield pool
+        finally:
+            await pool.close()
+    finally:
+        ctr.stop()
 
 
 def _make_req(side: str = "BUY", **overrides) -> ExecutionRequest:
@@ -156,7 +175,7 @@ def _make_req(side: str = "BUY", **overrides) -> ExecutionRequest:
     return ExecutionRequest(**defaults)
 
 
-def _make_gateway(submit_result: VenueSubmitResult | Exception) -> MagicMock:
+def _make_gateway(submit_result):
     """Build a gateway mock that returns / raises on submit_marketable_order."""
     gateway = MagicMock(spec=ClobGateway)
     if isinstance(submit_result, Exception):
@@ -175,73 +194,63 @@ def _make_gateway(submit_result: VenueSubmitResult | Exception) -> MagicMock:
     return gateway
 
 
+def _build_svc(pool, gateway, *, neg_risk: bool = False) -> ExecutionService:
+    return ExecutionService(
+        _StubClob(),
+        _FeeSvc(),
+        OrdersRepo(pool),
+        config=_make_exec_config(),
+        clob_gateway=gateway,
+        market_data_service=_make_mds(neg_risk=neg_risk),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Gateway acceptance: BUY / SELL submit
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_buy_submission_uses_gateway_marketable_path(tmp_path):
-    db_path = tmp_path / "state.db"
-    _prepare_db(db_path)
-    repo = OrderRepository(str(db_path))
-    gateway = _make_gateway(
-        VenueSubmitResult(success=True, order_id="ord-buy", status="submitted")
-    )
-    svc = ExecutionService(
-        _StubClob(), _FeeSvc(), repo,
-        config=_make_exec_config(),
-        clob_gateway=gateway,
-        market_data_service=_make_mds(),
-    )
-    result = await svc.execute(_make_req(side="BUY", signal_id="sig-buy"))
-    assert result.accepted is True
-    gateway.submit_marketable_order.assert_awaited_once()
-    request = gateway.submit_marketable_order.await_args.args[0]
-    assert isinstance(request, MarketableOrderRequest)
-    assert request.token_id == "t1"
-    assert request.side == "BUY"
-    assert request.size == Decimal("5")
+async def test_buy_submission_uses_gateway_marketable_path():
+    async with _pg_pool() as pool:
+        gateway = _make_gateway(
+            VenueSubmitResult(success=True, order_id="ord-buy", status="submitted")
+        )
+        svc = _build_svc(pool, gateway)
+        result = await svc.execute(_make_req(side="BUY", signal_id="sig-buy"))
+        assert result.accepted is True
+        gateway.submit_marketable_order.assert_awaited_once()
+        request = gateway.submit_marketable_order.await_args.args[0]
+        assert isinstance(request, MarketableOrderRequest)
+        assert request.token_id == "t1"
+        assert request.side == "BUY"
+        assert request.size == Decimal("5")
 
 
 @pytest.mark.asyncio
-async def test_sell_submission_uses_gateway_marketable_path(tmp_path):
-    db_path = tmp_path / "state.db"
-    _prepare_db(db_path)
-    repo = OrderRepository(str(db_path))
-    gateway = _make_gateway(
-        VenueSubmitResult(success=True, order_id="ord-sell", status="submitted")
-    )
-    svc = ExecutionService(
-        _StubClob(), _FeeSvc(), repo,
-        config=_make_exec_config(),
-        clob_gateway=gateway,
-        market_data_service=_make_mds(),
-    )
-    result = await svc.execute(_make_req(side="SELL", signal_id="sig-sell"))
-    assert result.accepted is True
-    request = gateway.submit_marketable_order.await_args.args[0]
-    assert request.side == "SELL"
+async def test_sell_submission_uses_gateway_marketable_path():
+    async with _pg_pool() as pool:
+        gateway = _make_gateway(
+            VenueSubmitResult(success=True, order_id="ord-sell", status="submitted")
+        )
+        svc = _build_svc(pool, gateway)
+        result = await svc.execute(_make_req(side="SELL", signal_id="sig-sell"))
+        assert result.accepted is True
+        request = gateway.submit_marketable_order.await_args.args[0]
+        assert request.side == "SELL"
 
 
 @pytest.mark.asyncio
-async def test_neg_risk_propagates_through_gateway_request(tmp_path):
-    db_path = tmp_path / "state.db"
-    _prepare_db(db_path)
-    repo = OrderRepository(str(db_path))
-    gateway = _make_gateway(
-        VenueSubmitResult(success=True, order_id="ord-nr", status="submitted")
-    )
-    svc = ExecutionService(
-        _StubClob(), _FeeSvc(), repo,
-        config=_make_exec_config(),
-        clob_gateway=gateway,
-        market_data_service=_make_mds(neg_risk=True),
-    )
-    await svc.execute(_make_req(signal_id="sig-nr"))
-    request = gateway.submit_marketable_order.await_args.args[0]
-    assert request.neg_risk is True
-    assert request.tick_size == Decimal("0.01")
+async def test_neg_risk_propagates_through_gateway_request():
+    async with _pg_pool() as pool:
+        gateway = _make_gateway(
+            VenueSubmitResult(success=True, order_id="ord-nr", status="submitted")
+        )
+        svc = _build_svc(pool, gateway, neg_risk=True)
+        await svc.execute(_make_req(signal_id="sig-nr"))
+        request = gateway.submit_marketable_order.await_args.args[0]
+        assert request.neg_risk is True
+        assert request.tick_size == Decimal("0.01")
 
 
 # ---------------------------------------------------------------------------
@@ -250,87 +259,57 @@ async def test_neg_risk_propagates_through_gateway_request(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_invalid_order_error_is_non_retryable(tmp_path):
-    db_path = tmp_path / "state.db"
-    _prepare_db(db_path)
-    repo = OrderRepository(str(db_path))
-    gateway = _make_gateway(VenueInvalidOrderError("invalid amount"))
-    svc = ExecutionService(
-        _StubClob(), _FeeSvc(), repo,
-        config=_make_exec_config(),
-        clob_gateway=gateway,
-        market_data_service=_make_mds(),
-    )
-    result = await svc.execute(_make_req(signal_id="sig-bad"))
-    assert result.accepted is False
-    # Non-retryable means the gateway is called exactly once, not retried.
-    assert gateway.submit_marketable_order.await_count == 1
+async def test_invalid_order_error_is_non_retryable():
+    async with _pg_pool() as pool:
+        gateway = _make_gateway(VenueInvalidOrderError("invalid amount"))
+        svc = _build_svc(pool, gateway)
+        result = await svc.execute(_make_req(signal_id="sig-bad"))
+        assert result.accepted is False
+        assert gateway.submit_marketable_order.await_count == 1
 
 
 @pytest.mark.asyncio
-async def test_auth_error_is_non_retryable(tmp_path):
-    db_path = tmp_path / "state.db"
-    _prepare_db(db_path)
-    repo = OrderRepository(str(db_path))
-    gateway = _make_gateway(VenueAuthError("unauthorized"))
-    svc = ExecutionService(
-        _StubClob(), _FeeSvc(), repo,
-        config=_make_exec_config(),
-        clob_gateway=gateway,
-        market_data_service=_make_mds(),
-    )
-    result = await svc.execute(_make_req(signal_id="sig-auth"))
-    assert result.accepted is False
-    assert gateway.submit_marketable_order.await_count == 1
+async def test_auth_error_is_non_retryable():
+    async with _pg_pool() as pool:
+        gateway = _make_gateway(VenueAuthError("unauthorized"))
+        svc = _build_svc(pool, gateway)
+        result = await svc.execute(_make_req(signal_id="sig-auth"))
+        assert result.accepted is False
+        assert gateway.submit_marketable_order.await_count == 1
 
 
 @pytest.mark.asyncio
-async def test_ambiguous_post_returns_submitted_unconfirmed(tmp_path):
+async def test_ambiguous_post_returns_submitted_unconfirmed():
     """A ``VenueSubmitResult`` with ``ambiguous_post_failure=True`` must be
     persisted as ``submitted_unconfirmed`` and the retry loop must stop —
     duplicate-fill risk is unacceptable.
     """
-    db_path = tmp_path / "state.db"
-    _prepare_db(db_path)
-    repo = OrderRepository(str(db_path))
-    gateway = _make_gateway(
-        VenueSubmitResult(
-            success=False,
-            ambiguous_post_failure=True,
-            error="timeout after POST",
+    async with _pg_pool() as pool:
+        gateway = _make_gateway(
+            VenueSubmitResult(
+                success=False,
+                ambiguous_post_failure=True,
+                error="timeout after POST",
+            )
         )
-    )
-    svc = ExecutionService(
-        _StubClob(), _FeeSvc(), repo,
-        config=_make_exec_config(),
-        clob_gateway=gateway,
-        market_data_service=_make_mds(),
-    )
-    result = await svc.execute(_make_req(signal_id="sig-ambig"))
-    assert result.status == "submitted_unconfirmed"
-    assert result.accepted is True
-    assert gateway.submit_marketable_order.await_count == 1
+        svc = _build_svc(pool, gateway)
+        result = await svc.execute(_make_req(signal_id="sig-ambig"))
+        assert result.status == "submitted_unconfirmed"
+        assert result.accepted is True
+        assert gateway.submit_marketable_order.await_count == 1
 
 
 @pytest.mark.asyncio
-async def test_unavailable_error_is_treated_as_ambiguous(tmp_path):
+async def test_unavailable_error_is_treated_as_ambiguous():
     """``VenueUnavailableError`` could mean the POST was delivered. Must be
     persisted as ``submitted_unconfirmed`` rather than retried — issue #66.
     """
-    db_path = tmp_path / "state.db"
-    _prepare_db(db_path)
-    repo = OrderRepository(str(db_path))
-    gateway = _make_gateway(VenueUnavailableError("connection reset"))
-    svc = ExecutionService(
-        _StubClob(), _FeeSvc(), repo,
-        config=_make_exec_config(),
-        clob_gateway=gateway,
-        market_data_service=_make_mds(),
-    )
-    result = await svc.execute(_make_req(signal_id="sig-unavail"))
-    assert result.status == "submitted_unconfirmed"
-    # Conservative: do not retry an ambiguous-POST.
-    assert gateway.submit_marketable_order.await_count == 1
+    async with _pg_pool() as pool:
+        gateway = _make_gateway(VenueUnavailableError("connection reset"))
+        svc = _build_svc(pool, gateway)
+        result = await svc.execute(_make_req(signal_id="sig-unavail"))
+        assert result.status == "submitted_unconfirmed"
+        assert gateway.submit_marketable_order.await_count == 1
 
 
 # ---------------------------------------------------------------------------
@@ -411,8 +390,6 @@ async def test_submit_marketable_order_quantizes_size_with_fixed_step_not_price_
 
     assert isinstance(result, VenueSubmitResult)
     assert result.success is True
-    # The SDK call must have received size=10.55 (quantized at 0.01) and
-    # price=0.4 (quantized at the price tick 0.1).
     assert seen["amount"] == pytest.approx(10.55)
     assert seen["max_price"] == pytest.approx(0.4)
     assert seen["tick_size"] == "0.1"

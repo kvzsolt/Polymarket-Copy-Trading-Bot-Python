@@ -110,27 +110,33 @@ class _Repo:
         self.fills = {}
         self.history = []
 
-    def get_by_idempotency_key(self, key):
+    async def get_by_idempotency_key(self, key):
         return self.store.get(key)
 
-    def save_submission(self, *, idempotency_key, request, response):
-        self.store[idempotency_key] = {"request": request, "response": response, "order_id": response.get("orderID")}
+    async def save_submission(self, record):
+        # Mirror the production OrderSubmissionRecord dataclass shape: keep
+        # the inline-built request/response payloads for assertion access.
+        self.store[record.idempotency_key] = {
+            "request": record.request_payload,
+            "response": record.response_payload,
+            "order_id": record.order_id,
+        }
         self.history.append({
-            "idempotency_key": idempotency_key,
-            "request": request,
-            "response": response,
+            "idempotency_key": record.idempotency_key,
+            "request": record.request_payload,
+            "response": record.response_payload,
         })
 
-    def mark_fill(self, *, order_id, fill):
+    async def mark_fill(self, *, order_id, fill):
         self.fills[order_id] = fill
 
     # Atomic submission lock stubs — issue #95: ExecutionService now requires
     # ``try_acquire_submission_lock`` or fails closed.  These in-memory stubs
     # are adequate for unit tests that don't exercise concurrent submissions.
-    def try_acquire_submission_lock(self, key, user_id, leader_id, request_payload):
+    async def try_acquire_submission_lock(self, key, user_id, leader_id, request_payload):
         return True  # always succeed in tests
 
-    def is_submission_locked(self, key):
+    async def is_submission_locked(self, key):
         return False
 
 
@@ -315,7 +321,8 @@ class TestExecutionService:
         assert res.order_id == "o-small"
         clob.create_market_order.assert_awaited_once()
 
-    def test_persists_sanitized_submission_payload(self):
+    @pytest.mark.asyncio
+    async def test_persists_sanitized_submission_payload(self):
         long_signal = "sig_" + ("x" * 600)
         repo = _Repo()
         svc = ExecutionService(
@@ -325,7 +332,7 @@ class TestExecutionService:
             config=_make_exec_config(),
         )
         idem_key = "persist-sanitized"
-        svc._save_submission(
+        await svc._save_submission(
             idempotency_key=idem_key,
             request={
                 "user_id": "u1",
@@ -399,7 +406,7 @@ class TestExecutionService:
         # Seed duplicate — must have order_id to block retry
         key = "d"
         repo.store = {key: {"order_id": "existing", "status": "filled"}}
-        with patch("services.executionService._idempotency_key", return_value=key):
+        with patch("services.executionService._effective_idempotency_key", return_value=key):
             res = await svc.execute(req)
         assert res.status == "duplicate_ignored"
 
@@ -432,7 +439,7 @@ class TestExecutionService:
             "response": {"status": "pending", "pending_since": 0},
         }
 
-        with patch("services.executionService._idempotency_key", return_value=key):
+        with patch("services.executionService._effective_idempotency_key", return_value=key):
             res = await svc.execute(req)
 
         assert res.accepted is True
@@ -468,7 +475,7 @@ class TestExecutionService:
             "response": {"status": "submitted_unconfirmed", "pending_since": 0},
         }
 
-        with patch("services.executionService._idempotency_key", return_value=key):
+        with patch("services.executionService._effective_idempotency_key", return_value=key):
             res = await svc.execute(req)
 
         assert res.accepted is True

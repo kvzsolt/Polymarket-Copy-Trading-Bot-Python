@@ -1,12 +1,14 @@
-"""Phase 5 — composition root tests.
+"""Phase 5 — composition root tests (PG-A5 async version).
 
-Verifies that ``bootstrap.build_app`` wires a complete, typed graph from an
-injected env mapping and that successive calls yield independent graphs.
+Verifies that ``bootstrap.build_app`` wires a complete, typed graph from
+an injected env mapping and that successive calls yield independent
+graphs. Backed by a live ``postgres:16-alpine`` testcontainer because
+``build_app`` brings the asyncpg pool online + applies migrations.
 """
 
 from __future__ import annotations
 
-from pathlib import Path
+import contextlib
 from types import SimpleNamespace
 
 import pytest
@@ -17,7 +19,9 @@ from domain.ports.repositories import AbstractLeaderRepository
 from orchestrators.leader_registry import LeaderRegistry
 from services.healthServer import ReadinessTracker
 from services.traderDiscoveryService import TraderDiscoveryService
-from storage.sqlite.leaders_repo import LeadersRepo
+from storage.postgres.leaders_repo import LeadersRepo
+
+pytestmark = pytest.mark.asyncio
 
 
 _VALID_PRIVATE_KEY = "0x" + "a" * 64
@@ -25,14 +29,46 @@ _VALID_FUNDER = "0x" + "b" * 40
 _VALID_USER = "0x" + "c" * 40
 
 
-def _valid_env(db_path: str, **overrides: str) -> dict[str, str]:
+@contextlib.asynccontextmanager
+async def _pg_container():
+    """Spin a Postgres testcontainer + yield the DSN. Resets the
+    ``storage.postgres.connection`` singleton so ``build_app`` brings
+    its own pool online cleanly."""
+    try:
+        from testcontainers.postgres import PostgresContainer
+        from storage.postgres import connection as conn_mod
+    except Exception as exc:
+        pytest.skip(f"Docker / postgres image unavailable: {exc!r}")
+    try:
+        ctr = PostgresContainer("postgres:16-alpine")
+        ctr.start()
+    except Exception as exc:
+        pytest.skip(f"Docker / postgres image unavailable: {exc!r}")
+    try:
+        dsn = ctr.get_connection_url(driver="asyncpg").replace(
+            "postgresql+asyncpg://", "postgresql://"
+        )
+        conn_mod._reset_for_tests()
+        try:
+            yield dsn
+        finally:
+            try:
+                await conn_mod.shutdown_pool()
+            except Exception:
+                pass
+            conn_mod._reset_for_tests()
+    finally:
+        ctr.stop()
+
+
+def _valid_env(dsn: str, **overrides: str) -> dict[str, str]:
     env = {
         "PRIVATE_KEY": _VALID_PRIVATE_KEY,
         "FUNDER_ADDRESS": _VALID_FUNDER,
         "USER_ADDRESS": _VALID_USER,
         "RPC_URL": "https://polygon-rpc.example.com",
         "CHAIN_ID": "137",
-        "BOT_STATE_DB": db_path,
+        "DATABASE_URL": dsn,
     }
     env.update(overrides)
     return env
@@ -46,86 +82,65 @@ def _supported_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
-@pytest.fixture
-def env(tmp_path: Path) -> dict[str, str]:
-    return _valid_env(str(tmp_path / "bot_state.db"))
-
-
 class TestBuildApp:
-    def test_returns_application(self, env: dict[str, str]) -> None:
-        app = build_app(env)
-        assert isinstance(app, Application)
+    async def test_returns_application(self) -> None:
+        async with _pg_container() as dsn:
+            app = await build_app(_valid_env(dsn))
+            assert isinstance(app, Application)
 
-    def test_config_loaded(self, env: dict[str, str]) -> None:
-        app = build_app(env)
-        assert isinstance(app.config, AppConfig)
-        assert app.config.wallet.funder_address == _VALID_FUNDER
+    async def test_config_loaded(self) -> None:
+        async with _pg_container() as dsn:
+            app = await build_app(_valid_env(dsn))
+            assert isinstance(app.config, AppConfig)
+            assert app.config.wallet.funder_address == _VALID_FUNDER
 
-    def test_readiness_tracker_is_fresh(self, env: dict[str, str]) -> None:
-        app = build_app(env)
-        assert isinstance(app.readiness, ReadinessTracker)
-        snap = app.readiness.snapshot()
-        # db_ok should reflect config.database.enabled (default True).
-        assert snap["db_ok"] is True
-        assert snap["api_ok"] is False
+    async def test_readiness_tracker_is_fresh(self) -> None:
+        async with _pg_container() as dsn:
+            app = await build_app(_valid_env(dsn))
+            assert isinstance(app.readiness, ReadinessTracker)
+            snap = app.readiness.snapshot()
+            assert snap["db_ok"] is True
+            assert snap["api_ok"] is False
 
-    def test_db_path_matches_config(self, env: dict[str, str]) -> None:
-        app = build_app(env)
-        assert app.db_path == env["BOT_STATE_DB"]
-        assert Path(app.db_path).exists()
+    async def test_shared_repos_satisfy_ports(self) -> None:
+        async with _pg_container() as dsn:
+            app = await build_app(_valid_env(dsn))
+            assert isinstance(app.leaders_repo, LeadersRepo)
+            assert isinstance(app.leaders_repo, AbstractLeaderRepository)
 
-    def test_shared_repos_satisfy_ports(self, env: dict[str, str]) -> None:
-        app = build_app(env)
-        assert isinstance(app.leaders_repo, LeadersRepo)
-        assert isinstance(app.leaders_repo, AbstractLeaderRepository)
+    async def test_registry_and_discovery_wired(self) -> None:
+        async with _pg_container() as dsn:
+            app = await build_app(_valid_env(dsn))
+            assert isinstance(app.registry, LeaderRegistry)
+            assert isinstance(app.discovery_service, TraderDiscoveryService)
+            assert app.registry.leaders_repo is app.leaders_repo
+            assert app.registry.config is app.config
+            assert app.registry.readiness is app.readiness
 
-    def test_registry_and_discovery_wired(self, env: dict[str, str]) -> None:
-        app = build_app(env)
-        assert isinstance(app.registry, LeaderRegistry)
-        assert isinstance(app.discovery_service, TraderDiscoveryService)
-        # Registry receives the shared leaders_repo and typed config/readiness.
-        assert app.registry.leaders_repo is app.leaders_repo
-        assert app.registry.config is app.config
-        assert app.registry.readiness is app.readiness
+    async def test_two_calls_yield_independent_graphs(self) -> None:
+        """Two ``build_app`` calls against the same testcontainer DSN
+        share the singleton asyncpg pool (idempotent ``init_pool``) but
+        yield independent ``Application`` graphs."""
+        async with _pg_container() as dsn:
+            env = _valid_env(dsn)
+            app1 = await build_app(env)
+            app2 = await build_app(env)
 
-    def test_two_calls_yield_independent_graphs(self, tmp_path: Path) -> None:
-        env1 = _valid_env(str(tmp_path / "a.db"))
-        env2 = _valid_env(str(tmp_path / "b.db"))
-        app1 = build_app(env1)
-        app2 = build_app(env2)
+            assert app1 is not app2
+            assert app1.config is not app2.config
+            assert app1.readiness is not app2.readiness
+            assert app1.registry is not app2.registry
+            assert app1.discovery_service is not app2.discovery_service
 
-        assert app1 is not app2
-        assert app1.config is not app2.config
-        assert app1.readiness is not app2.readiness
-        assert app1.leaders_repo is not app2.leaders_repo
-        assert app1.registry is not app2.registry
-        assert app1.discovery_service is not app2.discovery_service
+            # Mutating one tracker should not touch the other.
+            app1.readiness.update(api_ok=True)
+            assert app2.readiness.snapshot()["api_ok"] is False
 
-        # Mutating one tracker should not touch the other.
-        app1.readiness.update(api_ok=True)
-        assert app2.readiness.snapshot()["api_ok"] is False
-
-    def test_db_disabled_skips_schema_init(self, tmp_path: Path) -> None:
-        db_path = str(tmp_path / "volatile.db")
-        env = _valid_env(db_path, DB_ENABLED="false")
-        app = build_app(env)
-        # With DB disabled we still record the configured path but do not
-        # apply migrations on disk.
-        assert app.db_path == db_path
-        assert app.readiness.snapshot()["db_ok"] is False
-        assert not Path(db_path).exists()
-
-    def test_bot_state_db_enabled_overrides_legacy_db_enabled(self, tmp_path: Path) -> None:
-        db_path = str(tmp_path / "override.db")
-        env = _valid_env(db_path, DB_ENABLED="false", BOT_STATE_DB_ENABLED="true")
-        app = build_app(env)
-        assert app.readiness.snapshot()["db_ok"] is True
-        assert Path(db_path).exists()
-
-    def test_invalid_env_surfaces_validation_error(self, tmp_path: Path) -> None:
+    async def test_invalid_env_surfaces_validation_error(self) -> None:
         from config.app_config import EnvValidationError
 
-        env = _valid_env(str(tmp_path / "x.db"))
-        env.pop("PRIVATE_KEY")
-        with pytest.raises(EnvValidationError):
-            build_app(env)
+        async with _pg_container() as dsn:
+            env = _valid_env(dsn)
+            env.pop("PRIVATE_KEY")
+            with pytest.raises(EnvValidationError):
+                await build_app(env)

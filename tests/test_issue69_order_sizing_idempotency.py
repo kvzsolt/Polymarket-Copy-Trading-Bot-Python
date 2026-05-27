@@ -725,32 +725,27 @@ class TestExecutionEffectiveIdempotency:
         )
         assert key_a == key_b
 
-    def test_effective_key_different_from_legacy(self):
-        from services.executionService import _effective_idempotency_key, _idempotency_key
-        from services.execution.types import ExecutionRequest
-        req = ExecutionRequest(
-            user_id="u1",
-            leader_id="l1",
-            token_id="t1",
-            side="BUY",
-            amount=Decimal("5"),
-            max_slippage_bps=200,
-            reason="test",
-            signal_id="sig1",
-            condition_id="0xcond",
+    def test_effective_key_sensitive_to_post_sizing_price(self):
+        """The effective key changes when the post-sizing worst price moves
+        (different from the pre-sizing legacy key which ignored price).
+
+        The pre-sizing ``_idempotency_key`` helper was deleted in the
+        legacy-kill slice (#77, commit 5868dc2); the effective key is now
+        the only idempotency contract.
+        """
+        from services.executionService import _effective_idempotency_key
+
+        key_low_price = _effective_idempotency_key(
+            user="u1", condition_id="0xcond", token_id="t1", side="BUY",
+            effective_size=Decimal("5"), effective_price=Decimal("0.51"),
+            tick_size=Decimal("0.01"), intent_id="sig1",
         )
-        legacy = _idempotency_key(req)
-        effective = _effective_idempotency_key(
-            user="u1",
-            condition_id="0xcond",
-            token_id="t1",
-            side="BUY",
-            effective_size=Decimal("5"),
-            effective_price=Decimal("0.51"),
-            tick_size=Decimal("0.01"),
-            intent_id="sig1",
+        key_high_price = _effective_idempotency_key(
+            user="u1", condition_id="0xcond", token_id="t1", side="BUY",
+            effective_size=Decimal("5"), effective_price=Decimal("0.60"),
+            tick_size=Decimal("0.01"), intent_id="sig1",
         )
-        assert legacy != effective
+        assert key_low_price != key_high_price
 
     def test_none_condition_id_treated_as_empty(self):
         from services.executionService import _effective_idempotency_key

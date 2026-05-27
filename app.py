@@ -69,7 +69,7 @@ from services.tradeMonitor import _guarded_leader_fetch
 from services.healthServer import start_health_server
 from services.metrics import metrics
 from services.multiUserConfig import RuntimeUser, UserFollowConfig, load_runtime_users
-from storage.sqlite.leaders_repo import LeadersRepo
+from storage.postgres.leaders_repo import LeadersRepo
 from utils.createClobClient import create_clob_client
 from utils.getMyBalance import get_my_balance
 from utils.logger import (
@@ -125,7 +125,7 @@ def _flatten_contexts(
     ]
 
 
-def _refresh_contexts_for_new_leaders(
+async def _refresh_contexts_for_new_leaders(
     *,
     new_wallets: list[str],
     runtime_users: list[RuntimeUser],
@@ -151,7 +151,7 @@ def _refresh_contexts_for_new_leaders(
             if not user_state or not follow or not follow.enabled:
                 continue
 
-            context = build_trading_context(
+            context = await build_trading_context(
                 user_state,
                 follow,
                 config,
@@ -569,7 +569,7 @@ async def main():
 
     try:
         validate_runtime_env()
-        application = build_app()
+        application = await build_app()
     except EnvValidationError as exc:
         print_error(str(exc))
         return
@@ -641,7 +641,6 @@ async def main():
 
     application.readiness.update(runtime_user_count=len(runtime_users))
 
-    db_path = application.db_path
     application.readiness.update(db_ok=True)
 
     # Greptile P1 (PR #107): the bot used to reach
@@ -654,13 +653,16 @@ async def main():
 
     await _connect_db()
 
-    from config.env import ENV as _ENV
     from storage.postgres.connection import get_pool
     from storage.postgres.orders_repo import OrdersRepo as _PgOrdersRepo
 
-    _max_age = float(_ENV.get("RETENTION_MAX_AGE_SECONDS", 30 * 86400))
+    _max_age = float(application.config.polling.retention_max_age_seconds)
+    # Acquire the pool first so it's available to the per-user wiring below
+    # even when the (non-critical) purge step fails. Previously `_pool` was
+    # scoped inside the try/except, so a degraded purge would NameError on
+    # the subsequent `build_user_state(..., _pool, ...)` reference.
+    _pool = await get_pool()
     try:
-        _pool = await get_pool()
         purged = await _PgOrdersRepo(_pool).purge_old_processed_trades(_max_age)
     except RuntimeError:
         # Defensive: should not fire now that connect_db() runs above,
@@ -686,11 +688,11 @@ async def main():
     user_states: dict[str, UserRuntimeState] = {}
 
     for runtime_user in runtime_users:
-        client = await create_clob_client(wallet_config=runtime_user.wallet)
+        client = await create_clob_client(wallet_config=runtime_user.wallet, config=application.config)
         user_states[runtime_user.user_id] = build_user_state(
             runtime_user,
             client,
-            db_path,
+            _pool,
             application.config,
         )
 
@@ -729,7 +731,7 @@ async def main():
         health_reports_by_user[runtime_user.user_id] = await perform_startup_health_check(
             wallet=runtime_user.wallet.funder_address,
             user_id=runtime_user.user_id,
-            db_path=db_path,
+            pool=_pool,
             positions_repo=user_states[runtime_user.user_id].positions_repo,
             # PR #105 review: must pass orders_repo so the atomic-lock gate
             # actually probes the repo. Without it the check fails closed
@@ -743,7 +745,7 @@ async def main():
             require_live_clob=not application.config.dry_run,
         )
 
-    contexts_by_leader, risk_contexts_by_user = build_context_maps(
+    contexts_by_leader, risk_contexts_by_user = await build_context_maps(
         runtime_users,
         user_states,
         active_leaders,
@@ -938,7 +940,7 @@ async def main():
     fetch_interval = application.config.polling.fetch_interval
 
     async def _on_new_leaders(new_wallets: list[str]) -> None:
-        started_wallets = _refresh_contexts_for_new_leaders(
+        started_wallets = await _refresh_contexts_for_new_leaders(
             new_wallets=new_wallets,
             runtime_users=runtime_users,
             user_states=user_states,

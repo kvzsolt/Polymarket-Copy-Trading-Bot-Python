@@ -14,83 +14,108 @@ the normal re-trigger semantics.
 """
 from __future__ import annotations
 
+import contextlib
+
 import pytest
 
-from storage.sqlite.connection import create_connection
-from storage.sqlite.migrations import apply_migrations
-from storage.sqlite.risk_blocks_repo import (
+from storage.postgres.risk_blocks_repo import (
     OPERATOR_CLEAR_PREFIX,
     RiskBlocksRepo,
 )
 
-
-@pytest.fixture()
-def repo(tmp_path):
-    db_path = str(tmp_path / "blocks.db")
-    with create_connection(db_path) as conn:
-        apply_migrations(conn)
-        conn.commit()
-    return RiskBlocksRepo(db_path)
+pytestmark = pytest.mark.asyncio
 
 
-def test_operator_clear_survives_re_trigger(repo):
+@contextlib.asynccontextmanager
+async def _pg_pool():
+    try:
+        from testcontainers.postgres import PostgresContainer
+        import asyncpg
+        from storage.postgres.migrations import apply_migrations as pg_apply
+    except Exception as exc:
+        pytest.skip(f"Docker / postgres image unavailable: {exc!r}")
+    try:
+        ctr = PostgresContainer("postgres:16-alpine")
+        ctr.start()
+    except Exception as exc:
+        pytest.skip(f"Docker / postgres image unavailable: {exc!r}")
+    try:
+        dsn = ctr.get_connection_url(driver="asyncpg").replace(
+            "postgresql+asyncpg://", "postgresql://"
+        )
+        pool = await asyncpg.create_pool(dsn, min_size=1, max_size=3)
+        async with pool.acquire() as conn:
+            await pg_apply(conn)
+        try:
+            yield pool
+        finally:
+            await pool.close()
+    finally:
+        ctr.stop()
+
+
+async def test_operator_clear_survives_re_trigger():
     """Operator clear must NOT be reset by a subsequent re-trigger UPSERT."""
-    repo.mark_risk_block(
-        user_id="u",
-        condition_id="c",
-        token_id="t",
-        reason="stop_loss",
-        source="risk_monitor",
-    )
-    # Operator clears the block via the documented prefix.
-    cleared = repo.clear_risk_block(
-        user_id="u",
-        condition_id="c",
-        token_id="t",
-        clear_reason=f"{OPERATOR_CLEAR_PREFIX}manual_unlock",
-    )
-    assert cleared is True
-    assert repo.get_active_risk_block(user_id="u", condition_id="c", token_id="t") is None
+    async with _pg_pool() as pool:
+        repo = RiskBlocksRepo(pool)
+        await repo.mark_risk_block(
+            user_id="u",
+            condition_id="c",
+            token_id="t",
+            reason="stop_loss",
+            source="risk_monitor",
+        )
+        cleared = await repo.clear_risk_block(
+            user_id="u",
+            condition_id="c",
+            token_id="t",
+            clear_reason=f"{OPERATOR_CLEAR_PREFIX}manual_unlock",
+        )
+        assert cleared is True
+        assert await repo.get_active_risk_block(
+            user_id="u", condition_id="c", token_id="t"
+        ) is None
 
-    # Position re-triggers the risk path — the UPSERT must respect the
-    # operator's override.
-    repo.mark_risk_block(
-        user_id="u",
-        condition_id="c",
-        token_id="t",
-        reason="stop_loss",
-        source="risk_monitor",
-    )
-    assert repo.get_active_risk_block(user_id="u", condition_id="c", token_id="t") is None, (
-        "operator clear must survive re-trigger UPSERT"
-    )
+        await repo.mark_risk_block(
+            user_id="u",
+            condition_id="c",
+            token_id="t",
+            reason="stop_loss",
+            source="risk_monitor",
+        )
+        assert await repo.get_active_risk_block(
+            user_id="u", condition_id="c", token_id="t"
+        ) is None, "operator clear must survive re-trigger UPSERT"
 
 
-def test_system_clear_does_get_reset_on_re_trigger(repo):
-    """System clears (no operator prefix) keep the existing re-trigger semantics."""
-    repo.mark_risk_block(
-        user_id="u",
-        condition_id="c",
-        token_id="t",
-        reason="stop_loss",
-        source="risk_monitor",
-    )
-    # System clear with a non-operator reason.
-    repo.clear_risk_block(
-        user_id="u",
-        condition_id="c",
-        token_id="t",
-        clear_reason="reconciler:full_close_confirmed",
-    )
-    assert repo.get_active_risk_block(user_id="u", condition_id="c", token_id="t") is None
+async def test_system_clear_does_get_reset_on_re_trigger():
+    """System clears (no operator prefix) keep re-trigger semantics."""
+    async with _pg_pool() as pool:
+        repo = RiskBlocksRepo(pool)
+        await repo.mark_risk_block(
+            user_id="u",
+            condition_id="c",
+            token_id="t",
+            reason="stop_loss",
+            source="risk_monitor",
+        )
+        await repo.clear_risk_block(
+            user_id="u",
+            condition_id="c",
+            token_id="t",
+            clear_reason="reconciler:full_close_confirmed",
+        )
+        assert await repo.get_active_risk_block(
+            user_id="u", condition_id="c", token_id="t"
+        ) is None
 
-    repo.mark_risk_block(
-        user_id="u",
-        condition_id="c",
-        token_id="t",
-        reason="stop_loss",
-        source="risk_monitor",
-    )
-    assert repo.get_active_risk_block(user_id="u", condition_id="c", token_id="t") is not None, (
-        "system-cleared block must be re-armed by a fresh trigger"
-    )
+        await repo.mark_risk_block(
+            user_id="u",
+            condition_id="c",
+            token_id="t",
+            reason="stop_loss",
+            source="risk_monitor",
+        )
+        assert await repo.get_active_risk_block(
+            user_id="u", condition_id="c", token_id="t"
+        ) is not None, "system-cleared block must be re-armed by a fresh trigger"

@@ -40,13 +40,13 @@ class MockFillsRepo:
 class MockPositionsRepo:
     def __init__(self):
         self.upserted = []
-    def upsert_position(self, fill: Any) -> None:
+    async def upsert_position(self, fill: Any) -> None:
         self.upserted.append(fill)
 
 class MockReservationService:
     def __init__(self):
         self.released = []
-    def release_terminal(self, reservation_id: str, reason: str) -> None:
+    async def release_terminal(self, reservation_id: str, reason: str) -> None:
         self.released.append((reservation_id, reason))
 
 class MockVenueOrder:
