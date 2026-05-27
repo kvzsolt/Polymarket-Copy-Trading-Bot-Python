@@ -6,7 +6,6 @@ from services.riskMonitor import (
     RiskPriceCache,
     VenueCircuitBreaker,
     reconcile_unconfirmed_risk_orders,
-    risk_monitor_loop,
     run_risk_check_for_context,
 )
 
@@ -15,6 +14,5 @@ __all__ = [
     "RiskPriceCache",
     "VenueCircuitBreaker",
     "reconcile_unconfirmed_risk_orders",
-    "risk_monitor_loop",
     "run_risk_check_for_context",
 ]

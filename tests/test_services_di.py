@@ -122,8 +122,3 @@ class TestOrchestratorDISeams:
         assert "readiness_tracker" in sig.parameters
         assert "config" in sig.parameters
 
-    def test_risk_monitor_loop_accepts_readiness_tracker(self) -> None:
-        from services.riskMonitor import risk_monitor_loop
-        sig = inspect.signature(risk_monitor_loop)
-        assert "readiness_tracker" in sig.parameters
-        assert "config" in sig.parameters
