@@ -215,6 +215,7 @@ class ReservationsRepo:
                     SELECT reserved_size FROM order_reservations
                     WHERE user_id = $1 AND condition_id = $2 AND token_id = $3
                           AND side = 'SELL' AND status = 'active'
+                    FOR SHARE
                     """,
                     intent.key.user_id,
                     intent.key.condition_id,
@@ -233,6 +234,72 @@ class ReservationsRepo:
                     expires_at,
                 )
         return await self.get_by_id(res_id)
+
+    async def create_sell_reservation_checked_by_intent(
+        self,
+        intent: OrderIntent,
+        reserved_size: Decimal,
+        expires_at: int,
+        held_size: Decimal,
+    ) -> tuple["Reservation | None", "Reservation | None"]:
+        """SELL parity for ``create_buy_reservation_checked_by_intent``.
+
+        Returns ``(existing, new)`` with the same conventions as the BUY
+        variant: an active row for this intent key short-circuits with
+        ``(active_row, None)``; insufficient capacity returns ``(None,
+        None)``; success returns ``(None, new_row)``.
+
+        Serialises the intent-key lookup, capacity SELECT and insert
+        inside one ``conn.transaction()`` under the same per-(user,
+        condition, token) advisory lock that ``create_sell_reservation_
+        checked`` uses, closing the fast-path lookup race that the BUY
+        variant already covers.
+        """
+        stable_key = intent.key.stable_key()
+        res_id = str(uuid.uuid4())
+        created_at = int(intent.created_at.timestamp())
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1)::bigint)",
+                    f"sell_reservation:{intent.key.user_id}:"
+                    f"{intent.key.condition_id}:{intent.key.token_id}",
+                )
+                existing_row = await conn.fetchrow(
+                    """
+                    SELECT * FROM order_reservations
+                    WHERE order_intent_key = $1 AND status = 'active'
+                    FOR UPDATE
+                    """,
+                    stable_key,
+                )
+                if existing_row:
+                    return self._row_to_reservation(existing_row), None
+                rows = await conn.fetch(
+                    """
+                    SELECT reserved_size FROM order_reservations
+                    WHERE user_id = $1 AND condition_id = $2 AND token_id = $3
+                          AND side = 'SELL' AND status = 'active'
+                    FOR SHARE
+                    """,
+                    intent.key.user_id,
+                    intent.key.condition_id,
+                    intent.key.token_id,
+                )
+                already_reserved = self._sum_decimal_rows(rows, "reserved_size")
+                if held_size - already_reserved < reserved_size:
+                    return None, None
+                await self._insert_reservation(
+                    conn,
+                    res_id,
+                    intent,
+                    Decimal("0"),
+                    reserved_size,
+                    created_at,
+                    expires_at,
+                )
+        new_row = await self.get_by_id(res_id)
+        return None, new_row
 
     async def _create_reservation(
         self,
@@ -429,26 +496,52 @@ class ReservationsRepo:
         self, reservation_id: str, reason: str, released_at: int
     ) -> None:
         async with self._pool.acquire() as conn:
-            # jsonb_set with create-if-missing=true mirrors SQLite's
-            # json_insert: insert the key only if absent. We coalesce
-            # NULL → {} to handle rows that never wrote a payload.
-            await conn.execute(
-                """
-                UPDATE order_reservations
-                SET status = 'released',
-                    updated_at = $1,
-                    metadata_json = jsonb_set(
-                        COALESCE(metadata_json, '{}'::jsonb),
-                        '{release_reason}',
-                        to_jsonb($2::text),
-                        true
+            async with conn.transaction():
+                # Take the same per-scope advisory lock the capacity
+                # checks use so a cleanup-job release cannot land between
+                # an in-flight capacity SELECT and its INSERT. SELL uses
+                # per-(user, condition, token); BUY uses per-user.
+                meta = await conn.fetchrow(
+                    """
+                    SELECT user_id, condition_id, token_id, side
+                    FROM order_reservations
+                    WHERE id = $1
+                    """,
+                    reservation_id,
+                )
+                if meta is None:
+                    return
+                if meta["side"] == "SELL":
+                    lock_key = (
+                        f"sell_reservation:{meta['user_id']}:"
+                        f"{meta['condition_id']}:{meta['token_id']}"
                     )
-                WHERE id = $3 AND status = 'active'
-                """,
-                released_at,
-                reason,
-                reservation_id,
-            )
+                else:
+                    lock_key = f"buy_reservation:{meta['user_id']}"
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1)::bigint)",
+                    lock_key,
+                )
+                # jsonb_set with create-if-missing=true mirrors SQLite's
+                # json_insert: insert the key only if absent. We coalesce
+                # NULL → {} to handle rows that never wrote a payload.
+                await conn.execute(
+                    """
+                    UPDATE order_reservations
+                    SET status = 'released',
+                        updated_at = $1,
+                        metadata_json = jsonb_set(
+                            COALESCE(metadata_json, '{}'::jsonb),
+                            '{release_reason}',
+                            to_jsonb($2::text),
+                            true
+                        )
+                    WHERE id = $3 AND status = 'active'
+                    """,
+                    released_at,
+                    reason,
+                    reservation_id,
+                )
 
     def _row_to_reservation(self, row: asyncpg.Record) -> Reservation:
         return Reservation(

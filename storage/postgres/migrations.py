@@ -593,6 +593,12 @@ _DISCOVERY_DDL = [
     """,
     """CREATE INDEX IF NOT EXISTS idx_disc_ep_ev_episode
        ON discovery_episode_events(episode_id)""",
+    # Unique constraint backing ``ON CONFLICT (episode_id, trade_id) DO
+    # NOTHING`` in ``discovery_repo.upsert_episode``. Without it that
+    # clause is a no-op against the table's bigserial PK and duplicates
+    # are silently inserted, skewing leader-event counts.
+    """CREATE UNIQUE INDEX IF NOT EXISTS idx_disc_ep_ev_unique
+       ON discovery_episode_events(episode_id, trade_id)""",
 
     """
     CREATE TABLE IF NOT EXISTS discovery_context_buckets (
