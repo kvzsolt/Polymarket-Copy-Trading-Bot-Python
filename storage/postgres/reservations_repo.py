@@ -44,6 +44,20 @@ import asyncpg
 from domain.order_lifecycle import IntentReason, IntentSide, OrderIntent, Reservation
 
 
+# DL-05: ``hashtext()`` returns int32; casting to bigint spreads 2^32
+# values across the 2^64 advisory-lock space, so birthday collisions
+# appear at ~65k keys and serialise unrelated scopes. SHA-256 of the
+# bytea-encoded key gives a uniform 64-bit slot — take the first 8 bytes,
+# hex-encode, parse as a 64-bit signed integer via ``bit(64)::bigint``.
+# Same shape used in positions_repo so collisions stay symmetric across
+# both repos.
+_ADVISORY_LOCK_SQL = (
+    "SELECT pg_advisory_xact_lock("
+    "('x' || encode(substring(sha256($1::bytea), 1, 8), 'hex'))"
+    "::bit(64)::bigint)"
+)
+
+
 class ReservationsRepo:
     def __init__(self, pool: asyncpg.Pool):
         self._pool = pool
@@ -100,7 +114,7 @@ class ReservationsRepo:
                 # re-reads ``order_reservations``. Released at COMMIT
                 # /ROLLBACK by Postgres automatically.
                 await conn.execute(
-                    "SELECT pg_advisory_xact_lock(hashtext($1)::bigint)",
+                    _ADVISORY_LOCK_SQL,
                     f"buy_reservation:{intent.key.user_id}",
                 )
                 rows = await conn.fetch(
@@ -155,7 +169,7 @@ class ReservationsRepo:
         async with self._pool.acquire() as conn:
             async with conn.transaction():
                 await conn.execute(
-                    "SELECT pg_advisory_xact_lock(hashtext($1)::bigint)",
+                    _ADVISORY_LOCK_SQL,
                     f"buy_reservation:{intent.key.user_id}",
                 )
                 existing_row = await conn.fetchrow(
@@ -206,7 +220,7 @@ class ReservationsRepo:
                 # the same held position so two cannot both pass the
                 # held-size capacity check.
                 await conn.execute(
-                    "SELECT pg_advisory_xact_lock(hashtext($1)::bigint)",
+                    _ADVISORY_LOCK_SQL,
                     f"sell_reservation:{intent.key.user_id}:"
                     f"{intent.key.condition_id}:{intent.key.token_id}",
                 )
@@ -261,7 +275,7 @@ class ReservationsRepo:
         async with self._pool.acquire() as conn:
             async with conn.transaction():
                 await conn.execute(
-                    "SELECT pg_advisory_xact_lock(hashtext($1)::bigint)",
+                    _ADVISORY_LOCK_SQL,
                     f"sell_reservation:{intent.key.user_id}:"
                     f"{intent.key.condition_id}:{intent.key.token_id}",
                 )
@@ -519,7 +533,7 @@ class ReservationsRepo:
                 else:
                     lock_key = f"buy_reservation:{meta['user_id']}"
                 await conn.execute(
-                    "SELECT pg_advisory_xact_lock(hashtext($1)::bigint)",
+                    _ADVISORY_LOCK_SQL,
                     lock_key,
                 )
                 # jsonb_set with create-if-missing=true mirrors SQLite's

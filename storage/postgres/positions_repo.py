@@ -44,6 +44,15 @@ from utils.logger import get_logger
 logger = get_logger("PositionsRepo")
 
 
+# DL-05: SHA-256-based 64-bit advisory-lock slot. Mirrors the constant in
+# reservations_repo.py so collisions stay symmetric across both repos.
+_ADVISORY_LOCK_SQL = (
+    "SELECT pg_advisory_xact_lock("
+    "('x' || encode(substring(sha256($1::bytea), 1, 8), 'hex'))"
+    "::bit(64)::bigint)"
+)
+
+
 @dataclass
 class PositionRecord:
     user_id: str
@@ -100,6 +109,32 @@ class PositionsRepo(AbstractPositionRepository):
                 conn, user_id, condition_id, token_id=token_id
             )
 
+    # DL-02: queries are static literal strings — no f-string suffix
+    # splice. ``for_update`` selects between four pre-built variants so
+    # the SQL planner cache stays hot AND a future caller passing a
+    # tampered "for_update" cannot inject SQL fragments. The without-
+    # token form uses ``ORDER BY ... LIMIT 1`` which can lock the wrong
+    # row when multiple positions share ``(user_id, condition_id)``; the
+    # guard below refuses to combine ``for_update=True`` with a missing
+    # token_id rather than silently picking a row by alphabetical order.
+    _SELECT_POSITION_WITH_TOKEN = """
+        SELECT user_id, condition_id, token_id, leader_id,
+               size_tokens, avg_entry_price
+        FROM positions
+        WHERE user_id = $1 AND condition_id = $2 AND token_id = $3
+    """
+    _SELECT_POSITION_WITH_TOKEN_FOR_UPDATE = (
+        _SELECT_POSITION_WITH_TOKEN + " FOR UPDATE"
+    )
+    _SELECT_POSITION_WITHOUT_TOKEN = """
+        SELECT user_id, condition_id, token_id, leader_id,
+               size_tokens, avg_entry_price
+        FROM positions
+        WHERE user_id = $1 AND condition_id = $2
+        ORDER BY token_id ASC, leader_id ASC
+        LIMIT 1
+    """
+
     @staticmethod
     async def _get_position_in_conn(
         conn: asyncpg.Connection,
@@ -112,32 +147,29 @@ class PositionsRepo(AbstractPositionRepository):
         """SELECT helper that uses an existing connection — caller owns the
         transaction. ``for_update=True`` adds ``FOR UPDATE`` so apply_fill
         can serialise the read+write step against concurrent writers
-        (Postgres equivalent of the SQLite BEGIN IMMEDIATE pattern)."""
-        suffix = " FOR UPDATE" if for_update else ""
-        if token_id:
-            row = await conn.fetchrow(
-                f"""
-                SELECT user_id, condition_id, token_id, leader_id,
-                       size_tokens, avg_entry_price
-                FROM positions
-                WHERE user_id = $1 AND condition_id = $2 AND token_id = $3
-                {suffix}
-                """,
-                user_id,
-                condition_id,
-                token_id,
+        (Postgres equivalent of the SQLite BEGIN IMMEDIATE pattern).
+
+        ``for_update=True`` requires an explicit ``token_id`` so the lock
+        always lands on the intended row — the no-token fallback picks the
+        first row by ``ORDER BY token_id ASC LIMIT 1`` which would
+        otherwise lock an arbitrary opposite leg of a binary market.
+        """
+        if for_update and not token_id:
+            raise ValueError(
+                "_get_position_in_conn(for_update=True) requires an explicit "
+                "token_id to avoid locking the wrong row when multiple "
+                "positions share (user_id, condition_id)"
             )
+        if token_id:
+            query = (
+                PositionsRepo._SELECT_POSITION_WITH_TOKEN_FOR_UPDATE
+                if for_update
+                else PositionsRepo._SELECT_POSITION_WITH_TOKEN
+            )
+            row = await conn.fetchrow(query, user_id, condition_id, token_id)
         else:
             row = await conn.fetchrow(
-                f"""
-                SELECT user_id, condition_id, token_id, leader_id,
-                       size_tokens, avg_entry_price
-                FROM positions
-                WHERE user_id = $1 AND condition_id = $2
-                ORDER BY token_id ASC, leader_id ASC
-                LIMIT 1
-                {suffix}
-                """,
+                PositionsRepo._SELECT_POSITION_WITHOUT_TOKEN,
                 user_id,
                 condition_id,
             )
@@ -291,7 +323,7 @@ class PositionsRepo(AbstractPositionRepository):
         # serialises the gap-lock window so the second caller waits
         # until the first ``ON CONFLICT`` row is visible.
         await conn.execute(
-            "SELECT pg_advisory_xact_lock(hashtext($1)::bigint)",
+            _ADVISORY_LOCK_SQL,
             f"position:{user_id}:{condition_id}:{token_id}",
         )
 
