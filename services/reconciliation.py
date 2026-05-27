@@ -331,7 +331,20 @@ class ReconciliationService:
             # rate-limited order endpoints.
             probes_done = 0
             probe_cap_hit = False
-            for local_row in await self._local_in_flight_orders():
+            # SHP-02: surface the in-flight lookup failure separately
+            # from per-row probe failures. The pass already classified
+            # everything in the open list above; a pool/schema error
+            # here just means we skip the missing-from-open probe.
+            try:
+                in_flight_rows = await self._local_in_flight_orders()
+            except Exception as exc:
+                logger.warning(
+                    "reconcile_in_flight_lookup_failed | err=%r — "
+                    "skipping closed-order probe this pass",
+                    exc,
+                )
+                in_flight_rows = []
+            for local_row in in_flight_rows:
                 local_oid = str(local_row.get("order_id") or "")
                 if not local_oid or local_oid in seen_open_ids:
                     continue

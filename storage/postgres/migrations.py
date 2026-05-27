@@ -90,10 +90,12 @@ _CORE_DDL = [
     """
     CREATE INDEX IF NOT EXISTS idx_fills_order ON fills(order_id)
     """,
-    """
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_fills_unique
-    ON fills(user_id, order_id, condition_id, side, fill_ts)
-    """,
+    # DL-03: ``idx_fills_unique`` was byte-identical to ``idx_fills_dedup``
+    # above. The duplicate index doubled the per-INSERT index-maintenance
+    # cost and made ``ON CONFLICT ON CONSTRAINT`` ambiguous. Drop it on
+    # both fresh and redeployed databases. ``idx_fills_dedup`` remains the
+    # canonical conflict target referenced by orders_repo.mark_fill.
+    """DROP INDEX IF EXISTS idx_fills_unique""",
 
     # ----- positions (canonical 3-col PK) ---------------------------------
     """

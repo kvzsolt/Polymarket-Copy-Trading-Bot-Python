@@ -520,7 +520,10 @@ async def _prefetch_market_data_rest_snapshot(
 
     # Attach per-pair bundles on the context so the per-signal loop can pull
     # the exact side's bundle when constructing decision/execute metadata.
-    context.__dict__["_md_bundles_by_pair"] = bundles_by_pair
+    # SHP-09: ``context.extra`` is the canonical extension point — direct
+    # ``__dict__`` writes bypass the dataclass field set and would break
+    # under a future ``frozen=True`` / ``__slots__`` switch.
+    context.extra["_md_bundles_by_pair"] = bundles_by_pair
 
     # REST-primary execution seeds the store from `/book`, then immediately
     # hands the token to WSS for ongoing updates. Do not call
@@ -1389,11 +1392,11 @@ async def execute_trades(
         _stale_pair_key = (signal.token_id, _signal_side_norm)
         _bundle_for_pair = None
         if normalized:
-            _bundle_for_pair = (
-                getattr(context, "_md_bundles_by_pair", {}).get(_stale_pair_key)
-                if hasattr(context, "_md_bundles_by_pair")
-                else None
-            )
+            # SHP-09: read from the canonical ``context.extra`` extension
+            # point — matches the write at the top of this module.
+            _bundle_for_pair = context.extra.get(
+                "_md_bundles_by_pair", {}
+            ).get(_stale_pair_key)
         if (
             _stale_pair_key in market_data_stale_codes
             or (_bundle_for_pair is None and signal.token_id in market_data_stale_tokens)

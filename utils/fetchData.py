@@ -1,9 +1,5 @@
 from __future__ import annotations
 
-import asyncio
-import atexit
-import warnings
-
 import aiohttp
 
 from clients.network.http_client import AsyncHttpClient, HttpRetryPolicy
@@ -15,26 +11,14 @@ _session: aiohttp.ClientSession | None = None
 _http_client: AsyncHttpClient | None = None
 
 
-def _close_session_sync() -> None:
-    """Best-effort shutdown hook for environments that do not call close_session."""
-    global _session, _http_client
-    session = _session
-    if not session or session.closed:
-        return
-
-    close_coro = session.close()
-    try:
-        asyncio.run(close_coro)
-    except Exception as exc:
-        close_coro.close()
-        # Do not raise during process shutdown, but make leaks observable.
-        warnings.warn(f"Failed to close shared HTTP session during shutdown: {exc}")
-    finally:
-        _session = None
-        _http_client = None
-
-
-atexit.register(_close_session_sync)
+# INF-04: the prior ``atexit.register(_close_session_sync)`` ran
+# ``asyncio.run()`` during interpreter shutdown. Under pytest-asyncio
+# teardown a loop is still alive, and ``asyncio.run`` on top of a
+# running loop raises ``RuntimeError`` — the session then leaked. The
+# proper close path is the explicit ``await close_session()`` invoked
+# from app shutdown. If a CLI script forgets to call it the connector
+# will surface a warning during GC; that visibility is preferable to a
+# silent atexit failure.
 
 
 

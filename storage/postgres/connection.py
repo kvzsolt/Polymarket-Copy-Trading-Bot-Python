@@ -32,7 +32,12 @@ logger = logging.getLogger("PostgresPool")
 # happy-path against concurrent first-callers.
 _pool: Optional[asyncpg.Pool] = None
 _pool_dsn: Optional[str] = None
-_init_lock = asyncio.Lock()
+# INF-02: lazy lock init. ``asyncio.Lock()`` at module import time binds
+# to whatever event loop is active at first import; in test environments
+# that imported this module before pytest-asyncio created the loop the
+# lock could end up bound to a closed / wrong loop. Build on first
+# ``init_pool`` call instead, mirroring the lazy ``_pool`` pattern below.
+_init_lock: Optional[asyncio.Lock] = None
 
 
 async def init_pool(
@@ -48,7 +53,7 @@ async def init_pool(
     ``RuntimeError`` if a previous call used a different DSN — the bot
     is single-pool by design.
     """
-    global _pool, _pool_dsn
+    global _pool, _pool_dsn, _init_lock
 
     if _pool is not None:
         # Defensive sanity: a second init with a different DSN is almost
@@ -63,6 +68,8 @@ async def init_pool(
             )
         return _pool
 
+    if _init_lock is None:
+        _init_lock = asyncio.Lock()
     async with _init_lock:
         if _pool is not None:
             return _pool
@@ -99,12 +106,13 @@ async def get_pool() -> asyncpg.Pool:
 
 async def shutdown_pool() -> None:
     """Close the pool and clear the singleton. Idempotent."""
-    global _pool, _pool_dsn
+    global _pool, _pool_dsn, _init_lock
     if _pool is None:
         return
     pool = _pool
     _pool = None
     _pool_dsn = None
+    _init_lock = None
     await pool.close()
     logger.info("asyncpg pool shut down")
 
@@ -112,6 +120,7 @@ async def shutdown_pool() -> None:
 def _reset_for_tests() -> None:
     """Hard-reset the module state. Test-only — tears down pool reference
     without closing (caller must close first to avoid leaking connections)."""
-    global _pool, _pool_dsn
+    global _pool, _pool_dsn, _init_lock
     _pool = None
     _pool_dsn = None
+    _init_lock = None
