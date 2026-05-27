@@ -28,6 +28,7 @@ mistaking it for the local submission idempotency key.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import time
 from dataclasses import dataclass, field
@@ -310,7 +311,7 @@ class ReconciliationService:
             # rate-limited order endpoints.
             probes_done = 0
             probe_cap_hit = False
-            for local_row in self._local_in_flight_orders():
+            for local_row in await self._local_in_flight_orders():
                 local_oid = str(local_row.get("order_id") or "")
                 if not local_oid or local_oid in seen_open_ids:
                     continue
@@ -702,12 +703,18 @@ class ReconciliationService:
                 order_id, exc,
             )
 
-    def _local_in_flight_orders(self) -> list[dict[str, Any]]:
+    async def _local_in_flight_orders(self) -> list[dict[str, Any]]:
         """Return locally persisted orders that we still believe are open.
 
         Used to detect terminal venue states for orders that have fallen off
         the open-orders list (filled, cancelled) but our local view has not
         caught up yet.
+
+        ``OrdersRepo.get_unconfirmed_order_submissions`` is ``async def`` on
+        the Postgres adapter — calling it without ``await`` returns a
+        coroutine that the comprehension below would silently swallow via
+        the catch-all ``except``, returning ``[]``. That collapses every
+        venue-fallen-off probe to a no-op (cubic finding on PR #108).
         """
         repo = self.orders_repo
         if repo is None:
@@ -716,7 +723,10 @@ class ReconciliationService:
         if not callable(getter):
             return []
         try:
-            rows = getter() or []
+            result = getter()
+            if inspect.isawaitable(result):
+                result = await result
+            rows = result or []
         except Exception as exc:
             logger.error("reconcile_local_in_flight_lookup_failed | err=%s", exc)
             return []
