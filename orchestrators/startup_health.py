@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import asdict, dataclass, field
+from decimal import Decimal  # noqa: F401 — used in stringified type hints
 from typing import TYPE_CHECKING, Any
 
 from aiohttp import ClientSession
@@ -162,7 +163,11 @@ async def _check_polymarket_api() -> StartupHealthCheckItem:
         )
 
 
-def _balance_check(available_cash: float, *, warning_threshold: float = 5.0) -> StartupHealthCheckItem:
+def _balance_check(
+    available_cash: "Decimal | float",
+    *,
+    warning_threshold: "Decimal | float" = 5.0,
+) -> StartupHealthCheckItem:
     if available_cash <= 0:
         return StartupHealthCheckItem(
             status="error",
@@ -486,7 +491,7 @@ async def perform_startup_health_check(
     positions_repo: PositionsRepo,
     orders_repo=None,  # type: ignore[assignment] | OrdersRepo | None
     live_positions: list[dict[str, Any]],
-    available_cash: float,
+    available_cash: "Decimal | float",
     database_ok: bool,
     rpc_url: str,
     clob_gateway: ClobGateway | None = None,
