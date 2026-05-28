@@ -53,6 +53,17 @@ _ADVISORY_LOCK_SQL = (
 )
 
 
+def _lock_key(key: str) -> bytes:
+    """Encode a lock key to bytes for the ``$1::bytea`` parameter.
+
+    asyncpg does not implicitly cast ``str`` to ``bytea``; passing a bare
+    string to a ``bytea`` param raises ``DataError: a bytes-like object is
+    required, not 'str'``.  Encode as UTF-8 so Postgres receives the
+    correct wire type.
+    """
+    return key.encode("utf-8")
+
+
 @dataclass
 class PositionRecord:
     user_id: str
@@ -324,7 +335,7 @@ class PositionsRepo(AbstractPositionRepository):
         # until the first ``ON CONFLICT`` row is visible.
         await conn.execute(
             _ADVISORY_LOCK_SQL,
-            f"position:{user_id}:{condition_id}:{token_id}",
+            _lock_key(f"position:{user_id}:{condition_id}:{token_id}"),
         )
 
         current = await self._get_position_in_conn(
