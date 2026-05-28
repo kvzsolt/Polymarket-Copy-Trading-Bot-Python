@@ -58,6 +58,17 @@ _ADVISORY_LOCK_SQL = (
 )
 
 
+def _lock_key(key: str) -> bytes:
+    """Encode a lock key to bytes for the ``$1::bytea`` parameter.
+
+    asyncpg does not implicitly cast ``str`` to ``bytea``; passing a bare
+    string to a ``bytea`` param raises ``DataError: a bytes-like object is
+    required, not 'str'``.  Encode as UTF-8 so Postgres receives the
+    correct wire type.
+    """
+    return key.encode("utf-8")
+
+
 class ReservationsRepo:
     def __init__(self, pool: asyncpg.Pool):
         self._pool = pool
@@ -115,7 +126,7 @@ class ReservationsRepo:
                 # /ROLLBACK by Postgres automatically.
                 await conn.execute(
                     _ADVISORY_LOCK_SQL,
-                    f"buy_reservation:{intent.key.user_id}",
+                    _lock_key(f"buy_reservation:{intent.key.user_id}"),
                 )
                 rows = await conn.fetch(
                     """
@@ -170,7 +181,7 @@ class ReservationsRepo:
             async with conn.transaction():
                 await conn.execute(
                     _ADVISORY_LOCK_SQL,
-                    f"buy_reservation:{intent.key.user_id}",
+                    _lock_key(f"buy_reservation:{intent.key.user_id}"),
                 )
                 existing_row = await conn.fetchrow(
                     """
@@ -221,8 +232,10 @@ class ReservationsRepo:
                 # held-size capacity check.
                 await conn.execute(
                     _ADVISORY_LOCK_SQL,
-                    f"sell_reservation:{intent.key.user_id}:"
-                    f"{intent.key.condition_id}:{intent.key.token_id}",
+                    _lock_key(
+                        f"sell_reservation:{intent.key.user_id}:"
+                        f"{intent.key.condition_id}:{intent.key.token_id}"
+                    ),
                 )
                 rows = await conn.fetch(
                     """
@@ -276,8 +289,10 @@ class ReservationsRepo:
             async with conn.transaction():
                 await conn.execute(
                     _ADVISORY_LOCK_SQL,
-                    f"sell_reservation:{intent.key.user_id}:"
-                    f"{intent.key.condition_id}:{intent.key.token_id}",
+                    _lock_key(
+                        f"sell_reservation:{intent.key.user_id}:"
+                        f"{intent.key.condition_id}:{intent.key.token_id}"
+                    ),
                 )
                 existing_row = await conn.fetchrow(
                     """
@@ -534,7 +549,7 @@ class ReservationsRepo:
                     lock_key = f"buy_reservation:{meta['user_id']}"
                 await conn.execute(
                     _ADVISORY_LOCK_SQL,
-                    lock_key,
+                    _lock_key(lock_key),
                 )
                 # jsonb_set with create-if-missing=true mirrors SQLite's
                 # json_insert: insert the key only if absent. We coalesce
