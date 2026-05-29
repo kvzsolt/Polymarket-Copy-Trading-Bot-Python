@@ -304,6 +304,8 @@ Blockchain network and metrics server.
 | Env Var | Type | Default | Description |
 |---|---|---|---|
 | `ENABLE_TRADER_DISCOVERY` | bool | *(derived)* | Enable trader discovery service |
+| `ALLOW_AUTO_TRADER_DETECTION` | bool | `false` | When no manual leaders are configured, allow startup-only DB/discovery leader selection |
+| `MAX_AUTO_TRADERS_COUNT` | int | `2` | Maximum startup auto-selected leaders, clamped by `AUTO_DISCOVER_MAX_LEADERS` |
 | `DISCOVERY_INTERVAL_SECONDS` | int | `3600` | Seconds between discovery scans |
 | `DISCOVERY_PROMOTE_TO_ACTIVE` | bool | *(derived)* | Promote discovered leaders to active |
 | `MIN_LEADER_PNL` | float | `1000` | Minimum PnL for discovered leaders |

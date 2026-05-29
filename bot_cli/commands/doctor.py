@@ -214,6 +214,31 @@ def _resolve_jsonl_path() -> Path:
     return Path(override) if override else (_resolve_log_dir() / f"{APP_NAME}.jsonl")
 
 
+async def _auto_trader_db_candidate_count(config) -> int:
+    """Probe current DB-backed startup candidates using the production selector."""
+    from services.discovery.auto_trader_selector import AutoTraderSelector
+    from storage.postgres.connection import init_pool, shutdown_pool
+    from storage.postgres.discovery_repo import DiscoveryRepo
+
+    pool = None
+    try:
+        pool = await init_pool(
+            config.database.dsn,
+            min_size=1,
+            max_size=2,
+            command_timeout_seconds=15.0,
+        )
+        selector = AutoTraderSelector(DiscoveryRepo(pool), config)
+        selection = await selector.select_from_db()
+        return int(selection.db_candidate_count)
+    finally:
+        if pool is not None:
+            try:
+                await shutdown_pool()
+            except Exception:
+                pass
+
+
 # ---------------------------------------------------------------------------
 # Main entry
 # ---------------------------------------------------------------------------
@@ -637,14 +662,46 @@ async def run_doctor_checks(mode: str) -> dict[str, Any]:
         )
 
     # ----- leaders -----------------------------------------------------
-    if not config.leader.wallets:
+    if config.leader.wallets:
+        ctx.ok("leaders", "leader wallets configured")
+    elif not config.discovery.allow_auto_trader_detection:
         ctx.blocked(
             "leaders",
-            "no leader wallets configured",
-            "set LEADER_WALLETS or run python bot.py rotate-traders after discovery",
+            "no leader wallets configured and startup auto detection disabled",
+            "set LEADER_WALLETS, or set ALLOW_AUTO_TRADER_DETECTION=true, or run python bot.py rotate-traders after discovery",
+        )
+    elif int(config.discovery.max_auto_traders_count or 0) <= 0:
+        ctx.blocked(
+            "leaders",
+            "startup auto detection enabled but MAX_AUTO_TRADERS_COUNT <= 0",
+            "set MAX_AUTO_TRADERS_COUNT > 0 or configure LEADER_WALLETS",
         )
     else:
-        ctx.ok("leaders", "leader wallets configured")
+        try:
+            db_candidate_count = await _auto_trader_db_candidate_count(config)
+        except Exception as exc:
+            ctx.warning(
+                "leaders",
+                f"auto detection enabled but DB candidate probe failed: {type(exc).__name__}",
+                "investigate discovery DB access; startup bootstrap will re-check candidates before CLOB init",
+            )
+        else:
+            if db_candidate_count > 0:
+                ctx.ok(
+                    "leaders",
+                    f"startup auto detection enabled; {db_candidate_count} eligible DB candidates available",
+                )
+            elif config.discovery.falcon_api_token:
+                ctx.ok(
+                    "leaders",
+                    "startup auto detection enabled; no eligible DB candidates yet, bootstrap discovery can run before CLOB init",
+                )
+            else:
+                ctx.blocked(
+                    "leaders",
+                    "no leader wallets configured, no eligible DB candidates found, and FALCON_API_TOKEN is missing",
+                    "set LEADER_WALLETS, or set FALCON_API_TOKEN for bootstrap discovery, or run python bot.py rotate-traders after discovery",
+                )
 
     if config.near_one_exit.enable_near_one_exit:
         threshold = float(config.near_one_exit.threshold)

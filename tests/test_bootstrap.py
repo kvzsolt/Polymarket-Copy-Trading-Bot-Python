@@ -19,6 +19,7 @@ from domain.ports.repositories import AbstractLeaderRepository
 from orchestrators.leader_registry import LeaderRegistry
 from services.healthServer import ReadinessTracker
 from services.traderDiscoveryService import TraderDiscoveryService
+from storage.postgres.discovery_repo import DiscoveryRepo
 from storage.postgres.leaders_repo import LeadersRepo
 
 pytestmark = pytest.mark.asyncio
@@ -107,6 +108,7 @@ class TestBuildApp:
             app = await build_app(_valid_env(dsn))
             assert isinstance(app.leaders_repo, LeadersRepo)
             assert isinstance(app.leaders_repo, AbstractLeaderRepository)
+            assert isinstance(app.discovery_repo, DiscoveryRepo)
 
     async def test_registry_and_discovery_wired(self) -> None:
         async with _pg_container() as dsn:

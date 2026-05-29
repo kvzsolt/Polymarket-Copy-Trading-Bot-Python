@@ -171,7 +171,13 @@ class UserRuntimeState:
 def configured_leaders(config: AppConfig) -> list[str]:
     leaders = [str(wallet).strip() for wallet in config.leader.wallets if str(wallet).strip()]
     if not leaders:
-        if config.discovery.enable_trader_discovery:
+        if config.discovery.allow_auto_trader_detection:
+            logger.info(
+                "No leader wallets configured. Startup auto trader detection "
+                "is enabled and will select live-eligible DB/discovery "
+                "candidates without writing LEADER_WALLETS."
+            )
+        elif config.discovery.enable_trader_discovery:
             logger.info(
                 "No leader wallets configured. Discovery is enabled, so the bot "
                 "will score DB candidates only. Live copying requires "

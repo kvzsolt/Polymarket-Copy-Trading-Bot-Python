@@ -6,7 +6,7 @@
 
 ## Overview
 
-The bot's performance is fundamentally determined by which leaders you follow. A leader is any Polymarket trader whose wallet activity you monitor and potentially copy. The bot provides two modes for selecting leaders: **manual configuration** and **auto-discovery**.
+The bot's performance is fundamentally determined by which leaders you follow. A leader is any Polymarket trader whose wallet activity you monitor and potentially copy. The bot supports **manual configuration**, **startup-only auto trader detection**, and **manual rotation** from the discovery database.
 
 Regardless of how leaders are selected, the bot applies a consistent evaluation pipeline:
 1. **Signal detection** — Monitor the leader's wallet for new trades
@@ -47,9 +47,32 @@ The bot validates all leader addresses at startup:
 
 ---
 
+## Startup Auto Trader Detection
+
+Startup auto trader detection is opt-in and only applies when no manual leaders are configured. Manual `LEADER_WALLETS` always win.
+
+```env
+LEADER_WALLETS=
+ALLOW_AUTO_TRADER_DETECTION=true
+MAX_AUTO_TRADERS_COUNT=2
+DISCOVERY_AUTO_WRITE_LEADERS=false
+DISCOVERY_DYNAMIC_MONITORING_ENABLED=false
+```
+
+At startup the bot checks existing live-eligible discovery evaluations in the database. If none exist, it runs one synchronous discovery bootstrap before CLOB clients, user runtime state, market data, user-data websockets, risk monitors, or trade monitors are started. If eligible candidates are still unavailable after that bootstrap, live runtime startup is blocked cleanly.
+
+The selector does not write `LEADER_WALLETS`, does not edit runtime env files, does not lower discovery thresholds, and does not hot-add leaders while the bot is already running.
+
+| Env Var | Default | Effect |
+|---|---|---|
+| `ALLOW_AUTO_TRADER_DETECTION` | `false` | Allows startup-only DB/discovery selection when manual leaders are empty |
+| `MAX_AUTO_TRADERS_COUNT` | `2` | Maximum startup-selected leaders, clamped by `AUTO_DISCOVER_MAX_LEADERS` |
+
+---
+
 ## Auto-Discovery Mode
 
-Auto-discovery uses the Polymarket Analytics API to find profitable traders automatically.
+Auto-discovery fetches and scores candidate traders, then stores evaluations in the database. It is DB-only during normal runtime: it does not rewrite env files and does not start live monitors by itself.
 
 ### Enabling Auto-Discovery
 
@@ -79,10 +102,10 @@ LEADER_AUTO=true
 LEADER_AUTO_COUNT=5
 ```
 
-This enables discovery, promotion, and trader discovery all at once. The bot will:
+This enables discovery, promotion, and trader discovery settings. Discovery will:
 1. Query the Polymarket Analytics API for top traders
 2. Score each candidate
-3. Promote the top 5 (by score) to active monitoring
+3. Store candidate evaluations for rotation or startup auto trader detection
 
 ### Discovery Filters
 
@@ -279,15 +302,12 @@ There is no guaranteed formula, but historically good leaders tend to share thes
 
 ## Leader Registry Modes
 
-The `LeaderRegistry` operates in one of three modes depending on configuration:
+The `LeaderRegistry` refresh path remains DB/scoring-focused. Live runtime leader selection is decided before CLOB startup by manual `LEADER_WALLETS` or the startup auto trader bootstrap.
 
 | Mode | Condition | Behavior |
 |---|---|---|
-| `configured` | `LEADER_WALLETS` set, discovery off | Only manually configured leaders are monitored |
-| `discovery_only` | No `LEADER_WALLETS`, discovery on | Only auto-discovered leaders are monitored |
-| `mixed` | Both configured | Configured leaders + top discovered leaders |
-
-In mixed mode, configured leaders are always monitored. Discovered leaders that overlap with configured leaders are deduplicated. Configured leaders that don't appear in discovery results are flagged as "stale" with a warning.
+| `configured` | `LEADER_WALLETS` set | Only manually configured leaders are monitored |
+| `no_configured_leaders` | No manual leaders | Discovery refresh scores DB candidates; live runtime starts only if startup auto trader detection selected eligible leaders |
 
 ---
 

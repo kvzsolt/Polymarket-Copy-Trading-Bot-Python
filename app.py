@@ -34,8 +34,9 @@ except Exception as exc:  # pragma: no cover
     sys.exit(1)
 
 from bootstrap import build_app
-from config.app_config import EnvValidationError
+from config.app_config import EnvValidationError, load_config
 from config.env import is_valid_eth_address, validate_runtime_env
+from orchestrators.auto_trader_bootstrap import resolve_startup_leaders
 from orchestrators.leader_registry import LeaderRegistry
 from orchestrators.market_data_runtime import (
     MarketDataRuntime,
@@ -62,6 +63,7 @@ from orchestrators.runtime_summary import print_startup_summary
 from orchestrators.startup_health import perform_startup_health_check
 from orchestrators.user_data_runtime import UserDataRuntime
 from services.compliance import check_geoblock
+from services.discovery.auto_trader_selector import AutoTraderSelector
 from services.discovery.capture_service import DiscoveryCaptureService
 from services.discovery.position_snapshot_service import (
     SnapshotResult,
@@ -671,22 +673,14 @@ async def main():
 
     try:
         validate_runtime_env()
-        application = await build_app()
+        startup_config = load_config()
     except EnvValidationError as exc:
         print_error(str(exc))
         return
 
-    application.readiness.update(
-        wss_market_ok=False,
-        wss_market_connecting=False,
-        wss_user_ok=False,
-        wss_user_connecting=False,
-        market_data_ready=False,
-    )
-
     from bot_cli.commands.doctor import run_doctor_checks
 
-    mode = "paper" if application.config.execution.paper_trade_only else "live"
+    mode = "paper" if startup_config.execution.paper_trade_only else "live"
 
     if mode == "live":
         doctor_result = await run_doctor_checks("live")
@@ -719,11 +713,21 @@ async def main():
                     check.get("detail"),
                     check.get("fix"),
                 )
-    elif application.config.network.enforce_geoblock:
+    elif startup_config.network.enforce_geoblock:
         decision = await check_geoblock()
         if not decision.allowed:
             print_error(f"Trading disabled by geoblock policy: {decision.reason}")
             return
+
+    application = await build_app()
+
+    application.readiness.update(
+        wss_market_ok=False,
+        wss_market_connecting=False,
+        wss_user_ok=False,
+        wss_user_connecting=False,
+        market_data_ready=False,
+    )
 
     configured = configured_leaders(application.config)
     invalid = [wallet for wallet in configured if not is_valid_eth_address(wallet)]
@@ -736,7 +740,59 @@ async def main():
             )
         return
 
-    runtime_users = load_runtime_users(configured, application.config)
+    startup_selection = await resolve_startup_leaders(
+        configured_leaders=configured,
+        config=application.config,
+        selector=AutoTraderSelector(
+            repo=application.discovery_repo,
+            config=application.config,
+        ),
+        discovery_service=application.discovery_service,
+    )
+    active_leaders = startup_selection.active_leaders
+
+    invalid_active = [
+        wallet for wallet in active_leaders if not is_valid_eth_address(wallet)
+    ]
+    if invalid_active:
+        logger.error(
+            "startup_blocked_no_active_leaders",
+            extra={
+                "mode": startup_selection.mode,
+                "reason": "invalid_active_leaders",
+                "invalid_wallets": invalid_active,
+                "allow_auto_trader_detection": (
+                    application.config.discovery.allow_auto_trader_detection
+                ),
+                "max_auto_traders_count": (
+                    application.config.discovery.max_auto_traders_count
+                ),
+            },
+        )
+        print_error("No active leaders available. Auto-selected leaders were invalid.")
+        return
+
+    if not active_leaders:
+        logger.error(
+            "startup_blocked_no_active_leaders",
+            extra={
+                "mode": startup_selection.mode,
+                "reason": startup_selection.reason,
+                "allow_auto_trader_detection": (
+                    application.config.discovery.allow_auto_trader_detection
+                ),
+                "max_auto_traders_count": (
+                    application.config.discovery.max_auto_traders_count
+                ),
+            },
+        )
+        print_error(
+            "No active leaders available. Manual LEADER_WALLETS are empty and "
+            "auto trader detection did not find eligible candidates."
+        )
+        return
+
+    runtime_users = load_runtime_users(active_leaders, application.config)
     if not runtime_users:
         print_error("No runtime users configured.")
         return
@@ -779,12 +835,6 @@ async def main():
     registry = application.registry
     refresh_interval = application.config.discovery.discovery_interval_seconds
 
-    active_leaders = await _wait_for_active_leaders(
-        registry,
-        configured,
-        refresh_interval,
-        config=application.config,
-    )
     ensure_runtime_follows(runtime_users, active_leaders, application.config)
 
     user_states: dict[str, UserRuntimeState] = {}

@@ -3,6 +3,10 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import pytest
 
 
 _APP_PY = Path(__file__).resolve().parents[1] / "app.py"
@@ -60,3 +64,65 @@ def test_paper_mode_skips_live_doctor():
         parts.extend(src_lines[max(0, line - 6):line])
     nearby = "\n".join(parts)
     assert "live" in nearby
+
+
+@pytest.mark.asyncio
+async def test_live_doctor_runs_before_build_app(monkeypatch):
+    import app as app_module
+
+    events: list[str] = []
+    fake_config = SimpleNamespace(
+        execution=SimpleNamespace(paper_trade_only=False),
+        network=SimpleNamespace(enforce_geoblock=False),
+    )
+
+    async def _fake_doctor(_mode: str):
+        events.append("doctor")
+        return {"status": "ok", "checks": []}
+
+    async def _fake_build_app():
+        events.append("build_app")
+        raise RuntimeError("stop_after_build")
+
+    monkeypatch.setattr(app_module, "validate_runtime_env", lambda: None)
+    monkeypatch.setattr(app_module, "load_config", lambda: fake_config)
+    monkeypatch.setattr(app_module, "build_app", _fake_build_app)
+    monkeypatch.setattr("bot_cli.commands.doctor.run_doctor_checks", _fake_doctor)
+
+    with pytest.raises(RuntimeError, match="stop_after_build"):
+        await app_module.main()
+
+    assert events == ["doctor", "build_app"]
+
+
+@pytest.mark.asyncio
+async def test_blocked_live_doctor_short_circuits_before_build_app(monkeypatch):
+    import app as app_module
+
+    fake_config = SimpleNamespace(
+        execution=SimpleNamespace(paper_trade_only=False),
+        network=SimpleNamespace(enforce_geoblock=False),
+    )
+    build_app = AsyncMock()
+
+    async def _fake_doctor(_mode: str):
+        return {
+            "status": "blocked",
+            "checks": [
+                {
+                    "name": "leaders",
+                    "status": "blocked",
+                    "detail": "no leaders",
+                    "fix": "set LEADER_WALLETS",
+                }
+            ],
+        }
+
+    monkeypatch.setattr(app_module, "validate_runtime_env", lambda: None)
+    monkeypatch.setattr(app_module, "load_config", lambda: fake_config)
+    monkeypatch.setattr(app_module, "build_app", build_app)
+    monkeypatch.setattr("bot_cli.commands.doctor.run_doctor_checks", _fake_doctor)
+
+    await app_module.main()
+
+    build_app.assert_not_called()
