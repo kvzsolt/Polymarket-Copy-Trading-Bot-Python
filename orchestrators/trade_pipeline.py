@@ -1,25 +1,27 @@
 from __future__ import annotations
 
 import asyncio
-import sqlite3
 import time
 import traceback as _tb
+import uuid
+
+import asyncpg
 from dataclasses import dataclass
 from decimal import Decimal, ROUND_DOWN
 from typing import Any
 
 from config.app_config import AppConfig
-from config.env import ENV
 from domain.models import TradeSignal
 from domain.trading_context import TradingContext
 from services.entryPermissionService import EntryDecision, EntryPermissionService
+from services.execution.reconciliation_service import ReconciliationService
 from services.executionService import ExecutionRequest
 from services.metrics import metrics
-from services.positionActionCoordinator import PositionScope
+from domain.position_key import PositionKey
+from services.positionActionCoordinator import PositionScope  # noqa: F401  back-compat alias
 from services.riskEngine import headroom_for_buy
-from services.riskEngine import active_policy
-from storage.sqlite.fills_repo import FillRecord
-from storage.sqlite.positions_repo import PositionRecord
+from storage.postgres.fills_repo import FillRecord
+from storage.postgres.positions_repo import PositionRecord
 from utils import is_valid_clob_token_id
 from utils.dayEquity import get_day_start_equity
 from utils.fetchData import fetch_data
@@ -39,8 +41,7 @@ from utils.logger import (
 logger = get_logger("TradePipeline")
 
 
-def _positive_int_env(name: str, default: int) -> int:
-    raw = ENV.get(name, default)
+def _positive_int(raw: Any, default: int) -> int:
     try:
         value = int(raw)
     except (TypeError, ValueError):
@@ -52,7 +53,8 @@ def _positive_int_env(name: str, default: int) -> int:
 def _analysis_semaphore(context: TradingContext) -> asyncio.Semaphore:
     semaphore = context.extra.get("_trade_analysis_semaphore")
     if semaphore is None:
-        semaphore = asyncio.Semaphore(_positive_int_env("TRADE_ANALYSIS_CONCURRENCY", 6))
+        config_val = context.config.raw.get("TRADE_ANALYSIS_CONCURRENCY", 6) if context.config else 6
+        semaphore = asyncio.Semaphore(_positive_int(config_val, 6))
         context.extra["_trade_analysis_semaphore"] = semaphore
     return semaphore
 
@@ -61,9 +63,154 @@ def _analysis_semaphore(context: TradingContext) -> asyncio.Semaphore:
 def _reconcile_semaphore(context: TradingContext) -> asyncio.Semaphore:
     semaphore = context.extra.get("_reconcile_unconfirmed_semaphore")
     if semaphore is None:
-        semaphore = asyncio.Semaphore(_positive_int_env("RECONCILE_CONCURRENCY", 4))
+        config_val = context.config.raw.get("RECONCILE_CONCURRENCY", 4) if context.config else 4
+        semaphore = asyncio.Semaphore(_positive_int(config_val, 4))
         context.extra["_reconcile_unconfirmed_semaphore"] = semaphore
     return semaphore
+
+
+def get_reconciliation_service(context: TradingContext) -> ReconciliationService:
+    """Return the shared reconciler bound to this trading context.
+
+    The reconciler is the canonical owner of unconfirmed-order settlement
+    (issue #71). One instance per ``TradingContext`` keeps batch reconciles
+    consistent across trade and risk paths.
+    """
+    svc = context.extra.get("_reconciliation_service")
+    reservation_service = context.extra.get("reservation_service")
+    if reservation_service is None:
+        coordinator = getattr(context, "execution_coordinator", None)
+        reservation_service = getattr(coordinator, "reservation_service", None)
+        if reservation_service is not None:
+            context.extra["reservation_service"] = reservation_service
+    if svc is None:
+        svc = ReconciliationService(
+            orders_repo=context.orders_repo,
+            fills_repo=context.fills_repo,
+            positions_repo=context.positions_repo,
+            risk_blocks_repo=getattr(context, "risk_blocks_repo", None),
+            risk_triggers_repo=getattr(context, "risk_triggers_repo", None),
+            clob_gateway=context.extra.get("clob_gateway"),
+            audit_logger=getattr(context, "audit_logger", None),
+            reservation_service=reservation_service,
+            # Funder wallet is the dedup key for the ManualSync write-back.
+            # Falls back to context.wallet_address (the user's primary wallet)
+            # when no explicit funder is set.
+            funder_address=getattr(context, "wallet_address", None),
+        )
+        context.extra["_reconciliation_service"] = svc
+    elif getattr(svc, "reservation_service", None) is None and reservation_service is not None:
+        svc.reservation_service = reservation_service
+    return svc
+
+
+async def _submit_copy_through_coordinator(
+    context: TradingContext,
+    exec_req,
+    signal,
+    *,
+    leader_id: str,
+):
+    """Route copy BUY/SELL through ExecutionCoordinator when wired.
+
+    Live mode requires the coordinator: a missing coordinator fails closed
+    with status=``execution_coordinator_missing`` so we never silently bypass
+    ReservationService + PositionActionCoordinator. Paper / dry-run / test
+    contexts fall back to the ExecutionService primitive (via ``getattr``
+    alias) so existing tests that don't wire the coordinator keep working.
+    """
+    from services.execution.coordinator import is_live_mode
+
+    coordinator = getattr(context, "execution_coordinator", None)
+    if coordinator is None:
+        if is_live_mode(getattr(context, "config", None)):
+            logger.error(
+                "execution_coordinator_missing | live mode requires coordinator | "
+                "user=%s leader=%s cond=%s token=%s side=%s",
+                context.user_id, leader_id, signal.condition_id,
+                signal.token_id, exec_req.side,
+                extra={
+                    "type": "execution_coordinator_missing",
+                    "user_id": context.user_id,
+                    "leader_id": leader_id,
+                    "condition_id": signal.condition_id,
+                    "token_id": signal.token_id,
+                    "side": exec_req.side,
+                },
+            )
+            try:
+                from services.metrics import (
+                    METRIC_COORDINATOR_MISSING_SKIP, metrics,
+                )
+
+                metrics.inc_sync(
+                    METRIC_COORDINATOR_MISSING_SKIP,
+                    labels={"side": exec_req.side, "source": "copy_trade"},
+                )
+            except Exception:
+                pass
+            from services.executionService import ExecutionResult as _ER
+
+            return _ER(
+                accepted=False,
+                order_id=None,
+                status="execution_coordinator_missing",
+                requested_amount=Decimal(str(exec_req.amount)),
+                filled_amount=Decimal("0"),
+                avg_price=None,
+                fees_paid=Decimal("0"),
+                error="ExecutionCoordinator not wired in live mode",
+            )
+        submitter = getattr(context.execution_service, "execute")
+        return await submitter(exec_req)
+
+    from services.execution.coordinator import ExecutionIntent
+
+    side = (exec_req.side or "BUY").upper()
+    try:
+        price = Decimal(str(signal.price or 0))
+    except Exception:
+        price = Decimal("0")
+    try:
+        notional = Decimal(str(signal.usdc_size or 0))
+    except Exception:
+        notional = exec_req.amount * price if price > 0 else Decimal("0")
+
+    intent = ExecutionIntent(
+        user_id=context.user_id,
+        condition_id=exec_req.condition_id or signal.condition_id,
+        token_id=exec_req.token_id,
+        side=side,
+        size=Decimal(str(exec_req.amount)),
+        price=price,
+        notional_usdc=notional,
+        idempotency_key=signal.tx_hash,
+        source="copy_trade",
+        signal_id=exec_req.signal_id or signal.tx_hash,
+        leader_wallet=leader_id,
+        max_slippage_bps=int(exec_req.max_slippage_bps),
+        reason=exec_req.reason or "copy_trade",
+        recovery_metadata=exec_req.recovery_metadata,
+    )
+    coord_result = await coordinator.submit_copy_trade(intent)
+    raw = coord_result.raw_result
+    if raw is not None:
+        return raw
+    # Build a minimal ExecutionResult so downstream code (which reads status,
+    # filled_amount, etc.) continues to work.
+    from services.executionService import ExecutionResult
+
+    skip_status = coord_result.skip_code or coord_result.status or "rejected"
+    return ExecutionResult(
+        accepted=coord_result.accepted,
+        order_id=coord_result.order_id,
+        status=skip_status,
+        requested_amount=Decimal(str(exec_req.amount)),
+        filled_amount=Decimal("0"),
+        avg_price=None,
+        fees_paid=Decimal("0"),
+        error=coord_result.reason,
+    )
 
 
 def _decimal_or_zero(value: Any) -> Decimal:
@@ -84,23 +231,421 @@ def _matched_amount_from_response(response: dict[str, Any] | None) -> Decimal:
     )
 
 
-async def _resolve_market_meta(context: TradingContext, token_id: str) -> tuple[float, float]:
-    """Returns (min_order_size, tick_size) for the token."""
-    market_min_size = 0.0
-    tick_size = 0.0
+_MDS_RETRY_INTERVAL_S = 0.2
+_MDS_DEFAULT_TIMEOUT_S = 2.0
+
+
+def _market_data_subscribe_timeout(context: TradingContext) -> float:
+    raw = None
+    if context.config is not None:
+        raw = context.config.raw.get("MARKET_DATA_SUBSCRIBE_TIMEOUT_SECONDS")
     try:
-        if hasattr(context, 'execution_service') and context.execution_service:
-            meta = await context.execution_service.market_meta_service.get(token_id)
-            market_min_size = float(getattr(meta, "min_order_size", 0) or 0)
-            tick_size = float(getattr(meta, "tick_size", 0) or 0)
-    except Exception:
-        pass
-    return market_min_size, tick_size
+        value = float(raw) if raw is not None else _MDS_DEFAULT_TIMEOUT_S
+    except (TypeError, ValueError):
+        value = _MDS_DEFAULT_TIMEOUT_S
+    return max(0.2, value)
 
 
-async def _resolve_market_min_size(context: TradingContext, token_id: str) -> float:
-    min_size, _ = await _resolve_market_meta(context, token_id)
-    return min_size
+def _market_data_primary_source(context: TradingContext) -> str:
+    cfg = getattr(context, "config", None)
+    md_cfg = getattr(cfg, "market_data", None) if cfg is not None else None
+    return str(getattr(md_cfg, "primary_source", "rest_snapshot")).lower()
+
+
+async def _ensure_token_subscribed(context: TradingContext, token_id: str) -> None:
+    """Subscribe ``token_id`` to the market WSS if a runtime is wired.
+
+    Best-effort: a missing runtime (e.g. test contexts) is not fatal — sizing
+    will still attempt to read MDS, which fails closed if data is unavailable.
+    """
+    runtime = getattr(context, "market_data_runtime", None)
+    if runtime is None:
+        return
+    try:
+        await runtime.subscribe_tokens([token_id])
+    except Exception as exc:
+        logger.warning(
+            "trade_pipeline_subscribe_failed | token=%s error=%s",
+            token_id,
+            repr(exc),
+        )
+
+
+async def _resolve_market_bundle(
+    context: TradingContext,
+    token_id: str,
+    *,
+    timeout_seconds: float,
+):
+    """Wait up to ``timeout_seconds`` for fresh executable market data.
+
+    Returns a ``MarketDataBundle`` or ``None`` if the token stays stale past
+    the timeout. ``None`` triggers a per-signal ``market_data_stale`` skip in
+    the caller; the trade is never placed off stale data.
+    """
+    mds = getattr(context, "market_data_service", None)
+    if mds is None:
+        return None
+
+    # Imported lazily to keep the module independent of the MDS error types
+    # at import time (and to avoid circular imports through trade_pipeline).
+    from services.market_data_service import (  # noqa: WPS433  local import
+        MarketDataError,
+        MarketDataNotReady,
+        StaleDataError,
+    )
+
+    deadline = time.monotonic() + max(0.0, timeout_seconds)
+    last_error: Exception | None = None
+
+    while True:
+        try:
+            return await mds.require_fresh_data(token_id)
+        except MarketDataNotReady as exc:
+            # Resolved markets / not-executable states will not recover within
+            # the wait window. Fail closed immediately.
+            last_error = exc
+            break
+        except StaleDataError as exc:
+            last_error = exc
+        except MarketDataError as exc:
+            last_error = exc
+            break
+        except Exception as exc:  # pragma: no cover - defensive
+            last_error = exc
+            break
+
+        if time.monotonic() >= deadline:
+            break
+        await asyncio.sleep(_MDS_RETRY_INTERVAL_S)
+
+    logger.info(
+        "trade_pipeline_market_data_stale | token=%s reason=%s",
+        token_id,
+        repr(last_error) if last_error else "timeout",
+    )
+    return None
+
+
+async def _prefetch_market_data_for_signals(
+    context: TradingContext,
+    normalized: list,
+) -> tuple[dict[str, Any], set[str], dict[tuple[str, str], str]]:
+    """Resolve a fresh executable market bundle for each signal token.
+
+    In REST primary mode (``MARKET_DATA_PRIMARY_SOURCE=rest_snapshot``) this
+    calls :meth:`MarketDataService.require_execution_snapshot` once per unique
+    ``(token_id, side)`` pair, immediately before sizing. After the REST
+    snapshot has seeded ``MarketStateStore``, the token is best-effort
+    subscribed to market WSS so later book/quote updates can overwrite the
+    REST source in the same store. No WSS readiness wait, no retry loop — one
+    fresh REST `/book` per pair, gated against the millisecond budgets
+    configured on :class:`MarketDataPolicy`.
+
+    In WSS primary mode the legacy path is used: subscribe → wait for
+    ``ensure_token_ready_or_bootstrapped`` → ``require_fresh_data`` retry loop.
+
+    Returns:
+        bundles_by_token: token_id -> MarketDataBundle for any token that
+            resolved successfully. Used by the per-signal loop to extract
+            ``tick_size`` / ``min_order_size`` for sizing.
+        stale_tokens: token_ids whose primary-mode lookup failed at least
+            once. Retained for back-compat with callers that key off the
+            token only.
+        stale_skip_codes: ``(token_id, side)`` -> ``skip_code`` for each
+            failed lookup. Used by the per-signal loop to surface a
+            specific reason (``market_data_stale``,
+            ``market_data_timeout``, ``book_no_liquidity``,
+            ``book_spread_wide``, ``market_resolved``).
+    """
+    if not normalized:
+        return {}, set(), {}
+
+    primary_source = _market_data_primary_source(context)
+
+    if primary_source == "rest_snapshot":
+        return await _prefetch_market_data_rest_snapshot(context, normalized)
+
+    return await _prefetch_market_data_wss(context, normalized)
+
+
+async def _prefetch_market_data_rest_snapshot(
+    context: TradingContext,
+    normalized: list,
+) -> tuple[dict[str, Any], set[str], dict[tuple[str, str], str]]:
+    """REST-primary path. One fresh `/book` per unique (token_id, side).
+
+    This path intentionally does not wait for WSS readiness before sizing, but
+    it still subscribes the token after the REST snapshot write. That preserves
+    the intended handoff: REST seeds ``MarketStateStore`` immediately; WSS then
+    owns ongoing quote/book updates in the same token-keyed store.
+    """
+    mds = getattr(context, "market_data_service", None)
+    if mds is None:
+        # No MDS → fail closed: every signal will skip with market_data_stale.
+        stale_tokens: set[str] = set()
+        stale_codes: dict[tuple[str, str], str] = {}
+        for signal, _ in normalized:
+            token_id = getattr(signal, "token_id", None)
+            side = str(getattr(signal, "side", "") or "").upper()
+            if not token_id:
+                continue
+            stale_tokens.add(token_id)
+            stale_codes[(token_id, side)] = "market_data_stale"
+        return {}, stale_tokens, stale_codes
+
+    from services.market_data_service import (  # noqa: WPS433  local import
+        MarketDataError,
+        MarketDataNotReady,
+        StaleDataError,
+    )
+
+    unique_pairs: list[tuple[str, str, str | None]] = []
+    seen: set[tuple[str, str]] = set()
+    for signal, _ in normalized:
+        token_id = getattr(signal, "token_id", None)
+        side = str(getattr(signal, "side", "") or "").upper()
+        condition_id = getattr(signal, "condition_id", None)
+        if not token_id or not side:
+            continue
+        key = (token_id, side)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique_pairs.append((token_id, side, condition_id))
+
+    if not unique_pairs:
+        return {}, set(), {}
+
+    analysis_sem = _analysis_semaphore(context)
+    bundles_by_token: dict[str, Any] = {}
+    bundles_by_pair: dict[tuple[str, str], Any] = {}
+    stale_tokens: set[str] = set()
+    stale_codes: dict[tuple[str, str], str] = {}
+
+    async def _resolve_one(
+        token_id: str,
+        side: str,
+        condition_id: str | None,
+    ) -> tuple[str, str, Any, str | None]:
+        async with analysis_sem:
+            logger.info(
+                "trade_pipeline_market_data_snapshot_start | token_id=%s side=%s cond=%s",
+                token_id,
+                side,
+                condition_id,
+            )
+            try:
+                bundle = await mds.require_execution_snapshot(
+                    token_id,
+                    side=side,
+                    condition_id=condition_id,
+                )
+            except MarketDataNotReady as exc:
+                code = exc.skip_code or "market_resolved"
+                logger.info(
+                    "trade_pipeline_market_data_snapshot_rejected | token_id=%s side=%s reason=%s",
+                    token_id,
+                    side,
+                    code,
+                )
+                return token_id, side, None, code
+            except StaleDataError as exc:
+                code = exc.skip_code or "market_data_stale"
+                if code == "market_data_timeout":
+                    logger.info(
+                        "trade_pipeline_market_data_snapshot_timeout | token_id=%s side=%s",
+                        token_id,
+                        side,
+                    )
+                logger.info(
+                    "trade_pipeline_market_data_snapshot_rejected | token_id=%s side=%s reason=%s",
+                    token_id,
+                    side,
+                    code,
+                )
+                return token_id, side, None, code
+            except MarketDataError as exc:
+                code = getattr(exc, "skip_code", None) or "market_data_stale"
+                logger.info(
+                    "trade_pipeline_market_data_snapshot_rejected | token_id=%s side=%s reason=%s",
+                    token_id,
+                    side,
+                    code,
+                )
+                return token_id, side, None, code
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.warning(
+                    "trade_pipeline_market_data_snapshot_rejected | token_id=%s side=%s reason=unexpected error=%r",
+                    token_id,
+                    side,
+                    exc,
+                )
+                return token_id, side, None, "market_data_stale"
+
+            quote = getattr(bundle, "quote", None)
+            book = getattr(bundle, "book", None)
+            best_bid = getattr(quote, "best_bid", None) if quote is not None else None
+            best_ask = getattr(quote, "best_ask", None) if quote is not None else None
+            spread_bps: int | None = None
+            if best_bid is not None and best_ask is not None and best_ask > 0:
+                try:
+                    spread_bps = int(((best_ask - best_bid) / best_ask) * 10000)
+                except Exception:
+                    spread_bps = None
+            bid_count = len(getattr(book, "bids", {}) or {}) if book is not None else 0
+            ask_count = len(getattr(book, "asks", {}) or {}) if book is not None else 0
+            logger.info(
+                "trade_pipeline_market_data_snapshot_ready | token_id=%s side=%s source=rest_snapshot"
+                " bid_count=%d ask_count=%d spread_bps=%s",
+                token_id,
+                side,
+                bid_count,
+                ask_count,
+                spread_bps,
+            )
+            return token_id, side, bundle, None
+
+    results = await asyncio.gather(
+        *(
+            _resolve_one(token_id, side, condition_id)
+            for token_id, side, condition_id in unique_pairs
+        ),
+        return_exceptions=True,
+    )
+    for entry in results:
+        if isinstance(entry, Exception):
+            logger.warning(
+                "trade_pipeline_market_data_snapshot_rejected | reason=gather_error error=%r",
+                entry,
+            )
+            continue
+        token_id, side, bundle, skip_code = entry
+        if bundle is None:
+            stale_tokens.add(token_id)
+            stale_codes[(token_id, side)] = skip_code or "market_data_stale"
+            continue
+        bundles_by_pair[(token_id, side)] = bundle
+        # Any per-token sizing data (tick/min_order_size) is side-independent;
+        # keep one bundle keyed by token for downstream sizing inputs.
+        bundles_by_token.setdefault(token_id, bundle)
+
+    # Attach per-pair bundles on the context so the per-signal loop can pull
+    # the exact side's bundle when constructing decision/execute metadata.
+    # SHP-09: ``context.extra`` is the canonical extension point — direct
+    # ``__dict__`` writes bypass the dataclass field set and would break
+    # under a future ``frozen=True`` / ``__slots__`` switch.
+    context.extra["_md_bundles_by_pair"] = bundles_by_pair
+
+    # REST-primary execution seeds the store from `/book`, then immediately
+    # hands the token to WSS for ongoing updates. Do not call
+    # ensure_token_ready_or_bootstrapped() here: that would reintroduce a WSS
+    # readiness wait on the latency-critical copy-trade path.
+    for token_id in {token_id for token_id, _side, _condition_id in unique_pairs}:
+        await _ensure_token_subscribed(context, token_id)
+
+    return bundles_by_token, stale_tokens, stale_codes
+
+
+async def _prefetch_market_data_wss(
+    context: TradingContext,
+    normalized: list,
+) -> tuple[dict[str, Any], set[str], dict[tuple[str, str], str]]:
+    """Legacy WSS-primary path. Subscribe → bootstrap → require_fresh_data."""
+    unique_tokens: list[str] = []
+    seen: set[str] = set()
+    for signal, _ in normalized:
+        token_id = signal.token_id
+        if token_id and token_id not in seen:
+            seen.add(token_id)
+            unique_tokens.append(token_id)
+
+    if not unique_tokens:
+        return {}, set(), {}
+
+    timeout_seconds = _market_data_subscribe_timeout(context)
+    bundles_by_token: dict[str, Any] = {}
+    stale_tokens: set[str] = set()
+    stale_codes: dict[tuple[str, str], str] = {}
+
+    analysis_sem = _analysis_semaphore(context)
+
+    async def _resolve_one(token_id: str) -> tuple[str, Any]:
+        async with analysis_sem:
+            runtime = getattr(context, "market_data_runtime", None)
+
+            logger.info(
+                "trade_pipeline_market_data_prefetch_start | token_id=%s",
+                token_id,
+            )
+
+            if runtime is None:
+                await _ensure_token_subscribed(context, token_id)
+                logger.warning(
+                    "trade_pipeline_market_data_prefetch_no_runtime | token_id=%s",
+                    token_id,
+                )
+            else:
+                try:
+                    ready = await runtime.ensure_token_ready_or_bootstrapped(token_id)
+                    if ready:
+                        logger.info(
+                            "trade_pipeline_market_data_prefetch_ready | token_id=%s",
+                            token_id,
+                        )
+                    else:
+                        logger.info(
+                            "trade_pipeline_market_data_prefetch_timeout | token_id=%s",
+                            token_id,
+                        )
+                        return token_id, None
+                except Exception as exc:
+                    logger.warning(
+                        "trade_pipeline_market_data_prefetch_timeout | token_id=%s error=%r",
+                        token_id,
+                        exc,
+                    )
+                    return token_id, None
+
+            bundle = await _resolve_market_bundle(
+                context,
+                token_id,
+                timeout_seconds=timeout_seconds,
+            )
+            return token_id, bundle
+
+    results = await asyncio.gather(
+        *(_resolve_one(token_id) for token_id in unique_tokens),
+        return_exceptions=True,
+    )
+    sides_by_token: dict[str, set[str]] = {}
+    for signal, _ in normalized:
+        side = str(getattr(signal, "side", "") or "").upper()
+        if signal.token_id and side:
+            sides_by_token.setdefault(signal.token_id, set()).add(side)
+
+    for entry in results:
+        if isinstance(entry, Exception):
+            logger.warning(
+                "trade_pipeline_market_data_prefetch_error | error=%s",
+                repr(entry),
+            )
+            continue
+        token_id, bundle = entry
+        if bundle is None:
+            stale_tokens.add(token_id)
+            for side in sides_by_token.get(token_id, {""}):
+                stale_codes[(token_id, side)] = "market_data_stale"
+        else:
+            bundles_by_token[token_id] = bundle
+            bundle_source = getattr(getattr(bundle, "source", None), "value", None) or str(getattr(bundle, "source", ""))
+            if bundle_source == "rest_degraded":
+                logger.warning(
+                    "market_data_rest_degraded_used | token_id=%s source=%s",
+                    token_id,
+                    bundle_source,
+                )
+    return bundles_by_token, stale_tokens, stale_codes
 
 
 async def _fetch_live_position_size(
@@ -158,7 +703,7 @@ async def _sync_sell_position_from_live_holdings(
     if live_size is None:
         return None
 
-    existing = context.positions_repo.get_position(
+    existing = await context.positions_repo.get_position(
         context.user_id,
         condition_id,
         token_id=token_id,
@@ -166,7 +711,7 @@ async def _sync_sell_position_from_live_holdings(
     avg_entry_price = getattr(existing, "avg_entry_price", Decimal("0")) if existing else Decimal("0")
 
     if live_size <= Decimal("1e-12"):
-        context.positions_repo.delete_position(context.user_id, condition_id, token_id=token_id)
+        await context.positions_repo.delete_position(context.user_id, condition_id, token_id=token_id)
         logger.info(
             "live_position_sync_deleted_local_position | user_id=%s leader_id=%s condition_id=%s token=%s",
             context.user_id,
@@ -176,7 +721,7 @@ async def _sync_sell_position_from_live_holdings(
         )
         return Decimal("0")
 
-    context.positions_repo.upsert_position(
+    await context.positions_repo.upsert_position(
         PositionRecord(
             user_id=context.user_id,
             condition_id=condition_id,
@@ -263,12 +808,12 @@ def _extract_trade_submarket(raw: dict[str, Any]) -> str:
     )
 
 
-def _resolve_leader_tier(context: TradingContext, leader_id: str) -> str:
+async def _resolve_leader_tier(context: TradingContext, leader_id: str) -> str:
     """Look up the follow tier for a leader. Defaults to live_follow if no repo/record."""
     if not hasattr(context, "leaders_repo") or context.leaders_repo is None:
         return "live_follow"
     try:
-        rec = context.leaders_repo.get_tier(leader_id)
+        rec = await context.leaders_repo.get_tier(leader_id)
         tier = rec.follow_tier if rec and rec.follow_tier else None
     except Exception:
         return "live_follow"
@@ -470,7 +1015,7 @@ async def _fetch_balance_snapshot(
         return None
 
     free_cash_usdc = Decimal(str(balance_usdc))
-    open_positions = context.positions_repo.list_open_positions(context.user_id)
+    open_positions = await context.positions_repo.list_open_positions(context.user_id)
     total_exposure_usdc = Decimal("0")
     market_exposure_usdc = Decimal("0")
     leader_exposure_usdc = Decimal("0")
@@ -618,247 +1163,27 @@ async def _reconcile_one(
     record: dict,
     side: str,
 ) -> bool:
-    """Poll exchange and apply a single unconfirmed fill.
+    """Reconcile a single unconfirmed BUY/SELL via the canonical reconciler.
 
-    For BUY: creates the local position on confirmed fill.
-    For SELL: reduces/closes the local position on confirmed fill; if the FOK
-              was cancelled (no fill), removes the processed_trade row so the
-              SELL can be retried on the next monitor cycle.
-
-    Returns True if the order was reconciled (fill applied or retry unlocked).
+    Issue #71 — terminal settlement is owned by ``ReconciliationService``;
+    this wrapper supplies the per-context dependencies (fill confirmation,
+    position lookup, PnL tracker) and preserves caller-facing logging tags.
     """
-    order_id = record.get("order_id")
-    if not order_id:
+    if context.execution_service is None:
         return False
 
-    try:
-        fill_info = await context.execution_service._confirm_fill(order_id)
-    except Exception as exc:
-        logger.warning(
-            "reconcile_unconfirmed_poll_error | side=%s order_id=%s error=%s",
-            side,
-            order_id,
-            repr(exc),
-        )
-        return False
-
-    order_status = str(fill_info.get("status", "")).lower()
-    terminal_no_fill_statuses = {"cancelled", "canceled", "expired", "rejected"}
-    final_fill_statuses = {"filled", "matched"}
-
-    current_matched = _matched_amount_from_response(fill_info)
-    if not order_status and current_matched <= 0:
-        logger.warning(
-            "reconcile_unconfirmed_retryable_missing_status | side=%s order_id=%s cond=%s",
-            side,
-            order_id,
-            str(record.get("condition_id", ""))[:12],
-            extra={
-                "type": "reconcile_unconfirmed_missing_status",
-                "order_id": order_id,
-                "condition_id": record.get("condition_id"),
-                "user_id": record["user_id"],
-                "side": side,
-            },
-        )
-        return False
-
-
-    existing_submission = None
-    try:
-        if hasattr(context.orders_repo, "get_by_order_id"):
-            existing_submission = context.orders_repo.get_by_order_id(order_id)
-    except Exception:
-        existing_submission = None
-    previous_matched = _matched_amount_from_response(
-        (existing_submission or {}).get("response") if isinstance(existing_submission, dict) else None
-    )
-    delta_matched = current_matched - previous_matched
-
-    # Terminal no-fill result, unlock retry. Pending/open orders stay blocked.
-    if current_matched <= 0 and order_status in terminal_no_fill_statuses:
-        if order_status in terminal_no_fill_statuses:
-            logger.info(
-                "reconcile_%s_no_fill_unlock_retry | order_id=%s cond=%s",
-                side.lower(),
-                order_id,
-                str(record.get("condition_id", ""))[:12],
-                extra={
-                    "type": f"reconcile_{side.lower()}_no_fill_unlock",
-                    "order_id": order_id,
-                    "condition_id": record.get("condition_id"),
-                    "user_id": record["user_id"],
-                    "order_status": order_status,
-                },
-            )
-            context.orders_repo.delete_processed_trade(record["trade_key"])
-            return True  # unlocked for retry — counts as reconciled
-    if delta_matched < 0:
-        delta_matched = Decimal("0")
-
-    is_final_fill = order_status in final_fill_statuses or (
-        order_status in terminal_no_fill_statuses and current_matched > 0
-    )
-
-    if delta_matched <= 0:
-        if is_final_fill:
-            try:
-                context.orders_repo.update_submission_status(
-                    order_id=order_id,
-                    status="filled_reconciled",
-                    response_patch=fill_info,
-                )
-            except Exception:
-                pass
-            context.orders_repo.mark_processed_trade(
-                trade_key=record["trade_key"],
-                user_id=record["user_id"],
-                leader_id=record.get("leader_id"),
-                tx_hash=record.get("tx_hash"),
-                side=side,
-                asset=record["asset"],
-                condition_id=record["condition_id"],
-                status="filled_reconciled",
-                order_id=order_id,
-            )
-            return True
-        return False
-
-    avg_price_raw = (
-        fill_info.get("avg_price")
-        or fill_info.get("price")
-        or fill_info.get("average_price")
-        or 0
-    )
-    try:
-        avg_price = Decimal(str(avg_price_raw))
-    except Exception:
-        avg_price = Decimal("0")
-
-    if avg_price <= 0:
-        return False
-
-    try:
-        context.fills_repo.append_fill(
-            FillRecord(
-                user_id=record["user_id"],
-                leader_id=record.get("leader_id"),
-                order_id=order_id,
-                condition_id=record["condition_id"],
-                token_id=record["asset"],
-                side=side,
-                size_tokens=delta_matched,
-                price=avg_price,
-                fee=Decimal("0"),
-                fill_ts=int(time.time()),
-            ),
-            raw_payload={
-                "reconciled_from": "submitted_unconfirmed",
-                "copy_order_id": order_id,
-                "status": "reconciled",
-                "side": side,
-            },
-        )
-        if side == "SELL":
-            # Capture entry price before the position is reduced/deleted
-            pos = context.positions_repo.get_position(
-                record["user_id"], record["condition_id"], token_id=record["asset"]
-            )
-            entry_price = _to_optional_float(getattr(pos, "avg_entry_price", None)) if pos else None
-
-        context.positions_repo.apply_fill(
-            user_id=record["user_id"],
-            leader_id=record.get("leader_id"),
-            condition_id=record["condition_id"],
-            token_id=record["asset"],
-            side=side,
-            fill_size=delta_matched,
-            fill_price=avg_price,
-        )
-
-        if side == "SELL":
-            realized_source = "entry_price"
-            if entry_price is None:
-                logger.warning(
-                    "entry_price missing, using fill price for realized PnL | trade_key=%s cond=%s asset=%s",
-                    record.get("trade_key"),
-                    record.get("condition_id"),
-                    record.get("asset"),
-                )
-                ep = float(avg_price)
-                realized_source = "fill_price_fallback"
-            else:
-                ep = entry_price
-            realized = (float(avg_price) - ep) * float(delta_matched)
-            if context.pnl_tracker is not None:
-                context.pnl_tracker.record_sell(
-                    condition_id=record["condition_id"],
-                    price=float(avg_price),
-                    size_tokens=float(delta_matched),
-                    usdc_value=float(delta_matched * avg_price),
-                    entry_price=ep,
-                    realized_pnl=realized,
-                    exit_reason="reconciled_sell",
-                    leader_wallet=record.get("leader_id", ""),
-                    event_slug="",
-                    title=f"realized_source={realized_source}",
-                )
-
-    except Exception as exc:
-        logger.warning(
-            "reconcile_unconfirmed_apply_error | side=%s order_id=%s error=%s",
-            side,
-            order_id,
-            repr(exc),
-        )
-        return False
-
-    if is_final_fill:
-        context.orders_repo.mark_processed_trade(
-            trade_key=record["trade_key"],
-            user_id=record["user_id"],
-            leader_id=record.get("leader_id"),
-            tx_hash=record.get("tx_hash"),
-            side=side,
-            asset=record["asset"],
-            condition_id=record["condition_id"],
-            status="filled_reconciled",
-            order_id=order_id,
-        )
-        submission_status = "filled_reconciled"
-    else:
-        submission_status = "submitted_unconfirmed"
-
-    try:
-        context.orders_repo.update_submission_status(
-            order_id=order_id,
-            status=submission_status,
-            response_patch=fill_info,
-        )
-    except Exception:
-        pass
-
-    logger.info(
-        "reconcile_unconfirmed_filled | side=%s order_id=%s cond=%s size=%.4f price=%.4f",
+    reconciler = get_reconciliation_service(context)
+    return await reconciler.reconcile_trade_record(
+        record,
         side,
-        order_id,
-        str(record.get("condition_id", ""))[:12],
-        float(delta_matched),
-        float(avg_price),
-        extra={
-            "type": "reconcile_unconfirmed_filled",
-            "side": side,
-            "order_id": order_id,
-            "condition_id": record.get("condition_id"),
-            "user_id": record["user_id"],
-            "filled_amount": str(delta_matched),
-            "avg_price": str(avg_price),
-            "venue_status": order_status,
-            "matched_total": str(current_matched),
-            "matched_previous": str(previous_matched),
-        },
+        confirm_fill=reconciler.confirm_fill,
+        pnl_tracker=context.pnl_tracker,
+        get_position=context.positions_repo.get_position,
+        logger=logger,
+        # Phase 4 — let the reconciler release the daily-cap reservation
+        # for BUYs that terminally cancelled without filling.
+        balance_regime=getattr(context, "balance_regime", None),
     )
-    return True
 
 
 async def reconcile_submitted_unconfirmed(
@@ -881,8 +1206,8 @@ async def reconcile_submitted_unconfirmed(
     if context.execution_service is None:
         return 0
 
-    buy_pending = context.orders_repo.get_unconfirmed_buys(max_age_seconds=max_age_seconds)
-    sell_pending = context.orders_repo.get_unconfirmed_sells(max_age_seconds=max_age_seconds)
+    buy_pending = await context.orders_repo.get_unconfirmed_buys(max_age_seconds=max_age_seconds)
+    sell_pending = await context.orders_repo.get_unconfirmed_sells(max_age_seconds=max_age_seconds)
     if not buy_pending and not sell_pending:
         return 0
 
@@ -894,11 +1219,50 @@ async def reconcile_submitted_unconfirmed(
             # the reconciliation state-apply against the same scoped position
             # so risk monitor / execute_trades cannot observe stale state in
             # the middle of the fill-apply critical section.
-            _scope = PositionScope(
-                user_id=str(record.get("user_id") or ""),
-                condition_id=str(record.get("condition_id") or ""),
-                token_id=str(record.get("asset") or ""),
-            )
+            try:
+                _scope = PositionKey.from_reconciliation_record(record)
+            except ValueError:
+                # Legacy rows predating issue #67 may have NULL/empty
+                # user_id, condition_id, or asset. Emit a hard metric so
+                # ops can detect them, then fall back to a *per-row unique*
+                # sentinel scope so the row still reconciles (else it stays
+                # permanently stuck and skews equity).
+                #
+                # Each legacy row must get its OWN PositionKey — collapsing
+                # unrelated rows under a single shared sentinel (`__legacy_*__`)
+                # would serialize them through the same coordinator slot and
+                # corrupt per-position attribution. We salt every missing
+                # field with the order_id (falling back to trade_key, then a
+                # uuid) so two unrelated legacy rows lock independently.
+                _legacy_salt = (
+                    str(record.get("order_id") or "").strip()
+                    or str(record.get("trade_key") or "").strip()
+                    or f"row-{uuid.uuid4().hex[:12]}"
+                )
+                metrics.inc(
+                    "reconcile_missing_scope_total",
+                    labels={"side": side},
+                )
+                logger.warning(
+                    "reconcile_legacy_scope_fallback | order_id=%s trade_key=%s side=%s "
+                    "user_id=%r condition_id=%r asset=%r salt=%s",
+                    record.get("order_id"), record.get("trade_key"), side,
+                    record.get("user_id"), record.get("condition_id"),
+                    record.get("asset") or record.get("token_id"),
+                    _legacy_salt,
+                )
+                _scope = PositionKey(
+                    user_id=record.get("user_id") or f"__legacy_user__{_legacy_salt}",
+                    condition_id=(
+                        record.get("condition_id")
+                        or f"__legacy_cond__{_legacy_salt}"
+                    ),
+                    token_id=(
+                        record.get("asset")
+                        or record.get("token_id")
+                        or f"__legacy_token__{_legacy_salt}"
+                    ),
+                )
             async with sem:
                 async with context.position_coordinator.acquire(_scope):
                     return await _reconcile_one(context, record, side)
@@ -919,7 +1283,7 @@ async def reconcile_submitted_unconfirmed(
     reconciled += await _reconcile_batch(sell_pending, "SELL")
 
     if reconciled:
-        await metrics.inc("reconcile_unconfirmed_total", value=float(reconciled))
+        metrics.inc("reconcile_unconfirmed_total", value=float(reconciled))
 
     return reconciled
 
@@ -945,7 +1309,7 @@ async def execute_trades(
     normalized = normalize_signals(signals, leader_id)
     results: list[TradePipelineResult] = []
 
-    leader_tier_resolved = _resolve_leader_tier(context, leader_id)
+    leader_tier_resolved = await _resolve_leader_tier(context, leader_id)
     if _trade_config(context).execution.paper_trade_only and leader_tier_resolved == "live_follow":
         logger.info(
             "paper_trade_only_override_all",
@@ -969,41 +1333,58 @@ async def execute_trades(
 
     market_min_size_by_token: dict[str, float] = {}
     tick_size_by_token: dict[str, float] = {}
-    if normalized:
-        analysis_sem = _analysis_semaphore(context)
-
-        async def _prefetch_market_min(signal: TradeSignal) -> tuple[str, float, float]:
-            async with analysis_sem:
-                min_size, tick = await _resolve_market_meta(context, signal.token_id)
-                return signal.token_id, min_size, tick
-
-        prefetch_results = await asyncio.gather(
-            *(_prefetch_market_min(signal) for signal, _ in normalized),
-            return_exceptions=True,
-        )
-        for item, result in zip(normalized, prefetch_results):
-            signal, _ = item
-            if isinstance(result, Exception):
-                logger.warning(
-                    "market_min_prefetch_error | token=%s error=%s",
-                    signal.token_id,
-                    repr(result),
-                )
-                market_min_size_by_token[signal.token_id] = 0.0
-                tick_size_by_token[signal.token_id] = 0.0
-                continue
-            token_id, market_min_size, tick_size = result
-            market_min_size_by_token[token_id] = market_min_size
-            tick_size_by_token[token_id] = tick_size
+    market_data_stale_tokens: set[str] = set()
+    market_data_stale_codes: dict[tuple[str, str], str] = {}
+    if normalized and _market_data_primary_source(context) != "rest_snapshot":
+        (
+            bundles_by_token,
+            market_data_stale_tokens,
+            market_data_stale_codes,
+        ) = await _prefetch_market_data_for_signals(context, normalized)
+        for token_id, bundle in bundles_by_token.items():
+            try:
+                market_min_size_by_token[token_id] = float(bundle.tick.min_order_size)
+                tick_size_by_token[token_id] = float(bundle.tick.tick_size)
+            except (TypeError, ValueError, AttributeError):
+                # Defensive: a malformed bundle should not crash the loop.
+                market_data_stale_tokens.add(token_id)
+                market_min_size_by_token.pop(token_id, None)
+                tick_size_by_token.pop(token_id, None)
+                for sig, _raw in normalized:
+                    if sig.token_id == token_id:
+                        side = str(getattr(sig, "side", "") or "").upper()
+                        market_data_stale_codes.setdefault(
+                            (token_id, side), "market_data_stale"
+                        )
+    else:
+        context.extra["_md_bundles_by_pair"] = {}
 
     for signal, raw in normalized:
         labels = {"user_id": context.user_id, "leader_id": leader_id}
         sell_entry_price: float | None = None
-        await metrics.inc("trades_detected_total", labels=labels)
+        metrics.inc("trades_detected_total", labels=labels)
 
         trade_key = build_trade_key(context.user_id, leader_id, raw)
-        if context.orders_repo.has_processed_trade(trade_key):
-            await metrics.inc("duplicate_order_prevented_total", labels=labels)
+        # Phase 3: atomic claim replaces the prior non-atomic
+        # has_processed_trade → mark_processed_trade check-then-set. A
+        # concurrent worker that races on the same trade_key sees the row
+        # already inserted and gets False, so only one pipeline run can
+        # advance past this point per trade_key.
+        _raw_tx_hash = raw.get("transactionHash") or raw.get("txHash") or ""
+        _raw_side = str(raw.get("side") or "").strip().upper()
+        _raw_asset = raw.get("tokenID") or raw.get("token_id") or raw.get("asset") or ""
+        _raw_condition = raw.get("conditionId") or raw.get("condition_id") or ""
+        if not await context.orders_repo.try_claim_processed_trade(
+            trade_key=trade_key,
+            user_id=context.user_id,
+            leader_id=leader_id,
+            tx_hash=str(_raw_tx_hash),
+            side=_raw_side,
+            asset=str(_raw_asset),
+            condition_id=str(_raw_condition),
+            status="in_progress",
+        ):
+            metrics.inc("duplicate_order_prevented_total", labels=labels)
             results.append(
                 TradePipelineResult(
                     trade_key=trade_key,
@@ -1015,18 +1396,72 @@ async def execute_trades(
             continue
 
         # ------------------------------------------------------------------
-        # Per-scoped-position action coordination (issue #28)
+        # Market-data freshness gate — fail closed when WSS is not ready
+        # ------------------------------------------------------------------
+        # MarketDataService is the sole authority for executable market data.
+        # If subscription + WSS handshake did not converge inside the
+        # configured window, skip the signal rather than trade on stale or
+        # REST-only prices/books.
+        _signal_side_norm = str(getattr(signal, "side", "") or "").upper()
+        _stale_pair_key = (signal.token_id, _signal_side_norm)
+        _bundle_for_pair = None
+        if normalized:
+            # SHP-09: read from the canonical ``context.extra`` extension
+            # point — matches the write at the top of this module.
+            _bundle_for_pair = context.extra.get(
+                "_md_bundles_by_pair", {}
+            ).get(_stale_pair_key)
+        if (
+            _stale_pair_key in market_data_stale_codes
+            or (_bundle_for_pair is None and signal.token_id in market_data_stale_tokens)
+        ):
+            skip_code = market_data_stale_codes.get(
+                _stale_pair_key, "market_data_stale"
+            )
+            log_trade_skip(
+                logger,
+                side=signal.side,
+                condition_id=signal.condition_id,
+                asset=signal.token_id,
+                size=float(signal.size) if signal.size else None,
+                price=float(signal.price) if signal.price else None,
+                usdc_value=float(signal.usdc_size),
+                skip_code=skip_code,
+                reason="REST snapshot not executable: " + skip_code,
+                event_slug=signal.event_slug,
+                meta={"user_id": context.user_id, "leader_id": leader_id},
+            )
+            metrics.inc("trades_skipped_total", labels={**labels, "reason": skip_code})
+            await context.orders_repo.mark_processed_trade(
+                trade_key=trade_key,
+                user_id=context.user_id,
+                leader_id=leader_id,
+                tx_hash=signal.tx_hash,
+                side=signal.side,
+                asset=signal.token_id,
+                condition_id=signal.condition_id,
+                status=f"skipped_{skip_code}",
+            )
+            results.append(
+                TradePipelineResult(
+                    trade_key=trade_key,
+                    status="skipped",
+                    reason=skip_code,
+                    order_id=None,
+                )
+            )
+            continue
+
+        # ------------------------------------------------------------------
+        # Per-scoped-position action coordination (issue #28 / #67)
         # ------------------------------------------------------------------
         # Serialize all observe-then-mutate work on this scoped position
         # against the risk monitor's protective SELL path and any concurrent
         # reconciliation state-apply on the same (condition_id, token_id).
         # Unrelated positions remain fully concurrent.
-        _scope = PositionScope(
-            user_id=context.user_id,
-            condition_id=signal.condition_id,
-            token_id=signal.token_id,
-        )
+        _scope = PositionKey.from_signal_event(signal, context.user_id)
         async with context.position_coordinator.acquire(_scope):
+            logger.debug("trade_pipeline.signal_scope_acquired", extra=_scope.log_fields())
             # ------------------------------------------------------------------
             # Entry-permission gate — single authoritative BUY re-entry check
             # ------------------------------------------------------------------
@@ -1041,8 +1476,8 @@ async def execute_trades(
                         signal.token_id,
                     )
                     skip_reason = "entry_policy_unavailable"
-                    await metrics.inc("trades_skipped_total", labels={**labels, "reason": skip_reason})
-                    context.orders_repo.mark_processed_trade(
+                    metrics.inc("trades_skipped_total", labels={**labels, "reason": skip_reason})
+                    await context.orders_repo.mark_processed_trade(
                         trade_key=trade_key,
                         user_id=context.user_id,
                         leader_id=leader_id,
@@ -1097,9 +1532,9 @@ async def execute_trades(
                         event_slug=signal.event_slug,
                         meta={"user_id": context.user_id, "leader_id": leader_id, "policy_reason": _decision.reason},
                     )
-                    await metrics.inc("trades_skipped_total", labels={**labels, "reason": skip_reason})
-                    await metrics.inc("entry_denied_total", labels={**labels, "policy_reason": _decision.reason})
-                    context.orders_repo.mark_processed_trade(
+                    metrics.inc("trades_skipped_total", labels={**labels, "reason": skip_reason})
+                    metrics.inc("entry_denied_total", labels={**labels, "policy_reason": _decision.reason})
+                    await context.orders_repo.mark_processed_trade(
                         trade_key=trade_key,
                         user_id=context.user_id,
                         leader_id=leader_id,
@@ -1121,7 +1556,7 @@ async def execute_trades(
 
                 if _decision is not None and _decision.clear_rule_applied:
                     # Block was auto-cleared — emit a metric so we can track clear-rule firing
-                    await metrics.inc(
+                    metrics.inc(
                         "entry_block_auto_cleared_total",
                         labels={**labels, "clear_rule": _decision.clear_rule_applied},
                     )
@@ -1146,7 +1581,7 @@ async def execute_trades(
                             },
                         )
                     print_skip_reason("Tier gate: watchlist", "Leader is on watchlist — observing only")
-                    await metrics.inc("trades_skipped_total", labels={**labels, "reason": "tier_watchlist"})
+                    metrics.inc("trades_skipped_total", labels={**labels, "reason": "tier_watchlist"})
                     results.append(TradePipelineResult(trade_key, "skipped", "tier_watchlist", None))
                     continue
             if leader_tier == "paper_follow":
@@ -1162,8 +1597,8 @@ async def execute_trades(
                     },
                 )
                 print_skip_reason("Tier gate: paper follow", "Paper-tracking only — no live order submitted")
-                await metrics.inc("trades_paper_total", labels=labels)
-                context.orders_repo.mark_processed_trade(
+                metrics.inc("trades_paper_total", labels=labels)
+                await context.orders_repo.mark_processed_trade(
                     trade_key=trade_key,
                     user_id=context.user_id,
                     leader_id=leader_id,
@@ -1213,11 +1648,11 @@ async def execute_trades(
                         event_slug=signal.event_slug,
                         meta={"user_id": context.user_id, "leader_id": leader_id},
                     )
-                    await metrics.inc(
+                    metrics.inc(
                         "trades_skipped_total",
                         labels={**labels, "reason": reason},
                     )
-                    context.orders_repo.mark_processed_trade(
+                    await context.orders_repo.mark_processed_trade(
                         trade_key=trade_key,
                         user_id=context.user_id,
                         leader_id=leader_id,
@@ -1253,11 +1688,11 @@ async def execute_trades(
                         event_slug=signal.event_slug,
                         meta={"user_id": context.user_id, "leader_id": leader_id},
                     )
-                    await metrics.inc(
+                    metrics.inc(
                         "trades_skipped_total",
                         labels={**labels, "reason": position_pct_cap.reason},
                     )
-                    context.orders_repo.mark_processed_trade(
+                    await context.orders_repo.mark_processed_trade(
                         trade_key=trade_key,
                         user_id=context.user_id,
                         leader_id=leader_id,
@@ -1307,11 +1742,11 @@ async def execute_trades(
                             event_slug=signal.event_slug,
                             meta={"user_id": context.user_id, "leader_id": leader_id},
                         )
-                        await metrics.inc(
+                        metrics.inc(
                             "trades_skipped_total",
                             labels={**labels, "reason": buy_risk_cap.reason},
                         )
-                        context.orders_repo.mark_processed_trade(
+                        await context.orders_repo.mark_processed_trade(
                             trade_key=trade_key,
                             user_id=context.user_id,
                             leader_id=leader_id,
@@ -1384,6 +1819,27 @@ async def execute_trades(
                     tick_size=market_tick_size,
                 )
 
+                _decision_meta: dict[str, Any] = {
+                    "user_id": context.user_id,
+                    "leader_id": leader_id,
+                    "leader_score": leader_score.score,
+                    "trade_score": decision.trade_score,
+                    "price_drift_pct": decision.price_drift_pct,
+                    "edge_decay_pct": decision.edge_decay_pct,
+                    "leader_notional": float(signal.usdc_size),
+                    "tx_hash": signal.tx_hash,
+                }
+                if _bundle_for_pair is not None:
+                    _bsrc = getattr(_bundle_for_pair, "source", None)
+                    _decision_meta["market_data_source"] = (
+                        getattr(_bsrc, "value", None) or str(_bsrc or "")
+                    )
+                    _q = getattr(_bundle_for_pair, "quote", None)
+                    _b = getattr(_bundle_for_pair, "book", None)
+                    if _q is not None:
+                        _decision_meta["quote_source"] = getattr(_q, "source", None)
+                    if _b is not None:
+                        _decision_meta["book_source"] = getattr(_b, "source", None)
                 log_trade_decision(
                     logger,
                     side=signal.side,
@@ -1393,16 +1849,7 @@ async def execute_trades(
                     allow=decision.allow,
                     reason=decision.reason,
                     event_slug=signal.event_slug,
-                    meta={
-                        "user_id": context.user_id,
-                        "leader_id": leader_id,
-                        "leader_score": leader_score.score,
-                        "trade_score": decision.trade_score,
-                        "price_drift_pct": decision.price_drift_pct,
-                        "edge_decay_pct": decision.edge_decay_pct,
-                        "leader_notional": float(signal.usdc_size),
-                        "tx_hash": signal.tx_hash,
-                    },
+                    meta=_decision_meta,
                 )
 
                 if not decision.allow:
@@ -1426,8 +1873,8 @@ async def execute_trades(
                         event_slug=signal.event_slug,
                         meta={"user_id": context.user_id, "leader_id": leader_id},
                     )
-                    await metrics.inc("trades_skipped_total", labels={**labels, "reason": decision.skip_code})
-                    context.orders_repo.mark_processed_trade(
+                    metrics.inc("trades_skipped_total", labels={**labels, "reason": decision.skip_code})
+                    await context.orders_repo.mark_processed_trade(
                         trade_key=trade_key,
                         user_id=context.user_id,
                         leader_id=leader_id,
@@ -1442,6 +1889,84 @@ async def execute_trades(
 
                 # Use decision-gated notional (may be adjusted by scoring)
                 gated_notional = Decimal(str(decision.target_notional_usdc)) if decision.target_notional_usdc > 0 else target_notional
+
+                # --- Phase 4 balance regime gate ---
+                # Refresh the balance snapshot immediately before the regime
+                # check so that any prior fill/cancel in this batch (and any
+                # upstream balance movement since the first fetch at the top
+                # of the BUY branch) is reflected. The earlier snapshot is
+                # still used by sizing/cap resolvers above; only the regime
+                # gate needs the freshest possible free_cash reading.
+                _refreshed = await _fetch_balance_snapshot(
+                    context, signal.condition_id, leader_id,
+                )
+                if _refreshed is not None:
+                    snapshot = _refreshed
+                regime = getattr(context, "balance_regime", None)
+                if regime is not None:
+                    # Greptile P1 (PR #106 review): replace the non-atomic
+                    # ``check_buy → submit → record_buy`` triple with the
+                    # atomic ``await regime.reserve(...)`` so two concurrent
+                    # BUYs cannot both pass the cap against the same
+                    # ``daily_spent`` snapshot. ``reserve`` atomically checks
+                    # the cap AND records the hold under ``order_id=trade_key``;
+                    # the post-submit branches below either ``commit`` (on
+                    # accepted submission) or ``release`` (on
+                    # duplicate_ignored / not accepted / exception paths) the
+                    # held reservation. The proven atomic semantics live in
+                    # ``tests/test_balance_regime_atomic_reserve.py``.
+                    regime_decision = await regime.reserve(
+                        order_id=trade_key,
+                        notional_usdc=gated_notional,
+                        free_cash_usdc=snapshot.free_cash_usdc,
+                    )
+                    if not regime_decision.allow:
+                        reason = (
+                            f"balance regime [{regime_decision.policy_name}] blocked BUY: "
+                            f"{regime_decision.reason}"
+                        )
+                        print_skip_reason(
+                            f"Balance regime [{regime_decision.policy_name}] blocked BUY",
+                            regime_decision.reason,
+                        )
+                        log_trade_skip(
+                            logger,
+                            side=signal.side,
+                            condition_id=signal.condition_id,
+                            asset=signal.token_id,
+                            size=float(signal.size) if signal.size else None,
+                            price=live_price,
+                            usdc_value=float(gated_notional),
+                            skip_code=regime_decision.reason,
+                            reason=reason,
+                            event_slug=signal.event_slug,
+                            meta={
+                                "user_id": context.user_id,
+                                "leader_id": leader_id,
+                                "requested_usdc": str(regime_decision.requested_usdc),
+                                "daily_spent_usdc": str(regime_decision.daily_spent_usdc),
+                                "daily_remaining_usdc": str(regime_decision.daily_remaining_usdc),
+                                "headroom_usdc": str(regime_decision.headroom_usdc),
+                            },
+                        )
+                        metrics.inc(
+                            "trades_skipped_total",
+                            labels={**labels, "reason": regime_decision.reason},
+                        )
+                        await context.orders_repo.mark_processed_trade(
+                            trade_key=trade_key,
+                            user_id=context.user_id,
+                            leader_id=leader_id,
+                            tx_hash=signal.tx_hash,
+                            side=signal.side,
+                            asset=signal.token_id,
+                            condition_id=signal.condition_id,
+                            status=f"skipped_{regime_decision.reason}",
+                        )
+                        results.append(
+                            TradePipelineResult(trade_key, "skipped", regime_decision.reason, None)
+                        )
+                        continue
 
                 # Log final execution sizing if decision gate changed the amount
                 if float(gated_notional) != float(target_notional):
@@ -1471,12 +1996,19 @@ async def execute_trades(
                     reason="copy_trade",
                     signal_id=signal.tx_hash,
                     condition_id=signal.condition_id,
+                    recovery_metadata={
+                        "source": "copy_trade",
+                        "order_type": "FAK",
+                        "price_limit": str(signal.price),
+                    },
+                    order_type="FAK",
+                    price_limit=Decimal(str(signal.price)),
                 )
             else:
-                pos = context.positions_repo.get_position(context.user_id, signal.condition_id, token_id=signal.token_id)
+                pos = await context.positions_repo.get_position(context.user_id, signal.condition_id, token_id=signal.token_id)
                 if pos is None:
                     # No exact (condition_id, token_id) match — check if we hold the *other* outcome token.
-                    candidates = context.positions_repo.list_positions_for_condition(
+                    candidates = await context.positions_repo.list_positions_for_condition(
                         context.user_id, signal.condition_id
                     )
                     wrong_token_held = any(p.token_id != signal.token_id for p in candidates)
@@ -1495,7 +2027,7 @@ async def execute_trades(
                             "leader_id": leader_id,
                         },
                     )
-                    await metrics.inc("trades_skipped_total", labels={**labels, "reason": skip_code})
+                    metrics.inc("trades_skipped_total", labels={**labels, "reason": skip_code})
                     log_trade_skip(
                         logger,
                         side=signal.side,
@@ -1509,7 +2041,7 @@ async def execute_trades(
                         event_slug=signal.event_slug,
                         meta={"user_id": context.user_id, "leader_id": leader_id},
                     )
-                    context.orders_repo.mark_processed_trade(
+                    await context.orders_repo.mark_processed_trade(
                         trade_key=trade_key,
                         user_id=context.user_id,
                         leader_id=leader_id,
@@ -1533,7 +2065,7 @@ async def execute_trades(
                             "leader_id": leader_id,
                         },
                     )
-                    await metrics.inc("trades_skipped_total", labels={**labels, "reason": skip_code})
+                    metrics.inc("trades_skipped_total", labels={**labels, "reason": skip_code})
                     log_trade_skip(
                         logger,
                         side=signal.side,
@@ -1547,7 +2079,7 @@ async def execute_trades(
                         event_slug=signal.event_slug,
                         meta={"user_id": context.user_id, "leader_id": leader_id},
                     )
-                    context.orders_repo.mark_processed_trade(
+                    await context.orders_repo.mark_processed_trade(
                         trade_key=trade_key,
                         user_id=context.user_id,
                         leader_id=leader_id,
@@ -1592,7 +2124,7 @@ async def execute_trades(
                             },
                         )
                         if venue_sell_cap <= Decimal("0") and live_sellable_tokens <= Decimal("0"):
-                            context.positions_repo.delete_position(context.user_id, signal.condition_id, token_id=signal.token_id)
+                            await context.positions_repo.delete_position(context.user_id, signal.condition_id, token_id=signal.token_id)
                         max_sell_tokens = venue_sell_cap
 
                 leader_sell_fraction = _extract_leader_sell_fraction(raw) or Decimal("1")
@@ -1618,8 +2150,8 @@ async def execute_trades(
                         event_slug=signal.event_slug,
                         meta={"user_id": context.user_id, "leader_id": leader_id},
                     )
-                    await metrics.inc("trades_skipped_total", labels={**labels, "reason": "sell_size_zero"})
-                    context.orders_repo.mark_processed_trade(
+                    metrics.inc("trades_skipped_total", labels={**labels, "reason": "sell_size_zero"})
+                    await context.orders_repo.mark_processed_trade(
                         trade_key=trade_key,
                         user_id=context.user_id,
                         leader_id=leader_id,
@@ -1670,14 +2202,33 @@ async def execute_trades(
                     reason="leader_sell",
                     signal_id=signal.tx_hash,
                     condition_id=signal.condition_id,
+                    recovery_metadata={
+                        "source": "copy_trade",
+                        "order_type": "FAK",
+                        "price_limit": str(signal.price),
+                    },
+                    order_type="FAK",
+                    price_limit=Decimal(str(signal.price)),
                 )
 
             print_executing_strategy(signal.side)
-            exec_result = await context.execution_service.execute(exec_req)
+            exec_result = await _submit_copy_through_coordinator(
+                context, exec_req, signal, leader_id=leader_id
+            )
 
             if exec_result.status == "duplicate_ignored":
-                await metrics.inc("duplicate_order_prevented_total", labels=labels)
-                context.orders_repo.mark_processed_trade(
+                metrics.inc("duplicate_order_prevented_total", labels=labels)
+                # Greptile P1: roll back the regime reservation taken at the
+                # pre-submit ``reserve()`` so the daily cap is not double-
+                # consumed when the coordinator dedup-fires.
+                if signal.side == "BUY":
+                    _regime = getattr(context, "balance_regime", None)
+                    if _regime is not None:
+                        try:
+                            await _regime.release(order_id=trade_key)
+                        except Exception:  # pragma: no cover — defensive
+                            pass
+                await context.orders_repo.mark_processed_trade(
                     trade_key=trade_key,
                     user_id=context.user_id,
                     leader_id=leader_id,
@@ -1697,8 +2248,38 @@ async def execute_trades(
                 )
                 continue
 
+            # Phase 4 — commit the BUY reservation held by the pre-submit
+            # ``reserve()`` against the rolling 24h spend ceiling. Fires on
+            # BOTH the immediate-fill path and the accepted-no-fill path so
+            # every submitted BUY consumes the daily cap; ``commit`` with
+            # ``actual_filled_usdc`` returns any unfilled remainder. A
+            # rejection (``not exec_result.accepted``) instead RELEASES the
+            # reservation a few lines below. SELLs do not consume the
+            # daily-spend budget.
+            if exec_result.accepted and signal.side == "BUY":
+                regime = getattr(context, "balance_regime", None)
+                if regime is not None:
+                    try:
+                        _filled_amt = Decimal(str(exec_result.filled_amount or 0))
+                        if _filled_amt > 0:
+                            _fill_px = Decimal(
+                                str(exec_result.avg_price or signal.price or 0)
+                            )
+                            await regime.commit(
+                                order_id=trade_key,
+                                actual_filled_usdc=_filled_amt * _fill_px,
+                            )
+                        else:
+                            # Accepted but no immediate fill — keep the full
+                            # reservation in place (commit with None preserves
+                            # the held notional until a later reconciliation
+                            # path resolves the order).
+                            await regime.commit(order_id=trade_key)
+                    except Exception:  # pragma: no cover — defensive
+                        pass
+
             if exec_result.accepted and exec_result.filled_amount <= 0:
-                context.orders_repo.mark_processed_trade(
+                await context.orders_repo.mark_processed_trade(
                     trade_key=trade_key,
                     user_id=context.user_id,
                     leader_id=leader_id,
@@ -1736,7 +2317,18 @@ async def execute_trades(
                 continue
 
             if not exec_result.accepted:
-                await metrics.inc("execution_failures_total", labels={**labels, "reason": exec_result.status})
+                # Greptile P1: roll back the regime reservation taken at the
+                # pre-submit ``reserve()`` so a rejected BUY does not consume
+                # the daily cap. SELLs never reserved against the cap so the
+                # release is BUY-only.
+                if signal.side == "BUY":
+                    _regime = getattr(context, "balance_regime", None)
+                    if _regime is not None:
+                        try:
+                            await _regime.release(order_id=trade_key)
+                        except Exception:  # pragma: no cover — defensive
+                            pass
+                metrics.inc("execution_failures_total", labels={**labels, "reason": exec_result.status})
                 log_trade_skip(
                     logger,
                     side=signal.side,
@@ -1757,7 +2349,7 @@ async def execute_trades(
                 )
                 is_terminal = exec_result.status == "rejected"
                 max_non_terminal_attempts = _max_non_terminal_failure_attempts(context)
-                prev_trade = context.orders_repo.get_processed_trade(trade_key) or {}
+                prev_trade = await context.orders_repo.get_processed_trade(trade_key) or {}
                 prev_retry_attempt = _retry_attempt_from_status(
                     prev_trade.get("status"), prev_trade.get("retry_attempt")
                 )
@@ -1774,7 +2366,7 @@ async def execute_trades(
                         else _RETRYABLE_FAILED_STATUS
                     )
                 )
-                context.orders_repo.mark_processed_trade(
+                await context.orders_repo.mark_processed_trade(
                     trade_key=trade_key,
                     user_id=context.user_id,
                     leader_id=leader_id,
@@ -1788,16 +2380,38 @@ async def execute_trades(
                 fail_reason = exec_result.error or exec_result.status
                 live_synced_size: Decimal | None = None
                 if signal.side == "SELL" and "insufficient_balance" in str(fail_reason).lower():
-                    live_synced_size = await _sync_sell_position_from_live_holdings(
-                        context,
-                        leader_id=leader_id,
+                    # CLAUDE.md non-negotiable: SELL drift reconciliation must
+                    # release the stranded SELL reservation in addition to
+                    # syncing the local position. Pre-fix this branch called
+                    # _sync_sell_position_from_live_holdings, which updates
+                    # the position table but does NOT release any active
+                    # reservation — leaving the SELL reservation "active"
+                    # forever and blocking all future SELLs on the scope.
+                    #
+                    # Route through ReconciliationService.reconcile_position_drift
+                    # which owns both the position update AND the
+                    # reservation release on its drift-deleted path.
+                    drift_reconciler = get_reconciliation_service(context)
+                    drift_result = await drift_reconciler.reconcile_position_drift(
+                        user_id=context.user_id,
                         condition_id=signal.condition_id,
                         token_id=signal.token_id,
+                        leader_id=leader_id,
+                        live_position_fetcher=lambda: _fetch_live_position_size(
+                            context, token_id=signal.token_id
+                        ),
+                        reservation_service=context.extra.get("reservation_service"),
                     )
-                    if live_synced_size is not None:
+                    live_synced_size = drift_result.get("live_size")
+                    if drift_result.get("reconciled"):
                         fail_reason = (
-                            f"{fail_reason} | local position synced to live holdings={float(live_synced_size):.4f}"
+                            f"{fail_reason} | drift_reconciled action={drift_result.get('action')} "
+                            f"live_size={live_synced_size}"
                         )
+                    elif drift_result.get("action") == "no_drift":
+                        fail_reason = f"{fail_reason} | no_local_drift_detected"
+                    # ReconciliationService emits the manual_position_drift_*
+                    # audit events itself; no second emit here.
                 if non_terminal_retry_exhausted:
                     fail_reason = (
                         f"{fail_reason} "
@@ -1845,7 +2459,16 @@ async def execute_trades(
             fill_size = Decimal(str(exec_result.filled_amount))
             fee_paid = Decimal(str(exec_result.fees_paid or 0))
             try:
-                context.fills_repo.append_fill(
+                # Atomic fill + position write — PR #108 finding: the
+                # previous two-call sequence (append_fill auto-commit +
+                # apply_fill in a separate pool connection) left a
+                # crash-window where the fill was durably committed but
+                # the position never updated. ``append_fill_and_apply``
+                # serialises both in one ``conn.transaction()``; the
+                # duplicate-fill short-circuit (fill_id == 0) prevents
+                # double-counting when the ON CONFLICT DO NOTHING branch
+                # fires.
+                _fill_id, updated_position = await context.fills_repo.append_fill_and_apply(
                     FillRecord(
                         user_id=context.user_id,
                         leader_id=leader_id,
@@ -1858,24 +2481,16 @@ async def execute_trades(
                         fee=fee_paid,
                         fill_ts=int(now_ts),
                     ),
+                    context.positions_repo,
                     raw_payload={
                         "signal_tx_hash": signal.tx_hash,
                         "copy_order_id": exec_result.order_id,
                         "status": exec_result.status,
                     },
                 )
-                updated_position = context.positions_repo.apply_fill(
-                    user_id=context.user_id,
-                    leader_id=leader_id,
-                    condition_id=signal.condition_id,
-                    token_id=signal.token_id,
-                    side=signal.side,
-                    fill_size=fill_size,
-                    fill_price=Decimal(str(fill_price or 0)),
-                )
-            except sqlite3.IntegrityError as ie:
+            except asyncpg.exceptions.UniqueViolationError as ie:
                 error_msg = str(ie)
-                if "idx_fills_unique" in error_msg or "UNIQUE constraint failed: fills" in error_msg:
+                if "idx_fills_unique" in error_msg or "fills" in error_msg.lower():
                     # Duplicate fill — idempotent, skip gracefully
                     logger.info(
                         "trade_pipeline_duplicate_fill_ignored",
@@ -1886,7 +2501,7 @@ async def execute_trades(
                             "order_id": exec_result.order_id,
                         },
                     )
-                    context.orders_repo.mark_processed_trade(
+                    await context.orders_repo.mark_processed_trade(
                         trade_key=trade_key,
                         user_id=context.user_id,
                         leader_id=leader_id,
@@ -1919,7 +2534,45 @@ async def execute_trades(
                 )
                 raise
 
+            if _fill_id == 0:
+                # ON CONFLICT DO NOTHING fired — fill already persisted by a
+                # prior call. Position, risk-block, and PnL were updated in
+                # that call; replaying them here would double-count.
+                logger.info(
+                    "trade_pipeline_duplicate_fill_ignored",
+                    extra={
+                        "user_id": context.user_id,
+                        "leader_id": leader_id,
+                        "condition_id": signal.condition_id,
+                        "order_id": exec_result.order_id,
+                        "source": "on_conflict",
+                    },
+                )
+                await context.orders_repo.mark_processed_trade(
+                    trade_key=trade_key,
+                    user_id=context.user_id,
+                    leader_id=leader_id,
+                    tx_hash=signal.tx_hash,
+                    side=signal.side,
+                    asset=signal.token_id,
+                    condition_id=signal.condition_id,
+                    status="duplicate_ignored",
+                )
+                results.append(
+                    TradePipelineResult(
+                        trade_key=trade_key,
+                        status="skipped",
+                        reason="duplicate_ignored",
+                        order_id=exec_result.order_id,
+                    )
+                )
+                continue
+
             if signal.side == "BUY":
+                # Phase 4 — count the BUY against the rolling 24h spend
+                # ceiling on the immediately-filled path too. The submitted-
+                # unconfirmed branch (above) only fires when filled_amount<=0,
+                # so without this hook fast fills bypass the daily ledger.
                 if context.pnl_tracker is not None:
                     context.pnl_tracker.record_buy(
                         condition_id=signal.condition_id,
@@ -1970,7 +2623,7 @@ async def execute_trades(
                         title=signal.title,
                     )
 
-            await metrics.inc("trades_copied_total", labels=labels)
+            metrics.inc("trades_copied_total", labels=labels)
 
             log_trade_submitted(
                 logger,
@@ -2026,7 +2679,7 @@ async def execute_trades(
                 outcome=signal.outcome,
             )
 
-            context.orders_repo.mark_processed_trade(
+            await context.orders_repo.mark_processed_trade(
                 trade_key=trade_key,
                 user_id=context.user_id,
                 leader_id=leader_id,
@@ -2049,7 +2702,7 @@ async def execute_trades(
                             "asset": signal.token_id,
                         },
                     )
-                    context.orders_repo.mark_processed_trade(
+                    await context.orders_repo.mark_processed_trade(
                         trade_key=tx_key,
                         user_id=context.user_id,
                         leader_id=leader_id,

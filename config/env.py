@@ -47,9 +47,9 @@ class SignatureType(IntEnum):
 class WalletConfig:
     private_key: str
     chain_id: int
-    signature_type: SignatureType
     funder_address: str
     polygon_rpc_url: str
+    signature_type: SignatureType | int
 
 
 def _raw(key: str, default: str = '') -> str:
@@ -183,24 +183,39 @@ def get_chain_id() -> int:
     return _int('CHAIN_ID', '137')
 
 
-def get_signature_type() -> SignatureType:
-    raw = _ensure_no_inline_comment('SIGNATURE_TYPE', _raw('SIGNATURE_TYPE', '0'))
-    try:
-        value = int(raw)
-    except ValueError as exc:
-        raise EnvValidationError("SIGNATURE_TYPE must be one of: 0, 1, 2.") from exc
-
-    try:
-        return SignatureType(value)
-    except ValueError as exc:
-        raise EnvValidationError("SIGNATURE_TYPE must be one of: 0 (EOA), 1 (POLY_PROXY), 2 (GNOSIS_SAFE).") from exc
-
-
 def get_funder_address() -> str:
     funder = _ensure_no_inline_comment('FUNDER_ADDRESS', _raw('FUNDER_ADDRESS', ''))
     if funder:
         return funder
     return _ensure_no_inline_comment('PROXY_WALLET', _raw('PROXY_WALLET', ''))
+
+
+def _derive_signer_address_sync(private_key: str) -> str | None:
+    try:
+        from web3 import Web3
+        return str(Web3().eth.account.from_key(private_key).address)
+    except Exception:
+        return None
+
+
+def get_signature_type() -> SignatureType:
+    """Return a synchronous best-guess signature type without RPC probing.
+
+    For production use, prefer ``detect_wallet_signature_type()`` which
+    performs RPC contract-code detection.  This fallback is kept for
+    config building where async is not available.
+    """
+    from services.wallet_signature_detector import _classify_wallet_signature_type
+
+    pk = get_private_key()
+    signer = _derive_signer_address_sync(pk) if pk else None
+    funder = get_funder_address()
+    st, _label = _classify_wallet_signature_type(
+        signer_address=signer,
+        funder_address=funder,
+        funder_has_code=False,
+    )
+    return st
 
 
 def get_metrics_bind_host() -> str:
@@ -211,9 +226,9 @@ def build_wallet_config() -> WalletConfig:
     return WalletConfig(
         private_key=get_private_key(),
         chain_id=get_chain_id(),
-        signature_type=get_signature_type(),
         funder_address=get_funder_address(),
         polygon_rpc_url=_ensure_no_inline_comment('RPC_URL', _raw('RPC_URL', '')),
+        signature_type=get_signature_type(),
     )
 
 
@@ -425,6 +440,12 @@ def _build_env_snapshot() -> dict[str, object]:
 
     private_key_file_configured = _configured_if_valid('PRIVATE_KEY_FILE')
     private_key_configured = private_key_file_configured or _configured_if_valid('PRIVATE_KEY')
+    # CLOB credentials are equally sensitive as PRIVATE_KEY — they sign
+    # API requests. Mirror the REDACTED treatment so an ENV-dump
+    # cannot leak them.
+    clob_api_key_configured = bool(os.getenv('CLOB_API_KEY'))
+    clob_secret_configured = bool(os.getenv('CLOB_SECRET'))
+    clob_passphrase_configured = bool(os.getenv('CLOB_PASSPHRASE'))
 
     return {
     # --- Wallet / auth ---
@@ -433,13 +454,17 @@ def _build_env_snapshot() -> dict[str, object]:
     # Keep secrets and secret-file metadata out of ENV snapshot; call get_private_key() where needed.
     'PRIVATE_KEY': '***REDACTED***' if private_key_configured else '',
     'PRIVATE_KEY_FILE': '***REDACTED***' if private_key_file_configured else '',
-    'SIGNATURE_TYPE': _int('SIGNATURE_TYPE', '0'),
-    'CHAIN_ID': _int('CHAIN_ID', '137'),
+        'CHAIN_ID': _int('CHAIN_ID', '137'),
     'LEADER_WALLETS': _leader_wallets(),
 
     # --- CLOB ---
     'CLOB_HTTP_URL': os.getenv('CLOB_HTTP_URL', 'https://clob.polymarket.com/'),
-    'CLOB_API_KEY': os.getenv('CLOB_API_KEY', ''),
+    # CLOB credentials redacted in the in-memory snapshot — retrieve via
+    # os.getenv() at the actual call site (signing path) instead of from
+    # the cached ENV dict.
+    'CLOB_API_KEY': '***REDACTED***' if clob_api_key_configured else '',
+    'CLOB_SECRET': '***REDACTED***' if clob_secret_configured else '',
+    'CLOB_PASSPHRASE': '***REDACTED***' if clob_passphrase_configured else '',
 
     # --- Polling ---
     'FETCH_INTERVAL': _float('FETCH_INTERVAL', '0.25'),
@@ -515,13 +540,6 @@ def _build_env_snapshot() -> dict[str, object]:
     'BALANCE_POLICY_DYNAMIC_THRESHOLD_RAISE': os.getenv('BALANCE_POLICY_DYNAMIC_THRESHOLD_RAISE', 'false').strip().lower() in ('1', 'true', 'yes'),
     'DAY_START_EQUITY_USDC': _float('DAY_START_EQUITY_USDC', '50'),
 
-    # Neg-risk arbitrage scanner
-    'ENABLE_NEG_RISK_ARB': os.getenv('ENABLE_NEG_RISK_ARB', 'false').strip().lower() in ('1', 'true', 'yes'),
-    'ARB_MIN_PROFIT_BPS': _int('ARB_MIN_PROFIT_BPS', '30'),
-    'ARB_MAX_COST_USDC': _float('ARB_MAX_COST_USDC', '10'),
-    'ARB_MIN_ASK_DEPTH': _float('ARB_MIN_ASK_DEPTH', '20'),
-    'ARB_SCAN_INTERVAL': _int('ARB_SCAN_INTERVAL', '30'),
-    'ARB_MAX_CONCURRENT': _int('ARB_MAX_CONCURRENT', '2'),
     # Extended exit intelligence
     'ENABLE_PROFIT_LOCK': os.getenv('ENABLE_PROFIT_LOCK', 'false').strip().lower() in ('1', 'true', 'yes'),
     'PROFIT_LOCK_TRIGGER_PCT': _float('PROFIT_LOCK_TRIGGER_PCT', '70'),
@@ -560,9 +578,11 @@ def _build_env_snapshot() -> dict[str, object]:
     'MIN_LEADER_POSITIONS': _int('MIN_LEADER_POSITIONS', '20'),
     'DISCOVERY_MAX_RESULTS': _int('DISCOVERY_MAX_RESULTS', '50'),
 
-    # --- Auto-redeem ---
-    'ENABLE_AUTO_REDEEM': os.getenv('ENABLE_AUTO_REDEEM', 'false').strip().lower() in ('1', 'true', 'yes'),
-    'REDEEM_CHECK_INTERVAL': _int('REDEEM_CHECK_INTERVAL', '60'),
+    # --- Near-one exit (replaces on-chain redemption) ---
+    'ENABLE_NEAR_ONE_EXIT': os.getenv('ENABLE_NEAR_ONE_EXIT', 'false').strip().lower() in ('1', 'true', 'yes'),
+    'NEAR_ONE_EXIT_THRESHOLD': os.getenv('NEAR_ONE_EXIT_THRESHOLD', '0.99'),
+    'NEAR_ONE_EXIT_DWELL_SECONDS': _int('NEAR_ONE_EXIT_DWELL_SECONDS', '60'),
+    'NEAR_ONE_EXIT_CHECK_INTERVAL': _int('NEAR_ONE_EXIT_CHECK_INTERVAL', '5'),
 
     # --- Execution quality ---
     # Max acceptable slippage (%) before rejecting order

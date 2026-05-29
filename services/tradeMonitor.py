@@ -5,10 +5,10 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, TYPE_CHECKING
 
-from config.env import ENV, get_funder_address
+from config.env import get_funder_address
 from services.leaderCursorStore import LeaderCursorStore
 from services.metrics import metrics
-from storage.sqlite.cursors_repo import TradeCursor
+from storage.postgres.cursors_repo import TradeCursor
 from utils.fetchData import fetch_data
 
 if TYPE_CHECKING:
@@ -21,7 +21,6 @@ from utils.logger import (
     log_trade_batch_summary,
     monitor_heartbeat_tick,
     print_new_trade_detected,
-    shorten_addr,
 )
 
 logger = get_logger("TradeMonitor")
@@ -29,6 +28,9 @@ logger = get_logger("TradeMonitor")
 _LEADER_FETCH_LOCKS: dict[tuple[str, str], asyncio.Lock] = {}
 _LEADER_FETCH_LAST_TS: dict[tuple[str, str], float] = {}
 _LEADER_FETCH_INFLIGHT: dict[tuple[str, str], asyncio.Task] = {}
+
+# Set by trade_monitor() at startup; read by _leader_fetch_spacing_seconds()
+_fetch_spacing_config: Any = None
 
 
 def _leader_fetch_key(kind: str, leader_wallet: str) -> tuple[str, str]:
@@ -47,17 +49,19 @@ def _leader_fetch_lock(kind: str, leader_wallet: str) -> asyncio.Lock:
 
 
 def _leader_fetch_spacing_seconds(kind: str) -> float:
-    env_name = (
-        "LEADER_POSITIONS_MIN_FETCH_SPACING_MS"
-        if kind == "positions"
-        else "LEADER_ACTIVITY_MIN_FETCH_SPACING_MS"
-    )
-    raw = ENV.get(env_name, 250)
-    try:
-        ms = int(raw)
-    except (TypeError, ValueError):
-        ms = 250
-    return max(0.0, ms / 1000.0)
+    global _fetch_spacing_config
+    if _fetch_spacing_config is not None:
+        ms = (
+            _fetch_spacing_config.polling.leader_positions_min_fetch_spacing_ms
+            if kind == "positions"
+            else _fetch_spacing_config.polling.leader_activity_min_fetch_spacing_ms
+        )
+        return max(0.0, ms / 1000.0)
+
+    # No typed config injected — fail-closed default mirroring the
+    # previous ``ENV.get(LEADER_*_MIN_FETCH_SPACING_MS, 250)`` defaults.
+    # Production calls `configure_fetch_spacing(config)` from bootstrap.
+    return 0.25
 
 
 async def _guarded_leader_fetch(kind: str, leader_wallet: str, url: str):
@@ -148,6 +152,42 @@ async def _run_research_capture(
             "research_trade_capture_failed",
             extra={"error": redact_error_detail(exc)},
         )
+
+
+# Strong references for fire-and-forget research-capture tasks. Without
+# this set the asyncio event loop holds only a weak reference and the
+# task can be garbage-collected mid-execution, surfacing as
+# "Task was destroyed but it is pending!" warnings and silently
+# dropping the capture. Tasks remove themselves on completion via
+# the done_callback registered in _spawn_research_capture.
+_research_capture_tasks: set[asyncio.Task] = set()
+
+
+def _spawn_research_capture(
+    research_capture_service: Any,
+    raw_trades: list[dict],
+) -> asyncio.Task:
+    """Fire-and-forget the research-capture coroutine with a strong ref
+    + a done-callback that logs any unhandled exception so the task is
+    never silently lost."""
+    task = asyncio.create_task(
+        _run_research_capture(research_capture_service, raw_trades)
+    )
+    _research_capture_tasks.add(task)
+
+    def _on_done(t: asyncio.Task) -> None:
+        _research_capture_tasks.discard(t)
+        if t.cancelled():
+            return
+        exc = t.exception()
+        if exc is not None:
+            logger.warning(
+                "research_trade_capture_task_crashed",
+                extra={"error": redact_error_detail(exc)},
+            )
+
+    task.add_done_callback(_on_done)
+    return task
 
 
 
@@ -461,7 +501,7 @@ async def fetch_trade_data(
         if new_trades:
             newest = max(_to_seconds(t.get("timestamp")) for t in new_trades)
             ingest_lag = max(0.0, float(current_timestamp) - newest)
-            await metrics.set_gauge("ingest_lag_seconds", ingest_lag)
+            metrics.set_gauge("ingest_lag_seconds", ingest_lag)
         for t in new_trades:
             t['bot'] = False
             t['botExcutedTime'] = 0
@@ -481,7 +521,7 @@ async def fetch_trade_data(
         for trade in new_trades:
             if str(trade.get('type', '')).upper() != 'TRADE':
                 continue
-            await metrics.inc("signals_seen_total")
+            metrics.inc("signals_seen_total")
 
             if not trade.get('asset'):
                 trade['asset'] = trade.get('tokenID') or trade.get('token_id')
@@ -496,9 +536,7 @@ async def fetch_trade_data(
             window_s=config.polling.aggregate_signal_window_seconds
         )
         if trade_candidates and research_capture_service is not None:
-            asyncio.create_task(
-                _run_research_capture(research_capture_service, list(trade_candidates))
-            )
+            _spawn_research_capture(research_capture_service, list(trade_candidates))
         if trade_list:
             await _annotate_sell_fractions(trade_list, user_address)
         # Execute all detected trades immediately — no queue
@@ -519,7 +557,7 @@ async def fetch_trade_data(
             state.last_processed_ts = max(state.last_processed_ts, float(ts))
             try:
                 from models.userHistory import get_user_activity_model
-                get_user_activity_model(user_address).insert_many(new_trades)
+                await get_user_activity_model(user_address).insert_many(new_trades)
             except Exception as e:
                 logger.error(f'DB save activities: {e}')
     except Exception as e:
@@ -536,15 +574,17 @@ async def trade_monitor(
     research_capture_service: Any | None = None,
 ):
     """Main monitor loop. Calls *on_trade_callback(trades_list)* immediately on detection."""
+    global _fetch_spacing_config
+    _fetch_spacing_config = config
     fetch_interval = float(bot_params.get('FETCH_INTERVAL', config.polling.fetch_interval))
     state = LeaderMonitorState()
-    cursor_store = LeaderCursorStore()
+    cursor_store = await LeaderCursorStore.create()
     leader_wallet = bot_params['leaderWallet']
-    state.last_cursor = _normalize_cursor(cursor_store.get_cursor(leader_wallet))
+    state.last_cursor = _normalize_cursor(await cursor_store.get_cursor(leader_wallet))
     state.last_processed_ts = float(state.last_cursor.timestamp)
 
     await init(leader_wallet, state)
-    cursor_store.set_cursor(leader_wallet, state.last_cursor)
+    await cursor_store.set_cursor(leader_wallet, state.last_cursor)
     proxy_wallet = config.wallet.funder_address or get_funder_address()
     monitored_leader_count = int(bot_params.get('MONITORED_LEADER_COUNT', 1) or 1)
     while True:
@@ -562,7 +602,7 @@ async def trade_monitor(
             or state.last_cursor.tx_hash != previous_cursor.tx_hash
             or (state.last_cursor.trade_id or "") != (previous_cursor.trade_id or "")
         ):
-            cursor_store.set_cursor(leader_wallet, state.last_cursor)
+            await cursor_store.set_cursor(leader_wallet, state.last_cursor)
 
         if _monitor_loop_healthy(fetch_ok=fetch_ok, fetch_interval_s=fetch_interval, readiness_tracker=readiness_tracker):
             monitor_heartbeat_tick(

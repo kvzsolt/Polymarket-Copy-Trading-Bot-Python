@@ -1,26 +1,61 @@
-"""Concrete client adapters implementing the ``domain.ports.clients`` ABCs.
+# clients/__init__.py
 
-Each adapter is constructor-injected — they accept their configuration
-(``AppConfig`` section, HTTP session, SDK client) rather than reading
-environment variables or resolving singletons. The composition root
-(``bootstrap.py`` in Phase 5) is responsible for building them.
-"""
+from __future__ import annotations
 
-from clients.analytics_client import AnalyticsClient
-from clients.balance_client import BalanceClient
-from clients.http_client import HttpClient
-from clients.market_client import PolymarketClobClient
-from clients.market_ws import MarketWebSocket
-from clients.order_gateway import OrderGateway
-from clients.user_ws import UserWebSocket
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from clients.analytics_client import AnalyticsClient
+    from clients.balance_client import BalanceClient
+    from clients.market_client import PolymarketClobClient
+    from clients.market_ws import MarketWebSocket
+    from clients.network.http_client import AsyncHttpClient, HttpRetryPolicy
+    from clients.order_gateway import OrderGateway
+    from clients.user_ws import UserWebSocket
 
 __all__ = [
     "AnalyticsClient",
     "BalanceClient",
-    "HttpClient",
+    "AsyncHttpClient",
+    "HttpRetryPolicy",
     "MarketWebSocket",
     "OrderGateway",
     "PolymarketClobClient",
     "UserWebSocket",
 ]
 
+
+def __getattr__(name: str) -> Any:
+    if name == "AnalyticsClient":
+        from clients.analytics_client import AnalyticsClient
+        return AnalyticsClient
+
+    if name == "BalanceClient":
+        from clients.balance_client import BalanceClient
+        return BalanceClient
+
+    if name == "AsyncHttpClient":
+        from clients.network.http_client import AsyncHttpClient
+        return AsyncHttpClient
+
+    if name == "HttpRetryPolicy":
+        from clients.network.http_client import HttpRetryPolicy
+        return HttpRetryPolicy
+
+    if name == "MarketWebSocket":
+        from clients.market_ws import MarketWebSocket
+        return MarketWebSocket
+
+    if name == "OrderGateway":
+        from clients.order_gateway import OrderGateway
+        return OrderGateway
+
+    if name == "PolymarketClobClient":
+        from clients.market_client import PolymarketClobClient
+        return PolymarketClobClient
+
+    if name == "UserWebSocket":
+        from clients.user_ws import UserWebSocket
+        return UserWebSocket
+
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

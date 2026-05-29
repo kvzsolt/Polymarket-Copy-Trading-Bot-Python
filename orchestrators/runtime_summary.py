@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import asdict
-from typing import Any, Iterable
+from decimal import Decimal
+from typing import TYPE_CHECKING, Any, Iterable
 from urllib.parse import urlparse
 
 from rich.panel import Panel
@@ -9,6 +10,19 @@ from rich.rule import Rule
 
 from orchestrators.startup_health import StartupHealthReport
 from utils.logger import console, get_logger, shorten_addr
+
+
+def _safe_dsn_host(dsn: str) -> str:
+    try:
+        parsed = urlparse(dsn)
+        host = parsed.hostname or ""
+        port = parsed.port or ""
+        return f"{host}:{port}" if port else host
+    except Exception:
+        return "<unparseable>"
+
+if TYPE_CHECKING:
+    from services.discovery.position_snapshot_service import SnapshotResult
 
 logger = get_logger("RuntimeSummary")
 
@@ -132,61 +146,338 @@ def print_startup_health_check(report: StartupHealthReport) -> None:
     console.print()
 
 
-def print_startup_summary(
-    *,
-    wallet: str,
-    available_cash: float,
-    total_portfolio: float,
-    positions: list[dict],
-    active_leaders: list[str],
-    config,
-    health_report: StartupHealthReport,
-) -> None:
-    print_startup_health_check(health_report)
+def _safe_pct(numer: Decimal, denom: Decimal) -> Decimal:
+    """Return ``numer/denom * 100`` as Decimal — Decimal(0) on zero
+    denominator so the banner never raises mid-render."""
+    if denom is None or denom == 0:
+        return Decimal("0")
+    return (numer / denom) * Decimal("100")
 
-    console.print(Rule("STARTUP SUMMARY", style="cyan"))
+
+def _color_pct(pct: Decimal) -> str:
+    """Wrap a percentage in a rich color tag based on sign."""
+    if pct > 0:
+        return f"[green]+{pct:.2f}%[/green]"
+    if pct < 0:
+        return f"[red]{pct:.2f}%[/red]"
+    return f"[white]{pct:.2f}%[/white]"
+
+
+def _money(value: Decimal | float | int) -> str:
+    """Format a money value as ``$NNN.NN`` with thousands separator."""
+    d = value if isinstance(value, Decimal) else Decimal(str(value))
+    return f"${d:,.2f}"
+
+
+def _cents(value: Decimal) -> str:
+    """Render a Polymarket price (0–1) as cents (e.g. 0.55 → ``55¢``).
+    Banner real estate is tight; cents is easier to scan than ``$0.55``."""
+    return f"{(value * Decimal('100')):.1f}¢"
+
+
+def _leader_aggregate_gain(snapshots: list) -> tuple[Decimal, Decimal, Decimal]:
+    """Sum invested / current / realized across a leader's snapshots.
+
+    Returns ``(invested_cost_basis, current_value, total_gain_pct)``.
+    Invested = size × avg_price. Total gain = (current_value + realized_pnl
+    − invested) / invested × 100, defaulting to 0% when invested is 0.
+    """
+    invested = Decimal("0")
+    current = Decimal("0")
+    realized = Decimal("0")
+    for s in snapshots:
+        size = s.size if isinstance(s.size, Decimal) else Decimal(str(s.size or 0))
+        avg = (
+            s.avg_price
+            if isinstance(s.avg_price, Decimal)
+            else Decimal(str(s.avg_price or 0))
+        )
+        cv = (
+            s.current_value
+            if isinstance(s.current_value, Decimal)
+            else Decimal(str(s.current_value or 0))
+        )
+        rp = (
+            s.realized_pnl
+            if isinstance(s.realized_pnl, Decimal)
+            else Decimal(str(s.realized_pnl or 0))
+        )
+        invested += size * avg
+        current += cv
+        realized += rp
+    gain_pct = _safe_pct(current + realized - invested, invested)
+    return invested, current, gain_pct
+
+
+def print_traders_youre_copying(
+    snapshot_result: "SnapshotResult | None",
+    *,
+    max_positions_per_leader: int = 5,
+) -> None:
+    """Render the TRADERS YOU'RE COPYING panel from a SnapshotResult.
+
+    Per-leader: header with shortened wallet + open position count
+    + total gain%. Then up to ``max_positions_per_leader`` per-position
+    lines showing market title, current value, PnL%, bought-at price,
+    current price.
+
+    A leader with NO snapshots (fetch failed or empty position list)
+    still renders a one-line header so the operator sees the leader
+    is being monitored and what failed.
+
+    Renders nothing when ``snapshot_result`` is None (legacy callers
+    that have not been migrated to the snapshot pipeline).
+    """
+    if snapshot_result is None or not snapshot_result.leader_snapshots:
+        return
+
+    lines: list[str] = []
+    for leader_wallet, snapshots in snapshot_result.leader_snapshots.items():
+        failed = leader_wallet in snapshot_result.leaders_failed
+        wallet_short = shorten_addr(leader_wallet, 8, 4)
+        if not snapshots:
+            if failed:
+                lines.append(
+                    f"\n[bold yellow]{wallet_short}[/bold yellow]  "
+                    f"[dim](fetch failed — no positions captured)[/dim]"
+                )
+            else:
+                lines.append(
+                    f"\n[bold]{wallet_short}[/bold]  [dim](no open positions)[/dim]"
+                )
+            continue
+
+        _, _, gain_pct = _leader_aggregate_gain(snapshots)
+        lines.append(
+            f"\n[bold]{wallet_short}[/bold]  "
+            f"positions={len(snapshots)}  "
+            f"total_gain={_color_pct(gain_pct)}"
+        )
+
+        # Sort by current_value DESC so the largest position renders first.
+        ordered = sorted(
+            snapshots,
+            key=lambda s: (
+                s.current_value
+                if isinstance(s.current_value, Decimal)
+                else Decimal(str(s.current_value or 0))
+            ),
+            reverse=True,
+        )
+        for snap in ordered[:max_positions_per_leader]:
+            # Pull market title from raw_json if present (the data-api
+            # payload carries ``title``); fall back to condition_id.
+            title = snap.condition_id
+            try:
+                import json as _json
+                payload = (
+                    _json.loads(snap.raw_json)
+                    if isinstance(snap.raw_json, str)
+                    else snap.raw_json
+                )
+                title = str(
+                    payload.get("title")
+                    or payload.get("market")
+                    or snap.condition_id
+                )
+            except Exception:
+                pass
+
+            invested = (snap.size or Decimal("0")) * (snap.avg_price or Decimal("0"))
+            pnl = (snap.current_value or Decimal("0")) - invested
+            pnl_pct = _safe_pct(pnl, invested)
+            lines.append(
+                f"  • {title[:42]:<42}  "
+                f"val={_money(snap.current_value or 0):>8}  "
+                f"pnl={_color_pct(pnl_pct)}  "
+                f"@{_cents(snap.avg_price or Decimal('0'))}→{_cents(snap.current_price or Decimal('0'))}"
+            )
+        remaining = len(snapshots) - max_positions_per_leader
+        if remaining > 0:
+            lines.append(f"  • [dim]... +{remaining} more[/dim]")
+
     console.print(
         Panel(
-            "\n".join(
-                [
-                    f"💼 wallet: {shorten_addr(wallet, 8, 4)}",
-                    f"💵 cash: ${available_cash:.2f}",
-                    f"🧾 total: ${total_portfolio:.2f}",
-                    f"📂 open_positions: {len(positions)}",
-                ]
+            "\n".join(lines).lstrip(),
+            title="👥 [bold]TRADERS YOU'RE COPYING[/bold]",
+            border_style="magenta",
+            padding=(1, 2),
+        )
+    )
+    console.print()
+
+
+def print_your_positions(
+    snapshot_result: "SnapshotResult | None",
+    *,
+    own_wallet: str,
+    available_cash: "Decimal | float",
+    total_portfolio: "Decimal | float",
+    max_positions: int = 8,
+) -> None:
+    """Render the YOUR POSITIONS panel from own-wallet snapshots.
+
+    Mirrors the TS-bot screenshot: own wallet, available cash, portfolio
+    total, open position count, invested, current value, P/L%, top
+    positions list. Falls back to a header-only render when the
+    snapshot pipeline supplied no own snapshots (data-api degraded).
+    """
+    if snapshot_result is None:
+        return
+
+    # cubic P2: in multi-user runtime ``snapshot_result.own_snapshots``
+    # contains rows from every configured own_wallet. Without this
+    # filter, positions from all users render under the single
+    # ``own_wallet`` label passed in — visually misleading. Match on
+    # ``trader_wallet`` (case-insensitive) so the panel only shows
+    # positions actually belonging to the wallet whose address it
+    # advertises. Multi-wallet rendering (one panel per own wallet)
+    # is a separate follow-up.
+    _own_wallet_lc = (own_wallet or "").lower().strip()
+    own = [
+        s for s in snapshot_result.own_snapshots
+        if (s.trader_wallet or "").lower().strip() == _own_wallet_lc
+    ] if _own_wallet_lc else list(snapshot_result.own_snapshots)
+    invested = sum(
+        ((s.size or Decimal("0")) * (s.avg_price or Decimal("0")) for s in own),
+        Decimal("0"),
+    )
+    current = sum(
+        (s.current_value or Decimal("0") for s in own), Decimal("0")
+    )
+    realized = sum(
+        (s.realized_pnl or Decimal("0") for s in own), Decimal("0")
+    )
+    pnl_pct = _safe_pct(current + realized - invested, invested)
+
+    header_lines = [
+        f"💼 wallet:           {shorten_addr(own_wallet, 8, 4)}",
+        f"💵 available_cash:   {_money(available_cash)}",
+        f"🧾 portfolio_total:  {_money(total_portfolio)}",
+        f"📂 open_positions:   {len(own)}",
+        f"📥 invested:         {_money(invested)}",
+        f"📈 current_value:    {_money(current)}",
+        f"💰 pnl:              {_color_pct(pnl_pct)}",
+    ]
+    if snapshot_result.own_failed:
+        header_lines.append(
+            "[dim yellow]⚠ own snapshot fetch failed — banner uses cached / partial data[/dim yellow]"
+        )
+
+    position_lines: list[str] = []
+    if own:
+        ordered = sorted(
+            own,
+            key=lambda s: (
+                s.current_value
+                if isinstance(s.current_value, Decimal)
+                else Decimal(str(s.current_value or 0))
             ),
+            reverse=True,
+        )
+        for snap in ordered[:max_positions]:
+            title = snap.condition_id
+            try:
+                import json as _json
+                payload = (
+                    _json.loads(snap.raw_json)
+                    if isinstance(snap.raw_json, str)
+                    else snap.raw_json
+                )
+                title = str(
+                    payload.get("title")
+                    or payload.get("market")
+                    or snap.condition_id
+                )
+            except Exception:
+                pass
+            inv_i = (snap.size or Decimal("0")) * (snap.avg_price or Decimal("0"))
+            pnl_i_pct = _safe_pct((snap.current_value or Decimal("0")) - inv_i, inv_i)
+            position_lines.append(
+                f"  • {title[:42]:<42}  "
+                f"val={_money(snap.current_value or 0):>8}  "
+                f"pnl={_color_pct(pnl_i_pct)}  "
+                f"@{_cents(snap.current_price or Decimal('0'))}"
+            )
+        remaining = len(own) - max_positions
+        if remaining > 0:
+            position_lines.append(f"  • [dim]... +{remaining} more[/dim]")
+    else:
+        position_lines = ["  • [dim]No open positions[/dim]"]
+
+    body = "\n".join(header_lines) + "\n\n" + "\n".join(position_lines)
+    console.print(
+        Panel(
+            body,
             title="📊 [bold]PORTFOLIO[/bold]",
             border_style="cyan",
             padding=(1, 2),
         )
     )
+    console.print()
 
-    if positions:
-        position_lines: list[str] = []
-        for position in positions[:8]:
-            market = str(position.get("title") or position.get("market") or position.get("conditionId") or position.get("condition_id") or "?")
-            symbol = _position_symbol(position)
-            side = str(position.get("outcome") or position.get("side") or "?")
-            size = float(position.get("size") or position.get("size_tokens") or 0.0)
-            value = float(position.get("currentValue") or position.get("value") or 0.0)
-            position_lines.append(
-                f"• {market[:72]}\n"
-                f"  ↳ symbol={symbol} | side={side} | size={size:.2f} | value=${value:.2f}"
-            )
-        remaining = len(positions) - 8
-        if remaining > 0:
-            position_lines.append(f"• ... and {remaining} more position(s)")
-    else:
-        position_lines = ["• No open positions"]
 
-    console.print(
-        Panel(
-            "\n".join(position_lines),
-            title="📦 [bold]POSITIONS[/bold]",
-            border_style="blue",
-            padding=(1, 2),
+def print_startup_summary(
+    *,
+    wallet: str,
+    available_cash: "Decimal | float",
+    total_portfolio: "Decimal | float",
+    positions: list[dict],
+    active_leaders: list[str],
+    config,
+    health_report: StartupHealthReport,
+    snapshot_result: "SnapshotResult | None" = None,
+) -> None:
+    print_startup_health_check(health_report)
+
+    # Boot-time snapshot supplied — render TRADERS YOU'RE COPYING + PORTFOLIO
+    # panels (PORTFOLIO is the single per-wallet panel previously named
+    # YOUR POSITIONS; it already carries wallet/cash/total/open_positions/
+    # invested/current_value/pnl plus the per-position list). Legacy fallback
+    # below renders a minimal text-only PORTFOLIO when the snapshot pipeline
+    # was unavailable.
+    if snapshot_result is not None:
+        print_traders_youre_copying(snapshot_result)
+        print_your_positions(
+            snapshot_result,
+            own_wallet=wallet,
+            available_cash=available_cash,
+            total_portfolio=total_portfolio,
         )
-    )
+    else:
+        if positions:
+            position_lines: list[str] = []
+            for position in positions[:8]:
+                market = str(position.get("title") or position.get("market") or position.get("conditionId") or position.get("condition_id") or "?")
+                symbol = _position_symbol(position)
+                side = str(position.get("outcome") or position.get("side") or "?")
+                size = float(position.get("size") or position.get("size_tokens") or 0.0)
+                value = float(position.get("currentValue") or position.get("value") or 0.0)
+                position_lines.append(
+                    f"• {market[:72]}\n"
+                    f"  ↳ symbol={symbol} | side={side} | size={size:.2f} | value=${value:.2f}"
+                )
+            remaining = len(positions) - 8
+            if remaining > 0:
+                position_lines.append(f"• ... and {remaining} more position(s)")
+        else:
+            position_lines = ["• No open positions"]
+
+        header_lines = [
+            f"💼 wallet: {shorten_addr(wallet, 8, 4)}",
+            f"💵 cash: ${available_cash:.2f}",
+            f"🧾 total: ${total_portfolio:.2f}",
+            f"📂 open_positions: {len(positions)}",
+        ]
+        console.print(
+            Panel(
+                "\n".join(header_lines) + "\n\n" + "\n".join(position_lines),
+                title="📊 [bold]PORTFOLIO[/bold]",
+                border_style="cyan",
+                padding=(1, 2),
+            )
+        )
+        console.print()
 
     copied_wallets_set = {
         w.lower()
@@ -412,8 +703,7 @@ def print_startup_summary(
             "storage_and_persistence",
             "STORAGE & PERSISTENCE",
             {
-                "bot_state_db_enabled": config.database.enabled,
-                "bot_state_db": config.database.db_path,
+                "postgres_dsn_host": _safe_dsn_host(config.database.dsn),
                 "pnl_log_file": config.logging.pnl_log_file,
                 "multi_user_config_file": config.discovery.multi_user_config_file,
             },
@@ -431,23 +721,13 @@ def print_startup_summary(
             },
         ),
         (
-            "auto_redeem_engine",
-            "AUTO-REDEEM ENGINE",
+            "near_one_exit_engine",
+            "NEAR-ONE EXIT ENGINE",
             {
-                "enable_auto_redeem": config.redemption.enable_auto_redeem,
-                "redeem_check_interval": config.polling.redeem_check_interval,
-            },
-        ),
-        (
-            "negative_risk_arbitrage_engine",
-            "NEGATIVE-RISK ARBITRAGE ENGINE",
-            {
-                "enable_neg_risk_arb": config.features.enable_neg_risk_arb,
-                "arb_min_profit_bps": config.features.arb_min_profit_bps,
-                "arb_max_cost_usdc": config.features.arb_max_cost_usdc,
-                "arb_min_ask_depth": config.features.arb_min_ask_depth,
-                "arb_scan_interval": config.features.arb_scan_interval,
-                "arb_max_concurrent": config.features.arb_max_concurrent,
+                "enable_near_one_exit": config.near_one_exit.enable_near_one_exit,
+                "threshold": str(config.near_one_exit.threshold),
+                "dwell_seconds": config.near_one_exit.dwell_seconds,
+                "check_interval": config.near_one_exit.check_interval,
             },
         ),
     ]
@@ -498,8 +778,10 @@ def print_startup_summary(
             "type": "startup_summary",
             "wallet": shorten_addr(wallet, 8, 4),
             "activeLeadersCount": len(active_leaders),
-            "availableCash": available_cash,
-            "totalPortfolio": total_portfolio,
+            # JSON-log boundary: cast Decimal → float for the structured
+            # extra payload so the formatter never raises on a Decimal.
+            "availableCash": float(available_cash),
+            "totalPortfolio": float(total_portfolio),
             "openPositionCount": len(positions),
             "livePositions": sanitized_positions,
             "engineConfig": sanitized_engine_config,

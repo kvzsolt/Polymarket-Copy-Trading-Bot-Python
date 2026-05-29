@@ -11,11 +11,11 @@ from __future__ import annotations
 
 from decimal import Decimal
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from utils.createClobClient import MarketMeta, quantize_to_tick
+from utils.createClobClient import quantize_to_tick
 
 
 # ---------------------------------------------------------------------------
@@ -67,7 +67,6 @@ class TestV2MetadataPropagation:
     @pytest.fixture()
     def mock_wrapper(self) -> Any:
         """Build a ClobClientWrapper with a mocked V2 ClobClient."""
-        from py_clob_client.clob_types import OrderType
         from utils.createClobClient import ClobClientWrapper
         from config.env import WalletConfig, SignatureType
 
@@ -132,7 +131,6 @@ class TestOrderGatewayV2Options:
     def gateway(self) -> Any:
         from clients.order_gateway import OrderGateway
         from utils.createClobClient import ClobClientWrapper
-        from config.env import WalletConfig, SignatureType
 
         wrapper = MagicMock(spec=ClobClientWrapper)
         wrapper.create_market_order = AsyncMock(return_value={"orderID": "ord1"})

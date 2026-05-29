@@ -19,17 +19,14 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from clients import (
-    AnalyticsClient,
-    BalanceClient,
-    HttpClient,
-    OrderGateway,
-    PolymarketClobClient,
-)
+from clients.analytics_client import AnalyticsClient
+from clients.balance_client import BalanceClient
+from clients.market_client import PolymarketClobClient
+from clients.network.http_client import AsyncHttpClient, HttpRetryPolicy
+from clients.order_gateway import OrderGateway
 from domain.ports.clients import (
     AbstractAnalyticsClient,
     AbstractBalanceClient,
-    AbstractHttpClient,
     AbstractMarketClient,
     AbstractOrderGateway,
 )
@@ -53,35 +50,52 @@ class TestClientAbcRegistration:
     def test_analytics_client(self) -> None:
         assert issubclass(AnalyticsClient, AbstractAnalyticsClient)
 
-    def test_http_client(self) -> None:
-        assert issubclass(HttpClient, AbstractHttpClient)
-
 
 # ---------------------------------------------------------------------------
-# HttpClient — thin passthrough
+# AsyncHttpClient — thin passthrough to aiohttp session
 # ---------------------------------------------------------------------------
 
 
 class TestHttpClientDelegation:
     @pytest.mark.asyncio
     async def test_get_json_forwards(self) -> None:
-        underlying = MagicMock()
-        underlying.get_json = AsyncMock(return_value={"ok": True})
-        client = HttpClient(underlying)
+        mock_resp = MagicMock()
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+        mock_resp.json = AsyncMock(return_value={"ok": True})
+        mock_resp.status = 200
+        mock_resp.raise_for_status = MagicMock()
+        session = MagicMock()
+        session.request = MagicMock(return_value=mock_resp)
+
+        client = AsyncHttpClient(session, retry_policy=HttpRetryPolicy(attempts=1))
         result = await client.get_json("https://x.example", silent=True, params={"a": 1})
+
         assert result == {"ok": True}
-        underlying.get_json.assert_awaited_once_with(
-            "https://x.example", silent=True, params={"a": 1}
-        )
+        session.request.assert_called_once()
+        args, kwargs = session.request.call_args
+        assert args == ("GET", "https://x.example")
+        assert kwargs.get("params") == {"a": 1}
 
     @pytest.mark.asyncio
     async def test_post_json_forwards(self) -> None:
-        underlying = MagicMock()
-        underlying.post_json = AsyncMock(return_value={"id": 1})
-        client = HttpClient(underlying)
+        mock_resp = MagicMock()
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+        mock_resp.json = AsyncMock(return_value={"id": 1})
+        mock_resp.status = 200
+        mock_resp.raise_for_status = MagicMock()
+        session = MagicMock()
+        session.request = MagicMock(return_value=mock_resp)
+
+        client = AsyncHttpClient(session, retry_policy=HttpRetryPolicy(attempts=1))
         result = await client.post_json("https://x.example", json_body={"a": 1})
+
         assert result == {"id": 1}
-        underlying.post_json.assert_awaited_once()
+        session.request.assert_called_once()
+        args, kwargs = session.request.call_args
+        assert args == ("POST", "https://x.example")
+        assert kwargs.get("json") == {"a": 1}
 
 
 # ---------------------------------------------------------------------------
@@ -203,7 +217,7 @@ class TestOrderGateway:
 class TestAnalyticsClient:
     @pytest.mark.asyncio
     async def test_filters_by_thresholds(self) -> None:
-        http = MagicMock(spec=AbstractHttpClient)
+        http = MagicMock()
         http.get_json = AsyncMock(
             return_value={
                 "data": [
@@ -240,7 +254,7 @@ class TestAnalyticsClient:
 
     @pytest.mark.asyncio
     async def test_http_failure_returns_empty(self) -> None:
-        http = MagicMock(spec=AbstractHttpClient)
+        http = MagicMock()
         http.get_json = AsyncMock(side_effect=RuntimeError("boom"))
         client = AnalyticsClient(http=http)
         rows = await client.fetch_top_traders(
@@ -253,7 +267,7 @@ class TestAnalyticsClient:
 
     @pytest.mark.asyncio
     async def test_missing_data_key_returns_empty(self) -> None:
-        http = MagicMock(spec=AbstractHttpClient)
+        http = MagicMock()
         http.get_json = AsyncMock(return_value={"unexpected": True})
         client = AnalyticsClient(http=http)
         rows = await client.fetch_top_traders(

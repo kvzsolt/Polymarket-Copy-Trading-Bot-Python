@@ -1,0 +1,60 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "Audit event schema for the Polymarket Copy Trading Bot",
+  "definitions": {
+    "base_event": {
+      "type": "object",
+      "required": ["ts", "event"],
+      "properties": {
+        "ts": {"type": "string", "format": "date-time"},
+        "event": {"type": "string"}
+      }
+    },
+    "intent_accepted": {
+      "allOf": [{"$ref": "#/definitions/base_event"}],
+      "properties": {
+        "event": {"const": "intent_accepted"},
+        "intent_key": {"type": "string"},
+        "side": {"enum": ["BUY", "SELL"]},
+        "size": {"type": "string"},
+        "price": {"type": "string"},
+        "reason": {"type": "string"}
+      }
+    },
+    "reservation_created": {
+      "allOf": [{"$ref": "#/definitions/base_event"}],
+      "properties": {
+        "event": {"const": "reservation_created"},
+        "reservation_id": {"type": "string"},
+        "intent_key": {"type": "string"},
+        "reserved_value": {"type": "string"}
+      }
+    },
+    "order_submitted": {
+      "allOf": [{"$ref": "#/definitions/base_event"}],
+      "properties": {
+        "event": {"const": "order_submitted"},
+        "reservation_id": {"type": "string"},
+        "order_id": {"type": "string"},
+        "venue_order_id": {"type": "string"}
+      }
+    },
+    "order_filled": {
+      "allOf": [{"$ref": "#/definitions/base_event"}],
+      "properties": {
+        "event": {"const": "order_filled"},
+        "reservation_id": {"type": "string"},
+        "fill_size": {"type": "string"},
+        "fill_price": {"type": "string"}
+      }
+    },
+    "duplicate_intent_suppressed": {
+      "allOf": [{"$ref": "#/definitions/base_event"}],
+      "properties": {
+        "event": {"const": "duplicate_intent_suppressed"},
+        "intent_key": {"type": "string"},
+        "existing_reservation_id": {"type": "string"}
+      }
+    }
+  }
+}

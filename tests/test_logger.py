@@ -21,7 +21,6 @@ from utils.logger import (
     _parse_api_error,
     _build_panel_lines,
     configure_logging,
-    console,
     event_link,
     get_logger,
     log_api_response,
@@ -66,13 +65,27 @@ from utils.logger import (
 
 
 @pytest.fixture(autouse=True)
-def _clean_loggers():
+def _clean_loggers(monkeypatch):
+    # Strip env vars that override the jsonl path so an upstream test that
+    # set ``APP_LOG_JSONL_FILE`` / ``LOG_DIR`` cannot leak into this module
+    # and redirect log writes away from each test's per-tmp_path log dir.
+    monkeypatch.delenv("APP_LOG_JSONL_FILE", raising=False)
+    monkeypatch.delenv("LOG_DIR", raising=False)
     _CONFIGURED_LOGGERS.clear()
     root = logging.getLogger(APP_NAME)
     root.handlers.clear()
     yield
     _CONFIGURED_LOGGERS.clear()
     root.handlers.clear()
+    # Restore default APP_NAME logger config so cross-file test ordering
+    # doesn't end with subsequent tests inheriting a handler-less /
+    # WARNING-level logger. Without this, e.g.
+    # ``test_integer_level`` (which sets level=WARNING) used to leak
+    # the WARNING level into ``test_trade_pipeline_market_data_authority``
+    # downstream, dropping every ``logger.info`` line the trade pipeline
+    # tests assert on. Re-running ``configure_logging()`` with defaults
+    # rebuilds the standard handler set + restores INFO level.
+    configure_logging()
 
 
 @pytest.fixture()

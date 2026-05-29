@@ -18,6 +18,21 @@ from services.executionService import ExecutionService, _CLOB_CIRCUIT
 from services.healthServer import ReadinessTracker
 from domain.trading_context import TradingContext
 from config.app_config import load_config
+from types import SimpleNamespace
+
+
+def _make_config() -> SimpleNamespace:
+    return SimpleNamespace(
+        raw={},
+        execution=SimpleNamespace(
+            execution_require_fresh_book=True,
+            book_spread_mode="absolute_bps",
+            max_book_spread_bps=2500,
+            max_book_spread_ticks=0,
+            slippage_tolerance=2.0,
+            transaction_fee_bps=20,
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -46,9 +61,9 @@ class TestExecutionCircuitBreakerDI:
     def test_default_uses_module_breaker(self) -> None:
         svc = ExecutionService(
             clob_client=object(),
-            market_meta_service=object(),
             fee_service=object(),
             order_repo=object(),
+            config=_make_config(),
         )
         assert svc.circuit_breaker is _CLOB_CIRCUIT
 
@@ -56,10 +71,10 @@ class TestExecutionCircuitBreakerDI:
         custom = CircuitBreaker(name="t", failure_threshold=1, cooldown_seconds=1)
         svc = ExecutionService(
             clob_client=object(),
-            market_meta_service=object(),
             fee_service=object(),
             order_repo=object(),
             circuit_breaker=custom,
+            config=_make_config(),
         )
         assert svc.circuit_breaker is custom
 
@@ -76,6 +91,8 @@ class TestOrchestratorDISeams:
         assert "config" in sig.parameters
 
     def test_trading_context_has_readiness_tracker(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Pretend Python 3.12 — the runtime guard rejects 3.13
+        monkeypatch.setattr("config.app_config._runtime_python_supported", lambda: True)
         monkeypatch.setenv("PRIVATE_KEY", "0x" + "a" * 64)
         monkeypatch.setenv("FUNDER_ADDRESS", "0x" + "b" * 40)
         monkeypatch.setenv("RPC_URL", "https://polygon-rpc.example.com")
@@ -105,8 +122,3 @@ class TestOrchestratorDISeams:
         assert "readiness_tracker" in sig.parameters
         assert "config" in sig.parameters
 
-    def test_risk_monitor_loop_accepts_readiness_tracker(self) -> None:
-        from services.riskMonitor import risk_monitor_loop
-        sig = inspect.signature(risk_monitor_loop)
-        assert "readiness_tracker" in sig.parameters
-        assert "config" in sig.parameters

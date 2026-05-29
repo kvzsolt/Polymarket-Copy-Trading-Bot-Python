@@ -31,16 +31,16 @@ class _LeadersRepo:
         self.records = []
         self._tiers: dict[str, tuple[str, float | None]] = {}
 
-    def upsert_candidates(self, records):
+    async def upsert_candidates(self, records):
         self.records.extend(records)
 
-    def get_tier(self, wallet):
-        from storage.sqlite.leaders_repo import LeaderTierRecord
+    async def get_tier(self, wallet):
+        from storage.postgres.leaders_repo import LeaderTierRecord
 
         tier, changed_at = self._tiers.get(wallet.lower(), ("watchlist", None))
         return LeaderTierRecord(wallet=wallet.lower(), follow_tier=tier, tier_changed_at=changed_at)
 
-    def update_tier(self, wallet, follow_tier, tier_changed_at):
+    async def update_tier(self, wallet, follow_tier, tier_changed_at):
         self._tiers[wallet.lower()] = (follow_tier, tier_changed_at)
 
 
@@ -67,7 +67,7 @@ def _mock_config(*, promote_to_active: bool = False, top_n: int = 5, leader_auto
 
 @pytest.mark.asyncio
 async def test_discovery_only_mode_emits_no_leader_signal(capsys):
-    await metrics.clear()
+    metrics.clear()
 
     registry = LeaderRegistry(
         discovery_service=_Discovery(
@@ -86,12 +86,12 @@ async def test_discovery_only_mode_emits_no_leader_signal(capsys):
 
     state = await registry.refresh([])
 
-    assert state.mode == "discovery_only"
+    assert state.mode == "no_configured_leaders"
     assert state.active_monitored == []
     captured = capsys.readouterr()
     assert "no_leaders_monitored" in captured.out
 
-    _counters, gauges = await metrics.snapshot()
+    _counters, gauges = metrics.snapshot()
     assert gauges.get("monitored_leaders") == 0
 
 
@@ -110,7 +110,7 @@ async def test_discovery_only_wait_loop_stays_alive_without_leaders():
 
 
 @pytest.mark.asyncio
-async def test_discovery_only_mode_promotes_top_ranked_leaders_when_auto_enabled():
+async def test_discovery_only_mode_does_not_promote_top_ranked_leaders_when_auto_enabled():
     mock_config = _mock_config(promote_to_active=True, top_n=1, leader_auto=True)
     registry = LeaderRegistry(
         discovery_service=_Discovery(
@@ -135,5 +135,6 @@ async def test_discovery_only_mode_promotes_top_ranked_leaders_when_auto_enabled
 
     state = await registry.refresh([])
 
-    assert state.mode == "discovery_only"
-    assert state.active_monitored == ["0x1111111111111111111111111111111111111111"]
+    assert state.mode == "no_configured_leaders"
+    assert state.active_monitored == []
+    assert [c.follow_tier for c in state.discovered] == ["shadow", "shadow"]

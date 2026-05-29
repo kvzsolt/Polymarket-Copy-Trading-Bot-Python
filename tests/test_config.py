@@ -20,7 +20,6 @@ import pytest
 from config.app_config import (
     AppConfig,
     EnvValidationError,
-    SignatureType,
     load_config,
 )
 
@@ -74,7 +73,6 @@ class TestHappyPath:
         assert cfg.wallet.private_key == _VALID_PRIVATE_KEY
         assert cfg.wallet.funder_address == _VALID_FUNDER
         assert cfg.wallet.chain_id == 137
-        assert cfg.wallet.signature_type == SignatureType.EOA
         assert cfg.wallet.polygon_rpc_url == "https://polygon-rpc.example.com"
 
     def test_defaults_are_applied(self, valid_env: dict[str, str]) -> None:
@@ -108,9 +106,16 @@ class TestHappyPath:
         cfg = load_config(valid_env)
         assert cfg.discovery.min_active_positions == 1
 
-    def test_raw_env_preserved_for_transition(self, valid_env: dict[str, str]) -> None:
+    def test_raw_env_preserved_for_transition_excludes_secrets(
+        self, valid_env: dict[str, str]
+    ) -> None:
         cfg = load_config(valid_env)
-        assert cfg.raw["PRIVATE_KEY"] == _VALID_PRIVATE_KEY
+        # PRIVATE_KEY is in the documented sensitive set and must NOT
+        # land in AppConfig.raw — typed accessors (wallet.private_key)
+        # carry the secret instead.
+        assert "PRIVATE_KEY" not in cfg.raw
+        # Public-info keys (wallet addresses, RPC endpoint, etc.) stay
+        # in .raw for legacy callers still transitioning to typed config.
         assert cfg.raw["FUNDER_ADDRESS"] == _VALID_FUNDER
 
     def test_network_contract_prefers_collateral_then_pusd(self, valid_env: dict[str, str]) -> None:
@@ -141,7 +146,6 @@ class TestHappyPath:
                     "DISCOVERY_",
                     "AUTO_",
                     "TIER_",
-                    "ARB_",
                     "EXECUTION_",
                     "NEAR_",
                     "PROFIT_",
@@ -192,7 +196,13 @@ class TestMalformedValues:
         with pytest.raises(EnvValidationError, match="PRIVATE_KEY must be a 66-char hex key"):
             load_config(valid_env)
 
-    def test_private_key_file_requires_exact_0600_permissions(self, tmp_path, valid_env: dict[str, str]) -> None:
+    def test_private_key_file_requires_exact_0600_permissions(
+        self, tmp_path, monkeypatch, valid_env: dict[str, str]
+    ) -> None:
+        # Path-traversal guard requires the key file to live under $HOME
+        # or cwd; chdir into tmp_path so the test exercises the mode
+        # branch rather than the location branch.
+        monkeypatch.chdir(tmp_path)
         key_path = tmp_path / "pk.txt"
         key_path.write_text(_VALID_PRIVATE_KEY, encoding="utf-8")
         key_path.chmod(0o700)
@@ -216,10 +226,6 @@ class TestMalformedValues:
         with pytest.raises(EnvValidationError, match="inline comment"):
             load_config(valid_env)
 
-    def test_bad_signature_type(self, valid_env: dict[str, str]) -> None:
-        valid_env["SIGNATURE_TYPE"] = "99"
-        with pytest.raises(EnvValidationError, match="SIGNATURE_TYPE must be one of"):
-            load_config(valid_env)
 
     def test_bad_chain_id(self, valid_env: dict[str, str]) -> None:
         valid_env["CHAIN_ID"] = "1"
@@ -250,10 +256,13 @@ class TestSemanticInvariants:
         assert _runtime_python_supported() is False
 
     def test_bot_state_db_enabled_overrides_legacy_db_enabled(self, valid_env: dict[str, str]) -> None:
+        # PG migration removed DatabaseConfig.enabled / .db_path; the
+        # BOT_STATE_DB_ENABLED env var is no longer wired. Keep the test as a
+        # forward-compat probe: load_config still succeeds with both vars set.
         valid_env["DB_ENABLED"] = "false"
         valid_env["BOT_STATE_DB_ENABLED"] = "true"
         cfg = load_config(valid_env)
-        assert cfg.database.enabled is True
+        assert cfg.database.dsn
 
     def test_max_share_price_must_not_be_below_min_share_price(self, valid_env: dict[str, str]) -> None:
         valid_env["MIN_SHARE_PRICE"] = "0.4"
@@ -349,3 +358,39 @@ class TestImmutability:
         cfg = load_config(valid_env)
         with pytest.raises(FrozenInstanceError):
             cfg.database = None  # type: ignore[misc]
+
+
+class TestMarketDataFreshnessConfig:
+    """Market-data execution freshness + WSS liveness knobs are env-tunable."""
+
+    def test_defaults(self, valid_env: dict[str, str]) -> None:
+        md = load_config(valid_env).market_data
+        assert md.executable_quote_max_age_seconds == 2.0
+        assert md.executable_book_max_age_seconds == 2.0
+        assert md.executable_tick_max_age_seconds == 300.0
+        assert md.wss_connection_max_silence_seconds == 20.0
+        assert md.rest_bootstrap_max_spread_bps == 300
+
+    def test_overrides(self, valid_env: dict[str, str]) -> None:
+        env = dict(valid_env)
+        env.update(
+            {
+                "MARKET_DATA_EXECUTABLE_QUOTE_MAX_AGE_SECONDS": "5.5",
+                "MARKET_DATA_EXECUTABLE_BOOK_MAX_AGE_SECONDS": "6.0",
+                "MARKET_DATA_EXECUTABLE_TICK_MAX_AGE_SECONDS": "120.0",
+                "MARKET_DATA_WSS_CONNECTION_MAX_SILENCE_SECONDS": "45.0",
+                "MARKET_DATA_REST_BOOTSTRAP_MAX_SPREAD_BPS": "800",
+            }
+        )
+        md = load_config(env).market_data
+        assert md.executable_quote_max_age_seconds == 5.5
+        assert md.executable_book_max_age_seconds == 6.0
+        assert md.executable_tick_max_age_seconds == 120.0
+        assert md.wss_connection_max_silence_seconds == 45.0
+        assert md.rest_bootstrap_max_spread_bps == 800
+
+    def test_rejects_non_positive_silence_window(self, valid_env: dict[str, str]) -> None:
+        env = dict(valid_env)
+        env["MARKET_DATA_WSS_CONNECTION_MAX_SILENCE_SECONDS"] = "0"
+        with pytest.raises(EnvValidationError):
+            load_config(env)

@@ -1,7 +1,19 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from decimal import Decimal
+from typing import Any
+
+
+@dataclass(frozen=True)
+class ComplianceDecision:
+    allowed: bool
+    reason: str
+    source: str
+    checked_at: datetime
+    expires_at: datetime | None
+    raw: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)

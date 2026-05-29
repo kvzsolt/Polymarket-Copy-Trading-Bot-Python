@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from py_clob_client.clob_types import OrderArgs, OrderType
+from integrations.polymarket.clob_v2_gateway import OrderArgs, OrderType
 
 from domain.ports.clients import AbstractOrderGateway
 from utils.createClobClient import ClobClientWrapper
@@ -105,7 +105,7 @@ class OrderGateway(AbstractOrderGateway):
 
     async def cancel_order(self, order_id: str) -> Any:
         import asyncio
-        from py_clob_client_v2.clob_types import OrderPayload
+        from integrations.polymarket.clob_v2_gateway import OrderPayload
 
         client = self._wrapper.client
         loop = asyncio.get_running_loop()

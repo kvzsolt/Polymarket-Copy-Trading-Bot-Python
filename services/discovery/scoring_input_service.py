@@ -17,7 +17,7 @@ from services.discovery.context_service import ContextService
 from services.discovery.reconstructed_positions_service import (
     ReconstructedPositionsService,
 )
-from storage.sqlite.discovery_repo import DiscoveryRepo
+from storage.postgres.discovery_repo import DiscoveryRepo
 
 
 class ScoringInputAssemblerService:
@@ -36,7 +36,7 @@ class ScoringInputAssemblerService:
         )
         self._context_service = context_service or ContextService()
 
-    def assemble_for_trader(
+    async def assemble_for_trader(
         self,
         trader_wallet: str,
         *,
@@ -45,22 +45,22 @@ class ScoringInputAssemblerService:
         since_ts: int | None = None,
         trade_limit: int = 5000,
     ) -> dict[PositionKey, ScoringInputRecord]:
-        positions = self._reconstructed_positions.reconstruct_for_trader(
+        positions = await self._reconstructed_positions.reconstruct_for_trader(
             trader_wallet,
             condition_id=condition_id,
             token_id=token_id,
             since_ts=since_ts,
             trade_limit=trade_limit,
         )
+        snapshots = await self._repo.list_latest_position_snapshots(
+            trader_wallet,
+            condition_id=condition_id,
+            token_id=token_id,
+        )
         snapshots_by_key = {
-            self._snapshot_key(snapshot): snapshot
-            for snapshot in self._repo.list_latest_position_snapshots(
-                trader_wallet,
-                condition_id=condition_id,
-                token_id=token_id,
-            )
+            self._snapshot_key(snapshot): snapshot for snapshot in snapshots
         }
-        last_trade_ts_by_key = self._build_last_trade_ts_index(
+        last_trade_ts_by_key = await self._build_last_trade_ts_index(
             trader_wallet,
             condition_id=condition_id,
             token_id=token_id,
@@ -73,10 +73,9 @@ class ScoringInputAssemblerService:
         for key in sorted(positions):
             position = positions[key]
             snapshot = snapshots_by_key.get(key)
-            market = market_cache.get(key[1])
             if key[1] not in market_cache:
-                market = self._repo.get_market(key[1])
-                market_cache[key[1]] = market
+                market_cache[key[1]] = await self._repo.get_market(key[1])
+            market = market_cache[key[1]]
             records[key] = self._build_record(
                 position,
                 snapshot=snapshot,
@@ -85,7 +84,7 @@ class ScoringInputAssemblerService:
             )
         return records
 
-    def _build_last_trade_ts_index(
+    async def _build_last_trade_ts_index(
         self,
         trader_wallet: str,
         *,
@@ -95,13 +94,14 @@ class ScoringInputAssemblerService:
         trade_limit: int = 5000,
     ) -> dict[PositionKey, int]:
         last_trade_ts_by_key: dict[PositionKey, int] = {}
-        for trade in self._repo.list_trades(
+        trades = await self._repo.list_trades(
             trader_wallet,
             condition_id=condition_id,
             token_id=token_id,
             since_ts=since_ts,
             limit=trade_limit,
-        ):
+        )
+        for trade in trades:
             key = (trade.trader_wallet, trade.condition_id, trade.token_id)
             current = last_trade_ts_by_key.get(key)
             if current is None or trade.event_ts > current:

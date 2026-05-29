@@ -16,10 +16,48 @@ def is_valid_clob_token_id(token_id: str | None) -> bool:
     return bool(_CLOB_TOKEN_RE.match(token_id))
 
 
-from .createClobClient import ClobClientWrapper, MarketMeta, create_clob_client
-from .fetchData import fetch_data, close_session
-from .getMyBalance import get_my_balance
-from .idempotency import build_trade_key, has_processed, mark_processed
+# ---------------------------------------------------------------------------
+# Lazy imports for modules that depend on web3/py_clob_client_v2.
+# These are imported on first access to avoid requiring all optional
+# dependencies at module load time.
+#
+# SECURITY: This is a strict allowlist.  Only symbols explicitly listed
+# below can be resolved via lazy import.  Arbitrary attribute access
+# will raise AttributeError as normal — no dynamic code execution.
+# ---------------------------------------------------------------------------
+import threading as _threading
+
+_LAZY_IMPORTS: dict[str, str] = {
+    # symbol_name: module_path
+    "ClobClientWrapper": "utils.createClobClient",
+    "MarketMeta": "utils.createClobClient",
+    "create_clob_client": "utils.createClobClient",
+    "fetch_data": "utils.fetchData",
+    "close_session": "utils.fetchData",
+    "get_my_balance": "utils.getMyBalance",
+    "build_trade_key": "utils.idempotency",
+    "has_processed": "utils.idempotency",
+    "mark_processed": "utils.idempotency",
+}
+_LAZY_IMPORT_LOCK = _threading.Lock()
+
+
+def __getattr__(name: str):
+    """Lazy-load heavy submodules only when accessed (strict allowlist)."""
+    module_path = _LAZY_IMPORTS.get(name)
+    if module_path is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    import importlib
+    mod = importlib.import_module(module_path)
+    value = getattr(mod, name)
+    with _LAZY_IMPORT_LOCK:
+        # Double-check after acquiring lock (another thread may have set it)
+        if name not in globals():
+            globals()[name] = value
+    return value
+
+
+# Eagerly import lightweight modules that don't require optional deps
 from .logger import (
     configure_logging,
     get_logger,
@@ -76,7 +114,6 @@ __all__ = [
     "close_session",
     # getMyBalance
     "get_my_balance",
-    # postOrder — REMOVED (replaced by ExecutionService)
     # idempotency
     "build_trade_key",
     "has_processed",

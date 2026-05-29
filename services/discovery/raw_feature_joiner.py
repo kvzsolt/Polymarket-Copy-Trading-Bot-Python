@@ -16,7 +16,6 @@ from decimal import Decimal
 from domain.discovery_models import (
     OrderbookSnapshot,
     ReconstructedPositionStatus,
-    ReconstructionConfidence,
 )
 from domain.raw_feature_models import (
     DelaySurvivalInputs,
@@ -26,7 +25,7 @@ from domain.raw_feature_models import (
     SlippageCopyabilityInputs,
 )
 from domain.scoring_models import PositionKey, ScoringInputRecord
-from storage.sqlite.discovery_repo import DiscoveryRepo
+from storage.postgres.discovery_repo import DiscoveryRepo
 
 # Window durations in seconds
 _WINDOW_5M = 5 * 60
@@ -44,7 +43,7 @@ class RawFeatureJoiner:
     # Public API
     # ------------------------------------------------------------------
 
-    def join(
+    async def join(
         self,
         records: dict[PositionKey, ScoringInputRecord],
         *,
@@ -63,14 +62,14 @@ class RawFeatureJoiner:
         """
         out: dict[PositionKey, RawFeatureRecord] = {}
         for key, rec in records.items():
-            out[key] = self._build_one(rec, reference_ts)
+            out[key] = await self._build_one(rec, reference_ts)
         return out
 
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
 
-    def _build_one(
+    async def _build_one(
         self,
         rec: ScoringInputRecord,
         ref_ts_override: int | None,
@@ -78,13 +77,13 @@ class RawFeatureJoiner:
         ref_ts = ref_ts_override or rec.market_context.reference_ts
 
         # Fetch orderbook snapshots for this token
-        ob_snaps = self._repo.list_orderbook_snapshots(
+        ob_snaps = await self._repo.list_orderbook_snapshots(
             rec.token_id, limit=10,
         )
 
         # Fetch trades for entry-alpha windows
-        trades = self._repo.list_trades(
-            trader_wallet=rec.trader_wallet,
+        trades = await self._repo.list_trades(
+            rec.trader_wallet,
             condition_id=rec.condition_id,
             token_id=rec.token_id,
         )

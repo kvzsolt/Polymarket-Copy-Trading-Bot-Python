@@ -1,7 +1,7 @@
 # Local non-sensitive override template.
-# Copy to: config/runtime.localsecrets.env
+# Copy to: config/runtime.local.env
 # Recommended defaults:
-# - keep LEADER_AUTO=false unless you intentionally want discovery-driven leader rotation
+# - keep live leaders explicit in LEADER_WALLETS
 # - prefer LEADER_WALLETS over USER_ADDRESS for explicit follow lists
 # - keep MULTI_USER_CONFIG_FILE empty unless you are running allocator / multi-user mode
 # - keep machine-specific overrides here, not in `secrets.env`
@@ -24,11 +24,23 @@ MULTI_USER_CONFIG_FILE=
 # -----------------------------------------------------------------------------
 # Optional local behavior overrides
 # -----------------------------------------------------------------------------
-# Enable one-switch auto leader discovery mode locally.
-# LEADER_AUTO=false
-
-# Number of leaders to auto-promote when LEADER_AUTO is enabled.
-# LEADER_AUTO_COUNT=5
-
 # Override leader polling cadence locally if needed.
 # FETCH_INTERVAL=0.25
+
+# -----------------------------------------------------------------------------
+# Falcon + Polymarket discovery
+# -----------------------------------------------------------------------------
+# Discovery is DB-only. Put FALCON_API_TOKEN in secrets.env, not here.
+# Use `python bot.py rotate-traders` to edit LEADER_WALLETS.
+# FALCON_MIN_WIN_RATE_15D=0.45
+# FALCON_MAX_WIN_RATE_15D=0.90
+# FALCON_MIN_ROI_15D=0
+# FALCON_MIN_PNL_15D=100
+# FALCON_MIN_TRADES_15D=30
+# FALCON_MAX_TRADES_15D=750
+# POLYMARKET_HISTORY_LOOKBACK_DAYS=365
+# DISCOVERY_SIGNAL_GROUP_WINDOW_SECONDS=60
+# DISCOVERY_MIN_COPYABLE_GROUPED_SIGNAL_RATIO=0.75
+# DISCOVERY_MIN_COPYABLE_NOTIONAL_RATIO=0.60
+# DISCOVERY_DYNAMIC_MONITORING_ENABLED=false
+# ROTATE_TRADERS_ENV_FILE=config/runtime.local.env

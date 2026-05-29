@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import asyncio
+import contextlib
 import time
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -14,9 +14,37 @@ from services.reconciliation import (
     _order_age_seconds,
     _safe_int,
 )
-from storage.sqlite.connection import create_connection
-from storage.sqlite.migrations import apply_migrations
-from storage.sqlite.orders_repo import OrderSubmissionRecord, OrdersRepo
+from storage.postgres.orders_repo import OrderSubmissionRecord, OrdersRepo
+
+
+@contextlib.asynccontextmanager
+async def _pg_pool():
+    """Spin a Postgres testcontainer + return a pool with the full
+    schema applied. Auto-skips when Docker is unavailable."""
+    try:
+        from testcontainers.postgres import PostgresContainer
+        import asyncpg
+        from storage.postgres.migrations import apply_migrations as pg_apply
+    except Exception as exc:
+        pytest.skip(f"Docker / postgres image unavailable: {exc!r}")
+    try:
+        ctr = PostgresContainer("postgres:16-alpine")
+        ctr.start()
+    except Exception as exc:
+        pytest.skip(f"Docker / postgres image unavailable: {exc!r}")
+    try:
+        dsn = ctr.get_connection_url(driver="asyncpg").replace(
+            "postgresql+asyncpg://", "postgresql://"
+        )
+        pool = await asyncpg.create_pool(dsn, min_size=1, max_size=3)
+        async with pool.acquire() as conn:
+            await pg_apply(conn)
+        try:
+            yield pool
+        finally:
+            await pool.close()
+    finally:
+        ctr.stop()
 
 
 # ---------------------------------------------------------------------------
@@ -168,7 +196,7 @@ class TestReconciliationService:
         orders = [{"id": "x1", "timestamp": now}]
         clob = _make_mock_clob(orders=orders)
         repo_mock = MagicMock()
-        repo_mock.get_by_order_id.return_value = None
+        repo_mock.get_by_order_id = AsyncMock(return_value=None)
 
         svc = ReconciliationService(
             clob_client=clob,
@@ -187,7 +215,7 @@ class TestReconciliationService:
         orders = [{"id": "k1", "timestamp": now}]
         clob = _make_mock_clob(orders=orders)
         repo_mock = MagicMock()
-        repo_mock.get_by_order_id.return_value = {"some": "record"}
+        repo_mock.get_by_order_id = AsyncMock(return_value={"some": "record"})
 
         svc = ReconciliationService(
             clob_client=clob,
@@ -241,38 +269,40 @@ class TestReconciliationService:
         wrapper.client.get_orders.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_env_defaults(self):
-        """Service reads from env when no explicit values."""
+    async def test_appconfig_defaults(self):
+        """Service reads from AppConfig.reconciliation when no explicit values."""
+        from types import SimpleNamespace
         clob = _make_mock_clob()
-        with patch.dict("config.env.ENV", {
-            "RECONCILE_STALE_SECONDS": "1800",
-            "RECONCILE_AUTO_CANCEL": "true",
-        }):
-            svc = ReconciliationService(clob_client=clob)
-            assert svc.stale_threshold == 1800.0
-            assert svc.auto_cancel is True
+        cfg = SimpleNamespace(
+            reconciliation=SimpleNamespace(
+                stale_threshold_seconds=1800.0,
+                auto_cancel_stale=True,
+                max_closed_probes=10,
+            ),
+        )
+        svc = ReconciliationService(clob_client=clob, config=cfg)
+        assert svc.stale_threshold == 1800.0
+        assert svc.auto_cancel is True
 
 
 class TestOrderIdentityResolution:
-    def test_orders_repo_can_lookup_by_venue_order_id(self, tmp_path):
-        db_path = str(tmp_path / "reconcile.db")
-        with create_connection(db_path) as conn:
-            apply_migrations(conn)
-
-        repo = OrdersRepo(db_path)
-        repo.save_submission(
-            OrderSubmissionRecord(
-                idempotency_key="idem-1",
-                user_id="u1",
-                leader_id="leader1",
-                order_id="venue-123",
-                status="submitted_unconfirmed",
-                request_payload={"foo": "bar"},
-                response_payload={"orderID": "venue-123"},
+    @pytest.mark.asyncio
+    async def test_orders_repo_can_lookup_by_venue_order_id(self):
+        async with _pg_pool() as pool:
+            repo = OrdersRepo(pool)
+            await repo.save_submission(
+                OrderSubmissionRecord(
+                    idempotency_key="idem-1",
+                    user_id="u1",
+                    leader_id="leader1",
+                    order_id="venue-123",
+                    status="submitted_unconfirmed",
+                    request_payload={"foo": "bar"},
+                    response_payload={"orderID": "venue-123"},
+                )
             )
-        )
 
-        by_order = repo.get_by_order_id("venue-123")
+            by_order = await repo.get_by_order_id("venue-123")
         assert by_order is not None
         assert by_order["order_id"] == "venue-123"
         assert by_order["idempotency_key"] == "idem-1"
@@ -283,10 +313,12 @@ class TestOrderIdentityResolution:
         orders = [{"id": "venue-999", "timestamp": now}]
         clob = _make_mock_clob(orders=orders)
         repo_mock = MagicMock()
-        repo_mock.get_by_order_id.return_value = {"idempotency_key": "idem-999", "order_id": "venue-999"}
-        repo_mock.get_by_idempotency_key.side_effect = AssertionError(
-            "reconciliation must not treat venue order_id as idempotency key"
+        repo_mock.get_by_order_id = AsyncMock(
+            return_value={"idempotency_key": "idem-999", "order_id": "venue-999"}
         )
+        repo_mock.get_by_idempotency_key = AsyncMock(side_effect=AssertionError(
+            "reconciliation must not treat venue order_id as idempotency key"
+        ))
 
         svc = ReconciliationService(
             clob_client=clob,

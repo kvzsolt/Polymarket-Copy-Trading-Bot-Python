@@ -36,7 +36,7 @@ def _runtime_user_from_payload(payload: dict, config: AppConfig) -> RuntimeUser:
     wallet = WalletConfig(
         private_key=str(payload["private_key"]),
         chain_id=int(payload.get("chain_id", config.wallet.chain_id)),
-        signature_type=_parse_signature_type(payload.get("signature_type", int(config.wallet.signature_type))),
+        signature_type=_parse_signature_type(payload.get("signature_type", 0)),
         funder_address=str(payload["funder_address"]),
         polygon_rpc_url=str(payload.get("polygon_rpc_url", config.network.rpc_url)),
     )
@@ -65,10 +65,16 @@ def load_runtime_users(leader_wallets: list[str], config: AppConfig) -> list[Run
     """
     config_file = (config.discovery.multi_user_config_file or "").strip()
     if not config_file:
+        # Pre-fix: signature_type=None left a hole that crashed
+        # downstream callers doing ``int(wallet.signature_type)``.
+        # Fall back to the typed AppConfig wallet's signature_type
+        # so the single-user path produces a fully-populated
+        # WalletConfig identical in shape to the multi-user path.
         base_wallet = WalletConfig(
             private_key=config.wallet.private_key,
             chain_id=config.wallet.chain_id,
-            signature_type=config.wallet.signature_type,
+            signature_type=getattr(config.wallet, "signature_type", SignatureType(0))
+                or SignatureType(0),
             funder_address=config.wallet.funder_address,
             polygon_rpc_url=config.wallet.polygon_rpc_url,
         )
@@ -85,6 +91,43 @@ def load_runtime_users(leader_wallets: list[str], config: AppConfig) -> list[Run
         }
         return [RuntimeUser(user_id=config.wallet.funder_address or "default", wallet=base_wallet, follows=follows)]
 
-    payload = json.loads(Path(config_file).read_text(encoding="utf-8"))
+    # Confined-deputy guard: an operator-supplied path is read as JSON
+    # into the process. ``Path(x).resolve()`` so symlinks are followed,
+    # then require the resolved path under cwd or $HOME — a misconfigured
+    # ``MULTI_USER_CONFIG_FILE=/etc/passwd`` should NOT silently parse
+    # an arbitrary file. JSON parsing would normally reject it, but the
+    # read happens first and fills memory.
+    resolved = Path(config_file).expanduser().resolve(strict=False)
+    safe_roots = (
+        Path.home().resolve(strict=False),
+        Path.cwd().resolve(strict=False),
+    )
+    if not any(
+        resolved == root or _is_descendant(resolved, root) for root in safe_roots
+    ):
+        raise ValueError(
+            f"MULTI_USER_CONFIG_FILE must point under $HOME or the working "
+            f"directory; resolved path was {resolved}"
+        )
+    # ``json.loads`` cannot parse JSONC (comments/trailing commas); only
+    # accept .json. Operators wanting comments must strip them upstream.
+    if resolved.suffix.lower() != ".json":
+        raise ValueError(
+            f"MULTI_USER_CONFIG_FILE must be a .json file; got {resolved.suffix!r}"
+        )
+
+    payload = json.loads(resolved.read_text(encoding="utf-8"))
     users = [_runtime_user_from_payload(p, config) for p in payload.get("users", [])]
     return users
+
+
+def _is_descendant(child: Path, parent: Path) -> bool:
+    """Path.is_relative_to back-port for 3.8 + readability."""
+    try:
+        return child.is_relative_to(parent)
+    except AttributeError:  # pragma: no cover — Python < 3.9
+        try:
+            child.relative_to(parent)
+            return True
+        except ValueError:
+            return False

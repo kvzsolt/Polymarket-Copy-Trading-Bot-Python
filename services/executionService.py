@@ -2,23 +2,63 @@ from __future__ import annotations
 
 import asyncio
 import time
-from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from dataclasses import asdict, is_dataclass, replace
 from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
 from hashlib import sha256
 from typing import Any, TYPE_CHECKING
 
-from config.env import ENV
+from config.app_config import AppConfig
 
 if TYPE_CHECKING:
-    from config.app_config import AppConfig
+    from interfaces.clob_gateway import ClobGateway
+    from services.market_data_service import (
+        MarketDataBundle,
+        MarketDataService,
+        MarketDataNotReady,
+        StaleDataError,
+    )
 
-from py_clob_client.clob_types import OrderType
-from py_clob_client.order_builder.constants import BUY, SELL
+# CLOB venue access flows through the gateway; SDK-shaped types
+# (``OrderType`` / ``OrderArgs`` / ``BUY`` / ``SELL`` constants) are not
+# imported here. See ``interfaces/clob_gateway.py`` and issue #66.
+from integrations.polymarket.errors import (
+    VenueAuthError,
+    VenueInvalidOrderError,
+    VenueRateLimitError,
+    VenueUnavailableError,
+)
+from integrations.polymarket.models import MarketableOrderRequest
 from services.circuitBreaker import CircuitBreaker, CircuitOpen
-
+from services.idempotency import compute_effective_key as _compute_effective_key
 from utils.logger import get_logger, log_api_error, log_api_response, redact_error_detail
 from utils.createClobClient import _is_thin_or_empty_book
+
+# Re-exported from submodules for backward compatibility
+from services.execution.types import (
+    ExecutionRequest,
+    ExecutionResult,
+    BookSpreadMetrics as _BookSpreadMetrics,
+    _SUPPORTED_BOOK_SPREAD_MODES,
+)
+from services.execution.book_spread import (
+    resolve_book_spread_mode as _resolve_book_spread_mode,
+    calculate_book_spread_metrics as _calculate_book_spread_metrics,
+    calculate_book_depth_metrics as _calculate_book_depth_metrics,
+)
+from services.execution.submission import (
+    truncate_text as _truncate_text,
+    sanitize_submission_value as _sanitize_submission_value,
+    sanitize_submission_request as _sanitize_submission_request,
+    sanitize_submission_response as _sanitize_submission_response,
+    coerce_bool as _coerce_bool,
+    coerce_timestamp as _coerce_timestamp,
+    pending_submission_ttl_seconds as _pending_submission_ttl_seconds,
+    pending_since as _pending_since,
+    pending_expires_at as _pending_expires_at,
+    build_pending_response as _build_pending_response,
+    is_pending_submission_expired as _is_pending_submission_expired,
+    is_retry_blocking_existing as _is_retry_blocking_existing,
+)
 
 logger = get_logger("ExecutionService")
 
@@ -29,8 +69,7 @@ _CLOB_CIRCUIT = CircuitBreaker(
 )
 
 
-def _positive_int_env(name: str, default: int) -> int:
-    raw = ENV.get(name, default)
+def _positive_int(raw: Any, default: int) -> int:
     try:
         value = int(raw)
     except (TypeError, ValueError):
@@ -38,8 +77,7 @@ def _positive_int_env(name: str, default: int) -> int:
     return max(1, value)
 
 
-def _non_negative_int_env(name: str, default: int) -> int:
-    raw = ENV.get(name, default)
+def _non_negative_int(raw: Any, default: int) -> int:
     try:
         value = int(raw)
     except (TypeError, ValueError):
@@ -53,69 +91,37 @@ def _parse_decimal_or_default(raw: Any, default: Decimal) -> Decimal:
     except Exception:
         return default
 
-_MAX_PERSISTED_FIELD_CHARS = 160
-_MAX_PERSISTED_ERROR_CHARS = 512
-_TRUNCATED_SUFFIX = "...[truncated]"
-
-_PERSISTED_REQUEST_FIELDS = (
-    "user_id",
-    "leader_id",
-    "token_id",
-    "condition_id",
-    "side",
-    "amount",
-    "max_slippage_bps",
-    "reason",
-    "signal_id",
-    "recovery_metadata",
-    "worst_price",
-    "tick_size",
-    "neg_risk",
-)
-
-_PERSISTED_RESPONSE_FIELDS = (
-    "success",
-    "status",
-    "orderID",
-    "error",
-    "pending_since",
-    "pending_ttl_seconds",
-    "pending_expires_at",
-    "expired_at",
-)
-
-
-@dataclass(frozen=True)
-class ExecutionRequest:
-    user_id: str
-    leader_id: str
-    token_id: str
-    side: str  # BUY or SELL
-    amount: Decimal
-    max_slippage_bps: int
-    reason: str  # copy_trade, advanced_risk_exit, rebalance
-    signal_id: str | None = None
-    condition_id: str | None = None
-    recovery_metadata: dict[str, Any] | None = None
-
-
-@dataclass
-class ExecutionResult:
-    accepted: bool
-    order_id: str | None
-    status: str
-    requested_amount: Decimal
-    filled_amount: Decimal
-    avg_price: Decimal | None
-    fees_paid: Decimal
-    error: str | None = None
-
 
 def _normalize_side(side: str) -> str:
     value = (side or "").strip().upper()
     if value not in ("BUY", "SELL"):
         raise ValueError(f"Unsupported side: {side}")
     return value
+
+
+_FORCED_EXIT_SOURCES = frozenset({
+    "risk_exit",
+    "protective_exit",
+    "near_one_exit",
+})
+
+_FORCED_EXIT_REASONS = frozenset({
+    "risk_exit",
+    "protective_exit",
+    "advanced_risk_exit",
+    "near_one_exit",
+    "stop_loss",
+    "trailing_stop",
+})
+
+
+def _is_forced_sell_exit_request(req: ExecutionRequest, side: str) -> bool:
+    if side != "SELL":
+        return False
+    metadata = req.recovery_metadata if isinstance(req.recovery_metadata, dict) else {}
+    source = str(metadata.get("source") or "").strip().lower()
+    reason = str(req.reason or metadata.get("reason") or "").strip().lower()
+    return source in _FORCED_EXIT_SOURCES or reason in _FORCED_EXIT_REASONS
 
 
 def _quantize_price(price: Decimal, tick_size: Decimal, side: str) -> Decimal:
@@ -129,350 +135,204 @@ def _quantize_price(price: Decimal, tick_size: Decimal, side: str) -> Decimal:
     return rounded_units * tick_size
 
 
-_SUPPORTED_BOOK_SPREAD_MODES = {"absolute_bps", "relative_bps", "ticks"}
+def _submit_result_to_response(submit_result) -> dict[str, Any]:
+    """Translate a ``VenueSubmitResult`` into the dict shape ExecutionService
+    persists and returns. The dict view keeps downstream consumers
+    (``order_repo``, fill confirmation, audit logs) working unchanged while
+    SDK-shaped types stay behind the gateway boundary.
+    """
+    if submit_result.success:
+        default_status = submit_result.status or "submitted"
+    else:
+        default_status = submit_result.status or "failed"
+    raw = submit_result.raw if isinstance(submit_result.raw, dict) else {}
+    raw_data = raw.get("data") if isinstance(raw.get("data"), dict) else {}
+
+    def _pick_raw(*keys: str) -> Any:
+        for key in keys:
+            value = raw_data.get(key)
+            if value is not None:
+                return value
+            value = raw.get(key)
+            if value is not None:
+                return value
+        return None
+
+    return {
+        "success": submit_result.success,
+        "orderID": submit_result.order_id,
+        "status": default_status,
+        "size_matched": _pick_raw("size_matched", "sizeMatched"),
+        "filled_size": _pick_raw("filled_size", "filledSize"),
+        "matched_size": _pick_raw("matched_size", "matchedSize"),
+        "matched_amount": _pick_raw("matched_amount", "matchedAmount"),
+        "avg_price": _pick_raw("avg_price", "average_price", "averagePrice"),
+        "avg_fill_price": _pick_raw("avg_fill_price", "avgFillPrice"),
+        "error": submit_result.error,
+        "ambiguous_post_failure": submit_result.ambiguous_post_failure,
+        "non_retryable": submit_result.non_retryable,
+        "raw": submit_result.raw,
+    }
 
 
-@dataclass(frozen=True)
-class _BookSpreadMetrics:
-    absolute: Decimal
-    absolute_bps: int
-    relative_bps: int | None
-    ticks: int | None
+def _response_order_id(response: dict[str, Any]) -> Any:
+    return response.get("orderID") or response.get("order_id") or response.get("id")
 
 
-def _resolve_book_spread_mode(raw_mode: Any) -> str:
-    mode = str(raw_mode or "absolute_bps").strip().lower()
-    if mode in _SUPPORTED_BOOK_SPREAD_MODES:
-        return mode
-    return "absolute_bps"
+def _response_decimal(response: dict[str, Any], *keys: str) -> Decimal:
+    for key in keys:
+        value = response.get(key)
+        if value is None:
+            continue
+        try:
+            return Decimal(str(value))
+        except Exception:
+            continue
+    return Decimal("0")
 
 
-def _calculate_book_spread_metrics(
-    *, best_bid: Decimal, best_ask: Decimal, tick_size: Decimal
-) -> _BookSpreadMetrics:
-    absolute = best_ask - best_bid
-    absolute_bps = int(
-        (absolute * Decimal(10_000)).to_integral_value(rounding=ROUND_CEILING)
+def _response_matched_size(response: dict[str, Any]) -> Decimal:
+    return _response_decimal(
+        response,
+        "size_matched",
+        "filled_size",
+        "matched_size",
+        "matched_amount",
     )
-    relative_bps: int | None = None
-    if best_bid > 0:
-        relative_bps = int(
-            ((absolute / best_bid) * Decimal(10_000)).to_integral_value(
-                rounding=ROUND_CEILING
+
+
+def _response_avg_price(response: dict[str, Any]) -> Decimal | None:
+    value = _response_decimal(response, "avg_price", "avg_fill_price")
+    return value if value > 0 else None
+
+
+def _level_size_at_price(levels: Any, price: Decimal | None) -> Decimal:
+    if price is None:
+        return Decimal("0")
+    if isinstance(levels, dict):
+        iterable = levels.items()
+    else:
+        iterable = []
+        if levels:
+            iterable = (
+                (
+                    getattr(level, "price", None)
+                    if not isinstance(level, dict)
+                    else level.get("price"),
+                    getattr(level, "size", None)
+                    if not isinstance(level, dict)
+                    else level.get("size"),
+                )
+                for level in levels
             )
-        )
-    ticks: int | None = None
-    if tick_size > 0:
-        ticks = int((absolute / tick_size).to_integral_value(rounding=ROUND_CEILING))
-    return _BookSpreadMetrics(
-        absolute=absolute,
-        absolute_bps=absolute_bps,
-        relative_bps=relative_bps,
-        ticks=ticks,
-    )
+    for raw_price, raw_size in iterable:
+        try:
+            level_price = Decimal(str(raw_price))
+            level_size = Decimal(str(raw_size))
+        except Exception:
+            continue
+        if level_price == price and level_size > 0:
+            return level_size
+    return Decimal("0")
 
 
-def _idempotency_key(req: ExecutionRequest) -> str:
+def _top_level_marketable_amount(bundle: Any, side: str, quote_price: Decimal) -> Decimal:
+    """Return the request amount supported by the current best level.
+
+    Polymarket market-order ``amount`` is USDC for BUY and shares for SELL, so
+    BUY caps by ``best_ask_size * best_ask`` while SELL caps by bid size.
+    """
+    book = getattr(bundle, "book", None)
+    if book is None:
+        return Decimal("0")
+    if side == "BUY":
+        size = _level_size_at_price(getattr(book, "asks", {}), quote_price)
+        return size * quote_price
+    size = _level_size_at_price(getattr(book, "bids", {}), quote_price)
+    return size
+
+
+def _derive_intent_id_from_request(req: ExecutionRequest) -> str:
+    """Stable hash of the request shape, used as intent_id when signal_id is absent.
+
+    Two retries of the same logical request produce the same hash and collide
+    on the idempotency table, blocking duplicate submission. Distinct trade
+    intents must carry distinct ``signal_id`` (the canonical disambiguator).
+    """
     payload = "|".join(
         [
-            req.signal_id or "",
             req.user_id,
-            req.leader_id,
+            req.leader_id or "",
+            getattr(req, "condition_id", "") or "",
             req.token_id,
             req.side.upper(),
             str(req.amount),
             str(req.max_slippage_bps),
-            req.reason,
+            req.reason or "",
         ]
     )
     return sha256(payload.encode("utf-8")).hexdigest()
 
 
-def _truncate_text(value: Any, *, max_chars: int) -> str:
-    text = (
-        str(value)
-        .replace("\x00", " ")
-        .replace("\r", " ")
-        .replace("\n", " ")
-        .replace("\t", " ")
-    )
-    if len(text) <= max_chars:
-        return text
-    keep = max(0, max_chars - len(_TRUNCATED_SUFFIX))
-    return text[:keep] + _TRUNCATED_SUFFIX
-
-
-def _sanitize_submission_value(
-    value: Any, *, max_chars: int = _MAX_PERSISTED_FIELD_CHARS
-) -> Any:
-    if value is None:
-        return None
-    if isinstance(value, (bool, int, float)):
-        return value
-    if isinstance(value, Decimal):
-        return str(value)
-    if isinstance(value, dict):
-        sanitized_dict: dict[str, Any] = {}
-        for key, item in value.items():
-            sanitized_item = _sanitize_submission_value(item, max_chars=max_chars)
-            if sanitized_item is not None:
-                sanitized_dict[_truncate_text(key, max_chars=max_chars)] = sanitized_item
-        return sanitized_dict
-    if isinstance(value, (list, tuple)):
-        return [
-            sanitized_item
-            for item in value
-            if (sanitized_item := _sanitize_submission_value(item, max_chars=max_chars)) is not None
-        ]
-    return _truncate_text(value, max_chars=max_chars)
-
-
-def _sanitize_submission_request(request: dict[str, Any] | None) -> dict[str, Any]:
-    if not isinstance(request, dict):
-        return {}
-    sanitized: dict[str, Any] = {}
-    for key in _PERSISTED_REQUEST_FIELDS:
-        if key not in request:
-            continue
-        value = _sanitize_submission_value(request.get(key))
-        if value is not None:
-            sanitized[key] = value
-    return sanitized
-
-
-def _coerce_bool(value: Any) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)):
-        return bool(value)
-    if isinstance(value, str):
-        return value.strip().lower() in {"1", "true", "yes", "y"}
-    return False
-
-
-def _sanitize_submission_response(response: dict[str, Any] | Any) -> dict[str, Any]:
-    if not isinstance(response, dict):
-        return {
-            "success": False,
-            "status": "failed",
-            "error": _truncate_text(response, max_chars=_MAX_PERSISTED_ERROR_CHARS),
-        }
-
-    sanitized: dict[str, Any] = {}
-    for key in _PERSISTED_RESPONSE_FIELDS:
-        if key not in response:
-            continue
-        raw_value = response.get(key)
-        if key == "success":
-            sanitized[key] = _coerce_bool(raw_value)
-            continue
-        if key in {"pending_since", "pending_expires_at", "expired_at"}:
-            ts_value = _coerce_timestamp(raw_value)
-            sanitized[key] = (
-                ts_value
-                if ts_value is not None
-                else _sanitize_submission_value(raw_value)
-            )
-            continue
-        if key == "error":
-            error_value = _sanitize_submission_value(
-                raw_value, max_chars=_MAX_PERSISTED_ERROR_CHARS
-            )
-            if error_value:
-                sanitized[key] = error_value
-            continue
-        value = _sanitize_submission_value(raw_value)
-        if value is not None:
-            sanitized[key] = value
-
-    if "success" not in sanitized:
-        sanitized["success"] = _coerce_bool(response.get("success"))
-
-    if "status" not in sanitized:
-        sanitized["status"] = "submitted" if sanitized.get("success") else "failed"
-
-    return sanitized
-
-
-_RETRY_BLOCKING_STATUSES = {
-    "pending",
-    "pending_lock",
-    "submitted",
-    "submitted_unconfirmed",
-    "filled",
-    "duplicate_ignored",
-    "live",
-    "matched",
-}
-
-
-# Terminal statuses where a fill record should be persisted.
-_FILL_CONFIRM_STATUSES = {"filled", "matched", ""}
-
-
-def _pending_submission_ttl_seconds(config: AppConfig | None = None) -> float:
-    if config is not None:
-        return max(float(config.execution.pending_submission_ttl_seconds), 0.0)
-    return max(float(ENV.get("PENDING_SUBMISSION_TTL_SECONDS", 120.0)), 0.0)
-
-
-def _coerce_timestamp(value: Any) -> float | None:
-    if value is None:
-        return None
-    if isinstance(value, (int, float)):
-        return float(value)
-
-    text = str(value).strip()
-    if not text:
-        return None
-
-    try:
-        return float(text)
-    except ValueError:
-        pass
-
-    try:
-        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
-        return parsed.timestamp()
-    except ValueError:
-        pass
-
-    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M:%S.%f"):
-        try:
-            parsed = datetime.strptime(text, fmt).replace(tzinfo=timezone.utc)
-            return parsed.timestamp()
-        except ValueError:
-            continue
-
-    return None
-
-
-def _pending_since(existing: dict[str, Any]) -> float | None:
-    response = (
-        existing.get("response") if isinstance(existing.get("response"), dict) else {}
-    )
-    for candidate in (
-        existing.get("pending_since"),
-        response.get("pending_since"),
-        existing.get("updated_at"),
-        existing.get("created_at"),
-    ):
-        ts = _coerce_timestamp(candidate)
-        if ts is not None:
-            return ts
-    return None
-
-
-def _pending_expires_at(existing: dict[str, Any]) -> float | None:
-    response = (
-        existing.get("response") if isinstance(existing.get("response"), dict) else {}
-    )
-    for candidate in (
-        existing.get("pending_expires_at"),
-        response.get("pending_expires_at"),
-    ):
-        ts = _coerce_timestamp(candidate)
-        if ts is not None:
-            return ts
-    return None
-
-
-def _build_pending_response(
-    *, pending_since: float, ttl_seconds: float | None = None, config: AppConfig | None = None
-) -> dict[str, Any]:
-    ttl = (
-        _pending_submission_ttl_seconds(config)
-        if ttl_seconds is None
-        else max(float(ttl_seconds), 0.0)
-    )
-    return {
-        "success": False,
-        "status": "pending",
-        "pending_since": pending_since,
-        "pending_ttl_seconds": ttl,
-        "pending_expires_at": pending_since + ttl,
-    }
-
-
-def _is_pending_submission_expired(
-    existing: dict[str, Any] | None,
+def _effective_idempotency_key(
     *,
-    now_ts: float | None = None,
-    pending_ttl_seconds: float | None = None,
-    config: AppConfig | None = None,
-) -> bool:
-    if not existing:
-        return False
-    status = str(
-        existing.get("status") or existing.get("response", {}).get("status") or ""
-    ).lower()
-    if existing.get("order_id"):
-        return False
-    if status not in _RETRY_BLOCKING_STATUSES:
-        return False
+    user: str,
+    condition_id: str | None,
+    token_id: str,
+    side: str,
+    effective_size: Decimal,
+    effective_price: Decimal,
+    tick_size: Decimal,
+    intent_id: str = "",
+    policy_version: str = "",
+) -> str:
+    """Compute idempotency key from effective post-sizing order parameters.
 
-    now_value = time.time() if now_ts is None else float(now_ts)
-    explicit_expires_at = _pending_expires_at(existing)
-    if explicit_expires_at is not None:
-        return now_value >= explicit_expires_at
-
-    ttl_seconds = (
-        _pending_submission_ttl_seconds(config)
-        if pending_ttl_seconds is None
-        else float(pending_ttl_seconds)
+    Delegates to :func:`services.idempotency.compute_effective_key`.
+    """
+    return _compute_effective_key(
+        user=user,
+        condition_id=condition_id or "",
+        token_id=token_id,
+        side=side,
+        effective_size=effective_size,
+        effective_price=effective_price,
+        tick_size=tick_size,
+        intent_id=intent_id,
+        policy_version=policy_version,
     )
-    if ttl_seconds <= 0:
-        return True
-
-    submitted_at = _pending_since(existing)
-    if submitted_at is None:
-        return True
-
-    return (now_value - submitted_at) >= ttl_seconds
-
-
-def _is_retry_blocking_existing(
-    existing: dict[str, Any] | None,
-    *,
-    now_ts: float | None = None,
-    pending_ttl_seconds: float | None = None,
-    config: AppConfig | None = None,
-) -> bool:
-    if not existing:
-        return False
-    status = str(
-        existing.get("status") or existing.get("response", {}).get("status") or ""
-    ).lower()
-    if existing.get("order_id"):
-        return True
-    if _is_pending_submission_expired(
-        existing,
-        now_ts=now_ts,
-        pending_ttl_seconds=pending_ttl_seconds,
-        config=config,
-    ):
-        return False
-    return status in _RETRY_BLOCKING_STATUSES
 
 
 class ExecutionService:
     def __init__(
         self,
         clob_client,
-        market_meta_service,
-        fee_service,
-        order_repo,
+        fee_service=None,
+        order_repo=None,
         *,
         circuit_breaker: CircuitBreaker | None = None,
-        config: AppConfig | None = None,
+        config: AppConfig,
+        clob_gateway: "ClobGateway | None" = None,
+        market_data_service: "MarketDataService | None" = None,
     ):
         self.clob_client = clob_client
-        self.market_meta_service = market_meta_service
         self.fee_service = fee_service
         self.order_repo = order_repo
         self._config = config
+        self._market_data_service = market_data_service
+
+        # Single CLOB venue boundary. ``runtime_bootstrap`` is expected to pass
+        # a pre-constructed gateway so reconciliation, the execution
+        # coordinator, and ExecutionService all share one instance. When no
+        # gateway is supplied we build a default one over the legacy
+        # ``clob_client`` wrapper to preserve backward-compatibility for
+        # callers that have not yet been updated (the configless construction
+        # itself is fail-closed in #73, not #66).
+        if clob_gateway is None:
+            from integrations.polymarket.clob_v2_gateway import ClobV2Gateway
+            self.clob_gateway = ClobV2Gateway(clob_client, config)
+        else:
+            self.clob_gateway = clob_gateway
 
         # Always default to the shared module-level breaker so multi-user
         # runtimes get one venue-wide backoff window during a CLOB outage.
@@ -484,62 +344,56 @@ class ExecutionService:
         else:
             self.circuit_breaker = _CLOB_CIRCUIT
 
-        self._submit_semaphore = asyncio.Semaphore(
-            _positive_int_env("EXECUTION_SUBMIT_CONCURRENCY", 2)
+        # Typed concurrency cap; raw env fallback survives only for legacy
+        # callers that bypass AppConfig.execution.
+        submit_concurrency = getattr(
+            getattr(config, "execution", None),
+            "execution_submit_concurrency",
+            None,
         )
+        if not isinstance(submit_concurrency, int) or submit_concurrency <= 0:
+            submit_concurrency = _positive_int(
+                config.raw.get("EXECUTION_SUBMIT_CONCURRENCY", 2), 2
+            )
+        self._submit_semaphore = asyncio.Semaphore(submit_concurrency)
 
-    def _save_submission(
+    async def _save_submission(
         self,
         *,
         idempotency_key: str,
         request: dict[str, Any],
         response: dict[str, Any] | Any,
     ) -> None:
-        self.order_repo.save_submission(
-            idempotency_key=idempotency_key,
-            request=_sanitize_submission_request(request),
-            response=_sanitize_submission_response(response),
+        from storage.postgres.orders_repo import OrderSubmissionRecord
+
+        sanitized_request = _sanitize_submission_request(request)
+        sanitized_response = _sanitize_submission_response(response)
+        status = str(
+            sanitized_response.get("status")
+            or ("submitted" if sanitized_response.get("success") else "failed")
         )
-
-    async def _confirm_fill(self, order_id: str) -> dict[str, Any]:
-        """Poll order status briefly and return best-effort fill details."""
-        loop = asyncio.get_running_loop()
-        last_error: Exception | None = None
-        last_order: dict[str, Any] = {}
-        terminal_no_fill_statuses = {"cancelled", "canceled", "expired", "rejected"}
-        for _ in range(3):
-            try:
-                order = await loop.run_in_executor(
-                    None,
-                    lambda: self.clob_client.client.get_order(order_id),
-                )
-                if isinstance(order, dict):
-                    last_order = order
-                    status = str(order.get("status", "")).lower()
-                    if status in {"filled", "matched"}:
-                        return order
-                    # Even canceled FOK may include matched/size — but only treat
-                    # size_matched/filled_size as confirmed if status is a
-                    # terminal-fill status.  'live' + size_matched is a partial
-                    # match that should NOT be treated as a confirmed fill.
-                    safe_fill_status = status in _FILL_CONFIRM_STATUSES
-                    has_fill_data = bool(order.get("size_matched") or order.get("filled_size"))
-                    if has_fill_data and (safe_fill_status or status in terminal_no_fill_statuses):
-                        return order
-                    if status in terminal_no_fill_statuses:
-                        return order
-                await asyncio.sleep(0.15)
-            except Exception as exc:
-                last_error = exc
-                await asyncio.sleep(0.15)
-
-        if last_error:
-            logger.warning(
-                "fill confirmation warning for %s (%s)",
-                order_id,
-                redact_error_detail(last_error),
+        record = OrderSubmissionRecord(
+            idempotency_key=idempotency_key,
+            user_id=str(
+                sanitized_request.get("user_id")
+                or sanitized_request.get("userId")
+                or ""
+            ),
+            leader_id=str(
+                sanitized_request.get("leader_id")
+                or sanitized_request.get("leaderWallet")
+                or ""
             )
-        return last_order
+            or None,
+            order_id=_response_order_id(sanitized_response),
+            status=status,
+            request_payload=sanitized_request,
+            response_payload=sanitized_response,
+            last_error=str(sanitized_response.get("error"))
+            if sanitized_response.get("error")
+            else None,
+        )
+        await self.order_repo.save_submission(record)
 
     async def execute(self, req: ExecutionRequest) -> ExecutionResult:
         side = _normalize_side(req.side)
@@ -568,62 +422,132 @@ class ExecutionService:
                 error=f"CLOB circuit breaker open — retry in {remaining:.0f}s",
             )
 
-        ec = self._config.execution if self._config else None
-        require_fresh_book = (
-            ec.execution_require_fresh_book
-            if ec
-            else _coerce_bool(ENV.get("EXECUTION_REQUIRE_FRESH_BOOK", True))
-        )
-        meta = await self.market_meta_service.get(
-            req.token_id,
-            refresh=require_fresh_book,
-        )
+        ec = self._config.execution
+        forced_sell_exit = _is_forced_sell_exit_request(req, side)
+        metadata = req.recovery_metadata if isinstance(req.recovery_metadata, dict) else {}
+        requested_order_type = str(
+            req.order_type or metadata.get("order_type") or ""
+        ).strip().upper() or None
+        instant_fak = requested_order_type == "FAK" and req.price_limit is not None
+
+        # --- Single fresh-data fetch — fail closed if market data not ready ---
+        # Copy-trade FAK orders still need a current executable side of book,
+        # but they intentionally do not use the REST-snapshot spread cap. FAK
+        # is the fill-control mechanism here: buy the available best ask / sell
+        # the available best bid, cancel the rest, then refresh before reposts.
+        if self._market_data_service is None:
+            return ExecutionResult(
+                accepted=False,
+                order_id=None,
+                status="rejected",
+                requested_amount=req.amount,
+                filled_amount=Decimal("0"),
+                avg_price=None,
+                fees_paid=Decimal("0"),
+                error="market_data_service not wired — refusing execution",
+            )
+
+        if instant_fak:
+            caller_price_limit = Decimal(str(req.price_limit))
+            if caller_price_limit <= 0:
+                return ExecutionResult(
+                    accepted=False,
+                    order_id=None,
+                    status="rejected",
+                    requested_amount=req.amount,
+                    filled_amount=Decimal("0"),
+                    avg_price=None,
+                    fees_paid=Decimal("0"),
+                    error="price_limit must be > 0 for instant FAK execution",
+                )
+
+        try:
+            from services.market_data_service import MarketDataNotReady, StaleDataError
+            market_data_policy = None
+            if instant_fak or forced_sell_exit:
+                base_policy = getattr(self._market_data_service, "_policy", None)
+                if base_policy is not None and is_dataclass(base_policy):
+                    market_data_policy = replace(
+                        base_policy,
+                        rest_snapshot_max_spread_bps=1_000_000,
+                        require_book_depth=False,
+                    )
+            market_data_kwargs = {
+                "side": req.side,
+                "condition_id": getattr(req, "condition_id", None),
+            }
+            if market_data_policy is not None:
+                market_data_kwargs["policy"] = market_data_policy
+            bundle = await self._market_data_service.require_fresh_data(
+                req.token_id,
+                **market_data_kwargs,
+            )
+        except Exception as exc:
+            from services.market_data_service import MarketDataNotReady, StaleDataError
+            if isinstance(exc, MarketDataNotReady):
+                status = "market_not_ready"
+            else:
+                status = "stale_market_data"
+            logger.warning(
+                "market_data_not_executable | token=%s reason=%s",
+                req.token_id,
+                exc,
+            )
+            return ExecutionResult(
+                accepted=False,
+                order_id=None,
+                status=status,
+                requested_amount=req.amount,
+                filled_amount=Decimal("0"),
+                avg_price=None,
+                fees_paid=Decimal("0"),
+                error=str(exc),
+            )
+
+        best_bid = bundle.quote.best_bid
+        best_ask = bundle.quote.best_ask
+        tick_size = bundle.tick.tick_size
+        neg_risk = bundle.tick.neg_risk
+        min_order_size = bundle.tick.min_order_size
+        quote_price = best_ask if side == "BUY" else best_bid
 
         # --- Book quality gate: reject if spread is too wide ---
-        spread_mode = _resolve_book_spread_mode(
-            ec.book_spread_mode if ec else ENV.get("BOOK_SPREAD_MODE", "absolute_bps")
-        )
+        spread_mode = _resolve_book_spread_mode(ec.book_spread_mode)
         try:
-            max_spread_bps = (
-                int(ec.max_book_spread_bps)
-                if ec is not None
-                else _non_negative_int_env("MAX_BOOK_SPREAD_BPS", 500)
-            )
+            max_spread_bps = int(ec.max_book_spread_bps)
         except (TypeError, ValueError):
             logger.warning(
                 "invalid_max_book_spread_bps",
                 extra={"value": getattr(ec, "max_book_spread_bps", None)},
             )
-            max_spread_bps = _non_negative_int_env("MAX_BOOK_SPREAD_BPS", 500)
+            max_spread_bps = 500
         try:
-            max_spread_ticks = (
-                int(ec.max_book_spread_ticks)
-                if ec is not None
-                else _non_negative_int_env("MAX_BOOK_SPREAD_TICKS", 0)
-            )
+            max_spread_ticks = int(ec.max_book_spread_ticks)
         except (TypeError, ValueError):
             logger.warning(
                 "invalid_max_book_spread_ticks",
                 extra={"value": getattr(ec, "max_book_spread_ticks", None)},
             )
-            max_spread_ticks = _non_negative_int_env("MAX_BOOK_SPREAD_TICKS", 0)
+            max_spread_ticks = 0
         spread_limit = max_spread_ticks if spread_mode == "ticks" else max_spread_bps
         spread_limit_unit = "ticks" if spread_mode == "ticks" else "bps"
         if (
-            spread_limit > 0
-            and meta.best_bid
-            and meta.best_ask
-            and meta.best_bid > 0
+            not instant_fak
+            and not forced_sell_exit
+            and spread_limit > 0
+            and best_bid
+            and best_ask
+            and best_bid > 0
         ):
             # Detect garbage/placeholder orderbook (e.g. bid=0.01, ask=0.99)
-            if _is_thin_or_empty_book(meta.best_bid, meta.best_ask):
+            if _is_thin_or_empty_book(best_bid, best_ask):
                 logger.info(
                     "book_quality_gate_thin_book",
                     extra={
                         "type": "book_quality_gate_thin_book",
                         "token_id": req.token_id,
-                        "best_bid": str(meta.best_bid),
-                        "best_ask": str(meta.best_ask),
+                        "best_bid": str(best_bid),
+                        "best_ask": str(best_ask),
                         "reason": "orderbook has no real liquidity (placeholder/dust orders only)",
                     },
                 )
@@ -637,14 +561,14 @@ class ExecutionService:
                     fees_paid=Decimal("0"),
                     error=(
                         f"no real liquidity — book appears empty or placeholder "
-                        f"(bid={meta.best_bid} ask={meta.best_ask})"
+                        f"(bid={best_bid} ask={best_ask})"
                     ),
                 )
 
             spread = _calculate_book_spread_metrics(
-                best_bid=meta.best_bid,
-                best_ask=meta.best_ask,
-                tick_size=meta.tick_size,
+                best_bid=best_bid,
+                best_ask=best_ask,
+                tick_size=tick_size,
             )
             if spread_mode == "relative_bps":
                 measured_spread = spread.relative_bps
@@ -667,8 +591,8 @@ class ExecutionService:
                         "absolute_bps": spread.absolute_bps,
                         "relative_bps": spread.relative_bps,
                         "spread_ticks": spread.ticks,
-                        "best_bid": str(meta.best_bid),
-                        "best_ask": str(meta.best_ask),
+                        "best_bid": str(best_bid),
+                        "best_ask": str(best_ask),
                     },
                 )
                 return ExecutionResult(
@@ -686,20 +610,128 @@ class ExecutionService:
                         f"abs={spread.absolute} ({spread.absolute_bps} bps), "
                         f"rel={spread.relative_bps if spread.relative_bps is not None else 'n/a'} bps, "
                         f"ticks={spread.ticks if spread.ticks is not None else 'n/a'}; "
-                        f"bid={meta.best_bid} ask={meta.best_ask})"
+                        f"bid={best_bid} ask={best_ask})"
                     ),
                 )
-        elif spread_limit > 0 and (meta.best_bid is None or meta.best_ask is None):
+        elif not instant_fak and spread_limit > 0 and (best_bid is None or best_ask is None):
+            # Side-aware: BUY needs best_ask, SELL needs best_bid.
+            # The non-required side being None is a warning, not a rejection.
+            if side == "BUY" and best_ask is None:
+                logger.info(
+                    "book_quality_gate_no_book",
+                    extra={
+                        "type": "book_quality_gate_no_book",
+                        "token_id": req.token_id,
+                        "best_bid": str(best_bid),
+                        "best_ask": str(best_ask),
+                        "side": side,
+                        "reason": "BUY requires best_ask which is missing",
+                    },
+                )
+                return ExecutionResult(
+                    accepted=False,
+                    order_id=None,
+                    status="book_no_liquidity",
+                    requested_amount=req.amount,
+                    filled_amount=Decimal("0"),
+                    avg_price=None,
+                    fees_paid=Decimal("0"),
+                    error=(
+                        f"no orderbook data for required side — bid={best_bid} ask={best_ask}"
+                    ),
+                )
+            if side == "SELL" and best_bid is None:
+                logger.info(
+                    "book_quality_gate_no_book",
+                    extra={
+                        "type": "book_quality_gate_no_book",
+                        "token_id": req.token_id,
+                        "best_bid": str(best_bid),
+                        "best_ask": str(best_ask),
+                        "side": side,
+                        "reason": "SELL requires best_bid which is missing",
+                    },
+                )
+                return ExecutionResult(
+                    accepted=False,
+                    order_id=None,
+                    status="book_no_liquidity",
+                    requested_amount=req.amount,
+                    filled_amount=Decimal("0"),
+                    avg_price=None,
+                    fees_paid=Decimal("0"),
+                    error=(
+                        f"no orderbook data for required side — bid={best_bid} ask={best_ask}"
+                    ),
+                )
+            # The required side is present but the other side is missing.
+            # This is a one-sided book — log a warning but allow execution.
             logger.info(
-                "book_quality_gate_no_book",
+                "book_one_sided",
                 extra={
-                    "type": "book_quality_gate_no_book",
+                    "type": "book_one_sided",
                     "token_id": req.token_id,
-                    "best_bid": str(meta.best_bid),
-                    "best_ask": str(meta.best_ask),
-                    "reason": "orderbook missing bid or ask — market may not exist on CLOB",
+                    "best_bid": str(best_bid),
+                    "best_ask": str(best_ask),
+                    "side": side,
+                    "reason": "one-sided book — required side present, other side missing",
                 },
             )
+
+        # --- Book depth gate (Phase 4): require minimum side liquidity ---
+        min_book_depth_raw = getattr(ec, "min_book_depth_usdc", 0) or 0
+        try:
+            min_book_depth = Decimal(str(min_book_depth_raw))
+        except Exception:
+            min_book_depth = Decimal("0")
+        if min_book_depth > 0 and not forced_sell_exit and not instant_fak:
+            band_pct_raw = getattr(ec, "book_depth_band_pct", 5) or 5
+            try:
+                band_pct = Decimal(str(band_pct_raw))
+            except Exception:
+                band_pct = Decimal("5")
+            depth = _calculate_book_depth_metrics(
+                bids=getattr(bundle.book, "bids", {}),
+                asks=getattr(bundle.book, "asks", {}),
+                best_bid=best_bid,
+                best_ask=best_ask,
+                band_pct=band_pct,
+            )
+            side_notional = depth.side_notional_usdc(side)
+            if side_notional < min_book_depth:
+                logger.info(
+                    "book_quality_gate_thin_depth",
+                    extra={
+                        "type": "book_quality_gate_thin_depth",
+                        "token_id": req.token_id,
+                        "side": side,
+                        "band_pct": str(depth.band_pct),
+                        "band_low": str(depth.band_low),
+                        "band_high": str(depth.band_high),
+                        "side_notional_usdc": str(side_notional),
+                        "side_levels_in_band": depth.side_levels(side),
+                        "min_book_depth_usdc": str(min_book_depth),
+                        "best_bid": str(best_bid),
+                        "best_ask": str(best_ask),
+                    },
+                )
+                return ExecutionResult(
+                    accepted=False,
+                    order_id=None,
+                    status="book_thin_depth",
+                    requested_amount=req.amount,
+                    filled_amount=Decimal("0"),
+                    avg_price=None,
+                    fees_paid=Decimal("0"),
+                    error=(
+                        f"book depth too thin "
+                        f"(side={side} notional={side_notional} < {min_book_depth} "
+                        f"required within {depth.band_pct}% of mid; "
+                        f"levels_in_band={depth.side_levels(side)})"
+                    ),
+                )
+
+        if quote_price is None or quote_price <= 0:
             return ExecutionResult(
                 accepted=False,
                 order_id=None,
@@ -709,30 +741,16 @@ class ExecutionService:
                 avg_price=None,
                 fees_paid=Decimal("0"),
                 error=(
-                    f"no orderbook data — bid={meta.best_bid} ask={meta.best_ask}"
+                    f"no executable {'ask' if side == 'BUY' else 'bid'} "
+                    f"for {side} — bid={best_bid} ask={best_ask}"
                 ),
             )
-
-        quote = await self.clob_client.get_price(req.token_id, side)
-        if not quote or quote.get("price") is None:
-            return ExecutionResult(
-                accepted=False,
-                order_id=None,
-                status="rejected",
-                requested_amount=req.amount,
-                filled_amount=Decimal("0"),
-                avg_price=None,
-                fees_paid=Decimal("0"),
-                error="unable to fetch live quote",
-            )
-
-        quote_price = Decimal(str(quote["price"]))
         min_share_price = _parse_decimal_or_default(
-            ec.min_share_price if ec else ENV.get("MIN_SHARE_PRICE", 0),
+            ec.min_share_price if ec else 0,
             Decimal("0"),
         )
         max_share_price = _parse_decimal_or_default(
-            ec.max_share_price if ec else ENV.get("MAX_SHARE_PRICE", 0),
+            ec.max_share_price if ec else 0,
             Decimal("0"),
         )
         if side == "BUY" and min_share_price > 0 and quote_price < min_share_price:
@@ -763,10 +781,66 @@ class ExecutionService:
             worst_price = quote_price * (Decimal("1") + slippage)
         else:
             worst_price = quote_price * (Decimal("1") - slippage)
-        worst_price = _quantize_price(worst_price, meta.tick_size, side)
+        worst_price = _quantize_price(worst_price, tick_size, side)
 
-        idem_key = _idempotency_key(req)
-        existing = self.order_repo.get_by_idempotency_key(idem_key)
+        effective_order_amount = req.amount
+        if instant_fak:
+            top_level_amount = _top_level_marketable_amount(bundle, side, quote_price)
+            if top_level_amount <= 0:
+                return ExecutionResult(
+                    accepted=False,
+                    order_id=None,
+                    status="book_no_liquidity",
+                    requested_amount=req.amount,
+                    filled_amount=Decimal("0"),
+                    avg_price=None,
+                    fees_paid=Decimal("0"),
+                    error=(
+                        f"no executable top-level liquidity for {side} "
+                        f"at {quote_price}"
+                    ),
+                )
+            effective_order_amount = min(req.amount, top_level_amount)
+            logger.info(
+                "copy_fak_sized_from_fresh_book | token=%s side=%s requested=%s "
+                "order_amount=%s quote=%s top_level_amount=%s spread_gate=disabled",
+                req.token_id,
+                side,
+                req.amount,
+                effective_order_amount,
+                quote_price,
+                top_level_amount,
+            )
+
+        # Effective idempotency key computed after sizing/rounding so
+        # duplicate suppression represents the final executable order
+        # (condition_id, token_id, effective worst price, tick_size, side).
+        # Issue #94 + PR #105 review: intent_id must be deterministic per
+        # request shape. A per-call uuid4() broke retry idempotency — a
+        # network retry generated a fresh key, missed the dedup row, and
+        # could POST a duplicate signed order. Derive a stable hash from
+        # the request fields when signal_id is absent so the second
+        # attempt collides with the first.
+        resolved_intent_id = req.signal_id or ""
+        if not resolved_intent_id:
+            resolved_intent_id = _derive_intent_id_from_request(req)
+            logger.debug(
+                "execute: signal_id missing — derived deterministic intent_id=%s",
+                resolved_intent_id,
+            )
+        idem_key = _effective_idempotency_key(
+            user=req.user_id,
+            condition_id=getattr(req, "condition_id", None),
+            token_id=req.token_id,
+            side=side,
+            effective_size=effective_order_amount,
+            effective_price=worst_price,
+            tick_size=tick_size,
+            intent_id=resolved_intent_id,
+            policy_version=getattr(self._config, "policy_version", "") or "",
+        )
+
+        existing = await self.order_repo.get_by_idempotency_key(idem_key)
         if (
             existing
             and not existing.get("order_id")
@@ -802,7 +876,7 @@ class ExecutionService:
             pending_expires_at = _pending_expires_at(existing)
             if pending_expires_at is None:
                 pending_expires_at = pending_started_at + max(ttl_seconds, 0.0)
-            self._save_submission(
+            await self._save_submission(
                 idempotency_key=idem_key,
                 request=stale_request,
                 response={
@@ -815,7 +889,7 @@ class ExecutionService:
                     "pending_expires_at": pending_expires_at,
                 },
             )
-            existing = self.order_repo.get_by_idempotency_key(idem_key)
+        existing = await self.order_repo.get_by_idempotency_key(idem_key)
 
         if _is_retry_blocking_existing(existing, config=self._config):
             existing_order_id = existing.get("order_id")
@@ -830,14 +904,26 @@ class ExecutionService:
                 error=None,
             )
 
-        side_const = BUY if side == "BUY" else SELL
+        # ``side`` is already the canonical "BUY"/"SELL" string (see
+        # ``_normalize_side``). The gateway request consumes the same form;
+        # SDK constants are an implementation detail of the gateway.
         fee_bps = await self.fee_service.get_fee_bps(req.token_id)
 
         request_doc = asdict(req)
-        request_doc["amount"] = str(req.amount)
+        request_doc["amount"] = str(effective_order_amount)
+        request_doc["requested_amount"] = str(req.amount)
         request_doc["worst_price"] = str(worst_price)
-        request_doc["tick_size"] = str(meta.tick_size)
-        request_doc["neg_risk"] = meta.neg_risk
+        if req.price_limit is not None:
+            request_doc["price_limit"] = str(req.price_limit)
+        request_doc["tick_size"] = str(tick_size)
+        request_doc["neg_risk"] = neg_risk
+        request_doc["effective_idempotency_key"] = idem_key
+        request_doc["effective_side"] = side
+        request_doc["sizing_method"] = "effective_post_quantize"
+        if requested_order_type or forced_sell_exit:
+            request_doc["order_type"] = requested_order_type or "FAK"
+        if hasattr(req, "condition_id") and req.condition_id:
+            request_doc["condition_id"] = req.condition_id
 
         last_error: str | None = None
         response: dict[str, Any] = {}
@@ -847,16 +933,37 @@ class ExecutionService:
         # and both submit distinct signed orders.
         has_atomic_lock = hasattr(self.order_repo, "try_acquire_submission_lock")
         if has_atomic_lock:
-            lock_acquired = self.order_repo.try_acquire_submission_lock(
+            lock_acquired = await self.order_repo.try_acquire_submission_lock(
                 idem_key, req.user_id, req.leader_id, request_doc
             )
         else:
-            lock_acquired = existing is None or not _is_retry_blocking_existing(
-                existing, config=self._config
+            # Non-atomic locking is unsafe for live trading: two concurrent
+            # tasks can both observe no blocking row and both submit signed
+            # orders, causing duplicate submissions and potential double-exposure.
+            # Fail closed to prevent that silent data-corruption path (issue #95).
+            logger.error(
+                "Order repository lacks atomic submission lock — failing closed "
+                "to prevent duplicate submissions | idem_key=%s user_id=%s leader_id=%s",
+                idem_key,
+                req.user_id,
+                req.leader_id,
+            )
+            return ExecutionResult(
+                accepted=False,
+                order_id=None,
+                status="atomic_lock_unavailable",
+                requested_amount=req.amount,
+                filled_amount=Decimal("0"),
+                avg_price=None,
+                fees_paid=Decimal("0"),
+                error=(
+                    "order repository does not support atomic submission locking; "
+                    "cannot safely submit orders without it"
+                ),
             )
 
         if not lock_acquired:
-            existing_now = self.order_repo.get_by_idempotency_key(idem_key)
+            existing_now = await self.order_repo.get_by_idempotency_key(idem_key)
             if existing_now and existing_now.get("order_id"):
                 return ExecutionResult(
                     accepted=True,
@@ -868,32 +975,33 @@ class ExecutionService:
                     fees_paid=Decimal("0"),
                     error=None,
                 )
-            # When atomic lock is available and we failed to acquire it (INSERT + compare-and-swap
-            # both returned False), someone else holds the lock or has a terminal record. Return
-            # inflight_lock unconditionally — the compare-and-swap already proved we cannot
-            # atomically claim this idempotency key right now.
-            return ExecutionResult(
-                accepted=bool(existing_now and existing_now.get("order_id")),
-                order_id=existing_now.get("order_id") if existing_now else None,
-                status=(
-                    "duplicate_ignored"
-                    if (existing_now and existing_now.get("order_id"))
-                    else "inflight_lock"
-                ),
-                requested_amount=req.amount,
-                filled_amount=Decimal("0"),
-                avg_price=None,
-                fees_paid=Decimal("0"),
-                error=(
-                    None
-                    if (existing_now and existing_now.get("order_id"))
-                    else "another task is currently submitting this order"
-                ),
+            if has_atomic_lock and await self.order_repo.is_submission_locked(idem_key):
+                return ExecutionResult(
+                    accepted=False,
+                    order_id=None,
+                    status="inflight_lock",
+                    requested_amount=req.amount,
+                    filled_amount=Decimal("0"),
+                    avg_price=None,
+                    fees_paid=Decimal("0"),
+                    error="another task is currently submitting this order",
+                )
+
+        if not hasattr(self, "_submit_semaphore"):
+            cap = getattr(
+                getattr(self._config, "execution", None),
+                "execution_submit_concurrency",
+                None,
             )
+            if not isinstance(cap, int) or cap <= 0:
+                cap = _positive_int(
+                    self._config.raw.get("EXECUTION_SUBMIT_CONCURRENCY"), 2
+                )
+            self._submit_semaphore = asyncio.Semaphore(cap)
 
         async with self._submit_semaphore:
             pending_since = time.time()
-            self._save_submission(
+            await self._save_submission(
                 idempotency_key=idem_key,
                 request=request_doc,
                 response=_build_pending_response(
@@ -901,26 +1009,26 @@ class ExecutionService:
                 ),
             )
 
+            gateway_request = MarketableOrderRequest(
+                token_id=req.token_id,
+                side=side,
+                size=effective_order_amount,
+                price_limit=worst_price,
+                condition_id=getattr(req, "condition_id", None),
+                tick_size=tick_size,
+                neg_risk=neg_risk,
+                order_type=requested_order_type or ("FAK" if forced_sell_exit else None),
+            )
+
             for attempt in range(1, 4):
-                signed_order = None
-                post_called = False
                 try:
-                    signed_order = await self.clob_client.create_market_order(
-                        token_id=req.token_id,
-                        side=side_const,
-                        amount=float(req.amount),
-                        max_price=float(worst_price),
-                        tick_size=str(meta.tick_size),
-                        neg_risk=meta.neg_risk,
-                        order_type=OrderType.FOK,
+                    submit_result = await self.clob_gateway.submit_marketable_order(
+                        gateway_request
                     )
-                    post_called = True
-                    response = await self.clob_client.post_signed_order(
-                        signed_order, OrderType.FOK
-                    )
-                    if response.get("success"):
+                    response = _submit_result_to_response(submit_result)
+                    if submit_result.success:
                         self.circuit_breaker.record_success()
-                        self._save_submission(
+                        await self._save_submission(
                             idempotency_key=idem_key,
                             request=request_doc,
                             response=response,
@@ -934,9 +1042,10 @@ class ExecutionService:
                             meta={"side": side, "asset": req.token_id},
                         )
                         break
-                    if response.get("ambiguous_post_failure"):
+                    if submit_result.ambiguous_post_failure:
+                        last_error = submit_result.error or "ambiguous post failure"
                         response["status"] = "submitted_unconfirmed"
-                        self._save_submission(
+                        await self._save_submission(
                             idempotency_key=idem_key,
                             request=request_doc,
                             response=response,
@@ -947,59 +1056,101 @@ class ExecutionService:
                         )
                         break
                     last_error = (
-                        response.get("error") or "unknown order submission error"
+                        submit_result.error or "unknown order submission error"
                     )
-                    if response.get("non_retryable"):
+                    if submit_result.non_retryable:
+                        terminal_status = submit_result.status or "rejected"
+                        response = {
+                            "success": False,
+                            "status": terminal_status,
+                            "error": last_error,
+                            "non_retryable": True,
+                        }
+                        await self._save_submission(
+                            idempotency_key=idem_key,
+                            request=request_doc,
+                            response=response,
+                        )
                         logger.warning(
                             "non-retryable CLOB rejection, skipping retries: %s",
                             last_error,
                         )
                         break
-                except Exception as exc:
+                except VenueRateLimitError as exc:
                     last_error = redact_error_detail(exc)
-                    raw_exc_body = ""
-                    if hasattr(exc, "error_msg"):
-                        raw_exc_body = str(exc.error_msg)
-                    elif hasattr(exc, "__cause__"):
-                        raw_exc_body = str(exc.__cause__)
-                    if raw_exc_body:
-                        logger.warning(
-                            "raw_clob_error_on_%s | %s",
-                            "create_order" if not post_called else "post_order",
-                            raw_exc_body[:500],
-                        )
-                    if post_called:
-                        response = {
-                            "success": False,
-                            "status": "submitted_unconfirmed",
-                            "error": last_error,
-                        }
-                        self._save_submission(
-                            idempotency_key=idem_key,
-                            request=request_doc,
-                            response=response,
-                        )
-                        log_api_response(
-                            logger,
-                            method="POST",
-                            url="post_signed_order",
-                            status=503,
-                            error=last_error,
-                            meta={
-                                "side": side,
-                                "asset": req.token_id,
-                                "state": "submitted_unconfirmed",
-                            },
-                        )
-                        logger.warning(
-                            "ambiguous submission (post called but exception): %s",
-                            last_error,
-                        )
-                        break
+                    logger.warning("clob rate limited (attempt %s): %s", attempt, last_error)
+                except (VenueAuthError, VenueInvalidOrderError) as exc:
+                    last_error = redact_error_detail(exc)
+                    response = {
+                        "success": False,
+                        "status": "rejected",
+                        "error": last_error,
+                        "non_retryable": True,
+                    }
+                    await self._save_submission(
+                        idempotency_key=idem_key,
+                        request=request_doc,
+                        response=response,
+                    )
+                    logger.warning(
+                        "non-retryable CLOB rejection, skipping retries: %s",
+                        last_error,
+                    )
+                    break
+                except VenueUnavailableError as exc:
+                    last_error = redact_error_detail(exc)
+                    # Treat as ambiguous: the POST may have hit the wire and
+                    # we lost the response. A retry would risk duplicate fills.
+                    response = {
+                        "success": False,
+                        "status": "submitted_unconfirmed",
+                        "error": last_error,
+                    }
+                    await self._save_submission(
+                        idempotency_key=idem_key,
+                        request=request_doc,
+                        response=response,
+                    )
+                    log_api_response(
+                        logger,
+                        method="POST",
+                        url="post_signed_order",
+                        status=503,
+                        error=last_error,
+                        meta={
+                            "side": side,
+                            "asset": req.token_id,
+                            "state": "submitted_unconfirmed",
+                        },
+                    )
+                    logger.warning(
+                        "ambiguous submission (POST possibly delivered): %s",
+                        last_error,
+                    )
+                    break
+                except Exception as exc:
+                    # Defensive: anything not classified by the gateway is
+                    # treated as ambiguous to avoid duplicate-fill risk.
+                    last_error = redact_error_detail(exc)
+                    response = {
+                        "success": False,
+                        "status": "submitted_unconfirmed",
+                        "error": last_error,
+                    }
+                    await self._save_submission(
+                        idempotency_key=idem_key,
+                        request=request_doc,
+                        response=response,
+                    )
+                    logger.warning(
+                        "unclassified gateway exception (treating as ambiguous): %s",
+                        last_error,
+                    )
+                    break
                 await asyncio.sleep(min(0.15 * attempt, 0.30))
             else:
                 self.circuit_breaker.record_failure()
-                self._save_submission(
+                await self._save_submission(
                     idempotency_key=idem_key,
                     request=request_doc,
                     response=response
@@ -1016,9 +1167,17 @@ class ExecutionService:
 
             if not response.get("success"):
                 if str(response.get("status") or "").lower() == "submitted_unconfirmed":
+                    self._emit_post_lifecycle(
+                        req=req,
+                        side=side,
+                        order_id=_response_order_id(response),
+                        worst_price=worst_price,
+                        venue_status=str(response.get("status") or "submitted_unconfirmed"),
+                        lifecycle_status="submitted_unconfirmed",
+                    )
                     return ExecutionResult(
                         accepted=True,
-                        order_id=response.get("orderID"),
+                        order_id=_response_order_id(response),
                         status="submitted_unconfirmed",
                         requested_amount=req.amount,
                         filled_amount=Decimal("0"),
@@ -1026,10 +1185,19 @@ class ExecutionService:
                         fees_paid=Decimal("0"),
                         error=last_error,
                     )
+                self._emit_post_lifecycle(
+                    req=req,
+                    side=side,
+                    order_id=None,
+                    worst_price=worst_price,
+                    venue_status=str(response.get("status") or "failed"),
+                    lifecycle_status=str(response.get("status") or "failed"),
+                )
+                failure_status = str(response.get("status") or "failed").lower()
                 return ExecutionResult(
                     accepted=False,
                     order_id=None,
-                    status="failed",
+                    status=failure_status,
                     requested_amount=req.amount,
                     filled_amount=Decimal("0"),
                     avg_price=None,
@@ -1037,75 +1205,255 @@ class ExecutionService:
                     error=last_error or "order submission failed",
                 )
 
-            order_id = response.get("orderID")
-            fill_info = await self._confirm_fill(order_id) if order_id else {}
-
-        # Parse fill size — never fall back to req.amount (BUY=notional, SELL=tokens).
-        raw_fill = (
-            fill_info.get("size_matched")
-            or fill_info.get("filled_size")
-            or fill_info.get("size")
-        )
-        fill_status = str(fill_info.get("status", "")).lower()
-
-        # Only treat fill as confirmed when the venue status is terminal/success.
-        # Non-terminal statuses like 'live' with a size_matched indicate a partial
-        # or speculative fill that should NOT be persisted as a confirmed fill.
-        if raw_fill and Decimal(str(raw_fill)) > 0 and fill_status in _FILL_CONFIRM_STATUSES:
-            filled_amount = Decimal(str(raw_fill))
-            confirmed = True
-        else:
-            filled_amount = Decimal("0")
-            confirmed = False
-
-        if raw_fill and Decimal(str(raw_fill)) > 0 and fill_status not in _FILL_CONFIRM_STATUSES:
-            logger.warning(
-                "fill data present but status is non-terminal (status=%s, raw_fill=%s, order_id=%s) — skipping persistence",
-                fill_status, raw_fill, order_id,
-            )
-
-        avg_price = (
-            Decimal(
-                str(
-                    fill_info.get("avg_price")
-                    or fill_info.get("price")
-                    or worst_price
+            order_id = _response_order_id(response)
+            immediate_fak_fill = requested_order_type == "FAK"
+            if immediate_fak_fill:
+                matched_size = _response_matched_size(response)
+                avg_fill_price = _response_avg_price(response) or worst_price
+                total_fill_cost = matched_size * avg_fill_price
+                order_ids = [str(order_id)] if order_id else []
+                max_fak_attempts = _positive_int(
+                    self._config.raw.get("COPY_FAK_MAX_ATTEMPTS", 3),
+                    3,
                 )
-            )
-            if confirmed
-            else None
-        )
+                for fak_attempt in range(2, max_fak_attempts + 1):
+                    if side == "BUY":
+                        remaining_amount = req.amount - total_fill_cost
+                    else:
+                        remaining_amount = req.amount - matched_size
+                    if remaining_amount <= Decimal("0.0001"):
+                        break
+                    try:
+                        next_bundle = await self._market_data_service.require_fresh_data(
+                            req.token_id,
+                            **market_data_kwargs,
+                        )
+                        next_quote_price = (
+                            next_bundle.quote.best_ask
+                            if side == "BUY"
+                            else next_bundle.quote.best_bid
+                        )
+                        if next_quote_price is None or next_quote_price <= 0:
+                            logger.info(
+                                "copy_fak_repost_no_liquidity | token=%s attempt=%d side=%s",
+                                req.token_id,
+                                fak_attempt,
+                                side,
+                            )
+                            break
+                        if (
+                            side == "BUY"
+                            and (
+                                (min_share_price > 0 and next_quote_price < min_share_price)
+                                or (max_share_price > 0 and next_quote_price > max_share_price)
+                            )
+                        ):
+                            logger.info(
+                                "copy_fak_repost_price_gate | token=%s attempt=%d price=%s",
+                                req.token_id,
+                                fak_attempt,
+                                next_quote_price,
+                            )
+                            break
+                        next_top_level_amount = _top_level_marketable_amount(
+                            next_bundle,
+                            side,
+                            next_quote_price,
+                        )
+                        if next_top_level_amount <= 0:
+                            logger.info(
+                                "copy_fak_repost_no_top_level_liquidity | token=%s attempt=%d side=%s price=%s",
+                                req.token_id,
+                                fak_attempt,
+                                side,
+                                next_quote_price,
+                            )
+                            break
+                        next_order_amount = min(remaining_amount, next_top_level_amount)
+                        next_tick_size = next_bundle.tick.tick_size
+                        next_worst_price = (
+                            next_quote_price * (Decimal("1") + slippage)
+                            if side == "BUY"
+                            else next_quote_price * (Decimal("1") - slippage)
+                        )
+                        next_worst_price = _quantize_price(
+                            next_worst_price,
+                            next_tick_size,
+                            side,
+                        )
+                        next_request = MarketableOrderRequest(
+                            token_id=req.token_id,
+                            side=side,
+                            size=next_order_amount,
+                            price_limit=next_worst_price,
+                            condition_id=getattr(req, "condition_id", None),
+                            tick_size=next_tick_size,
+                            neg_risk=next_bundle.tick.neg_risk,
+                            order_type="FAK",
+                        )
+                        next_submit = await self.clob_gateway.submit_marketable_order(
+                            next_request
+                        )
+                        next_response = _submit_result_to_response(next_submit)
+                        next_idem = f"{idem_key}:fak:{fak_attempt}"
+                        next_doc = dict(request_doc)
+                        next_doc["amount"] = str(next_order_amount)
+                        next_doc["remaining_amount"] = str(remaining_amount)
+                        next_doc["worst_price"] = str(next_worst_price)
+                        next_doc["fak_attempt"] = fak_attempt
+                        await self._save_submission(
+                            idempotency_key=next_idem,
+                            request=next_doc,
+                            response=next_response,
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "copy_fak_repost_failed | token=%s attempt=%d remaining=%s error=%s",
+                            req.token_id,
+                            fak_attempt,
+                            str(remaining_amount),
+                            redact_error_detail(exc),
+                        )
+                        break
+                    if not next_response.get("success"):
+                        break
+                    next_order_id = _response_order_id(next_response)
+                    if next_order_id:
+                        order_ids.append(str(next_order_id))
+                    next_matched = _response_matched_size(next_response)
+                    if next_matched <= 0:
+                        break
+                    next_avg = _response_avg_price(next_response) or worst_price
+                    matched_size += next_matched
+                    total_fill_cost += next_matched * next_avg
+                    avg_fill_price = (
+                        total_fill_cost / matched_size
+                        if matched_size > 0
+                        else avg_fill_price
+                    )
 
-        if confirmed and avg_price and avg_price > 0:
-            notional = filled_amount * avg_price
-            fees_paid = (notional * Decimal(fee_bps) / Decimal(10_000)).quantize(
-                Decimal("0.00000001")
-            )
-        else:
-            notional = Decimal("0")
-            fees_paid = Decimal("0")
+                if matched_size > 0:
+                    if side == "BUY":
+                        fill_status = (
+                            "filled"
+                            if total_fill_cost + Decimal("0.0001") >= req.amount
+                            else "partially_filled"
+                        )
+                    else:
+                        fill_status = (
+                            "filled"
+                            if matched_size + Decimal("0.00000001") >= req.amount
+                            else "partially_filled"
+                        )
+                    self._emit_post_lifecycle(
+                        req=req,
+                        side=side,
+                        order_id=",".join(order_ids) if order_ids else order_id,
+                        worst_price=worst_price,
+                        venue_status=str(response.get("status") or fill_status),
+                        lifecycle_status=fill_status,
+                    )
+                    return ExecutionResult(
+                        accepted=True,
+                        order_id=",".join(order_ids) if order_ids else order_id,
+                        status=fill_status,
+                        requested_amount=req.amount,
+                        filled_amount=matched_size,
+                        avg_price=avg_fill_price,
+                        fees_paid=Decimal("0"),
+                        error=None,
+                    )
 
-        if order_id and confirmed:
-            self.order_repo.mark_fill(
+                venue_no_fill = str(response.get("status") or "cancelled").lower()
+                self._emit_post_lifecycle(
+                    req=req,
+                    side=side,
+                    order_id=order_id,
+                    worst_price=worst_price,
+                    venue_status=venue_no_fill,
+                    lifecycle_status=venue_no_fill,
+                )
+                return ExecutionResult(
+                    accepted=False,
+                    order_id=order_id,
+                    status=venue_no_fill if venue_no_fill else "cancelled",
+                    requested_amount=req.amount,
+                    filled_amount=Decimal("0"),
+                    avg_price=None,
+                    fees_paid=Decimal("0"),
+                    error="FAK order did not fill",
+                )
+            # Settlement is owned by the canonical reconciler.
+            # Execution never self-confirms fills — it returns
+            # submitted_unconfirmed and lets the reconciler poll
+            # venue state, apply incremental deltas, and finalise
+            # terminal statuses. The lifecycle log emits the POST-side
+            # status (live / matched / delayed / submitted_unconfirmed)
+            # so the user sees order progress immediately.
+            venue_raw = str(response.get("status") or "submitted").lower()
+            if venue_raw == "live":
+                lifecycle_status = "live"
+            elif venue_raw == "matched":
+                lifecycle_status = "matched"
+            elif venue_raw == "delayed":
+                lifecycle_status = "delayed"
+            else:
+                lifecycle_status = "submitted_unconfirmed"
+            self._emit_post_lifecycle(
+                req=req,
+                side=side,
                 order_id=order_id,
-                fill={
-                    "filled_amount": str(filled_amount),
-                    "avg_price": str(avg_price),
-                    "fee_bps": fee_bps,
-                    "fees_paid": str(fees_paid),
-                },
+                worst_price=worst_price,
+                venue_status=venue_raw,
+                lifecycle_status=lifecycle_status,
+            )
+            return ExecutionResult(
+                accepted=True,
+                order_id=order_id,
+                status="submitted_unconfirmed",
+                requested_amount=req.amount,
+                filled_amount=Decimal("0"),
+                avg_price=None,
+                fees_paid=Decimal("0"),
+                error=None,
             )
 
-        result_status = "filled" if confirmed else "submitted_unconfirmed"
-        if fill_status and fill_status not in {"", "filled", "matched"}:
-            result_status = fill_status
-        return ExecutionResult(
-            accepted=True,
-            order_id=order_id,
-            status=result_status,
-            requested_amount=req.amount,
-            filled_amount=filled_amount,
-            avg_price=avg_price,
-            fees_paid=fees_paid,
-            error=None,
-        )
+    @staticmethod
+    def _emit_post_lifecycle(
+        *,
+        req: ExecutionRequest,
+        side: str,
+        order_id: str | None,
+        worst_price: Decimal,
+        venue_status: str,
+        lifecycle_status: str,
+    ) -> None:
+        """Emit a lifecycle log after the gateway POST. Idempotent via dedup."""
+        try:
+            from utils.logger import log_order_lifecycle
+
+            usdc_value: float | None = None
+            try:
+                usdc_value = float(req.amount) * float(worst_price or 0)
+            except Exception:
+                usdc_value = None
+            log_order_lifecycle(
+                logger,
+                status=lifecycle_status,
+                side=side,
+                condition_id=getattr(req, "condition_id", None),
+                asset=req.token_id,
+                order_id=order_id,
+                size=float(req.amount) if req.amount is not None else None,
+                price=float(worst_price) if worst_price is not None else None,
+                usdc_value=usdc_value,
+                venue_status=venue_status,
+                submission_state=lifecycle_status,
+                signal_id=getattr(req, "signal_id", None),
+            )
+        except Exception as exc:
+            # SHP-08: logging must never break execution, but it shouldn't
+            # vanish either. Keep at debug so the failure is observable
+            # under ``--log-level=DEBUG`` without spamming production
+            # warn/error.
+            logger.debug("lifecycle_log_failed | %r", exc)
