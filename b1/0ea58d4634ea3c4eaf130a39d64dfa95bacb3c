@@ -1,0 +1,51 @@
+orchestrators/runtime_bootstrap.py
+  s_a5cb1f3a9dbf76::t_bc622f77e99791 174-180
+app.py
+  s_a5cb1f3a9dbf76::t_f3edec64949437 37,676,683,716,722-730
+  s_a5cb1f3a9dbf76::t_6422dc106eb3e8 39,66,743-795
+bot_cli/commands/doctor.py
+  s_a5cb1f3a9dbf76::t_d98caba76703ab 217-241
+  s_a5cb1f3a9dbf76::t_66f442d23c1cec 665-673,676-677,680-704
+tests/test_doctor_app_startup.py
+  s_a5cb1f3a9dbf76::t_6404ff2f2a58b1 6-9,67-128
+tests/test_doctor_live.py
+  s_a5cb1f3a9dbf76::t_a80709e36ed85b 235-294
+orchestrators/auto_trader_bootstrap.py
+  s_a5cb1f3a9dbf76::t_a14ae6047d3e99 1-189
+tests/test_bootstrap.py
+  s_a5cb1f3a9dbf76::t_6bd1d56e9d96f8 22,111
+services/discovery/auto_trader_selector.py
+  s_a5cb1f3a9dbf76::t_5ed0f66c53b69b 1-134
+tests/test_auto_trader_bootstrap.py
+  s_a5cb1f3a9dbf76::t_482586ac4ddf6f 1-3,5-172
+  s_a5cb1f3a9dbf76::t_07896cd1b40109 4,173-223
+tests/test_auto_trader_selector.py
+  s_a5cb1f3a9dbf76::t_d57ca77490150d 1-114
+config/app_config.py
+  s_a5cb1f3a9dbf76::t_ec29dea702a424 25,66,1094,1115,1218-1231,1236-1237
+  s_a5cb1f3a9dbf76::t_ac93d0d76af67b 545-546
+docs/02-configuration.md
+  s_a5cb1f3a9dbf76::t_bb3630171eb6d4 307-308
+tests/test_config.py
+  s_a5cb1f3a9dbf76::t_776dd6e6b6eab5 109-136
+docs/06-leader-selection.md
+  s_a5cb1f3a9dbf76::t_a314f01451558d 9,50-72,75,105,108,305,309-310
+bootstrap.py
+  s_a5cb1f3a9dbf76::t_57095061782db1 54,146
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "b10ea58d4634ea3c4eaf130a39d64dfa95bacb3c",
+  "prompts": {},
+  "sessions": {
+    "s_a5cb1f3a9dbf76": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e75fc-a868-7d83-a88e-3e0b2426b217",
+        "model": "gpt-5.4"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
