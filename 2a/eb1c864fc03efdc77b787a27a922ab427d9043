@@ -1,0 +1,425 @@
+tests/test_position_drift_service.py
+  s_ec3524408c0f48::t_9a73cfa4982f81 188-220,235-265
+  s_598d6c997338e3::t_d63b0d3c778d9c 23,221-234
+app.py
+  s_077ffa93ca7c87::t_56099c9cf58924 191,215,860,1119
+  s_f16d46f27d1689::t_9c5bcdf4a76f5c 916-928
+  s_ec3524408c0f48::t_5e2457c93ed85c 555,561,576
+  s_598d6c997338e3::t_f974ca8c194d1c 956,958-964,966-967,970-972,974-980
+  s_ec3524408c0f48::t_3fc5e6d678329a 476-496
+  s_598d6c997338e3::t_708786e97ac432 991
+  s_ec3524408c0f48::t_e3be215b1d506e 53
+  s_f16d46f27d1689::t_ad3f0e8dc2a146 575
+  s_ec3524408c0f48::t_40d2cf54447723 902-904,908-915,929-934,937,941-955,965,982-988,990
+  s_598d6c997338e3::t_19b1c15da0a72f 905-907
+  s_5fc3ba4bb67409::t_b1d3c944f77560 1200-1202,1208-1209
+  s_598d6c997338e3::t_40d91d790384af 497-508,515,556,562-567,577
+bot_cli/commands/__init__.py
+  s_5fc3ba4bb67409::t_2c3da65d525dee 23-26,49-50
+tests/test_leader_registry_tiers.py
+  s_5fc3ba4bb67409::t_318b3c370d3711 1-2,16,18-32,37,40-41,46,58,61,68-72
+tests/test_issue100_unknown_classification.py
+  s_19aa94e58a792d::t_2e93b831555b8b 29-32,56-65
+  s_46e52c4bd5396f::t_873cc96c1affe8 66-106
+  s_46e52c4bd5396f::t_04e16903b41263 18
+services/execution/types.py
+  s_19aa94e58a792d::t_73bed4d7814076 74-75
+  s_19aa94e58a792d::t_284590cec06355 25,36-41
+  s_e04c3e8827225a::t_381d8af967bb43 28
+  s_e04c3e8827225a::t_5283263d0cd70a 35
+integrations/polymarket/models.py
+  s_e04c3e8827225a::t_b456090f1073e3 135
+tests/test_user_data_runtime.py
+  s_598d6c997338e3::t_8e3c71ae3b3c80 526-542
+utils/createClobClient.py
+  s_ec3524408c0f48::t_9aca1ce3d1d0c7 391-405
+  s_19aa94e58a792d::t_c808d37fdc564e 521,525-534,582-584,594
+  s_598d6c997338e3::t_790822030d0e9f 703-707
+  s_19aa94e58a792d::t_55bb8d59269b59 120-130,595
+  s_e04c3e8827225a::t_ddd5d889fd7775 114-119,492,615
+  s_ec3524408c0f48::t_797786aeb4ea9a 41-65
+config/runtime.local.example
+  s_077ffa93ca7c87::t_0777741688c666 4
+  s_077ffa93ca7c87::t_357ba8e239e57d 2,33-34,41-42,46
+  s_5fc3ba4bb67409::t_9f1361f02c8b94 29-32,35-40,43-45
+tests/test_leader_scoring_service.py
+  s_5fc3ba4bb67409::t_d8643b9f10afb5 1-47
+services/execution/reconciliation_service.py
+  s_46e52c4bd5396f::t_9615fc81c3916a 132-139
+  s_e04c3e8827225a::t_2847d6193be9d2 937-938,941
+  s_f16d46f27d1689::t_cc99debd617893 1385-1391
+  s_19aa94e58a792d::t_c8f9c9af0f0289 281-283,301-308,311-312,341-342,344-349,351-352,379-397
+  s_e04c3e8827225a::t_bf61252bf0f538 227-230,325
+  s_46e52c4bd5396f::t_544a13fb72c52f 128-130
+  s_e04c3e8827225a::t_d356c2f4056d55 225-226,321-324,326-333,336-338,494-511
+  s_46e52c4bd5396f::t_71b5b18cb06d1e 284-287
+  s_f16d46f27d1689::t_07594b60ae886b 402-455
+  s_46e52c4bd5396f::t_f8b7eb7ec78008 343,350,353-378
+  s_46e52c4bd5396f::t_c3a78b9f4ed276 313-314
+  s_f16d46f27d1689::t_1dac52b91241ef 1266-1272
+  s_f16d46f27d1689::t_1601502eb284a3 264,275-280
+  s_46e52c4bd5396f::t_6ca58e6cbd6012 183-186
+services/executionService.py
+  s_19aa94e58a792d::t_5486e1480c2880 1015
+  s_19aa94e58a792d::t_a4f70ab30cddde 472
+  s_e04c3e8827225a::t_dfb9751cea8e8f 178-179,207-208,388,1173,1180,1208
+  s_19aa94e58a792d::t_1b2f3feca54454 1213-1226,1284-1286,1289,1292-1299,1303-1334,1339,1351,1358
+  s_e04c3e8827225a::t_d3ab6598887f61 102-126,426
+  s_e04c3e8827225a::t_f1236a13e51139 5
+  s_19aa94e58a792d::t_5e1e00e57ba633 209-254
+  s_19aa94e58a792d::t_b33dca0fe1ec9b 427-431,450,453-462
+  s_19aa94e58a792d::t_2c4b367f2fbc02 148-160,165-170,180-206
+  s_e04c3e8827225a::t_64b7d5e856a09d 537
+  s_19aa94e58a792d::t_56ba16f5f29ce2 687,916-917,923-924,1020
+  s_19aa94e58a792d::t_48017fba2df5fe 1062,1065,1194,1196,1200
+  s_19aa94e58a792d::t_1792563eded23c 535,616
+  s_19aa94e58a792d::t_ae69bae085504f 434-437,451-452,463,466-471,473-480,483,512
+  s_19aa94e58a792d::t_f99a79e4e09527 1209-1212,1335-1338,1340-1350,1352-1357,1359-1385
+  s_19aa94e58a792d::t_dbbe51ed804fbe 536
+  s_19aa94e58a792d::t_163a0a83816e70 734-747,786-814,836,913-914
+  s_19aa94e58a792d::t_fd479aa5d19c82 1227-1283,1287-1288,1290-1291,1300-1302
+services/discovery/balance_provider.py
+  s_5fc3ba4bb67409::t_ffd72c3832b4b4 19,22-23,26-27,29-30
+  s_5fc3ba4bb67409::t_006ac99fa289bb 1-18,20-21,24-25,28,31-43
+services/discovery/falcon_recent_state_service.py
+  s_077ffa93ca7c87::t_86b21a823629d4 1-48
+tests/test_falcon_candidate_service.py
+  s_5fc3ba4bb67409::t_c198ff52bce098 1-66
+orchestrators/user_data_runtime.py
+  s_f16d46f27d1689::t_266bfd035c899e 61-65
+  s_f16d46f27d1689::t_aa497e6060a826 125-136
+  s_ec3524408c0f48::t_ef1b617e6dc9f7 31-33
+  s_f16d46f27d1689::t_bca7b2d828b78c 236-247
+  s_f16d46f27d1689::t_17417fa7cc28c0 213-224
+  s_f16d46f27d1689::t_6b439688dc8b46 20
+  s_f16d46f27d1689::t_83ad2b44b85214 288,300-316
+  s_f16d46f27d1689::t_1736d0ff607c51 27-29
+  s_598d6c997338e3::t_f4918e6cd61db8 34-36,70-73,275-286,354
+  s_ec3524408c0f48::t_e247a6eb85ae08 249-254,260,263-274
+  s_ec3524408c0f48::t_e04522490c585e 66-69
+services/discovery/candidate_scoring.py
+  s_5fc3ba4bb67409::t_60fc61077e959e 1-235
+services/execution/coordinator.py
+  s_19aa94e58a792d::t_33be78b704214f 639-645,658-659
+  s_e04c3e8827225a::t_ed97794c9dcad0 4,297,350,435,445-447,826
+  s_19aa94e58a792d::t_ae6a4aaae3acab 730-749
+tests/test_copyability_replay.py
+  s_5fc3ba4bb67409::t_d8643b9f10afb5 1-85
+orchestrators/runtime_discovery.py
+  s_5fc3ba4bb67409::t_b5884c1236d867 29-33,43
+bot_cli/main.py
+  s_5fc3ba4bb67409::t_a7b10ce1ad13d3 25-26,40
+tests/test_candidate_classifier.py
+  s_5fc3ba4bb67409::t_d8643b9f10afb5 1-69
+tests/test_reconciliation_service.py
+  s_e04c3e8827225a::t_d329959c28279a 17,19,25-27,104-137
+  s_46e52c4bd5396f::t_044b55ca9b6720 443-519
+orchestrators/trade_pipeline.py
+  s_f16d46f27d1689::t_fb88ea33a3965b 96-99
+  s_19aa94e58a792d::t_d67b73b3f29679 1338,1359-1360
+  s_e04c3e8827225a::t_c82c51915088f5 80-85,95,102-103
+  s_19aa94e58a792d::t_80d23874dd8812 1999-2005,2205-2211
+config/app_config.py
+  s_077ffa93ca7c87::t_363d9b86d34cc2 575,1280
+  s_5fc3ba4bb67409::t_2313cd9594fb27 1224-1279,1281-1294
+  s_598d6c997338e3::t_d63b0d3c778d9c 470,1180
+  s_5fc3ba4bb67409::t_77a6ad9dc0ddf2 543-574,576-582
+services/discovery/falcon_candidate_service.py
+  s_5fc3ba4bb67409::t_2fe0563e8d300d 1-90
+orchestrators/leader_registry.py
+  s_5fc3ba4bb67409::t_18d97dd3e840eb 102-110,118-120,130,144,146-152
+services/leaderScoringService.py
+  s_5fc3ba4bb67409::t_fd07495ff3d102 1,29,31-33,36-43,45,49,60,62-64,66,68-71,74-108,110-113,116,120-131,136-137
+integrations/polymarket/history_client.py
+  s_5fc3ba4bb67409::t_63af30618b58f9 1-64
+tests/test_collateral_readiness.py
+  s_598d6c997338e3::t_790822030d0e9f 211,226-227,253,255-257
+  s_598d6c997338e3::t_90134ced2d5e1b 208-210,212-225,228-252,254
+tests/test_market_data_service.py
+  s_e04c3e8827225a::t_2591964fcf176c 876-892
+storage/postgres/migrations.py
+  s_5fc3ba4bb67409::t_a79463012b1366 635-679
+services/discovery/runtime_env_editor.py
+  s_5fc3ba4bb67409::t_ed39956ca3636f 1-43
+tests/test_runtime_summary_banner.py
+  s_ec3524408c0f48::t_c283ce44271008 199
+bot_cli/commands/rotate_traders.py
+  s_5fc3ba4bb67409::t_ed39956ca3636f 1-27,29-39,45-56
+  s_5fc3ba4bb67409::t_2179d65529ebe5 28,40-44
+tests/test_signal_grouper.py
+  s_5fc3ba4bb67409::t_d8643b9f10afb5 1-49
+tests/test_issue66_gateway_isolation.py
+  s_598d6c997338e3::t_eee6489ca9ba9f 397-410,412-435
+  s_598d6c997338e3::t_4c02a0d006fd88 436-443,445-476,478-500
+  s_e04c3e8827225a::t_bbc5df6fd9f93b 516-525
+  s_46e52c4bd5396f::t_265b522d6ce1ec 535-626
+  s_46e52c4bd5396f::t_4cffe01c0b7d86 27
+  s_598d6c997338e3::t_7776d2e70d03e9 355-362,381-382,392
+  s_19aa94e58a792d::t_76bc8ab1c60e26 370,411,444,477
+tests/test_decision_engine.py
+  s_077ffa93ca7c87::t_ee4b08d4b2c0d7 17,282-284,286-287,290,292-308,311,313-315
+services/discovery/leader_trust_store.py
+  s_5fc3ba4bb67409::t_d1cca2cfbd1c4b 1-45,57-59
+  s_077ffa93ca7c87::t_047a2ba42207fb 46-56
+tests/test_v31_features.py
+  s_077ffa93ca7c87::t_261df38bacb13e 341-349,351,355-363,365-368,370-374,377-384,386
+services/traderDiscoveryService.py
+  s_077ffa93ca7c87::t_825cd17199bbe6 62,76,123,129,182-184,186,188-190,192
+  s_5fc3ba4bb67409::t_29cfe4aed32258 1,3-4,11-12,49,51,53-61,64-75,78-79,81-84,86-88,90-91,93-99,101-122,124-128,130-131,134-145,147-161,163-177
+  s_077ffa93ca7c87::t_6113df8a1609fc 178-179
+  s_077ffa93ca7c87::t_87dc8448cd4966 63,77,132-133
+services/manual_sync_service.py
+  s_f16d46f27d1689::t_bf1cc89346b085 281-288,298,309-314
+  s_598d6c997338e3::t_f974ca8c194d1c 333,460-481
+  s_f16d46f27d1689::t_aafe673960ab3d 168-175,181,196-202,204
+  s_f16d46f27d1689::t_37b7bfe8f9b4c2 250,255
+  s_ec3524408c0f48::t_e954103b27c19f 373-398
+  s_ec3524408c0f48::t_ab33a853e89a16 97-101
+  s_ec3524408c0f48::t_7bee0857afd45c 92,107-112
+  s_f16d46f27d1689::t_11d90690388c62 1-91,93-96,102-106,113-167,176-180,182-195,203,205-249,251-254,256-280,289-297,299-308,315-332,334-372,399-459
+tests/test_falcon_recent_state_service.py
+  s_077ffa93ca7c87::t_50356b8aa52c72 1-47
+tests/test_runtime_bootstrap_config.py
+  s_077ffa93ca7c87::t_a4c2b0e4995b5d 283,285-293,301
+  s_e04c3e8827225a::t_db8bc4066d36f5 104-128
+  s_e04c3e8827225a::t_8f5b8f43afd39c 103,129-262
+services/discovery/copyability_replay.py
+  s_5fc3ba4bb67409::t_b33da3a1985514 1-190
+services/riskMonitor.py
+  s_598d6c997338e3::t_2df27e4d2a3f48 861,867-868,885-905,908-922
+  s_ec3524408c0f48::t_666f49dc6322e9 330-333
+  s_598d6c997338e3::t_94eb8358b20ff9 639-640
+  s_e04c3e8827225a::t_0aec30ffcbe89c 835-840
+  s_ec3524408c0f48::t_8ba62687517173 152-156,164-170,194-198,205-212,223-248
+  s_598d6c997338e3::t_0cbf1b3524bc82 846-860,862-866,869-884,906-907,923-946
+  s_598d6c997338e3::t_53e2df9d840456 1133-1160
+  s_ec3524408c0f48::t_2579576bbc36d8 613-617
+  s_ec3524408c0f48::t_0954f0ea40f20a 563-569,585-587,593
+  s_ec3524408c0f48::t_b30cf9bf184f88 304
+  s_ec3524408c0f48::t_359aeb4b817a72 354-355,357-363,369,372-380
+  s_598d6c997338e3::t_809a9a78c5ab57 570-572,588-592
+  s_ec3524408c0f48::t_c2ca7f62274e88 11
+  s_ec3524408c0f48::t_fa6f5cc956d94c 276-282
+  s_ec3524408c0f48::t_f44009bd6df1a6 542-544,547,552-558,602-603,634-638,641-645,652-653
+  s_ec3524408c0f48::t_aa4cd861c228a7 594-595,598
+  s_ec3524408c0f48::t_242371fb513c8c 271-272,290-303
+  s_ec3524408c0f48::t_500028f6967642 305-310,323-325
+  s_ec3524408c0f48::t_6af442378d959f 407-432
+  s_598d6c997338e3::t_287b3790ed080c 433-535,573-584,626-633
+  s_19aa94e58a792d::t_8bd976565b90eb 1065-1072
+  s_ec3524408c0f48::t_4140f90aed90a4 30
+scripts/find_followable_traders.py
+  s_5fc3ba4bb67409::t_21e6c26ab3a463 1-9,15,17-18,20,24,28,30-45,49-50,55-56,58-75,80
+storage/postgres/discovery_repo.py
+  s_5fc3ba4bb67409::t_c2a8c6aef60e02 43,314-473
+tests/test_numeric_adapter.py
+  s_ee2ae8f5d53547::t_d7b4cd5136c495 121-123
+  s_ee2ae8f5d53547::t_d19d339733d9bc 89-120,124-127
+tests/test_production_services.py
+  s_e04c3e8827225a::t_91eb5db86ba8a6 375-376,379-385,397
+  s_19aa94e58a792d::t_b8bc819d92d7de 400-423
+tests/test_execution_coordinator.py
+  s_e04c3e8827225a::t_33f4fdbefef20c 5-6,186-211
+integrations/falcon/__init__.py
+  s_5fc3ba4bb67409::t_63af30618b58f9 1-2
+services/discovery/signal_grouper.py
+  s_5fc3ba4bb67409::t_2fe0563e8d300d 1-151
+bootstrap.py
+  s_5fc3ba4bb67409::t_9221796c118415 22-24,27-28,31,33,35-36,39,98,101-126,128-129,132
+  s_5fc3ba4bb67409::t_45421bfb8ba5ef 29-30,127
+  s_077ffa93ca7c87::t_54aa9437636fe3 34,55,99-100,131,146
+  s_077ffa93ca7c87::t_45dad993df6820 32,130
+orchestrators/runtime_summary.py
+  s_ec3524408c0f48::t_2a4184a3895e46 412
+  s_ec3524408c0f48::t_890e6e6ea4c6eb 433-438,448-478,480
+utils/numeric.py
+  s_ee2ae8f5d53547::t_ac34418dd0b495 96-99,101
+  s_ee2ae8f5d53547::t_6b11b851b40836 16-19,24
+  s_ee2ae8f5d53547::t_08387200ee90ac 22-23,25-28
+storage/postgres/orders_repo.py
+  s_e04c3e8827225a::t_a5a8f724fe925b 235-254
+integrations/falcon/client.py
+  s_5fc3ba4bb67409::t_63af30618b58f9 1-57
+services/discovery/polymarket_history_backfill.py
+  s_5fc3ba4bb67409::t_2fe0563e8d300d 1-87
+services/position_drift_service.py
+  s_ec3524408c0f48::t_46086032da85c9 408-415,425-433,435-447,458-471
+  s_ec3524408c0f48::t_6fe6679e992742 119-123
+  s_ec3524408c0f48::t_6d484932edf1ea 36-40,43-44
+  s_598d6c997338e3::t_d63b0d3c778d9c 41-42,434,448-457
+services/discovery/rotation_service.py
+  s_077ffa93ca7c87::t_253d8e708e247b 25,27-37,98-102,124-154
+  s_5fc3ba4bb67409::t_ed39956ca3636f 1-2,4-5,9,11-21,23-24,26,38-47,49,51-97,103-119,156-188,190,195-223
+  s_077ffa93ca7c87::t_e0acb759a38ba0 3,6-8,10
+  s_5fc3ba4bb67409::t_ca77ef8096b226 22,48,50,120-123,155,189,191-194
+tests/test_discovery_wiring.py
+  s_5fc3ba4bb67409::t_466b04ec767c3e 1,27,31,46,49-50,75,82,86,147
+tests/test_position_drift_startup.py
+  s_598d6c997338e3::t_d63b0d3c778d9c 24
+bot_cli/commands/config.py
+  s_598d6c997338e3::t_198cb798d0bcf7 17-18,22-23
+  s_077ffa93ca7c87::t_844dda166c2bbb 19-20,24-25,104-106
+tests/test_runtime_env_editor.py
+  s_5fc3ba4bb67409::t_d8643b9f10afb5 1-23
+config/runtime_env.py
+  s_077ffa93ca7c87::t_af768172d02af2 26
+  s_077ffa93ca7c87::t_982563c5000f21 25
+integrations/polymarket/clob_v2_gateway.py
+  s_598d6c997338e3::t_c2ab81d36e78c3 505,507
+  s_46e52c4bd5396f::t_5add0d2afa18cc 62
+  s_598d6c997338e3::t_74f9ca5b73c682 112-116,501-503
+  s_19aa94e58a792d::t_70a4621288174b 176,187-199,248
+  s_19aa94e58a792d::t_9e3b3038295a1f 376-402
+  s_e04c3e8827225a::t_3298b26d95a9ac 39,498,525
+  s_46e52c4bd5396f::t_a16379718c877e 546-587
+  s_19aa94e58a792d::t_abf38357471ce4 527-529
+  s_598d6c997338e3::t_15e05ea5bfbb51 19,117,133-164
+  s_46e52c4bd5396f::t_d23aa4547350bd 235-247
+  s_e04c3e8827225a::t_59b0fac5500222 307-315,318-319,593,645
+  s_e04c3e8827225a::t_32fa6d93cf9632 598-614
+utils/logger.py
+  s_19aa94e58a792d::t_c49bbf83cc2a35 1189-1190
+  s_f16d46f27d1689::t_fbcd200cb5bce9 1090-1174
+  s_e04c3e8827225a::t_286f1f8be60c36 1879
+services/discovery/candidate_classifier.py
+  s_5fc3ba4bb67409::t_e484cb04b29baf 4,148,150
+  s_5fc3ba4bb67409::t_b33da3a1985514 1-3,5-147,149,151-158
+tests/test_clob_v2_market_meta.py
+  s_19aa94e58a792d::t_fbc2d89715fa9b 128-135
+  s_19aa94e58a792d::t_15658c8940d7f5 153
+  s_19aa94e58a792d::t_c7c35efa7a11fe 126-127,136-152,154-156
+tests/test_discovery_balance_provider.py
+  s_5fc3ba4bb67409::t_6fc578bfde10b5 1-43
+tests/test_manual_sync_service.py
+  s_598d6c997338e3::t_162199830c5cbb 48,50,57-59
+  s_f16d46f27d1689::t_94029104ca0a24 1-47,49,51-56,60-218,246-277,280-282,285-288,317-343
+  s_598d6c997338e3::t_992692b0d3d526 219-245
+  s_f16d46f27d1689::t_f3124cab51f3d8 278-279,283-284,289-316
+  s_ec3524408c0f48::t_bee41dc07b411a 344-439
+bot_cli/commands/doctor.py
+  s_077ffa93ca7c87::t_d704aa4f106dbf 640,643-644,647
+tests/test_leader_registry_modes.py
+  s_5fc3ba4bb67409::t_91e4e190118828 89,113,138-140
+tests/test_risk_monitor_404_sentinel.py
+  s_ec3524408c0f48::t_0b5a9a1df731e1 1-19,24-27,29-31,33,37-51,55-127
+  s_598d6c997338e3::t_d186cf0335deb0 20-21,273-355
+  s_598d6c997338e3::t_b0c62ef5e00e0c 22-23,35,52-54,128-155,242
+  s_598d6c997338e3::t_20fb699a305e5c 28,34,156-241
+  s_598d6c997338e3::t_1680bcb9190f54 32,36,243-272,356-385
+tests/test_book_quality_gate.py
+  s_19aa94e58a792d::t_c7bec9fb17be6e 326-351
+  s_19aa94e58a792d::t_0183e16f5975cb 13,57,248-249,252,275-279,282,285,288,324
+  s_19aa94e58a792d::t_95b04d0513f1a9 250-251,253-274,280-281,283
+  s_19aa94e58a792d::t_de21d276d0cff9 284,286-287,289-321,325
+  s_e04c3e8827225a::t_bd922a8ad842ce 125,128,137-140,228-245
+  s_19aa94e58a792d::t_d99824a82b84fb 246,322-323
+integrations/polymarket/errors.py
+  s_46e52c4bd5396f::t_dc4dcec5950948 46-57
+integrations/polymarket/__init__.py
+  s_46e52c4bd5396f::t_d71131bc3cc69e 16
+  s_46e52c4bd5396f::t_3eafc71785e400 48
+secrets.env.example
+  s_077ffa93ca7c87::t_82eae0f7616b98 15,17-18,20-21
+tests/test_rotation_service.py
+  s_077ffa93ca7c87::t_822803cf45f46f 1-125
+tests/test_polymarket_history_backfill.py
+  s_5fc3ba4bb67409::t_8fcd150322b2b0 1-54
+models/userHistory.py
+  s_f16d46f27d1689::t_a5d8c41555804c 166-187
+orchestrators/runtime_bootstrap.py
+  s_ec3524408c0f48::t_37e07d155cdb60 391,407
+  s_f16d46f27d1689::t_9e03519314b493 350-358
+  s_ec3524408c0f48::t_00042f9b77c08f 839-902,922-924,934-951
+  s_f16d46f27d1689::t_b893a9ab6272e7 167-168
+  s_f16d46f27d1689::t_3d3b907a8b513a 380
+  s_ec3524408c0f48::t_734acce10b2e35 3
+  s_ec3524408c0f48::t_57d81c662cebbf 340-343,359
+  s_e04c3e8827225a::t_70356af7e7fb70 37-38
+  s_077ffa93ca7c87::t_eda38f794ca30a 20,715,717,734,960,977
+  s_e04c3e8827225a::t_db628ebef70987 487-508,641-676,690-708,769
+  s_e04c3e8827225a::t_0a33b5498ec2ca 36,39-51,103-104,111-112,117
+  s_e04c3e8827225a::t_962f5911c16d6e 5,509-640,677-689
+  s_f16d46f27d1689::t_bb01a4b92919c6 384-390,392-406
+  s_077ffa93ca7c87::t_8c97367af553aa 174,176-178,183-184
+  s_ec3524408c0f48::t_bb89dc2b46828b 903-921,925-933
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "2aeb1c864fc03efdc77b787a27a922ab427d9043",
+  "prompts": {},
+  "sessions": {
+    "s_077ffa93ca7c87": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e75b7-7ee6-7cd2-ba21-a869d70b6072",
+        "model": "gpt-5.5"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    },
+    "s_19aa94e58a792d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e7090-e9b4-75f2-8f6e-a2b020db7c64",
+        "model": "gpt-5.5"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    },
+    "s_46e52c4bd5396f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "363824a3-4db2-4d2b-b00b-7a5bd5a7cee1",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    },
+    "s_598d6c997338e3": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e6e16-0918-7951-8cd6-2901edbd1706",
+        "model": "gpt-5.5"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    },
+    "s_5fc3ba4bb67409": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e71f3-6da7-7a22-928f-9f387851a079",
+        "model": "gpt-5.5"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    },
+    "s_e04c3e8827225a": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e7065-ab8b-70f2-ab40-e6a4901bb7b4",
+        "model": "gpt-5.5"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    },
+    "s_ec3524408c0f48": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7c883880-b182-4d47-bd18-cf8c23dec864",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    },
+    "s_ee2ae8f5d53547": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bb6c76d3-94f2-4106-99b7-4064ffe99e58",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    },
+    "s_f16d46f27d1689": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9cc25f7e-917a-42ad-95bf-dfbfe3ae75b0",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
