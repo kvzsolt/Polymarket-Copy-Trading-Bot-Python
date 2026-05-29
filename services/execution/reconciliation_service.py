@@ -125,7 +125,18 @@ _TERMINAL_NO_FILL_STATUSES = frozenset({
     "cancelled", "canceled", "expired", "rejected", "failed",
     "order_status_canceled", "order_status_canceled_market_resolved",
     "order_status_invalid",
+    # Order the venue has no record of (HTTP 404) after the confirm_fill
+    # consecutive-poll guard — see ``confirm_fill`` / ``_VENUE_ORDER_NOT_FOUND_*``.
+    "not_found",
 })
+# Eventual-consistency guard for venue 404s: a just-submitted order can 404
+# briefly before the venue indexes it, so confirm_fill only settles an order
+# as terminal ``not_found`` after this many CONSECUTIVE not-found polls. The
+# reconcile loop runs periodically, so consecutive polls span real wall-clock
+# time — protecting the submitted-unconfirmed safety net against a single
+# transient 404. Any successful poll resets the per-order counter.
+_VENUE_ORDER_NOT_FOUND_THRESHOLD = 3
+
 _FINAL_FILL_STATUSES_TRADE = frozenset({"filled", "matched", "confirmed"})
 # Risk reconcile historically treated empty status + matched > 0 as final fill
 # (see services/riskMonitor.reconcile_unconfirmed_risk_orders) — preserve.
@@ -169,6 +180,10 @@ _VENUE_TO_LIFECYCLE: dict[str, tuple[str, str]] = {
     "order_status_invalid": ("rejected", "failed"),
     "failed": ("failed", "failed"),
     "expired": ("expired", "failed"),
+    # Venue 404 confirmed across the consecutive-poll guard — the order never
+    # landed (or was pruned). Settle as cancelled so the trade key unlocks for
+    # retry and the reservation is released (terminal-no-fill branch).
+    "not_found": ("cancelled", "cancelled"),
     "submitted_unconfirmed": ("submitted_unconfirmed", "submitted_unconfirmed"),
     "submitted": ("submitted_unconfirmed", "submitted_unconfirmed"),
 }
@@ -207,6 +222,12 @@ def _matched_amount_from_response(payload: dict[str, Any] | None) -> Decimal:
     return _decimal_or_zero(
         payload.get("size_matched")
         or payload.get("filled_size")
+        or payload.get("matched_size")
+        or payload.get("matched_amount")
+        or payload.get("sizeMatched")
+        or payload.get("filledSize")
+        or payload.get("matchedSize")
+        or payload.get("matchedAmount")
         or payload.get("size")
         or 0
     )
@@ -240,6 +261,7 @@ class ReconciliationService:
         audit_logger: Any | None = None,
         risk_blocks_repo: Any | None = None,
         risk_triggers_repo: Any | None = None,
+        funder_address: str | None = None,
     ):
         self.orders_repo = orders_repo
         self.fills_repo = fills_repo
@@ -250,6 +272,19 @@ class ReconciliationService:
         self.audit_logger = audit_logger
         self.risk_blocks_repo = risk_blocks_repo
         self.risk_triggers_repo = risk_triggers_repo
+        # Funder wallet for the user_activities write-back. When set, every
+        # terminal "filled_reconciled" emission also writes a bot=true row
+        # into user_activities so the manual-sync detector has a single
+        # source of truth for tx_hash dedup. None preserves legacy behaviour
+        # for bot_cli / test contexts that don't need the write-back.
+        self.funder_address = funder_address.lower() if funder_address else None
+        self._venue_poll_backoff_until = 0.0
+        self._venue_poll_backoff_reason = ""
+        self._venue_poll_log_after = 0.0
+        # Per-order consecutive venue-404 counter for the not-found settlement
+        # guard (see ``_VENUE_ORDER_NOT_FOUND_THRESHOLD``). Reset on any
+        # successful poll; popped once the order settles as ``not_found``.
+        self._venue_not_found_counts: dict[str, int] = {}
 
     # ------------------------------------------------------------------
     # Fill confirmation (venue poll)
@@ -263,22 +298,160 @@ class ReconciliationService:
         """
         if self.clob_gateway is None:
             return {"status": "unknown", "size_matched": "0"}
+        now = time.monotonic()
+        if now < self._venue_poll_backoff_until:
+            return {
+                "status": "poll_unavailable",
+                "size_matched": "0",
+                "poll_error": self._venue_poll_backoff_reason,
+                "retryable": True,
+            }
         try:
             venue_state = await self.clob_gateway.get_order(order_id)
+            self._venue_poll_backoff_until = 0.0
+            self._venue_poll_backoff_reason = ""
+            # Found at the venue → clear any pending not-found streak.
+            self._venue_not_found_counts.pop(order_id, None)
             if venue_state is None:
                 return {"status": "unknown", "size_matched": "0"}
             # VenueOrderState or raw dict — normalise to a plain dict.
             if isinstance(venue_state, dict):
                 return venue_state
             # Protocol-based VenueOrderState — convert to dict.
+            matched = (
+                getattr(venue_state, "size_matched", None)
+                or getattr(venue_state, "filled_size", None)
+                or getattr(venue_state, "matched_size", None)
+                or getattr(venue_state, "matched_amount", None)
+                or "0"
+            )
+            avg_price = (
+                getattr(venue_state, "avg_price", None)
+                or getattr(venue_state, "avg_fill_price", None)
+                or getattr(venue_state, "average_price", None)
+                or "0"
+            )
             return {
                 "status": getattr(venue_state, "status", "unknown"),
-                "size_matched": str(getattr(venue_state, "size_matched", "0")),
-                "avg_price": str(getattr(venue_state, "avg_price", "0")),
+                "size_matched": str(matched),
+                "avg_price": str(avg_price),
+                "order_id": getattr(venue_state, "order_id", order_id),
             }
         except Exception as exc:
+            try:
+                from integrations.polymarket.errors import (
+                    VenueOrderNotFoundError,
+                    VenueRateLimitError,
+                    VenueUnavailableError,
+                )
+                retryable_poll_error = isinstance(
+                    exc, (VenueRateLimitError, VenueUnavailableError)
+                )
+                not_found_error = isinstance(exc, VenueOrderNotFoundError)
+            except Exception:
+                retryable_poll_error = False
+                not_found_error = False
+
+            # Venue 404 — the order is not (yet?) at the venue. Apply the
+            # eventual-consistency guard: only settle as terminal ``not_found``
+            # after THRESHOLD consecutive not-found polls; below that, keep the
+            # order alive ("unknown") so a just-submitted order that hasn't been
+            # indexed is not wrongly cancelled (submitted-unconfirmed safety).
+            if not_found_error:
+                count = self._venue_not_found_counts.get(order_id, 0) + 1
+                self._venue_not_found_counts[order_id] = count
+                if count >= _VENUE_ORDER_NOT_FOUND_THRESHOLD:
+                    self._venue_not_found_counts.pop(order_id, None)
+                    _log.warning(
+                        "confirm_fill order not found at venue after %d consecutive polls; "
+                        "settling as terminal not_found | order_id=%s",
+                        count,
+                        order_id,
+                    )
+                    return {"status": "not_found", "size_matched": "0"}
+                _log.info(
+                    "confirm_fill order not found at venue (%d/%d) — deferring settlement | order_id=%s",
+                    count,
+                    _VENUE_ORDER_NOT_FOUND_THRESHOLD,
+                    order_id,
+                )
+                return {"status": "unknown", "size_matched": "0"}
+
+            if retryable_poll_error:
+                reason = redact_error_detail(exc)
+                self._venue_poll_backoff_until = time.monotonic() + 5.0
+                self._venue_poll_backoff_reason = reason
+                if time.monotonic() >= self._venue_poll_log_after:
+                    _log.warning(
+                        "confirm_fill transient poll failure; backing off CLOB order polls for 5s | order_id=%s error=%s",
+                        order_id,
+                        reason,
+                    )
+                    self._venue_poll_log_after = time.monotonic() + 5.0
+                return {
+                    "status": "poll_unavailable",
+                    "size_matched": "0",
+                    "poll_error": reason,
+                    "retryable": True,
+                }
+
             _log.warning("confirm_fill poll failed for %s: %s", order_id, redact_error_detail(exc))
             return {"status": "unknown", "size_matched": "0"}
+
+    # ------------------------------------------------------------------
+    # Manual-sync write-back
+    # ------------------------------------------------------------------
+    async def _record_funder_activity(
+        self,
+        *,
+        record: dict[str, Any],
+        side: str,
+        order_id: str | None,
+        size: Any,
+        price: Any,
+    ) -> None:
+        """Write the copy-trade tx_hash into ``user_activities`` for the funder.
+
+        The manual-sync detector dedups against ``user_activities`` by
+        ``transaction_hash``; without this write-back the first manual-sync
+        pass after a copy execution would mis-classify the bot's own fill
+        as a manual trade. Idempotent via ``find_activity_by_tx_hash`` so
+        retried reconciliations don't double-insert.
+        """
+        if not self.funder_address:
+            return
+        tx_hash = str(record.get("tx_hash") or "").strip()
+        if not tx_hash:
+            return
+        try:
+            from models.userHistory import (
+                find_activity_by_tx_hash,
+                get_user_activity_model,
+            )
+
+            if await find_activity_by_tx_hash(self.funder_address, tx_hash):
+                return
+
+            payload = {
+                "transactionHash": tx_hash,
+                "side": side,
+                "size": str(size) if size is not None else "0",
+                "price": str(price) if price is not None else "0",
+                "asset": record.get("asset"),
+                "conditionId": record.get("condition_id"),
+                "orderId": order_id,
+                "leaderId": record.get("leader_id"),
+                "bot": True,
+                "recordedAt": int(__import__("time").time()),
+            }
+            await get_user_activity_model(self.funder_address).insert_many([payload])
+        except Exception as exc:
+            # Write-back is best-effort — never break reconciliation on a
+            # logging-only side effect.
+            _log.debug(
+                "reconcile_funder_activity_writeback_failed | tx=%s error=%s",
+                tx_hash, redact_error_detail(exc),
+            )
 
     # ------------------------------------------------------------------
     # Helpers
@@ -318,6 +491,24 @@ class ReconciliationService:
                     reservation_id = recovery.get("reservation_id")
         if not reservation_id:
             reservation_id = record.get("reservation_id")
+        if not reservation_id:
+            order_id = str(record.get("order_id") or "").strip()
+            getter = getattr(self.orders_repo, "get_by_order_id", None)
+            if order_id and callable(getter):
+                try:
+                    order_row = await getter(order_id)
+                except Exception:
+                    order_row = None
+                if isinstance(order_row, dict):
+                    order_request = order_row.get("request")
+                    if isinstance(order_request, dict):
+                        reservation_id = order_request.get("reservation_id")
+                        if not reservation_id:
+                            recovery = order_request.get("recovery_metadata")
+                            if isinstance(recovery, dict):
+                                reservation_id = recovery.get("reservation_id")
+                    if not reservation_id:
+                        reservation_id = order_row.get("reservation_id")
         if not reservation_id:
             return
         try:
@@ -743,8 +934,11 @@ class ReconciliationService:
     def _avg_price_from_fill(fill_info: dict[str, Any]) -> Decimal:
         raw = (
             fill_info.get("avg_price")
+            or fill_info.get("avg_fill_price")
+            or fill_info.get("avgFillPrice")
             or fill_info.get("price")
             or fill_info.get("average_price")
+            or fill_info.get("averagePrice")
             or 0
         )
         try:
@@ -1069,6 +1263,13 @@ class ReconciliationService:
                         {"order_id": order_id, "side": side, "matched_total": str(current_matched)},
                     )
                     await self._release_reservation_if_present(record, reason="confirmed")
+                    await self._record_funder_activity(
+                        record=record,
+                        side=side,
+                        order_id=order_id,
+                        size=current_matched,
+                        price=None,
+                    )
                 # Lifecycle log fires once via the dedup map — idempotent.
                 self._emit_lifecycle(
                     status="confirmed",
@@ -1181,6 +1382,13 @@ class ReconciliationService:
             )
             submission_status = "filled_reconciled"
             await self._release_reservation_if_present(record, reason="confirmed")
+            await self._record_funder_activity(
+                record=record,
+                side=side,
+                order_id=order_id,
+                size=current_matched,
+                price=avg_price,
+            )
             self._emit_lifecycle(
                 status="confirmed",
                 side=side,

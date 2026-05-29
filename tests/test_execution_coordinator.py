@@ -2,6 +2,8 @@ import pytest
 from typing import Any
 from decimal import Decimal
 from datetime import datetime, timezone
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 from domain.order_lifecycle import OrderIntent, OrderIntentKey, IntentSide, IntentReason, OrderLifecycleStatus
 from services.execution.coordinator import ExecutionCoordinator, VenueSubmitResult, RetryableVenueError
@@ -179,6 +181,34 @@ async def test_coordinator_unconfirmed_enqueues_reconciliation():
     
     # Reservation must NOT be released
     assert len(res_svc.released) == 0
+
+
+@pytest.mark.asyncio
+async def test_coordinator_unconfirmed_awaits_reservation_linking():
+    gateway = MockClobGateway(result=VenueSubmitResult(order_id="v1", status="live"))
+    res_svc = MockReservationService()
+    res_svc.reservations_repo = SimpleNamespace(link_order=AsyncMock())
+
+    coordinator = ExecutionCoordinator(
+        reservation_service=res_svc,
+        orders_repo=MockOrdersRepo(),
+        fills_repo=MockFillsRepo(),
+        positions_repo=MockPositionsRepo(),
+        clob_gateway=gateway,
+        reconciler=MockReconciler(),
+        audit_logger=MockAuditLogger()
+    )
+
+    result = await coordinator.execute_intent(create_intent())
+
+    assert result.status == OrderLifecycleStatus.SUBMITTED_UNCONFIRMED
+    assert res_svc.reservations_repo.link_order.await_count == 2
+    res_svc.reservations_repo.link_order.assert_any_await(
+        "res1", order_id="ord1", venue_order_id=None
+    )
+    res_svc.reservations_repo.link_order.assert_any_await(
+        "res1", order_id="ord1", venue_order_id="v1"
+    )
 
 
 @pytest.mark.asyncio

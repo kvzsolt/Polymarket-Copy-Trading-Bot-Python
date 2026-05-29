@@ -100,6 +100,166 @@ async def test_startup_reconcile_unconfirmed_rehydrates_on_risk_only_convergence
     rehydrate.assert_called_once_with(ctx)
 
 
+@pytest.mark.asyncio
+async def test_startup_reconcile_unconfirmed_sweeps_expired_reservations():
+    reservation_service = SimpleNamespace(
+        release_expired_active=AsyncMock(return_value=["res-1", "res-2"]),
+    )
+    ctx = SimpleNamespace(
+        user_id="user-1",
+        execution_service=object(),
+        extra={"reservation_service": reservation_service},
+    )
+
+    with (
+        patch("orchestrators.trade_pipeline.reconcile_submitted_unconfirmed", return_value=0) as reconcile,
+        patch("orchestrators.runtime_bootstrap.reconcile_unconfirmed_risk_orders", return_value=0) as reconcile_risk,
+        patch("orchestrators.runtime_bootstrap.rehydrate_position_manager") as rehydrate,
+    ):
+        result = await startup_reconcile_unconfirmed([ctx])
+
+    assert result == {"user-1": 2}
+    reconcile.assert_called_once_with(ctx)
+    reconcile_risk.assert_called_once_with(ctx)
+    reservation_service.release_expired_active.assert_awaited_once_with()
+    rehydrate.assert_called_once_with(ctx)
+
+
+@pytest.mark.asyncio
+async def test_expired_reservation_callback_reconciles_order_row_linked_only_by_metadata():
+    from integrations.polymarket.models import VenueOrderState
+
+    active = SimpleNamespace(
+        id="res-1",
+        status="active",
+        order_id=None,
+        venue_order_id=None,
+        user_id="user-1",
+        leader_wallet="leader-1",
+        condition_id="cond-1",
+        token_id="token-1",
+        side="BUY",
+        intent_key="intent-1",
+    )
+
+    class _ReservationsRepo:
+        async def get_by_id(self, reservation_id: str):
+            assert reservation_id == "res-1"
+            return active
+
+    class _ReservationService:
+        def __init__(self):
+            self.reservations_repo = _ReservationsRepo()
+            self.released = []
+            self.reconciler_callback = None
+
+        async def release_terminal(self, reservation_id: str, reason: str):
+            self.released.append((reservation_id, reason))
+            active.status = "released"
+
+    class _OrdersRepo:
+        def __init__(self):
+            self.order_row = {
+                "idempotency_key": "idem-1",
+                "user_id": "user-1",
+                "leader_id": "leader-1",
+                "order_id": "order-1",
+                "status": "submitted_unconfirmed",
+                "request": {
+                    "user_id": "user-1",
+                    "leader_id": "leader-1",
+                    "condition_id": "cond-1",
+                    "token_id": "token-1",
+                    "side": "BUY",
+                    "signal_id": "tx-1",
+                    "recovery_metadata": {"reservation_id": "res-1"},
+                },
+                "matched_total": "0",
+            }
+            self.updated = []
+            self.processed = []
+
+        async def get_unconfirmed_buys(self, max_age_seconds=300.0):
+            return []
+
+        async def get_unconfirmed_sells(self, max_age_seconds=300.0):
+            return []
+
+        async def get_unconfirmed_order_submissions(self, user_id=None, side=None):
+            return []
+
+        async def get_by_reservation_id(self, reservation_id: str):
+            assert reservation_id == "res-1"
+            return self.order_row
+
+        async def get_by_order_id(self, order_id: str):
+            assert order_id == "order-1"
+            return self.order_row
+
+        async def update_submission_status(self, *, order_id: str, status: str, response_patch=None):
+            self.updated.append((order_id, status, response_patch))
+            self.order_row["status"] = status
+
+        async def mark_processed_trade(self, **kwargs):
+            self.processed.append(kwargs)
+
+    class _FillsRepo:
+        def __init__(self):
+            self.fills = []
+
+        async def append_fill(self, fill, raw_payload=None):
+            self.fills.append((fill, raw_payload))
+
+    class _PositionsRepo:
+        def __init__(self):
+            self.applied = []
+
+        async def apply_fill(self, **kwargs):
+            self.applied.append(kwargs)
+
+        async def get_position(self, *args, **kwargs):
+            return None
+
+    async def _get_order(order_id: str):
+        return VenueOrderState(
+            order_id=order_id,
+            status="confirmed",
+            filled_size=Decimal("2"),
+            avg_fill_price=Decimal("0.50"),
+        )
+
+    reservation_service = _ReservationService()
+    orders_repo = _OrdersRepo()
+    fills_repo = _FillsRepo()
+    positions_repo = _PositionsRepo()
+    ctx = SimpleNamespace(
+        user_id="user-1",
+        wallet_address="0xfunder",
+        execution_service=object(),
+        extra={"clob_gateway": SimpleNamespace(get_order=_get_order)},
+        orders_repo=orders_repo,
+        fills_repo=fills_repo,
+        positions_repo=positions_repo,
+        risk_blocks_repo=None,
+        risk_triggers_repo=None,
+        audit_logger=None,
+        pnl_tracker=None,
+    )
+    coord = SimpleNamespace(
+        reservation_service=reservation_service,
+        reservations_repo=reservation_service.reservations_repo,
+    )
+
+    with patch("orchestrators.runtime_bootstrap.rehydrate_position_manager", new=AsyncMock(return_value=None)):
+        runtime_bootstrap._bind_reservation_runtime(ctx, coord)
+        released = await reservation_service.reconciler_callback("res-1")
+
+    assert released is True
+    assert reservation_service.released == [("res-1", "confirmed")]
+    assert fills_repo.fills
+    assert positions_repo.applied[0]["fill_size"] == Decimal("2")
+
+
 def test_build_trading_context_uses_typed_sizing_execution_values():
     cfg = _config()
     follow = default_follow("user-1", "leader-1", cfg)
@@ -120,8 +280,17 @@ def test_build_trading_context_uses_typed_sizing_execution_values():
         risk_triggers_repo=None,
     )
 
+    trust_store = object()
     with patch("orchestrators.runtime_bootstrap.rehydrate_position_manager", new=AsyncMock(return_value=None)):
-        ctx = asyncio.run(build_trading_context(user_state, follow, cfg, readiness=object()))
+        ctx = asyncio.run(
+            build_trading_context(
+                user_state,
+                follow,
+                cfg,
+                readiness=object(),
+                trust_store=trust_store,
+            )
+        )
 
     assert ctx.buy_min_amount == 3.0
     assert ctx.buy_max_amount == 42.0
@@ -129,6 +298,7 @@ def test_build_trading_context_uses_typed_sizing_execution_values():
     assert ctx.entry_permission_service is not None
     assert ctx.entry_permission_service._repo is risk_blocks_repo
     assert ctx.config is cfg
+    assert ctx.leader_scorer._trust_store is trust_store
     assert ctx.copy_decision_service._config is cfg
 
 

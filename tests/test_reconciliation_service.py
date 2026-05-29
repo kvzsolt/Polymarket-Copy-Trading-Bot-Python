@@ -14,12 +14,16 @@ class MockOrder(OrderRecord):
         self.market_id = market_id
 
 class MockOrdersRepo:
-    def __init__(self, order):
+    def __init__(self, order, by_order_id=None):
         self.order = order
+        self.by_order_id = by_order_id or {}
         self.marked = []
 
     async def get(self, order_id: str) -> MockOrder:
         return self.order
+
+    async def get_by_order_id(self, order_id: str) -> dict[str, Any] | None:
+        return self.by_order_id.get(order_id)
 
     async def mark_submitted_unconfirmed(self, order_id: str) -> None:
         self.marked.append(("submitted_unconfirmed", order_id))
@@ -95,6 +99,42 @@ def make_service(order, gateway) -> ReconciliationService:
         db=MockDbProvider(),
         audit_logger=MockAuditLogger()
     )
+
+
+@pytest.mark.asyncio
+async def test_release_reservation_falls_back_to_order_request_metadata():
+    orders_repo = MockOrdersRepo(
+        order=None,
+        by_order_id={
+            "venue-order-1": {
+                "order_id": "venue-order-1",
+                "request": {
+                    "recovery_metadata": {
+                        "reservation_id": "reservation-from-order-row",
+                    },
+                },
+            },
+        },
+    )
+    reservation_service = MockReservationService()
+    svc = ReconciliationService(
+        orders_repo=orders_repo,
+        fills_repo=MockFillsRepo(),
+        positions_repo=MockPositionsRepo(),
+        reservation_service=reservation_service,
+        clob_gateway=MockClobGateway(),
+        db=MockDbProvider(),
+        audit_logger=MockAuditLogger(),
+    )
+
+    await svc._release_reservation_if_present(
+        {"order_id": "venue-order-1"},
+        reason="confirmed",
+    )
+
+    assert reservation_service.released == [
+        ("reservation-from-order-row", "confirmed"),
+    ]
 
 
 @pytest.mark.asyncio
@@ -400,3 +440,80 @@ async def test_all_fills_belong_to_other_orders_no_apply():
     assert res.is_resolved is False
     assert len(svc.positions_repo.upserted) == 0
     assert len(svc.reservation_service.released) == 0
+
+
+# ---------------------------------------------------------------------------
+# confirm_fill venue-404 not-found guard (Server-disconnected / 404 fix)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_confirm_fill_not_found_guard_defers_then_settles():
+    """A venue 404 must NOT settle on the first poll — a just-submitted order
+    can 404 briefly before the venue indexes it (submitted-unconfirmed safety).
+    Only after THRESHOLD consecutive not-found polls does confirm_fill return
+    terminal ``not_found``; before that it returns ``unknown`` (keep-alive)."""
+    from integrations.polymarket.errors import VenueOrderNotFoundError
+    from services.execution.reconciliation_service import (
+        _VENUE_ORDER_NOT_FOUND_THRESHOLD,
+    )
+
+    class _NotFoundGateway:
+        async def get_order(self, venue_order_id):
+            raise VenueOrderNotFoundError("order_not_found: 404")
+
+        async def get_fills(self, market=None):
+            return []
+
+    svc = make_service(
+        MockOrder("o404", "v404", "r404", "submitted_unconfirmed"),
+        _NotFoundGateway(),
+    )
+
+    # First THRESHOLD-1 polls keep the order alive.
+    for i in range(_VENUE_ORDER_NOT_FOUND_THRESHOLD - 1):
+        res = await svc.confirm_fill("v404")
+        assert res["status"] == "unknown", f"poll {i} should defer settlement"
+
+    # THRESHOLD-th consecutive not-found settles terminal.
+    res = await svc.confirm_fill("v404")
+    assert res["status"] == "not_found"
+    assert res["size_matched"] == "0"
+
+
+@pytest.mark.asyncio
+async def test_confirm_fill_not_found_counter_resets_on_success():
+    """A successful poll between 404s clears the streak so a single later 404
+    does not prematurely settle the order."""
+    from integrations.polymarket.errors import VenueOrderNotFoundError
+    from services.execution.reconciliation_service import (
+        _VENUE_ORDER_NOT_FOUND_THRESHOLD,
+    )
+
+    state = {"found": False}
+
+    class _FlakyGateway:
+        async def get_order(self, venue_order_id):
+            if state["found"]:
+                return MockVenueOrder("live")
+            raise VenueOrderNotFoundError("order_not_found: 404")
+
+        async def get_fills(self, market=None):
+            return []
+
+    svc = make_service(
+        MockOrder("oFlk", "vFlk", "rFlk", "submitted_unconfirmed"),
+        _FlakyGateway(),
+    )
+
+    # Accumulate not-found polls just below the threshold.
+    for _ in range(_VENUE_ORDER_NOT_FOUND_THRESHOLD - 1):
+        assert (await svc.confirm_fill("vFlk"))["status"] == "unknown"
+
+    # A successful poll resets the streak.
+    state["found"] = True
+    assert (await svc.confirm_fill("vFlk"))["status"] == "live"
+
+    # Streak restarts: a single later 404 must NOT settle.
+    state["found"] = False
+    assert (await svc.confirm_fill("vFlk"))["status"] == "unknown"

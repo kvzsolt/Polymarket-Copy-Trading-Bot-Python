@@ -1,11 +1,5 @@
-"""Tests for Phase 10: discovery → live monitoring wiring.
+"""Discovery refresh is DB-only and must not start monitors."""
 
-PG-A6 port:
-* Mock leaders_repo.get_leaders_by_tier uses AsyncMock now that the
-  underlying PG repo method is a coroutine.
-* The schema-touching ``test_get_leaders_by_tier`` runs against a
-  per-test asyncpg testcontainer pool.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -15,19 +9,13 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 
-# ---------------------------------------------------------------------------
-# _discovery_refresh_loop
-# ---------------------------------------------------------------------------
-
 def _make_leaders_repo(tiers: dict[str, list[str]]):
-    """Return a mock leaders_repo whose get_leaders_by_tier (async) returns from *tiers*."""
     repo = MagicMock()
     repo.get_leaders_by_tier = AsyncMock(side_effect=lambda t: list(tiers.get(t, [])))
     return repo
 
 
 class _FakeRegistry:
-    """Minimal stand-in for LeaderRegistry."""
     def __init__(self):
         self.refresh_count = 0
 
@@ -36,13 +24,11 @@ class _FakeRegistry:
 
 
 @pytest.mark.asyncio
-async def test_discovery_loop_detects_new_leaders():
-    """When leaders_repo returns new tier-promoted leaders, callback fires."""
+async def test_discovery_loop_does_not_callback_for_tier_leaders():
     from app import _discovery_refresh_loop
 
     registry = _FakeRegistry()
-    tiers: dict[str, list[str]] = {"live_follow": ["0xAAA"], "paper_follow": []}
-    repo = _make_leaders_repo(tiers)
+    repo = _make_leaders_repo({"live_follow": ["0xAAA"], "paper_follow": ["0xBBB"]})
     callback = AsyncMock()
 
     task = asyncio.create_task(
@@ -57,138 +43,16 @@ async def test_discovery_loop_detects_new_leaders():
     )
     await asyncio.sleep(0.05)
     task.cancel()
-    try:
+    with pytest.raises(asyncio.CancelledError):
         await task
-    except asyncio.CancelledError:
-        pass
 
-    assert callback.call_count >= 1
-    first_call_wallets = callback.call_args_list[0][0][0]
-    assert "0xAAA" in first_call_wallets
-
-
-@pytest.mark.asyncio
-async def test_discovery_loop_no_duplicate_callbacks():
-    """Once a leader is tracked, it should not trigger callback again."""
-    from app import _discovery_refresh_loop
-
-    registry = _FakeRegistry()
-    tiers = {"live_follow": ["0xBBB"], "paper_follow": []}
-    repo = _make_leaders_repo(tiers)
-    callback = AsyncMock()
-
-    task = asyncio.create_task(
-        _discovery_refresh_loop(
-            registry=registry,
-            configured_leaders=["0xBBB"],
-            refresh_interval=0,
-            leaders_repo=repo,
-            on_new_leaders=callback,
-            already_monitored=set(),
-        )
-    )
-    await asyncio.sleep(0.08)
-    task.cancel()
-    try:
-        await task
-    except asyncio.CancelledError:
-        pass
-
-    assert callback.call_count == 1
-
-
-@pytest.mark.asyncio
-async def test_discovery_loop_already_monitored_skipped():
-    """Leaders in already_monitored should not trigger callback."""
-    from app import _discovery_refresh_loop
-
-    registry = _FakeRegistry()
-    tiers = {"live_follow": ["0xCCC"], "paper_follow": []}
-    repo = _make_leaders_repo(tiers)
-    callback = AsyncMock()
-
-    task = asyncio.create_task(
-        _discovery_refresh_loop(
-            registry=registry,
-            configured_leaders=["0xCCC"],
-            refresh_interval=0,
-            leaders_repo=repo,
-            on_new_leaders=callback,
-            already_monitored={"0xCCC"},
-        )
-    )
-    await asyncio.sleep(0.05)
-    task.cancel()
-    try:
-        await task
-    except asyncio.CancelledError:
-        pass
-
-    assert callback.call_count == 0
-
-
-@pytest.mark.asyncio
-async def test_discovery_loop_paper_follow_detected():
-    """Paper-follow leaders should also trigger monitoring."""
-    from app import _discovery_refresh_loop
-
-    registry = _FakeRegistry()
-    tiers = {"live_follow": [], "paper_follow": ["0xDDD"]}
-    repo = _make_leaders_repo(tiers)
-    callback = AsyncMock()
-
-    task = asyncio.create_task(
-        _discovery_refresh_loop(
-            registry=registry,
-            configured_leaders=["0xDDD"],
-            refresh_interval=0,
-            leaders_repo=repo,
-            on_new_leaders=callback,
-            already_monitored=set(),
-        )
-    )
-    await asyncio.sleep(0.05)
-    task.cancel()
-    try:
-        await task
-    except asyncio.CancelledError:
-        pass
-
-    assert callback.call_count >= 1
-    assert "0xDDD" in callback.call_args_list[0][0][0]
-
-
-@pytest.mark.asyncio
-async def test_discovery_loop_no_callback_without_repo():
-    """When leaders_repo is None, callback is never called."""
-    from app import _discovery_refresh_loop
-
-    registry = _FakeRegistry()
-    callback = AsyncMock()
-
-    task = asyncio.create_task(
-        _discovery_refresh_loop(
-            registry=registry,
-            configured_leaders=["0xEEE"],
-            refresh_interval=0,
-            leaders_repo=None,
-            on_new_leaders=callback,
-            already_monitored=set(),
-        )
-    )
-    await asyncio.sleep(0.05)
-    task.cancel()
-    try:
-        await task
-    except asyncio.CancelledError:
-        pass
-
+    assert registry.refresh_count > 0
+    assert repo.get_leaders_by_tier.call_count == 0
     assert callback.call_count == 0
 
 
 @pytest.mark.asyncio
 async def test_discovery_loop_refresh_exception_resilience():
-    """If registry.refresh raises, the loop continues without crashing."""
     from app import _discovery_refresh_loop
 
     registry = MagicMock()
@@ -201,8 +65,6 @@ async def test_discovery_loop_refresh_exception_resilience():
             raise RuntimeError("API down")
 
     registry.refresh = _failing_refresh
-    tiers = {"live_follow": ["0xFFF"], "paper_follow": []}
-    repo = _make_leaders_repo(tiers)
     callback = AsyncMock()
 
     task = asyncio.create_task(
@@ -210,25 +72,19 @@ async def test_discovery_loop_refresh_exception_resilience():
             registry=registry,
             configured_leaders=["0xFFF"],
             refresh_interval=0,
-            leaders_repo=repo,
+            leaders_repo=_make_leaders_repo({"live_follow": ["0xFFF"]}),
             on_new_leaders=callback,
             already_monitored=set(),
         )
     )
     await asyncio.sleep(0.08)
     task.cancel()
-    try:
+    with pytest.raises(asyncio.CancelledError):
         await task
-    except asyncio.CancelledError:
-        pass
 
     assert call_count >= 3
-    assert callback.call_count >= 1
+    assert callback.call_count == 0
 
-
-# ---------------------------------------------------------------------------
-# get_leaders_by_tier (PG)
-# ---------------------------------------------------------------------------
 
 @contextlib.asynccontextmanager
 async def _pg_pool():
@@ -260,7 +116,6 @@ async def _pg_pool():
 
 @pytest.mark.asyncio
 async def test_get_leaders_by_tier():
-    """Verify get_leaders_by_tier returns correct wallets for a given tier."""
     from storage.postgres.leaders_repo import LeadersRepo
 
     async with _pg_pool() as pool:
@@ -289,3 +144,4 @@ async def test_get_leaders_by_tier():
         assert paper == ["0x222"]
         assert watchlist == ["0x333"]
         assert none == []
+

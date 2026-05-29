@@ -98,57 +98,26 @@ class LeaderRegistry:
                 "Invalid configured leader wallets: " + ", ".join(invalid)
             )
 
-        discovery_enabled = self.config.discovery.enable_trader_discovery
-        if configured_clean and not discovery_enabled:
-            metrics.set_gauge("monitored_leaders", float(len(configured_clean)))
-            if self.readiness is not None:
-                self.readiness.update(monitored_leader_count=len(configured_clean), mode="configured")
-            return LeaderRegistryState(
-                configured=configured_clean,
-                discovered=[],
-                active_monitored=list(configured_clean),
-                mode="configured",
-            )
-
-        self.logger.info("discovery_refresh_started")
-        metrics.inc("discovery_refresh_started_total")
-
         candidates: list[LeaderCandidate] = []
-        try:
-            discovered_profiles = await self.discovery_service.discover_candidates()
-            min_score = self.config.leader.auto_discover_min_score
-            min_positions = self.config.discovery.min_leader_positions
-            min_active_positions = self.config.discovery.min_active_positions
+        if self.config.discovery.enable_trader_discovery:
+            self.logger.info("discovery_refresh_started")
+            metrics.inc("discovery_refresh_started_total")
+            try:
+                discovered_profiles = await self.discovery_service.discover_candidates()
+            except Exception as exc:
+                self.logger.warning("discovery_refresh_failed", extra={"error": repr(exc)})
+                metrics.inc("discovery_refresh_failed_total")
+                discovered_profiles = []
 
             for profile in discovered_profiles:
-                reason = None
-                active = True
-                if profile.total_positions < min_positions:
-                    active = False
-                    reason = "too_few_positions"
-                elif profile.active_positions < min_active_positions:
-                    active = False
-                    reason = "inactive"
-                elif profile.composite_score < min_score:
-                    active = False
-                    reason = "low_score"
-
-                # Evaluate tier via permission ladder
-                has_coverage = profile.total_positions >= min_positions
-                tier = await self._evaluate_leader_tier(
-                    wallet=str(profile.wallet).lower(),
-                    score=float(profile.composite_score),
-                    has_sufficient_coverage=has_coverage and active,
-                )
-
                 candidates.append(
                     LeaderCandidate(
                         leader_id=str(profile.wallet).lower(),
                         score=float(profile.composite_score),
                         recent_trades=int(profile.total_positions),
-                        active=active,
-                        rejection_reason=reason,
-                        follow_tier=tier.value,
+                        active=False,
+                        rejection_reason=None,
+                        follow_tier="shadow",
                     )
                 )
 
@@ -158,7 +127,7 @@ class LeaderRegistry:
                         leader_id=c.leader_id,
                         score=c.score,
                         recent_trades=c.recent_trades,
-                        active=c.active,
+                        active=False,
                         rejection_reason=c.rejection_reason,
                         source="discovery",
                     )
@@ -169,42 +138,18 @@ class LeaderRegistry:
             self.logger.info("discovery_refresh_succeeded", extra={"candidate_count": len(candidates)})
             metrics.inc("discovery_refresh_succeeded_total")
             metrics.set_gauge("discovery_candidates", float(len(candidates)))
-        except Exception as exc:
-            self.logger.warning("discovery_refresh_failed", extra={"error": repr(exc)})
-            metrics.inc("discovery_refresh_failed_total")
-            candidates = []
-
-        active_discovered = [c.leader_id for c in candidates if c.active]
-
-        mode = "configured"
-        active_monitored: list[str] = []
 
         if configured_clean:
             active_monitored = list(configured_clean)
-            stale_configured = [w for w in configured_clean if w not in active_discovered]
-            for stale in stale_configured:
-                self.logger.warning("configured_leader_stale", extra={"leader_id": stale})
-            if active_discovered:
-                mode = "mixed"
+            mode = "configured"
         else:
-            mode = "discovery_only"
-            promote = self.config.discovery.discovery_promote_to_active
-            if promote:
-                top_n = self.config.leader.auto_discover_top_n
-                ranked = sorted(
-                    [c for c in candidates if c.active],
-                    key=lambda x: (-x.score, -x.recent_trades, x.leader_id),
-                )
-                active_monitored = [c.leader_id for c in ranked[:top_n]]
-            else:
-                active_monitored = []
-                self.logger.error(
-                    "No leaders can be monitored: LEADER_WALLETS is empty and "
-                    "DISCOVERY_PROMOTE_TO_ACTIVE is not enabled. Either set "
-                    "LEADER_WALLETS=0x... in your .env or set "
-                    "LEADER_AUTO=true (or DISCOVERY_PROMOTE_TO_ACTIVE=true) to "
-                    "auto-promote discovered leaders."
-                )
+            active_monitored = []
+            mode = "no_configured_leaders"
+            self.logger.warning(
+                "No LEADER_WALLETS configured. Discovery will score candidates, "
+                "but live copying requires python bot.py rotate-traders or manual "
+                "LEADER_WALLETS."
+            )
 
         if not active_monitored:
             self.logger.warning("no_leaders_monitored", extra={"mode": mode})

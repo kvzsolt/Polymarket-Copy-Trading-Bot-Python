@@ -21,6 +21,7 @@ def _drift_config(**overrides) -> PositionDriftConfig:
         allow_external_position_tracking=False,
         pause_scope_on_unresolved=True,
         max_size_epsilon=Decimal("0.000001"),
+        prune_holdoff_seconds=60.0,
     )
     base.update(overrides)
     return PositionDriftConfig(**base)

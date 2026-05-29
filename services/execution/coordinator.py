@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from inspect import isawaitable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -293,7 +294,7 @@ class ExecutionCoordinator:
                 )
                 raise
 
-            self._link_reservation_order(reservation.id, order_id=order.id)
+            await self._link_reservation_order(reservation.id, order_id=order.id)
 
             await self._transition_order(
                 order.id,
@@ -346,7 +347,7 @@ class ExecutionCoordinator:
                 self._log_audit("execution_terminal_failed", intent, order.id, reservation.id, str(exc))
                 raise  # Reraise unknown errors, but ensure reservation is released
 
-            self._link_reservation_order(
+            await self._link_reservation_order(
                 reservation.id, order_id=order.id, venue_order_id=venue_result.order_id
             )
 
@@ -431,7 +432,7 @@ class ExecutionCoordinator:
                     )
             raise
 
-    def _link_reservation_order(
+    async def _link_reservation_order(
         self,
         reservation_id: str,
         *,
@@ -441,7 +442,9 @@ class ExecutionCoordinator:
         repo = getattr(self.reservation_service, "reservations_repo", None)
         linker = getattr(repo, "link_order", None)
         if linker is not None:
-            linker(reservation_id, order_id=order_id, venue_order_id=venue_order_id)
+            result = linker(reservation_id, order_id=order_id, venue_order_id=venue_order_id)
+            if isawaitable(result):
+                await result
 
     async def _transition_order(self, order_id: str, from_status: OrderLifecycleStatus, to_status: OrderLifecycleStatus, venue_order_id: str | None = None, metadata: Dict[str, Any] | None = None) -> None:
         assert_transition_allowed(from_status, to_status)
@@ -633,6 +636,13 @@ class ExecutionCoordinator:
         recovery_metadata = dict(intent.recovery_metadata or {})
         recovery_metadata["reservation_id"] = reservation_id
         recovery_metadata.setdefault("source", source_override)
+        price_limit = None
+        raw_price_limit = recovery_metadata.get("price_limit")
+        if raw_price_limit is not None:
+            try:
+                price_limit = Decimal(str(raw_price_limit))
+            except Exception:
+                price_limit = None
 
         exec_request = ExecutionRequest(
             user_id=intent.user_id,
@@ -645,6 +655,8 @@ class ExecutionCoordinator:
             signal_id=intent.signal_id,
             condition_id=intent.condition_id,
             recovery_metadata=recovery_metadata,
+            order_type=recovery_metadata.get("order_type"),
+            price_limit=price_limit,
         )
 
         # ---- Submit through ExecutionService (dup-guard layer #2) -----
@@ -712,6 +724,26 @@ class ExecutionCoordinator:
                 order_id=order_id,
                 reservation_id=reservation_id,
                 lifecycle_status="failed",
+                raw_result=result,
+            )
+
+        if status in {"filled", "partially_filled"}:
+            await self._release_reservation(reservation_id, reason=status)
+            if order_id and self.reservations_repo is not None:
+                try:
+                    await self.reservations_repo.link_order(reservation_id, order_id=order_id)
+                except Exception as exc:
+                    logger.debug(
+                        "coordinator_link_reservation_failed | reservation_id=%s order_id=%s error=%r",
+                        reservation_id, order_id, exc,
+                    )
+            return ExecutionCoordinatorResult(
+                accepted=True,
+                status=status,
+                order_id=order_id,
+                reservation_id=reservation_id,
+                submission_state=status,
+                lifecycle_status=status,
                 raw_result=result,
             )
 

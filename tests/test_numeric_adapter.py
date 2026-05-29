@@ -86,6 +86,45 @@ class TestIdempotentQuantization:
         assert first == second
 
 
+class TestFloatRoundtripNoise:
+    """Tick-relative epsilon must absorb float→Decimal roundtrip noise.
+
+    Production regression: small BUY orders carry their USDC notional through
+    ``float(Decimal(...))`` in CopyDecisionService and arrive at the SDK
+    boundary as e.g. ``Decimal("4.999991")`` instead of ``Decimal("5")``. A
+    fixed ``epsilon=1e-6`` rejected every cap-clamped order even though the
+    intended on-grid value (5.00 USDC) is unambiguous.
+    """
+
+    @pytest.mark.parametrize(
+        "value, tick, expected",
+        [
+            ("4.999991", "0.01", 5.0),
+            ("4.99997", "0.01", 5.0),
+            ("4.999962", "0.01", 5.0),
+            ("5.000009", "0.01", 5.0),
+        ],
+    )
+    def test_float_noise_within_tick_scaled_epsilon_accepted(self, value, tick, expected):
+        out = quantize_and_convert_to_float(Decimal(value), tick)
+        assert out == pytest.approx(expected)
+
+    def test_genuine_off_grid_still_rejected_on_coarse_tick(self):
+        # 0.5005 on a 0.01 tick is 0.0005 off — far above the tick-relative
+        # floor (1e-5) — must remain a rejection so the caller-mistake gate
+        # is not weakened.
+        with pytest.raises(ValueError) as exc:
+            quantize_and_convert_to_float(Decimal("0.5005"), "0.01")
+        assert "quantization_delta" in str(exc.value)
+
+    def test_caller_epsilon_authoritative_on_fine_ticks(self):
+        # On a 0.0001 tick the tick-scaled floor is 1e-6 (equal to the
+        # caller-passed default). A 5e-5 off-grid input is far above both —
+        # still rejected.
+        with pytest.raises(ValueError):
+            quantize_and_convert_to_float(Decimal("5.00015"), "0.0001")
+
+
 class TestArbitraryTickSize:
     """Tick math must be correct for any positive tick, not only powers of 10.
 

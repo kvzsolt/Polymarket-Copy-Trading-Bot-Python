@@ -13,9 +13,19 @@ from decimal import Decimal, ROUND_HALF_UP
 logger = logging.getLogger("numeric_adapter")
 
 # Default rounding-delta threshold above which we reject instead of silently quantize.
-# 1e-6 is effectively 1 micro-unit relative to 1.0, which is orders of magnitude
-# smaller than Polymarket's minimum order size (typically 1.0) or tick size.
+# 1e-6 is effectively 1 micro-unit relative to 1.0. The effective threshold inside
+# ``quantize_and_convert_to_float`` is scaled relative to ``tick_size`` so that
+# float→Decimal roundtrip noise (~1e-5 on values near 5 with tick=0.01) does not
+# masquerade as an off-grid caller mistake. See _effective_epsilon below.
 DEFAULT_EPSILON = Decimal("1e-6")
+
+# Tick-relative epsilon floor: any value within 1% of a tick is treated as
+# on-grid. For tick=0.01 (USDC cents) this is 1e-4, comfortably above the
+# float-precision noise produced by ``Decimal(str(float_value))`` round-trips
+# (observed up to ~4e-5 on values near 5 USDC) while still rejecting genuine
+# off-grid inputs by 2+ orders of magnitude (e.g. 0.5005 vs tick 0.01 → 5e-4
+# delta, still rejected).
+_EPSILON_TICK_RATIO = Decimal("1e-2")
 
 
 def quantize_and_convert_to_float(
@@ -83,9 +93,12 @@ def quantize_and_convert_to_float(
     rounded = multiples * tick
 
     delta = abs(value - rounded)
-    if delta > epsilon:
+    # Scale epsilon by tick so float→Decimal roundtrip noise on coarse ticks
+    # (USDC cents, share lots) does not get mistaken for an off-grid input.
+    effective_epsilon = max(epsilon, tick * _EPSILON_TICK_RATIO)
+    if delta > effective_epsilon:
         raise ValueError(
-            f"quantization_delta={delta} exceeds epsilon={epsilon} "
+            f"quantization_delta={delta} exceeds epsilon={effective_epsilon} "
             f"(original={value!s}, tick={tick!s}, rounded={rounded!s}). "
             "Rejecting to prevent silent precision loss. "
             "If this is expected, increase epsilon or pre-quantize the input."

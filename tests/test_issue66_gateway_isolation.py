@@ -24,6 +24,7 @@ from integrations.polymarket.clob_v2_gateway import ClobV2Gateway, _build_submit
 from integrations.polymarket.errors import (
     VenueAuthError,
     VenueInvalidOrderError,
+    VenueOrderNotFoundError,
     VenueUnavailableError,
 )
 from integrations.polymarket.models import (
@@ -351,16 +352,14 @@ async def test_check_compatibility_when_sdk_available_returns_ok_report():
 
 
 @pytest.mark.asyncio
-async def test_submit_marketable_order_quantizes_size_with_fixed_step_not_price_tick():
-    """PR #105 review (Cubic P1): order *size* uses a fixed 2-decimal step
-    per the Polymarket SDK ROUNDING_CONFIG. Quantizing size with the price
-    ``tick_size`` (e.g. ``"0.1"``) used to reject valid 2-decimal sizes
-    such as ``10.55`` because the rounding delta against a 0.1 grid
-    exceeded the adapter's epsilon.
+async def test_submit_marketable_order_quantizes_amount_with_fixed_step_not_price_tick():
+    """MarketOrderArgs.amount uses SDK amount precision, not price tick.
 
-    With the fix, submit_marketable_order quantizes size at ``"0.01"`` and
-    price at the supplied tick_size, so a 10.55 / tick=0.1 order goes
-    through and the SDK receives ``size=10.55`` unchanged.
+    Context7/docs expose ROUNDING_CONFIG["0.01"] as
+    RoundConfig(price=2, size=2, amount=4). Market orders use ``amount``
+    (USDC for BUY, shares for SELL), so a 4-decimal filled position such as
+    5.6818 must pass through unchanged instead of being rejected or rounded
+    against a 2-decimal limit-order size grid.
     """
     seen: dict[str, object] = {}
 
@@ -368,7 +367,7 @@ async def test_submit_marketable_order_quantizes_size_with_fixed_step_not_price_
         seen.update(kwargs)
         return {"signed": True}
 
-    async def _post(_signed):
+    async def _post(_signed, **_kwargs):
         return {"success": True, "data": {"orderID": "ord-quant", "status": "submitted"}}
 
     wrapper = SimpleNamespace(
@@ -379,8 +378,8 @@ async def test_submit_marketable_order_quantizes_size_with_fixed_step_not_price_
 
     req = MarketableOrderRequest(
         token_id="t1",
-        side="BUY",
-        size=Decimal("10.55"),
+        side="SELL",
+        size=Decimal("5.6818"),
         price_limit=Decimal("0.40"),
         tick_size=Decimal("0.1"),
         neg_risk=False,
@@ -390,9 +389,113 @@ async def test_submit_marketable_order_quantizes_size_with_fixed_step_not_price_
 
     assert isinstance(result, VenueSubmitResult)
     assert result.success is True
-    assert seen["amount"] == pytest.approx(10.55)
+    assert seen["amount"] == pytest.approx(5.6818)
     assert seen["max_price"] == pytest.approx(0.4)
     assert seen["tick_size"] == "0.1"
+
+
+@pytest.mark.asyncio
+async def test_submit_marketable_order_accepts_half_unit_amount_noise():
+    """Amounts generated from float sizing can land half a 4dp unit off-grid.
+
+    The SDK rounds MarketOrderArgs.amount to 4 decimals, so a BUY notional
+    like 4.999995 is an unambiguous 5.0000 order, not a terminal invalid
+    order.
+    """
+    seen: dict[str, object] = {}
+
+    async def _capture_signed(**kwargs):
+        seen.update(kwargs)
+        return {"signed": True}
+
+    async def _post(_signed, **_kwargs):
+        return {"success": True, "data": {"orderID": "ord-quant-buy", "status": "submitted"}}
+
+    wrapper = SimpleNamespace(
+        create_market_order=_capture_signed,
+        post_signed_order=_post,
+    )
+    gw = ClobV2Gateway(wrapper)
+
+    req = MarketableOrderRequest(
+        token_id="t1",
+        side="BUY",
+        size=Decimal("4.999995"),
+        price_limit=Decimal("0.72"),
+        tick_size=Decimal("0.01"),
+        neg_risk=False,
+    )
+
+    result = await gw.submit_marketable_order(req)
+
+    assert result.success is True
+    assert seen["amount"] == pytest.approx(5.0)
+    assert seen["max_price"] == pytest.approx(0.72)
+
+
+@pytest.mark.asyncio
+async def test_submit_marketable_order_accepts_buy_amount_precision_noise():
+    seen: dict[str, object] = {}
+
+    async def _capture_signed(**kwargs):
+        seen.update(kwargs)
+        return {"signed": True}
+
+    async def _post(_signed, **_kwargs):
+        return {"success": True, "data": {"orderID": "ord-quant-buy-2", "status": "submitted"}}
+
+    wrapper = SimpleNamespace(
+        create_market_order=_capture_signed,
+        post_signed_order=_post,
+    )
+    gw = ClobV2Gateway(wrapper)
+
+    req = MarketableOrderRequest(
+        token_id="t1",
+        side="BUY",
+        size=Decimal("4.679789"),
+        price_limit=Decimal("0.81"),
+        tick_size=Decimal("0.01"),
+        neg_risk=False,
+    )
+
+    result = await gw.submit_marketable_order(req)
+
+    assert result.success is True
+    assert seen["amount"] == pytest.approx(4.6798)
+    assert seen["max_price"] == pytest.approx(0.81)
+
+
+@pytest.mark.asyncio
+async def test_submit_marketable_order_floors_sell_amount_to_avoid_oversell():
+    seen: dict[str, object] = {}
+
+    async def _capture_signed(**kwargs):
+        seen.update(kwargs)
+        return {"signed": True}
+
+    async def _post(_signed, **_kwargs):
+        return {"success": True, "data": {"orderID": "ord-quant-sell", "status": "submitted"}}
+
+    wrapper = SimpleNamespace(
+        create_market_order=_capture_signed,
+        post_signed_order=_post,
+    )
+    gw = ClobV2Gateway(wrapper)
+
+    req = MarketableOrderRequest(
+        token_id="t1",
+        side="SELL",
+        size=Decimal("5.681889"),
+        price_limit=Decimal("0.40"),
+        tick_size=Decimal("0.01"),
+        neg_risk=False,
+    )
+
+    result = await gw.submit_marketable_order(req)
+
+    assert result.success is True
+    assert seen["amount"] == pytest.approx(5.6818)
 
 
 def test_build_submit_result_surfaces_ambiguous_and_non_retryable_flags():
@@ -410,6 +513,16 @@ def test_build_submit_result_surfaces_ambiguous_and_non_retryable_flags():
     assert result.status == "pending"
 
 
+def test_build_submit_result_accepts_sdk_order_id_key():
+    result = _build_submit_result({
+        "success": True,
+        "data": {"order_id": "ord-sdk-v2", "status": "submitted"},
+    })
+    assert isinstance(result, VenueSubmitResult)
+    assert result.order_id == "ord-sdk-v2"
+    assert result.status == "submitted"
+
+
 def test_build_submit_result_handles_non_retryable_rejection():
     result = _build_submit_result({
         "success": False,
@@ -419,3 +532,95 @@ def test_build_submit_result_handles_non_retryable_rejection():
     assert result.non_retryable is True
     assert result.ambiguous_post_failure is False
     assert result.success is False
+
+
+# ---------------------------------------------------------------------------
+# get_order — transport-disconnect retry + 404 not-found (Server-disconnected fix)
+# ---------------------------------------------------------------------------
+
+
+class _FakeHttpResp:
+    """Minimal httpx.Response stand-in for building a real SDK PolyApiException."""
+
+    def __init__(self, status_code: int, body):
+        self.status_code = status_code
+        self._body = body
+        self.text = str(body)
+
+    def json(self):
+        return self._body
+
+
+def _sdk_transport_exc():
+    """The exact wrapper py-clob-client-v2 raises on an httpx transport failure."""
+    from py_clob_client_v2.exceptions import PolyApiException as SDKExc
+
+    return SDKExc(error_msg="Request exception!")
+
+
+def _sdk_404_exc():
+    from py_clob_client_v2.exceptions import PolyApiException as SDKExc
+
+    return SDKExc(_FakeHttpResp(404, {"error": "order not found"}))
+
+
+@pytest.mark.asyncio
+async def test_get_order_retries_once_on_transport_disconnect_then_succeeds():
+    """GET is idempotent — a 'Server disconnected' transport failure is retried
+    exactly once; the retry opens a fresh connection and succeeds."""
+    calls = {"n": 0}
+
+    def _sync_get_order(order_id: str):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise _sdk_transport_exc()
+        return {"id": order_id, "status": "live", "size_matched": "0"}
+
+    wrapper = SimpleNamespace(client=SimpleNamespace(get_order=_sync_get_order))
+    gw = ClobV2Gateway(wrapper)
+
+    state = await gw.get_order("0xorder")
+
+    assert calls["n"] == 2  # one failure + one retry
+    assert isinstance(state, VenueOrderState)
+    assert state.status == "live"
+    assert state.order_id == "0xorder"
+
+
+@pytest.mark.asyncio
+async def test_get_order_retries_transport_only_once_then_raises_unavailable():
+    """A persistent transport failure raises VenueUnavailableError after the
+    single retry (no infinite loop)."""
+    calls = {"n": 0}
+
+    def _always_disconnect(order_id: str):
+        calls["n"] += 1
+        raise _sdk_transport_exc()
+
+    wrapper = SimpleNamespace(client=SimpleNamespace(get_order=_always_disconnect))
+    gw = ClobV2Gateway(wrapper)
+
+    with pytest.raises(VenueUnavailableError) as exc_info:
+        await gw.get_order("0xorder")
+
+    assert calls["n"] == 2  # original + exactly one retry
+    assert "poly_api_transport" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_get_order_404_raises_not_found_without_retry():
+    """A 404 is terminal-not-retryable; it raises VenueOrderNotFoundError and
+    is NOT retried (unlike transport failures)."""
+    calls = {"n": 0}
+
+    def _not_found(order_id: str):
+        calls["n"] += 1
+        raise _sdk_404_exc()
+
+    wrapper = SimpleNamespace(client=SimpleNamespace(get_order=_not_found))
+    gw = ClobV2Gateway(wrapper)
+
+    with pytest.raises(VenueOrderNotFoundError):
+        await gw.get_order("0xorder")
+
+    assert calls["n"] == 1  # no retry on 404

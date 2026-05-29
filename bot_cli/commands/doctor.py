@@ -637,14 +637,14 @@ async def run_doctor_checks(mode: str) -> dict[str, Any]:
         )
 
     # ----- leaders -----------------------------------------------------
-    if not config.leader.wallets and not config.leader.auto_discover_leaders:
+    if not config.leader.wallets:
         ctx.blocked(
             "leaders",
-            "no leader wallets and discovery disabled",
-            "set LEADER_WALLETS or LEADER_AUTO=true",
+            "no leader wallets configured",
+            "set LEADER_WALLETS or run python bot.py rotate-traders after discovery",
         )
     else:
-        ctx.ok("leaders", "leaders configured or auto-discovery enabled")
+        ctx.ok("leaders", "leader wallets configured")
 
     if config.near_one_exit.enable_near_one_exit:
         threshold = float(config.near_one_exit.threshold)

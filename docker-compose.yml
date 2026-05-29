@@ -5,7 +5,7 @@
 #   docker compose up                             # full stack — bot + PG
 #
 # DATABASE_URL inside the compose network defaults to postgres:5432;
-# the host-side .venv runs read DATABASE_URL=postgresql://bot:bot@localhost:5432/polymarket_bot
+# the host-side .venv runs read DATABASE_URL=postgresql://bot:bot@localhost:5432/polymarket_copytrading_python
 # (see secrets.env.example).
 
 services:
@@ -16,7 +16,7 @@ services:
     environment:
       POSTGRES_USER: bot
       POSTGRES_PASSWORD: bot
-      POSTGRES_DB: polymarket_bot
+      POSTGRES_DB: polymarket_copytrading_python
       # Keep WAL retained briefly so a crashed bot can replay; tune in prod.
       POSTGRES_INITDB_ARGS: "--data-checksums"
     ports:
@@ -24,7 +24,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U bot -d polymarket_bot"]
+      test: ["CMD-SHELL", "pg_isready -U bot -d polymarket_copytrading_python"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -41,7 +41,7 @@ services:
       - secrets.env
     environment:
       # Inside the compose network the bot reaches PG via the service name.
-      DATABASE_URL: "postgresql://bot:bot@postgres:5432/polymarket_bot"
+      DATABASE_URL: "postgresql://bot:bot@postgres:5432/polymarket_copytrading_python"
       PAPER_TRADE_ONLY: "true"
       ENABLE_METRICS_SERVER: "true"
       METRICS_PORT: "9102"
@@ -53,4 +53,4 @@ services:
 
 volumes:
   postgres_data:
-    name: polymarket_bot_postgres_data
+    name: polymarket_copytrading_python_postgres_data

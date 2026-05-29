@@ -123,6 +123,37 @@ class TestNegRiskPropagation:
         )
         assert wrapper.create_market_order.call_args.kwargs["neg_risk"] is True
 
+
+class TestPostSignedOrderClassification:
+    def _make_gateway(self):
+        from clients.order_gateway import OrderGateway
+
+        wrapper = MagicMock()
+        wrapper.create_market_order = AsyncMock(return_value=object())
+        wrapper.post_signed_order = AsyncMock(return_value={"success": True})
+        return OrderGateway(wrapper), wrapper
+
+    @pytest.mark.asyncio
+    async def test_fak_no_match_is_terminal_non_retryable_cancelled(self):
+        class ClobReject(Exception):
+            error_msg = (
+                '{"error":"no orders found to match with FAK order. '
+                'FAK orders are partially filled or killed if no match is found.",'
+                '"orderID":"0xabc"}'
+            )
+
+        raw_client = MagicMock()
+        raw_client.post_order.side_effect = ClobReject()
+        wrapper = ClobClientWrapper(raw_client, _dummy_wallet())
+
+        result = await wrapper.post_signed_order({"signed": True})
+
+        assert result["success"] is False
+        assert result["status"] == "cancelled"
+        assert result["orderID"] == "0xabc"
+        assert result["non_retryable"] is True
+        assert "fak_no_match" in result["error"]
+
     @pytest.mark.asyncio
     async def test_neg_risk_false_forwarded(self):
         gw, wrapper = self._make_gateway()

@@ -632,6 +632,51 @@ _DISCOVERY_DDL = [
     """,
     """CREATE INDEX IF NOT EXISTS idx_disc_ctx_entity
        ON discovery_context_buckets(entity_type, entity_id)""",
+
+    """
+    CREATE TABLE IF NOT EXISTS falcon_discovery_evaluations (
+        wallet text PRIMARY KEY,
+        status text NOT NULL DEFAULT 'shadow',
+        final_score double precision NOT NULL DEFAULT 0,
+        falcon_quality_score double precision NOT NULL DEFAULT 0,
+        copyability_score double precision NOT NULL DEFAULT 0,
+        recent_state_score double precision NOT NULL DEFAULT 0,
+        market_fit_score double precision NOT NULL DEFAULT 0,
+
+        h_score double precision,
+        roi_15d double precision,
+        win_rate_15d double precision,
+        sharpe_15d double precision,
+        pnl_15d double precision,
+        total_trades_15d integer,
+        markets_traded_15d integer,
+        trajectory text,
+
+        total_grouped_signals integer NOT NULL DEFAULT 0,
+        meaningful_signals integer NOT NULL DEFAULT 0,
+        copyable_signals integer NOT NULL DEFAULT 0,
+        copyable_signal_ratio double precision NOT NULL DEFAULT 0,
+        copyable_notional_ratio double precision NOT NULL DEFAULT 0,
+
+        sports_esports_ratio double precision NOT NULL DEFAULT 0,
+        fast_crypto_signal_ratio double precision NOT NULL DEFAULT 0,
+        fast_crypto_notional_ratio double precision NOT NULL DEFAULT 0,
+
+        pnl_7d text NOT NULL DEFAULT '0',
+        pnl_3d text NOT NULL DEFAULT '0',
+        rejection_reason text,
+        eligible_live boolean NOT NULL DEFAULT false,
+        eligible_shadow boolean NOT NULL DEFAULT false,
+
+        falcon_raw_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+        replay_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+        updated_at double precision NOT NULL
+    )
+    """,
+    """CREATE INDEX IF NOT EXISTS idx_falcon_eval_status_score
+       ON falcon_discovery_evaluations(status, final_score DESC)""",
+    """CREATE INDEX IF NOT EXISTS idx_falcon_eval_live
+       ON falcon_discovery_evaluations(eligible_live, final_score DESC)""",
 ]
 
 

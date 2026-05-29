@@ -31,6 +31,7 @@ Translation notes:
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -44,24 +45,17 @@ from utils.logger import get_logger
 logger = get_logger("PositionsRepo")
 
 
-# DL-05: SHA-256-based 64-bit advisory-lock slot. Mirrors the constant in
-# reservations_repo.py so collisions stay symmetric across both repos.
-_ADVISORY_LOCK_SQL = (
-    "SELECT pg_advisory_xact_lock("
-    "('x' || encode(substring(sha256($1::bytea), 1, 8), 'hex'))"
-    "::bit(64)::bigint)"
-)
+# DL-05: Python-side SHA-256 → signed 64-bit int. Mirrors reservations_repo
+# so collisions stay symmetric across both repos. Hashing in Python avoids
+# the DB-side hash CPU cost and the asyncpg str→bytea type-mismatch
+# surface — Python ``int`` maps natively to PG ``bigint``.
+_ADVISORY_LOCK_SQL = "SELECT pg_advisory_xact_lock($1)"
 
 
-def _lock_key(key: str) -> bytes:
-    """Encode a lock key to bytes for the ``$1::bytea`` parameter.
-
-    asyncpg does not implicitly cast ``str`` to ``bytea``; passing a bare
-    string to a ``bytea`` param raises ``DataError: a bytes-like object is
-    required, not 'str'``.  Encode as UTF-8 so Postgres receives the
-    correct wire type.
-    """
-    return key.encode("utf-8")
+def _lock_key(key: str) -> int:
+    """Hash a lock-key string to a signed 64-bit int for ``pg_advisory_xact_lock``."""
+    digest = hashlib.sha256(key.encode("utf-8")).digest()[:8]
+    return int.from_bytes(digest, "big", signed=True)
 
 
 @dataclass

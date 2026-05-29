@@ -14,7 +14,15 @@ _SECRET_KEYS = frozenset({
     "PRIVATE_KEY",
     "private_key",
     "CLOB_API_KEY",
+    "CLOB_SECRET",
+    "CLOB_PASSPHRASE",
+    "FALCON_API_TOKEN",
+    "DATABASE_URL",
     "api_key",
+    "api_secret",
+    "api_passphrase",
+    "api_token",
+    "dsn",
 })
 
 _REDACTED = "***REDACTED***"
@@ -93,9 +101,9 @@ _CONFIG_EXPLANATIONS: dict[str, str] = {
     "NEAR_ONE_EXIT_THRESHOLD": "Price threshold (Decimal, e.g. 0.99) that triggers near-one exit.",
     "NEAR_ONE_EXIT_DWELL_SECONDS": "Seconds the price must remain >= threshold before NearOne fires.",
     "NEAR_ONE_EXIT_CHECK_INTERVAL": "Seconds between NearOneExit loop iterations.",
-    "ENABLE_TRADER_DISCOVERY": "If true, auto-discover profitable traders to follow.",
-    "AUTO_DISCOVER_LEADERS": "If true, automatically discover and follow top traders.",
-    "AUTO_DISCOVER_TOP_N": "Number of top traders to discover.",
+    "ENABLE_TRADER_DISCOVERY": "If true, run DB-only Falcon + Polymarket candidate discovery. It does not start live monitors.",
+    "AUTO_DISCOVER_LEADERS": "Legacy compatibility flag. Discovery is DB-only; use LEADER_WALLETS or rotate-traders for live leaders.",
+    "AUTO_DISCOVER_TOP_N": "Compatibility count used by discovery/rotation defaults.",
     "COPY_DECISION_MIN_SCORE": "Minimum leader score (0–1) required to copy a trade.",
     "ENABLE_COPY_DECISION_GATE": "If true, gate trades on the leader's copy-decision score.",
     "ENABLE_NEAR_RESOLUTION_GATE": "If true, reject BUY signals near market resolution.",

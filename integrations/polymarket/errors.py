@@ -43,3 +43,15 @@ class VenueInvalidOrderError(TerminalVenueError):
     """The order was rejected due to invalid parameters."""
 
     pass
+
+
+class VenueOrderNotFoundError(TerminalVenueError):
+    """The venue reports no order with this id (HTTP 404).
+
+    Terminal-not-retryable by HTTP semantics: re-querying the same id will
+    keep returning 404. Distinct from ``VenueInvalidOrderError`` so the
+    reconciler can apply the eventual-consistency guard (a just-submitted
+    order can 404 briefly before the venue indexes it) before settling.
+    """
+
+    pass

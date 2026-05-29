@@ -523,3 +523,20 @@ class TestReconcileSignalWake:
         assert not hasattr(rt, "positions_repo")
         assert not hasattr(rt, "fills_repo")
         assert not hasattr(rt, "reservation_service")
+
+
+class TestMarketTokenSubscriptionWake:
+    @pytest.mark.asyncio
+    async def test_on_fill_subscribes_seen_token_to_market_runtime(self) -> None:
+        callback = AsyncMock()
+        rt = UserDataRuntime(
+            market_store=MarketStateStore(),
+            readiness=ReadinessTracker(),
+            api_creds=dict(VALID_CREDS),
+            user_id=USER_ID,
+            on_market_token_seen=callback,
+        )
+
+        await rt._on_fill({"asset_id": " 12345 ", "side": "BUY"})
+
+        callback.assert_awaited_once_with("12345")

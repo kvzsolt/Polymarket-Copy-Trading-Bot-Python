@@ -17,14 +17,23 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from cache.market_state_store import MarketStateStore
 from clients.user_ws import DEFAULT_USER_WS_URL, UserWebSocket
 from services.healthServer import ReadinessTracker
 from utils.logger import get_logger, redact_error_detail
 
+if TYPE_CHECKING:
+    from services.manual_sync_service import ManualSyncService
+
 ReconcileSignal = Callable[[dict[str, Any]], Awaitable[None]]
+# Sync callback: clear the risk-monitor price cache for ``token_id`` so a
+# previously dormant (zero-bid) market re-arms as soon as a fill lands.
+RiskCacheEvict = Callable[[str], None]
+# Async callback: user fills reveal tokens that must be subscribed on the
+# market WSS so risk/execution can read fresh quotes from MarketStateStore.
+MarketTokenSubscribe = Callable[[str], Awaitable[None]]
 
 logger = get_logger("UserDataRuntime")
 
@@ -49,6 +58,19 @@ class UserDataRuntime:
     # positions/reservations directly — settlement remains owned by the
     # reconciler.
     on_reconcile_signal: ReconcileSignal | None = None
+    # Optional manual-sync hook. When attached, lifecycle + fill events are
+    # forwarded so the service can detect off-bot trades, seed positions
+    # from venue on startup, and run a REST fallback when WSS is down.
+    # ``None`` keeps the runtime backwards-compatible.
+    manual_sync_service: "ManualSyncService | None" = None
+    # Optional risk-cache evict hook. When set, every WSS fill on a token
+    # clears the risk-monitor cache for that token so a previously dormant
+    # market (cached at price=0) is re-probed on the next risk tick.
+    on_risk_cache_evict: RiskCacheEvict | None = None
+    # Optional market-data subscription hook. Manual/off-bot fills arrive via
+    # user WSS; without this, the risk monitor falls back to REST /price
+    # because MarketWS was never subscribed for that token.
+    on_market_token_seen: MarketTokenSubscribe | None = None
 
     _ws_client: UserWebSocket | None = field(default=None, init=False)
     _ws_task: asyncio.Task | None = field(default=None, init=False)
@@ -99,6 +121,18 @@ class UserDataRuntime:
     async def stop(self) -> None:
         self._status.running = False
         self._status.authenticated = False
+
+        if self.manual_sync_service is not None:
+            try:
+                await self.manual_sync_service.stop()
+            except Exception as exc:
+                logger.warning(
+                    "manual_sync_stop_error",
+                    extra={
+                        "user_id": self.user_id,
+                        "error": redact_error_detail(exc),
+                    },
+                )
 
         if self._ws_client is not None:
             try:
@@ -176,6 +210,18 @@ class UserDataRuntime:
 
         logger.info("user_wss_authenticated", extra={"user_id": self.user_id})
 
+        if self.manual_sync_service is not None:
+            try:
+                await self.manual_sync_service.on_wss_authenticated()
+            except Exception as exc:
+                logger.warning(
+                    "manual_sync_wss_authenticated_hook_failed",
+                    extra={
+                        "user_id": self.user_id,
+                        "error": redact_error_detail(exc),
+                    },
+                )
+
     async def _on_disconnected(self) -> None:
         self._status.authenticated = False
 
@@ -187,16 +233,59 @@ class UserDataRuntime:
 
         logger.warning("user_wss_disconnected", extra={"user_id": self.user_id})
 
+        if self.manual_sync_service is not None:
+            try:
+                await self.manual_sync_service.on_wss_disconnected()
+            except Exception as exc:
+                logger.warning(
+                    "manual_sync_wss_disconnected_hook_failed",
+                    extra={
+                        "user_id": self.user_id,
+                        "error": redact_error_detail(exc),
+                    },
+                )
+
     async def _on_fill(self, event: dict[str, Any]) -> None:
+        token_id = str(
+            event.get("asset_id")
+            or event.get("token_id")
+            or event.get("tokenID")
+            or ""
+        ).strip()
         logger.debug(
             "user_wss_fill_event",
             extra={
                 "user_id": self.user_id,
                 "order_id": event.get("order_id") or event.get("id"),
-                "asset_id": event.get("asset_id") or event.get("token_id"),
+                "asset_id": token_id or None,
             },
         )
+        if token_id and self.on_risk_cache_evict is not None:
+            try:
+                self.on_risk_cache_evict(token_id)
+            except Exception as exc:
+                logger.warning(
+                    "risk_cache_evict_failed",
+                    extra={
+                        "user_id": self.user_id,
+                        "token_id": token_id,
+                        "error": redact_error_detail(exc),
+                    },
+                )
+        if token_id and self.on_market_token_seen is not None:
+            try:
+                await self.on_market_token_seen(token_id)
+            except Exception as exc:
+                logger.warning(
+                    "market_token_subscribe_failed",
+                    extra={
+                        "user_id": self.user_id,
+                        "token_id": token_id,
+                        "error": redact_error_detail(exc),
+                    },
+                )
         await self._wake_reconciler(event)
+        await self._wake_manual_sync(reason="wss_fill")
 
     async def _on_order_update(self, event: dict[str, Any]) -> None:
         logger.debug(
@@ -208,6 +297,23 @@ class UserDataRuntime:
             },
         )
         await self._wake_reconciler(event)
+        await self._wake_manual_sync(reason="wss_order_update")
+
+    async def _wake_manual_sync(self, *, reason: str) -> None:
+        """Forward a WSS event to ManualSyncService.trigger_sync (debounced)."""
+        if self.manual_sync_service is None:
+            return
+        try:
+            await self.manual_sync_service.trigger_sync(reason=reason)
+        except Exception as exc:
+            logger.warning(
+                "manual_sync_trigger_failed",
+                extra={
+                    "user_id": self.user_id,
+                    "reason": reason,
+                    "error": redact_error_detail(exc),
+                },
+            )
 
     async def _wake_reconciler(self, event: dict[str, Any]) -> None:
         """Fire the optional reconcile-wake hook.

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from domain.trading_context import TradingContext
 from interfaces.clob_gateway import ClobGateway
@@ -16,6 +17,7 @@ from services.positionManager import PositionManager
 from services.riskEngine import RiskEngine, init_risk_engine
 from services.healthServer import ReadinessTracker
 from services.entryPermissionService import EntryPermissionService
+from services.leaderScoringService import LeaderScoringService
 from services.riskMonitor import rehydrate_position_manager, reconcile_unconfirmed_risk_orders
 from storage.postgres.fills_repo import FillsRepo
 from storage.postgres.orders_repo import OrdersRepo
@@ -29,6 +31,22 @@ if TYPE_CHECKING:
     from config.app_config import AppConfig
 
 logger = get_logger("RuntimeBootstrap")
+
+
+async def _release_expired_reservations_for_context(context: TradingContext) -> int:
+    extra = getattr(context, "extra", {}) or {}
+    reservation_service = extra.get("reservation_service")
+    if reservation_service is None:
+        coordinator = getattr(context, "execution_coordinator", None)
+        reservation_service = getattr(coordinator, "reservation_service", None)
+    release_expired = getattr(reservation_service, "release_expired_active", None)
+    if not callable(release_expired):
+        return 0
+    released_ids = await release_expired()
+    try:
+        return len(released_ids or [])
+    except TypeError:
+        return 0
 
 
 async def startup_reconcile_unconfirmed(
@@ -82,18 +100,21 @@ async def startup_reconcile_unconfirmed(
         try:
             trade_n = await reconcile_submitted_unconfirmed(context)
             risk_n = await reconcile_unconfirmed_risk_orders(context)
-            total_n = trade_n + risk_n
+            reservation_n = await _release_expired_reservations_for_context(context)
+            total_n = trade_n + risk_n + reservation_n
             if total_n > 0:
                 # Position state changed — re-rehydrate so the risk monitor
                 # and trade loops observe the converged snapshot.
                 await rehydrate_position_manager(context)
                 reconciled_by_user[context.user_id] = total_n
                 logger.info(
-                    "startup_reconcile_complete | user=%s reconciled=%d (trade=%d risk=%d)",
+                    "startup_reconcile_complete | user=%s reconciled=%d "
+                    "(trade=%d risk=%d reservations=%d)",
                     context.user_id,
                     total_n,
                     trade_n,
                     risk_n,
+                    reservation_n,
                 )
         except Exception as exc:
             logger.warning(
@@ -143,21 +164,24 @@ class UserRuntimeState:
     execution_coordinator: "object | None" = None
     # PR7 — manual / off-bot position drift sweep.
     position_drift_service: "object | None" = None
+    # Manual sync service — funder activity + position seeder (TS port).
+    manual_sync_service: "object | None" = None
 
 
 def configured_leaders(config: AppConfig) -> list[str]:
     leaders = [str(wallet).strip() for wallet in config.leader.wallets if str(wallet).strip()]
     if not leaders:
-        if config.leader.leader_auto:
+        if config.discovery.enable_trader_discovery:
             logger.info(
-                "No leader wallets configured. LEADER_AUTO is enabled, so the bot "
-                f"will auto-discover and follow up to {config.leader.leader_auto_count} leaders."
+                "No leader wallets configured. Discovery is enabled, so the bot "
+                "will score DB candidates only. Live copying requires "
+                "python bot.py rotate-traders or manual LEADER_WALLETS."
             )
         else:
             logger.warning(
                 "No leader wallets configured. Both LEADER_WALLETS and USER_ADDRESS "
-                "are empty. Set LEADER_AUTO=true to auto-discover leaders, or add "
-                "manual leader wallets."
+                "are empty. Add manual leader wallets or run "
+                "python bot.py rotate-traders after discovery has candidates."
             )
     return leaders
 
@@ -313,11 +337,26 @@ def build_user_state(
         config=config,
     )
 
-    # PR7 — proactive position drift sweep.
+    # PR7 — proactive position drift sweep. Built BEFORE manual_sync so the
+    # handshake (manual_sync.was_recently_pruned → skip upsert) is wired
+    # from boot. Without this ordering manual_sync would resurrect rows
+    # drift authoritatively pruned, looping risk-monitor /price probes.
     position_drift_service = _build_position_drift_service(
         pool=pool,
         positions_repo=positions_repo,
         config=config,
+    )
+
+    # Manual sync service — detects off-bot trades on the funder wallet and
+    # seeds positions table from venue on startup. Optional so paper-only
+    # contexts that lack a funder address skip the service cleanly.
+    manual_sync_service = _build_manual_sync_service(
+        funder_address=runtime_user.wallet.funder_address,
+        user_id=runtime_user.user_id,
+        positions_repo=positions_repo,
+        market_store=market_store,
+        fills_repo=fills_repo,
+        position_drift_service=position_drift_service,
     )
 
     return UserRuntimeState(
@@ -337,6 +376,34 @@ def build_user_state(
         market_data_service=market_data_svc,
         market_store=market_store,
         execution_coordinator=execution_coordinator,
+        position_drift_service=position_drift_service,
+        manual_sync_service=manual_sync_service,
+    )
+
+
+def _build_manual_sync_service(
+    *,
+    funder_address: str,
+    user_id: str,
+    positions_repo: PositionsRepo,
+    market_store: MarketStateStore | None,
+    fills_repo: FillsRepo | None,
+    position_drift_service=None,
+):
+    """Build the per-user ManualSyncService. Returns None when prerequisites are missing."""
+    if not funder_address or market_store is None:
+        return None
+    try:
+        from services.manual_sync_service import ManualSyncService
+    except Exception as exc:
+        logger.warning("manual_sync_service_unwired error=%r", exc)
+        return None
+    return ManualSyncService(
+        funder_address=funder_address,
+        user_id=user_id,
+        positions_repo=positions_repo,
+        market_store=market_store,
+        fills_repo=fills_repo,
         position_drift_service=position_drift_service,
     )
 
@@ -417,13 +484,237 @@ def _build_execution_coordinator(
     return coord
 
 
+def _bind_reservation_runtime(context: TradingContext, coord: object | None) -> None:
+    """Expose the coordinator's reservation service to reconciliation paths.
+
+    The coordinator owns the service instance. Reconciliation code discovers it
+    through ``context.extra`` so terminal fills/cancels can release active
+    reservations.
+    """
+    if coord is None:
+        return
+
+    reservation_service = getattr(coord, "reservation_service", None)
+    if reservation_service is None:
+        return
+
+    reservations_repo = (
+        getattr(coord, "reservations_repo", None)
+        or getattr(reservation_service, "reservations_repo", None)
+    )
+    context.extra["reservation_service"] = reservation_service
+    if reservations_repo is not None:
+        context.extra["reservations_repo"] = reservations_repo
+
+    def _reservation_attr(reservation: object, name: str) -> Any:
+        return getattr(reservation, name, None)
+
+    def _reservation_side(reservation: object, request: dict[str, Any] | None = None) -> str:
+        request_side = str((request or {}).get("side") or "").upper()
+        if request_side:
+            return request_side
+        raw_side = _reservation_attr(reservation, "side")
+        return str(getattr(raw_side, "value", raw_side) or "").upper()
+
+    def _synthetic_trade_record(
+        *,
+        reservation: object,
+        order_row: dict[str, Any] | None,
+        order_id: str,
+    ) -> tuple[str, dict[str, Any]] | None:
+        request = order_row.get("request") if isinstance(order_row, dict) else None
+        request = request if isinstance(request, dict) else {}
+        side = _reservation_side(reservation, request)
+        if side not in {"BUY", "SELL"}:
+            return None
+
+        condition_id = (
+            request.get("condition_id")
+            or _reservation_attr(reservation, "condition_id")
+        )
+        token_id = (
+            request.get("token_id")
+            or request.get("asset")
+            or _reservation_attr(reservation, "token_id")
+        )
+        user_id = (
+            (order_row or {}).get("user_id") if isinstance(order_row, dict) else None
+        ) or request.get("user_id") or _reservation_attr(reservation, "user_id") or context.user_id
+        leader_id = (
+            (order_row or {}).get("leader_id") if isinstance(order_row, dict) else None
+        ) or request.get("leader_id") or _reservation_attr(reservation, "leader_wallet")
+        trade_key = (
+            request.get("signal_id")
+            or ((order_row or {}).get("idempotency_key") if isinstance(order_row, dict) else None)
+            or _reservation_attr(reservation, "intent_key")
+            or order_id
+        )
+        if not condition_id or not token_id or not user_id or not trade_key:
+            return None
+
+        record = {
+            "trade_key": str(trade_key),
+            "user_id": str(user_id),
+            "leader_id": leader_id,
+            "tx_hash": str(request.get("signal_id") or trade_key),
+            "asset": str(token_id),
+            "condition_id": str(condition_id),
+            "order_id": str(order_id),
+            "reservation_id": str(_reservation_attr(reservation, "id") or ""),
+            "request": request,
+            "status": (order_row or {}).get("status") if isinstance(order_row, dict) else None,
+        }
+        return side, record
+
+    async def _lookup_order_by_reservation(reservation_id: str) -> dict[str, Any] | None:
+        order_lookup = getattr(context.orders_repo, "get_by_reservation_id", None)
+        if not callable(order_lookup):
+            return None
+        try:
+            order_row = await order_lookup(reservation_id)
+        except Exception:
+            return None
+        return order_row if isinstance(order_row, dict) else None
+
+    async def _lookup_order_by_order_id(order_id: str | None) -> dict[str, Any] | None:
+        if not order_id:
+            return None
+        order_lookup = getattr(context.orders_repo, "get_by_order_id", None)
+        if not callable(order_lookup):
+            return None
+        try:
+            order_row = await order_lookup(order_id)
+        except Exception:
+            return None
+        return order_row if isinstance(order_row, dict) else None
+
+    async def _reservation_is_released(reservation_id: str) -> bool:
+        if reservations_repo is None:
+            return False
+        try:
+            active = await reservations_repo.get_by_id(reservation_id)
+        except Exception:
+            return False
+        return active is None or str(getattr(active, "status", "")).lower() != "active"
+
+    async def _reconcile_linked_reservation_order(
+        *,
+        reservation: object,
+        order_id: str,
+        order_row: dict[str, Any] | None,
+    ) -> bool:
+        synthetic = _synthetic_trade_record(
+            reservation=reservation,
+            order_row=order_row,
+            order_id=order_id,
+        )
+        if synthetic is None:
+            return False
+        side, record = synthetic
+        try:
+            from orchestrators.trade_pipeline import get_reconciliation_service
+
+            reconciler = get_reconciliation_service(context)
+            applied = await reconciler.reconcile_trade_record(
+                record,
+                side,
+                confirm_fill=reconciler.confirm_fill,
+                pnl_tracker=context.pnl_tracker,
+                get_position=context.positions_repo.get_position,
+                logger=logger,
+                balance_regime=getattr(context, "balance_regime", None),
+            )
+            if applied:
+                await rehydrate_position_manager(context)
+            return applied
+        except Exception as exc:
+            logger.warning(
+                "reservation_expiry_linked_order_reconcile_failed | user=%s "
+                "reservation_id=%s order_id=%s error=%r",
+                context.user_id,
+                _reservation_attr(reservation, "id"),
+                order_id,
+                exc,
+            )
+            return False
+
+    async def _reconcile_expired_reservation(reservation_id: str) -> bool:
+        """Run canonical reconciliation before an expired reservation releases."""
+        try:
+            from orchestrators.trade_pipeline import reconcile_submitted_unconfirmed
+
+            trade_n = await reconcile_submitted_unconfirmed(context, max_age_seconds=0)
+            risk_n = await reconcile_unconfirmed_risk_orders(context)
+            if trade_n or risk_n:
+                await rehydrate_position_manager(context)
+        except Exception as exc:
+            logger.warning(
+                "reservation_expiry_reconcile_failed | user=%s reservation_id=%s error=%r",
+                context.user_id,
+                reservation_id,
+                exc,
+            )
+            return False
+
+        if reservations_repo is None:
+            return False
+
+        try:
+            active = await reservations_repo.get_by_id(reservation_id)
+        except Exception as exc:
+            logger.warning(
+                "reservation_expiry_lookup_failed | user=%s reservation_id=%s error=%r",
+                context.user_id,
+                reservation_id,
+                exc,
+            )
+            return False
+
+        if active is None or str(getattr(active, "status", "")).lower() != "active":
+            return True
+
+        linked_order = getattr(active, "order_id", None) or getattr(active, "venue_order_id", None)
+        order_row = await _lookup_order_by_reservation(reservation_id)
+        candidate_order_id = str(
+            linked_order or (order_row or {}).get("order_id") or ""
+        ).strip()
+        if candidate_order_id:
+            if order_row is None:
+                order_row = await _lookup_order_by_order_id(candidate_order_id)
+            await _reconcile_linked_reservation_order(
+                reservation=active,
+                order_id=candidate_order_id,
+                order_row=order_row,
+            )
+            return await _reservation_is_released(reservation_id)
+
+        try:
+            await reservation_service.release_terminal(
+                reservation_id,
+                reason="expired_orphan_no_order",
+            )
+        except Exception as exc:
+            logger.warning(
+                "reservation_expiry_orphan_release_failed | user=%s reservation_id=%s error=%r",
+                context.user_id,
+                reservation_id,
+                exc,
+            )
+            return False
+        return True
+
+    reservation_service.reconciler_callback = _reconcile_expired_reservation
+
+
 async def build_trading_context(
     user_state: UserRuntimeState,
     follow: UserFollowConfig,
     config: AppConfig,
     leaders_repo=None,
     readiness: ReadinessTracker | None = None,
+    trust_store=None,
 ) -> TradingContext:
+    leader_scorer = LeaderScoringService(config=config, trust_store=trust_store)
     context = TradingContext(
         user_id=user_state.user.user_id,
         wallet_address=user_state.user.wallet.funder_address,
@@ -440,6 +731,7 @@ async def build_trading_context(
         entry_permission_service=EntryPermissionService(user_state.risk_blocks_repo),
         execution_service=user_state.execution_service,
         leaders_repo=leaders_repo,
+        leader_scorer=leader_scorer,
         allocation_pct=follow.allocation_pct,
         buy_min_amount=config.sizing.buy_min_amount,
         buy_max_amount=min(config.sizing.buy_max_amount, follow.max_trade_usdc),
@@ -474,6 +766,7 @@ async def build_trading_context(
             getattr(coord, "position_coordinator", None) is context.position_coordinator
         ), "runtime_bootstrap: position_coordinator attach silently dropped"
         context.execution_coordinator = coord
+        _bind_reservation_runtime(context, coord)
     # PR7 — bind position drift service so the coordinator can check
     # ``is_scope_paused`` before submission.
     drift_svc = getattr(user_state, "position_drift_service", None)
@@ -543,6 +836,119 @@ async def startup_drift_check(
     return per_user
 
 
+async def hydrate_resolved_market_state(
+    *,
+    runtime_users: list[RuntimeUser],
+    user_states: dict[str, UserRuntimeState],
+) -> dict[str, int]:
+    """Boot-time gate: REST-query Polymarket's ``/markets/{condition_id}``
+    for every open position and mark resolved markets in the per-user
+    MarketStateStore.
+
+    Why:
+        The WSS ``market_resolved`` event only fires on live resolution.
+        A market that resolved while the bot was offline never re-emits the
+        event on reconnect, so the position would otherwise poll ``/price``
+        forever (the venue happily returns ``price=0`` indefinitely on a
+        resolved binary outcome).
+
+    The result feeds ``services/riskMonitor._is_token_resolved`` so neither
+    the periodic risk refresh nor the per-position stop-loss probe issues
+    HTTP requests for terminal positions.
+
+    Returns a dict mapping user_id → count of (token, condition) pairs
+    flagged resolved. Tokens already marked resolved by an earlier path
+    (WSS push, prior boot) are still incremented — the operation is
+    idempotent so the count reflects the boot survey, not a delta.
+    """
+    summary: dict[str, int] = {}
+    loop = asyncio.get_running_loop()
+
+    for runtime_user in runtime_users:
+        user_state = user_states.get(runtime_user.user_id)
+        if user_state is None:
+            continue
+        market_store = getattr(user_state, "market_store", None)
+        client = getattr(user_state, "client", None)
+        positions_repo = getattr(user_state, "positions_repo", None)
+        if market_store is None or client is None or positions_repo is None:
+            continue
+
+        try:
+            positions = list(
+                await positions_repo.list_open_positions(runtime_user.user_id) or []
+            )
+        except Exception as exc:
+            logger.warning(
+                "hydrate_resolved_market_state_list_failed | user=%s error=%r",
+                runtime_user.user_id, exc,
+            )
+            continue
+
+        tokens_by_condition: dict[str, list[str]] = {}
+        for pos in positions:
+            cond = str(getattr(pos, "condition_id", "") or "")
+            token = str(getattr(pos, "token_id", "") or "")
+            if not cond or not token:
+                continue
+            tokens_by_condition.setdefault(cond, []).append(token)
+
+        resolved_count = 0
+        # Sync SDK call must run in a thread; condition_ids are unique so
+        # this is bounded by len(positions) — cheap and one-shot at boot.
+        for cond, tokens in tokens_by_condition.items():
+            try:
+                market = await loop.run_in_executor(None, client.get_market, cond)
+            except Exception as exc:
+                # SDK raises (PolyApiException or similar) when the condition
+                # itself is unknown to Polymarket — typically a 404 on
+                # ``/markets/{cond}``. Treat that as terminal: if the venue
+                # no longer indexes the condition, every token under it is
+                # retired. We mark resolved here so the risk monitor stops
+                # probing them.
+                err_text = repr(exc).lower()
+                if "404" in err_text or "not_found" in err_text or "not found" in err_text:
+                    for token in tokens:
+                        try:
+                            market_store.mark_resolved(token, cond)
+                            resolved_count += 1
+                        except Exception:
+                            logger.debug("mark_resolved_failed", exc_info=True)
+                else:
+                    logger.debug(
+                        "hydrate_resolved_get_market_failed | cond=%s error=%r",
+                        cond, exc,
+                    )
+                continue
+            if not isinstance(market, dict):
+                continue
+            # Terminal signals per Polymarket OpenAPI:
+            #   - ``closed: true``  → resolved binary outcome decided.
+            #   - ``active: false`` → market suspended / not tradeable.
+            #   - ``archived: true`` → historical market (documented on
+            #     /simplified-markets responses; defensively check here too).
+            closed = bool(market.get("closed"))
+            inactive = market.get("active") is False
+            archived = bool(market.get("archived"))
+            if not (closed or inactive or archived):
+                continue
+            for token in tokens:
+                try:
+                    market_store.mark_resolved(token, cond)
+                    resolved_count += 1
+                except Exception:
+                    logger.debug("mark_resolved_failed", exc_info=True)
+
+        if resolved_count:
+            logger.info(
+                "hydrate_resolved_market_state | user=%s resolved=%d",
+                runtime_user.user_id, resolved_count,
+            )
+        summary[runtime_user.user_id] = resolved_count
+
+    return summary
+
+
 async def build_context_maps(
     runtime_users: list[RuntimeUser],
     user_states: dict[str, UserRuntimeState],
@@ -551,6 +957,7 @@ async def build_context_maps(
     *,
     leaders_repo=None,
     readiness: ReadinessTracker | None = None,
+    trust_store=None,
 ) -> tuple[dict[str, list[TradingContext]], dict[str, TradingContext]]:
     contexts_by_leader: dict[str, list[TradingContext]] = {leader: [] for leader in active_leaders}
     risk_contexts_by_user: dict[str, TradingContext] = {}
@@ -567,6 +974,7 @@ async def build_context_maps(
                 config,
                 leaders_repo=leaders_repo,
                 readiness=readiness,
+                trust_store=trust_store,
             )
             contexts_by_leader[leader].append(context)
             if context.user_id not in risk_contexts_by_user:

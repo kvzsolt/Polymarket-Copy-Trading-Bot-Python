@@ -77,6 +77,12 @@ def get_reconciliation_service(context: TradingContext) -> ReconciliationService
     consistent across trade and risk paths.
     """
     svc = context.extra.get("_reconciliation_service")
+    reservation_service = context.extra.get("reservation_service")
+    if reservation_service is None:
+        coordinator = getattr(context, "execution_coordinator", None)
+        reservation_service = getattr(coordinator, "reservation_service", None)
+        if reservation_service is not None:
+            context.extra["reservation_service"] = reservation_service
     if svc is None:
         svc = ReconciliationService(
             orders_repo=context.orders_repo,
@@ -86,9 +92,15 @@ def get_reconciliation_service(context: TradingContext) -> ReconciliationService
             risk_triggers_repo=getattr(context, "risk_triggers_repo", None),
             clob_gateway=context.extra.get("clob_gateway"),
             audit_logger=getattr(context, "audit_logger", None),
-            reservation_service=context.extra.get("reservation_service"),
+            reservation_service=reservation_service,
+            # Funder wallet is the dedup key for the ManualSync write-back.
+            # Falls back to context.wallet_address (the user's primary wallet)
+            # when no explicit funder is set.
+            funder_address=getattr(context, "wallet_address", None),
         )
         context.extra["_reconciliation_service"] = svc
+    elif getattr(svc, "reservation_service", None) is None and reservation_service is not None:
+        svc.reservation_service = reservation_service
     return svc
 
 
@@ -1323,7 +1335,7 @@ async def execute_trades(
     tick_size_by_token: dict[str, float] = {}
     market_data_stale_tokens: set[str] = set()
     market_data_stale_codes: dict[tuple[str, str], str] = {}
-    if normalized:
+    if normalized and _market_data_primary_source(context) != "rest_snapshot":
         (
             bundles_by_token,
             market_data_stale_tokens,
@@ -1344,6 +1356,8 @@ async def execute_trades(
                         market_data_stale_codes.setdefault(
                             (token_id, side), "market_data_stale"
                         )
+    else:
+        context.extra["_md_bundles_by_pair"] = {}
 
     for signal, raw in normalized:
         labels = {"user_id": context.user_id, "leader_id": leader_id}
@@ -1982,6 +1996,13 @@ async def execute_trades(
                     reason="copy_trade",
                     signal_id=signal.tx_hash,
                     condition_id=signal.condition_id,
+                    recovery_metadata={
+                        "source": "copy_trade",
+                        "order_type": "FAK",
+                        "price_limit": str(signal.price),
+                    },
+                    order_type="FAK",
+                    price_limit=Decimal(str(signal.price)),
                 )
             else:
                 pos = await context.positions_repo.get_position(context.user_id, signal.condition_id, token_id=signal.token_id)
@@ -2181,6 +2202,13 @@ async def execute_trades(
                     reason="leader_sell",
                     signal_id=signal.tx_hash,
                     condition_id=signal.condition_id,
+                    recovery_metadata={
+                        "source": "copy_trade",
+                        "order_type": "FAK",
+                        "price_limit": str(signal.price),
+                    },
+                    order_type="FAK",
+                    price_limit=Decimal(str(signal.price)),
                 )
 
             print_executing_strategy(signal.side)
