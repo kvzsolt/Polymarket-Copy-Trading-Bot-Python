@@ -33,6 +33,7 @@ Translation notes:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import uuid
 from collections.abc import Iterable
@@ -44,29 +45,23 @@ import asyncpg
 from domain.order_lifecycle import IntentReason, IntentSide, OrderIntent, Reservation
 
 
-# DL-05: ``hashtext()`` returns int32; casting to bigint spreads 2^32
-# values across the 2^64 advisory-lock space, so birthday collisions
-# appear at ~65k keys and serialise unrelated scopes. SHA-256 of the
-# bytea-encoded key gives a uniform 64-bit slot — take the first 8 bytes,
-# hex-encode, parse as a 64-bit signed integer via ``bit(64)::bigint``.
-# Same shape used in positions_repo so collisions stay symmetric across
-# both repos.
-_ADVISORY_LOCK_SQL = (
-    "SELECT pg_advisory_xact_lock("
-    "('x' || encode(substring(sha256($1::bytea), 1, 8), 'hex'))"
-    "::bit(64)::bigint)"
-)
+# DL-05: Advisory lock slot is a signed bigint. Hash the key to SHA-256 in
+# Python and take the first 8 bytes as a signed 64-bit int — uniform 2^64
+# slot distribution, no DB-side hash CPU cost, no asyncpg type confusion
+# (Python ``int`` maps natively to PG ``bigint``). Same shape used in
+# positions_repo so collisions stay symmetric across both repos.
+_ADVISORY_LOCK_SQL = "SELECT pg_advisory_xact_lock($1)"
 
 
-def _lock_key(key: str) -> bytes:
-    """Encode a lock key to bytes for the ``$1::bytea`` parameter.
+def _lock_key(key: str) -> int:
+    """Hash a lock-key string to a signed 64-bit int for ``pg_advisory_xact_lock``.
 
-    asyncpg does not implicitly cast ``str`` to ``bytea``; passing a bare
-    string to a ``bytea`` param raises ``DataError: a bytes-like object is
-    required, not 'str'``.  Encode as UTF-8 so Postgres receives the
-    correct wire type.
+    SHA-256 truncated to 8 bytes gives a uniform 2^64 slot distribution;
+    asyncpg sends Python ``int`` directly as PG ``bigint`` — no encoding
+    dance, no ``bytea`` cast surface.
     """
-    return key.encode("utf-8")
+    digest = hashlib.sha256(key.encode("utf-8")).digest()[:8]
+    return int.from_bytes(digest, "big", signed=True)
 
 
 class ReservationsRepo:

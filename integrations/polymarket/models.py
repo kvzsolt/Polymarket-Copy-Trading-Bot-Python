@@ -132,3 +132,4 @@ class MarketableOrderRequest:
     condition_id: str | None = None
     tick_size: Decimal | None = None
     neg_risk: bool | None = None
+    order_type: str | None = None

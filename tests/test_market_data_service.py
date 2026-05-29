@@ -873,6 +873,24 @@ class TestRequireExecutionSnapshot:
         assert exc.value.skip_code == "book_spread_wide"
 
     @pytest.mark.asyncio
+    async def test_spread_gate_disabled_still_allows_sell_with_bid_liquidity(self) -> None:
+        store = MarketStateStore()
+        gw = _gateway_returning(
+            _book(
+                {Decimal("0.06"): Decimal("100")},
+                {Decimal("0.95"): Decimal("100")},
+            )
+        )
+        svc = MarketDataService(
+            store, gw, policy=_rest_policy(rest_snapshot_max_spread_bps=0)
+        )
+
+        bundle = await svc.require_execution_snapshot(TOKEN, side="SELL")
+
+        assert bundle.source == MarketDataSource.REST_SNAPSHOT
+        assert bundle.quote.best_bid == Decimal("0.06")
+
+    @pytest.mark.asyncio
     async def test_total_budget_exceeded(self) -> None:
         store = MarketStateStore()
 

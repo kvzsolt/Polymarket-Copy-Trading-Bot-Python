@@ -1087,6 +1087,91 @@ def print_success(msg: str) -> None:
     console.print(f"✅ [success]{msg}[/success]")
 
 
+def print_manual_trade_detected(trade: dict) -> None:
+    """Rich-panel log for a detected manual (off-bot) trade on the funder wallet.
+
+    Mirrors ``print_new_trade_detected`` shape but with BUY=green/🛒 and
+    SELL=red/💵 to surface that the bot did NOT originate this trade.
+    """
+    side = str(trade.get("side") or "?").upper()
+    size = float(trade.get("size") or 0)
+    price = float(trade.get("price") or 0)
+    usdc = float(trade.get("usdcSize") or 0) or (size * price)
+    market = trade.get("title") or trade.get("market") or trade.get("slug") or "Unknown"
+    outcome = trade.get("outcome") or ""
+    tx_hash = trade.get("transactionHash") or trade.get("tx_hash") or ""
+    event_slug = trade.get("eventSlug") or trade.get("slug") or ""
+
+    is_buy = side == "BUY"
+    icon = "🛒" if is_buy else "💵"
+    border = "green" if is_buy else "red"
+
+    ts = time.strftime("%I:%M:%S %p")
+    console.print()
+    console.print(Rule(style=border))
+    console.print(f"  {icon} [bold {border}]MANUAL TRADE DETECTED[/bold {border}] | {side}  [muted][{ts}][/muted]")
+    console.print(Rule(style=border))
+    console.print()
+
+    lines = [
+        f"[bold]Market:[/bold]      {market}",
+    ]
+    if outcome:
+        lines.append(f"[bold]Outcome:[/bold]     {outcome}")
+    lines.extend([
+        f"[bold]Side:[/bold]        {side}",
+        f"[bold]Size:[/bold]        {size:.4f} tokens",
+        f"[bold]Price:[/bold]       {price:.4f}",
+        f"[bold]Value:[/bold]       [money]{format_usdc(usdc)}[/money]",
+    ])
+    if event_slug:
+        url = event_link(event_slug)
+        lines.append(f"[bold]Event:[/bold]       [link={url}]{url}[/link]")
+    if tx_hash:
+        url = tx_link(tx_hash)
+        lines.append(f"[bold]TX:[/bold]          [link={url}]{url}[/link]")
+
+    console.print(Panel(
+        "\n".join(lines),
+        title=f"{icon} [bold {border}]MANUAL TRADE DETECTED[/bold {border}]",
+        border_style=border,
+        padding=(1, 2),
+    ))
+    console.print()
+
+    # Structured grep-able line for JSONL sink — mirrors trade_pipeline patterns.
+    _file_logger = logging.getLogger("ManualSync")
+    _file_logger.info(
+        "manual_trade_detected | side=%s size=%.4f price=%.4f usdc=%.2f market=%s outcome=%s tx=%s",
+        side, size, price, usdc, market, outcome or "-", tx_hash or "-",
+    )
+
+
+def print_manual_sync_discrepancy(
+    market: str, real_size: float, tracked_size: float, action: str
+) -> None:
+    """Yellow Panel surfacing a venue↔DB size mismatch detected during manual sync."""
+    console.print()
+    console.print(Rule(style="yellow"))
+    console.print("  ⚖️  [bold yellow]SYNCHRONIZER | PARITY DISCREPANCY[/bold yellow]")
+    console.print(Rule(style="yellow"))
+    console.print()
+
+    lines = [
+        f"[bold]Asset:[/bold]       {market}",
+        f"[bold]Real-World:[/bold]  [success]{real_size:.4f}[/success] shares (proxy wallet)",
+        f"[bold]Database:[/bold]    [error]{tracked_size:.4f}[/error] shares (tracked sum)",
+        f"[bold]Resolution:[/bold]  [bold cyan]{action}[/bold cyan]",
+    ]
+    console.print(Panel(
+        "\n".join(lines),
+        title="⚖️ [bold yellow]SYNC DISCREPANCY[/bold yellow]",
+        border_style="yellow",
+        padding=(0, 2),
+    ))
+    console.print()
+
+
 def redact_error_detail(error: Any) -> str:
     if error is None:
         return "unknown_error"
@@ -1101,6 +1186,8 @@ def redact_error_detail(error: Any) -> str:
         return _HTTP_ERROR_CATEGORIES.get(status_code, f"http_{status_code}")
 
     lowered = error_str.lower()
+    if "poly_api_transport" in lowered or "connectionterminated" in lowered:
+        return "network_error"
     if "timeout" in lowered:
         return "timeout"
     if "rate limit" in lowered or "too many requests" in lowered:
@@ -1789,7 +1876,7 @@ def log_api_response(
 
     # Restore rich data_summary for safe fields (v5 behavior)
     _SAFE_DATA_FIELDS = (
-        "success", "orderID", "status", "error", "price", "size",
+        "success", "orderID", "order_id", "status", "error", "price", "size",
         "min_order_size", "transactionHash",
     )
     if isinstance(data, dict):

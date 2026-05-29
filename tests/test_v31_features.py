@@ -338,44 +338,52 @@ class TestPositionExitSystem(unittest.TestCase):
 
 class TestTraderDiscoveryScoring(unittest.TestCase):
 
-    def test_score_high_pnl(self):
-        from services.traderDiscoveryService import TraderDiscoveryService, TraderProfile
-        ds = TraderDiscoveryService()
-        p = TraderProfile(
-            wallet="0x1234567890abcdef1234567890abcdef12345678",
-            overall_gain=5_000_000, win_amount=6_000_000, loss_amount=-1_000_000,
-            win_rate=0.73, total_positions=200, active_positions=10,
-            event_count=80, total_current_value=50_000,
+    def test_falcon_quality_high_profile(self):
+        from services.discovery.candidate_scoring import falcon_quality_score
+
+        candidate = SimpleNamespace(
+            h_score=90,
+            roi_15d=125,
+            win_rate_15d=73,
+            sharpe_15d=4,
+            trajectory="improving",
         )
-        score = ds._score_trader(p)
+        score = falcon_quality_score(candidate)
         assert score > 0.5
         assert score <= 1.0
 
-    def test_score_loser(self):
-        from services.traderDiscoveryService import TraderDiscoveryService, TraderProfile
-        ds = TraderDiscoveryService()
-        p = TraderProfile(
-            wallet="0xabcdefabcdefabcdefabcdefabcdefabcdefabcd",
-            overall_gain=-500, win_amount=100, loss_amount=-600,
-            win_rate=0.30, total_positions=5, event_count=3,
-        )
-        self.assertLess(ds._score_trader(p), 0.3)
+    def test_falcon_quality_weak_profile(self):
+        from services.discovery.candidate_scoring import falcon_quality_score
 
-    def test_score_empty(self):
-        from services.traderDiscoveryService import TraderDiscoveryService, TraderProfile
-        ds = TraderDiscoveryService()
-        p = TraderProfile(wallet="0x0000000000000000000000000000000000000000")
-        assert ds._score_trader(p) == pytest.approx(0.0, abs=0.1)
+        candidate = SimpleNamespace(
+            h_score=5,
+            roi_15d=-50,
+            win_rate_15d=30,
+            sharpe_15d=-1,
+            trajectory="declining",
+        )
+        self.assertLess(falcon_quality_score(candidate), 0.3)
+
+    def test_copyability_score_empty(self):
+        from services.discovery.candidate_scoring import copyability_score
+
+        replay = SimpleNamespace(
+            copyable_signal_ratio=0.0,
+            copyable_notional_ratio=0.0,
+        )
+        assert copyability_score(replay) == pytest.approx(0.0)
 
     def test_pct_win_rate_normalization(self):
-        from services.traderDiscoveryService import TraderDiscoveryService, TraderProfile
-        ds = TraderDiscoveryService()
-        p = TraderProfile(
-            wallet="0x1234567890abcdef1234567890abcdef12345678",
-            overall_gain=100_000, win_amount=200_000, loss_amount=-100_000,
-            win_rate=73.3, total_positions=50, event_count=30,
+        from services.discovery.candidate_scoring import falcon_quality_score
+
+        candidate = SimpleNamespace(
+            h_score=50,
+            roi_15d=10,
+            win_rate_15d=73.3,
+            sharpe_15d=1,
+            trajectory="stable",
         )
-        assert ds._score_trader(p) > 0.3
+        assert falcon_quality_score(candidate) > 0.3
 
 
 # ═══════════════════════════════════════════════════════════════════════

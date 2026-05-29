@@ -205,3 +205,53 @@ class TestFailClosedStartup:
             )
             with pytest.raises(RuntimeError, match="V2 collateral readiness FAILED"):
                 await create_clob_client(private_key="0x" + "a" * 64, config=mock_cfg)
+
+    @pytest.mark.asyncio
+    @patch("services.collateral_readiness.check_collateral_readiness")
+    async def test_startup_derives_l2_creds_without_create_attempt(self, mock_check: AsyncMock) -> None:
+        from config.env import SignatureType, WalletConfig
+        from utils.createClobClient import create_clob_client
+        from types import SimpleNamespace
+        from unittest.mock import patch as _p
+
+        mock_check.return_value = CollateralStatus(
+            pusd_balance=Decimal("100"),
+            pusd_allowance_ctf=Decimal("1000"),
+            wallet_address="0x" + "a" * 40,
+            rpc_url="http://rpc",
+            ready=True,
+            failures=(),
+        )
+        mock_client = MagicMock()
+        mock_creds = MagicMock()
+        mock_client.derive_api_key.return_value = mock_creds
+        mock_cfg = SimpleNamespace(
+            clob=SimpleNamespace(
+                clob_v2_ready=True,
+            ),
+            network=SimpleNamespace(
+                pusd_contract_address="",
+                collateral_contract_address="",
+                ctf_exchange_v2_address="",
+            ),
+        )
+
+        with _p("utils.createClobClient.build_wallet_config") as mock_bwc, \
+             _p("utils.createClobClient.validate_wallet_config"), \
+             _p("utils.createClobClient.ClobClient", return_value=mock_client), \
+             _p("utils.createClobClient.detect_wallet_signature_type", return_value=(1, "EOA", "0x" + "a" * 40)):
+            mock_bwc.return_value = WalletConfig(
+                private_key="0x" + "a" * 64,
+                chain_id=137,
+                signature_type=SignatureType.EOA,
+                funder_address="0x" + "a" * 40,
+                polygon_rpc_url="http://localhost",
+            )
+
+            wrapper = await create_clob_client(private_key="0x" + "a" * 64, config=mock_cfg)
+
+        mock_client.create_api_key.assert_not_called()
+        mock_client.create_or_derive_api_key.assert_not_called()
+        mock_client.derive_api_key.assert_called_once()
+        mock_client.set_api_creds.assert_called_once_with(mock_creds)
+        assert wrapper.api_creds is mock_creds

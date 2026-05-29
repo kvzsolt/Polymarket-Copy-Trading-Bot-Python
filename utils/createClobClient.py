@@ -38,6 +38,31 @@ logger = get_logger("ClobClient")
 CLOB_HTTP_URL = "https://clob.polymarket.com"
 
 
+class _PriceTokenNotFound:
+    """Sentinel returned by ``get_price`` when the venue answers 404 on
+    ``/price?token_id=X``. Per Polymarket OpenAPI 404 means "No orderbook
+    exists for the requested token id" — i.e. the token is retired /
+    market resolved. Callers must treat this as terminal (mark the token
+    resolved upstream), distinct from ``None`` which signals transient
+    venue unhealth (5xx, timeout, malformed payload). The sentinel is
+    intentionally a unique object, not a string, so identity comparison
+    via ``is`` is unambiguous.
+    """
+
+    _instance: "_PriceTokenNotFound | None" = None
+
+    def __new__(cls) -> "_PriceTokenNotFound":
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    def __repr__(self) -> str:
+        return "PRICE_TOKEN_NOT_FOUND"
+
+
+PRICE_TOKEN_NOT_FOUND = _PriceTokenNotFound()
+
+
 def configure_from_appconfig(config: Any) -> None:
     """Override module-level CLOB constants from a typed AppConfig.
 
@@ -84,6 +109,23 @@ def _safe_decimal(value: Any) -> Decimal | None:
         return Decimal(str(value))
     except Exception:
         return None
+
+
+def _response_order_id(response: Any) -> Any:
+    if not isinstance(response, dict):
+        return None
+    return response.get("orderID") or response.get("order_id") or response.get("id")
+
+
+def _error_body_order_id(raw_body: str) -> str | None:
+    for marker in ('"orderID":"', '"orderID": "', "'orderID': '", "'orderID':'"):
+        if marker not in raw_body:
+            continue
+        start = raw_body.find(marker) + len(marker)
+        end = raw_body.find(marker[-1], start)
+        if end > start:
+            return raw_body[start:end]
+    return None
 
 
 def quantize_to_tick(
@@ -346,6 +388,21 @@ class ClobClientWrapper:
             session = _get_session()
             async with session.get(price_url) as resp:
                 data = await resp.json()
+                if resp.status == 404:
+                    # Per Polymarket OpenAPI: 404 = "No orderbook exists for
+                    # the requested token id". Terminal signal — token is
+                    # retired / market resolved. Distinct from 5xx (transient
+                    # venue unhealth) which still returns None. Log once at
+                    # debug, no Rich error panel; risk monitor handles the
+                    # mark_resolved side-effect.
+                    log_api_response(
+                        logger,
+                        method="GET",
+                        url=price_url,
+                        status=resp.status,
+                        error="token_not_found",
+                    )
+                    return PRICE_TOKEN_NOT_FOUND
                 if resp.status != 200:
                     log_api_response(
                         logger,
@@ -432,7 +489,7 @@ class ClobClientWrapper:
             result = {
                 "success": True,
                 "data": response,
-                "orderID": response.get("orderID") if isinstance(response, dict) else None,
+                "orderID": _response_order_id(response),
                 "status": response.get("status") if isinstance(response, dict) else None,
             }
             log_api_response(
@@ -461,10 +518,20 @@ class ClobClientWrapper:
 
             # Build a human-friendly error code + detail for the TUI.
             friendly_error = redacted_error
+            terminal_status = "failed"
             if raw_body:
                 # Heuristic: surface common CLOB rejections with their key line.
                 lowered = raw_body.lower()
-                if "lower than the minimum" in lowered or "minimum:" in lowered:
+                if "no orders found to match with fak order" in lowered:
+                    friendly_error = f"fak_no_match | {raw_body}"
+                    terminal_status = "cancelled"
+                elif "fak orders are partially filled or killed if no match is found" in lowered:
+                    friendly_error = f"fak_no_match | {raw_body}"
+                    terminal_status = "cancelled"
+                elif "order couldn't be fully filled" in lowered:
+                    friendly_error = f"order_not_fully_fillable | {raw_body}"
+                    terminal_status = "cancelled"
+                elif "lower than the minimum" in lowered or "minimum:" in lowered:
                     friendly_error = f"size_below_min | {raw_body}"
                 elif "not enough balance" in lowered or "allowance" in lowered:
                     friendly_error = f"insufficient_balance | {raw_body}"
@@ -512,6 +579,9 @@ class ClobClientWrapper:
                     "invalid order",
                     "invalid payload",
                     "crosses the book",
+                    "no orders found to match with fak order",
+                    "fak orders are partially filled or killed if no match is found",
+                    "order couldn't be fully filled",
                     "banned",
                     "closed only",
                     "not enough balance",
@@ -521,6 +591,8 @@ class ClobClientWrapper:
             )
             return {
                 "success": False,
+                "status": terminal_status,
+                "orderID": _error_body_order_id(raw_body),
                 "error": friendly_error,
                 "raw_error": raw_body,
                 "ambiguous_post_failure": is_ambiguous,
@@ -540,7 +612,7 @@ class ClobClientWrapper:
             result = {
                 "success": True,
                 "data": response,
-                "orderID": response.get("orderID") if isinstance(response, dict) else None,
+                "orderID": _response_order_id(response),
                 "status": response.get("status") if isinstance(response, dict) else None,
             }
             log_api_response(
@@ -628,7 +700,11 @@ async def create_clob_client(
         signature_type=int(runtime_cfg.signature_type),
         funder=(runtime_cfg.funder_address if runtime_cfg.signature_type != SignatureType.EOA else None),
     )
-    user_api_creds = client.create_or_derive_api_key()
+    # L1 signer client -> derive existing L2/HMAC credentials -> enable L2.
+    # Avoid ``create_or_derive_api_key()`` because the SDK tries
+    # ``create_api_key()`` first and logs a noisy non-fatal 400 when a key
+    # already exists.
+    user_api_creds = client.derive_api_key()
     client.set_api_creds(user_api_creds)
     logger.info(
         "CLOB client ready",

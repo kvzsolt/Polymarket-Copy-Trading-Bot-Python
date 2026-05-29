@@ -62,14 +62,25 @@ class TestRequiredMinimum:
         assert report["fee_rate_bps"] == 0
 
     @pytest.mark.asyncio
-    async def test_missing_exchange_address_fails_closed(self):
+    async def test_missing_exchange_address_falls_back_to_sdk_config(self):
+        """When the SDK client does not expose ``exchange_address`` as an
+        instance attribute, the probe falls back to
+        ``py_clob_client_v2.config.get_contract_config(137)`` — the canonical
+        source of truth for Polygon-mainnet contract addresses. This is the
+        real shape of py-clob-client-v2: addresses live in the config
+        module, not on the client. ``sdk_available`` stays True because the
+        fallback populates a valid Polymarket-v2 exchange address.
+        """
         gw = _make_gateway(sdk_attrs={
             "chain_id": 137,
             "create_market_order": lambda **kw: None,
         })
         report = await gw.check_compatibility()
-        assert report["sdk_available"] is False
-        assert "exchange_address" in (report["error"] or "")
+        # Fallback fills exchange_address from get_contract_config(137).
+        # Polymarket v2 canonical exchange on Polygon mainnet.
+        assert report["exchange_address"] == "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E"
+        assert report["sdk_available"] is True
+        assert report["error"] is None
 
     @pytest.mark.asyncio
     async def test_wrong_chain_id_fails_closed(self):

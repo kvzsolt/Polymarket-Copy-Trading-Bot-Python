@@ -372,10 +372,17 @@ class TestExecutionService:
     @pytest.mark.asyncio
     async def test_reconciler_has_confirm_fill(self):
         """ReconciliationService.confirm_fill polls the CLOB gateway (issue #71)."""
+        from decimal import Decimal
+        from integrations.polymarket.models import VenueOrderState
         from services.execution.reconciliation_service import ReconciliationService
 
-        async def mock_get_order(order_id: str) -> dict:
-            return {"status": "filled", "size_matched": "3.5", "avg_price": "0.52"}
+        async def mock_get_order(order_id: str):
+            return VenueOrderState(
+                order_id=order_id,
+                status="filled",
+                filled_size=Decimal("3.5"),
+                avg_fill_price=Decimal("0.52"),
+            )
 
         mock_gw = SimpleNamespace(get_order=mock_get_order)
         svc = ReconciliationService(
@@ -387,6 +394,33 @@ class TestExecutionService:
         result = await svc.confirm_fill("order-42")
         assert result["status"] == "filled"
         assert result["size_matched"] == "3.5"
+        assert result["avg_price"] == "0.52"
+
+    @pytest.mark.asyncio
+    async def test_reconciler_backs_off_after_transient_confirm_fill_error(self):
+        from integrations.polymarket.errors import VenueUnavailableError
+        from services.execution.reconciliation_service import ReconciliationService
+
+        calls = 0
+
+        async def mock_get_order(order_id: str):
+            nonlocal calls
+            calls += 1
+            raise VenueUnavailableError("poly_api_transport: PolyApiException")
+
+        svc = ReconciliationService(
+            orders_repo=SimpleNamespace(),
+            fills_repo=SimpleNamespace(),
+            positions_repo=SimpleNamespace(),
+            clob_gateway=SimpleNamespace(get_order=mock_get_order),
+        )
+
+        first = await svc.confirm_fill("order-1")
+        second = await svc.confirm_fill("order-2")
+
+        assert first["status"] == "poll_unavailable"
+        assert second["status"] == "poll_unavailable"
+        assert calls == 1
 
     @pytest.mark.asyncio
     async def test_duplicate_idempotency_is_ignored(self):

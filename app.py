@@ -50,6 +50,7 @@ from orchestrators.runtime_bootstrap import (
     configured_leaders,
     ensure_runtime_follows,
     fetch_live_positions,
+    hydrate_resolved_market_state,
     startup_reconcile_unconfirmed,
 )
 from orchestrators.runtime_discovery import (
@@ -187,6 +188,7 @@ async def _refresh_contexts_for_new_leaders(
     leaders_repo: LeadersRepo,
     config,
     readiness,
+    trust_store=None,
 ) -> list[str]:
     started_wallets: list[str] = []
     ensure_runtime_follows(runtime_users, new_wallets, config)
@@ -210,6 +212,7 @@ async def _refresh_contexts_for_new_leaders(
                 config,
                 leaders_repo=leaders_repo,
                 readiness=readiness,
+                trust_store=trust_store,
             )
             contexts_by_leader[wallet].append(context)
 
@@ -470,12 +473,46 @@ def _build_reconcile_wake_closure(context):
     return _wake
 
 
+def _build_risk_cache_evict_closure(context):
+    """Build a sync callable that evicts a token from the per-context
+    ``RiskPriceCache`` so a WSS fill on a dormant (zero-bid) market re-arms
+    the price probe immediately. Returns None when the cache is not yet
+    constructed; the runtime treats None as "no risk cache wired".
+    """
+
+    def _evict(token_id: str) -> None:
+        cache = context.extra.get("risk_price_cache")
+        if cache is None:
+            return
+        try:
+            cache.evict(token_id)
+        except Exception:
+            # Cache is best-effort hygiene; never let an evict raise into
+            # the WSS message loop.
+            return
+
+    return _evict
+
+
+def _build_market_token_subscribe_closure(runtime: MarketDataRuntime):
+    """Return a user-fill hook that subscribes newly seen tokens to MarketWS."""
+
+    async def _subscribe(token_id: str) -> None:
+        token_id = str(token_id or "").strip()
+        if not token_id:
+            return
+        await runtime.subscribe_tokens([token_id])
+
+    return _subscribe
+
+
 async def _start_user_data_runtimes(
     *,
     runtime_users: list[RuntimeUser],
     user_states: dict[str, UserRuntimeState],
     readiness,
     risk_contexts_by_user: dict[str, "TradingContext"] | None = None,
+    market_data_runtimes: dict[str, MarketDataRuntime] | None = None,
 ) -> list[UserDataRuntime]:
     """Start user WSS runtimes.
 
@@ -515,10 +552,19 @@ async def _start_user_data_runtimes(
         api_creds = _user_ws_api_creds(user_state)
 
         wake_closure = None
+        risk_cache_evict = None
+        market_token_subscribe = None
         if risk_contexts_by_user is not None:
             user_context = risk_contexts_by_user.get(runtime_user.user_id)
             if user_context is not None:
                 wake_closure = _build_reconcile_wake_closure(user_context)
+                risk_cache_evict = _build_risk_cache_evict_closure(user_context)
+        if market_data_runtimes is not None:
+            market_runtime = market_data_runtimes.get(runtime_user.user_id)
+            if market_runtime is not None:
+                market_token_subscribe = _build_market_token_subscribe_closure(
+                    market_runtime
+                )
 
         runtime = UserDataRuntime(
             market_store=market_store,
@@ -526,6 +572,9 @@ async def _start_user_data_runtimes(
             api_creds=api_creds,
             user_id=runtime_user.user_id,
             on_reconcile_signal=wake_closure,
+            manual_sync_service=getattr(user_state, "manual_sync_service", None),
+            on_risk_cache_evict=risk_cache_evict,
+            on_market_token_seen=market_token_subscribe,
         )
 
         await runtime.start()
@@ -808,6 +857,7 @@ async def main():
         application.config,
         leaders_repo=leaders_repo,
         readiness=application.readiness,
+        trust_store=application.trust_store,
     )
 
     monitored_leaders = [
@@ -823,21 +873,6 @@ async def main():
             extra={"reason": "no_user_follows_active_leaders"},
         )
         metrics.inc("no_leaders_monitored_total")
-
-    market_data_runtimes = await _start_market_data_runtimes(
-        runtime_users=runtime_users,
-        user_states=user_states,
-        live_positions_by_user=live_positions_by_user,
-        contexts_by_leader=contexts_by_leader,
-        readiness=application.readiness,
-        config=application.config,
-    )
-
-    _attach_market_data_runtime_to_contexts(
-        contexts_by_leader=contexts_by_leader,
-        risk_contexts_by_user=risk_contexts_by_user,
-        runtimes_by_user=market_data_runtimes,
-    )
 
     # CLAUDE.md non-negotiable: startup reconciliation MUST run before risk /
     # trade loops AND before the user WSS attaches its on_reconcile_signal
@@ -864,16 +899,36 @@ async def main():
     else:
         application.readiness.update(reconciler_ok=True)
 
-    # User WSS runtimes are started AFTER reconciler readiness is set so the
-    # on_reconcile_signal closure cannot fire on still-pending orders.
-    user_data_runtimes = await _start_user_data_runtimes(
-        runtime_users=runtime_users,
-        user_states=user_states,
-        readiness=application.readiness,
-        risk_contexts_by_user=risk_contexts_by_user,
-    )
+    # Boot ordering (read carefully — the race fix lives here):
+    #
+    # 1. ``manual_sync.initial_sync`` seeds positions from the venue's
+    #    ``data-api /positions`` snapshot, excluding zero-value stale rows.
+    # 2. ``startup_drift_check`` validates canonical DB state against live
+    #    truth and timestamps every prune in ``_prune_timestamps``.
+    # 3. ``hydrate_resolved_market_state`` runs LAST: marks resolved /
+    #    archived / inactive markets in MarketStateStore so the risk
+    #    monitor short-circuits 404-prone tokens.
+    # 4. ``_start_user_data_runtimes`` finally attaches the WSS. When auth
+    #    triggers ``manual_sync.trigger_sync``, the upsert path now sees
+    #    the drift prune timestamps and honours the holdoff — so the
+    #    eventually-consistent data-api cannot resurrect what drift just
+    #    pruned, which is what produced the /price 404 + breaker loop.
+    for runtime_user in runtime_users:
+        user_state = user_states.get(runtime_user.user_id)
+        manual_sync = getattr(user_state, "manual_sync_service", None) if user_state else None
+        if manual_sync is None:
+            continue
+        try:
+            await manual_sync.initial_sync()
+        except Exception as exc:
+            logger.warning(
+                "manual_sync_initial_failed | user=%s error=%r",
+                runtime_user.user_id, exc,
+            )
 
-    # PR7 — proactive position drift sweep. Must complete before monitors start.
+    # PR7 — proactive position drift sweep. Must complete before monitors
+    # start AND before the user WSS attaches so its first auth-triggered
+    # manual_sync sees the prune timestamps.
     from orchestrators.runtime_bootstrap import startup_drift_check
 
     drift_per_user = await startup_drift_check(
@@ -881,6 +936,59 @@ async def main():
         user_states=user_states,
         config=application.config,
         readiness=application.readiness,
+    )
+
+    # Boot-time resolved-market gate. Catches markets that resolved /
+    # archived / went inactive while the bot was offline (WSS
+    # ``market_resolved`` only fires on live resolution). Runs AFTER
+    # initial_sync + drift_check so the position set is stable.
+    # Best-effort: a failure here logs and the runtime continues; the
+    # dormant-token cache + 404 sentinel still bound traffic.
+    try:
+        await hydrate_resolved_market_state(
+            runtime_users=runtime_users,
+            user_states=user_states,
+        )
+    except Exception as exc:
+        logger.warning(
+            "hydrate_resolved_market_state_failed",
+            extra={"error": redact_error_detail(exc)},
+        )
+
+    # Start market-data WSS only after portfolio/database convergence. Starting
+    # it earlier can subscribe/probe stale tokens that manual_sync has not yet
+    # filtered and drift has not yet pruned.
+    live_positions_by_user = {}
+    for runtime_user in runtime_users:
+        live_positions_by_user[runtime_user.user_id] = await fetch_live_positions(
+            runtime_user.wallet.funder_address
+        )
+
+    market_data_runtimes = await _start_market_data_runtimes(
+        runtime_users=runtime_users,
+        user_states=user_states,
+        live_positions_by_user=live_positions_by_user,
+        contexts_by_leader=contexts_by_leader,
+        readiness=application.readiness,
+        config=application.config,
+    )
+
+    _attach_market_data_runtime_to_contexts(
+        contexts_by_leader=contexts_by_leader,
+        risk_contexts_by_user=risk_contexts_by_user,
+        runtimes_by_user=market_data_runtimes,
+    )
+
+    # User WSS runtimes are started AFTER reconciler readiness is set AND
+    # after drift_check populated prune timestamps so on_reconcile_signal
+    # + manual_sync.trigger_sync(reason="wss_authenticated") respect the
+    # holdoff window.
+    user_data_runtimes = await _start_user_data_runtimes(
+        runtime_users=runtime_users,
+        user_states=user_states,
+        readiness=application.readiness,
+        risk_contexts_by_user=risk_contexts_by_user,
+        market_data_runtimes=market_data_runtimes,
     )
     if drift_per_user and not all(drift_per_user.values()):
         unresolved = [u for u, ok in drift_per_user.items() if not ok]
@@ -1008,6 +1116,7 @@ async def main():
             leaders_repo=leaders_repo,
             config=application.config,
             readiness=application.readiness,
+            trust_store=application.trust_store,
         )
 
         monitored_leader_count = len(
@@ -1088,13 +1197,16 @@ async def main():
     discovery_task = None
 
     if application.config.discovery.enable_trader_discovery:
+        dynamic_monitoring_enabled = bool(
+            application.config.discovery.discovery_dynamic_monitoring_enabled
+        )
         discovery_task = asyncio.create_task(
             _discovery_refresh_loop(
                 registry,
                 configured,
                 refresh_interval,
-                leaders_repo=leaders_repo,
-                on_new_leaders=_on_new_leaders,
+                leaders_repo=leaders_repo if dynamic_monitoring_enabled else None,
+                on_new_leaders=_on_new_leaders if dynamic_monitoring_enabled else None,
                 already_monitored=monitored_set,
             )
         )

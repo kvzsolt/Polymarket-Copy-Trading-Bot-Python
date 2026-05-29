@@ -19,10 +19,24 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 
 from config.app_config import AppConfig, load_config
+from decimal import Decimal
+from integrations.falcon.client import FalconClient
+from integrations.polymarket.history_client import PolymarketHistoryClient
 from orchestrators.leader_registry import LeaderRegistry
 from services.healthServer import ReadinessTracker
+from services.discovery.candidate_classifier import CandidateClassifier
+from services.discovery.candidate_scoring import CandidateScoringService
+from services.discovery.balance_provider import build_wallet_balance_provider
+from services.discovery.copyability_replay import CopyabilityReplayService
+from services.discovery.falcon_candidate_service import FalconCandidateService
+from services.discovery.falcon_recent_state_service import FalconRecentStateService
+from services.discovery.ingestion_service import IngestionService
+from services.discovery.leader_trust_store import LeaderTrustStore
+from services.discovery.polymarket_history_backfill import PolymarketHistoryBackfill
+from services.discovery.signal_grouper import SignalGrouper
 from services.traderDiscoveryService import TraderDiscoveryService
 from storage.postgres.connection import init_pool
+from storage.postgres.discovery_repo import DiscoveryRepo
 from storage.postgres.leaders_repo import LeadersRepo
 from storage.postgres.migrations import apply_migrations as apply_pg_migrations
 from utils.logger import get_logger
@@ -38,6 +52,7 @@ class Application:
     readiness: ReadinessTracker
     leaders_repo: LeadersRepo
     discovery_service: TraderDiscoveryService
+    trust_store: LeaderTrustStore
     registry: LeaderRegistry
 
 
@@ -80,7 +95,41 @@ async def build_app(env: Mapping[str, str] | None = None) -> Application:
     readiness.update(db_ok=True)
 
     leaders_repo = LeadersRepo(pool)
-    discovery_service = TraderDiscoveryService()
+    discovery_repo = DiscoveryRepo(pool)
+    trust_store = LeaderTrustStore()
+    await trust_store.refresh_from_repo(discovery_repo)
+    ingestion = IngestionService(discovery_repo)
+    falcon_client = FalconClient(
+        api_url=config.discovery.falcon_api_url,
+        token=config.discovery.falcon_api_token,
+    )
+    history_client = PolymarketHistoryClient()
+    discovery_service = TraderDiscoveryService(
+        config=config,
+        falcon_candidates=FalconCandidateService(falcon_client, config),
+        history_backfill=PolymarketHistoryBackfill(
+            client=history_client,
+            ingestion=ingestion,
+            config=config,
+        ),
+        discovery_repo=discovery_repo,
+        evaluation_repo=discovery_repo,
+        grouper=SignalGrouper(
+            window_seconds=config.discovery.discovery_signal_group_window_seconds,
+            max_gap_seconds=config.discovery.discovery_signal_group_max_gap_seconds,
+            min_group_notional_usdc=Decimal(
+                str(config.discovery.discovery_min_group_notional_usdc)
+            ),
+        ),
+        classifier=CandidateClassifier(config),
+        replay_service=CopyabilityReplayService(
+            config=config,
+            balance_provider=build_wallet_balance_provider(config),
+        ),
+        scoring_service=CandidateScoringService(config),
+        recent_state_service=FalconRecentStateService(falcon_client),
+        trust_store=trust_store,
+    )
     registry = LeaderRegistry(
         discovery_service=discovery_service,
         leaders_repo=leaders_repo,
@@ -94,5 +143,6 @@ async def build_app(env: Mapping[str, str] | None = None) -> Application:
         readiness=readiness,
         leaders_repo=leaders_repo,
         discovery_service=discovery_service,
+        trust_store=trust_store,
         registry=registry,
     )

@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
-from decimal import Decimal
+from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP
 from typing import Any
 
 # Lazy imports for py-clob-client-v2 — SDK may not be installed in test/lint environments.
@@ -36,6 +36,7 @@ except ImportError:  # pragma: no cover
         GTC = "GTC"
         GTD = "GTD"
         FOK = "FOK"
+        FAK = "FAK"
 
     from dataclasses import dataclass
 
@@ -58,6 +59,7 @@ except ImportError:  # pragma: no cover
 from integrations.polymarket.errors import (
     VenueAuthError,
     VenueInvalidOrderError,
+    VenueOrderNotFoundError,
     VenueRateLimitError,
     VenueUnavailableError,
 )
@@ -107,11 +109,12 @@ except (ImportError, Exception):  # pragma: no cover
 # Constants
 # ---------------------------------------------------------------------------
 
-# Polymarket py-clob-client-v2 ROUNDING_CONFIG fixes order size precision to
-# 2 decimals regardless of the market's price tick_size (which only affects
-# price precision: "0.1" | "0.01" | "0.001" | "0.0001"). Quantizing size
-# with the price tick is incorrect — see PR #105 review.
-_SIZE_QUANTIZATION: str = "0.01"
+# Polymarket py-clob-client-v2 ROUNDING_CONFIG separates price, limit-order
+# size, and market-order amount precision. Context7/docs example:
+# ROUNDING_CONFIG["0.01"] == RoundConfig(price=2, size=2, amount=4).
+# Marketable orders use MarketOrderArgs.amount: USDC for BUY, shares for SELL.
+_MARKET_ORDER_AMOUNT_QUANTIZATION: str = "0.0001"
+_MARKET_ORDER_AMOUNT_STEP = Decimal(_MARKET_ORDER_AMOUNT_QUANTIZATION)
 
 
 # ---------------------------------------------------------------------------
@@ -127,6 +130,40 @@ def _safe_decimal(value: Any) -> Decimal | None:
         return None
 
 
+def _quantize_marketable_amount_to_float(value: Decimal, side: str) -> float:
+    """Quantize SDK MarketOrderArgs.amount without treating normal 4dp
+    rounding as a terminal order error.
+
+    BUY amount is USDC spend, so nearest 4dp preserves the intended notional.
+    SELL amount is shares, so round down to avoid submitting more shares than
+    the bot actually holds after venue fills with 4+ decimal precision.
+    """
+    if value <= 0:
+        raise ValueError(f"marketable amount must be positive, got {value}")
+
+    rounding = ROUND_DOWN if str(side).upper() == SELL else ROUND_HALF_UP
+    rounded = value.quantize(_MARKET_ORDER_AMOUNT_STEP, rounding=rounding)
+    if rounded <= 0:
+        raise ValueError(
+            f"marketable amount rounds to zero (original={value}, "
+            f"step={_MARKET_ORDER_AMOUNT_STEP})"
+        )
+
+    delta = abs(value - rounded)
+    if delta > Decimal("0"):
+        logger.info(
+            "SDK_boundary_marketable_amount_conversion | side=%s original=%s "
+            "rounded=%s step=%s delta=%s",
+            str(side).upper(),
+            str(value),
+            str(rounded),
+            str(_MARKET_ORDER_AMOUNT_STEP),
+            str(delta),
+        )
+
+    return float(rounded)
+
+
 def _classify_error(exc: Exception) -> tuple[bool, str]:
     """Classify an exception as (retryable, reason).
 
@@ -136,6 +173,7 @@ def _classify_error(exc: Exception) -> tuple[bool, str]:
     """
     exc_name = type(exc).__name__.lower()
     msg = str(exc).lower()
+    status_code = getattr(exc, "status_code", None) or getattr(exc, "statusCode", None)
 
     # Timeout / connection errors are ambiguous (order may have landed).
     # Match on either the exception type name OR the message — generic
@@ -146,7 +184,19 @@ def _classify_error(exc: Exception) -> tuple[bool, str]:
     if any(
         kw in exc_name for kw in ("timeout", "connectionerror", "connectionreset", "connectionterminated", "disconnected")
     ) or any(
-        kw in msg for kw in ("timeout", "connection reset", "connection lost", "connection refused", "server disconnected", "connection terminated", "connection closed")
+        kw in msg for kw in (
+            "timeout",
+            "connection reset",
+            "connectionreset",
+            "connection lost",
+            "connection refused",
+            "server disconnected",
+            "connection terminated",
+            "connectionterminated",
+            "connection closed",
+            "remote protocol",
+            "network_error",
+        )
     ):
         return True, "timeout_or_connection"
 
@@ -177,11 +227,25 @@ def _classify_error(exc: Exception) -> tuple[bool, str]:
         return False, "invalid_order"
 
     # 5xx / server errors — include status code in reason when available.
-    status_code = getattr(exc, "status_code", None) or getattr(exc, "statusCode", None)
     if status_code in (500, 502, 503, 504):
         return True, f"server_error_{status_code}"
     if any(kw in msg for kw in ("500", "502", "503", "504", "internal server", "bad gateway", "service unavailable", "gateway timeout")):
         return True, "server_error"
+
+    # py-clob-client-v2 collapses every httpx transport failure (RemoteProtocol
+    # "Server disconnected", ConnectError, timeouts) into a bare
+    # ``PolyApiException(error_msg="Request exception!")`` whose ``status_code``
+    # is None — the original detail is discarded by the SDK before we see it
+    # (http_helpers/helpers.py). A real HTTP rejection ALWAYS carries a
+    # status_code, so ``PolyApiException`` + ``status_code is None`` is, by the
+    # SDK's own construction, a network-level transport failure. This mirrors
+    # the SDK's internal ``_is_transient_error`` heuristic. Classify it as
+    # retryable transport so reconciliation backs off / retries instead of
+    # spamming unknown-classification errors every poll. (Kept AFTER the
+    # auth/invalid-order branches so a future SDK that sets a terminal
+    # error_msg is still caught by those explicit checks first.)
+    if exc_name == "polyapiexception" and status_code is None:
+        return True, "poly_api_transport"
 
     return False, "unknown"
 
@@ -240,13 +304,19 @@ def _build_submit_result(result: dict) -> VenueSubmitResult:
     """
     data = result.get("data") if isinstance(result.get("data"), dict) else None
 
-    def _pick(key: str) -> object | None:
-        nested = data.get(key) if data is not None else None
-        return result.get(key) if nested is None else nested
+    def _pick_any(*keys: str) -> object | None:
+        for key in keys:
+            nested = data.get(key) if data is not None else None
+            if nested is not None:
+                return nested
+            value = result.get(key)
+            if value is not None:
+                return value
+        return None
 
     success = bool(result.get("success", False))
-    order_id = _pick("orderID")
-    status = _pick("status")
+    order_id = _pick_any("orderID", "order_id", "id")
+    status = _pick_any("status")
     error = result.get("error")
 
     return VenueSubmitResult(
@@ -301,6 +371,33 @@ class ClobV2Gateway:
             }
         except Exception as exc:
             logger.error("get_market_info failed for %s (%s)", token_id, redact_error_detail(exc))
+            _raise_classified(exc)
+
+    async def get_execution_metadata(self, token_id: str) -> dict[str, Any]:
+        """Fetch only order-construction metadata, without an orderbook snapshot."""
+        client = self._require_raw_client()
+        loop = asyncio.get_running_loop()
+        try:
+            tick_size_raw, neg_risk_raw = await asyncio.gather(
+                loop.run_in_executor(None, lambda: client.get_tick_size(token_id)),
+                loop.run_in_executor(None, lambda: client.get_neg_risk(token_id)),
+            )
+            tick_size = _safe_decimal(tick_size_raw)
+            if tick_size is None or tick_size <= 0:
+                raise VenueInvalidOrderError(f"invalid tick_size for {token_id}: {tick_size_raw!r}")
+            return {
+                "token_id": token_id,
+                "tick_size": str(tick_size),
+                "neg_risk": bool(neg_risk_raw),
+            }
+        except (VenueAuthError, VenueInvalidOrderError, VenueRateLimitError, VenueUnavailableError):
+            raise
+        except Exception as exc:
+            logger.error(
+                "get_execution_metadata failed for %s (%s)",
+                token_id,
+                redact_error_detail(exc),
+            )
             _raise_classified(exc)
 
     # --- Order book ------------------------------------------------------------
@@ -398,22 +495,16 @@ class ClobV2Gateway:
         price_limit = request.price_limit
         if price_limit is None:
             raise VenueInvalidOrderError("price_limit is required for marketable orders")
+        order_type = request.order_type or getattr(OrderType, "FOK", "FOK")
 
         # Canonical Decimal→float conversion at the SDK boundary.
-        # ``quantize_and_convert_to_float`` rounds to the nearest tick and
-        # rejects (raises) if the rounding delta is suspiciously large.
-        # This is intentional: silently dropping precision at this boundary
-        # is the root cause of audit issue #92.
-        #
-        # PR #105 review (Cubic P1): ``tick_size`` is the *price* precision
-        # ("0.1" | "0.01" | "0.001" | "0.0001" per Polymarket SDK). Order
-        # *size* always uses 2-decimal precision regardless of the market's
-        # price tick — quantizing size with a coarse price tick (e.g. "0.1")
-        # rejects valid sizes like 10.55. Use the fixed SDK size step here.
+        # ``MarketOrderArgs.amount`` is not price-tick sized. Per SDK docs,
+        # market-order amount precision is 4 decimals; price_limit still uses
+        # the market tick.
         try:
-            quantized_size = quantize_and_convert_to_float(
+            quantized_size = _quantize_marketable_amount_to_float(
                 Decimal(str(request.size)),
-                _SIZE_QUANTIZATION,
+                request.side,
             )
             quantized_price = quantize_and_convert_to_float(
                 Decimal(str(price_limit)),
@@ -431,8 +522,12 @@ class ClobV2Gateway:
                 max_price=quantized_price,
                 tick_size=tick_size_str,
                 neg_risk=neg_risk,
+                order_type=order_type,
             )
-            result = await self._client.post_signed_order(signed)
+            result = await self._client.post_signed_order(
+                signed,
+                order_type=order_type,
+            )
         except Exception as exc:
             logger.error("submit_marketable_order failed (%s)", redact_error_detail(exc))
             _raise_classified(exc)
@@ -448,23 +543,75 @@ class ClobV2Gateway:
         """Fetch the current state of an order from the venue."""
         client = self._require_raw_client()
         loop = asyncio.get_running_loop()
-        try:
-            raw = await loop.run_in_executor(None, lambda: client.get_order(order_id))
-        except Exception as exc:
-            logger.error("get_order failed for %s (%s)", order_id, redact_error_detail(exc))
-            _raise_classified(exc)
+        attempts = 0
+        while True:
+            try:
+                raw = await loop.run_in_executor(None, lambda: client.get_order(order_id))
+                break
+            except Exception as exc:
+                status_code = (
+                    getattr(exc, "status_code", None) or getattr(exc, "statusCode", None)
+                )
+                # 404 = the venue has no order with this id. Terminal by HTTP
+                # semantics (re-querying keeps returning 404). Surface a
+                # distinct type so the reconciler applies its consecutive-poll
+                # guard before settling — a just-submitted order can 404
+                # briefly before the venue indexes it.
+                if status_code == 404:
+                    logger.warning("get_order not found for %s (404)", order_id)
+                    raise VenueOrderNotFoundError(
+                        f"order_not_found: {redact_error_detail(exc)}"
+                    ) from exc
+
+                retryable, reason = _classify_error(exc)
+                # GET is idempotent — a transport disconnect (the SDK reuses a
+                # stale HTTP/2 keep-alive connection from its process-wide
+                # singleton httpx client; Polymarket/Cloudflare closes idle
+                # connections → "Server disconnected") is safe to retry once.
+                # The failed request makes httpx evict the dead connection, so
+                # the retry opens a fresh one and usually succeeds — letting
+                # confirm_fill progress instead of parking on a 5s backoff.
+                # NEVER apply this to POST paths (duplicate-order risk).
+                if retryable and reason == "poly_api_transport" and attempts < 1:
+                    attempts += 1
+                    await asyncio.sleep(0.15)
+                    continue
+
+                log_fn = logger.warning if retryable else logger.error
+                log_fn(
+                    "get_order failed for %s (%s reason=%s)",
+                    order_id,
+                    redact_error_detail(exc),
+                    reason,
+                )
+                _raise_classified(exc)
 
         if not isinstance(raw, dict):
             raw = {}
 
         return VenueOrderState(
-            order_id=str(raw.get("id", order_id)),
+            order_id=str(raw.get("id") or raw.get("order_id") or raw.get("orderID") or order_id),
             status=str(raw.get("status", "unknown")),
             side=raw.get("side"),
             price=_safe_decimal(raw.get("price")),
             size=_safe_decimal(raw.get("original_size") or raw.get("size")),
-            filled_size=_safe_decimal(raw.get("size_matched") or raw.get("filled_size")) or Decimal("0"),
-            avg_fill_price=_safe_decimal(raw.get("avg_price") or raw.get("average_price")) or Decimal("0"),
+            filled_size=_safe_decimal(
+                raw.get("size_matched")
+                or raw.get("filled_size")
+                or raw.get("matched_size")
+                or raw.get("matched_amount")
+                or raw.get("sizeMatched")
+                or raw.get("filledSize")
+                or raw.get("matchedSize")
+                or raw.get("matchedAmount")
+            ) or Decimal("0"),
+            avg_fill_price=_safe_decimal(
+                raw.get("avg_price")
+                or raw.get("avg_fill_price")
+                or raw.get("avgFillPrice")
+                or raw.get("average_price")
+                or raw.get("averagePrice")
+            ) or Decimal("0"),
             created_at=None,
             raw=raw,
         )
@@ -495,7 +642,7 @@ class ClobV2Gateway:
                 continue
             fills.append(VenueFill(
                 fill_id=raw.get("id"),
-                order_id=raw.get("order_id"),
+                order_id=raw.get("order_id") or raw.get("orderID"),
                 token_id=raw.get("asset_id") or raw.get("token_id"),
                 side=raw.get("side"),
                 size=_safe_decimal(raw.get("size")) or Decimal("0"),
@@ -613,6 +760,26 @@ class ClobV2Gateway:
                     report[key] = int(value) if is_int else str(value)
             except Exception:  # pragma: no cover — best-effort discovery
                 continue
+
+        # py-clob-client-v2 does not expose contract addresses as client
+        # instance attributes — they live in get_contract_config(chain_id).
+        # Fall back to the SDK config module for any fields still missing.
+        if any(report[k] is None for k in ("exchange_address", "chain_id")):
+            try:
+                from py_clob_client_v2.config import get_contract_config  # type: ignore[import-untyped]
+                contract_cfg = get_contract_config(self._EXPECTED_CHAIN_ID)
+                if report["exchange_address"] is None:
+                    report["exchange_address"] = str(contract_cfg.exchange)
+                if report["neg_risk_exchange_address"] is None:
+                    report["neg_risk_exchange_address"] = str(contract_cfg.neg_risk_exchange)
+                if report["collateral_address"] is None:
+                    report["collateral_address"] = str(contract_cfg.collateral)
+                if report["conditional_token_address"] is None:
+                    report["conditional_token_address"] = str(contract_cfg.conditional_tokens)
+                if report["chain_id"] is None:
+                    report["chain_id"] = self._EXPECTED_CHAIN_ID
+            except Exception:  # pragma: no cover — defensive, SDK import may vary
+                pass
 
         report["negative_risk_supported"] = (
             hasattr(client, "create_market_order")

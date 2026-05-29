@@ -40,6 +40,7 @@ from domain.discovery_models import (
     TraderRecord,
 )
 from domain.ports.repositories import AbstractDiscoveryRepository
+from services.discovery.candidate_scoring import FalconDiscoveryEvaluation
 
 PositionKey = tuple[str, str, str]
 
@@ -308,6 +309,168 @@ class DiscoveryRepo(AbstractDiscoveryRepository):
                 else r["raw_json"]
             ),
             source=r["source"],
+        )
+
+    # ------------------------------------------------------------------
+    # Falcon discovery evaluations
+    # ------------------------------------------------------------------
+
+    async def upsert_evaluation(self, e: FalconDiscoveryEvaluation) -> None:
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO falcon_discovery_evaluations (
+                    wallet, status, final_score, falcon_quality_score,
+                    copyability_score, recent_state_score, market_fit_score,
+                    h_score, roi_15d, win_rate_15d, sharpe_15d, pnl_15d,
+                    total_trades_15d, markets_traded_15d, trajectory,
+                    total_grouped_signals, meaningful_signals, copyable_signals,
+                    copyable_signal_ratio, copyable_notional_ratio,
+                    sports_esports_ratio, fast_crypto_signal_ratio,
+                    fast_crypto_notional_ratio, pnl_7d, pnl_3d,
+                    rejection_reason, eligible_live, eligible_shadow,
+                    falcon_raw_json, replay_json, updated_at
+                ) VALUES (
+                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+                    $11, $12, $13, $14, $15, $16, $17, $18,
+                    $19, $20, $21, $22, $23, $24, $25, $26,
+                    $27, $28, $29::jsonb, $30::jsonb, $31
+                )
+                ON CONFLICT(wallet) DO UPDATE SET
+                    status = excluded.status,
+                    final_score = excluded.final_score,
+                    falcon_quality_score = excluded.falcon_quality_score,
+                    copyability_score = excluded.copyability_score,
+                    recent_state_score = excluded.recent_state_score,
+                    market_fit_score = excluded.market_fit_score,
+                    h_score = excluded.h_score,
+                    roi_15d = excluded.roi_15d,
+                    win_rate_15d = excluded.win_rate_15d,
+                    sharpe_15d = excluded.sharpe_15d,
+                    pnl_15d = excluded.pnl_15d,
+                    total_trades_15d = excluded.total_trades_15d,
+                    markets_traded_15d = excluded.markets_traded_15d,
+                    trajectory = excluded.trajectory,
+                    total_grouped_signals = excluded.total_grouped_signals,
+                    meaningful_signals = excluded.meaningful_signals,
+                    copyable_signals = excluded.copyable_signals,
+                    copyable_signal_ratio = excluded.copyable_signal_ratio,
+                    copyable_notional_ratio = excluded.copyable_notional_ratio,
+                    sports_esports_ratio = excluded.sports_esports_ratio,
+                    fast_crypto_signal_ratio = excluded.fast_crypto_signal_ratio,
+                    fast_crypto_notional_ratio = excluded.fast_crypto_notional_ratio,
+                    pnl_7d = excluded.pnl_7d,
+                    pnl_3d = excluded.pnl_3d,
+                    rejection_reason = excluded.rejection_reason,
+                    eligible_live = excluded.eligible_live,
+                    eligible_shadow = excluded.eligible_shadow,
+                    falcon_raw_json = excluded.falcon_raw_json,
+                    replay_json = excluded.replay_json,
+                    updated_at = excluded.updated_at
+                """,
+                e.wallet.lower(),
+                e.status,
+                float(e.final_score),
+                float(e.falcon_quality_score),
+                float(e.copyability_score),
+                float(e.recent_state_score),
+                float(e.market_fit_score),
+                float(e.h_score),
+                float(e.roi_15d),
+                float(e.win_rate_15d),
+                float(e.sharpe_15d),
+                float(e.pnl_15d),
+                int(e.total_trades_15d),
+                int(e.markets_traded_15d),
+                e.trajectory,
+                int(e.total_grouped_signals),
+                int(e.meaningful_signals),
+                int(e.copyable_signals),
+                float(e.copyable_signal_ratio),
+                float(e.copyable_notional_ratio),
+                float(e.sports_esports_ratio),
+                float(e.fast_crypto_signal_ratio),
+                float(e.fast_crypto_notional_ratio),
+                str(e.pnl_7d),
+                str(e.pnl_3d),
+                e.rejection_reason,
+                bool(e.eligible_live),
+                bool(e.eligible_shadow),
+                _ensure_json_str(e.falcon_raw_json),
+                _ensure_json_str(e.replay_json),
+                float(e.updated_at),
+            )
+
+    async def get_evaluation(self, wallet: str) -> FalconDiscoveryEvaluation | None:
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM falcon_discovery_evaluations WHERE wallet = $1",
+                wallet.lower(),
+            )
+        return self._row_to_evaluation(row) if row is not None else None
+
+    async def list_evaluations(
+        self,
+        *,
+        statuses: list[str] | None = None,
+        eligible_live: bool | None = None,
+        limit: int = 50,
+    ) -> list[FalconDiscoveryEvaluation]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if statuses:
+            params.append(statuses)
+            clauses.append(f"status = ANY(${len(params)}::text[])")
+        if eligible_live is not None:
+            params.append(bool(eligible_live))
+            clauses.append(f"eligible_live = ${len(params)}")
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.append(int(limit))
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                f"""
+                SELECT * FROM falcon_discovery_evaluations
+                {where}
+                ORDER BY final_score DESC, wallet ASC
+                LIMIT ${len(params)}
+                """,
+                *params,
+            )
+        return [self._row_to_evaluation(r) for r in rows]
+
+    def _row_to_evaluation(self, r: asyncpg.Record) -> FalconDiscoveryEvaluation:
+        return FalconDiscoveryEvaluation(
+            wallet=str(r["wallet"]),
+            status=str(r["status"]),
+            final_score=float(r["final_score"] or 0.0),
+            falcon_quality_score=float(r["falcon_quality_score"] or 0.0),
+            copyability_score=float(r["copyability_score"] or 0.0),
+            recent_state_score=float(r["recent_state_score"] or 0.0),
+            market_fit_score=float(r["market_fit_score"] or 0.0),
+            h_score=float(r["h_score"] or 0.0),
+            roi_15d=float(r["roi_15d"] or 0.0),
+            win_rate_15d=float(r["win_rate_15d"] or 0.0),
+            sharpe_15d=float(r["sharpe_15d"] or 0.0),
+            pnl_15d=float(r["pnl_15d"] or 0.0),
+            total_trades_15d=int(r["total_trades_15d"] or 0),
+            markets_traded_15d=int(r["markets_traded_15d"] or 0),
+            trajectory=str(r["trajectory"] or ""),
+            total_grouped_signals=int(r["total_grouped_signals"] or 0),
+            meaningful_signals=int(r["meaningful_signals"] or 0),
+            copyable_signals=int(r["copyable_signals"] or 0),
+            copyable_signal_ratio=float(r["copyable_signal_ratio"] or 0.0),
+            copyable_notional_ratio=float(r["copyable_notional_ratio"] or 0.0),
+            sports_esports_ratio=float(r["sports_esports_ratio"] or 0.0),
+            fast_crypto_signal_ratio=float(r["fast_crypto_signal_ratio"] or 0.0),
+            fast_crypto_notional_ratio=float(r["fast_crypto_notional_ratio"] or 0.0),
+            pnl_7d=Decimal(r["pnl_7d"] or "0"),
+            pnl_3d=Decimal(r["pnl_3d"] or "0"),
+            rejection_reason=r["rejection_reason"],
+            eligible_live=bool(r["eligible_live"]),
+            eligible_shadow=bool(r["eligible_shadow"]),
+            falcon_raw_json=_decode_jsonb(r["falcon_raw_json"]) or {},
+            replay_json=_decode_jsonb(r["replay_json"]) or {},
+            updated_at=float(r["updated_at"] or 0.0),
         )
 
     # ------------------------------------------------------------------

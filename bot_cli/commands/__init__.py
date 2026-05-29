@@ -20,6 +20,10 @@ from bot_cli.commands.stale_locks import (
     run_stale_locks,
 )
 from bot_cli.commands.drift import register_drift_command, run_drift
+from bot_cli.commands.rotate_traders import (
+    register_rotate_traders_command,
+    run_rotate_traders,
+)
 
 __all__ = [
     "register_doctor_command",
@@ -42,4 +46,6 @@ __all__ = [
     "run_stale_locks",
     "register_drift_command",
     "run_drift",
+    "register_rotate_traders_command",
+    "run_rotate_traders",
 ]

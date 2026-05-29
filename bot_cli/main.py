@@ -22,6 +22,8 @@ from bot_cli.commands import (
     run_stale_locks,
     register_drift_command,
     run_drift,
+    register_rotate_traders_command,
+    run_rotate_traders,
 )
 
 _COMMANDS = [
@@ -35,6 +37,7 @@ _COMMANDS = [
     ("reservations", register_reservations_command, run_reservations),
     ("stale-locks", register_stale_locks_command, run_stale_locks),
     ("drift", register_drift_command, run_drift),
+    ("rotate-traders", register_rotate_traders_command, run_rotate_traders),
 ]
 
 _COMMAND_RUNNERS = {name: runner for name, _, runner in _COMMANDS}

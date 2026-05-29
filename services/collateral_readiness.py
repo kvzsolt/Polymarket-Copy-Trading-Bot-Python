@@ -147,13 +147,13 @@ def _check_sync(
 # Any caller passing one of these is fail-closed at the boundary so a
 # stale env-file or accidental default cannot silently pass the
 # collateral probe by reading the wrong contract.
-KNOWN_INCORRECT_ADDRESSES: frozenset[str] = frozenset(
-    addr.lower()
-    for addr in (
-        "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB",  # Synthetix SNX on Polygon
-        "0xE111180000d2663C0091e4f400237545B87B996B",  # placeholder / non-canonical
-    )
-)
+#
+# Both previously listed addresses (0xC011... collateral, 0xE111... exchange_v2)
+# are correct Polymarket v2 contracts on Polygon per py-clob-client-v2
+# get_contract_config(137). The "incorrect" labels were based on Ethereum
+# mainnet identity — wrong chain context. Set is empty; empty-string guard
+# in _validate_address is the primary protection against missing config.
+KNOWN_INCORRECT_ADDRESSES: frozenset[str] = frozenset()
 
 
 def _validate_address(label: str, address: str) -> None:
@@ -181,10 +181,8 @@ async def check_collateral_readiness(
     Returns a ``CollateralStatus`` with structured details.
     Logs a summary and any failures at WARNING level.
 
-    Addresses must be passed explicitly from typed ``AppConfig`` — the
-    previous hard-coded defaults pointed at non-Polymarket contracts
-    (Synthetix SNX) and silently let the probe report success while
-    reading the wrong balance.
+    Addresses must be passed explicitly from typed ``AppConfig`` — do not
+    pass exchange or other non-collateral contract addresses here.
     """
     _validate_address("pusd_address", pusd_address)
     _validate_address("ctf_exchange_address", ctf_exchange_address)

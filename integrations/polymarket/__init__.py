@@ -13,6 +13,7 @@ from integrations.polymarket.errors import (
     TerminalVenueError,
     VenueAuthError,
     VenueInvalidOrderError,
+    VenueOrderNotFoundError,
     VenueRateLimitError,
     VenueUnavailableError,
 )
@@ -44,6 +45,7 @@ __all__ = [
     "VenueCancelResult",
     "VenueFill",
     "VenueInvalidOrderError",
+    "VenueOrderNotFoundError",
     "VenueOrderState",
     "VenueRateLimitError",
     "VenueSubmitResult",

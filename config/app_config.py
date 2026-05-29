@@ -467,6 +467,7 @@ class PositionDriftConfig:
     allow_external_position_tracking: bool
     pause_scope_on_unresolved: bool
     max_size_epsilon: Decimal
+    prune_holdoff_seconds: float = 60.0
 
 
 @dataclass(frozen=True)
@@ -539,6 +540,46 @@ class DiscoveryConfig:
     discovery_max_results: int
     discovery_cache_ttl_seconds: float
     multi_user_config_file: str
+    falcon_api_url: str = "https://narrative.agent.heisenberg.so/api/v2/semantic/retrieve/parameterized"
+    falcon_api_token: str = ""
+    falcon_page_size: int = 100
+    falcon_max_pages: int = 5
+    falcon_min_win_rate_15d: float = 0.45
+    falcon_max_win_rate_15d: float = 0.90
+    falcon_min_roi_15d: float = 0.0
+    falcon_min_pnl_15d: float = 100.0
+    falcon_min_trades_15d: int = 30
+    falcon_max_trades_15d: int = 750
+    polymarket_history_lookback_days: int = 365
+    polymarket_history_window_days: int = 7
+    polymarket_activity_max_offset: int = 10000
+    discovery_history_trade_limit: int = 50000
+    discovery_signal_group_window_seconds: int = 60
+    discovery_signal_group_max_gap_seconds: int = 120
+    discovery_min_group_notional_usdc: float = 5.0
+    discovery_min_copyable_grouped_signal_ratio: float = 0.75
+    discovery_min_copyable_notional_ratio: float = 0.60
+    discovery_require_7d_non_negative: bool = True
+    discovery_min_7d_pnl_usdc: float = 0.0
+    discovery_allow_3d_slightly_negative: bool = True
+    discovery_min_3d_pnl_usdc: float = -50.0
+    discovery_min_3d_roi: float = -0.05
+    discovery_crypto_fast_max_resolution_minutes: float = 30.0
+    discovery_crypto_fast_reject_signal_ratio: float = 0.70
+    discovery_crypto_fast_reject_notional_ratio: float = 0.70
+    discovery_crypto_fast_min_non_crypto_signals: int = 5
+    discovery_auto_write_leaders: bool = False
+    discovery_dynamic_monitoring_enabled: bool = False
+    discovery_market_specialists_allowed: bool = True
+    discovery_position_volatility_allowed: bool = True
+    rotate_traders_env_file: str = "config/runtime.local.env"
+    rotate_traders_min_shadow_days: int = 3
+    rotate_traders_min_shadow_signals: int = 20
+    rotate_traders_replace_only_if_needed: bool = True
+    rotate_traders_min_score_delta: float = 0.10
+    rotate_keep_live_if_7d_pnl_positive: bool = True
+    rotate_reject_live_if_7d_pnl_below: float = 0.0
+    rotate_allow_manual_override: bool = True
 
 
 @dataclass(frozen=True)
@@ -900,7 +941,7 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
     database = DatabaseConfig(
         dsn=p.string(
             "DATABASE_URL",
-            "postgresql://bot:bot@localhost:5432/polymarket_bot",
+            "postgresql://bot:bot@localhost:5432/polymarket_copytrading_python",
         ),
         pool_min_size=_pool_min,
         pool_max_size=_pool_max,
@@ -1136,6 +1177,7 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         max_size_epsilon=Decimal(
             p.string("POSITION_DRIFT_MAX_SIZE_EPSILON", "0.000001")
         ),
+        prune_holdoff_seconds=p.float_("POSITION_DRIFT_PRUNE_HOLDOFF_SECONDS", "60.0"),
     )
 
     order_confirmation = OrderConfirmationConfig(
@@ -1179,6 +1221,77 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         discovery_max_results=p.int_("DISCOVERY_MAX_RESULTS", "50"),
         discovery_cache_ttl_seconds=p.float_("DISCOVERY_CACHE_TTL_SECONDS", "3600"),
         multi_user_config_file=p.string("MULTI_USER_CONFIG_FILE", ""),
+        falcon_api_url=p.string(
+            "FALCON_API_URL",
+            "https://narrative.agent.heisenberg.so/api/v2/semantic/retrieve/parameterized",
+        ),
+        falcon_api_token=p.string("FALCON_API_TOKEN", ""),
+        falcon_page_size=p.int_("FALCON_PAGE_SIZE", "100"),
+        falcon_max_pages=p.int_("FALCON_MAX_PAGES", "5"),
+        falcon_min_win_rate_15d=p.float_("FALCON_MIN_WIN_RATE_15D", "0.45"),
+        falcon_max_win_rate_15d=p.float_("FALCON_MAX_WIN_RATE_15D", "0.90"),
+        falcon_min_roi_15d=p.float_("FALCON_MIN_ROI_15D", "0"),
+        falcon_min_pnl_15d=p.float_("FALCON_MIN_PNL_15D", "100"),
+        falcon_min_trades_15d=p.int_("FALCON_MIN_TRADES_15D", "30"),
+        falcon_max_trades_15d=p.int_("FALCON_MAX_TRADES_15D", "750"),
+        polymarket_history_lookback_days=p.int_("POLYMARKET_HISTORY_LOOKBACK_DAYS", "365"),
+        polymarket_history_window_days=p.int_("POLYMARKET_HISTORY_WINDOW_DAYS", "7"),
+        polymarket_activity_max_offset=p.int_("POLYMARKET_ACTIVITY_MAX_OFFSET", "10000"),
+        discovery_history_trade_limit=p.int_("DISCOVERY_HISTORY_TRADE_LIMIT", "50000"),
+        discovery_signal_group_window_seconds=p.int_("DISCOVERY_SIGNAL_GROUP_WINDOW_SECONDS", "60"),
+        discovery_signal_group_max_gap_seconds=p.int_("DISCOVERY_SIGNAL_GROUP_MAX_GAP_SECONDS", "120"),
+        discovery_min_group_notional_usdc=p.float_("DISCOVERY_MIN_GROUP_NOTIONAL_USDC", "5"),
+        discovery_min_copyable_grouped_signal_ratio=p.float_(
+            "DISCOVERY_MIN_COPYABLE_GROUPED_SIGNAL_RATIO", "0.75"
+        ),
+        discovery_min_copyable_notional_ratio=p.float_(
+            "DISCOVERY_MIN_COPYABLE_NOTIONAL_RATIO", "0.60"
+        ),
+        discovery_require_7d_non_negative=p.bool_("DISCOVERY_REQUIRE_7D_NON_NEGATIVE", True),
+        discovery_min_7d_pnl_usdc=p.float_("DISCOVERY_MIN_7D_PNL_USDC", "0"),
+        discovery_allow_3d_slightly_negative=p.bool_(
+            "DISCOVERY_ALLOW_3D_SLIGHTLY_NEGATIVE", True
+        ),
+        discovery_min_3d_pnl_usdc=p.float_("DISCOVERY_MIN_3D_PNL_USDC", "-50"),
+        discovery_min_3d_roi=p.float_("DISCOVERY_MIN_3D_ROI", "-0.05"),
+        discovery_crypto_fast_max_resolution_minutes=p.float_(
+            "DISCOVERY_CRYPTO_FAST_MAX_RESOLUTION_MINUTES", "30"
+        ),
+        discovery_crypto_fast_reject_signal_ratio=p.float_(
+            "DISCOVERY_CRYPTO_FAST_REJECT_SIGNAL_RATIO", "0.70"
+        ),
+        discovery_crypto_fast_reject_notional_ratio=p.float_(
+            "DISCOVERY_CRYPTO_FAST_REJECT_NOTIONAL_RATIO", "0.70"
+        ),
+        discovery_crypto_fast_min_non_crypto_signals=p.int_(
+            "DISCOVERY_CRYPTO_FAST_MIN_NON_CRYPTO_SIGNALS", "5"
+        ),
+        discovery_auto_write_leaders=p.bool_("DISCOVERY_AUTO_WRITE_LEADERS", False),
+        discovery_dynamic_monitoring_enabled=p.bool_(
+            "DISCOVERY_DYNAMIC_MONITORING_ENABLED", False
+        ),
+        discovery_market_specialists_allowed=p.bool_(
+            "DISCOVERY_MARKET_SPECIALISTS_ALLOWED", True
+        ),
+        discovery_position_volatility_allowed=p.bool_(
+            "DISCOVERY_POSITION_VOLATILITY_ALLOWED", True
+        ),
+        rotate_traders_env_file=p.string(
+            "ROTATE_TRADERS_ENV_FILE", "config/runtime.local.env"
+        ),
+        rotate_traders_min_shadow_days=p.int_("ROTATE_TRADERS_MIN_SHADOW_DAYS", "3"),
+        rotate_traders_min_shadow_signals=p.int_("ROTATE_TRADERS_MIN_SHADOW_SIGNALS", "20"),
+        rotate_traders_replace_only_if_needed=p.bool_(
+            "ROTATE_TRADERS_REPLACE_ONLY_IF_NEEDED", True
+        ),
+        rotate_traders_min_score_delta=p.float_("ROTATE_TRADERS_MIN_SCORE_DELTA", "0.10"),
+        rotate_keep_live_if_7d_pnl_positive=p.bool_(
+            "ROTATE_KEEP_LIVE_IF_7D_PNL_POSITIVE", True
+        ),
+        rotate_reject_live_if_7d_pnl_below=p.float_(
+            "ROTATE_REJECT_LIVE_IF_7D_PNL_BELOW", "0"
+        ),
+        rotate_allow_manual_override=p.bool_("ROTATE_ALLOW_MANUAL_OVERRIDE", True),
     )
 
     features = FeatureFlagConfig(

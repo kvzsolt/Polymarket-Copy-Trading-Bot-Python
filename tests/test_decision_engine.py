@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from services.copyDecisionService import CopyDecisionService
 from services.leaderScoringService import LeaderScore
 from services.tradeAnalyticsService import TradeAnalyticsService
-from services.traderDiscoveryService import RankedLeader, TraderDiscoveryService
+from services.traderDiscoveryService import TraderDiscoveryService, TraderProfile
 
 
 def _test_config() -> SimpleNamespace:
@@ -279,82 +279,40 @@ class TestCopyDecisionService:
 
 class TestTraderDiscoveryService:
     @pytest.mark.asyncio
-    async def test_resolve_leaders_disabled_returns_configured(self):
-        # No-config TraderDiscoveryService defaults to disabled — see
-        # services/traderDiscoveryService.py:148 (legacy-kill #77 dropped
-        # the ENV.get fallback in favour of a hardcoded disabled default).
+    async def test_unwired_discovery_returns_no_candidates(self):
+        # No-config TraderDiscoveryService is intentionally inert. Discovery
+        # now scores DB candidates only and must not mutate live leaders.
         svc = TraderDiscoveryService()
-        configured = ["0x" + ("1" * 40)]
-        resolved = await svc.resolve_leaders(configured)
-        assert resolved == configured
+        assert await svc.discover_candidates() == []
+        assert await svc.discover_ranked_leaders() == []
 
     @pytest.mark.asyncio
-    async def test_discovery_sort_is_deterministic_by_score_then_rank(self):
+    async def test_discover_ranked_leaders_maps_profiles_without_auto_following(self):
         svc = TraderDiscoveryService()
-        # Two traders with same computed score; expect smaller rank first.
-        rows = {
-            "data": [
-                {
-                    "trader": "0x" + ("2" * 40),
-                    "trader_name": "B",
-                    "overall_gain": 2000000,
-                    "win_amount": 2000000,
-                    "loss_amount": -0,
-                    "win_rate": 0.80,
-                    "total_positions": 200,
-                    "active_positions": 10,
-                    "event_ct": 80,
-                    "rank": 5,
-                    "total_current_value": 50000,
-                    "trader_tags": "",
-                },
-                {
-                    "trader": "0x" + ("3" * 40),
-                    "trader_name": "A",
-                    "overall_gain": 2000000,
-                    "win_amount": 2000000,
-                    "loss_amount": -0,
-                    "win_rate": 0.80,
-                    "total_positions": 200,
-                    "active_positions": 10,
-                    "event_ct": 80,
-                    "rank": 1,
-                    "total_current_value": 50000,
-                    "trader_tags": "",
-                },
-            ]
-        }
-        # Override the discovery-gate thresholds via the instance attrs —
-        # the legacy-kill slice dropped the ENV.get fallback that read
-        # MIN_LEADER_PNL / _WIN_RATE / _POSITIONS at construction time.
-        svc._min_pnl = 0.0
-        svc._min_win_rate = 0.0
-        svc._min_positions = 0
-        svc._max_results = 50
-        with patch("services.traderDiscoveryService._fetch_json", return_value=rows):
-            cands = await svc.discover_candidates(max_results=2)
-        assert len(cands) == 2
-        assert cands[0].rank == 1
-        assert cands[1].rank == 5
-
-    @pytest.mark.asyncio
-    async def test_resolve_leaders_adds_ranked_candidates(self):
-        svc = TraderDiscoveryService()
-        # Patch instance attrs directly — they're set in __init__ from ENV
-        # and don't re-read ENV at resolve time.
-        svc._auto_discover = True
-        svc._auto_discover_min_score = 0.45
-        svc._auto_discover_top_n = 5
-        configured = ["0x" + ("1" * 40)]
-        discovered = [
-            RankedLeader(wallet="0x" + ("2" * 40), score=0.80, recent_trade_count=10, recent_notional_usdc=200),
-            RankedLeader(wallet="0x" + ("3" * 40), score=0.20, recent_trade_count=10, recent_notional_usdc=200),
+        profiles = [
+            TraderProfile(
+                wallet="0x" + ("2" * 40),
+                composite_score=0.8,
+                total_positions=12,
+                total_current_value=42,
+            )
         ]
-        with patch.object(svc, "discover_ranked_leaders", new=AsyncMock(return_value=discovered)):
-            resolved = await svc.resolve_leaders(configured)
-        assert configured[0] in resolved
-        assert discovered[0].wallet in resolved
-        assert discovered[1].wallet not in resolved
+        with patch.object(
+            svc,
+            "discover_candidates",
+            new=AsyncMock(return_value=profiles),
+        ):
+            ranked = await svc.discover_ranked_leaders(limit=5)
+        assert [r.wallet for r in ranked] == [profiles[0].wallet]
+        assert ranked[0].score == pytest.approx(0.8)
+        assert ranked[0].recent_trade_count == 12
+
+    @pytest.mark.asyncio
+    async def test_cached_profile_lookup_is_lowercase(self):
+        svc = TraderDiscoveryService()
+        profile = TraderProfile(wallet="0x" + ("A" * 40), composite_score=0.7)
+        svc._cache[profile.wallet.lower()] = profile
+        assert svc.get_cached_profile(profile.wallet.upper()) is profile
 
 
 class TestTradeAnalyticsService:

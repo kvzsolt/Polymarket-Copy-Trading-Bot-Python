@@ -196,7 +196,7 @@ def test_your_positions_panel_renders_aggregate_math(capture_console) -> None:
         result, own_wallet="0xown", available_cash=1000.0, total_portfolio=1500.0
     )
     out = capture_console.getvalue()
-    assert "YOUR POSITIONS" in out
+    assert "PORTFOLIO" in out
     # invested = 60+48 = 108; current = 140+36 = 176; +5 realized → gain = 73/108 = 67.59%
     assert "+67.59%" in out
     assert "BTC>100k" in out

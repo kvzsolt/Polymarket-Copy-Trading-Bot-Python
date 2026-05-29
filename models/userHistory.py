@@ -163,5 +163,27 @@ def get_user_activity_model(wallet_address: str) -> _UserActivityCollection:
     return _UserActivityCollection(wallet_address)
 
 
+async def find_activity_by_tx_hash(wallet_address: str, tx_hash: str) -> bool:
+    """Return True if a user_activities row with this transaction_hash exists.
+
+    Used by:
+      * ManualSyncService to skip already-tracked trades during the funder
+        activity sweep (single source of truth dedup).
+      * Reconciler write-back to make the post-confirmation insert idempotent
+        so retried reconciliations don't double-insert.
+    """
+    if not tx_hash:
+        return False
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT 1 FROM user_activities "
+            "WHERE wallet_address = $1 AND transaction_hash = $2 LIMIT 1",
+            _wallet(wallet_address),
+            str(tx_hash),
+        )
+        return row is not None
+
+
 def get_trading_collection() -> _TradingCollection:
     return _TradingCollection()

@@ -33,6 +33,15 @@ if TYPE_CHECKING:
 
 _log = get_logger("PositionDriftService")
 
+# Holdoff during which ``was_recently_pruned`` returns True for a scope_key
+# whose row was just deleted by ``PRUNE_LOCAL_ZERO_POSITION``. Polymarket's
+# data-api ``/positions`` endpoint is eventually consistent and lags the
+# live order book by tens of seconds, so manual_sync routinely sees a
+# resurrected size after drift has authoritatively pruned the position.
+# Runtime config can raise this for stale markets where the Data API lags
+# longer than the default convergence window.
+DRIFT_PRUNE_HOLDOFF_SECONDS = 60.0
+
 
 LivePositionsFetcher = Callable[[str], Awaitable[list[dict[str, Any]]]]
 
@@ -107,6 +116,11 @@ class PositionDriftService:
         self._paused_scopes: dict[str, set[str]] = {}
         # scope_key -> latest PositionDriftRecord
         self._latest: dict[str, PositionDriftRecord] = {}
+        # scope_key -> monotonic timestamp of the last PRUNE_LOCAL_ZERO_POSITION
+        # decision. Consulted by manual_sync via ``was_recently_pruned`` so an
+        # eventually-consistent data-api echo cannot resurrect the row inside
+        # ``DRIFT_PRUNE_HOLDOFF_SECONDS``.
+        self._prune_timestamps: dict[str, float] = {}
 
     # ------------------------------------------------------------------
     # Public API
@@ -142,7 +156,7 @@ class PositionDriftService:
                 paused_scopes=tuple(self._paused_scopes.get(user_id, set())),
             )
 
-        local_positions = list(self._positions_repo.list_open_positions(user_id) or [])
+        local_positions = list(await self._positions_repo.list_open_positions(user_id) or [])
         records: list[PositionDriftRecord] = []
         seen_scopes: set[str] = set()
 
@@ -151,7 +165,7 @@ class PositionDriftService:
             token_id = str(getattr(pos, "token_id", "") or "")
             local_size = _decimal_or_zero(getattr(pos, "size_tokens", 0))
             venue_size = _venue_size_for(venue_positions, token_id)
-            record = self._classify(
+            record = await self._classify(
                 user_id=user_id,
                 condition_id=condition_id,
                 token_id=token_id,
@@ -170,7 +184,7 @@ class PositionDriftService:
             venue_size = _venue_size_for(venue_positions, token_id)
             if venue_size <= self._config.max_size_epsilon:
                 continue
-            record = self._classify(
+            record = await self._classify(
                 user_id=user_id,
                 condition_id=condition_id,
                 token_id=token_id,
@@ -217,7 +231,7 @@ class PositionDriftService:
     # ------------------------------------------------------------------
     # Classification
     # ------------------------------------------------------------------
-    def _classify(
+    async def _classify(
         self,
         *,
         user_id: str,
@@ -228,7 +242,7 @@ class PositionDriftService:
     ) -> PositionDriftRecord:
         epsilon = self._config.max_size_epsilon
         drift = venue_size - local_size
-        reservations = self._active_reservations(
+        reservations = await self._active_reservations(
             user_id=user_id, condition_id=condition_id, token_id=token_id
         )
         reservation_ids = tuple(r.id for r in reservations)
@@ -266,7 +280,7 @@ class PositionDriftService:
                 # Safe to prune: bot believes it holds shares the venue does
                 # not actually report and no order is in flight.
                 try:
-                    self._positions_repo.delete_position(user_id, condition_id, token_id=token_id)
+                    await self._positions_repo.delete_position(user_id, condition_id, token_id=token_id)
                 except Exception:
                     _log.debug("drift_prune_delete_failed", exc_info=True)
                 return self._record(
@@ -350,20 +364,18 @@ class PositionDriftService:
             reservation_ids=reservation_ids,
         )
 
-    def _active_reservations(
+    async def _active_reservations(
         self, *, user_id: str, condition_id: str, token_id: str
     ) -> list[Any]:
         if self._reservations_repo is None:
             return []
         try:
-            return list(
-                self._reservations_repo.list_active_for_scope(
-                    user_id=user_id,
-                    condition_id=condition_id,
-                    token_id=token_id,
-                )
-                or []
+            result = await self._reservations_repo.list_active_for_scope(
+                user_id=user_id,
+                condition_id=condition_id,
+                token_id=token_id,
             )
+            return list(result or [])
         except Exception:
             return []
 
@@ -393,6 +405,14 @@ class PositionDriftService:
             reason=reason,
             reservation_ids=reservation_ids,
         )
+        # Stamp the prune timestamp so manual_sync can refuse to re-upsert a
+        # row that drift just authoritatively deleted. We track the action,
+        # not the status, because PRUNE_LOCAL_ZERO_POSITION is the only path
+        # that mutates positions_repo — other LOCAL_MISSING_VENUE_POSITION
+        # branches either pause or update read-only and shouldn't suppress
+        # manual_sync.
+        if action == PositionDriftAction.PRUNE_LOCAL_ZERO_POSITION:
+            self._prune_timestamps[record.scope_key] = time.time()
         self._emit(record)
         return record
 
@@ -401,6 +421,54 @@ class PositionDriftService:
         if self._config.pause_scope_on_unresolved:
             self._pause(record.user_id, record.scope_key)
         return record
+
+    # ------------------------------------------------------------------
+    # Prune-holdoff handshake
+    # ------------------------------------------------------------------
+    def was_recently_pruned(
+        self,
+        *,
+        user_id: str,
+        condition_id: str,
+        token_id: str,
+        ttl_seconds: float | None = None,
+        now: float | None = None,
+    ) -> bool:
+        """Return True when this scope was pruned by drift inside the holdoff
+        window. ``ManualSyncService`` consults this before upserting a
+        venue-positive row so the eventually-consistent data-api can't
+        resurrect a position drift just deleted. ``now`` overrides
+        ``time.time()`` for deterministic tests.
+        """
+        scope_key = f"{user_id}|{condition_id}|{token_id}"
+        ts = self._prune_timestamps.get(scope_key)
+        if ts is None:
+            return False
+        current = now if now is not None else time.time()
+        ttl = (
+            ttl_seconds
+            if ttl_seconds is not None
+            else getattr(
+                self._config,
+                "prune_holdoff_seconds",
+                DRIFT_PRUNE_HOLDOFF_SECONDS,
+            )
+        )
+        if (current - ts) > max(0.0, float(ttl)):
+            # TTL elapsed — drop the stamp so memory stays bounded.
+            self._prune_timestamps.pop(scope_key, None)
+            return False
+        return True
+
+    def clear_prune_record(
+        self, *, user_id: str, condition_id: str, token_id: str
+    ) -> None:
+        """Manual override to drop the holdoff for a scope. Used by tests
+        and by operators who legitimately reopened a position via an
+        off-bot trade.
+        """
+        scope_key = f"{user_id}|{condition_id}|{token_id}"
+        self._prune_timestamps.pop(scope_key, None)
 
     def _pause(self, user_id: str, scope_key: str) -> None:
         self._paused_scopes.setdefault(user_id, set()).add(scope_key)

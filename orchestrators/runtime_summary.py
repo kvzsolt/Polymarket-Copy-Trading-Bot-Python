@@ -409,7 +409,7 @@ def print_your_positions(
     console.print(
         Panel(
             body,
-            title="📦 [bold]YOUR POSITIONS[/bold]",
+            title="📊 [bold]PORTFOLIO[/bold]",
             border_style="cyan",
             padding=(1, 2),
         )
@@ -430,10 +430,12 @@ def print_startup_summary(
 ) -> None:
     print_startup_health_check(health_report)
 
-    # New: TRADERS YOU'RE COPYING + YOUR POSITIONS panels render first
-    # when the boot-time snapshot pipeline supplied data. Legacy callers
-    # without the snapshot pipeline fall through to the existing
-    # PORTFOLIO / POSITIONS panels below.
+    # Boot-time snapshot supplied — render TRADERS YOU'RE COPYING + PORTFOLIO
+    # panels (PORTFOLIO is the single per-wallet panel previously named
+    # YOUR POSITIONS; it already carries wallet/cash/total/open_positions/
+    # invested/current_value/pnl plus the per-position list). Legacy fallback
+    # below renders a minimal text-only PORTFOLIO when the snapshot pipeline
+    # was unavailable.
     if snapshot_result is not None:
         print_traders_youre_copying(snapshot_result)
         print_your_positions(
@@ -442,50 +444,40 @@ def print_startup_summary(
             available_cash=available_cash,
             total_portfolio=total_portfolio,
         )
-
-    console.print(Rule("STARTUP SUMMARY", style="cyan"))
-    console.print(
-        Panel(
-            "\n".join(
-                [
-                    f"💼 wallet: {shorten_addr(wallet, 8, 4)}",
-                    f"💵 cash: ${available_cash:.2f}",
-                    f"🧾 total: ${total_portfolio:.2f}",
-                    f"📂 open_positions: {len(positions)}",
-                ]
-            ),
-            title="📊 [bold]PORTFOLIO[/bold]",
-            border_style="cyan",
-            padding=(1, 2),
-        )
-    )
-
-    if positions:
-        position_lines: list[str] = []
-        for position in positions[:8]:
-            market = str(position.get("title") or position.get("market") or position.get("conditionId") or position.get("condition_id") or "?")
-            symbol = _position_symbol(position)
-            side = str(position.get("outcome") or position.get("side") or "?")
-            size = float(position.get("size") or position.get("size_tokens") or 0.0)
-            value = float(position.get("currentValue") or position.get("value") or 0.0)
-            position_lines.append(
-                f"• {market[:72]}\n"
-                f"  ↳ symbol={symbol} | side={side} | size={size:.2f} | value=${value:.2f}"
-            )
-        remaining = len(positions) - 8
-        if remaining > 0:
-            position_lines.append(f"• ... and {remaining} more position(s)")
     else:
-        position_lines = ["• No open positions"]
+        if positions:
+            position_lines: list[str] = []
+            for position in positions[:8]:
+                market = str(position.get("title") or position.get("market") or position.get("conditionId") or position.get("condition_id") or "?")
+                symbol = _position_symbol(position)
+                side = str(position.get("outcome") or position.get("side") or "?")
+                size = float(position.get("size") or position.get("size_tokens") or 0.0)
+                value = float(position.get("currentValue") or position.get("value") or 0.0)
+                position_lines.append(
+                    f"• {market[:72]}\n"
+                    f"  ↳ symbol={symbol} | side={side} | size={size:.2f} | value=${value:.2f}"
+                )
+            remaining = len(positions) - 8
+            if remaining > 0:
+                position_lines.append(f"• ... and {remaining} more position(s)")
+        else:
+            position_lines = ["• No open positions"]
 
-    console.print(
-        Panel(
-            "\n".join(position_lines),
-            title="📦 [bold]POSITIONS[/bold]",
-            border_style="blue",
-            padding=(1, 2),
+        header_lines = [
+            f"💼 wallet: {shorten_addr(wallet, 8, 4)}",
+            f"💵 cash: ${available_cash:.2f}",
+            f"🧾 total: ${total_portfolio:.2f}",
+            f"📂 open_positions: {len(positions)}",
+        ]
+        console.print(
+            Panel(
+                "\n".join(header_lines) + "\n\n" + "\n".join(position_lines),
+                title="📊 [bold]PORTFOLIO[/bold]",
+                border_style="cyan",
+                padding=(1, 2),
+            )
         )
-    )
+        console.print()
 
     copied_wallets_set = {
         w.lower()

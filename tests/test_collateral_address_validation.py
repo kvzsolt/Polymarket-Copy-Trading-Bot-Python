@@ -1,25 +1,23 @@
-"""Regression: collateral_readiness must fail-closed on known-wrong addresses.
+"""Regression: collateral_readiness must require explicit addresses.
 
-Pre-fix the function carried hardcoded defaults:
-  pusd_address          = 0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB  # Synthetix SNX
-  ctf_exchange_address  = 0xE111180000d2663C0091e4f400237545B87B996B  # not Polymarket's
+Historical context: an earlier guard treated two real Polymarket-v2
+addresses on Polygon as "known incorrect" because they collided with
+unrelated Ethereum-mainnet contract names (Synthetix SNX, etc.). The
+guard was wrong about chain context — the same hex string maps to
+different deployments on different chains. Per py-clob-client-v2
+``get_contract_config(137)``:
 
-If the operator forgot to set the env values, the readiness probe would
-read the SNX balance (≈0 for a Polymarket trader) and report
-``ready=False`` for the wrong reason, OR — worse — if a checked address
-happened to be configured but pointing at a different contract, the
-probe could silently pass with a stale value.
+  * 0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB → Polymarket pUSD on Polygon
+  * 0xE111180000d2663C0091e4f400237545B87B996B → Polymarket exchange_v2 on Polygon
 
-This test pins:
-  * The function refuses to accept the known-bad SNX address and the
-    placeholder CTF address as either parameter.
-  * The contract addresses are required (no implicit defaults).
+``KNOWN_INCORRECT_ADDRESSES`` is now empty; the primary guard is the
+required-kwarg surface (no implicit defaults). If a future need to
+hard-reject specific bogus addresses arises, re-populate the set with
+addresses confirmed against the SDK's chain config.
 """
 from __future__ import annotations
 
-import asyncio
-
-import pytest
+import inspect
 
 from services.collateral_readiness import (
     KNOWN_INCORRECT_ADDRESSES,
@@ -27,45 +25,13 @@ from services.collateral_readiness import (
 )
 
 
-SNX_BAD = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"
-PLACEHOLDER_CTF = "0xE111180000d2663C0091e4f400237545B87B996B"
-
-
-def test_known_incorrect_addresses_set_populated():
-    assert SNX_BAD.lower() in {a.lower() for a in KNOWN_INCORRECT_ADDRESSES}
-    assert PLACEHOLDER_CTF.lower() in {a.lower() for a in KNOWN_INCORRECT_ADDRESSES}
-
-
-def test_check_rejects_snx_as_pusd_address():
-    async def _run():
-        with pytest.raises(ValueError, match=r"known-incorrect"):
-            await check_collateral_readiness(
-                wallet_address="0x1111111111111111111111111111111111111111",
-                rpc_url="https://rpc.example",
-                pusd_address=SNX_BAD,
-                ctf_exchange_address="0x2222222222222222222222222222222222222222",
-            )
-
-    asyncio.run(_run())
-
-
-def test_check_rejects_placeholder_ctf_address():
-    async def _run():
-        with pytest.raises(ValueError, match=r"known-incorrect"):
-            await check_collateral_readiness(
-                wallet_address="0x1111111111111111111111111111111111111111",
-                rpc_url="https://rpc.example",
-                pusd_address="0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
-                ctf_exchange_address=PLACEHOLDER_CTF,
-            )
-
-    asyncio.run(_run())
+def test_known_incorrect_addresses_set_is_empty_by_design():
+    """No known-incorrect entries — the required-kwarg surface is the guard."""
+    assert KNOWN_INCORRECT_ADDRESSES == frozenset()
 
 
 def test_addresses_are_required_kwargs():
     """No defaults — caller must pass explicit addresses sourced from typed config."""
-    import inspect
-
     sig = inspect.signature(check_collateral_readiness)
     pusd = sig.parameters.get("pusd_address")
     ctf = sig.parameters.get("ctf_exchange_address")

@@ -22,14 +22,23 @@ _PERSISTED_REQUEST_FIELDS = (
     "signal_id",
     "recovery_metadata",
     "worst_price",
+    "price_limit",
     "tick_size",
     "neg_risk",
+    "order_type",
 )
 
 _PERSISTED_RESPONSE_FIELDS = (
     "success",
     "status",
     "orderID",
+    "order_id",
+    "size_matched",
+    "filled_size",
+    "matched_size",
+    "matched_amount",
+    "avg_price",
+    "avg_fill_price",
     "error",
     "pending_since",
     "pending_ttl_seconds",
@@ -62,6 +71,8 @@ class ExecutionRequest:
     signal_id: str | None = None
     condition_id: str | None = None
     recovery_metadata: dict[str, Any] | None = None
+    order_type: str | None = None
+    price_limit: Decimal | None = None
 
 
 @dataclass

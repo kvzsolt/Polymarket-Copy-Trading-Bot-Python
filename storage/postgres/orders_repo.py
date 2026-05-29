@@ -232,6 +232,26 @@ class OrdersRepo(AbstractOrderRepository):
             )
         return self._row_to_order_record(row)
 
+    async def get_by_reservation_id(self, reservation_id: str) -> dict[str, Any] | None:
+        if not reservation_id:
+            return None
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT idempotency_key, user_id, leader_id, order_id, status,
+                       request_json, response_json, attempt_count, last_error,
+                       created_at, updated_at,
+                       COALESCE(matched_total, '0') AS matched_total
+                FROM orders
+                WHERE request_json->>'reservation_id' = $1
+                   OR request_json->'recovery_metadata'->>'reservation_id' = $1
+                ORDER BY updated_at DESC
+                LIMIT 1
+                """,
+                reservation_id,
+            )
+        return self._row_to_order_record(row)
+
     async def save_submission(self, record: OrderSubmissionRecord) -> None:
         request_json = _json_str(record.request_payload) or "{}"
         response_json = _json_str(record.response_payload)

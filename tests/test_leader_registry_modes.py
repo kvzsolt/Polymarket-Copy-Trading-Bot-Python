@@ -86,7 +86,7 @@ async def test_discovery_only_mode_emits_no_leader_signal(capsys):
 
     state = await registry.refresh([])
 
-    assert state.mode == "discovery_only"
+    assert state.mode == "no_configured_leaders"
     assert state.active_monitored == []
     captured = capsys.readouterr()
     assert "no_leaders_monitored" in captured.out
@@ -110,7 +110,7 @@ async def test_discovery_only_wait_loop_stays_alive_without_leaders():
 
 
 @pytest.mark.asyncio
-async def test_discovery_only_mode_promotes_top_ranked_leaders_when_auto_enabled():
+async def test_discovery_only_mode_does_not_promote_top_ranked_leaders_when_auto_enabled():
     mock_config = _mock_config(promote_to_active=True, top_n=1, leader_auto=True)
     registry = LeaderRegistry(
         discovery_service=_Discovery(
@@ -135,5 +135,6 @@ async def test_discovery_only_mode_promotes_top_ranked_leaders_when_auto_enabled
 
     state = await registry.refresh([])
 
-    assert state.mode == "discovery_only"
-    assert state.active_monitored == ["0x1111111111111111111111111111111111111111"]
+    assert state.mode == "no_configured_leaders"
+    assert state.active_monitored == []
+    assert [c.follow_tier for c in state.discovered] == ["shadow", "shadow"]
