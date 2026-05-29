@@ -20,31 +20,7 @@ from typing import Any
 
 from web3 import Web3
 
-from config.env import ENV
-
 logger = logging.getLogger("collateral_readiness")
-
-# pUSD (Polymarket USD) collateral on Polygon.
-# Prefer the explicit collateral config, then legacy aliases, then the current
-# known Polymarket pUSD address.
-_PUSD_CONTRACT_ADDRESS = (
-    ENV.get("COLLATERAL_CONTRACT_ADDRESS")
-    or ENV.get("PUSD_CONTRACT_ADDRESS")
-    or ENV.get("USDC_CONTRACT_ADDRESS")
-    or "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"
-)
-
-# CTF Exchange V2 — the exchange contract that needs pUSD allowance.
-_CTF_EXCHANGE_V2 = ENV.get(
-    "CTF_EXCHANGE_V2_ADDRESS",
-    "0xE111180000d2663C0091e4f400237545B87B996B",
-)
-
-# Neg Risk Exchange V2
-_NEG_RISK_EXCHANGE_V2 = ENV.get(
-    "NEG_RISK_EXCHANGE_V2_ADDRESS",
-    "0xe2222d279d744050d28e00520010520000310F59",
-)
 
 _ERC20_ABI: list[dict[str, Any]] = [
     {
@@ -66,19 +42,12 @@ _ERC20_ABI: list[dict[str, Any]] = [
     },
 ]
 
-# Minimum pUSD balance to consider "ready" (configurable).
-_MIN_PUSD_BALANCE = Decimal(
-    ENV.get("MIN_PUSD_BALANCE", "1.0")
-)
-
-
 @dataclass(frozen=True)
 class CollateralStatus:
     """Structured result of collateral readiness checks."""
 
     pusd_balance: Decimal
     pusd_allowance_ctf: Decimal
-    pusd_allowance_neg_risk: Decimal
     wallet_address: str
     rpc_url: str
     ready: bool
@@ -104,11 +73,19 @@ def _check_sync(
     *,
     wallet_address: str,
     rpc_url: str,
+    pusd_address: str,
+    ctf_exchange_address: str,
+    min_pusd_balance: Decimal,
 ) -> CollateralStatus:
     """Run all collateral checks synchronously (call from thread)."""
     failures: list[str] = []
     checksum_wallet = Web3.to_checksum_address(wallet_address)
-    pusd_contract = Web3.to_checksum_address(_PUSD_CONTRACT_ADDRESS)
+    pusd_contract = Web3.to_checksum_address(pusd_address)
+
+    # Lazy import — utils.logger pulls in a lot; only needed in the
+    # exception paths below to redact RPC URL / auth tokens that
+    # Web3's HTTPProvider embeds in connection error messages.
+    from utils.logger import redact_error_detail
 
     # 1. pUSD balance
     try:
@@ -121,11 +98,16 @@ def _check_sync(
         pusd_balance = Decimal(raw_balance) / Decimal(10**6)
     except Exception as exc:
         pusd_balance = Decimal("0")
-        failures.append(f"pUSD balance check failed: {exc}")
+        # Pre-fix: ``f"... failed: {exc}"`` interpolated the raw exception
+        # str(), which for Web3 connection errors carries the full
+        # provider URL including any embedded API key (Alchemy / Infura).
+        # ``redact_error_detail`` returns a category label
+        # (``network_error`` / ``http_<code>`` / etc) — safe to log.
+        failures.append(f"pUSD balance check failed: {redact_error_detail(exc)}")
 
-    if pusd_balance < _MIN_PUSD_BALANCE:
+    if pusd_balance < min_pusd_balance:
         failures.append(
-            f"pUSD balance {pusd_balance:.2f} < minimum {_MIN_PUSD_BALANCE}"
+            f"pUSD balance {pusd_balance:.2f} < minimum {min_pusd_balance}"
         )
 
     # 2. CTF Exchange allowance
@@ -134,43 +116,25 @@ def _check_sync(
             rpc_url=rpc_url,
             contract_address=pusd_contract,
             method="allowance",
-            args=[checksum_wallet, Web3.to_checksum_address(_CTF_EXCHANGE_V2)],
+            args=[checksum_wallet, Web3.to_checksum_address(ctf_exchange_address)],
         )
         pusd_allowance_ctf = Decimal(raw_allowance) / Decimal(10**6)
     except Exception as exc:
         pusd_allowance_ctf = Decimal("0")
-        failures.append(f"CTF exchange allowance check failed: {exc}")
+        failures.append(
+            f"CTF exchange allowance check failed: {redact_error_detail(exc)}"
+        )
 
     if pusd_allowance_ctf <= 0:
         failures.append(
             "CTF Exchange pUSD allowance is 0 — approve pUSD spending for "
-            f"{_CTF_EXCHANGE_V2}"
-        )
-
-    # 3. Neg Risk Exchange allowance
-    try:
-        raw_nr = _erc20_read(
-            rpc_url=rpc_url,
-            contract_address=pusd_contract,
-            method="allowance",
-            args=[checksum_wallet, Web3.to_checksum_address(_NEG_RISK_EXCHANGE_V2)],
-        )
-        pusd_allowance_neg_risk = Decimal(raw_nr) / Decimal(10**6)
-    except Exception as exc:
-        pusd_allowance_neg_risk = Decimal("0")
-        failures.append(f"Neg Risk exchange allowance check failed: {exc}")
-
-    if pusd_allowance_neg_risk <= 0:
-        failures.append(
-            "Neg Risk Exchange pUSD allowance is 0 — approve pUSD spending for "
-            f"{_NEG_RISK_EXCHANGE_V2}"
+            f"{ctf_exchange_address}"
         )
 
     ready = len(failures) == 0
     return CollateralStatus(
         pusd_balance=pusd_balance,
         pusd_allowance_ctf=pusd_allowance_ctf,
-        pusd_allowance_neg_risk=pusd_allowance_neg_risk,
         wallet_address=wallet_address,
         rpc_url=rpc_url,
         ready=ready,
@@ -178,31 +142,66 @@ def _check_sync(
     )
 
 
+# Addresses that have appeared as hard-coded defaults at some point in
+# the project history but are NOT Polymarket collateral / CTF contracts.
+# Any caller passing one of these is fail-closed at the boundary so a
+# stale env-file or accidental default cannot silently pass the
+# collateral probe by reading the wrong contract.
+#
+# Both previously listed addresses (0xC011... collateral, 0xE111... exchange_v2)
+# are correct Polymarket v2 contracts on Polygon per py-clob-client-v2
+# get_contract_config(137). The "incorrect" labels were based on Ethereum
+# mainnet identity — wrong chain context. Set is empty; empty-string guard
+# in _validate_address is the primary protection against missing config.
+KNOWN_INCORRECT_ADDRESSES: frozenset[str] = frozenset()
+
+
+def _validate_address(label: str, address: str) -> None:
+    """Reject empty addresses and any in the known-incorrect set."""
+    if not address:
+        raise ValueError(f"{label} is required — pass from typed AppConfig, no defaults")
+    if address.lower() in KNOWN_INCORRECT_ADDRESSES:
+        raise ValueError(
+            f"{label}={address!r} is a known-incorrect contract address "
+            f"(see services.collateral_readiness.KNOWN_INCORRECT_ADDRESSES). "
+            f"Fix your typed config; refusing fail-open."
+        )
+
+
 async def check_collateral_readiness(
     *,
     wallet_address: str,
-    rpc_url: str | None = None,
+    rpc_url: str,
+    pusd_address: str,
+    ctf_exchange_address: str,
+    min_pusd_balance: Decimal = Decimal("1.0"),
 ) -> CollateralStatus:
     """Run pUSD collateral readiness checks.
 
     Returns a ``CollateralStatus`` with structured details.
     Logs a summary and any failures at WARNING level.
+
+    Addresses must be passed explicitly from typed ``AppConfig`` — do not
+    pass exchange or other non-collateral contract addresses here.
     """
-    rpc = rpc_url or ENV.get("RPC_URL", "https://polygon-bor-rpc.publicnode.com")
+    _validate_address("pusd_address", pusd_address)
+    _validate_address("ctf_exchange_address", ctf_exchange_address)
 
     status = await asyncio.to_thread(
         _check_sync,
         wallet_address=wallet_address,
-        rpc_url=rpc,
+        rpc_url=rpc_url,
+        pusd_address=pusd_address,
+        ctf_exchange_address=ctf_exchange_address,
+        min_pusd_balance=min_pusd_balance,
     )
 
     if status.ready:
         logger.info(
             "V2 collateral readiness OK — pUSD balance=%.2f, "
-            "CTF allowance=%.2f, NegRisk allowance=%.2f",
+            "CTF allowance=%.2f",
             status.pusd_balance,
             status.pusd_allowance_ctf,
-            status.pusd_allowance_neg_risk,
         )
     else:
         for failure in status.failures:

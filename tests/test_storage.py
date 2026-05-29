@@ -1,17 +1,19 @@
-"""Phase 3 tests — storage adapters implement their domain ports.
+"""Storage adapter tests — every concrete PG repo implements its
+domain port AND round-trips its primary CRUD path through a live
+``postgres:16-alpine`` testcontainer (PG-A5 sweep).
 
 The goals of this module are:
 
 * Prove each concrete repository is registered as a subclass of its ABC.
-* Round-trip the primary CRUD / upsert paths through a temp sqlite file
+* Round-trip the primary CRUD / upsert paths through a real PG pool
   so the ABC surface remains honest (no stale method renames, no
   unintended signature drift).
-* Isolate every test with its own on-disk DB (``tmp_path``) — no shared
-  state, no reliance on the module-level ``ENV`` / default DB path.
+* Isolate every test with its own testcontainer — no shared state.
 """
 
 from __future__ import annotations
 
+import contextlib
 from decimal import Decimal
 
 import pytest
@@ -23,25 +25,43 @@ from domain.ports import (
     AbstractLeaderRepository,
     AbstractOrderRepository,
     AbstractPositionRepository,
-    AbstractRedemptionRepository,
 )
-from storage.sqlite.connection import create_connection
-from storage.sqlite.cursors_repo import CursorsRepo, TradeCursor
-from storage.sqlite.discovery_repo import DiscoveryRepo
-from storage.sqlite.fills_repo import FillRecord, FillsRepo
-from storage.sqlite.leaders_repo import LeaderCandidateRecord, LeadersRepo
-from storage.sqlite.migrations import apply_migrations
-from storage.sqlite.orders_repo import OrdersRepo, OrderSubmissionRecord
-from storage.sqlite.positions_repo import PositionRecord, PositionsRepo
-from storage.sqlite.redemptions_repo import RedemptionsRepo
+from storage.postgres.cursors_repo import CursorsRepo, TradeCursor
+from storage.postgres.discovery_repo import DiscoveryRepo
+from storage.postgres.fills_repo import FillRecord, FillsRepo
+from storage.postgres.leaders_repo import LeaderCandidateRecord, LeadersRepo
+from storage.postgres.orders_repo import OrdersRepo, OrderSubmissionRecord
+from storage.postgres.positions_repo import PositionRecord, PositionsRepo
 
 
-@pytest.fixture()
-def db_path(tmp_path):
-    path = tmp_path / "state.db"
-    with create_connection(str(path)) as conn:
-        apply_migrations(conn)
-    return str(path)
+@contextlib.asynccontextmanager
+async def _pg_pool():
+    """Spin a Postgres testcontainer + return a pool with the full
+    schema applied. Auto-skips when Docker is unavailable."""
+    try:
+        from testcontainers.postgres import PostgresContainer
+        import asyncpg
+        from storage.postgres.migrations import apply_migrations as pg_apply
+    except Exception as exc:
+        pytest.skip(f"Docker / postgres image unavailable: {exc!r}")
+    try:
+        ctr = PostgresContainer("postgres:16-alpine")
+        ctr.start()
+    except Exception as exc:
+        pytest.skip(f"Docker / postgres image unavailable: {exc!r}")
+    try:
+        dsn = ctr.get_connection_url(driver="asyncpg").replace(
+            "postgresql+asyncpg://", "postgresql://"
+        )
+        pool = await asyncpg.create_pool(dsn, min_size=1, max_size=3)
+        async with pool.acquire() as conn:
+            await pg_apply(conn)
+        try:
+            yield pool
+        finally:
+            await pool.close()
+    finally:
+        ctr.stop()
 
 
 # ---------------------------------------------------------------------------
@@ -50,6 +70,8 @@ def db_path(tmp_path):
 
 
 class TestAbcRegistration:
+    """Subclass checks need no pool. Sync tests."""
+
     def test_orders_repo(self) -> None:
         assert issubclass(OrdersRepo, AbstractOrderRepository)
 
@@ -65,9 +87,6 @@ class TestAbcRegistration:
     def test_cursors_repo(self) -> None:
         assert issubclass(CursorsRepo, AbstractCursorRepository)
 
-    def test_redemptions_repo(self) -> None:
-        assert issubclass(RedemptionsRepo, AbstractRedemptionRepository)
-
     def test_discovery_repo(self) -> None:
         assert issubclass(DiscoveryRepo, AbstractDiscoveryRepository)
 
@@ -78,152 +97,161 @@ class TestAbcRegistration:
 
 
 class TestOrdersRepo:
-    def test_acquire_then_is_locked(self, db_path: str) -> None:
-        repo = OrdersRepo(db_path)
-        assert repo.try_acquire_submission_lock("k1", "u1", "l1", {"a": 1}) is True
-        assert repo.is_submission_locked("k1") is True
-        # Re-acquiring must fail deterministically
-        assert repo.try_acquire_submission_lock("k1", "u1", "l1", {"a": 1}) is False
+    @pytest.mark.asyncio
+    async def test_acquire_then_is_locked(self) -> None:
+        async with _pg_pool() as pool:
+            repo = OrdersRepo(pool)
+            assert await repo.try_acquire_submission_lock(
+                "k1", "u1", "l1", {"a": 1}
+            ) is True
+            assert await repo.is_submission_locked("k1") is True
+            # Re-acquiring must fail deterministically.
+            assert await repo.try_acquire_submission_lock(
+                "k1", "u1", "l1", {"a": 1}
+            ) is False
 
-    def test_save_submission_readback(self, db_path: str) -> None:
-        repo = OrdersRepo(db_path)
-        repo.save_submission(
-            OrderSubmissionRecord(
-                idempotency_key="k2",
-                user_id="u1",
-                leader_id="l1",
-                order_id="ord-xyz",
-                status="submitted",
-                request_payload={"a": 1},
-                response_payload={"orderID": "ord-xyz"},
+    @pytest.mark.asyncio
+    async def test_save_submission_readback(self) -> None:
+        async with _pg_pool() as pool:
+            repo = OrdersRepo(pool)
+            await repo.save_submission(
+                OrderSubmissionRecord(
+                    idempotency_key="k2",
+                    user_id="u1",
+                    leader_id="l1",
+                    order_id="ord-xyz",
+                    status="submitted",
+                    request_payload={"a": 1},
+                    response_payload={"orderID": "ord-xyz"},
+                )
             )
-        )
-        row = repo.get_by_idempotency_key("k2")
+            row = await repo.get_by_idempotency_key("k2")
         assert row is not None
         assert row["order_id"] == "ord-xyz"
         assert row["status"] == "submitted"
 
-    def test_processed_trade_lifecycle(self, db_path: str) -> None:
-        repo = OrdersRepo(db_path)
-        assert repo.has_processed_trade("tk1") is False
-        repo.mark_processed_trade(
-            trade_key="tk1",
-            user_id="u1",
-            leader_id="l1",
-            condition_id="c1",
-            side="BUY",
-            status="ok",
-            tx_hash="0xdead",
-            asset="3" * 20,
-        )
-        assert repo.has_processed_trade("tk1") is True
-        assert repo.get_processed_trade("tk1") is not None
+    @pytest.mark.asyncio
+    async def test_processed_trade_lifecycle(self) -> None:
+        async with _pg_pool() as pool:
+            repo = OrdersRepo(pool)
+            assert await repo.has_processed_trade("tk1") is False
+            await repo.mark_processed_trade(
+                trade_key="tk1",
+                user_id="u1",
+                leader_id="l1",
+                condition_id="c1",
+                side="BUY",
+                status="ok",
+                tx_hash="0xdead",
+                asset="3" * 20,
+            )
+            assert await repo.has_processed_trade("tk1") is True
+            assert await repo.get_processed_trade("tk1") is not None
 
 
 class TestPositionsRepo:
-    def test_upsert_and_list(self, db_path: str) -> None:
-        repo = PositionsRepo(db_path)
-        record = PositionRecord(
-            user_id="u1",
-            condition_id="c1",
-            token_id="1" * 20,
-            leader_id="l1",
-            size_tokens=Decimal("10"),
-            avg_entry_price=Decimal("0.5"),
-        )
-        repo.upsert_position(record)
-        rows = repo.list_open_positions("u1")
+    @pytest.mark.asyncio
+    async def test_upsert_and_list(self) -> None:
+        async with _pg_pool() as pool:
+            repo = PositionsRepo(pool)
+            await repo.upsert_position(
+                PositionRecord(
+                    user_id="u1",
+                    condition_id="c1",
+                    token_id="1" * 20,
+                    leader_id="l1",
+                    size_tokens=Decimal("10"),
+                    avg_entry_price=Decimal("0.5"),
+                )
+            )
+            rows = await repo.list_open_positions("u1")
         assert len(rows) == 1
         assert rows[0].condition_id == "c1"
 
-    def test_delete_position(self, db_path: str) -> None:
-        repo = PositionsRepo(db_path)
-        repo.upsert_position(
-            PositionRecord(
-                user_id="u1",
-                condition_id="c1",
-                token_id="2" * 20,
-                leader_id="l1",
-                size_tokens=Decimal("5"),
-                avg_entry_price=Decimal("0.6"),
+    @pytest.mark.asyncio
+    async def test_delete_position(self) -> None:
+        async with _pg_pool() as pool:
+            repo = PositionsRepo(pool)
+            await repo.upsert_position(
+                PositionRecord(
+                    user_id="u1",
+                    condition_id="c1",
+                    token_id="2" * 20,
+                    leader_id="l1",
+                    size_tokens=Decimal("5"),
+                    avg_entry_price=Decimal("0.6"),
+                )
             )
-        )
-        repo.delete_position("u1", "c1")
-        assert repo.get_position("u1", "c1") is None
+            await repo.delete_position("u1", "c1", token_id="2" * 20)
+            got = await repo.get_position("u1", "c1", token_id="2" * 20)
+        assert got is None
 
 
 class TestFillsRepo:
-    def test_append_and_list(self, db_path: str) -> None:
-        repo = FillsRepo(db_path)
-        rec = FillRecord(
-            user_id="u1",
-            leader_id="l1",
-            order_id="ord-1",
-            condition_id="c1",
-            token_id="3" * 20,
-            side="BUY",
-            size_tokens=Decimal("1"),
-            price=Decimal("0.5"),
-        )
-        fid = repo.append_fill(rec)
-        assert isinstance(fid, int)
-        assert repo.list_fills_for_user("u1")
-        assert repo.list_fills_for_user_condition("u1", "c1")
+    @pytest.mark.asyncio
+    async def test_append_and_list(self) -> None:
+        async with _pg_pool() as pool:
+            repo = FillsRepo(pool)
+            fid = await repo.append_fill(
+                FillRecord(
+                    user_id="u1",
+                    leader_id="l1",
+                    order_id="ord-1",
+                    condition_id="c1",
+                    token_id="3" * 20,
+                    side="BUY",
+                    size_tokens=Decimal("1"),
+                    price=Decimal("0.5"),
+                )
+            )
+            assert isinstance(fid, int)
+            user_rows = await repo.list_fills_for_user("u1")
+            cond_rows = await repo.list_fills_for_user_condition("u1", "c1")
+        assert user_rows
+        assert cond_rows
 
 
 class TestLeadersRepo:
-    def test_upsert_candidates_and_list_active(self, db_path: str) -> None:
-        repo = LeadersRepo(db_path)
-        repo.upsert_candidates(
-            [
-                LeaderCandidateRecord(
-                    leader_id="0xaaa",
-                    score=1.0,
-                    recent_trades=5,
-                    active=True,
-                    source="test",
-                ),
-                LeaderCandidateRecord(
-                    leader_id="0xbbb",
-                    score=0.5,
-                    recent_trades=1,
-                    active=False,
-                    source="test",
-                ),
-            ]
-        )
-        actives = repo.list_active()
+    @pytest.mark.asyncio
+    async def test_upsert_candidates_and_list_active(self) -> None:
+        async with _pg_pool() as pool:
+            repo = LeadersRepo(pool)
+            await repo.upsert_candidates(
+                [
+                    LeaderCandidateRecord(
+                        leader_id="0xaaa",
+                        score=1.0,
+                        recent_trades=5,
+                        active=True,
+                        source="test",
+                    ),
+                    LeaderCandidateRecord(
+                        leader_id="0xbbb",
+                        score=0.5,
+                        recent_trades=1,
+                        active=False,
+                        source="test",
+                    ),
+                ]
+            )
+            actives = await repo.list_active()
         assert "0xaaa" in actives
         assert "0xbbb" not in actives
 
 
 class TestCursorsRepo:
-    def test_default_cursor_then_roundtrip(self, db_path: str) -> None:
-        repo = CursorsRepo(db_path)
-        initial = repo.get_cursor("leader-a")
-        assert initial.timestamp == 0
-        assert initial.tx_hash == ""
+    @pytest.mark.asyncio
+    async def test_default_cursor_then_roundtrip(self) -> None:
+        async with _pg_pool() as pool:
+            repo = CursorsRepo(pool)
+            initial = await repo.get_cursor("leader-a")
+            assert initial.timestamp == 0
+            assert initial.tx_hash == ""
 
-        repo.set_cursor(
-            "leader-a", TradeCursor(timestamp=1234, tx_hash="0xdead", trade_id="t1")
-        )
-        reloaded = repo.get_cursor("leader-a")
+            await repo.set_cursor(
+                "leader-a",
+                TradeCursor(timestamp=1234, tx_hash="0xdead", trade_id="t1"),
+            )
+            reloaded = await repo.get_cursor("leader-a")
         assert reloaded.timestamp == 1234
         assert reloaded.tx_hash == "0xdead"
-
-
-class TestRedemptionsRepo:
-    def test_save_attempt_does_not_raise(self, db_path: str) -> None:
-        repo = RedemptionsRepo(db_path)
-        repo.save_attempt({
-            "user_id": "u1",
-            "condition_id": "cond-1",
-            "attempt_id": "att-1",
-            "status": "ok",
-            "amount": "1",
-        })
-
-    def test_save_attempt_raises_on_missing_identifiers(self, db_path: str) -> None:
-        repo = RedemptionsRepo(db_path)
-        with pytest.raises(ValueError, match="missing redemption identifiers"):
-            repo.save_attempt({"user_id": "u1", "status": "ok"})

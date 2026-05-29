@@ -1,103 +1,80 @@
+"""Write a snapshot of Falcon/Polymarket discovery candidates.
+
+This script is intentionally read-only with respect to runtime leadership:
+it never edits LEADER_WALLETS and never starts monitors. Use
+`python bot.py rotate-traders` for operator-confirmed rotation.
+"""
+
+from __future__ import annotations
+
 import asyncio
 import json
-import os
 import time
 from pathlib import Path
 
+from config.app_config import load_config
+from config.db import connect_db
+from config.env import rehydrate_env
 from config.runtime_env import load_runtime_env
+from storage.postgres.connection import get_pool
+from storage.postgres.discovery_repo import DiscoveryRepo
+from utils.logger import get_logger
 
-load_runtime_env(override_secrets=True)
 
-from config.env import ENV, rehydrate_env
-from config.db import connect_db, get_db_path
-from services.traderDiscoveryService import TraderDiscoveryService
-from orchestrators.leader_registry import LeaderRegistry
-from storage.sqlite.leaders_repo import LeadersRepo
-
+logger = get_logger("TraderFinder")
 OUTPUT_JSON = Path("data/followable_traders.json")
-OUTPUT_JSON.parent.mkdir(parents=True, exist_ok=True)
-
-TARGET_COUNT = int(os.getenv("FIND_TRADERS_TARGET", "6"))
-REFRESH_SECONDS = int(os.getenv("FIND_TRADERS_REFRESH_SECONDS", "60"))
 
 
-def snapshot_payload(state, discovery):
-    rows = []
-    for cand in state.discovered:
-        profile = discovery.get_cached_profile(cand.leader_id)
-        rows.append(
-            {
-                "wallet": cand.leader_id,
-                "active": cand.active,
-                "score": cand.score,
-                "recent_trades": cand.recent_trades,
-                "rejection_reason": cand.rejection_reason,
-                "overall_gain": getattr(profile, "overall_gain", None),
-                "win_rate": getattr(profile, "win_rate", None),
-                "total_positions": getattr(profile, "total_positions", None),
-                "active_positions": getattr(profile, "active_positions", None),
-                "name": getattr(profile, "name", ""),
-            }
-        )
-    rows.sort(key=lambda r: ((not r["active"]), -(r["score"] or 0.0), -(r["recent_trades"] or 0), r["wallet"]))
+def _row(row) -> dict:
     return {
-        "generated_at": time.time(),
-        "db_path": get_db_path(),
-        "target_count": TARGET_COUNT,
-        "refresh_seconds": REFRESH_SECONDS,
-        "filters_used_exactly_as_implemented": {
-            "min_pnl": ENV.get("MIN_LEADER_PNL"),
-            "min_win_rate": ENV.get("MIN_LEADER_WIN_RATE"),
-            "min_positions": ENV.get("MIN_LEADER_POSITIONS"),
-            "auto_discover_min_score": ENV.get("AUTO_DISCOVER_MIN_SCORE"),
-            "discovery_promote_to_active": ENV.get("DISCOVERY_PROMOTE_TO_ACTIVE"),
-            "auto_discover_top_n": ENV.get("AUTO_DISCOVER_TOP_N"),
-            "min_active_positions": ENV.get("MIN_ACTIVE_POSITIONS", 1),
-        },
-        "not_implemented_filters": [
-            "max hold duration < 12h",
-            "max 50 trades/day",
-        ],
-        "mode": state.mode,
-        "active_monitored": state.active_monitored,
-        "candidate_count": len(state.discovered),
-        "candidates": rows,
+        "wallet": row.wallet,
+        "status": row.status,
+        "final_score": row.final_score,
+        "falcon_quality_score": row.falcon_quality_score,
+        "copyability_score": row.copyability_score,
+        "copyable_signal_ratio": row.copyable_signal_ratio,
+        "copyable_notional_ratio": row.copyable_notional_ratio,
+        "sports_esports_ratio": row.sports_esports_ratio,
+        "fast_crypto_signal_ratio": row.fast_crypto_signal_ratio,
+        "fast_crypto_notional_ratio": row.fast_crypto_notional_ratio,
+        "pnl_7d": str(row.pnl_7d),
+        "pnl_3d": str(row.pnl_3d),
+        "rejection_reason": row.rejection_reason,
+        "eligible_live": row.eligible_live,
+        "eligible_shadow": row.eligible_shadow,
+        "updated_at": row.updated_at,
     }
 
 
-async def main():
+async def main() -> None:
+    load_runtime_env(override_secrets=True)
     rehydrate_env(load_dotenv_file=False)
     await connect_db()
+    config = load_config()
+    pool = await get_pool()
+    repo = DiscoveryRepo(pool)
+    rows = await repo.list_evaluations(statuses=["live_eligible", "shadow"], limit=100)
 
-    discovery = TraderDiscoveryService()
-    repo = LeadersRepo(get_db_path())
-    registry = LeaderRegistry(discovery, repo)
-
-    print(f"[finder] started: target={TARGET_COUNT} refresh={REFRESH_SECONDS}s")
-    print("[finder] using implemented filters only: pnl / win rate / positions / active positions / composite score")
-
-    while True:
-        state = await registry.refresh([])
-        payload = snapshot_payload(state, discovery)
-        OUTPUT_JSON.write_text(json.dumps(payload, indent=2))
-
-        active = state.active_monitored
-        print(f"[finder] active={len(active)} candidates={len(state.discovered)} mode={state.mode}")
-        for wallet in active[:TARGET_COUNT]:
-            profile = discovery.get_cached_profile(wallet)
-            if profile:
-                wr = profile.win_rate if profile.win_rate <= 1.0 else profile.win_rate / 100.0
-                print(
-                    f"[finder] leader={wallet} score={profile.composite_score:.3f} "
-                    f"pnl={profile.overall_gain:.2f} wr={wr:.3f} positions={profile.total_positions}"
-                )
-
-        if len(active) >= TARGET_COUNT:
-            print(f"[finder] success: found {len(active)} active followable traders")
-            return
-
-        await asyncio.sleep(REFRESH_SECONDS)
+    payload = {
+        "generated_at": time.time(),
+        "mode": "db_only",
+        "rotation_command": "python bot.py rotate-traders",
+        "thresholds": {
+            "min_copyable_grouped_signal_ratio": (
+                config.discovery.discovery_min_copyable_grouped_signal_ratio
+            ),
+            "min_copyable_notional_ratio": (
+                config.discovery.discovery_min_copyable_notional_ratio
+            ),
+        },
+        "candidate_count": len(rows),
+        "candidates": [_row(row) for row in rows],
+    }
+    OUTPUT_JSON.parent.mkdir(parents=True, exist_ok=True)
+    OUTPUT_JSON.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    logger.info("wrote %s with %d candidates", OUTPUT_JSON, len(rows))
 
 
 if __name__ == "__main__":
     asyncio.run(main())
+

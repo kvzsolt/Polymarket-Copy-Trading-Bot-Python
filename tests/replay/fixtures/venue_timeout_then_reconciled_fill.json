@@ -1,0 +1,46 @@
+{
+  "_description": "Replay fixture: venue timeout on submit, then reconciliation later confirms the fill",
+  "_scenario": "venue_timeout_then_reconciled_fill",
+  "_invariant": "reservation survives timeout; reconciliation resolves to fill and releases reservation",
+  "events": [
+    {
+      "ts": "2026-05-01T10:00:00Z",
+      "type": "price_update",
+      "token_id": "0xTOKEN_C",
+      "price": 0.72
+    },
+    {
+      "ts": "2026-05-01T10:00:01Z",
+      "type": "book_snapshot",
+      "token_id": "0xTOKEN_C",
+      "bids": [[0.70, 300]],
+      "asks": [[0.73, 200], [0.74, 150]]
+    },
+    {
+      "ts": "2026-05-01T10:00:02Z",
+      "type": "leader_buy",
+      "leader_wallet": "0xLEADER",
+      "condition_id": "0xCOND_C",
+      "token_id": "0xTOKEN_C",
+      "size": 50.0
+    },
+    {
+      "ts": "2026-05-01T10:00:03Z",
+      "type": "venue_timeout",
+      "order_id": "order_3"
+    },
+    {
+      "ts": "2026-05-01T10:00:30Z",
+      "type": "reconciliation_check",
+      "order_id": "order_3"
+    },
+    {
+      "ts": "2026-05-01T10:00:35Z",
+      "type": "fill_confirmed",
+      "order_id": "order_3",
+      "venue_order_id": "v_order_3",
+      "fill_size": 50.0,
+      "fill_price": 0.73
+    }
+  ]
+}

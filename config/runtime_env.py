@@ -11,7 +11,10 @@ _NON_SENSITIVE_ENV_PATH = _REPO_ROOT / "config" / "runtime.env"
 _LOCAL_NON_SENSITIVE_ENV_PATH = _REPO_ROOT / "config" / "runtime.local.env"
 
 # Keys that are expected to live in secrets.env and should override the
-# public/local runtime lanes when present.
+# public/local runtime lanes when present. Only true credentials —
+# FUNDER_ADDRESS is a public on-chain address and was removed from
+# this set so accidental placement in secrets.env does not silently
+# override the per-user runtime.local.env wallet config without warning.
 _SECRETS_OVERRIDE_KEYS = {
     "RPC_URL",
     "CLOB_API_KEY",
@@ -19,7 +22,8 @@ _SECRETS_OVERRIDE_KEYS = {
     "CLOB_PASSPHRASE",
     "PRIVATE_KEY",
     "PRIVATE_KEY_FILE",
-    "FUNDER_ADDRESS",
+    "FALCON_API_TOKEN",
+    "DATABASE_URL",
 }
 
 
@@ -84,12 +88,12 @@ def load_runtime_env(
             secrets_path=resolved_secrets,
         )
 
-        # First fill any still-unset values from secrets.env.
-        load_dotenv(dotenv_path=resolved_secrets, override=False)
-
-        # Then explicitly override only sensitive keys.
-        if override_secrets:
-            for key in _SECRETS_OVERRIDE_KEYS:
-                value = secret_values.get(key)
-                if value is not None:
-                    os.environ[key] = value
+        # Allowlisted sensitive keys: set when missing, or force-set when
+        # override_secrets is True. Non-sensitive keys must live in
+        # runtime.env / runtime.local.env.
+        for key in _SECRETS_OVERRIDE_KEYS:
+            value = secret_values.get(key)
+            if value is None:
+                continue
+            if override_secrets or key not in os.environ:
+                os.environ[key] = value

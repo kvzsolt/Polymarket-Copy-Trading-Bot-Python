@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from config.env import SignatureType, WalletConfig
-from utils.createClobClient import (
+from services.wallet_signature_detector import (
     _classify_wallet_signature_type,
     detect_wallet_signature_type,
 )
@@ -59,14 +59,14 @@ def test_classify_wallet_signature_type_gnosis_safe() -> None:
 @pytest.mark.asyncio
 async def test_detect_wallet_signature_type_eoa_skips_rpc_probe(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        "utils.createClobClient._derive_signer_address",
+        "services.wallet_signature_detector._derive_signer_address",
         lambda _private_key: _SIGNER_ADDRESS,
     )
 
     def _boom(*_args, **_kwargs):
         raise AssertionError("RPC probe should not run for signer=funder EOA")
 
-    monkeypatch.setattr("utils.createClobClient._fetch_contract_code_hex", _boom)
+    monkeypatch.setattr("services.wallet_signature_detector._fetch_contract_code_hex", _boom)
 
     signature_type, wallet_type, signer_address = await detect_wallet_signature_type(
         _wallet_config(_FUNDER_EOA)
@@ -80,11 +80,11 @@ async def test_detect_wallet_signature_type_eoa_skips_rpc_probe(monkeypatch: pyt
 @pytest.mark.asyncio
 async def test_detect_wallet_signature_type_gnosis_safe_from_contract_code(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        "utils.createClobClient._derive_signer_address",
+        "services.wallet_signature_detector._derive_signer_address",
         lambda _private_key: _SIGNER_ADDRESS,
     )
     monkeypatch.setattr(
-        "utils.createClobClient._fetch_contract_code_hex",
+        "services.wallet_signature_detector._fetch_contract_code_hex",
         lambda _rpc_url, _address: "0x1234",
     )
 
@@ -102,11 +102,11 @@ async def test_detect_wallet_signature_type_poly_proxy_when_funder_differs_and_h
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        "utils.createClobClient._derive_signer_address",
+        "services.wallet_signature_detector._derive_signer_address",
         lambda _private_key: _SIGNER_ADDRESS,
     )
     monkeypatch.setattr(
-        "utils.createClobClient._fetch_contract_code_hex",
+        "services.wallet_signature_detector._fetch_contract_code_hex",
         lambda _rpc_url, _address: "0x",
     )
 

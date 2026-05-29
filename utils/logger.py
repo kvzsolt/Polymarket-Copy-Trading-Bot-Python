@@ -106,6 +106,74 @@ class JsonFormatter(logging.Formatter):
         return json.dumps(payload, ensure_ascii=False)
 
 
+_POSITION_DRIFT_PANEL: dict[str, tuple[str, str, str]] = {
+    # status -> (title, border, icon)
+    "clean": ("POSITION DRIFT CLEAN", "green", "✅"),
+    "local_missing_venue_position": ("POSITION DRIFT DETECTED", "yellow", "⚠️"),
+    "venue_missing_local_position": ("POSITION DRIFT DETECTED", "yellow", "⚠️"),
+    "size_mismatch_positive": ("POSITION DRIFT DETECTED", "yellow", "⚠️"),
+    "size_mismatch_negative": ("POSITION DRIFT DETECTED", "yellow", "⚠️"),
+    "reservation_orphaned": ("POSITION DRIFT DETECTED", "yellow", "⚠️"),
+    "unresolved": ("TRADING PAUSED FOR POSITION", "red", "🛑"),
+}
+
+
+_ORDER_LIFECYCLE_PANEL: dict[str, tuple[str, str, str]] = {
+    # status -> (title, border_style, icon)
+    "submitted_unconfirmed": ("ORDER UNCONFIRMED", "yellow", "⏳"),
+    "delayed": ("ORDER DELAYED", "yellow", "⏳"),
+    "submitted_delayed": ("ORDER DELAYED", "yellow", "⏳"),
+    "live": ("ORDER LIVE", "cyan", "📘"),
+    "order_live": ("ORDER LIVE", "cyan", "📘"),
+    "matched": ("ORDER MATCHED", "cyan", "🔄"),
+    "matched_pending_confirmation": ("ORDER MATCHED", "cyan", "🔄"),
+    "mined": ("TRADE MINED", "cyan", "⛏️"),
+    "trade_mined": ("TRADE MINED", "cyan", "⛏️"),
+    "retrying": ("TRADE RETRYING", "yellow", "🔁"),
+    "trade_retrying": ("TRADE RETRYING", "yellow", "🔁"),
+    "confirmed": ("TRADE CONFIRMED", "green", "✅"),
+    "trade_confirmed": ("TRADE CONFIRMED", "green", "✅"),
+    "filled": ("TRADE CONFIRMED", "green", "✅"),
+    "failed": ("ORDER FAILED", "red", "❌"),
+    "rejected": ("ORDER FAILED", "red", "❌"),
+    "expired": ("ORDER FAILED", "red", "❌"),
+    "cancelled": ("ORDER CANCELLED", "red", "❌"),
+    "canceled": ("ORDER CANCELLED", "red", "❌"),
+    "ambiguous_timeout": ("ORDER AMBIGUOUS — TIMEOUT", "magenta", "⚠️"),
+    "auto_released_ambiguous": ("ORDER AUTO-RELEASED", "magenta", "♻️"),
+}
+
+
+_ORDER_LIFECYCLE_LAST: dict[str, str] = {}
+_ORDER_LIFECYCLE_LAST_MAX = 1024
+
+
+def _lifecycle_dedup_key(
+    order_id: str | None,
+    signal_id: str | None,
+    condition_id: str | None,
+) -> str:
+    return order_id or signal_id or condition_id or ""
+
+
+def _lifecycle_should_emit(key: str, status: str) -> bool:
+    if not key:
+        return True
+    prev = _ORDER_LIFECYCLE_LAST.get(key)
+    if prev == status:
+        return False
+    if len(_ORDER_LIFECYCLE_LAST) >= _ORDER_LIFECYCLE_LAST_MAX:
+        # Drop oldest insertion. Python dicts preserve insertion order so this
+        # popitem(last=False) equivalent works via next(iter(...)).
+        try:
+            oldest = next(iter(_ORDER_LIFECYCLE_LAST))
+            _ORDER_LIFECYCLE_LAST.pop(oldest, None)
+        except StopIteration:
+            pass
+    _ORDER_LIFECYCLE_LAST[key] = status
+    return True
+
+
 class RichConsoleHandler(logging.Handler):
     """Console handler with Rich-styled rendering for structured log types."""
 
@@ -177,6 +245,12 @@ class RichConsoleHandler(logging.Handler):
         if log_type == "trade_submitted":
             self._render_submitted(record, ts)
             return True
+        if log_type == "order_lifecycle":
+            self._render_order_lifecycle(record, ts)
+            return True
+        if log_type == "position_drift":
+            self._render_position_drift(record, ts)
+            return True
         if log_type == "risk_exit":
             self._render_risk_exit(record, ts)
             return True
@@ -188,12 +262,6 @@ class RichConsoleHandler(logging.Handler):
             return True
         if log_type == "clob_client_init":
             self._render_clob_client_init(record, ts)
-            return True
-        if log_type == "redemption_scan":
-            self._render_redemption_scan(record, ts)
-            return True
-        if log_type == "redemption_result":
-            self._render_redemption_result(record, ts)
             return True
         return False
 
@@ -275,41 +343,6 @@ class RichConsoleHandler(logging.Handler):
             "\n".join(lines),
             title=f"🔐 [bold cyan]CLOB CLIENT READY[/bold cyan]  [muted][{ts}][/muted]",
             border_style="cyan",
-            padding=(1, 2),
-        ))
-
-    def _render_redemption_scan(self, record: LogRecord, ts: str) -> None:
-        lines = _build_panel_lines(
-            Interval=f"{getattr(record, 'intervalSeconds', 0)}s",
-            Redeemables=str(getattr(record, "redeemableCount", 0)),
-            Conditions=str(getattr(record, "conditionCount", 0)),
-            EstimatedValue=f"${float(getattr(record, 'estimatedValue', 0.0) or 0.0):.2f}",
-        )
-        console.print()
-        console.print(Panel(
-            "\n".join(lines),
-            title=f"🏦 [bold green]REDEMPTION SCAN[/bold green]  [muted][{ts}][/muted]",
-            border_style="green",
-            padding=(1, 2),
-        ))
-
-    def _render_redemption_result(self, record: LogRecord, ts: str) -> None:
-        status = str(getattr(record, "status", "unknown") or "unknown")
-        ok = status == "confirmed"
-        border = "green" if ok else "red"
-        title = "REDEMPTION CONFIRMED" if ok else "REDEMPTION FAILED"
-        lines = _build_panel_lines(
-            Condition=shorten_addr(getattr(record, "conditionId", None), 10, 6),
-            Positions=str(getattr(record, "positionCount", 0)),
-            EstimatedValue=f"${float(getattr(record, 'estimatedValue', 0.0) or 0.0):.2f}",
-            TxHash=shorten_addr(getattr(record, "txHash", None), 10, 6),
-            Error=getattr(record, "error", None),
-        )
-        console.print()
-        console.print(Panel(
-            "\n".join(lines),
-            title=f"{'✅' if ok else '❌'} [bold {border}]{title}[/bold {border}]  [muted][{ts}][/muted]",
-            border_style=border,
             padding=(1, 2),
         ))
 
@@ -410,6 +443,102 @@ class RichConsoleHandler(logging.Handler):
                 border_style="cyan",
                 padding=(1, 2),
             ))
+
+    def _render_order_lifecycle(self, record: LogRecord, ts: str) -> None:
+        status = (getattr(record, "status", "") or "").lower()
+        side = (getattr(record, "side", "") or "?").upper()
+        venue_status = getattr(record, "venueStatus", None)
+        submission_state = getattr(record, "submissionState", None)
+        size_raw = getattr(record, "size", None)
+        price_raw = getattr(record, "price", None)
+        usdc_raw = getattr(record, "usdcValue", None)
+        cond = shorten_addr(getattr(record, "conditionId", None), 8, 6)
+        asset = shorten_addr(getattr(record, "asset", None), 8, 6)
+        order_id = shorten_addr(getattr(record, "copyOrderId", None), 8, 6)
+        tx = shorten_addr(getattr(record, "txHash", None), 8, 6)
+
+        title_text, border, icon = _ORDER_LIFECYCLE_PANEL.get(
+            status,
+            ("ORDER LIFECYCLE", "white", "📋"),
+        )
+        side_style = "trade.buy" if side == "BUY" else "trade.sell" if side == "SELL" else "info"
+
+        def _fmt_float(v: Any, fmt: str) -> str | None:
+            try:
+                return format(float(v), fmt) if v is not None else None
+            except (TypeError, ValueError):
+                return None
+
+        size_str = _fmt_float(size_raw, ".4f")
+        price_str = _fmt_float(price_raw, ".4f")
+        usdc_str = _fmt_float(usdc_raw, ".2f")
+
+        lines = _build_panel_lines(
+            Side=f"[{side_style}]{side}[/{side_style}]",
+            Status=status or None,
+            VenueStatus=str(venue_status) if venue_status else None,
+            State=str(submission_state) if submission_state else None,
+            Size=f"{size_str} tokens" if size_str else None,
+            Price=price_str,
+            Value=f"[money]${usdc_str}[/money]" if usdc_str else None,
+            Condition=cond if cond != "N/A" else None,
+            Asset=asset if asset != "N/A" else None,
+            OrderID=order_id if order_id != "N/A" else None,
+            Tx=tx if tx != "N/A" else None,
+        )
+        console.print()
+        console.print(Panel(
+            "\n".join(lines),
+            title=f"{icon} [bold {border}]{title_text} — {side}[/bold {border}]  [muted][{ts}][/muted]",
+            border_style=border,
+            padding=(1, 2),
+        ))
+
+    def _render_position_drift(self, record: LogRecord, ts: str) -> None:
+        status = (getattr(record, "status", "") or "").lower()
+        action = (getattr(record, "action", "") or "").lower()
+        user_id = getattr(record, "userId", None)
+        cond = shorten_addr(getattr(record, "conditionId", None), 8, 6)
+        asset = shorten_addr(getattr(record, "asset", None), 8, 6)
+        local = getattr(record, "localSize", None)
+        venue = getattr(record, "venueSize", None)
+        drift = getattr(record, "driftSize", None)
+        reason = getattr(record, "reason", None)
+
+        title, border, icon = _POSITION_DRIFT_PANEL.get(
+            status,
+            ("POSITION DRIFT DETECTED", "yellow", "⚠️"),
+        )
+        # Action overrides for clearer operator signal.
+        if action == "prune_local_zero_position":
+            title, border, icon = "LOCAL POSITION PRUNED", "cyan", "🧹"
+        elif action in {"pause_scope", "require_operator_review"}:
+            title, border, icon = "TRADING PAUSED FOR POSITION", "red", "🛑"
+
+        def _fmt(v: Any) -> str | None:
+            try:
+                return f"{float(v):.4f}"
+            except (TypeError, ValueError):
+                return None
+
+        lines = _build_panel_lines(
+            User=user_id or None,
+            Status=status or None,
+            Action=action or None,
+            Condition=cond if cond != "N/A" else None,
+            Asset=asset if asset != "N/A" else None,
+            LocalSize=_fmt(local),
+            VenueSize=_fmt(venue),
+            DriftSize=_fmt(drift),
+            Reason=reason or None,
+        )
+        console.print()
+        console.print(Panel(
+            "\n".join(lines),
+            title=f"{icon} [bold {border}]{title}[/bold {border}]  [muted][{ts}][/muted]",
+            border_style=border,
+            padding=(1, 2),
+        ))
 
     def _render_risk_exit(self, record: LogRecord, ts: str) -> None:
         cond = shorten_addr(getattr(record, "conditionId", None), 8, 6)
@@ -958,6 +1087,91 @@ def print_success(msg: str) -> None:
     console.print(f"✅ [success]{msg}[/success]")
 
 
+def print_manual_trade_detected(trade: dict) -> None:
+    """Rich-panel log for a detected manual (off-bot) trade on the funder wallet.
+
+    Mirrors ``print_new_trade_detected`` shape but with BUY=green/🛒 and
+    SELL=red/💵 to surface that the bot did NOT originate this trade.
+    """
+    side = str(trade.get("side") or "?").upper()
+    size = float(trade.get("size") or 0)
+    price = float(trade.get("price") or 0)
+    usdc = float(trade.get("usdcSize") or 0) or (size * price)
+    market = trade.get("title") or trade.get("market") or trade.get("slug") or "Unknown"
+    outcome = trade.get("outcome") or ""
+    tx_hash = trade.get("transactionHash") or trade.get("tx_hash") or ""
+    event_slug = trade.get("eventSlug") or trade.get("slug") or ""
+
+    is_buy = side == "BUY"
+    icon = "🛒" if is_buy else "💵"
+    border = "green" if is_buy else "red"
+
+    ts = time.strftime("%I:%M:%S %p")
+    console.print()
+    console.print(Rule(style=border))
+    console.print(f"  {icon} [bold {border}]MANUAL TRADE DETECTED[/bold {border}] | {side}  [muted][{ts}][/muted]")
+    console.print(Rule(style=border))
+    console.print()
+
+    lines = [
+        f"[bold]Market:[/bold]      {market}",
+    ]
+    if outcome:
+        lines.append(f"[bold]Outcome:[/bold]     {outcome}")
+    lines.extend([
+        f"[bold]Side:[/bold]        {side}",
+        f"[bold]Size:[/bold]        {size:.4f} tokens",
+        f"[bold]Price:[/bold]       {price:.4f}",
+        f"[bold]Value:[/bold]       [money]{format_usdc(usdc)}[/money]",
+    ])
+    if event_slug:
+        url = event_link(event_slug)
+        lines.append(f"[bold]Event:[/bold]       [link={url}]{url}[/link]")
+    if tx_hash:
+        url = tx_link(tx_hash)
+        lines.append(f"[bold]TX:[/bold]          [link={url}]{url}[/link]")
+
+    console.print(Panel(
+        "\n".join(lines),
+        title=f"{icon} [bold {border}]MANUAL TRADE DETECTED[/bold {border}]",
+        border_style=border,
+        padding=(1, 2),
+    ))
+    console.print()
+
+    # Structured grep-able line for JSONL sink — mirrors trade_pipeline patterns.
+    _file_logger = logging.getLogger("ManualSync")
+    _file_logger.info(
+        "manual_trade_detected | side=%s size=%.4f price=%.4f usdc=%.2f market=%s outcome=%s tx=%s",
+        side, size, price, usdc, market, outcome or "-", tx_hash or "-",
+    )
+
+
+def print_manual_sync_discrepancy(
+    market: str, real_size: float, tracked_size: float, action: str
+) -> None:
+    """Yellow Panel surfacing a venue↔DB size mismatch detected during manual sync."""
+    console.print()
+    console.print(Rule(style="yellow"))
+    console.print("  ⚖️  [bold yellow]SYNCHRONIZER | PARITY DISCREPANCY[/bold yellow]")
+    console.print(Rule(style="yellow"))
+    console.print()
+
+    lines = [
+        f"[bold]Asset:[/bold]       {market}",
+        f"[bold]Real-World:[/bold]  [success]{real_size:.4f}[/success] shares (proxy wallet)",
+        f"[bold]Database:[/bold]    [error]{tracked_size:.4f}[/error] shares (tracked sum)",
+        f"[bold]Resolution:[/bold]  [bold cyan]{action}[/bold cyan]",
+    ]
+    console.print(Panel(
+        "\n".join(lines),
+        title="⚖️ [bold yellow]SYNC DISCREPANCY[/bold yellow]",
+        border_style="yellow",
+        padding=(0, 2),
+    ))
+    console.print()
+
+
 def redact_error_detail(error: Any) -> str:
     if error is None:
         return "unknown_error"
@@ -972,6 +1186,8 @@ def redact_error_detail(error: Any) -> str:
         return _HTTP_ERROR_CATEGORIES.get(status_code, f"http_{status_code}")
 
     lowered = error_str.lower()
+    if "poly_api_transport" in lowered or "connectionterminated" in lowered:
+        return "network_error"
     if "timeout" in lowered:
         return "timeout"
     if "rate limit" in lowered or "too many requests" in lowered:
@@ -1211,7 +1427,8 @@ def _log_trade(
     tx_hash: str | None = None,
     meta: dict[str, Any] | None = None,
 ) -> None:
-    _f = lambda v, fmt=".4f": format(float(v), fmt) if v is not None else "0"
+    def _f(v, fmt=".4f"):
+        return format(float(v), fmt) if v is not None else "0"
     parts = [
         f"{label} {side.upper()}",
         f"cond={condition_id}",
@@ -1258,13 +1475,20 @@ def log_api_error(
     max_retries: int = 3,
     meta: dict[str, Any] | None = None,
 ) -> None:
-    error_str = str(error) if error else "Unknown error"
+    # ``error_detail`` lands in the JSONL audit log via the ``extra``
+    # payload below. Pre-fix it carried ``str(error)`` verbatim, which
+    # for aiohttp / CLOB SDK exceptions can embed the signed Authorization
+    # header, the HMAC signature, or the full RPC URL with embedded API
+    # key. Route through ``safe_error_detail`` to get a category-only
+    # representation (matches the structured ``error`` field above) so
+    # the JSONL line can never carry credentials.
     redacted_message = redact_error_detail(error)
+    redacted_detail = safe_error_detail(error) if error else "Unknown error"
     payload = {
         "type": "api_error",
         "side": side.upper(),
         "error": redacted_message,
-        "error_detail": error_str,
+        "error_detail": redacted_detail,
         "conditionId": condition_id,
         "asset": asset,
         "retry": retry,
@@ -1376,6 +1600,122 @@ def log_trade_submitted(
         side=side, condition_id=condition_id, event_slug=event_slug,
         asset=asset, size=size, price=price, usdc_value=usdc_value,
         meta=meta,
+    )
+
+
+def log_order_lifecycle(
+    logger: logging.Logger,
+    *,
+    status: str,
+    side: str,
+    condition_id: str | None,
+    asset: str | None,
+    order_id: str | None,
+    size: float | None = None,
+    price: float | None = None,
+    usdc_value: float | None = None,
+    venue_status: str | None = None,
+    submission_state: str | None = None,
+    tx_hash: str | None = None,
+    event_slug: str | None = None,
+    signal_id: str | None = None,
+    meta: dict[str, Any] | None = None,
+    force: bool = False,
+) -> None:
+    """Emit a transition-only structured log for order lifecycle progress.
+
+    The handler renders this as a Rich panel (status → color/icon defined in
+    _ORDER_LIFECYCLE_PANEL). Repeat calls with the same dedup key + status are
+    suppressed unless ``force=True``.
+    """
+    canonical = (status or "").strip().lower()
+    key = _lifecycle_dedup_key(order_id, signal_id, condition_id)
+    if not force and not _lifecycle_should_emit(key, canonical):
+        return
+
+    payload: dict[str, Any] = {
+        "type": "order_lifecycle",
+        "status": canonical,
+        "side": (side or "").upper(),
+        "venueStatus": venue_status,
+        "submissionState": submission_state,
+        "conditionId": condition_id,
+        "asset": asset,
+        "copyOrderId": order_id,
+        "size": size,
+        "price": price,
+        "usdcValue": usdc_value,
+        "txHash": tx_hash,
+        "signalId": signal_id,
+    }
+    ev_url = event_link(event_slug)
+    if ev_url:
+        payload["eventUrl"] = ev_url
+    if meta:
+        payload.update(meta)
+
+    def _f(v, fmt=".4f"):
+        return format(float(v), fmt) if v is not None else "0"
+    msg = (
+        f"LIFECYCLE {canonical} | side={(side or '').upper()} | "
+        f"cond={condition_id} | asset={asset} | order_id={order_id} | "
+        f"size={_f(size)} price={_f(price)} {format_usdc(usdc_value)}"
+    )
+    logger.info(msg, extra=payload)
+
+
+def _reset_lifecycle_dedup_for_tests() -> None:
+    """Test helper — clears the per-key dedup map."""
+    _ORDER_LIFECYCLE_LAST.clear()
+
+
+def log_position_drift(
+    logger: logging.Logger,
+    *,
+    status: str,
+    action: str,
+    user_id: str,
+    condition_id: str | None,
+    asset: str | None,
+    local_size: float | None = None,
+    venue_size: float | None = None,
+    drift_size: float | None = None,
+    reason: str | None = None,
+    reservation_ids: list[str] | None = None,
+    meta: dict[str, Any] | None = None,
+) -> None:
+    """Emit a structured ``position_drift`` log (PR7).
+
+    Renders via ``RichConsoleHandler._render_position_drift`` and writes a
+    JSONL record. No dedup — every drift observation is operator-visible.
+    """
+    payload: dict[str, Any] = {
+        "type": "position_drift",
+        "status": (status or "").lower(),
+        "action": (action or "").lower(),
+        "userId": user_id,
+        "conditionId": condition_id,
+        "asset": asset,
+        "localSize": local_size,
+        "venueSize": venue_size,
+        "driftSize": drift_size,
+        "reason": reason,
+        "reservationIds": reservation_ids or [],
+    }
+    if meta:
+        payload.update(meta)
+    logger.info(
+        "POSITION_DRIFT %s/%s | user=%s | cond=%s | asset=%s | local=%s venue=%s drift=%s | %s",
+        payload["status"],
+        payload["action"],
+        user_id,
+        condition_id,
+        asset,
+        local_size,
+        venue_size,
+        drift_size,
+        reason or "",
+        extra=payload,
     )
 
 
@@ -1536,7 +1876,7 @@ def log_api_response(
 
     # Restore rich data_summary for safe fields (v5 behavior)
     _SAFE_DATA_FIELDS = (
-        "success", "orderID", "status", "error", "price", "size",
+        "success", "orderID", "order_id", "status", "error", "price", "size",
         "min_order_size", "transactionHash",
     )
     if isinstance(data, dict):

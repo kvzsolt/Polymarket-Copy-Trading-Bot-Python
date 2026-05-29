@@ -1,0 +1,178 @@
+{
+  "_description": "Replay fixture: bot restarts with pending orders; reservations must survive and pending orders re-queued for reconciliation",
+  "_scenario": "restart_with_pending_orders",
+  "_invariant": "reservations are preserved across restart; pending orders re-queued for reconciliation",
+  "events": [
+    {
+      "ts": "2026-05-01T13:00:00Z",
+      "type": "price_update",
+      "token_id": "0xTOKEN_F",
+      "price": 0.60
+    },
+    {
+      "ts": "2026-05-01T13:00:01Z",
+      "type": "book_snapshot",
+      "token_id": "0xTOKEN_F",
+      "bids": [[0.58, 200], [0.57, 400]],
+      "asks": [[0.62, 150], [0.63, 300]]
+    },
+    {
+      "ts": "2026-05-01T13:00:02Z",
+      "type": "reservation_created",
+      "reservation_id": "res_restart_001",
+      "user_id": "0xUSER",
+      "condition_id": "0xCOND_F",
+      "token_id": "0xTOKEN_F",
+      "side": "BUY",
+      "reserved_size": "50.0",
+      "reserved_usdc": "31.0",
+      "status": "active"
+    },
+    {
+      "ts": "2026-05-01T13:00:03Z",
+      "type": "leader_buy",
+      "leader_wallet": "0xLEADER",
+      "condition_id": "0xCOND_F",
+      "token_id": "0xTOKEN_F",
+      "size": 50.0
+    },
+    {
+      "ts": "2026-05-01T13:00:04Z",
+      "type": "order_submitted",
+      "order_id": "order_restart_001",
+      "venue_order_id": "v_restart_001",
+      "status": "submitted"
+    },
+    {
+      "ts": "2026-05-01T13:00:05Z",
+      "type": "reservation_created",
+      "reservation_id": "res_restart_002",
+      "user_id": "0xUSER",
+      "condition_id": "0xCOND_G",
+      "token_id": "0xTOKEN_G",
+      "side": "BUY",
+      "reserved_size": "25.0",
+      "reserved_usdc": "10.0",
+      "status": "active"
+    },
+    {
+      "ts": "2026-05-01T13:00:06Z",
+      "type": "leader_buy",
+      "leader_wallet": "0xLEADER",
+      "condition_id": "0xCOND_G",
+      "token_id": "0xTOKEN_G",
+      "size": 25.0
+    },
+    {
+      "ts": "2026-05-01T13:00:07Z",
+      "type": "order_submitted",
+      "order_id": "order_restart_002",
+      "venue_order_id": "v_restart_002",
+      "status": "submitted"
+    },
+    {
+      "ts": "2026-05-01T13:00:10Z",
+      "type": "bot_restart",
+      "reason": "process_crash"
+    },
+    {
+      "ts": "2026-05-01T13:00:15Z",
+      "type": "rehydration_start"
+    },
+    {
+      "ts": "2026-05-01T13:00:16Z",
+      "type": "reservation_rehydrated",
+      "reservation_id": "res_restart_001",
+      "user_id": "0xUSER",
+      "condition_id": "0xCOND_F",
+      "token_id": "0xTOKEN_F",
+      "side": "BUY",
+      "reserved_size": "50.0",
+      "reserved_usdc": "31.0",
+      "status": "active"
+    },
+    {
+      "ts": "2026-05-01T13:00:17Z",
+      "type": "reservation_rehydrated",
+      "reservation_id": "res_restart_002",
+      "user_id": "0xUSER",
+      "condition_id": "0xCOND_G",
+      "token_id": "0xTOKEN_G",
+      "side": "BUY",
+      "reserved_size": "25.0",
+      "reserved_usdc": "10.0",
+      "status": "active"
+    },
+    {
+      "ts": "2026-05-01T13:00:18Z",
+      "type": "reconciliation_check",
+      "order_id": "order_restart_001"
+    },
+    {
+      "ts": "2026-05-01T13:00:19Z",
+      "type": "reconciliation_check",
+      "order_id": "order_restart_002"
+    },
+    {
+      "ts": "2026-05-01T13:00:25Z",
+      "type": "fill_confirmed",
+      "order_id": "order_restart_001",
+      "venue_order_id": "v_restart_001",
+      "fill_size": 50.0,
+      "fill_price": 0.62
+    },
+    {
+      "ts": "2026-05-01T13:00:26Z",
+      "type": "reservation_released",
+      "reservation_id": "res_restart_001",
+      "status": "released",
+      "reason": "fill_confirmed"
+    },
+    {
+      "ts": "2026-05-01T13:00:30Z",
+      "type": "venue_response",
+      "order_id": "order_restart_002",
+      "venue_order_id": "v_restart_002",
+      "status": "expired"
+    },
+    {
+      "ts": "2026-05-01T13:00:31Z",
+      "type": "reservation_released",
+      "reservation_id": "res_restart_002",
+      "status": "released",
+      "reason": "order_terminal_failed"
+    }
+  ],
+  "expected_state": {
+    "positions": [
+      {
+        "user_id": "0xUSER",
+        "condition_id": "0xCOND_F",
+        "token_id": "0xTOKEN_F",
+        "size_tokens": "50.0",
+        "avg_entry_price": "0.62"
+      }
+    ],
+    "reservations": [],
+    "fills": [
+      {
+        "order_id": "order_restart_001",
+        "side": "BUY",
+        "size_tokens": "50.0",
+        "price": "0.62"
+      }
+    ],
+    "orders": [
+      {
+        "order_id": "order_restart_001",
+        "status": "filled",
+        "terminal": true
+      },
+      {
+        "order_id": "order_restart_002",
+        "status": "expired",
+        "terminal": true
+      }
+    ]
+  }
+}

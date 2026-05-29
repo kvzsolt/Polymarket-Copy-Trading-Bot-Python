@@ -3,12 +3,15 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import asdict, dataclass, field
-from typing import Any
+from decimal import Decimal  # noqa: F401 — used in stringified type hints
+from typing import TYPE_CHECKING, Any
 
 from aiohttp import ClientSession
 
-from storage.sqlite.connection import create_connection
-from storage.sqlite.positions_repo import PositionRecord, PositionsRepo
+if TYPE_CHECKING:
+    from interfaces.clob_gateway import ClobGateway
+
+from storage.postgres.positions_repo import PositionRecord, PositionsRepo
 from utils.logger import get_logger
 
 logger = get_logger("StartupHealth")
@@ -160,7 +163,11 @@ async def _check_polymarket_api() -> StartupHealthCheckItem:
         )
 
 
-def _balance_check(available_cash: float, *, warning_threshold: float = 5.0) -> StartupHealthCheckItem:
+def _balance_check(
+    available_cash: "Decimal | float",
+    *,
+    warning_threshold: "Decimal | float" = 5.0,
+) -> StartupHealthCheckItem:
     if available_cash <= 0:
         return StartupHealthCheckItem(
             status="error",
@@ -200,13 +207,13 @@ def _live_position_keys(live_positions: list[dict[str, Any]]) -> set[tuple[str, 
     return keys
 
 
-def reconcile_persisted_positions_to_live(
+async def reconcile_persisted_positions_to_live(
     positions_repo: PositionsRepo,
     *,
     user_id: str,
     live_positions: list[dict[str, Any]],
 ) -> PositionSyncResult:
-    persisted = positions_repo.list_open_positions(user_id)
+    persisted = await positions_repo.list_open_positions(user_id)
     live_keys = _live_position_keys(live_positions)
 
     stale: list[PositionRecord] = []
@@ -216,7 +223,7 @@ def reconcile_persisted_positions_to_live(
             stale.append(record)
 
     for record in stale:
-        positions_repo.delete_position(
+        await positions_repo.delete_position(
             user_id,
             record.condition_id,
             token_id=record.token_id,
@@ -232,68 +239,68 @@ def reconcile_persisted_positions_to_live(
     )
 
 
-def normalize_startup_order_statuses(db_path: str, *, user_id: str) -> OrderStartupCleanupResult:
-    with create_connection(db_path) as conn:
-        row = conn.execute(
-            """
-            SELECT
-                SUM(CASE WHEN status IN ('pending', 'pending_lock') THEN 1 ELSE 0 END) AS pending_count,
-                SUM(CASE WHEN status = 'delayed' THEN 1 ELSE 0 END) AS delayed_count,
-                SUM(CASE WHEN status LIKE 'retry_pending_%' THEN 1 ELSE 0 END) AS retry_pending_count
-            FROM orders
-            WHERE user_id = ?
-            """,
-            (user_id,),
-        ).fetchone()
+async def normalize_startup_order_statuses(pool, *, user_id: str) -> OrderStartupCleanupResult:
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            row = await conn.fetchrow(
+                """
+                SELECT
+                    COALESCE(SUM(CASE WHEN status IN ('pending', 'pending_lock') THEN 1 ELSE 0 END), 0) AS pending_count,
+                    COALESCE(SUM(CASE WHEN status = 'delayed' THEN 1 ELSE 0 END), 0) AS delayed_count,
+                    COALESCE(SUM(CASE WHEN status LIKE 'retry_pending_%' THEN 1 ELSE 0 END), 0) AS retry_pending_count
+                FROM orders
+                WHERE user_id = $1
+                """,
+                user_id,
+            )
 
-        pending_count = int((row["pending_count"] or 0) if row else 0)
-        delayed_count = int((row["delayed_count"] or 0) if row else 0)
-        retry_pending_count = int((row["retry_pending_count"] or 0) if row else 0)
+            pending_count = int(row["pending_count"] if row else 0)
+            delayed_count = int(row["delayed_count"] if row else 0)
+            retry_pending_count = int(row["retry_pending_count"] if row else 0)
 
-        conn.execute(
-            """
-            UPDATE orders
-            SET
-                status = 'terminal_failed',
-                last_error = COALESCE(last_error, 'startup_reset_after_restart'),
-                updated_at = CURRENT_TIMESTAMP
-            WHERE user_id = ?
-              AND (
-                status IN ('pending', 'pending_lock', 'delayed')
-                OR status LIKE 'retry_pending_%'
-              )
-            """,
-            (user_id,),
-        )
+            await conn.execute(
+                """
+                UPDATE orders
+                SET
+                    status = 'terminal_failed',
+                    last_error = COALESCE(last_error, 'startup_reset_after_restart'),
+                    updated_at = now()
+                WHERE user_id = $1
+                  AND (
+                    status IN ('pending', 'pending_lock', 'delayed')
+                    OR status LIKE 'retry_pending_%'
+                  )
+                """,
+                user_id,
+            )
 
-        purge_row = conn.execute(
-            """
-            SELECT COUNT(*) AS purge_count
-            FROM orders
-            WHERE user_id = ?
-              AND (
-                status IN ('failed', 'submission_failed', 'created', 'retryable_failed', 'terminal_failed')
-                OR status LIKE 'retryable_failed_%'
-                OR status LIKE 'retry_pending_%'
-              )
-            """,
-            (user_id,),
-        ).fetchone()
-        purged_failed = int((purge_row["purge_count"] or 0) if purge_row else 0)
+            purge_row = await conn.fetchrow(
+                """
+                SELECT COUNT(*) AS purge_count
+                FROM orders
+                WHERE user_id = $1
+                  AND (
+                    status IN ('failed', 'submission_failed', 'created', 'retryable_failed', 'terminal_failed')
+                    OR status LIKE 'retryable_failed_%'
+                    OR status LIKE 'retry_pending_%'
+                  )
+                """,
+                user_id,
+            )
+            purged_failed = int(purge_row["purge_count"] if purge_row else 0)
 
-        conn.execute(
-            """
-            DELETE FROM orders
-            WHERE user_id = ?
-              AND (
-                status IN ('failed', 'submission_failed', 'created', 'retryable_failed', 'terminal_failed')
-                OR status LIKE 'retryable_failed_%'
-                OR status LIKE 'retry_pending_%'
-              )
-            """,
-            (user_id,),
-        )
-        conn.commit()
+            await conn.execute(
+                """
+                DELETE FROM orders
+                WHERE user_id = $1
+                  AND (
+                    status IN ('failed', 'submission_failed', 'created', 'retryable_failed', 'terminal_failed')
+                    OR status LIKE 'retryable_failed_%'
+                    OR status LIKE 'retry_pending_%'
+                  )
+                """,
+                user_id,
+            )
 
     return OrderStartupCleanupResult(
         normalized_pending=pending_count,
@@ -304,17 +311,17 @@ def normalize_startup_order_statuses(db_path: str, *, user_id: str) -> OrderStar
     )
 
 
-def _load_order_status_counts(db_path: str, *, user_id: str) -> dict[str, int]:
-    with create_connection(db_path) as conn:
-        rows = conn.execute(
+async def _load_order_status_counts(pool, *, user_id: str) -> dict[str, int]:
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
             """
             SELECT status, COUNT(*) AS count
             FROM orders
-            WHERE user_id = ?
+            WHERE user_id = $1
             GROUP BY status
             """,
-            (user_id,),
-        ).fetchall()
+            user_id,
+        )
     return {str(row["status"] or "unknown"): int(row["count"] or 0) for row in rows}
 
 
@@ -342,6 +349,44 @@ def _summarize_order_status_counts(order_status_counts: dict[str, int]) -> dict[
         "successful": successful,
         "failed": failed,
     }
+
+
+def _check_atomic_lock(orders_repo) -> StartupHealthCheckItem:
+    """Verify the orders repo supports atomic submission locking (issue #95).
+
+    Live trading without ``try_acquire_submission_lock`` can result in
+    duplicate order submissions from concurrent tasks. This check gates
+    startup if the lock is missing.
+
+    PR #105 review: ``orders_repo=None`` previously degraded to a warning,
+    which silently bypassed the gate when a caller forgot to wire the repo
+    through. The check is the gate — a missing repo is an error, not a
+    warning. Callers must supply ``orders_repo`` explicitly.
+    """
+    if orders_repo is None:
+        return StartupHealthCheckItem(
+            status="error",
+            message=(
+                "orders_repo not supplied to health check — atomic submission "
+                "lock gate cannot be verified"
+            ),
+            details={"method": "try_acquire_submission_lock"},
+        )
+    has_lock = hasattr(orders_repo, "try_acquire_submission_lock")
+    if not has_lock:
+        return StartupHealthCheckItem(
+            status="error",
+            message=(
+                "order repository lacks atomic submission lock — "
+                "duplicate order submissions possible in live trading"
+            ),
+            details={"method": "try_acquire_submission_lock"},
+        )
+    return StartupHealthCheckItem(
+        status="ok",
+        message="atomic submission lock available",
+        details={"method": "try_acquire_submission_lock"},
+    )
 
 
 def _orders_check(
@@ -395,28 +440,83 @@ def _position_sync_check(sync: PositionSyncResult) -> StartupHealthCheckItem:
     )
 
 
+async def _check_clob_gateway(gateway: ClobGateway | None) -> StartupHealthCheckItem:
+    """Probe CLOB V2 gateway compatibility (issue #66).
+
+    Always returns a check item — never raises. The caller decides whether to
+    fail closed (live mode) or warn (paper mode).
+    """
+    if gateway is None:
+        return StartupHealthCheckItem(
+            status="warning",
+            message="CLOB gateway not wired (paper mode without venue connectivity)",
+        )
+    probe = getattr(gateway, "check_compatibility", None)
+    if probe is None:
+        return StartupHealthCheckItem(
+            status="warning",
+            message="CLOB gateway does not implement check_compatibility",
+        )
+    try:
+        report = await asyncio.wait_for(probe(), timeout=5.0)
+    except asyncio.TimeoutError:
+        return StartupHealthCheckItem(
+            status="error",
+            message="CLOB gateway compatibility probe timed out after 5s",
+        )
+    except Exception as exc:  # pragma: no cover — gateway should not raise
+        return StartupHealthCheckItem(
+            status="error",
+            message=f"CLOB gateway compatibility probe raised: {exc!s}",
+        )
+    sdk_ok = bool(report.get("sdk_available"))
+    if not sdk_ok:
+        return StartupHealthCheckItem(
+            status="error",
+            message=str(report.get("error") or "CLOB SDK not available"),
+            details=report,
+        )
+    return StartupHealthCheckItem(
+        status="ok",
+        message="CLOB V2 gateway ready",
+        details=report,
+    )
+
+
 async def perform_startup_health_check(
     *,
     wallet: str,
     user_id: str,
-    db_path: str,
+    pool,
     positions_repo: PositionsRepo,
+    orders_repo=None,  # type: ignore[assignment] | OrdersRepo | None
     live_positions: list[dict[str, Any]],
-    available_cash: float,
+    available_cash: "Decimal | float",
     database_ok: bool,
     rpc_url: str,
+    clob_gateway: ClobGateway | None = None,
+    require_live_clob: bool = False,
 ) -> StartupHealthReport:
-    rpc_check, polymarket_check = await asyncio.gather(
+    rpc_check, polymarket_check, clob_check = await asyncio.gather(
         _check_rpc(rpc_url),
         _check_polymarket_api(),
+        _check_clob_gateway(clob_gateway),
     )
-    position_sync = reconcile_persisted_positions_to_live(
+    # In live mode, downgrade clob_check warnings to errors so the report
+    # refuses to mark the runtime healthy. Paper mode keeps the warning.
+    if require_live_clob and clob_check.status != "ok":
+        clob_check = StartupHealthCheckItem(
+            status="error",
+            message=clob_check.message,
+            details=clob_check.details,
+        )
+    position_sync = await reconcile_persisted_positions_to_live(
         positions_repo,
         user_id=user_id,
         live_positions=live_positions,
     )
-    order_cleanup = normalize_startup_order_statuses(db_path, user_id=user_id)
-    order_status_counts = _load_order_status_counts(db_path, user_id=user_id)
+    order_cleanup = await normalize_startup_order_statuses(pool, user_id=user_id)
+    order_status_counts = await _load_order_status_counts(pool, user_id=user_id)
     order_summary = _summarize_order_status_counts(order_status_counts)
 
     checks: dict[str, StartupHealthCheckItem] = {
@@ -427,8 +527,10 @@ async def perform_startup_health_check(
         "rpc": rpc_check,
         "balance": _balance_check(available_cash),
         "polymarketApi": polymarket_check,
+        "clobGateway": clob_check,
         "positionSync": _position_sync_check(position_sync),
         "orders": _orders_check(order_status_counts, order_cleanup),
+        "atomicLock": _check_atomic_lock(orders_repo),
     }
 
     statuses = [item.status for item in checks.values()]

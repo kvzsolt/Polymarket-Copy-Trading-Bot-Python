@@ -1,14 +1,47 @@
 from __future__ import annotations
 
 import asyncio
+from decimal import Decimal
+from typing import Any
 
 from web3 import Web3
 
-from config.env import ENV
-from network.web3_adapter import AsyncWeb3Adapter
+from clients.network.web3_adapter import AsyncWeb3Adapter
 from utils.logger import get_logger
 
 logger = get_logger("Balance")
+
+# USDC has 6 decimals — wei-style raw int → human balance.
+_USDC_SCALE = Decimal(10**6)
+
+# Module-level RPC + contract-address state. Production overrides via
+# ``configure_from_appconfig(config)`` from ``orchestrators/runtime_
+# bootstrap.py`` once at startup. When no typed config is injected, the
+# module exposes empty defaults and balance lookups fail-closed with a
+# clear error message.
+_RPC_URL: str = ""
+_COLLATERAL_CONTRACT_ADDRESS: str = ""
+_PUSD_CONTRACT_ADDRESS: str = ""
+_USDC_CONTRACT_ADDRESS: str = ""
+
+
+def configure_from_appconfig(config: Any) -> None:
+    """Override module-level RPC URL + collateral contract addresses.
+
+    Production bootstrap calls this once at startup so the balance lookup
+    path runs entirely off typed AppConfig.
+    """
+    global _RPC_URL, _COLLATERAL_CONTRACT_ADDRESS, _PUSD_CONTRACT_ADDRESS, _USDC_CONTRACT_ADDRESS
+    _RPC_URL = str(getattr(config.network, "rpc_url", "") or "")
+    _COLLATERAL_CONTRACT_ADDRESS = str(
+        getattr(config.network, "collateral_contract_address", "") or ""
+    )
+    _PUSD_CONTRACT_ADDRESS = str(
+        getattr(config.network, "pusd_contract_address", "") or ""
+    )
+    _USDC_CONTRACT_ADDRESS = str(
+        getattr(config.network, "usdc_contract_address", "") or ""
+    )
 
 USDC_ABI = [{
     "constant": True,
@@ -28,17 +61,17 @@ def _masked_address(address: str | None) -> str:
 
 
 
-def _get_balance_sync(address: str) -> float | None:
-    rpc_url = ENV.get('RPC_URL')
+def _get_balance_sync(address: str) -> Decimal | None:
+    rpc_url = _RPC_URL
 
     if not rpc_url:
         logger.error("Balance lookup failed: RPC_URL is not configured")
         return None
 
     raw_candidates = [
-        ENV.get('COLLATERAL_CONTRACT_ADDRESS'),
-        ENV.get('PUSD_CONTRACT_ADDRESS'),
-        ENV.get('USDC_CONTRACT_ADDRESS'),
+        _COLLATERAL_CONTRACT_ADDRESS,
+        _PUSD_CONTRACT_ADDRESS,
+        _USDC_CONTRACT_ADDRESS,
     ]
     # Preserve order but drop blanks/duplicates.
     seen: set[str] = set()
@@ -83,9 +116,12 @@ def _get_balance_sync(address: str) -> float | None:
 
             token_contract = w3.eth.contract(address=checksum_contract, abi=USDC_ABI)
             raw_balance = token_contract.functions.balanceOf(checksum_address).call()
-            bal = float(raw_balance / 10**6)
+            # ``raw_balance`` is uint256 microUSDC. ``Decimal(int) / Decimal(int)``
+            # stays exact; the previous ``float(raw / 10**6)`` lost cent precision
+            # above 2^53 microUSDC and corrupted downstream risk-cap math.
+            bal = Decimal(int(raw_balance)) / _USDC_SCALE
             logger.debug(
-                "Collateral balance for %s=%0.2f via %s",
+                "Collateral balance for %s=%s via %s",
                 _masked_address(checksum_address),
                 bal,
                 _masked_address(checksum_contract),
@@ -104,7 +140,7 @@ def _get_balance_sync(address: str) -> float | None:
     return None
 
 
-async def get_my_balance(address: str) -> float | None:
+async def get_my_balance(address: str) -> Decimal | None:
     if not address:
         logger.error("Balance lookup failed: wallet address is missing")
         return None
@@ -121,7 +157,7 @@ async def get_my_balance(address: str) -> float | None:
 
 
 async def get_native_balance_wei(address: str) -> int | None:
-    rpc_url = ENV.get('RPC_URL')
+    rpc_url = _RPC_URL
     if not rpc_url:
         return None
     try:

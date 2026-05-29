@@ -24,10 +24,10 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
+from decimal import Decimal
 from types import SimpleNamespace
 import sys as _sys
 from dataclasses import dataclass, field
-from enum import IntEnum
 from pathlib import Path
 from typing import Any
 
@@ -47,8 +47,11 @@ __all__ = [
     "LeaderConfig",
     "LoggingConfig",
     "NetworkConfig",
+    "OrderConfirmationConfig",
+    "PositionDriftConfig",
     "PollingConfig",
-    "RedemptionConfig",
+    "NearOneExitConfig",
+    "ReconciliationConfig",
     "RiskConfig",
     "SignatureType",
     "SizingConfig",
@@ -132,26 +135,36 @@ class _Parser:
             raw = raw_default
         return raw.lower() in ("1", "true", "yes")
 
-    # ---- specialised parsers ----
-    def signature_type(self) -> SignatureType:
-        raw = self._strip("SIGNATURE_TYPE", self.raw("SIGNATURE_TYPE", "0"))
-        if raw == "":
-            raw = "0"
-        try:
-            value = int(raw)
-        except ValueError:
-            self.errors.append(
-                "SIGNATURE_TYPE must be one of: 0 (EOA), 1 (POLY_PROXY), 2 (GNOSIS_SAFE)."
-            )
-            return SignatureType.EOA
-        try:
-            return SignatureType(value)
-        except ValueError:
-            self.errors.append(
-                "SIGNATURE_TYPE must be one of: 0 (EOA), 1 (POLY_PROXY), 2 (GNOSIS_SAFE)."
-            )
-            return SignatureType.EOA
+    def json_dict_float(self, key: str, default: str = "{}") -> dict[str, float]:
+        """Parse a JSON object mapping to floats.
 
+        Empty / missing input yields an empty dict. Malformed input collects
+        an error and returns an empty dict so other config can still load.
+        """
+        import json as _json
+
+        raw = self._strip(key, self.raw(key, default))
+        if not raw:
+            return {}
+        try:
+            parsed = _json.loads(raw)
+        except (ValueError, TypeError):
+            self.errors.append(f"{key} must be a valid JSON object, got: {raw!r}")
+            return {}
+        if not isinstance(parsed, dict):
+            self.errors.append(f"{key} must be a JSON object (dict), got: {type(parsed).__name__}")
+            return {}
+        result: dict[str, float] = {}
+        for k, v in parsed.items():
+            try:
+                result[str(k)] = float(v)
+            except (TypeError, ValueError):
+                self.errors.append(
+                    f"{key} entry {k!r}={v!r} is not coercible to float"
+                )
+        return result
+
+    # ---- specialised parsers ----
     def leader_wallets(self) -> tuple[str, ...]:
         raw = self._strip("LEADER_WALLETS", self.raw("LEADER_WALLETS", ""))
         if raw:
@@ -170,19 +183,53 @@ class _Parser:
         key_file = self._strip("PRIVATE_KEY_FILE", self.raw("PRIVATE_KEY_FILE", ""))
         if key_file:
             try:
-                path = Path(key_file).expanduser()
+                # Resolve symlinks before any permission check so a
+                # symlink pointing at /etc/passwd cannot bypass the
+                # 0600-on-the-link-itself check.
+                raw_path = Path(key_file).expanduser()
+                path = raw_path.resolve(strict=False)
+
+                # Confined-deputy guard: only accept paths under the
+                # operator's home OR the bot's working dir. An operator
+                # who wants a wider location can symlink from one of the
+                # allowed roots — the resolve() above means the symlink
+                # target must also pass this check.
+                allowed_roots = (
+                    Path.home().resolve(strict=False),
+                    Path.cwd().resolve(strict=False),
+                )
+                if not any(path == root or _is_under(path, root) for root in allowed_roots):
+                    self.errors.append(
+                        f"PRIVATE_KEY_FILE must be under $HOME or the working dir; "
+                        f"resolved path was {path}"
+                    )
+                    return ""
+
                 if not path.exists():
                     self.errors.append(f"PRIVATE_KEY_FILE path does not exist: {path}")
                     return ""
                 if not path.is_file():
                     self.errors.append(f"PRIVATE_KEY_FILE must point to a file: {path}")
                     return ""
-                mode = path.stat().st_mode & 0o777
-                if mode != 0o600:
-                    self.errors.append(
-                        f"PRIVATE_KEY_FILE must have permissions 0600 exactly (chmod 600): {path}"
-                    )
-                    return ""
+
+                # Check BOTH the link itself (lstat) and the resolved
+                # target (stat). 0600 on a symlink target is meaningless
+                # if the link itself is world-readable on systems that
+                # honour link mode (some), and vice versa.
+                lstat_mode = raw_path.lstat().st_mode & 0o777
+                stat_mode = path.stat().st_mode & 0o777
+                if stat_mode != 0o600 or (
+                    raw_path != path and lstat_mode not in (0o600, 0o777)
+                ):
+                    # lstat 0777 is the default for symlinks on Linux —
+                    # accept that case; otherwise require 0600 on both
+                    # the link and the target.
+                    if stat_mode != 0o600:
+                        self.errors.append(
+                            f"PRIVATE_KEY_FILE must have permissions 0600 exactly "
+                            f"(chmod 600): {path} (mode 0o{stat_mode:o})"
+                        )
+                        return ""
                 key = path.read_text(encoding="utf-8").strip()
             except OSError as exc:
                 self.errors.append(f"Unable to read PRIVATE_KEY_FILE: {exc}")
@@ -209,14 +256,19 @@ class _Parser:
 
 @dataclass(frozen=True)
 class DatabaseConfig:
-    db_path: str
-    enabled: bool = True
+    dsn: str = ""
+    pool_min_size: int = 2
+    pool_max_size: int = 20
+    command_timeout_seconds: float = 30.0
 
 
 @dataclass(frozen=True)
 class ClobConfig:
     http_url: str
     api_key: str
+    # CLOB V2 gate — fail-closed default. The bot will not attempt the
+    # py-clob-client-v2 surface unless this is explicitly enabled.
+    clob_v2_ready: bool = False
 
 
 @dataclass(frozen=True)
@@ -224,8 +276,15 @@ class PollingConfig:
     fetch_interval: float
     aggregate_signal_window_seconds: float
     risk_check_interval: float
-    redeem_check_interval: int
     discovery_refresh_interval_seconds: int
+    leader_positions_min_fetch_spacing_ms: int
+    leader_activity_min_fetch_spacing_ms: int
+    reconcile_interval_seconds: int
+    # Maximum age (seconds) for retained processed-trade rows before the
+    # background purge sweeper deletes them. Previously a raw
+    # ``ENV.get("RETENTION_MAX_AGE_SECONDS", 30*86400)`` read from app.py
+    # and utils/idempotency.py; promoted here so the purge path is typed.
+    retention_max_age_seconds: float = 30.0 * 86400.0
 
 
 @dataclass(frozen=True)
@@ -281,6 +340,11 @@ class RiskConfig:
     staged_tp_fractions: str
     stop_loss_threshold: float
     stop_loss_grace_period_seconds: float
+    # PR #105 review: bound the in-memory risk price cache via typed config
+    # so the production sizing/risk path no longer relies on a raw env read.
+    # ``services.riskMonitor.RiskPriceCache`` still honours its env fallback
+    # as a legacy adapter (issue #73 allows raw env in legacy/test paths only).
+    risk_price_cache_max_size: int
 
 
 @dataclass(frozen=True)
@@ -308,6 +372,16 @@ class ExecutionConfig:
     circuit_cooldown_seconds: float
     meta_cache_ttl_good: float
     meta_cache_ttl_thin: float
+    # Phase 4 — balance regime
+    max_position_size_usdc: float
+    max_daily_spend_usdc: float
+    min_balance_headroom_usdc: float
+    # Phase 4 — book depth gate
+    min_book_depth_usdc: float
+    book_depth_band_pct: float
+    # Submission concurrency: typed cap so production paths do not depend on
+    # raw env reads inside ExecutionService.
+    execution_submit_concurrency: int
 
 
 @dataclass(frozen=True)
@@ -359,11 +433,99 @@ class NetworkConfig:
     enable_metrics_server: bool
     metrics_port: int
     metrics_bind_host: str
+    # Polymarket-side collateral / exchange contract addresses. These used
+    # to be read straight out of ``ENV`` by ``utils/createClobClient.py``
+    # and ``utils/getMyBalance.py``; promoted to typed config so the
+    # balance-check + CLOB-client paths can drop their raw env reads.
+    # Default-empty strings let the existing usdc_contract_address fallback
+    # chain in load_config keep working when these aren't set.
+    collateral_contract_address: str = ""
+    pusd_contract_address: str = ""
+    ctf_exchange_v2_address: str = ""
 
 
 @dataclass(frozen=True)
-class RedemptionConfig:
-    enable_auto_redeem: bool
+class ReconciliationConfig:
+    stale_threshold_seconds: float
+    auto_cancel_stale: bool
+    # Per-tick cap on how many already-closed orders the reconciler is
+    # allowed to re-probe. Fail-closed default mirrors the previous
+    # ``ENV.get("RECONCILE_MAX_CLOSED_PROBES", 10)`` read.
+    max_closed_probes: int = 10
+
+
+@dataclass(frozen=True)
+class PositionDriftConfig:
+    """PR7 — manual / off-bot position drift policy.
+
+    Proactive cross-check between local position state and venue truth.
+    """
+
+    check_on_startup: bool
+    fail_closed: bool
+    allow_auto_prune_zero: bool
+    allow_external_position_tracking: bool
+    pause_scope_on_unresolved: bool
+    max_size_epsilon: Decimal
+    prune_holdoff_seconds: float = 60.0
+
+
+@dataclass(frozen=True)
+class OrderConfirmationConfig:
+    """Confirmation-delay and ambiguous-timeout policy (PR5).
+
+    Polymarket order submissions legitimately pass through delayed/live/matched
+    states before reaching CONFIRMED. The reconciler should defer its first
+    poll by ``initial_delay_seconds`` (plus ``delayed_extra_seconds`` if the
+    venue acknowledged ``delayed``). After ``max_wait_seconds + auto_release_
+    grace_seconds`` with no terminal state, the strict auto-release path may
+    run a battery of safety probes; only when every probe is clean is the
+    reservation released. Probe failures or inconclusive results keep the
+    reservation active.
+    """
+
+    initial_delay_seconds: float
+    poll_interval_seconds: float
+    max_wait_seconds: float
+    delayed_extra_seconds: float
+    token_delay_overrides: dict[str, float]
+    condition_delay_overrides: dict[str, float]
+    auto_release_ambiguous: bool
+    auto_release_grace_seconds: float
+    auto_release_require_all_probes_clean: bool
+    auto_release_max_probe_errors: int
+
+    def resolve_initial_delay(
+        self,
+        *,
+        token_id: str | None,
+        condition_id: str | None,
+        venue_status: str | None = None,
+    ) -> float:
+        delay = self.initial_delay_seconds
+        if token_id and token_id in self.token_delay_overrides:
+            delay = self.token_delay_overrides[token_id]
+        elif condition_id and condition_id in self.condition_delay_overrides:
+            delay = self.condition_delay_overrides[condition_id]
+        if str(venue_status or "").lower() == "delayed":
+            delay += self.delayed_extra_seconds
+        return delay
+
+
+@dataclass(frozen=True)
+class NearOneExitConfig:
+    """Sell-the-position-near-par exit replaces on-chain redemption.
+
+    When a copied position's token price has been at or above ``threshold`` for
+    at least ``dwell_seconds``, NearOneExitService submits a SELL for the
+    entire held size through the normal CLOB execution path. No CTF
+    ``redeemPositions`` transaction is ever issued.
+    """
+
+    enable_near_one_exit: bool
+    threshold: Decimal
+    dwell_seconds: int
+    check_interval: int
 
 
 @dataclass(frozen=True)
@@ -376,12 +538,52 @@ class DiscoveryConfig:
     min_leader_positions: int
     min_active_positions: int
     discovery_max_results: int
+    discovery_cache_ttl_seconds: float
     multi_user_config_file: str
+    falcon_api_url: str = "https://narrative.agent.heisenberg.so/api/v2/semantic/retrieve/parameterized"
+    falcon_api_token: str = ""
+    falcon_page_size: int = 100
+    falcon_max_pages: int = 5
+    falcon_min_win_rate_15d: float = 0.45
+    falcon_max_win_rate_15d: float = 0.90
+    falcon_min_roi_15d: float = 0.0
+    falcon_min_pnl_15d: float = 100.0
+    falcon_min_trades_15d: int = 30
+    falcon_max_trades_15d: int = 750
+    polymarket_history_lookback_days: int = 365
+    polymarket_history_window_days: int = 7
+    polymarket_activity_max_offset: int = 10000
+    discovery_history_trade_limit: int = 50000
+    discovery_signal_group_window_seconds: int = 60
+    discovery_signal_group_max_gap_seconds: int = 120
+    discovery_min_group_notional_usdc: float = 5.0
+    discovery_min_copyable_grouped_signal_ratio: float = 0.75
+    discovery_min_copyable_notional_ratio: float = 0.60
+    discovery_require_7d_non_negative: bool = True
+    discovery_min_7d_pnl_usdc: float = 0.0
+    discovery_allow_3d_slightly_negative: bool = True
+    discovery_min_3d_pnl_usdc: float = -50.0
+    discovery_min_3d_roi: float = -0.05
+    discovery_crypto_fast_max_resolution_minutes: float = 30.0
+    discovery_crypto_fast_reject_signal_ratio: float = 0.70
+    discovery_crypto_fast_reject_notional_ratio: float = 0.70
+    discovery_crypto_fast_min_non_crypto_signals: int = 5
+    discovery_auto_write_leaders: bool = False
+    discovery_dynamic_monitoring_enabled: bool = False
+    discovery_market_specialists_allowed: bool = True
+    discovery_position_volatility_allowed: bool = True
+    rotate_traders_env_file: str = "config/runtime.local.env"
+    rotate_traders_min_shadow_days: int = 3
+    rotate_traders_min_shadow_signals: int = 20
+    rotate_traders_replace_only_if_needed: bool = True
+    rotate_traders_min_score_delta: float = 0.10
+    rotate_keep_live_if_7d_pnl_positive: bool = True
+    rotate_reject_live_if_7d_pnl_below: float = 0.0
+    rotate_allow_manual_override: bool = True
 
 
 @dataclass(frozen=True)
 class FeatureFlagConfig:
-    enable_neg_risk_arb: bool
     enable_profit_lock: bool
     enable_near_max_exit: bool
     enable_trailing_stop: bool
@@ -390,11 +592,43 @@ class FeatureFlagConfig:
     enable_stop_loss: bool
     enable_tier_gate_watchlist: bool
     enable_tier_gate_watchlist_log: bool
-    arb_min_profit_bps: int
-    arb_max_cost_usdc: float
-    arb_min_ask_depth: float
-    arb_scan_interval: int
-    arb_max_concurrent: int
+
+
+@dataclass(frozen=True)
+class MarketDataConfig:
+    """Market data WSS health monitoring and REST fallback policy.
+
+    PR10.4: REST `/book` snapshot is the primary execution source when
+    ``primary_source == "rest_snapshot"``. WSS keeps running for background
+    cache, prewarm, diagnostics, and resolved-market events, but copy-trade
+    execution no longer waits for WSS subscribe/bootstrap.
+    """
+
+    primary_source: str = "rest_snapshot"
+    rest_snapshot_enable: bool = True
+    rest_snapshot_max_age_ms: int = 500
+    rest_snapshot_request_timeout_ms: int = 750
+    rest_snapshot_total_budget_ms: int = 1000
+    rest_snapshot_max_spread_bps: int = 300
+    allow_rest_when_wss_down: bool = False
+    wss_down_after_seconds: float = 15.0
+    rest_degraded_max_age_seconds: float = 2.0
+    rest_degraded_max_spread_bps: int = 500
+    rest_degraded_log_every_seconds: float = 30.0
+    enable_rest_bootstrap: bool = True
+    rest_bootstrap_max_age_ms: int = 500
+    rest_bootstrap_request_timeout_ms: int = 750
+    rest_bootstrap_total_budget_ms: int = 1000
+    rest_bootstrap_max_spread_bps: int = 300
+    rest_bootstrap_require_wss_connected: bool = True
+    # Execution-time freshness policy for the WSS-fed market-data cache.
+    # quote/book age windows apply to the snapshot's own timestamp; a quiet
+    # WSS book past that window is still executable while the WSS connection
+    # is proven live (heartbeat/pong within wss_connection_max_silence_seconds).
+    executable_quote_max_age_seconds: float = 2.0
+    executable_book_max_age_seconds: float = 2.0
+    executable_tick_max_age_seconds: float = 300.0
+    wss_connection_max_silence_seconds: float = 20.0
 
 
 @dataclass(frozen=True)
@@ -411,9 +645,15 @@ class AppConfig:
     leader: LeaderConfig
     logging: LoggingConfig
     network: NetworkConfig
-    redemption: RedemptionConfig
+    near_one_exit: NearOneExitConfig
+    reconciliation: ReconciliationConfig
+    order_confirmation: OrderConfirmationConfig
+    position_drift: PositionDriftConfig
     discovery: DiscoveryConfig
     features: FeatureFlagConfig
+    market_data: MarketDataConfig = field(default_factory=MarketDataConfig)
+    # Global safety: when True the bot runs in paper-only / dry-run mode.
+    dry_run: bool = False
     # The raw mapping is kept for transitional backwards compatibility
     # (Phase 6 will remove any remaining legacy ``ENV`` fallbacks).
     raw: Mapping[str, Any] = field(default_factory=dict, repr=False, compare=False)
@@ -431,12 +671,6 @@ sys = SimpleNamespace(version_info=_sys.version_info)
 
 def _runtime_python_supported() -> bool:
     return sys.version_info.major == 3 and 11 <= sys.version_info.minor < 13
-
-
-def _database_enabled(parser: _Parser) -> bool:
-    if parser.raw("BOT_STATE_DB_ENABLED", "") != "":
-        return parser.bool_("BOT_STATE_DB_ENABLED", True)
-    return parser.bool_("DB_ENABLED", True)
 
 
 def _validate_semantics(cfg: AppConfig, errors: list[str]) -> None:
@@ -516,6 +750,17 @@ def _validate_semantics(cfg: AppConfig, errors: list[str]) -> None:
         errors.append("RISK_BUFFER_PCT must be non-negative.")
     if e.pending_submission_ttl_seconds <= 0:
         errors.append("PENDING_SUBMISSION_TTL_SECONDS must be > 0.")
+    # Phase 4 — balance regime + book depth gate. ``0`` disables a knob.
+    if e.max_position_size_usdc < 0:
+        errors.append("MAX_POSITION_SIZE_USDC must be non-negative.")
+    if e.max_daily_spend_usdc < 0:
+        errors.append("MAX_DAILY_SPEND_USDC must be non-negative.")
+    if e.min_balance_headroom_usdc < 0:
+        errors.append("MIN_BALANCE_HEADROOM_USDC must be non-negative.")
+    if e.min_book_depth_usdc < 0:
+        errors.append("MIN_BOOK_DEPTH_USDC must be non-negative.")
+    if not (0 < e.book_depth_band_pct <= 100):
+        errors.append("BOOK_DEPTH_BAND_PCT must be in (0, 100].")
 
     # Risk
     r = cfg.risk
@@ -583,6 +828,83 @@ def _validate_semantics(cfg: AppConfig, errors: list[str]) -> None:
     if d.discovery_max_results <= 0:
         errors.append("DISCOVERY_MAX_RESULTS must be > 0.")
 
+    # Market data
+    md = cfg.market_data
+    if md.primary_source not in ("rest_snapshot", "wss"):
+        errors.append(
+            'MARKET_DATA_PRIMARY_SOURCE must be one of: "rest_snapshot", "wss".'
+        )
+    if md.rest_snapshot_max_age_ms <= 0:
+        errors.append("MARKET_DATA_REST_SNAPSHOT_MAX_AGE_MS must be > 0.")
+    if md.rest_snapshot_request_timeout_ms <= 0:
+        errors.append("MARKET_DATA_REST_SNAPSHOT_REQUEST_TIMEOUT_MS must be > 0.")
+    if md.rest_snapshot_total_budget_ms <= 0:
+        errors.append("MARKET_DATA_REST_SNAPSHOT_TOTAL_BUDGET_MS must be > 0.")
+    if md.rest_snapshot_max_spread_bps < 0:
+        errors.append("MARKET_DATA_REST_SNAPSHOT_MAX_SPREAD_BPS must be non-negative.")
+    if md.wss_down_after_seconds <= 0:
+        errors.append("MARKET_DATA_WSS_DOWN_AFTER_SECONDS must be > 0.")
+    if md.rest_degraded_max_age_seconds <= 0:
+        errors.append("MARKET_DATA_REST_DEGRADED_MAX_AGE_SECONDS must be > 0.")
+    if md.rest_degraded_max_spread_bps < 0:
+        errors.append("MARKET_DATA_REST_DEGRADED_MAX_SPREAD_BPS must be non-negative.")
+    if md.rest_bootstrap_max_age_ms <= 0:
+        errors.append("MARKET_DATA_REST_BOOTSTRAP_MAX_AGE_MS must be > 0.")
+    if md.rest_bootstrap_request_timeout_ms <= 0:
+        errors.append("MARKET_DATA_REST_BOOTSTRAP_REQUEST_TIMEOUT_MS must be > 0.")
+    if md.rest_bootstrap_total_budget_ms <= 0:
+        errors.append("MARKET_DATA_REST_BOOTSTRAP_TOTAL_BUDGET_MS must be > 0.")
+    if md.rest_bootstrap_max_spread_bps < 0:
+        errors.append("MARKET_DATA_REST_BOOTSTRAP_MAX_SPREAD_BPS must be non-negative.")
+    if md.executable_quote_max_age_seconds <= 0:
+        errors.append("MARKET_DATA_EXECUTABLE_QUOTE_MAX_AGE_SECONDS must be > 0.")
+    if md.executable_book_max_age_seconds <= 0:
+        errors.append("MARKET_DATA_EXECUTABLE_BOOK_MAX_AGE_SECONDS must be > 0.")
+    if md.executable_tick_max_age_seconds <= 0:
+        errors.append("MARKET_DATA_EXECUTABLE_TICK_MAX_AGE_SECONDS must be > 0.")
+    if md.wss_connection_max_silence_seconds <= 0:
+        errors.append("MARKET_DATA_WSS_CONNECTION_MAX_SILENCE_SECONDS must be > 0.")
+
+
+_RAW_SENSITIVE_KEYS: frozenset[str] = frozenset(
+    {
+        "PRIVATE_KEY",
+        "PRIVATE_KEY_FILE",
+        "CLOB_API_KEY",
+        "CLOB_SECRET",
+        "CLOB_PASSPHRASE",
+    }
+)
+
+
+def _is_under(child: Path, parent: Path) -> bool:
+    """Return True when *child* is a descendant of *parent*.
+
+    Both arguments must already be ``.resolve()``-ed by the caller so
+    the comparison handles symlinks correctly.
+    """
+    try:
+        return child.is_relative_to(parent)
+    except AttributeError:  # pragma: no cover — Python < 3.9
+        try:
+            child.relative_to(parent)
+            return True
+        except ValueError:
+            return False
+
+
+def _strip_sensitive(env: Mapping[str, str]) -> dict[str, str]:
+    """Build a copy of *env* with credential keys removed.
+
+    AppConfig.raw is accessed by ``runtime_summary``, ``trade_pipeline``,
+    and ``executionService`` for structured logging / debug surfacing. Any
+    of those sites that logged ``config.raw`` wholesale used to leak the
+    private key. Filter at the boundary so the in-memory AppConfig.raw
+    physically does not carry the values, and ``raw.get("PRIVATE_KEY")``
+    returns None — typed accessors must be used for those keys instead.
+    """
+    return {k: v for k, v in env.items() if k not in _RAW_SENSITIVE_KEYS}
+
 
 def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
     """Build and validate an :class:`AppConfig` from *env* (defaults to ``os.environ``).
@@ -599,25 +921,47 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
 
     p = _Parser(env)
 
-    # Database
+    # Database — Postgres via asyncpg. Validate pool bounds up front so
+    # asyncpg.create_pool does not raise an unhelpful inner-pool error.
+    _pool_min = p.int_("DATABASE_POOL_MIN_SIZE", "2")
+    _pool_max = p.int_("DATABASE_POOL_MAX_SIZE", "20")
+    if _pool_min < 0:
+        raise EnvValidationError(
+            f"DATABASE_POOL_MIN_SIZE must be >= 0; got {_pool_min}"
+        )
+    if _pool_max <= 0:
+        raise EnvValidationError(
+            f"DATABASE_POOL_MAX_SIZE must be > 0; got {_pool_max}"
+        )
+    if _pool_min > _pool_max:
+        raise EnvValidationError(
+            f"DATABASE_POOL_MIN_SIZE ({_pool_min}) must be <= "
+            f"DATABASE_POOL_MAX_SIZE ({_pool_max})"
+        )
     database = DatabaseConfig(
-        db_path=p.string("BOT_STATE_DB", "data/bot_state.db"),
-        enabled=_database_enabled(p),
+        dsn=p.string(
+            "DATABASE_URL",
+            "postgresql://bot:bot@localhost:5432/polymarket_copytrading_python",
+        ),
+        pool_min_size=_pool_min,
+        pool_max_size=_pool_max,
+        command_timeout_seconds=p.float_("DATABASE_COMMAND_TIMEOUT_SECONDS", "30.0"),
     )
 
     # Wallet
     wallet = WalletConfig(
         private_key=p.private_key(),
         chain_id=p.int_("CHAIN_ID", "137"),
-        signature_type=p.signature_type(),
         funder_address=p.funder_address(),
         polygon_rpc_url=p.string("RPC_URL", "https://polygon-bor-rpc.publicnode.com"),
+        signature_type=SignatureType(p.int_("SIGNATURE_TYPE", "0")),
     )
 
     # CLOB
     clob = ClobConfig(
         http_url=p.string("CLOB_HTTP_URL", "https://clob.polymarket.com/"),
         api_key=p.string("CLOB_API_KEY", ""),
+        clob_v2_ready=p.bool_("CLOB_V2_READY", False),
     )
 
     # Polling / cadence
@@ -625,8 +969,11 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         fetch_interval=p.float_("FETCH_INTERVAL", "0.25"),
         aggregate_signal_window_seconds=p.float_("AGGREGATE_SIGNAL_WINDOW_SECONDS", "0.1"),
         risk_check_interval=p.float_("RISK_CHECK_INTERVAL", "15"),
-        redeem_check_interval=p.int_("REDEEM_CHECK_INTERVAL", "60"),
         discovery_refresh_interval_seconds=p.int_("DISCOVERY_REFRESH_INTERVAL_SECONDS", "300"),
+        leader_positions_min_fetch_spacing_ms=p.int_("LEADER_POSITIONS_MIN_FETCH_SPACING_MS", "250"),
+        leader_activity_min_fetch_spacing_ms=p.int_("LEADER_ACTIVITY_MIN_FETCH_SPACING_MS", "250"),
+        reconcile_interval_seconds=p.int_("RECONCILE_INTERVAL_SECONDS", "300"),
+        retention_max_age_seconds=p.float_("RETENTION_MAX_AGE_SECONDS", str(30 * 86400)),
     )
 
     # Sizing
@@ -684,6 +1031,11 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         staged_tp_fractions=p.string("STAGED_TP_FRACTIONS", "0.25,0.35"),
         stop_loss_threshold=p.float_("STOP_LOSS_THRESHOLD", "0.15"),
         stop_loss_grace_period_seconds=p.float_("STOP_LOSS_GRACE_PERIOD_SECONDS", "180"),
+        # PR #105 review: typed cap for the per-process risk price cache. The
+        # legacy adapter (RiskPriceCache.__init__) still reads the env var
+        # directly when no explicit value is passed; this typed value is the
+        # production wiring path used when AppConfig is in scope.
+        risk_price_cache_max_size=p.int_("RISK_PRICE_CACHE_MAX_SIZE", "5000"),
     )
 
     # Execution
@@ -711,6 +1063,14 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         circuit_cooldown_seconds=p.float_("CIRCUIT_COOLDOWN_SECONDS", "60"),
         meta_cache_ttl_good=p.float_("META_CACHE_TTL_GOOD", "300"),
         meta_cache_ttl_thin=p.float_("META_CACHE_TTL_THIN", "30"),
+        # Phase 4 — balance regime. ``0`` disables a knob.
+        max_position_size_usdc=p.float_("MAX_POSITION_SIZE_USDC", "0"),
+        max_daily_spend_usdc=p.float_("MAX_DAILY_SPEND_USDC", "0"),
+        min_balance_headroom_usdc=p.float_("MIN_BALANCE_HEADROOM_USDC", "0"),
+        # Phase 4 — book depth gate. ``MIN_BOOK_DEPTH_USDC=0`` disables.
+        min_book_depth_usdc=p.float_("MIN_BOOK_DEPTH_USDC", "0"),
+        book_depth_band_pct=p.float_("BOOK_DEPTH_BAND_PCT", "5"),
+        execution_submit_concurrency=p.int_("EXECUTION_SUBMIT_CONCURRENCY", "2"),
     )
 
     # Leader / discovery cascades — reproduce the same cascading defaults the legacy
@@ -793,10 +1153,61 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         enable_metrics_server=p.bool_("ENABLE_METRICS_SERVER", False),
         metrics_port=p.int_("METRICS_PORT", "9102"),
         metrics_bind_host=p.string("METRICS_BIND_HOST", "127.0.0.1"),
+        collateral_contract_address=p.string("COLLATERAL_CONTRACT_ADDRESS", ""),
+        pusd_contract_address=p.string("PUSD_CONTRACT_ADDRESS", ""),
+        ctf_exchange_v2_address=p.string("CTF_EXCHANGE_V2_ADDRESS", ""),
     )
 
-    redemption = RedemptionConfig(
-        enable_auto_redeem=p.bool_("ENABLE_AUTO_REDEEM", False),
+    reconciliation = ReconciliationConfig(
+        stale_threshold_seconds=p.float_("RECONCILE_STALE_SECONDS", "3600"),
+        auto_cancel_stale=p.bool_("RECONCILE_AUTO_CANCEL", False),
+        max_closed_probes=p.int_("RECONCILE_MAX_CLOSED_PROBES", "10"),
+    )
+
+    position_drift = PositionDriftConfig(
+        check_on_startup=p.bool_("POSITION_DRIFT_CHECK_ON_STARTUP", True),
+        fail_closed=p.bool_("POSITION_DRIFT_FAIL_CLOSED", True),
+        allow_auto_prune_zero=p.bool_("POSITION_DRIFT_ALLOW_AUTO_PRUNE_ZERO", True),
+        allow_external_position_tracking=p.bool_(
+            "POSITION_DRIFT_ALLOW_EXTERNAL_POSITION_TRACKING", False
+        ),
+        pause_scope_on_unresolved=p.bool_(
+            "POSITION_DRIFT_PAUSE_SCOPE_ON_UNRESOLVED", True
+        ),
+        max_size_epsilon=Decimal(
+            p.string("POSITION_DRIFT_MAX_SIZE_EPSILON", "0.000001")
+        ),
+        prune_holdoff_seconds=p.float_("POSITION_DRIFT_PRUNE_HOLDOFF_SECONDS", "60.0"),
+    )
+
+    order_confirmation = OrderConfirmationConfig(
+        initial_delay_seconds=p.float_("ORDER_CONFIRMATION_INITIAL_DELAY_SECONDS", "2"),
+        poll_interval_seconds=p.float_("ORDER_CONFIRMATION_POLL_INTERVAL_SECONDS", "3"),
+        max_wait_seconds=p.float_("ORDER_CONFIRMATION_MAX_WAIT_SECONDS", "90"),
+        delayed_extra_seconds=p.float_("ORDER_CONFIRMATION_DELAYED_EXTRA_SECONDS", "2"),
+        token_delay_overrides=p.json_dict_float(
+            "ORDER_CONFIRMATION_TOKEN_DELAY_OVERRIDES", "{}"
+        ),
+        condition_delay_overrides=p.json_dict_float(
+            "ORDER_CONFIRMATION_CONDITION_DELAY_OVERRIDES", "{}"
+        ),
+        auto_release_ambiguous=p.bool_("ORDER_CONFIRMATION_AUTO_RELEASE_AMBIGUOUS", True),
+        auto_release_grace_seconds=p.float_(
+            "ORDER_CONFIRMATION_AUTO_RELEASE_GRACE_SECONDS", "300"
+        ),
+        auto_release_require_all_probes_clean=p.bool_(
+            "ORDER_CONFIRMATION_AUTO_RELEASE_REQUIRE_ALL_PROBES_CLEAN", True
+        ),
+        auto_release_max_probe_errors=p.int_(
+            "ORDER_CONFIRMATION_AUTO_RELEASE_MAX_PROBE_ERRORS", "0"
+        ),
+    )
+
+    near_one_exit = NearOneExitConfig(
+        enable_near_one_exit=p.bool_("ENABLE_NEAR_ONE_EXIT", False),
+        threshold=Decimal(p.string("NEAR_ONE_EXIT_THRESHOLD", "0.99")),
+        dwell_seconds=p.int_("NEAR_ONE_EXIT_DWELL_SECONDS", "60"),
+        check_interval=p.int_("NEAR_ONE_EXIT_CHECK_INTERVAL", "5"),
     )
 
     discovery = DiscoveryConfig(
@@ -808,11 +1219,82 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         min_leader_positions=p.int_("MIN_LEADER_POSITIONS", "20"),
         min_active_positions=p.int_("MIN_ACTIVE_POSITIONS", "1"),
         discovery_max_results=p.int_("DISCOVERY_MAX_RESULTS", "50"),
+        discovery_cache_ttl_seconds=p.float_("DISCOVERY_CACHE_TTL_SECONDS", "3600"),
         multi_user_config_file=p.string("MULTI_USER_CONFIG_FILE", ""),
+        falcon_api_url=p.string(
+            "FALCON_API_URL",
+            "https://narrative.agent.heisenberg.so/api/v2/semantic/retrieve/parameterized",
+        ),
+        falcon_api_token=p.string("FALCON_API_TOKEN", ""),
+        falcon_page_size=p.int_("FALCON_PAGE_SIZE", "100"),
+        falcon_max_pages=p.int_("FALCON_MAX_PAGES", "5"),
+        falcon_min_win_rate_15d=p.float_("FALCON_MIN_WIN_RATE_15D", "0.45"),
+        falcon_max_win_rate_15d=p.float_("FALCON_MAX_WIN_RATE_15D", "0.90"),
+        falcon_min_roi_15d=p.float_("FALCON_MIN_ROI_15D", "0"),
+        falcon_min_pnl_15d=p.float_("FALCON_MIN_PNL_15D", "100"),
+        falcon_min_trades_15d=p.int_("FALCON_MIN_TRADES_15D", "30"),
+        falcon_max_trades_15d=p.int_("FALCON_MAX_TRADES_15D", "750"),
+        polymarket_history_lookback_days=p.int_("POLYMARKET_HISTORY_LOOKBACK_DAYS", "365"),
+        polymarket_history_window_days=p.int_("POLYMARKET_HISTORY_WINDOW_DAYS", "7"),
+        polymarket_activity_max_offset=p.int_("POLYMARKET_ACTIVITY_MAX_OFFSET", "10000"),
+        discovery_history_trade_limit=p.int_("DISCOVERY_HISTORY_TRADE_LIMIT", "50000"),
+        discovery_signal_group_window_seconds=p.int_("DISCOVERY_SIGNAL_GROUP_WINDOW_SECONDS", "60"),
+        discovery_signal_group_max_gap_seconds=p.int_("DISCOVERY_SIGNAL_GROUP_MAX_GAP_SECONDS", "120"),
+        discovery_min_group_notional_usdc=p.float_("DISCOVERY_MIN_GROUP_NOTIONAL_USDC", "5"),
+        discovery_min_copyable_grouped_signal_ratio=p.float_(
+            "DISCOVERY_MIN_COPYABLE_GROUPED_SIGNAL_RATIO", "0.75"
+        ),
+        discovery_min_copyable_notional_ratio=p.float_(
+            "DISCOVERY_MIN_COPYABLE_NOTIONAL_RATIO", "0.60"
+        ),
+        discovery_require_7d_non_negative=p.bool_("DISCOVERY_REQUIRE_7D_NON_NEGATIVE", True),
+        discovery_min_7d_pnl_usdc=p.float_("DISCOVERY_MIN_7D_PNL_USDC", "0"),
+        discovery_allow_3d_slightly_negative=p.bool_(
+            "DISCOVERY_ALLOW_3D_SLIGHTLY_NEGATIVE", True
+        ),
+        discovery_min_3d_pnl_usdc=p.float_("DISCOVERY_MIN_3D_PNL_USDC", "-50"),
+        discovery_min_3d_roi=p.float_("DISCOVERY_MIN_3D_ROI", "-0.05"),
+        discovery_crypto_fast_max_resolution_minutes=p.float_(
+            "DISCOVERY_CRYPTO_FAST_MAX_RESOLUTION_MINUTES", "30"
+        ),
+        discovery_crypto_fast_reject_signal_ratio=p.float_(
+            "DISCOVERY_CRYPTO_FAST_REJECT_SIGNAL_RATIO", "0.70"
+        ),
+        discovery_crypto_fast_reject_notional_ratio=p.float_(
+            "DISCOVERY_CRYPTO_FAST_REJECT_NOTIONAL_RATIO", "0.70"
+        ),
+        discovery_crypto_fast_min_non_crypto_signals=p.int_(
+            "DISCOVERY_CRYPTO_FAST_MIN_NON_CRYPTO_SIGNALS", "5"
+        ),
+        discovery_auto_write_leaders=p.bool_("DISCOVERY_AUTO_WRITE_LEADERS", False),
+        discovery_dynamic_monitoring_enabled=p.bool_(
+            "DISCOVERY_DYNAMIC_MONITORING_ENABLED", False
+        ),
+        discovery_market_specialists_allowed=p.bool_(
+            "DISCOVERY_MARKET_SPECIALISTS_ALLOWED", True
+        ),
+        discovery_position_volatility_allowed=p.bool_(
+            "DISCOVERY_POSITION_VOLATILITY_ALLOWED", True
+        ),
+        rotate_traders_env_file=p.string(
+            "ROTATE_TRADERS_ENV_FILE", "config/runtime.local.env"
+        ),
+        rotate_traders_min_shadow_days=p.int_("ROTATE_TRADERS_MIN_SHADOW_DAYS", "3"),
+        rotate_traders_min_shadow_signals=p.int_("ROTATE_TRADERS_MIN_SHADOW_SIGNALS", "20"),
+        rotate_traders_replace_only_if_needed=p.bool_(
+            "ROTATE_TRADERS_REPLACE_ONLY_IF_NEEDED", True
+        ),
+        rotate_traders_min_score_delta=p.float_("ROTATE_TRADERS_MIN_SCORE_DELTA", "0.10"),
+        rotate_keep_live_if_7d_pnl_positive=p.bool_(
+            "ROTATE_KEEP_LIVE_IF_7D_PNL_POSITIVE", True
+        ),
+        rotate_reject_live_if_7d_pnl_below=p.float_(
+            "ROTATE_REJECT_LIVE_IF_7D_PNL_BELOW", "0"
+        ),
+        rotate_allow_manual_override=p.bool_("ROTATE_ALLOW_MANUAL_OVERRIDE", True),
     )
 
     features = FeatureFlagConfig(
-        enable_neg_risk_arb=p.bool_("ENABLE_NEG_RISK_ARB", False),
         enable_profit_lock=p.bool_("ENABLE_PROFIT_LOCK", False),
         enable_near_max_exit=p.bool_("ENABLE_NEAR_MAX_EXIT", True),
         enable_trailing_stop=p.bool_("ENABLE_TRAILING_STOP", False),
@@ -821,11 +1303,6 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         enable_stop_loss=p.bool_("ENABLE_STOP_LOSS", False),
         enable_tier_gate_watchlist=p.bool_("ENABLE_TIER_GATE_WATCHLIST", False),
         enable_tier_gate_watchlist_log=p.bool_("ENABLE_TIER_GATE_WATCHLIST_LOG", False),
-        arb_min_profit_bps=p.int_("ARB_MIN_PROFIT_BPS", "30"),
-        arb_max_cost_usdc=p.float_("ARB_MAX_COST_USDC", "10"),
-        arb_min_ask_depth=p.float_("ARB_MIN_ASK_DEPTH", "20"),
-        arb_scan_interval=p.int_("ARB_SCAN_INTERVAL", "30"),
-        arb_max_concurrent=p.int_("ARB_MAX_CONCURRENT", "2"),
     )
 
     cfg = AppConfig(
@@ -839,10 +1316,37 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         leader=leader,
         logging=logging_cfg,
         network=network,
-        redemption=redemption,
+        near_one_exit=near_one_exit,
+        reconciliation=reconciliation,
+        order_confirmation=order_confirmation,
+        position_drift=position_drift,
         discovery=discovery,
         features=features,
-        raw=dict(env),
+        market_data=MarketDataConfig(
+            primary_source=p.string("MARKET_DATA_PRIMARY_SOURCE", "rest_snapshot").lower(),
+            rest_snapshot_enable=p.bool_("MARKET_DATA_REST_SNAPSHOT_ENABLE", True),
+            rest_snapshot_max_age_ms=p.int_("MARKET_DATA_REST_SNAPSHOT_MAX_AGE_MS", "500"),
+            rest_snapshot_request_timeout_ms=p.int_("MARKET_DATA_REST_SNAPSHOT_REQUEST_TIMEOUT_MS", "750"),
+            rest_snapshot_total_budget_ms=p.int_("MARKET_DATA_REST_SNAPSHOT_TOTAL_BUDGET_MS", "1000"),
+            rest_snapshot_max_spread_bps=p.int_("MARKET_DATA_REST_SNAPSHOT_MAX_SPREAD_BPS", "300"),
+            allow_rest_when_wss_down=p.bool_("MARKET_DATA_ALLOW_REST_WHEN_WSS_DOWN", False),
+            wss_down_after_seconds=p.float_("MARKET_DATA_WSS_DOWN_AFTER_SECONDS", 15.0),
+            rest_degraded_max_age_seconds=p.float_("MARKET_DATA_REST_DEGRADED_MAX_AGE_SECONDS", 2.0),
+            rest_degraded_max_spread_bps=p.int_("MARKET_DATA_REST_DEGRADED_MAX_SPREAD_BPS", 500),
+            rest_degraded_log_every_seconds=p.float_("MARKET_DATA_REST_DEGRADED_LOG_EVERY_SECONDS", 30.0),
+            enable_rest_bootstrap=p.bool_("MARKET_DATA_ENABLE_REST_BOOTSTRAP", True),
+            rest_bootstrap_max_age_ms=p.int_("MARKET_DATA_REST_BOOTSTRAP_MAX_AGE_MS", 500),
+            rest_bootstrap_request_timeout_ms=p.int_("MARKET_DATA_REST_BOOTSTRAP_REQUEST_TIMEOUT_MS", 750),
+            rest_bootstrap_total_budget_ms=p.int_("MARKET_DATA_REST_BOOTSTRAP_TOTAL_BUDGET_MS", 1000),
+            rest_bootstrap_max_spread_bps=p.int_("MARKET_DATA_REST_BOOTSTRAP_MAX_SPREAD_BPS", 300),
+            rest_bootstrap_require_wss_connected=p.bool_("MARKET_DATA_REST_BOOTSTRAP_REQUIRE_WSS_CONNECTED", True),
+            executable_quote_max_age_seconds=p.float_("MARKET_DATA_EXECUTABLE_QUOTE_MAX_AGE_SECONDS", 2.0),
+            executable_book_max_age_seconds=p.float_("MARKET_DATA_EXECUTABLE_BOOK_MAX_AGE_SECONDS", 2.0),
+            executable_tick_max_age_seconds=p.float_("MARKET_DATA_EXECUTABLE_TICK_MAX_AGE_SECONDS", 300.0),
+            wss_connection_max_silence_seconds=p.float_("MARKET_DATA_WSS_CONNECTION_MAX_SILENCE_SECONDS", 20.0),
+        ),
+        dry_run=p.bool_("PAPER_TRADE_ONLY", False),
+        raw=_strip_sensitive(env),
     )
 
     _validate_semantics(cfg, p.errors)

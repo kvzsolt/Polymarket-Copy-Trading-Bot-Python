@@ -7,7 +7,6 @@ Used by the account-cap policy to compute daily drawdown limits.
 from __future__ import annotations
 
 import json
-import time
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -51,18 +50,26 @@ def get_day_start_equity(current_equity: float | Decimal) -> Decimal:
     state = _load_state()
 
     if state.get("date") == today and state.get("equity") is not None:
+        # Persisted as string for lossless Decimal round-trip; Decimal(str())
+        # also handles the legacy float-shaped payload safely.
         return Decimal(str(state["equity"]))
 
-    # New day or first run — snapshot current equity
-    equity_val = float(current_equity) if isinstance(current_equity, Decimal) else current_equity
+    # New day or first run — snapshot current equity as Decimal.
+    equity_dec = (
+        current_equity
+        if isinstance(current_equity, Decimal)
+        else Decimal(str(current_equity))
+    )
     state = {
         "date": today,
-        "equity": equity_val,
+        # Stored as string so the JSON round-trip never coerces Decimal
+        # through float and loses cent precision on large values.
+        "equity": str(equity_dec),
         "recorded_at": datetime.now(tz=timezone.utc).isoformat(),
     }
     _save_state(state)
-    logger.info(f"Day-start equity recorded: ${equity_val:.2f} for {today}")
-    return Decimal(str(equity_val))
+    logger.info("Day-start equity recorded: $%s for %s", equity_dec, today)
+    return equity_dec
 
 
 def get_daily_loss(current_equity: float | Decimal) -> Decimal:

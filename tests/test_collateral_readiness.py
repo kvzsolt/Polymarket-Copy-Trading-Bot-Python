@@ -27,7 +27,6 @@ def _make_status(**overrides: Any) -> CollateralStatus:
     defaults = {
         "pusd_balance": Decimal("100"),
         "pusd_allowance_ctf": Decimal("999999"),
-        "pusd_allowance_neg_risk": Decimal("999999"),
         "wallet_address": "0x" + "a" * 40,
         "rpc_url": "http://rpc",
         "ready": True,
@@ -54,50 +53,43 @@ class TestCheckSync:
 
     @patch("services.collateral_readiness._erc20_read")
     def test_all_green(self, mock_read: MagicMock) -> None:
-        # balanceOf returns 100 USDC (100 * 10^6)
-        # allowance returns max uint256-ish (1e12 * 10^6)
-        mock_read.side_effect = [100_000_000, 1_000_000_000_000_000, 1_000_000_000_000_000]
+        mock_read.side_effect = [100_000_000, 1_000_000_000_000_000]
         status = _check_sync(
             wallet_address="0x" + "a" * 40,
             rpc_url="http://rpc",
+            pusd_address="0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
+            ctf_exchange_address="0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E",
+            min_pusd_balance=Decimal("1.0"),
         )
         assert status.ready is True
         assert status.pusd_balance == Decimal("100")
         assert status.pusd_allowance_ctf > 0
-        assert status.pusd_allowance_neg_risk > 0
 
     @patch("services.collateral_readiness._erc20_read")
     def test_low_balance_fails(self, mock_read: MagicMock) -> None:
-        # 0.5 USDC balance — below minimum of 1.0
-        mock_read.side_effect = [500_000, 1_000_000_000_000_000, 1_000_000_000_000_000]
+        mock_read.side_effect = [500_000, 1_000_000_000_000_000]
         status = _check_sync(
             wallet_address="0x" + "a" * 40,
             rpc_url="http://rpc",
+            pusd_address="0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
+            ctf_exchange_address="0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E",
+            min_pusd_balance=Decimal("1.0"),
         )
         assert status.ready is False
         assert any("pUSD balance" in f for f in status.failures)
 
     @patch("services.collateral_readiness._erc20_read")
     def test_zero_allowance_ctf_fails(self, mock_read: MagicMock) -> None:
-        # Balance OK, but CTF allowance = 0
-        mock_read.side_effect = [100_000_000, 0, 1_000_000_000_000_000]
+        mock_read.side_effect = [100_000_000, 0]
         status = _check_sync(
             wallet_address="0x" + "a" * 40,
             rpc_url="http://rpc",
+            pusd_address="0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
+            ctf_exchange_address="0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E",
+            min_pusd_balance=Decimal("1.0"),
         )
         assert status.ready is False
         assert any("CTF Exchange" in f for f in status.failures)
-
-    @patch("services.collateral_readiness._erc20_read")
-    def test_zero_allowance_neg_risk_fails(self, mock_read: MagicMock) -> None:
-        # Balance OK, CTF allowance OK, but neg risk allowance = 0
-        mock_read.side_effect = [100_000_000, 1_000_000_000_000_000, 0]
-        status = _check_sync(
-            wallet_address="0x" + "a" * 40,
-            rpc_url="http://rpc",
-        )
-        assert status.ready is False
-        assert any("Neg Risk" in f for f in status.failures)
 
     @patch("services.collateral_readiness._erc20_read")
     def test_rpc_failure_records_failure(self, mock_read: MagicMock) -> None:
@@ -105,9 +97,11 @@ class TestCheckSync:
         status = _check_sync(
             wallet_address="0x" + "a" * 40,
             rpc_url="http://rpc",
+            pusd_address="0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
+            ctf_exchange_address="0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E",
+            min_pusd_balance=Decimal("1.0"),
         )
         assert status.ready is False
-        # All three checks should have failure entries
         assert len(status.failures) >= 1
 
 
@@ -121,19 +115,23 @@ class TestAsyncCheck:
         status = await check_collateral_readiness(
             wallet_address="0x" + "a" * 40,
             rpc_url="http://rpc",
+            pusd_address="0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
+            ctf_exchange_address="0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E",
         )
         assert status.ready is True
 
     @pytest.mark.asyncio
     @patch("services.collateral_readiness._check_sync")
-    async def test_uses_env_rpc_url_default(self, mock_sync: MagicMock) -> None:
+    async def test_uses_explicit_rpc_url(self, mock_sync: MagicMock) -> None:
         mock_sync.return_value = _make_status()
         await check_collateral_readiness(
             wallet_address="0x" + "a" * 40,
+            rpc_url="http://explicit-rpc",
+            pusd_address="0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
+            ctf_exchange_address="0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E",
         )
-        # Should have called with the default RPC URL from ENV
         call_kwargs = mock_sync.call_args[1]
-        assert "rpc_url" in call_kwargs
+        assert call_kwargs["rpc_url"] == "http://explicit-rpc"
 
 
 class TestNoSecretLeakage:
@@ -141,15 +139,17 @@ class TestNoSecretLeakage:
 
     @patch("services.collateral_readiness._erc20_read")
     def test_status_has_no_private_key(self, mock_read: MagicMock) -> None:
-        mock_read.side_effect = [100_000_000, 1_000_000_000_000_000, 1_000_000_000_000_000]
+        mock_read.side_effect = [100_000_000, 1_000_000_000_000_000]
         status = _check_sync(
             wallet_address="0x" + "a" * 40,
             rpc_url="http://rpc",
+            pusd_address="0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
+            ctf_exchange_address="0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E",
+            min_pusd_balance=Decimal("1.0"),
         )
         serialized = str(status)
         assert "private" not in serialized.lower()
         assert "secret" not in serialized.lower()
-        # Wallet address is fine to log (it's public on-chain)
         assert "0x" + "a" * 40 in serialized
 
 
@@ -166,21 +166,32 @@ class TestFailClosedStartup:
         mock_check.return_value = CollateralStatus(
             pusd_balance=Decimal("0"),
             pusd_allowance_ctf=Decimal("0"),
-            pusd_allowance_neg_risk=Decimal("0"),
             wallet_address="0x" + "a" * 40,
             rpc_url="http://rpc",
             ready=False,
             failures=("pUSD balance 0.00 < minimum 1", "CTF Exchange pUSD allowance is 0"),
         )
 
-        # Mock the heavy init path to reach the collateral gate
         mock_client = MagicMock()
         mock_client.get_tick_size.return_value = "0.01"
         mock_client.get_neg_risk.return_value = False
-        mock_client.get_order_book.return_value = MagicMock(bids=[], asks=[], tick_size="0.01", neg_risk=False, min_order_size="5")
+        mock_client.get_order_book.return_value = MagicMock(
+            bids=[], asks=[], tick_size="0.01", neg_risk=False, min_order_size="5"
+        )
 
-        with _p("utils.createClobClient.ENV", {"CLOB_V2_READY": True}), \
-             _p("utils.createClobClient.build_wallet_config") as mock_bwc, \
+        # Build a minimal AppConfig stub with the CLOB V2 gate flipped.
+        # The legacy-kill slice (#77) moved the gate from ENV.get into
+        # ``config.clob.clob_v2_ready`` (typed AppConfig field).
+        from types import SimpleNamespace
+        mock_cfg = SimpleNamespace(
+            clob=SimpleNamespace(clob_v2_ready=True),
+            network=SimpleNamespace(
+                pusd_contract_address="",
+                collateral_contract_address="",
+                ctf_exchange_v2_address="",
+            ),
+        )
+        with _p("utils.createClobClient.build_wallet_config") as mock_bwc, \
              _p("utils.createClobClient.validate_wallet_config"), \
              _p("utils.createClobClient.ClobClient", return_value=mock_client), \
              _p("utils.createClobClient.detect_wallet_signature_type", return_value=(1, "EOA", "0x" + "a" * 40)):
@@ -193,4 +204,54 @@ class TestFailClosedStartup:
                 polygon_rpc_url="http://localhost",
             )
             with pytest.raises(RuntimeError, match="V2 collateral readiness FAILED"):
-                await create_clob_client(private_key="0x" + "a" * 64)
+                await create_clob_client(private_key="0x" + "a" * 64, config=mock_cfg)
+
+    @pytest.mark.asyncio
+    @patch("services.collateral_readiness.check_collateral_readiness")
+    async def test_startup_derives_l2_creds_without_create_attempt(self, mock_check: AsyncMock) -> None:
+        from config.env import SignatureType, WalletConfig
+        from utils.createClobClient import create_clob_client
+        from types import SimpleNamespace
+        from unittest.mock import patch as _p
+
+        mock_check.return_value = CollateralStatus(
+            pusd_balance=Decimal("100"),
+            pusd_allowance_ctf=Decimal("1000"),
+            wallet_address="0x" + "a" * 40,
+            rpc_url="http://rpc",
+            ready=True,
+            failures=(),
+        )
+        mock_client = MagicMock()
+        mock_creds = MagicMock()
+        mock_client.derive_api_key.return_value = mock_creds
+        mock_cfg = SimpleNamespace(
+            clob=SimpleNamespace(
+                clob_v2_ready=True,
+            ),
+            network=SimpleNamespace(
+                pusd_contract_address="",
+                collateral_contract_address="",
+                ctf_exchange_v2_address="",
+            ),
+        )
+
+        with _p("utils.createClobClient.build_wallet_config") as mock_bwc, \
+             _p("utils.createClobClient.validate_wallet_config"), \
+             _p("utils.createClobClient.ClobClient", return_value=mock_client), \
+             _p("utils.createClobClient.detect_wallet_signature_type", return_value=(1, "EOA", "0x" + "a" * 40)):
+            mock_bwc.return_value = WalletConfig(
+                private_key="0x" + "a" * 64,
+                chain_id=137,
+                signature_type=SignatureType.EOA,
+                funder_address="0x" + "a" * 40,
+                polygon_rpc_url="http://localhost",
+            )
+
+            wrapper = await create_clob_client(private_key="0x" + "a" * 64, config=mock_cfg)
+
+        mock_client.create_api_key.assert_not_called()
+        mock_client.create_or_derive_api_key.assert_not_called()
+        mock_client.derive_api_key.assert_called_once()
+        mock_client.set_api_creds.assert_called_once_with(mock_creds)
+        assert wrapper.api_creds is mock_creds

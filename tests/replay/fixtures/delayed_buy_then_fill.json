@@ -1,0 +1,41 @@
+{
+  "_description": "Replay fixture: BUY is delayed, then venue fills before the second buy signal",
+  "_scenario": "delayed_buy_then_fill",
+  "_invariant": "second BUY is suppressed while first is pending; after fill, reservation is released",
+  "events": [
+    {
+      "ts": "2026-05-01T10:00:00Z",
+      "type": "price_update",
+      "token_id": "0xTOKEN_B",
+      "price": 0.40
+    },
+    {
+      "ts": "2026-05-01T10:00:01Z",
+      "type": "book_snapshot",
+      "token_id": "0xTOKEN_B",
+      "bids": [[0.38, 200], [0.37, 400]],
+      "asks": [[0.42, 100], [0.43, 250]]
+    },
+    {
+      "ts": "2026-05-01T10:00:02Z",
+      "type": "leader_buy",
+      "leader_wallet": "0xLEADER",
+      "condition_id": "0xCOND_B",
+      "token_id": "0xTOKEN_B",
+      "size": 100.0
+    },
+    {
+      "ts": "2026-05-01T10:00:04Z",
+      "type": "leader_buy",
+      "leader_wallet": "0xLEADER",
+      "condition_id": "0xCOND_B",
+      "token_id": "0xTOKEN_B",
+      "size": 80.0
+    },
+    {
+      "ts": "2026-05-01T10:00:10Z",
+      "type": "fill_confirmed",
+      "order_id": "order_2"
+    }
+  ]
+}

@@ -19,6 +19,8 @@ secrets.env
 /data/bot_state.db
 /log
 .github
+!.github/workflows/
+!.github/workflows/*.yml
 .claude
 lib/
 .proxyai

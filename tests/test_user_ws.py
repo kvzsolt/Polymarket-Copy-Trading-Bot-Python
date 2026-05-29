@@ -6,18 +6,17 @@ Phase 2 test coverage:
   - Heartbeat interval compliance (5s PING)
   - Reconnect on connection failure
 """
-
 from __future__ import annotations
 
-import asyncio
 import json
+import time
 from decimal import Decimal
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from cache.market_state_store import MarketStateStore
 from clients.user_ws import UserWebSocket, HEARTBEAT_INTERVAL
-from services.price_cache import PositionPriceCache
 
 
 # ---------------------------------------------------------------------------
@@ -25,12 +24,12 @@ from services.price_cache import PositionPriceCache
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
-def cache() -> PositionPriceCache:
-    return PositionPriceCache(quote_ttl=5.0, tick_ttl=300.0)
+def cache() -> MarketStateStore:
+    return MarketStateStore()
 
 
 @pytest.fixture
-def user_ws(cache: PositionPriceCache) -> UserWebSocket:
+def user_ws(cache: MarketStateStore) -> UserWebSocket:
     return UserWebSocket(
         cache,
         ws_url="wss://test.example.com/ws/user",
@@ -38,7 +37,7 @@ def user_ws(cache: PositionPriceCache) -> UserWebSocket:
 
 
 TOKEN_A = "0xaaa_token_yes"
-API_CREDS = {"api_key": "test_key", "api_secret": "test_secret"}
+API_CREDS = {"api_key": "test_key", "api_secret": "test_secret", "api_passphrase": "test_passphrase"}
 
 
 # ---------------------------------------------------------------------------
@@ -51,12 +50,14 @@ class TestFillEvent:
     def test_fill_event_invalidates_cache(
         self,
         user_ws: UserWebSocket,
-        cache: PositionPriceCache,
+        cache: MarketStateStore,
     ) -> None:
         """User fill event triggers cache invalidation."""
         # Pre-populate cache
         cache.set_quote(TOKEN_A, best_bid=Decimal("0.55"), best_ask=Decimal("0.60"))
+        cache.set_book(TOKEN_A, bids={Decimal("0.55"): Decimal("100")}, asks={Decimal("0.60"): Decimal("50")})
         assert cache.get_quote(TOKEN_A) is not None
+        assert cache.get_book(TOKEN_A) is not None
 
         # Simulate fill event
         event = json.dumps({
@@ -70,11 +71,12 @@ class TestFillEvent:
 
         # Cache should be invalidated
         assert cache.get_quote(TOKEN_A) is None
+        assert cache.get_book(TOKEN_A) is None
 
     def test_fill_event_order_fill_type(
         self,
         user_ws: UserWebSocket,
-        cache: PositionPriceCache,
+        cache: MarketStateStore,
     ) -> None:
         """order_fill event type also triggers invalidation."""
         cache.set_quote(TOKEN_A, best_bid=Decimal("0.55"), best_ask=Decimal("0.60"))
@@ -91,7 +93,7 @@ class TestFillEvent:
     def test_fill_event_fill_type(
         self,
         user_ws: UserWebSocket,
-        cache: PositionPriceCache,
+        cache: MarketStateStore,
     ) -> None:
         """fill event type also triggers invalidation."""
         cache.set_quote(TOKEN_A, best_bid=Decimal("0.55"), best_ask=Decimal("0.60"))
@@ -108,7 +110,7 @@ class TestFillEvent:
     def test_fill_without_token_id_ignored(
         self,
         user_ws: UserWebSocket,
-        cache: PositionPriceCache,
+        cache: MarketStateStore,
     ) -> None:
         """Fill event missing token_id is safely ignored."""
         cache.set_quote(TOKEN_A, best_bid=Decimal("0.55"), best_ask=Decimal("0.60"))
@@ -134,7 +136,7 @@ class TestOrderUpdate:
     def test_order_update_logged(
         self,
         user_ws: UserWebSocket,
-        cache: PositionPriceCache,
+        cache: MarketStateStore,
     ) -> None:
         """Order update events are logged but don't invalidate cache."""
         cache.set_quote(TOKEN_A, best_bid=Decimal("0.55"), best_ask=Decimal("0.60"))
@@ -171,9 +173,10 @@ class TestAuthentication:
 
         mock_ws.send.assert_called_once()
         sent = json.loads(mock_ws.send.call_args[0][0])
-        assert sent["type"] == "auth"
-        assert sent["api_key"] == "test_key"
-        assert sent["api_secret"] == "test_secret"
+        assert sent["type"] == "user"
+        assert sent["auth"]["apiKey"] == "test_key"
+        assert sent["auth"]["secret"] == "test_secret"
+        assert sent["auth"]["passphrase"] == "test_passphrase"
 
     def test_auth_success_logged(
         self,
@@ -233,6 +236,55 @@ class TestHeartbeat:
             await user_ws._heartbeat(mock_ws)
             # Should return without raising
 
+    @pytest.mark.asyncio
+    async def test_heartbeat_closes_socket_on_missed_pong(
+        self,
+        cache: MarketStateStore,
+    ) -> None:
+        """Parity with market WS: missing inbound activity within the
+        pong-timeout window closes the socket so the reconnect loop fires."""
+        ws_client = UserWebSocket(cache, pong_timeout_seconds=10.0)
+        ws_client._running = True
+        # Seed a very stale alive-anchor to mimic a dead remote stream.
+        ws_client._last_pong_monotonic = time.monotonic() - 100.0
+
+        sock = MagicMock()
+        sock.send = AsyncMock()
+        sock.close = AsyncMock()
+
+        async def fake_sleep(_secs: float) -> None:
+            ws_client._running = False
+
+        with patch("clients.user_ws.asyncio.sleep", side_effect=fake_sleep):
+            await ws_client._heartbeat(sock)
+
+        sock.close.assert_awaited()
+
+    def test_pong_detector_unit(self, cache: MarketStateStore) -> None:
+        """Direct unit check on the pong-missed predicate.
+
+        Semantics (post-fix): elapsed = now - last_alive. Pre-fix used
+        last_ping - last_pong which silently went negative on inbound
+        between pings — the tests below were locked to that wrong
+        formula; updated to anchor on time.monotonic() like the real
+        code now does.
+        """
+        ws_client = UserWebSocket(cache, pong_timeout_seconds=10.0)
+        assert ws_client._is_pong_missed() is False  # no ping yet
+
+        now = time.monotonic()
+        ws_client._last_ping_monotonic = now - 100.0
+        ws_client._last_pong_monotonic = now - 100.0  # 100s stale → MISSED
+        assert ws_client._is_pong_missed() is True
+
+        ws_client._last_pong_monotonic = now - 5.0  # 5s ago — fresh
+        assert ws_client._is_pong_missed() is False
+
+        # Fallback: no pong ever, but last ping aged past timeout.
+        ws_client._last_ping_monotonic = time.monotonic() - 30.0
+        ws_client._last_pong_monotonic = None
+        assert ws_client._is_pong_missed() is True
+
 
 # ---------------------------------------------------------------------------
 # Reconnect
@@ -244,7 +296,7 @@ class TestReconnect:
     @pytest.mark.asyncio
     async def test_reconnect_on_failure(
         self,
-        cache: PositionPriceCache,
+        cache: MarketStateStore,
     ) -> None:
         """Connection failure triggers reconnect with backoff."""
         ws = UserWebSocket(cache, ws_url="wss://test.example.com/ws/user")
@@ -292,7 +344,7 @@ class TestMessageEdgeCases:
     def test_list_of_events(
         self,
         user_ws: UserWebSocket,
-        cache: PositionPriceCache,
+        cache: MarketStateStore,
     ) -> None:
         """Array of events is processed individually."""
         cache.set_quote(TOKEN_A, best_bid=Decimal("0.55"), best_ask=Decimal("0.60"))

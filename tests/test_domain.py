@@ -31,7 +31,6 @@ from domain.ports import (
     AbstractOrderGateway,
     AbstractOrderRepository,
     AbstractPositionRepository,
-    AbstractRedemptionRepository,
 )
 
 ALL_PORTS = [
@@ -47,7 +46,6 @@ ALL_PORTS = [
     AbstractOrderGateway,
     AbstractOrderRepository,
     AbstractPositionRepository,
-    AbstractRedemptionRepository,
 ]
 
 
@@ -87,20 +85,12 @@ class _StubCursorRepo(AbstractCursorRepository):
         self.store: dict[str, Any] = {}
 
     def get_cursor(self, leader_id: str):  # type: ignore[override]
-        from storage.sqlite.cursors_repo import TradeCursor
+        from storage.postgres.cursors_repo import TradeCursor
 
         return self.store.get(leader_id.lower(), TradeCursor(timestamp=0, tx_hash=""))
 
     def set_cursor(self, leader_id: str, cursor) -> None:  # type: ignore[override]
         self.store[leader_id.lower()] = cursor
-
-
-class _StubRedemptionRepo(AbstractRedemptionRepository):
-    def __init__(self) -> None:
-        self.attempts: list[dict[str, Any]] = []
-
-    def save_attempt(self, payload: dict[str, Any]) -> None:
-        self.attempts.append(payload)
 
 
 class _StubNotifier(AbstractNotifier):
@@ -124,11 +114,6 @@ class TestLiskovConformance:
     def test_stub_cursor_repo_is_instance(self) -> None:
         repo = _StubCursorRepo()
         assert isinstance(repo, AbstractCursorRepository)
-
-    def test_stub_redemption_repo_round_trip(self) -> None:
-        repo = _StubRedemptionRepo()
-        repo.save_attempt({"id": 1})
-        assert repo.attempts == [{"id": 1}]
 
     @pytest.mark.asyncio
     async def test_stub_notifier_records_messages(self) -> None:

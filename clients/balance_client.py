@@ -10,11 +10,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from decimal import Decimal
 
 from web3 import Web3
 
 from domain.ports.clients import AbstractBalanceClient
-from network.web3_adapter import AsyncWeb3Adapter
+from clients.network.web3_adapter import AsyncWeb3Adapter
 
 _USDC_ABI = [
     {
@@ -25,6 +26,9 @@ _USDC_ABI = [
         "type": "function",
     }
 ]
+
+# USDC has 6 decimals — exact Decimal scale, no float.
+_USDC_SCALE = Decimal(10**6)
 
 
 class BalanceClient(AbstractBalanceClient):
@@ -39,7 +43,7 @@ class BalanceClient(AbstractBalanceClient):
         self._usdc_contract_address = usdc_contract_address
         self._logger = logger or logging.getLogger("BalanceClient")
 
-    def _get_usdc_balance_sync(self, address: str) -> float | None:
+    def _get_usdc_balance_sync(self, address: str) -> Decimal | None:
         try:
             checksum_contract = Web3.to_checksum_address(self._usdc_contract_address)
             checksum_address = Web3.to_checksum_address(address)
@@ -51,12 +55,15 @@ class BalanceClient(AbstractBalanceClient):
             w3 = Web3(Web3.HTTPProvider(self._rpc_url))
             contract = w3.eth.contract(address=checksum_contract, abi=_USDC_ABI)
             raw = contract.functions.balanceOf(checksum_address).call()
-            return float(raw / 10**6)
+            # Decimal(int) / Decimal(int) is exact across the full uint256
+            # range. The previous ``float(raw / 10**6)`` lost cent precision
+            # above ~2^53 microUSDC and corrupted downstream risk-cap math.
+            return Decimal(int(raw)) / _USDC_SCALE
         except Exception as exc:
             self._logger.error("USDC balance lookup failed: %s", exc)
             return None
 
-    async def get_usdc_balance(self, address: str) -> float | None:
+    async def get_usdc_balance(self, address: str) -> Decimal | None:
         if not address:
             return None
         return await asyncio.to_thread(self._get_usdc_balance_sync, address)

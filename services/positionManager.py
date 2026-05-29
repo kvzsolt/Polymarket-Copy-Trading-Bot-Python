@@ -44,6 +44,35 @@ def _as_float(value: object, default: float) -> float:
         return default
 
 
+def _to_dec(value: object, default: Decimal = Decimal("0")) -> Decimal:
+    """Normalise any numeric input to Decimal at the position-manager boundary.
+
+    CLAUDE.md non-negotiable: position state must not flow through float
+    arithmetic. Callers may still pass float / int from legacy paths;
+    we convert via ``str()`` to avoid IEEE-754 representation noise.
+
+    Review fix (cubic / greptile P1 on PR #110): on conversion failure we
+    now raise ``InvalidOperation`` instead of silently returning the
+    default. The prior broad ``except Exception: return default`` was
+    fail-open — a non-numeric ``entry_price`` slid through as
+    ``Decimal("0")`` and then either crashed the risk monitor with
+    ``DivisionByZero`` or produced a full-exit-price × size PnL on the
+    next sell. ``None`` is still treated as "no value" and returns the
+    default (kept for the evaluate_risk_action ``current_price=None``
+    short-circuit). Anything else that is not coercible to Decimal must
+    fail at the call site.
+    """
+    if value is None:
+        return default
+    if isinstance(value, Decimal):
+        return value
+    if isinstance(value, bool):
+        return Decimal(int(value))
+    # ``Decimal(str(value))`` raises ``decimal.InvalidOperation`` (a
+    # subclass of ArithmeticError) on garbage — let it propagate.
+    return Decimal(str(value))
+
+
 def _parse_csv_floats(raw: str) -> list[float]:
     """Parse comma-separated float values."""
     return [float(x.strip()) for x in raw.split(",") if x.strip()]
@@ -54,7 +83,7 @@ class PositionExitState:
     """Per-position state tracking for advanced exits."""
     # Trailing stop
     trailing_active: bool = False
-    trailing_high_price: float = 0.0
+    trailing_high_price: Decimal = field(default_factory=lambda: Decimal("0"))
     # Profit lock
     profit_lock_triggered: bool = False
     profit_lock_sold: bool = False
@@ -71,15 +100,15 @@ class TrackedPosition:
     condition_id: str
     asset: str
     side: str                 # BUY
-    entry_price: float
-    size_tokens: float
-    usdc_cost: float
+    entry_price: Decimal
+    size_tokens: Decimal
+    usdc_cost: Decimal
     entry_time: float = field(default_factory=time.time)
     leader_wallet: str = ""
     event_slug: str = ""
     title: str = ""
     category: str = "unknown"
-    peak_price: float = 0.0
+    peak_price: Decimal = field(default_factory=lambda: Decimal("0"))
     # Advanced exit state
     exit_state: PositionExitState = field(default_factory=PositionExitState)
     # Legacy compat fields
@@ -87,10 +116,10 @@ class TrackedPosition:
     profit_lock_held_logged: bool = False
     near_max_warn_trim_done: bool = False
     # Filled when position is closed
-    exit_price: Optional[float] = None
+    exit_price: Optional[Decimal] = None
     exit_time: Optional[float] = None
     exit_reason: Optional[str] = None
-    realized_pnl: Optional[float] = None
+    realized_pnl: Optional[Decimal] = None
 
 
 class PositionManager:
@@ -133,7 +162,7 @@ class PositionManager:
             return matches[0]
         return None
 
-    def __init__(self, config: AppConfig | None = None, *, risk_settings=None):
+    def __init__(self, config: AppConfig | None = None):
         self._positions: dict[str, TrackedPosition] = {}
         self._closed: list[TrackedPosition] = []
 
@@ -184,36 +213,20 @@ class PositionManager:
             self._enable_leader_divergence = _as_bool(getattr(fc, "enable_leader_divergence_exit", False), False)
             self._enabled = self._risk_master_enabled
 
-        elif risk_settings is not None:
-            # Legacy test-compatibility path: accept RiskSettings directly
-            rs = risk_settings
-            self._risk_master_enabled = True
-            self._enable_stop_loss = False
-            self._stop_loss_threshold = 0.15
-            self._stop_loss_grace_period_seconds = 180.0
-            self._profit_lock_mode = "legacy"
-            self._profit_lock_trigger = rs.profit_lock_trigger_ratio
-            self._profit_lock_sell_fraction = rs.profit_lock_sell_ratio
-            self._enable_near_max = True
-            self._near_max_exit = rs.near_max_price_level
-            self._near_max_warn = rs.near_max_warn_level
-            self._near_max_warn_ratio = 0.50
-            self._enable_trailing = False
-            self._trailing_activation_pct = rs.trailing_trigger_ratio
-            self._trailing_distance = rs.trailing_distance_ratio
-            self._enable_staged_tp = False
-            self._staged_levels = [0.30, 0.50]
-            self._staged_fractions = [0.25, 0.35]
-            self._enable_leader_divergence = False
-            self._enabled = self._risk_master_enabled
-
         else:
-            # Bare defaults for backward compat
+            # Bare defaults for tests that build a PositionManager() without
+            # a typed config. Profit-lock evaluation requires an explicit
+            # ``enable_profit_lock`` opt-in via AppConfig.features, so the
+            # no-config path leaves it disabled. The legacy "armed-then-
+            # retrace" profit-lock strategy was removed as part of the
+            # nasty-rework slice (issue #77); the trailing-stop priority
+            # (Priority 4 below) covers the same exit-on-retrace use case
+            # when configured via AppConfig.
             self._risk_master_enabled = True
             self._enable_stop_loss = False
             self._stop_loss_threshold = 0.15
             self._stop_loss_grace_period_seconds = 180.0
-            self._profit_lock_mode = "legacy"
+            self._profit_lock_mode = "disabled"
             self._profit_lock_trigger = 0.70
             self._profit_lock_sell_fraction = 0.50
             self._enable_near_max = True
@@ -244,63 +257,82 @@ class PositionManager:
         self,
         condition_id: str,
         asset: str,
-        entry_price: float,
-        size_tokens: float,
-        usdc_cost: float,
+        entry_price,
+        size_tokens,
+        usdc_cost,
         leader_wallet: str = "",
         event_slug: str = "",
         title: str = "",
         category: str = "unknown",
     ) -> TrackedPosition:
-        """Register a new buy position for risk monitoring."""
-        d_entry = Decimal(str(entry_price))
-        d_size = Decimal(str(size_tokens))
-        d_cost = Decimal(str(usdc_cost))
+        """Register a new buy position for risk monitoring.
+
+        Money-shaped inputs (``entry_price``, ``size_tokens``, ``usdc_cost``)
+        accept any numeric type; they are normalised to ``Decimal`` at this
+        boundary so the position store never holds float-typed money.
+        """
+        d_entry = _to_dec(entry_price)
+        d_size = _to_dec(size_tokens)
+        d_cost = _to_dec(usdc_cost)
+        # Defense-in-depth (cubic P1 on PR #110): even after the broad
+        # except removal in ``_to_dec`` above, a caller passing literal
+        # zero or a negative slips through as a valid Decimal. A zero
+        # ``entry_price`` then crashes ``evaluate_risk_action`` via
+        # ``pct_change = (cp - entry) / entry`` (DivisionByZero) and a
+        # zero ``size_tokens`` poisons ``track_sell``'s ``effective_size``
+        # clamp. Fail closed here.
+        if d_entry <= 0 or d_size <= 0 or d_cost <= 0:
+            raise ValueError(
+                "track_buy requires positive entry_price/size_tokens/usdc_cost, "
+                f"got entry={entry_price!r}, size={size_tokens!r}, cost={usdc_cost!r}"
+            )
 
         pos = TrackedPosition(
             condition_id=condition_id,
             asset=asset,
             side="BUY",
-            entry_price=entry_price,
-            size_tokens=size_tokens,
-            usdc_cost=usdc_cost,
+            entry_price=d_entry,
+            size_tokens=d_size,
+            usdc_cost=d_cost,
             leader_wallet=leader_wallet,
             event_slug=event_slug,
             title=title,
             category=category,
-            peak_price=entry_price,
+            peak_price=d_entry,
         )
         key = self._position_key(condition_id, asset)
         existing = self._positions.get(key)
         if existing:
-            total_tokens = Decimal(str(existing.size_tokens)) + d_size
+            total_tokens = existing.size_tokens + d_size
             if total_tokens > 0:
-                existing.entry_price = float(
-                    (Decimal(str(existing.entry_price)) * Decimal(str(existing.size_tokens)) + d_entry * d_size)
+                existing.entry_price = (
+                    (existing.entry_price * existing.size_tokens + d_entry * d_size)
                     / total_tokens
                 )
-            existing.size_tokens = float(total_tokens)
-            existing.usdc_cost = float(Decimal(str(existing.usdc_cost)) + d_cost)
-            existing.peak_price = max(existing.peak_price, entry_price)
+            existing.size_tokens = total_tokens
+            existing.usdc_cost = existing.usdc_cost + d_cost
+            existing.peak_price = max(existing.peak_price, d_entry)
             existing.category = category or existing.category
             logger.info(
                 f"Position averaged: {condition_id[:12]}…/{asset[:12]} "
-                f"avg_entry={existing.entry_price:.4f} total_tokens={existing.size_tokens:.4f}"
+                f"avg_entry={float(existing.entry_price):.4f} "
+                f"total_tokens={float(existing.size_tokens):.4f}"
             )
             return existing
 
         self._positions[key] = pos
         logger.info(
             f"Position opened: {condition_id[:12]}…/{asset[:12]} "
-            f"entry={entry_price:.4f} tokens={size_tokens:.4f} cost=${usdc_cost:.2f}"
+            f"entry={float(d_entry):.4f} tokens={float(d_size):.4f} "
+            f"cost=${float(d_cost):.2f}"
         )
         return pos
 
     def track_sell(
         self,
         condition_id: str,
-        exit_price: float,
-        size_tokens: float,
+        exit_price,
+        size_tokens,
         *,
         asset: str | None = None,
         reason: str = "leader_sell",
@@ -316,8 +348,8 @@ class PositionManager:
         # which silently routed any unexpected type to the wrong path. The
         # keyword-only ``asset`` parameter makes the asset-aware form
         # unambiguous. (Greptile P2 PR #63.)
-        sell_size: float = float(size_tokens)
-        exit_price = float(exit_price)
+        sell_size = _to_dec(size_tokens)
+        exit_price_d = _to_dec(exit_price)
 
         if sell_size <= 0:
             raise ValueError(
@@ -333,29 +365,31 @@ class PositionManager:
             return None
 
         # Clamp sell amount to held amount to prevent PnL inflation on oversells
-        effective_size = min(Decimal(str(sell_size)), Decimal(str(pos.size_tokens)))
-        pos.size_tokens = float(Decimal(str(pos.size_tokens)) - effective_size)
-        realized = float((Decimal(str(exit_price)) - Decimal(str(pos.entry_price))) * effective_size)
+        effective_size = min(sell_size, pos.size_tokens)
+        pos.size_tokens = pos.size_tokens - effective_size
+        realized = (exit_price_d - pos.entry_price) * effective_size
         if pos.realized_pnl is None:
-            pos.realized_pnl = 0.0
+            pos.realized_pnl = Decimal("0")
         pos.realized_pnl += realized
 
-        if pos.size_tokens <= 0.001:
-            pos.exit_price = exit_price
+        # 0.001 token == residual dust threshold; matches the pre-Decimal
+        # comparison in the float path.
+        if pos.size_tokens <= Decimal("0.001"):
+            pos.exit_price = exit_price_d
             pos.exit_time = time.time()
             pos.exit_reason = reason
-            pos.size_tokens = 0.0
+            pos.size_tokens = Decimal("0")
             del self._positions[resolved_key]
             self._closed.append(pos)
             logger.info(
                 f"Position closed ({reason}): {condition_id[:12]}… "
-                f"exit={exit_price:.4f} pnl=${pos.realized_pnl:.2f}"
+                f"exit={float(exit_price_d):.4f} pnl=${float(pos.realized_pnl):.2f}"
             )
             return pos
 
         logger.info(
             f"Position partially sold: {condition_id[:12]}… "
-            f"remaining={pos.size_tokens:.4f} partial_pnl=${realized:.2f}"
+            f"remaining={float(pos.size_tokens):.4f} partial_pnl=${float(realized):.2f}"
         )
         return None
 
@@ -370,8 +404,8 @@ class PositionManager:
     def evaluate_risk_action(
         self,
         condition_id: str,
-        asset_or_current_price: str | float,
-        current_price: float | None = None,
+        asset_or_current_price,
+        current_price=None,
     ) -> Optional[dict]:
         """Return risk action dict with reason + size_fraction, or None.
 
@@ -381,18 +415,24 @@ class PositionManager:
         3. Staged take-profit
         4. Trailing stop
         5. Leader divergence
+
+        ``current_price`` accepts any numeric (float / int / Decimal) and is
+        normalised to ``Decimal`` at the boundary. All internal money
+        arithmetic stays in ``Decimal``; config thresholds are wrapped via
+        ``_to_dec`` at each comparison so the no-config defaults stay
+        float-typed without polluting downstream state.
         """
         if not self._risk_management_enabled():
             return None
 
         if isinstance(asset_or_current_price, str):
             asset = asset_or_current_price
-            current_price = float(current_price) if current_price is not None else None
+            cp = _to_dec(current_price) if current_price is not None else None
         else:
             asset = None
-            current_price = float(asset_or_current_price)
+            cp = _to_dec(asset_or_current_price)
 
-        if current_price is None:
+        if cp is None:
             return None
 
         resolved_key = self._resolve_lookup_key(condition_id, asset)
@@ -401,74 +441,64 @@ class PositionManager:
             return None
 
         es = pos.exit_state
-        pct_change = float((Decimal(str(current_price)) - Decimal(str(pos.entry_price))) / Decimal(str(pos.entry_price)))
+        pct_change = (cp - pos.entry_price) / pos.entry_price
 
         # Update peak price for trailing
-        if current_price > pos.peak_price:
-            pos.peak_price = current_price
-        if current_price > es.trailing_high_price:
-            es.trailing_high_price = current_price
+        if cp > pos.peak_price:
+            pos.peak_price = cp
+        if cp > es.trailing_high_price:
+            es.trailing_high_price = cp
 
         # ── Priority 0: STOP-LOSS (absolute price floor, grace-period protected) ──
         if getattr(self, "_enable_stop_loss", False):
-            sl_threshold = getattr(self, "_stop_loss_threshold", 0.15)
+            sl_threshold = _to_dec(getattr(self, "_stop_loss_threshold", 0.15))
             grace = getattr(self, "_stop_loss_grace_period_seconds", 180.0)
             age_seconds = time.time() - pos.entry_time
-            if current_price <= sl_threshold and age_seconds > grace:
+            if cp <= sl_threshold and age_seconds > grace:
                 logger.info(
                     f"STOP-LOSS triggered: {condition_id[:12]}… "
-                    f"price={current_price:.4f} <= threshold={sl_threshold:.4f} "
+                    f"price={float(cp):.4f} <= threshold={float(sl_threshold):.4f} "
                     f"age={age_seconds:.0f}s > grace={grace:.0f}s"
                 )
                 return {"reason": "stop_loss", "size_fraction": 1.0}
 
         # ── Priority 1: NEAR-MAX-PRICE EXIT ──
-        if self._enable_near_max and current_price > 0:
-            if current_price >= self._near_max_exit:
+        if self._enable_near_max and cp > 0:
+            near_max_exit_d = _to_dec(self._near_max_exit)
+            near_max_warn_d = _to_dec(self._near_max_warn)
+            if cp >= near_max_exit_d:
                 logger.info(
                     f"🏁 NEAR-MAX full exit: {condition_id[:12]}… "
-                    f"price={current_price:.4f} >= {self._near_max_exit}"
+                    f"price={float(cp):.4f} >= {self._near_max_exit}"
                 )
                 return {"reason": "near_max_full_exit", "size_fraction": 1.0}
 
             if (
-                current_price >= self._near_max_warn
+                cp >= near_max_warn_d
                 and not es.near_max_warn_done
                 and self._near_max_warn_ratio > 0
             ):
                 es.near_max_warn_done = True
                 logger.info(
                     f"✂️ NEAR-MAX warn trim: {condition_id[:12]}… "
-                    f"price={current_price:.4f} >= {self._near_max_warn}"
+                    f"price={float(cp):.4f} >= {self._near_max_warn}"
                 )
                 return {"reason": "near_max_partial_trim", "size_fraction": self._near_max_warn_ratio}
 
         # ── Priority 2: PROFIT LOCK ──
-        # Legacy mode: arm above trigger, exit on fallback below trigger.
-        if self._profit_lock_mode == "legacy":
-            if pct_change >= self._profit_lock_trigger and not pos.profit_lock_armed:
-                pos.profit_lock_armed = True
-                # do not exit immediately
-                return None
-            if pos.profit_lock_armed and pct_change >= self._profit_lock_trigger and not pos.profit_lock_held_logged:
-                pos.profit_lock_held_logged = True
-                return None
-            if pos.profit_lock_armed and pct_change < self._profit_lock_trigger:
-                # Fallback below trigger: exit fully.
-                pos.profit_lock_armed = False
-                return {"reason": "profit_lock_fallback", "size_fraction": 1.0}
-
         # Advanced mode: partial sell at trigger then trail remainder.
-        if self._profit_lock_mode == "advanced" and pct_change >= self._profit_lock_trigger:
+        # (The historical "legacy" armed-then-retrace strategy was removed in
+        # issue #77; the trailing-stop priority below covers exit-on-retrace.)
+        if self._profit_lock_mode == "advanced" and pct_change >= _to_dec(self._profit_lock_trigger):
             if not es.profit_lock_sold:
                 es.profit_lock_triggered = True
                 es.profit_lock_sold = True
                 # Activate trailing on remainder
                 es.trailing_active = True
-                es.trailing_high_price = current_price
+                es.trailing_high_price = cp
                 logger.info(
                     f"🔒 PROFIT LOCK: {condition_id[:12]}… "
-                    f"profit={pct_change*100:.1f}% >= {self._profit_lock_trigger*100:.0f}% "
+                    f"profit={float(pct_change)*100:.1f}% >= {self._profit_lock_trigger*100:.0f}% "
                     f"selling {self._profit_lock_sell_fraction*100:.0f}% + trailing remainder"
                 )
                 return {"reason": "profit_lock", "size_fraction": self._profit_lock_sell_fraction}
@@ -478,15 +508,15 @@ class PositionManager:
             for i, (level, fraction) in enumerate(zip(self._staged_levels, self._staged_fractions)):
                 if i in es.staged_tp_triggered:
                     continue
-                if pct_change >= level:
+                if pct_change >= _to_dec(level):
                     es.staged_tp_triggered.add(i)
                     # Activate trailing after first staged TP
                     if not es.trailing_active:
                         es.trailing_active = True
-                        es.trailing_high_price = current_price
+                        es.trailing_high_price = cp
                     logger.info(
                         f"📊 STAGED TP level {i+1}: {condition_id[:12]}… "
-                        f"profit={pct_change*100:.1f}% >= {level*100:.0f}% "
+                        f"profit={float(pct_change)*100:.1f}% >= {level*100:.0f}% "
                         f"selling {fraction*100:.0f}%"
                     )
                     return {"reason": f"staged_tp_level_{i+1}", "size_fraction": fraction}
@@ -494,21 +524,22 @@ class PositionManager:
         # ── Priority 4: TRAILING STOP ──
         if self._enable_trailing:
             # Auto-activate trailing after activation threshold
-            if not es.trailing_active and pct_change >= self._trailing_activation_pct:
+            if not es.trailing_active and pct_change >= _to_dec(self._trailing_activation_pct):
                 es.trailing_active = True
-                es.trailing_high_price = current_price
+                es.trailing_high_price = cp
                 logger.info(
                     f"📈 TRAILING STOP activated: {condition_id[:12]}… "
-                    f"profit={pct_change*100:.1f}% peak={current_price:.4f}"
+                    f"profit={float(pct_change)*100:.1f}% peak={float(cp):.4f}"
                 )
 
             if es.trailing_active and es.trailing_high_price > 0:
-                trail_trigger = es.trailing_high_price - self._trailing_distance
-                if current_price <= trail_trigger and current_price > pos.entry_price:
+                trail_distance_d = _to_dec(self._trailing_distance)
+                trail_trigger = es.trailing_high_price - trail_distance_d
+                if cp <= trail_trigger and cp > pos.entry_price:
                     logger.info(
                         f"📉 TRAILING STOP triggered: {condition_id[:12]}… "
-                        f"price={current_price:.4f} <= trail={trail_trigger:.4f} "
-                        f"(peak={es.trailing_high_price:.4f} - {self._trailing_distance})"
+                        f"price={float(cp):.4f} <= trail={float(trail_trigger):.4f} "
+                        f"(peak={float(es.trailing_high_price):.4f} - {self._trailing_distance})"
                     )
                     return {"reason": "trailing_stop", "size_fraction": 1.0}
 
@@ -543,15 +574,23 @@ class PositionManager:
 
     def summary(self) -> dict:
         """Return portfolio summary stats."""
-        total_invested = sum(p.usdc_cost for p in self._positions.values())
-        total_realized = sum(p.realized_pnl or 0 for p in self._closed)
-        wins = sum(1 for p in self._closed if (p.realized_pnl or 0) > 0)
-        losses = sum(1 for p in self._closed if (p.realized_pnl or 0) <= 0)
+        total_invested = sum(
+            (p.usdc_cost for p in self._positions.values()),
+            start=Decimal("0"),
+        )
+        total_realized = sum(
+            ((p.realized_pnl or Decimal("0")) for p in self._closed),
+            start=Decimal("0"),
+        )
+        wins = sum(1 for p in self._closed if (p.realized_pnl or Decimal("0")) > 0)
+        losses = sum(1 for p in self._closed if (p.realized_pnl or Decimal("0")) <= 0)
+        # Truncate to 2dp via quantize so the dict value stays Decimal —
+        # callers that need a float for display can cast at the boundary.
         return {
             "open_positions": len(self._positions),
             "closed_positions": len(self._closed),
-            "total_invested": round(total_invested, 2),
-            "total_realized_pnl": round(total_realized, 2),
+            "total_invested": total_invested.quantize(Decimal("0.01")),
+            "total_realized_pnl": total_realized.quantize(Decimal("0.01")),
             "wins": wins,
             "losses": losses,
             "win_rate": round(wins / max(wins + losses, 1) * 100, 1),

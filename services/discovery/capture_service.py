@@ -20,7 +20,8 @@ import aiohttp
 
 from domain.discovery_models import ObservedTrade, OrderbookSnapshot
 from services.discovery.ingestion_service import IngestionService
-from storage.sqlite.discovery_repo import DiscoveryRepo
+from storage.postgres.connection import get_pool
+from storage.postgres.discovery_repo import DiscoveryRepo
 from utils import is_valid_clob_token_id
 from utils.createClobClient import CLOB_HTTP_URL
 from utils.fetchData import fetch_data
@@ -32,16 +33,35 @@ logger = get_logger("DiscoveryCapture")
 class DiscoveryCaptureService:
     def __init__(
         self,
-        db_path: str,
+        pool,
         *,
         orderbook_levels: int = 5,
         orderbook_error_log_window_seconds: float = 90.0,
     ):
-        self._repo = DiscoveryRepo(db_path)
+        self._repo = DiscoveryRepo(pool)
         self._ingestion = IngestionService(self._repo)
         self._orderbook_levels = max(1, int(orderbook_levels))
         self._orderbook_error_log_window_seconds = max(0.0, float(orderbook_error_log_window_seconds))
         self._orderbook_failure_log_state: dict[tuple[str, str, int | None], tuple[float, int]] = {}
+
+    @classmethod
+    async def create(
+        cls,
+        *,
+        orderbook_levels: int = 5,
+        orderbook_error_log_window_seconds: float = 90.0,
+    ) -> "DiscoveryCaptureService":
+        """Factory that resolves the singleton asyncpg pool lazily.
+
+        Avoids forcing every caller to import get_pool. The constructor
+        stays sync so tests can pass a mock pool directly.
+        """
+        pool = await get_pool()
+        return cls(
+            pool,
+            orderbook_levels=orderbook_levels,
+            orderbook_error_log_window_seconds=orderbook_error_log_window_seconds,
+        )
 
     async def capture_observed_trades(self, raw_activities: list[dict[str, Any]]) -> None:
         if not raw_activities:
@@ -49,11 +69,11 @@ class DiscoveryCaptureService:
 
         for raw in raw_activities:
             try:
-                self._ingestion.ingest_market(raw)
+                await self._ingestion.ingest_market(raw)
             except Exception as exc:
                 logger.warning("market_capture_failed", extra={"error": redact_error_detail(exc)})
 
-        result = self._ingestion.ingest_activity_batch_detailed(raw_activities)
+        result = await self._ingestion.ingest_activity_batch_detailed(raw_activities)
         if not result.inserted_trades:
             return
 
@@ -76,10 +96,10 @@ class DiscoveryCaptureService:
     ) -> int:
         for raw in raw_positions:
             try:
-                self._ingestion.ingest_market(raw)
+                await self._ingestion.ingest_market(raw)
             except Exception as exc:
                 logger.warning("market_capture_failed", extra={"error": redact_error_detail(exc)})
-        return self._ingestion.ingest_position_snapshots(
+        return await self._ingestion.ingest_position_snapshots(
             trader_wallet,
             raw_positions,
             snapshot_ts=snapshot_ts,
@@ -92,10 +112,10 @@ class DiscoveryCaptureService:
     ) -> int:
         for raw in raw_positions:
             try:
-                self._ingestion.ingest_market(raw)
+                await self._ingestion.ingest_market(raw)
             except Exception as exc:
                 logger.warning("market_capture_failed", extra={"error": redact_error_detail(exc)})
-        return self._ingestion.ingest_closed_position_snapshots(trader_wallet, raw_positions)
+        return await self._ingestion.ingest_closed_position_snapshots(trader_wallet, raw_positions)
 
     async def _capture_orderbook_snapshot(self, trade: ObservedTrade) -> None:
         if not trade.token_id:
@@ -133,8 +153,8 @@ class DiscoveryCaptureService:
             )
             return
 
-        self._repo.insert_orderbook_snapshot(snapshot)
-        self._ingestion.ingest_market(
+        await self._repo.insert_orderbook_snapshot(snapshot)
+        await self._ingestion.ingest_market(
             {
                 "conditionId": trade.condition_id,
                 "asset": trade.token_id,

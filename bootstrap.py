@@ -17,15 +17,28 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from pathlib import Path
 
 from config.app_config import AppConfig, load_config
+from decimal import Decimal
+from integrations.falcon.client import FalconClient
+from integrations.polymarket.history_client import PolymarketHistoryClient
 from orchestrators.leader_registry import LeaderRegistry
 from services.healthServer import ReadinessTracker
+from services.discovery.candidate_classifier import CandidateClassifier
+from services.discovery.candidate_scoring import CandidateScoringService
+from services.discovery.balance_provider import build_wallet_balance_provider
+from services.discovery.copyability_replay import CopyabilityReplayService
+from services.discovery.falcon_candidate_service import FalconCandidateService
+from services.discovery.falcon_recent_state_service import FalconRecentStateService
+from services.discovery.ingestion_service import IngestionService
+from services.discovery.leader_trust_store import LeaderTrustStore
+from services.discovery.polymarket_history_backfill import PolymarketHistoryBackfill
+from services.discovery.signal_grouper import SignalGrouper
 from services.traderDiscoveryService import TraderDiscoveryService
-from storage.sqlite.connection import create_connection
-from storage.sqlite.leaders_repo import LeadersRepo
-from storage.sqlite.migrations import apply_migrations
+from storage.postgres.connection import init_pool
+from storage.postgres.discovery_repo import DiscoveryRepo
+from storage.postgres.leaders_repo import LeadersRepo
+from storage.postgres.migrations import apply_migrations as apply_pg_migrations
 from utils.logger import get_logger
 
 __all__ = ["Application", "build_app"]
@@ -37,21 +50,13 @@ class Application:
 
     config: AppConfig
     readiness: ReadinessTracker
-    db_path: str
     leaders_repo: LeadersRepo
     discovery_service: TraderDiscoveryService
+    trust_store: LeaderTrustStore
     registry: LeaderRegistry
 
 
-def _init_database(db_path: str) -> None:
-    """Apply migrations against ``db_path`` exactly once per call."""
-    Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-    with create_connection(db_path) as conn:
-        apply_migrations(conn)
-        conn.commit()
-
-
-def build_app(env: Mapping[str, str] | None = None) -> Application:
+async def build_app(env: Mapping[str, str] | None = None) -> Application:
     """Construct the shared application graph.
 
     Parameters
@@ -65,18 +70,66 @@ def build_app(env: Mapping[str, str] | None = None) -> Application:
     Application
         A freshly wired, fully typed graph. Successive calls yield
         independent instances (no module-level caching).
+
+    Notes
+    -----
+    PG-A5: builds an async ``LeadersRepo`` against the singleton asyncpg
+    pool. The pool is brought online here (``init_pool`` is idempotent —
+    a second caller returns the same pool) and the canonical schema is
+    applied before any repo touches it. Sqlite legacy initialisation
+    continues to run via ``config.db.connect_db()`` at the runtime
+    entrypoint until the remaining sqlite callers migrate.
     """
     config = load_config(env)
 
-    db_path = config.database.db_path
-    if config.database.enabled:
-        _init_database(db_path)
+    pool = await init_pool(
+        config.database.dsn,
+        min_size=config.database.pool_min_size,
+        max_size=config.database.pool_max_size,
+        command_timeout_seconds=config.database.command_timeout_seconds,
+    )
+    async with pool.acquire() as conn:
+        await apply_pg_migrations(conn)
 
     readiness = ReadinessTracker()
-    readiness.update(db_ok=config.database.enabled)
+    readiness.update(db_ok=True)
 
-    leaders_repo = LeadersRepo(db_path)
-    discovery_service = TraderDiscoveryService()
+    leaders_repo = LeadersRepo(pool)
+    discovery_repo = DiscoveryRepo(pool)
+    trust_store = LeaderTrustStore()
+    await trust_store.refresh_from_repo(discovery_repo)
+    ingestion = IngestionService(discovery_repo)
+    falcon_client = FalconClient(
+        api_url=config.discovery.falcon_api_url,
+        token=config.discovery.falcon_api_token,
+    )
+    history_client = PolymarketHistoryClient()
+    discovery_service = TraderDiscoveryService(
+        config=config,
+        falcon_candidates=FalconCandidateService(falcon_client, config),
+        history_backfill=PolymarketHistoryBackfill(
+            client=history_client,
+            ingestion=ingestion,
+            config=config,
+        ),
+        discovery_repo=discovery_repo,
+        evaluation_repo=discovery_repo,
+        grouper=SignalGrouper(
+            window_seconds=config.discovery.discovery_signal_group_window_seconds,
+            max_gap_seconds=config.discovery.discovery_signal_group_max_gap_seconds,
+            min_group_notional_usdc=Decimal(
+                str(config.discovery.discovery_min_group_notional_usdc)
+            ),
+        ),
+        classifier=CandidateClassifier(config),
+        replay_service=CopyabilityReplayService(
+            config=config,
+            balance_provider=build_wallet_balance_provider(config),
+        ),
+        scoring_service=CandidateScoringService(config),
+        recent_state_service=FalconRecentStateService(falcon_client),
+        trust_store=trust_store,
+    )
     registry = LeaderRegistry(
         discovery_service=discovery_service,
         leaders_repo=leaders_repo,
@@ -88,8 +141,8 @@ def build_app(env: Mapping[str, str] | None = None) -> Application:
     return Application(
         config=config,
         readiness=readiness,
-        db_path=db_path,
         leaders_repo=leaders_repo,
         discovery_service=discovery_service,
+        trust_store=trust_store,
         registry=registry,
     )

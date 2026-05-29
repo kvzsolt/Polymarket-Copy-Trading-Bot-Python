@@ -9,12 +9,11 @@ from .env import (
     get_chain_id,
     get_funder_address,
     get_private_key,
-    get_signature_type,
     rehydrate_env,
     validate_runtime_env,
     validate_wallet_config,
 )
-from .db import connect_db, get_client, get_database
+from .db import connect_db
 from .app_config import (
     AppConfig,
     ClobConfig,
@@ -26,7 +25,7 @@ from .app_config import (
     LoggingConfig,
     NetworkConfig,
     PollingConfig,
-    RedemptionConfig,
+    NearOneExitConfig,
     RiskConfig,
     SizingConfig,
     load_config,
@@ -44,10 +43,7 @@ __all__ = [
     "validate_runtime_env",
     "validate_wallet_config",
     "get_private_key",
-    "get_signature_type",
     "connect_db",
-    "get_client",
-    "get_database",
     "AppConfig",
     "ClobConfig",
     "DatabaseConfig",
@@ -58,7 +54,7 @@ __all__ = [
     "LoggingConfig",
     "NetworkConfig",
     "PollingConfig",
-    "RedemptionConfig",
+    "NearOneExitConfig",
     "RiskConfig",
     "SizingConfig",
     "load_config",

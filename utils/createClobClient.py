@@ -6,10 +6,9 @@ from dataclasses import dataclass
 from decimal import ROUND_CEILING, ROUND_DOWN, ROUND_FLOOR, Decimal
 from typing import Any
 
-from web3 import Web3
 
-from py_clob_client.client import ClobClient
-from py_clob_client.clob_types import (
+from py_clob_client_v2.client import ClobClient
+from py_clob_client_v2.clob_types import (
     MarketOrderArgs,
     OrderArgs,
     OrderType,
@@ -17,12 +16,12 @@ from py_clob_client.clob_types import (
 )
 
 from config.env import (
-    ENV,
     SignatureType,
     WalletConfig,
     build_wallet_config,
     validate_wallet_config,
 )
+from services.wallet_signature_detector import detect_wallet_signature_type
 from utils.fetchData import _get_session
 from utils.logger import (
     get_logger,
@@ -33,7 +32,48 @@ from utils.logger import (
 
 logger = get_logger("ClobClient")
 
-CLOB_HTTP_URL = (ENV.get("CLOB_HTTP_URL") or "https://clob.polymarket.com").rstrip("/")
+# Module-level config. Hardcoded defaults match the previous env-read
+# defaults; production paths override via ``configure_from_appconfig(cfg)``
+# (called from ``orchestrators/runtime_bootstrap.py`` at startup).
+CLOB_HTTP_URL = "https://clob.polymarket.com"
+
+
+class _PriceTokenNotFound:
+    """Sentinel returned by ``get_price`` when the venue answers 404 on
+    ``/price?token_id=X``. Per Polymarket OpenAPI 404 means "No orderbook
+    exists for the requested token id" — i.e. the token is retired /
+    market resolved. Callers must treat this as terminal (mark the token
+    resolved upstream), distinct from ``None`` which signals transient
+    venue unhealth (5xx, timeout, malformed payload). The sentinel is
+    intentionally a unique object, not a string, so identity comparison
+    via ``is`` is unambiguous.
+    """
+
+    _instance: "_PriceTokenNotFound | None" = None
+
+    def __new__(cls) -> "_PriceTokenNotFound":
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    def __repr__(self) -> str:
+        return "PRICE_TOKEN_NOT_FOUND"
+
+
+PRICE_TOKEN_NOT_FOUND = _PriceTokenNotFound()
+
+
+def configure_from_appconfig(config: Any) -> None:
+    """Override module-level CLOB constants from a typed AppConfig.
+
+    Production bootstrap calls this once at startup so the module's
+    ``CLOB_HTTP_URL`` + meta-cache TTLs follow the typed config rather
+    than the raw env. Tests can leave the defaults in place.
+    """
+    global CLOB_HTTP_URL, _META_CACHE_TTL_GOOD, _META_CACHE_TTL_THIN
+    CLOB_HTTP_URL = str(config.clob.http_url or "https://clob.polymarket.com").rstrip("/")
+    _META_CACHE_TTL_GOOD = float(config.execution.meta_cache_ttl_good)
+    _META_CACHE_TTL_THIN = float(config.execution.meta_cache_ttl_thin)
 
 
 @dataclass(frozen=True)
@@ -46,8 +86,8 @@ class MarketMeta:
     best_ask: Decimal | None = None
 
 
-_META_CACHE_TTL_GOOD = float(ENV.get("META_CACHE_TTL_GOOD", 300))
-_META_CACHE_TTL_THIN = float(ENV.get("META_CACHE_TTL_THIN", 30))
+_META_CACHE_TTL_GOOD = 300.0
+_META_CACHE_TTL_THIN = 30.0
 
 # Thresholds for detecting garbage/placeholder orderbook state.
 # bid <= this AND ask >= (1 - this) means the book is effectively empty.
@@ -69,6 +109,23 @@ def _safe_decimal(value: Any) -> Decimal | None:
         return Decimal(str(value))
     except Exception:
         return None
+
+
+def _response_order_id(response: Any) -> Any:
+    if not isinstance(response, dict):
+        return None
+    return response.get("orderID") or response.get("order_id") or response.get("id")
+
+
+def _error_body_order_id(raw_body: str) -> str | None:
+    for marker in ('"orderID":"', '"orderID": "', "'orderID': '", "'orderID':'"):
+        if marker not in raw_body:
+            continue
+        start = raw_body.find(marker) + len(marker)
+        end = raw_body.find(marker[-1], start)
+        if end > start:
+            return raw_body[start:end]
+    return None
 
 
 def quantize_to_tick(
@@ -98,12 +155,18 @@ def quantize_to_tick(
 
 def _top_of_book_from_levels(levels: list[Any], *, side: str) -> Decimal | None:
     prices = []
-    for level in levels:
-        price = _safe_decimal(getattr(level, "price", None))
-        if price is None and isinstance(level, dict):
-            price = _safe_decimal(level.get("price"))
-        if price is not None:
-            prices.append(price)
+    if isinstance(levels, dict):
+        for key in levels.keys():
+            price = _safe_decimal(key)
+            if price is not None:
+                prices.append(price)
+    else:
+        for level in levels:
+            price = _safe_decimal(getattr(level, "price", None))
+            if price is None and isinstance(level, dict):
+                price = _safe_decimal(level.get("price"))
+            if price is not None:
+                prices.append(price)
 
     if not prices:
         return None
@@ -114,86 +177,103 @@ def _top_of_book_from_levels(levels: list[Any], *, side: str) -> Decimal | None:
     raise ValueError(f"Unsupported book side: {side}")
 
 
-def _derive_signer_address(private_key: str) -> str | None:
-    try:
-        return str(Web3().eth.account.from_key(private_key).address)
-    except Exception as exc:
-        logger.warning("Failed to derive signer address (%s)", redact_error_detail(exc))
-        return None
 
 
-def _fetch_contract_code_hex(rpc_url: str, address: str) -> str:
-    provider = Web3.HTTPProvider(rpc_url)
-    w3 = Web3(provider)
-    checksum = Web3.to_checksum_address(address)
-    return str(w3.eth.get_code(checksum).hex())
 
+class _RawBook:
+    """Minimal book object returned by the HTTP fallback so gateway attribute access works."""
+    __slots__ = ("bids", "asks", "tick_size", "min_order_size", "neg_risk")
 
-def _classify_wallet_signature_type(
-    *,
-    signer_address: str | None,
-    funder_address: str,
-    funder_has_code: bool,
-) -> tuple[SignatureType, str]:
-    signer = str(signer_address or "").strip().lower()
-    funder = str(funder_address or "").strip().lower()
-
-    if signer and funder and signer == funder:
-        return (SignatureType.EOA, "EOA")
-    if funder_has_code:
-        return (SignatureType.GNOSIS_SAFE, "GNOSIS_SAFE")
-    if signer and funder and signer != funder:
-        return (SignatureType.POLY_PROXY, "POLY_PROXY")
-    return (SignatureType.EOA, "EOA")
-
-
-async def detect_wallet_signature_type(wallet_config: WalletConfig) -> tuple[SignatureType, str, str | None]:
-    signer_address = _derive_signer_address(wallet_config.private_key)
-    funder_address = str(wallet_config.funder_address or "").strip()
-    funder_has_code = False
-
-    if signer_address and funder_address and signer_address.lower() != funder_address.lower():
-        try:
-            code_hex = await asyncio.to_thread(
-                _fetch_contract_code_hex,
-                wallet_config.polygon_rpc_url,
-                funder_address,
-            )
-            funder_has_code = bool(code_hex and code_hex != "0x")
-        except Exception as exc:
-            logger.warning(
-                "Wallet type RPC probe failed (%s)",
-                redact_error_detail(exc),
-            )
-
-    signature_type, wallet_type = _classify_wallet_signature_type(
-        signer_address=signer_address,
-        funder_address=funder_address,
-        funder_has_code=funder_has_code,
-    )
-    return (signature_type, wallet_type, signer_address)
+    def __init__(
+        self,
+        bids: list,
+        asks: list,
+        *,
+        tick_size: object | None = None,
+        min_order_size: object | None = None,
+        neg_risk: object | None = None,
+    ) -> None:
+        self.bids = bids
+        self.asks = asks
+        self.tick_size = tick_size
+        self.min_order_size = min_order_size
+        self.neg_risk = bool(neg_risk) if neg_risk is not None else False
 
 
 class ClobClientWrapper:
-    def __init__(self, client: ClobClient, wallet_config: WalletConfig):
+    def __init__(
+        self,
+        client: ClobClient,
+        wallet_config: WalletConfig,
+        api_creds: Any | None = None,
+    ):
         self.client = client
         self.wallet_config = wallet_config
+        self.api_creds = api_creds
         self.signature_type = int(wallet_config.signature_type)
         self.proxy_wallet = wallet_config.funder_address
-        # Cache: asset -> (MarketMeta, expiry_timestamp)
         self._market_meta_cache: dict[str, tuple[MarketMeta, float]] = {}
 
     async def get_order_book(self, asset: str) -> Any:
+        http_result = await self._http_fallback_orderbook(asset)
+        if http_result is not None:
+            return http_result
+        # SDK last resort only
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, lambda: self.client.get_order_book(asset))
+        try:
+            return await loop.run_in_executor(None, lambda: self.client.get_order_book(asset))
+        except Exception as exc:
+            logger.warning("SDK book fetch failed for %s: %s", asset, redact_error_detail(exc))
+            return _RawBook(bids=[], asks=[])
 
-    async def get_market_meta(self, asset: str) -> MarketMeta:
-        cached = self._market_meta_cache.get(asset)
-        if cached:
-            meta, expiry = cached
-            if time.monotonic() < expiry:
-                return meta
-            del self._market_meta_cache[asset]
+    async def _http_fallback_orderbook(self, asset: str) -> "_RawBook | None":
+        url = f"{CLOB_HTTP_URL}/book?token_id={asset}"
+        session = _get_session()
+        try:
+            async with session.get(url) as resp:
+                if resp.status != 200:
+                    log_api_response(
+                        logger,
+                        method="GET",
+                        url=url,
+                        status=resp.status,
+                        error=f"status_code={resp.status}",
+                    )
+                    return None
+                data = await resp.json()
+                bids = data.get("bids") or []
+                asks = data.get("asks") or []
+                log_api_response(logger, method="GET", url=url, status=resp.status, data=data)
+                return _RawBook(
+                    bids=bids,
+                    asks=asks,
+                    tick_size=data.get("tick_size") or data.get("minimum_tick_size"),
+                    min_order_size=(
+                        data.get("min_order_size")
+                        or data.get("minimum_order_size")
+                        or data.get("order_min_size")
+                    ),
+                    neg_risk=data.get("neg_risk", False),
+                )
+        except Exception as exc:
+            logger.warning("HTTP fallback (book) failed for %s: %s", asset, redact_error_detail(exc))
+            return None
+
+    async def get_market_meta(self, asset: str, refresh: bool = False) -> MarketMeta:
+        if refresh:
+            self._market_meta_cache.pop(asset, None)
+        else:
+            cached = self._market_meta_cache.get(asset)
+            if cached:
+                meta, expiry = cached
+                if time.monotonic() < expiry:
+                    return meta
+                # ``.pop(..., None)`` rather than ``del`` so two
+                # concurrent coroutines that both observed the expired
+                # entry cannot race on the same delete and raise
+                # ``KeyError``. The asyncio.gather call below means
+                # the race is real, not theoretical.
+                self._market_meta_cache.pop(asset, None)
 
         loop = asyncio.get_running_loop()
 
@@ -233,6 +313,7 @@ class ClobClientWrapper:
                 best_bid=_top_of_book_from_levels(bids, side="bid"),
                 best_ask=_top_of_book_from_levels(asks, side="ask"),
             )
+
             ttl = _META_CACHE_TTL_THIN if _is_thin_or_empty_book(meta.best_bid, meta.best_ask) else _META_CACHE_TTL_GOOD
             self._market_meta_cache[asset] = (meta, time.monotonic() + ttl)
             return meta
@@ -243,39 +324,62 @@ class ClobClientWrapper:
             redact_error_detail(ob_result),
         )
 
-        # HTTP fallback for resiliency.
+        http_meta = await self._http_fallback_market_meta(asset, tick_size_v2, neg_risk_v2)
+        if http_meta is not None:
+            return http_meta
+
+        raise RuntimeError(f"Failed to fetch market metadata for {asset}: SDK error and HTTP fallback failed")
+
+    async def _http_fallback_market_meta(
+        self, asset: str, tick_size_v2: Decimal | None, neg_risk_v2: bool | None,
+    ) -> MarketMeta | None:
         url = f"{CLOB_HTTP_URL}/book?token_id={asset}"
         session = _get_session()
-        async with session.get(url) as resp:
-            if resp.status != 200:
-                log_api_response(
-                    logger,
-                    method="GET",
-                    url=url,
-                    status=resp.status,
-                    error=f"status_code={resp.status}",
+        try:
+            async with session.get(url) as resp:
+                if resp.status != 200:
+                    log_api_response(
+                        logger,
+                        method="GET",
+                        url=url,
+                        status=resp.status,
+                        error=f"status_code={resp.status}",
+                    )
+                    return None
+                data = await resp.json()
+
+                bids = (data.get("bids") or [])
+                asks = (data.get("asks") or [])
+                meta = MarketMeta(
+                    token_id=asset,
+                    tick_size=tick_size_v2 if tick_size_v2 is not None else Decimal(str(data.get("tick_size", "0.01"))),
+                    min_order_size=Decimal(str(data.get("min_order_size", "0"))),
+                    neg_risk=neg_risk_v2 if neg_risk_v2 is not None else bool(data.get("neg_risk", False)),
+                    best_bid=_top_of_book_from_levels(bids, side="bid"),
+                    best_ask=_top_of_book_from_levels(asks, side="ask"),
                 )
-                raise RuntimeError(f"Failed to fetch market metadata for {asset}: HTTP {resp.status}")
-            data = await resp.json()
+                ttl = _META_CACHE_TTL_THIN if _is_thin_or_empty_book(meta.best_bid, meta.best_ask) else _META_CACHE_TTL_GOOD
+                self._market_meta_cache[asset] = (meta, time.monotonic() + ttl)
+                log_api_response(logger, method="GET", url=url, status=resp.status, data=data)
+                return meta
+        except Exception as exc:
+            logger.warning("HTTP fallback failed for %s: %s", asset, redact_error_detail(exc))
+            return None
 
-            bids = (data.get("bids") or [])
-            asks = (data.get("asks") or [])
-            meta = MarketMeta(
-                token_id=asset,
-                tick_size=tick_size_v2 if tick_size_v2 is not None else Decimal(str(data.get("tick_size", "0.01"))),
-                min_order_size=Decimal(str(data.get("min_order_size", "0"))),
-                neg_risk=neg_risk_v2 if neg_risk_v2 is not None else bool(data.get("neg_risk", False)),
-                best_bid=_top_of_book_from_levels(bids, side="bid"),
-                best_ask=_top_of_book_from_levels(asks, side="ask"),
-            )
-            ttl = _META_CACHE_TTL_THIN if _is_thin_or_empty_book(meta.best_bid, meta.best_ask) else _META_CACHE_TTL_GOOD
-            self._market_meta_cache[asset] = (meta, time.monotonic() + ttl)
-            log_api_response(logger, method="GET", url=url, status=resp.status, data=data)
-            return meta
-
-    async def get_min_order_size(self, asset: str) -> float:
+    async def get_min_order_size(self, asset: str) -> Decimal:
+        # Return Decimal. ``MarketMeta.min_order_size`` is already
+        # Decimal; the previous ``float()`` cast lost precision at the
+        # boundary and violated CLAUDE.md "no floats in sizing logic".
+        # No callers exist today (grep clean), so this is a free type
+        # tightening.
         meta = await self.get_market_meta(asset)
-        return float(meta.min_order_size)
+        return meta.min_order_size
+
+    def get_orders(self, *args: Any, **kwargs: Any) -> Any:
+        return self.client.get_orders(*args, **kwargs)
+
+    def cancel_orders(self, order_ids: list[str]) -> Any:
+        return self.client.cancel_orders(order_ids)
 
     async def get_price(self, asset: str, side: str):
         try:
@@ -284,6 +388,21 @@ class ClobClientWrapper:
             session = _get_session()
             async with session.get(price_url) as resp:
                 data = await resp.json()
+                if resp.status == 404:
+                    # Per Polymarket OpenAPI: 404 = "No orderbook exists for
+                    # the requested token id". Terminal signal — token is
+                    # retired / market resolved. Distinct from 5xx (transient
+                    # venue unhealth) which still returns None. Log once at
+                    # debug, no Rich error panel; risk monitor handles the
+                    # mark_resolved side-effect.
+                    log_api_response(
+                        logger,
+                        method="GET",
+                        url=price_url,
+                        status=resp.status,
+                        error="token_not_found",
+                    )
+                    return PRICE_TOKEN_NOT_FOUND
                 if resp.status != 200:
                     log_api_response(
                         logger,
@@ -333,7 +452,15 @@ class ClobClientWrapper:
         neg_risk: bool,
         order_type: OrderType = OrderType.FOK,
     ):
-        quantized_price = float(quantize_to_tick(Decimal(str(max_price)), Decimal(tick_size), side=side))
+        # INF-05 (CLAUDE.md no-float-money): keep the side-aware tick
+        # quantization (BUY→CEILING, SELL→FLOOR) so the order price never
+        # rounds against us at the venue, and route the final Decimal→float
+        # conversion through ``quantize_and_convert_to_float`` so the
+        # sanctioned epsilon guard fires at the SDK boundary instead of
+        # falling out via raw ``float(...)``.
+        quantized_d = quantize_to_tick(Decimal(str(max_price)), Decimal(tick_size), side=side)
+        from utils.numeric import quantize_and_convert_to_float
+        quantized_price = quantize_and_convert_to_float(quantized_d, tick_size)
         order_args = MarketOrderArgs(
             token_id=token_id,
             amount=amount,
@@ -357,12 +484,12 @@ class ClobClientWrapper:
             loop = asyncio.get_running_loop()
             response = await loop.run_in_executor(
                 None,
-                lambda: self.client.post_order(signed_order, orderType=order_type),
+                lambda: self.client.post_order(signed_order, order_type=order_type),
             )
             result = {
                 "success": True,
                 "data": response,
-                "orderID": response.get("orderID") if isinstance(response, dict) else None,
+                "orderID": _response_order_id(response),
                 "status": response.get("status") if isinstance(response, dict) else None,
             }
             log_api_response(
@@ -376,7 +503,7 @@ class ClobClientWrapper:
             return result
         except Exception as exc:
             redacted_error = redact_error_detail(exc)
-            # Pull the raw error body from the CLOB client if present. py_clob_client
+            # Pull the raw error body from the CLOB client if present. py-clob-client-v2
             # attaches the upstream response on `.error_msg` for HTTPException.
             # This is NOT a secret (it's the CLOB's own rejection reason like
             # "Size (0.13) lower than the minimum: 5") so we surface it to the
@@ -391,10 +518,20 @@ class ClobClientWrapper:
 
             # Build a human-friendly error code + detail for the TUI.
             friendly_error = redacted_error
+            terminal_status = "failed"
             if raw_body:
                 # Heuristic: surface common CLOB rejections with their key line.
                 lowered = raw_body.lower()
-                if "lower than the minimum" in lowered or "minimum:" in lowered:
+                if "no orders found to match with fak order" in lowered:
+                    friendly_error = f"fak_no_match | {raw_body}"
+                    terminal_status = "cancelled"
+                elif "fak orders are partially filled or killed if no match is found" in lowered:
+                    friendly_error = f"fak_no_match | {raw_body}"
+                    terminal_status = "cancelled"
+                elif "order couldn't be fully filled" in lowered:
+                    friendly_error = f"order_not_fully_fillable | {raw_body}"
+                    terminal_status = "cancelled"
+                elif "lower than the minimum" in lowered or "minimum:" in lowered:
                     friendly_error = f"size_below_min | {raw_body}"
                 elif "not enough balance" in lowered or "allowance" in lowered:
                     friendly_error = f"insufficient_balance | {raw_body}"
@@ -442,6 +579,9 @@ class ClobClientWrapper:
                     "invalid order",
                     "invalid payload",
                     "crosses the book",
+                    "no orders found to match with fak order",
+                    "fak orders are partially filled or killed if no match is found",
+                    "order couldn't be fully filled",
                     "banned",
                     "closed only",
                     "not enough balance",
@@ -451,6 +591,8 @@ class ClobClientWrapper:
             )
             return {
                 "success": False,
+                "status": terminal_status,
+                "orderID": _error_body_order_id(raw_body),
                 "error": friendly_error,
                 "raw_error": raw_body,
                 "ambiguous_post_failure": is_ambiguous,
@@ -470,7 +612,7 @@ class ClobClientWrapper:
             result = {
                 "success": True,
                 "data": response,
-                "orderID": response.get("orderID") if isinstance(response, dict) else None,
+                "orderID": _response_order_id(response),
                 "status": response.get("status") if isinstance(response, dict) else None,
             }
             log_api_response(
@@ -508,11 +650,17 @@ async def create_clob_client(
     wallet_config: WalletConfig | None = None,
     private_key: str | None = None,
     proxy_wallet: str | None = None,
+    config: Any = None,
 ):
-    if not ENV.get("CLOB_V2_READY", False):
+    # CLOB V2 gate — typed `AppConfig.clob.clob_v2_ready` is the only
+    # source of truth; falls back to fail-closed False when no config
+    # is passed. Production paths thread `config=app_config` from
+    # `app.py:create_clob_client(wallet_config=..., config=app_config)`.
+    clob_v2_ready = bool(getattr(getattr(config, "clob", None), "clob_v2_ready", False))
+    if not clob_v2_ready:
         raise RuntimeError(
-            "CLOB V2 migration not finalized — CLOB_V2_READY is not set. "
-            "Set CLOB_V2_READY=true once smoke tests pass "
+            "CLOB V2 migration not finalized — config.clob.clob_v2_ready is False. "
+            "Set CLOB_V2_READY=true in your .env once smoke tests pass "
             "(see docs/v2_operator_runbook.md)."
         )
     host = CLOB_HTTP_URL
@@ -552,7 +700,11 @@ async def create_clob_client(
         signature_type=int(runtime_cfg.signature_type),
         funder=(runtime_cfg.funder_address if runtime_cfg.signature_type != SignatureType.EOA else None),
     )
-    user_api_creds = client.create_or_derive_api_creds()
+    # L1 signer client -> derive existing L2/HMAC credentials -> enable L2.
+    # Avoid ``create_or_derive_api_key()`` because the SDK tries
+    # ``create_api_key()`` first and logs a noisy non-fatal 400 when a key
+    # already exists.
+    user_api_creds = client.derive_api_key()
     client.set_api_creds(user_api_creds)
     logger.info(
         "CLOB client ready",
@@ -574,9 +726,22 @@ async def create_clob_client(
 
     funder_or_signer = runtime_cfg.funder_address or signer_address or ""
     if funder_or_signer:
+        # Addresses must be set in typed config (no defaults). The
+        # collateral check fail-closes on the historically wrong defaults
+        # (Synthetix SNX masquerading as pUSD). Operator-supplied values
+        # are validated by check_collateral_readiness itself.
+        _network = getattr(config, "network", None) if config is not None else None
+        _pusd_addr = (
+            (getattr(_network, "pusd_contract_address", "") if _network else "")
+            or (getattr(_network, "collateral_contract_address", "") if _network else "")
+            or ""
+        )
+        _ctf_addr = (getattr(_network, "ctf_exchange_v2_address", "") if _network else "") or ""
         collateral_status = await check_collateral_readiness(
             wallet_address=funder_or_signer,
             rpc_url=runtime_cfg.polygon_rpc_url,
+            pusd_address=_pusd_addr,
+            ctf_exchange_address=_ctf_addr,
         )
         if not collateral_status.ready:
             reasons = "; ".join(collateral_status.failures)
@@ -589,4 +754,8 @@ async def create_clob_client(
             collateral_status.pusd_balance,
         )
 
-    return ClobClientWrapper(client, wallet_config=runtime_cfg)
+    return ClobClientWrapper(
+        client,
+        wallet_config=runtime_cfg,
+        api_creds=user_api_creds,
+    )

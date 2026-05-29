@@ -1,6 +1,6 @@
 """Tests for v3.1 features: advanced exits, trader discovery, leader scoring integration.
 
-These tests mock out heavy dependencies (py_clob_client, web3) so they run in
+These tests mock out heavy dependencies (py_clob_client_v2, web3) so they run in
 environments without the full Polymarket SDK installed.
 """
 
@@ -10,9 +10,29 @@ import types
 import unittest
 import importlib.abc
 import importlib.machinery
-from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
+
+
+def _scorer_config() -> SimpleNamespace:
+    return SimpleNamespace(
+        leader=SimpleNamespace(
+            leader_score_balance_target_usdc=500.0,
+            leader_score_pnl_bonus_cap=0.1,
+            leader_score_activity_target=8,
+            leader_score_weight_balance=0.35,
+            leader_score_weight_analytics=0.45,
+            leader_score_weight_activity=0.20,
+            leader_score_floor=0.10,
+        ),
+        sizing=SimpleNamespace(
+            enable_trust_size_multipliers=True,
+            trust_size_multiplier_min=0.50,
+            trust_size_multiplier_max=1.25,
+        ),
+    )
 
 
 class _AutoMockModule(types.ModuleType):
@@ -46,7 +66,7 @@ class _MockFinder(importlib.abc.MetaPathFinder):
 
     _ALLOWED = frozenset((
         # External / heavy deps we don't want to require in unit tests.
-        "py_clob_client", "py_order_utils", "web3",
+        "py_clob_client_v2", "py_order_utils", "web3",
         "dotenv", "aiohttp", "motor", "colorama",
         "eth_account", "hexbytes",
     ))
@@ -318,44 +338,52 @@ class TestPositionExitSystem(unittest.TestCase):
 
 class TestTraderDiscoveryScoring(unittest.TestCase):
 
-    def test_score_high_pnl(self):
-        from services.traderDiscoveryService import TraderDiscoveryService, TraderProfile
-        ds = TraderDiscoveryService()
-        p = TraderProfile(
-            wallet="0x1234567890abcdef1234567890abcdef12345678",
-            overall_gain=5_000_000, win_amount=6_000_000, loss_amount=-1_000_000,
-            win_rate=0.73, total_positions=200, active_positions=10,
-            event_count=80, total_current_value=50_000,
+    def test_falcon_quality_high_profile(self):
+        from services.discovery.candidate_scoring import falcon_quality_score
+
+        candidate = SimpleNamespace(
+            h_score=90,
+            roi_15d=125,
+            win_rate_15d=73,
+            sharpe_15d=4,
+            trajectory="improving",
         )
-        score = ds._score_trader(p)
+        score = falcon_quality_score(candidate)
         assert score > 0.5
         assert score <= 1.0
 
-    def test_score_loser(self):
-        from services.traderDiscoveryService import TraderDiscoveryService, TraderProfile
-        ds = TraderDiscoveryService()
-        p = TraderProfile(
-            wallet="0xabcdefabcdefabcdefabcdefabcdefabcdefabcd",
-            overall_gain=-500, win_amount=100, loss_amount=-600,
-            win_rate=0.30, total_positions=5, event_count=3,
-        )
-        self.assertLess(ds._score_trader(p), 0.3)
+    def test_falcon_quality_weak_profile(self):
+        from services.discovery.candidate_scoring import falcon_quality_score
 
-    def test_score_empty(self):
-        from services.traderDiscoveryService import TraderDiscoveryService, TraderProfile
-        ds = TraderDiscoveryService()
-        p = TraderProfile(wallet="0x0000000000000000000000000000000000000000")
-        assert ds._score_trader(p) == pytest.approx(0.0, abs=0.1)
+        candidate = SimpleNamespace(
+            h_score=5,
+            roi_15d=-50,
+            win_rate_15d=30,
+            sharpe_15d=-1,
+            trajectory="declining",
+        )
+        self.assertLess(falcon_quality_score(candidate), 0.3)
+
+    def test_copyability_score_empty(self):
+        from services.discovery.candidate_scoring import copyability_score
+
+        replay = SimpleNamespace(
+            copyable_signal_ratio=0.0,
+            copyable_notional_ratio=0.0,
+        )
+        assert copyability_score(replay) == pytest.approx(0.0)
 
     def test_pct_win_rate_normalization(self):
-        from services.traderDiscoveryService import TraderDiscoveryService, TraderProfile
-        ds = TraderDiscoveryService()
-        p = TraderProfile(
-            wallet="0x1234567890abcdef1234567890abcdef12345678",
-            overall_gain=100_000, win_amount=200_000, loss_amount=-100_000,
-            win_rate=73.3, total_positions=50, event_count=30,
+        from services.discovery.candidate_scoring import falcon_quality_score
+
+        candidate = SimpleNamespace(
+            h_score=50,
+            roi_15d=10,
+            win_rate_15d=73.3,
+            sharpe_15d=1,
+            trajectory="stable",
         )
-        assert ds._score_trader(p) > 0.3
+        assert falcon_quality_score(candidate) > 0.3
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -380,7 +408,7 @@ class TestLeaderScoringIntegration(unittest.TestCase):
 
     def test_scoring_without_discovery(self):
         import services.leaderScoringService as ls_mod
-        scorer = ls_mod.LeaderScoringService(discovery_service=None)
+        scorer = ls_mod.LeaderScoringService(discovery_service=None, config=_scorer_config())
         result = scorer.score_leader(
             "0x1234567890abcdef1234567890abcdef12345678",
             leader_balance=300.0,
@@ -404,7 +432,7 @@ class TestLeaderScoringIntegration(unittest.TestCase):
         mock_disc = MagicMock()
         mock_disc.get_cached_profile.return_value = mock_profile
 
-        scorer = ls_mod.LeaderScoringService(discovery_service=mock_disc)
+        scorer = ls_mod.LeaderScoringService(discovery_service=mock_disc, config=_scorer_config())
         result = scorer.score_leader(
             "0x1234567890abcdef1234567890abcdef12345678",
             leader_balance=300.0,
@@ -414,7 +442,7 @@ class TestLeaderScoringIntegration(unittest.TestCase):
 
     def test_trust_multiplier(self):
         import services.leaderScoringService as ls_mod
-        scorer = ls_mod.LeaderScoringService()
+        scorer = ls_mod.LeaderScoringService(config=_scorer_config())
         assert scorer.trust_multiplier(0.0) == pytest.approx(0.50)
         assert scorer.trust_multiplier(1.0) == pytest.approx(1.25)
         assert scorer.trust_multiplier(0.5) == pytest.approx(0.875)

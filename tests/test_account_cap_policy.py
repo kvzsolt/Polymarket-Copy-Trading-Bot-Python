@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-import pytest
 
 from services.riskEngine import (
+    AccountCapPolicy,
     compute_hard_cap,
     compute_reserve_cash,
     compute_soft_cap,
@@ -16,29 +16,59 @@ from services.riskEngine import (
 )
 
 
+def _policy(
+    *,
+    reserve_pct: float = 0.12,
+    reserve_floor: float = 7,
+    hard_cap_pct: float = 0.15,
+    hard_cap_ceiling: float = 8,
+    max_open_positions: int = 12,
+    allow_partial_exits: bool = True,
+    allow_pyramiding: bool = False,
+    max_adds_per_position: int = 1,
+    base_min_score: float = 0.22,
+    strategy_min_notional: float = 0.00001,
+    dynamic_threshold_raise: bool = False,
+) -> AccountCapPolicy:
+    """Build an AccountCapPolicy directly with the desired overrides.
+
+    Replaces the previous ``monkeypatch.setattr(re, "ENV", {...})`` +
+    ``re.get_policy("ignored")`` pattern (legacy-kill #77 removed the
+    ENV-fallback path; production builds the policy from typed AppConfig).
+    """
+    return AccountCapPolicy(
+        name="account_cap",
+        reserve_pct=Decimal(str(reserve_pct)),
+        reserve_floor=Decimal(str(reserve_floor)),
+        hard_cap_pct=Decimal(str(hard_cap_pct)),
+        hard_cap_ceiling=Decimal(str(hard_cap_ceiling)),
+        max_open_positions=max_open_positions,
+        allow_partial_exits=allow_partial_exits,
+        allow_pyramiding=allow_pyramiding,
+        max_adds_per_position=max_adds_per_position,
+        base_min_score=Decimal(str(base_min_score)),
+        strategy_min_notional=Decimal(str(strategy_min_notional)),
+        dynamic_threshold_raise=dynamic_threshold_raise,
+    )
+
+
 class TestAccountCapPolicySelection:
     def test_policy_name_for_equity_always_returns_single_policy(self):
         assert policy_name_for_equity(Decimal("25")) == "account_cap"
         assert policy_name_for_equity(Decimal("250")) == "account_cap"
         assert policy_name_for_equity(Decimal("50000")) == "account_cap"
 
-    def test_get_policy_ignores_legacy_name_and_returns_active_policy(self, monkeypatch):
-        import services.riskEngine as re
-
-        monkeypatch.setattr(
-            re,
-            "ENV",
-            {
-                **re.ENV,
-                "BALANCE_POLICY_RESERVE_PCT": 0.10,
-                "BALANCE_POLICY_RESERVE_FLOOR": 6,
-                "BALANCE_POLICY_HARD_CAP_PCT": 0.20,
-                "BALANCE_POLICY_HARD_CAP_CEILING": 9,
-                "BALANCE_POLICY_MAX_OPEN_POSITIONS": 4,
-                "BALANCE_POLICY_ALLOW_PARTIAL_EXITS": False,
-            },
+    def test_get_policy_ignores_legacy_name_and_returns_active_policy(self):
+        # Build the policy directly with the desired overrides; previously
+        # patched via ``re.ENV`` before the legacy-kill slice.
+        policy = _policy(
+            reserve_pct=0.10,
+            reserve_floor=6,
+            hard_cap_pct=0.20,
+            hard_cap_ceiling=9,
+            max_open_positions=4,
+            allow_partial_exits=False,
         )
-        policy = re.get_policy("micro")
         assert policy.name == "account_cap"
         assert policy.reserve_floor == Decimal("6")
         assert policy.max_open_positions == 4
@@ -46,34 +76,22 @@ class TestAccountCapPolicySelection:
 
 
 class TestComputeReserveCash:
-    def test_reserve_floor_wins(self, monkeypatch):
-        import services.riskEngine as re
-
-        monkeypatch.setattr(re, "ENV", {**re.ENV, "BALANCE_POLICY_RESERVE_PCT": 0.10, "BALANCE_POLICY_RESERVE_FLOOR": 7})
-        policy = re.get_policy("ignored")
+    def test_reserve_floor_wins(self):
+        policy = _policy(reserve_pct=0.10, reserve_floor=7)
         assert compute_reserve_cash(Decimal("20"), policy) == Decimal("7")
 
-    def test_reserve_pct_wins(self, monkeypatch):
-        import services.riskEngine as re
-
-        monkeypatch.setattr(re, "ENV", {**re.ENV, "BALANCE_POLICY_RESERVE_PCT": 0.20, "BALANCE_POLICY_RESERVE_FLOOR": 5})
-        policy = re.get_policy("ignored")
+    def test_reserve_pct_wins(self):
+        policy = _policy(reserve_pct=0.20, reserve_floor=5)
         assert compute_reserve_cash(Decimal("50"), policy) == Decimal("10")
 
 
 class TestComputeHardCap:
-    def test_hard_cap_ceiling_wins(self, monkeypatch):
-        import services.riskEngine as re
-
-        monkeypatch.setattr(re, "ENV", {**re.ENV, "BALANCE_POLICY_HARD_CAP_PCT": 0.18, "BALANCE_POLICY_HARD_CAP_CEILING": 4.5})
-        policy = re.get_policy("ignored")
+    def test_hard_cap_ceiling_wins(self):
+        policy = _policy(hard_cap_pct=0.18, hard_cap_ceiling=4.5)
         assert compute_hard_cap(Decimal("50"), Decimal("40"), policy) == Decimal("4.5")
 
-    def test_hard_cap_tradable_wins(self, monkeypatch):
-        import services.riskEngine as re
-
-        monkeypatch.setattr(re, "ENV", {**re.ENV, "BALANCE_POLICY_HARD_CAP_PCT": 0.18, "BALANCE_POLICY_HARD_CAP_CEILING": 4.5})
-        policy = re.get_policy("ignored")
+    def test_hard_cap_tradable_wins(self):
+        policy = _policy(hard_cap_pct=0.18, hard_cap_ceiling=4.5)
         assert compute_hard_cap(Decimal("50"), Decimal("3"), policy) == Decimal("3")
 
 
@@ -92,11 +110,8 @@ class TestComputeSoftCap:
 
 
 class TestHeadroomForBuy:
-    def test_max_positions_blocks(self, monkeypatch):
-        import services.riskEngine as re
-
-        monkeypatch.setattr(re, "ENV", {**re.ENV, "BALANCE_POLICY_MAX_OPEN_POSITIONS": 3})
-        policy = re.get_policy("ignored")
+    def test_max_positions_blocks(self):
+        policy = _policy(max_open_positions=3)
         h = headroom_for_buy(
             equity_usdc=Decimal("30"),
             free_cash_usdc=Decimal("25"),
@@ -134,11 +149,8 @@ class TestHeadroomForBuy:
         assert not h.allow
         assert h.reason == "no_buy_headroom"
 
-    def test_no_tradable_cash(self, monkeypatch):
-        import services.riskEngine as re
-
-        monkeypatch.setattr(re, "ENV", {**re.ENV, "BALANCE_POLICY_RESERVE_PCT": 0.10, "BALANCE_POLICY_RESERVE_FLOOR": 5})
-        policy = re.get_policy("ignored")
+    def test_no_tradable_cash(self):
+        policy = _policy(reserve_pct=0.10, reserve_floor=5)
         h = headroom_for_buy(
             equity_usdc=Decimal("20"),
             free_cash_usdc=Decimal("4"),
@@ -148,21 +160,13 @@ class TestHeadroomForBuy:
         assert not h.allow
         assert h.reason == "no_tradable_cash_after_reserve"
 
-    def test_allows_small_buy(self, monkeypatch):
-        import services.riskEngine as re
-
-        monkeypatch.setattr(
-            re,
-            "ENV",
-            {
-                **re.ENV,
-                "BALANCE_POLICY_RESERVE_PCT": 0.10,
-                "BALANCE_POLICY_RESERVE_FLOOR": 5,
-                "BALANCE_POLICY_HARD_CAP_PCT": 0.18,
-                "BALANCE_POLICY_HARD_CAP_CEILING": 4.5,
-            },
+    def test_allows_small_buy(self):
+        policy = _policy(
+            reserve_pct=0.10,
+            reserve_floor=5,
+            hard_cap_pct=0.18,
+            hard_cap_ceiling=4.5,
         )
-        policy = re.get_policy("ignored")
         h = headroom_for_buy(
             equity_usdc=Decimal("30"),
             free_cash_usdc=Decimal("25"),
@@ -222,39 +226,35 @@ class TestWorstPriceMinSize:
 # ---------------------------------------------------------------------------
 
 class TestIdempotencyKey:
-    def test_different_signal_ids_produce_different_keys(self):
-        from services.executionService import ExecutionRequest, _idempotency_key
+    """Post-sizing idempotency keys. The pre-sizing ``_idempotency_key``
+    helper was deleted in the legacy-kill slice (#77, commit 5868dc2);
+    the effective key is the only contract now.
+    """
 
-        req1 = ExecutionRequest(
-            user_id="u1", leader_id="l1", token_id="t1",
-            side="BUY", amount=Decimal("2.5"),
-            max_slippage_bps=200, reason="copy_trade",
-            signal_id="signal_aaa",
+    def test_different_signal_ids_produce_different_keys(self):
+        from services.executionService import _effective_idempotency_key
+
+        k1 = _effective_idempotency_key(
+            user="u1", condition_id="c1", token_id="t1", side="BUY",
+            effective_size=Decimal("2.5"), effective_price=Decimal("0.50"),
+            tick_size=Decimal("0.01"), intent_id="signal_aaa", policy_version="",
         )
-        req2 = ExecutionRequest(
-            user_id="u1", leader_id="l1", token_id="t1",
-            side="BUY", amount=Decimal("2.5"),
-            max_slippage_bps=200, reason="copy_trade",
-            signal_id="signal_bbb",
+        k2 = _effective_idempotency_key(
+            user="u1", condition_id="c1", token_id="t1", side="BUY",
+            effective_size=Decimal("2.5"), effective_price=Decimal("0.50"),
+            tick_size=Decimal("0.01"), intent_id="signal_bbb", policy_version="",
         )
-        assert _idempotency_key(req1) != _idempotency_key(req2)
+        assert k1 != k2
 
     def test_same_signal_same_key(self):
-        from services.executionService import ExecutionRequest, _idempotency_key
+        from services.executionService import _effective_idempotency_key
 
-        req1 = ExecutionRequest(
-            user_id="u1", leader_id="l1", token_id="t1",
-            side="BUY", amount=Decimal("2.5"),
-            max_slippage_bps=200, reason="copy_trade",
-            signal_id="signal_aaa",
+        kwargs = dict(
+            user="u1", condition_id="c1", token_id="t1", side="BUY",
+            effective_size=Decimal("2.5"), effective_price=Decimal("0.50"),
+            tick_size=Decimal("0.01"), intent_id="signal_aaa", policy_version="",
         )
-        req2 = ExecutionRequest(
-            user_id="u1", leader_id="l1", token_id="t1",
-            side="BUY", amount=Decimal("2.5"),
-            max_slippage_bps=200, reason="copy_trade",
-            signal_id="signal_aaa",
-        )
-        assert _idempotency_key(req1) == _idempotency_key(req2)
+        assert _effective_idempotency_key(**kwargs) == _effective_idempotency_key(**kwargs)
 
 
 # ---------------------------------------------------------------------------
