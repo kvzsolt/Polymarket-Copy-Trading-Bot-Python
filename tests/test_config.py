@@ -106,6 +106,34 @@ class TestHappyPath:
         cfg = load_config(valid_env)
         assert cfg.discovery.min_active_positions == 1
 
+    def test_auto_trader_detection_config_defaults(
+        self,
+        valid_env: dict[str, str],
+    ) -> None:
+        cfg = load_config(valid_env)
+        assert cfg.discovery.allow_auto_trader_detection is False
+        assert cfg.discovery.max_auto_traders_count == 2
+
+    def test_auto_trader_detection_config_loads_env(
+        self,
+        valid_env: dict[str, str],
+    ) -> None:
+        valid_env["ALLOW_AUTO_TRADER_DETECTION"] = "true"
+        valid_env["MAX_AUTO_TRADERS_COUNT"] = "3"
+        cfg = load_config(valid_env)
+        assert cfg.discovery.allow_auto_trader_detection is True
+        assert cfg.discovery.max_auto_traders_count == 3
+
+    def test_auto_trader_detection_config_clamps_to_auto_discover_cap(
+        self,
+        valid_env: dict[str, str],
+    ) -> None:
+        valid_env["ALLOW_AUTO_TRADER_DETECTION"] = "true"
+        valid_env["MAX_AUTO_TRADERS_COUNT"] = "99"
+        valid_env["AUTO_DISCOVER_MAX_LEADERS"] = "4"
+        cfg = load_config(valid_env)
+        assert cfg.discovery.max_auto_traders_count == 4
+
     def test_raw_env_preserved_for_transition_excludes_secrets(
         self, valid_env: dict[str, str]
     ) -> None:

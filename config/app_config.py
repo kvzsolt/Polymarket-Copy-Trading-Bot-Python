@@ -22,6 +22,7 @@ Design notes
 
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Mapping
 from decimal import Decimal
@@ -62,6 +63,7 @@ __all__ = [
 
 _ETH_ADDR_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
 _HEX_PRIVATE_KEY_RE = re.compile(r"^0x[0-9a-fA-F]{64}$")
+logger = logging.getLogger("AppConfig")
 
 
 # ---------------------------------------------------------------------------
@@ -540,6 +542,8 @@ class DiscoveryConfig:
     discovery_max_results: int
     discovery_cache_ttl_seconds: float
     multi_user_config_file: str
+    allow_auto_trader_detection: bool = False
+    max_auto_traders_count: int = 2
     falcon_api_url: str = "https://narrative.agent.heisenberg.so/api/v2/semantic/retrieve/parameterized"
     falcon_api_token: str = ""
     falcon_page_size: int = 100
@@ -1087,6 +1091,7 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
     discovery_promote_to_active = configured_promote_to_active or leader_auto
 
     legacy_auto_count = p.int_("AUTO_DISCOVER_TOP_N", "5")
+    auto_discover_max_leaders_raw = p.int_("AUTO_DISCOVER_MAX_LEADERS", "10")
     leader_auto_count_raw = p._strip(
         "LEADER_AUTO_COUNT", p.raw("LEADER_AUTO_COUNT", "")
     )
@@ -1107,7 +1112,7 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         leader_auto_count=auto_discover_top_n,
         auto_discover_leaders=auto_discover_leaders,
         auto_discover_max_leaders=max(
-            p.int_("AUTO_DISCOVER_MAX_LEADERS", "10"), auto_discover_top_n
+            auto_discover_max_leaders_raw, auto_discover_top_n
         ),
         auto_discover_top_n=auto_discover_top_n,
         auto_discover_min_score=p.float_("AUTO_DISCOVER_MIN_SCORE", "0.45"),
@@ -1210,10 +1215,26 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         check_interval=p.int_("NEAR_ONE_EXIT_CHECK_INTERVAL", "5"),
     )
 
+    allow_auto_trader_detection = p.bool_("ALLOW_AUTO_TRADER_DETECTION", False)
+    auto_traders_raw = p.int_("MAX_AUTO_TRADERS_COUNT", "2")
+    auto_traders_cap = max(0, auto_discover_max_leaders_raw)
+    max_auto_traders_count = max(0, min(auto_traders_raw, auto_traders_cap))
+    if allow_auto_trader_detection and max_auto_traders_count <= 0:
+        logger.warning(
+            "auto_trader_detection_config_invalid",
+            extra={
+                "allow_auto_trader_detection": True,
+                "max_auto_traders_count": max_auto_traders_count,
+                "effect": "auto detection cannot select leaders",
+            },
+        )
+
     discovery = DiscoveryConfig(
         enable_trader_discovery=enable_trader_discovery,
         discovery_interval_seconds=p.int_("DISCOVERY_INTERVAL_SECONDS", "3600"),
         discovery_promote_to_active=discovery_promote_to_active,
+        allow_auto_trader_detection=allow_auto_trader_detection,
+        max_auto_traders_count=max_auto_traders_count,
         min_leader_pnl=p.float_("MIN_LEADER_PNL", "1000"),
         min_leader_win_rate=p.float_("MIN_LEADER_WIN_RATE", "0.55"),
         min_leader_positions=p.int_("MIN_LEADER_POSITIONS", "20"),
