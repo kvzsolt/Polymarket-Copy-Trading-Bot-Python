@@ -193,6 +193,80 @@ async def test_expired_reservation_allows_new_reservation():
         assert res2.status == "active"
 
 
+async def _insert_legacy_reservation(pool, intent: OrderIntent, *, expires_at: int):
+    """Write a reservation row under the pre-source_event_id 6-field key,
+    simulating one created by a build that predates that key component."""
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO order_reservations (
+                id, user_id, order_intent_key, condition_id, token_id, side,
+                reason, reserved_usdc, reserved_size, status,
+                created_at, updated_at, expires_at, metadata_json
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'active',$10,$10,$11,'{}'::jsonb)
+            """,
+            "legacy-res-1",
+            intent.key.user_id,
+            intent.key.legacy_stable_key(),
+            intent.key.condition_id,
+            intent.key.token_id,
+            intent.key.side.value,
+            intent.key.reason.value,
+            "5.0",
+            "0",
+            1000,
+            expires_at,
+        )
+
+
+def _new_key_buy_intent(source_event_id: str) -> OrderIntent:
+    return OrderIntent(
+        key=OrderIntentKey(
+            user_id="u1",
+            leader_wallet="0xleader",
+            condition_id="cond1",
+            token_id="1" * 70,
+            side=IntentSide.BUY,
+            reason=IntentReason.COPY_BUY,
+            source_event_id=source_event_id,
+        ),
+        size=Decimal("10"),
+        price=Decimal("0.5"),
+        max_slippage_bps=200,
+        created_at=datetime.fromtimestamp(1000, tz=timezone.utc),
+    )
+
+
+@pytest.mark.asyncio
+async def test_legacy_format_reservation_blocks_new_key_intent():
+    # Rollout safety: an ACTIVE reservation stored under the legacy 6-field
+    # key must still block a new (7-field) intent on the same scope, so the
+    # key-format change cannot double-reserve during deployment.
+    async with _pg_pool() as pool:
+        svc = _build_service(pool, MockClock(1000))
+        await _insert_legacy_reservation(
+            pool, create_mock_intent(IntentSide.BUY), expires_at=1060
+        )
+        with pytest.raises(ReservationConflict):
+            await svc.reserve_for_intent(_new_key_buy_intent("0xdifferenttx"))
+
+
+@pytest.mark.asyncio
+async def test_expired_legacy_reservation_allows_new_key_intent():
+    # Once the orphaned legacy reservation passes its TTL, the dual-read
+    # expire-reconciles it and the new-key intent proceeds — the transient
+    # self-heals.
+    async with _pg_pool() as pool:
+        clock = MockClock(1000)
+        svc = _build_service(pool, clock)
+        await _insert_legacy_reservation(
+            pool, create_mock_intent(IntentSide.BUY), expires_at=1060
+        )
+        clock.advance(61)  # now past the legacy reservation's expiry
+        res = await svc.reserve_for_intent(_new_key_buy_intent("0xtx"))
+        assert res.status == "active"
+
+
 @pytest.mark.asyncio
 async def test_release_terminal():
     async with _pg_pool() as pool:

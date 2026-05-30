@@ -481,7 +481,9 @@ def _build_execution_coordinator(
         positions_repo=positions_repo,
         get_balance_func=get_my_balance,
         funder_address=funder_address,
-        ttl_seconds=120,
+        ttl_seconds=(
+            config.execution.reservation_ttl_seconds if config is not None else 120
+        ),
     )
     coord = ExecutionCoordinator(
         reservation_service=reservation_service,
