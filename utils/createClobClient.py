@@ -561,9 +561,25 @@ class ClobClientWrapper:
             # Do NOT return a simple {success: False} for these — the caller
             # must know this is post-submission ambiguous, not pre-submission safe.
             exc_name = type(exc).__name__.lower()
+            exc_text = str(exc).lower()
+            raw_lower = raw_body.lower()
             is_ambiguous = any(
-                kw in exc_name or kw in str(exc).lower()
-                for kw in ("timeout", "connectionerror", "connectionreset", "brokenpipe", "readtimeout", "connecttimeout")
+                kw in exc_name or kw in exc_text or kw in raw_lower
+                for kw in (
+                    "timeout",
+                    "connectionerror",
+                    "connectionreset",
+                    "connectionterminated",
+                    "connection terminated",
+                    "connection lost",
+                    "connection closed",
+                    "server disconnected",
+                    "remote protocol",
+                    "brokenpipe",
+                    "readtimeout",
+                    "connecttimeout",
+                    "request exception",
+                )
             )
             # Classify non-retryable validation errors so the caller can
             # fail fast instead of burning retries on an order CLOB will

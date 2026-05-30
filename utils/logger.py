@@ -144,6 +144,23 @@ _ORDER_LIFECYCLE_PANEL: dict[str, tuple[str, str, str]] = {
 }
 
 
+_REDEMPTION_PANEL: dict[str, tuple[str, str, str]] = {
+    # status -> (title, border_style, icon)
+    # Distinct coin/settlement theme so on-chain redemption is never confused
+    # with the CLOB order/trade lifecycle panels above.
+    "scanning": ("REDEMPTION SCAN", "blue", "🔎"),
+    "submit": ("REDEEMING POSITION", "cyan", "🪙"),
+    "redeeming": ("REDEEMING POSITION", "cyan", "🪙"),
+    "success": ("POSITION REDEEMED", "green", "💰"),
+    "redeemed": ("POSITION REDEEMED", "green", "💰"),
+    "failed": ("REDEMPTION FAILED", "red", "❌"),
+    "reverted": ("REDEMPTION FAILED", "red", "❌"),
+    "blocked": ("REDEMPTION BLOCKED", "red", "🛑"),
+    "online": ("REDEMPTION ENGINE ONLINE", "green", "🟢"),
+    "disabled": ("REDEMPTION DISABLED", "white", "💤"),
+}
+
+
 _ORDER_LIFECYCLE_LAST: dict[str, str] = {}
 _ORDER_LIFECYCLE_LAST_MAX = 1024
 
@@ -253,6 +270,9 @@ class RichConsoleHandler(logging.Handler):
             return True
         if log_type == "risk_exit":
             self._render_risk_exit(record, ts)
+            return True
+        if log_type == "redemption":
+            self._render_redemption(record, ts)
             return True
         if log_type == "api_error":
             self._render_api_error(record, ts)
@@ -490,6 +510,44 @@ class RichConsoleHandler(logging.Handler):
         console.print(Panel(
             "\n".join(lines),
             title=f"{icon} [bold {border}]{title_text} — {side}[/bold {border}]  [muted][{ts}][/muted]",
+            border_style=border,
+            padding=(1, 2),
+        ))
+
+    def _render_redemption(self, record: LogRecord, ts: str) -> None:
+        status = (getattr(record, "status", "") or "").lower()
+        cond = shorten_addr(getattr(record, "conditionId", None), 8, 6)
+        funder = shorten_addr(getattr(record, "funder", None), 8, 4)
+        tx = shorten_addr(getattr(record, "txHash", None), 8, 6)
+        positions = getattr(record, "positions", None)
+        value_raw = getattr(record, "expectedValue", None)
+        reason = getattr(record, "reason", None)
+        error = getattr(record, "error", None)
+
+        title_text, border, icon = _REDEMPTION_PANEL.get(
+            status,
+            ("REDEMPTION", "white", "🪙"),
+        )
+
+        try:
+            value_str = format(float(value_raw), ".2f") if value_raw is not None else None
+        except (TypeError, ValueError):
+            value_str = None
+
+        lines = _build_panel_lines(
+            Status=status or None,
+            Funder=funder if funder != "N/A" else None,
+            Condition=cond if cond != "N/A" else None,
+            Positions=str(positions) if positions is not None else None,
+            ExpectedValue=f"[money]${value_str}[/money]" if value_str else None,
+            Tx=tx if tx != "N/A" else None,
+            Reason=reason or None,
+            Error=error or None,
+        )
+        console.print()
+        console.print(Panel(
+            "\n".join(lines),
+            title=f"{icon} [bold {border}]{title_text}[/bold {border}]  [muted][{ts}][/muted]",
             border_style=border,
             padding=(1, 2),
         ))
@@ -1667,6 +1725,53 @@ def log_order_lifecycle(
 def _reset_lifecycle_dedup_for_tests() -> None:
     """Test helper — clears the per-key dedup map."""
     _ORDER_LIFECYCLE_LAST.clear()
+
+
+def log_redemption(
+    logger: logging.Logger,
+    *,
+    status: str,
+    condition_id: str | None = None,
+    funder: str | None = None,
+    positions: int | None = None,
+    expected_value: float | str | None = None,
+    tx_hash: str | None = None,
+    reason: str | None = None,
+    error: str | None = None,
+    meta: dict[str, Any] | None = None,
+) -> None:
+    """Emit a structured ``redemption`` log for on-chain CTF settlement.
+
+    Mirrors ``log_order_lifecycle`` but renders through the distinct coin/
+    settlement panel (``_REDEMPTION_PANEL``) so an operator never confuses a
+    ``CTF.redeemPositions`` claim with a CLOB order/trade transition. No
+    dedup — the RedemptionService already guards against duplicate submits per
+    condition, so every emitted event is meaningful and operator-visible.
+
+    ``status`` keys the panel theme: ``online`` / ``disabled`` / ``scanning``
+    / ``submit`` / ``success`` / ``failed`` / ``blocked``.
+    """
+    canonical = (status or "").strip().lower()
+    payload: dict[str, Any] = {
+        "type": "redemption",
+        "status": canonical,
+        "conditionId": condition_id,
+        "funder": funder,
+        "positions": positions,
+        "expectedValue": expected_value,
+        "txHash": tx_hash,
+        "reason": reason,
+        "error": error,
+    }
+    if meta:
+        payload.update(meta)
+
+    msg = (
+        f"REDEMPTION {canonical} | funder={funder} | cond={condition_id} | "
+        f"positions={positions} | tx={tx_hash} | reason={reason or ''} "
+        f"error={error or ''}"
+    )
+    logger.info(msg, extra=payload)
 
 
 def log_position_drift(

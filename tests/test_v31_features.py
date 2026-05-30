@@ -139,6 +139,10 @@ class TestPositionExitSystem(unittest.TestCase):
             parts = [p.strip() for p in str(s).split(',') if p.strip()]
             return [float(p) for p in parts]
 
+        def _pct_ratio(value):
+            raw = float(value)
+            return raw / 100.0 if raw > 1.0 else raw
+
         pm = pm_mod.PositionManager()  # bare defaults branch
 
         # Override all private attrs to match the requested flags.
@@ -157,7 +161,7 @@ class TestPositionExitSystem(unittest.TestCase):
 
         pm._enable_trailing = bool(defaults['ENABLE_TRAILING_STOP'])
         pm._trailing_activation_pct = float(defaults['TRAILING_ACTIVATION_PCT']) / 100.0
-        pm._trailing_distance = float(defaults['TRAILING_DISTANCE'])
+        pm._trailing_distance = _pct_ratio(defaults['TRAILING_DISTANCE'])
 
         pm._enable_staged_tp = bool(defaults['ENABLE_STAGED_TP'])
         raw_levels = _csv_floats(defaults['STAGED_TP_LEVELS'])
@@ -189,6 +193,57 @@ class TestPositionExitSystem(unittest.TestCase):
         assert action is not None
         assert action["reason"] == "near_max_full_exit"
         assert action["size_fraction"] == 1.0
+
+    def test_near_max_full_exit_logs_once_then_throttles(self):
+        """Steady-state NEAR-MAX exit logs INFO once, repeats drop to DEBUG.
+
+        The risk loop re-evaluates every ~0.25s; without throttling a position
+        parked at >= near-max would spam an identical INFO line every tick.
+        Decision output must stay unchanged across all evaluations.
+        """
+        import logging
+        import services.positionManager as pm_mod
+
+        pm = self._make_pm()
+        cid = self._add_position(pm, entry_price=0.50)
+
+        with self.assertLogs(pm_mod.logger, level="INFO") as cap1:
+            a1 = pm.evaluate_risk_action(cid, 0.99)
+        assert a1["reason"] == "near_max_full_exit"
+        info1 = [
+            r for r in cap1.records
+            if r.levelno == logging.INFO and "NEAR-MAX full exit" in r.getMessage()
+        ]
+        assert len(info1) == 1
+
+        with self.assertLogs(pm_mod.logger, level="DEBUG") as cap2:
+            a2 = pm.evaluate_risk_action(cid, 0.99)
+            a3 = pm.evaluate_risk_action(cid, 0.99)
+        assert a2["reason"] == "near_max_full_exit"
+        assert a3["reason"] == "near_max_full_exit"
+        msgs = [r for r in cap2.records if "NEAR-MAX full exit" in r.getMessage()]
+        assert all(r.levelno == logging.DEBUG for r in msgs)
+        assert not any(r.levelno == logging.INFO for r in msgs)
+        assert len(msgs) >= 1
+
+    def test_near_max_full_exit_relogs_after_price_drops_back(self):
+        """A genuine re-entry (price falls below then re-crosses) logs INFO again."""
+        import logging
+        import services.positionManager as pm_mod
+
+        pm = self._make_pm()
+        cid = self._add_position(pm, entry_price=0.50)
+
+        pm.evaluate_risk_action(cid, 0.99)          # first cross → INFO + flag set
+        pm.evaluate_risk_action(cid, 0.80)          # below threshold → flag cleared
+        with self.assertLogs(pm_mod.logger, level="INFO") as cap:
+            again = pm.evaluate_risk_action(cid, 0.99)  # re-cross → INFO again
+        assert again["reason"] == "near_max_full_exit"
+        info = [
+            r for r in cap.records
+            if r.levelno == logging.INFO and "NEAR-MAX full exit" in r.getMessage()
+        ]
+        assert len(info) == 1
 
     def test_near_max_warn_at_92c(self):
         pm = self._make_pm()
@@ -283,7 +338,7 @@ class TestPositionExitSystem(unittest.TestCase):
         pm = self._make_pm(ENABLE_PROFIT_LOCK=False, ENABLE_STAGED_TP=False)
         cid = self._add_position(pm, entry_price=0.50)
         pm.evaluate_risk_action(cid, 0.70)  # peak
-        action = pm.evaluate_risk_action(cid, 0.64)  # 0.70 - 0.05 = 0.65 > 0.64
+        action = pm.evaluate_risk_action(cid, 0.64)  # 0.70 * (1 - 5%) = 0.665 > 0.64
         assert action is not None
         assert action["reason"] == "trailing_stop"
 
@@ -291,8 +346,21 @@ class TestPositionExitSystem(unittest.TestCase):
         pm = self._make_pm(ENABLE_PROFIT_LOCK=False, ENABLE_STAGED_TP=False)
         cid = self._add_position(pm, entry_price=0.50)
         pm.evaluate_risk_action(cid, 0.70)
-        action = pm.evaluate_risk_action(cid, 0.66)  # above 0.65 trail
+        action = pm.evaluate_risk_action(cid, 0.67)  # above 0.665 trail
         assert action is None
+
+    def test_trailing_distance_accepts_whole_percentage(self):
+        pm = self._make_pm(
+            ENABLE_PROFIT_LOCK=False,
+            ENABLE_STAGED_TP=False,
+            TRAILING_DISTANCE=10,
+        )
+        cid = self._add_position(pm, entry_price=0.50)
+        pm.evaluate_risk_action(cid, 0.70)
+        assert pm.evaluate_risk_action(cid, 0.64) is None
+        action = pm.evaluate_risk_action(cid, 0.63)  # 0.70 * (1 - 10%)
+        assert action is not None
+        assert action["reason"] == "trailing_stop"
 
     def test_trailing_disabled(self):
         pm = self._make_pm(ENABLE_TRAILING_STOP=False, ENABLE_PROFIT_LOCK=False, ENABLE_STAGED_TP=False)
@@ -475,6 +543,10 @@ class TestFeatureFlags(unittest.TestCase):
             parts = [p.strip() for p in str(s).split(',') if p.strip()]
             return [float(p) for p in parts]
 
+        def _pct_ratio(value):
+            raw = float(value)
+            return raw / 100.0 if raw > 1.0 else raw
+
         pm = pm_mod.PositionManager()
         pm._risk_master_enabled = bool(defaults['ENABLE_RISK_MGMT'])
         pm._enabled = bool(defaults['ENABLE_RISK_MGMT'])
@@ -487,7 +559,7 @@ class TestFeatureFlags(unittest.TestCase):
         pm._near_max_warn_ratio = float(defaults['NEAR_MAX_PRICE_WARN_TRIM_RATIO'])
         pm._enable_trailing = bool(defaults['ENABLE_TRAILING_STOP'])
         pm._trailing_activation_pct = float(defaults['TRAILING_ACTIVATION_PCT']) / 100.0
-        pm._trailing_distance = float(defaults['TRAILING_DISTANCE'])
+        pm._trailing_distance = _pct_ratio(defaults['TRAILING_DISTANCE'])
         pm._enable_staged_tp = bool(defaults['ENABLE_STAGED_TP'])
         raw_levels = _csv_floats(defaults['STAGED_TP_LEVELS'])
         raw_fractions = _csv_floats(defaults['STAGED_TP_FRACTIONS'])

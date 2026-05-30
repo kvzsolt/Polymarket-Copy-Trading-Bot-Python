@@ -1335,7 +1335,7 @@ async def execute_trades(
     tick_size_by_token: dict[str, float] = {}
     market_data_stale_tokens: set[str] = set()
     market_data_stale_codes: dict[tuple[str, str], str] = {}
-    if normalized and _market_data_primary_source(context) != "rest_snapshot":
+    if normalized and _market_data_primary_source(context) == "rest_snapshot":
         (
             bundles_by_token,
             market_data_stale_tokens,
@@ -2278,7 +2278,7 @@ async def execute_trades(
                     except Exception:  # pragma: no cover — defensive
                         pass
 
-            if exec_result.accepted and exec_result.filled_amount <= 0:
+            if exec_result.accepted and _decimal_or_zero(exec_result.filled_amount) <= 0:
                 await context.orders_repo.mark_processed_trade(
                     trade_key=trade_key,
                     user_id=context.user_id,

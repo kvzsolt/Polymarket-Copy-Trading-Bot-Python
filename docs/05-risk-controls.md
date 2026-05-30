@@ -205,9 +205,9 @@ When a position's unrealized profit exceeds `PROFIT_LOCK_TRIGGER_PCT`, the bot s
 |---|---|---|
 | `ENABLE_TRAILING_STOP` | `false` | Enable trailing stop |
 | `TRAILING_ACTIVATION_PCT` | `20` | Profit percentage to activate trailing |
-| `TRAILING_DISTANCE` | `0.05` | Trailing distance in share price units |
+| `TRAILING_DISTANCE` | `0.05` | Trailing distance as peak-drop percentage (`0.10` or `10` = 10%) |
 
-The trailing stop activates when unrealized profit exceeds `TRAILING_ACTIVATION_PCT`. Once active, it tracks the highest share price seen and exits the position if the price falls by `TRAILING_DISTANCE` from that peak.
+The trailing stop activates when unrealized profit exceeds `TRAILING_ACTIVATION_PCT`. Once active, it tracks the highest share price seen and exits the position if the price falls by `TRAILING_DISTANCE` percent from that peak.
 
 ### Near-Max Exit
 

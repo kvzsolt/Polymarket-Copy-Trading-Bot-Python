@@ -4,6 +4,9 @@ import time
 from dataclasses import dataclass
 
 from services.discovery.ingestion_service import IngestionService
+from utils.logger import get_logger
+
+logger = get_logger("PolymarketHistoryBackfill")
 
 
 @dataclass(frozen=True)
@@ -14,6 +17,7 @@ class BackfillResult:
     fetched: int
     earliest_ts: int | None
     latest_ts: int | None
+    errors: int = 0
 
 
 class PolymarketHistoryBackfill:
@@ -31,6 +35,7 @@ class PolymarketHistoryBackfill:
         total_inserted = 0
         total_skipped = 0
         total_fetched = 0
+        total_errors = 0
         earliest_seen: int | None = None
         latest_seen: int | None = None
 
@@ -39,13 +44,34 @@ class PolymarketHistoryBackfill:
             start_ts = max(earliest_allowed, end_ts - window_days * 86400)
             offset = 0
             while offset <= int(self.config.discovery.polymarket_activity_max_offset):
-                page = await self.client.fetch_activity_page(
-                    wallet=wallet,
-                    start_ts=start_ts,
-                    end_ts=end_ts,
-                    offset=offset,
-                    limit=500,
-                )
+                try:
+                    page = await self.client.fetch_activity_page(
+                        wallet=wallet,
+                        start_ts=start_ts,
+                        end_ts=end_ts,
+                        offset=offset,
+                        limit=500,
+                    )
+                except Exception as exc:
+                    total_errors += 1
+                    logger.warning(
+                        "polymarket_history_page_failed | wallet=%s start_ts=%s end_ts=%s offset=%s error_type=%s error=%r",
+                        wallet,
+                        start_ts,
+                        end_ts,
+                        offset,
+                        type(exc).__name__,
+                        exc,
+                        extra={
+                            "wallet": wallet,
+                            "start_ts": start_ts,
+                            "end_ts": end_ts,
+                            "offset": offset,
+                            "error_type": type(exc).__name__,
+                            "error": repr(exc),
+                        },
+                    )
+                    break
                 if not page.rows:
                     break
 
@@ -73,6 +99,7 @@ class PolymarketHistoryBackfill:
             fetched=total_fetched,
             earliest_ts=earliest_seen,
             latest_ts=latest_seen,
+            errors=total_errors,
         )
 
 
@@ -84,4 +111,3 @@ def _ts(value) -> int | None:
     if ts > 1_000_000_000_000:
         ts = int(ts / 1000)
     return ts
-

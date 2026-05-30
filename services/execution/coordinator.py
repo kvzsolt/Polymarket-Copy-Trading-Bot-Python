@@ -758,6 +758,20 @@ class ExecutionCoordinator:
                         "coordinator_link_reservation_failed | reservation_id=%s order_id=%s error=%r",
                         reservation_id, order_id, exc,
                     )
+            # Enqueue reconciliation immediately so an ambiguous forced-exit
+            # ack (e.g. a fully-killed FAK that returned submitted_unconfirmed)
+            # is settled — and its reservation released — within the next
+            # reconcile pass, rather than stranding the reservation until its
+            # TTL expires and the risk-loop reaper picks it up. Mirrors the
+            # _execute_intent_locked non-terminal path.
+            if order_id and self.reconciler is not None:
+                try:
+                    await self.reconciler.enqueue(order_id)
+                except Exception as exc:
+                    logger.debug(
+                        "coordinator_reconcile_enqueue_failed | reservation_id=%s order_id=%s error=%r",
+                        reservation_id, order_id, exc,
+                    )
             return ExecutionCoordinatorResult(
                 accepted=True,
                 status=status or "submitted_unconfirmed",

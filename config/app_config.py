@@ -52,6 +52,7 @@ __all__ = [
     "PositionDriftConfig",
     "PollingConfig",
     "NearOneExitConfig",
+    "RedemptionConfig",
     "ReconciliationConfig",
     "RiskConfig",
     "SignatureType",
@@ -531,6 +532,23 @@ class NearOneExitConfig:
 
 
 @dataclass(frozen=True)
+class RedemptionConfig:
+    enable_auto_redeem: bool
+    check_interval: int
+    resolved_high: Decimal
+    resolved_low: Decimal
+    price_epsilon: Decimal
+    zero_threshold: Decimal
+    ctf_contract_address: str
+    collateral_contract_address: str
+    gas_limit: int
+    gas_price_buffer_pct: int
+    receipt_timeout_seconds: int
+    max_conditions_per_tick: int
+    require_signer_match: bool
+
+
+@dataclass(frozen=True)
 class DiscoveryConfig:
     enable_trader_discovery: bool
     discovery_interval_seconds: int
@@ -650,6 +668,7 @@ class AppConfig:
     logging: LoggingConfig
     network: NetworkConfig
     near_one_exit: NearOneExitConfig
+    redemption: RedemptionConfig
     reconciliation: ReconciliationConfig
     order_confirmation: OrderConfirmationConfig
     position_drift: PositionDriftConfig
@@ -788,6 +807,34 @@ def _validate_semantics(cfg: AppConfig, errors: list[str]) -> None:
         errors.append("MAX_OPEN_POSITIONS must be > 0.")
     if r.max_daily_drawdown_pct <= 0:
         errors.append("MAX_DAILY_DRAWDOWN_PCT must be > 0.")
+
+    # Redemption
+    red = cfg.redemption
+    if red.check_interval <= 0:
+        errors.append("REDEEM_CHECK_INTERVAL must be > 0.")
+    if not (Decimal("0") <= red.resolved_low <= Decimal("1")):
+        errors.append("REDEEM_RESOLVED_LOW must be in [0, 1].")
+    if not (Decimal("0") <= red.resolved_high <= Decimal("1")):
+        errors.append("REDEEM_RESOLVED_HIGH must be in [0, 1].")
+    if red.resolved_low >= red.resolved_high:
+        errors.append("REDEEM_RESOLVED_LOW must be < REDEEM_RESOLVED_HIGH.")
+    if red.price_epsilon < 0:
+        errors.append("REDEEM_PRICE_EPSILON must be non-negative.")
+    if red.zero_threshold < 0:
+        errors.append("REDEEM_ZERO_THRESHOLD must be non-negative.")
+    if red.gas_limit <= 0:
+        errors.append("REDEEM_GAS_LIMIT must be > 0.")
+    if red.gas_price_buffer_pct < 0:
+        errors.append("REDEEM_GAS_PRICE_BUFFER_PCT must be non-negative.")
+    if red.receipt_timeout_seconds <= 0:
+        errors.append("REDEEM_RECEIPT_TIMEOUT_SECONDS must be > 0.")
+    if red.max_conditions_per_tick <= 0:
+        errors.append("REDEEM_MAX_CONDITIONS_PER_TICK must be > 0.")
+    if red.enable_auto_redeem:
+        if not _ETH_ADDR_RE.match(red.ctf_contract_address):
+            errors.append("REDEEM_CTF_CONTRACT_ADDRESS must be a valid Ethereum address.")
+        if not _ETH_ADDR_RE.match(red.collateral_contract_address):
+            errors.append("REDEEM_COLLATERAL_CONTRACT_ADDRESS must be a valid Ethereum address.")
 
     # Leader
     le = cfg.leader
@@ -1215,6 +1262,29 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         check_interval=p.int_("NEAR_ONE_EXIT_CHECK_INTERVAL", "5"),
     )
 
+    redemption_collateral = (
+        p.string("REDEEM_COLLATERAL_CONTRACT_ADDRESS", "")
+        or network.usdc_contract_address
+    )
+    redemption = RedemptionConfig(
+        enable_auto_redeem=p.bool_("ENABLE_AUTO_REDEEM", False),
+        check_interval=p.int_("REDEEM_CHECK_INTERVAL", "60"),
+        resolved_high=Decimal(p.string("REDEEM_RESOLVED_HIGH", "0.99")),
+        resolved_low=Decimal(p.string("REDEEM_RESOLVED_LOW", "0.01")),
+        price_epsilon=Decimal(p.string("REDEEM_PRICE_EPSILON", "0.000001")),
+        zero_threshold=Decimal(p.string("REDEEM_ZERO_THRESHOLD", "0.0001")),
+        ctf_contract_address=p.string(
+            "REDEEM_CTF_CONTRACT_ADDRESS",
+            "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045",
+        ),
+        collateral_contract_address=redemption_collateral,
+        gas_limit=p.int_("REDEEM_GAS_LIMIT", "500000"),
+        gas_price_buffer_pct=p.int_("REDEEM_GAS_PRICE_BUFFER_PCT", "20"),
+        receipt_timeout_seconds=p.int_("REDEEM_RECEIPT_TIMEOUT_SECONDS", "120"),
+        max_conditions_per_tick=p.int_("REDEEM_MAX_CONDITIONS_PER_TICK", "5"),
+        require_signer_match=p.bool_("REDEEM_REQUIRE_SIGNER_MATCH", True),
+    )
+
     allow_auto_trader_detection = p.bool_("ALLOW_AUTO_TRADER_DETECTION", False)
     auto_traders_raw = p.int_("MAX_AUTO_TRADERS_COUNT", "2")
     auto_traders_cap = max(0, auto_discover_max_leaders_raw)
@@ -1338,6 +1408,7 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         logging=logging_cfg,
         network=network,
         near_one_exit=near_one_exit,
+        redemption=redemption,
         reconciliation=reconciliation,
         order_confirmation=order_confirmation,
         position_drift=position_drift,

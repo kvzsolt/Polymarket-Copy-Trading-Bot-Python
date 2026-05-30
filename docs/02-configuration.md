@@ -175,7 +175,7 @@ Risk management parameters. See [05-risk-controls.md](05-risk-controls.md) for d
 | `PROFIT_LOCK_TRIGGER_PCT` | float | `70` | Profit % to trigger profit lock |
 | `PROFIT_LOCK_SELL_FRACTION` | float | `0.50` | Fraction of position to sell at lock |
 | `TRAILING_ACTIVATION_PCT` | float | `20` | Profit % to activate trailing stop |
-| `TRAILING_DISTANCE` | float | `0.05` | Trailing stop distance (share price units) |
+| `TRAILING_DISTANCE` | float | `0.05` | Trailing stop distance as peak-drop percentage (`0.10` or `10` = 10%) |
 | `STAGED_TP_LEVELS` | string | `30,50` | Comma-separated take-profit levels |
 | `STAGED_TP_FRACTIONS` | string | `0.25,0.35` | Comma-separated TP sell fractions |
 | `STOP_LOSS_THRESHOLD` | float | `0.15` | Price floor for stop-loss exit |
@@ -194,6 +194,8 @@ Order execution quality and decision gates.
 | `MAX_SHARE_PRICE` | float | `0` | Maximum buy price; 0 disables |
 | `MAX_RETRIES` | int | `3` | Maximum order submission retries |
 | `NON_TERMINAL_FAILURE_MAX_ATTEMPTS` | int | `3` | Max attempts for non-terminal failures |
+| `COPY_FAK_MAX_ATTEMPTS` | int | `8` | Max FAK reposts to fill remaining BUY copy notional |
+| `EXIT_FAK_MAX_ATTEMPTS` | int | `8` | Max FAK reposts for forced SELL exits |
 | `PAPER_TRADE_ONLY` | bool | `false` | Force paper trading mode |
 | `ENABLE_COPY_DECISION_GATE` | bool | `false` | Enable copy decision scoring gate |
 | `ENABLE_NEAR_RESOLUTION_GATE` | bool | `false` | Reject stale signals near resolution |

@@ -211,13 +211,13 @@ async def test_was_recently_pruned_honours_ttl():
     )
     await svc.scan_user(user_id="u1", wallet="0xfunder")
     # Manually advance: pass a ``now`` 120s into the future, ttl=60s.
-    far_future = svc._prune_timestamps[f"u1|cond1|0xtok"] + 120.0
+    far_future = svc._prune_timestamps["u1|cond1|0xtok"] + 120.0
     assert svc.was_recently_pruned(
         user_id="u1", condition_id="cond1", token_id="0xtok",
         ttl_seconds=60.0, now=far_future,
     ) is False
     # Side-effect: TTL elapse drops the stamp so memory stays bounded.
-    assert f"u1|cond1|0xtok" not in svc._prune_timestamps
+    assert "u1|cond1|0xtok" not in svc._prune_timestamps
 
 
 @pytest.mark.asyncio
@@ -228,7 +228,7 @@ async def test_was_recently_pruned_uses_configured_holdoff():
         config=_cfg(prune_holdoff_seconds=180.0),
     )
     await svc.scan_user(user_id="u1", wallet="0xfunder")
-    future = svc._prune_timestamps[f"u1|cond1|0xtok"] + 120.0
+    future = svc._prune_timestamps["u1|cond1|0xtok"] + 120.0
     assert svc.was_recently_pruned(
         user_id="u1", condition_id="cond1", token_id="0xtok", now=future
     ) is True
