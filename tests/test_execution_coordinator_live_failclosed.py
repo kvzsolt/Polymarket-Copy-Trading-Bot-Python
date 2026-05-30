@@ -182,7 +182,7 @@ async def test_no_config_trade_pipeline_falls_back():
 
 @pytest.mark.asyncio
 async def test_live_risk_dispatch_skips_when_coordinator_missing():
-    from services.riskMonitor import _dispatch_risk_exit
+    from services.risk.risk_monitor import _dispatch_risk_exit
 
     exec_svc = MagicMock()
     exec_svc.execute = AsyncMock()
@@ -209,7 +209,7 @@ async def test_live_risk_dispatch_skips_when_coordinator_missing():
 
 @pytest.mark.asyncio
 async def test_paper_risk_dispatch_falls_back():
-    from services.riskMonitor import _dispatch_risk_exit
+    from services.risk.risk_monitor import _dispatch_risk_exit
 
     fake = SimpleNamespace(accepted=True, status="submitted_unconfirmed", filled_amount=Decimal("0"))
     exec_svc = MagicMock()

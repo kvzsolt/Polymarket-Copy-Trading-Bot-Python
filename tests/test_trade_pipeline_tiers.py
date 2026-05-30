@@ -17,7 +17,7 @@ from config.env import rehydrate_env
 from domain.trading_context import TradingContext
 from orchestrators.trade_pipeline import execute_trades, _resolve_leader_tier
 from services.pnlTracker import PnLTracker
-from services.riskEngine import RiskEngine
+from services.risk.risk_engine import RiskEngine
 from services.accountingService import AccountingService
 from services.positionManager import PositionManager
 from storage.postgres.fills_repo import FillsRepo

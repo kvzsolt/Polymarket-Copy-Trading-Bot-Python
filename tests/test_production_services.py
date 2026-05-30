@@ -17,7 +17,7 @@ from services.market_data_service import MarketDataBundle, MarketDataSource
 from config.env import SignatureType, WalletConfig, validate_wallet_config
 from services.backtest import BacktestConfig, BacktestEngine
 from services.executionService import ExecutionRequest, ExecutionService, _sanitize_submission_response
-from services.riskEngine import PortfolioSnapshot, ProposedTrade, RiskEngine, policy_from_config  # noqa: F401
+from services.risk.risk_engine import PortfolioSnapshot, ProposedTrade, RiskEngine, policy_from_config  # noqa: F401
 
 
 def _make_exec_config(

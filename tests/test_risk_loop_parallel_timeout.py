@@ -26,7 +26,7 @@ def _ctx(user_id: str):
 
 @pytest.mark.asyncio
 async def test_one_stalled_context_does_not_block_the_others():
-    from services.riskMonitor import risk_monitor_loop_for_contexts
+    from services.risk.risk_monitor import risk_monitor_loop_for_contexts
 
     ctx_fast = _ctx("fast")
     ctx_slow = _ctx("slow")
@@ -57,13 +57,13 @@ async def test_one_stalled_context_does_not_block_the_others():
     # cancellation. The internal post-cycle asyncio.sleep stays real so
     # wait_for inside the loop still works correctly.
     with patch(
-        "services.riskMonitor.run_risk_check_for_context",
+        "services.risk.risk_monitor.run_risk_check_for_context",
         side_effect=check,
     ), patch(
-        "services.riskMonitor._refresh_context_price_cache",
+        "services.risk.risk_monitor._refresh_context_price_cache",
         side_effect=refresh,
     ), patch(
-        "services.riskMonitor._exit_monitor_enabled", return_value=True
+        "services.risk.risk_monitor._exit_monitor_enabled", return_value=True
     ):
         # Outer wait_for is 5x the per-context timeout — gives one full
         # cycle plus a sleep tick to complete before we cancel.

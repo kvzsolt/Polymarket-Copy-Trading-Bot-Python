@@ -16,15 +16,21 @@ def __getattr__(name: str):
         "RiskHeadroom": "services.risk.risk_engine",
         "RiskPolicy": "services.risk.risk_engine",
         "active_policy": "services.risk.risk_engine",
+        "get_active_policy": "services.risk.risk_engine",
+        "get_policy": "services.risk.risk_engine",
         "headroom_for_buy": "services.risk.risk_engine",
         "init_risk_engine": "services.risk.risk_engine",
         "policy_from_config": "services.risk.risk_engine",
+        "policy_from_env": "services.risk.risk_engine",
+        "policy_name_for_equity": "services.risk.risk_engine",
         # risk_monitor
         "CachedRiskPrice": "services.risk.risk_monitor",
         "RiskPriceCache": "services.risk.risk_monitor",
         "VenueCircuitBreaker": "services.risk.risk_monitor",
         "reconcile_unconfirmed_risk_orders": "services.risk.risk_monitor",
+        "rehydrate_position_manager": "services.risk.risk_monitor",
         "run_risk_check_for_context": "services.risk.risk_monitor",
+        "risk_monitor_loop_for_contexts": "services.risk.risk_monitor",
     }
     if name in _lazy_map:
         import importlib
@@ -49,9 +55,15 @@ __all__ = [
     "VenueCircuitBreaker",
     "active_policy",
     "evaluate_exit",
+    "get_active_policy",
+    "get_policy",
     "headroom_for_buy",
     "init_risk_engine",
     "policy_from_config",
+    "policy_from_env",
+    "policy_name_for_equity",
     "reconcile_unconfirmed_risk_orders",
+    "rehydrate_position_manager",
     "run_risk_check_for_context",
+    "risk_monitor_loop_for_contexts",
 ]

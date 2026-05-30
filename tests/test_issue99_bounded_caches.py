@@ -14,7 +14,7 @@ from decimal import Decimal
 import pytest
 
 from cache.market_state_store import MarketStateStore
-from services.riskMonitor import RiskPriceCache
+from services.risk.risk_monitor import RiskPriceCache
 
 
 class TestMarketStateStoreBounded:
@@ -123,7 +123,7 @@ class TestRiskPriceCacheTypedConfig:
         ctx.extra = {}
         ctx.config = config
 
-        from services.riskMonitor import _ensure_context_price_cache
+        from services.risk.risk_monitor import _ensure_context_price_cache
 
         cache = _ensure_context_price_cache(ctx)
         assert cache._max_size == 42

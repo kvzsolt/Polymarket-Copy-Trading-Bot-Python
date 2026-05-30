@@ -1264,7 +1264,7 @@ async def main():
     risk_task = None
 
     if application.config.risk.enable_risk_mgmt:
-        from services.riskMonitor import risk_monitor_loop_for_contexts
+        from services.risk.risk_monitor import risk_monitor_loop_for_contexts
 
         risk_task = asyncio.create_task(
             risk_monitor_loop_for_contexts(

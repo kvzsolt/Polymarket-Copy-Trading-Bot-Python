@@ -709,7 +709,7 @@ production ``ENV.get(...)`` callsite to typed ``AppConfig``.
 
 | Slice | Commit | What |
 |---|---|---|
-| Fix 14 tests driving deleted ENV-fallback | `7abb80c` | `test_account_cap_policy.py` (10 fails) — patched `services.riskEngine.ENV`; replace with local `_policy(...)` builder that constructs `AccountCapPolicy` directly. `test_collateral_readiness.py` (1 fail) — replace `ENV` patch with `SimpleNamespace` AppConfig stub passed as `config=`. `test_decision_engine.py` (2 fails) — drop ENV patches; set discovery-gate thresholds via instance attrs. `test_issue69_order_sizing_idempotency.py` (1 fail) — rewrite `test_effective_key_different_from_legacy` against `_effective_idempotency_key` only |
+| Fix 14 tests driving deleted ENV-fallback | `7abb80c` | `test_account_cap_policy.py` (10 fails) — patched `services.risk.risk_engine.ENV`; replace with local `_policy(...)` builder that constructs `AccountCapPolicy` directly. `test_collateral_readiness.py` (1 fail) — replace `ENV` patch with `SimpleNamespace` AppConfig stub passed as `config=`. `test_decision_engine.py` (2 fails) — drop ENV patches; set discovery-gate thresholds via instance attrs. `test_issue69_order_sizing_idempotency.py` (1 fail) — rewrite `test_effective_key_different_from_legacy` against `_effective_idempotency_key` only |
 | Close-out doc + push | _this commit_ | docs/full-rework-progress.md update, final verification, push |
 
 ### Final verification

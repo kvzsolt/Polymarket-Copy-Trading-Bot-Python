@@ -17,7 +17,7 @@ This service is intentionally **read-heavy and conservative**. It owns:
 It does **not** invent fills or mutate persisted position state. The current
 state-mutating convergence path for delayed fills lives in
 ``orchestrators.trade_pipeline.reconcile_submitted_unconfirmed(...)`` and the
-in-memory runtime shadow rebuild lives in ``services.riskMonitor`` via
+in-memory runtime shadow rebuild lives in ``services.risk.risk_monitor`` via
 ``rehydrate_position_manager(...)``.
 
 That ownership split matters: this module should classify venue orders against

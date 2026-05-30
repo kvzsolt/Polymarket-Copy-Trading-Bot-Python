@@ -155,7 +155,7 @@ terminal settlement:
 - Applies only positive incremental deltas from cumulative matched size.
 - Releases reservations on terminal state.
 
-### Risk + protective exits (`services/risk*`, `services/riskMonitor.py`)
+### Risk + protective exits (`services/risk/`)
 
 Risk triggers are *not* the durable re-entry block. The block activates
 only after a confirmed protective SELL fully closes the scoped

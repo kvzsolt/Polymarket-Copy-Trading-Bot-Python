@@ -32,8 +32,8 @@ from services.executionService import ExecutionResult
 from services.pnlTracker import PnLTracker
 from services.positionManager import PositionManager
 from services.positionActionCoordinator import PositionScope
-from services.riskEngine import RiskEngine
-from services.riskMonitor import run_risk_check_for_context
+from services.risk.risk_engine import RiskEngine
+from services.risk.risk_monitor import run_risk_check_for_context
 from storage.postgres.fills_repo import FillsRepo
 from storage.postgres.orders_repo import OrdersRepo
 from storage.postgres.positions_repo import PositionRecord, PositionsRepo
@@ -289,7 +289,7 @@ async def test_risk_monitor_acquires_scope_lock(tmp_path):
 
         ctx.position_coordinator.get_lock = _spy  # type: ignore[assignment]
 
-        with patch("services.riskMonitor._get_context_cached_price", new_callable=AsyncMock, return_value=Decimal("0.60")):
+        with patch("services.risk.risk_monitor._get_context_cached_price", new_callable=AsyncMock, return_value=Decimal("0.60")):
             await run_risk_check_for_context(ctx)
 
         assert any(
@@ -338,7 +338,7 @@ async def test_same_scope_buy_and_risk_sell_serialize(tmp_path):
 
             async def _run_risk() -> None:
                 with patch(
-                    "services.riskMonitor._get_context_cached_price",
+                    "services.risk.risk_monitor._get_context_cached_price",
                     new_callable=AsyncMock,
                     return_value=Decimal("0.40"),
                 ):
@@ -395,7 +395,7 @@ async def test_different_scopes_stay_concurrent(tmp_path):
         await lock_a.acquire()
         try:
             with patch(
-                "services.riskMonitor._get_context_cached_price",
+                "services.risk.risk_monitor._get_context_cached_price",
                 new_callable=AsyncMock,
                 return_value=Decimal("0.40"),
             ):
