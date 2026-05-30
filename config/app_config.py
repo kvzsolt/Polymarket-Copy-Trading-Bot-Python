@@ -363,6 +363,10 @@ class ExecutionConfig:
     near_resolution_gate_price: float
     near_resolution_max_age_seconds: float
     pending_submission_ttl_seconds: int
+    # TTL for pre-submit balance/share reservations. Bounds the window in
+    # which a pending order blocks the next same-scope copy before it is
+    # expired (and reconciled). Mirrors ``pending_submission_ttl_seconds``.
+    reservation_ttl_seconds: int
     retry_backoff_base: float
     transaction_fee_bps: float
     gas_cost_usdc: float
@@ -773,6 +777,8 @@ def _validate_semantics(cfg: AppConfig, errors: list[str]) -> None:
         errors.append("RISK_BUFFER_PCT must be non-negative.")
     if e.pending_submission_ttl_seconds <= 0:
         errors.append("PENDING_SUBMISSION_TTL_SECONDS must be > 0.")
+    if e.reservation_ttl_seconds <= 0:
+        errors.append("RESERVATION_TTL_SECONDS must be > 0.")
     # Phase 4 — balance regime + book depth gate. ``0`` disables a knob.
     if e.max_position_size_usdc < 0:
         errors.append("MAX_POSITION_SIZE_USDC must be non-negative.")
@@ -1102,6 +1108,7 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         near_resolution_gate_price=p.float_("NEAR_RESOLUTION_GATE_PRICE", "0.95"),
         near_resolution_max_age_seconds=p.float_("NEAR_RESOLUTION_MAX_AGE_SECONDS", "15"),
         pending_submission_ttl_seconds=p.int_("PENDING_SUBMISSION_TTL_SECONDS", "120"),
+        reservation_ttl_seconds=p.int_("RESERVATION_TTL_SECONDS", "120"),
         retry_backoff_base=p.float_("RETRY_BACKOFF_BASE", "1.0"),
         transaction_fee_bps=p.float_("TRANSACTION_FEE_BPS", "20"),
         gas_cost_usdc=p.float_("GAS_COST_USDC", "0.03"),
