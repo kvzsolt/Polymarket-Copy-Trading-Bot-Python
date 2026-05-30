@@ -811,6 +811,7 @@ class ExecutionCoordinator:
             token_id=intent.token_id,
             side=side,
             reason=reason,
+            source_event_id=intent.signal_id,
         )
         return OrderIntent(
             key=key,

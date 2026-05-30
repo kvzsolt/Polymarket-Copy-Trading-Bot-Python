@@ -35,6 +35,7 @@ from utils.logger import (
     print_executing_strategy,
     print_skip_reason,
     print_trade_result,
+    print_warning,
     shorten_addr,
 )
 
@@ -1125,6 +1126,13 @@ def normalize_signals(raw_signals: list[dict[str, Any]], leader_id: str) -> list
         token_id = str(raw.get("tokenID") or raw.get("token_id") or raw.get("asset") or "")
         tx_hash = str(raw.get("transactionHash") or raw.get("txHash") or "")
         if not condition_id or not token_id or not tx_hash:
+            # A detected TRADE that is missing core market identifiers cannot be
+            # copied. Surface a concise line so the operator is not left with a
+            # silent "NEW TRADE DETECTED" followed by nothing.
+            print_warning(
+                f"Ignored — missing market identifiers "
+                f"({side} {raw.get('title') or raw.get('slug') or 'unknown market'})"
+            )
             continue
         if not is_valid_clob_token_id(token_id):
             logger.warning("normalize_signals: skipping signal with invalid token_id=%r", token_id)
@@ -1424,6 +1432,11 @@ async def execute_trades(
             skip_code = market_data_stale_codes.get(
                 _stale_pair_key, "market_data_stale"
             )
+            print_skip_reason(
+                "Market data stale",
+                f"{signal.side} {signal.title or shorten_addr(signal.token_id, 8, 6)} "
+                f"— {skip_code} (fail-closed: no fresh quote/book)",
+            )
             log_trade_skip(
                 logger,
                 side=signal.side,
@@ -1482,6 +1495,11 @@ async def execute_trades(
                         signal.token_id,
                     )
                     skip_reason = "entry_policy_unavailable"
+                    print_skip_reason(
+                        "Entry policy unavailable",
+                        "BUY blocked fail-closed — entry-permission service is "
+                        "not wired; cannot evaluate re-entry safety",
+                    )
                     metrics.inc("trades_skipped_total", labels={**labels, "reason": skip_reason})
                     await context.orders_repo.mark_processed_trade(
                         trade_key=trade_key,
@@ -1522,6 +1540,13 @@ async def execute_trades(
 
                 if _decision is not None and not _decision.allowed:
                     skip_reason = "market_risk_quarantined"
+                    _quarantine_detail = (
+                        f"entry denied by policy [{_decision.reason}]"
+                        + (f": {_decision.deny_detail}" if _decision.deny_detail else "")
+                    )
+                    print_skip_reason(
+                        "Market quarantined by risk monitor", _quarantine_detail
+                    )
                     log_trade_skip(
                         logger,
                         side=signal.side,
@@ -1531,10 +1556,7 @@ async def execute_trades(
                         price=float(signal.price or 0),
                         usdc_value=float(signal.usdc_size),
                         skip_code=skip_reason,
-                        reason=(
-                            f"entry denied by policy [{_decision.reason}]"
-                            + (f": {_decision.deny_detail}" if _decision.deny_detail else "")
-                        ),
+                        reason=_quarantine_detail,
                         event_slug=signal.event_slug,
                         meta={"user_id": context.user_id, "leader_id": leader_id, "policy_reason": _decision.reason},
                     )
@@ -1859,13 +1881,13 @@ async def execute_trades(
                 )
 
                 if not decision.allow:
-                    if decision.skip_code != "signal_too_old":
-                        skip_title = (
-                            "BUY blocked by execution minimums/risk cap"
-                            if decision.skip_code in {"risk_cap_too_low_for_min_order", "buy_below_minimum_order_requirements", "buy_cap_blocks_upsize_to_venue_min"}
-                            else "Decision gate rejected BUY"
-                        )
-                        print_skip_reason(skip_title, decision.reason)
+                    if decision.skip_code == "signal_too_old":
+                        skip_title = "Signal too old"
+                    elif decision.skip_code in {"risk_cap_too_low_for_min_order", "buy_below_minimum_order_requirements", "buy_cap_blocks_upsize_to_venue_min"}:
+                        skip_title = "BUY blocked by execution minimums/risk cap"
+                    else:
+                        skip_title = "Decision gate rejected BUY"
+                    print_skip_reason(skip_title, decision.reason)
                     log_trade_skip(
                         logger,
                         side=signal.side,
@@ -2024,6 +2046,7 @@ async def execute_trades(
                     else:
                         skip_detail = "never held — we never entered this market"
                         skip_code = "never_held"
+                    print_skip_reason("SELL skipped", skip_detail)
                     logger.debug(
                         "sell_skip",
                         extra={
@@ -2063,6 +2086,7 @@ async def execute_trades(
                 if pos.size_tokens <= Decimal("0"):
                     skip_detail = "already closed — position size is zero"
                     skip_code = "already_closed"
+                    print_skip_reason("SELL skipped", skip_detail)
                     logger.debug(
                         "sell_skip",
                         extra={
@@ -2223,6 +2247,10 @@ async def execute_trades(
             )
 
             if exec_result.status == "duplicate_ignored":
+                print_skip_reason(
+                    "Duplicate ignored",
+                    exec_result.error or "an in-flight order already covers this trade",
+                )
                 metrics.inc("duplicate_order_prevented_total", labels=labels)
                 # Greptile P1: roll back the regime reservation taken at the
                 # pre-submit ``reserve()`` so the daily cap is not double-
@@ -2285,6 +2313,11 @@ async def execute_trades(
                         pass
 
             if exec_result.accepted and _decimal_or_zero(exec_result.filled_amount) <= 0:
+                print_skip_reason(
+                    "Order placed but did not fill",
+                    f"{signal.side} FAK killed unfilled — price moved past limit "
+                    f"{signal.price} (transient; awaiting reconciliation)",
+                )
                 await context.orders_repo.mark_processed_trade(
                     trade_key=trade_key,
                     user_id=context.user_id,
@@ -2335,6 +2368,10 @@ async def execute_trades(
                         except Exception:  # pragma: no cover — defensive
                             pass
                 metrics.inc("execution_failures_total", labels={**labels, "reason": exec_result.status})
+                print_skip_reason(
+                    f"Copy not accepted: {exec_result.status}",
+                    exec_result.error or exec_result.status,
+                )
                 log_trade_skip(
                     logger,
                     side=signal.side,
