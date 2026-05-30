@@ -1,0 +1,20 @@
+services/risk/risk_monitor.py
+  s_1d1ce70b73c64e::t_596dd327516fa0 14-16,26,89
+  s_1d1ce70b73c64e::t_beeb6d5640db03 19
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "4237a0dad6f49ab4c03190afc877d5389103593b",
+  "prompts": {},
+  "sessions": {
+    "s_1d1ce70b73c64e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e77cd-2cce-7ab3-89e2-2f16b02b0749",
+        "model": "gpt-5.5"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
