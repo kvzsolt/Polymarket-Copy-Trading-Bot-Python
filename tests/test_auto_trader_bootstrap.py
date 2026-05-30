@@ -212,6 +212,7 @@ async def test_no_clob_init_when_auto_bootstrap_finds_no_candidates(monkeypatch)
     load_users = MagicMock()
 
     monkeypatch.setattr(app_module, "validate_runtime_env", lambda: None)
+    monkeypatch.setattr(app_module, "load_config", lambda: cfg)
     monkeypatch.setattr(app_module, "build_app", AsyncMock(return_value=fake_application))
     monkeypatch.setattr(app_module, "create_clob_client", create_clob)
     monkeypatch.setattr(app_module, "load_runtime_users", load_users)

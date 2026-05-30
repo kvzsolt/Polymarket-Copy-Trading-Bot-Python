@@ -588,6 +588,36 @@ async def test_get_order_retries_once_on_transport_disconnect_then_succeeds():
 
 
 @pytest.mark.asyncio
+async def test_get_order_retries_once_on_direct_connection_terminated_then_succeeds():
+    """Some stacks surface HTTP/2 disconnects directly as ConnectionTerminated.
+
+    That is still a safe-to-retry GET transport failure, not a terminal venue
+    response.
+    """
+    calls = {"n": 0}
+
+    class ConnectionTerminated(Exception):
+        pass
+
+    def _sync_get_order(order_id: str):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise ConnectionTerminated(
+                "<ConnectionTerminated error_code:1, last_stream_id:10065>"
+            )
+        return {"id": order_id, "status": "matched", "size_matched": "1"}
+
+    wrapper = SimpleNamespace(client=SimpleNamespace(get_order=_sync_get_order))
+    gw = ClobV2Gateway(wrapper)
+
+    state = await gw.get_order("0xorder")
+
+    assert calls["n"] == 2
+    assert state.status == "matched"
+    assert state.filled_size == Decimal("1")
+
+
+@pytest.mark.asyncio
 async def test_get_order_retries_transport_only_once_then_raises_unavailable():
     """A persistent transport failure raises VenueUnavailableError after the
     single retry (no infinite loop)."""

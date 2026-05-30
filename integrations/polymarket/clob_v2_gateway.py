@@ -572,7 +572,7 @@ class ClobV2Gateway:
                 # the retry opens a fresh one and usually succeeds — letting
                 # confirm_fill progress instead of parking on a 5s backoff.
                 # NEVER apply this to POST paths (duplicate-order risk).
-                if retryable and reason == "poly_api_transport" and attempts < 1:
+                if retryable and reason in {"poly_api_transport", "timeout_or_connection"} and attempts < 1:
                     attempts += 1
                     await asyncio.sleep(0.15)
                     continue

@@ -618,6 +618,7 @@ async def _shutdown_runtime(
     discovery_task: asyncio.Task | None,
     risk_task: asyncio.Task | None,
     near_one_tasks: list[asyncio.Task],
+    redemption_tasks: list[asyncio.Task],
     market_data_runtimes: dict[str, MarketDataRuntime],
     user_data_runtimes: list[UserDataRuntime],
     metrics_runner,
@@ -629,6 +630,7 @@ async def _shutdown_runtime(
     if risk_task:
         shutdown_tasks.append(risk_task)
     shutdown_tasks.extend(near_one_tasks)
+    shutdown_tasks.extend(redemption_tasks)
 
     for task in shutdown_tasks:
         task.cancel()
@@ -1299,6 +1301,44 @@ async def main():
                 )
             )
 
+    # Auto-redemption (opt-in, default off). NearOneExit replaced on-chain CTF
+    # redemption for the live exit path; this restores a conservative
+    # settlement-claim loop for operators who hold to resolution. It is gated
+    # twice: the data-api must flag the position ``redeemable`` AND the local
+    # market cache must show the token pinned at a terminal price
+    # (REDEEM_RESOLVED_LOW / REDEEM_RESOLVED_HIGH). The Web3 redeem path runs in
+    # a worker thread so it never blocks trade/risk/WSS loops.
+    redemption_tasks: list[asyncio.Task] = []
+
+    if application.config.redemption.enable_auto_redeem:
+        from services.redemption import RedemptionService
+
+        for runtime_user in runtime_users:
+            user_state = user_states.get(runtime_user.user_id)
+            if user_state is None:
+                continue
+            market_store = getattr(user_state, "market_store", None)
+            if market_store is None:
+                logger.warning(
+                    "redemption_service_skipped",
+                    extra={
+                        "user_id": runtime_user.user_id,
+                        "reason": "missing market_store",
+                    },
+                )
+                continue
+            redemption_tasks.append(
+                asyncio.create_task(
+                    RedemptionService(
+                        config=application.config,
+                        wallet_address=runtime_user.wallet.funder_address,
+                        market_store=market_store,
+                        private_key=runtime_user.wallet.private_key,
+                    ).loop(),
+                    name=f"redemption-{runtime_user.user_id}",
+                )
+            )
+
     monitor_tasks.extend(
         asyncio.create_task(
             run_leader_monitor(
@@ -1338,6 +1378,7 @@ async def main():
             discovery_task=discovery_task,
             risk_task=risk_task,
             near_one_tasks=near_one_tasks,
+            redemption_tasks=redemption_tasks,
             market_data_runtimes=market_data_runtimes,
             user_data_runtimes=user_data_runtimes,
             metrics_runner=metrics_runner,

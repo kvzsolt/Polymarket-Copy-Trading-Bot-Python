@@ -44,6 +44,12 @@ def _as_float(value: object, default: float) -> float:
         return default
 
 
+def _as_pct_ratio(value: object, default: float) -> float:
+    raw = _as_float(value, default)
+    ratio = raw / 100.0 if raw > 1.0 else raw
+    return max(0.0, min(1.0, ratio))
+
+
 def _to_dec(value: object, default: Decimal = Decimal("0")) -> Decimal:
     """Normalise any numeric input to Decimal at the position-manager boundary.
 
@@ -93,6 +99,12 @@ class PositionExitState:
     near_max_warn_done: bool = False
     # Leader divergence
     leader_divergence_pending: bool = False
+    # Steady-state full-exit log de-dup. The risk loop re-evaluates every
+    # ~0.25s; a position parked at/above near-max (or under stop-loss / trailing
+    # trigger) would otherwise emit the same INFO line every tick. We log INFO
+    # once per state transition and demote repeats to DEBUG. A key is discarded
+    # when its branch condition clears so a genuine re-entry logs again.
+    logged_steady_exits: set[str] = field(default_factory=set)
 
 
 @dataclass
@@ -199,7 +211,7 @@ class PositionManager:
             # Trailing stop
             self._enable_trailing = _as_bool(getattr(fc, "enable_trailing_stop", False), False)
             self._trailing_activation_pct = _as_float(getattr(rc, "trailing_activation_pct", 20.0), 20.0) / 100.0
-            self._trailing_distance = _as_float(getattr(rc, "trailing_distance", 0.05), 0.05)
+            self._trailing_distance = _as_pct_ratio(getattr(rc, "trailing_distance", 0.05), 0.05)
 
             # Staged TP
             self._enable_staged_tp = _as_bool(getattr(fc, "enable_staged_tp", False), False)
@@ -401,6 +413,25 @@ class PositionManager:
             pos.exit_state.leader_divergence_pending = True
             logger.info(f"🤝 Leader divergence signaled: {condition_id[:12]}…")
 
+    @staticmethod
+    def _log_steady_exit(es: "PositionExitState", key: str, message: str) -> None:
+        """Log a steady-state full-exit trigger at INFO once per transition.
+
+        Repeats (the risk loop re-evaluates every tick while the position stays
+        parked at/above the exit threshold) drop to DEBUG so the operator sees
+        the trigger once, not hundreds of identical lines. ``_clear_steady_exit``
+        resets the key when the branch condition clears.
+        """
+        if key in es.logged_steady_exits:
+            logger.debug(message)
+        else:
+            es.logged_steady_exits.add(key)
+            logger.info(message)
+
+    @staticmethod
+    def _clear_steady_exit(es: "PositionExitState", key: str) -> None:
+        es.logged_steady_exits.discard(key)
+
     def evaluate_risk_action(
         self,
         condition_id: str,
@@ -455,23 +486,29 @@ class PositionManager:
             grace = getattr(self, "_stop_loss_grace_period_seconds", 180.0)
             age_seconds = time.time() - pos.entry_time
             if cp <= sl_threshold and age_seconds > grace:
-                logger.info(
+                self._log_steady_exit(
+                    es,
+                    "stop_loss",
                     f"STOP-LOSS triggered: {condition_id[:12]}… "
                     f"price={float(cp):.4f} <= threshold={float(sl_threshold):.4f} "
-                    f"age={age_seconds:.0f}s > grace={grace:.0f}s"
+                    f"age={age_seconds:.0f}s > grace={grace:.0f}s",
                 )
                 return {"reason": "stop_loss", "size_fraction": 1.0}
+            self._clear_steady_exit(es, "stop_loss")
 
         # ── Priority 1: NEAR-MAX-PRICE EXIT ──
         if self._enable_near_max and cp > 0:
             near_max_exit_d = _to_dec(self._near_max_exit)
             near_max_warn_d = _to_dec(self._near_max_warn)
             if cp >= near_max_exit_d:
-                logger.info(
+                self._log_steady_exit(
+                    es,
+                    "near_max_full_exit",
                     f"🏁 NEAR-MAX full exit: {condition_id[:12]}… "
-                    f"price={float(cp):.4f} >= {self._near_max_exit}"
+                    f"price={float(cp):.4f} >= {self._near_max_exit}",
                 )
                 return {"reason": "near_max_full_exit", "size_fraction": 1.0}
+            self._clear_steady_exit(es, "near_max_full_exit")
 
             if (
                 cp >= near_max_warn_d
@@ -534,14 +571,17 @@ class PositionManager:
 
             if es.trailing_active and es.trailing_high_price > 0:
                 trail_distance_d = _to_dec(self._trailing_distance)
-                trail_trigger = es.trailing_high_price - trail_distance_d
+                trail_trigger = es.trailing_high_price * (Decimal("1") - trail_distance_d)
                 if cp <= trail_trigger and cp > pos.entry_price:
-                    logger.info(
+                    self._log_steady_exit(
+                        es,
+                        "trailing_stop",
                         f"📉 TRAILING STOP triggered: {condition_id[:12]}… "
                         f"price={float(cp):.4f} <= trail={float(trail_trigger):.4f} "
-                        f"(peak={float(es.trailing_high_price):.4f} - {self._trailing_distance})"
+                        f"(peak={float(es.trailing_high_price):.4f}, distance={self._trailing_distance * 100:.2f}%)",
                     )
                     return {"reason": "trailing_stop", "size_fraction": 1.0}
+                self._clear_steady_exit(es, "trailing_stop")
 
         # ── Priority 5: LEADER DIVERGENCE ──
         if self._enable_leader_divergence and es.leader_divergence_pending:

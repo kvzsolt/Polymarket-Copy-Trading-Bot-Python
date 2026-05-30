@@ -58,6 +58,7 @@ class CopyabilityReplayService:
         )
         simulated_free_cash = available_balance
         open_positions: set[tuple[str, str]] = set()
+        open_position_notional: dict[tuple[str, str], Decimal] = {}
         max_open_positions = 0
 
         results: list[SignalReplayResult] = []
@@ -70,7 +71,10 @@ class CopyabilityReplayService:
             signals, key=lambda s: (s.first_ts, s.condition_id, s.token_id, s.side)
         ):
             if signal.side == "SELL":
-                open_positions.discard((signal.condition_id, signal.token_id))
+                key = (signal.condition_id, signal.token_id)
+                released = open_position_notional.pop(key, Decimal("0"))
+                simulated_free_cash += released
+                open_positions.discard(key)
                 continue
 
             leader_notional = Decimal(str(signal.total_usdc_size))
@@ -106,7 +110,11 @@ class CopyabilityReplayService:
 
             if copyable:
                 simulated_free_cash -= effective
-                open_positions.add((signal.condition_id, signal.token_id))
+                key = (signal.condition_id, signal.token_id)
+                open_positions.add(key)
+                open_position_notional[key] = (
+                    open_position_notional.get(key, Decimal("0")) + effective
+                )
                 max_open_positions = max(max_open_positions, len(open_positions))
                 copyable_leader_notional += leader_notional
                 copyable_target_sum += effective
@@ -187,4 +195,3 @@ class CopyabilityReplayService:
             return False, "effective_notional_zero", Decimal("0")
 
         return True, "ok", effective
-

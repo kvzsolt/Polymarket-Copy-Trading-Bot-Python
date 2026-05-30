@@ -206,6 +206,53 @@ def _response_avg_price(response: dict[str, Any]) -> Decimal | None:
     return value if value > 0 else None
 
 
+def _response_error_text(response: dict[str, Any]) -> str:
+    value = response.get("error")
+    return str(value).strip().lower() if value is not None else ""
+
+
+_DEFERRED_ORDER_ACK_STATUSES = {
+    "live",
+    "matched",
+    "delayed",
+    "submitted",
+    "submitted_unconfirmed",
+    "submitted_delayed",
+    "order_status_live",
+    "order_status_matched",
+}
+
+
+def _is_deferred_order_ack(response: dict[str, Any]) -> bool:
+    """Whether the venue accepted an order whose fill is not known yet.
+
+    A FAK POST can return ``delayed``/``matched`` with an order id before the
+    matched amount is queryable. Treat that as reconciliation-owned, not as a
+    zero-fill cancellation that should be immediately reposted.
+    """
+    if _response_matched_size(response) > 0:
+        return False
+    if not _response_order_id(response):
+        return False
+    status = str(response.get("status") or "").strip().lower()
+    return status in _DEFERRED_ORDER_ACK_STATUSES
+
+
+def _is_fak_repostable_no_fill(response: dict[str, Any]) -> bool:
+    """Whether a zero-fill FAK response should refresh the book and retry."""
+    if bool(response.get("ambiguous_post_failure")):
+        return False
+    if _is_deferred_order_ack(response):
+        return False
+    if _response_matched_size(response) > 0:
+        return False
+    status = str(response.get("status") or "").strip().lower()
+    error = _response_error_text(response)
+    if "fak_no_match" in error or "order_not_fully_fillable" in error:
+        return True
+    return status == "cancelled"
+
+
 def _level_size_at_price(levels: Any, price: Decimal | None) -> Decimal:
     if price is None:
         return Decimal("0")
@@ -1165,6 +1212,27 @@ class ExecutionService:
                     max_retries=3,
                 )
 
+            if requested_order_type == "FAK" and _is_deferred_order_ack(response):
+                venue_status = str(response.get("status") or "submitted_unconfirmed")
+                self._emit_post_lifecycle(
+                    req=req,
+                    side=side,
+                    order_id=_response_order_id(response),
+                    worst_price=worst_price,
+                    venue_status=venue_status,
+                    lifecycle_status=venue_status,
+                )
+                return ExecutionResult(
+                    accepted=True,
+                    order_id=_response_order_id(response),
+                    status="submitted_unconfirmed",
+                    requested_amount=req.amount,
+                    filled_amount=Decimal("0"),
+                    avg_price=None,
+                    fees_paid=Decimal("0"),
+                    error=None,
+                )
+
             if not response.get("success"):
                 if str(response.get("status") or "").lower() == "submitted_unconfirmed":
                     self._emit_post_lifecycle(
@@ -1185,24 +1253,35 @@ class ExecutionService:
                         fees_paid=Decimal("0"),
                         error=last_error,
                     )
-                self._emit_post_lifecycle(
-                    req=req,
-                    side=side,
-                    order_id=None,
-                    worst_price=worst_price,
-                    venue_status=str(response.get("status") or "failed"),
-                    lifecycle_status=str(response.get("status") or "failed"),
-                )
-                failure_status = str(response.get("status") or "failed").lower()
-                return ExecutionResult(
-                    accepted=False,
-                    order_id=None,
-                    status=failure_status,
-                    requested_amount=req.amount,
-                    filled_amount=Decimal("0"),
-                    avg_price=None,
-                    fees_paid=Decimal("0"),
-                    error=last_error or "order submission failed",
+                if not (
+                    requested_order_type == "FAK"
+                    and _is_fak_repostable_no_fill(response)
+                ):
+                    self._emit_post_lifecycle(
+                        req=req,
+                        side=side,
+                        order_id=None,
+                        worst_price=worst_price,
+                        venue_status=str(response.get("status") or "failed"),
+                        lifecycle_status=str(response.get("status") or "failed"),
+                    )
+                    failure_status = str(response.get("status") or "failed").lower()
+                    return ExecutionResult(
+                        accepted=False,
+                        order_id=None,
+                        status=failure_status,
+                        requested_amount=req.amount,
+                        filled_amount=Decimal("0"),
+                        avg_price=None,
+                        fees_paid=Decimal("0"),
+                        error=last_error or "order submission failed",
+                    )
+                logger.info(
+                    "copy_fak_initial_zero_fill_retry | token=%s side=%s status=%s error=%s",
+                    req.token_id,
+                    side,
+                    str(response.get("status") or "cancelled").lower(),
+                    response.get("error"),
                 )
 
             order_id = _response_order_id(response)
@@ -1211,11 +1290,21 @@ class ExecutionService:
                 matched_size = _response_matched_size(response)
                 avg_fill_price = _response_avg_price(response) or worst_price
                 total_fill_cost = matched_size * avg_fill_price
-                order_ids = [str(order_id)] if order_id else []
-                max_fak_attempts = _positive_int(
-                    self._config.raw.get("COPY_FAK_MAX_ATTEMPTS", 3),
-                    3,
-                )
+                last_no_fill_error = response.get("error")
+                order_ids = [str(order_id)] if order_id and matched_size > 0 else []
+                # Forced exits (near-max / trailing / stop-loss) must fully
+                # offload the position across however many book levels it takes,
+                # so they get a higher repost ceiling than ordinary copy fills.
+                if forced_sell_exit:
+                    max_fak_attempts = _positive_int(
+                        self._config.raw.get("EXIT_FAK_MAX_ATTEMPTS", 8),
+                        8,
+                    )
+                else:
+                    max_fak_attempts = _positive_int(
+                        self._config.raw.get("COPY_FAK_MAX_ATTEMPTS", 8),
+                        8,
+                    )
                 for fak_attempt in range(2, max_fak_attempts + 1):
                     if side == "BUY":
                         remaining_amount = req.amount - total_fill_cost
@@ -1315,22 +1404,34 @@ class ExecutionService:
                             redact_error_detail(exc),
                         )
                         break
+                    next_order_id = _response_order_id(next_response)
+                    next_matched = _response_matched_size(next_response)
+                    if next_matched > 0:
+                        if next_order_id:
+                            order_ids.append(str(next_order_id))
+                        next_avg = _response_avg_price(next_response) or worst_price
+                        matched_size += next_matched
+                        total_fill_cost += next_matched * next_avg
+                        avg_fill_price = (
+                            total_fill_cost / matched_size
+                            if matched_size > 0
+                            else avg_fill_price
+                        )
+                        continue
+                    last_no_fill_error = next_response.get("error") or last_no_fill_error
+                    if _is_fak_repostable_no_fill(next_response):
+                        logger.info(
+                            "copy_fak_repost_zero_fill_continue | token=%s attempt=%d side=%s status=%s error=%s",
+                            req.token_id,
+                            fak_attempt,
+                            side,
+                            str(next_response.get("status") or "cancelled").lower(),
+                            next_response.get("error"),
+                        )
+                        continue
                     if not next_response.get("success"):
                         break
-                    next_order_id = _response_order_id(next_response)
-                    if next_order_id:
-                        order_ids.append(str(next_order_id))
-                    next_matched = _response_matched_size(next_response)
-                    if next_matched <= 0:
-                        break
-                    next_avg = _response_avg_price(next_response) or worst_price
-                    matched_size += next_matched
-                    total_fill_cost += next_matched * next_avg
-                    avg_fill_price = (
-                        total_fill_cost / matched_size
-                        if matched_size > 0
-                        else avg_fill_price
-                    )
+                    break
 
                 if matched_size > 0:
                     if side == "BUY":
@@ -1350,7 +1451,7 @@ class ExecutionService:
                         side=side,
                         order_id=",".join(order_ids) if order_ids else order_id,
                         worst_price=worst_price,
-                        venue_status=str(response.get("status") or fill_status),
+                        venue_status=fill_status,
                         lifecycle_status=fill_status,
                     )
                     return ExecutionResult(
@@ -1381,7 +1482,7 @@ class ExecutionService:
                     filled_amount=Decimal("0"),
                     avg_price=None,
                     fees_paid=Decimal("0"),
-                    error="FAK order did not fill",
+                    error=str(last_no_fill_error or "FAK order did not fill"),
                 )
             # Settlement is owned by the canonical reconciler.
             # Execution never self-confirms fills — it returns

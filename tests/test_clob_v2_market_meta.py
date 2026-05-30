@@ -155,6 +155,23 @@ class TestPostSignedOrderClassification:
         assert "fak_no_match" in result["error"]
 
     @pytest.mark.asyncio
+    async def test_post_signed_order_connection_terminated_is_ambiguous(self):
+        class ConnectionTerminated(Exception):
+            pass
+
+        raw_client = MagicMock()
+        raw_client.post_order.side_effect = ConnectionTerminated(
+            "<ConnectionTerminated error_code:1, last_stream_id:10065>"
+        )
+        wrapper = ClobClientWrapper(raw_client, _dummy_wallet())
+
+        result = await wrapper.post_signed_order({"signed": True})
+
+        assert result["success"] is False
+        assert result["ambiguous_post_failure"] is True
+        assert result["non_retryable"] is False
+
+    @pytest.mark.asyncio
     async def test_neg_risk_false_forwarded(self):
         gw, wrapper = self._make_gateway()
         await gw.post_market_order(

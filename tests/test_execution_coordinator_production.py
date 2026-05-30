@@ -263,6 +263,32 @@ async def test_submit_risk_exit_routes_through_funnel():
 
 
 @pytest.mark.asyncio
+async def test_forced_exit_submitted_unconfirmed_enqueues_reconciliation():
+    """An ambiguous forced-exit ack is enqueued for reconciliation immediately.
+
+    Otherwise the reservation would stay active (kept for the reconciler to
+    release on terminal) but nothing would settle the killed FAK until its TTL
+    expired and the risk-loop reaper picked it up — the deadlock this fixes.
+    """
+    reservation = _make_reservation("res-recon")
+    coord, reservation_service, execution_service = _make_coordinator(
+        reserve_return=reservation,
+        execute_return=_make_exec_result(status="submitted_unconfirmed", order_id="ord-recon"),
+    )
+    coord.reconciler = AsyncMock()
+    coord.reservations_repo.link_order = AsyncMock()
+
+    result = await coord.submit_risk_exit(_intent(side="SELL", source="risk_exit"))
+
+    assert result.accepted is True
+    assert result.status == "submitted_unconfirmed"
+    # Reservation stays active — reconciler owns terminal release.
+    reservation_service.release_terminal.assert_not_called()
+    # ...but reconciliation is kicked off now, not at TTL.
+    coord.reconciler.enqueue.assert_awaited_once_with("ord-recon")
+
+
+@pytest.mark.asyncio
 async def test_submit_near_one_exit_acquires_scope_when_position_coordinator_set():
     reservation = _make_reservation("res-near-one")
     coord, reservation_service, execution_service = _make_coordinator(
