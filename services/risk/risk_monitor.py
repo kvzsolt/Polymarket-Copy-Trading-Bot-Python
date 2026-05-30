@@ -10,25 +10,20 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
-from config.app_config import AppConfig
-
 if TYPE_CHECKING:
-    pass
+    from config.app_config import AppConfig
+    from domain.trading_context import TradingContext
+    from services.healthServer import ReadinessTracker
 
-from domain.trading_context import TradingContext
-from services.accountingService import AccountingService, PositionLot
-from services.executionService import ExecutionRequest, ExecutionService
-from services.feeService import FeeService
-from services.healthServer import ReadinessTracker
 from services.metrics import metrics
+from services.executionService import ExecutionRequest
 from services.positionActionCoordinator import PositionScope
 from services.risk.risk_engine import active_policy
-from storage.postgres.connection import get_pool
 from storage.postgres.fills_repo import FillRecord
-from storage.postgres.orders_repo import OrdersRepo as _PgOrdersRepo
 from utils import is_valid_clob_token_id
 from utils.createClobClient import PRICE_TOKEN_NOT_FOUND
 from utils.fetchData import fetch_data
+from utils.logger import get_logger
 
 # ---------------------------------------------------------------------------
 # Venue circuit breaker — suppresses price polls during exchange outages.
@@ -91,7 +86,7 @@ class VenueCircuitBreaker:
     def reset(self) -> None:
         self._consecutive_failures = 0
         self._opened_at = None
-from utils.logger import get_logger, log_risk_exit
+
 
 logger = get_logger("RiskMonitor")
 
