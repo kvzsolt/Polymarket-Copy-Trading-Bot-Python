@@ -155,6 +155,20 @@ The final trade cap is the minimum of `hard_cap`, `market_headroom`, `category_h
 
 If the number of open positions reaches `MAX_OPEN_POSITIONS`, all BUY intents are rejected with reason `max_open_positions_reached`.
 
+`MAX_POSITION_PCT` caps **per-market exposure** at this fraction of your current **free cash** (not total equity). When a BUY would push a market's exposure past `free_cash × MAX_POSITION_PCT`, the trade is skipped with reason `max_position_pct_reached` and a `⚠️ COPY NOT EXECUTED` panel is printed to the terminal. Raise `MAX_POSITION_PCT` (up to `1.0`) if you want larger single-market concentration; lower it to spread copies across more markets. This is the most common reason a detected leader trade is not copied while the bot is otherwise healthy.
+
+---
+
+## Reservation TTL
+
+| Parameter | Default | Description |
+|---|---|---|
+| `RESERVATION_TTL_SECONDS` | `120` | How long a pre-submit balance/share reservation stays active before it expires and is reclaimed by reconciliation / the risk-loop reaper |
+
+When a copy is submitted, the bot reserves the required quote (BUY) or shares (SELL) so concurrent intents cannot over-commit the same funds. The reservation is released on fill confirmation, rejection, cancel, or terminal reconciliation; if none of those happen it expires after `RESERVATION_TTL_SECONDS`. Shorten this window if pending orders are blocking subsequent same-scope copies for too long; it must be `> 0`.
+
+**Deployment note (reservation key format):** the reservation key now includes the source trade id so two different leader trades on the same market reserve independently. This changes the stored `order_intent_key` format, so a reservation created by an older build is not matched by the new lookup. The effect is bounded and fail-safe — reservations self-heal within `RESERVATION_TTL_SECONDS` (reclaimed by reconciliation / the risk-loop reaper), and duplicate *orders* are still prevented by the tx-keyed processed-trade claim and coordinator idempotency. For a zero-transient rollout, deploy during a quiescent window so no reservations are active at cutover.
+
 ---
 
 ## Daily Drawdown Limits

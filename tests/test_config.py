@@ -86,6 +86,7 @@ class TestHappyPath:
         # Execution defaults.
         assert cfg.execution.max_retries == 3
         assert cfg.execution.paper_trade_only is False
+        assert cfg.execution.reservation_ttl_seconds == 120
         # Logging default path.
         assert cfg.logging.pnl_log_file.endswith("pnl.jsonl")
 
@@ -267,6 +268,24 @@ class TestMalformedValues:
             match="MAX_OPEN_POSITIONS must be a valid int",
         ):
             load_config(valid_env)
+
+    @pytest.mark.parametrize("bad_value", ["0", "-1", "-120"])
+    def test_reservation_ttl_seconds_must_be_positive(
+        self, valid_env: dict[str, str], bad_value: str
+    ) -> None:
+        valid_env["RESERVATION_TTL_SECONDS"] = bad_value
+        with pytest.raises(
+            EnvValidationError,
+            match="RESERVATION_TTL_SECONDS must be > 0",
+        ):
+            load_config(valid_env)
+
+    def test_reservation_ttl_seconds_override_applied(
+        self, valid_env: dict[str, str]
+    ) -> None:
+        valid_env["RESERVATION_TTL_SECONDS"] = "45"
+        cfg = load_config(valid_env)
+        assert cfg.execution.reservation_ttl_seconds == 45
 
 
 # ---------------------------------------------------------------------------

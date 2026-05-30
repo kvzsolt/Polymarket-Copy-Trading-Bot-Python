@@ -80,6 +80,23 @@ class ReservationService:
         # from ``UniqueViolationError`` covers the residual.
         existing = await self.reservations_repo.get_active_by_intent_key(stable_key)
 
+        if existing is None:
+            # Transitional dual-read for the ``source_event_id`` key-format
+            # change. A reservation created by a build that predates that
+            # component is stored under the 6-field legacy key and is
+            # invisible to the 7-field lookup above, which would let a second
+            # reservation be taken on the same scope until the orphan expires.
+            # Re-check under the legacy key so an orphaned reservation still
+            # blocks (active) or is expire-reconciled (stale). New
+            # reservations are always stored under the 7-field ``stable_key``,
+            # so this only ever matches pre-deployment rows and is a no-op
+            # once they drain (see OrderIntentKey.stable_key DEPLOYMENT NOTE).
+            legacy_key = intent.key.legacy_stable_key()
+            if legacy_key != stable_key:
+                existing = await self.reservations_repo.get_active_by_intent_key(
+                    legacy_key
+                )
+
         if existing:
             if existing.expires_at.timestamp() < self.clock.utcnow_timestamp():
                 logger.info(
