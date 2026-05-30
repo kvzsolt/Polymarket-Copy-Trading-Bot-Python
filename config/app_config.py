@@ -344,7 +344,7 @@ class RiskConfig:
     stop_loss_grace_period_seconds: float
     # PR #105 review: bound the in-memory risk price cache via typed config
     # so the production sizing/risk path no longer relies on a raw env read.
-    # ``services.riskMonitor.RiskPriceCache`` still honours its env fallback
+    # ``services.risk.risk_monitor.RiskPriceCache`` still honours its env fallback
     # as a legacy adapter (issue #73 allows raw env in legacy/test paths only).
     risk_price_cache_max_size: int
 

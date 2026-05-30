@@ -14,11 +14,14 @@ from services.market_data_service import MarketDataService, MarketDataPolicy
 from services.multiUserConfig import RuntimeUser, UserFollowConfig
 from services.pnlTracker import PnLTracker
 from services.positionManager import PositionManager
-from services.riskEngine import RiskEngine, init_risk_engine
+from services.risk.risk_engine import RiskEngine, init_risk_engine
 from services.healthServer import ReadinessTracker
 from services.entryPermissionService import EntryPermissionService
 from services.leaderScoringService import LeaderScoringService
-from services.riskMonitor import rehydrate_position_manager, reconcile_unconfirmed_risk_orders
+from services.risk.risk_monitor import (
+    reconcile_unconfirmed_risk_orders,
+    rehydrate_position_manager,
+)
 from storage.postgres.fills_repo import FillsRepo
 from storage.postgres.orders_repo import OrdersRepo
 from storage.postgres.positions_repo import PositionsRepo

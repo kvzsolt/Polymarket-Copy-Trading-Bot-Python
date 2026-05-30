@@ -9,7 +9,7 @@ from domain.trading_context import TradingContext
 from orchestrators.runtime_bootstrap import startup_reconcile_unconfirmed
 from services.executionService import ExecutionResult
 from services.positionManager import PositionManager
-from services.riskMonitor import (
+from services.risk.risk_monitor import (
     VenueCircuitBreaker,
     _get_context_cached_price,
     rehydrate_position_manager,

@@ -21,7 +21,7 @@ from services.copyDecisionService import CopyDecision
 from services.executionService import ExecutionResult
 from services.pnlTracker import PnLTracker
 from services.positionManager import PositionManager
-from services.riskEngine import RiskEngine
+from services.risk.risk_engine import RiskEngine
 from services.accountingService import AccountingService
 from storage.postgres.fills_repo import FillRecord, FillsRepo
 

@@ -19,7 +19,7 @@ from services.executionService import ExecutionRequest
 from services.metrics import metrics
 from domain.position_key import PositionKey
 from services.positionActionCoordinator import PositionScope  # noqa: F401  back-compat alias
-from services.riskEngine import headroom_for_buy
+from services.risk.risk_engine import headroom_for_buy
 from storage.postgres.fills_repo import FillRecord
 from storage.postgres.positions_repo import PositionRecord
 from utils import is_valid_clob_token_id
