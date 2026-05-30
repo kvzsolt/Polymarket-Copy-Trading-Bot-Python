@@ -135,18 +135,30 @@ class MarketDataService:
     ) -> MarketDataBundle:
         active_policy = policy or self._policy
 
-        if active_policy.primary_source == "rest_snapshot":
-            # In REST primary mode, the trade pipeline is responsible for
-            # passing the trade side so the snapshot's side-specific
-            # liquidity check is meaningful. Callers without a side fall
-            # back to the legacy WSS-cache path below.
-            if side is not None:
-                return await self.require_execution_snapshot(
-                    token_id,
-                    side=side,
-                    condition_id=condition_id,
-                    policy=active_policy,
-                )
+        if active_policy.primary_source == "rest_snapshot" and side is not None:
+            # REST is the prefetch / bootstrap source: the pipeline takes one
+            # fresh REST `/book` before the first order and then subscribes the
+            # token to the market WSS. From that point the WSS stream is the
+            # primary source — so prefer the live WSS-fed cache here and only
+            # fetch a fresh REST snapshot when the cache is not yet executable.
+            #
+            # ``_bundle_from_cache`` returns a bundle only when quote+book are
+            # WSS-fresh (or a still-fresh REST snapshot bridging the gap before
+            # the first WSS delta lands); a cold/stale cache returns ``None``
+            # and we fall through to a gated REST fetch. This keeps "REST
+            # prefetch, WSS after subscription" while staying fail-closed, and
+            # it uses the same execution gates the WSS-primary path already
+            # applies. (A resolved market raises MarketDataNotReady and
+            # propagates — we must not trade it.)
+            cached = self._bundle_from_cache(token_id, active_policy)
+            if cached is not None:
+                return cached
+            return await self.require_execution_snapshot(
+                token_id,
+                side=side,
+                condition_id=condition_id,
+                policy=active_policy,
+            )
 
         bundle = self._bundle_from_cache(token_id, active_policy)
         if bundle is not None:

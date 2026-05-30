@@ -1335,7 +1335,13 @@ async def execute_trades(
     tick_size_by_token: dict[str, float] = {}
     market_data_stale_tokens: set[str] = set()
     market_data_stale_codes: dict[tuple[str, str], str] = {}
-    if normalized and _market_data_primary_source(context) == "rest_snapshot":
+    # ``_prefetch_market_data_for_signals`` dispatches on the primary source
+    # internally (rest_snapshot -> REST /book prefetch; otherwise the WSS
+    # subscribe/bootstrap/require_fresh_data path), so this gate must run for
+    # BOTH modes — restricting it to one mode disables the other's pre-loop
+    # bundling and its per-signal freshness gate. (2dea338 inverted this gate
+    # to ``== rest_snapshot``, which silently dropped WSS-mode stale gating.)
+    if normalized:
         (
             bundles_by_token,
             market_data_stale_tokens,
