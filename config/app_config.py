@@ -118,6 +118,19 @@ class _Parser:
             except ValueError:
                 return 0.0
 
+    def float_or_auto(self, key: str, default: str) -> float | None:
+        raw = self._strip(key, self.raw(key, default))
+        if raw == "" or raw.lower() == "auto" or raw.startswith("#"):
+            return None
+        try:
+            return float(raw)
+        except ValueError:
+            self.errors.append(f"{key} must be a valid float or 'auto', got: {raw!r}")
+            try:
+                return float(default)
+            except ValueError:
+                return 0.0
+
     def int_(self, key: str, default: str) -> int:
         raw = self._strip(key, self.raw(key, default))
         if raw == "":
@@ -337,7 +350,7 @@ class RiskConfig:
     near_max_price_exit: float
     profit_lock_trigger_pct: float
     profit_lock_sell_fraction: float
-    trailing_activation_pct: float
+    trailing_activation_pct: float | None
     trailing_distance: float
     staged_tp_levels: str
     staged_tp_fractions: str
@@ -440,6 +453,8 @@ class NetworkConfig:
     enable_metrics_server: bool
     metrics_port: int
     metrics_bind_host: str
+    # Optional fallback RPC when primary returns internal errors (-32603).
+    fallback_rpc_url: str = ""
     # Polymarket-side collateral / exchange contract addresses. These used
     # to be read straight out of ``ENV`` by ``utils/createClobClient.py``
     # and ``utils/getMyBalance.py``; promoted to typed config so the
@@ -1082,7 +1097,7 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         near_max_price_exit=p.float_("NEAR_MAX_PRICE_EXIT", "0.95"),
         profit_lock_trigger_pct=p.float_("PROFIT_LOCK_TRIGGER_PCT", "70"),
         profit_lock_sell_fraction=p.float_("PROFIT_LOCK_SELL_FRACTION", "0.50"),
-        trailing_activation_pct=p.float_("TRAILING_ACTIVATION_PCT", "20"),
+        trailing_activation_pct=p.float_or_auto("TRAILING_ACTIVATION_PCT", "20"),
         trailing_distance=p.float_("TRAILING_DISTANCE", "0.05"),
         staged_tp_levels=p.string("STAGED_TP_LEVELS", "30,50"),
         staged_tp_fractions=p.string("STAGED_TP_FRACTIONS", "0.25,0.35"),
@@ -1202,6 +1217,7 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
 
     network = NetworkConfig(
         rpc_url=p.string("RPC_URL", ""),
+        fallback_rpc_url=p.string("FALLBACK_RPC_URL", ""),
         chain_id=wallet.chain_id,
         usdc_contract_address=(
             p.string("COLLATERAL_CONTRACT_ADDRESS", "")

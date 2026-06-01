@@ -60,9 +60,13 @@ def _erc20_read(
     contract_address: str,
     method: str,
     args: list[Any],
+    fallback_rpc_url: str = "",
 ) -> int:
-    """Synchronous ERC-20 read call."""
-    w3 = Web3(Web3.HTTPProvider(rpc_url))
+    """Synchronous ERC-20 read call with RPC fallback."""
+    from clients.network.rpc_fallback import FallbackWeb3Provider
+
+    provider = FallbackWeb3Provider(rpc_url, fallback_rpc_url)
+    w3 = provider.get_web3()
     checksum_contract = Web3.to_checksum_address(contract_address)
     contract = w3.eth.contract(address=checksum_contract, abi=_ERC20_ABI)
     func = getattr(contract.functions, method)
@@ -73,6 +77,7 @@ def _check_sync(
     *,
     wallet_address: str,
     rpc_url: str,
+    fallback_rpc_url: str,
     pusd_address: str,
     ctf_exchange_address: str,
     min_pusd_balance: Decimal,
@@ -91,6 +96,7 @@ def _check_sync(
     try:
         raw_balance = _erc20_read(
             rpc_url=rpc_url,
+            fallback_rpc_url=fallback_rpc_url,
             contract_address=pusd_contract,
             method="balanceOf",
             args=[checksum_wallet],
@@ -114,6 +120,7 @@ def _check_sync(
     try:
         raw_allowance = _erc20_read(
             rpc_url=rpc_url,
+            fallback_rpc_url=fallback_rpc_url,
             contract_address=pusd_contract,
             method="allowance",
             args=[checksum_wallet, Web3.to_checksum_address(ctf_exchange_address)],
@@ -172,6 +179,7 @@ async def check_collateral_readiness(
     *,
     wallet_address: str,
     rpc_url: str,
+    fallback_rpc_url: str = "",
     pusd_address: str,
     ctf_exchange_address: str,
     min_pusd_balance: Decimal = Decimal("1.0"),
@@ -191,6 +199,7 @@ async def check_collateral_readiness(
         _check_sync,
         wallet_address=wallet_address,
         rpc_url=rpc_url,
+        fallback_rpc_url=fallback_rpc_url,
         pusd_address=pusd_address,
         ctf_exchange_address=ctf_exchange_address,
         min_pusd_balance=min_pusd_balance,

@@ -82,6 +82,18 @@ def _float(key: str, default: str) -> float:
     return float(raw) if raw else float(default)
 
 
+def _float_or_auto(key: str, default: str) -> float | None:
+    raw = _ensure_no_inline_comment(key, _raw(key, default))
+    if not raw or raw.lower() == 'auto' or raw.startswith('#'):
+        return None
+    try:
+        return float(raw)
+    except ValueError as exc:
+        raise EnvValidationError(
+            f"{key} must be a valid float or 'auto', got: {raw!r}"
+        ) from exc
+
+
 def _int(key: str, default: str) -> int:
     raw = _ensure_no_inline_comment(key, _raw(key, default))
     return int(raw) if raw else int(default)
@@ -222,6 +234,11 @@ def get_metrics_bind_host() -> str:
     return _ensure_no_inline_comment('METRICS_BIND_HOST', _raw('METRICS_BIND_HOST', '127.0.0.1'))
 
 
+def get_fallback_rpc_url() -> str:
+    """Return the fallback RPC URL if configured, otherwise empty string."""
+    return _ensure_no_inline_comment('FALLBACK_RPC_URL', _raw('FALLBACK_RPC_URL', ''))
+
+
 def build_wallet_config() -> WalletConfig:
     return WalletConfig(
         private_key=get_private_key(),
@@ -271,6 +288,7 @@ def validate_runtime_env() -> None:
         'CHAIN_ID',
         'MULTI_USER_CONFIG_FILE',
         'RPC_URL',
+        'FALLBACK_RPC_URL',
         'PNL_LOG_FILE',
         'CLOB_HTTP_URL',
         'METRICS_BIND_HOST',
@@ -553,7 +571,7 @@ def _build_env_snapshot() -> dict[str, object]:
 
     # Trailing stop
     'ENABLE_TRAILING_STOP': os.getenv('ENABLE_TRAILING_STOP', 'false').strip().lower() in ('1', 'true', 'yes'),
-    'TRAILING_ACTIVATION_PCT': _float('TRAILING_ACTIVATION_PCT', '20'),
+    'TRAILING_ACTIVATION_PCT': _float_or_auto('TRAILING_ACTIVATION_PCT', '20'),
     'TRAILING_DISTANCE': _float('TRAILING_DISTANCE', '0.05'),
 
     # Staged take-profit (comma-separated levels and fractions)
@@ -616,6 +634,7 @@ def _build_env_snapshot() -> dict[str, object]:
     # --- Infrastructure ---
     'MULTI_USER_CONFIG_FILE': os.getenv('MULTI_USER_CONFIG_FILE', ''),
     'RPC_URL': os.getenv('RPC_URL', 'https://polygon-bor-rpc.publicnode.com'),
+    'FALLBACK_RPC_URL': os.getenv('FALLBACK_RPC_URL', ''),
     'USDC_CONTRACT_ADDRESS': os.getenv('USDC_CONTRACT_ADDRESS', '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174'),
     'PUSD_CONTRACT_ADDRESS': os.getenv('PUSD_CONTRACT_ADDRESS', '0x5731a8987bC70324e2C14d22D95a9cF0E84b687E'),
     'CTF_EXCHANGE_V2_ADDRESS': os.getenv('CTF_EXCHANGE_V2_ADDRESS', '0xE111180000d2663C0091e4f400237545B87B996B'),
