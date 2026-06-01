@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import signal
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 
 # Load non-sensitive runtime config + local .env as early as possible.
@@ -612,25 +613,58 @@ async def _subscribe_context_tokens(
             )
 
 
+@dataclass
+class _Supervised:
+    """A long-lived auxiliary background loop owned by the main supervisor.
+
+    ``factory`` must return a FRESH awaitable on every call so a crashed loop
+    can be restarted by re-invoking it. The supervisor restarts a crashed loop
+    up to ``max_restarts`` times within a rolling window; surviving longer than
+    ``recovery_seconds`` resets the counter (transient blips don't accumulate).
+    Once the budget is exhausted the supervisor fail-closes the whole process
+    rather than limp along with a dead safety subsystem.
+    """
+
+    name: str
+    factory: Callable[[], Awaitable[None]]
+    max_restarts: int = 5
+    recovery_seconds: float = 60.0
+    task: asyncio.Task | None = None
+    restarts: int = 0
+    started: float = 0.0
+
+    def spawn(self) -> asyncio.Task:
+        self.started = asyncio.get_event_loop().time()
+        self.task = asyncio.create_task(self.factory(), name=self.name)
+        return self.task
+
+
+def _on_supervised_crash(spec: _Supervised, now: float) -> str:
+    """Pure restart decision for a crashed supervised loop.
+
+    Mutates ``spec.restarts`` and returns ``"restart"`` or ``"fail_closed"``.
+    Kept free of asyncio/logging so it is unit-testable in isolation.
+    """
+    if now - spec.started >= spec.recovery_seconds:
+        spec.restarts = 0  # survived long enough — reset before counting this crash
+    spec.restarts += 1
+    return "fail_closed" if spec.restarts >= spec.max_restarts else "restart"
+
+
 async def _shutdown_runtime(
     *,
     monitor_tasks: list[asyncio.Task],
-    discovery_task: asyncio.Task | None,
-    risk_task: asyncio.Task | None,
-    near_one_tasks: list[asyncio.Task],
-    redemption_tasks: list[asyncio.Task],
+    supervised: list[_Supervised],
     market_data_runtimes: dict[str, MarketDataRuntime],
     user_data_runtimes: list[UserDataRuntime],
     metrics_runner,
 ) -> None:
     shutdown_tasks = list(monitor_tasks)
 
-    if discovery_task:
-        shutdown_tasks.append(discovery_task)
-    if risk_task:
-        shutdown_tasks.append(risk_task)
-    shutdown_tasks.extend(near_one_tasks)
-    shutdown_tasks.extend(redemption_tasks)
+    # Cancel the CURRENT task ref of each supervised loop (a restarted loop
+    # holds a new task object, so we must read spec.task here, not a captured
+    # reference from startup).
+    shutdown_tasks.extend(spec.task for spec in supervised if spec.task)
 
     for task in shutdown_tasks:
         task.cancel()
@@ -669,8 +703,23 @@ async def _shutdown_runtime(
     if metrics_runner:
         await metrics_runner.cleanup()
 
+    # Honour the connection layer's documented shutdown contract: the
+    # process-wide asyncpg pool is opened during startup and must be closed
+    # here. Idempotent (no-op when the pool was never initialised, e.g. paper
+    # mode with no DATABASE_URL) and warning-only so a teardown hiccup never
+    # masks the real shutdown reason.
+    try:
+        from storage.postgres.connection import shutdown_pool
 
-async def main():
+        await shutdown_pool()
+    except Exception as exc:
+        logger.warning(
+            "db_pool_shutdown_failed",
+            extra={"error": redact_error_detail(exc)},
+        )
+
+
+async def main() -> int:
     configure_logging(level="INFO")
 
     try:
@@ -678,7 +727,7 @@ async def main():
         startup_config = load_config()
     except EnvValidationError as exc:
         print_error(str(exc))
-        return
+        return 1
 
     from bot_cli.commands.doctor import run_doctor_checks
 
@@ -702,7 +751,7 @@ async def main():
             import json
 
             print(json.dumps(doctor_result, indent=2))
-            return
+            return 1
         if doctor_result.get("status") == "warning":
             warnings = [
                 c for c in doctor_result.get("checks", [])
@@ -719,7 +768,7 @@ async def main():
         decision = await check_geoblock()
         if not decision.allowed:
             print_error(f"Trading disabled by geoblock policy: {decision.reason}")
-            return
+            return 1
 
     application = await build_app()
 
@@ -740,7 +789,7 @@ async def main():
                 f'Invalid leader wallet "{wallet}" — must be 42-char hex '
                 "(0x + 40 hex digits)."
             )
-        return
+        return 1
 
     startup_selection = await resolve_startup_leaders(
         configured_leaders=configured,
@@ -772,7 +821,7 @@ async def main():
             },
         )
         print_error("No active leaders available. Auto-selected leaders were invalid.")
-        return
+        return 1
 
     if not active_leaders:
         logger.error(
@@ -792,12 +841,12 @@ async def main():
             "No active leaders available. Manual LEADER_WALLETS are empty and "
             "auto trader detection did not find eligible candidates."
         )
-        return
+        return 1
 
     runtime_users = load_runtime_users(active_leaders, application.config)
     if not runtime_users:
         print_error("No runtime users configured.")
-        return
+        return 1
 
     application.readiness.update(runtime_user_count=len(runtime_users))
 
@@ -1246,37 +1295,43 @@ async def main():
             )
         )
 
-    discovery_task = None
+    # Auxiliary long-lived loops are registered as _Supervised specs and driven
+    # by the main wait loop below (bounded restart, fail-closed on exhaustion)
+    # instead of being fire-and-forget. Each factory must return a FRESH
+    # awaitable per call so a crashed loop can be respawned.
+    supervised: list[_Supervised] = []
 
     if application.config.discovery.enable_trader_discovery:
         dynamic_monitoring_enabled = bool(
             application.config.discovery.discovery_dynamic_monitoring_enabled
         )
-        discovery_task = asyncio.create_task(
-            _discovery_refresh_loop(
-                registry,
-                configured,
-                refresh_interval,
-                leaders_repo=leaders_repo if dynamic_monitoring_enabled else None,
-                on_new_leaders=_on_new_leaders if dynamic_monitoring_enabled else None,
-                already_monitored=monitored_set,
+        supervised.append(
+            _Supervised(
+                name="discovery-refresh",
+                factory=lambda: _discovery_refresh_loop(
+                    registry,
+                    configured,
+                    refresh_interval,
+                    leaders_repo=leaders_repo if dynamic_monitoring_enabled else None,
+                    on_new_leaders=_on_new_leaders if dynamic_monitoring_enabled else None,
+                    already_monitored=monitored_set,
+                ),
             )
         )
-
-    risk_task = None
 
     if application.config.risk.enable_risk_mgmt:
         from services.risk.risk_monitor import risk_monitor_loop_for_contexts
 
-        risk_task = asyncio.create_task(
-            risk_monitor_loop_for_contexts(
-                list(risk_contexts_by_user.values()),
-                readiness_tracker=application.readiness,
-                config=application.config,
+        supervised.append(
+            _Supervised(
+                name="risk-monitor",
+                factory=lambda: risk_monitor_loop_for_contexts(
+                    list(risk_contexts_by_user.values()),
+                    readiness_tracker=application.readiness,
+                    config=application.config,
+                ),
             )
         )
-
-    near_one_tasks: list[asyncio.Task] = []
 
     if application.config.near_one_exit.enable_near_one_exit:
         from services.near_one_exit import NearOneExitService
@@ -1285,19 +1340,21 @@ async def main():
             user_state = user_states.get(runtime_user.user_id)
             if user_state is None or user_state.market_data_service is None:
                 continue
-            near_one_tasks.append(
-                asyncio.create_task(
-                    NearOneExitService(
-                        position_manager=user_state.position_manager,
-                        execution_service=user_state.execution_service,
-                        market_data_service=user_state.market_data_service,
-                        config=application.config,
-                        readiness=application.readiness,
-                        user_id=runtime_user.user_id,
-                        funder_address=runtime_user.wallet.funder_address,
-                        execution_coordinator=getattr(user_state, "execution_coordinator", None),
-                    ).loop(),
+            near_one_service = NearOneExitService(
+                position_manager=user_state.position_manager,
+                execution_service=user_state.execution_service,
+                market_data_service=user_state.market_data_service,
+                config=application.config,
+                readiness=application.readiness,
+                user_id=runtime_user.user_id,
+                funder_address=runtime_user.wallet.funder_address,
+                execution_coordinator=getattr(user_state, "execution_coordinator", None),
+            )
+            supervised.append(
+                _Supervised(
                     name=f"near-one-exit-{runtime_user.user_id}",
+                    # Bind per-user service via default arg to avoid late-binding.
+                    factory=lambda s=near_one_service: s.loop(),
                 )
             )
 
@@ -1308,8 +1365,6 @@ async def main():
     # market cache must show the token pinned at a terminal price
     # (REDEEM_RESOLVED_LOW / REDEEM_RESOLVED_HIGH). The Web3 redeem path runs in
     # a worker thread so it never blocks trade/risk/WSS loops.
-    redemption_tasks: list[asyncio.Task] = []
-
     if application.config.redemption.enable_auto_redeem:
         from services.redemption import RedemptionService
 
@@ -1327,17 +1382,22 @@ async def main():
                     },
                 )
                 continue
-            redemption_tasks.append(
-                asyncio.create_task(
-                    RedemptionService(
-                        config=application.config,
-                        wallet_address=runtime_user.wallet.funder_address,
-                        market_store=market_store,
-                        private_key=runtime_user.wallet.private_key,
-                    ).loop(),
+            redemption_service = RedemptionService(
+                config=application.config,
+                wallet_address=runtime_user.wallet.funder_address,
+                market_store=market_store,
+                private_key=runtime_user.wallet.private_key,
+            )
+            supervised.append(
+                _Supervised(
                     name=f"redemption-{runtime_user.user_id}",
+                    # Bind per-user service via default arg to avoid late-binding.
+                    factory=lambda s=redemption_service: s.loop(),
                 )
             )
+
+    for spec in supervised:
+        spec.spawn()
 
     monitor_tasks.extend(
         asyncio.create_task(
@@ -1354,31 +1414,77 @@ async def main():
         for wallet in monitored_leaders
     )
 
+    loop = asyncio.get_running_loop()
     try:
         while True:
+            # Wait on leader monitors AND every live supervised aux loop, so a
+            # crash in risk / discovery / near-one / redemption is observed here
+            # rather than dying silently while the process stays "up".
             active = [task for task in monitor_tasks if not task.done()]
+            active += [
+                spec.task for spec in supervised if spec.task and not spec.task.done()
+            ]
 
-            if active:
-                done, _ = await asyncio.wait(active, timeout=refresh_interval)
+            if not active:
+                await asyncio.sleep(refresh_interval)
+                metrics.inc("no_leaders_monitored_total")
+                continue
 
-                for task in done:
-                    exc = task.exception()
+            done, _ = await asyncio.wait(active, timeout=refresh_interval)
+
+            fail_closed = False
+            for task in done:
+                spec = next((s for s in supervised if s.task is task), None)
+                exc = task.exception()
+
+                if spec is None:
+                    # Leader monitor: existing behavior — log and drop; dynamic
+                    # discovery re-introduces monitors as leaders change.
                     if exc:
                         logger.error(
                             "monitor_task_crashed",
                             extra={"error": redact_error_detail(exc)},
                         )
-            else:
-                await asyncio.sleep(refresh_interval)
-                metrics.inc("no_leaders_monitored_total")
+                    continue
+
+                if exc is None:
+                    # Supervised loops run forever; a clean return means the
+                    # subsystem disabled itself (e.g. config gate). Leave it
+                    # dropped rather than tear the process down.
+                    logger.warning(
+                        "supervised_task_exited_clean",
+                        extra={"task": spec.name},
+                    )
+                    continue
+
+                metrics.inc("supervised_task_restart_total")
+                decision = _on_supervised_crash(spec, loop.time())
+                logger.error(
+                    "supervised_task_crashed",
+                    extra={
+                        "task": spec.name,
+                        "restarts": spec.restarts,
+                        "decision": decision,
+                        "error": redact_error_detail(exc),
+                    },
+                )
+                if decision == "restart":
+                    spec.spawn()
+                else:
+                    logger.critical(
+                        "supervised_task_fail_closed",
+                        extra={"task": spec.name, "restarts": spec.restarts},
+                    )
+                    application.readiness.update(supervisor_ok=False)
+                    fail_closed = True
+
+            if fail_closed:
+                return 1
 
     finally:
         await _shutdown_runtime(
             monitor_tasks=monitor_tasks,
-            discovery_task=discovery_task,
-            risk_task=risk_task,
-            near_one_tasks=near_one_tasks,
-            redemption_tasks=redemption_tasks,
+            supervised=supervised,
             market_data_runtimes=market_data_runtimes,
             user_data_runtimes=user_data_runtimes,
             metrics_runner=metrics_runner,
@@ -1399,16 +1505,23 @@ if __name__ == "__main__":
     signal.signal(signal.SIGTERM, _shutdown_handler)
     signal.signal(signal.SIGINT, _shutdown_handler)
 
+    import sys
+
+    exit_code = 0
     try:
-        loop.run_until_complete(main_task)
+        # main() returns 1 on a fatal/fail-closed startup or a supervisor
+        # exhaustion; orderly SIGTERM/SIGINT shutdown cancels the task and
+        # exits 0.
+        exit_code = loop.run_until_complete(main_task) or 0
     except (asyncio.CancelledError, KeyboardInterrupt):
-        pass
+        exit_code = 0
     except Exception as exc:
-        import sys
         import traceback
 
         print_error(f"Fatal startup error: {exc}")
         traceback.print_exc()
-        sys.exit(1)
+        exit_code = 1
     finally:
         loop.close()
+
+    sys.exit(exit_code)

@@ -59,6 +59,14 @@ class ReadinessTracker:
             "last_wss_message_ts": 0,
             # PR7 — position drift sweep status.
             "drift_ok": False,
+            # Background-task supervisor health. True until a supervised aux
+            # loop (risk / discovery / near-one / redemption) exhausts its
+            # restart budget and the process fail-closes. Deliberately NOT in
+            # _STRICT_REQUIRED_KEYS: a transient restart should not flap
+            # /health/ready (the Docker HEALTHCHECK target) and trigger an
+            # orchestrator to kill the container mid-recovery. Surfaced via the
+            # snapshot + the ``supervised_task_restart_total`` metric instead.
+            "supervisor_ok": True,
         }
         if initial:
             self._state.update(initial)
