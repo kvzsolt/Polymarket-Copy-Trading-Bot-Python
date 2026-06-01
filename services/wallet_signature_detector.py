@@ -41,11 +41,12 @@ def _derive_signer_address(private_key: str) -> str | None:
         return None
 
 
-def _fetch_contract_code_hex(rpc_url: str, address: str) -> str:
+def _fetch_contract_code_hex(rpc_url: str, address: str, fallback_rpc_url: str = "") -> str:
+    from clients.network.rpc_fallback import FallbackWeb3Provider
     from web3 import Web3
 
-    provider = Web3.HTTPProvider(rpc_url)
-    w3 = Web3(provider)
+    provider = FallbackWeb3Provider(rpc_url, fallback_rpc_url)
+    w3 = provider.get_web3()
     checksum = Web3.to_checksum_address(address)
     return str(w3.eth.get_code(checksum).hex())
 
@@ -89,10 +90,13 @@ async def detect_wallet_signature_type(
 
     if signer_address and funder_address and signer_address.lower() != funder_address.lower():
         try:
+            # Try to get fallback from the wallet config if available
+            fallback_rpc = getattr(wallet_config, 'fallback_rpc_url', '') or ''
             code_hex = await asyncio.to_thread(
                 _fetch_contract_code_hex,
                 wallet_config.polygon_rpc_url,
                 funder_address,
+                fallback_rpc,
             )
             funder_has_code = bool(code_hex and code_hex != "0x")
         except Exception as exc:
