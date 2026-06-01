@@ -61,19 +61,21 @@ breach.
 - The expiry reaper is the catch-all for that case — but it only runs if the
   risk loop runs.
 
-**Proposed minimal fix (asyncio-native, reuses existing code, no rearchitecture):**
-Run the existing expiry reaper independently of `enable_risk_mgmt` — a small
-periodic task per runtime user that calls
-`reservation_service.release_expired_active()` on an interval (reusing
-`_reap_expired_reservations_for_context` semantics, which already only release
-reconciliation-confirmed-terminal reservations, preserving duplicate-order and
-stale-lock protections). This is a startup-wiring change in `app.py`; it is left
-unimplemented pending confirmation because it is a behavior change on the
-safety-critical startup path and overlaps the task-supervision work on
-`fix/develop-runtime-hardening`.
+**Fix (implemented — asyncio-native, reuses existing code, no rearchitecture):**
+`app.py` now starts a standalone reservation reaper **only when
+`enable_risk_mgmt` is false** (so the risk-on path is byte-for-byte unchanged).
+The reaper periodically (interval = `polling.reconcile_interval_seconds`, floored
+at 30s) calls the new testable helper `app._reap_reservations_once(contexts)`,
+which delegates to the existing, vetted
+`services.risk.risk_monitor._reap_expired_reservations_for_context` →
+`reservation_service.release_expired_active()`. That path only releases
+reservations whose linked order reconciliation confirms is venue-terminal, so
+duplicate-order and stale-lock protections are preserved. The task is cancelled
+on shutdown via `_shutdown_runtime` (new `reservation_reaper_tasks` param).
+Regression tests: `tests/test_reservation_reaper.py`.
 
 ## Conclusion
 The concurrency audit's P0/P1 items are already implemented correctly for an
 asyncio application; no threading rewrite is warranted or safe. The single
-actionable item is the risk-gated reservation reaper (C8-adjacent), proposed as a
-minimal, reuse-existing fix above.
+actionable item — the risk-gated reservation reaper (C8-adjacent) — has been
+fixed with the minimal, reuse-existing change described above.

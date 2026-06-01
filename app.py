@@ -157,6 +157,24 @@ def _flatten_contexts(
     ]
 
 
+async def _reap_reservations_once(contexts: list["TradingContext"]) -> None:
+    """Reconcile-and-release TTL-expired reservations across *contexts*.
+
+    Standalone equivalent of the risk loop's in-session reaper, used when risk
+    management is disabled. Reuses the vetted per-context reaper, which only
+    releases reservations whose linked order reconciliation confirms is
+    venue-terminal — duplicate-order / stale-lock protections are preserved.
+    See ``docs/concurrency-audit-response.md`` (C8-adjacent gap).
+    """
+    from services.risk.risk_monitor import _reap_expired_reservations_for_context
+
+    for ctx in contexts:
+        try:
+            await _reap_expired_reservations_for_context(ctx)
+        except Exception:
+            logger.debug("reservation_reaper_failed", exc_info=True)
+
+
 def _wallets_blocked_by_reconcile_failures(
     started_wallets: list[str],
     contexts_by_leader: dict[str, list["TradingContext"]],
@@ -619,6 +637,7 @@ async def _shutdown_runtime(
     risk_task: asyncio.Task | None,
     near_one_tasks: list[asyncio.Task],
     redemption_tasks: list[asyncio.Task],
+    reservation_reaper_tasks: list[asyncio.Task] | None = None,
     market_data_runtimes: dict[str, MarketDataRuntime],
     user_data_runtimes: list[UserDataRuntime],
     metrics_runner,
@@ -631,6 +650,7 @@ async def _shutdown_runtime(
         shutdown_tasks.append(risk_task)
     shutdown_tasks.extend(near_one_tasks)
     shutdown_tasks.extend(redemption_tasks)
+    shutdown_tasks.extend(reservation_reaper_tasks or [])
 
     for task in shutdown_tasks:
         task.cancel()
@@ -1276,6 +1296,31 @@ async def main():
             )
         )
 
+    # Standalone reservation reaper for risk-disabled runs. When risk
+    # management is on, its loop already reaps expired reservations in-session;
+    # with it off, a TTL-expired reservation on a stuck submitted_unconfirmed
+    # order would otherwise strand capital/shares until restart. Only added
+    # when risk mgmt is off so the risk-on path is unchanged. See
+    # docs/concurrency-audit-response.md (C8-adjacent gap).
+    reservation_reaper_tasks: list[asyncio.Task] = []
+    if not application.config.risk.enable_risk_mgmt:
+        _reaper_contexts = _flatten_contexts(contexts_by_leader)
+        _reaper_interval = max(
+            30.0, float(application.config.polling.reconcile_interval_seconds)
+        )
+
+        async def _reservation_reaper_loop() -> None:
+            while True:
+                await asyncio.sleep(_reaper_interval)
+                await _reap_reservations_once(_reaper_contexts)
+
+        if _reaper_contexts:
+            reservation_reaper_tasks.append(
+                asyncio.create_task(
+                    _reservation_reaper_loop(), name="reservation-reaper"
+                )
+            )
+
     near_one_tasks: list[asyncio.Task] = []
 
     if application.config.near_one_exit.enable_near_one_exit:
@@ -1379,6 +1424,7 @@ async def main():
             risk_task=risk_task,
             near_one_tasks=near_one_tasks,
             redemption_tasks=redemption_tasks,
+            reservation_reaper_tasks=reservation_reaper_tasks,
             market_data_runtimes=market_data_runtimes,
             user_data_runtimes=user_data_runtimes,
             metrics_runner=metrics_runner,
