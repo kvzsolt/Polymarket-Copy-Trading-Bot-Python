@@ -1,0 +1,59 @@
+utils/createClobClient.py
+  s_a4ba1159c867d4::t_e5bf8988ff12b5 4,40-102
+  s_a4ba1159c867d4::t_7b5bfa11b4cb12 746
+tests/test_clob_sdk_transport.py
+  s_a4ba1159c867d4::t_58dca9e4902db1 1-53
+orchestrators/runtime_summary.py
+  s_0737dbaecfeef8::t_470763cd08b767 649-653
+orchestrators/trade_pipeline.py
+  s_0737dbaecfeef8::t_bdf409144d15c4 1063
+  s_0737dbaecfeef8::t_fb18d9d8180748 1925-1928,1932-2059
+  s_0737dbaecfeef8::t_88aff3e839db7f 889-894,1020
+  s_0737dbaecfeef8::t_8aa49b4b6e92b3 1066-1070,1082
+tests/test_v31_features.py
+  s_0737dbaecfeef8::t_be0457263d4f6d 13,376-391,393-441
+  s_0737dbaecfeef8::t_24bbd5f4fb55aa 392
+  s_0737dbaecfeef8::t_f8073cad69c281 147-154,172-174
+  s_0737dbaecfeef8::t_5308eeed9483d8 628-635,647-649
+services/positionManager.py
+  s_0737dbaecfeef8::t_fc638b3763e184 448-458,588-589,592,595-596
+  s_0737dbaecfeef8::t_10793683984aee 213-225,261
+docs/05-risk-controls.md
+  s_0737dbaecfeef8::t_ffcbf91707cb24 221,224
+  s_0737dbaecfeef8::t_d56fb011e17fb2 152,158
+tests/test_env_security.py
+  s_0737dbaecfeef8::t_b7b946616ae560 91-103
+tests/test_config.py
+  s_0737dbaecfeef8::t_81a8dad048e8df 93
+  s_0737dbaecfeef8::t_4a92c436b31c77 94-107,287-291
+docs/02-configuration.md
+  s_0737dbaecfeef8::t_aa915d239be333 139
+  s_0737dbaecfeef8::t_c6210383a72541 177
+tests/test_trade_pipeline_safety.py
+  s_0737dbaecfeef8::t_5097cfcb5cdcd9 830,852-854,862-866,934-961,963-964,969-970,973
+  s_0737dbaecfeef8::t_f5a8657ff0face 965-968
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "004e7f0c346ab782a86c747e3500046d02439a7c",
+  "prompts": {},
+  "sessions": {
+    "s_0737dbaecfeef8": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e8066-4acb-7642-88c6-0f52463f0f35",
+        "model": "gpt-5.5"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    },
+    "s_a4ba1159c867d4": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e7a68-ec2f-7d21-b54c-05359c1c2db7",
+        "model": "gpt-5.5"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
