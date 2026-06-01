@@ -1,0 +1,24 @@
+config/env.py
+  s_0737dbaecfeef8::t_4cc6e13e81da38 85-86,88,95-96,237-241,291,574
+  s_0737dbaecfeef8::t_5548caadaa131e 87,89-94
+config/app_config.py
+  s_0737dbaecfeef8::t_b2bdfce0900dcb 353,456-457,1100
+  s_0737dbaecfeef8::t_ebdd0a244d211e 121-122,124-133
+  s_0737dbaecfeef8::t_017fd1266cf23b 123
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "c14eed545eec6208577b76f6dcd0910f20aeef5c",
+  "prompts": {},
+  "sessions": {
+    "s_0737dbaecfeef8": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e8066-4acb-7642-88c6-0f52463f0f35",
+        "model": "gpt-5.5"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
