@@ -136,7 +136,7 @@ Position sizing strategy and limits.
 | `BUY_MIN_AMOUNT` | float | `6` | Minimum order size in USDC |
 | `BUY_MAX_AMOUNT` | float | `15` | Maximum order size in USDC |
 | `POSITION_THRESHOLD` | int | `0` | Position threshold for sizing adjustments |
-| `MAX_POSITION_PCT` | float | `0.45` | Maximum fraction of balance per trade (0, 1] |
+| `MAX_POSITION_PCT` | float | `0.45` | Maximum fraction of freshly fetched funder cash per BUY (0, 1] |
 | `ENABLE_TRUST_SIZE_MULTIPLIERS` | bool | `true` | Scale position size by leader trust score |
 | `TRUST_SIZE_MULTIPLIER_MIN` | float | `0.50` | Minimum trust-based size multiplier |
 | `TRUST_SIZE_MULTIPLIER_MAX` | float | `1.25` | Maximum trust-based size multiplier |
@@ -174,7 +174,7 @@ Risk management parameters. See [05-risk-controls.md](05-risk-controls.md) for d
 | `NEAR_MAX_PRICE_EXIT` | float | `0.95` | Price level for full near-max exit |
 | `PROFIT_LOCK_TRIGGER_PCT` | float | `70` | Profit % to trigger profit lock |
 | `PROFIT_LOCK_SELL_FRACTION` | float | `0.50` | Fraction of position to sell at lock |
-| `TRAILING_ACTIVATION_PCT` | float | `20` | Profit % to activate trailing stop |
+| `TRAILING_ACTIVATION_PCT` | float/`auto` | `20` | Profit % to activate trailing stop; blank or `auto` scales activation from max payout |
 | `TRAILING_DISTANCE` | float | `0.05` | Trailing stop distance as peak-drop percentage (`0.10` or `10` = 10%) |
 | `STAGED_TP_LEVELS` | string | `30,50` | Comma-separated take-profit levels |
 | `STAGED_TP_FRACTIONS` | string | `0.25,0.35` | Comma-separated TP sell fractions |

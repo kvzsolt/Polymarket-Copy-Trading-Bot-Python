@@ -149,13 +149,13 @@ The final trade cap is the minimum of `hard_cap`, `market_headroom`, `category_h
 | Parameter | Default | Description |
 |---|---|---|
 | `MAX_OPEN_POSITIONS` | `40` | Maximum number of open positions across all markets |
-| `MAX_POSITION_PCT` | `0.45` | Maximum fraction of balance per single trade |
+| `MAX_POSITION_PCT` | `0.45` | Maximum fraction of freshly fetched funder cash per BUY |
 | `BUY_MIN_AMOUNT` | `6` | Minimum order size in USDC |
 | `BUY_MAX_AMOUNT` | `15` | Maximum order size in USDC |
 
 If the number of open positions reaches `MAX_OPEN_POSITIONS`, all BUY intents are rejected with reason `max_open_positions_reached`.
 
-`MAX_POSITION_PCT` caps **per-market exposure** at this fraction of your current **free cash** (not total equity). When a BUY would push a market's exposure past `free_cash × MAX_POSITION_PCT`, the trade is skipped with reason `max_position_pct_reached` and a `⚠️ COPY NOT EXECUTED` panel is printed to the terminal. Raise `MAX_POSITION_PCT` (up to `1.0`) if you want larger single-market concentration; lower it to spread copies across more markets. This is the most common reason a detected leader trade is not copied while the bot is otherwise healthy.
+`MAX_POSITION_PCT` caps the next BUY at `fresh_funder_cash × MAX_POSITION_PCT` (not total equity, and not existing market exposure). The bot fetches the funder wallet's current cash before the BUY is submitted and resizes or skips if the fresh cap is too small for venue minimums. Existing market, category, and leader exposure are handled by the separate exposure policies.
 
 ---
 
@@ -218,10 +218,10 @@ When a position's unrealized profit exceeds `PROFIT_LOCK_TRIGGER_PCT`, the bot s
 | Parameter | Default | Description |
 |---|---|---|
 | `ENABLE_TRAILING_STOP` | `false` | Enable trailing stop |
-| `TRAILING_ACTIVATION_PCT` | `20` | Profit percentage to activate trailing |
+| `TRAILING_ACTIVATION_PCT` | `20` | Profit percentage to activate trailing; blank or `auto` enables dynamic activation |
 | `TRAILING_DISTANCE` | `0.05` | Trailing distance as peak-drop percentage (`0.10` or `10` = 10%) |
 
-The trailing stop activates when unrealized profit exceeds `TRAILING_ACTIVATION_PCT`. Once active, it tracks the highest share price seen and exits the position if the price falls by `TRAILING_DISTANCE` percent from that peak.
+With a numeric `TRAILING_ACTIVATION_PCT`, the trailing stop activates when unrealized profit exceeds that percentage. With blank or `auto`, activation is scaled from the position's maximum payout: smaller-upside positions arm earlier, while larger-upside positions wait for more of the payout curve before arming. Once active, it tracks the highest share price seen and exits the position if the price falls by `TRAILING_DISTANCE` percent from that peak.
 
 ### Near-Max Exit
 

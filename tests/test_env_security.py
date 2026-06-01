@@ -88,6 +88,19 @@ class TestEnvSecurity:
         # Reset snapshot for any later tests in this process.
         rehydrate_env()
 
+    def test_rehydrate_env_treats_blank_trailing_activation_comment_as_auto(self):
+        from config.env import ENV, rehydrate_env
+
+        with patch.dict(
+            os.environ,
+            {"TRAILING_ACTIVATION_PCT": "# Profit % (of entry price) required to arm the trailing stop."},
+            clear=False,
+        ):
+            rehydrate_env()
+            assert ENV["TRAILING_ACTIVATION_PCT"] is None
+
+        rehydrate_env()
+
     def test_rehydrate_env_redacts_private_key_file_in_snapshot(self, tmp_path):
         from config.env import ENV, rehydrate_env
 

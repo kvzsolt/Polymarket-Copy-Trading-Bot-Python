@@ -210,7 +210,19 @@ class PositionManager:
 
             # Trailing stop
             self._enable_trailing = _as_bool(getattr(fc, "enable_trailing_stop", False), False)
-            self._trailing_activation_pct = _as_float(getattr(rc, "trailing_activation_pct", 20.0), 20.0) / 100.0
+            trailing_activation_raw = getattr(rc, "trailing_activation_pct", 20.0)
+            self._trailing_activation_auto = (
+                trailing_activation_raw is None
+                or (
+                    isinstance(trailing_activation_raw, str)
+                    and trailing_activation_raw.strip().lower() in ("", "auto")
+                )
+            )
+            self._trailing_activation_pct = (
+                0.0
+                if self._trailing_activation_auto
+                else _as_float(trailing_activation_raw, 20.0) / 100.0
+            )
             self._trailing_distance = _as_pct_ratio(getattr(rc, "trailing_distance", 0.05), 0.05)
 
             # Staged TP
@@ -246,6 +258,7 @@ class PositionManager:
             self._near_max_warn = 0.92
             self._near_max_warn_ratio = 0.50
             self._enable_trailing = False
+            self._trailing_activation_auto = False
             self._trailing_activation_pct = 0.20
             self._trailing_distance = 0.05
             self._enable_staged_tp = False
@@ -432,6 +445,17 @@ class PositionManager:
     def _clear_steady_exit(es: "PositionExitState", key: str) -> None:
         es.logged_steady_exits.discard(key)
 
+    def _trailing_activation_threshold(self, pos: TrackedPosition) -> Decimal:
+        if not getattr(self, "_trailing_activation_auto", False):
+            return _to_dec(getattr(self, "_trailing_activation_pct", 0.20))
+
+        # Polymarket winning outcome tokens redeem at 1 USDC per token. The
+        # size term cancels out, so the activation scales by payout multiple.
+        max_payout_multiple = Decimal("1") / pos.entry_price
+        activation_value_multiple = Decimal("0.68") * max_payout_multiple + Decimal("0.28")
+        activation_value_multiple = max(Decimal("1"), activation_value_multiple)
+        return activation_value_multiple - Decimal("1")
+
     def evaluate_risk_action(
         self,
         condition_id: str,
@@ -561,12 +585,15 @@ class PositionManager:
         # ── Priority 4: TRAILING STOP ──
         if self._enable_trailing:
             # Auto-activate trailing after activation threshold
-            if not es.trailing_active and pct_change >= _to_dec(self._trailing_activation_pct):
+            activation_threshold = self._trailing_activation_threshold(pos)
+            if not es.trailing_active and pct_change >= activation_threshold:
                 es.trailing_active = True
                 es.trailing_high_price = cp
+                activation_mode = "dynamic" if getattr(self, "_trailing_activation_auto", False) else "fixed"
                 logger.info(
                     f"📈 TRAILING STOP activated: {condition_id[:12]}… "
-                    f"profit={float(pct_change)*100:.1f}% peak={float(cp):.4f}"
+                    f"profit={float(pct_change)*100:.1f}% >= {float(activation_threshold) * 100:.1f}% "
+                    f"({activation_mode}) peak={float(cp):.4f}"
                 )
 
             if es.trailing_active and es.trailing_high_price > 0:
