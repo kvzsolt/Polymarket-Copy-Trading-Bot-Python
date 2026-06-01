@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import random
 import time
 from dataclasses import asdict, is_dataclass, replace
 from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
@@ -1194,7 +1195,10 @@ class ExecutionService:
                         last_error,
                     )
                     break
-                await asyncio.sleep(min(0.15 * attempt, 0.30))
+                # Add jitter so concurrent runtimes retrying the same venue
+                # outage do not re-submit in lockstep bursts. Base backoff is
+                # unchanged; jitter only spreads attempts by up to 0.1s.
+                await asyncio.sleep(min(0.15 * attempt, 0.30) + random.uniform(0, 0.1))
             else:
                 self.circuit_breaker.record_failure()
                 await self._save_submission(
