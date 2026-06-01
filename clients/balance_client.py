@@ -15,6 +15,7 @@ from decimal import Decimal
 from web3 import Web3
 
 from domain.ports.clients import AbstractBalanceClient
+from clients.network.rpc_fallback import FallbackWeb3Provider
 from clients.network.web3_adapter import AsyncWeb3Adapter
 
 _USDC_ABI = [
@@ -37,9 +38,11 @@ class BalanceClient(AbstractBalanceClient):
         *,
         rpc_url: str,
         usdc_contract_address: str,
+        fallback_rpc_url: str = "",
         logger: logging.Logger | None = None,
     ):
         self._rpc_url = rpc_url
+        self._fallback_rpc_url = fallback_rpc_url
         self._usdc_contract_address = usdc_contract_address
         self._logger = logger or logging.getLogger("BalanceClient")
 
@@ -52,7 +55,8 @@ class BalanceClient(AbstractBalanceClient):
             return None
 
         try:
-            w3 = Web3(Web3.HTTPProvider(self._rpc_url))
+            provider = FallbackWeb3Provider(self._rpc_url, self._fallback_rpc_url)
+            w3 = provider.get_web3()
             contract = w3.eth.contract(address=checksum_contract, abi=_USDC_ABI)
             raw = contract.functions.balanceOf(checksum_address).call()
             # Decimal(int) / Decimal(int) is exact across the full uint256
@@ -72,7 +76,8 @@ class BalanceClient(AbstractBalanceClient):
         if not address:
             return None
         try:
-            w3 = Web3(Web3.HTTPProvider(self._rpc_url))
+            provider = FallbackWeb3Provider(self._rpc_url, self._fallback_rpc_url)
+            w3 = provider.get_web3()
             adapter = AsyncWeb3Adapter(w3, logger=self._logger)
             checksum_address = Web3.to_checksum_address(address)
             return int(await adapter.get_native_balance(checksum_address))
