@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 from dataclasses import dataclass
 from decimal import ROUND_CEILING, ROUND_DOWN, ROUND_FLOOR, Decimal
@@ -36,6 +37,69 @@ logger = get_logger("ClobClient")
 # defaults; production paths override via ``configure_from_appconfig(cfg)``
 # (called from ``orchestrators/runtime_bootstrap.py`` at startup).
 CLOB_HTTP_URL = "https://clob.polymarket.com"
+_SDK_HTTP_TRANSPORT_CONFIGURED = False
+_SDK_HTTP_TRANSPORT_LOCK = threading.Lock()
+
+
+def _configure_sdk_http_transport() -> None:
+    """Replace py-clob-client-v2's process-wide HTTP/2 client.
+
+    py-clob-client-v2 1.0.0 creates a module-level ``httpx.Client(http2=True)``
+    in ``http_helpers.helpers``. In this bot the sync SDK is called from
+    executor threads across multiple runtime paths, so every ClobClient shares
+    one HTTP/2 connection pool. Polymarket/Cloudflare can reset idle or
+    multiplexed streams, which surfaces as repeated h2 ``ConnectionTerminated``
+    / SDK "request error" log lines.
+
+    HTTP/1.1 is enough for the bot's low request volume and avoids the shared
+    HTTP/2 stream state. Keepalive expiry is intentionally short so stale
+    sockets are not retained long between polling cycles.
+    """
+    global _SDK_HTTP_TRANSPORT_CONFIGURED
+    if _SDK_HTTP_TRANSPORT_CONFIGURED:
+        return
+
+    with _SDK_HTTP_TRANSPORT_LOCK:
+        if _SDK_HTTP_TRANSPORT_CONFIGURED:
+            return
+
+        try:
+            import httpx
+            from py_clob_client_v2.http_helpers import helpers as sdk_http_helpers
+        except Exception as exc:  # pragma: no cover - defensive startup logging
+            logger.warning(
+                "Unable to configure py_clob_client_v2 HTTP transport: %s",
+                redact_error_detail(exc),
+            )
+            return
+
+        old_client = getattr(sdk_http_helpers, "_http_client", None)
+        new_client = httpx.Client(
+            http2=False,
+            limits=httpx.Limits(
+                max_connections=50,
+                max_keepalive_connections=10,
+                keepalive_expiry=2.0,
+            ),
+            timeout=httpx.Timeout(10.0, connect=5.0),
+        )
+        sdk_http_helpers._http_client = new_client
+
+        if old_client is not None and old_client is not new_client:
+            try:
+                old_client.close()
+            except Exception:
+                pass
+
+        _SDK_HTTP_TRANSPORT_CONFIGURED = True
+        logger.info(
+            "Configured py_clob_client_v2 HTTP transport",
+            extra={
+                "type": "clob_sdk_transport",
+                "http2": False,
+                "keepalive_expiry_seconds": 2.0,
+            },
+        )
 
 
 class _PriceTokenNotFound:
@@ -679,6 +743,7 @@ async def create_clob_client(
             "Set CLOB_V2_READY=true in your .env once smoke tests pass "
             "(see docs/v2_operator_runbook.md)."
         )
+    _configure_sdk_http_transport()
     host = CLOB_HTTP_URL
     cfg = wallet_config or build_wallet_config()
 

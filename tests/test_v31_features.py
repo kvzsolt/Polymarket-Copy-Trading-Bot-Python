@@ -10,6 +10,7 @@ import types
 import unittest
 import importlib.abc
 import importlib.machinery
+from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -143,6 +144,14 @@ class TestPositionExitSystem(unittest.TestCase):
             raw = float(value)
             return raw / 100.0 if raw > 1.0 else raw
 
+        def _trailing_activation(value):
+            if value is None:
+                return True, 0.0
+            raw = str(value).strip().lower()
+            if raw in ("", "auto"):
+                return True, 0.0
+            return False, float(value) / 100.0
+
         pm = pm_mod.PositionManager()  # bare defaults branch
 
         # Override all private attrs to match the requested flags.
@@ -160,7 +169,9 @@ class TestPositionExitSystem(unittest.TestCase):
         pm._near_max_warn_ratio = float(defaults['NEAR_MAX_PRICE_WARN_TRIM_RATIO'])
 
         pm._enable_trailing = bool(defaults['ENABLE_TRAILING_STOP'])
-        pm._trailing_activation_pct = float(defaults['TRAILING_ACTIVATION_PCT']) / 100.0
+        pm._trailing_activation_auto, pm._trailing_activation_pct = _trailing_activation(
+            defaults['TRAILING_ACTIVATION_PCT']
+        )
         pm._trailing_distance = _pct_ratio(defaults['TRAILING_DISTANCE'])
 
         pm._enable_staged_tp = bool(defaults['ENABLE_STAGED_TP'])
@@ -362,6 +373,73 @@ class TestPositionExitSystem(unittest.TestCase):
         assert action is not None
         assert action["reason"] == "trailing_stop"
 
+    def test_dynamic_trailing_activates_at_30_pct_for_10_to_15_payout(self):
+        pm = self._make_pm(
+            ENABLE_PROFIT_LOCK=False,
+            ENABLE_NEAR_MAX_EXIT=False,
+            ENABLE_STAGED_TP=False,
+            TRAILING_ACTIVATION_PCT="",
+        )
+        cid = self._add_position(
+            pm,
+            entry_price=Decimal("0.6666666666666666666666666667"),
+            size=Decimal("15"),
+        )
+
+        assert pm.evaluate_risk_action(cid, Decimal("0.86")) is None
+        assert not pm.get_position(cid).exit_state.trailing_active
+
+        assert pm.evaluate_risk_action(cid, Decimal("0.867")) is None
+        assert pm.get_position(cid).exit_state.trailing_active
+
+    def test_dynamic_trailing_activates_at_30_usdc_value_for_10_to_40_payout(self):
+        pm = self._make_pm(
+            ENABLE_PROFIT_LOCK=False,
+            ENABLE_NEAR_MAX_EXIT=False,
+            ENABLE_STAGED_TP=False,
+            TRAILING_ACTIVATION_PCT="auto",
+        )
+        cid = self._add_position(pm, entry_price=Decimal("0.25"), size=Decimal("40"))
+
+        assert pm.evaluate_risk_action(cid, Decimal("0.725")) is None
+        assert not pm.get_position(cid).exit_state.trailing_active
+
+        assert pm.evaluate_risk_action(cid, Decimal("0.75")) is None
+        assert pm.get_position(cid).exit_state.trailing_active
+
+    def test_dynamic_trailing_keeps_configured_distance(self):
+        pm = self._make_pm(
+            ENABLE_PROFIT_LOCK=False,
+            ENABLE_NEAR_MAX_EXIT=False,
+            ENABLE_STAGED_TP=False,
+            TRAILING_ACTIVATION_PCT="auto",
+            TRAILING_DISTANCE=0.10,
+        )
+        cid = self._add_position(pm, entry_price=Decimal("0.25"), size=Decimal("40"))
+
+        pm.evaluate_risk_action(cid, Decimal("0.75"))
+        pm.evaluate_risk_action(cid, Decimal("0.90"))
+        assert pm.evaluate_risk_action(cid, Decimal("0.82")) is None
+        action = pm.evaluate_risk_action(cid, Decimal("0.80"))
+
+        assert action is not None
+        assert action["reason"] == "trailing_stop"
+
+    def test_near_max_still_wins_before_dynamic_trailing(self):
+        pm = self._make_pm(
+            ENABLE_PROFIT_LOCK=False,
+            ENABLE_NEAR_MAX_EXIT=True,
+            NEAR_MAX_PRICE_WARN_TRIM_RATIO=0.0,
+            ENABLE_STAGED_TP=False,
+            TRAILING_ACTIVATION_PCT="auto",
+        )
+        cid = self._add_position(pm, entry_price=Decimal("0.25"), size=Decimal("40"))
+
+        action = pm.evaluate_risk_action(cid, Decimal("0.95"))
+
+        assert action is not None
+        assert action["reason"] == "near_max_full_exit"
+
     def test_trailing_disabled(self):
         pm = self._make_pm(ENABLE_TRAILING_STOP=False, ENABLE_PROFIT_LOCK=False, ENABLE_STAGED_TP=False)
         cid = self._add_position(pm, entry_price=0.50)
@@ -547,6 +625,14 @@ class TestFeatureFlags(unittest.TestCase):
             raw = float(value)
             return raw / 100.0 if raw > 1.0 else raw
 
+        def _trailing_activation(value):
+            if value is None:
+                return True, 0.0
+            raw = str(value).strip().lower()
+            if raw in ("", "auto"):
+                return True, 0.0
+            return False, float(value) / 100.0
+
         pm = pm_mod.PositionManager()
         pm._risk_master_enabled = bool(defaults['ENABLE_RISK_MGMT'])
         pm._enabled = bool(defaults['ENABLE_RISK_MGMT'])
@@ -558,7 +644,9 @@ class TestFeatureFlags(unittest.TestCase):
         pm._near_max_warn = float(defaults['NEAR_MAX_PRICE_WARN'])
         pm._near_max_warn_ratio = float(defaults['NEAR_MAX_PRICE_WARN_TRIM_RATIO'])
         pm._enable_trailing = bool(defaults['ENABLE_TRAILING_STOP'])
-        pm._trailing_activation_pct = float(defaults['TRAILING_ACTIVATION_PCT']) / 100.0
+        pm._trailing_activation_auto, pm._trailing_activation_pct = _trailing_activation(
+            defaults['TRAILING_ACTIVATION_PCT']
+        )
         pm._trailing_distance = _pct_ratio(defaults['TRAILING_DISTANCE'])
         pm._enable_staged_tp = bool(defaults['ENABLE_STAGED_TP'])
         raw_levels = _csv_floats(defaults['STAGED_TP_LEVELS'])
