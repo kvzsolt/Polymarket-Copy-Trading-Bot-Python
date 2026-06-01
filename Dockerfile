@@ -35,8 +35,10 @@ COPY . .
 # runs as ``botuser`` (cubic P2).
 RUN mkdir -p /app/data /app/log && chown -R botuser:botuser /app/data /app/log
 
-# Verify the install
-RUN python -c "from config.app_config import load_config; print('OK')"
+# Verify the install. Import the Postgres connection layer too so a future
+# requirements.txt drop of ``asyncpg`` (the runtime DB driver) fails the build
+# rather than surfacing only at first DB use inside a running container.
+RUN python -c "from config.app_config import load_config; import storage.postgres.connection; print('OK')"
 
 # Fail-closed safety defaults. ``PAPER_TRADE_ONLY=true`` is the
 # canonical kill-switch for live mode — set it here so a deployment
