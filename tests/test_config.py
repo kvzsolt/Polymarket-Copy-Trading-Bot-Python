@@ -90,6 +90,21 @@ class TestHappyPath:
         # Logging default path.
         assert cfg.logging.pnl_log_file.endswith("pnl.jsonl")
 
+    @pytest.mark.parametrize("raw_value", ["", "auto", "AUTO", "# Profit % comment"])
+    def test_trailing_activation_auto_values(
+        self,
+        valid_env: dict[str, str],
+        raw_value: str,
+    ) -> None:
+        valid_env["TRAILING_ACTIVATION_PCT"] = raw_value
+        cfg = load_config(valid_env)
+        assert cfg.risk.trailing_activation_pct is None
+
+    def test_trailing_activation_numeric_value(self, valid_env: dict[str, str]) -> None:
+        valid_env["TRAILING_ACTIVATION_PCT"] = "40"
+        cfg = load_config(valid_env)
+        assert cfg.risk.trailing_activation_pct == pytest.approx(40.0)
+
     def test_leader_wallets_parsed_from_csv(self, valid_env: dict[str, str]) -> None:
         valid_env["LEADER_WALLETS"] = f"{_VALID_FUNDER},{_VALID_USER}"
         cfg = load_config(valid_env)
@@ -266,6 +281,14 @@ class TestMalformedValues:
         with pytest.raises(
             EnvValidationError,
             match="MAX_OPEN_POSITIONS must be a valid int",
+        ):
+            load_config(valid_env)
+
+    def test_invalid_trailing_activation_value(self, valid_env: dict[str, str]) -> None:
+        valid_env["TRAILING_ACTIVATION_PCT"] = "not-auto"
+        with pytest.raises(
+            EnvValidationError,
+            match="TRAILING_ACTIVATION_PCT must be a valid float or 'auto'",
         ):
             load_config(valid_env)
 
