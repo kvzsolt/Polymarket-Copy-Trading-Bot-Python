@@ -29,6 +29,7 @@ from storage.postgres.risk_blocks_repo import RiskBlocksRepo
 from storage.postgres.risk_triggers_repo import RiskTriggersRepo
 from utils.fetchData import fetch_data
 from utils.logger import get_logger
+from utils.slippage import slippage_pct_to_bps
 
 if TYPE_CHECKING:
     from config.app_config import AppConfig
@@ -753,7 +754,7 @@ async def build_trading_context(
         readiness=readiness or ReadinessTracker(),
         market_data_service=getattr(user_state, "market_data_service", None),
         extra={
-            "slippage_tolerance_bps": int(config.execution.slippage_tolerance * 100),
+            "slippage_tolerance_bps": slippage_pct_to_bps(config.execution.slippage_tolerance),
             "clob_gateway": user_state.clob_gateway,
         },
     )

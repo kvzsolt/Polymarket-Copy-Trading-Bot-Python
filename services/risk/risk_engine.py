@@ -8,6 +8,7 @@ if TYPE_CHECKING:
     from config.app_config import AppConfig
 
 from utils.logger import get_logger
+from utils.slippage import slippage_pct_to_bps
 
 logger = get_logger("RiskEngine")
 
@@ -306,7 +307,7 @@ def policy_from_config(config: AppConfig) -> RiskPolicy:
         max_leader_exposure_usdc=Decimal(str(rc.max_leader_exposure_usdc)),
         max_open_positions=rc.max_open_positions,
         max_daily_drawdown_pct=Decimal(str(rc.max_daily_drawdown_pct)),
-        max_slippage_bps=int(Decimal(str(ec.slippage_tolerance)) * 100),
+        max_slippage_bps=slippage_pct_to_bps(ec.slippage_tolerance),
         kill_switch=rc.kill_switch,
     )
 

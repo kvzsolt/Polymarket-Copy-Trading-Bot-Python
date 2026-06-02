@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING
 from services.execution.types import ExecutionRequest
 from services.order_sizing import size_sell_order
 from utils.logger import get_logger
+from utils.slippage import slippage_pct_to_bps
 
 if TYPE_CHECKING:
     from config.app_config import AppConfig
@@ -132,7 +133,7 @@ class NearOneExitService:
             cfg.dwell_seconds,
             cfg.check_interval,
         )
-        slippage_bps = int(self._config.execution.slippage_tolerance * 100)
+        slippage_bps = slippage_pct_to_bps(self._config.execution.slippage_tolerance)
         while True:
             try:
                 await self._tick(slippage_bps)

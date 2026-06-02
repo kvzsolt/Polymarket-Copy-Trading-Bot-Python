@@ -77,7 +77,7 @@ def _check_sync(
     *,
     wallet_address: str,
     rpc_url: str,
-    fallback_rpc_url: str,
+    fallback_rpc_url: str = "",
     pusd_address: str,
     ctf_exchange_address: str,
     min_pusd_balance: Decimal,

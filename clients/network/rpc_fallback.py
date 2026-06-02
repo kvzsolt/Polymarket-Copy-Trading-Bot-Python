@@ -105,7 +105,15 @@ class _FailoverHTTPProvider(JSONBaseProvider):
         if self._fallback is None:
             if _primary_exc is not None:
                 raise _primary_exc
-            return _primary_response  # type: ignore[return-value]
+            if _primary_response is None:
+                # Unreachable: we only fall through here from the
+                # failover-worthy *response* path (which sets _primary_response)
+                # or the *exception* path (handled above). Guard the invariant
+                # explicitly so a future edit can't silently return None.
+                raise RuntimeError(
+                    "rpc_fallback: no primary response or exception recorded"
+                )
+            return _primary_response
 
         # Try fallback.
         logger.info("Failing over to secondary RPC for %s", method)
