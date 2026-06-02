@@ -1017,6 +1017,24 @@ async def main() -> int:
         readiness=application.readiness,
         trust_store=application.trust_store,
     )
+    from orchestrators.trade_pipeline import seed_position_pct_cap_snapshot
+
+    seeded_context_ids: set[int] = set()
+    for context in risk_contexts_by_user.values():
+        seed_position_pct_cap_snapshot(
+            context,
+            user_balances.get(context.user_id, Decimal("0")),
+        )
+        seeded_context_ids.add(id(context))
+    for contexts in contexts_by_leader.values():
+        for context in contexts:
+            if id(context) in seeded_context_ids:
+                continue
+            seed_position_pct_cap_snapshot(
+                context,
+                user_balances.get(context.user_id, Decimal("0")),
+            )
+            seeded_context_ids.add(id(context))
 
     monitored_leaders = [
         leader

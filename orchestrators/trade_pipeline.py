@@ -759,6 +759,11 @@ class _BuyRiskCap:
     cap_notional_usdc: Decimal
 
 
+_POSITION_PCT_CAP_BALANCE_KEY = "_max_position_pct_balance_snapshot_usdc"
+_POSITION_PCT_CAP_BALANCE_AT_KEY = "_max_position_pct_balance_snapshot_at"
+_POSITION_PCT_CAP_BALANCE_WALLET_KEY = "_max_position_pct_balance_snapshot_wallet"
+_POSITION_PCT_CAP_REFRESH_SECONDS = 24 * 60 * 60
+
 
 def _normalize(value: Any) -> str:
     return str(value or "").strip().lower()
@@ -837,6 +842,61 @@ def _to_decimal(value: Any, default: str = "0") -> Decimal:
         return Decimal(str(value))
     except Exception:
         return Decimal(default)
+
+
+def seed_position_pct_cap_snapshot(
+    context: TradingContext,
+    balance_usdc: Any,
+    *,
+    timestamp: float | None = None,
+) -> None:
+    """Seed the MAX_POSITION_PCT cap basis from a wallet balance snapshot.
+
+    The position percentage cap is intentionally based on a coarse wallet
+    snapshot: startup balance, then a refresh at most once per 24 hours. Other
+    balance policies may still use live free cash.
+    """
+    balance = max(Decimal("0"), _to_decimal(balance_usdc))
+    context.extra[_POSITION_PCT_CAP_BALANCE_KEY] = balance
+    context.extra[_POSITION_PCT_CAP_BALANCE_AT_KEY] = (
+        float(timestamp) if timestamp is not None else time.time()
+    )
+    context.extra[_POSITION_PCT_CAP_BALANCE_WALLET_KEY] = _funder_wallet_address(context)
+
+
+def _position_pct_cap_snapshot_is_fresh(
+    context: TradingContext,
+    *,
+    now: float | None = None,
+) -> bool:
+    wallet = _funder_wallet_address(context)
+    cached_wallet = str(
+        context.extra.get(_POSITION_PCT_CAP_BALANCE_WALLET_KEY) or ""
+    ).strip()
+    try:
+        cached_at = float(context.extra.get(_POSITION_PCT_CAP_BALANCE_AT_KEY))
+    except (TypeError, ValueError):
+        return False
+    cached_balance = _to_decimal(
+        context.extra.get(_POSITION_PCT_CAP_BALANCE_KEY),
+        default="-1",
+    )
+    wallet_matches = not cached_wallet or cached_wallet.lower() == wallet.lower()
+    age_seconds = max(0.0, (time.time() if now is None else now) - cached_at)
+    return (
+        cached_balance >= 0
+        and wallet_matches
+        and age_seconds < _POSITION_PCT_CAP_REFRESH_SECONDS
+    )
+
+
+def _seed_position_pct_cap_snapshot_if_stale(
+    context: TradingContext,
+    balance_usdc: Any,
+) -> None:
+    if _position_pct_cap_snapshot_is_fresh(context):
+        return
+    seed_position_pct_cap_snapshot(context, balance_usdc)
 
 
 def _to_optional_float(value: Any) -> float | None:
@@ -1022,6 +1082,7 @@ async def _fetch_balance_snapshot(
         return None
 
     free_cash_usdc = Decimal(str(balance_usdc))
+    _seed_position_pct_cap_snapshot_if_stale(context, free_cash_usdc)
     open_positions = await context.positions_repo.list_open_positions(context.user_id)
     total_exposure_usdc = Decimal("0")
     market_exposure_usdc = Decimal("0")
@@ -1043,12 +1104,28 @@ async def _fetch_balance_snapshot(
     )
 
 
+async def _position_pct_cap_balance_usdc(context: TradingContext) -> Decimal | None:
+    now = time.time()
+    cached_balance = _to_decimal(
+        context.extra.get(_POSITION_PCT_CAP_BALANCE_KEY),
+        default="-1",
+    )
+    if _position_pct_cap_snapshot_is_fresh(context, now=now):
+        return cached_balance
+
+    wallet = _funder_wallet_address(context)
+    refreshed = await get_my_balance(wallet)
+    if refreshed is None:
+        return None
+    seed_position_pct_cap_snapshot(context, refreshed, timestamp=now)
+    return _to_decimal(refreshed)
+
+
 async def _resolve_position_pct_cap(
     context: TradingContext,
     signal: TradeSignal,
     snapshot: _BalanceSnapshot,
 ) -> _BuyRiskCap:
-    free_cash_usdc = snapshot.free_cash_usdc
     max_position_pct = Decimal(str(_trade_config(context).sizing.max_position_pct or 0))
     if max_position_pct <= 0:
         # MAX_POSITION_PCT <= 0 means the cap is intentionally disabled by the
@@ -1060,13 +1137,23 @@ async def _resolve_position_pct_cap(
             allow=True,
             reason="disabled",
             policy_name="max_position_pct",
-            cap_notional_usdc=free_cash_usdc,
+            cap_notional_usdc=snapshot.free_cash_usdc,
         )
 
-    # Cash-only per-BUY cap. Existing position exposure is enforced by the
-    # market/account exposure policies; MAX_POSITION_PCT only limits how much
-    # of current free cash this new BUY may consume.
-    cap_notional_usdc = max(Decimal("0"), free_cash_usdc * max_position_pct)
+    cap_balance_usdc = await _position_pct_cap_balance_usdc(context)
+    if cap_balance_usdc is None:
+        return _BuyRiskCap(
+            allow=False,
+            reason="position_pct_cap_balance_unavailable",
+            policy_name="max_position_pct",
+            cap_notional_usdc=Decimal("0"),
+        )
+
+    # Coarse wallet-snapshot per-BUY cap. Existing position exposure is
+    # enforced by the market/account exposure policies; MAX_POSITION_PCT only
+    # limits how much of the startup/24h wallet snapshot this new BUY may
+    # consume.
+    cap_notional_usdc = max(Decimal("0"), cap_balance_usdc * max_position_pct)
     if cap_notional_usdc <= 0:
         return _BuyRiskCap(
             allow=False,
@@ -1079,7 +1166,7 @@ async def _resolve_position_pct_cap(
         allow=True,
         reason="ok",
         policy_name="max_position_pct",
-        cap_notional_usdc=min(cap_notional_usdc, free_cash_usdc),
+        cap_notional_usdc=cap_notional_usdc,
     )
 
 
@@ -1921,140 +2008,6 @@ async def execute_trades(
 
                 # Use decision-gated notional (may be adjusted by scoring)
                 gated_notional = Decimal(str(decision.target_notional_usdc)) if decision.target_notional_usdc > 0 else target_notional
-
-                # Fetch actual funder cash immediately before submitting.
-                # This is a hard pre-submit gate: MAX_POSITION_PCT is defined
-                # against current free cash, so a stale earlier snapshot must
-                # never authorize the final transaction amount.
-                _refreshed = await _fetch_balance_snapshot(
-                    context, signal.condition_id, leader_id,
-                )
-                if _refreshed is None:
-                    reason = "balance_unavailable_before_submit"
-                    print_skip_reason("Balance unavailable before BUY submit", reason)
-                    log_trade_skip(
-                        logger,
-                        side=signal.side,
-                        condition_id=signal.condition_id,
-                        asset=signal.token_id,
-                        size=float(signal.size) if signal.size else None,
-                        price=live_price,
-                        usdc_value=float(gated_notional),
-                        skip_code=reason,
-                        reason=reason,
-                        event_slug=signal.event_slug,
-                        meta={"user_id": context.user_id, "leader_id": leader_id},
-                    )
-                    metrics.inc(
-                        "trades_skipped_total",
-                        labels={**labels, "reason": reason},
-                    )
-                    await context.orders_repo.mark_processed_trade(
-                        trade_key=trade_key,
-                        user_id=context.user_id,
-                        leader_id=leader_id,
-                        tx_hash=signal.tx_hash,
-                        side=signal.side,
-                        asset=signal.token_id,
-                        condition_id=signal.condition_id,
-                        status=f"skipped_{reason}",
-                    )
-                    results.append(TradePipelineResult(trade_key, "skipped", reason, None))
-                    continue
-
-                snapshot = _refreshed
-                fresh_position_pct_cap = await _resolve_position_pct_cap(context, signal, snapshot)
-                if not fresh_position_pct_cap.allow:
-                    reason = fresh_position_pct_cap.reason
-                    print_skip_reason(
-                        f"Position cap [{fresh_position_pct_cap.policy_name}] blocked BUY before submit",
-                        reason,
-                    )
-                    log_trade_skip(
-                        logger,
-                        side=signal.side,
-                        condition_id=signal.condition_id,
-                        asset=signal.token_id,
-                        size=float(signal.size) if signal.size else None,
-                        price=live_price,
-                        usdc_value=float(gated_notional),
-                        skip_code=reason,
-                        reason=reason,
-                        event_slug=signal.event_slug,
-                        meta={
-                            "user_id": context.user_id,
-                            "leader_id": leader_id,
-                            "free_cash_usdc": str(snapshot.free_cash_usdc),
-                        },
-                    )
-                    metrics.inc(
-                        "trades_skipped_total",
-                        labels={**labels, "reason": reason},
-                    )
-                    await context.orders_repo.mark_processed_trade(
-                        trade_key=trade_key,
-                        user_id=context.user_id,
-                        leader_id=leader_id,
-                        tx_hash=signal.tx_hash,
-                        side=signal.side,
-                        asset=signal.token_id,
-                        condition_id=signal.condition_id,
-                        status=f"skipped_{reason}",
-                    )
-                    results.append(TradePipelineResult(trade_key, "skipped", reason, None))
-                    continue
-
-                if fresh_position_pct_cap.cap_notional_usdc < gated_notional:
-                    decision = copy_decision_svc.decide_buy(
-                        trade=raw,
-                        leader_score=leader_score,
-                        live_price=live_price,
-                        base_notional_usdc=float(target_notional),
-                        max_notional_usdc=float(fresh_position_pct_cap.cap_notional_usdc),
-                        market_min_size=market_min_size,
-                        tick_size=market_tick_size,
-                    )
-                    if not decision.allow:
-                        reason = decision.skip_code
-                        print_skip_reason("BUY blocked by fresh cash cap", decision.reason)
-                        log_trade_skip(
-                            logger,
-                            side=signal.side,
-                            condition_id=signal.condition_id,
-                            asset=signal.token_id,
-                            size=float(signal.size) if signal.size else None,
-                            price=live_price,
-                            usdc_value=float(fresh_position_pct_cap.cap_notional_usdc),
-                            skip_code=reason,
-                            reason=decision.reason,
-                            event_slug=signal.event_slug,
-                            meta={
-                                "user_id": context.user_id,
-                                "leader_id": leader_id,
-                                "free_cash_usdc": str(snapshot.free_cash_usdc),
-                            },
-                        )
-                        metrics.inc(
-                            "trades_skipped_total",
-                            labels={**labels, "reason": reason},
-                        )
-                        await context.orders_repo.mark_processed_trade(
-                            trade_key=trade_key,
-                            user_id=context.user_id,
-                            leader_id=leader_id,
-                            tx_hash=signal.tx_hash,
-                            side=signal.side,
-                            asset=signal.token_id,
-                            condition_id=signal.condition_id,
-                            status=f"skipped_{reason}",
-                        )
-                        results.append(TradePipelineResult(trade_key, "skipped", reason, None))
-                        continue
-                    gated_notional = (
-                        Decimal(str(decision.target_notional_usdc))
-                        if decision.target_notional_usdc > 0
-                        else fresh_position_pct_cap.cap_notional_usdc
-                    )
 
                 # --- Phase 4 balance regime gate ---
                 regime = getattr(context, "balance_regime", None)
