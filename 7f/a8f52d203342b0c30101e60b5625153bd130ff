@@ -1,0 +1,33 @@
+docs/02-configuration.md
+  s_252232a351b877::t_3ded139126e894 139
+orchestrators/trade_pipeline.py
+  s_252232a351b877::t_991dc5c557517d 762-766,847-866,868,895-896,898-899
+  s_252232a351b877::t_d189c280593474 1107-1112,1115,1117-1123,1140,1152-1156,1169
+  s_252232a351b877::t_8b5489b92a8249 1113-1114,1116
+  s_252232a351b877::t_11ec179ebac254 1085
+  s_252232a351b877::t_9b031498317a2c 1141-1149
+  s_252232a351b877::t_31f24282f7746b 867,869-894,897
+docs/05-risk-controls.md
+  s_252232a351b877::t_6a8d435f334473 152,158
+app.py
+  s_252232a351b877::t_f4cd9bed3b6652 945-962
+tests/test_trade_pipeline_safety.py
+  s_252232a351b877::t_86a6ddb5e21e3e 18-23,949,969,974-1004,1006
+  s_252232a351b877::t_78e38c83333f6d 1005
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "7fa8f52d203342b0c30101e60b5625153bd130ff",
+  "prompts": {},
+  "sessions": {
+    "s_252232a351b877": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e8989-ee9d-71d3-b4bc-9aaf640ad6e0",
+        "model": "gpt-5.5"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
