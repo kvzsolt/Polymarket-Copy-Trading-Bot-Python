@@ -13,6 +13,10 @@ import pytest
 
 import config.app_config as app_config_mod
 
+# Spins up a real Postgres via testcontainers (Docker) — label as integration
+# so it does not run in the unit-only tier.
+pytestmark = pytest.mark.integration
+
 
 _BASE_LIVE_ENV = {
     "PRIVATE_KEY": "0x" + "a" * 64,

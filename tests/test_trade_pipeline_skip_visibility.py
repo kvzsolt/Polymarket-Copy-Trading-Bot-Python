@@ -40,6 +40,10 @@ from storage.postgres.orders_repo import OrdersRepo
 from storage.postgres.positions_repo import PositionsRepo
 from storage.postgres.risk_blocks_repo import RiskBlocksRepo
 
+# Spins up a real Postgres via testcontainers (Docker) — label as integration
+# so it does not run in the unit-only tier.
+pytestmark = pytest.mark.integration
+
 FAKE_TOKEN_ID = "71321045679252212594626385532706912750332728571942532223535764789812338637396"
 
 

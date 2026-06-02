@@ -21,6 +21,7 @@ _USDC_SCALE = Decimal(10**6)
 # module exposes empty defaults and balance lookups fail-closed with a
 # clear error message.
 _RPC_URL: str = ""
+_FALLBACK_RPC_URL: str = ""
 _COLLATERAL_CONTRACT_ADDRESS: str = ""
 _PUSD_CONTRACT_ADDRESS: str = ""
 _USDC_CONTRACT_ADDRESS: str = ""
@@ -32,8 +33,9 @@ def configure_from_appconfig(config: Any) -> None:
     Production bootstrap calls this once at startup so the balance lookup
     path runs entirely off typed AppConfig.
     """
-    global _RPC_URL, _COLLATERAL_CONTRACT_ADDRESS, _PUSD_CONTRACT_ADDRESS, _USDC_CONTRACT_ADDRESS
+    global _RPC_URL, _FALLBACK_RPC_URL, _COLLATERAL_CONTRACT_ADDRESS, _PUSD_CONTRACT_ADDRESS, _USDC_CONTRACT_ADDRESS
     _RPC_URL = str(getattr(config.network, "rpc_url", "") or "")
+    _FALLBACK_RPC_URL = str(getattr(config.network, "fallback_rpc_url", "") or "")
     _COLLATERAL_CONTRACT_ADDRESS = str(
         getattr(config.network, "collateral_contract_address", "") or ""
     )
@@ -148,8 +150,9 @@ async def get_my_balance(address: str) -> Decimal | None:
         return None
 
     try:
-        # Run all Web3 HTTP calls off the event loop.
-        return await asyncio.to_thread(_get_balance_sync, address)
+        # Run all Web3 HTTP calls off the event loop. Forward the configured
+        # fallback RPC so FALLBACK_RPC_URL actually applies to balance reads.
+        return await asyncio.to_thread(_get_balance_sync, address, _FALLBACK_RPC_URL)
     except Exception as exc:
         logger.error(
             f"Balance lookup failed in async wrapper for wallet={_masked_address(address)} | error={exc}",

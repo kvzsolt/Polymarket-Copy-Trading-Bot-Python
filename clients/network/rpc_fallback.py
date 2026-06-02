@@ -66,6 +66,13 @@ class _FailoverHTTPProvider(JSONBaseProvider):
             logger.debug("RPC fallback not configured (single provider)")
 
     def make_request(self, method: str, params: Any) -> dict[str, Any]:
+        # Track the primary outcome so the no-fallback branch can pass it
+        # through rather than crash. ``_primary_exc`` stays None on the
+        # failover-worthy *response* path; ``_primary_response`` stays None on
+        # the *exception* path.
+        _primary_exc: Exception | None = None
+        _primary_response: dict[str, Any] | None = None
+
         # Try primary first.
         try:
             raw = self._primary.make_request(method, params)
@@ -77,6 +84,7 @@ class _FailoverHTTPProvider(JSONBaseProvider):
                 method,
                 raw.get("error"),
             )
+            _primary_response = raw
         except Exception as exc:
             if _is_failover_exception(exc):
                 logger.warning(
@@ -90,9 +98,14 @@ class _FailoverHTTPProvider(JSONBaseProvider):
                 # Non-failover exception (e.g. invalid params) — raise immediately.
                 raise
 
-        # If we have no fallback, re-raise the primary failure.
+        # No fallback configured: pass the primary outcome through instead of
+        # crashing with UnboundLocalError. Re-raise a stored exception; on the
+        # response path, return the (failover-worthy) primary response so the
+        # caller sees the real JSON-RPC error rather than an unrelated crash.
         if self._fallback is None:
-            raise _primary_exc
+            if _primary_exc is not None:
+                raise _primary_exc
+            return _primary_response  # type: ignore[return-value]
 
         # Try fallback.
         logger.info("Failing over to secondary RPC for %s", method)

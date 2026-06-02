@@ -139,6 +139,29 @@ class TestFailoverHTTPProviderMakeRequest:
         assert result == mock_response
         provider._primary.make_request.assert_called_once_with("eth_call", [{"to": "0x"}])
 
+    def test_failover_response_no_fallback_passes_through(self) -> None:
+        # Regression: a failover-worthy JSON-RPC *response* with no fallback
+        # configured used to hit `raise _primary_exc` (unbound) and crash with
+        # UnboundLocalError. It must now return the primary response instead.
+        provider = _FailoverHTTPProvider("https://primary.example")
+        primary_err = {"jsonrpc": "2.0", "id": 1, "error": {"code": -32603, "message": "Internal error"}}
+        provider._primary = MagicMock()
+        provider._primary.make_request = MagicMock(return_value=primary_err)
+
+        result = provider.make_request("eth_call", [{"to": "0x"}])
+
+        assert result == primary_err
+
+    def test_failover_exception_no_fallback_reraises(self) -> None:
+        provider = _FailoverHTTPProvider("https://primary.example")
+        provider._primary = MagicMock()
+        provider._primary.make_request = MagicMock(
+            side_effect=ConnectionError("request timeout")
+        )
+
+        with pytest.raises(ConnectionError):
+            provider.make_request("eth_call", [{"to": "0x"}])
+
     def test_primary_failover_code_uses_fallback(self) -> None:
         provider = _FailoverHTTPProvider("https://primary.example", "https://fallback.example")
         primary_err = {"jsonrpc": "2.0", "id": 1, "error": {"code": -32603, "message": "Internal error"}}
