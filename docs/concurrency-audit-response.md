@@ -64,10 +64,14 @@ breach.
 **Fix (implemented — asyncio-native, reuses existing code, no rearchitecture):**
 `app.py` now starts a standalone reservation reaper **only when
 `enable_risk_mgmt` is false** (so the risk-on path is byte-for-byte unchanged).
-The reaper periodically (interval = `polling.reconcile_interval_seconds`, floored
-at 30s) calls the new testable helper `app._reap_reservations_once(contexts)`,
-which delegates to the existing, vetted
-`services.risk.risk_monitor._reap_expired_reservations_for_context` →
+The task starts **unconditionally** in that mode (the app may start with zero
+leaders and discover them later), and **re-derives its context list every tick**
+via `_flatten_contexts(contexts_by_leader)` — dynamic leader discovery
+(`_on_new_leaders`) mutates `contexts_by_leader` in place, so a one-time snapshot
+would miss later-discovered leaders. Each tick (sweep first, then sleep; interval
+= `polling.reconcile_interval_seconds`, floored at 30s) it calls the testable
+helper `app._reap_reservations_once(contexts)`, which delegates to the existing,
+vetted `services.risk.risk_monitor._reap_expired_reservations_for_context` →
 `reservation_service.release_expired_active()`. That path only releases
 reservations whose linked order reconciliation confirms is venue-terminal, so
 duplicate-order and stale-lock protections are preserved. The task is cancelled

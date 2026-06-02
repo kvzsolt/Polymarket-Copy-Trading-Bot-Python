@@ -1304,22 +1304,29 @@ async def main():
     # docs/concurrency-audit-response.md (C8-adjacent gap).
     reservation_reaper_tasks: list[asyncio.Task] = []
     if not application.config.risk.enable_risk_mgmt:
-        _reaper_contexts = _flatten_contexts(contexts_by_leader)
         _reaper_interval = max(
             30.0, float(application.config.polling.reconcile_interval_seconds)
         )
 
         async def _reservation_reaper_loop() -> None:
+            # Re-derive the context list every tick: dynamic leader discovery
+            # (``_on_new_leaders``) mutates ``contexts_by_leader`` in place after
+            # startup, so a one-time snapshot would silently miss any
+            # later-discovered leader — reinstating the exact gap this reaper
+            # closes. Sweep first, then sleep, so an already-expired reservation
+            # is reaped promptly instead of waiting a full interval.
             while True:
+                await _reap_reservations_once(_flatten_contexts(contexts_by_leader))
                 await asyncio.sleep(_reaper_interval)
-                await _reap_reservations_once(_reaper_contexts)
 
-        if _reaper_contexts:
-            reservation_reaper_tasks.append(
-                asyncio.create_task(
-                    _reservation_reaper_loop(), name="reservation-reaper"
-                )
+        # Start unconditionally (not gated on a non-empty snapshot): the app
+        # supports starting with zero monitored leaders and discovering them
+        # later, and those contexts still need reaping when risk mgmt is off.
+        reservation_reaper_tasks.append(
+            asyncio.create_task(
+                _reservation_reaper_loop(), name="reservation-reaper"
             )
+        )
 
     near_one_tasks: list[asyncio.Task] = []
 
