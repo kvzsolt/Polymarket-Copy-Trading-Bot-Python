@@ -244,12 +244,48 @@ class ReservationService:
         )
 
         if free_balance < required_usdc:
+            already_reserved = await self._reap_expired_quote_before_reject(
+                user_id=user_id,
+                already_reserved=already_reserved,
+            )
+            free_balance = balance - already_reserved
+
+        if free_balance < required_usdc:
             raise InsufficientFreeQuote(
                 f"insufficient free USDC: need {required_usdc}, "
                 f"free={free_balance} (balance={balance}, "
                 f"reserved={already_reserved})"
             )
         return balance
+
+    async def _reap_expired_quote_before_reject(
+        self,
+        *,
+        user_id: str,
+        already_reserved: Decimal,
+    ) -> Decimal:
+        if already_reserved <= 0:
+            return already_reserved
+        try:
+            released_ids = await self.release_expired_active()
+        except Exception as exc:
+            logger.warning(
+                "reservation.check.buy.expiry_reap_failed user=%s error=%r",
+                user_id,
+                exc,
+            )
+            return already_reserved
+        refreshed = await self.reservations_repo.sum_active_quote_for_user(user_id)
+        if refreshed != already_reserved:
+            logger.info(
+                "reservation.check.buy.expiry_reap_applied user=%s "
+                "released_or_enqueued=%d reserved_before=%s reserved_after=%s",
+                user_id,
+                len(released_ids or []),
+                already_reserved,
+                refreshed,
+            )
+        return refreshed
 
     async def _get_held_size(
         self,

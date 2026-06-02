@@ -481,7 +481,38 @@ def _build_reconcile_wake_closure(context):
             return
         async with lock:
             try:
-                await reconcile_submitted_unconfirmed(context)
+                reconciled = await reconcile_submitted_unconfirmed(context)
+                reservation_reaped = 0
+                extra = getattr(context, "extra", {}) or {}
+                reservation_service = extra.get("reservation_service")
+                if reservation_service is None:
+                    coordinator = getattr(context, "execution_coordinator", None)
+                    reservation_service = getattr(coordinator, "reservation_service", None)
+                release_expired = getattr(
+                    reservation_service,
+                    "release_expired_active",
+                    None,
+                )
+                if callable(release_expired):
+                    released_ids = await release_expired()
+                    try:
+                        reservation_reaped = len(released_ids or [])
+                    except TypeError:
+                        reservation_reaped = 0
+                if reconciled or reservation_reaped:
+                    logger.info(
+                        "user_wss_wake_reconcile_complete | user=%s reconciled=%d reservations_reaped=%d order_id=%s",
+                        context.user_id,
+                        reconciled,
+                        reservation_reaped,
+                        (
+                            event.get("order_id")
+                            or event.get("orderID")
+                            or event.get("id")
+                        )
+                        if isinstance(event, dict)
+                        else None,
+                    )
             except Exception as exc:
                 logger.warning(
                     "user_wss_wake_reconcile_error",
