@@ -172,8 +172,16 @@ async def _reap_reservations_once(contexts: list["TradingContext"]) -> None:
     for ctx in contexts:
         try:
             await _reap_expired_reservations_for_context(ctx)
-        except Exception:
-            logger.debug("reservation_reaper_failed", exc_info=True)
+        except Exception as exc:
+            # Match the risk-monitor reaper convention (risk_monitor.py): a
+            # persistent failure here strands capital/shares, so it must be
+            # visible in prod (where DEBUG is suppressed) via an error log with
+            # the user_id and a metric — not swallowed at debug level.
+            metrics.inc("reservation_reaper_failed_total")
+            logger.error(
+                "reservation_reaper_failed user=%s: %r",
+                getattr(ctx, "user_id", "?"), exc,
+            )
 
 
 def _wallets_blocked_by_reconcile_failures(
@@ -1511,6 +1519,20 @@ async def main() -> int:
             fail_closed = False
             for task in done:
                 spec = next((s for s in supervised if s.task is task), None)
+
+                # A cancelled task is a normal lifecycle event (shutdown, or a
+                # loop that re-raises CancelledError) — never a crash. Calling
+                # task.exception() on it would raise CancelledError and tear
+                # down the supervisor, turning graceful cancellation into an
+                # exit(1). Treat it as a benign drop.
+                if task.cancelled():
+                    if spec is not None:
+                        logger.info(
+                            "supervised_task_cancelled",
+                            extra={"task": spec.name},
+                        )
+                    continue
+
                 exc = task.exception()
 
                 if spec is None:
