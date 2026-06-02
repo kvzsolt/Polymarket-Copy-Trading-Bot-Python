@@ -25,7 +25,7 @@ from __future__ import annotations
 import logging
 import re
 from collections.abc import Mapping
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from types import SimpleNamespace
 import sys as _sys
 from dataclasses import dataclass, field
@@ -150,6 +150,21 @@ class _Parser:
         if raw == "":
             raw = raw_default
         return raw.lower() in ("1", "true", "yes")
+
+    def decimal_(self, key: str, default: str) -> Decimal:
+        raw = self._strip(key, self.raw(key, default))
+        if raw == "":
+            raw = default
+        try:
+            return Decimal(raw)
+        except (InvalidOperation, ValueError):
+            # Aggregate into EnvValidationError like float_/int_ rather than
+            # raising InvalidOperation straight out of load_config().
+            self.errors.append(f"{key} must be a valid decimal, got: {raw!r}")
+            try:
+                return Decimal(default)
+            except (InvalidOperation, ValueError):
+                return Decimal("0")
 
     def json_dict_float(self, key: str, default: str = "{}") -> dict[str, float]:
         """Parse a JSON object mapping to floats.
@@ -1280,7 +1295,7 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
 
     near_one_exit = NearOneExitConfig(
         enable_near_one_exit=p.bool_("ENABLE_NEAR_ONE_EXIT", False),
-        threshold=Decimal(p.string("NEAR_ONE_EXIT_THRESHOLD", "0.99")),
+        threshold=p.decimal_("NEAR_ONE_EXIT_THRESHOLD", "0.99"),
         dwell_seconds=p.int_("NEAR_ONE_EXIT_DWELL_SECONDS", "60"),
         check_interval=p.int_("NEAR_ONE_EXIT_CHECK_INTERVAL", "5"),
     )
@@ -1292,10 +1307,10 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
     redemption = RedemptionConfig(
         enable_auto_redeem=p.bool_("ENABLE_AUTO_REDEEM", False),
         check_interval=p.int_("REDEEM_CHECK_INTERVAL", "60"),
-        resolved_high=Decimal(p.string("REDEEM_RESOLVED_HIGH", "0.99")),
-        resolved_low=Decimal(p.string("REDEEM_RESOLVED_LOW", "0.01")),
-        price_epsilon=Decimal(p.string("REDEEM_PRICE_EPSILON", "0.000001")),
-        zero_threshold=Decimal(p.string("REDEEM_ZERO_THRESHOLD", "0.0001")),
+        resolved_high=p.decimal_("REDEEM_RESOLVED_HIGH", "0.99"),
+        resolved_low=p.decimal_("REDEEM_RESOLVED_LOW", "0.01"),
+        price_epsilon=p.decimal_("REDEEM_PRICE_EPSILON", "0.000001"),
+        zero_threshold=p.decimal_("REDEEM_ZERO_THRESHOLD", "0.0001"),
         ctf_contract_address=p.string(
             "REDEEM_CTF_CONTRACT_ADDRESS",
             "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045",

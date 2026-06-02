@@ -312,7 +312,24 @@ def _parse_position(raw: dict[str, Any]) -> RedemptionPosition | None:
     ).strip()
     if not token_id or not condition_id:
         return None
-    size = _to_decimal(raw.get("size")) or Decimal("0")
+    # Money fields must not silently coerce a *malformed* value to zero: a
+    # non-null but unparseable ``size`` would otherwise collapse through the
+    # ``size <= zero_threshold`` gate and the (potentially valuable) resolved
+    # position would never be redeemed. An *absent* size key keeps the prior
+    # behavior (0, later gated out); a present-but-unparseable value is skipped
+    # with a visible warning rather than silently zeroed.
+    raw_size = raw.get("size")
+    if raw_size is None:
+        size = Decimal("0")
+    else:
+        size = _to_decimal(raw_size)
+        if size is None:
+            logger.warning(
+                "redemption_parse_skip | unparseable size — skipping position "
+                "condition=%s token=%s raw_size=%r",
+                condition_id, token_id[:12], raw_size,
+            )
+            return None
     current_value = _to_decimal(raw.get("currentValue")) or Decimal("0")
     return RedemptionPosition(
         token_id=token_id,
