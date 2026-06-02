@@ -65,6 +65,7 @@ def _make_service(
     positions_repo=None,
     market_store=None,
     debounce_seconds: float = 0.0,
+    reservation_service=None,
 ) -> tuple[ManualSyncService, MagicMock, MagicMock]:
     positions_repo = positions_repo or MagicMock()
     positions_repo.list_open_positions = AsyncMock(return_value=[])
@@ -78,6 +79,7 @@ def _make_service(
         market_store=market_store,
         debounce_seconds=debounce_seconds,
         rest_poll_interval_seconds=0.05,
+        reservation_service=reservation_service,
     )
     return svc, positions_repo, market_store
 
@@ -213,6 +215,29 @@ async def test_position_discrepancy_emits_log_and_upsert():
     assert kwargs["real_size"] == 12.5
     assert kwargs["tracked_size"] == 0.0
     positions_repo.upsert_position.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_position_sync_reaps_expired_reservations_after_venue_fill():
+    """Venue confirms a larger position → existing expiry reaper runs."""
+    reservation_service = MagicMock()
+    reservation_service.release_expired_active = AsyncMock(return_value=["res-buy-1"])
+    svc, positions_repo, _ = _make_service(reservation_service=reservation_service)
+    positions_repo.list_open_positions = AsyncMock(return_value=[])
+
+    with (
+        patch("services.manual_sync_service.fetch_data", AsyncMock(side_effect=[
+            [],
+            [_live_position(size=12.5, avg=0.4)],
+        ])),
+        patch("services.manual_sync_service.get_user_position_model", MagicMock(return_value=MagicMock(
+            delete_many=AsyncMock(), insert_many=AsyncMock(),
+        ))),
+        patch("services.manual_sync_service.print_manual_sync_discrepancy"),
+    ):
+        await svc.sync_now(reason="test")
+
+    reservation_service.release_expired_active.assert_awaited_once_with()
 
 
 @pytest.mark.asyncio

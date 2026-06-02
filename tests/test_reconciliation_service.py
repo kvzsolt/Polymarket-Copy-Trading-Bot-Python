@@ -48,10 +48,21 @@ class MockPositionsRepo:
         self.upserted.append(fill)
 
 class MockReservationService:
-    def __init__(self):
+    def __init__(self, reservations_repo=None):
         self.released = []
+        self.reservations_repo = reservations_repo
     async def release_terminal(self, reservation_id: str, reason: str) -> None:
         self.released.append((reservation_id, reason))
+
+
+class MockReservationsRepo:
+    def __init__(self, by_order_id=None):
+        self.by_order_id = by_order_id or {}
+        self.lookups = []
+
+    async def get_active_by_order_id(self, order_id: str):
+        self.lookups.append(order_id)
+        return self.by_order_id.get(order_id)
 
 class MockVenueOrder:
     def __init__(self, status):
@@ -134,6 +145,68 @@ async def test_release_reservation_falls_back_to_order_request_metadata():
 
     assert reservation_service.released == [
         ("reservation-from-order-row", "confirmed"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_release_reservation_falls_back_to_active_order_reservation_link():
+    reservations_repo = MockReservationsRepo(
+        by_order_id={
+            "venue-order-2": type("ReservationRow", (), {"id": "reservation-from-link"})()
+        }
+    )
+    reservation_service = MockReservationService(reservations_repo=reservations_repo)
+    svc = ReconciliationService(
+        orders_repo=MockOrdersRepo(order=None),
+        fills_repo=MockFillsRepo(),
+        positions_repo=MockPositionsRepo(),
+        reservation_service=reservation_service,
+        clob_gateway=MockClobGateway(),
+        db=MockDbProvider(),
+        audit_logger=MockAuditLogger(),
+    )
+
+    await svc._release_reservation_if_present(
+        {"order_id": "venue-order-2"},
+        reason="confirmed",
+    )
+
+    assert reservations_repo.lookups == ["venue-order-2"]
+    assert reservation_service.released == [
+        ("reservation-from-link", "confirmed"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_release_reservation_fallback_splits_merged_order_ids():
+    reservations_repo = MockReservationsRepo(
+        by_order_id={
+            "venue-order-b": type("ReservationRow", (), {"id": "reservation-from-merged-link"})()
+        }
+    )
+    reservation_service = MockReservationService(reservations_repo=reservations_repo)
+    svc = ReconciliationService(
+        orders_repo=MockOrdersRepo(order=None),
+        fills_repo=MockFillsRepo(),
+        positions_repo=MockPositionsRepo(),
+        reservation_service=reservation_service,
+        clob_gateway=MockClobGateway(),
+        db=MockDbProvider(),
+        audit_logger=MockAuditLogger(),
+    )
+
+    await svc._release_reservation_if_present(
+        {"order_id": "venue-order-a,venue-order-b"},
+        reason="confirmed",
+    )
+
+    assert reservations_repo.lookups == [
+        "venue-order-a,venue-order-b",
+        "venue-order-a",
+        "venue-order-b",
+    ]
+    assert reservation_service.released == [
+        ("reservation-from-merged-link", "confirmed"),
     ]
 
 
