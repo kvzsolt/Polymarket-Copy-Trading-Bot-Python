@@ -158,6 +158,24 @@ def _flatten_contexts(
     ]
 
 
+async def _reap_reservations_once(contexts: list["TradingContext"]) -> None:
+    """Reconcile-and-release TTL-expired reservations across *contexts*.
+
+    Standalone equivalent of the risk loop's in-session reaper, used when risk
+    management is disabled. Reuses the vetted per-context reaper, which only
+    releases reservations whose linked order reconciliation confirms is
+    venue-terminal — duplicate-order / stale-lock protections are preserved.
+    See ``docs/concurrency-audit-response.md`` (C8-adjacent gap).
+    """
+    from services.risk.risk_monitor import _reap_expired_reservations_for_context
+
+    for ctx in contexts:
+        try:
+            await _reap_expired_reservations_for_context(ctx)
+        except Exception:
+            logger.debug("reservation_reaper_failed", exc_info=True)
+
+
 def _wallets_blocked_by_reconcile_failures(
     started_wallets: list[str],
     contexts_by_leader: dict[str, list["TradingContext"]],
@@ -1331,6 +1349,33 @@ async def main() -> int:
                     config=application.config,
                 ),
             )
+        )
+
+    # Standalone reservation reaper for risk-disabled runs. When risk
+    # management is on, its loop already reaps expired reservations in-session;
+    # with it off, a TTL-expired reservation on a stuck submitted_unconfirmed
+    # order would otherwise strand capital/shares until restart. Registered as a
+    # supervised task (only when risk mgmt is off) so it inherits the same
+    # bounded-restart / fail-closed / shutdown treatment as the other aux loops.
+    # See docs/concurrency-audit-response.md (C8-adjacent gap).
+    if not application.config.risk.enable_risk_mgmt:
+        _reaper_interval = max(
+            30.0, float(application.config.polling.reconcile_interval_seconds)
+        )
+
+        async def _reservation_reaper_loop() -> None:
+            # Re-derive the context list every tick: dynamic leader discovery
+            # (``_on_new_leaders``) mutates ``contexts_by_leader`` in place after
+            # startup, so a one-time snapshot would silently miss any
+            # later-discovered leader — reinstating the exact gap this reaper
+            # closes. Sweep first, then sleep, so an already-expired reservation
+            # is reaped promptly instead of waiting a full interval.
+            while True:
+                await _reap_reservations_once(_flatten_contexts(contexts_by_leader))
+                await asyncio.sleep(_reaper_interval)
+
+        supervised.append(
+            _Supervised(name="reservation-reaper", factory=_reservation_reaper_loop)
         )
 
     if application.config.near_one_exit.enable_near_one_exit:
