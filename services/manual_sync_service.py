@@ -90,6 +90,7 @@ class ManualSyncService:
         debounce_seconds: float = 1.0,
         rest_poll_interval_seconds: float = 30.0,
         position_drift_service: Any | None = None,
+        reservation_service: Any | None = None,
     ) -> None:
         if not funder_address:
             raise ValueError("ManualSyncService requires a non-empty funder_address")
@@ -110,6 +111,7 @@ class ManualSyncService:
         # drift just authoritatively deleted. ``None`` keeps the legacy
         # always-upsert behaviour for tests and paper-mode fixtures.
         self._position_drift_service = position_drift_service
+        self._reservation_service = reservation_service
 
         self._lock = asyncio.Lock()
         self._debounce_task: asyncio.Task | None = None
@@ -358,6 +360,7 @@ class ManualSyncService:
         persisted_by_token: dict[str, Any] = {
             str(record.token_id): record for record in persisted
         }
+        increased_position_scopes = 0
 
         for pos in live:
             token_id = str(pos.get("asset") or pos.get("tokenId") or "").strip()
@@ -369,6 +372,7 @@ class ManualSyncService:
 
             existing = persisted_by_token.get(token_id)
             local_size = existing.size_tokens if existing is not None else Decimal("0")
+            venue_size_increased = venue_size > local_size + _SIZE_EPSILON
 
             # Drift handshake: if PositionDriftService just pruned this scope
             # (venue=0 observed authoritatively), skip the upsert even when
@@ -420,11 +424,17 @@ class ManualSyncService:
                     avg_entry_price=avg_price,
                     leader_id=(existing.leader_id if existing is not None else None),
                 )
+                if venue_size_increased:
+                    increased_position_scopes += 1
             except Exception as exc:
                 logger.warning(
                     "manual_sync_positions_repo_upsert_failed | token=%s error=%s",
                     token_id, redact_error_detail(exc),
                 )
+
+        await self._reap_expired_reservations_after_position_increase(
+            increased_scopes=increased_position_scopes,
+        )
 
     async def _upsert_position(
         self,
@@ -448,6 +458,39 @@ class ManualSyncService:
             avg_entry_price=avg_entry_price,
         )
         await self._positions_repo.upsert_position(record)
+
+    async def _reap_expired_reservations_after_position_increase(
+        self,
+        *,
+        increased_scopes: int,
+    ) -> None:
+        if self._reservation_service is None:
+            return
+        if increased_scopes <= 0:
+            return
+        release_expired = getattr(self._reservation_service, "release_expired_active", None)
+        if not callable(release_expired):
+            return
+        try:
+            released_ids = await release_expired()
+        except Exception as exc:
+            logger.warning(
+                "manual_sync_reservation_reap_failed | increased_scopes=%d error=%s",
+                increased_scopes,
+                redact_error_detail(exc),
+            )
+            return
+        try:
+            count = len(released_ids or [])
+        except TypeError:
+            count = 0
+        if count:
+            logger.info(
+                "manual_sync_reaped_expired_reservations | count=%d increased_scopes=%d user=%s",
+                count,
+                increased_scopes,
+                self._user_id,
+            )
 
 
 def _decimal_or_zero(value: Any) -> Decimal:

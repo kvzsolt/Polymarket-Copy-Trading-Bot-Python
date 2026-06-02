@@ -366,6 +366,7 @@ def build_user_state(
         market_store=market_store,
         fills_repo=fills_repo,
         position_drift_service=position_drift_service,
+        reservation_service=getattr(execution_coordinator, "reservation_service", None),
     )
 
     return UserRuntimeState(
@@ -398,6 +399,7 @@ def _build_manual_sync_service(
     market_store: MarketStateStore | None,
     fills_repo: FillsRepo | None,
     position_drift_service=None,
+    reservation_service=None,
 ):
     """Build the per-user ManualSyncService. Returns None when prerequisites are missing."""
     if not funder_address or market_store is None:
@@ -414,6 +416,7 @@ def _build_manual_sync_service(
         market_store=market_store,
         fills_repo=fills_repo,
         position_drift_service=position_drift_service,
+        reservation_service=reservation_service,
     )
 
 

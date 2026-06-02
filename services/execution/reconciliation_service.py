@@ -233,6 +233,20 @@ def _matched_amount_from_response(payload: dict[str, Any] | None) -> Decimal:
     )
 
 
+def _order_id_candidates(order_id: Any) -> list[str]:
+    raw = str(order_id or "").strip()
+    if not raw:
+        return []
+    candidates: list[str] = []
+    for part in raw.split(","):
+        candidate = part.strip()
+        if candidate and candidate not in candidates:
+            candidates.append(candidate)
+    if raw not in candidates:
+        candidates.insert(0, raw)
+    return candidates
+
+
 ConfirmFillCallable = Callable[[str], Awaitable[dict[str, Any]]]
 
 
@@ -483,14 +497,21 @@ class ReconciliationService:
             return
         request = record.get("request") if isinstance(record, dict) else None
         reservation_id: Any = None
+        reservation_source: str | None = None
         if isinstance(request, dict):
             reservation_id = request.get("reservation_id")
+            if reservation_id:
+                reservation_source = "request"
             if not reservation_id:
                 recovery = request.get("recovery_metadata")
                 if isinstance(recovery, dict):
                     reservation_id = recovery.get("reservation_id")
+                    if reservation_id:
+                        reservation_source = "request.recovery_metadata"
         if not reservation_id:
             reservation_id = record.get("reservation_id")
+            if reservation_id:
+                reservation_source = "record"
         if not reservation_id:
             order_id = str(record.get("order_id") or "").strip()
             getter = getattr(self.orders_repo, "get_by_order_id", None)
@@ -503,21 +524,64 @@ class ReconciliationService:
                     order_request = order_row.get("request")
                     if isinstance(order_request, dict):
                         reservation_id = order_request.get("reservation_id")
+                        if reservation_id:
+                            reservation_source = "orders.request"
                         if not reservation_id:
                             recovery = order_request.get("recovery_metadata")
                             if isinstance(recovery, dict):
                                 reservation_id = recovery.get("reservation_id")
+                                if reservation_id:
+                                    reservation_source = "orders.request.recovery_metadata"
                     if not reservation_id:
                         reservation_id = order_row.get("reservation_id")
+                        if reservation_id:
+                            reservation_source = "orders.row"
+        if not reservation_id:
+            reservation_id = await self._lookup_active_reservation_id_for_order(
+                record.get("order_id")
+            )
+            if reservation_id:
+                reservation_source = "order_reservations.order_id"
         if not reservation_id:
             return
         try:
+            _log.info(
+                "reconciliation_reservation_release | reservation_id=%s reason=%s source=%s order_id=%s",
+                reservation_id,
+                reason,
+                reservation_source or "unknown",
+                record.get("order_id"),
+            )
+            self._audit(
+                "reconciliation_reservation_release",
+                {
+                    "reservation_id": str(reservation_id),
+                    "reason": reason,
+                    "source": reservation_source or "unknown",
+                    "order_id": record.get("order_id"),
+                },
+            )
             await self.reservation_service.release_terminal(str(reservation_id), reason=reason)
         except Exception as exc:
             _log.warning(
                 "reconciliation_reservation_release_failed | reservation_id=%s reason=%s error=%r",
                 reservation_id, reason, exc,
             )
+
+    async def _lookup_active_reservation_id_for_order(self, order_id: Any) -> str | None:
+        repo = getattr(self.reservation_service, "reservations_repo", None)
+        lookup = getattr(repo, "get_active_by_order_id", None)
+        if not callable(lookup):
+            return None
+        for candidate in _order_id_candidates(order_id):
+            try:
+                reservation = await lookup(candidate)
+            except Exception:
+                continue
+            reservation_id = getattr(reservation, "id", None)
+            if reservation_id:
+                return str(reservation_id)
+        return None
 
     def _emit_lifecycle(
         self,
