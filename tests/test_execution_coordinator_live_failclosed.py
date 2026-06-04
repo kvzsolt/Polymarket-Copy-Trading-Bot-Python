@@ -344,6 +344,8 @@ async def test_runtime_bootstrap_helper_returns_coordinator():
         assert hasattr(coord, "submit_risk_exit")
         assert hasattr(coord, "submit_near_one_exit")
         assert hasattr(coord, "submit_protective_exit")
+        assert coord.reservation_service.enabled is False
+        assert coord.reservations_repo is None
 
 
 def test_runtime_bootstrap_helper_returns_none_without_funder():

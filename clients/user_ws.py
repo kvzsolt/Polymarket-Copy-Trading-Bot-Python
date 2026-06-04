@@ -351,7 +351,27 @@ class UserWebSocket:
             coro.close()
             return
         self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
+
+        def _on_done(done: asyncio.Task) -> None:
+            self._tasks.discard(done)
+            if done.cancelled():
+                return
+            try:
+                exc = done.exception()
+            except Exception as callback_exc:
+                logger.warning(
+                    "UserWS: callback task inspection failed: %s",
+                    callback_exc,
+                )
+                return
+            if exc is not None:
+                logger.warning(
+                    "UserWS: callback task failed: %s: %s",
+                    type(exc).__name__,
+                    exc,
+                )
+
+        task.add_done_callback(_on_done)
 
     async def _run_lifecycle_callback(
         self,

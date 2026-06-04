@@ -429,15 +429,19 @@ class ReservationsRepo:
                 "SELECT * FROM order_reservations WHERE id = $1", res_id
             )
 
-    async def list_expired_active(self, now_ts: int) -> list[Reservation]:
+    async def list_expired_active(
+        self, now_ts: int, user_id: str | None = None
+    ) -> list[Reservation]:
+        query = """
+            SELECT * FROM order_reservations
+            WHERE status = 'active' AND expires_at < $1
+        """
+        params: list[object] = [now_ts]
+        if user_id is not None:
+            params.append(user_id)
+            query += f" AND user_id = ${len(params)}"
         async with self._pool.acquire() as conn:
-            rows = await conn.fetch(
-                """
-                SELECT * FROM order_reservations
-                WHERE status = 'active' AND expires_at < $1
-                """,
-                now_ts,
-            )
+            rows = await conn.fetch(query, *params)
         return [self._row_to_reservation(r) for r in rows]
 
     async def list_active(self) -> list[Reservation]:

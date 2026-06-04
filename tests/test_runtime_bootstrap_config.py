@@ -355,6 +355,12 @@ def test_build_user_state_injects_typed_config_into_runtime_services():
     assert execution_service_cls.call_args.kwargs["config"] is cfg
     assert state.position_manager is position_manager_instance
     assert state.execution_service is execution_service_instance
+    assert state.execution_coordinator is not None
+    reservation_service = state.execution_coordinator.reservation_service
+    assert (
+        state.position_drift_service._reservations_repo
+        is reservation_service.reservations_repo
+    )
 
 
 def test_copy_notional_prefers_typed_config_over_env():

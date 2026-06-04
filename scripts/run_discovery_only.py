@@ -48,6 +48,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Maximum evaluations to print.",
     )
     parser.add_argument(
+        "--eval-limit",
+        type=int,
+        default=0,
+        help="Maximum Falcon candidates to evaluate in this run. 0 means no explicit cap.",
+    )
+    parser.add_argument(
         "--json-out",
         default="",
         help="Optional path to write the summary JSON.",
@@ -61,6 +67,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def _evaluation_to_dict(e: Any) -> dict[str, Any]:
+    uncopyable_reason_counts = _uncopyable_reason_counts(e)
     return {
         "wallet": getattr(e, "wallet", ""),
         "status": getattr(e, "status", ""),
@@ -81,8 +88,25 @@ def _evaluation_to_dict(e: Any) -> dict[str, Any]:
         "pnl_7d": str(getattr(e, "pnl_7d", "0")),
         "pnl_3d": str(getattr(e, "pnl_3d", "0")),
         "rejection_reason": getattr(e, "rejection_reason", None),
+        "uncopyable_reason_counts": dict(sorted(uncopyable_reason_counts.items())),
         "updated_at": float(getattr(e, "updated_at", 0.0) or 0.0),
     }
+
+
+def _uncopyable_reason_counts(e: Any) -> Counter:
+    replay_json = getattr(e, "replay_json", {}) or {}
+    if not isinstance(replay_json, dict):
+        return Counter()
+    counts: Counter = Counter()
+    for item in replay_json.get("signal_results", ()) or ():
+        if not isinstance(item, dict):
+            continue
+        if bool(item.get("copyable")):
+            continue
+        reason = str(item.get("reason") or "").strip()
+        if reason and reason != "ok":
+            counts[reason] += 1
+    return counts
 
 
 async def _amain(argv: list[str] | None = None) -> int:
@@ -122,6 +146,7 @@ async def _amain(argv: list[str] | None = None) -> int:
                 "once": bool(args.once),
                 "list_only": bool(args.list_only),
                 "limit": int(args.limit),
+                "eval_limit": int(args.eval_limit),
                 "require_live_candidates": bool(args.require_live_candidates),
                 "falcon_configured": bool(app.config.discovery.falcon_api_token),
                 "lookback_days": app.config.discovery.polymarket_history_lookback_days,
@@ -132,7 +157,9 @@ async def _amain(argv: list[str] | None = None) -> int:
 
         profiles = []
         if not args.list_only:
-            profiles = await app.discovery_service.discover_candidates()
+            profiles = await app.discovery_service.discover_candidates(
+                limit=args.eval_limit or None
+            )
             logger.info(
                 "discovery_only_pass_complete",
                 extra={"profile_count": len(profiles)},
@@ -157,6 +184,9 @@ async def _amain(argv: list[str] | None = None) -> int:
             str(getattr(e, "rejection_reason", None) or "none")
             for e in evaluations
         )
+        global_uncopyable_reason_counts: Counter = Counter()
+        for e in evaluations:
+            global_uncopyable_reason_counts.update(_uncopyable_reason_counts(e))
 
         payload = {
             "discovery_ran": not args.list_only,
@@ -166,6 +196,9 @@ async def _amain(argv: list[str] | None = None) -> int:
             "shadow_count": len(shadow),
             "rejected_count": len(rejected),
             "rejection_counts": dict(sorted(rejection_counts.items())),
+            "global_uncopyable_reason_counts": dict(
+                sorted(global_uncopyable_reason_counts.items())
+            ),
             "top": [_evaluation_to_dict(e) for e in evaluations[: int(args.limit)]],
         }
 

@@ -215,7 +215,11 @@ class ExecutionCoordinator:
         # PR7 — wired per-context by ``build_trading_context``.
         self.position_drift_service: Any | None = None
         # Cache the underlying reservations repo for direct order-id lookups.
-        self.reservations_repo = getattr(reservation_service, "reservations_repo", None)
+        self.reservations_repo = (
+            None
+            if getattr(reservation_service, "enabled", True) is False
+            else getattr(reservation_service, "reservations_repo", None)
+        )
 
     async def execute_intent(self, intent: OrderIntent) -> ExecutionResult:
         """V2 entry point: acquire per-scope lock, then run the execution body.
@@ -439,6 +443,8 @@ class ExecutionCoordinator:
         order_id: str | None = None,
         venue_order_id: str | None = None,
     ) -> None:
+        if getattr(self.reservation_service, "enabled", True) is False:
+            return
         repo = getattr(self.reservation_service, "reservations_repo", None)
         linker = getattr(repo, "link_order", None)
         if linker is not None:

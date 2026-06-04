@@ -44,6 +44,19 @@ def web3_returns(monkeypatch):
         web3_cls.HTTPProvider = MagicMock()
         web3_cls.to_checksum_address = lambda a: a
         monkeypatch.setattr("utils.getMyBalance.Web3", web3_cls)
+
+        class FakeFallbackWeb3Provider:
+            def __init__(self, rpc_url, fallback_rpc_url=""):
+                self.rpc_url = rpc_url
+                self.fallback_rpc_url = fallback_rpc_url
+
+            def get_web3(self):
+                return w3_mock
+
+        monkeypatch.setattr(
+            "utils.getMyBalance.FallbackWeb3Provider",
+            FakeFallbackWeb3Provider,
+        )
         return w3_mock
 
     return _go

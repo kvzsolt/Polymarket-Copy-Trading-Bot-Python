@@ -43,6 +43,8 @@ async def _release_expired_reservations_for_context(context: TradingContext) -> 
         coordinator = getattr(context, "execution_coordinator", None)
         reservation_service = getattr(coordinator, "reservation_service", None)
     release_expired = getattr(reservation_service, "release_expired_active", None)
+    if getattr(reservation_service, "enabled", True) is False:
+        return 0
     if not callable(release_expired):
         return 0
     released_ids = await release_expired()
@@ -346,6 +348,9 @@ def build_user_state(
         config=config,
     )
 
+    reservation_service = getattr(execution_coordinator, "reservation_service", None)
+    reservations_repo = getattr(reservation_service, "reservations_repo", None)
+
     # PR7 — proactive position drift sweep. Built BEFORE manual_sync so the
     # handshake (manual_sync.was_recently_pruned → skip upsert) is wired
     # from boot. Without this ordering manual_sync would resurrect rows
@@ -353,6 +358,7 @@ def build_user_state(
     position_drift_service = _build_position_drift_service(
         pool=pool,
         positions_repo=positions_repo,
+        reservations_repo=reservations_repo,
         config=config,
     )
 
@@ -366,7 +372,7 @@ def build_user_state(
         market_store=market_store,
         fills_repo=fills_repo,
         position_drift_service=position_drift_service,
-        reservation_service=getattr(execution_coordinator, "reservation_service", None),
+        reservation_service=reservation_service,
     )
 
     return UserRuntimeState(
@@ -424,6 +430,7 @@ def _build_position_drift_service(
     *,
     pool,
     positions_repo: PositionsRepo,
+    reservations_repo=None,
     config: AppConfig,
 ):
     """Build the per-user PositionDriftService (PR7).
@@ -434,11 +441,9 @@ def _build_position_drift_service(
     """
     try:
         from services.position_drift_service import PositionDriftService
-        from storage.postgres.reservations_repo import ReservationsRepo
     except Exception as exc:
         logger.warning("position_drift_service_unwired error=%r", exc)
         return None
-    reservations_repo = ReservationsRepo(pool)
 
     async def _fetcher(wallet: str):
         return await fetch_live_positions(wallet)
@@ -479,6 +484,12 @@ def _build_execution_coordinator(
         logger.warning("execution_coordinator_unwired error=%r", exc)
         return None
     reservations_repo = ReservationsRepo(pool)
+    # Reservations are a typed-config gate (RESERVATIONS_ENABLED), not a
+    # hard-coded mode. Configless contexts (partial test state) keep the
+    # historical disabled behavior so existing fixtures stay green.
+    reservations_enabled = (
+        config.execution.reservations_enabled if config is not None else False
+    )
     reservation_service = ReservationService(
         reservations_repo=reservations_repo,
         positions_repo=positions_repo,
@@ -487,7 +498,16 @@ def _build_execution_coordinator(
         ttl_seconds=(
             config.execution.reservation_ttl_seconds if config is not None else 120
         ),
+        enabled=reservations_enabled,
     )
+    if not reservations_enabled:
+        logger.warning(
+            "reservations DISABLED (RESERVATIONS_ENABLED=false): pre-submit "
+            "BUY-quote/SELL-share double-spend reservations are OFF. "
+            "Duplicate-order protection now relies solely on the idempotency "
+            "submission lock + per-scope position coordinator. funder=%s",
+            funder_address,
+        )
     coord = ExecutionCoordinator(
         reservation_service=reservation_service,
         orders_repo=order_repo,

@@ -66,6 +66,18 @@ _ETH_ADDR_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
 _HEX_PRIVATE_KEY_RE = re.compile(r"^0x[0-9a-fA-F]{64}$")
 logger = logging.getLogger("AppConfig")
 
+# Contract addresses live in the dependency-free ``config.addresses`` leaf
+# module so the typed config and the legacy ``config.env`` surface share one
+# source of truth (env already imports app_config indirectly, so neither can
+# own the constants without a cycle). Re-exported here for back-compat with
+# existing ``from config.app_config import POLYGON_USDCE_ADDRESS`` call sites.
+from config.addresses import (  # noqa: E402
+    POLYGON_USDCE_ADDRESS,
+    POLYMARKET_CTF_COLLATERAL_ADAPTER_ADDRESS,
+    POLYMARKET_CTF_EXCHANGE_V2_ADDRESS,
+    POLYMARKET_PUSD_ADDRESS,
+)
+
 
 # ---------------------------------------------------------------------------
 # Parsing primitives (env-mapping parameterised — no os.environ coupling).
@@ -380,6 +392,13 @@ class ExecutionConfig:
     # which a pending order blocks the next same-scope copy before it is
     # expired (and reconciled). Mirrors ``pending_submission_ttl_seconds``.
     reservation_ttl_seconds: int
+    # Master switch for pre-submit BUY-quote / SELL-share reservations. When
+    # False the ReservationService no-ops (returns placeholder reservations)
+    # and double-spend protection falls back to the idempotency submission
+    # lock + position coordinator. Defaults False on this hardening branch
+    # because the reservation blocker was over-firing on legitimate same-scope
+    # copies; flip to True once that is retuned. See docs/02-configuration.md.
+    reservations_enabled: bool
     retry_backoff_base: float
     transaction_fee_bps: float
     gas_cost_usdc: float
@@ -459,8 +478,8 @@ class NetworkConfig:
     # to be read straight out of ``ENV`` by ``utils/createClobClient.py``
     # and ``utils/getMyBalance.py``; promoted to typed config so the
     # balance-check + CLOB-client paths can drop their raw env reads.
-    # Default-empty strings let the existing usdc_contract_address fallback
-    # chain in load_config keep working when these aren't set.
+    # CLOB v2 defaults to pUSD collateral; ``usdc_contract_address`` is kept
+    # as a legacy field name for callers that still expect that attribute.
     collateral_contract_address: str = ""
     pusd_contract_address: str = ""
     ctf_exchange_v2_address: str = ""
@@ -593,6 +612,7 @@ class DiscoveryConfig:
     falcon_max_trades_15d: int = 750
     polymarket_history_lookback_days: int = 365
     polymarket_history_window_days: int = 7
+    polymarket_history_min_window_seconds: int = 21600
     polymarket_activity_max_offset: int = 10000
     discovery_history_trade_limit: int = 50000
     discovery_signal_group_window_seconds: int = 60
@@ -600,6 +620,11 @@ class DiscoveryConfig:
     discovery_min_group_notional_usdc: float = 5.0
     discovery_min_copyable_grouped_signal_ratio: float = 0.75
     discovery_min_copyable_notional_ratio: float = 0.60
+    discovery_min_auto_sports_esports_ratio: float = 0.75
+    discovery_auto_prefer_sports_esports: bool = True
+    discovery_evaluation_ttl_seconds: int = 3600
+    discovery_reject_stale_evaluations: bool = True
+    discovery_require_recent_state_for_live: bool = True
     discovery_require_7d_non_negative: bool = True
     discovery_min_7d_pnl_usdc: float = 0.0
     discovery_allow_3d_slightly_negative: bool = True
@@ -1124,6 +1149,7 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         near_resolution_max_age_seconds=p.float_("NEAR_RESOLUTION_MAX_AGE_SECONDS", "15"),
         pending_submission_ttl_seconds=p.int_("PENDING_SUBMISSION_TTL_SECONDS", "120"),
         reservation_ttl_seconds=p.int_("RESERVATION_TTL_SECONDS", "120"),
+        reservations_enabled=p.bool_("RESERVATIONS_ENABLED", False),
         retry_backoff_base=p.float_("RETRY_BACKOFF_BASE", "1.0"),
         transaction_fee_bps=p.float_("TRANSACTION_FEE_BPS", "20"),
         gas_cost_usdc=p.float_("GAS_COST_USDC", "0.03"),
@@ -1221,16 +1247,19 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         chain_id=wallet.chain_id,
         usdc_contract_address=(
             p.string("COLLATERAL_CONTRACT_ADDRESS", "")
-            or p.string("PUSD_CONTRACT_ADDRESS", "")
-            or p.string("USDC_CONTRACT_ADDRESS", "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174")
+            or p.string("PUSD_CONTRACT_ADDRESS", POLYMARKET_PUSD_ADDRESS)
+            or p.string("USDC_CONTRACT_ADDRESS", POLYGON_USDCE_ADDRESS)
         ),
         enforce_geoblock=p.bool_("ENFORCE_GEOBLOCK", True),
         enable_metrics_server=p.bool_("ENABLE_METRICS_SERVER", False),
         metrics_port=p.int_("METRICS_PORT", "9102"),
         metrics_bind_host=p.string("METRICS_BIND_HOST", "127.0.0.1"),
         collateral_contract_address=p.string("COLLATERAL_CONTRACT_ADDRESS", ""),
-        pusd_contract_address=p.string("PUSD_CONTRACT_ADDRESS", ""),
-        ctf_exchange_v2_address=p.string("CTF_EXCHANGE_V2_ADDRESS", ""),
+        pusd_contract_address=p.string("PUSD_CONTRACT_ADDRESS", POLYMARKET_PUSD_ADDRESS),
+        ctf_exchange_v2_address=p.string(
+            "CTF_EXCHANGE_V2_ADDRESS",
+            POLYMARKET_CTF_EXCHANGE_V2_ADDRESS,
+        ),
     )
 
     reconciliation = ReconciliationConfig(
@@ -1287,6 +1316,7 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
 
     redemption_collateral = (
         p.string("REDEEM_COLLATERAL_CONTRACT_ADDRESS", "")
+        or network.pusd_contract_address
         or network.usdc_contract_address
     )
     redemption = RedemptionConfig(
@@ -1298,7 +1328,10 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         zero_threshold=Decimal(p.string("REDEEM_ZERO_THRESHOLD", "0.0001")),
         ctf_contract_address=p.string(
             "REDEEM_CTF_CONTRACT_ADDRESS",
-            "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045",
+            p.string(
+                "CTF_COLLATERAL_ADAPTER_ADDRESS",
+                POLYMARKET_CTF_COLLATERAL_ADAPTER_ADDRESS,
+            ),
         ),
         collateral_contract_address=redemption_collateral,
         gas_limit=p.int_("REDEEM_GAS_LIMIT", "500000"),
@@ -1350,6 +1383,9 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         falcon_max_trades_15d=p.int_("FALCON_MAX_TRADES_15D", "750"),
         polymarket_history_lookback_days=p.int_("POLYMARKET_HISTORY_LOOKBACK_DAYS", "365"),
         polymarket_history_window_days=p.int_("POLYMARKET_HISTORY_WINDOW_DAYS", "7"),
+        polymarket_history_min_window_seconds=p.int_(
+            "POLYMARKET_HISTORY_MIN_WINDOW_SECONDS", "21600"
+        ),
         polymarket_activity_max_offset=p.int_("POLYMARKET_ACTIVITY_MAX_OFFSET", "10000"),
         discovery_history_trade_limit=p.int_("DISCOVERY_HISTORY_TRADE_LIMIT", "50000"),
         discovery_signal_group_window_seconds=p.int_("DISCOVERY_SIGNAL_GROUP_WINDOW_SECONDS", "60"),
@@ -1360,6 +1396,21 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         ),
         discovery_min_copyable_notional_ratio=p.float_(
             "DISCOVERY_MIN_COPYABLE_NOTIONAL_RATIO", "0.60"
+        ),
+        discovery_min_auto_sports_esports_ratio=p.float_(
+            "DISCOVERY_MIN_AUTO_SPORTS_ESPORTS_RATIO", "0.75"
+        ),
+        discovery_auto_prefer_sports_esports=p.bool_(
+            "DISCOVERY_AUTO_PREFER_SPORTS_ESPORTS", True
+        ),
+        discovery_evaluation_ttl_seconds=p.int_(
+            "DISCOVERY_EVALUATION_TTL_SECONDS", "3600"
+        ),
+        discovery_reject_stale_evaluations=p.bool_(
+            "DISCOVERY_REJECT_STALE_EVALUATIONS", True
+        ),
+        discovery_require_recent_state_for_live=p.bool_(
+            "DISCOVERY_REQUIRE_RECENT_STATE_FOR_LIVE", True
         ),
         discovery_require_7d_non_negative=p.bool_("DISCOVERY_REQUIRE_7D_NON_NEGATIVE", True),
         discovery_min_7d_pnl_usdc=p.float_("DISCOVERY_MIN_7D_PNL_USDC", "0"),

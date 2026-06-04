@@ -86,7 +86,7 @@ async def test_detect_wallet_signature_type_gnosis_safe_from_contract_code(monke
     )
     monkeypatch.setattr(
         "services.wallet_signature_detector._fetch_contract_code_hex",
-        lambda _rpc_url, _address: "0x1234",
+        lambda _rpc_url, _address, _fallback_rpc="":"0x1234",
     )
 
     signature_type, wallet_type, signer_address = await detect_wallet_signature_type(
@@ -108,7 +108,7 @@ async def test_detect_wallet_signature_type_poly_proxy_when_funder_differs_and_h
     )
     monkeypatch.setattr(
         "services.wallet_signature_detector._fetch_contract_code_hex",
-        lambda _rpc_url, _address: "0x",
+        lambda _rpc_url, _address, _fallback_rpc="":"0x",
     )
 
     signature_type, wallet_type, signer_address = await detect_wallet_signature_type(

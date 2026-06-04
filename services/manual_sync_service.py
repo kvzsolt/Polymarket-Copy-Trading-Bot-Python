@@ -74,6 +74,8 @@ _POSITIONS_URL = "https://data-api.polymarket.com/positions?user={wallet}"
 
 # Size-comparison epsilon. Matches the TS ZERO_THRESHOLD constant.
 _SIZE_EPSILON = Decimal("0.001")
+_WSS_TRIGGER_REASONS = frozenset({"wss_fill", "wss_order_update"})
+_DEFAULT_WSS_SETTLE_DELAY_SECONDS = 10.0
 
 
 class ManualSyncService:
@@ -89,6 +91,7 @@ class ManualSyncService:
         user_id: str | None = None,
         debounce_seconds: float = 1.0,
         rest_poll_interval_seconds: float = 30.0,
+        wss_settle_delay_seconds: float = _DEFAULT_WSS_SETTLE_DELAY_SECONDS,
         position_drift_service: Any | None = None,
         reservation_service: Any | None = None,
     ) -> None:
@@ -105,6 +108,7 @@ class ManualSyncService:
         self._fills_repo = fills_repo
         self._debounce_seconds = max(0.0, float(debounce_seconds))
         self._rest_poll_interval = max(1.0, float(rest_poll_interval_seconds))
+        self._wss_settle_delay = max(0.0, float(wss_settle_delay_seconds))
         # Drift handshake: when set, ``_sync_positions_and_tracking`` consults
         # ``was_recently_pruned`` before upserting so an eventually-consistent
         # data-api echo of a venue-positive size cannot resurrect a row that
@@ -161,8 +165,15 @@ class ManualSyncService:
         )
 
     async def _debounced_run(self, reason: str) -> None:
+        delay = self._debounce_seconds
+        if reason in _WSS_TRIGGER_REASONS:
+            # User WSS events are also emitted for bot-origin fills. Run the
+            # manual detector after reconciliation has had a chance to write
+            # the bot=True activity row; otherwise the bot's own fill can be
+            # fetched from /activity and printed as "manual".
+            delay = max(delay, self._wss_settle_delay)
         try:
-            await asyncio.sleep(self._debounce_seconds)
+            await asyncio.sleep(delay)
         except asyncio.CancelledError:
             return
         await self.sync_now(reason=reason)
@@ -360,6 +371,7 @@ class ManualSyncService:
         persisted_by_token: dict[str, Any] = {
             str(record.token_id): record for record in persisted
         }
+        live_tokens: set[str] = set()
         increased_position_scopes = 0
 
         for pos in live:
@@ -367,6 +379,7 @@ class ManualSyncService:
             condition_id = str(pos.get("conditionId") or pos.get("condition_id") or "").strip()
             if not token_id or not condition_id:
                 continue
+            live_tokens.add(token_id)
             venue_size = _decimal_or_zero(pos.get("size"))
             avg_price = _decimal_or_zero(pos.get("avgPrice"))
 
@@ -432,8 +445,79 @@ class ManualSyncService:
                     token_id, redact_error_detail(exc),
                 )
 
-        await self._reap_expired_reservations_after_position_increase(
-            increased_scopes=increased_position_scopes,
+        # Guard: skip deletion when the Data-API response cannot be trusted as a
+        # complete picture of the user's holdings.  Two signals:
+        #
+        # (a) Empty raw response — almost certainly a transient API failure, not
+        #     "the user has zero positions".  Wiping all local rows on an empty
+        #     response risks runaway risk-monitor probes against retired tokens.
+        #
+        # (b) Raw response smaller than local tracked count — suggests a paginated
+        #     or truncated response.  Skipping avoids deleting a position whose
+        #     token was transiently absent from this single snapshot.
+        #
+        # In both cases we log a warning and defer deletion to the next sync when
+        # the API hopefully returns a complete picture.  Zero-value positions
+        # returned by the API (currentValue=0) are still deleted because they
+        # appear in the raw response — only the count-based guards affect that.
+        deleted_position_scopes = 0
+        _can_delete: bool
+        if not positions:
+            if persisted_by_token:
+                logger.warning(
+                    "manual_sync_deletion_skipped_empty_api | "
+                    "local_count=%d user=%s",
+                    len(persisted_by_token),
+                    self._user_id,
+                )
+            _can_delete = False
+        elif len(positions) < len(persisted_by_token):
+            logger.warning(
+                "manual_sync_deletion_skipped_sparse_api | "
+                "api_count=%d local_count=%d user=%s",
+                len(positions),
+                len(persisted_by_token),
+                self._user_id,
+            )
+            _can_delete = False
+        else:
+            _can_delete = True
+
+        if _can_delete:
+            for token_id, record in persisted_by_token.items():
+                if token_id in live_tokens:
+                    continue
+                condition_id = str(getattr(record, "condition_id", "") or "").strip()
+                if not token_id or not condition_id:
+                    continue
+                try:
+                    await self._positions_repo.delete_position(
+                        self._user_id,
+                        condition_id,
+                        token_id=token_id,
+                    )
+                    deleted_position_scopes += 1
+                    try:
+                        self._market_store.evict(token_id)
+                    except Exception as exc:
+                        logger.debug(
+                            "manual_sync_cache_evict_failed | token=%s error=%s",
+                            token_id, redact_error_detail(exc),
+                        )
+                    logger.info(
+                        "manual_sync_deleted_stale_position | user=%s cond=%s token=%s",
+                        self._user_id,
+                        condition_id,
+                        token_id,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "manual_sync_positions_repo_delete_failed | token=%s error=%s",
+                        token_id, redact_error_detail(exc),
+                    )
+
+        await self._reap_expired_reservations_after_position_change(
+            changed_scopes=increased_position_scopes + deleted_position_scopes,
         )
 
     async def _upsert_position(
@@ -459,14 +543,16 @@ class ManualSyncService:
         )
         await self._positions_repo.upsert_position(record)
 
-    async def _reap_expired_reservations_after_position_increase(
+    async def _reap_expired_reservations_after_position_change(
         self,
         *,
-        increased_scopes: int,
+        changed_scopes: int,
     ) -> None:
         if self._reservation_service is None:
             return
-        if increased_scopes <= 0:
+        if getattr(self._reservation_service, "enabled", True) is False:
+            return
+        if changed_scopes <= 0:
             return
         release_expired = getattr(self._reservation_service, "release_expired_active", None)
         if not callable(release_expired):
@@ -475,8 +561,8 @@ class ManualSyncService:
             released_ids = await release_expired()
         except Exception as exc:
             logger.warning(
-                "manual_sync_reservation_reap_failed | increased_scopes=%d error=%s",
-                increased_scopes,
+                "manual_sync_reservation_reap_failed | changed_scopes=%d error=%s",
+                changed_scopes,
                 redact_error_detail(exc),
             )
             return
@@ -486,9 +572,9 @@ class ManualSyncService:
             count = 0
         if count:
             logger.info(
-                "manual_sync_reaped_expired_reservations | count=%d increased_scopes=%d user=%s",
+                "manual_sync_reaped_expired_reservations | count=%d changed_scopes=%d user=%s",
                 count,
-                increased_scopes,
+                changed_scopes,
                 self._user_id,
             )
 

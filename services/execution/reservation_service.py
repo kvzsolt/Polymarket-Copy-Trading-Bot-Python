@@ -1,6 +1,8 @@
 import logging
 import time
+import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Protocol, Awaitable, Callable, Any
 
@@ -54,6 +56,7 @@ class ReservationService:
         clock: Clock | None = None,
         ttl_seconds: int = 120,
         reconciler_callback: ReconcilerCallback | None = None,
+        enabled: bool = True,
     ):
         self.reservations_repo = reservations_repo
         self.positions_repo = positions_repo
@@ -66,9 +69,18 @@ class ReservationService:
         self.clock = clock if clock is not None else DefaultClock()
         self.ttl_seconds = ttl_seconds
         self.reconciler_callback = reconciler_callback
+        self.enabled = enabled
 
     async def reserve_for_intent(self, intent: OrderIntent) -> Reservation:
         stable_key = intent.key.stable_key()
+        if not self.enabled:
+            logger.info(
+                "reservation.acquire.disabled key=%s side=%s",
+                stable_key,
+                intent.key.side.value,
+            )
+            return self._disabled_reservation(intent, stable_key)
+
         # Fast-path lookup: most callers hit this once with no prior
         # reservation. The auto-committed read here is intentionally
         # racy — it short-circuits the common no-contention path before
@@ -362,6 +374,13 @@ class ReservationService:
         return None
 
     async def release_terminal(self, reservation_id: str, reason: str) -> None:
+        if self._is_disabled_reservation_id(reservation_id):
+            logger.info(
+                "reservation.release.disabled_noop id=%s reason=%s",
+                reservation_id,
+                reason,
+            )
+            return
         logger.info(
             "reservation.release id=%s reason=%s",
             reservation_id, reason,
@@ -371,6 +390,33 @@ class ReservationService:
             reason=reason,
             released_at=self.clock.utcnow_timestamp(),
         )
+
+    def _disabled_reservation(self, intent: OrderIntent, stable_key: str) -> Reservation:
+        now_ts = self.clock.utcnow_timestamp()
+        # Each disabled reservation gets a unique ID so callers that track
+        # reservation IDs in a dict/set don't silently deduplicate concurrent
+        # or retried acquisitions for the same intent.
+        unique_id = f"disabled:{stable_key}:{uuid.uuid4().hex}"
+        return Reservation(
+            id=unique_id,
+            user_id=intent.key.user_id,
+            intent_key=stable_key,
+            condition_id=intent.key.condition_id,
+            token_id=intent.key.token_id,
+            side=intent.key.side,
+            reason=intent.key.reason,
+            reserved_usdc=Decimal("0"),
+            reserved_size=Decimal("0"),
+            status="disabled",
+            created_at=datetime.fromtimestamp(now_ts, tz=timezone.utc),
+            expires_at=datetime.fromtimestamp(now_ts, tz=timezone.utc),
+            order_id=None,
+            venue_order_id=None,
+        )
+
+    @staticmethod
+    def _is_disabled_reservation_id(reservation_id: str) -> bool:
+        return str(reservation_id).startswith("disabled:")
 
     async def release_expired_active(self) -> list[str]:
         """Enqueue reconciliation for expired active reservations.

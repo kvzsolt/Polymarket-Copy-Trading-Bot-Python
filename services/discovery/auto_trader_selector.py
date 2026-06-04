@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
+import time
 from typing import Any, Protocol
 
 from config.app_config import AppConfig
+from services.discovery.evaluation_context import build_evaluation_context_hash
 from services.metrics import metrics
 from utils.logger import get_logger
 
@@ -35,9 +37,10 @@ class EvaluationRepo(Protocol):
 class AutoTraderSelector:
     """DB-only startup selector for live-eligible discovery evaluations."""
 
-    def __init__(self, repo: EvaluationRepo, config: AppConfig):
+    def __init__(self, repo: EvaluationRepo, config: AppConfig, balance_provider=None):
         self.repo = repo
         self.config = config
+        self.balance_provider = balance_provider
 
     async def select_from_db(self) -> AutoTraderSelection:
         limit = int(self.config.discovery.max_auto_traders_count or 0)
@@ -49,17 +52,29 @@ class AutoTraderSelector:
                 reason="max_auto_traders_count_zero",
             )
 
+        query_limit = max(limit * 5, 25)
         rows = await self.repo.list_evaluations(
             statuses=["perfect_candidate", "live_eligible"],
             eligible_live=True,
-            limit=limit,
+            limit=query_limit,
         )
+        current_config_hash: str | None = None
+        if rows and self.config.discovery.discovery_reject_stale_evaluations:
+            current_config_hash = await self._current_config_hash()
+            if current_config_hash is None:
+                metrics.set_gauge("auto_trader_bootstrap_db_candidates", float(len(rows)))
+                return AutoTraderSelection(
+                    wallets=[],
+                    source="db",
+                    reason="current_config_hash_unavailable",
+                    db_candidate_count=len(rows),
+                )
 
         wallets: list[str] = []
         for row in rows:
             if len(wallets) >= limit:
                 break
-            if not self._is_live_eligible(row):
+            if not self._is_live_eligible(row, current_config_hash=current_config_hash):
                 continue
             wallet = str(getattr(row, "wallet", "") or "").strip().lower()
             if wallet:
@@ -71,6 +86,7 @@ class AutoTraderSelector:
             "auto_trader_db_selection_complete",
             extra={
                 "requested_limit": limit,
+                "query_limit": query_limit,
                 "db_candidate_count": len(rows),
                 "selected_count": len(wallets),
                 "selected_wallets": wallets,
@@ -84,7 +100,28 @@ class AutoTraderSelector:
             db_candidate_count=len(rows),
         )
 
-    def _is_live_eligible(self, row: Any) -> bool:
+    async def _current_config_hash(self) -> str | None:
+        if self.balance_provider is None:
+            logger.warning(
+                "auto_trader_selection_stale_check_failed",
+                extra={"reason": "balance_provider_unavailable"},
+            )
+            return None
+        try:
+            balance = await self.balance_provider.get_available_balance_usdc()
+        except Exception as exc:
+            logger.warning(
+                "auto_trader_selection_stale_check_failed",
+                extra={"reason": "balance_fetch_failed", "error": repr(exc)},
+            )
+            return None
+        config_hash, _context = build_evaluation_context_hash(
+            self.config,
+            balance_usdc=balance,
+        )
+        return config_hash
+
+    def _is_live_eligible(self, row: Any, *, current_config_hash: str | None = None) -> bool:
         status = str(getattr(row, "status", "") or "").lower()
         if status not in _LIVE_STATUSES:
             return False
@@ -96,6 +133,25 @@ class AutoTraderSelector:
         if _as_float(getattr(row, "final_score", 0.0)) < float(
             self.config.leader.auto_discover_min_score
         ):
+            return False
+        if (
+            self.config.discovery.discovery_auto_prefer_sports_esports
+            and _as_float(getattr(row, "sports_esports_ratio", 0.0))
+            < self.config.discovery.discovery_min_auto_sports_esports_ratio
+        ):
+            logger.info(
+                "auto_trader_candidate_rejected",
+                extra={
+                    "wallet": str(getattr(row, "wallet", "") or "").lower(),
+                    "reason": "sports_esports_ratio_below_min",
+                    "sports_esports_ratio": _as_float(
+                        getattr(row, "sports_esports_ratio", 0.0)
+                    ),
+                    "min_sports_esports_ratio": (
+                        self.config.discovery.discovery_min_auto_sports_esports_ratio
+                    ),
+                },
+            )
             return False
         if _as_float(getattr(row, "copyable_signal_ratio", 0.0)) < float(
             self.config.discovery.discovery_min_copyable_grouped_signal_ratio
@@ -115,6 +171,33 @@ class AutoTraderSelector:
             pnl_7d = _as_decimal(getattr(row, "pnl_7d", Decimal("0")))
             min_pnl = Decimal(str(self.config.discovery.discovery_min_7d_pnl_usdc))
             if pnl_7d < min_pnl:
+                return False
+
+        if self.config.discovery.discovery_reject_stale_evaluations:
+            updated_at = _as_float(getattr(row, "updated_at", 0.0))
+            ttl = int(self.config.discovery.discovery_evaluation_ttl_seconds or 0)
+            if ttl > 0 and updated_at > 0 and time.time() - updated_at > ttl:
+                logger.info(
+                    "auto_trader_candidate_rejected",
+                    extra={
+                        "wallet": str(getattr(row, "wallet", "") or "").lower(),
+                        "reason": "evaluation_expired",
+                        "updated_at": updated_at,
+                        "ttl_seconds": ttl,
+                    },
+                )
+                return False
+            row_hash = str(getattr(row, "config_hash", "") or "")
+            if not current_config_hash or row_hash != current_config_hash:
+                logger.info(
+                    "auto_trader_candidate_rejected",
+                    extra={
+                        "wallet": str(getattr(row, "wallet", "") or "").lower(),
+                        "reason": "config_hash_mismatch",
+                        "row_config_hash": row_hash,
+                        "current_config_hash": current_config_hash or "",
+                    },
+                )
                 return False
 
         return True

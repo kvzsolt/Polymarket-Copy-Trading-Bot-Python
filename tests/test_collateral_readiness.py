@@ -22,6 +22,9 @@ from services.collateral_readiness import (
     check_collateral_readiness,
 )
 
+PUSD_ADDRESS = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"
+CTF_EXCHANGE_V2_ADDRESS = "0xE111180000d2663C0091e4f400237545B87B996B"
+
 
 def _make_status(**overrides: Any) -> CollateralStatus:
     defaults = {
@@ -57,8 +60,9 @@ class TestCheckSync:
         status = _check_sync(
             wallet_address="0x" + "a" * 40,
             rpc_url="http://rpc",
-            pusd_address="0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
-            ctf_exchange_address="0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E",
+            fallback_rpc_url="",
+            pusd_address=PUSD_ADDRESS,
+            ctf_exchange_address=CTF_EXCHANGE_V2_ADDRESS,
             min_pusd_balance=Decimal("1.0"),
         )
         assert status.ready is True
@@ -71,8 +75,9 @@ class TestCheckSync:
         status = _check_sync(
             wallet_address="0x" + "a" * 40,
             rpc_url="http://rpc",
-            pusd_address="0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
-            ctf_exchange_address="0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E",
+            fallback_rpc_url="",
+            pusd_address=PUSD_ADDRESS,
+            ctf_exchange_address=CTF_EXCHANGE_V2_ADDRESS,
             min_pusd_balance=Decimal("1.0"),
         )
         assert status.ready is False
@@ -84,8 +89,9 @@ class TestCheckSync:
         status = _check_sync(
             wallet_address="0x" + "a" * 40,
             rpc_url="http://rpc",
-            pusd_address="0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
-            ctf_exchange_address="0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E",
+            fallback_rpc_url="",
+            pusd_address=PUSD_ADDRESS,
+            ctf_exchange_address=CTF_EXCHANGE_V2_ADDRESS,
             min_pusd_balance=Decimal("1.0"),
         )
         assert status.ready is False
@@ -97,8 +103,9 @@ class TestCheckSync:
         status = _check_sync(
             wallet_address="0x" + "a" * 40,
             rpc_url="http://rpc",
-            pusd_address="0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
-            ctf_exchange_address="0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E",
+            fallback_rpc_url="",
+            pusd_address=PUSD_ADDRESS,
+            ctf_exchange_address=CTF_EXCHANGE_V2_ADDRESS,
             min_pusd_balance=Decimal("1.0"),
         )
         assert status.ready is False
@@ -115,8 +122,8 @@ class TestAsyncCheck:
         status = await check_collateral_readiness(
             wallet_address="0x" + "a" * 40,
             rpc_url="http://rpc",
-            pusd_address="0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
-            ctf_exchange_address="0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E",
+            pusd_address=PUSD_ADDRESS,
+            ctf_exchange_address=CTF_EXCHANGE_V2_ADDRESS,
         )
         assert status.ready is True
 
@@ -127,8 +134,8 @@ class TestAsyncCheck:
         await check_collateral_readiness(
             wallet_address="0x" + "a" * 40,
             rpc_url="http://explicit-rpc",
-            pusd_address="0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
-            ctf_exchange_address="0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E",
+            pusd_address=PUSD_ADDRESS,
+            ctf_exchange_address=CTF_EXCHANGE_V2_ADDRESS,
         )
         call_kwargs = mock_sync.call_args[1]
         assert call_kwargs["rpc_url"] == "http://explicit-rpc"
@@ -143,8 +150,9 @@ class TestNoSecretLeakage:
         status = _check_sync(
             wallet_address="0x" + "a" * 40,
             rpc_url="http://rpc",
-            pusd_address="0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
-            ctf_exchange_address="0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E",
+            fallback_rpc_url="",
+            pusd_address=PUSD_ADDRESS,
+            ctf_exchange_address=CTF_EXCHANGE_V2_ADDRESS,
             min_pusd_balance=Decimal("1.0"),
         )
         serialized = str(status)

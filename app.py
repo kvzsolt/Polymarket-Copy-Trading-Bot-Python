@@ -65,6 +65,7 @@ from orchestrators.startup_health import perform_startup_health_check
 from orchestrators.user_data_runtime import UserDataRuntime
 from services.compliance import check_geoblock
 from services.discovery.auto_trader_selector import AutoTraderSelector
+from services.discovery.balance_provider import build_wallet_balance_provider
 from services.discovery.capture_service import DiscoveryCaptureService
 from services.discovery.position_snapshot_service import (
     SnapshotResult,
@@ -854,6 +855,7 @@ async def main() -> int:
         selector=AutoTraderSelector(
             repo=application.discovery_repo,
             config=application.config,
+            balance_provider=build_wallet_balance_provider(application.config),
         ),
         discovery_service=application.discovery_service,
     )
@@ -956,11 +958,20 @@ async def main() -> int:
             application.config,
         )
 
+    logger.info(
+        "startup_stage | stage=clob_clients_ready users=%d",
+        len(user_states),
+    )
     application.readiness.update(
         gateway_ok=True,
         circuit_breaker_state="closed",
     )
 
+    logger.info(
+        "startup_stage | stage=balance_checks_started leaders=%d users=%d",
+        len(active_leaders),
+        len(runtime_users),
+    )
     leader_balances_raw = await asyncio.gather(
         *(get_my_balance(wallet) for wallet in active_leaders)
     )
@@ -982,15 +993,32 @@ async def main() -> int:
     api_ok = all(value is not None for value in leader_balances_raw) and all(
         value is not None for value in user_balances_raw
     )
+    logger.info(
+        "startup_stage | stage=balance_checks_completed api_ok=%s",
+        api_ok,
+    )
     application.readiness.update(api_ok=api_ok)
 
     live_positions_by_user: dict[str, list[dict]] = {}
     health_reports_by_user = {}
 
     for runtime_user in runtime_users:
+        logger.info(
+            "startup_stage | stage=live_positions_fetch_started user=%s",
+            runtime_user.user_id,
+        )
         live_positions = await fetch_live_positions(runtime_user.wallet.funder_address)
         live_positions_by_user[runtime_user.user_id] = live_positions
+        logger.info(
+            "startup_stage | stage=live_positions_fetch_completed user=%s positions=%d",
+            runtime_user.user_id,
+            len(live_positions),
+        )
 
+        logger.info(
+            "startup_stage | stage=startup_health_started user=%s",
+            runtime_user.user_id,
+        )
         health_reports_by_user[runtime_user.user_id] = await perform_startup_health_check(
             wallet=runtime_user.wallet.funder_address,
             user_id=runtime_user.user_id,
@@ -1006,6 +1034,13 @@ async def main() -> int:
             rpc_url=application.config.wallet.polygon_rpc_url,
             clob_gateway=user_states[runtime_user.user_id].clob_gateway,
             require_live_clob=not application.config.dry_run,
+        )
+        _health_report = health_reports_by_user[runtime_user.user_id]
+        logger.info(
+            "startup_stage | stage=startup_health_completed user=%s status=%s healthy=%s",
+            runtime_user.user_id,
+            getattr(_health_report, "status", "unknown"),
+            getattr(_health_report, "healthy", False),
         )
 
     contexts_by_leader, risk_contexts_by_user = await build_context_maps(
@@ -1056,9 +1091,17 @@ async def main() -> int:
     # reconcile-wake events while startup_reconcile_unconfirmed was still
     # running on the same orders, double-applying fills under the race.
     reconcile_failures: list[str] = []
+    logger.info(
+        "startup_stage | stage=startup_reconcile_started users=%d",
+        len(risk_contexts_by_user),
+    )
     startup_reconciled = await startup_reconcile_unconfirmed(
         list(risk_contexts_by_user.values()),
         failures_out=reconcile_failures,
+    )
+    logger.info(
+        "startup_stage | stage=startup_reconcile_completed failures=%d",
+        len(reconcile_failures),
     )
 
     if reconcile_failures:
@@ -1095,7 +1138,15 @@ async def main() -> int:
         if manual_sync is None:
             continue
         try:
+            logger.info(
+                "startup_stage | stage=manual_sync_initial_started user=%s",
+                runtime_user.user_id,
+            )
             await manual_sync.initial_sync()
+            logger.info(
+                "startup_stage | stage=manual_sync_initial_completed user=%s",
+                runtime_user.user_id,
+            )
         except Exception as exc:
             logger.warning(
                 "manual_sync_initial_failed | user=%s error=%r",
@@ -1107,11 +1158,19 @@ async def main() -> int:
     # manual_sync sees the prune timestamps.
     from orchestrators.runtime_bootstrap import startup_drift_check
 
+    logger.info(
+        "startup_stage | stage=startup_drift_check_started users=%d",
+        len(runtime_users),
+    )
     drift_per_user = await startup_drift_check(
         runtime_users=runtime_users,
         user_states=user_states,
         config=application.config,
         readiness=application.readiness,
+    )
+    logger.info(
+        "startup_stage | stage=startup_drift_check_completed unresolved=%d",
+        sum(1 for ok in drift_per_user.values() if not ok),
     )
 
     # Boot-time resolved-market gate. Catches markets that resolved /
@@ -1121,10 +1180,12 @@ async def main() -> int:
     # Best-effort: a failure here logs and the runtime continues; the
     # dormant-token cache + 404 sentinel still bound traffic.
     try:
+        logger.info("startup_stage | stage=hydrate_resolved_market_state_started")
         await hydrate_resolved_market_state(
             runtime_users=runtime_users,
             user_states=user_states,
         )
+        logger.info("startup_stage | stage=hydrate_resolved_market_state_completed")
     except Exception as exc:
         logger.warning(
             "hydrate_resolved_market_state_failed",
@@ -1136,10 +1197,20 @@ async def main() -> int:
     # filtered and drift has not yet pruned.
     live_positions_by_user = {}
     for runtime_user in runtime_users:
+        logger.info(
+            "startup_stage | stage=live_positions_refresh_started user=%s",
+            runtime_user.user_id,
+        )
         live_positions_by_user[runtime_user.user_id] = await fetch_live_positions(
             runtime_user.wallet.funder_address
         )
+        logger.info(
+            "startup_stage | stage=live_positions_refresh_completed user=%s positions=%d",
+            runtime_user.user_id,
+            len(live_positions_by_user[runtime_user.user_id]),
+        )
 
+    logger.info("startup_stage | stage=market_data_runtimes_starting")
     market_data_runtimes = await _start_market_data_runtimes(
         runtime_users=runtime_users,
         user_states=user_states,
@@ -1147,6 +1218,10 @@ async def main() -> int:
         contexts_by_leader=contexts_by_leader,
         readiness=application.readiness,
         config=application.config,
+    )
+    logger.info(
+        "startup_stage | stage=market_data_runtimes_started users=%d",
+        len(market_data_runtimes),
     )
 
     _attach_market_data_runtime_to_contexts(
@@ -1159,12 +1234,17 @@ async def main() -> int:
     # after drift_check populated prune timestamps so on_reconcile_signal
     # + manual_sync.trigger_sync(reason="wss_authenticated") respect the
     # holdoff window.
+    logger.info("startup_stage | stage=user_data_runtimes_starting")
     user_data_runtimes = await _start_user_data_runtimes(
         runtime_users=runtime_users,
         user_states=user_states,
         readiness=application.readiness,
         risk_contexts_by_user=risk_contexts_by_user,
         market_data_runtimes=market_data_runtimes,
+    )
+    logger.info(
+        "startup_stage | stage=user_data_runtimes_started users=%d",
+        len(user_data_runtimes),
     )
     if drift_per_user and not all(drift_per_user.values()):
         unresolved = [u for u, ok in drift_per_user.items() if not ok]
@@ -1231,6 +1311,11 @@ async def main() -> int:
     # / data-api degradation never blocks boot.
     snapshot_result: SnapshotResult | None = None
     try:
+        logger.info(
+            "startup_stage | stage=boot_snapshot_started leaders=%d users=%d",
+            len(monitored_leaders),
+            len(runtime_users),
+        )
         from storage.postgres.connection import get_pool
         from storage.postgres.discovery_repo import DiscoveryRepo
 
@@ -1251,6 +1336,7 @@ async def main() -> int:
             repo=discovery_repo,
             fetcher=_boot_snapshot_fetcher,
         )
+        logger.info("startup_stage | stage=boot_snapshot_completed")
     except Exception as exc:
         logger.warning(
             "boot_snapshot_skipped",
@@ -1377,8 +1463,15 @@ async def main() -> int:
     supervised: list[_Supervised] = []
 
     if application.config.discovery.enable_trader_discovery:
-        dynamic_monitoring_enabled = bool(
-            application.config.discovery.discovery_dynamic_monitoring_enabled
+        logger.info(
+            "discovery_dynamic_monitoring_disabled",
+            extra={
+                "discovery_dynamic_monitoring_enabled": False,
+                "configured_value": bool(
+                    application.config.discovery.discovery_dynamic_monitoring_enabled
+                ),
+                "effect": "background discovery will refresh DB only and will not hot-add monitors",
+            },
         )
         supervised.append(
             _Supervised(
@@ -1387,8 +1480,8 @@ async def main() -> int:
                     registry,
                     configured,
                     refresh_interval,
-                    leaders_repo=leaders_repo if dynamic_monitoring_enabled else None,
-                    on_new_leaders=_on_new_leaders if dynamic_monitoring_enabled else None,
+                    leaders_repo=None,
+                    on_new_leaders=None,
                     already_monitored=monitored_set,
                 ),
             )

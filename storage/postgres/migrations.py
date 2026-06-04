@@ -668,11 +668,20 @@ _DISCOVERY_DDL = [
         eligible_live boolean NOT NULL DEFAULT false,
         eligible_shadow boolean NOT NULL DEFAULT false,
 
+        balance_usdc text NOT NULL DEFAULT '0',
+        config_hash text NOT NULL DEFAULT '',
+        evaluation_context_json jsonb NOT NULL DEFAULT '{}'::jsonb,
         falcon_raw_json jsonb NOT NULL DEFAULT '{}'::jsonb,
         replay_json jsonb NOT NULL DEFAULT '{}'::jsonb,
         updated_at double precision NOT NULL
     )
     """,
+    """ALTER TABLE falcon_discovery_evaluations
+       ADD COLUMN IF NOT EXISTS balance_usdc text NOT NULL DEFAULT '0'""",
+    """ALTER TABLE falcon_discovery_evaluations
+       ADD COLUMN IF NOT EXISTS config_hash text NOT NULL DEFAULT ''""",
+    """ALTER TABLE falcon_discovery_evaluations
+       ADD COLUMN IF NOT EXISTS evaluation_context_json jsonb NOT NULL DEFAULT '{}'::jsonb""",
     """CREATE INDEX IF NOT EXISTS idx_falcon_eval_status_score
        ON falcon_discovery_evaluations(status, final_score DESC)""",
     """CREATE INDEX IF NOT EXISTS idx_falcon_eval_live

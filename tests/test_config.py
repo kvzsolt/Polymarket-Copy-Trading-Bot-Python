@@ -150,6 +150,30 @@ class TestHappyPath:
         cfg = load_config(valid_env)
         assert cfg.discovery.max_auto_traders_count == 4
 
+    def test_discovery_startup_safety_config_loads_env(
+        self,
+        valid_env: dict[str, str],
+    ) -> None:
+        valid_env.update(
+            {
+                "DISCOVERY_MIN_AUTO_SPORTS_ESPORTS_RATIO": "0.8",
+                "DISCOVERY_AUTO_PREFER_SPORTS_ESPORTS": "false",
+                "DISCOVERY_EVALUATION_TTL_SECONDS": "120",
+                "DISCOVERY_REJECT_STALE_EVALUATIONS": "false",
+                "POLYMARKET_HISTORY_MIN_WINDOW_SECONDS": "3600",
+                "DISCOVERY_REQUIRE_RECENT_STATE_FOR_LIVE": "false",
+            }
+        )
+
+        cfg = load_config(valid_env)
+
+        assert cfg.discovery.discovery_min_auto_sports_esports_ratio == pytest.approx(0.8)
+        assert cfg.discovery.discovery_auto_prefer_sports_esports is False
+        assert cfg.discovery.discovery_evaluation_ttl_seconds == 120
+        assert cfg.discovery.discovery_reject_stale_evaluations is False
+        assert cfg.discovery.polymarket_history_min_window_seconds == 3600
+        assert cfg.discovery.discovery_require_recent_state_for_live is False
+
     def test_raw_env_preserved_for_transition_excludes_secrets(
         self, valid_env: dict[str, str]
     ) -> None:
@@ -174,6 +198,31 @@ class TestHappyPath:
         valid_env["PUSD_CONTRACT_ADDRESS"] = "0x" + "2" * 40
         cfg = load_config(valid_env)
         assert cfg.network.usdc_contract_address == "0x" + "2" * 40
+
+    def test_v2_contract_defaults(self, valid_env: dict[str, str]) -> None:
+        cfg = load_config(valid_env)
+        assert (
+            cfg.network.pusd_contract_address
+            == "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"
+        )
+        assert cfg.network.usdc_contract_address == cfg.network.pusd_contract_address
+        assert (
+            cfg.network.ctf_exchange_v2_address
+            == "0xE111180000d2663C0091e4f400237545B87B996B"
+        )
+        assert (
+            cfg.redemption.collateral_contract_address
+            == "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"
+        )
+        assert (
+            cfg.redemption.ctf_contract_address
+            == "0xAdA100Db00Ca00073811820692005400218FcE1f"
+        )
+
+    def test_redeem_target_accepts_adapter_alias(self, valid_env: dict[str, str]) -> None:
+        valid_env["CTF_COLLATERAL_ADAPTER_ADDRESS"] = "0x" + "4" * 40
+        cfg = load_config(valid_env)
+        assert cfg.redemption.ctf_contract_address == "0x" + "4" * 40
 
     def test_load_without_env_reads_os_environ(
         self, monkeypatch: pytest.MonkeyPatch

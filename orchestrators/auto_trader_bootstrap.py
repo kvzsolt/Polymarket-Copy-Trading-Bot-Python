@@ -63,6 +63,16 @@ async def resolve_startup_leaders(
 
     max_count = int(config.discovery.max_auto_traders_count or 0)
     logger.info(
+        "discovery_dynamic_monitoring_disabled",
+        extra={
+            "discovery_dynamic_monitoring_enabled": False,
+            "configured_value": bool(
+                config.discovery.discovery_dynamic_monitoring_enabled
+            ),
+            "effect": "background discovery will refresh DB only and will not hot-add monitors",
+        },
+    )
+    logger.info(
         "auto_trader_bootstrap_started",
         extra={
             "configured_count": 0,

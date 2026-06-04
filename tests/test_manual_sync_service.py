@@ -65,11 +65,13 @@ def _make_service(
     positions_repo=None,
     market_store=None,
     debounce_seconds: float = 0.0,
+    wss_settle_delay_seconds: float = 0.0,
     reservation_service=None,
 ) -> tuple[ManualSyncService, MagicMock, MagicMock]:
     positions_repo = positions_repo or MagicMock()
     positions_repo.list_open_positions = AsyncMock(return_value=[])
     positions_repo.upsert_position = AsyncMock()
+    positions_repo.delete_position = AsyncMock()
     market_store = market_store or MagicMock()
     market_store.evict = MagicMock()
     svc = ManualSyncService(
@@ -78,6 +80,7 @@ def _make_service(
         positions_repo=positions_repo,
         market_store=market_store,
         debounce_seconds=debounce_seconds,
+        wss_settle_delay_seconds=wss_settle_delay_seconds,
         rest_poll_interval_seconds=0.05,
         reservation_service=reservation_service,
     )
@@ -192,6 +195,27 @@ async def test_debounced_trigger_coalesces_burst_into_single_sync():
 
 
 @pytest.mark.asyncio
+async def test_wss_fill_sync_waits_for_reconciliation_settle_delay():
+    svc, _, _ = _make_service(
+        debounce_seconds=0.0,
+        wss_settle_delay_seconds=0.05,
+    )
+    counter = {"n": 0}
+
+    async def _fake_sync(*, reason: str) -> None:
+        counter["n"] += 1
+
+    with patch.object(svc, "sync_now", side_effect=_fake_sync):
+        await svc.trigger_sync(reason="wss_fill")
+        await asyncio.sleep(0.01)
+        assert counter["n"] == 0
+        await asyncio.sleep(0.07)
+
+    assert counter["n"] == 1
+    await svc.stop()
+
+
+@pytest.mark.asyncio
 async def test_position_discrepancy_emits_log_and_upsert():
     """Venue position not in local DB → discrepancy log + upsert_position fires."""
     svc, positions_repo, _ = _make_service()
@@ -238,6 +262,161 @@ async def test_position_sync_reaps_expired_reservations_after_venue_fill():
         await svc.sync_now(reason="test")
 
     reservation_service.release_expired_active.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_deletion_skipped_when_api_response_is_empty():
+    """Empty positions API → local positions NOT deleted (empty = suspect response).
+
+    A genuinely zero-position portfolio is a valid state, but the Data API
+    returning an empty list is far more likely to be a transient failure than
+    proof the user sold everything.  Wiping all local rows on an empty response
+    would cause cascading failures (risk-monitor probes against retired tokens,
+    reservations not released, etc.).  Deletion is deferred to the next sync.
+    """
+    svc, positions_repo, market_store = _make_service()
+    positions_repo.list_open_positions = AsyncMock(return_value=[
+        PositionRecord(
+            user_id=FUNDER,
+            condition_id="0xcond-stale",
+            token_id="0xasset-stale",
+            leader_id="0xleader",
+            size_tokens=Decimal("7.5"),
+            avg_entry_price=Decimal("0.42"),
+        )
+    ])
+    user_pos_model = MagicMock(delete_many=AsyncMock(), insert_many=AsyncMock())
+
+    with (
+        patch("services.manual_sync_service.fetch_data", AsyncMock(side_effect=[
+            [],  # activity
+            [],  # positions — empty → deletion guard fires
+        ])),
+        patch("services.manual_sync_service.get_user_position_model", MagicMock(return_value=user_pos_model)),
+    ):
+        await svc.sync_now(reason="manual_sell_to_zero")
+
+    positions_repo.delete_position.assert_not_called()
+    market_store.evict.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_deletion_skipped_when_api_response_smaller_than_local():
+    """Sparse positions API (fewer items than local) → deletion skipped.
+
+    If the Data API returns fewer positions than we track locally the response
+    may be truncated or paginated.  Deleting rows whose tokens are simply absent
+    from this snapshot would silently wipe live positions, so the entire
+    deletion pass is skipped and logged.  The next sync will retry.
+    """
+    svc, positions_repo, market_store = _make_service()
+    positions_repo.list_open_positions = AsyncMock(return_value=[
+        PositionRecord(
+            user_id=FUNDER,
+            condition_id="0xcond1",
+            token_id="0xasset1",
+            leader_id=None,
+            size_tokens=Decimal("10.0"),
+            avg_entry_price=Decimal("0.5"),
+        ),
+        PositionRecord(
+            user_id=FUNDER,
+            condition_id="0xcond2",
+            token_id="0xasset2",
+            leader_id=None,
+            size_tokens=Decimal("5.0"),
+            avg_entry_price=Decimal("0.3"),
+        ),
+    ])
+    user_pos_model = MagicMock(delete_many=AsyncMock(), insert_many=AsyncMock())
+
+    # API only returns 1 position — 1 < 2 local → sparse-response guard fires.
+    with (
+        patch("services.manual_sync_service.fetch_data", AsyncMock(side_effect=[
+            [],
+            [_live_position(asset="0xasset1", cond="0xcond1", size=10.0)],
+        ])),
+        patch("services.manual_sync_service.get_user_position_model", MagicMock(return_value=user_pos_model)),
+    ):
+        await svc.sync_now(reason="test")
+
+    # 0xasset2 is absent from the API response but deletion must be skipped.
+    positions_repo.delete_position.assert_not_called()
+    market_store.evict.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_deletion_proceeds_when_api_count_matches_and_token_absent():
+    """API returns as many positions as we have locally, one token missing → delete.
+
+    When the raw API count equals (or exceeds) the local tracked count the
+    response is treated as complete.  A token absent from that complete snapshot
+    is genuinely closed and should be removed from local state.
+    """
+    svc, positions_repo, market_store = _make_service()
+    positions_repo.list_open_positions = AsyncMock(return_value=[
+        PositionRecord(
+            user_id=FUNDER,
+            condition_id="0xcond-closed",
+            token_id="0xasset-closed",
+            leader_id=None,
+            size_tokens=Decimal("7.5"),
+            avg_entry_price=Decimal("0.42"),
+        )
+    ])
+    user_pos_model = MagicMock(delete_many=AsyncMock(), insert_many=AsyncMock())
+
+    # API returns 1 position (different token) — count 1 == local count 1.
+    # The old token is absent from the snapshot → deletion should proceed.
+    with (
+        patch("services.manual_sync_service.fetch_data", AsyncMock(side_effect=[
+            [],
+            [_live_position(asset="0xasset-new", cond="0xcond-new", size=5.0)],
+        ])),
+        patch("services.manual_sync_service.get_user_position_model", MagicMock(return_value=user_pos_model)),
+    ):
+        await svc.sync_now(reason="manual_switch")
+
+    positions_repo.delete_position.assert_awaited_once_with(
+        FUNDER,
+        "0xcond-closed",
+        token_id="0xasset-closed",
+    )
+    market_store.evict.assert_called_once_with("0xasset-closed")
+
+
+@pytest.mark.asyncio
+async def test_zero_value_position_deletes_existing_local_position():
+    """Data API stale zero-value rows are treated as absent for local state."""
+    svc, positions_repo, _ = _make_service()
+    positions_repo.list_open_positions = AsyncMock(return_value=[
+        PositionRecord(
+            user_id=FUNDER,
+            condition_id="0xcond1",
+            token_id="0xasset1",
+            leader_id=None,
+            size_tokens=Decimal("12.1851"),
+            avg_entry_price=Decimal("0.34"),
+        )
+    ])
+
+    with (
+        patch("services.manual_sync_service.fetch_data", AsyncMock(side_effect=[
+            [],
+            [_live_position(size=12.1851, avg=0.34, current_value=0.0)],
+        ])),
+        patch("services.manual_sync_service.get_user_position_model", MagicMock(return_value=MagicMock(
+            delete_many=AsyncMock(), insert_many=AsyncMock(),
+        ))),
+    ):
+        await svc.sync_now(reason="startup")
+
+    positions_repo.upsert_position.assert_not_called()
+    positions_repo.delete_position.assert_awaited_once_with(
+        FUNDER,
+        "0xcond1",
+        token_id="0xasset1",
+    )
 
 
 @pytest.mark.asyncio

@@ -861,6 +861,8 @@ async def _active_sell_reserved_size(
         repo = context.extra.get("reservations_repo")
     if reservation_service is None:
         reservation_service = context.extra.get("reservation_service")
+    if getattr(reservation_service, "enabled", True) is False:
+        return Decimal("0")
     list_active = getattr(repo, "list_active_for_scope", None)
     if not callable(list_active):
         return Decimal("0")
@@ -956,6 +958,8 @@ async def _reap_expired_reservations_for_context(context: TradingContext) -> int
     reservation_service = getattr(coordinator, "reservation_service", None)
     if reservation_service is None:
         reservation_service = context.extra.get("reservation_service")
+    if getattr(reservation_service, "enabled", True) is False:
+        return 0
     release_expired = getattr(reservation_service, "release_expired_active", None)
     if not callable(release_expired):
         return 0

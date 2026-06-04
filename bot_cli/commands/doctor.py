@@ -403,23 +403,17 @@ async def run_doctor_checks(mode: str) -> dict[str, Any]:
         # the long-running bot owns schema lifecycle. Skip the explicit
         # table-presence probe (was sqlite_master-specific).
         ttl = config.execution.pending_submission_ttl_seconds
-        async with pool.acquire() as conn:
-            count = await conn.fetchval(
-                """
-                SELECT COUNT(*) FROM orders
-                WHERE status IN ('submitted_unconfirmed','delayed','pending',
-                                 'pending_lock','submitting')
-                  AND (EXTRACT(EPOCH FROM now())::bigint
-                       - EXTRACT(EPOCH FROM created_at)::bigint) > $1
-                """,
-                int(ttl),
-            )
-        count = int(count or 0)
+        from storage.postgres.orders_repo import OrdersRepo
+
+        stale_rows = await OrdersRepo(pool).list_stale_submission_locks(
+            ttl_seconds=int(ttl)
+        )
+        count = len(stale_rows)
         if count:
             ctx.warning(
                 "stale_idempotency",
                 f"{count} stale pending orders",
-                "run stale-lock cleanup before live",
+                "run stale-lock resolve and reconciliation before live",
             )
         else:
             ctx.ok("stale_idempotency", "no stale pending orders")
