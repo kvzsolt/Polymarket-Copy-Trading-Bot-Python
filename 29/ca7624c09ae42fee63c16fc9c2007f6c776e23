@@ -1,0 +1,241 @@
+docs/08-redemption.md
+  s_0dbb9395740ae9::t_fb76e4c5c963a0 9,38,41-42,49-55,174,181-183,185-186,190-191
+orchestrators/auto_trader_bootstrap.py
+  s_5c68500d211848::t_109e4ebe37bedf 66-74
+services/risk/risk_monitor.py
+  s_ae48be61134aa3::t_cd8a6841e9c1b5 864-865,961-962
+bot_cli/commands/stale_locks.py
+  s_4522ed1c9cb51f::t_4c54a2a1757c63 7,32-56,82-89,92-100,102,119-120,126-150,189-225,229-230
+services/execution/coordinator.py
+  s_ae48be61134aa3::t_8dde0458b5fd01 218-222,446-447
+tests/test_user_ws.py
+  s_60a87c7c1dd625::t_fc3b84e7de897e 11
+  s_60a87c7c1dd625::t_e88b2f1b896c3a 144,157
+  s_60a87c7c1dd625::t_0e8d0d9ddfe61f 151
+  s_60a87c7c1dd625::t_a1601768de03d8 129-143,145-150,152,398
+  s_b979adbf2cb104::t_e4e2cbed7e074a 153-156,158-165
+tests/test_wallet_signature_detector.py
+  s_b979adbf2cb104::t_60eb371020c810 89,111
+services/traderDiscoveryService.py
+  s_5c68500d211848::t_ed7e11c29e311b 17,86-88,98-99,102-114,309-311,380
+config/addresses.py
+  s_b979adbf2cb104::t_7048b8a23d1ca4 1-37
+services/discovery/candidate_scoring.py
+  s_5c68500d211848::t_a0162efc4af752 29,62-64,83,101-119,121,136,166-170,219-223
+  s_5c68500d211848::t_4b0a6fb8e6a9d2 224-227,229-231
+config/runtime.local.example
+  s_5c68500d211848::t_859419107f1673 42-43,47-51
+bot_cli/commands/doctor.py
+  s_4522ed1c9cb51f::t_6318741d83c2f8 406-411
+  s_4522ed1c9cb51f::t_4a95a72f4beda0 416
+config/app_config.py
+  s_b979adbf2cb104::t_bc2fab83df38f1 69-79
+  s_0dbb9395740ae9::t_247a30b0d49c58 1250-1251,1258-1262,1319,1331-1334
+  s_b979adbf2cb104::t_93839555b611eb 1152
+  s_0dbb9395740ae9::t_c2eef5d840e371 481-482
+  s_b979adbf2cb104::t_f546047be2697f 395-401
+  s_5c68500d211848::t_ccd5f8856df05e 615,623-627,1386-1388,1400-1413
+services/execution/reservation_service.py
+  s_8d2f9f238f78b3::t_f87c77ddb57b3e 396-399,401
+  s_8d2f9f238f78b3::t_bf9d5f3df740dc 3
+  s_ae48be61134aa3::t_b1ba7ea9624107 5,59,72,76-83,377-383,394-395,400,402-419
+storage/postgres/migrations.py
+  s_5c68500d211848::t_d7e404387b763e 671-673,679-684
+tests/release_gate/test_cli_reservations.py
+  s_4522ed1c9cb51f::t_ae953d6bb463d5 16-20,72-94,126-172
+tests/test_reservation_service_decimal_balance.py
+  s_ae48be61134aa3::t_1fa3bb2aab3fad 17-19,21-23,62-97
+tests/test_discovery_only_runner.py
+  s_5c68500d211848::t_31556187ab947a 56,129-179
+bot_cli/commands/reservations.py
+  s_4522ed1c9cb51f::t_9e50bb9fa5fb27 36-54,85-97,121-180,251-283,287-288
+tests/test_issue70_reservations.py
+  s_61854cc4d63776::t_c593d08cee9b74 518-539
+  s_4522ed1c9cb51f::t_a7d47eb5aaae9b 500,514,607,616
+tests/test_runtime_bootstrap_config.py
+  s_61854cc4d63776::t_c0f5816b066cc5 360-363
+  s_61854cc4d63776::t_c593d08cee9b74 358-359
+tests/test_collateral_readiness.py
+  s_0dbb9395740ae9::t_9892cd41bcc7a1 63,78,92,106,153
+  s_0dbb9395740ae9::t_ef059080e84623 25-26,64-65,79-80,93-94,107-108,125-126,137-138,154-155
+services/discovery/polymarket_history_backfill.py
+  s_5c68500d211848::t_3f4faf010749cc 149-158
+  s_5c68500d211848::t_7e37f0a31b6527 10,24-33,52,54-62,67-88,102-148,159-228,238-255
+  s_5c68500d211848::t_fac0fa40db682d 53
+services/redemption/__init__.py
+  s_0dbb9395740ae9::t_e8589191098d12 4-8
+services/manual_sync_service.py
+  s_ae48be61134aa3::t_fb93d58d49aa48 553-554
+  s_ae48be61134aa3::t_1579e62295d6c0 77-78,94,111,168-174,176
+  s_04ee81fd4398a8::t_bf4486a8bdee08 448-462,464-470,473-492,494-512,514-515
+  s_60a87c7c1dd625::t_4f625bfd2140e1 374,382,463,471-472,493,513,516-518,520,549,555,564-565,575,577
+  s_60a87c7c1dd625::t_9793bac28407dc 519,546
+app.py
+  s_5c68500d211848::t_b581aa5384494e 68,858,1466-1474,1483-1484
+  s_ee43f6f83eb61a::t_a857f7c9694d14 961-964,970-974,996-999,1006-1009,1012-1016,1018-1021,1038-1044,1094-1097,1102-1105,1141-1144,1146-1149,1161-1164,1171-1174,1183,1188,1200-1203,1207-1211,1213,1222-1225,1237,1245-1248,1314-1318,1339
+services/discovery/evaluation_context.py
+  s_5c68500d211848::t_25f11fded3eb2e 1-10,17,19,30,32-33,35-36,38-55
+  s_5c68500d211848::t_da392a86711a42 11-16,18,20-29,31,34,37
+storage/postgres/reservations_repo.py
+  s_4522ed1c9cb51f::t_82905ddbdec171 432-442,444
+tests/test_execution_coordinator_live_failclosed.py
+  s_ae48be61134aa3::t_d2fb31880c197f 347-348
+tests/test_get_my_balance_decimal.py
+  s_ee43f6f83eb61a::t_9b7f332ed17485 47-59
+orchestrators/runtime_bootstrap.py
+  s_61854cc4d63776::t_0a93e096b7667b 351-353,361,375
+  s_ae48be61134aa3::t_14324befdbf7c4 46-47
+  s_61854cc4d63776::t_bb11fe58d93fe5 433
+  s_b979adbf2cb104::t_32892af3f9516c 487-492,501,503-510
+tests/test_config.py
+  s_0dbb9395740ae9::t_01db63e1307dbd 202-226
+  s_5c68500d211848::t_40e014397ad4f6 153-176
+tests/test_orders_repo_upsert.py
+  s_60a87c7c1dd625::t_37205e77cdcaf6 12-40,71-127
+clients/network/rpc_fallback.py
+  s_ee43f6f83eb61a::t_27972904f574a7 35-36,81,102-103,106-108,111-114,124-126,132,146,151-153,155-159,203-204,208,215,232-235
+  s_b979adbf2cb104::t_6f8bc0be857435 27,37-80
+services/redemption/redemption_service.py
+  s_0dbb9395740ae9::t_a299a598d6044d 74-77,262,269
+services/discovery/copyability_replay.py
+  s_5c68500d211848::t_866d63f4c42c93 8,43-48,67,81-94,131-134,166-170,185-189,225-230
+storage/postgres/orders_repo.py
+  s_60a87c7c1dd625::t_904f7efe7eb4ac 91-101,121,827,830,861,867,881,887
+  s_4522ed1c9cb51f::t_a9367acea7a1ea 103-120,205-422
+  s_b979adbf2cb104::t_b1330ebd4e359b 79-90
+orchestrators/user_data_runtime.py
+  s_60a87c7c1dd625::t_59c49b99460106 251,254
+storage/postgres/discovery_repo.py
+  s_5c68500d211848::t_e3906c97f77ba5 332,338,368-370,403-405,478-480
+services/discovery/auto_trader_selector.py
+  s_5c68500d211848::t_9febf39b3d10e5 5,9,40,43,61,63-64,66-69,71,77,89,103-124,137-155,176-200
+  s_5c68500d211848::t_5cee9f79568d6e 55,59,62,65,70
+tests/test_candidate_scoring.py
+  s_5c68500d211848::t_43a0fb91ac5848 1-125
+tests/test_rpc_fallback.py
+  s_ee43f6f83eb61a::t_839d997ebc382f 21,115,125-136,203-216,233-240
+clients/user_ws.py
+  s_54ac8977692f83::t_c786a51afe5c68 369-370
+  s_60a87c7c1dd625::t_316102f8bd8f3d 355-368,371-374,487
+tests/test_copyability_replay.py
+  s_5c68500d211848::t_82f81b0fe0e11e 44,55,121-147
+tests/release_gate/test_cli_stale_locks.py
+  s_4522ed1c9cb51f::t_fda07651e47241 22,100-120,148-194
+tests/test_manual_sync_service.py
+  s_60a87c7c1dd625::t_2e84ac5dea81b9 74,267,277-286,330-332,334-336,373,375-377,379-381,384,386-419
+  s_04ee81fd4398a8::t_9a5e885d13d6b7 268-276,287-329,333,337-372,374,378,382-383,385
+  s_ae48be61134aa3::t_9179adde69961b 68,83,197-214
+tests/test_user_data_runtime.py
+  s_60a87c7c1dd625::t_dd652b3cc6f9b3 543-557
+tests/test_auto_trader_selector.py
+  s_5c68500d211848::t_c24ef2556229a3 9-10,17-32,37-41,47,59,63,95,140-218
+  s_5c68500d211848::t_266d85b2a07919 62
+tests/test_clob_client_detection.py
+  s_b979adbf2cb104::t_fc1ed4bea778da 88,110
+config/env.py
+  s_b979adbf2cb104::t_a3e4522686d336 645-649
+  s_b979adbf2cb104::t_448461a36ffbea 25-31
+docs/02-configuration.md
+  s_0dbb9395740ae9::t_b448bb81947817 297-299,317-319
+  s_b979adbf2cb104::t_b8ad93e92d0319 205-206
+  s_b979adbf2cb104::t_ab81b72a499ff6 220-231
+  s_b979adbf2cb104::t_4997ddff532339 292
+tests/test_polymarket_history_backfill.py
+  s_5c68500d211848::t_0b23c777cad3a8 73-85,136-223
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.3",
+  "base_commit_sha": "29ca7624c09ae42fee63c16fc9c2007f6c776e23",
+  "prompts": {},
+  "sessions": {
+    "s_04ee81fd4398a8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fc957ffc-7bcf-4b49-b72c-d2e82f0a64fd",
+        "model": "unknown"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    },
+    "s_0dbb9395740ae9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e8e1c-7dc0-7e70-a6d7-19ddc87bf18b",
+        "model": "gpt-5.5"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    },
+    "s_4522ed1c9cb51f": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e92e2-d509-7cf3-a1e4-6e3ef340368f",
+        "model": "gpt-5.5"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    },
+    "s_54ac8977692f83": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "97d467a6-1f1a-4408-818b-dad5b2b1edca",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    },
+    "s_5c68500d211848": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e92d1-c13c-7401-8437-2cbaa9759237",
+        "model": "gpt-5.5"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    },
+    "s_60a87c7c1dd625": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e8f35-4fef-7f41-90c5-7dfceb40ed60",
+        "model": "gpt-5.5"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    },
+    "s_61854cc4d63776": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e9351-0332-7860-825c-39be05d74d1d",
+        "model": "gpt-5.5"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    },
+    "s_8d2f9f238f78b3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e027ff39-043a-4503-841e-71adc523ab17",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    },
+    "s_ae48be61134aa3": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e9037-09fb-7e91-b560-a08bb430022a",
+        "model": "gpt-5.5"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    },
+    "s_b979adbf2cb104": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6577c420-bd89-4ac0-a6f9-ab2dfc791280",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    },
+    "s_ee43f6f83eb61a": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e89ba-ec13-7b83-9d1e-899db998aa25",
+        "model": "gpt-5.5"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
