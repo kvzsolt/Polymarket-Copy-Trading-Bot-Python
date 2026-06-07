@@ -5,8 +5,8 @@ Pins the post-Review-B behavior so regressions get caught:
   * C1 — reconcile_submitted_unconfirmed must not silently drop rows whose
     identity is missing; it emits a hard metric and falls back to a sentinel
     scope so the row still reconciles.
-  * C3 — submit_near_one_exit and execute_intent must fail closed in live
-    mode if the PositionScope import fails (no silent no-lock SELL).
+  * C3 — execute_intent must fail closed in live mode if the PositionScope
+    import fails (no silent no-lock SELL).
   * C6 contract — two scopes that share (condition_id, token_id) but differ
     on user_id must not collide in the coordinator's lock registry.
   * C7 — runtime_bootstrap must raise (not silently swallow) when it cannot
@@ -180,72 +180,6 @@ def _make_coordinator(*, config):
     )
 
 
-@pytest.mark.asyncio
-async def test_near_one_exit_fails_closed_in_live_when_positionscope_import_fails(monkeypatch):
-    coord = _make_coordinator(config=_live_config())
-
-    intent = SimpleNamespace(
-        user_id="u-live",
-        condition_id="cond-1",
-        token_id="tok-1",
-        side="SELL",
-    )
-
-    # Force the late `from services.positionActionCoordinator import PositionScope`
-    # to fail by removing the module from sys.modules and patching the import.
-    real_module = sys.modules.pop("services.positionActionCoordinator", None)
-    real_import = __import__
-
-    def _raise_on_import(*_a, **_kw):
-        raise ImportError("simulated import failure")
-
-    monkeypatch.setattr(
-        "builtins.__import__",
-        lambda name, *a, **kw: _raise_on_import()
-        if name == "services.positionActionCoordinator"
-        else real_import(name, *a, **kw),
-    )
-
-    try:
-        with pytest.raises(RuntimeError, match="refusing to bypass per-scope"):
-            await coord.submit_near_one_exit(intent)
-    finally:
-        if real_module is not None:
-            sys.modules["services.positionActionCoordinator"] = real_module
-
-
-@pytest.mark.asyncio
-async def test_near_one_exit_paper_mode_does_not_raise_on_import_fail(monkeypatch):
-    coord = _make_coordinator(config=_paper_config())
-
-    intent = SimpleNamespace(
-        user_id="u-paper",
-        condition_id="cond-2",
-        token_id="tok-2",
-        side="SELL",
-    )
-
-    real_module = sys.modules.pop("services.positionActionCoordinator", None)
-    real_import = __import__
-    monkeypatch.setattr(
-        "builtins.__import__",
-        lambda name, *a, **kw: (_ for _ in ()).throw(ImportError("x"))
-        if name == "services.positionActionCoordinator"
-        else real_import(name, *a, **kw),
-    )
-
-    # Paper mode: silent downgrade to direct execution is acceptable, so
-    # the call must proceed past the import without RuntimeError. The actual
-    # body still fails on the mocked submit funnel — accept any non-RuntimeError.
-    try:
-        with pytest.raises(Exception) as exc_info:
-            await coord.submit_near_one_exit(intent)
-        assert not isinstance(exc_info.value, RuntimeError) or "refusing to bypass" not in str(exc_info.value)
-    finally:
-        if real_module is not None:
-            sys.modules["services.positionActionCoordinator"] = real_module
-
-
 # ---------------------------------------------------------------------------
 # C6 contract — different users on same (cond, token) must not collide
 # ---------------------------------------------------------------------------
@@ -281,43 +215,6 @@ async def test_coordinator_per_user_isolation_on_same_cond_token():
         lock_b.release()
     finally:
         lock_a.release()
-
-
-# ---------------------------------------------------------------------------
-# Deadlock probe — submit_near_one_exit from inside scope-holding context
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_submit_near_one_exit_deadlocks_when_caller_already_holds_scope():
-    """Pins the non-reentrant contract: callers must NOT hold the scope
-    lock when invoking submit_near_one_exit, otherwise it deadlocks.
-
-    Documents the constraint so callers are not tempted to wrap the
-    submitter in their own scope acquisition.
-    """
-    coord = _make_coordinator(config=_paper_config())
-
-    intent = SimpleNamespace(
-        user_id="u-dead",
-        condition_id="cond-dead",
-        token_id="tok-dead",
-        side="SELL",
-    )
-
-    scope = PositionScope(
-        user_id="u-dead", condition_id="cond-dead", token_id="tok-dead",
-    )
-
-    # Hold the scope lock externally, then call the submitter. The internal
-    # acquire must block (asyncio.Lock is non-reentrant), so the call cannot
-    # complete within a short timeout — we verify the deadlock posture.
-    async with coord.position_coordinator.acquire(scope):
-        with pytest.raises(asyncio.TimeoutError):
-            await asyncio.wait_for(
-                coord.submit_near_one_exit(intent),
-                timeout=0.25,
-            )
 
 
 # ---------------------------------------------------------------------------

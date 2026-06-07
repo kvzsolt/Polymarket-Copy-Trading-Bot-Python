@@ -289,35 +289,6 @@ async def test_forced_exit_submitted_unconfirmed_enqueues_reconciliation():
 
 
 @pytest.mark.asyncio
-async def test_submit_near_one_exit_acquires_scope_when_position_coordinator_set():
-    reservation = _make_reservation("res-near-one")
-    coord, reservation_service, execution_service = _make_coordinator(
-        reserve_return=reservation,
-        execute_return=_make_exec_result(status="submitted_unconfirmed"),
-    )
-    scope_mgr = MagicMock()
-    captured = []
-
-    class _Scope:
-        async def __aenter__(self):
-            captured.append("enter")
-            return self
-
-        async def __aexit__(self, *a):
-            captured.append("exit")
-            return False
-
-    scope_mgr.acquire = MagicMock(return_value=_Scope())
-    coord.position_coordinator = scope_mgr
-
-    result = await coord.submit_near_one_exit(_intent(side="SELL", source="near_one_exit"))
-
-    assert result.accepted is True
-    assert captured == ["enter", "exit"]
-    scope_mgr.acquire.assert_called_once()
-
-
-@pytest.mark.asyncio
 async def test_submit_protective_exit_uses_protective_source():
     reservation = _make_reservation("res-prot")
     coord, reservation_service, execution_service = _make_coordinator(

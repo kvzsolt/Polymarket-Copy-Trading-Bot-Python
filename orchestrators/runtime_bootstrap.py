@@ -812,6 +812,28 @@ async def build_trading_context(
         ), "runtime_bootstrap: position_coordinator attach silently dropped"
         context.execution_coordinator = coord
         _bind_reservation_runtime(context, coord)
+    # Phase 4 — seed IntentRegistry from durable reservation rows on restart.
+    # Must run after _bind_reservation_runtime so context.extra["reservations_repo"]
+    # is populated.  A missing reservations_repo (test contexts, no-reservation
+    # deployments) is silently skipped — the registry starts empty which is safe.
+    _reservations_repo = context.extra.get("reservations_repo")
+    if _reservations_repo is not None:
+        try:
+            from services.execution.intent_recovery import recover_intents_from_db
+            _recovered = await recover_intents_from_db(
+                registry=context.position_coordinator.intent_registry,
+                reservations_repo=_reservations_repo,
+            )
+            if _recovered:
+                logger.info(
+                    "runtime_bootstrap.intent_recovery user_id=%s recovered=%d",
+                    context.user_id, _recovered,
+                )
+        except Exception as _exc:
+            logger.warning(
+                "runtime_bootstrap.intent_recovery_failed user_id=%s error=%r",
+                context.user_id, _exc,
+            )
     # PR7 — bind position drift service so the coordinator can check
     # ``is_scope_paused`` before submission.
     drift_svc = getattr(user_state, "position_drift_service", None)

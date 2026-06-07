@@ -692,7 +692,7 @@ class _Supervised:
     started: float = 0.0
 
     def spawn(self) -> asyncio.Task:
-        self.started = asyncio.get_event_loop().time()
+        self.started = asyncio.get_running_loop().time()
         self.task = asyncio.create_task(self.factory(), name=self.name)
         return self.task
 
@@ -1054,22 +1054,22 @@ async def main() -> int:
     )
     from orchestrators.trade_pipeline import seed_position_pct_cap_snapshot
 
-    seeded_context_ids: set[int] = set()
+    seeded_user_ids: set[str] = set()
     for context in risk_contexts_by_user.values():
         seed_position_pct_cap_snapshot(
             context,
             user_balances.get(context.user_id, Decimal("0")),
         )
-        seeded_context_ids.add(id(context))
+        seeded_user_ids.add(context.user_id)
     for contexts in contexts_by_leader.values():
         for context in contexts:
-            if id(context) in seeded_context_ids:
+            if context.user_id in seeded_user_ids:
                 continue
             seed_position_pct_cap_snapshot(
                 context,
                 user_balances.get(context.user_id, Decimal("0")),
             )
-            seeded_context_ids.add(id(context))
+            seeded_user_ids.add(context.user_id)
 
     monitored_leaders = [
         leader
@@ -1528,33 +1528,8 @@ async def main() -> int:
             _Supervised(name="reservation-reaper", factory=_reservation_reaper_loop)
         )
 
-    if application.config.near_one_exit.enable_near_one_exit:
-        from services.near_one_exit import NearOneExitService
-
-        for runtime_user in runtime_users:
-            user_state = user_states.get(runtime_user.user_id)
-            if user_state is None or user_state.market_data_service is None:
-                continue
-            near_one_service = NearOneExitService(
-                position_manager=user_state.position_manager,
-                execution_service=user_state.execution_service,
-                market_data_service=user_state.market_data_service,
-                config=application.config,
-                readiness=application.readiness,
-                user_id=runtime_user.user_id,
-                funder_address=runtime_user.wallet.funder_address,
-                execution_coordinator=getattr(user_state, "execution_coordinator", None),
-            )
-            supervised.append(
-                _Supervised(
-                    name=f"near-one-exit-{runtime_user.user_id}",
-                    # Bind per-user service via default arg to avoid late-binding.
-                    factory=lambda s=near_one_service: s.loop(),
-                )
-            )
-
-    # Auto-redemption (opt-in, default off). NearOneExit replaced on-chain CTF
-    # redemption for the live exit path; this restores a conservative
+    # Auto-redemption (opt-in, default off). Conservative settlement-claim loop
+    # for operators who hold to resolution. This restores a conservative
     # settlement-claim loop for operators who hold to resolution. It is gated
     # twice: the data-api must flag the position ``redeemable`` AND the local
     # market cache must show the token pinned at a terminal price

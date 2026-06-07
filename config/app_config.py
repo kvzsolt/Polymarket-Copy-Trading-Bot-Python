@@ -51,7 +51,6 @@ __all__ = [
     "OrderConfirmationConfig",
     "PositionDriftConfig",
     "PollingConfig",
-    "NearOneExitConfig",
     "RedemptionConfig",
     "ReconciliationConfig",
     "RiskConfig",
@@ -554,22 +553,6 @@ class OrderConfirmationConfig:
 
 
 @dataclass(frozen=True)
-class NearOneExitConfig:
-    """Sell-the-position-near-par exit replaces on-chain redemption.
-
-    When a copied position's token price has been at or above ``threshold`` for
-    at least ``dwell_seconds``, NearOneExitService submits a SELL for the
-    entire held size through the normal CLOB execution path. No CTF
-    ``redeemPositions`` transaction is ever issued.
-    """
-
-    enable_near_one_exit: bool
-    threshold: Decimal
-    dwell_seconds: int
-    check_interval: int
-
-
-@dataclass(frozen=True)
 class RedemptionConfig:
     enable_auto_redeem: bool
     check_interval: int
@@ -711,7 +694,6 @@ class AppConfig:
     leader: LeaderConfig
     logging: LoggingConfig
     network: NetworkConfig
-    near_one_exit: NearOneExitConfig
     redemption: RedemptionConfig
     reconciliation: ReconciliationConfig
     order_confirmation: OrderConfirmationConfig
@@ -1307,13 +1289,6 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         ),
     )
 
-    near_one_exit = NearOneExitConfig(
-        enable_near_one_exit=p.bool_("ENABLE_NEAR_ONE_EXIT", False),
-        threshold=Decimal(p.string("NEAR_ONE_EXIT_THRESHOLD", "0.99")),
-        dwell_seconds=p.int_("NEAR_ONE_EXIT_DWELL_SECONDS", "60"),
-        check_interval=p.int_("NEAR_ONE_EXIT_CHECK_INTERVAL", "5"),
-    )
-
     redemption_collateral = (
         p.string("REDEEM_COLLATERAL_CONTRACT_ADDRESS", "")
         or network.pusd_contract_address
@@ -1481,7 +1456,6 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         leader=leader,
         logging=logging_cfg,
         network=network,
-        near_one_exit=near_one_exit,
         redemption=redemption,
         reconciliation=reconciliation,
         order_confirmation=order_confirmation,

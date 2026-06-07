@@ -697,26 +697,6 @@ async def run_doctor_checks(mode: str) -> dict[str, Any]:
                     "set LEADER_WALLETS, or set FALCON_API_TOKEN for bootstrap discovery, or run python bot.py rotate-traders after discovery",
                 )
 
-    if config.near_one_exit.enable_near_one_exit:
-        threshold = float(config.near_one_exit.threshold)
-        if not (0.5 < threshold < 1.0):
-            ctx.blocked(
-                "near_one_exit",
-                f"threshold out of range: {threshold}",
-                "0.5 < NEAR_ONE_EXIT_THRESHOLD < 1.0",
-            )
-        elif config.near_one_exit.dwell_seconds <= 0:
-            ctx.blocked(
-                "near_one_exit",
-                f"dwell_seconds invalid: {config.near_one_exit.dwell_seconds}",
-                "set NEAR_ONE_EXIT_DWELL_SECONDS > 0",
-            )
-        else:
-            ctx.ok(
-                "near_one_exit",
-                f"threshold={threshold} dwell={config.near_one_exit.dwell_seconds}",
-            )
-
     return ctx.to_dict()
 
 

@@ -73,17 +73,18 @@ class PositionActionCoordinator:
         self._locks: dict[tuple[str, str, str], asyncio.Lock] = {}
         self._registry_lock = asyncio.Lock()
         self._prune_threshold = 128
+        # Explicit waiter counter — avoids relying on asyncio.Lock._waiters
+        # (a CPython implementation detail not part of the public asyncio API).
+        # Incremented by acquire() before waiting; decremented once lock is held.
+        self._waiter_counts: dict[tuple[str, str, str], int] = {}
 
     @staticmethod
     def _scope_key(scope: PositionScope) -> tuple[str, str, str]:
         return (scope.user_id, scope.condition_id, scope.token_id)
 
-    @staticmethod
-    def _has_waiters(lock: asyncio.Lock) -> bool:
-        waiters = getattr(lock, "_waiters", None)
-        if not waiters:
-            return False
-        return any(not waiter.cancelled() for waiter in waiters)
+    def _has_waiters(self, key: tuple[str, str, str]) -> bool:
+        """True if any task is waiting to acquire the scope lock for *key*."""
+        return self._waiter_counts.get(key, 0) > 0
 
     async def get_lock(self, scope: PositionScope) -> asyncio.Lock:
         """Return (creating if needed) the per-scope ``asyncio.Lock``.
@@ -110,27 +111,35 @@ class PositionActionCoordinator:
     @asynccontextmanager
     async def acquire(self, scope: PositionScope) -> AsyncIterator[None]:
         """Async context manager that holds the per-scope lock for its body."""
-        lock = await self.get_lock(scope)
-        async with lock:
-            yield
-        self.release_scope(scope)
+        key = self._scope_key(scope)
+        self._waiter_counts[key] = self._waiter_counts.get(key, 0) + 1
+        try:
+            lock = await self.get_lock(scope)
+            async with lock:
+                # Decrement once held — no longer "waiting", now "holding"
+                self._waiter_counts[key] = max(0, self._waiter_counts.get(key, 0) - 1)
+                yield
+        finally:
+            self.release_scope(scope)
 
     def release_scope(self, scope: PositionScope) -> bool:
         """Drop an idle scope lock once it has no holder and no queued waiters."""
         key = self._scope_key(scope)
         lock = self._locks.get(key)
-        if lock is None or lock.locked() or self._has_waiters(lock):
+        if lock is None or lock.locked() or self._has_waiters(key):
             return False
         self._locks.pop(key, None)
+        self._waiter_counts.pop(key, None)
         return True
 
     def prune(self) -> int:
         """Remove all idle scope locks and return the count removed."""
         removed = 0
         for key, lock in list(self._locks.items()):
-            if lock.locked() or self._has_waiters(lock):
+            if lock.locked() or self._has_waiters(key):
                 continue
             self._locks.pop(key, None)
+            self._waiter_counts.pop(key, None)
             removed += 1
         return removed
 

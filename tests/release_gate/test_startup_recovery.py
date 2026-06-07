@@ -52,7 +52,7 @@ def _line_of_first_call(tree, qualname_part: str) -> int | None:
 
 def test_app_main_calls_startup_reconcile_before_monitors() -> None:
     """``app.main`` must await ``startup_reconcile_unconfirmed`` before
-    scheduling the risk monitor, near-one-exit tasks, or leader monitor tasks.
+    scheduling the risk monitor or leader monitor tasks.
 
     Parsed as AST so the gate stays cheap and resilient to call-site moves.
     """
@@ -65,15 +65,11 @@ def test_app_main_calls_startup_reconcile_before_monitors() -> None:
     reconcile_line = _line_of_first_call(tree, "startup_reconcile_unconfirmed")
     assert reconcile_line is not None, "app.py must call startup_reconcile_unconfirmed"
 
-    # Look for monitor scheduling: risk_monitor_loop_for_contexts,
-    # NearOneExitService(...), run_leader_monitor.
     risk_line = _line_of_first_call(tree, "risk_monitor_loop_for_contexts")
-    near_one_line = _line_of_first_call(tree, "NearOneExitService")
     leader_line = _line_of_first_call(tree, "run_leader_monitor")
 
     for label, line in [
         ("risk_monitor_loop_for_contexts", risk_line),
-        ("NearOneExitService", near_one_line),
         ("run_leader_monitor", leader_line),
     ]:
         assert line is not None, f"app.py must schedule {label}"
@@ -94,7 +90,6 @@ def test_app_main_runs_drift_check_after_reconcile_before_monitors() -> None:
     reconcile_line = _line_of_first_call(tree, "startup_reconcile_unconfirmed")
     drift_line = _line_of_first_call(tree, "startup_drift_check")
     risk_line = _line_of_first_call(tree, "risk_monitor_loop_for_contexts")
-    near_one_line = _line_of_first_call(tree, "NearOneExitService")
     leader_line = _line_of_first_call(tree, "run_leader_monitor")
 
     assert drift_line is not None, "app.py must call startup_drift_check"
@@ -105,7 +100,6 @@ def test_app_main_runs_drift_check_after_reconcile_before_monitors() -> None:
     )
     for label, line in [
         ("risk_monitor_loop_for_contexts", risk_line),
-        ("NearOneExitService", near_one_line),
         ("run_leader_monitor", leader_line),
     ]:
         assert line is not None

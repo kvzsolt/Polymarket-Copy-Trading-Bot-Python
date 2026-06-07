@@ -113,18 +113,6 @@ EVENT_TYPES: dict[str, tuple[str, ...]] = {
         "reason",
         "source",
     ),
-    "near_one_exit_triggered": (
-        "condition_id",
-        "token_id",
-        "price",
-        "dwell_seconds",
-        "size_tokens",
-    ),
-    "near_one_exit_skipped": (
-        "condition_id",
-        "token_id",
-        "reason",
-    ),
 }
 
 

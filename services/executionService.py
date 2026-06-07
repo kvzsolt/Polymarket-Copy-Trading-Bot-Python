@@ -103,14 +103,12 @@ def _normalize_side(side: str) -> str:
 _FORCED_EXIT_SOURCES = frozenset({
     "risk_exit",
     "protective_exit",
-    "near_one_exit",
 })
 
 _FORCED_EXIT_REASONS = frozenset({
     "risk_exit",
     "protective_exit",
     "advanced_risk_exit",
-    "near_one_exit",
     "stop_loss",
     "trailing_stop",
 })
