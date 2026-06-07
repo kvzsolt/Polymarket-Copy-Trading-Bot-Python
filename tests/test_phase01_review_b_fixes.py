@@ -113,6 +113,40 @@ async def test_reconcile_emits_metric_and_fallback_for_empty_identity(monkeypatc
     assert "ord-legacy-1" in scope.token_id
 
 
+@pytest.mark.asyncio
+async def test_reconcile_submitted_unconfirmed_scopes_queries_to_context_user():
+    """Runtime contexts must not reconcile every user's pending rows.
+
+    A risk-loop pre-reconcile runs once per user context. If each context fetches
+    every submitted_unconfirmed row globally, one stuck venue order can multiply
+    work across all users and repeatedly hit the pre-reconcile timeout.
+    """
+    from orchestrators import trade_pipeline as tp
+
+    orders_repo = MagicMock()
+    orders_repo.get_unconfirmed_buys = AsyncMock(return_value=[])
+    orders_repo.get_unconfirmed_sells = AsyncMock(return_value=[])
+
+    ctx = SimpleNamespace(
+        user_id="0xUser",
+        execution_service=MagicMock(),
+        orders_repo=orders_repo,
+        position_coordinator=PositionActionCoordinator(),
+        extra={},
+        config=None,
+    )
+
+    assert await tp.reconcile_submitted_unconfirmed(ctx) == 0
+    orders_repo.get_unconfirmed_buys.assert_awaited_once_with(
+        max_age_seconds=300.0,
+        user_id="0xUser",
+    )
+    orders_repo.get_unconfirmed_sells.assert_awaited_once_with(
+        max_age_seconds=300.0,
+        user_id="0xUser",
+    )
+
+
 # ---------------------------------------------------------------------------
 # C3 — fail-closed lock bypass in live mode
 # ---------------------------------------------------------------------------
@@ -160,13 +194,16 @@ async def test_near_one_exit_fails_closed_in_live_when_positionscope_import_fail
     # Force the late `from services.positionActionCoordinator import PositionScope`
     # to fail by removing the module from sys.modules and patching the import.
     real_module = sys.modules.pop("services.positionActionCoordinator", None)
+    real_import = __import__
 
     def _raise_on_import(*_a, **_kw):
         raise ImportError("simulated import failure")
 
     monkeypatch.setattr(
         "builtins.__import__",
-        lambda name, *a, **kw: _raise_on_import() if name == "services.positionActionCoordinator" else __import__(name, *a, **kw),
+        lambda name, *a, **kw: _raise_on_import()
+        if name == "services.positionActionCoordinator"
+        else real_import(name, *a, **kw),
     )
 
     try:
@@ -189,9 +226,12 @@ async def test_near_one_exit_paper_mode_does_not_raise_on_import_fail(monkeypatc
     )
 
     real_module = sys.modules.pop("services.positionActionCoordinator", None)
+    real_import = __import__
     monkeypatch.setattr(
         "builtins.__import__",
-        lambda name, *a, **kw: (_ for _ in ()).throw(ImportError("x")) if name == "services.positionActionCoordinator" else __import__(name, *a, **kw),
+        lambda name, *a, **kw: (_ for _ in ()).throw(ImportError("x"))
+        if name == "services.positionActionCoordinator"
+        else real_import(name, *a, **kw),
     )
 
     # Paper mode: silent downgrade to direct execution is acceptable, so

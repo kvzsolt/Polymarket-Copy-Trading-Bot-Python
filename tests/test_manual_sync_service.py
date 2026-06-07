@@ -67,6 +67,7 @@ def _make_service(
     debounce_seconds: float = 0.0,
     wss_settle_delay_seconds: float = 0.0,
     reservation_service=None,
+    orders_repo=None,
 ) -> tuple[ManualSyncService, MagicMock, MagicMock]:
     positions_repo = positions_repo or MagicMock()
     positions_repo.list_open_positions = AsyncMock(return_value=[])
@@ -83,8 +84,22 @@ def _make_service(
         wss_settle_delay_seconds=wss_settle_delay_seconds,
         rest_poll_interval_seconds=0.05,
         reservation_service=reservation_service,
+        orders_repo=orders_repo,
     )
     return svc, positions_repo, market_store
+
+
+def _orders_repo(*, has_recent=False):
+    """Build an orders_repo stub whose ``has_recent_processed_trade`` returns
+    (or raises) ``has_recent``. Pass an Exception instance to simulate a probe
+    failure.
+    """
+    repo = MagicMock()
+    if isinstance(has_recent, BaseException):
+        repo.has_recent_processed_trade = AsyncMock(side_effect=has_recent)
+    else:
+        repo.has_recent_processed_trade = AsyncMock(return_value=has_recent)
+    return repo
 
 
 @pytest.mark.asyncio
@@ -640,4 +655,189 @@ async def test_manual_sync_handshake_only_blocks_new_upserts_not_size_updates():
 
     # Drift NOT consulted (existing is not None → no holdoff check needed).
     drift_mock.was_recently_pruned.assert_not_called()
+    positions_repo.upsert_position.assert_called_once()
+
+
+# ----------------------------------------------------------------------
+# Own-fill duplicate-order recognition (sym 3 + 4)
+# ----------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_own_copy_fill_recorded_as_bot_not_manual():
+    """A data-api trade matching a recent bot processed_trade is the bot's OWN
+    copy fill: record it bot=True with the real settlement tx and do NOT surface
+    it as a manual trade. Closes the cross-identifier dedup gap."""
+    orders_repo = _orders_repo(has_recent=True)
+    svc, positions_repo, market_store = _make_service(orders_repo=orders_repo)
+
+    insert_many = AsyncMock()
+    activity_model = MagicMock(insert_many=insert_many)
+
+    with (
+        patch("services.manual_sync_service.fetch_data", AsyncMock(side_effect=[
+            [_trade(tx="0xsettle", asset="0xtokenOwn", side="BUY")],  # activity
+            [],                                                        # positions
+        ])),
+        patch("services.manual_sync_service.find_activity_by_tx_hash", AsyncMock(return_value=False)),
+        patch("services.manual_sync_service.get_user_activity_model", MagicMock(return_value=activity_model)),
+        patch("services.manual_sync_service.get_user_position_model", MagicMock(return_value=MagicMock(
+            delete_many=AsyncMock(), insert_many=AsyncMock(),
+        ))),
+        patch("services.manual_sync_service.print_manual_trade_detected") as mock_print,
+    ):
+        await svc.sync_now(reason="wss_fill")
+
+    # Recognised as own → no manual panel.
+    mock_print.assert_not_called()
+    # Recorded with the REAL settlement tx and bot=True (so later sweeps dedup).
+    inserted_payload = insert_many.call_args.args[0][0]
+    assert inserted_payload["transactionHash"] == "0xsettle"
+    assert inserted_payload["bot"] is True
+    assert inserted_payload["own_detected_via"] == "processed_trades"
+    # Probed processed_trades on the exact (token, side) scope.
+    orders_repo.has_recent_processed_trade.assert_awaited()
+    probe_kwargs = orders_repo.has_recent_processed_trade.call_args.kwargs
+    assert probe_kwargs["asset"] == "0xtokenOwn"
+    assert probe_kwargs["side"] == "BUY"
+    # Not treated as manual → the manual-path cache evict did not fire.
+    market_store.evict.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_genuine_manual_trade_still_detected_when_orders_repo_present():
+    """orders_repo wired but no recent bot trade → still classified manual
+    (printed + inserted bot=False). The dedup never suppresses real manuals."""
+    orders_repo = _orders_repo(has_recent=False)
+    svc, positions_repo, market_store = _make_service(orders_repo=orders_repo)
+
+    insert_many = AsyncMock()
+    activity_model = MagicMock(insert_many=insert_many)
+
+    with (
+        patch("services.manual_sync_service.fetch_data", AsyncMock(side_effect=[
+            [_trade(tx="0xmanual", asset="0xtokenM", side="SELL")],
+            [],
+        ])),
+        patch("services.manual_sync_service.find_activity_by_tx_hash", AsyncMock(return_value=False)),
+        patch("services.manual_sync_service.get_user_activity_model", MagicMock(return_value=activity_model)),
+        patch("services.manual_sync_service.get_user_position_model", MagicMock(return_value=MagicMock(
+            delete_many=AsyncMock(), insert_many=AsyncMock(),
+        ))),
+        patch("services.manual_sync_service.print_manual_trade_detected") as mock_print,
+    ):
+        await svc.sync_now(reason="wss_fill")
+
+    mock_print.assert_called_once()
+    inserted_payload = insert_many.call_args.args[0][0]
+    assert inserted_payload["transactionHash"] == "0xmanual"
+    assert inserted_payload["bot"] is False
+    market_store.evict.assert_called_once_with("0xtokenM")
+
+
+@pytest.mark.asyncio
+async def test_own_trade_probe_failure_falls_back_to_manual():
+    """If the processed_trades probe errors, the trade is NOT suppressed — it
+    falls back to the legacy manual classification (no silent loss of a real
+    manual trade)."""
+    orders_repo = _orders_repo(has_recent=RuntimeError("db down"))
+    svc, _, _ = _make_service(orders_repo=orders_repo)
+
+    insert_many = AsyncMock()
+    activity_model = MagicMock(insert_many=insert_many)
+
+    with (
+        patch("services.manual_sync_service.fetch_data", AsyncMock(side_effect=[
+            [_trade(tx="0xfail", asset="0xtokenF")],
+            [],
+        ])),
+        patch("services.manual_sync_service.find_activity_by_tx_hash", AsyncMock(return_value=False)),
+        patch("services.manual_sync_service.get_user_activity_model", MagicMock(return_value=activity_model)),
+        patch("services.manual_sync_service.get_user_position_model", MagicMock(return_value=MagicMock(
+            delete_many=AsyncMock(), insert_many=AsyncMock(),
+        ))),
+        patch("services.manual_sync_service.print_manual_trade_detected") as mock_print,
+    ):
+        await svc.sync_now(reason="wss_fill")
+
+    mock_print.assert_called_once()
+    assert insert_many.call_args.args[0][0]["bot"] is False
+
+
+@pytest.mark.asyncio
+async def test_orders_repo_unwired_preserves_legacy_manual_detection():
+    """orders_repo None (paper/test contexts) → own-recognition is skipped and
+    the legacy tx_hash-only manual classification is unchanged."""
+    svc, _, market_store = _make_service(orders_repo=None)
+
+    insert_many = AsyncMock()
+    activity_model = MagicMock(insert_many=insert_many)
+
+    with (
+        patch("services.manual_sync_service.fetch_data", AsyncMock(side_effect=[
+            [_trade(tx="0xlegacy", asset="0xtokenL")],
+            [],
+        ])),
+        patch("services.manual_sync_service.find_activity_by_tx_hash", AsyncMock(return_value=False)),
+        patch("services.manual_sync_service.get_user_activity_model", MagicMock(return_value=activity_model)),
+        patch("services.manual_sync_service.get_user_position_model", MagicMock(return_value=MagicMock(
+            delete_many=AsyncMock(), insert_many=AsyncMock(),
+        ))),
+        patch("services.manual_sync_service.print_manual_trade_detected") as mock_print,
+    ):
+        await svc.sync_now(reason="wss_fill")
+
+    mock_print.assert_called_once()
+    assert insert_many.call_args.args[0][0]["bot"] is False
+
+
+@pytest.mark.asyncio
+async def test_position_seed_held_off_while_bot_order_in_flight():
+    """existing is None + a recent bot order on the token → manual-sync must NOT
+    seed the absolute venue size (the reconciler owns the first incremental
+    write; seeding here double-counts)."""
+    orders_repo = _orders_repo(has_recent=True)
+    svc, positions_repo, _ = _make_service(orders_repo=orders_repo)
+    positions_repo.list_open_positions = AsyncMock(return_value=[])
+
+    with (
+        patch("services.manual_sync_service.fetch_data", AsyncMock(side_effect=[
+            [],                                       # activity
+            [_live_position(asset="0xasset1", size=2.55, avg=0.40)],  # positions
+        ])),
+        patch("services.manual_sync_service.get_user_position_model", MagicMock(return_value=MagicMock(
+            delete_many=AsyncMock(), insert_many=AsyncMock(),
+        ))),
+        patch("services.manual_sync_service.print_manual_sync_discrepancy") as mock_disc,
+    ):
+        await svc.sync_now(reason="wss_fill")
+
+    positions_repo.upsert_position.assert_not_called()
+    mock_disc.assert_not_called()
+    # Seed hold-off probes the BUY side (the row-creating side that races the
+    # reconciler's first incremental write) within the short hold-off window.
+    probe_kwargs = orders_repo.has_recent_processed_trade.call_args.kwargs
+    assert probe_kwargs["asset"] == "0xasset1"
+    assert probe_kwargs["side"] == "BUY"
+
+
+@pytest.mark.asyncio
+async def test_position_seed_proceeds_when_no_recent_bot_order():
+    """existing is None + no recent bot order → manual-sync seeds the venue
+    position as before (safety net for genuinely off-bot / failed-reconcile
+    holdings)."""
+    orders_repo = _orders_repo(has_recent=False)
+    svc, positions_repo, _ = _make_service(orders_repo=orders_repo)
+    positions_repo.list_open_positions = AsyncMock(return_value=[])
+
+    with (
+        patch("services.manual_sync_service.fetch_data", AsyncMock(side_effect=[
+            [],
+            [_live_position(asset="0xasset1", size=2.55, avg=0.40)],
+        ])),
+        patch("services.manual_sync_service.get_user_position_model", MagicMock(return_value=MagicMock(
+            delete_many=AsyncMock(), insert_many=AsyncMock(),
+        ))),
+        patch("services.manual_sync_service.print_manual_sync_discrepancy"),
+    ):
+        await svc.sync_now(reason="wss_fill")
+
     positions_repo.upsert_position.assert_called_once()

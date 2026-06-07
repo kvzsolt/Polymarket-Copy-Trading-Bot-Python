@@ -371,6 +371,7 @@ def build_user_state(
         positions_repo=positions_repo,
         market_store=market_store,
         fills_repo=fills_repo,
+        orders_repo=order_repo,
         position_drift_service=position_drift_service,
         reservation_service=reservation_service,
     )
@@ -404,6 +405,7 @@ def _build_manual_sync_service(
     positions_repo: PositionsRepo,
     market_store: MarketStateStore | None,
     fills_repo: FillsRepo | None,
+    orders_repo: OrdersRepo | None = None,
     position_drift_service=None,
     reservation_service=None,
 ):
@@ -421,6 +423,7 @@ def _build_manual_sync_service(
         positions_repo=positions_repo,
         market_store=market_store,
         fills_repo=fills_repo,
+        orders_repo=orders_repo,
         position_drift_service=position_drift_service,
         reservation_service=reservation_service,
     )
@@ -490,15 +493,23 @@ def _build_execution_coordinator(
     reservations_enabled = (
         config.execution.reservations_enabled if config is not None else False
     )
+    _reservation_ttl = (
+        config.execution.reservation_ttl_seconds if config is not None else 120
+    )
     reservation_service = ReservationService(
         reservations_repo=reservations_repo,
         positions_repo=positions_repo,
         get_balance_func=get_my_balance,
         funder_address=funder_address,
-        ttl_seconds=(
-            config.execution.reservation_ttl_seconds if config is not None else 120
-        ),
+        ttl_seconds=_reservation_ttl,
         enabled=reservations_enabled,
+        # sym 5 — break the reservation-release deadlock. A reservation linked
+        # to a FAK order the reconciler can never confirm terminal would
+        # otherwise pin its scope forever (the reason RESERVATIONS_ENABLED was
+        # turned off). Force-release once it has been expired by a full extra
+        # TTL window: a fill-and-kill order cannot rest, so by then it is
+        # definitively not live and the held budget is stranded.
+        force_release_grace_seconds=float(_reservation_ttl),
     )
     if not reservations_enabled:
         logger.warning(

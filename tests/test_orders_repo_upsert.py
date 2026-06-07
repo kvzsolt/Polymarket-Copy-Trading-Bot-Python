@@ -127,6 +127,34 @@ async def test_unconfirmed_processed_trade_selectors_include_matched_rows():
     assert "matched" in sell_params[1]
 
 
+async def test_unconfirmed_processed_trade_selectors_can_scope_by_user():
+    conn = _RecordingConn(
+        [
+            {
+                "trade_key": "trade-matched",
+                "user_id": "u1",
+                "leader_id": "l1",
+                "tx_hash": "0x1",
+                "asset": "token-a",
+                "condition_id": "cond-a",
+                "order_id": "ord-matched",
+                "processed_at": 1.0,
+            }
+        ]
+    )
+    repo = OrdersRepo(_FakePool(conn))
+
+    await repo.get_unconfirmed_buys(user_id="u1")
+    await repo.get_unconfirmed_sells(user_id="u1")
+
+    buy_query, buy_params = conn.calls[0]
+    sell_query, sell_params = conn.calls[1]
+    assert "AND (user_id = $3 OR user_id IS NULL OR user_id = '')" in buy_query
+    assert "AND (user_id = $3 OR user_id IS NULL OR user_id = '')" in sell_query
+    assert buy_params[2] == "u1"
+    assert sell_params[2] == "u1"
+
+
 async def test_order_repo_upsert_replaces_failed_submission():
     async with _pg_pool() as pool:
         repo = OrdersRepo(pool)
@@ -230,3 +258,57 @@ async def test_persist_execution_atomically_scopes_position_by_token_id():
     assert rows[1]["token_id"] == "token-b"
     assert rows[1]["size_tokens"] == "7"
     assert rows[1]["avg_entry_price"] == "0.6428571428571428571428571429"
+
+
+class _FetchrowConn:
+    """Fake conn exposing ``fetchrow`` for has_recent_processed_trade tests."""
+
+    def __init__(self, row):
+        self.row = row
+        self.calls: list[tuple] = []
+
+    async def fetchrow(self, query, *params):
+        self.calls.append((query, params))
+        return self.row
+
+
+async def test_has_recent_processed_trade_true_with_side_filter():
+    conn = _FetchrowConn({"?column?": 1})
+    repo = OrdersRepo(_FakePool(conn))
+
+    out = await repo.has_recent_processed_trade(
+        user_id="0xUser", asset="0xTok", side="buy", max_age_seconds=120.0
+    )
+
+    assert out is True
+    query, params = conn.calls[0]
+    assert "FROM processed_trades" in query
+    assert params[0] == "0xUser"
+    assert params[1] == "0xTok"
+    assert isinstance(params[2], float)  # epoch cutoff
+    # Side bound case-insensitively as a parameter (no SQL injection surface).
+    assert "UPPER(side)" in query
+    assert params[3] == "BUY"
+
+
+async def test_has_recent_processed_trade_false_no_row_and_no_side_filter():
+    conn = _FetchrowConn(None)
+    repo = OrdersRepo(_FakePool(conn))
+
+    out = await repo.has_recent_processed_trade(
+        user_id="0xUser", asset="0xTok", max_age_seconds=300.0
+    )
+
+    assert out is False
+    query, params = conn.calls[0]
+    assert "UPPER(side)" not in query  # side omitted → no filter
+    assert len(params) == 3
+
+
+async def test_has_recent_processed_trade_short_circuits_empty_scope():
+    conn = _FetchrowConn({"x": 1})
+    repo = OrdersRepo(_FakePool(conn))
+
+    assert await repo.has_recent_processed_trade(user_id="", asset="0xT") is False
+    assert await repo.has_recent_processed_trade(user_id="u", asset="") is False
+    assert conn.calls == []  # no DB round-trip on an empty scope

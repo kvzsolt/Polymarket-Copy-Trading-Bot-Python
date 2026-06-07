@@ -65,6 +65,7 @@ from utils.logger import (
 if TYPE_CHECKING:
     from cache.market_state_store import MarketStateStore
     from storage.postgres.fills_repo import FillsRepo
+    from storage.postgres.orders_repo import OrdersRepo
     from storage.postgres.positions_repo import PositionsRepo
 
 logger = get_logger("ManualSync")
@@ -76,6 +77,19 @@ _POSITIONS_URL = "https://data-api.polymarket.com/positions?user={wallet}"
 _SIZE_EPSILON = Decimal("0.001")
 _WSS_TRIGGER_REASONS = frozenset({"wss_fill", "wss_order_update"})
 _DEFAULT_WSS_SETTLE_DELAY_SECONDS = 10.0
+# How far back to look in ``processed_trades`` when deciding whether a
+# data-api ``/activity`` row is the bot's OWN copy fill (vs a genuine off-bot
+# manual trade). Generous because mislabeling our own fill as "manual" is the
+# failure we are closing; missing a real manual trade on the same (token, side)
+# within this window is the rare, low-harm trade-off (the position sync still
+# reflects it). See classification path in ``_sync_manual_trades``.
+_DEFAULT_OWN_TRADE_DEDUP_WINDOW_SECONDS = 300.0
+# Shorter hold-off used before SEEDING a brand-new position row from the venue.
+# While a bot order is this-recently in-flight, the reconciler owns the first
+# write (incremental delta); seeding the absolute venue size here would race it
+# and double-count. Kept short so a genuinely-failed reconciliation still gets
+# the safety-net seed quickly (minimising the unprotected-position window).
+_DEFAULT_OWN_FILL_SEED_HOLDOFF_SECONDS = 45.0
 
 
 class ManualSyncService:
@@ -88,10 +102,13 @@ class ManualSyncService:
         positions_repo: "PositionsRepo",
         market_store: "MarketStateStore",
         fills_repo: "FillsRepo | None" = None,
+        orders_repo: "OrdersRepo | None" = None,
         user_id: str | None = None,
         debounce_seconds: float = 1.0,
         rest_poll_interval_seconds: float = 30.0,
         wss_settle_delay_seconds: float = _DEFAULT_WSS_SETTLE_DELAY_SECONDS,
+        own_trade_dedup_window_seconds: float = _DEFAULT_OWN_TRADE_DEDUP_WINDOW_SECONDS,
+        own_fill_seed_holdoff_seconds: float = _DEFAULT_OWN_FILL_SEED_HOLDOFF_SECONDS,
         position_drift_service: Any | None = None,
         reservation_service: Any | None = None,
     ) -> None:
@@ -106,9 +123,18 @@ class ManualSyncService:
         self._positions_repo = positions_repo
         self._market_store = market_store
         self._fills_repo = fills_repo
+        # orders_repo is consulted to recognise the bot's OWN in-flight copy
+        # orders (recorded in ``processed_trades`` at submit time) so they are
+        # not misclassified as off-bot manual trades, and so a brand-new
+        # position is not seeded from the venue while the reconciler still owns
+        # the first incremental write. ``None`` preserves the legacy
+        # tx_hash-only behaviour for paper/test contexts.
+        self._orders_repo = orders_repo
         self._debounce_seconds = max(0.0, float(debounce_seconds))
         self._rest_poll_interval = max(1.0, float(rest_poll_interval_seconds))
         self._wss_settle_delay = max(0.0, float(wss_settle_delay_seconds))
+        self._own_trade_dedup_window = max(0.0, float(own_trade_dedup_window_seconds))
+        self._own_fill_seed_holdoff = max(0.0, float(own_fill_seed_holdoff_seconds))
         # Drift handshake: when set, ``_sync_positions_and_tracking`` consults
         # ``was_recently_pruned`` before upserting so an eventually-consistent
         # data-api echo of a venue-positive size cannot resurrect a row that
@@ -291,6 +317,33 @@ class ManualSyncService:
             if already_tracked:
                 continue
 
+            # Bot's OWN copy fill? ``processed_trades`` carries a recent row for
+            # this (token, side) written at submit time. Record it as bot=True
+            # with the real settlement tx (so later sweeps dedup via tx_hash) and
+            # do NOT surface it as a manual trade. Closes the cross-identifier
+            # gap: the reconciler write-back keys the leader's tx, never this one.
+            own_token_id = str(trade.get("asset") or trade.get("tokenId") or "").strip()
+            if own_token_id and await self._is_own_recent_bot_trade(
+                token_id=own_token_id,
+                side=side,
+                max_age_seconds=self._own_trade_dedup_window,
+            ):
+                try:
+                    await self._record_own_bot_activity(trade)
+                    logger.info(
+                        "manual_sync_own_fill_recognized | token=%s side=%s tx=%s",
+                        own_token_id, side, tx_hash,
+                    )
+                except Exception as exc:
+                    # Insert failed → do NOT claim recognition. The processed_trades
+                    # row is still fresh, so the next sweep re-detects and retries
+                    # (insert_many is idempotent on the tx_hash).
+                    logger.warning(
+                        "manual_sync_own_activity_insert_failed | tx=%s error=%s",
+                        tx_hash, redact_error_detail(exc),
+                    )
+                continue
+
             # Manual trade — log + persist + evict cache. ``silent`` skips
             # the per-trade Rich panel; the activity row + cache evict still
             # run so future runs dedup correctly.
@@ -332,6 +385,61 @@ class ManualSyncService:
         # the reconciler write-back (which sets bot=True).
         payload["bot"] = False
         payload["manual_sync_recorded_at"] = int(time.time())
+        await get_user_activity_model(self._funder).insert_many([payload])
+
+    async def _is_own_recent_bot_trade(
+        self,
+        *,
+        token_id: str,
+        side: str | None,
+        max_age_seconds: float,
+    ) -> bool:
+        """Whether the bot itself recently acted on this ``(token[, side])`` scope.
+
+        Consults ``processed_trades`` via ``orders_repo``. Those rows are written
+        at submit time — BEFORE the async reconciler settles the fill — so a
+        recent row is the authoritative early signal that a venue holding/fill is
+        the bot's OWN copy rather than an off-bot manual trade. Returns ``False``
+        when orders_repo is unwired or the probe errors, preserving the legacy
+        tx_hash-only behaviour (no regression, never suppresses a real manual
+        trade on a probe failure).
+        """
+        repo = self._orders_repo
+        if repo is None or not token_id:
+            return False
+        probe = getattr(repo, "has_recent_processed_trade", None)
+        if not callable(probe):
+            return False
+        try:
+            return bool(
+                await probe(
+                    user_id=self._user_id,
+                    asset=token_id,
+                    side=side,
+                    max_age_seconds=max_age_seconds,
+                )
+            )
+        except Exception as exc:
+            logger.warning(
+                "manual_sync_own_trade_probe_failed | token=%s side=%s error=%s",
+                token_id, side, redact_error_detail(exc),
+            )
+            return False
+
+    async def _record_own_bot_activity(self, trade: dict[str, Any]) -> None:
+        """Persist the bot's OWN settlement activity (``bot=True``) keyed by the
+        real on-chain ``transactionHash`` from the data-api feed.
+
+        The reconciler write-back stores the LEADER's tx_hash, which never
+        matches the data-api settlement tx — so without this row every sweep
+        would re-evaluate the bot's own fill. Recording it here with the correct
+        tx both attributes it properly and lets ``find_activity_by_tx_hash`` dedup
+        every later sweep.
+        """
+        payload = dict(trade)
+        payload["bot"] = True
+        payload["manual_sync_recorded_at"] = int(time.time())
+        payload["own_detected_via"] = "processed_trades"
         await get_user_activity_model(self._funder).insert_many([payload])
 
     # ------------------------------------------------------------------
@@ -412,6 +520,29 @@ class ManualSyncService:
                         token_id, condition_id, venue_size,
                     )
                     continue
+
+            # Reconciler-first guard: a brand-new long position row is created by
+            # a BUY fill. While the bot's own copy BUY is recently in-flight on
+            # this token, the reconciler owns the FIRST position write (an
+            # incremental delta from cumulative matched size). Seeding the
+            # absolute venue size here races that delta apply and double-counts
+            # (manual SET 2.55, then reconciler ADD 2.55 -> 5.10). Skip creating
+            # the row; reconciliation will create it with correct accounting.
+            # Scoped to BUY (the row-creating side) so a recent SELL exit does
+            # not suppress seeding a residual. Bounded by a short hold-off so a
+            # genuinely-failed reconciliation still gets the safety-net seed on a
+            # later sweep.
+            if existing is None and await self._is_own_recent_bot_trade(
+                token_id=token_id,
+                side="BUY",
+                max_age_seconds=self._own_fill_seed_holdoff,
+            ):
+                logger.info(
+                    "manual_sync_skipped_pending_bot_fill | "
+                    "token=%s cond=%s venue_size=%s",
+                    token_id, condition_id, venue_size,
+                )
+                continue
 
             if abs(venue_size - local_size) > _SIZE_EPSILON:
                 action = (

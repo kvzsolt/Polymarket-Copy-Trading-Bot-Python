@@ -179,10 +179,10 @@ async def test_expired_reservation_callback_reconciles_order_row_linked_only_by_
             self.updated = []
             self.processed = []
 
-        async def get_unconfirmed_buys(self, max_age_seconds=300.0):
+        async def get_unconfirmed_buys(self, max_age_seconds=300.0, *, user_id=None):
             return []
 
-        async def get_unconfirmed_sells(self, max_age_seconds=300.0):
+        async def get_unconfirmed_sells(self, max_age_seconds=300.0, *, user_id=None):
             return []
 
         async def get_unconfirmed_order_submissions(self, user_id=None, side=None):

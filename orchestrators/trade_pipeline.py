@@ -1305,8 +1305,15 @@ async def reconcile_submitted_unconfirmed(
     if context.execution_service is None:
         return 0
 
-    buy_pending = await context.orders_repo.get_unconfirmed_buys(max_age_seconds=max_age_seconds)
-    sell_pending = await context.orders_repo.get_unconfirmed_sells(max_age_seconds=max_age_seconds)
+    reconcile_user_id = str(getattr(context, "user_id", "") or "") or None
+    buy_pending = await context.orders_repo.get_unconfirmed_buys(
+        max_age_seconds=max_age_seconds,
+        user_id=reconcile_user_id,
+    )
+    sell_pending = await context.orders_repo.get_unconfirmed_sells(
+        max_age_seconds=max_age_seconds,
+        user_id=reconcile_user_id,
+    )
     if not buy_pending and not sell_pending:
         return 0
 
@@ -2393,11 +2400,30 @@ async def execute_trades(
                         pass
 
             if exec_result.accepted and _decimal_or_zero(exec_result.filled_amount) <= 0:
+                # Execution is settlement-deferred by design: a FAK that the
+                # venue accepts returns filled_amount=0 / submitted_unconfirmed
+                # and the reconciler owns final accounting. This is NOT a "price
+                # moved past limit" kill (a genuine kill returns accepted=False);
+                # the order may well have filled. Report it as pending, not dead.
                 print_skip_reason(
-                    "Order placed but did not fill",
-                    f"{signal.side} FAK killed unfilled — price moved past limit "
-                    f"{signal.price} (transient; awaiting reconciliation)",
+                    "Order submitted — awaiting fill confirmation",
+                    f"{signal.side} FAK accepted at limit {signal.price}; fill "
+                    f"not yet confirmed by the venue — reconciliation will settle it",
                 )
+                # Copy-scoped display values. ``exec_req`` carries the COPY size,
+                # not the leader's ``signal.size``: for a BUY the request amount
+                # is USDC notional (tokens ≈ notional / limit price); for a SELL
+                # it is shares directly.
+                _copy_amount = _decimal_or_zero(getattr(exec_req, "amount", 0))
+                _limit_px = _decimal_or_zero(
+                    getattr(exec_req, "price_limit", None) or signal.price or 0
+                )
+                if exec_req.side == "BUY":
+                    _copy_usdc = _copy_amount
+                    _copy_tokens = (_copy_amount / _limit_px) if _limit_px > 0 else None
+                else:
+                    _copy_tokens = _copy_amount
+                    _copy_usdc = (_copy_amount * _limit_px) if _limit_px > 0 else None
                 await context.orders_repo.mark_processed_trade(
                     trade_key=trade_key,
                     user_id=context.user_id,
@@ -2414,9 +2440,9 @@ async def execute_trades(
                     side=signal.side,
                     condition_id=signal.condition_id,
                     asset=signal.token_id,
-                    size=float(signal.size) if signal.size else None,
-                    price=float(signal.price) if signal.price else None,
-                    usdc_value=float(signal.usdc_size),
+                    size=float(_copy_tokens) if _copy_tokens is not None else None,
+                    price=float(_limit_px) if _limit_px > 0 else None,
+                    usdc_value=float(_copy_usdc) if _copy_usdc is not None else None,
                     event_slug=signal.event_slug,
                     meta={
                         "user_id": context.user_id,

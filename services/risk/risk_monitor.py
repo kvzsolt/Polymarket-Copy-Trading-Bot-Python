@@ -150,6 +150,17 @@ _MIN_RISK_CACHE_STALE_SECONDS = 0.75
 # entry (clients/user_ws.py), so genuine reactivation re-arms the probe.
 _DORMANT_TOKEN_TTL_SECONDS = 300.0
 
+_RISK_PRE_RECONCILE_BACKOFF_KEY = "risk_pre_reconcile_backoff"
+_DEFAULT_RISK_PRE_RECONCILE_TIMEOUT_SECONDS = 5.0
+_DEFAULT_RISK_PRE_RECONCILE_BACKOFF_SECONDS = 30.0
+_MAX_RISK_PRE_RECONCILE_BACKOFF_SECONDS = 300.0
+
+
+@dataclass
+class RiskPreReconcileBackoff:
+    consecutive_timeouts: int = 0
+    next_attempt_at: float = 0.0
+
 
 @dataclass
 class CachedRiskPrice:
@@ -1113,17 +1124,98 @@ async def reconcile_unconfirmed_risk_orders(context: TradingContext) -> int:
     return reconciled
 
 
-async def run_risk_check_for_context(context: TradingContext) -> None:
-    if not context.execution_service:
-        return
+def _float_env_or_default(name: str, default: float, *, minimum: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None or str(raw).strip() == "":
+        return default
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return default
+    if value <= 0:
+        return default
+    return max(minimum, value)
 
-    # Issue #29 — reconcile unconfirmed orders BEFORE rehydration / position
-    # evaluation.  Without this, on restart the risk monitor observes stale
-    # position state: unconfirmed SELLs that already filled on-exchange still
-    # appear as open positions, leading to duplicate protective SELLs; and
-    # unconfirmed BUYs that filled are invisible, so the monitor cannot
-    # protect them.  The trade pipeline already does this at the top of
-    # execute_trades; the risk monitor must converge the same way.
+
+def _risk_pre_reconcile_timeout_seconds(poll_interval: float) -> float:
+    default = max(float(poll_interval or 0.0), _DEFAULT_RISK_PRE_RECONCILE_TIMEOUT_SECONDS)
+    return _float_env_or_default(
+        "RISK_PRE_RECONCILE_TIMEOUT_SECONDS",
+        default,
+        minimum=0.05,
+    )
+
+
+def _risk_pre_reconcile_backoff_base_seconds(
+    poll_interval: float,
+    timeout_seconds: float,
+) -> float:
+    default = max(
+        float(poll_interval or 0.0),
+        timeout_seconds,
+        _DEFAULT_RISK_PRE_RECONCILE_BACKOFF_SECONDS,
+    )
+    return _float_env_or_default(
+        "RISK_PRE_RECONCILE_TIMEOUT_BACKOFF_SECONDS",
+        default,
+        minimum=timeout_seconds,
+    )
+
+
+def _risk_pre_reconcile_state(context: TradingContext) -> RiskPreReconcileBackoff:
+    extra = getattr(context, "extra", None)
+    if not isinstance(extra, dict):
+        return RiskPreReconcileBackoff()
+    state = extra.get(_RISK_PRE_RECONCILE_BACKOFF_KEY)
+    if not isinstance(state, RiskPreReconcileBackoff):
+        state = RiskPreReconcileBackoff()
+        extra[_RISK_PRE_RECONCILE_BACKOFF_KEY] = state
+    return state
+
+
+def _risk_pre_reconcile_is_due(context: TradingContext, *, now: float) -> bool:
+    return _risk_pre_reconcile_state(context).next_attempt_at <= now
+
+
+def _record_risk_pre_reconcile_success(context: TradingContext) -> None:
+    state = _risk_pre_reconcile_state(context)
+    state.consecutive_timeouts = 0
+    state.next_attempt_at = 0.0
+
+
+def _record_risk_pre_reconcile_timeout(
+    context: TradingContext,
+    *,
+    now: float,
+    base_backoff_seconds: float,
+) -> float:
+    state = _risk_pre_reconcile_state(context)
+    state.consecutive_timeouts += 1
+    multiplier = 2 ** min(state.consecutive_timeouts - 1, 3)
+    backoff_seconds = min(
+        base_backoff_seconds * multiplier,
+        max(base_backoff_seconds, _MAX_RISK_PRE_RECONCILE_BACKOFF_SECONDS),
+    )
+    state.next_attempt_at = now + backoff_seconds
+    return backoff_seconds
+
+
+async def _pre_reconcile_for_context(context: TradingContext) -> int:
+    """Reconcile this context's unconfirmed orders. Best-effort; never raises.
+
+    Issue #29 — converge unconfirmed order state BEFORE position evaluation so
+    the monitor never acts on stale positions: unconfirmed SELLs that already
+    filled on-exchange would otherwise still look open (→ duplicate protective
+    SELLs), and unconfirmed BUYs that filled would be invisible (→ unprotected).
+    Returns the number of orders reconciled (0 on error).
+
+    Hoisted into its own function so the risk loop can run it OUTSIDE the
+    per-cycle protective-exit timeout budget — these are venue order-status
+    round-trips and must not starve the stop-loss evaluation every cycle
+    (sym 1: "Risk loop TIMEOUT ... context skipped this cycle").
+    """
+    if not getattr(context, "execution_service", None):
+        return 0
     try:
         from orchestrators.trade_pipeline import reconcile_submitted_unconfirmed
         trade_n = await reconcile_submitted_unconfirmed(context)
@@ -1136,8 +1228,25 @@ async def run_risk_check_for_context(context: TradingContext) -> None:
                 trade_n,
                 risk_n,
             )
+        return total_n
     except Exception as exc:
         logger.warning("risk_monitor_pre_reconcile_error | %s", repr(exc))
+        return 0
+
+
+async def run_risk_check_for_context(
+    context: TradingContext, *, pre_reconcile: bool = True
+) -> None:
+    if not context.execution_service:
+        return
+
+    # Issue #29 — reconcile unconfirmed orders BEFORE rehydration / position
+    # evaluation. Direct callers (and tests) keep this inline by default; the
+    # risk loop passes ``pre_reconcile=False`` because it runs the reconcile in
+    # its own untimed phase so slow venue round-trips never consume the
+    # protective-exit timeout budget (sym 1).
+    if pre_reconcile:
+        await _pre_reconcile_for_context(context)
 
     await rehydrate_position_manager(context)
     slippage_bps = int(float(context.extra.get("slippage_tolerance_bps", 200)))
@@ -1685,6 +1794,61 @@ async def risk_monitor_loop_for_contexts(
                         context.user_id, result,
                     )
 
+        # Pre-reconcile unconfirmed orders in their OWN phase, ahead of the timed
+        # protective-exit check below. These are venue order-status round-trips;
+        # keeping them out of the per-context protective-exit budget stops them
+        # from starving the stop-loss evaluation while copies settle (sym 1).
+        #
+        # A timeout here is usually a stuck/slow venue order-status call. Retrying
+        # that same call every risk tick creates the live spam pattern observed in
+        # ops ("Risk pre-reconcile TIMEOUT ... after 5.0s" every ~6s) and delays
+        # protective-exit evaluation by the timeout every cycle. After a timeout,
+        # back off this user's pre-reconcile attempts; the standalone reconciler
+        # and WSS wake path can still converge state, while risk checks keep
+        # running with ``pre_reconcile=False`` instead of parking behind venue IO.
+        prerec_ceiling = _risk_pre_reconcile_timeout_seconds(poll_interval)
+        prerec_backoff_base = _risk_pre_reconcile_backoff_base_seconds(
+            poll_interval,
+            prerec_ceiling,
+        )
+        prerec_now = time.monotonic()
+        prerec_contexts = [
+            context
+            for context in contexts
+            if _risk_pre_reconcile_is_due(context, now=prerec_now)
+        ]
+        if prerec_contexts:
+            prereconcile_results = await asyncio.gather(
+                *(
+                    asyncio.wait_for(
+                        _pre_reconcile_for_context(context), timeout=prerec_ceiling
+                    )
+                    for context in prerec_contexts
+                ),
+                return_exceptions=True,
+            )
+            for context, result in zip(prerec_contexts, prereconcile_results, strict=False):
+                if isinstance(result, asyncio.TimeoutError):
+                    backoff_seconds = _record_risk_pre_reconcile_timeout(
+                        context,
+                        now=time.monotonic(),
+                        base_backoff_seconds=prerec_backoff_base,
+                    )
+                    logger.error(
+                        "Risk pre-reconcile TIMEOUT user=%s after %.1fs — "
+                        "backing off %.1fs; deferred to standalone reconciler",
+                        context.user_id,
+                        prerec_ceiling,
+                        backoff_seconds,
+                    )
+                elif isinstance(result, Exception):
+                    logger.error(
+                        "Risk pre-reconcile failed user=%s: %r",
+                        context.user_id, result,
+                    )
+                else:
+                    _record_risk_pre_reconcile_success(context)
+
         refresh_tasks = [
             _refresh_context_price_cache(context, refresh_interval=poll_interval)
             for context in contexts
@@ -1705,7 +1869,10 @@ async def risk_monitor_loop_for_contexts(
         # poll_interval, which is the maximum any one cycle can take.
         ceiling = max(poll_interval, 5.0)
         check_tasks = [
-            asyncio.wait_for(run_risk_check_for_context(c), timeout=ceiling)
+            asyncio.wait_for(
+                run_risk_check_for_context(c, pre_reconcile=False),
+                timeout=ceiling,
+            )
             for c in contexts
         ]
         check_results = await asyncio.gather(*check_tasks, return_exceptions=True)

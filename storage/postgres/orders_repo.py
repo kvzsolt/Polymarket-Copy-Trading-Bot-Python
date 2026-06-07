@@ -849,44 +849,90 @@ class OrdersRepo(AbstractOrderRepository):
         ]
 
     async def get_unconfirmed_buys(
-        self, max_age_seconds: float = 300.0
+        self,
+        max_age_seconds: float = 300.0,
+        *,
+        user_id: str | None = None,
     ) -> list[dict]:
         cutoff = time.time() - max_age_seconds
-        async with self._pool.acquire() as conn:
-            rows = await conn.fetch(
-                """
+        query = """
                 SELECT trade_key, user_id, leader_id, tx_hash, asset,
                        condition_id, order_id, processed_at
                 FROM processed_trades
                 WHERE status = ANY($2::text[])
                   AND side = 'BUY'
                   AND (order_id IS NOT NULL OR processed_at <= $1)
-                ORDER BY processed_at ASC
-                """,
-                cutoff,
-                list(_UNCONFIRMED_SUBMISSION_STATES),
-            )
+        """
+        params: list[Any] = [cutoff, list(_UNCONFIRMED_SUBMISSION_STATES)]
+        if user_id:
+            query += f" AND (user_id = ${len(params) + 1} OR user_id IS NULL OR user_id = '')"
+            params.append(user_id)
+        query += " ORDER BY processed_at ASC"
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(query, *params)
         return [dict(r) for r in rows]
 
     async def get_unconfirmed_sells(
-        self, max_age_seconds: float = 300.0
+        self,
+        max_age_seconds: float = 300.0,
+        *,
+        user_id: str | None = None,
     ) -> list[dict]:
         cutoff = time.time() - max_age_seconds
-        async with self._pool.acquire() as conn:
-            rows = await conn.fetch(
-                """
+        query = """
                 SELECT trade_key, user_id, leader_id, tx_hash, asset,
                        condition_id, order_id, processed_at
                 FROM processed_trades
                 WHERE status = ANY($2::text[])
                   AND side = 'SELL'
                   AND (order_id IS NOT NULL OR processed_at <= $1)
-                ORDER BY processed_at ASC
-                """,
-                cutoff,
-                list(_UNCONFIRMED_SUBMISSION_STATES),
-            )
+        """
+        params: list[Any] = [cutoff, list(_UNCONFIRMED_SUBMISSION_STATES)]
+        if user_id:
+            query += f" AND (user_id = ${len(params) + 1} OR user_id IS NULL OR user_id = '')"
+            params.append(user_id)
+        query += " ORDER BY processed_at ASC"
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(query, *params)
         return [dict(r) for r in rows]
+
+    async def has_recent_processed_trade(
+        self,
+        *,
+        user_id: str,
+        asset: str,
+        side: str | None = None,
+        max_age_seconds: float = 300.0,
+    ) -> bool:
+        """Whether a bot-originated processed trade exists for this scope recently.
+
+        Used by manual-sync to recognise the bot's OWN copy fills before the
+        async reconciler settles them. ``processed_trades`` rows are written at
+        submit time (see ``mark_processed_trade``), BEFORE reconciliation, so a
+        recent row on ``(user_id, asset[, side])`` is the authoritative "the bot
+        acted on this scope" signal that closes the manual-sync race window.
+
+        Matches ANY status so both in-flight (``submitted_unconfirmed``) and
+        just-settled rows count. ``processed_at`` is a unix-epoch numeric column
+        (same comparison basis as ``get_unconfirmed_buys``).
+        """
+        if not user_id or not asset:
+            return False
+        cutoff = time.time() - max(0.0, float(max_age_seconds))
+        query = """
+            SELECT 1 FROM processed_trades
+            WHERE user_id = $1
+              AND asset = $2
+              AND processed_at >= $3
+        """
+        params: list[Any] = [user_id, asset, cutoff]
+        if side is not None:
+            query += f" AND UPPER(side) = ${len(params) + 1}"
+            params.append(str(side).upper())
+        query += " LIMIT 1"
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(query, *params)
+        return row is not None
 
     async def persist_execution_atomically(
         self,
