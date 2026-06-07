@@ -1,0 +1,46 @@
+tests/release_gate/test_sizing_metadata_driven.py
+  s_a91bd933bea395::t_2a2c529759575e 166
+services/execution/coordinator.py
+  s_a91bd933bea395::t_f49192177e629a 66
+  s_a91bd933bea395::t_24cf0c63b4bbf7 226-228
+orchestrators/runtime_bootstrap.py
+  s_a91bd933bea395::t_993a7f29d32316 815-836
+tests/release_gate/test_no_legacy_imports.py
+  s_a91bd933bea395::t_6331cf1dbf1f04 43
+app.py
+  s_a91bd933bea395::t_9cd81baeebb3da 695
+  s_a91bd933bea395::t_487282e6efb3a9 1057,1063,1066,1072
+  s_a91bd933bea395::t_b6274ba4294d54 1531-1532
+services/intentRegistry.py
+  s_a91bd933bea395::t_d4ad48ccb0a721 394
+  s_a91bd933bea395::t_837a1ab1fba27a 338
+  s_a91bd933bea395::t_7ad50a0ca6cd78 435
+domain/trading_context.py
+  s_a91bd933bea395::t_98c8c112c50296 47
+  s_a91bd933bea395::t_f2ebfaec321ffe 14
+tests/release_gate/test_startup_recovery.py
+  s_a91bd933bea395::t_9aa7fcaace588b 55
+services/positionActionCoordinator.py
+  s_a91bd933bea395::t_e812fd608292a9 76-79
+  s_a91bd933bea395::t_6c62de8418cad7 85-87
+  s_a91bd933bea395::t_599e717b972d1c 114-123
+  s_a91bd933bea395::t_40904739443bfc 129,132,139,142
+tests/test_phase01_review_b_fixes.py
+  s_a91bd933bea395::t_bb5597c4487141 8-9
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.3",
+  "base_commit_sha": "0d01cecf2decb32e86612b8b577b43543fc75904",
+  "prompts": {},
+  "sessions": {
+    "s_a91bd933bea395": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9081eebd-938a-4900-b047-cf1c0fd95311",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
