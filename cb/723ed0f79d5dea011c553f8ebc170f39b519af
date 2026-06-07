@@ -1,0 +1,59 @@
+tests/test_manual_sync_service.py
+  s_50ab1c78f58192::t_ccaed6d0194fad 659-814,817-818,820-843
+  s_50ab1c78f58192::t_42d4f523955371 815-816,819
+  s_50ab1c78f58192::t_f440aaafa5d32c 70,87,92-102
+tests/test_trade_pipeline_skip_visibility.py
+  s_50ab1c78f58192::t_31d8bf2d794f85 341-344,348-369
+tests/test_orders_repo_upsert.py
+  s_50ab1c78f58192::t_074f3de05d7017 261-314
+services/execution/reservation_service.py
+  s_50ab1c78f58192::t_e04916197a10ee 507-512,521-524,532-538
+  s_50ab1c78f58192::t_386e3698958d5e 546,552,555-560,563-564,571-574
+  s_50ab1c78f58192::t_be8c57e1c42b50 60,74-88
+  s_50ab1c78f58192::t_0a246f2cc017d1 437-479
+tests/test_reservation_force_release.py
+  s_50ab1c78f58192::t_c500760ec28ee7 1-149
+orchestrators/trade_pipeline.py
+  s_50ab1c78f58192::t_ad8926de8988e1 2403-2407,2409-2419,2421-2426,2443-2445
+storage/postgres/orders_repo.py
+  s_50ab1c78f58192::t_196dfae03b14ec 899-936
+tests/test_risk_loop_parallel_timeout.py
+  s_50ab1c78f58192::t_8d58b55ab7ee93 37
+  s_50ab1c78f58192::t_9843781b1cae0e 86-138
+services/risk/risk_monitor.py
+  s_50ab1c78f58192::t_190df3703ea90d 1813,1845-1847,1851
+  s_50ab1c78f58192::t_1ef8c885004fdf 1203-1216,1218,1231,1234-1249
+  s_50ab1c78f58192::t_8efaa2c92d565c 1872-1875
+  s_50ab1c78f58192::t_35ca947dd433db 1217
+  s_50ab1c78f58192::t_69fdd6e2ed9c08 1797-1799,1801,1821-1824,1831-1837,1840,1843-1844
+services/manual_sync_service.py
+  s_50ab1c78f58192::t_f340e4b76961ba 126-132,136-137
+  s_50ab1c78f58192::t_0c1e97edca21e7 390-444
+  s_50ab1c78f58192::t_f92217aec727b2 333-336,338-340
+  s_50ab1c78f58192::t_d6192aca847dc9 535-536,538-546
+  s_50ab1c78f58192::t_20dcb11708f299 320-332,337,341-346
+  s_50ab1c78f58192::t_40c03a51d9edc8 524-534,537
+  s_50ab1c78f58192::t_2b71eee6ad52ef 80-92
+  s_50ab1c78f58192::t_105089a25077f0 68
+  s_50ab1c78f58192::t_f74fff369475b9 105,110-111
+orchestrators/runtime_bootstrap.py
+  s_50ab1c78f58192::t_31612f995f3931 408,426
+  s_50ab1c78f58192::t_8d6006e5d904fa 496-498,504,506-512
+  s_50ab1c78f58192::t_d8449b4b0df32c 374
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.3",
+  "base_commit_sha": "cb723ed0f79d5dea011c553f8ebc170f39b519af",
+  "prompts": {},
+  "sessions": {
+    "s_50ab1c78f58192": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "94c3fccf-b22a-4acd-a3d5-f4e7780979e1",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
