@@ -113,13 +113,27 @@ class PositionActionCoordinator:
         """Async context manager that holds the per-scope lock for its body."""
         key = self._scope_key(scope)
         self._waiter_counts[key] = self._waiter_counts.get(key, 0) + 1
+        waiting = True
+
+        def _drop_waiter() -> None:
+            # Decrement the waiter counter exactly once — whether we transition
+            # from "waiting" to "holding" or are cancelled/raise while still
+            # blocked on ``await lock``. Without the finally call below a
+            # cancelled waiter (e.g. risk-loop ``wait_for`` timeout) would leak
+            # the count and pin the scope as permanently busy (P1-f).
+            nonlocal waiting
+            if waiting:
+                waiting = False
+                self._waiter_counts[key] = max(0, self._waiter_counts.get(key, 0) - 1)
+
         try:
             lock = await self.get_lock(scope)
             async with lock:
-                # Decrement once held — no longer "waiting", now "holding"
-                self._waiter_counts[key] = max(0, self._waiter_counts.get(key, 0) - 1)
+                # No longer "waiting", now "holding".
+                _drop_waiter()
                 yield
         finally:
+            _drop_waiter()
             self.release_scope(scope)
 
     def release_scope(self, scope: PositionScope) -> bool:
