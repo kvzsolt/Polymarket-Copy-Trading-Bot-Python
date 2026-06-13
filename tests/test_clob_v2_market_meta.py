@@ -172,6 +172,65 @@ class TestPostSignedOrderClassification:
         assert result["non_retryable"] is False
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("status_code", [500, 502, 503, 504])
+    async def test_post_signed_order_5xx_is_ambiguous(self, status_code):
+        # P1-a: a 5xx returned after the venue may have accepted the order must
+        # be ambiguous (defer to reconciliation), NOT a plain retryable failure
+        # that the caller re-signs and re-POSTs as a duplicate. The body matches
+        # none of the substring keywords, so classification must use status_code.
+        class PolyApiException(Exception):
+            def __init__(self, code):
+                self.status_code = code
+                self.error_msg = "Service Unavailable"
+                super().__init__("Service Unavailable")
+
+        raw_client = MagicMock()
+        raw_client.post_order.side_effect = PolyApiException(status_code)
+        wrapper = ClobClientWrapper(raw_client, _dummy_wallet())
+
+        result = await wrapper.post_signed_order({"signed": True})
+
+        assert result["success"] is False
+        assert result["ambiguous_post_failure"] is True
+
+    @pytest.mark.asyncio
+    async def test_post_signed_order_transport_none_status_is_ambiguous(self):
+        # A raw transport failure surfaces as PolyApiException(status_code=None).
+        class PolyApiException(Exception):
+            def __init__(self):
+                self.status_code = None
+                self.error_msg = "Request exception!"
+                super().__init__("Request exception!")
+
+        raw_client = MagicMock()
+        raw_client.post_order.side_effect = PolyApiException()
+        wrapper = ClobClientWrapper(raw_client, _dummy_wallet())
+
+        result = await wrapper.post_signed_order({"signed": True})
+
+        assert result["ambiguous_post_failure"] is True
+
+    @pytest.mark.asyncio
+    async def test_post_signed_order_4xx_is_not_ambiguous(self):
+        # A 4xx validation rejection is terminal, NOT ambiguous — the order was
+        # never accepted, so re-classifying it as ambiguous would wrongly hold a
+        # phantom submitted_unconfirmed reservation.
+        class PolyApiException(Exception):
+            def __init__(self):
+                self.status_code = 400
+                self.error_msg = '{"error":"invalid order"}'
+                super().__init__("invalid order")
+
+        raw_client = MagicMock()
+        raw_client.post_order.side_effect = PolyApiException()
+        wrapper = ClobClientWrapper(raw_client, _dummy_wallet())
+
+        result = await wrapper.post_signed_order({"signed": True})
+
+        assert result["success"] is False
+        assert result["ambiguous_post_failure"] is False
+
+    @pytest.mark.asyncio
     async def test_neg_risk_false_forwarded(self):
         gw, wrapper = self._make_gateway()
         await gw.post_market_order(

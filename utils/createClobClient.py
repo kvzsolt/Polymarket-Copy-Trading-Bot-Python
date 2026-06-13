@@ -627,7 +627,24 @@ class ClobClientWrapper:
             exc_name = type(exc).__name__.lower()
             exc_text = str(exc).lower()
             raw_lower = raw_body.lower()
-            is_ambiguous = any(
+            # A 5xx returned AFTER the venue may have accepted/matched the order
+            # is post-submission AMBIGUOUS, not a clean rejection: the matching
+            # engine can hold the order even though the edge/CDN returned an
+            # error. The SDK sets ``.status_code`` on PolyApiException (a raw
+            # transport failure surfaces as status_code=None). Classify by
+            # status code, not just by substring — a 5xx body ("Service
+            # Unavailable" / "Bad Gateway" / "Internal Server Error") matches
+            # none of the keyword set below, so without this a 5xx-after-accept
+            # would be treated as a plain retryable failure, re-signed, and
+            # re-POSTed as a DUPLICATE order. Routing it to ambiguous makes the
+            # caller persist submitted_unconfirmed and defer to reconciliation.
+            # 4xx validation rejections are intentionally excluded (terminal).
+            status_code = getattr(exc, "status_code", None)
+            is_ambiguous = (
+                status_code in (500, 502, 503, 504)
+                or (type(exc).__name__ == "PolyApiException" and status_code is None)
+            )
+            is_ambiguous = is_ambiguous or any(
                 kw in exc_name or kw in exc_text or kw in raw_lower
                 for kw in (
                     "timeout",
