@@ -1,0 +1,43 @@
+tests/release_gate/test_dockerfile_safety_defaults.py
+  s_8af57e4ef74563::t_4f20836787fdd1 36-38
+  s_8af57e4ef74563::t_743548b32dfa02 39-51
+Dockerfile
+  s_8af57e4ef74563::t_cd2613042a2880 43-49
+bot_cli/commands/doctor.py
+  s_8af57e4ef74563::t_b8ac71d3eec150 273-276,280-281,284,288-289
+docker-compose.yml
+  s_8af57e4ef74563::t_07a5f00493b235 45-47
+orchestrators/trade_pipeline.py
+  s_8af57e4ef74563::t_dca1b6989f02d3 818-826,828,833,835
+tests/test_config.py
+  s_8af57e4ef74563::t_64885cbaeb1ee1 94-122
+  s_8af57e4ef74563::t_be08c2b1094a35 88-89
+config/app_config.py
+  s_8af57e4ef74563::t_a2c9f12021ce0f 1120-1131,1139
+  s_8af57e4ef74563::t_c95a4753544055 1500-1501
+tests/test_trade_pipeline_tiers.py
+  s_8af57e4ef74563::t_df11541073a94f 244,249
+  s_8af57e4ef74563::t_7232a00c4fafd5 297-299,305-307
+  s_8af57e4ef74563::t_af6ed485efcf86 396-398,413
+  s_8af57e4ef74563::t_2ae6d523245255 209-210,213
+  s_8af57e4ef74563::t_7568dead55203d 216,220
+  s_8af57e4ef74563::t_2732b7ac40d316 252,256
+tests/test_doctor_live.py
+  s_8af57e4ef74563::t_a55f11336ee306 24-26
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.6",
+  "base_commit_sha": "299c5a2afa5b9087b56391df4f53ce79318816a1",
+  "prompts": {},
+  "sessions": {
+    "s_8af57e4ef74563": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f8bc636e-c49c-4009-b8b6-c47aa7d65a7a",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
