@@ -83,6 +83,31 @@ _CORE_DDL = [
     CREATE UNIQUE INDEX IF NOT EXISTS idx_fills_dedup
     ON fills(user_id, order_id, condition_id, side, fill_ts)
     """,
+    # P0-1: stable reconciler fill-dedup. The wall-clock ``fill_ts`` discriminator
+    # let a re-applied settlement (after a crash / swallowed watermark error left
+    # the reconciler recomputing the same delta) insert a second fill row in a
+    # later second and double-apply the position delta. The reconciler now writes
+    # ``dedup_key`` = the cumulative-matched total, unique per
+    # (user_id, order_id, condition_id, side). ADD COLUMN before the index that
+    # references it (cf. wallet_role ordering, P1-h). Partial index so
+    # non-reconciler fills (dedup_key NULL) keep their fill_ts dedup unchanged.
+    """ALTER TABLE fills ADD COLUMN IF NOT EXISTS dedup_key text""",
+    # P0-1: make the legacy wall-clock fill_ts dedup PARTIAL so it governs only
+    # non-reconciler fills (dedup_key IS NULL). Reconciler fills carry a stable
+    # dedup_key and must NOT be subject to fill_ts uniqueness — two *distinct*
+    # settlements in the same wall-clock second would otherwise falsely collide
+    # and under-apply. Drop + recreate so existing DBs pick up the WHERE clause.
+    """DROP INDEX IF EXISTS idx_fills_dedup""",
+    """
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_fills_dedup
+    ON fills(user_id, order_id, condition_id, side, fill_ts)
+    WHERE dedup_key IS NULL
+    """,
+    """
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_fills_dedup_v2
+    ON fills(user_id, order_id, condition_id, side, dedup_key)
+    WHERE dedup_key IS NOT NULL
+    """,
     """
     CREATE INDEX IF NOT EXISTS idx_fills_user_condition
     ON fills(user_id, condition_id)
