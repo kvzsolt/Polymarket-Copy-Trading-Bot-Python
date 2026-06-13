@@ -1,0 +1,22 @@
+tests/test_dynamic_leader_reconcile_gate.py
+  s_8af57e4ef74563::t_ddd6789d0bce95 53-90
+app.py
+  s_8af57e4ef74563::t_4a70a12bc7289f 212-235
+  s_8af57e4ef74563::t_3c69b5f1ee7620 1141,1145-1163
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.6",
+  "base_commit_sha": "d12eb7e7a3b3c2378689106d97eff1d1dfbcb971",
+  "prompts": {},
+  "sessions": {
+    "s_8af57e4ef74563": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f8bc636e-c49c-4009-b8b6-c47aa7d65a7a",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
