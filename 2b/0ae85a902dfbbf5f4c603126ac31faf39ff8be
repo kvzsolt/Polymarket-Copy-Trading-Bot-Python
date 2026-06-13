@@ -1,0 +1,22 @@
+tests/test_migration_wallet_role_order.py
+  s_8af57e4ef74563::t_83946b376aa00b 1-11,13,16,18,20-21,23-37
+  s_8af57e4ef74563::t_e7d5256643404d 12,14-15,17,19,22
+storage/postgres/migrations.py
+  s_8af57e4ef74563::t_ef8354684d5099 500-507
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.6",
+  "base_commit_sha": "2b0ae85a902dfbbf5f4c603126ac31faf39ff8be",
+  "prompts": {},
+  "sessions": {
+    "s_8af57e4ef74563": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f8bc636e-c49c-4009-b8b6-c47aa7d65a7a",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
