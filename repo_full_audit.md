@@ -368,22 +368,41 @@ The fundamentals are good enough that this is a **fixable RED, not a structural 
 
 ## Post-Audit Fixes Applied (this branch)
 
-The audit scope included fixing the verified, low-blast-radius P0s with regression tests. Committed on `fix/develop-runtime-hardening`:
+The audit-remediation run fixed the verified findings test-first, one commit per finding, on `fix/develop-runtime-hardening`. Prior-session P0/P1 fixes plus this run:
 
-| Commit | Finding | Change | Tests |
-|---|---|---|---|
-| `82e1065` | Patch 0 / DDC-01 | `await reservations_repo.list_active()` in intent recovery (HEAD was a silent no-op) | `test_issue70_reservations_intent_lifecycle.py` (AsyncMock + `assert_awaited`) |
-| `f906083` | **P0-3** | `fetch_live_positions` returns `None` on failure; prune skips on `None` (no ledger wipe); drift fetcher raises on `None` (fail closed) | 3 new non-Docker tests in `test_startup_health.py` |
-| `d12eb7e` | **P0-4** | New `_cold_start_monitored_after_reconcile` removes wallets of reconcile-failed users from the monitored set before spawn | 3 new tests in `test_dynamic_leader_reconcile_gate.py` |
-| `742424a` | **P1-a** (borderline P0) | `post_signed_order` classifies 5xx / transport-`None` `PolyApiException` as ambiguous (→ `submitted_unconfirmed` + reconcile) instead of retryable (→ duplicate) | 6 new tests in `test_clob_v2_market_meta.py` |
+| Commit | Finding | Change |
+|---|---|---|
+| `82e1065` | Patch 0 / DDC-01 | `await reservations_repo.list_active()` — HEAD recovery was a silent no-op |
+| `f906083` | **P0-3** | boot live-position fetch failure no longer wipes the ledger (fail closed) |
+| `d12eb7e` | **P0-4** | reconcile-failed users' monitors blocked before spawn |
+| `742424a` | **P1-a** | 5xx/transport POST classified ambiguous → reconcile, not retry→duplicate |
+| `2b0ae85` | **P1-h** | `wallet_role` column added before the role-keyed index (no startup abort) |
+| `05dd415` | **P1-f** | coordinator waiter count dropped on cancel-while-waiting (no stranded scope) |
+| `4ee7175` | **P1-e** | trailing stop fires on retrace below entry |
+| `8ced608` | **P1-r** | WSS trade `id` surfaced; REST `transaction_hash` captured |
+| `2539636` | **P1-d** | WSS liveness anchored on inbound activity only |
+| `4cdd0c2` | **P1-l** | Rich markup escaped in leader-controlled log fields |
+| `3b27129` | **P1-c** | copy decision scored against the fresh quote, not the stale signal |
+| `d135aed` | **P1-k** | `PositionKey` preserves checksum `user_id` casing (no orphan rows) |
+| `8404f7f` | **P1-b** | manual-sync absolute SET under the position advisory lock |
+| `b1b499b` | **P1-m** | circuit breaker trips on venue-unavailable submissions |
+| `0c86c93` | **P1-g** | stale submission locks self-heal on acquire (TTL takeover) |
+| `4beaf22` | **P1-i** | open positions with no active-leader follow are still risk-monitored |
+| `371f1fa` | **P1-p** | a bare cancelled FAK with an order id is deferred, not reposted (no over-buy) |
+| `30d747d` | **P1-q** | `unmatched` order status classified non-terminal (Context7-confirmed) |
+| `800c011` | **P1-j** | geoblock consulted on the BUY trade path with expiry revalidation |
+| `b9ba21e` | **P0-5** | startup purge preserves venue-accepted (order_id-bearing) orders |
+| `d9f09e2` | **P0-1** | atomic reconciler settlement + stable `(order_id, cumulative_matched)` fill dedup |
 
-**Deliberately NOT hot-patched** (documented in the remediation plan, require focused/decision-gated work):
+Each carries a regression test (real-Postgres behavioural where the guard lives in SQL: P0-1, P0-5, P1-g).
 
-- **P0-1 (reconciler atomicity):** the fix is an atomic `apply_fill + watermark` repo method + a fills-dedup-key migration, on the single most safety-critical file. CLAUDE.md forbids touching `reconciliation_service.py` without a dedicated regression suite and forbids weakening reconciliation protections; this must not be rushed as a quick patch.
-- **P0-2 (live-gate default):** flipping `paper_trade_only`/`dry_run` to default-True and `_resolve_leader_tier` away from `live_follow` reverses **deliberate, explicitly-tested behavior** (`test_no_repo_returns_live`, `test_repo_no_record_returns_live` assert `live_follow` on no repo). That is Open Question #1 — a design-intent decision for the team, not an unambiguous bug. The deployed path (Dockerfile/compose `PAPER_TRADE_ONLY=true`) is already fail-closed; the gap is bare/`--env-file` runs.
-- **P0-5 (reconcile-before-purge):** a startup-sequence reorder embedded in `perform_startup_health_check`; medium risk, needs careful sequencing + a venue-probe path before delete.
+**Remaining (out of this run's fixed set):**
 
-**Rating after these fixes:** still 🔴 RED — P0-1, P0-2, and P0-5 remain open, and the release-gate behavioral coverage gap (P1-n) is unaddressed. The committed fixes close two confirmed P0s (P0-3, P0-4), a P0-class recovery no-op (Patch 0), and a duplicate-order path (P1-a). Live trading must remain blocked until P0-1/P0-2/P0-5 are resolved and the behavioral release-gate tests pass.
+- **P0-2 (live-gate fail-open):** intentionally **skipped at the owner's direction** ("no paper trade, just fix bugs, no need stupid gate"). The gate code is left as-is — this run neither enables live trading nor weakens any protection. Live-gate fail-open is therefore an **owner-accepted residual**, not an open bug. Deployed Docker/compose already default `PAPER_TRADE_ONLY=true`.
+- **P0-5 residual:** a lost-POST order with **no** `order_id` (crash between the wire send and the local save) still cannot be recovered without a venue-probe-by-maker path + a new gateway method (deferred; CLAUDE.md forbids rushing reconciliation).
+- **P1-n / P2-\* / P3-\*:** not in this run (P0+P1 scope). The release-gate duplicate-order and crash-recovery invariants remain skipped/AST-only; a dead duplicate `services/compliance.py` (shadowed by the `services/compliance/` package) is a P3 cleanup.
+
+**Rating after these fixes:** the settlement / recovery axis is now fixed with regression tests (P0-1 atomic settlement + stable dedup, P0-3, P0-4, P0-5 order preservation) and 15 P1s are closed. Strictly by the rubric a confirmed-but-skipped P0 (P0-2, owner-accepted) keeps the headline 🔴 **RED**; on the money/ledger axis the codebase is materially safer (🟠 ORANGE-equivalent). **Live trading must remain blocked** until the live-gate posture is decided and the behavioural release-gate invariants (P1-n) actually run.
 
 ---
 
