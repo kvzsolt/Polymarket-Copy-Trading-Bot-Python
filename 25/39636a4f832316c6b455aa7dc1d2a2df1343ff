@@ -1,0 +1,26 @@
+clients/market_ws.py
+  s_8af57e4ef74563::t_c9bdf90a2f7b68 303-310
+cache/market_state_store.py
+  s_8af57e4ef74563::t_735d7c7b76ace3 1040,1045-1053,1056-1057,1059
+tests/test_market_ws_inbound_liveness.py
+  s_8af57e4ef74563::t_4dc369ae75d4ba 1-39
+tests/test_market_data_service.py
+  s_8af57e4ef74563::t_c1f845ea47dbcd 560-562
+  s_8af57e4ef74563::t_7de92b0a3b8e06 637-640,645-646
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.6",
+  "base_commit_sha": "2539636a4f832316c6b455aa7dc1d2a2df1343ff",
+  "prompts": {},
+  "sessions": {
+    "s_8af57e4ef74563": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f8bc636e-c49c-4009-b8b6-c47aa7d65a7a",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
