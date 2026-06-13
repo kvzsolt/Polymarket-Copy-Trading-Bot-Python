@@ -1,0 +1,24 @@
+tests/test_logger_markup_injection.py
+  s_8af57e4ef74563::t_786d7479d6c4c6 1-56
+utils/logger.py
+  s_8af57e4ef74563::t_f3ff28fdde3918 1179,1181,1184
+  s_8af57e4ef74563::t_daf1b4ce009037 15
+  s_8af57e4ef74563::t_177bd2bd5592e9 1017-1020,1022,1024-1026
+  s_8af57e4ef74563::t_7e98bd5ed53f41 1225
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.6",
+  "base_commit_sha": "4cdd0c25319fd70013116b40d8ffb70e1f97304f",
+  "prompts": {},
+  "sessions": {
+    "s_8af57e4ef74563": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f8bc636e-c49c-4009-b8b6-c47aa7d65a7a",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
