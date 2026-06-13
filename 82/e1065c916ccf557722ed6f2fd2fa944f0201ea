@@ -1,0 +1,21 @@
+tests/test_issue70_reservations_intent_lifecycle.py
+  s_8f3ee7ad4b69f0::t_245c4c1cb83073 17,334,338,361,365,382,386,414,419,539
+services/execution/intent_recovery.py
+  s_8f3ee7ad4b69f0::t_245c4c1cb83073 43
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.6",
+  "base_commit_sha": "82e1065c916ccf557722ed6f2fd2fa944f0201ea",
+  "prompts": {},
+  "sessions": {
+    "s_8f3ee7ad4b69f0": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ea3b0-0f15-7a60-9027-64626169ea1e",
+        "model": "gpt-5.5"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
