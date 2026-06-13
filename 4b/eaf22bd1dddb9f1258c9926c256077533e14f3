@@ -1,0 +1,21 @@
+tests/test_runtime_bootstrap_orphan_risk_context.py
+  s_8af57e4ef74563::t_eb868be69d1691 1-88
+orchestrators/runtime_bootstrap.py
+  s_8af57e4ef74563::t_7302cf94346f82 1063-1116
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.6",
+  "base_commit_sha": "4beaf22bd1dddb9f1258c9926c256077533e14f3",
+  "prompts": {},
+  "sessions": {
+    "s_8af57e4ef74563": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f8bc636e-c49c-4009-b8b6-c47aa7d65a7a",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
