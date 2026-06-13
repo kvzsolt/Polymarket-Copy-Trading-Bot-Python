@@ -497,18 +497,19 @@ _DISCOVERY_DDL = [
       END IF;
     END$$
     """,
+    # cubic P1 / audit P1-h: idempotent column-add MUST run before the
+    # role-keyed index. On a DB created before ``wallet_role`` existed,
+    # creating the index first would fail because the column it references
+    # isn't there yet — aborting the single migration transaction so the
+    # bot cannot start. ``ADD COLUMN IF NOT EXISTS`` is a no-op on fresh DBs
+    # where the column was created with the table above.
+    """ALTER TABLE discovery_position_snapshots
+       ADD COLUMN IF NOT EXISTS wallet_role text NOT NULL DEFAULT 'leader'""",
     # New unique index keyed on the role too so leader/own snapshots
     # at the same identity tuple don't collide.
     """CREATE UNIQUE INDEX IF NOT EXISTS idx_disc_pos_snap_unique_v2
        ON discovery_position_snapshots(trader_wallet, condition_id,
                                        token_id, snapshot_ts, wallet_role)""",
-    # cubic P1: idempotent column-add MUST run before the role-keyed
-    # index. On a DB created before ``wallet_role`` existed, creating the
-    # index first would fail because the column it references isn't
-    # there yet. ``ADD COLUMN IF NOT EXISTS`` is a no-op on fresh DBs
-    # where the column was created with the table at line 458.
-    """ALTER TABLE discovery_position_snapshots
-       ADD COLUMN IF NOT EXISTS wallet_role text NOT NULL DEFAULT 'leader'""",
     """CREATE INDEX IF NOT EXISTS idx_disc_pos_snap_role_ts
        ON discovery_position_snapshots(wallet_role, snapshot_ts DESC)""",
 
