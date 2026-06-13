@@ -248,7 +248,17 @@ def _is_fak_repostable_no_fill(response: dict[str, Any]) -> bool:
     status = str(response.get("status") or "").strip().lower()
     error = _response_error_text(response)
     if "fak_no_match" in error or "order_not_fully_fillable" in error:
+        # Explicit no-match: nothing filled, safe to refresh the book and retry.
         return True
+    # P1-p: a bare 'cancelled' carrying an order id but NO explicit no-match
+    # signal may be a partial-fill-then-cancel whose filled amount the POST
+    # response does not report (size_matched is GET-only; the venue returns
+    # makingAmount/takingAmount, which this path does not parse). Reposting
+    # would double-buy the already-filled portion, so defer to the reconciler —
+    # it settles the real fill via the order id. A cancel with no order id has
+    # nothing to reconcile and stays repostable.
+    if _response_order_id(response):
+        return False
     return status == "cancelled"
 
 
