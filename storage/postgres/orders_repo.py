@@ -119,6 +119,13 @@ COALESCE(
 )
 """
 
+# P1-g: generous TTL after which a never-submitted (order_id IS NULL) submission
+# lock is considered a dead holder and may be taken over by a fresh acquirer.
+# A live submission completes in seconds; a pending_lock row older than this has
+# almost certainly lost its holder. Kept well above realistic submit durations
+# so a slow-but-alive submitter is never stolen from.
+_DEFAULT_STALE_LOCK_TAKEOVER_SECONDS = 300
+
 
 @dataclass
 class OrderSubmissionRecord:
@@ -168,13 +175,25 @@ class OrdersRepo(AbstractOrderRepository):
         user_id: str,
         leader_id: str | None,
         request_payload: dict,
+        *,
+        stale_takeover_seconds: int = _DEFAULT_STALE_LOCK_TAKEOVER_SECONDS,
     ) -> bool:
         request_json = _json_str(request_payload) or "{}"
         async with self._pool.acquire() as conn:
-            # RETURNING returns the inserted row's key when INSERT happens;
-            # when ON CONFLICT DO NOTHING fires there is no returned row.
+            # RETURNING yields the key when the INSERT happens. P1-g: the
+            # ON CONFLICT was previously DO NOTHING, so a task that died holding
+            # a ``pending_lock`` row (before it ever POSTed — hence
+            # ``order_id IS NULL``) blocked that idempotency key until the next
+            # boot, with no runtime auto-release. DO UPDATE ... WHERE makes the
+            # lock self-healing: a fresh acquirer takes it over ONLY when the
+            # existing row is a never-submitted (``order_id IS NULL``)
+            # direct-expirable lock that has been stale longer than the generous
+            # takeover TTL — exactly the ``safe_to_expire`` condition the batch
+            # reaper uses. A live (recent) or already-submitted (``order_id`` set)
+            # lock fails the WHERE, the UPDATE is skipped, RETURNING is empty,
+            # and acquisition returns False as before.
             returned = await conn.fetchval(
-                """
+                f"""
                 INSERT INTO orders (
                     idempotency_key, user_id, leader_id, order_id, status,
                     request_json, response_json, attempt_count, last_error,
@@ -184,13 +203,29 @@ class OrdersRepo(AbstractOrderRepository):
                     $4::jsonb, NULL, 0, NULL,
                     now(), now()
                 )
-                ON CONFLICT(idempotency_key) DO NOTHING
+                ON CONFLICT(idempotency_key) DO UPDATE SET
+                    user_id = excluded.user_id,
+                    leader_id = excluded.leader_id,
+                    request_json = excluded.request_json,
+                    response_json = NULL,
+                    status = 'pending_lock',
+                    attempt_count = 0,
+                    last_error = 'stale_lock_taken_over',
+                    created_at = now(),
+                    updated_at = now()
+                WHERE orders.order_id IS NULL
+                  AND orders.status = ANY($5::text[])
+                  AND (
+                      EXTRACT(EPOCH FROM now())::bigint - {_STALE_LOCK_AGE_EXPR}
+                  ) > $6
                 RETURNING idempotency_key
                 """,
                 key,
                 user_id,
                 leader_id,
                 request_json,
+                list(_DIRECT_EXPIRABLE_STALE_LOCK_STATUSES),
+                int(stale_takeover_seconds),
             )
         return returned is not None
 
