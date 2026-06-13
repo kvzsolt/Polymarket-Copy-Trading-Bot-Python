@@ -815,16 +815,24 @@ def _extract_trade_submarket(raw: dict[str, Any]) -> str:
 
 
 async def _resolve_leader_tier(context: TradingContext, leader_id: str) -> str:
-    """Look up the follow tier for a leader. Defaults to live_follow if no repo/record."""
+    """Look up the follow tier for a leader.
+
+    P0-2: fail-closed. An absent repo, a lookup error, or an unknown/missing
+    tier resolves to ``watchlist`` (the non-live, no-submission tier), never
+    ``live_follow``. A DB glitch or a misconfiguration must not auto-promote a
+    leader to live copy trading. (The global LIVE_TRADING master switch already
+    forces paper unless explicitly enabled; this is defense-in-depth within
+    live mode.)
+    """
     if not hasattr(context, "leaders_repo") or context.leaders_repo is None:
-        return "live_follow"
+        return "watchlist"
     try:
         rec = await context.leaders_repo.get_tier(leader_id)
         tier = rec.follow_tier if rec and rec.follow_tier else None
     except Exception:
-        return "live_follow"
+        return "watchlist"
     if not tier or tier not in ("watchlist", "paper_follow", "live_follow"):
-        return "live_follow"
+        return "watchlist"
     return tier
 
 

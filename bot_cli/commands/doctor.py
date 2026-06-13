@@ -270,19 +270,23 @@ async def run_doctor_checks(mode: str) -> dict[str, Any]:
 
     # ----- mode flags ---------------------------------------------------
     if live:
+        # P0-2: live trading is gated by the LIVE_TRADING master switch (default
+        # paper). If the doctor is asked for "live" but the config resolved to
+        # paper, the operator must set the master switch — there is no silent
+        # fallback to paper, the bot refuses to start.
         if config.execution.paper_trade_only:
             ctx.blocked(
                 "paper_trade_only_false",
-                "PAPER_TRADE_ONLY=true in live mode",
-                "set PAPER_TRADE_ONLY=false",
+                "live mode requested but config resolves to PAPER",
+                "set LIVE_TRADING=enabled (and ensure PAPER_TRADE_ONLY is not 'true')",
             )
         else:
-            ctx.ok("paper_trade_only_false", "PAPER_TRADE_ONLY=false")
+            ctx.ok("paper_trade_only_false", "live trading enabled (paper_trade_only=false)")
         if config.dry_run:
             ctx.blocked(
                 "dry_run_false",
-                "dry_run=true",
-                "disable PAPER_TRADE_ONLY env",
+                "dry_run=true (config resolves to paper)",
+                "set LIVE_TRADING=enabled",
             )
         else:
             ctx.ok("dry_run_false", "dry_run=false")

@@ -85,10 +85,40 @@ class TestHappyPath:
         assert cfg.polling.fetch_interval == pytest.approx(0.25)
         # Execution defaults.
         assert cfg.execution.max_retries == 3
-        assert cfg.execution.paper_trade_only is False
+        # P0-2: fail-closed default — paper unless LIVE_TRADING is explicitly enabled.
+        assert cfg.execution.paper_trade_only is True
         assert cfg.execution.reservation_ttl_seconds == 120
         # Logging default path.
         assert cfg.logging.pnl_log_file.endswith("pnl.jsonl")
+
+    # --- P0-2: LIVE_TRADING master switch (fail-closed) ---
+
+    def test_default_is_paper(self, valid_env: dict[str, str]) -> None:
+        cfg = load_config(valid_env)
+        assert cfg.execution.paper_trade_only is True
+        assert cfg.dry_run is True
+
+    @pytest.mark.parametrize("val", ["enabled", "true", "1", "yes", "on", "ENABLED", "True"])
+    def test_explicit_enable_goes_live(self, valid_env: dict[str, str], val: str) -> None:
+        valid_env["LIVE_TRADING"] = val
+        cfg = load_config(valid_env)
+        assert cfg.execution.paper_trade_only is False
+        assert cfg.dry_run is False
+
+    @pytest.mark.parametrize("val", ["", "off", "disabled", "no", "false", "0", "garbage", "  "])
+    def test_unknown_or_disabled_stays_paper(self, valid_env: dict[str, str], val: str) -> None:
+        valid_env["LIVE_TRADING"] = val
+        cfg = load_config(valid_env)
+        assert cfg.execution.paper_trade_only is True
+        assert cfg.dry_run is True
+
+    def test_paper_trade_only_true_forces_paper_even_with_live_switch(
+        self, valid_env: dict[str, str]
+    ) -> None:
+        valid_env["LIVE_TRADING"] = "enabled"
+        valid_env["PAPER_TRADE_ONLY"] = "true"
+        cfg = load_config(valid_env)
+        assert cfg.execution.paper_trade_only is True  # explicit paper force wins
 
     @pytest.mark.parametrize("raw_value", ["", "auto", "AUTO", "# Profit % comment"])
     def test_trailing_activation_auto_values(

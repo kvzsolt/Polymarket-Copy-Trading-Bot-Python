@@ -33,11 +33,22 @@ def dockerignore_text() -> str:
     return (REPO_ROOT / ".dockerignore").read_text()
 
 
-def test_paper_trade_only_env_default(dockerfile_text: str) -> None:
-    assert "ENV PAPER_TRADE_ONLY=true" in dockerfile_text, (
-        "Dockerfile must set PAPER_TRADE_ONLY=true as a fail-closed default — "
-        "missing-env-file deployments must NOT enable live trading"
-    )
+def test_dockerfile_does_not_enable_live_trading(dockerfile_text: str) -> None:
+    # P0-2: the live-trading gate moved to the config layer — the LIVE_TRADING
+    # master switch defaults to PAPER when absent/unknown (see
+    # test_config.py::test_default_is_paper). The image must not ENABLE live via
+    # an ENV directive (comments documenting LIVE_TRADING are fine).
+    for line in dockerfile_text.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("ENV "):
+            continue
+        assert "LIVE_TRADING" not in stripped, (
+            f"Dockerfile must not set LIVE_TRADING via ENV (live must be an "
+            f"explicit per-deployment opt-in): {stripped!r}"
+        )
+        assert not ("PAPER_TRADE_ONLY" in stripped and "false" in stripped.lower()), (
+            f"Dockerfile must not bake PAPER_TRADE_ONLY=false: {stripped!r}"
+        )
 
 
 def test_non_root_user_directive(dockerfile_text: str) -> None:

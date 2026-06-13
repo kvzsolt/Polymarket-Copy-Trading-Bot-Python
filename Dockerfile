@@ -40,13 +40,13 @@ RUN mkdir -p /app/data /app/log && chown -R botuser:botuser /app/data /app/log
 # rather than surfacing only at first DB use inside a running container.
 RUN python -c "from config.app_config import load_config; import storage.postgres.connection; print('OK')"
 
-# Fail-closed safety defaults. ``PAPER_TRADE_ONLY=true`` is the
-# canonical kill-switch for live mode — set it here so a deployment
-# missing an --env-file does NOT silently enable live trading.
-# The ``CMD ["--paper"]`` token in the previous version was silently
-# ignored (``app.py`` does no argv parsing), making the apparent
-# "paper-by-default" comment a lie. The env var is the real switch.
-ENV PAPER_TRADE_ONLY=true
+# Fail-closed live-trading gate (P0-2). Live trading is OFF unless LIVE_TRADING
+# is EXPLICITLY enabled; the config layer (config/app_config.py) defaults to
+# PAPER when the master switch is absent/unknown, so a deployment missing config
+# can never silently go live — no Docker env bake is required for safety.
+# To go live: set ``LIVE_TRADING=enabled``. (Setting ``PAPER_TRADE_ONLY=true``
+# still force-overrides to paper.) The legacy ``ENV PAPER_TRADE_ONLY=true`` bake
+# is removed so the master switch is the single live gate.
 ENV ENABLE_METRICS_SERVER=true
 ENV METRICS_PORT=9102
 

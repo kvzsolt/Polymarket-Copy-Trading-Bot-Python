@@ -1117,6 +1117,18 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         risk_price_cache_max_size=p.int_("RISK_PRICE_CACHE_MAX_SIZE", "5000"),
     )
 
+    # P0-2: live-trading master switch — fail-closed. The bot runs in PAPER mode
+    # unless LIVE_TRADING is EXPLICITLY enabled; a missing / unknown / malformed
+    # value resolves to paper. The legacy PAPER_TRADE_ONLY flag can additionally
+    # force paper but can never enable live. This is the single source for
+    # paper_trade_only / dry_run, so live trading requires an affirmative opt-in
+    # (LIVE_TRADING=enabled) — there is no path where missing config goes live.
+    _live_switch = p._strip("LIVE_TRADING", p.raw("LIVE_TRADING", "")).strip().lower()
+    live_trading_enabled = _live_switch in ("enabled", "true", "1", "yes", "on")
+    paper_trade_only_effective = (
+        p.bool_("PAPER_TRADE_ONLY", False) or not live_trading_enabled
+    )
+
     # Execution
     execution = ExecutionConfig(
         slippage_tolerance=p.float_("SLIPPAGE_TOLERANCE", "2.0"),
@@ -1124,7 +1136,7 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         max_share_price=p.float_("MAX_SHARE_PRICE", "0"),
         max_retries=p.int_("MAX_RETRIES", "3"),
         non_terminal_failure_max_attempts=p.int_("NON_TERMINAL_FAILURE_MAX_ATTEMPTS", "3"),
-        paper_trade_only=p.bool_("PAPER_TRADE_ONLY", False),
+        paper_trade_only=paper_trade_only_effective,
         enable_copy_decision_gate=p.bool_("ENABLE_COPY_DECISION_GATE", False),
         enable_near_resolution_gate=p.bool_("ENABLE_NEAR_RESOLUTION_GATE", False),
         near_resolution_gate_price=p.float_("NEAR_RESOLUTION_GATE_PRICE", "0.95"),
@@ -1485,7 +1497,8 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
             executable_tick_max_age_seconds=p.float_("MARKET_DATA_EXECUTABLE_TICK_MAX_AGE_SECONDS", 300.0),
             wss_connection_max_silence_seconds=p.float_("MARKET_DATA_WSS_CONNECTION_MAX_SILENCE_SECONDS", 20.0),
         ),
-        dry_run=p.bool_("PAPER_TRADE_ONLY", False),
+        # P0-2: single source — derived from the LIVE_TRADING master switch.
+        dry_run=paper_trade_only_effective,
         raw=_strip_sensitive(env),
     )
 
