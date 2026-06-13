@@ -1173,6 +1173,11 @@ class ExecutionService:
                         "ambiguous submission (POST possibly delivered): %s",
                         last_error,
                     )
+                    # P1-m: a venue outage surfaces here as the dominant mode.
+                    # Record it so the breaker can trip and stop POSTing into a
+                    # dead venue — the order is already saved submitted_unconfirmed
+                    # for the reconciler, so this only gates further submissions.
+                    self.circuit_breaker.record_failure()
                     break
                 except Exception as exc:
                     # Defensive: anything not classified by the gateway is
@@ -1192,6 +1197,9 @@ class ExecutionService:
                         "unclassified gateway exception (treating as ambiguous): %s",
                         last_error,
                     )
+                    # P1-m: count unclassified gateway failures toward the
+                    # breaker too (same venue-health signal as above).
+                    self.circuit_breaker.record_failure()
                     break
                 # Add jitter so concurrent runtimes retrying the same venue
                 # outage do not re-submit in lockstep bursts. Base backoff is
