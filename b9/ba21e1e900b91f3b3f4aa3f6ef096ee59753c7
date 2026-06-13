@@ -1,0 +1,24 @@
+tests/test_startup_health.py
+  s_8af57e4ef74563::t_e438a825f86d04 123-126,155,157,165-166
+orchestrators/startup_health.py
+  s_8af57e4ef74563::t_97bb85913c3ea7 268-269
+  s_8af57e4ef74563::t_f4ebe2b1a2bae0 281-305,315
+tests/test_startup_normalize_preserves_order_id.py
+  s_8af57e4ef74563::t_928f6462eaf016 1-95
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.6",
+  "base_commit_sha": "b9ba21e1e900b91f3b3f4aa3f6ef096ee59753c7",
+  "prompts": {},
+  "sessions": {
+    "s_8af57e4ef74563": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f8bc636e-c49c-4009-b8b6-c47aa7d65a7a",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
