@@ -300,9 +300,14 @@ class MarketWebSocket:
             if not self._running:
                 break
             msg = raw_msg.decode("utf-8", errors="replace") if isinstance(raw_msg, bytes) else raw_msg
-            # Any inbound frame proves the pipe is alive; treat as a pong
-            # for the missed-pong detector.
-            self._last_pong_monotonic = time.monotonic()
+            # Any inbound frame proves the pipe is alive; treat it as a pong
+            # both for the in-loop missed-pong detector AND for the cache
+            # liveness anchor (P1-d), so data frames — not only literal PONG
+            # frames — keep the stream marked live and a server that stops
+            # sending anything trips staleness on the inbound clock.
+            now = time.monotonic()
+            self._last_pong_monotonic = now
+            self._call_cache_optional("on_market_ws_pong", now)
             if msg in ("PING", "ping"):
                 with contextlib.suppress(Exception):
                     await ws.send("PONG")
