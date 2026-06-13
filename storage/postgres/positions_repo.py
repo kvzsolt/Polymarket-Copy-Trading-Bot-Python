@@ -405,6 +405,80 @@ class PositionsRepo(AbstractPositionRepository):
 
         return current
 
+    async def set_position_size(
+        self,
+        *,
+        user_id: str,
+        condition_id: str,
+        token_id: str,
+        size_tokens: Decimal,
+        avg_entry_price: Decimal,
+        leader_id: str | None = None,
+        expected_size: Decimal | None = None,
+    ) -> bool:
+        """Absolutely set a position size under the per-position advisory lock.
+
+        Used by manual-sync to align the local size to the live venue holding.
+        Takes the same ``pg_advisory_xact_lock`` + ``SELECT ... FOR UPDATE`` as
+        ``apply_fill`` so a reconciler delta committing between the caller's
+        snapshot and this write cannot be clobbered (P1-b).
+
+        When ``expected_size`` is provided and the current (locked) size has
+        drifted from it — a concurrent writer applied a delta since the caller
+        read the row — the absolute write is SKIPPED and ``False`` returned, so
+        the caller defers to the next sync cycle rather than overwriting fresh
+        state. Returns ``True`` when the size was written or the row deleted at
+        ~0.
+        """
+        if not is_valid_clob_token_id(token_id):
+            raise ValueError(f"set_position_size: refusing invalid token_id={token_id!r}")
+
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    _ADVISORY_LOCK_SQL,
+                    _lock_key(f"position:{user_id}:{condition_id}:{token_id}"),
+                )
+                current = await self._get_position_in_conn(
+                    conn,
+                    user_id,
+                    condition_id,
+                    token_id=token_id,
+                    for_update=True,
+                )
+                current_size = current.size_tokens if current is not None else Decimal("0")
+                if (
+                    expected_size is not None
+                    and abs(current_size - expected_size) > Decimal("1e-9")
+                ):
+                    logger.warning(
+                        "set_position_size_skipped_concurrent_change user=%s "
+                        "condition=%s token=%s expected=%s current=%s",
+                        user_id,
+                        condition_id,
+                        token_id,
+                        expected_size,
+                        current_size,
+                    )
+                    return False
+                if size_tokens <= Decimal("1e-12"):
+                    await self._delete_position_in_conn(
+                        conn, user_id, condition_id, token_id=token_id
+                    )
+                    return True
+                await self._upsert_position_in_conn(
+                    conn,
+                    PositionRecord(
+                        user_id=user_id,
+                        condition_id=condition_id,
+                        token_id=token_id,
+                        leader_id=leader_id,
+                        size_tokens=size_tokens,
+                        avg_entry_price=avg_entry_price,
+                    ),
+                )
+                return True
+
     async def rebuild_user_positions_from_fills(
         self, user_id: str, fills_repo
     ) -> list[PositionRecord]:

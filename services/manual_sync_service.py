@@ -567,6 +567,7 @@ class ManualSyncService:
                     size_tokens=venue_size,
                     avg_entry_price=avg_price,
                     leader_id=(existing.leader_id if existing is not None else None),
+                    expected_size=local_size,
                 )
                 if venue_size_increased:
                     increased_position_scopes += 1
@@ -659,20 +660,29 @@ class ManualSyncService:
         size_tokens: Decimal,
         avg_entry_price: Decimal,
         leader_id: str | None,
+        expected_size: Decimal | None = None,
     ) -> None:
-        # Import here so module-level import doesn't pull asyncpg into test
-        # contexts that stub out PositionsRepo with a MagicMock.
-        from storage.postgres.positions_repo import PositionRecord
-
-        record = PositionRecord(
+        # P1-b: route the absolute venue-size align through the locked
+        # ``set_position_size`` so a reconciler ``apply_fill`` delta committing
+        # inside this read→write window is not clobbered. The repo re-reads the
+        # row ``FOR UPDATE`` under the position advisory lock and skips the
+        # write when a concurrent delta changed the size since our snapshot
+        # (``expected_size``), deferring the align to the next sync cycle.
+        written = await self._positions_repo.set_position_size(
             user_id=self._user_id,
             condition_id=condition_id,
             token_id=token_id,
-            leader_id=leader_id,
             size_tokens=size_tokens,
             avg_entry_price=avg_entry_price,
+            leader_id=leader_id,
+            expected_size=expected_size,
         )
-        await self._positions_repo.upsert_position(record)
+        if written is False:
+            logger.info(
+                "manual_sync_align_deferred_concurrent_change | token=%s cond=%s",
+                token_id,
+                condition_id,
+            )
 
     async def _reap_expired_reservations_after_position_change(
         self,

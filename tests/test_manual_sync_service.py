@@ -72,6 +72,7 @@ def _make_service(
     positions_repo = positions_repo or MagicMock()
     positions_repo.list_open_positions = AsyncMock(return_value=[])
     positions_repo.upsert_position = AsyncMock()
+    positions_repo.set_position_size = AsyncMock(return_value=True)
     positions_repo.delete_position = AsyncMock()
     market_store = market_store or MagicMock()
     market_store.evict = MagicMock()
@@ -253,7 +254,7 @@ async def test_position_discrepancy_emits_log_and_upsert():
     args, kwargs = mock_log.call_args
     assert kwargs["real_size"] == 12.5
     assert kwargs["tracked_size"] == 0.0
-    positions_repo.upsert_position.assert_called_once()
+    positions_repo.set_position_size.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -426,7 +427,7 @@ async def test_zero_value_position_deletes_existing_local_position():
     ):
         await svc.sync_now(reason="startup")
 
-    positions_repo.upsert_position.assert_not_called()
+    positions_repo.set_position_size.assert_not_called()
     positions_repo.delete_position.assert_awaited_once_with(
         FUNDER,
         "0xcond1",
@@ -458,7 +459,7 @@ async def test_zero_value_position_is_not_seeded_from_stale_data_api():
     user_pos_model.delete_many.assert_called_once()
     user_pos_model.insert_many.assert_not_called()
     mock_log.assert_not_called()
-    positions_repo.upsert_position.assert_not_called()
+    positions_repo.set_position_size.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -490,7 +491,11 @@ async def test_position_already_matching_does_not_log_discrepancy():
 
     mock_log.assert_not_called()
     # upsert still fires to keep updated_at fresh.
-    positions_repo.upsert_position.assert_called_once()
+    positions_repo.set_position_size.assert_called_once()
+    # P1-b: the align hands the pre-read local size as expected_size so the
+    # locked repo write can skip (defer) if a reconciler delta raced it.
+    _, kwargs = positions_repo.set_position_size.call_args
+    assert kwargs["expected_size"] == Decimal("10.0")
 
 
 @pytest.mark.asyncio
@@ -592,7 +597,7 @@ async def test_manual_sync_skips_upsert_when_drift_recently_pruned():
     assert call_kwargs["token_id"] == "0xasset1"
     assert call_kwargs["condition_id"] == "0xcond1"
     # No upsert + no discrepancy panel → the holdoff fired.
-    positions_repo.upsert_position.assert_not_called()
+    positions_repo.set_position_size.assert_not_called()
     mock_disc.assert_not_called()
 
 
@@ -617,7 +622,7 @@ async def test_manual_sync_upserts_when_drift_not_recent():
         await svc.sync_now(reason="test")
 
     drift_mock.was_recently_pruned.assert_called_once()
-    positions_repo.upsert_position.assert_called_once()
+    positions_repo.set_position_size.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -655,7 +660,7 @@ async def test_manual_sync_handshake_only_blocks_new_upserts_not_size_updates():
 
     # Drift NOT consulted (existing is not None → no holdoff check needed).
     drift_mock.was_recently_pruned.assert_not_called()
-    positions_repo.upsert_position.assert_called_once()
+    positions_repo.set_position_size.assert_called_once()
 
 
 # ----------------------------------------------------------------------
@@ -810,7 +815,7 @@ async def test_position_seed_held_off_while_bot_order_in_flight():
     ):
         await svc.sync_now(reason="wss_fill")
 
-    positions_repo.upsert_position.assert_not_called()
+    positions_repo.set_position_size.assert_not_called()
     mock_disc.assert_not_called()
     # Seed hold-off probes the BUY side (the row-creating side that races the
     # reconciler's first incremental write) within the short hold-off window.
@@ -840,4 +845,4 @@ async def test_position_seed_proceeds_when_no_recent_bot_order():
     ):
         await svc.sync_now(reason="wss_fill")
 
-    positions_repo.upsert_position.assert_called_once()
+    positions_repo.set_position_size.assert_called_once()
