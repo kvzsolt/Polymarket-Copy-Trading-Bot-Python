@@ -1,0 +1,22 @@
+storage/postgres/orders_repo.py
+  s_8af57e4ef74563::t_f5195081afa065 122-128
+  s_8af57e4ef74563::t_d1859c0430cd1d 178-179,183-194,196,206-220,227-228
+tests/test_orders_repo_submission_lock_takeover.py
+  s_8af57e4ef74563::t_b35bd79e199195 1-91
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.6",
+  "base_commit_sha": "0c86c932c3510f1fb7fe63068e412b65924bee81",
+  "prompts": {},
+  "sessions": {
+    "s_8af57e4ef74563": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f8bc636e-c49c-4009-b8b6-c47aa7d65a7a",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
