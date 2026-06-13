@@ -1060,4 +1060,58 @@ async def build_context_maps(
             if context.user_id not in risk_contexts_by_user:
                 risk_contexts_by_user[context.user_id] = context
 
+    # P1-i: a user holding open copied positions must still be risk-monitored
+    # even when rotation/discovery leaves them with no enabled follow on any
+    # active leader (empty active_leaders, or a follow set that no longer
+    # intersects the active leaders). Otherwise their open positions go
+    # unmonitored and protective exits (stop-loss / trailing) never run. The
+    # risk-only context is added to ``risk_contexts_by_user`` ONLY — never to
+    # ``contexts_by_leader`` — so it drives protective exits without enabling
+    # any new copy entries.
+    for runtime_user in runtime_users:
+        if runtime_user.user_id in risk_contexts_by_user:
+            continue
+        user_state = user_states.get(runtime_user.user_id)
+        if user_state is None:
+            continue
+        try:
+            open_positions = (
+                await user_state.positions_repo.list_open_positions(
+                    runtime_user.user_id
+                )
+                or []
+            )
+        except Exception:
+            logger.warning(
+                "risk_only_context_open_check_failed | user=%s",
+                runtime_user.user_id,
+                exc_info=True,
+            )
+            continue
+        if not open_positions:
+            continue
+        follow = next(iter(runtime_user.follows.values()), None)
+        if follow is None:
+            logger.warning(
+                "risk_only_context_skipped_no_follow | user=%s open_positions=%d",
+                runtime_user.user_id,
+                len(open_positions),
+            )
+            continue
+        context = await build_trading_context(
+            user_state,
+            follow,
+            config,
+            leaders_repo=leaders_repo,
+            readiness=readiness,
+            trust_store=trust_store,
+        )
+        risk_contexts_by_user[runtime_user.user_id] = context
+        logger.info(
+            "risk_only_context_built | user=%s open_positions=%d "
+            "(no active-leader follow)",
+            runtime_user.user_id,
+            len(open_positions),
+        )
+
     return contexts_by_leader, risk_contexts_by_user
