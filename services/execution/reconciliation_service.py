@@ -153,6 +153,12 @@ _VENUE_NON_TERMINAL = frozenset({
     "submitted", "submitted_unconfirmed", "submitted_delayed",
     "order_live", "trade_mined", "trade_retrying",
     "mined", "retrying",
+    # P1-q: a marketable order that did not match after the matching delay is
+    # placed ON THE BOOK as a resting order (Context7: order status 'unmatched'
+    # = "marketable order placed on the book after the delay expired without a
+    # match"). It is live / non-terminal — keep polling; do NOT fall through to
+    # the ("failed","failed") default and settle a live resting order as failed.
+    "unmatched",
 })
 
 # Map normalised venue status -> (local submission status, lifecycle log status).
@@ -160,6 +166,8 @@ _VENUE_TO_LIFECYCLE: dict[str, tuple[str, str]] = {
     "live": ("order_live", "live"),
     "order_status_live": ("order_live", "live"),
     "order_live": ("order_live", "live"),
+    # P1-q: 'unmatched' marketable order is resting on the book → treat as live.
+    "unmatched": ("order_live", "live"),
     "delayed": ("submitted_delayed", "delayed"),
     "submitted_delayed": ("submitted_delayed", "delayed"),
     "matched": ("matched_pending_confirmation", "matched"),
