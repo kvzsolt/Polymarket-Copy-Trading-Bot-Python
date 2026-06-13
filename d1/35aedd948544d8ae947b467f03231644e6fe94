@@ -1,0 +1,24 @@
+domain/position_key.py
+  s_8af57e4ef74563::t_40f5061072ab0a 56
+  s_8af57e4ef74563::t_0f243de6b0280c 31-41
+tests/test_position_key.py
+  s_8af57e4ef74563::t_bfeec224a619d8 72-79
+tests/test_position_key_user_id_casing.py
+  s_8af57e4ef74563::t_4dd664dd7b894b 1-38
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.6",
+  "base_commit_sha": "d135aedd948544d8ae947b467f03231644e6fe94",
+  "prompts": {},
+  "sessions": {
+    "s_8af57e4ef74563": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f8bc636e-c49c-4009-b8b6-c47aa7d65a7a",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
