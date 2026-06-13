@@ -1394,6 +1394,30 @@ async def reconcile_submitted_unconfirmed(
     return reconciled
 
 
+def _decision_live_price(signal: Any, bundle: Any) -> float:
+    """Price used to score the copy decision (drift/edge gates + BUY sizing).
+
+    P1-c: this must be the FRESH executable quote — ``best_ask`` for a BUY,
+    ``best_bid`` for a SELL — not the stale leader signal price. Scoring against
+    ``signal.price`` made ``price_drift_pct`` / ``edge_decay_pct`` identically
+    zero (the signal compared against itself) and sized BUYs off the old price,
+    leaving the protective drift gate inert on every copy. Falls back to the
+    signal price when no fresh quote is available; the degraded/REST path is
+    gated separately upstream.
+    """
+    fallback = float(getattr(signal, "price", 0) or 0)
+    quote = getattr(bundle, "quote", None) if bundle is not None else None
+    if quote is None:
+        return fallback
+    side = str(getattr(signal, "side", "") or "").upper()
+    fresh = getattr(quote, "best_ask", None) if side == "BUY" else getattr(quote, "best_bid", None)
+    try:
+        fresh_f = float(fresh) if fresh is not None else 0.0
+    except (TypeError, ValueError):
+        return fallback
+    return fresh_f if fresh_f > 0 else fallback
+
+
 async def execute_trades(
     context: TradingContext,
     leader_id: str,
@@ -1740,8 +1764,10 @@ async def execute_trades(
             # --- Decision gate: score the leader and this specific trade ---
             copy_decision_svc = context.copy_decision_service
 
-            # Fetch live price for decision scoring
-            live_price = float(signal.price or 0)
+            # Fetch live price for decision scoring from the FRESH quote
+            # (best_ask for BUY / best_bid for SELL), not the stale leader
+            # signal price — see _decision_live_price (P1-c).
+            live_price = _decision_live_price(signal, _bundle_for_pair)
             market_min_size = market_min_size_by_token.get(signal.token_id, 0.0)
             market_tick_size = tick_size_by_token.get(signal.token_id, 0.0)
 
