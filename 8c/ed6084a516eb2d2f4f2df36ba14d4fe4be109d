@@ -1,0 +1,22 @@
+tests/test_user_ws_trade_event_identity.py
+  s_8af57e4ef74563::t_13fe970fd1bfab 1-67
+clients/user_ws.py
+  s_8af57e4ef74563::t_ae2bf8f93098ba 430-433,438-447
+  s_8af57e4ef74563::t_d6b96db5091bef 475
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.6",
+  "base_commit_sha": "8ced6084a516eb2d2f4f2df36ba14d4fe4be109d",
+  "prompts": {},
+  "sessions": {
+    "s_8af57e4ef74563": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f8bc636e-c49c-4009-b8b6-c47aa7d65a7a",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
