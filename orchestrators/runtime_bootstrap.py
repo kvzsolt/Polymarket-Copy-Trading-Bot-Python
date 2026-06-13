@@ -8,6 +8,7 @@ from domain.trading_context import TradingContext
 from interfaces.clob_gateway import ClobGateway
 from cache.market_state_store import MarketStateStore
 from services.accountingService import AccountingService
+from services.compliance import GeoblockGate
 from services.executionService import ExecutionService
 from services.feeService import FeeService
 from services.market_data_service import MarketDataService, MarketDataPolicy
@@ -340,6 +341,9 @@ def build_user_state(
         config=config,
         clob_gateway=clob_gateway,
         market_data_service=market_data_svc,
+        # P1-j: trade-path geoblock enforcement with expiry revalidation. Opt-in
+        # via ENFORCE_GEOBLOCK (default on); fail-closed; BUY entries only.
+        geoblock_gate=GeoblockGate(config.network.enforce_geoblock),
     )
 
     # PR6 — production execution funnel. ReservationService + ExecutionCoordinator

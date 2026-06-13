@@ -370,12 +370,16 @@ class ExecutionService:
         config: AppConfig,
         clob_gateway: "ClobGateway | None" = None,
         market_data_service: "MarketDataService | None" = None,
+        geoblock_gate=None,
     ):
         self.clob_client = clob_client
         self.fee_service = fee_service
         self.order_repo = order_repo
         self._config = config
         self._market_data_service = market_data_service
+        # P1-j: optional trade-path geoblock gate (services.compliance.GeoblockGate).
+        # None = no enforcement (preserves the configless / test default).
+        self._geoblock_gate = geoblock_gate
 
         # Single CLOB venue boundary. ``runtime_bootstrap`` is expected to pass
         # a pre-constructed gateway so reconciliation, the execution
@@ -477,6 +481,25 @@ class ExecutionService:
                 fees_paid=Decimal("0"),
                 error=f"CLOB circuit breaker open — retry in {remaining:.0f}s",
             )
+
+        # P1-j: consult the geoblock gate on the trade path (not just at boot)
+        # and revalidate on expiry. Only BUY *entries* are blocked in a
+        # geoblocked region — a protective SELL exit is risk-reducing and must
+        # never be stranded by a compliance gate. The gate is fail-closed and
+        # opt-in; ``None`` means enforcement is disabled.
+        if self._geoblock_gate is not None and side == "BUY":
+            geoblock_decision = await self._geoblock_gate.ensure_allowed()
+            if geoblock_decision is not None and not geoblock_decision.allowed:
+                return ExecutionResult(
+                    accepted=False,
+                    order_id=None,
+                    status="geoblocked",
+                    requested_amount=req.amount,
+                    filled_amount=Decimal("0"),
+                    avg_price=None,
+                    fees_paid=Decimal("0"),
+                    error=f"geoblocked: {geoblock_decision.reason}",
+                )
 
         ec = self._config.execution
         forced_sell_exit = _is_forced_sell_exit_request(req, side)
