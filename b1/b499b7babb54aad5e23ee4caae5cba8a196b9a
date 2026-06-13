@@ -1,0 +1,22 @@
+tests/test_execution_circuit_breaker_outage.py
+  s_8af57e4ef74563::t_73962c2fd4598d 1-141
+services/executionService.py
+  s_8af57e4ef74563::t_be1fba6ad4b691 1200-1202
+  s_8af57e4ef74563::t_4e169997862734 1176-1180
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.6",
+  "base_commit_sha": "b1b499b7babb54aad5e23ee4caae5cba8a196b9a",
+  "prompts": {},
+  "sessions": {
+    "s_8af57e4ef74563": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f8bc636e-c49c-4009-b8b6-c47aa7d65a7a",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
