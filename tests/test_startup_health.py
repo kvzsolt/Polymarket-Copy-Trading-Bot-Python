@@ -120,7 +120,10 @@ async def test_reconcile_persisted_positions_to_live_prunes_stale_rows():
 
 
 @pytest.mark.asyncio
-async def test_normalize_startup_order_statuses_collapses_pending_and_delayed():
+async def test_normalize_startup_order_statuses_preserves_order_id_rows():
+    # P0-5: a pending row with no order_id is normalized + purged, but a delayed
+    # row carrying a venue order_id is PRESERVED for startup reconciliation —
+    # deleting it would lose a venue-accepted order as an untracked off-bot fill.
     async with _pg_pool() as pool:
         orders_repo = OrdersRepo(pool)
         await orders_repo.save_submission(
@@ -149,9 +152,9 @@ async def test_normalize_startup_order_statuses_collapses_pending_and_delayed():
         cleanup = await normalize_startup_order_statuses(pool, user_id="u1")
 
         assert cleanup.normalized_pending == 1
-        assert cleanup.normalized_delayed == 1
+        assert cleanup.normalized_delayed == 0  # delayed carries an order_id -> preserved
         assert cleanup.normalized_retry_pending == 0
-        assert cleanup.purged_failed == 2
+        assert cleanup.purged_failed == 1  # only the normalized (no-order_id) pending row
         async with pool.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT status, COUNT(*) AS count FROM orders "
@@ -159,7 +162,8 @@ async def test_normalize_startup_order_statuses_collapses_pending_and_delayed():
                 "u1",
             )
         counts = {str(row["status"]): int(row["count"]) for row in rows}
-        assert counts == {}
+        # The order_id-bearing delayed row survives for reconciliation.
+        assert counts == {"delayed": 1}
 
 
 def test_startup_health_report_log_payload_includes_reconciliation_state() -> None:

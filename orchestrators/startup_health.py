@@ -265,8 +265,8 @@ async def normalize_startup_order_statuses(pool, *, user_id: str) -> OrderStartu
             row = await conn.fetchrow(
                 """
                 SELECT
-                    COALESCE(SUM(CASE WHEN status IN ('pending', 'pending_lock') THEN 1 ELSE 0 END), 0) AS pending_count,
-                    COALESCE(SUM(CASE WHEN status = 'delayed' THEN 1 ELSE 0 END), 0) AS delayed_count,
+                    COALESCE(SUM(CASE WHEN status IN ('pending', 'pending_lock') AND order_id IS NULL THEN 1 ELSE 0 END), 0) AS pending_count,
+                    COALESCE(SUM(CASE WHEN status = 'delayed' AND order_id IS NULL THEN 1 ELSE 0 END), 0) AS delayed_count,
                     COALESCE(SUM(CASE WHEN status LIKE 'retry_pending_%' THEN 1 ELSE 0 END), 0) AS retry_pending_count
                 FROM orders
                 WHERE user_id = $1
@@ -278,6 +278,31 @@ async def normalize_startup_order_statuses(pool, *, user_id: str) -> OrderStartu
             delayed_count = int(row["delayed_count"] if row else 0)
             retry_pending_count = int(row["retry_pending_count"] if row else 0)
 
+            # P0-5: a pending/delayed row that carries a venue ``order_id``
+            # reached the venue (e.g. a 'delayed' ack) and is recoverable by
+            # ``startup_reconcile_unconfirmed`` (which runs next and handles
+            # 'delayed' via _UNCONFIRMED_STATES). Marking it terminal_failed and
+            # deleting it here would lose a venue-accepted order as an untracked
+            # off-bot fill. Preserve those rows; only normalize rows with NO
+            # venue handle.
+            preserved_row = await conn.fetchrow(
+                """
+                SELECT COALESCE(SUM(CASE WHEN order_id IS NOT NULL THEN 1 ELSE 0 END), 0) AS preserved_count
+                FROM orders
+                WHERE user_id = $1
+                  AND status IN ('pending', 'pending_lock', 'delayed')
+                """,
+                user_id,
+            )
+            preserved_count = int(preserved_row["preserved_count"] if preserved_row else 0)
+            if preserved_count:
+                logger.info(
+                    "startup_order_normalize_preserved | user=%s order_id_rows=%d "
+                    "(left for startup reconciliation)",
+                    user_id,
+                    preserved_count,
+                )
+
             await conn.execute(
                 """
                 UPDATE orders
@@ -287,7 +312,7 @@ async def normalize_startup_order_statuses(pool, *, user_id: str) -> OrderStartu
                     updated_at = now()
                 WHERE user_id = $1
                   AND (
-                    status IN ('pending', 'pending_lock', 'delayed')
+                    (status IN ('pending', 'pending_lock', 'delayed') AND order_id IS NULL)
                     OR status LIKE 'retry_pending_%'
                   )
                 """,
