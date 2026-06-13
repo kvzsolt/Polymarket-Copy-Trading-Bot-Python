@@ -1,0 +1,22 @@
+tests/test_trade_pipeline_decision_price.py
+  s_8af57e4ef74563::t_3b27a9234bfdfb 1-55
+orchestrators/trade_pipeline.py
+  s_8af57e4ef74563::t_c7d52e98f8f17d 1397-1420
+  s_8af57e4ef74563::t_82e46bc39d62e9 1767-1770
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.6",
+  "base_commit_sha": "3b271294dab28e34a4a063dc5d3a94a8f7c6b350",
+  "prompts": {},
+  "sessions": {
+    "s_8af57e4ef74563": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f8bc636e-c49c-4009-b8b6-c47aa7d65a7a",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
