@@ -1,0 +1,31 @@
+orchestrators/runtime_bootstrap.py
+  s_8af57e4ef74563::t_1937cbf828653c 218-225,232,235
+  s_8af57e4ef74563::t_c2199c894a6231 459-465
+orchestrators/startup_health.py
+  s_8af57e4ef74563::t_d7d763f9c4b719 54-57
+  s_8af57e4ef74563::t_d2a004d1ba1d98 522
+  s_8af57e4ef74563::t_230e7e49c2b4c7 218,221-236
+  s_8af57e4ef74563::t_18e30b54ce1727 447-455
+app.py
+  s_8af57e4ef74563::t_f3bfd4c1e0bf9a 1207-1208,1210,1212
+  s_8af57e4ef74563::t_e88d2c41ee3b14 1010-1012,1014,1016,1018
+tests/test_startup_health.py
+  s_8af57e4ef74563::t_88337cb869cd8b 23
+  s_8af57e4ef74563::t_33b7a1b21762c5 406-482
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.6",
+  "base_commit_sha": "f906083fb9d648f7593394d556856759dd781b19",
+  "prompts": {},
+  "sessions": {
+    "s_8af57e4ef74563": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f8bc636e-c49c-4009-b8b6-c47aa7d65a7a",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
