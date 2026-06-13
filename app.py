@@ -209,6 +209,30 @@ def _wallets_blocked_by_reconcile_failures(
     ]
 
 
+def _cold_start_monitored_after_reconcile(
+    monitored_leaders: list[str],
+    contexts_by_leader: dict[str, list["TradingContext"]],
+    reconcile_failures: list[str],
+) -> list[str]:
+    """Filter the cold-start leader set so monitors do NOT start for wallets
+    whose users failed startup reconciliation.
+
+    Starting a leader monitor on an un-reconciled snapshot is the double-fill
+    exposure (an unconfirmed prior-session fill is invisible, so the next
+    leader signal re-buys). The dynamic-discovery path already refuses such
+    wallets via ``_wallets_blocked_by_reconcile_failures``; the cold-start path
+    must apply the same gate instead of merely recording ``reconciler_ok``.
+    """
+    blocked = set(
+        _wallets_blocked_by_reconcile_failures(
+            monitored_leaders, contexts_by_leader, reconcile_failures
+        )
+    )
+    if not blocked:
+        return monitored_leaders
+    return [wallet for wallet in monitored_leaders if wallet not in blocked]
+
+
 async def _refresh_contexts_for_new_leaders(
     *,
     new_wallets: list[str],
@@ -1114,10 +1138,29 @@ async def main() -> int:
         # affected users.
         logger.error(
             "startup_reconcile_partial_failure | failed_users=%s — "
-            "reconciler_ok stays False, monitors will not advance",
+            "reconciler_ok stays False, monitors for affected wallets blocked",
             reconcile_failures,
         )
         application.readiness.update(reconciler_ok=False)
+
+        # Fail closed: actually remove the affected wallets from the monitored
+        # set. Recording reconciler_ok=False is not enough — no monitor reads
+        # it, so without this filter the leader monitors would still spawn and
+        # re-buy on un-reconciled state (B4-01 / P0-4).
+        _before = len(monitored_leaders)
+        monitored_leaders = _cold_start_monitored_after_reconcile(
+            monitored_leaders, contexts_by_leader, reconcile_failures
+        )
+        if len(monitored_leaders) != _before:
+            logger.error(
+                "startup_reconcile_block_monitors | kept=%d of %d wallets "
+                "(blocked wallets had a user with a failed startup reconcile)",
+                len(monitored_leaders),
+                _before,
+            )
+            application.readiness.update(
+                monitored_leader_count=len(monitored_leaders)
+            )
     else:
         application.readiness.update(reconciler_ok=True)
 
