@@ -1007,12 +1007,15 @@ async def main() -> int:
             "startup_stage | stage=live_positions_fetch_started user=%s",
             runtime_user.user_id,
         )
+        # None == fetch failed (fail-closed); the health-check prune treats it
+        # distinctly from a genuinely-empty snapshot. Store [] for downstream
+        # consumers but pass the raw value (None-aware) to the health check.
         live_positions = await fetch_live_positions(runtime_user.wallet.funder_address)
-        live_positions_by_user[runtime_user.user_id] = live_positions
+        live_positions_by_user[runtime_user.user_id] = live_positions or []
         logger.info(
-            "startup_stage | stage=live_positions_fetch_completed user=%s positions=%d",
+            "startup_stage | stage=live_positions_fetch_completed user=%s positions=%s",
             runtime_user.user_id,
-            len(live_positions),
+            "fetch_failed" if live_positions is None else len(live_positions),
         )
 
         logger.info(
@@ -1201,13 +1204,12 @@ async def main() -> int:
             "startup_stage | stage=live_positions_refresh_started user=%s",
             runtime_user.user_id,
         )
-        live_positions_by_user[runtime_user.user_id] = await fetch_live_positions(
-            runtime_user.wallet.funder_address
-        )
+        _refreshed = await fetch_live_positions(runtime_user.wallet.funder_address)
+        live_positions_by_user[runtime_user.user_id] = _refreshed or []
         logger.info(
-            "startup_stage | stage=live_positions_refresh_completed user=%s positions=%d",
+            "startup_stage | stage=live_positions_refresh_completed user=%s positions=%s",
             runtime_user.user_id,
-            len(live_positions_by_user[runtime_user.user_id]),
+            "fetch_failed" if _refreshed is None else len(_refreshed),
         )
 
     logger.info("startup_stage | stage=market_data_runtimes_starting")

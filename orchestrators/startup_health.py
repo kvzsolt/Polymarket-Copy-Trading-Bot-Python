@@ -51,6 +51,10 @@ class PositionSyncResult:
     pruned_positions: int
     pruned_condition_ids: tuple[str, ...]
     pruned_token_ids: tuple[str, ...]
+    # True when the live-position snapshot could not be fetched. In that case
+    # pruning is SKIPPED (a transient venue/data-API failure must never be
+    # read as "the wallet holds nothing" and delete the local ledger).
+    fetch_failed: bool = False
 
 
 @dataclass(frozen=True)
@@ -211,9 +215,25 @@ async def reconcile_persisted_positions_to_live(
     positions_repo: PositionsRepo,
     *,
     user_id: str,
-    live_positions: list[dict[str, Any]],
+    live_positions: list[dict[str, Any]] | None,
 ) -> PositionSyncResult:
     persisted = await positions_repo.list_open_positions(user_id)
+
+    # Fail closed: a None snapshot means the live-position fetch failed. We must
+    # not prune — deleting every persisted position because a transient API
+    # error returned "nothing" would destroy the basis for protective exits,
+    # SELL mirroring, and exposure caps.
+    if live_positions is None:
+        return PositionSyncResult(
+            persisted_before=len(persisted),
+            persisted_after=len(persisted),
+            live_count=0,
+            pruned_positions=0,
+            pruned_condition_ids=(),
+            pruned_token_ids=(),
+            fetch_failed=True,
+        )
+
     live_keys = _live_position_keys(live_positions)
 
     stale: list[PositionRecord] = []
@@ -424,6 +444,15 @@ def _orders_check(
 
 
 def _position_sync_check(sync: PositionSyncResult) -> StartupHealthCheckItem:
+    if sync.fetch_failed:
+        return StartupHealthCheckItem(
+            status="error",
+            message=(
+                f"live position snapshot fetch failed; skipped pruning "
+                f"{sync.persisted_before} persisted position(s) (fail-closed)"
+            ),
+            details=asdict(sync),
+        )
     if sync.pruned_positions > 0:
         return StartupHealthCheckItem(
             status="warning",
@@ -490,7 +519,7 @@ async def perform_startup_health_check(
     pool,
     positions_repo: PositionsRepo,
     orders_repo=None,  # type: ignore[assignment] | OrdersRepo | None
-    live_positions: list[dict[str, Any]],
+    live_positions: list[dict[str, Any]] | None,
     available_cash: "Decimal | float",
     database_ok: bool,
     rpc_url: str,

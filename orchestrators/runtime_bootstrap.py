@@ -215,17 +215,24 @@ def ensure_runtime_follows(runtime_users: list[RuntimeUser], leaders: list[str],
                 runtime_user.follows[leader] = default_follow(runtime_user.user_id, leader, config)
 
 
-async def fetch_live_positions(wallet: str) -> list[dict]:
+async def fetch_live_positions(wallet: str) -> list[dict] | None:
+    """Fetch the wallet's live positions from the data API.
+
+    Returns ``None`` when the snapshot could not be fetched (network error,
+    non-list response). Callers MUST distinguish ``None`` (fetch failed →
+    fail closed, do not prune/delete local state) from ``[]`` (the wallet
+    genuinely holds no open positions).
+    """
     try:
         positions = await fetch_data(
             f"https://data-api.polymarket.com/positions?user={wallet}",
             silent=True,
         )
     except Exception:
-        return []
+        return None
 
     if not isinstance(positions, list):
-        return []
+        return None
 
     live_positions: list[dict] = []
     for position in positions:
@@ -449,7 +456,13 @@ def _build_position_drift_service(
         return None
 
     async def _fetcher(wallet: str):
-        return await fetch_live_positions(wallet)
+        # Fail closed: a None snapshot means the fetch failed. Raise so the
+        # drift service treats it as unresolved (it is designed to fail closed
+        # on a raising fetcher) rather than as "venue holds nothing".
+        result = await fetch_live_positions(wallet)
+        if result is None:
+            raise RuntimeError("live positions snapshot fetch failed")
+        return result
 
     return PositionDriftService(
         positions_repo=positions_repo,

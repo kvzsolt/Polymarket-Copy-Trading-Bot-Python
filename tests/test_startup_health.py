@@ -20,6 +20,7 @@ from orchestrators.startup_health import (
     PositionSyncResult,
     StartupHealthCheckItem,
     StartupHealthReport,
+    _position_sync_check,
     normalize_startup_order_statuses,
     perform_startup_health_check,
     reconcile_persisted_positions_to_live,
@@ -402,3 +403,80 @@ async def test_perform_startup_health_check_fails_when_orders_repo_missing(monke
             await positions_repo.get_position("u1", "cond-stale", token_id="22222222222222222222")
             is None
         )
+
+
+# ---------------------------------------------------------------------------
+# P0-3: a transient live-position fetch failure must NOT delete local state.
+# These run without Docker (fake repo) so the fail-closed invariant is checked
+# in the unit tier, not only behind a testcontainer.
+# ---------------------------------------------------------------------------
+
+
+class _FakePositionsRepo:
+    """Minimal PositionsRepo stand-in: records delete calls, never touches a DB."""
+
+    def __init__(self, records: list[PositionRecord]):
+        self._records = list(records)
+        self.deleted: list[tuple[str, str, str | None]] = []
+
+    async def list_open_positions(self, user_id: str) -> list[PositionRecord]:
+        return [r for r in self._records if r.user_id == user_id]
+
+    async def delete_position(self, user_id, condition_id, token_id=None):
+        self.deleted.append((user_id, condition_id, token_id))
+
+
+def _rec(condition_id: str, token_id: str) -> PositionRecord:
+    return PositionRecord(
+        user_id="u1",
+        condition_id=condition_id,
+        token_id=token_id,
+        leader_id="leader-1",
+        size_tokens=Decimal("5"),
+        avg_entry_price=Decimal("0.5"),
+    )
+
+
+@pytest.mark.asyncio
+async def test_reconcile_skips_prune_when_live_snapshot_fetch_failed():
+    """live_positions=None (fetch failed) → fail closed: no prune, no deletes."""
+    repo = _FakePositionsRepo([_rec("cond-a", "11111111111111111111"),
+                               _rec("cond-b", "22222222222222222222")])
+
+    sync = await reconcile_persisted_positions_to_live(
+        repo, user_id="u1", live_positions=None
+    )
+
+    assert sync.fetch_failed is True
+    assert sync.pruned_positions == 0
+    assert sync.persisted_before == 2
+    assert sync.persisted_after == 2
+    assert repo.deleted == []  # nothing deleted — the ledger is preserved
+
+
+@pytest.mark.asyncio
+async def test_reconcile_still_prunes_on_genuinely_empty_snapshot():
+    """live_positions=[] (genuinely empty, fetch OK) → prune proceeds as before."""
+    repo = _FakePositionsRepo([_rec("cond-a", "11111111111111111111")])
+
+    sync = await reconcile_persisted_positions_to_live(
+        repo, user_id="u1", live_positions=[]
+    )
+
+    assert sync.fetch_failed is False
+    assert sync.pruned_positions == 1
+    assert repo.deleted == [("u1", "cond-a", "11111111111111111111")]
+
+
+def test_position_sync_check_fetch_failed_reports_error():
+    sync = PositionSyncResult(
+        persisted_before=3,
+        persisted_after=3,
+        live_count=0,
+        pruned_positions=0,
+        pruned_condition_ids=(),
+        pruned_token_ids=(),
+        fetch_failed=True,
+    )
+    item = _position_sync_check(sync)
+    assert item.status == "error"
