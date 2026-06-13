@@ -1,0 +1,29 @@
+storage/postgres/positions_repo.py
+  s_8af57e4ef74563::t_875a8509c2ed93 408-481
+tests/test_positions_repo_set_position_size.py
+  s_8af57e4ef74563::t_dc0eb25241916b 1-154
+services/manual_sync_service.py
+  s_8af57e4ef74563::t_6ebf87a62c65b9 570
+  s_8af57e4ef74563::t_15ae9bc74f88e4 663,665-671,677-678,680-685
+tests/test_manual_sync_service.py
+  s_8af57e4ef74563::t_6e616d8a461a00 430,462,600,818
+  s_8af57e4ef74563::t_1679a4c09f2780 495-498
+  s_8af57e4ef74563::t_890582b255ae55 75
+  s_8af57e4ef74563::t_38ff7d9d859fe3 257,494,625,663,848
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.6",
+  "base_commit_sha": "8404f7fa47cce984ef8ebdab4123b744ad79855b",
+  "prompts": {},
+  "sessions": {
+    "s_8af57e4ef74563": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f8bc636e-c49c-4009-b8b6-c47aa7d65a7a",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
