@@ -1,0 +1,21 @@
+tests/test_exit_policy_decimal_boundary.py
+  s_8af57e4ef74563::t_faa6a464b1dca0 1-92
+services/risk/exit_policy.py
+  s_8af57e4ef74563::t_82846207d9e852 57-63,66,71-72,76
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.6",
+  "base_commit_sha": "8bd06bbad358a70ac80d6c1862a167eef4a9d8d5",
+  "prompts": {},
+  "sessions": {
+    "s_8af57e4ef74563": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f8bc636e-c49c-4009-b8b6-c47aa7d65a7a",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
