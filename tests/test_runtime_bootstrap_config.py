@@ -210,6 +210,28 @@ async def test_expired_reservation_callback_reconciles_order_row_linked_only_by_
         async def append_fill(self, fill, raw_payload=None):
             self.fills.append((fill, raw_payload))
 
+        async def append_fill_and_apply(self, record, positions_repo, *, raw_payload=None):
+            # Mirror FillsRepo.append_fill_and_apply (P0-1): dedup on dedup_key,
+            # else append + apply the position delta. (0, None) on a duplicate.
+            seen = getattr(self, "_applied_keys", None)
+            if seen is None:
+                seen = self._applied_keys = set()
+            key = (record.order_id, record.side, getattr(record, "dedup_key", None))
+            if key[2] is not None and key in seen:
+                return 0, None
+            seen.add(key)
+            await self.append_fill(record, raw_payload=raw_payload)
+            updated = await positions_repo.apply_fill(
+                user_id=record.user_id,
+                leader_id=record.leader_id,
+                condition_id=record.condition_id,
+                token_id=record.token_id,
+                side=record.side,
+                fill_size=record.size_tokens,
+                fill_price=record.price,
+            )
+            return 1, updated
+
     class _PositionsRepo:
         def __init__(self):
             self.applied = []
