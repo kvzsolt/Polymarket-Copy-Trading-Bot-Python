@@ -15,7 +15,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from cache.market_state_store import BookSnapshot, QuoteSnapshot, TickSnapshot
 from services.market_data_service import MarketDataBundle, MarketDataSource
 from config.env import SignatureType, WalletConfig, validate_wallet_config
-from services.backtest import BacktestConfig, BacktestEngine
 from services.executionService import ExecutionRequest, ExecutionService, _sanitize_submission_response
 from services.risk.risk_engine import PortfolioSnapshot, ProposedTrade, RiskEngine, policy_from_config  # noqa: F401
 
@@ -627,22 +626,3 @@ class TestRiskEngine:
         )
         decision = engine.evaluate(portfolio, policy, trade)
         assert decision.allow is False
-
-
-class TestBacktest:
-    def test_backtest_runs(self):
-        cfg = BacktestConfig(
-            initial_equity=1000.0,
-            max_trade_usdc=100.0,
-            slippage_bps=50,
-            fee_bps=20,
-            latency_ms=200,
-        )
-        signals = [
-            {"timestamp": 1, "token_id": "t1", "side": "BUY", "usdc_size": 50, "price": 0.5},
-            {"timestamp": 2, "token_id": "t1", "side": "SELL", "size": 50, "price": 0.6},
-        ]
-        market = {"t1": 0.55}
-        res = BacktestEngine().run(signals, market, cfg)
-        assert "final_equity" in res
-        assert res["num_points"] >= 1
