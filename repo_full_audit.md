@@ -406,6 +406,38 @@ Each carries a regression test (real-Postgres behavioural where the guard lives 
 
 ---
 
+## Post-Audit Fixes Applied — P0-2 reversal + P2 / P3 / P2-a (later passes)
+
+After the P0/P1 run, the owner reversed the P0-2 decision and the P2/P3 tail was implemented (subagent-orchestrated, orchestrator-verified, one commit per finding) on `fix/develop-runtime-hardening`.
+
+| Commit | Finding | Change |
+|---|---|---|
+| `299c5a2` | **P0-2** (reversed) | `LIVE_TRADING=enabled` master switch; default + unknown ⇒ paper; live ⇒ doctor-or-die **fail-stop** (any doctor failure prints the exact error and exits — no silent degrade to paper); tier resolver fails closed to `watchlist`; Docker/compose drop `PAPER_TRADE_ONLY` so the switch is the single gate |
+| `692fc85` | **P2-c / P2-d** | reject `NaN`/`Inf` floats (`math.isfinite`); wire `CIRCUIT_FAILURE_THRESHOLD` from typed config into the breaker; align drifted `env.py` defaults |
+| `12f6665` | **P2-b / P2-r** | `_BoundedAcquirePool` adds an `acquire()` timeout + server-side `statement_timeout` / `idle_in_transaction_session_timeout`; `Decimal(str(...))` in the atomic ledger writer. (Also carried the P1-g `orders.`-qualified `ON CONFLICT` SQL fix.) |
+| `ea33c86` | **P2-i / P2-j / P2-k / P2-l** | `asyncio.timeout` around each SDK GET; `_classify_error` status-code-first; `cancel_order` 404 ⇒ terminal `already_gone`; neg-risk fail-closed when neither V2 nor book is determinable |
+| `4b32c5a` | P0-1 / P1-g regression | dedup-aware `append_fill_and_apply` added to 3 reconciler test fakes (real-PG surfaced the gaps) |
+| `8bd06bb` | **P2-f** (+ P2-p exit part) | exit-trigger stop/take-profit/trailing comparisons kept in `Decimal` (no float-ULP boundary drift) |
+| `2db2d5c` | **P2-m / P2-e** | SELL fails closed when live holdings are unknown (`None`), releasing the atomic claim via `retryable_failed`; fee-aware BUY affordability gate (`notional × (1 + fee_bps/1e4)` vs free cash) before the reservation — fees gate only, sizing + idempotency-key inputs untouched |
+| `9af2d57` | **P2-g / P2-h** | `/health/ready` fails on a ticked-then-stale loop heartbeat (flap-safe: ts≤0 not reported); guarded `set_cursor` persist (no monitor crash on a transient PG blip); leader-monitor crash decrements `monitored_leader_count` |
+| `5e15cd5` | **P2-q** | `bot run` propagates `app.main()`'s exit code (fail-closed exits no longer report success) |
+| `9097396` | **P3** | delete dead `services/backtest.py`, the shadowed `services/compliance.py` flat-file + its dead facade, and the stray root `test.py` |
+| `39a160b` | **P2-a** | money-path type-correctness (`_raise_classified -> NoReturn`; gateway `condition_id` fail-closed; `http_client` `raise None` guard; `gather` result guards widened to `BaseException`) + a **blocking** `--follow-imports=silent` mypy gate over the order-signing + HTTP spine; global mypy stays soft-fail |
+
+Each carries a regression/behavioural test; the whole touched set is green (real-PG where the guard lives in SQL). Whole-repo `compileall` + CI-parity hard ruff pass; scoped money-path mypy went 129 → 122 errors with the two spine files now blocking-clean.
+
+**Deferred / scoped out (documented, not silently dropped):**
+
+- **P2-o** — the legacy `services/reconciliation.py` was **kept**, not retired. It is a bulk venue open-order **drift sweeper** (`reconcile() -> stale_orders_cancelled`) that the live `bot orders` / `bot reconcile` CLI commands consume; the new per-order `ReconciliationService` exposes no equivalent bulk-sweep entrypoint, so there is no clean redirect. Retiring it needs a dedicated task (build a bulk-sweep method on the new reconciler first). Retiring it blindly would have removed an operator pre-live tool — refused per the "do not weaken reconciliation protections" constraint.
+- **P2-p (realized-PnL part)** — the `reconciliation_service.py:1382,1410` `Decimal→float→Decimal` round-trip feeding scoring is **not** fixed here (only the `exit_policy.py` exit-trigger comparisons were). Deferred.
+- **P2-h (restart part)** — a crashed leader monitor's count is now corrected, but auto-restart still relies on dynamic discovery; true restart-on-crash lives in `orchestrators/runtime_monitor.py` (out of the supervision file set). Deferred.
+- **P2-n** — excluded: the `below_minimum` gate flag already exists; only an optional operator-suppress config remained (not a safety gap).
+- **P3 kept (NOT dead, contrary to the condensed list):** `utils/idempotency.py` (re-exported by `utils/__init__` + `config/app_config`), `services/position_action_coordinator.py` (snake_case shim with a tested identity contract), `services/marketStructureService.py` (safety-relevant reconciliation logic with a live backing repo — confirm intent before deleting).
+
+**Rating after these fixes:** with P0-2 now a fail-stop master switch (no paper fallback on doctor failure) and the P2/P3 tail closed, the headline residual is **P1-n** (the release-gate duplicate-order / crash-recovery invariants still run AST-only, not behaviourally). Money/ledger, settlement, gateway-isolation, config-fail-closed, and supervision axes are materially hardened. Rating moves to 🟡 **YELLOW** once P1-n's behavioural invariants actually execute and pass; live trading stays blocked until the full CLAUDE.md live-gate checklist is satisfied.
+
+---
+
 ## Appendix — Verification Verdicts and Refuted Suspects
 
 **Adversarially verified:** P0-1 (CONFIRMED — no enclosing transaction, bare-except watermark, wall-clock dedup, no missed guard); P1-a 5xx-duplicate (CONFIRMED — wrapper catches the exception and returns a string-classified dict; gateway `_classify_error` is never reached for the POST path; SDK raises `PolyApiException(status_code=5xx)` proven in installed source); P1-b manual-sync race (CONFIRMED, downgraded to P1 — new-row double-count guarded by a 45s holdoff, residual lost-update on existing rows); P0-2 paper gate (CONFIRMED — both flags default False, no master switch, Docker/compose mitigate container deploys only).
