@@ -1,0 +1,36 @@
+tests/test_connection_pool_timeouts.py
+  s_8af57e4ef74563::t_91c76ee8b3f220 1-19,22-32,34-245,281-283,285-290,313-314,316
+  s_8af57e4ef74563::t_1af2bb53340040 20-21
+  s_8af57e4ef74563::t_c86cfc8ad293f9 246,256-258
+  s_8af57e4ef74563::t_b7b70a54539a8f 247-255,259-280,284,291-312,315
+  s_8af57e4ef74563::t_1ed5ffe70e3111 33
+storage/postgres/connection.py
+  s_8af57e4ef74563::t_58df22350d80c3 173-174,176-180,182-191
+  s_8af57e4ef74563::t_d2604eccf19981 42-50,78
+  s_8af57e4ef74563::t_e4be680bd52093 51-77
+  s_8af57e4ef74563::t_567b6fb80ffb9f 138-144,150-152,154,158-159,163-165
+  s_8af57e4ef74563::t_60c8e390add02a 98-100,107-116
+  s_8af57e4ef74563::t_90eb372fa4ee25 15-26
+  s_8af57e4ef74563::t_082cc53d5673b5 170-172,175,181,192-193
+storage/postgres/orders_repo.py
+  s_8af57e4ef74563::t_395ef3f6a1a169 115-120,123-124
+  s_8af57e4ef74563::t_40f851b64a8f28 1114-1115
+  s_8af57e4ef74563::t_d6317bb7f2dbc4 1057-1060
+  s_8af57e4ef74563::t_9f56f72da38e6e 1125
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.6",
+  "base_commit_sha": "12f6665dc0231de2b509de8842364a9af8094f30",
+  "prompts": {},
+  "sessions": {
+    "s_8af57e4ef74563": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f8bc636e-c49c-4009-b8b6-c47aa7d65a7a",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
