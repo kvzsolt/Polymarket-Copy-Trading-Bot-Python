@@ -721,6 +721,17 @@ class _Supervised:
         return self.task
 
 
+def _live_monitor_count(monitor_tasks: list[asyncio.Task]) -> int:
+    """Count leader-monitor tasks that are still running.
+
+    P2-h accounting helper: after a leader monitor crashes (its task is
+    ``done`` at that point), the readiness ``monitored_leader_count`` gauge must
+    be re-derived from the survivors so health/metrics stop advertising a
+    monitor that no longer exists. Kept pure for unit-testing.
+    """
+    return sum(1 for task in monitor_tasks if not task.done())
+
+
 def _on_supervised_crash(spec: _Supervised, now: float) -> str:
     """Pure restart decision for a crashed supervised loop.
 
@@ -1404,6 +1415,21 @@ async def main() -> int:
 
     metrics_runner = None
 
+    # P2-g: derive the strict-readiness heartbeat staleness budget from the
+    # slowest monitored loop interval (trade-poll FETCH_INTERVAL vs risk
+    # RISK_CHECK_INTERVAL), times 3 — mirroring the per-loop lag tolerance in
+    # ``tradeMonitor._monitor_loop_healthy``. ReadinessTracker floors this so a
+    # sub-second poll interval cannot produce a flappy budget. Configured BEFORE
+    # the metrics server begins serving /health/ready so a loop that dies after
+    # ticking flips the endpoint to 503 instead of staying green.
+    _slowest_loop_interval = max(
+        float(application.config.polling.fetch_interval),
+        float(application.config.polling.risk_check_interval),
+    )
+    application.readiness.configure_heartbeat_budget(
+        staleness_seconds=_slowest_loop_interval * 3.0,
+    )
+
     if application.config.network.enable_metrics_server:
         metrics_runner = await start_health_server(
             application.config.network.metrics_port,
@@ -1667,13 +1693,23 @@ async def main() -> int:
                 exc = task.exception()
 
                 if spec is None:
-                    # Leader monitor: existing behavior — log and drop; dynamic
-                    # discovery re-introduces monitors as leaders change.
+                    # Leader monitor: log and drop; dynamic discovery
+                    # re-introduces monitors as leaders change. P2-h: a crashed
+                    # leader monitor used to leave ``monitored_leader_count``
+                    # advertising a monitor that no longer exists, so health /
+                    # metrics over-reported live coverage. Re-derive the count
+                    # from the still-live monitor tasks (the crashed one is
+                    # ``done`` here) so the gauge reflects reality and an
+                    # operator can see coverage dropped.
                     if exc:
                         logger.error(
                             "monitor_task_crashed",
                             extra={"error": redact_error_detail(exc)},
                         )
+                    metrics.inc("leader_monitor_crashed_total")
+                    application.readiness.update(
+                        monitored_leader_count=_live_monitor_count(monitor_tasks)
+                    )
                     continue
 
                 if exc is None:

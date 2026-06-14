@@ -43,3 +43,29 @@ def test_custom_budget_is_respected():
 
     assert app._on_supervised_crash(spec, 0.0) == "restart"
     assert app._on_supervised_crash(spec, 0.0) == "fail_closed"
+
+
+# --- P2-h: crashed leader monitor must be excluded from the live-count gauge ---
+
+
+class _FakeTask:
+    def __init__(self, done: bool):
+        self._done = done
+
+    def done(self) -> bool:
+        return self._done
+
+
+def test_live_monitor_count_excludes_done_tasks():
+    tasks = [_FakeTask(done=False), _FakeTask(done=True), _FakeTask(done=False)]
+    # One crashed/finished monitor (done=True) must not be counted.
+    assert app._live_monitor_count(tasks) == 2
+
+
+def test_live_monitor_count_zero_when_all_done():
+    tasks = [_FakeTask(done=True), _FakeTask(done=True)]
+    assert app._live_monitor_count(tasks) == 0
+
+
+def test_live_monitor_count_empty_list():
+    assert app._live_monitor_count([]) == 0
