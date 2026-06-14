@@ -1,0 +1,20 @@
+repo_full_audit.md
+  s_8af57e4ef74563::t_3c88abe9ce2bf7 438-440
+  s_8af57e4ef74563::t_529b3d2c95fb60 426
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.6",
+  "base_commit_sha": "055431c41b6b1b61dff8804dae3222cc0b35bc03",
+  "prompts": {},
+  "sessions": {
+    "s_8af57e4ef74563": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f8bc636e-c49c-4009-b8b6-c47aa7d65a7a",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
