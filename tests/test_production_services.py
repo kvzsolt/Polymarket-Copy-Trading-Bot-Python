@@ -132,7 +132,13 @@ class _Repo:
     # Atomic submission lock stubs — issue #95: ExecutionService now requires
     # ``try_acquire_submission_lock`` or fails closed.  These in-memory stubs
     # are adequate for unit tests that don't exercise concurrent submissions.
-    async def try_acquire_submission_lock(self, key, user_id, leader_id, request_payload):
+    async def try_acquire_submission_lock(
+        self, key, user_id, leader_id, request_payload, *, stale_takeover_seconds=300
+    ):
+        # Mirror the real OrdersRepo signature — P1-n added the keyword-only
+        # ``stale_takeover_seconds`` so execute() can take a confirmed-expired
+        # lock over at the pending-TTL threshold. These stubs don't model
+        # concurrency, so always acquire.
         return True  # always succeed in tests
 
     async def is_submission_locked(self, key):
