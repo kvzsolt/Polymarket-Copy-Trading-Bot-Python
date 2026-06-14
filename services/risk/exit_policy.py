@@ -54,20 +54,26 @@ def evaluate_exit(
     if entry_price <= 0 or current_price <= 0:
         return ExitDecision(should_exit=False, reason="invalid_prices")
 
-    pnl_pct = float((current_price - entry_price) / entry_price)
+    # Keep the trigger comparisons in Decimal so a threshold sitting exactly on
+    # the boundary fires deterministically. Casting the PnL ratio to float here
+    # (P2-f / P2-p) let the compare drift by a few ULPs, so a stop-loss placed
+    # precisely at the configured pct could silently fail to trigger. The
+    # thresholds arrive as float config values; widen them to Decimal at the
+    # boundary instead of narrowing the ratio to float.
+    pnl_pct = (current_price - entry_price) / entry_price
 
     # Stop loss
-    if stop_loss_pct > 0 and pnl_pct <= -stop_loss_pct:
+    if stop_loss_pct > 0 and pnl_pct <= -Decimal(str(stop_loss_pct)):
         return ExitDecision(should_exit=True, reason="stop_loss", size_fraction=1.0)
 
     # Trailing stop
     if trailing_stop_pct > 0 and trailing_high is not None and trailing_high > 0:
-        drop_from_high = float((trailing_high - current_price) / trailing_high)
-        if drop_from_high >= trailing_stop_pct:
+        drop_from_high = (trailing_high - current_price) / trailing_high
+        if drop_from_high >= Decimal(str(trailing_stop_pct)):
             return ExitDecision(should_exit=True, reason="trailing_stop", size_fraction=1.0)
 
     # Take profit
-    if take_profit_pct > 0 and pnl_pct >= take_profit_pct:
+    if take_profit_pct > 0 and pnl_pct >= Decimal(str(take_profit_pct)):
         return ExitDecision(should_exit=True, reason="take_profit", size_fraction=1.0)
 
     return ExitDecision(should_exit=False, reason="ok")
