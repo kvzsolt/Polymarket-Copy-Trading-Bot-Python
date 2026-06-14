@@ -1,0 +1,26 @@
+tests/test_trade_pipeline_buy_fee_affordability.py
+  s_8af57e4ef74563::t_49c6bee42441a7 1-106
+orchestrators/trade_pipeline.py
+  s_8af57e4ef74563::t_db18372a8a60c9 1216-1262
+  s_8af57e4ef74563::t_7d9cc294bd91f4 2402-2441,2460-2461
+  s_8af57e4ef74563::t_aedeade49aca02 2100-2174
+  s_8af57e4ef74563::t_ad67c85f7c16e1 2442-2459
+tests/test_trade_pipeline_sell_clamp_failclosed.py
+  s_8af57e4ef74563::t_bb5dea4f13ba14 1-126
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.6",
+  "base_commit_sha": "2db2d5ce65338e8d326b98912064a4b8a80b3fd7",
+  "prompts": {},
+  "sessions": {
+    "s_8af57e4ef74563": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f8bc636e-c49c-4009-b8b6-c47aa7d65a7a",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
