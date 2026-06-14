@@ -515,7 +515,7 @@ async def _prefetch_market_data_rest_snapshot(
         return_exceptions=True,
     )
     for entry in results:
-        if isinstance(entry, Exception):
+        if isinstance(entry, BaseException):
             logger.warning(
                 "trade_pipeline_market_data_snapshot_rejected | reason=gather_error error=%r",
                 entry,
@@ -626,7 +626,7 @@ async def _prefetch_market_data_wss(
             sides_by_token.setdefault(signal.token_id, set()).add(side)
 
     for entry in results:
-        if isinstance(entry, Exception):
+        if isinstance(entry, BaseException):
             logger.warning(
                 "trade_pipeline_market_data_prefetch_error | error=%s",
                 repr(entry),

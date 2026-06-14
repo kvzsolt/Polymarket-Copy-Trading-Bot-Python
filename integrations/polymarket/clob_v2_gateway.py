@@ -17,7 +17,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP
-from typing import Any
+from typing import Any, NoReturn
 
 # Lazy imports for py-clob-client-v2 — SDK may not be installed in test/lint environments.
 try:
@@ -41,7 +41,7 @@ except ImportError:  # pragma: no cover
     from dataclasses import dataclass
 
     @dataclass
-    class OrderPayload:
+    class OrderPayload:  # type: ignore[no-redef]
         """Minimal fallback when py_clob_client_v2 is not installed."""
 
         orderID: str
@@ -294,7 +294,7 @@ def _classify_error(exc: Exception) -> tuple[bool, str]:
     return False, "unknown"
 
 
-def _raise_classified(exc: Exception) -> None:
+def _raise_classified(exc: Exception) -> NoReturn:
     """Raise the appropriate typed venue error based on classification.
 
     Issue #100: an *unknown* exception (no substring match in
@@ -519,6 +519,11 @@ class ClobV2Gateway:
             size=str(request.size),
             price=str(request.price),
         )
+        if not request.condition_id:
+            # Fail closed: condition_id selects the neg-risk exchange at signing.
+            # Missing it means we cannot prove the correct venue, so refuse to
+            # submit rather than sign for a possibly-wrong market (P2-a).
+            return VenueSubmitResult(success=False, error="missing_condition_id")
         try:
             result = await self._client.post_order(args, condition_id=request.condition_id)
         except Exception as exc:
@@ -595,6 +600,10 @@ class ClobV2Gateway:
     # --- Order state -----------------------------------------------------------
 
     async def get_order(self, order_id: str) -> VenueOrderState:
+        # raw is assigned inside the retry loop's try; init defensively so the
+        # ``isinstance(raw, dict)`` guard below stays well-defined even on the
+        # (unreachable) no-iteration path now that _raise_classified is NoReturn.
+        raw: Any = None
         """Fetch the current state of an order from the venue."""
         client = self._require_raw_client()
         loop = asyncio.get_running_loop()
