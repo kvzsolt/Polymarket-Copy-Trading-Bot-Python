@@ -1,0 +1,23 @@
+tests/test_reconciliation_delta_anomaly.py
+  s_8af57e4ef74563::t_123f3b3eb23d33 64-85
+tests/test_runtime_bootstrap_config.py
+  s_8af57e4ef74563::t_9cb1a3a08493e5 213-234
+tests/test_reconciler_idempotent_transitions.py
+  s_8af57e4ef74563::t_3c264873159a9d 76-97
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.6",
+  "base_commit_sha": "4b32c5a2e0c0711dcae7f0478a9e18f61f66dc76",
+  "prompts": {},
+  "sessions": {
+    "s_8af57e4ef74563": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f8bc636e-c49c-4009-b8b6-c47aa7d65a7a",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
