@@ -112,10 +112,16 @@ _DIRECT_EXPIRABLE_STALE_LOCK_STATUSES = (
     "submitting",
     "pending",
 )
+# Columns are qualified with ``orders.`` so this expression is unambiguous
+# inside an ``INSERT ... ON CONFLICT DO UPDATE ... WHERE`` clause (where both the
+# target ``orders`` row and the ``excluded`` pseudo-row expose the same column
+# names). The qualification is also valid in the plain ``FROM orders`` SELECTs
+# that use this expression (P1-g follow-up: bare names raised AmbiguousColumnError
+# in the takeover path).
 _STALE_LOCK_AGE_EXPR = """
 COALESCE(
-    (response_json->>'pending_since')::float8::bigint,
-    EXTRACT(EPOCH FROM COALESCE(updated_at, created_at))::bigint
+    (orders.response_json->>'pending_since')::float8::bigint,
+    EXTRACT(EPOCH FROM COALESCE(orders.updated_at, orders.created_at))::bigint
 )
 """
 
@@ -1048,8 +1054,10 @@ class OrdersRepo(AbstractOrderRepository):
                         if current:
                             cur_size = Decimal(str(current["size_tokens"] or "0"))
                             cur_avg = Decimal(str(current["avg_entry_price"] or "0"))
-                            new_fill = Decimal(fill_size)
-                            new_price = Decimal(fill_price)
+                            # P2-r: str()-wrap so a float caller can't inject
+                            # binary-float noise into the avg-price math.
+                            new_fill = Decimal(str(fill_size))
+                            new_price = Decimal(str(fill_price))
                             new_size = cur_size + new_fill
                             if new_size > 0:
                                 avg = (
@@ -1103,7 +1111,8 @@ class OrdersRepo(AbstractOrderRepository):
                     elif side_u == "SELL":
                         if current:
                             cur_size = Decimal(str(current["size_tokens"] or "0"))
-                            if Decimal(fill_size) > cur_size:
+                            # P2-r: str()-wrap (defensive; matches file convention).
+                            if Decimal(str(fill_size)) > cur_size:
                                 logger.warning(
                                     "Atomic SELL fill exceeds held size; clamping "
                                     "user=%s cond=%s token=%s fill_size=%s current_size=%s",
@@ -1113,7 +1122,7 @@ class OrdersRepo(AbstractOrderRepository):
                                     fill_size,
                                     current["size_tokens"],
                                 )
-                            sell_size = min(Decimal(fill_size), cur_size)
+                            sell_size = min(Decimal(str(fill_size)), cur_size)
                             new_size = cur_size - sell_size
                             if new_size <= Decimal("1e-12"):
                                 await conn.execute(
