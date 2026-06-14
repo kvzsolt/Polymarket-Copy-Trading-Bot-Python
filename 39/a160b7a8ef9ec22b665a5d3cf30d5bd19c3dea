@@ -1,0 +1,30 @@
+clients/network/http_client.py
+  s_8af57e4ef74563::t_885a484a6cae26 106-111
+.github/workflows/ci.yml
+  s_8af57e4ef74563::t_8b0504286c548a 119-131
+orchestrators/trade_pipeline.py
+  s_8af57e4ef74563::t_f9336b02962026 518
+  s_8af57e4ef74563::t_2cee01f063446c 629
+integrations/polymarket/clob_v2_gateway.py
+  s_8af57e4ef74563::t_b08d27f82de497 522-526
+  s_8af57e4ef74563::t_76253412fd733e 603-606
+  s_8af57e4ef74563::t_a4b40c544daeda 44
+  s_8af57e4ef74563::t_b63910671e30b3 297
+  s_8af57e4ef74563::t_875562e3ed7638 20
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.6",
+  "base_commit_sha": "39a160b7a8ef9ec22b665a5d3cf30d5bd19c3dea",
+  "prompts": {},
+  "sessions": {
+    "s_8af57e4ef74563": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f8bc636e-c49c-4009-b8b6-c47aa7d65a7a",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
