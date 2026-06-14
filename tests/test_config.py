@@ -389,6 +389,42 @@ class TestMalformedValues:
         cfg = load_config(valid_env)
         assert cfg.execution.reservation_ttl_seconds == 45
 
+    # P2-c — NaN/Inf are valid float() inputs but corrupt downstream gates
+    # (slippage, spread). Fail closed: load_config must raise rather than
+    # silently accept a non-finite numeric config value.
+    @pytest.mark.parametrize("bad_value", ["nan", "NaN", "inf", "Inf", "-inf", "infinity"])
+    def test_slippage_tolerance_rejects_non_finite(
+        self, valid_env: dict[str, str], bad_value: str
+    ) -> None:
+        valid_env["SLIPPAGE_TOLERANCE"] = bad_value
+        with pytest.raises(
+            EnvValidationError,
+            match="SLIPPAGE_TOLERANCE must be a finite number",
+        ):
+            load_config(valid_env)
+
+    @pytest.mark.parametrize("bad_value", ["inf", "nan", "-inf"])
+    def test_max_book_spread_bps_rejects_non_finite(
+        self, valid_env: dict[str, str], bad_value: str
+    ) -> None:
+        # MAX_BOOK_SPREAD_BPS is an int field; int("inf") already raises, but
+        # assert the fail-closed contract holds for the spread gate too.
+        valid_env["MAX_BOOK_SPREAD_BPS"] = bad_value
+        with pytest.raises(EnvValidationError):
+            load_config(valid_env)
+
+    def test_float_or_auto_rejects_non_finite(
+        self, valid_env: dict[str, str]
+    ) -> None:
+        # TRAILING_ACTIVATION_PCT uses the float_or_auto path; 'inf' is not
+        # 'auto' and must not slip through as a finite trailing trigger.
+        valid_env["TRAILING_ACTIVATION_PCT"] = "inf"
+        with pytest.raises(
+            EnvValidationError,
+            match="TRAILING_ACTIVATION_PCT must be a finite number",
+        ):
+            load_config(valid_env)
+
 
 # ---------------------------------------------------------------------------
 # Semantic / cross-field invariants

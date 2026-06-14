@@ -402,6 +402,20 @@ class ExecutionService:
         if circuit_breaker is not None:
             self.circuit_breaker = circuit_breaker
         else:
+            # P2-d: honor ``execution.circuit_failure_threshold`` from typed
+            # config on the shared module breaker so the config value is not
+            # dead (it previously hardcoded failure_threshold=5). We only
+            # reconfigure the shared default — an explicitly injected breaker
+            # above keeps its own threshold. The shared instance is preserved
+            # (we mutate the threshold, not the object) so multi-user runtimes
+            # still share one venue-wide backoff window.
+            configured_threshold = getattr(
+                getattr(config, "execution", None),
+                "circuit_failure_threshold",
+                None,
+            )
+            if isinstance(configured_threshold, int) and configured_threshold > 0:
+                _CLOB_CIRCUIT.failure_threshold = configured_threshold
             self.circuit_breaker = _CLOB_CIRCUIT
 
         # Typed concurrency cap; raw env fallback survives only for legacy

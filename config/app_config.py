@@ -23,6 +23,7 @@ Design notes
 from __future__ import annotations
 
 import logging
+import math
 import re
 from collections.abc import Mapping
 from decimal import Decimal
@@ -116,31 +117,55 @@ class _Parser:
     def string(self, key: str, default: str = "") -> str:
         return self._strip(key, self.raw(key, default))
 
+    def _finite_or_error(self, key: str, value: float, *, default: str) -> float:
+        """Reject NaN / +/-Inf for numeric config (P2-c, fail-closed).
+
+        ``float("nan")`` / ``float("inf")`` parse without error but corrupt
+        every downstream comparison gate (slippage tolerance, spread caps),
+        so a non-finite value must surface as a config error rather than be
+        accepted silently. We inline the check here instead of reusing
+        ``config.validation`` because those helpers couple finiteness to a
+        sign check and raise eagerly, whereas this parser accumulates errors
+        and raises once in ``load_config``.
+        """
+        if not math.isfinite(value):
+            self.errors.append(f"{key} must be a finite number, got: {value!r}")
+            try:
+                fallback = float(default)
+            except ValueError:
+                return 0.0
+            return fallback if math.isfinite(fallback) else 0.0
+        return value
+
     def float_(self, key: str, default: str) -> float:
         raw = self._strip(key, self.raw(key, default))
         if raw == "":
             raw = default
         try:
-            return float(raw)
+            value = float(raw)
         except ValueError:
             self.errors.append(f"{key} must be a valid float, got: {raw!r}")
             try:
-                return float(default)
+                value = float(default)
             except ValueError:
                 return 0.0
+            return value if math.isfinite(value) else 0.0
+        return self._finite_or_error(key, value, default=default)
 
     def float_or_auto(self, key: str, default: str) -> float | None:
         raw = self._strip(key, self.raw(key, default))
         if raw == "" or raw.lower() == "auto" or raw.startswith("#"):
             return None
         try:
-            return float(raw)
+            value = float(raw)
         except ValueError:
             self.errors.append(f"{key} must be a valid float or 'auto', got: {raw!r}")
             try:
-                return float(default)
+                value = float(default)
             except ValueError:
                 return 0.0
+            return value if math.isfinite(value) else 0.0
+        return self._finite_or_error(key, value, default=default)
 
     def int_(self, key: str, default: str) -> int:
         raw = self._strip(key, self.raw(key, default))

@@ -139,3 +139,55 @@ async def test_venue_unavailable_trips_circuit_after_threshold():
     # Each ambiguous venue-unavailable submission must have recorded a failure;
     # after the threshold the breaker opens and stops POSTing into a dead venue.
     assert breaker.allow_request() is False
+
+
+def test_shared_breaker_honours_config_failure_threshold():
+    """P2-d: when no breaker is injected the service falls back to the shared
+    module breaker, which must adopt ``config.execution.circuit_failure_threshold``
+    so the typed config value is not dead. Default-injected path only.
+    """
+    from services.executionService import _CLOB_CIRCUIT
+
+    original_threshold = _CLOB_CIRCUIT.failure_threshold
+    try:
+        cfg = _make_exec_config()
+        cfg.execution.circuit_failure_threshold = 11
+        gateway = MagicMock(spec=ClobGateway)
+        gateway.get_order = AsyncMock()
+        svc = ExecutionService(
+            _StubClob(),
+            _FeeSvc(),
+            _mock_order_repo(),
+            config=cfg,
+            clob_gateway=gateway,
+            market_data_service=_make_mds(),
+        )
+        # Default path returns the shared module breaker...
+        assert svc.circuit_breaker is _CLOB_CIRCUIT
+        # ...reconfigured from typed config (was the hardcoded module default).
+        assert svc.circuit_breaker.failure_threshold == 11
+    finally:
+        _CLOB_CIRCUIT.failure_threshold = original_threshold
+        _CLOB_CIRCUIT.reset()
+
+
+def test_injected_breaker_threshold_not_overwritten_by_config():
+    """An explicitly injected breaker keeps its own threshold — config only
+    drives the shared default, never an operator-supplied DI breaker.
+    """
+    cfg = _make_exec_config()
+    cfg.execution.circuit_failure_threshold = 99
+    breaker = CircuitBreaker("dedicated", failure_threshold=2, cooldown_seconds=60)
+    gateway = MagicMock(spec=ClobGateway)
+    gateway.get_order = AsyncMock()
+    svc = ExecutionService(
+        _StubClob(),
+        _FeeSvc(),
+        _mock_order_repo(),
+        config=cfg,
+        clob_gateway=gateway,
+        market_data_service=_make_mds(),
+        circuit_breaker=breaker,
+    )
+    assert svc.circuit_breaker is breaker
+    assert svc.circuit_breaker.failure_threshold == 2

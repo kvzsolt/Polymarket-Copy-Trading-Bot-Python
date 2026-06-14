@@ -571,7 +571,10 @@ def _build_env_snapshot() -> dict[str, object]:
     'PROFIT_LOCK_SELL_FRACTION': _float('PROFIT_LOCK_SELL_FRACTION', '0.50'),
 
     # Near-max price exits (default 0.95 = near 95c)
-    'ENABLE_NEAR_MAX_EXIT': os.getenv('ENABLE_NEAR_MAX_EXIT', 'false').strip().lower() in ('1', 'true', 'yes'),
+    # P2-d: aligned to the typed canonical default in config.app_config
+    # (FeatureFlagConfig.enable_near_max_exit defaults True). The legacy
+    # 'false' had drifted from the typed value.
+    'ENABLE_NEAR_MAX_EXIT': os.getenv('ENABLE_NEAR_MAX_EXIT', 'true').strip().lower() in ('1', 'true', 'yes'),
     'NEAR_MAX_PRICE_WARN': _float('NEAR_MAX_PRICE_WARN', '0.95'),
     'NEAR_MAX_PRICE_WARN_TRIM_RATIO': _float('NEAR_MAX_PRICE_WARN_TRIM_RATIO', '0.50'),
     'NEAR_MAX_PRICE_EXIT': _float('NEAR_MAX_PRICE_EXIT', '0.95'),
@@ -660,8 +663,12 @@ def _build_env_snapshot() -> dict[str, object]:
     # - relative_bps: ((ask-bid)/bid) * 10_000
     # - ticks: (ask-bid) / tick_size
     'BOOK_SPREAD_MODE': os.getenv('BOOK_SPREAD_MODE', 'absolute_bps').strip().lower(),
-    # Maximum acceptable book spread in bps for absolute_bps/relative_bps (0 = disabled). Default: 500.
-    'MAX_BOOK_SPREAD_BPS': _int('MAX_BOOK_SPREAD_BPS', '500'),
+    # Maximum acceptable book spread in bps for absolute_bps/relative_bps (0 = disabled).
+    # P2-d: aligned to the typed canonical default in config.app_config
+    # (ExecutionConfig.max_book_spread_bps == 2500). The legacy 500 had drifted
+    # from the typed value, so any transitional ENV-reading call site applied a
+    # tighter spread gate than the production AppConfig path.
+    'MAX_BOOK_SPREAD_BPS': _int('MAX_BOOK_SPREAD_BPS', '2500'),
     # Maximum acceptable spread in ticks when BOOK_SPREAD_MODE=ticks (0 = disabled).
     'MAX_BOOK_SPREAD_TICKS': _int('MAX_BOOK_SPREAD_TICKS', '0'),
     # Require fresh orderbook fetch for execution-time spread checks.
