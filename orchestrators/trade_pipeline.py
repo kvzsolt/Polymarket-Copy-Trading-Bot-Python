@@ -1213,6 +1213,53 @@ async def _resolve_buy_risk_cap(
     )
 
 
+def _buy_required_cash_with_fees(
+    notional_usdc: Decimal,
+    fee_bps: int,
+) -> Decimal:
+    """Cash a BUY actually consumes once venue fees are added (P2-e).
+
+    A BUY that is affordable on notional alone can still be unaffordable once
+    fees are charged on top. ``required_cash = notional * (1 + fee_bps/10_000)``
+    in Decimal so the headroom/affordability comparison never silently lets a
+    BUY through that the wallet cannot cover net-of-fees. Fees affect ONLY this
+    affordability gate — never order sizing or the effective-idempotency key.
+    """
+    if notional_usdc <= 0:
+        return Decimal("0")
+    fee_multiplier = Decimal("1") + (Decimal(int(fee_bps)) / Decimal("10000"))
+    return notional_usdc * fee_multiplier
+
+
+async def _buy_fee_bps_or_none(context: TradingContext, token_id: str) -> int | None:
+    """Best-effort venue fee in bps for the BUY affordability gate.
+
+    Returns ``None`` when no fee source is wired (configless/legacy/test paths)
+    so the caller can keep the pre-existing no-fee cash gates authoritative
+    instead of regressing previously-allowed trades. ``FeeService.get_fee_bps``
+    is itself cached and never raises (it falls back to its default bps), so a
+    non-None result is always a usable integer.
+    """
+    exec_service = getattr(context, "execution_service", None)
+    fee_service = getattr(exec_service, "fee_service", None)
+    getter = getattr(fee_service, "get_fee_bps", None)
+    if getter is None:
+        return None
+    try:
+        fee_bps = await getter(token_id)
+    except Exception as exc:  # defensive — get_fee_bps should not raise
+        logger.warning(
+            "buy_fee_lookup_failed | token=%s error=%s",
+            shorten_addr(token_id, 8, 6),
+            repr(exc),
+        )
+        return None
+    try:
+        return int(fee_bps)
+    except (TypeError, ValueError):
+        return None
+
+
 
 def normalize_signals(raw_signals: list[dict[str, Any]], leader_id: str) -> list[tuple[TradeSignal, dict[str, Any]]]:
     out: list[tuple[TradeSignal, dict[str, Any]]] = []
@@ -2050,6 +2097,81 @@ async def execute_trades(
                 # Use decision-gated notional (may be adjusted by scoring)
                 gated_notional = Decimal(str(decision.target_notional_usdc)) if decision.target_notional_usdc > 0 else target_notional
 
+                # --- P2-e: fee-aware affordability gate ---
+                # The upstream cash gates (headroom_for_buy / balance regime)
+                # compare against the BARE notional and ignore venue fees, so a
+                # BUY affordable on notional alone but NOT once fees are added
+                # could slip through. Compare required_cash = notional*(1+fee)
+                # against live free cash and fail closed if it does not fit. This
+                # runs BEFORE the regime reservation so a rejection never leaks a
+                # held reservation, and it does NOT alter sizing — the order
+                # amount stays exactly ``gated_notional``.
+                buy_fee_bps = await _buy_fee_bps_or_none(context, signal.token_id)
+                if buy_fee_bps is not None and buy_fee_bps > 0:
+                    required_cash_with_fees = _buy_required_cash_with_fees(
+                        gated_notional, buy_fee_bps
+                    )
+                    if required_cash_with_fees > snapshot.free_cash_usdc:
+                        reason = (
+                            f"insufficient cash for BUY net of fees: "
+                            f"need {required_cash_with_fees} "
+                            f"(notional {gated_notional} + {buy_fee_bps}bps), "
+                            f"free {snapshot.free_cash_usdc}"
+                        )
+                        skip_code = "insufficient_cash_with_fees"
+                        print_skip_reason("Insufficient cash (fees)", reason)
+                        logger.warning(
+                            "buy_insufficient_cash_with_fees | cond=%s leader=%s "
+                            "notional=%s fee_bps=%d required=%s free_cash=%s",
+                            signal.condition_id[:12],
+                            leader_id[:12],
+                            str(gated_notional),
+                            buy_fee_bps,
+                            str(required_cash_with_fees),
+                            str(snapshot.free_cash_usdc),
+                            extra={
+                                "type": skip_code,
+                                "user_id": context.user_id,
+                                "condition_id": signal.condition_id,
+                                "leader_id": leader_id,
+                                "notional_usdc": str(gated_notional),
+                                "fee_bps": buy_fee_bps,
+                                "required_cash_usdc": str(required_cash_with_fees),
+                                "free_cash_usdc": str(snapshot.free_cash_usdc),
+                            },
+                        )
+                        log_trade_skip(
+                            logger,
+                            side=signal.side,
+                            condition_id=signal.condition_id,
+                            asset=signal.token_id,
+                            size=float(signal.size) if signal.size else None,
+                            price=live_price,
+                            usdc_value=float(gated_notional),
+                            skip_code=skip_code,
+                            reason=reason,
+                            event_slug=signal.event_slug,
+                            meta={"user_id": context.user_id, "leader_id": leader_id},
+                        )
+                        metrics.inc(
+                            "trades_skipped_total",
+                            labels={**labels, "reason": skip_code},
+                        )
+                        await context.orders_repo.mark_processed_trade(
+                            trade_key=trade_key,
+                            user_id=context.user_id,
+                            leader_id=leader_id,
+                            tx_hash=signal.tx_hash,
+                            side=signal.side,
+                            asset=signal.token_id,
+                            condition_id=signal.condition_id,
+                            status=f"skipped_{skip_code}",
+                        )
+                        results.append(
+                            TradePipelineResult(trade_key, "skipped", skip_code, None)
+                        )
+                        continue
+
                 # --- Phase 4 balance regime gate ---
                 regime = getattr(context, "balance_regime", None)
                 if regime is not None:
@@ -2277,6 +2399,66 @@ async def execute_trades(
                         if venue_sell_cap <= Decimal("0") and live_sellable_tokens <= Decimal("0"):
                             await context.positions_repo.delete_position(context.user_id, signal.condition_id, token_id=signal.token_id)
                         max_sell_tokens = venue_sell_cap
+                else:
+                    # P2-m: live-holdings fetch returned None (transport error /
+                    # unknown). We cannot determine the on-chain sellable size,
+                    # so selling against the (possibly stale) DB position size is
+                    # unsafe — it can oversell or sell shares we no longer hold.
+                    # Fail closed: skip this SELL. ``None`` (unknown) is distinct
+                    # from ``Decimal("0")`` (known-zero), which the clamp above
+                    # already handles as a close/delete.
+                    reason = "live holdings unavailable — cannot confirm sellable size"
+                    skip_code = "sell_clamp_live_holdings_unavailable"
+                    print_skip_reason("SELL skipped", reason)
+                    logger.warning(
+                        "sell_clamp_live_holdings_unavailable | cond=%s leader=%s token=%s db_size=%.4f",
+                        signal.condition_id[:12],
+                        leader_id[:12],
+                        shorten_addr(signal.token_id, 8, 6),
+                        float(max_sell_tokens),
+                        extra={
+                            "type": skip_code,
+                            "user_id": context.user_id,
+                            "condition_id": signal.condition_id,
+                            "leader_id": leader_id,
+                            "token_id": signal.token_id,
+                            "db_position_size_tokens": float(max_sell_tokens),
+                        },
+                    )
+                    log_trade_skip(
+                        logger,
+                        side=signal.side,
+                        condition_id=signal.condition_id,
+                        asset=signal.token_id,
+                        size=float(requested_sell_tokens),
+                        price=live_price,
+                        usdc_value=float(signal.usdc_size),
+                        skip_code=skip_code,
+                        reason=reason,
+                        event_slug=signal.event_slug,
+                        meta={"user_id": context.user_id, "leader_id": leader_id},
+                    )
+                    metrics.inc("trades_skipped_total", labels={**labels, "reason": skip_code})
+                    # Transient/unknown — persist a RETRYABLE status (not a
+                    # terminal one). A missing live-holdings read is not a final
+                    # decision; the atomic claim above already inserted an
+                    # ``in_progress`` row, so we must downgrade it to
+                    # ``retryable_failed`` to release the claim and let the next
+                    # poll retry the protective SELL once the venue/data-API
+                    # recovers (same retryable status the transient venue-failure
+                    # path uses).
+                    await context.orders_repo.mark_processed_trade(
+                        trade_key=trade_key,
+                        user_id=context.user_id,
+                        leader_id=leader_id,
+                        tx_hash=signal.tx_hash,
+                        side=signal.side,
+                        asset=signal.token_id,
+                        condition_id=signal.condition_id,
+                        status=_RETRYABLE_FAILED_STATUS,
+                    )
+                    results.append(TradePipelineResult(trade_key, "skipped", skip_code, None))
+                    continue
 
                 leader_sell_fraction = _extract_leader_sell_fraction(raw) or Decimal("1")
                 sell_tokens = _resolve_leader_sell_tokens(
