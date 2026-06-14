@@ -1,0 +1,29 @@
+services/tradeMonitor.py
+  s_8af57e4ef74563::t_5d6ca712ae8664 408-439,619,637
+app.py
+  s_8af57e4ef74563::t_5d6ca712ae8664 724-734,1418-1432,1696-1703,1709-1712
+services/healthServer.py
+  s_8af57e4ef74563::t_5d6ca712ae8664 25-53,67-85,124-160,171-177,192-195
+tests/test_health_readiness.py
+  s_8af57e4ef74563::t_5d6ca712ae8664 6,8-32,77-206
+tests/test_supervised_retry_policy.py
+  s_8af57e4ef74563::t_5d6ca712ae8664 46-71
+tests/test_trade_monitor_cursor.py
+  s_8af57e4ef74563::t_5d6ca712ae8664 14,353-447
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.6",
+  "base_commit_sha": "9af2d577835183337a02fb02cd0b970ed4702944",
+  "prompts": {},
+  "sessions": {
+    "s_8af57e4ef74563": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f8bc636e-c49c-4009-b8b6-c47aa7d65a7a",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
