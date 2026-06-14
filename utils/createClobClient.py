@@ -175,6 +175,38 @@ def _safe_decimal(value: Any) -> Decimal | None:
         return None
 
 
+def _resolve_neg_risk_fail_closed(
+    asset: str,
+    neg_risk_v2: bool | None,
+    book_neg_risk: object | None,
+) -> bool:
+    """Resolve the market's neg_risk flag, failing closed when unknown (P2-j).
+
+    neg_risk decides WHICH exchange contract an order is signed for
+    (standard CTF exchange vs negative-risk exchange). Signing for the wrong
+    one produces an order the venue will reject — or worse, mis-routes against
+    the wrong contract family. So this value must never be *guessed*.
+
+    Precedence:
+    1. The authoritative V2 ``get_neg_risk`` result (``neg_risk_v2``) wins
+       when present — including a pre-fetched value threaded by the caller.
+    2. Otherwise fall back to the book's own ``neg_risk`` field when the book
+       actually reported one (tri-state ``True``/``False``; ``None`` = omitted).
+    3. If neither is determinable, raise. The caller (gateway → execution)
+       then never signs an order with a fabricated neg_risk — submission fails
+       closed instead of silently defaulting to ``False``.
+    """
+    if neg_risk_v2 is not None:
+        return bool(neg_risk_v2)
+    if book_neg_risk is not None:
+        return bool(book_neg_risk)
+    raise RuntimeError(
+        f"neg_risk indeterminate for {asset}: get_neg_risk failed and the "
+        "order book did not report neg_risk. Refusing to default to False — "
+        "signing with a guessed neg_risk would target the wrong exchange."
+    )
+
+
 def _response_order_id(response: Any) -> Any:
     if not isinstance(response, dict):
         return None
@@ -261,7 +293,12 @@ class _RawBook:
         self.asks = asks
         self.tick_size = tick_size
         self.min_order_size = min_order_size
-        self.neg_risk = bool(neg_risk) if neg_risk is not None else False
+        # Preserve the tri-state (P2-j): ``None`` means the book DID NOT report
+        # neg_risk (so it is unknown), distinct from an explicit ``False``.
+        # Collapsing omitted→False here previously let a transport-failed
+        # ``get_neg_risk`` silently sign a neg-risk order for the wrong
+        # exchange. ``get_market_meta`` now fails closed on the ``None`` case.
+        self.neg_risk = bool(neg_risk) if neg_risk is not None else None
 
 
 class ClobClientWrapper:
@@ -317,7 +354,9 @@ class ClobClientWrapper:
                         or data.get("minimum_order_size")
                         or data.get("order_min_size")
                     ),
-                    neg_risk=data.get("neg_risk", False),
+                    # Pass through ``None`` when the venue omits neg_risk so the
+                    # tri-state is preserved (P2-j). Do NOT default to False.
+                    neg_risk=data.get("neg_risk"),
                 )
         except Exception as exc:
             logger.warning("HTTP fallback (book) failed for %s: %s", asset, redact_error_detail(exc))
@@ -373,7 +412,13 @@ class ClobClientWrapper:
                 token_id=asset,
                 tick_size=tick_size_v2 if tick_size_v2 is not None else Decimal(str(getattr(orderbook, "tick_size", "0.01"))),
                 min_order_size=Decimal(str(getattr(orderbook, "min_order_size", "0"))),
-                neg_risk=neg_risk_v2 if neg_risk_v2 is not None else bool(getattr(orderbook, "neg_risk", False)),
+                # Fail closed if neg_risk cannot be determined (P2-j) instead of
+                # defaulting to False. ``getattr(..., None)`` keeps the book's
+                # tri-state: the SDK book always reports neg_risk; the HTTP
+                # ``_RawBook`` yields None when the venue omitted it.
+                neg_risk=_resolve_neg_risk_fail_closed(
+                    asset, neg_risk_v2, getattr(orderbook, "neg_risk", None)
+                ),
                 best_bid=_top_of_book_from_levels(bids, side="bid"),
                 best_ask=_top_of_book_from_levels(asks, side="ask"),
             )
@@ -418,7 +463,13 @@ class ClobClientWrapper:
                     token_id=asset,
                     tick_size=tick_size_v2 if tick_size_v2 is not None else Decimal(str(data.get("tick_size", "0.01"))),
                     min_order_size=Decimal(str(data.get("min_order_size", "0"))),
-                    neg_risk=neg_risk_v2 if neg_risk_v2 is not None else bool(data.get("neg_risk", False)),
+                    # Fail closed when neg_risk is indeterminate (P2-j): V2
+                    # ``get_neg_risk`` failed AND the /book payload omitted
+                    # neg_risk. ``data.get("neg_risk")`` (no False default)
+                    # preserves the tri-state the resolver keys on.
+                    neg_risk=_resolve_neg_risk_fail_closed(
+                        asset, neg_risk_v2, data.get("neg_risk")
+                    ),
                     best_bid=_top_of_book_from_levels(bids, side="bid"),
                     best_ask=_top_of_book_from_levels(asks, side="ask"),
                 )

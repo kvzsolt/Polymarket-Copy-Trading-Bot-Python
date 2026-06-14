@@ -390,6 +390,112 @@ class TestRefreshBypassesWrapperCache:
         assert meta.best_ask == Decimal("0.55")
 
 
+class TestNegRiskFailClosed:
+    """P2-j: neg_risk must never be guessed.
+
+    When ``get_neg_risk`` transport-fails AND the order book does not report a
+    neg_risk value, ``get_market_meta`` must fail closed (raise) rather than
+    silently defaulting to ``neg_risk=False`` — signing with a fabricated
+    neg_risk would target the wrong exchange contract. A determinate value
+    from V2 or from the book still resolves normally.
+    """
+
+    def _make_wrapper(self, *, neg_risk_raises, ob_neg_risk):
+        client = MagicMock()
+        client.get_tick_size.return_value = "0.01"
+        if neg_risk_raises:
+            client.get_neg_risk.side_effect = RuntimeError("V2 neg_risk transport down")
+        else:
+            client.get_neg_risk.return_value = False
+
+        ob = MagicMock()
+        ob.tick_size = "0.01"
+        ob.neg_risk = ob_neg_risk
+        ob.bids = []
+        ob.asks = []
+        ob.min_order_size = "5"
+        client.get_order_book.return_value = ob
+        return ClobClientWrapper(client, _dummy_wallet())
+
+    @pytest.mark.asyncio
+    async def test_v2_failed_and_book_omits_neg_risk_raises(self):
+        # ob.neg_risk = None means the book did NOT report neg_risk.
+        wrapper = self._make_wrapper(neg_risk_raises=True, ob_neg_risk=None)
+        with pytest.raises(RuntimeError, match="neg_risk indeterminate"):
+            await wrapper.get_market_meta("tok_indeterminate")
+
+    @pytest.mark.asyncio
+    async def test_v2_failed_but_book_reports_neg_risk_resolves(self):
+        # V2 down but the book explicitly reports neg_risk=True → use it.
+        wrapper = self._make_wrapper(neg_risk_raises=True, ob_neg_risk=True)
+        meta = await wrapper.get_market_meta("tok_book_true")
+        assert meta.neg_risk is True
+
+    @pytest.mark.asyncio
+    async def test_v2_value_takes_precedence_even_if_book_omits(self):
+        # V2 succeeds (False) and the book omits neg_risk → V2 wins, no raise.
+        wrapper = self._make_wrapper(neg_risk_raises=False, ob_neg_risk=None)
+        meta = await wrapper.get_market_meta("tok_v2_wins")
+        assert meta.neg_risk is False
+
+    @pytest.mark.asyncio
+    async def test_http_fallback_fails_closed_when_neg_risk_unknown(self):
+        # SDK book fetch raises → HTTP fallback path. V2 neg_risk down AND the
+        # /book payload omits neg_risk → fail closed.
+        client = MagicMock()
+        client.get_tick_size.return_value = "0.01"
+        client.get_neg_risk.side_effect = RuntimeError("V2 neg_risk transport down")
+        client.get_order_book.side_effect = RuntimeError("SDK book down")
+        wrapper = ClobClientWrapper(client, _dummy_wallet())
+
+        http_data = {  # NOTE: no "neg_risk" key
+            "bids": [{"price": "0.50"}],
+            "asks": [{"price": "0.55"}],
+            "tick_size": "0.01",
+            "min_order_size": "5",
+        }
+        mock_response = MagicMock()
+        mock_response.status = 200
+        mock_response.json = AsyncMock(return_value=http_data)
+        mock_cm = MagicMock()
+        mock_cm.__aenter__ = AsyncMock(return_value=mock_response)
+        mock_cm.__aexit__ = AsyncMock(return_value=False)
+        mock_session = MagicMock()
+        mock_session.get = MagicMock(return_value=mock_cm)
+
+        with patch("utils.createClobClient._get_session", return_value=mock_session):
+            with pytest.raises(RuntimeError):
+                await wrapper.get_market_meta("tok_http_indeterminate")
+
+    @pytest.mark.asyncio
+    async def test_http_fallback_uses_book_neg_risk_when_present(self):
+        client = MagicMock()
+        client.get_tick_size.return_value = "0.01"
+        client.get_neg_risk.side_effect = RuntimeError("V2 neg_risk transport down")
+        client.get_order_book.side_effect = RuntimeError("SDK book down")
+        wrapper = ClobClientWrapper(client, _dummy_wallet())
+
+        http_data = {
+            "bids": [{"price": "0.50"}],
+            "asks": [{"price": "0.55"}],
+            "tick_size": "0.01",
+            "min_order_size": "5",
+            "neg_risk": True,
+        }
+        mock_response = MagicMock()
+        mock_response.status = 200
+        mock_response.json = AsyncMock(return_value=http_data)
+        mock_cm = MagicMock()
+        mock_cm.__aenter__ = AsyncMock(return_value=mock_response)
+        mock_cm.__aexit__ = AsyncMock(return_value=False)
+        mock_session = MagicMock()
+        mock_session.get = MagicMock(return_value=mock_cm)
+
+        with patch("utils.createClobClient._get_session", return_value=mock_session):
+            meta = await wrapper.get_market_meta("tok_http_book_true")
+        assert meta.neg_risk is True
+
+
 class TestEmptySDKBookFallsBackToHTTP:
     """Test that when SDK returns an empty book, HTTP fallback is attempted."""
 
