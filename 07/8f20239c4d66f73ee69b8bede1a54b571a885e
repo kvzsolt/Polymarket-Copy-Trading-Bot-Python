@@ -1,0 +1,75 @@
+tests/test_config.py
+  s_71f3e833bdb7f0::t_b26393623f34ef 88-90
+docs/07-execution-lifecycle.md
+  s_71f3e833bdb7f0::t_d45ce72dd38486 282-283
+app.py
+  s_71f3e833bdb7f0::t_6e40be37339f82 1629-1630
+  s_71f3e833bdb7f0::t_dd19dfd506930c 417
+repo_full_audit.md
+  s_71f3e833bdb7f0::t_a18ceec431af97 67,214,448
+docs/03-paper-trading.md
+  s_71f3e833bdb7f0::t_d437a5819bb011 105-106,119-120
+tests/release_gate/test_no_legacy_imports.py
+  s_71f3e833bdb7f0::t_f6775bb06dbd96 43
+  s_71f3e833bdb7f0::t_c60016fed2e8e3 105-107,148-153,165-167
+services/healthServer.py
+  s_71f3e833bdb7f0::t_67ffc308784df7 110
+config/app_config.py
+  s_71f3e833bdb7f0::t_9e590c8e3c84cc 1151
+docs/02-configuration.md
+  s_71f3e833bdb7f0::t_f3e42855020457 179
+tests/test_numeric_adapter.py
+  s_71f3e833bdb7f0::t_c849075c9c4cc1 11,29
+orchestrators/runtime_bootstrap.py
+  s_71f3e833bdb7f0::t_01e56bc9fd5e8b 816-817
+  s_71f3e833bdb7f0::t_0821f54a57cbf2 350-351
+tests/test_issue102_numeric_boundaries.py
+  s_71f3e833bdb7f0::t_80c0aec901e810 16,53-54
+docs/architecture.md
+  s_71f3e833bdb7f0::t_f55248aed944e2 63-64,172
+config/env.py
+  s_71f3e833bdb7f0::t_854f79738e39ad 657
+docs/recovery_playbook.md
+  s_71f3e833bdb7f0::t_d5a9ca232688b2 25
+docs/known_limitations.md
+  s_71f3e833bdb7f0::t_647aa1240edd98 18-21,63-66
+docs/09-troubleshooting.md
+  s_71f3e833bdb7f0::t_7f474a3b657cd8 141
+tests/test_supervised_retry_policy.py
+  s_71f3e833bdb7f0::t_146da33d7b355d 4
+tests/release_gate/test_sizing_metadata_driven.py
+  s_71f3e833bdb7f0::t_d31336ee2e2d01 165
+docs/full-rework-progress.md
+  s_71f3e833bdb7f0::t_a589346abf71ce 271
+domain/trading_context.py
+  s_71f3e833bdb7f0::t_b0031ceca5f535 59
+AGENTS.md
+  s_71f3e833bdb7f0::t_c7cf392627e13d 44,72
+services/positionManager.py
+  s_71f3e833bdb7f0::t_61b9ebb3c8daf3 452
+docs/05-risk-controls.md
+  s_71f3e833bdb7f0::t_50b12fa7635cc8 246,253-255
+services/risk/risk_monitor.py
+  s_71f3e833bdb7f0::t_2525a426292925 572,1004
+tests/test_v31_features.py
+  s_71f3e833bdb7f0::t_4e9074f620328f 348,371
+  s_71f3e833bdb7f0::t_c926def38bfd55 129,180
+  s_71f3e833bdb7f0::t_99fdd63ceb24b0 660,703
+  s_71f3e833bdb7f0::t_e6825ec1527c0d 338-347,349-370,372-386
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.8",
+  "base_commit_sha": "078f20239c4d66f73ee69b8bede1a54b571a885e",
+  "prompts": {},
+  "sessions": {
+    "s_71f3e833bdb7f0": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ed8f6-154e-7573-82bc-f0175d547380",
+        "model": "gpt-5.5"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
