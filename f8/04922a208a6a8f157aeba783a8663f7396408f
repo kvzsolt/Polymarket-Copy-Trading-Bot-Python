@@ -1,0 +1,83 @@
+bot_cli/commands/doctor.py
+  s_71f3e833bdb7f0::t_f36a977e28a070 669,674-675
+config/env.py
+  s_71f3e833bdb7f0::t_40a0c2f3a0f530 115-133,161,164-165
+  s_71f3e833bdb7f0::t_0ca3732cac13e5 308-310,315-316,319,353-357,465-474
+  s_71f3e833bdb7f0::t_a319ec096200a4 486,498-519,551-555,559
+  s_71f3e833bdb7f0::t_e48c79c0c244bf 668-677
+storage/postgres/discovery_repo.py
+  s_71f3e833bdb7f0::t_f49980a723aaaa 338,340
+  s_71f3e833bdb7f0::t_5e98f7b3be129e 447,458-460,468,484-485,493-499,522-654
+  s_71f3e833bdb7f0::t_5c392c82b0fc10 325,327-329,341-343,352-353,361-367,396-397,405-411
+docs/02-configuration.md
+  s_71f3e833bdb7f0::t_c69d039b867a49 25-29,34-37,243-246,333-334,344-355
+docs/06-leader-selection.md
+  s_71f3e833bdb7f0::t_b106d78681d71a 33,39,56-62,65-67,72,76-81,87,118,132-134,150-151,154-177,353-359
+tests/test_auto_trader_selector.py
+  s_71f3e833bdb7f0::t_a33890f675377d 44-45,59-60,99,176,225-262
+tests/test_falcon_candidate_service.py
+  s_71f3e833bdb7f0::t_dfc7a5e7ba86d3 39-53,55,72-184,186-188
+  s_71f3e833bdb7f0::t_93744c0f4deb5c 185
+services/discovery/candidate_scoring.py
+  s_71f3e833bdb7f0::t_d38f457afa8dbb 62-70,97-108,110,183-191,238-373
+services/discovery/auto_trader_selector.py
+  s_71f3e833bdb7f0::t_e508836db0dc32 78-84
+  s_71f3e833bdb7f0::t_d35eb98f376833 32,57-77,152,155,158-162,168-173,175-194,200-208,214-223,228-237,243,250-255,262-266,271-275,281-289
+services/traderDiscoveryService.py
+  s_71f3e833bdb7f0::t_1466f79a88ea59 10,98-102,104-105,107-117,121-122,125-177,182-187,206-213,247-254,301-307,326,328,373-392,403,419-499
+tests/test_config.py
+  s_71f3e833bdb7f0::t_d41a8f6b228f6b 242
+  s_71f3e833bdb7f0::t_a95a1818737061 143-187,207-220,232-241
+tests/test_candidate_scoring.py
+  s_71f3e833bdb7f0::t_5e895a83636e5b 13-18,30-34,50-56,143-244
+tests/test_app_config_raw_no_secrets.py
+  s_71f3e833bdb7f0::t_c3ee0a2c83f5c1 27-28,48-54,69-70
+services/discovery/evaluation_context.py
+  s_71f3e833bdb7f0::t_7ffed1a1ab4fc5 39-47
+tests/test_env_security.py
+  s_71f3e833bdb7f0::t_4cbeda6b5d4ff2 78-85
+tests/test_trader_discovery_service.py
+  s_71f3e833bdb7f0::t_5fb024e61fe5ce 37,40-43,111-123
+tests/test_discovery_wiring.py
+  s_71f3e833bdb7f0::t_213dd922c01fee 298-406
+  s_71f3e833bdb7f0::t_e29dfbdb455682 7-8,28-84,148-238
+services/discovery/falcon_candidate_service.py
+  s_71f3e833bdb7f0::t_15a8ed61b913a6 3,6-7,10,41-59,61-106,108-113,125,132-148,159,171-173,175-179,190-223
+  s_71f3e833bdb7f0::t_93744c0f4deb5c 107
+  s_71f3e833bdb7f0::t_3475b4db96ca50 25-32
+storage/postgres/migrations.py
+  s_71f3e833bdb7f0::t_5268406249d62e 671-672,681-687,720-737,742-790
+orchestrators/runtime_discovery.py
+  s_71f3e833bdb7f0::t_9462daf77f0eee 8-9,58,63-73,85-87,89-109
+  s_71f3e833bdb7f0::t_bb49a699b8496b 74-84,88
+services/discovery/rotation_service.py
+  s_71f3e833bdb7f0::t_a89b015d5afeee 7,139-154,158,160-161
+config/app_config.py
+  s_71f3e833bdb7f0::t_2b4031922dc4b0 1043-1044
+  s_71f3e833bdb7f0::t_4d0dc5e909d86c 960-961,966-996
+  s_71f3e833bdb7f0::t_2ead724fa12f35 91-103,105-106
+  s_71f3e833bdb7f0::t_e5f6a22ddaa571 1261,1275-1282,1284-1291,1293-1295,1298-1303,1306-1308,1454-1456,1473-1477,1525-1535
+  s_71f3e833bdb7f0::t_c272a91e8f72b1 104
+  s_71f3e833bdb7f0::t_3e7da717af7763 236,240,243-244,627-629,636-638,665-670
+  s_71f3e833bdb7f0::t_e2aaef6ec32ba7 1292,1296-1297,1522-1524
+app.py
+  s_71f3e833bdb7f0::t_c23998b4f23046 1537-1538,1540-1548,1556-1559
+config/runtime.local.example
+  s_71f3e833bdb7f0::t_ff75ccab8e1612 33-54
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.8",
+  "base_commit_sha": "f804922a208a6a8f157aeba783a8663f7396408f",
+  "prompts": {},
+  "sessions": {
+    "s_71f3e833bdb7f0": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ed8f6-154e-7573-82bc-f0175d547380",
+        "model": "gpt-5.5"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
