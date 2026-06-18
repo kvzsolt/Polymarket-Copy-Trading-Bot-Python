@@ -67,6 +67,18 @@ class TestEnvSecurity:
             with pytest.raises(EnvValidationError):
                 validate_runtime_env()
 
+    def test_rehydrate_env_rejects_invalid_optional_int_cleanly(self):
+        from config.env import EnvValidationError, rehydrate_env
+
+        with patch.dict(os.environ, {"AUTO_LEADER_COUNT": "abc"}, clear=False):
+            with pytest.raises(
+                EnvValidationError,
+                match="AUTO_LEADER_COUNT must be a valid integer",
+            ):
+                rehydrate_env()
+
+        rehydrate_env()
+
     def test_rehydrate_env_refreshes_snapshot_in_place(self):
         from config.env import ENV, rehydrate_env
 

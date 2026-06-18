@@ -143,7 +143,7 @@ class RotationService:
                 getattr(row, "score_version", "leader_score_v2"),
             )
             or "leader_score_v2"
-        )
+        ).lower()
         scored = score_candidate(
             candidate=row,
             falcon_quality=float(row.falcon_quality_score),

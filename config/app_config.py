@@ -1299,7 +1299,11 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         if leader_auto_count_override is not None
         else 2
     )
-    auto_traders_cap = max(0, auto_discover_max_leaders_raw)
+    auto_traders_cap = max(
+        0,
+        auto_discover_max_leaders_raw,
+        auto_discover_top_n,
+    )
     max_auto_traders_count = max(0, min(auto_leader_count_raw, auto_traders_cap))
 
     leader = LeaderConfig(

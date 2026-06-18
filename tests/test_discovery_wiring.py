@@ -159,7 +159,7 @@ async def test_discovery_loop_enabled_callback_only_new_wallets():
         )
     )
     callback = AsyncMock()
-    already = {"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+    already = {"0XAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}
 
     task = asyncio.create_task(
         discovery_refresh_loop(
@@ -177,6 +177,7 @@ async def test_discovery_loop_enabled_callback_only_new_wallets():
         await task
 
     callback.assert_awaited_once_with(["0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"])
+    assert "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" in already
     assert "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" in already
 
 

@@ -242,7 +242,7 @@ Leader selection, scoring, and tier management. See [06-leader-selection.md](06-
 | `LEADER_WALLETS` | string | *(empty)* | Comma-separated leader wallet addresses |
 | `USER_ADDRESS` | string | *(empty)* | Legacy fallback single leader address in manual mode only |
 | `LEADER_SOURCE` | string | `manual` | `manual` preserves legacy `USER_ADDRESS` fallback; `auto` treats empty `LEADER_WALLETS` as no manual leaders |
-| `AUTO_LEADER_ENABLED` | bool | `false` | Alias for startup auto leader selection |
+| `AUTO_LEADER_ENABLED` | bool | `false` | Alias for startup auto leader selection when no manual leaders are configured |
 | `AUTO_LEADER_COUNT` | int | `2` | Alias for startup auto leader count |
 | `LEADER_AUTO` | bool | *(derived)* | Auto-promote discovered leaders |
 | `LEADER_AUTO_COUNT` | int | `5` | Number of leaders to auto-promote |
@@ -330,7 +330,7 @@ Blockchain network and metrics server.
 | Env Var | Type | Default | Description |
 |---|---|---|---|
 | `ENABLE_TRADER_DISCOVERY` | bool | *(derived)* | Enable trader discovery service |
-| `ALLOW_AUTO_TRADER_DETECTION` | bool | `false` | Legacy alias for startup-only DB/discovery leader selection |
+| `ALLOW_AUTO_TRADER_DETECTION` | bool | `false` | Legacy alias for startup-only DB/discovery leader selection when no manual leaders are configured |
 | `MAX_AUTO_TRADERS_COUNT` | int | `2` | Legacy alias for maximum startup auto-selected leaders, clamped by `AUTO_DISCOVER_MAX_LEADERS` |
 | `DISCOVERY_INTERVAL_SECONDS` | int | `3600` | Seconds between discovery scans |
 | `DISCOVERY_PROMOTE_TO_ACTIVE` | bool | *(derived)* | Promote discovered leaders to active |

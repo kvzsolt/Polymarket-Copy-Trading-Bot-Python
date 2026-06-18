@@ -69,12 +69,8 @@ class AutoTraderSelector:
                     "leader_score_v2",
                 )
                 or "leader_score_v2"
-            )
-        try:
-            rows = await self.repo.list_evaluations(**query_kwargs)
-        except TypeError:
-            query_kwargs.pop("score_version", None)
-            rows = await self.repo.list_evaluations(**query_kwargs)
+            ).lower()
+        rows = await self.repo.list_evaluations(**query_kwargs)
         rows = sorted(
             rows,
             key=lambda row: (
@@ -182,8 +178,8 @@ class AutoTraderSelector:
                     "leader_score_v2",
                 )
                 or "leader_score_v2"
-            )
-            row_version = str(getattr(row, "score_version", "") or "")
+            ).lower()
+            row_version = str(getattr(row, "score_version", "") or "").lower()
             if row_version != expected_version:
                 self._log_rejection(
                     row,
