@@ -41,6 +41,8 @@ def _config(*, max_count: int = 2, reject_stale: bool = False):
             discovery_reject_stale_evaluations=reject_stale,
             discovery_require_7d_non_negative=True,
             discovery_min_7d_pnl_usdc=0.0,
+            leader_score_version="leader_score_v2",
+            auto_leader_require_score_version=True,
         ),
         leader=SimpleNamespace(auto_discover_min_score=0.45),
     )
@@ -54,6 +56,8 @@ def _row(wallet: str, **overrides):
         "eligible_live": True,
         "rejection_reason": None,
         "final_score": 0.80,
+        "score_version": "leader_score_v2",
+        "total_volume_15d": 1000.0,
         "copyable_signal_ratio": 0.90,
         "copyable_notional_ratio": 0.85,
         "sports_esports_ratio": 0.90,
@@ -92,6 +96,7 @@ async def test_auto_trader_selector_selects_eligible_live_rows():
     repo.list_evaluations.assert_awaited_once_with(
         statuses=["perfect_candidate", "live_eligible"],
         eligible_live=True,
+        score_version="leader_score_v2",
         limit=25,
     )
     _counters, gauges = metrics.snapshot()
@@ -168,6 +173,7 @@ async def test_auto_trader_selector_overfetches_to_find_valid_lower_ranked_candi
     repo.list_evaluations.assert_awaited_once_with(
         statuses=["perfect_candidate", "live_eligible"],
         eligible_live=True,
+        score_version="leader_score_v2",
         limit=25,
     )
 
@@ -216,3 +222,41 @@ async def test_auto_trader_selector_rejects_expired_evaluations(monkeypatch):
     ).select_from_db()
 
     assert selection.wallets == []
+
+
+async def test_auto_trader_selector_rejects_score_version_mismatch():
+    repo = SimpleNamespace(
+        list_evaluations=AsyncMock(
+            return_value=[
+                _row(
+                    "0x1111111111111111111111111111111111111111",
+                    score_version="leader_score_v1",
+                ),
+                _row("0x2222222222222222222222222222222222222222"),
+            ]
+        )
+    )
+
+    selection = await AutoTraderSelector(repo, _config(max_count=2)).select_from_db()
+
+    assert selection.wallets == ["0x2222222222222222222222222222222222222222"]
+
+
+async def test_auto_trader_selector_orders_equal_scores_by_volume_then_wallet():
+    repo = SimpleNamespace(
+        list_evaluations=AsyncMock(
+            return_value=[
+                _row("0x3333333333333333333333333333333333333333", total_volume_15d=10),
+                _row("0x1111111111111111111111111111111111111111", total_volume_15d=50),
+                _row("0x2222222222222222222222222222222222222222", total_volume_15d=50),
+            ]
+        )
+    )
+
+    selection = await AutoTraderSelector(repo, _config(max_count=3)).select_from_db()
+
+    assert selection.wallets == [
+        "0x1111111111111111111111111111111111111111",
+        "0x2222222222222222222222222222222222222222",
+        "0x3333333333333333333333333333333333333333",
+    ]

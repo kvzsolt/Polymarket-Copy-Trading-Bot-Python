@@ -112,6 +112,25 @@ def _bool(key: str, default: bool = False) -> bool:
     return raw.strip().lower() in ('1', 'true', 'yes')
 
 
+def _optional_int(key: str) -> int | None:
+    raw = _ensure_no_inline_comment(key, _raw(key, ''))
+    if not raw:
+        return None
+    return int(raw)
+
+
+def _leader_source() -> str:
+    return _ensure_no_inline_comment('LEADER_SOURCE', _raw('LEADER_SOURCE', 'manual')).lower()
+
+
+def _auto_leader_detection_enabled() -> bool:
+    return (
+        _leader_source() == 'auto'
+        or _bool('AUTO_LEADER_ENABLED', False)
+        or _bool('ALLOW_AUTO_TRADER_DETECTION', False)
+    )
+
+
 def _runtime_python_supported() -> bool:
     return (sys.version_info.major == 3) and (11 <= sys.version_info.minor < 13)
 
@@ -139,9 +158,11 @@ def _leader_wallets() -> list[str]:
     raw = _ensure_no_inline_comment('LEADER_WALLETS', _raw('LEADER_WALLETS', ''))
     if raw:
         wallets = [w.strip() for w in raw.split(',') if w.strip()]
-    else:
+    elif not _auto_leader_detection_enabled():
         single = _ensure_no_inline_comment('USER_ADDRESS', _raw('USER_ADDRESS', ''))
         wallets = [single] if single else []
+    else:
+        wallets = []
 
     invalid = [w for w in wallets if not is_valid_eth_address(w)]
     if invalid:
@@ -284,12 +305,18 @@ def validate_runtime_env() -> None:
     for key in (
         'USER_ADDRESS',
         'LEADER_WALLETS',
+        'LEADER_SOURCE',
+        'AUTO_LEADER_ENABLED',
+        'AUTO_LEADER_COUNT',
         'LEADER_AUTO',
         'LEADER_AUTO_COUNT',
         'AUTO_DISCOVER_LEADERS',
         'AUTO_DISCOVER_TOP_N',
+        'ALLOW_AUTO_TRADER_DETECTION',
+        'MAX_AUTO_TRADERS_COUNT',
         'DISCOVERY_PROMOTE_TO_ACTIVE',
         'ENABLE_TRADER_DISCOVERY',
+        'FALCON_SORT_MODES',
         'FUNDER_ADDRESS',
         'SIGNATURE_TYPE',
         'CHAIN_ID',
@@ -323,6 +350,11 @@ def validate_runtime_env() -> None:
         errors.append(
             f'Invalid FUNDER_ADDRESS "{funder_address}" (expected 42-char Ethereum address).'
         )
+    try:
+        if _leader_source() not in {'manual', 'auto'}:
+            errors.append('LEADER_SOURCE must be one of: "manual", "auto".')
+    except EnvValidationError as exc:
+        errors.append(str(exc))
 
     # Wallet model validation
     try:
@@ -430,6 +462,16 @@ def validate_runtime_env() -> None:
         errors.append('AUTO_DISCOVER_TOP_N must be > 0.')
     if ENV.get('DISCOVERY_MAX_RESULTS', 0) <= 0:
         errors.append('DISCOVERY_MAX_RESULTS must be > 0.')
+    if ENV.get('FALCON_MAX_CANDIDATES', 0) <= 0:
+        errors.append('FALCON_MAX_CANDIDATES must be > 0.')
+    if ENV.get('LEADER_SCORE_VERSION') not in ('leader_score_v1', 'leader_score_v2'):
+        errors.append('LEADER_SCORE_VERSION must be one of: "leader_score_v1", "leader_score_v2".')
+    if ENV.get('DISCOVERY_VOLUME_TARGET_15D', 0.0) <= 0:
+        errors.append('DISCOVERY_VOLUME_TARGET_15D must be > 0.')
+    if ENV.get('DISCOVERY_MIN_VOLUME_15D', 0.0) < 0:
+        errors.append('DISCOVERY_MIN_VOLUME_15D must be non-negative.')
+    if ENV.get('DISCOVERY_RANK_TARGET', 0) <= 0:
+        errors.append('DISCOVERY_RANK_TARGET must be > 0.')
 
     if errors:
         raise EnvValidationError('Invalid runtime environment:\n- ' + '\n- '.join(errors))
@@ -441,6 +483,7 @@ def validate_runtime_env() -> None:
 # after patching ``os.environ`` to rebuild this snapshot in place.
 def _build_env_snapshot() -> dict[str, object]:
     """Return a parsed environment snapshot from current ``os.environ``."""
+    leader_source = _leader_source()
     configured_auto_discover = _bool('AUTO_DISCOVER_LEADERS', False)
     configured_trader_discovery = _bool('ENABLE_TRADER_DISCOVERY', False)
     configured_promote_to_active = _bool('DISCOVERY_PROMOTE_TO_ACTIVE', False)
@@ -452,16 +495,28 @@ def _build_env_snapshot() -> dict[str, object]:
     enable_trader_discovery = configured_trader_discovery or leader_auto or auto_discover_leaders
     discovery_promote_to_active = configured_promote_to_active or leader_auto
     legacy_auto_count = _int('AUTO_DISCOVER_TOP_N', '5')
-    leader_auto_count_raw = _ensure_no_inline_comment('LEADER_AUTO_COUNT', _raw('LEADER_AUTO_COUNT', ''))
-    if leader_auto_count_raw:
-        try:
-            auto_discover_top_n = int(leader_auto_count_raw)
-        except ValueError as exc:
-            raise EnvValidationError(
-                f'LEADER_AUTO_COUNT must be a valid integer, got: {leader_auto_count_raw!r}'
-            ) from exc
-    else:
-        auto_discover_top_n = legacy_auto_count
+    auto_leader_count_override = _optional_int('AUTO_LEADER_COUNT')
+    leader_auto_count_override = _optional_int('LEADER_AUTO_COUNT')
+    auto_discover_top_n = (
+        auto_leader_count_override
+        if auto_leader_count_override is not None
+        else leader_auto_count_override
+        if leader_auto_count_override is not None
+        else legacy_auto_count
+    )
+    auto_discover_max_leaders = max(_int('AUTO_DISCOVER_MAX_LEADERS', '10'), auto_discover_top_n)
+    auto_leader_enabled = _auto_leader_detection_enabled()
+    max_auto_traders_override = _optional_int('MAX_AUTO_TRADERS_COUNT')
+    auto_leader_count = (
+        auto_leader_count_override
+        if auto_leader_count_override is not None
+        else max_auto_traders_override
+        if max_auto_traders_override is not None
+        else leader_auto_count_override
+        if leader_auto_count_override is not None
+        else 2
+    )
+    max_auto_traders_count = max(0, min(auto_leader_count, auto_discover_max_leaders))
 
     private_key_file_configured = _configured_if_valid('PRIVATE_KEY_FILE')
     private_key_configured = private_key_file_configured or _configured_if_valid('PRIVATE_KEY')
@@ -493,10 +548,15 @@ def _build_env_snapshot() -> dict[str, object]:
 
     # --- Polling ---
     'FETCH_INTERVAL': _float('FETCH_INTERVAL', '0.25'),
+    'LEADER_SOURCE': leader_source,
+    'AUTO_LEADER_ENABLED': auto_leader_enabled,
+    'AUTO_LEADER_COUNT': max_auto_traders_count,
+    'ALLOW_AUTO_TRADER_DETECTION': auto_leader_enabled,
+    'MAX_AUTO_TRADERS_COUNT': max_auto_traders_count,
     'LEADER_AUTO': leader_auto,
     'LEADER_AUTO_COUNT': auto_discover_top_n,
     'AUTO_DISCOVER_LEADERS': auto_discover_leaders,
-    'AUTO_DISCOVER_MAX_LEADERS': max(_int('AUTO_DISCOVER_MAX_LEADERS', '10'), auto_discover_top_n),
+    'AUTO_DISCOVER_MAX_LEADERS': auto_discover_max_leaders,
     'AUTO_DISCOVER_TOP_N': auto_discover_top_n,
     'AUTO_DISCOVER_MIN_SCORE': _float('AUTO_DISCOVER_MIN_SCORE', '0.45'),
     'AGGREGATE_SIGNAL_WINDOW_SECONDS': _float('AGGREGATE_SIGNAL_WINDOW_SECONDS', '0.1'),
@@ -605,6 +665,16 @@ def _build_env_snapshot() -> dict[str, object]:
     'MIN_LEADER_WIN_RATE': _float('MIN_LEADER_WIN_RATE', '0.55'),
     'MIN_LEADER_POSITIONS': _int('MIN_LEADER_POSITIONS', '20'),
     'DISCOVERY_MAX_RESULTS': _int('DISCOVERY_MAX_RESULTS', '50'),
+    'FALCON_SORT_MODES': os.getenv('FALCON_SORT_MODES', 'h_score,pnl,sharpe,roi,win_rate').strip(),
+    'FALCON_DEDUPE_CANDIDATES': _bool('FALCON_DEDUPE_CANDIDATES', True),
+    'FALCON_MAX_CANDIDATES': _int('FALCON_MAX_CANDIDATES', '250'),
+    'LEADER_SCORE_VERSION': os.getenv('LEADER_SCORE_VERSION', 'leader_score_v2').strip().lower(),
+    'DISCOVERY_VOLUME_TARGET_15D': _float('DISCOVERY_VOLUME_TARGET_15D', '10000'),
+    'DISCOVERY_MIN_VOLUME_15D': _float('DISCOVERY_MIN_VOLUME_15D', '0'),
+    'DISCOVERY_RANK_TARGET': _int('DISCOVERY_RANK_TARGET', '100'),
+    'DISCOVERY_RISK_PENALTY_ENABLED': _bool('DISCOVERY_RISK_PENALTY_ENABLED', True),
+    'AUTO_LEADER_REQUIRE_SCORE_VERSION': _bool('AUTO_LEADER_REQUIRE_SCORE_VERSION', True),
+    'DISCOVERY_DYNAMIC_MONITORING_ENABLED': _bool('DISCOVERY_DYNAMIC_MONITORING_ENABLED', False),
 
     # --- Near-one exit (replaces on-chain redemption) ---
     'ENABLE_NEAR_ONE_EXIT': os.getenv('ENABLE_NEAR_ONE_EXIT', 'false').strip().lower() in ('1', 'true', 'yes'),

@@ -88,6 +88,22 @@ def _has_inline_comment(raw: str) -> bool:
     return (" #" in raw) or ("\t#" in raw)
 
 
+def _optional_int(p: "_Parser", key: str) -> int | None:
+    raw = p._strip(key, p.raw(key, ""))
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        p.errors.append(f"{key} must be a valid int, got: {raw!r}")
+        return None
+
+
+def _csv_tuple(p: "_Parser", key: str, default: str) -> tuple[str, ...]:
+    raw = p.string(key, default)
+    return tuple(item.strip().lower() for item in raw.split(",") if item.strip())
+
+
 class _Parser:
     """Stateful parser that collects validation errors instead of raising early.
 
@@ -217,13 +233,15 @@ class _Parser:
         return result
 
     # ---- specialised parsers ----
-    def leader_wallets(self) -> tuple[str, ...]:
+    def leader_wallets(self, *, allow_user_address_fallback: bool = True) -> tuple[str, ...]:
         raw = self._strip("LEADER_WALLETS", self.raw("LEADER_WALLETS", ""))
         if raw:
             wallets = [w.strip() for w in raw.split(",") if w.strip()]
-        else:
+        elif allow_user_address_fallback:
             single = self._strip("USER_ADDRESS", self.raw("USER_ADDRESS", ""))
             wallets = [single] if single else []
+        else:
+            wallets = []
         for w in wallets:
             if not _ETH_ADDR_RE.match(w):
                 self.errors.append(
@@ -606,12 +624,18 @@ class DiscoveryConfig:
     discovery_max_results: int
     discovery_cache_ttl_seconds: float
     multi_user_config_file: str
+    leader_source: str = "manual"
+    auto_leader_enabled: bool = False
+    auto_leader_count: int = 2
     allow_auto_trader_detection: bool = False
     max_auto_traders_count: int = 2
     falcon_api_url: str = "https://narrative.agent.heisenberg.so/api/v2/semantic/retrieve/parameterized"
     falcon_api_token: str = ""
     falcon_page_size: int = 100
     falcon_max_pages: int = 5
+    falcon_sort_modes: tuple[str, ...] = ("h_score", "pnl", "sharpe", "roi", "win_rate")
+    falcon_dedupe_candidates: bool = True
+    falcon_max_candidates: int = 250
     falcon_min_win_rate_15d: float = 0.45
     falcon_max_win_rate_15d: float = 0.90
     falcon_min_roi_15d: float = 0.0
@@ -638,6 +662,12 @@ class DiscoveryConfig:
     discovery_allow_3d_slightly_negative: bool = True
     discovery_min_3d_pnl_usdc: float = -50.0
     discovery_min_3d_roi: float = -0.05
+    leader_score_version: str = "leader_score_v2"
+    discovery_volume_target_15d: float = 10000.0
+    discovery_min_volume_15d: float = 0.0
+    discovery_rank_target: int = 100
+    discovery_risk_penalty_enabled: bool = True
+    auto_leader_require_score_version: bool = True
     discovery_crypto_fast_max_resolution_minutes: float = 30.0
     discovery_crypto_fast_reject_signal_ratio: float = 0.70
     discovery_crypto_fast_reject_notional_ratio: float = 0.70
@@ -927,10 +957,43 @@ def _validate_semantics(cfg: AppConfig, errors: list[str]) -> None:
 
     # Discovery
     d = cfg.discovery
+    if d.leader_source not in {"manual", "auto"}:
+        errors.append('LEADER_SOURCE must be one of: "manual", "auto".')
     if d.min_active_positions <= 0:
         errors.append("MIN_ACTIVE_POSITIONS must be > 0.")
     if d.discovery_max_results <= 0:
         errors.append("DISCOVERY_MAX_RESULTS must be > 0.")
+    if d.falcon_page_size <= 0:
+        errors.append("FALCON_PAGE_SIZE must be > 0.")
+    if d.falcon_max_pages <= 0:
+        errors.append("FALCON_MAX_PAGES must be > 0.")
+    if not d.falcon_sort_modes:
+        errors.append("FALCON_SORT_MODES must include at least one sort mode.")
+    valid_falcon_sorts = {"h_score", "roi", "pnl", "win_rate", "trades", "sharpe"}
+    invalid_falcon_sorts = [
+        mode for mode in d.falcon_sort_modes if mode not in valid_falcon_sorts
+    ]
+    if invalid_falcon_sorts:
+        errors.append(
+            "FALCON_SORT_MODES contains unsupported sort mode(s): "
+            + ", ".join(invalid_falcon_sorts)
+        )
+    if d.falcon_max_candidates <= 0:
+        errors.append("FALCON_MAX_CANDIDATES must be > 0.")
+    if d.leader_score_version not in {"leader_score_v1", "leader_score_v2"}:
+        errors.append(
+            'LEADER_SCORE_VERSION must be one of: "leader_score_v1", "leader_score_v2".'
+        )
+    if d.discovery_volume_target_15d <= 0:
+        errors.append("DISCOVERY_VOLUME_TARGET_15D must be > 0.")
+    if d.discovery_min_volume_15d < 0:
+        errors.append("DISCOVERY_MIN_VOLUME_15D must be non-negative.")
+    if d.discovery_min_volume_15d > d.discovery_volume_target_15d:
+        errors.append(
+            "DISCOVERY_MIN_VOLUME_15D must be <= DISCOVERY_VOLUME_TARGET_15D."
+        )
+    if d.discovery_rank_target <= 0:
+        errors.append("DISCOVERY_RANK_TARGET must be > 0.")
 
     # Market data
     md = cfg.market_data
@@ -977,6 +1040,8 @@ _RAW_SENSITIVE_KEYS: frozenset[str] = frozenset(
         "CLOB_API_KEY",
         "CLOB_SECRET",
         "CLOB_PASSPHRASE",
+        "FALCON_API_TOKEN",
+        "DATABASE_URL",
     }
 )
 
@@ -1193,6 +1258,7 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
 
     # Leader / discovery cascades — reproduce the same cascading defaults the legacy
     # ENV snapshot uses so services relying on these derived flags behave identically.
+    leader_source = p.string("LEADER_SOURCE", "manual").lower()
     configured_auto_discover = p.bool_("AUTO_DISCOVER_LEADERS", False)
     configured_trader_discovery = p.bool_("ENABLE_TRADER_DISCOVERY", False)
     configured_promote_to_active = p.bool_("DISCOVERY_PROMOTE_TO_ACTIVE", False)
@@ -1206,22 +1272,40 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
 
     legacy_auto_count = p.int_("AUTO_DISCOVER_TOP_N", "5")
     auto_discover_max_leaders_raw = p.int_("AUTO_DISCOVER_MAX_LEADERS", "10")
-    leader_auto_count_raw = p._strip(
-        "LEADER_AUTO_COUNT", p.raw("LEADER_AUTO_COUNT", "")
+    auto_leader_count_override = _optional_int(p, "AUTO_LEADER_COUNT")
+    leader_auto_count_override = _optional_int(p, "LEADER_AUTO_COUNT")
+    auto_discover_top_n = (
+        auto_leader_count_override
+        if auto_leader_count_override is not None
+        else leader_auto_count_override
+        if leader_auto_count_override is not None
+        else legacy_auto_count
     )
-    if leader_auto_count_raw:
-        try:
-            auto_discover_top_n = int(leader_auto_count_raw)
-        except ValueError:
-            p.errors.append(
-                f"LEADER_AUTO_COUNT must be a valid integer, got: {leader_auto_count_raw!r}"
-            )
-            auto_discover_top_n = legacy_auto_count
-    else:
-        auto_discover_top_n = legacy_auto_count
+
+    auto_leader_enabled_raw = p.bool_("AUTO_LEADER_ENABLED", False)
+    allow_auto_trader_detection_raw = p.bool_("ALLOW_AUTO_TRADER_DETECTION", False)
+    allow_auto_trader_detection = (
+        leader_source == "auto"
+        or auto_leader_enabled_raw
+        or allow_auto_trader_detection_raw
+    )
+    max_auto_traders_override = _optional_int(p, "MAX_AUTO_TRADERS_COUNT")
+    auto_leader_count_raw = (
+        auto_leader_count_override
+        if auto_leader_count_override is not None
+        else max_auto_traders_override
+        if max_auto_traders_override is not None
+        else leader_auto_count_override
+        if leader_auto_count_override is not None
+        else 2
+    )
+    auto_traders_cap = max(0, auto_discover_max_leaders_raw)
+    max_auto_traders_count = max(0, min(auto_leader_count_raw, auto_traders_cap))
 
     leader = LeaderConfig(
-        wallets=p.leader_wallets(),
+        wallets=p.leader_wallets(
+            allow_user_address_fallback=not allow_auto_trader_detection
+        ),
         leader_auto=leader_auto,
         leader_auto_count=auto_discover_top_n,
         auto_discover_leaders=auto_discover_leaders,
@@ -1353,10 +1437,6 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         require_signer_match=p.bool_("REDEEM_REQUIRE_SIGNER_MATCH", True),
     )
 
-    allow_auto_trader_detection = p.bool_("ALLOW_AUTO_TRADER_DETECTION", False)
-    auto_traders_raw = p.int_("MAX_AUTO_TRADERS_COUNT", "2")
-    auto_traders_cap = max(0, auto_discover_max_leaders_raw)
-    max_auto_traders_count = max(0, min(auto_traders_raw, auto_traders_cap))
     if allow_auto_trader_detection and max_auto_traders_count <= 0:
         logger.warning(
             "auto_trader_detection_config_invalid",
@@ -1371,6 +1451,9 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         enable_trader_discovery=enable_trader_discovery,
         discovery_interval_seconds=p.int_("DISCOVERY_INTERVAL_SECONDS", "3600"),
         discovery_promote_to_active=discovery_promote_to_active,
+        leader_source=leader_source,
+        auto_leader_enabled=allow_auto_trader_detection,
+        auto_leader_count=max_auto_traders_count,
         allow_auto_trader_detection=allow_auto_trader_detection,
         max_auto_traders_count=max_auto_traders_count,
         min_leader_pnl=p.float_("MIN_LEADER_PNL", "1000"),
@@ -1387,6 +1470,11 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         falcon_api_token=p.string("FALCON_API_TOKEN", ""),
         falcon_page_size=p.int_("FALCON_PAGE_SIZE", "100"),
         falcon_max_pages=p.int_("FALCON_MAX_PAGES", "5"),
+        falcon_sort_modes=_csv_tuple(
+            p, "FALCON_SORT_MODES", "h_score,pnl,sharpe,roi,win_rate"
+        ),
+        falcon_dedupe_candidates=p.bool_("FALCON_DEDUPE_CANDIDATES", True),
+        falcon_max_candidates=p.int_("FALCON_MAX_CANDIDATES", "250"),
         falcon_min_win_rate_15d=p.float_("FALCON_MIN_WIN_RATE_15D", "0.45"),
         falcon_max_win_rate_15d=p.float_("FALCON_MAX_WIN_RATE_15D", "0.90"),
         falcon_min_roi_15d=p.float_("FALCON_MIN_ROI_15D", "0"),
@@ -1431,6 +1519,20 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         ),
         discovery_min_3d_pnl_usdc=p.float_("DISCOVERY_MIN_3D_PNL_USDC", "-50"),
         discovery_min_3d_roi=p.float_("DISCOVERY_MIN_3D_ROI", "-0.05"),
+        leader_score_version=p.string(
+            "LEADER_SCORE_VERSION", "leader_score_v2"
+        ).lower(),
+        discovery_volume_target_15d=p.float_(
+            "DISCOVERY_VOLUME_TARGET_15D", "10000"
+        ),
+        discovery_min_volume_15d=p.float_("DISCOVERY_MIN_VOLUME_15D", "0"),
+        discovery_rank_target=p.int_("DISCOVERY_RANK_TARGET", "100"),
+        discovery_risk_penalty_enabled=p.bool_(
+            "DISCOVERY_RISK_PENALTY_ENABLED", True
+        ),
+        auto_leader_require_score_version=p.bool_(
+            "AUTO_LEADER_REQUIRE_SCORE_VERSION", True
+        ),
         discovery_crypto_fast_max_resolution_minutes=p.float_(
             "DISCOVERY_CRYPTO_FAST_MAX_RESOLUTION_MINUTES", "30"
         ),
