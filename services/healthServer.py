@@ -107,7 +107,7 @@ class ReadinessTracker:
             # PR7 — position drift sweep status.
             "drift_ok": False,
             # Background-task supervisor health. True until a supervised aux
-            # loop (risk / discovery / near-one / redemption) exhausts its
+            # loop (risk / discovery) exhausts its
             # restart budget and the process fail-closes. Deliberately NOT in
             # _STRICT_REQUIRED_KEYS: a transient restart should not flap
             # /health/ready (the Docker HEALTHCHECK target) and trigger an

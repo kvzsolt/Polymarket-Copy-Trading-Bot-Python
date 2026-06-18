@@ -1,7 +1,7 @@
 """Bounded-restart policy for supervised aux loops (runtime-hardening).
 
 ``_on_supervised_crash`` is the pure decision function the main supervisor uses
-when a risk / discovery / near-one / redemption loop crashes: restart up to
+when a risk / discovery loop crashes: restart up to
 ``max_restarts`` within a rolling window, then fail-closed.
 """
 from __future__ import annotations

@@ -347,8 +347,8 @@ def build_user_state(
     )
 
     # PR6 — production execution funnel. ReservationService + ExecutionCoordinator
-    # are wired per user so trade pipeline, risk monitor, and near-one exits
-    # all share reservation + collision scope.
+    # are wired per user so trade pipeline and risk monitor share reservation
+    # and collision scope.
     execution_coordinator = _build_execution_coordinator(
         pool=pool,
         positions_repo=positions_repo,
@@ -813,8 +813,8 @@ async def build_trading_context(
         try:
             coord.position_coordinator = context.position_coordinator
         except Exception as exc:
-            # If coord is frozen/slotted the silent bypass would leave
-            # near-one-exit submitting with position_coordinator=None.
+            # If coord is frozen/slotted the silent bypass would leave live
+            # submits without the per-context position coordinator.
             # Surface the wiring failure loudly so ops can fix it.
             logger.error(
                 "runtime_bootstrap.coordinator_wiring_failed user_id=%s error=%r",

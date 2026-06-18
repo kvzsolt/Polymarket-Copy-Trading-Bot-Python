@@ -8,7 +8,7 @@ the contract the audit demanded:
 * inputs already on the tick grid pass through unchanged;
 * an input off the grid by more than ``epsilon`` is *rejected*, never silently
   truncated;
-* repeating decimals, 0.01 / 0.001 ticks, the min-size boundary and near-one
+* repeating decimals, 0.01 / 0.001 ticks, the min-size boundary and near-1.0
   prices all round-trip to the expected tick multiple.
 """
 from __future__ import annotations
@@ -26,7 +26,7 @@ class TestExactBoundary:
         [
             ("0.50", "0.01", 0.50),
             ("0.55", "0.01", 0.55),
-            ("0.999", "0.001", 0.999),   # near-one price, fine tick
+            ("0.999", "0.001", 0.999),   # near-1.0 price, fine tick
             ("1.0", "0.01", 1.0),        # min-size boundary
             ("10", "0.01", 10.0),
             ("0.123", "0.001", 0.123),

@@ -414,7 +414,7 @@ async def _start_market_data_runtimes(
     """Start WSS-backed market data runtimes, keyed by user_id.
 
     Trade detection remains HTTP polling. These runtimes only keep market
-    quote/book/tick state fresh for execution, risk, and near-one exits. The
+    quote/book/tick state fresh for execution and risk exits. The
     caller must attach the matching runtime to each user's TradingContext so
     the trade pipeline can subscribe new signal tokens dynamically.
     """
@@ -1604,44 +1604,6 @@ async def main() -> int:
             _Supervised(name="reservation-reaper", factory=_reservation_reaper_loop)
         )
 
-    # Auto-redemption (opt-in, default off). Conservative settlement-claim loop
-    # for operators who hold to resolution. This restores a conservative
-    # settlement-claim loop for operators who hold to resolution. It is gated
-    # twice: the data-api must flag the position ``redeemable`` AND the local
-    # market cache must show the token pinned at a terminal price
-    # (REDEEM_RESOLVED_LOW / REDEEM_RESOLVED_HIGH). The Web3 redeem path runs in
-    # a worker thread so it never blocks trade/risk/WSS loops.
-    if application.config.redemption.enable_auto_redeem:
-        from services.redemption import RedemptionService
-
-        for runtime_user in runtime_users:
-            user_state = user_states.get(runtime_user.user_id)
-            if user_state is None:
-                continue
-            market_store = getattr(user_state, "market_store", None)
-            if market_store is None:
-                logger.warning(
-                    "redemption_service_skipped",
-                    extra={
-                        "user_id": runtime_user.user_id,
-                        "reason": "missing market_store",
-                    },
-                )
-                continue
-            redemption_service = RedemptionService(
-                config=application.config,
-                wallet_address=runtime_user.wallet.funder_address,
-                market_store=market_store,
-                private_key=runtime_user.wallet.private_key,
-            )
-            supervised.append(
-                _Supervised(
-                    name=f"redemption-{runtime_user.user_id}",
-                    # Bind per-user service via default arg to avoid late-binding.
-                    factory=lambda s=redemption_service: s.loop(),
-                )
-            )
-
     for spec in supervised:
         spec.spawn()
 
@@ -1664,8 +1626,8 @@ async def main() -> int:
     try:
         while True:
             # Wait on leader monitors AND every live supervised aux loop, so a
-            # crash in risk / discovery / near-one / redemption is observed here
-            # rather than dying silently while the process stays "up".
+            # crash in risk / discovery is observed here rather than dying
+            # silently while the process stays "up".
             active = [task for task in monitor_tasks if not task.done()]
             active += [
                 spec.task for spec in supervised if spec.task and not spec.task.done()

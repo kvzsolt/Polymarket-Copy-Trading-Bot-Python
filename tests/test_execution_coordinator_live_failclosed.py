@@ -3,7 +3,6 @@
 Pins:
   - Live trade_pipeline copy with coordinator=None skips fail-closed.
   - Paper-mode fallback still works (existing tests must keep functioning).
-  - Live near-one exit with coordinator=None skips fail-closed.
   - Live risk dispatch with coordinator=None skips fail-closed.
   - runtime_bootstrap wires execution_coordinator for normal user contexts.
 """
