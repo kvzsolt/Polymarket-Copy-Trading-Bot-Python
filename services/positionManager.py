@@ -231,7 +231,7 @@ class PositionManager:
             staged_fractions_raw = getattr(rc, "staged_tp_fractions", "")
             self._staged_levels = _parse_csv_floats(staged_levels_raw) if staged_levels_raw else [0.30, 0.50]
             self._staged_fractions = _parse_csv_floats(staged_fractions_raw) if staged_fractions_raw else [0.25, 0.35]
-            self._staged_levels = [l / 100.0 if l >= 100.0 else l for l in self._staged_levels]
+            self._staged_levels = [l / 100.0 if l > 1.0 else l for l in self._staged_levels]
 
             # Leader divergence
             self._enable_leader_divergence = _as_bool(getattr(fc, "enable_leader_divergence_exit", False), False)
