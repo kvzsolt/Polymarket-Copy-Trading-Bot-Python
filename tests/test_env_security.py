@@ -75,7 +75,14 @@ class TestEnvSecurity:
 
         with patch.dict(
             os.environ,
-            {"LEADER_WALLETS": "", "USER_ADDRESS": address, "ENABLE_RISK_MGMT": "false"},
+            {
+                "LEADER_WALLETS": "",
+                "USER_ADDRESS": address,
+                "ENABLE_RISK_MGMT": "false",
+                "LEADER_SOURCE": "manual",
+                "AUTO_LEADER_ENABLED": "false",
+                "ALLOW_AUTO_TRADER_DETECTION": "false",
+            },
             clear=False,
         ):
             refreshed = rehydrate_env()

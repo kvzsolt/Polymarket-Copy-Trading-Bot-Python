@@ -24,6 +24,8 @@ def _valid_env(extras: dict[str, str] | None = None) -> dict[str, str]:
         "CLOB_API_KEY": "supersecret-key",
         "CLOB_SECRET": "supersecret-secret",
         "CLOB_PASSPHRASE": "supersecret-passphrase",
+        "FALCON_API_TOKEN": "supersecret-falcon",
+        "DATABASE_URL": "postgresql://user:pass@localhost/db",
         "PAPER_TRADE_ONLY": "true",
     }
     if extras:
@@ -43,7 +45,13 @@ def test_private_key_stripped_from_raw():
 
 def test_clob_credentials_stripped_from_raw():
     cfg = load_config(_valid_env())
-    for sensitive in ("CLOB_API_KEY", "CLOB_SECRET", "CLOB_PASSPHRASE"):
+    for sensitive in (
+        "CLOB_API_KEY",
+        "CLOB_SECRET",
+        "CLOB_PASSPHRASE",
+        "FALCON_API_TOKEN",
+        "DATABASE_URL",
+    ):
         assert sensitive not in cfg.raw, (
             f"{sensitive} must not leak into AppConfig.raw"
         )
@@ -58,5 +66,7 @@ def test_sensitive_set_documented():
         "CLOB_API_KEY",
         "CLOB_SECRET",
         "CLOB_PASSPHRASE",
+        "FALCON_API_TOKEN",
+        "DATABASE_URL",
     }
     assert set(_RAW_SENSITIVE_KEYS) == expected
