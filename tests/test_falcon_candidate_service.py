@@ -111,6 +111,71 @@ async def test_falcon_candidate_service_calls_multiple_sort_modes():
 
 
 @pytest.mark.asyncio
+async def test_falcon_candidate_service_queries_all_modes_before_truncating():
+    class _BreadthClient:
+        def __init__(self):
+            self.calls = []
+
+        async def query(self, **kwargs):
+            self.calls.append(kwargs)
+            sort_by = kwargs["params"]["sort_by"]
+            if sort_by == "h_score":
+                rows = [
+                    {
+                        "wallet": "0x" + "a" * 40,
+                        "h_score": "90",
+                        "roi_15d": "20",
+                        "win_rate_15d": "55",
+                        "sharpe_15d": "1",
+                        "total_pnl_15d": "100",
+                        "total_trades_15d": "30",
+                        "markets_traded_15d": "5",
+                    },
+                    {
+                        "wallet": "0x" + "b" * 40,
+                        "h_score": "89",
+                        "roi_15d": "20",
+                        "win_rate_15d": "55",
+                        "sharpe_15d": "1",
+                        "total_pnl_15d": "100",
+                        "total_trades_15d": "30",
+                        "markets_traded_15d": "5",
+                    },
+                ]
+            else:
+                rows = [
+                    {
+                        "wallet": "0x" + "c" * 40,
+                        "h_score": "70",
+                        "roi_15d": "20",
+                        "win_rate_15d": "55",
+                        "sharpe_15d": "1",
+                        "total_pnl_15d": "100",
+                        "total_trades_15d": "30",
+                        "markets_traded_15d": "5",
+                    }
+                ]
+            return SimpleNamespace(has_more=False, results=rows)
+
+    client = _BreadthClient()
+    service = FalconCandidateService(
+        client,
+        _config(
+            falcon_sort_modes=("h_score", "pnl"),
+            falcon_max_candidates=2,
+        ),
+    )
+
+    candidates = await service.fetch_candidates()
+
+    assert [call["params"]["sort_by"] for call in client.calls] == ["h_score", "pnl"]
+    assert [candidate.wallet for candidate in candidates] == [
+        "0x" + "a" * 40,
+        "0x" + "c" * 40,
+    ]
+
+
+@pytest.mark.asyncio
 async def test_falcon_candidate_service_dedupe_merges_sort_metadata():
     class _DedupeClient:
         async def query(self, **kwargs):

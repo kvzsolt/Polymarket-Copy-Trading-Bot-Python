@@ -251,16 +251,17 @@ class TestHappyPath:
         cfg = load_config(valid_env)
         assert cfg.discovery.max_auto_traders_count == 4
 
-    def test_auto_trader_detection_cap_honors_promoted_auto_leader_count(
+    def test_auto_trader_detection_count_cannot_raise_auto_discover_cap(
         self,
         valid_env: dict[str, str],
     ) -> None:
         valid_env["AUTO_LEADER_ENABLED"] = "true"
-        valid_env["AUTO_LEADER_COUNT"] = "8"
-        valid_env["AUTO_DISCOVER_MAX_LEADERS"] = "4"
+        valid_env["AUTO_LEADER_COUNT"] = "99"
+        valid_env["AUTO_DISCOVER_MAX_LEADERS"] = "10"
         cfg = load_config(valid_env)
-        assert cfg.leader.auto_discover_max_leaders == 8
-        assert cfg.discovery.max_auto_traders_count == 8
+        assert cfg.leader.auto_discover_max_leaders == 10
+        assert cfg.leader.auto_discover_top_n == 10
+        assert cfg.discovery.max_auto_traders_count == 10
 
     def test_discovery_startup_safety_config_loads_env(
         self,

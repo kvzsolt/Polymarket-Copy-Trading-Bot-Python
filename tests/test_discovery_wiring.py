@@ -158,7 +158,7 @@ async def test_discovery_loop_enabled_callback_only_new_wallets():
             ]
         )
     )
-    callback = AsyncMock()
+    callback = AsyncMock(return_value=["0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"])
     already = {"0XAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}
 
     task = asyncio.create_task(
@@ -216,7 +216,10 @@ async def test_discovery_loop_callback_failure_does_not_poison_refresh():
     repo = SimpleNamespace(
         list_evaluations=AsyncMock(return_value=[_eval_row("0x" + "c" * 40)])
     )
-    callback = AsyncMock(side_effect=[RuntimeError("boom"), None])
+    callback = AsyncMock(side_effect=[
+        RuntimeError("boom"),
+        ["0x" + "c" * 40],
+    ])
 
     task = asyncio.create_task(
         discovery_refresh_loop(
@@ -235,6 +238,37 @@ async def test_discovery_loop_callback_failure_does_not_poison_refresh():
 
     assert registry.refresh_count >= 2
     assert callback.await_count >= 2
+
+
+@pytest.mark.asyncio
+async def test_discovery_loop_empty_callback_result_retries_wallet():
+    from orchestrators.runtime_discovery import discovery_refresh_loop
+
+    wallet = "0x" + "d" * 40
+    registry = _DynamicRegistry(enabled=True)
+    repo = SimpleNamespace(
+        list_evaluations=AsyncMock(return_value=[_eval_row(wallet)])
+    )
+    callback = AsyncMock(return_value=[])
+    already: set[str] = set()
+
+    task = asyncio.create_task(
+        discovery_refresh_loop(
+            registry=registry,
+            configured_leaders=[],
+            refresh_interval=0,
+            leaders_repo=repo,
+            on_new_leaders=callback,
+            already_monitored=already,
+        )
+    )
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert callback.await_count >= 2
+    assert already == set()
 
 
 @contextlib.asynccontextmanager

@@ -79,6 +79,25 @@ class TestEnvSecurity:
 
         rehydrate_env()
 
+    def test_rehydrate_env_auto_leader_count_cannot_raise_cap(self):
+        from config.env import ENV, rehydrate_env
+
+        with patch.dict(
+            os.environ,
+            {
+                "AUTO_LEADER_COUNT": "99",
+                "AUTO_DISCOVER_MAX_LEADERS": "10",
+            },
+            clear=False,
+        ):
+            rehydrate_env()
+            assert ENV["AUTO_DISCOVER_MAX_LEADERS"] == 10
+            assert ENV["AUTO_DISCOVER_TOP_N"] == 10
+            assert ENV["AUTO_LEADER_COUNT"] == 10
+            assert ENV["MAX_AUTO_TRADERS_COUNT"] == 10
+
+        rehydrate_env()
+
     def test_rehydrate_env_refreshes_snapshot_in_place(self):
         from config.env import ENV, rehydrate_env
 

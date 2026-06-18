@@ -502,14 +502,18 @@ def _build_env_snapshot() -> dict[str, object]:
     legacy_auto_count = _int('AUTO_DISCOVER_TOP_N', '5')
     auto_leader_count_override = _optional_int('AUTO_LEADER_COUNT')
     leader_auto_count_override = _optional_int('LEADER_AUTO_COUNT')
-    auto_discover_top_n = (
+    auto_discover_max_leaders = max(0, _int('AUTO_DISCOVER_MAX_LEADERS', '10'))
+    requested_auto_discover_top_n = (
         auto_leader_count_override
         if auto_leader_count_override is not None
         else leader_auto_count_override
         if leader_auto_count_override is not None
         else legacy_auto_count
     )
-    auto_discover_max_leaders = max(_int('AUTO_DISCOVER_MAX_LEADERS', '10'), auto_discover_top_n)
+    auto_discover_top_n = max(
+        0,
+        min(requested_auto_discover_top_n, auto_discover_max_leaders),
+    )
     auto_leader_enabled = _auto_leader_detection_enabled()
     max_auto_traders_override = _optional_int('MAX_AUTO_TRADERS_COUNT')
     auto_leader_count = (

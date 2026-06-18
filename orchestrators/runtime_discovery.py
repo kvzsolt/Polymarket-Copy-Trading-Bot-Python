@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from typing import TYPE_CHECKING
 
 from orchestrators.leader_registry import LeaderRegistry
@@ -52,7 +52,7 @@ async def discovery_refresh_loop(
     refresh_interval: int,
     *,
     leaders_repo=None,
-    on_new_leaders: Callable[[list[str]], Awaitable[None]] | None = None,
+    on_new_leaders: Callable[[list[str]], Awaitable[Iterable[str] | None]] | None = None,
     already_monitored: set[str] | None = None,
 ) -> None:
     if already_monitored is None:
@@ -103,7 +103,9 @@ async def discovery_refresh_loop(
             if not new_wallets:
                 continue
             try:
-                await on_new_leaders(new_wallets)
+                started_wallets = _normalized_wallet_set(
+                    await on_new_leaders(new_wallets)
+                )
             except Exception as exc:
                 logger.warning(
                     "dynamic_leader_callback_failed",
@@ -113,9 +115,27 @@ async def discovery_refresh_loop(
                     },
                 )
                 continue
-            already_monitored.update(wallet.lower() for wallet in new_wallets)
+            if not started_wallets:
+                logger.warning(
+                    "dynamic_leader_callback_started_no_wallets",
+                    extra={"wallets": new_wallets},
+                )
+                continue
+            already_monitored.update(started_wallets)
         except Exception as exc:
             logger.warning(
                 "Background discovery refresh failed",
                 extra={"error": redact_error_detail(exc)},
             )
+
+
+def _normalized_wallet_set(wallets: Iterable[str] | str | None) -> set[str]:
+    if wallets is None:
+        return set()
+    if isinstance(wallets, str):
+        wallets = (wallets,)
+    return {
+        str(wallet).strip().lower()
+        for wallet in wallets
+        if str(wallet).strip()
+    }
