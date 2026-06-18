@@ -8,6 +8,7 @@ Phase 2 test coverage:
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from decimal import Decimal
@@ -124,6 +125,44 @@ class TestFillEvent:
 
         # Cache NOT invalidated (can't identify which token)
         assert cache.get_quote(TOKEN_A) is not None
+
+    @pytest.mark.asyncio
+    async def test_fill_callback_failure_is_logged(
+        self,
+        cache: MarketStateStore,
+    ) -> None:
+        """Spawned event callbacks must not fail outside structured logs."""
+        async def _raise(_event: dict) -> None:
+            raise RuntimeError("callback boom")
+
+        ws = UserWebSocket(
+            cache,
+            ws_url="wss://test.example.com/ws/user",
+            on_fill=_raise,
+        )
+
+        with patch("clients.user_ws.logger.warning") as warning:
+            ws._handle_message(json.dumps({
+                "event_type": "trade",
+                "asset_id": TOKEN_A,
+                "side": "BUY",
+            }))
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+
+        # The failure is logged as type + message (no exc_info traceback) so
+        # secrets/payloads carried on the exception cannot leak into logs.
+        matching = [
+            call
+            for call in warning.call_args_list
+            if call.args
+            and call.args[0] == "UserWS: callback task failed: %s: %s"
+            and call.args[1] == "RuntimeError"
+            and str(call.args[2]) == "callback boom"
+        ]
+        assert matching, warning.call_args_list
+        # No full traceback dump — exc_info must not be passed.
+        assert all("exc_info" not in call.kwargs for call in matching)
 
 
 # ---------------------------------------------------------------------------

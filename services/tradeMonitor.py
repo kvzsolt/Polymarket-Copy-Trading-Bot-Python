@@ -405,6 +405,38 @@ def _aggregate_trades(trades: list[dict], window_s: float = 2.0) -> list[dict]:
     return aggregated
 
 
+async def _persist_cursor(cursor_store: Any, leader_wallet: str, cursor: TradeCursor) -> bool:
+    """Persist *cursor* for *leader_wallet*, swallowing transient store errors.
+
+    P2-h: ``cursor_store.set_cursor`` is a DB round-trip. Pre-fix an unguarded
+    ``await`` here propagated a transient failure (PG blip, pool exhaustion) out
+    of ``trade_monitor`` → ``run_leader_monitor`` and crashed the whole leader
+    monitor task. The app supervisor logs-and-drops a crashed leader monitor
+    (it is not a restartable ``_Supervised`` spec), so a single transient write
+    error permanently stopped copying that leader until a full restart.
+
+    A failed persist is non-fatal: the cursor lives in ``state.last_cursor`` and
+    the next loop iteration retries the write. The only cost of a missed persist
+    is re-reading already-seen activity on a *process* restart, which the
+    cursor-comparison de-dup (``_cursor_key``) already tolerates — so dropping a
+    write never re-executes a trade. Returns True on success, False on failure.
+    """
+    try:
+        await cursor_store.set_cursor(leader_wallet, cursor)
+        return True
+    except asyncio.CancelledError:
+        # Cooperative shutdown — must propagate so the task can unwind.
+        raise
+    except Exception as exc:
+        metrics.inc("leader_cursor_persist_failed_total")
+        logger.error(
+            "leader_cursor_persist_failed | leader=%s error=%s",
+            leader_wallet,
+            redact_error_detail(exc),
+        )
+        return False
+
+
 def _monitor_loop_healthy(*, fetch_ok: bool, fetch_interval_s: int, readiness_tracker: ReadinessTracker) -> bool:
     if not fetch_ok:
         return False
@@ -584,7 +616,7 @@ async def trade_monitor(
     state.last_processed_ts = float(state.last_cursor.timestamp)
 
     await init(leader_wallet, state)
-    await cursor_store.set_cursor(leader_wallet, state.last_cursor)
+    await _persist_cursor(cursor_store, leader_wallet, state.last_cursor)
     proxy_wallet = config.wallet.funder_address or get_funder_address()
     monitored_leader_count = int(bot_params.get('MONITORED_LEADER_COUNT', 1) or 1)
     while True:
@@ -602,7 +634,7 @@ async def trade_monitor(
             or state.last_cursor.tx_hash != previous_cursor.tx_hash
             or (state.last_cursor.trade_id or "") != (previous_cursor.trade_id or "")
         ):
-            await cursor_store.set_cursor(leader_wallet, state.last_cursor)
+            await _persist_cursor(cursor_store, leader_wallet, state.last_cursor)
 
         if _monitor_loop_healthy(fetch_ok=fetch_ok, fetch_interval_s=fetch_interval, readiness_tracker=readiness_tracker):
             monitor_heartbeat_tick(

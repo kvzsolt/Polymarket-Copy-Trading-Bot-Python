@@ -19,7 +19,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from bot_cli.commands.stale_locks import _list_stale_locks
+from bot_cli.commands.stale_locks import _list_stale_locks, _resolve_stale_locks
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.release_gate]
 
@@ -97,6 +97,27 @@ async def _seed_with_pending_since(pool) -> None:
         )
 
 
+async def _seed_resolve_candidates(pool) -> None:
+    now_utc = datetime.now(tz=timezone.utc)
+    old_ts = now_utc - timedelta(hours=1)
+    fresh_ts = now_utc
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO orders
+              (idempotency_key, user_id, leader_id, order_id, status,
+               request_json, response_json, attempt_count, last_error,
+               created_at, updated_at)
+            VALUES
+              ('k-safe','u-test',NULL,NULL,'pending_lock','{}'::jsonb,NULL,0,NULL,$1,$1),
+              ('k-defer','u-test',NULL,'ord-live','submitted_unconfirmed','{}'::jsonb,NULL,0,NULL,$1,$1),
+              ('k-fresh','u-test',NULL,NULL,'pending','{}'::jsonb,NULL,0,NULL,$2,$2)
+            """,
+            old_ts,
+            fresh_ts,
+        )
+
+
 async def test_only_aged_locks_listed() -> None:
     async with _pg_pool() as pool:
         await _seed(pool)
@@ -122,6 +143,55 @@ async def test_user_filter() -> None:
         await _seed(pool)
         other = await _list_stale_locks(pool, ttl_seconds=120, user_id="other")
     assert other == []
+
+
+async def test_resolve_dry_run_classifies_without_mutation() -> None:
+    async with _pg_pool() as pool:
+        await _seed_resolve_candidates(pool)
+        result = await _resolve_stale_locks(
+            pool, ttl_seconds=120, user_id=None, apply=False
+        )
+        async with pool.acquire() as conn:
+            status = await conn.fetchval(
+                "SELECT status FROM orders WHERE idempotency_key = 'k-safe'"
+            )
+
+    assert result["applied"] is False
+    assert result["summary"] == {
+        "expired": 0,
+        "would_expire": 1,
+        "deferred_reconciliation_required": 1,
+        "kept_fresh": 1,
+    }
+    assert result["would_expire"][0]["idempotency_key"] == "k-safe"
+    assert result["deferred_reconciliation_required"][0]["idempotency_key"] == "k-defer"
+    assert status == "pending_lock"
+
+
+async def test_resolve_apply_expires_only_safe_no_order_lock() -> None:
+    async with _pg_pool() as pool:
+        await _seed_resolve_candidates(pool)
+        result = await _resolve_stale_locks(
+            pool, ttl_seconds=120, user_id=None, apply=True
+        )
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT idempotency_key, order_id, status, response_json
+                FROM orders
+                ORDER BY idempotency_key
+                """
+            )
+
+    by_key = {row["idempotency_key"]: row for row in rows}
+    assert result["applied"] is True
+    assert result["summary"]["expired"] == 1
+    assert result["summary"]["deferred_reconciliation_required"] == 1
+    assert result["expired"][0]["idempotency_key"] == "k-safe"
+    assert by_key["k-safe"]["status"] == "expired"
+    assert json.loads(by_key["k-safe"]["response_json"])["status"] == "expired"
+    assert by_key["k-defer"]["status"] == "submitted_unconfirmed"
+    assert by_key["k-defer"]["order_id"] == "ord-live"
 
 
 async def test_run_stale_locks_emits_json(capsys, monkeypatch) -> None:

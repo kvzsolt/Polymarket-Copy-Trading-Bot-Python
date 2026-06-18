@@ -236,62 +236,6 @@ async def test_paper_risk_dispatch_falls_back():
 
 
 # ---------------------------------------------------------------------------
-# near_one_exit fail-closed
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_live_near_one_exit_skips_when_coordinator_missing():
-    from cache.market_state_store import TickSnapshot
-    from services.near_one_exit import NearOneExitService
-
-    cfg = SimpleNamespace(
-        dry_run=False,
-        execution=SimpleNamespace(paper_trade_only=False, slippage_tolerance=2.0),
-        near_one_exit=SimpleNamespace(
-            enable_near_one_exit=True,
-            threshold=Decimal("0.99"),
-            dwell_seconds=0,
-            check_interval=1,
-        ),
-    )
-    mds = MagicMock()
-    mds.get_tick_or_none = AsyncMock(
-        return_value=TickSnapshot(
-            token_id="tok-1",
-            tick_size=Decimal("0.01"),
-            min_order_size=Decimal("1"),
-            neg_risk=False,
-            source="wss",
-            monotonic_ts=time.monotonic(),
-        )
-    )
-    exec_svc = MagicMock()
-    exec_svc.execute = AsyncMock()
-
-    svc = NearOneExitService(
-        position_manager=MagicMock(),
-        execution_service=exec_svc,
-        market_data_service=mds,
-        config=cfg,
-        readiness=MagicMock(),
-        user_id="u1",
-        funder_address="0xfunder",
-        execution_coordinator=None,
-    )
-
-    await svc._fire(
-        condition_id="cond-1",
-        token_id="tok-1",
-        size_tokens=5.0,
-        live_price=0.995,
-        dwell_elapsed=0.1,
-        slippage_bps=200,
-    )
-
-    exec_svc.execute.assert_not_awaited()
-
-
-# ---------------------------------------------------------------------------
 # bootstrap wires coordinator
 # ---------------------------------------------------------------------------
 
@@ -342,8 +286,9 @@ async def test_runtime_bootstrap_helper_returns_coordinator():
         assert coord is not None
         assert hasattr(coord, "submit_copy_trade")
         assert hasattr(coord, "submit_risk_exit")
-        assert hasattr(coord, "submit_near_one_exit")
         assert hasattr(coord, "submit_protective_exit")
+        assert coord.reservation_service.enabled is False
+        assert coord.reservations_repo is None
 
 
 def test_runtime_bootstrap_helper_returns_none_without_funder():

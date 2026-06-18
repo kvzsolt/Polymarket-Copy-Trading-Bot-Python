@@ -21,6 +21,9 @@ _BASE_LIVE_ENV = {
     "LEADER_WALLETS": "0x" + "d" * 40,
     "RPC_URL": "https://polygon-rpc.example.com",
     "CHAIN_ID": "137",
+    # P0-2: live mode requires the explicit master switch (PAPER_TRADE_ONLY=false
+    # alone no longer enables live — the fail-closed default is paper).
+    "LIVE_TRADING": "enabled",
     "PAPER_TRADE_ONLY": "false",
     "CLOB_V2_READY": "true",
     "KILL_SWITCH": "false",

@@ -1037,25 +1037,26 @@ class MarketStateStore:
             self._last_ws_pong_monotonic = monotonic_ts
 
     def wss_connection_age_seconds(self) -> float | None:
-        """Seconds since the most recent market WSS heartbeat or pong.
+        """Seconds since the most recent INBOUND market WSS activity.
 
         Connection liveness, not data freshness. MarketDataService uses this so
         a quiet-but-connected WSS stream stays executable: an unchanged book is
         still the current book while the WSS pipe is proven alive. Returns None
-        when no heartbeat/pong has been observed yet (e.g. pre-connect).
+        when no inbound activity has been observed yet (e.g. pre-connect).
+
+        P1-d: liveness is anchored on inbound activity only. The outbound PING
+        (``_last_ws_heartbeat_monotonic``) is self-generated every ~5s and must
+        NOT count toward liveness — including it masked a silent / half-open
+        feed as fresh until the slower in-loop pong detector closed it, serving
+        a stale book past the book-age budget in the meantime. Only a frame
+        from the server (PONG or data, fed via ``on_market_ws_pong``) proves
+        the pipe is alive.
         """
         with self._lock:
-            timestamps = [
-                ts
-                for ts in (
-                    self._last_ws_heartbeat_monotonic,
-                    self._last_ws_pong_monotonic,
-                )
-                if ts is not None
-            ]
-            if not timestamps:
+            last_inbound = self._last_ws_pong_monotonic
+            if last_inbound is None:
                 return None
-            return time.monotonic() - max(timestamps)
+            return time.monotonic() - last_inbound
 
     # ------------------------------------------------------------------
     # Helpers

@@ -179,10 +179,10 @@ async def test_expired_reservation_callback_reconciles_order_row_linked_only_by_
             self.updated = []
             self.processed = []
 
-        async def get_unconfirmed_buys(self, max_age_seconds=300.0):
+        async def get_unconfirmed_buys(self, max_age_seconds=300.0, *, user_id=None):
             return []
 
-        async def get_unconfirmed_sells(self, max_age_seconds=300.0):
+        async def get_unconfirmed_sells(self, max_age_seconds=300.0, *, user_id=None):
             return []
 
         async def get_unconfirmed_order_submissions(self, user_id=None, side=None):
@@ -209,6 +209,28 @@ async def test_expired_reservation_callback_reconciles_order_row_linked_only_by_
 
         async def append_fill(self, fill, raw_payload=None):
             self.fills.append((fill, raw_payload))
+
+        async def append_fill_and_apply(self, record, positions_repo, *, raw_payload=None):
+            # Mirror FillsRepo.append_fill_and_apply (P0-1): dedup on dedup_key,
+            # else append + apply the position delta. (0, None) on a duplicate.
+            seen = getattr(self, "_applied_keys", None)
+            if seen is None:
+                seen = self._applied_keys = set()
+            key = (record.order_id, record.side, getattr(record, "dedup_key", None))
+            if key[2] is not None and key in seen:
+                return 0, None
+            seen.add(key)
+            await self.append_fill(record, raw_payload=raw_payload)
+            updated = await positions_repo.apply_fill(
+                user_id=record.user_id,
+                leader_id=record.leader_id,
+                condition_id=record.condition_id,
+                token_id=record.token_id,
+                side=record.side,
+                fill_size=record.size_tokens,
+                fill_price=record.price,
+            )
+            return 1, updated
 
     class _PositionsRepo:
         def __init__(self):
@@ -355,6 +377,12 @@ def test_build_user_state_injects_typed_config_into_runtime_services():
     assert execution_service_cls.call_args.kwargs["config"] is cfg
     assert state.position_manager is position_manager_instance
     assert state.execution_service is execution_service_instance
+    assert state.execution_coordinator is not None
+    reservation_service = state.execution_coordinator.reservation_service
+    assert (
+        state.position_drift_service._reservations_repo
+        is reservation_service.reservations_repo
+    )
 
 
 def test_copy_notional_prefers_typed_config_over_env():

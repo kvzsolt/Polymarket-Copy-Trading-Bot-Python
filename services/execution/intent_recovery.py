@@ -40,7 +40,7 @@ async def recover_intents_from_db(
     Only active rows from ``order_reservations`` are recovered. Released rows
     have already reached a terminal decision and must not re-open an intent.
     """
-    active_reservations = reservations_repo.list_active()
+    active_reservations = await reservations_repo.list_active()
     if not active_reservations:
         logger.info("intent.recovery no active reservations to recover")
         return 0

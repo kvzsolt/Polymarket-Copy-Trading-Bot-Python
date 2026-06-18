@@ -71,8 +71,10 @@ class RedemptionService:
     - The local market cache must also show the token at the configured terminal
       price (default 0.01 or 0.99). API ``curPrice`` is not trusted for this gate.
 
-    The Web3 transaction path is synchronous internally, so it is run via
-    ``asyncio.to_thread`` to keep WSS, risk, and trade loops responsive.
+    The Web3 transaction path targets the configured redeemPositions contract
+    (Polymarket v2 uses the CTF collateral adapter) and is synchronous
+    internally, so it is run via ``asyncio.to_thread`` to keep WSS, risk, and
+    trade loops responsive.
     """
 
     def __init__(
@@ -257,14 +259,14 @@ class RedemptionService:
             rpc_url = self._config.network.rpc_url or self._config.wallet.polygon_rpc_url
             w3 = Web3(Web3.HTTPProvider(rpc_url))
             account = Account.from_key(self._private_key)
-            ctf = w3.eth.contract(
+            redeem_contract = w3.eth.contract(
                 address=Web3.to_checksum_address(cfg.ctf_contract_address),
                 abi=_CTF_REDEEM_ABI,
             )
             gas_price = w3.eth.gas_price
             if cfg.gas_price_buffer_pct:
                 gas_price = gas_price * (100 + cfg.gas_price_buffer_pct) // 100
-            tx = ctf.functions.redeemPositions(
+            tx = redeem_contract.functions.redeemPositions(
                 Web3.to_checksum_address(cfg.collateral_contract_address),
                 _HASH_ZERO,
                 _condition_id_bytes32(condition_id),

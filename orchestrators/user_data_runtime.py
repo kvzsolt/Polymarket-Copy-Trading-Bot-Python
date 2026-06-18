@@ -248,8 +248,10 @@ class UserDataRuntime:
     async def _on_fill(self, event: dict[str, Any]) -> None:
         token_id = str(
             event.get("asset_id")
+            or event.get("asset")
             or event.get("token_id")
             or event.get("tokenID")
+            or event.get("tokenId")
             or ""
         ).strip()
         logger.debug(

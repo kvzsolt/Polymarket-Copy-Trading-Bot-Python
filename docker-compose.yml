@@ -42,7 +42,9 @@ services:
     environment:
       # Inside the compose network the bot reaches PG via the service name.
       DATABASE_URL: "postgresql://bot:bot@postgres:5432/polymarket_copytrading_python"
-      PAPER_TRADE_ONLY: "true"
+      # P0-2: fail-closed by default (config layer is paper unless LIVE_TRADING
+      # is explicitly enabled). To go live set LIVE_TRADING=enabled (e.g. in
+      # secrets.env). PAPER_TRADE_ONLY=true still force-overrides to paper.
       ENABLE_METRICS_SERVER: "true"
       METRICS_PORT: "9102"
     ports:

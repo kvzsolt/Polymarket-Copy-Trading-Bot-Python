@@ -37,6 +37,12 @@ class FillRecord:
     price: Decimal
     fee: Decimal = Decimal("0")
     fill_ts: int | None = None
+    # P0-1: stable reconciler dedup discriminator (the cumulative-matched total
+    # at settlement). When set, the fill is unique on
+    # ``idx_fills_dedup_v2 (user_id, order_id, condition_id, side, dedup_key)``
+    # so re-applying the same settlement is skipped instead of double-applied.
+    # ``None`` for non-reconciler fills (partial index excludes them).
+    dedup_key: str | None = None
 
 
 class FillsRepo(AbstractFillRepository):
@@ -70,8 +76,8 @@ class FillsRepo(AbstractFillRepository):
                 """
                 INSERT INTO fills (
                     user_id, leader_id, order_id, condition_id, token_id, side,
-                    size_tokens, price, fee, fill_ts, fill_json
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb)
+                    size_tokens, price, fee, fill_ts, fill_json, dedup_key
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12)
                 ON CONFLICT DO NOTHING
                 RETURNING id
                 """,
@@ -90,6 +96,7 @@ class FillsRepo(AbstractFillRepository):
                 # zero while still falling back when the field is unset.
                 int(record.fill_ts if record.fill_ts is not None else time.time()),
                 json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str),
+                record.dedup_key,
             )
             return int(new_id) if new_id is not None else 0
 
@@ -132,8 +139,8 @@ class FillsRepo(AbstractFillRepository):
                     """
                     INSERT INTO fills (
                         user_id, leader_id, order_id, condition_id, token_id, side,
-                        size_tokens, price, fee, fill_ts, fill_json
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb)
+                        size_tokens, price, fee, fill_ts, fill_json, dedup_key
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12)
                     ON CONFLICT DO NOTHING
                     RETURNING id
                     """,
@@ -148,6 +155,7 @@ class FillsRepo(AbstractFillRepository):
                     str(record.fee),
                     int(record.fill_ts if record.fill_ts is not None else time.time()),
                     json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str),
+                    record.dedup_key,
                 )
                 fill_id = int(new_id) if new_id is not None else 0
                 if fill_id == 0:

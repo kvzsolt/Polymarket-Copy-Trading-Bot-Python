@@ -338,10 +338,32 @@ async def test_fak_accepted_no_fill_prints_transient_panel(tmp_path):
             mds=_FakeMDS(_make_bundle()),
             runtime=runtime,
         )
-        with patch("orchestrators.trade_pipeline.print_skip_reason") as p:
+        with (
+            patch("orchestrators.trade_pipeline.print_skip_reason") as p,
+            patch("orchestrators.trade_pipeline.log_trade_submitted") as log_sub,
+        ):
             results = await execute_trades(ctx, "leader1", [_signal()], time.time())
         assert results[0].status == "submitted_unconfirmed"
         p.assert_called()
-        detail = " ".join(str(c.args[1]) for c in p.call_args_list if len(c.args) > 1)
-        assert "did not fill" in (" ".join(str(c.args[0]) for c in p.call_args_list)).lower() \
-            or "fill" in detail.lower()
+        header = " ".join(str(c.args[0]) for c in p.call_args_list).lower()
+        detail = " ".join(
+            str(c.args[1]) for c in p.call_args_list if len(c.args) > 1
+        ).lower()
+        # Panel still surfaces fill status...
+        assert "fill" in detail or "fill" in header
+        # ...but with accurate, non-misleading framing (sym 2): the old
+        # "killed unfilled / price moved past limit" text claimed a kill on what
+        # is actually a deferred, possibly-filled order.
+        assert "killed" not in detail
+        assert "price moved past limit" not in detail
+        assert "awaiting" in detail or "reconcil" in detail
+        # Copy-scoped size is logged (limit price + internally consistent
+        # tokens*price ≈ usdc), not the leader's raw signal.size.
+        log_sub.assert_called()
+        sub_kwargs = log_sub.call_args.kwargs
+        assert sub_kwargs["meta"]["submissionState"] == "submitted_unconfirmed"
+        assert sub_kwargs["price"] == pytest.approx(0.50)
+        if sub_kwargs["size"] is not None and sub_kwargs["usdc_value"] is not None:
+            assert sub_kwargs["size"] * sub_kwargs["price"] == pytest.approx(
+                sub_kwargs["usdc_value"], rel=1e-6
+            )
