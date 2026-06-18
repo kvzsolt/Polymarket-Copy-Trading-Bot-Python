@@ -1,0 +1,25 @@
+tests/test_v31_features.py
+  s_71f3e833bdb7f0::t_261af05ba428e1 180,387-411,728
+services/positionManager.py
+  s_71f3e833bdb7f0::t_a923f3aebfc057 234
+docs/02-configuration.md
+  s_71f3e833bdb7f0::t_c5f5f113331390 179
+docs/05-risk-controls.md
+  s_71f3e833bdb7f0::t_5e546047394aa8 254-255
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.8",
+  "base_commit_sha": "db3e9db27dd8270aba9dd769680331103d50ec2d",
+  "prompts": {},
+  "sessions": {
+    "s_71f3e833bdb7f0": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ed8f6-154e-7573-82bc-f0175d547380",
+        "model": "gpt-5.5"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
