@@ -1,0 +1,38 @@
+tests/test_env_security.py
+  s_71f3e833bdb7f0::t_bdf22e440cab71 82-100
+tests/test_falcon_candidate_service.py
+  s_71f3e833bdb7f0::t_bdf22e440cab71 114-177
+orchestrators/runtime_discovery.py
+  s_71f3e833bdb7f0::t_9c3975b3ee8e50 4,55,106-108,118-124,130-141
+services/discovery/falcon_candidate_service.py
+  s_71f3e833bdb7f0::t_9c3975b3ee8e50 61,81-91,101-110,112-116,231-240
+tests/test_config.py
+  s_71f3e833bdb7f0::t_bdf22e440cab71 254,259-260,262-264
+.github/workflows/ci.yml
+  s_71f3e833bdb7f0::t_9c3975b3ee8e50 16
+tests/test_discovery_wiring.py
+  s_71f3e833bdb7f0::t_344e093acb83e1 161
+  s_71f3e833bdb7f0::t_bdf22e440cab71 219-222,243-271
+app.py
+  s_71f3e833bdb7f0::t_9c3975b3ee8e50 1443,1529
+config/env.py
+  s_71f3e833bdb7f0::t_9c3975b3ee8e50 505-506,513-516
+config/app_config.py
+  s_71f3e833bdb7f0::t_9c3975b3ee8e50 1277-1278,1285-1288,1307,1317
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.8",
+  "base_commit_sha": "9a4fc43311c6faef55dba250a82a910188291076",
+  "prompts": {},
+  "sessions": {
+    "s_71f3e833bdb7f0": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ed8f6-154e-7573-82bc-f0175d547380",
+        "model": "gpt-5.5"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
