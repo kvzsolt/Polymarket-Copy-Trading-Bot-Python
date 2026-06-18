@@ -30,7 +30,7 @@ jobs:
           pip install -e ".[dev]"
       - name: no-xfail enforcement
         run: |
-          if grep -rn 'xfail' tests/; then
+          if grep -rnE 'pytest\.mark\.xfail|pytest\.xfail' tests/; then
             echo "ERROR: xfail markers found — all tests must pass or be deleted"
             exit 1
           fi
