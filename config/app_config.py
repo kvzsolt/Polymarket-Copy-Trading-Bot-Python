@@ -1274,12 +1274,17 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
     auto_discover_max_leaders_raw = p.int_("AUTO_DISCOVER_MAX_LEADERS", "10")
     auto_leader_count_override = _optional_int(p, "AUTO_LEADER_COUNT")
     leader_auto_count_override = _optional_int(p, "LEADER_AUTO_COUNT")
-    auto_discover_top_n = (
+    auto_discover_max_leaders = max(0, auto_discover_max_leaders_raw)
+    requested_auto_discover_top_n = (
         auto_leader_count_override
         if auto_leader_count_override is not None
         else leader_auto_count_override
         if leader_auto_count_override is not None
         else legacy_auto_count
+    )
+    auto_discover_top_n = max(
+        0,
+        min(requested_auto_discover_top_n, auto_discover_max_leaders),
     )
 
     auto_leader_enabled_raw = p.bool_("AUTO_LEADER_ENABLED", False)
@@ -1299,11 +1304,7 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         if leader_auto_count_override is not None
         else 2
     )
-    auto_traders_cap = max(
-        0,
-        auto_discover_max_leaders_raw,
-        auto_discover_top_n,
-    )
+    auto_traders_cap = auto_discover_max_leaders
     max_auto_traders_count = max(0, min(auto_leader_count_raw, auto_traders_cap))
 
     leader = LeaderConfig(
@@ -1313,9 +1314,7 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         leader_auto=leader_auto,
         leader_auto_count=auto_discover_top_n,
         auto_discover_leaders=auto_discover_leaders,
-        auto_discover_max_leaders=max(
-            auto_discover_max_leaders_raw, auto_discover_top_n
-        ),
+        auto_discover_max_leaders=auto_discover_max_leaders,
         auto_discover_top_n=auto_discover_top_n,
         auto_discover_min_score=p.float_("AUTO_DISCOVER_MIN_SCORE", "0.45"),
         copy_decision_min_score=p.float_("COPY_DECISION_MIN_SCORE", "0.15"),

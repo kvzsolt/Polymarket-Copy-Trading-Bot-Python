@@ -58,8 +58,7 @@ class FalconCandidateService:
         )
         max_candidates = max(1, max_candidates)
 
-        out: list[FalconCandidate] = []
-        by_wallet: dict[str, FalconCandidate] = {}
+        mode_results: list[list[FalconCandidate]] = []
         failures: list[Exception] = []
         successful_modes = 0
 
@@ -79,8 +78,17 @@ class FalconCandidateService:
                 continue
 
             successful_modes += 1
-            for candidate in mode_candidates:
-                if dedupe:
+            mode_results.append(mode_candidates)
+
+        if successful_modes == 0:
+            if failures:
+                raise RuntimeError("all Falcon sort modes failed") from failures[-1]
+            raise RuntimeError("no Falcon sort modes configured")
+
+        if dedupe:
+            by_wallet: dict[str, FalconCandidate] = {}
+            for mode_candidates in mode_results:
+                for candidate in mode_candidates:
                     existing = by_wallet.get(candidate.wallet)
                     if existing is None:
                         by_wallet[candidate.wallet] = candidate
@@ -89,24 +97,23 @@ class FalconCandidateService:
                             existing,
                             candidate,
                         )
-                    if len(by_wallet) >= max_candidates:
-                        break
-                else:
-                    out.append(candidate)
-                    if len(out) >= max_candidates:
-                        break
-            if (dedupe and len(by_wallet) >= max_candidates) or (
-                not dedupe and len(out) >= max_candidates
-            ):
+
+            selected_wallets: list[str] = []
+            seen_wallets: set[str] = set()
+            for candidate in _round_robin_candidates(mode_results):
+                if candidate.wallet in seen_wallets:
+                    continue
+                selected_wallets.append(candidate.wallet)
+                seen_wallets.add(candidate.wallet)
+                if len(selected_wallets) >= max_candidates:
+                    break
+            return [by_wallet[wallet] for wallet in selected_wallets]
+
+        out: list[FalconCandidate] = []
+        for candidate in _round_robin_candidates(mode_results):
+            out.append(candidate)
+            if len(out) >= max_candidates:
                 break
-
-        if successful_modes == 0:
-            if failures:
-                raise RuntimeError("all Falcon sort modes failed") from failures[-1]
-            raise RuntimeError("no Falcon sort modes configured")
-
-        if dedupe:
-            return list(by_wallet.values())[:max_candidates]
         return out[:max_candidates]
 
     async def _fetch_sort_mode(self, sort_by: str) -> list[FalconCandidate]:
@@ -221,3 +228,13 @@ def _merge_candidate_seen_mode(
         all_seen_sort_modes=tuple(seen),
         raw=raw,
     )
+
+
+def _round_robin_candidates(
+    mode_results: list[list[FalconCandidate]],
+):
+    max_len = max((len(candidates) for candidates in mode_results), default=0)
+    for idx in range(max_len):
+        for candidates in mode_results:
+            if idx < len(candidates):
+                yield candidates[idx]
