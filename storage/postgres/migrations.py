@@ -668,6 +668,8 @@ _DISCOVERY_DDL = [
         copyability_score double precision NOT NULL DEFAULT 0,
         recent_state_score double precision NOT NULL DEFAULT 0,
         market_fit_score double precision NOT NULL DEFAULT 0,
+        score_version text NOT NULL DEFAULT 'leader_score_v1',
+        score_breakdown_json jsonb NOT NULL DEFAULT '{}'::jsonb,
 
         h_score double precision,
         roi_15d double precision,
@@ -676,6 +678,13 @@ _DISCOVERY_DDL = [
         pnl_15d double precision,
         total_trades_15d integer,
         markets_traded_15d integer,
+        leaderboard_rank integer,
+        falcon_tier text,
+        total_volume_15d double precision,
+        source_agent_id integer,
+        source_sort_by text,
+        source_rank integer,
+        all_seen_sort_modes jsonb NOT NULL DEFAULT '[]'::jsonb,
         trajectory text,
 
         total_grouped_signals integer NOT NULL DEFAULT 0,
@@ -708,10 +717,77 @@ _DISCOVERY_DDL = [
        ADD COLUMN IF NOT EXISTS config_hash text NOT NULL DEFAULT ''""",
     """ALTER TABLE falcon_discovery_evaluations
        ADD COLUMN IF NOT EXISTS evaluation_context_json jsonb NOT NULL DEFAULT '{}'::jsonb""",
+    """ALTER TABLE falcon_discovery_evaluations
+       ADD COLUMN IF NOT EXISTS score_version text NOT NULL DEFAULT 'leader_score_v1'""",
+    """ALTER TABLE falcon_discovery_evaluations
+       ADD COLUMN IF NOT EXISTS score_breakdown_json jsonb NOT NULL DEFAULT '{}'::jsonb""",
+    """ALTER TABLE falcon_discovery_evaluations
+       ADD COLUMN IF NOT EXISTS leaderboard_rank integer""",
+    """ALTER TABLE falcon_discovery_evaluations
+       ADD COLUMN IF NOT EXISTS falcon_tier text""",
+    """ALTER TABLE falcon_discovery_evaluations
+       ADD COLUMN IF NOT EXISTS total_volume_15d double precision""",
+    """ALTER TABLE falcon_discovery_evaluations
+       ADD COLUMN IF NOT EXISTS source_agent_id integer""",
+    """ALTER TABLE falcon_discovery_evaluations
+       ADD COLUMN IF NOT EXISTS source_sort_by text""",
+    """ALTER TABLE falcon_discovery_evaluations
+       ADD COLUMN IF NOT EXISTS source_rank integer""",
+    """ALTER TABLE falcon_discovery_evaluations
+       ADD COLUMN IF NOT EXISTS all_seen_sort_modes jsonb NOT NULL DEFAULT '[]'::jsonb""",
     """CREATE INDEX IF NOT EXISTS idx_falcon_eval_status_score
        ON falcon_discovery_evaluations(status, final_score DESC)""",
     """CREATE INDEX IF NOT EXISTS idx_falcon_eval_live
        ON falcon_discovery_evaluations(eligible_live, final_score DESC)""",
+    """CREATE INDEX IF NOT EXISTS idx_falcon_eval_score_version_status_score
+       ON falcon_discovery_evaluations(score_version, status, final_score DESC)""",
+    """CREATE INDEX IF NOT EXISTS idx_falcon_eval_rank
+       ON falcon_discovery_evaluations(leaderboard_rank)
+       WHERE leaderboard_rank IS NOT NULL""",
+    """CREATE INDEX IF NOT EXISTS idx_falcon_eval_volume_score
+       ON falcon_discovery_evaluations(total_volume_15d DESC, final_score DESC)""",
+
+    """
+    CREATE TABLE IF NOT EXISTS leader_discovery_runs (
+        run_id text PRIMARY KEY,
+        started_at double precision NOT NULL,
+        completed_at double precision,
+        config_hash text NOT NULL DEFAULT '',
+        falcon_sort_modes jsonb NOT NULL DEFAULT '[]'::jsonb,
+        candidate_count integer NOT NULL DEFAULT 0,
+        evaluated_count integer NOT NULL DEFAULT 0,
+        error_count integer NOT NULL DEFAULT 0,
+        status text NOT NULL DEFAULT 'running',
+        error_json jsonb NOT NULL DEFAULT '{}'::jsonb
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS leader_discovery_run_candidates (
+        run_id text NOT NULL,
+        wallet text NOT NULL,
+        source_agent_id integer,
+        source_sort_by text,
+        source_rank integer,
+        leaderboard_rank integer,
+        falcon_tier text,
+        h_score double precision,
+        roi_15d double precision,
+        win_rate_15d double precision,
+        sharpe_15d double precision,
+        pnl_15d double precision,
+        total_trades_15d integer,
+        markets_traded_15d integer,
+        total_volume_15d double precision,
+        trajectory text,
+        final_score double precision,
+        status text,
+        eligible_live boolean NOT NULL DEFAULT false,
+        rejection_reason text,
+        raw_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+        created_at double precision NOT NULL,
+        PRIMARY KEY (run_id, wallet)
+    )
+    """,
 ]
 
 

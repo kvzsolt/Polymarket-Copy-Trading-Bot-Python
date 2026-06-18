@@ -36,6 +36,15 @@ def build_evaluation_context(config: Any, *, balance_usdc: Decimal | str | int |
         "discovery_min_copyable_notional_ratio": _value(
             discovery, "discovery_min_copyable_notional_ratio"
         ),
+        "leader_score_version": _value(discovery, "leader_score_version"),
+        "discovery_volume_target_15d": _value(
+            discovery, "discovery_volume_target_15d"
+        ),
+        "discovery_min_volume_15d": _value(discovery, "discovery_min_volume_15d"),
+        "discovery_rank_target": _value(discovery, "discovery_rank_target"),
+        "discovery_risk_penalty_enabled": _value(
+            discovery, "discovery_risk_penalty_enabled"
+        ),
     }
 
 

@@ -4,7 +4,7 @@ from dataclasses import dataclass, replace
 from decimal import Decimal
 
 from services.discovery.balance_provider import build_wallet_balance_provider
-from services.discovery.candidate_scoring import clamp, copyability_score
+from services.discovery.candidate_scoring import copyability_score, score_candidate
 from services.discovery.copyability_replay import CopyabilityReplayService
 from services.discovery.runtime_env_editor import RuntimeEnvEditor
 from services.discovery.signal_grouper import SignalGrouper
@@ -136,16 +136,29 @@ class RotationService:
         signals = self.grouper.group(trades)
         replay = await self.replay_service.replay_wallet(row.wallet, signals)
         copy_score = copyability_score(replay)
-        final_score = clamp(
-            0.50 * float(row.falcon_quality_score)
-            + 0.30 * copy_score
-            + 0.15 * float(row.recent_state_score)
-            + 0.05 * float(row.market_fit_score)
+        score_version = str(
+            getattr(
+                self.config.discovery,
+                "leader_score_version",
+                getattr(row, "score_version", "leader_score_v2"),
+            )
+            or "leader_score_v2"
+        ).lower()
+        scored = score_candidate(
+            candidate=row,
+            falcon_quality=float(row.falcon_quality_score),
+            copyability=copy_score,
+            recent_consistency=float(row.recent_state_score),
+            market_fit=float(row.market_fit_score),
+            config=self.config,
+            score_version=score_version,
         )
         return replace(
             row,
-            final_score=final_score,
+            final_score=float(scored["final_score"]),
             copyability_score=copy_score,
+            score_version=score_version,
+            score_breakdown_json=dict(scored["breakdown"]),
             total_grouped_signals=int(len(signals)),
             meaningful_signals=int(replay.meaningful_signals),
             copyable_signals=int(replay.copyable_signals),
