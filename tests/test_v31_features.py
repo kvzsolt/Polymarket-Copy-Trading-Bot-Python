@@ -126,7 +126,7 @@ class TestPositionExitSystem(unittest.TestCase):
             'TRAILING_ACTIVATION_PCT': 20,
             'TRAILING_DISTANCE': 0.05,
             'ENABLE_STAGED_TP': True,
-            'STAGED_TP_LEVELS': '30,50',
+            'STAGED_TP_LEVELS': '0.30,0.50',
             'STAGED_TP_FRACTIONS': '0.25,0.35',
             'ENABLE_LEADER_DIVERGENCE_EXIT': True,
         }
@@ -139,6 +139,15 @@ class TestPositionExitSystem(unittest.TestCase):
                 return []
             parts = [p.strip() for p in str(s).split(',') if p.strip()]
             return [float(p) for p in parts]
+
+        def _staged_level_ratios(s):
+            if not s:
+                return []
+            ratios = []
+            for part in [p.strip() for p in str(s).split(',') if p.strip()]:
+                raw = float(part)
+                ratios.append(raw / 100.0 if "." not in part and "e" not in part.lower() and raw > 1.0 else raw)
+            return ratios
 
         def _pct_ratio(value):
             raw = float(value)
@@ -175,9 +184,8 @@ class TestPositionExitSystem(unittest.TestCase):
         pm._trailing_distance = _pct_ratio(defaults['TRAILING_DISTANCE'])
 
         pm._enable_staged_tp = bool(defaults['ENABLE_STAGED_TP'])
-        raw_levels = _csv_floats(defaults['STAGED_TP_LEVELS'])
         raw_fractions = _csv_floats(defaults['STAGED_TP_FRACTIONS'])
-        pm._staged_levels = [l / 100.0 if l > 1.0 else l for l in raw_levels] or [0.30, 0.50]
+        pm._staged_levels = _staged_level_ratios(defaults['STAGED_TP_LEVELS']) or [0.30, 0.50]
         pm._staged_fractions = raw_fractions or [0.25, 0.35]
 
         pm._enable_leader_divergence = bool(defaults['ENABLE_LEADER_DIVERGENCE_EXIT'])
@@ -334,6 +342,106 @@ class TestPositionExitSystem(unittest.TestCase):
         cid = self._add_position(pm, entry_price=0.50)
         action = pm.evaluate_risk_action(cid, 0.66)
         assert action is None
+
+    def test_staged_tp_uses_typed_config_defaults(self):
+        from config.app_config import load_config
+        from services.positionManager import PositionManager
+
+        cfg = load_config({
+            "PRIVATE_KEY": "0x" + "a" * 64,
+            "FUNDER_ADDRESS": "0x" + "b" * 40,
+            "RPC_URL": "https://polygon-rpc.example.com",
+            "CHAIN_ID": "137",
+            "USER_ADDRESS": "0x" + "c" * 40,
+            "ENABLE_RISK_MGMT": "true",
+            "ENABLE_STAGED_TP": "true",
+            "ENABLE_NEAR_MAX_EXIT": "false",
+        })
+        pm = PositionManager(config=cfg)
+        cid = self._add_position(pm, entry_price=0.50)
+
+        action = pm.evaluate_risk_action(cid, 0.66)
+
+        assert action is not None
+        assert action["reason"] == "staged_tp_level_1"
+        assert action["size_fraction"] == pytest.approx(0.25)
+
+    def test_staged_tp_normalizes_whole_number_ratio_values(self):
+        from config.app_config import load_config
+        from services.positionManager import PositionManager
+
+        cfg = load_config({
+            "PRIVATE_KEY": "0x" + "a" * 64,
+            "FUNDER_ADDRESS": "0x" + "b" * 40,
+            "RPC_URL": "https://polygon-rpc.example.com",
+            "CHAIN_ID": "137",
+            "USER_ADDRESS": "0x" + "c" * 40,
+            "ENABLE_RISK_MGMT": "true",
+            "ENABLE_STAGED_TP": "true",
+            "STAGED_TP_LEVELS": "130",
+            "STAGED_TP_FRACTIONS": "0.25",
+            "ENABLE_NEAR_MAX_EXIT": "false",
+        })
+        pm = PositionManager(config=cfg)
+        cid = self._add_position(pm, entry_price=0.40)
+
+        assert pm.evaluate_risk_action(cid, 0.91) is None
+        action = pm.evaluate_risk_action(cid, 0.92)
+
+        assert action is not None
+        assert action["reason"] == "staged_tp_level_1"
+        assert action["size_fraction"] == pytest.approx(0.25)
+
+    def test_staged_tp_preserves_decimal_ratio_above_one(self):
+        from config.app_config import load_config
+        from services.positionManager import PositionManager
+
+        cfg = load_config({
+            "PRIVATE_KEY": "0x" + "a" * 64,
+            "FUNDER_ADDRESS": "0x" + "b" * 40,
+            "RPC_URL": "https://polygon-rpc.example.com",
+            "CHAIN_ID": "137",
+            "USER_ADDRESS": "0x" + "c" * 40,
+            "ENABLE_RISK_MGMT": "true",
+            "ENABLE_STAGED_TP": "true",
+            "STAGED_TP_LEVELS": "1.30",
+            "STAGED_TP_FRACTIONS": "0.25",
+            "ENABLE_NEAR_MAX_EXIT": "false",
+        })
+        pm = PositionManager(config=cfg)
+        cid = self._add_position(pm, entry_price=0.40)
+
+        assert pm.evaluate_risk_action(cid, 0.91) is None
+        action = pm.evaluate_risk_action(cid, 0.92)
+
+        assert action is not None
+        assert action["reason"] == "staged_tp_level_1"
+        assert action["size_fraction"] == pytest.approx(0.25)
+
+    def test_staged_tp_accepts_legacy_percentage_levels(self):
+        from config.app_config import load_config
+        from services.positionManager import PositionManager
+
+        cfg = load_config({
+            "PRIVATE_KEY": "0x" + "a" * 64,
+            "FUNDER_ADDRESS": "0x" + "b" * 40,
+            "RPC_URL": "https://polygon-rpc.example.com",
+            "CHAIN_ID": "137",
+            "USER_ADDRESS": "0x" + "c" * 40,
+            "ENABLE_RISK_MGMT": "true",
+            "ENABLE_STAGED_TP": "true",
+            "STAGED_TP_LEVELS": "30,50",
+            "STAGED_TP_FRACTIONS": "0.25,0.35",
+            "ENABLE_NEAR_MAX_EXIT": "false",
+        })
+        pm = PositionManager(config=cfg)
+        cid = self._add_position(pm, entry_price=0.50)
+
+        action = pm.evaluate_risk_action(cid, 0.66)
+
+        assert action is not None
+        assert action["reason"] == "staged_tp_level_1"
+        assert action["size_fraction"] == pytest.approx(0.25)
 
     # ── Trailing Stop ──
 
@@ -608,7 +716,7 @@ class TestFeatureFlags(unittest.TestCase):
             'ENABLE_NEAR_MAX_EXIT': False, 'NEAR_MAX_PRICE_EXIT': 0.95, 'NEAR_MAX_PRICE_WARN': 0.92,
             'NEAR_MAX_PRICE_WARN_TRIM_RATIO': 0.50,
             'ENABLE_TRAILING_STOP': False, 'TRAILING_ACTIVATION_PCT': 20, 'TRAILING_DISTANCE': 0.05,
-            'ENABLE_STAGED_TP': False, 'STAGED_TP_LEVELS': '30,50', 'STAGED_TP_FRACTIONS': '0.25,0.35',
+            'ENABLE_STAGED_TP': False, 'STAGED_TP_LEVELS': '0.30,0.50', 'STAGED_TP_FRACTIONS': '0.25,0.35',
             'ENABLE_LEADER_DIVERGENCE_EXIT': False,
         }
         defaults.update(overrides)
@@ -620,6 +728,15 @@ class TestFeatureFlags(unittest.TestCase):
                 return []
             parts = [p.strip() for p in str(s).split(',') if p.strip()]
             return [float(p) for p in parts]
+
+        def _staged_level_ratios(s):
+            if not s:
+                return []
+            ratios = []
+            for part in [p.strip() for p in str(s).split(',') if p.strip()]:
+                raw = float(part)
+                ratios.append(raw / 100.0 if "." not in part and "e" not in part.lower() and raw > 1.0 else raw)
+            return ratios
 
         def _pct_ratio(value):
             raw = float(value)
@@ -649,9 +766,8 @@ class TestFeatureFlags(unittest.TestCase):
         )
         pm._trailing_distance = _pct_ratio(defaults['TRAILING_DISTANCE'])
         pm._enable_staged_tp = bool(defaults['ENABLE_STAGED_TP'])
-        raw_levels = _csv_floats(defaults['STAGED_TP_LEVELS'])
         raw_fractions = _csv_floats(defaults['STAGED_TP_FRACTIONS'])
-        pm._staged_levels = [l / 100.0 if l > 1.0 else l for l in raw_levels] or [0.30, 0.50]
+        pm._staged_levels = _staged_level_ratios(defaults['STAGED_TP_LEVELS']) or [0.30, 0.50]
         pm._staged_fractions = raw_fractions or [0.25, 0.35]
         pm._enable_leader_divergence = bool(defaults['ENABLE_LEADER_DIVERGENCE_EXIT'])
         return pm
