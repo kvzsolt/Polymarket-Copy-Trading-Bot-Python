@@ -1,0 +1,39 @@
+docs/02-configuration.md
+  s_71f3e833bdb7f0::t_a9ca977f589e39 245,333
+tests/test_rotation_service.py
+  s_71f3e833bdb7f0::t_de360f4354cc06 22,126
+config/app_config.py
+  s_71f3e833bdb7f0::t_a9ca977f589e39 1302-1306
+orchestrators/runtime_discovery.py
+  s_71f3e833bdb7f0::t_a9ca977f589e39 58-65
+tests/test_discovery_wiring.py
+  s_71f3e833bdb7f0::t_de360f4354cc06 162,180
+tests/test_config.py
+  s_71f3e833bdb7f0::t_de360f4354cc06 250,254-263
+tests/test_env_security.py
+  s_71f3e833bdb7f0::t_de360f4354cc06 70-81
+tests/test_auto_trader_selector.py
+  s_71f3e833bdb7f0::t_de360f4354cc06 181-187
+services/discovery/rotation_service.py
+  s_71f3e833bdb7f0::t_a9ca977f589e39 146
+services/discovery/auto_trader_selector.py
+  s_71f3e833bdb7f0::t_a9ca977f589e39 72-73,181-182
+config/env.py
+  s_71f3e833bdb7f0::t_a9ca977f589e39 119-124
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.8",
+  "base_commit_sha": "903861e5378a0c77eecf4cfa8208089638aba36d",
+  "prompts": {},
+  "sessions": {
+    "s_71f3e833bdb7f0": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ed8f6-154e-7573-82bc-f0175d547380",
+        "model": "gpt-5.5"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
