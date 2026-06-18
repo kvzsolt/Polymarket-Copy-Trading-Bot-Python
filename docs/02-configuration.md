@@ -176,7 +176,7 @@ Risk management parameters. See [05-risk-controls.md](05-risk-controls.md) for d
 | `PROFIT_LOCK_SELL_FRACTION` | float | `0.50` | Fraction of position to sell at lock |
 | `TRAILING_ACTIVATION_PCT` | float/`auto` | `20` | Profit % to activate trailing stop; blank or `auto` scales activation from max payout |
 | `TRAILING_DISTANCE` | float | `0.05` | Trailing stop distance as peak-drop percentage (`0.10` or `10` = 10%) |
-| `STAGED_TP_LEVELS` | string | `0.30,0.50` | Comma-separated take-profit profit-ratio levels |
+| `STAGED_TP_LEVELS` | string | `0.30,0.50` | Comma-separated take-profit profit-ratio levels; legacy percentage values like `30,50` are still accepted |
 | `STAGED_TP_FRACTIONS` | string | `0.25,0.35` | Comma-separated TP sell fractions |
 | `STOP_LOSS_THRESHOLD` | float | `0.15` | Price floor for stop-loss exit |
 | `STOP_LOSS_GRACE_PERIOD_SECONDS` | float | `180` | Grace period before stop-loss activates |

@@ -251,8 +251,8 @@ The staged take-profit sells incrementally at each level. For the default config
 - At 50% profit: Sell 35% of the remaining position
 
 Levels are profit ratios relative to entry price. For example, `0.30` means
-the position is up 30%. Whole-number values `>=100` are divided by 100 so
-`130` is treated as `1.30`, or up 130%.
+the position is up 30%. Legacy whole-number percentages remain accepted:
+`30` is treated as `0.30`, and `130` is treated as `1.30`.
 
 ### Leader Divergence Exit
 

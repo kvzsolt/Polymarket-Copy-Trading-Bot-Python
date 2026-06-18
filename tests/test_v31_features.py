@@ -177,7 +177,7 @@ class TestPositionExitSystem(unittest.TestCase):
         pm._enable_staged_tp = bool(defaults['ENABLE_STAGED_TP'])
         raw_levels = _csv_floats(defaults['STAGED_TP_LEVELS'])
         raw_fractions = _csv_floats(defaults['STAGED_TP_FRACTIONS'])
-        pm._staged_levels = [l / 100.0 if l >= 100.0 else l for l in raw_levels] or [0.30, 0.50]
+        pm._staged_levels = [l / 100.0 if l > 1.0 else l for l in raw_levels] or [0.30, 0.50]
         pm._staged_fractions = raw_fractions or [0.25, 0.35]
 
         pm._enable_leader_divergence = bool(defaults['ENABLE_LEADER_DIVERGENCE_EXIT'])
@@ -379,6 +379,31 @@ class TestPositionExitSystem(unittest.TestCase):
 
         assert pm.evaluate_risk_action(cid, 0.91) is None
         action = pm.evaluate_risk_action(cid, 0.92)
+
+        assert action is not None
+        assert action["reason"] == "staged_tp_level_1"
+        assert action["size_fraction"] == pytest.approx(0.25)
+
+    def test_staged_tp_accepts_legacy_percentage_levels(self):
+        from config.app_config import load_config
+        from services.positionManager import PositionManager
+
+        cfg = load_config({
+            "PRIVATE_KEY": "0x" + "a" * 64,
+            "FUNDER_ADDRESS": "0x" + "b" * 40,
+            "RPC_URL": "https://polygon-rpc.example.com",
+            "CHAIN_ID": "137",
+            "USER_ADDRESS": "0x" + "c" * 40,
+            "ENABLE_RISK_MGMT": "true",
+            "ENABLE_STAGED_TP": "true",
+            "STAGED_TP_LEVELS": "30,50",
+            "STAGED_TP_FRACTIONS": "0.25,0.35",
+            "ENABLE_NEAR_MAX_EXIT": "false",
+        })
+        pm = PositionManager(config=cfg)
+        cid = self._add_position(pm, entry_price=0.50)
+
+        action = pm.evaluate_risk_action(cid, 0.66)
 
         assert action is not None
         assert action["reason"] == "staged_tp_level_1"
@@ -700,7 +725,7 @@ class TestFeatureFlags(unittest.TestCase):
         pm._enable_staged_tp = bool(defaults['ENABLE_STAGED_TP'])
         raw_levels = _csv_floats(defaults['STAGED_TP_LEVELS'])
         raw_fractions = _csv_floats(defaults['STAGED_TP_FRACTIONS'])
-        pm._staged_levels = [l / 100.0 if l >= 100.0 else l for l in raw_levels] or [0.30, 0.50]
+        pm._staged_levels = [l / 100.0 if l > 1.0 else l for l in raw_levels] or [0.30, 0.50]
         pm._staged_fractions = raw_fractions or [0.25, 0.35]
         pm._enable_leader_divergence = bool(defaults['ENABLE_LEADER_DIVERGENCE_EXIT'])
         return pm
