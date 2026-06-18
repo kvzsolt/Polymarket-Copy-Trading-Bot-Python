@@ -1,6 +1,8 @@
 import logging
 import time
+import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Protocol, Awaitable, Callable, Any
 
@@ -54,6 +56,8 @@ class ReservationService:
         clock: Clock | None = None,
         ttl_seconds: int = 120,
         reconciler_callback: ReconcilerCallback | None = None,
+        enabled: bool = True,
+        force_release_grace_seconds: float | None = None,
     ):
         self.reservations_repo = reservations_repo
         self.positions_repo = positions_repo
@@ -66,9 +70,33 @@ class ReservationService:
         self.clock = clock if clock is not None else DefaultClock()
         self.ttl_seconds = ttl_seconds
         self.reconciler_callback = reconciler_callback
+        self.enabled = enabled
+        # sym 5 — deadlock breaker. Expiry-release is normally gated on the
+        # reconciler confirming the linked order is terminal. When the
+        # reconciler can NEVER confirm terminal (stuck deferred "matched",
+        # unqueryable order id, etc.) the reservation pins its (user, condition,
+        # token, side) scope forever and every later order on that scope is
+        # rejected with ReservationConflict — which is why the operator had to
+        # set RESERVATIONS_ENABLED=false. Once a reservation has been EXPIRED by
+        # at least this many seconds, force-release it: the held budget belongs
+        # to a fill-and-kill order, and FAK orders do not rest on the book, so
+        # one grace window past expiry the order is definitively not live. Fill
+        # accounting is unaffected — the reconciler still applies any real fill
+        # via the order_id-keyed incremental path, independent of the
+        # reservation. ``None`` disables the force-release (legacy behaviour;
+        # keeps existing fixtures green).
+        self.force_release_grace_seconds = force_release_grace_seconds
 
     async def reserve_for_intent(self, intent: OrderIntent) -> Reservation:
         stable_key = intent.key.stable_key()
+        if not self.enabled:
+            logger.info(
+                "reservation.acquire.disabled key=%s side=%s",
+                stable_key,
+                intent.key.side.value,
+            )
+            return self._disabled_reservation(intent, stable_key)
+
         # Fast-path lookup: most callers hit this once with no prior
         # reservation. The auto-committed read here is intentionally
         # racy — it short-circuits the common no-contention path before
@@ -362,6 +390,13 @@ class ReservationService:
         return None
 
     async def release_terminal(self, reservation_id: str, reason: str) -> None:
+        if self._is_disabled_reservation_id(reservation_id):
+            logger.info(
+                "reservation.release.disabled_noop id=%s reason=%s",
+                reservation_id,
+                reason,
+            )
+            return
         logger.info(
             "reservation.release id=%s reason=%s",
             reservation_id, reason,
@@ -371,6 +406,76 @@ class ReservationService:
             reason=reason,
             released_at=self.clock.utcnow_timestamp(),
         )
+
+    def _disabled_reservation(self, intent: OrderIntent, stable_key: str) -> Reservation:
+        now_ts = self.clock.utcnow_timestamp()
+        # Each disabled reservation gets a unique ID so callers that track
+        # reservation IDs in a dict/set don't silently deduplicate concurrent
+        # or retried acquisitions for the same intent.
+        unique_id = f"disabled:{stable_key}:{uuid.uuid4().hex}"
+        return Reservation(
+            id=unique_id,
+            user_id=intent.key.user_id,
+            intent_key=stable_key,
+            condition_id=intent.key.condition_id,
+            token_id=intent.key.token_id,
+            side=intent.key.side,
+            reason=intent.key.reason,
+            reserved_usdc=Decimal("0"),
+            reserved_size=Decimal("0"),
+            status="disabled",
+            created_at=datetime.fromtimestamp(now_ts, tz=timezone.utc),
+            expires_at=datetime.fromtimestamp(now_ts, tz=timezone.utc),
+            order_id=None,
+            venue_order_id=None,
+        )
+
+    @staticmethod
+    def _is_disabled_reservation_id(reservation_id: str) -> bool:
+        return str(reservation_id).startswith("disabled:")
+
+    def _expired_beyond_force_grace(self, res: Reservation, now: float) -> bool:
+        """Whether ``res`` has been expired long enough to force-release without
+        terminal reconciliation confirmation (sym 5 deadlock breaker).
+
+        Disabled (returns ``False``) when ``force_release_grace_seconds`` is
+        ``None``. Otherwise true once ``now`` is at least that many seconds past
+        the reservation's ``expires_at``.
+        """
+        grace = self.force_release_grace_seconds
+        if grace is None:
+            return False
+        expires_at = getattr(res, "expires_at", None)
+        if expires_at is None:
+            return False
+        try:
+            exp_ts = expires_at.timestamp()
+        except Exception:
+            return False
+        return (now - exp_ts) >= float(grace)
+
+    async def _force_release_stranded(self, res: Reservation, now: float) -> bool:
+        """Force-release a reservation whose order the reconciler cannot confirm
+        terminal. Returns True on success. Loud by design — a force-release is a
+        last-resort that should be visible in operator logs."""
+        try:
+            await self.reservations_repo.mark_released(
+                res.id, "expired_terminal_forced", now
+            )
+        except Exception as exc:
+            logger.warning(
+                "reservation.force_release_failed id=%s error=%r", res.id, exc
+            )
+            return False
+        logger.warning(
+            "reservation.force_released_after_grace id=%s key=%s side=%s "
+            "usdc=%s size=%s grace_s=%s — reconciliation could not confirm "
+            "terminal within grace; releasing stranded FAK budget so the scope "
+            "is not pinned forever",
+            res.id, res.intent_key, res.side.value,
+            res.reserved_usdc, res.reserved_size, self.force_release_grace_seconds,
+        )
+        return True
 
     async def release_expired_active(self) -> list[str]:
         """Enqueue reconciliation for expired active reservations.
@@ -399,6 +504,12 @@ class ReservationService:
                         enqueued_ids.append(res.id)
                         continue
                     if result is False:
+                        # Reconciler cannot confirm terminal. Keep active unless
+                        # it has been stranded past the force-release grace.
+                        if self._expired_beyond_force_grace(res, now):
+                            if await self._force_release_stranded(res, now):
+                                enqueued_ids.append(res.id)
+                            continue
                         logger.info(
                             "reservation.expiry_callback_deferred id=%s — keeping active",
                             res.id,
@@ -407,6 +518,10 @@ class ReservationService:
                     enqueued_ids.append(res.id)
                     continue
                 except Exception as exc:
+                    if self._expired_beyond_force_grace(res, now):
+                        if await self._force_release_stranded(res, now):
+                            enqueued_ids.append(res.id)
+                            continue
                     logger.warning(
                         "reservation.expiry_reconciliation_failed id=%s "
                         "error=%s — keeping reservation active",
@@ -414,6 +529,13 @@ class ReservationService:
                     )
                     continue
             else:
+                # No reconciler wired. A grace-configured deployment still
+                # force-releases stranded reservations so the scope is not
+                # pinned forever; otherwise keep active (legacy behaviour).
+                if self._expired_beyond_force_grace(res, now):
+                    if await self._force_release_stranded(res, now):
+                        enqueued_ids.append(res.id)
+                    continue
                 logger.info(
                     "reservation.expiry_no_reconciler id=%s — keeping reservation active",
                     res.id,
@@ -421,20 +543,33 @@ class ReservationService:
         return enqueued_ids
 
     async def _expire_with_reconciliation(self, res: Reservation) -> bool:
+        now = self.clock.utcnow_timestamp()
         if self.reconciler_callback is not None:
             try:
                 result = await self.reconciler_callback(res.id)
                 if result is True:
                     await self.reservations_repo.mark_released(
-                        res.id, "expired_terminal", self.clock.utcnow_timestamp()
+                        res.id, "expired_terminal", now
                     )
                     return True
+                # Reconciler could not confirm terminal. Block the new intent
+                # (return False → ReservationConflict) UNLESS the stranded
+                # reservation is past the force-release grace, in which case
+                # releasing it lets the new order proceed (sym 5).
+                if self._expired_beyond_force_grace(res, now):
+                    return await self._force_release_stranded(res, now)
                 return False
             except Exception as exc:
+                if self._expired_beyond_force_grace(res, now):
+                    return await self._force_release_stranded(res, now)
                 logger.warning(
                     "reservation.expiry_reconciliation_failed id=%s "
                     "error=%s — keeping reservation active",
                     res.id, exc,
                 )
                 return False
+        # No reconciler wired: release a grace-stranded reservation so the new
+        # intent is not blocked forever; otherwise preserve legacy behaviour.
+        if self._expired_beyond_force_grace(res, now):
+            return await self._force_release_stranded(res, now)
         return False

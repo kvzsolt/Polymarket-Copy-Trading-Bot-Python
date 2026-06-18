@@ -39,19 +39,6 @@ from services.executionService import ExecutionService
 from storage.postgres.orders_repo import OrdersRepo
 
 
-@pytest.mark.skip(
-    reason=(
-        "PG migration: pooled-conn concurrency surfaces a TOCTOU window in "
-        "ExecutionService where the existing-row check + "
-        "try_acquire_submission_lock + save_submission triple is not "
-        "transactional. Multiple winners observe no existing row and INSERT "
-        "pending_lock successfully via ON CONFLICT DO UPDATE. Fix requires "
-        "moving the entire pre-submit sequence inside a single asyncpg "
-        "transaction or using a check-and-set primitive on get-or-insert. "
-        "Tracked as follow-up — matches the deferred stress test in "
-        "tests/test_execution_idempotency_extended.py::TestAtomicLockConcurrencyStress."
-    )
-)
 @pytest.mark.asyncio
 async def test_concurrent_identical_intents_durable_state():
     """Inv-1 + Inv-2: N concurrent identical execute() → exactly one venue

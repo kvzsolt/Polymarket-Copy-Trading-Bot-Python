@@ -23,6 +23,7 @@ Design notes
 from __future__ import annotations
 
 import logging
+import math
 import re
 from collections.abc import Mapping
 from decimal import Decimal
@@ -51,7 +52,6 @@ __all__ = [
     "OrderConfirmationConfig",
     "PositionDriftConfig",
     "PollingConfig",
-    "NearOneExitConfig",
     "RedemptionConfig",
     "ReconciliationConfig",
     "RiskConfig",
@@ -65,6 +65,18 @@ __all__ = [
 _ETH_ADDR_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
 _HEX_PRIVATE_KEY_RE = re.compile(r"^0x[0-9a-fA-F]{64}$")
 logger = logging.getLogger("AppConfig")
+
+# Contract addresses live in the dependency-free ``config.addresses`` leaf
+# module so the typed config and the legacy ``config.env`` surface share one
+# source of truth (env already imports app_config indirectly, so neither can
+# own the constants without a cycle). Re-exported here for back-compat with
+# existing ``from config.app_config import POLYGON_USDCE_ADDRESS`` call sites.
+from config.addresses import (  # noqa: E402
+    POLYGON_USDCE_ADDRESS,
+    POLYMARKET_CTF_COLLATERAL_ADAPTER_ADDRESS,
+    POLYMARKET_CTF_EXCHANGE_V2_ADDRESS,
+    POLYMARKET_PUSD_ADDRESS,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -105,31 +117,55 @@ class _Parser:
     def string(self, key: str, default: str = "") -> str:
         return self._strip(key, self.raw(key, default))
 
+    def _finite_or_error(self, key: str, value: float, *, default: str) -> float:
+        """Reject NaN / +/-Inf for numeric config (P2-c, fail-closed).
+
+        ``float("nan")`` / ``float("inf")`` parse without error but corrupt
+        every downstream comparison gate (slippage tolerance, spread caps),
+        so a non-finite value must surface as a config error rather than be
+        accepted silently. We inline the check here instead of reusing
+        ``config.validation`` because those helpers couple finiteness to a
+        sign check and raise eagerly, whereas this parser accumulates errors
+        and raises once in ``load_config``.
+        """
+        if not math.isfinite(value):
+            self.errors.append(f"{key} must be a finite number, got: {value!r}")
+            try:
+                fallback = float(default)
+            except ValueError:
+                return 0.0
+            return fallback if math.isfinite(fallback) else 0.0
+        return value
+
     def float_(self, key: str, default: str) -> float:
         raw = self._strip(key, self.raw(key, default))
         if raw == "":
             raw = default
         try:
-            return float(raw)
+            value = float(raw)
         except ValueError:
             self.errors.append(f"{key} must be a valid float, got: {raw!r}")
             try:
-                return float(default)
+                value = float(default)
             except ValueError:
                 return 0.0
+            return value if math.isfinite(value) else 0.0
+        return self._finite_or_error(key, value, default=default)
 
     def float_or_auto(self, key: str, default: str) -> float | None:
         raw = self._strip(key, self.raw(key, default))
         if raw == "" or raw.lower() == "auto" or raw.startswith("#"):
             return None
         try:
-            return float(raw)
+            value = float(raw)
         except ValueError:
             self.errors.append(f"{key} must be a valid float or 'auto', got: {raw!r}")
             try:
-                return float(default)
+                value = float(default)
             except ValueError:
                 return 0.0
+            return value if math.isfinite(value) else 0.0
+        return self._finite_or_error(key, value, default=default)
 
     def int_(self, key: str, default: str) -> int:
         raw = self._strip(key, self.raw(key, default))
@@ -380,6 +416,13 @@ class ExecutionConfig:
     # which a pending order blocks the next same-scope copy before it is
     # expired (and reconciled). Mirrors ``pending_submission_ttl_seconds``.
     reservation_ttl_seconds: int
+    # Master switch for pre-submit BUY-quote / SELL-share reservations. When
+    # False the ReservationService no-ops (returns placeholder reservations)
+    # and double-spend protection falls back to the idempotency submission
+    # lock + position coordinator. Defaults False on this hardening branch
+    # because the reservation blocker was over-firing on legitimate same-scope
+    # copies; flip to True once that is retuned. See docs/02-configuration.md.
+    reservations_enabled: bool
     retry_backoff_base: float
     transaction_fee_bps: float
     gas_cost_usdc: float
@@ -459,8 +502,8 @@ class NetworkConfig:
     # to be read straight out of ``ENV`` by ``utils/createClobClient.py``
     # and ``utils/getMyBalance.py``; promoted to typed config so the
     # balance-check + CLOB-client paths can drop their raw env reads.
-    # Default-empty strings let the existing usdc_contract_address fallback
-    # chain in load_config keep working when these aren't set.
+    # CLOB v2 defaults to pUSD collateral; ``usdc_contract_address`` is kept
+    # as a legacy field name for callers that still expect that attribute.
     collateral_contract_address: str = ""
     pusd_contract_address: str = ""
     ctf_exchange_v2_address: str = ""
@@ -535,22 +578,6 @@ class OrderConfirmationConfig:
 
 
 @dataclass(frozen=True)
-class NearOneExitConfig:
-    """Sell-the-position-near-par exit replaces on-chain redemption.
-
-    When a copied position's token price has been at or above ``threshold`` for
-    at least ``dwell_seconds``, NearOneExitService submits a SELL for the
-    entire held size through the normal CLOB execution path. No CTF
-    ``redeemPositions`` transaction is ever issued.
-    """
-
-    enable_near_one_exit: bool
-    threshold: Decimal
-    dwell_seconds: int
-    check_interval: int
-
-
-@dataclass(frozen=True)
 class RedemptionConfig:
     enable_auto_redeem: bool
     check_interval: int
@@ -593,6 +620,7 @@ class DiscoveryConfig:
     falcon_max_trades_15d: int = 750
     polymarket_history_lookback_days: int = 365
     polymarket_history_window_days: int = 7
+    polymarket_history_min_window_seconds: int = 21600
     polymarket_activity_max_offset: int = 10000
     discovery_history_trade_limit: int = 50000
     discovery_signal_group_window_seconds: int = 60
@@ -600,6 +628,11 @@ class DiscoveryConfig:
     discovery_min_group_notional_usdc: float = 5.0
     discovery_min_copyable_grouped_signal_ratio: float = 0.75
     discovery_min_copyable_notional_ratio: float = 0.60
+    discovery_min_auto_sports_esports_ratio: float = 0.75
+    discovery_auto_prefer_sports_esports: bool = True
+    discovery_evaluation_ttl_seconds: int = 3600
+    discovery_reject_stale_evaluations: bool = True
+    discovery_require_recent_state_for_live: bool = True
     discovery_require_7d_non_negative: bool = True
     discovery_min_7d_pnl_usdc: float = 0.0
     discovery_allow_3d_slightly_negative: bool = True
@@ -686,7 +719,6 @@ class AppConfig:
     leader: LeaderConfig
     logging: LoggingConfig
     network: NetworkConfig
-    near_one_exit: NearOneExitConfig
     redemption: RedemptionConfig
     reconciliation: ReconciliationConfig
     order_confirmation: OrderConfirmationConfig
@@ -1110,6 +1142,18 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         risk_price_cache_max_size=p.int_("RISK_PRICE_CACHE_MAX_SIZE", "5000"),
     )
 
+    # P0-2: live-trading master switch — fail-closed. The bot runs in PAPER mode
+    # unless LIVE_TRADING is EXPLICITLY enabled; a missing / unknown / malformed
+    # value resolves to paper. The legacy PAPER_TRADE_ONLY flag can additionally
+    # force paper but can never enable live. This is the single source for
+    # paper_trade_only / dry_run, so live trading requires an affirmative opt-in
+    # (LIVE_TRADING=enabled) — there is no path where missing config goes live.
+    _live_switch = p._strip("LIVE_TRADING", p.raw("LIVE_TRADING", "")).strip().lower()
+    live_trading_enabled = _live_switch in ("enabled", "true", "1", "yes", "on")
+    paper_trade_only_effective = (
+        p.bool_("PAPER_TRADE_ONLY", False) or not live_trading_enabled
+    )
+
     # Execution
     execution = ExecutionConfig(
         slippage_tolerance=p.float_("SLIPPAGE_TOLERANCE", "2.0"),
@@ -1117,13 +1161,14 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         max_share_price=p.float_("MAX_SHARE_PRICE", "0"),
         max_retries=p.int_("MAX_RETRIES", "3"),
         non_terminal_failure_max_attempts=p.int_("NON_TERMINAL_FAILURE_MAX_ATTEMPTS", "3"),
-        paper_trade_only=p.bool_("PAPER_TRADE_ONLY", False),
+        paper_trade_only=paper_trade_only_effective,
         enable_copy_decision_gate=p.bool_("ENABLE_COPY_DECISION_GATE", False),
         enable_near_resolution_gate=p.bool_("ENABLE_NEAR_RESOLUTION_GATE", False),
         near_resolution_gate_price=p.float_("NEAR_RESOLUTION_GATE_PRICE", "0.95"),
         near_resolution_max_age_seconds=p.float_("NEAR_RESOLUTION_MAX_AGE_SECONDS", "15"),
         pending_submission_ttl_seconds=p.int_("PENDING_SUBMISSION_TTL_SECONDS", "120"),
         reservation_ttl_seconds=p.int_("RESERVATION_TTL_SECONDS", "120"),
+        reservations_enabled=p.bool_("RESERVATIONS_ENABLED", False),
         retry_backoff_base=p.float_("RETRY_BACKOFF_BASE", "1.0"),
         transaction_fee_bps=p.float_("TRANSACTION_FEE_BPS", "20"),
         gas_cost_usdc=p.float_("GAS_COST_USDC", "0.03"),
@@ -1221,16 +1266,19 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         chain_id=wallet.chain_id,
         usdc_contract_address=(
             p.string("COLLATERAL_CONTRACT_ADDRESS", "")
-            or p.string("PUSD_CONTRACT_ADDRESS", "")
-            or p.string("USDC_CONTRACT_ADDRESS", "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174")
+            or p.string("PUSD_CONTRACT_ADDRESS", POLYMARKET_PUSD_ADDRESS)
+            or p.string("USDC_CONTRACT_ADDRESS", POLYGON_USDCE_ADDRESS)
         ),
         enforce_geoblock=p.bool_("ENFORCE_GEOBLOCK", True),
         enable_metrics_server=p.bool_("ENABLE_METRICS_SERVER", False),
         metrics_port=p.int_("METRICS_PORT", "9102"),
         metrics_bind_host=p.string("METRICS_BIND_HOST", "127.0.0.1"),
         collateral_contract_address=p.string("COLLATERAL_CONTRACT_ADDRESS", ""),
-        pusd_contract_address=p.string("PUSD_CONTRACT_ADDRESS", ""),
-        ctf_exchange_v2_address=p.string("CTF_EXCHANGE_V2_ADDRESS", ""),
+        pusd_contract_address=p.string("PUSD_CONTRACT_ADDRESS", POLYMARKET_PUSD_ADDRESS),
+        ctf_exchange_v2_address=p.string(
+            "CTF_EXCHANGE_V2_ADDRESS",
+            POLYMARKET_CTF_EXCHANGE_V2_ADDRESS,
+        ),
     )
 
     reconciliation = ReconciliationConfig(
@@ -1278,15 +1326,9 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         ),
     )
 
-    near_one_exit = NearOneExitConfig(
-        enable_near_one_exit=p.bool_("ENABLE_NEAR_ONE_EXIT", False),
-        threshold=Decimal(p.string("NEAR_ONE_EXIT_THRESHOLD", "0.99")),
-        dwell_seconds=p.int_("NEAR_ONE_EXIT_DWELL_SECONDS", "60"),
-        check_interval=p.int_("NEAR_ONE_EXIT_CHECK_INTERVAL", "5"),
-    )
-
     redemption_collateral = (
         p.string("REDEEM_COLLATERAL_CONTRACT_ADDRESS", "")
+        or network.pusd_contract_address
         or network.usdc_contract_address
     )
     redemption = RedemptionConfig(
@@ -1298,7 +1340,10 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         zero_threshold=Decimal(p.string("REDEEM_ZERO_THRESHOLD", "0.0001")),
         ctf_contract_address=p.string(
             "REDEEM_CTF_CONTRACT_ADDRESS",
-            "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045",
+            p.string(
+                "CTF_COLLATERAL_ADAPTER_ADDRESS",
+                POLYMARKET_CTF_COLLATERAL_ADAPTER_ADDRESS,
+            ),
         ),
         collateral_contract_address=redemption_collateral,
         gas_limit=p.int_("REDEEM_GAS_LIMIT", "500000"),
@@ -1350,6 +1395,9 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         falcon_max_trades_15d=p.int_("FALCON_MAX_TRADES_15D", "750"),
         polymarket_history_lookback_days=p.int_("POLYMARKET_HISTORY_LOOKBACK_DAYS", "365"),
         polymarket_history_window_days=p.int_("POLYMARKET_HISTORY_WINDOW_DAYS", "7"),
+        polymarket_history_min_window_seconds=p.int_(
+            "POLYMARKET_HISTORY_MIN_WINDOW_SECONDS", "21600"
+        ),
         polymarket_activity_max_offset=p.int_("POLYMARKET_ACTIVITY_MAX_OFFSET", "10000"),
         discovery_history_trade_limit=p.int_("DISCOVERY_HISTORY_TRADE_LIMIT", "50000"),
         discovery_signal_group_window_seconds=p.int_("DISCOVERY_SIGNAL_GROUP_WINDOW_SECONDS", "60"),
@@ -1360,6 +1408,21 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         ),
         discovery_min_copyable_notional_ratio=p.float_(
             "DISCOVERY_MIN_COPYABLE_NOTIONAL_RATIO", "0.60"
+        ),
+        discovery_min_auto_sports_esports_ratio=p.float_(
+            "DISCOVERY_MIN_AUTO_SPORTS_ESPORTS_RATIO", "0.75"
+        ),
+        discovery_auto_prefer_sports_esports=p.bool_(
+            "DISCOVERY_AUTO_PREFER_SPORTS_ESPORTS", True
+        ),
+        discovery_evaluation_ttl_seconds=p.int_(
+            "DISCOVERY_EVALUATION_TTL_SECONDS", "3600"
+        ),
+        discovery_reject_stale_evaluations=p.bool_(
+            "DISCOVERY_REJECT_STALE_EVALUATIONS", True
+        ),
+        discovery_require_recent_state_for_live=p.bool_(
+            "DISCOVERY_REQUIRE_RECENT_STATE_FOR_LIVE", True
         ),
         discovery_require_7d_non_negative=p.bool_("DISCOVERY_REQUIRE_7D_NON_NEGATIVE", True),
         discovery_min_7d_pnl_usdc=p.float_("DISCOVERY_MIN_7D_PNL_USDC", "0"),
@@ -1430,7 +1493,6 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         leader=leader,
         logging=logging_cfg,
         network=network,
-        near_one_exit=near_one_exit,
         redemption=redemption,
         reconciliation=reconciliation,
         order_confirmation=order_confirmation,
@@ -1460,7 +1522,8 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
             executable_tick_max_age_seconds=p.float_("MARKET_DATA_EXECUTABLE_TICK_MAX_AGE_SECONDS", 300.0),
             wss_connection_max_silence_seconds=p.float_("MARKET_DATA_WSS_CONNECTION_MAX_SILENCE_SECONDS", 20.0),
         ),
-        dry_run=p.bool_("PAPER_TRADE_ONLY", False),
+        # P0-2: single source — derived from the LIVE_TRADING master switch.
+        dry_run=paper_trade_only_effective,
         raw=_strip_sensitive(env),
     )
 

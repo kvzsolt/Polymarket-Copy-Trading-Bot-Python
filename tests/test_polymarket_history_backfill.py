@@ -70,6 +70,19 @@ class _ZeroClient:
         return SimpleNamespace(rows=[])
 
 
+class _FullUntilCapClient:
+    def __init__(self, *, full_offsets: set[int] | None = None):
+        self.calls = []
+        self.full_offsets = full_offsets or set()
+
+    async def fetch_activity_page(self, **kwargs):
+        self.calls.append(kwargs)
+        offset = int(kwargs["offset"])
+        if offset in self.full_offsets:
+            return SimpleNamespace(rows=[{"timestamp": str(offset + i)} for i in range(500)])
+        return SimpleNamespace(rows=[])
+
+
 @pytest.mark.asyncio
 async def test_history_backfill_page_error_returns_partial_result(monkeypatch):
     monkeypatch.setattr(
@@ -120,3 +133,91 @@ async def test_history_backfill_zero_rows_does_not_throw(monkeypatch):
     assert result.errors == 0
     assert result.earliest_ts is None
     assert result.latest_ts is None
+
+
+@pytest.mark.asyncio
+async def test_history_backfill_never_requests_offset_above_3000(monkeypatch):
+    monkeypatch.setattr(
+        "services.discovery.polymarket_history_backfill.time.time",
+        lambda: 100_000,
+    )
+    client = _FullUntilCapClient(full_offsets={0, 500, 1000, 1500, 2000, 2500, 3000})
+
+    await PolymarketHistoryBackfill(
+        client=client,
+        ingestion=_Ingestion(),
+        config=SimpleNamespace(
+            discovery=SimpleNamespace(
+                polymarket_history_lookback_days=1,
+                polymarket_history_window_days=1,
+                polymarket_history_min_window_seconds=200_000,
+                polymarket_activity_max_offset=10_000,
+            )
+        ),
+    ).backfill_wallet("0x" + "d" * 40)
+
+    assert max(call["offset"] for call in client.calls) == 3000
+
+
+@pytest.mark.asyncio
+async def test_history_backfill_splits_saturated_windows(monkeypatch):
+    monkeypatch.setattr(
+        "services.discovery.polymarket_history_backfill.time.time",
+        lambda: 100_000,
+    )
+
+    class _SplitClient:
+        def __init__(self):
+            self.calls = []
+
+        async def fetch_activity_page(self, **kwargs):
+            self.calls.append(kwargs)
+            if kwargs["start_ts"] == 100_000 - 86400 and kwargs["end_ts"] == 100_000:
+                return SimpleNamespace(rows=[{"timestamp": "1"} for _ in range(500)])
+            if kwargs["offset"] == 0:
+                return SimpleNamespace(rows=[{"timestamp": str(kwargs["start_ts"])}])
+            return SimpleNamespace(rows=[])
+
+    client = _SplitClient()
+    result = await PolymarketHistoryBackfill(
+        client=client,
+        ingestion=_Ingestion(),
+        config=SimpleNamespace(
+            discovery=SimpleNamespace(
+                polymarket_history_lookback_days=1,
+                polymarket_history_window_days=1,
+                polymarket_history_min_window_seconds=1,
+                polymarket_activity_max_offset=0,
+            )
+        ),
+    ).backfill_wallet("0x" + "e" * 40)
+
+    assert result.fetched == 2
+    assert any(call["end_ts"] < 100_000 for call in client.calls)
+    assert any(call["start_ts"] > 100_000 - 86400 for call in client.calls)
+
+
+@pytest.mark.asyncio
+async def test_history_backfill_min_dense_window_keeps_partial(monkeypatch):
+    monkeypatch.setattr(
+        "services.discovery.polymarket_history_backfill.time.time",
+        lambda: 100_000,
+    )
+    client = _FullUntilCapClient(full_offsets={0})
+
+    result = await PolymarketHistoryBackfill(
+        client=client,
+        ingestion=_Ingestion(),
+        config=SimpleNamespace(
+            discovery=SimpleNamespace(
+                polymarket_history_lookback_days=1,
+                polymarket_history_window_days=1,
+                polymarket_history_min_window_seconds=200_000,
+                polymarket_activity_max_offset=0,
+            )
+        ),
+    ).backfill_wallet("0x" + "f" * 40)
+
+    assert result.fetched == 500
+    assert result.inserted == 500
+    assert max(call["offset"] for call in client.calls) == 0

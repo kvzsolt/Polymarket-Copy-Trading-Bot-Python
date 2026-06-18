@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import random
 import time
 from dataclasses import asdict, is_dataclass, replace
 from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
@@ -102,14 +103,12 @@ def _normalize_side(side: str) -> str:
 _FORCED_EXIT_SOURCES = frozenset({
     "risk_exit",
     "protective_exit",
-    "near_one_exit",
 })
 
 _FORCED_EXIT_REASONS = frozenset({
     "risk_exit",
     "protective_exit",
     "advanced_risk_exit",
-    "near_one_exit",
     "stop_loss",
     "trailing_stop",
 })
@@ -249,7 +248,17 @@ def _is_fak_repostable_no_fill(response: dict[str, Any]) -> bool:
     status = str(response.get("status") or "").strip().lower()
     error = _response_error_text(response)
     if "fak_no_match" in error or "order_not_fully_fillable" in error:
+        # Explicit no-match: nothing filled, safe to refresh the book and retry.
         return True
+    # P1-p: a bare 'cancelled' carrying an order id but NO explicit no-match
+    # signal may be a partial-fill-then-cancel whose filled amount the POST
+    # response does not report (size_matched is GET-only; the venue returns
+    # makingAmount/takingAmount, which this path does not parse). Reposting
+    # would double-buy the already-filled portion, so defer to the reconciler —
+    # it settles the real fill via the order id. A cancel with no order id has
+    # nothing to reconcile and stays repostable.
+    if _response_order_id(response):
+        return False
     return status == "cancelled"
 
 
@@ -361,12 +370,16 @@ class ExecutionService:
         config: AppConfig,
         clob_gateway: "ClobGateway | None" = None,
         market_data_service: "MarketDataService | None" = None,
+        geoblock_gate=None,
     ):
         self.clob_client = clob_client
         self.fee_service = fee_service
         self.order_repo = order_repo
         self._config = config
         self._market_data_service = market_data_service
+        # P1-j: optional trade-path geoblock gate (services.compliance.GeoblockGate).
+        # None = no enforcement (preserves the configless / test default).
+        self._geoblock_gate = geoblock_gate
 
         # Single CLOB venue boundary. ``runtime_bootstrap`` is expected to pass
         # a pre-constructed gateway so reconciliation, the execution
@@ -389,6 +402,20 @@ class ExecutionService:
         if circuit_breaker is not None:
             self.circuit_breaker = circuit_breaker
         else:
+            # P2-d: honor ``execution.circuit_failure_threshold`` from typed
+            # config on the shared module breaker so the config value is not
+            # dead (it previously hardcoded failure_threshold=5). We only
+            # reconfigure the shared default — an explicitly injected breaker
+            # above keeps its own threshold. The shared instance is preserved
+            # (we mutate the threshold, not the object) so multi-user runtimes
+            # still share one venue-wide backoff window.
+            configured_threshold = getattr(
+                getattr(config, "execution", None),
+                "circuit_failure_threshold",
+                None,
+            )
+            if isinstance(configured_threshold, int) and configured_threshold > 0:
+                _CLOB_CIRCUIT.failure_threshold = configured_threshold
             self.circuit_breaker = _CLOB_CIRCUIT
 
         # Typed concurrency cap; raw env fallback survives only for legacy
@@ -468,6 +495,25 @@ class ExecutionService:
                 fees_paid=Decimal("0"),
                 error=f"CLOB circuit breaker open — retry in {remaining:.0f}s",
             )
+
+        # P1-j: consult the geoblock gate on the trade path (not just at boot)
+        # and revalidate on expiry. Only BUY *entries* are blocked in a
+        # geoblocked region — a protective SELL exit is risk-reducing and must
+        # never be stranded by a compliance gate. The gate is fail-closed and
+        # opt-in; ``None`` means enforcement is disabled.
+        if self._geoblock_gate is not None and side == "BUY":
+            geoblock_decision = await self._geoblock_gate.ensure_allowed()
+            if geoblock_decision is not None and not geoblock_decision.allowed:
+                return ExecutionResult(
+                    accepted=False,
+                    order_id=None,
+                    status="geoblocked",
+                    requested_amount=req.amount,
+                    filled_amount=Decimal("0"),
+                    avg_price=None,
+                    fees_paid=Decimal("0"),
+                    error=f"geoblocked: {geoblock_decision.reason}",
+                )
 
         ec = self._config.execution
         forced_sell_exit = _is_forced_sell_exit_request(req, side)
@@ -888,13 +934,22 @@ class ExecutionService:
         )
 
         existing = await self.order_repo.get_by_idempotency_key(idem_key)
-        if (
+        pending_lock_expired = bool(
             existing
             and not existing.get("order_id")
             and _is_pending_submission_expired(existing, config=self._config)
-        ):
-            ttl_seconds = _pending_submission_ttl_seconds(self._config)
-            ttl_seconds_log = int(ttl_seconds)
+        )
+        if pending_lock_expired:
+            # The prior submission lock for this key passed its pending TTL with
+            # no order_id — a dead, never-submitted lock. Do NOT destructively
+            # re-mark the row (e.g. status="expired") here: under concurrency a
+            # late re-mark clobbers a peer's fresh takeover and lets multiple
+            # retriers each submit (duplicate orders). It is also unnecessary —
+            # is_retry_blocking_existing (below) already treats an expired
+            # pending row as non-blocking, and try_acquire_submission_lock takes
+            # the dead lock over atomically at the pending-TTL threshold (exactly
+            # one winner; see the concurrent-post-expiry stress test). Record it
+            # for observability only.
             existing_status = str(
                 existing.get("status")
                 or existing.get("response", {}).get("status")
@@ -904,37 +959,7 @@ class ExecutionService:
                 "expiring stale %s submission lock | idempotency_key=%s | ttl=%ss",
                 existing_status,
                 idem_key,
-                ttl_seconds_log,
-            )
-            stale_request = existing.get("request")
-            if not isinstance(stale_request, dict):
-                stale_request = {
-                    "user_id": req.user_id,
-                    "leader_id": req.leader_id,
-                    "token_id": req.token_id,
-                    "side": side,
-                    "amount": str(req.amount),
-                    "reason": req.reason,
-                    "signal_id": req.signal_id,
-                }
-            pending_started_at = _pending_since(existing)
-            if pending_started_at is None:
-                pending_started_at = time.time()
-            pending_expires_at = _pending_expires_at(existing)
-            if pending_expires_at is None:
-                pending_expires_at = pending_started_at + max(ttl_seconds, 0.0)
-            await self._save_submission(
-                idempotency_key=idem_key,
-                request=stale_request,
-                response={
-                    "success": False,
-                    "status": "expired",
-                    "error": f"stale {existing_status} submission expired after {ttl_seconds_log}s",
-                    "expired_at": time.time(),
-                    "pending_since": pending_started_at,
-                    "pending_ttl_seconds": ttl_seconds,
-                    "pending_expires_at": pending_expires_at,
-                },
+                int(_pending_submission_ttl_seconds(self._config)),
             )
         existing = await self.order_repo.get_by_idempotency_key(idem_key)
 
@@ -980,8 +1005,23 @@ class ExecutionService:
         # and both submit distinct signed orders.
         has_atomic_lock = hasattr(self.order_repo, "try_acquire_submission_lock")
         if has_atomic_lock:
+            # If THIS call confirmed the prior pending lock is expired (above),
+            # authorise try_acquire to take the dead lock over at the same
+            # pending-submission TTL threshold instead of the conservative
+            # default — the now strictly fail-closed loser path (P1-n) would
+            # otherwise block the legitimate post-expiry retry. Concurrent
+            # post-expiry retriers still serialise to exactly one winner: the
+            # takeover resets the row to a fresh ``pending_lock`` whose age is
+            # < TTL, so the loser's takeover WHERE fails. Non-expiry concurrent
+            # duplicates keep the conservative default and never steal an
+            # actively-submitting lock.
+            _acquire_kwargs: dict[str, Any] = {}
+            if pending_lock_expired:
+                _acquire_kwargs["stale_takeover_seconds"] = int(
+                    _pending_submission_ttl_seconds(self._config)
+                )
             lock_acquired = await self.order_repo.try_acquire_submission_lock(
-                idem_key, req.user_id, req.leader_id, request_doc
+                idem_key, req.user_id, req.leader_id, request_doc, **_acquire_kwargs
             )
         else:
             # Non-atomic locking is unsafe for live trading: two concurrent
@@ -1022,17 +1062,36 @@ class ExecutionService:
                     fees_paid=Decimal("0"),
                     error=None,
                 )
-            if has_atomic_lock and await self.order_repo.is_submission_locked(idem_key):
-                return ExecutionResult(
-                    accepted=False,
-                    order_id=None,
-                    status="inflight_lock",
-                    requested_amount=req.amount,
-                    filled_amount=Decimal("0"),
-                    avg_price=None,
-                    fees_paid=Decimal("0"),
-                    error="another task is currently submitting this order",
-                )
+            # CRITICAL duplicate-order fail-closed (P1-n): we did NOT acquire the
+            # submission lock and no durable order_id is visible yet. The lock
+            # primitive serializes to exactly ONE acquirer, so reaching here
+            # means another task is the winner (or the key is in a non-takeable
+            # state). A task that does not own the lock MUST NEVER fall through
+            # to the submit path below — that was the N-concurrent-identical-
+            # intents -> N venue POSTs race: a loser whose is_submission_locked()
+            # momentarily read False (the winner's row sitting between lock
+            # states — pending_lock -> pending-response -> order_id — so its
+            # status was transiently not in the locked set while order_id was
+            # still NULL) would slip past the old guarded return and POST a
+            # duplicate signed order. is_submission_locked is now advisory only
+            # (it shapes the error string); it never gates this fail-closed
+            # return. Proven by tests/test_execution_idempotency_extended.py::
+            # TestAtomicLockConcurrencyStress and the release-gate twin.
+            _lock_held = has_atomic_lock and await self.order_repo.is_submission_locked(idem_key)
+            return ExecutionResult(
+                accepted=False,
+                order_id=None,
+                status="inflight_lock",
+                requested_amount=req.amount,
+                filled_amount=Decimal("0"),
+                avg_price=None,
+                fees_paid=Decimal("0"),
+                error=(
+                    "another task is currently submitting this order"
+                    if _lock_held
+                    else "submission lock not acquired — refusing to submit (fail-closed)"
+                ),
+            )
 
         if not hasattr(self, "_submit_semaphore"):
             cap = getattr(
@@ -1174,6 +1233,11 @@ class ExecutionService:
                         "ambiguous submission (POST possibly delivered): %s",
                         last_error,
                     )
+                    # P1-m: a venue outage surfaces here as the dominant mode.
+                    # Record it so the breaker can trip and stop POSTing into a
+                    # dead venue — the order is already saved submitted_unconfirmed
+                    # for the reconciler, so this only gates further submissions.
+                    self.circuit_breaker.record_failure()
                     break
                 except Exception as exc:
                     # Defensive: anything not classified by the gateway is
@@ -1193,8 +1257,14 @@ class ExecutionService:
                         "unclassified gateway exception (treating as ambiguous): %s",
                         last_error,
                     )
+                    # P1-m: count unclassified gateway failures toward the
+                    # breaker too (same venue-health signal as above).
+                    self.circuit_breaker.record_failure()
                     break
-                await asyncio.sleep(min(0.15 * attempt, 0.30))
+                # Add jitter so concurrent runtimes retrying the same venue
+                # outage do not re-submit in lockstep bursts. Base backoff is
+                # unchanged; jitter only spreads attempts by up to 0.1s.
+                await asyncio.sleep(min(0.15 * attempt, 0.30) + random.uniform(0, 0.1))
             else:
                 self.circuit_breaker.record_failure()
                 await self._save_submission(

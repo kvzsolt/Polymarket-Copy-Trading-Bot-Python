@@ -5,6 +5,7 @@ from decimal import Decimal
 from typing import Any
 
 from services.copyStrategy import calculate_copy_notional
+from services.discovery.evaluation_context import build_evaluation_context_hash
 
 
 @dataclass(frozen=True)
@@ -39,6 +40,12 @@ class CopyabilityReplayResult:
     details: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass
+class SimulatedPosition:
+    copied_cost: Decimal = Decimal("0")
+    copied_size: Decimal = Decimal("0")
+
+
 class StaticBalanceProvider:
     def __init__(self, balance_usdc: Decimal | str | int | float):
         self._balance_usdc = Decimal(str(balance_usdc))
@@ -57,8 +64,7 @@ class CopyabilityReplayService:
             str(await self.balance_provider.get_available_balance_usdc())
         )
         simulated_free_cash = available_balance
-        open_positions: set[tuple[str, str]] = set()
-        open_position_notional: dict[tuple[str, str], Decimal] = {}
+        open_positions: dict[tuple[str, str], SimulatedPosition] = {}
         max_open_positions = 0
 
         results: list[SignalReplayResult] = []
@@ -72,9 +78,20 @@ class CopyabilityReplayService:
         ):
             if signal.side == "SELL":
                 key = (signal.condition_id, signal.token_id)
-                released = open_position_notional.pop(key, Decimal("0"))
-                simulated_free_cash += released
-                open_positions.discard(key)
+                pos = open_positions.get(key)
+                if pos is not None:
+                    sell_size = Decimal(str(signal.total_size or "0"))
+                    ratio = (
+                        min(Decimal("1"), sell_size / pos.copied_size)
+                        if pos.copied_size > 0
+                        else Decimal("1")
+                    )
+                    released = pos.copied_cost * ratio
+                    pos.copied_cost -= released
+                    pos.copied_size -= pos.copied_size * ratio
+                    simulated_free_cash += released
+                    if pos.copied_cost <= Decimal("0.000001") or pos.copied_size <= Decimal("0.000001"):
+                        open_positions.pop(key, None)
                 continue
 
             leader_notional = Decimal(str(signal.total_usdc_size))
@@ -111,10 +128,10 @@ class CopyabilityReplayService:
             if copyable:
                 simulated_free_cash -= effective
                 key = (signal.condition_id, signal.token_id)
-                open_positions.add(key)
-                open_position_notional[key] = (
-                    open_position_notional.get(key, Decimal("0")) + effective
-                )
+                pos = open_positions.setdefault(key, SimulatedPosition())
+                copied_size = _copied_size(effective, Decimal(str(signal.vwap_price or "0")))
+                pos.copied_cost += effective
+                pos.copied_size += copied_size
                 max_open_positions = max(max_open_positions, len(open_positions))
                 copyable_leader_notional += leader_notional
                 copyable_target_sum += effective
@@ -146,6 +163,11 @@ class CopyabilityReplayService:
             else 0.0
         )
 
+        config_hash, context = build_evaluation_context_hash(
+            self.config,
+            balance_usdc=available_balance,
+        )
+
         return CopyabilityReplayResult(
             wallet=wallet.lower(),
             total_signals=len(signals),
@@ -160,6 +182,11 @@ class CopyabilityReplayService:
             max_concurrent_open_positions=max_open_positions,
             estimated_required_daily_budget=target_sum,
             signal_results=tuple(results),
+            details={
+                "balance_usdc": str(available_balance),
+                "config_hash": config_hash,
+                "evaluation_context": context,
+            },
         )
 
     def _check_caps(
@@ -195,3 +222,9 @@ class CopyabilityReplayService:
             return False, "effective_notional_zero", Decimal("0")
 
         return True, "ok", effective
+
+
+def _copied_size(effective: Decimal, avg_price: Decimal) -> Decimal:
+    if avg_price <= 0:
+        return Decimal("0")
+    return effective / avg_price

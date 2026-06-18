@@ -40,7 +40,7 @@ FORBIDDEN_PREFIXES: tuple[str, ...] = (
     "legacy",
     "test_probe",
     "test_doctor",
-    # issue-78: redemption pipeline removed; NearOneExitService replaces it.
+    # issue-78: redemption pipeline removed.
     "services.redemption",
     "services.redemptionService",
     "services.autoRedeem",

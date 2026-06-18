@@ -85,10 +85,40 @@ class TestHappyPath:
         assert cfg.polling.fetch_interval == pytest.approx(0.25)
         # Execution defaults.
         assert cfg.execution.max_retries == 3
-        assert cfg.execution.paper_trade_only is False
+        # P0-2: fail-closed default — paper unless LIVE_TRADING is explicitly enabled.
+        assert cfg.execution.paper_trade_only is True
         assert cfg.execution.reservation_ttl_seconds == 120
         # Logging default path.
         assert cfg.logging.pnl_log_file.endswith("pnl.jsonl")
+
+    # --- P0-2: LIVE_TRADING master switch (fail-closed) ---
+
+    def test_default_is_paper(self, valid_env: dict[str, str]) -> None:
+        cfg = load_config(valid_env)
+        assert cfg.execution.paper_trade_only is True
+        assert cfg.dry_run is True
+
+    @pytest.mark.parametrize("val", ["enabled", "true", "1", "yes", "on", "ENABLED", "True"])
+    def test_explicit_enable_goes_live(self, valid_env: dict[str, str], val: str) -> None:
+        valid_env["LIVE_TRADING"] = val
+        cfg = load_config(valid_env)
+        assert cfg.execution.paper_trade_only is False
+        assert cfg.dry_run is False
+
+    @pytest.mark.parametrize("val", ["", "off", "disabled", "no", "false", "0", "garbage", "  "])
+    def test_unknown_or_disabled_stays_paper(self, valid_env: dict[str, str], val: str) -> None:
+        valid_env["LIVE_TRADING"] = val
+        cfg = load_config(valid_env)
+        assert cfg.execution.paper_trade_only is True
+        assert cfg.dry_run is True
+
+    def test_paper_trade_only_true_forces_paper_even_with_live_switch(
+        self, valid_env: dict[str, str]
+    ) -> None:
+        valid_env["LIVE_TRADING"] = "enabled"
+        valid_env["PAPER_TRADE_ONLY"] = "true"
+        cfg = load_config(valid_env)
+        assert cfg.execution.paper_trade_only is True  # explicit paper force wins
 
     @pytest.mark.parametrize("raw_value", ["", "auto", "AUTO", "# Profit % comment"])
     def test_trailing_activation_auto_values(
@@ -150,6 +180,30 @@ class TestHappyPath:
         cfg = load_config(valid_env)
         assert cfg.discovery.max_auto_traders_count == 4
 
+    def test_discovery_startup_safety_config_loads_env(
+        self,
+        valid_env: dict[str, str],
+    ) -> None:
+        valid_env.update(
+            {
+                "DISCOVERY_MIN_AUTO_SPORTS_ESPORTS_RATIO": "0.8",
+                "DISCOVERY_AUTO_PREFER_SPORTS_ESPORTS": "false",
+                "DISCOVERY_EVALUATION_TTL_SECONDS": "120",
+                "DISCOVERY_REJECT_STALE_EVALUATIONS": "false",
+                "POLYMARKET_HISTORY_MIN_WINDOW_SECONDS": "3600",
+                "DISCOVERY_REQUIRE_RECENT_STATE_FOR_LIVE": "false",
+            }
+        )
+
+        cfg = load_config(valid_env)
+
+        assert cfg.discovery.discovery_min_auto_sports_esports_ratio == pytest.approx(0.8)
+        assert cfg.discovery.discovery_auto_prefer_sports_esports is False
+        assert cfg.discovery.discovery_evaluation_ttl_seconds == 120
+        assert cfg.discovery.discovery_reject_stale_evaluations is False
+        assert cfg.discovery.polymarket_history_min_window_seconds == 3600
+        assert cfg.discovery.discovery_require_recent_state_for_live is False
+
     def test_raw_env_preserved_for_transition_excludes_secrets(
         self, valid_env: dict[str, str]
     ) -> None:
@@ -174,6 +228,31 @@ class TestHappyPath:
         valid_env["PUSD_CONTRACT_ADDRESS"] = "0x" + "2" * 40
         cfg = load_config(valid_env)
         assert cfg.network.usdc_contract_address == "0x" + "2" * 40
+
+    def test_v2_contract_defaults(self, valid_env: dict[str, str]) -> None:
+        cfg = load_config(valid_env)
+        assert (
+            cfg.network.pusd_contract_address
+            == "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"
+        )
+        assert cfg.network.usdc_contract_address == cfg.network.pusd_contract_address
+        assert (
+            cfg.network.ctf_exchange_v2_address
+            == "0xE111180000d2663C0091e4f400237545B87B996B"
+        )
+        assert (
+            cfg.redemption.collateral_contract_address
+            == "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"
+        )
+        assert (
+            cfg.redemption.ctf_contract_address
+            == "0xAdA100Db00Ca00073811820692005400218FcE1f"
+        )
+
+    def test_redeem_target_accepts_adapter_alias(self, valid_env: dict[str, str]) -> None:
+        valid_env["CTF_COLLATERAL_ADAPTER_ADDRESS"] = "0x" + "4" * 40
+        cfg = load_config(valid_env)
+        assert cfg.redemption.ctf_contract_address == "0x" + "4" * 40
 
     def test_load_without_env_reads_os_environ(
         self, monkeypatch: pytest.MonkeyPatch
@@ -309,6 +388,42 @@ class TestMalformedValues:
         valid_env["RESERVATION_TTL_SECONDS"] = "45"
         cfg = load_config(valid_env)
         assert cfg.execution.reservation_ttl_seconds == 45
+
+    # P2-c — NaN/Inf are valid float() inputs but corrupt downstream gates
+    # (slippage, spread). Fail closed: load_config must raise rather than
+    # silently accept a non-finite numeric config value.
+    @pytest.mark.parametrize("bad_value", ["nan", "NaN", "inf", "Inf", "-inf", "infinity"])
+    def test_slippage_tolerance_rejects_non_finite(
+        self, valid_env: dict[str, str], bad_value: str
+    ) -> None:
+        valid_env["SLIPPAGE_TOLERANCE"] = bad_value
+        with pytest.raises(
+            EnvValidationError,
+            match="SLIPPAGE_TOLERANCE must be a finite number",
+        ):
+            load_config(valid_env)
+
+    @pytest.mark.parametrize("bad_value", ["inf", "nan", "-inf"])
+    def test_max_book_spread_bps_rejects_non_finite(
+        self, valid_env: dict[str, str], bad_value: str
+    ) -> None:
+        # MAX_BOOK_SPREAD_BPS is an int field; int("inf") already raises, but
+        # assert the fail-closed contract holds for the spread gate too.
+        valid_env["MAX_BOOK_SPREAD_BPS"] = bad_value
+        with pytest.raises(EnvValidationError):
+            load_config(valid_env)
+
+    def test_float_or_auto_rejects_non_finite(
+        self, valid_env: dict[str, str]
+    ) -> None:
+        # TRAILING_ACTIVATION_PCT uses the float_or_auto path; 'inf' is not
+        # 'auto' and must not slip through as a finite trailing trigger.
+        valid_env["TRAILING_ACTIVATION_PCT"] = "inf"
+        with pytest.raises(
+            EnvValidationError,
+            match="TRAILING_ACTIVATION_PCT must be a finite number",
+        ):
+            load_config(valid_env)
 
 
 # ---------------------------------------------------------------------------

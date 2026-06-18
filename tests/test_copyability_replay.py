@@ -41,6 +41,7 @@ def _signal(
     notional: str = "10",
     *,
     side: str = "BUY",
+    size: str = "10",
     condition_id: str | None = None,
     token_id: str | None = None,
 ):
@@ -51,7 +52,7 @@ def _signal(
         side=side,
         first_ts=100 + idx,
         last_ts=100 + idx,
-        total_size=Decimal("10"),
+        total_size=Decimal(size),
         total_usdc_size=Decimal(notional),
         vwap_price=Decimal("1"),
         tx_hashes=(f"0x{idx}",),
@@ -115,6 +116,35 @@ async def test_replay_sell_releases_cash():
     assert result.copyable_signals == 2
     assert [r.reason for r in result.signal_results] == ["ok", "ok"]
     assert result.copyable_signal_ratio == 1.0
+
+
+@pytest.mark.asyncio
+async def test_replay_partial_sell_releases_only_proportional_cash():
+    replay = CopyabilityReplayService(
+        config=_config(),
+        balance_provider=StaticBalanceProvider("10"),
+    )
+
+    result = await replay.replay_wallet(
+        "0x1111111111111111111111111111111111111111",
+        [
+            _signal(1, notional="10", size="10", condition_id="cond-a", token_id="token-a"),
+            _signal(
+                2,
+                side="SELL",
+                size="5",
+                condition_id="cond-a",
+                token_id="token-a",
+            ),
+            _signal(3, notional="6", size="6", condition_id="cond-b", token_id="token-b"),
+        ],
+    )
+
+    assert result.copyable_signals == 1
+    assert [r.reason for r in result.signal_results] == [
+        "ok",
+        "insufficient_balance_headroom",
+    ]
 
 
 @pytest.mark.asyncio

@@ -18,6 +18,7 @@ import pytest
 
 from clients.network.rpc_fallback import (
     FallbackWeb3Provider,
+    _DEFAULT_REQUEST_TIMEOUT_SECONDS,
     _FailoverHTTPProvider,
     _is_failover_exception,
     _is_failover_response,
@@ -111,6 +112,7 @@ class TestFailoverHTTPProviderCreation:
     def test_no_fallback_when_empty(self) -> None:
         provider = _FailoverHTTPProvider("https://primary.example", "")
         assert provider._fallback is None
+        assert provider._request_timeout_seconds == _DEFAULT_REQUEST_TIMEOUT_SECONDS
 
     def test_no_fallback_when_same_url(self) -> None:
         provider = _FailoverHTTPProvider("https://primary.example", "https://primary.example")
@@ -119,6 +121,18 @@ class TestFailoverHTTPProviderCreation:
     def test_fallback_created_when_different(self) -> None:
         provider = _FailoverHTTPProvider("https://primary.example", "https://fallback.example")
         assert provider._fallback is not None
+
+    def test_http_providers_receive_timeout_request_kwargs(self) -> None:
+        with patch("clients.network.rpc_fallback.Web3.HTTPProvider") as http_provider:
+            _FailoverHTTPProvider(
+                "https://primary.example",
+                "https://fallback.example",
+                request_timeout_seconds=3.5,
+            )
+
+        assert http_provider.call_count == 2
+        assert http_provider.call_args_list[0].kwargs["request_kwargs"] == {"timeout": 3.5}
+        assert http_provider.call_args_list[1].kwargs["request_kwargs"] == {"timeout": 3.5}
 
 
 # ---------------------------------------------------------------------------
@@ -186,6 +200,20 @@ class TestFailoverHTTPProviderMakeRequest:
         with pytest.raises(Exception, match="request timeout"):
             provider.make_request("eth_call", [{"to": "0x"}])
 
+    def test_no_fallback_returns_primary_error_response(self) -> None:
+        provider = _FailoverHTTPProvider("https://primary.example", "")
+        primary_err = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "error": {"code": -32603, "message": "Internal error"},
+        }
+        provider._primary = MagicMock()
+        provider._primary.make_request = MagicMock(return_value=primary_err)
+
+        result = provider.make_request("eth_call", [{"to": "0x"}])
+
+        assert result == primary_err
+
 
 # ---------------------------------------------------------------------------
 # FallbackWeb3Provider — high-level factory
@@ -202,6 +230,14 @@ class TestFallbackWeb3Provider:
         factory = FallbackWeb3Provider("https://primary.example", "https://fallback.example")
         assert factory.primary_url == "https://primary.example"
         assert factory.fallback_url == "https://fallback.example"
+        assert factory.request_timeout_seconds == _DEFAULT_REQUEST_TIMEOUT_SECONDS
+
+    def test_request_timeout_exposed(self) -> None:
+        factory = FallbackWeb3Provider(
+            "https://primary.example",
+            request_timeout_seconds=2.0,
+        )
+        assert factory.request_timeout_seconds == 2.0
 
     def test_none_fallback_when_empty(self) -> None:
         factory = FallbackWeb3Provider("https://primary.example", "")

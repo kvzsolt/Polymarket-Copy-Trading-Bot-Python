@@ -599,7 +599,12 @@ class PositionManager:
             if es.trailing_active and es.trailing_high_price > 0:
                 trail_distance_d = _to_dec(self._trailing_distance)
                 trail_trigger = es.trailing_high_price * (Decimal("1") - trail_distance_d)
-                if cp <= trail_trigger and cp > pos.entry_price:
+                # P1-e: fire on the retrace from the in-profit peak regardless
+                # of entry. The old ``and cp > pos.entry_price`` clause silently
+                # suppressed the trailing stop once price fell through entry,
+                # letting a position round-trip the whole move (and then some)
+                # with only the opt-in absolute stop-loss as a backstop.
+                if cp <= trail_trigger:
                     self._log_steady_exit(
                         es,
                         "trailing_stop",

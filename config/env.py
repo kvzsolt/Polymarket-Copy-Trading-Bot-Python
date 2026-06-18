@@ -22,6 +22,13 @@ from dataclasses import dataclass
 from enum import IntEnum
 from pathlib import Path
 
+from config.addresses import (
+    POLYGON_USDCE_ADDRESS,
+    POLYMARKET_CTF_COLLATERAL_ADAPTER_ADDRESS,
+    POLYMARKET_CTF_EXCHANGE_V2_ADDRESS,
+    POLYMARKET_NEG_RISK_EXCHANGE_V2_ADDRESS,
+    POLYMARKET_PUSD_ADDRESS,
+)
 from config.runtime_env import load_runtime_env
 
 # NOTE: Do NOT call load_runtime_env() at import time.
@@ -564,7 +571,10 @@ def _build_env_snapshot() -> dict[str, object]:
     'PROFIT_LOCK_SELL_FRACTION': _float('PROFIT_LOCK_SELL_FRACTION', '0.50'),
 
     # Near-max price exits (default 0.95 = near 95c)
-    'ENABLE_NEAR_MAX_EXIT': os.getenv('ENABLE_NEAR_MAX_EXIT', 'false').strip().lower() in ('1', 'true', 'yes'),
+    # P2-d: aligned to the typed canonical default in config.app_config
+    # (FeatureFlagConfig.enable_near_max_exit defaults True). The legacy
+    # 'false' had drifted from the typed value.
+    'ENABLE_NEAR_MAX_EXIT': os.getenv('ENABLE_NEAR_MAX_EXIT', 'true').strip().lower() in ('1', 'true', 'yes'),
     'NEAR_MAX_PRICE_WARN': _float('NEAR_MAX_PRICE_WARN', '0.95'),
     'NEAR_MAX_PRICE_WARN_TRIM_RATIO': _float('NEAR_MAX_PRICE_WARN_TRIM_RATIO', '0.50'),
     'NEAR_MAX_PRICE_EXIT': _float('NEAR_MAX_PRICE_EXIT', '0.95'),
@@ -635,10 +645,11 @@ def _build_env_snapshot() -> dict[str, object]:
     'MULTI_USER_CONFIG_FILE': os.getenv('MULTI_USER_CONFIG_FILE', ''),
     'RPC_URL': os.getenv('RPC_URL', 'https://polygon-bor-rpc.publicnode.com'),
     'FALLBACK_RPC_URL': os.getenv('FALLBACK_RPC_URL', ''),
-    'USDC_CONTRACT_ADDRESS': os.getenv('USDC_CONTRACT_ADDRESS', '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174'),
-    'PUSD_CONTRACT_ADDRESS': os.getenv('PUSD_CONTRACT_ADDRESS', '0x5731a8987bC70324e2C14d22D95a9cF0E84b687E'),
-    'CTF_EXCHANGE_V2_ADDRESS': os.getenv('CTF_EXCHANGE_V2_ADDRESS', '0xE111180000d2663C0091e4f400237545B87B996B'),
-    'NEG_RISK_EXCHANGE_V2_ADDRESS': os.getenv('NEG_RISK_EXCHANGE_V2_ADDRESS', '0xe2222d279d744050d28e00520010520000310F59'),
+    'USDC_CONTRACT_ADDRESS': os.getenv('USDC_CONTRACT_ADDRESS', POLYGON_USDCE_ADDRESS),
+    'PUSD_CONTRACT_ADDRESS': os.getenv('PUSD_CONTRACT_ADDRESS', POLYMARKET_PUSD_ADDRESS),
+    'CTF_COLLATERAL_ADAPTER_ADDRESS': os.getenv('CTF_COLLATERAL_ADAPTER_ADDRESS', POLYMARKET_CTF_COLLATERAL_ADAPTER_ADDRESS),
+    'CTF_EXCHANGE_V2_ADDRESS': os.getenv('CTF_EXCHANGE_V2_ADDRESS', POLYMARKET_CTF_EXCHANGE_V2_ADDRESS),
+    'NEG_RISK_EXCHANGE_V2_ADDRESS': os.getenv('NEG_RISK_EXCHANGE_V2_ADDRESS', POLYMARKET_NEG_RISK_EXCHANGE_V2_ADDRESS),
     'MIN_PUSD_BALANCE': _float('MIN_PUSD_BALANCE', '1.0'),
     'BOT_STATE_DB': os.getenv('BOT_STATE_DB', 'data/bot_state.db'),
     'ENABLE_METRICS_SERVER': os.getenv('ENABLE_METRICS_SERVER', 'false').strip().lower() in ('1', 'true', 'yes'),
@@ -652,8 +663,12 @@ def _build_env_snapshot() -> dict[str, object]:
     # - relative_bps: ((ask-bid)/bid) * 10_000
     # - ticks: (ask-bid) / tick_size
     'BOOK_SPREAD_MODE': os.getenv('BOOK_SPREAD_MODE', 'absolute_bps').strip().lower(),
-    # Maximum acceptable book spread in bps for absolute_bps/relative_bps (0 = disabled). Default: 500.
-    'MAX_BOOK_SPREAD_BPS': _int('MAX_BOOK_SPREAD_BPS', '500'),
+    # Maximum acceptable book spread in bps for absolute_bps/relative_bps (0 = disabled).
+    # P2-d: aligned to the typed canonical default in config.app_config
+    # (ExecutionConfig.max_book_spread_bps == 2500). The legacy 500 had drifted
+    # from the typed value, so any transitional ENV-reading call site applied a
+    # tighter spread gate than the production AppConfig path.
+    'MAX_BOOK_SPREAD_BPS': _int('MAX_BOOK_SPREAD_BPS', '2500'),
     # Maximum acceptable spread in ticks when BOOK_SPREAD_MODE=ticks (0 = disabled).
     'MAX_BOOK_SPREAD_TICKS': _int('MAX_BOOK_SPREAD_TICKS', '0'),
     # Require fresh orderbook fetch for execution-time spread checks.

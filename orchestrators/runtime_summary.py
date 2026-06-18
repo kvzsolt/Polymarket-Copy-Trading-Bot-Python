@@ -724,16 +724,6 @@ def print_startup_summary(
                 "reconcile_interval_seconds": config.raw.get('RECONCILE_INTERVAL_SECONDS', 'disabled'),
             },
         ),
-        (
-            "near_one_exit_engine",
-            "NEAR-ONE EXIT ENGINE",
-            {
-                "enable_near_one_exit": config.near_one_exit.enable_near_one_exit,
-                "threshold": str(config.near_one_exit.threshold),
-                "dwell_seconds": config.near_one_exit.dwell_seconds,
-                "check_interval": config.near_one_exit.check_interval,
-            },
-        ),
     ]
 
     hidden_console_sections = {

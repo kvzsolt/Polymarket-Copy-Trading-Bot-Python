@@ -14,7 +14,7 @@ import contextlib
 import time
 from datetime import datetime, timezone
 from decimal import Decimal
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -331,10 +331,11 @@ class TestStartupRecovery:
 
         registry = IntentRegistry()
         mock_repo = MagicMock()
-        mock_repo.list_active.return_value = []
+        mock_repo.list_active = AsyncMock(return_value=[])
 
         count = await recover_intents_from_db(registry, mock_repo)
         assert count == 0
+        mock_repo.list_active.assert_awaited_once_with()
 
     @pytest.mark.asyncio
     async def test_recovery_restores_pending_intent(self):
@@ -357,10 +358,11 @@ class TestStartupRecovery:
             expires_at=datetime.fromtimestamp(2000, tz=timezone.utc),
         )
         mock_repo = MagicMock()
-        mock_repo.list_active.return_value = [mock_reservation]
+        mock_repo.list_active = AsyncMock(return_value=[mock_reservation])
 
         count = await recover_intents_from_db(registry, mock_repo)
         assert count == 1
+        mock_repo.list_active.assert_awaited_once_with()
 
         # Verify the intent is in the registry
         scope = _scope("TKN-A")
@@ -377,10 +379,11 @@ class TestStartupRecovery:
 
         registry = IntentRegistry()
         mock_repo = MagicMock()
-        mock_repo.list_active.return_value = []
+        mock_repo.list_active = AsyncMock(return_value=[])
 
         count = await recover_intents_from_db(registry, mock_repo)
         assert count == 0
+        mock_repo.list_active.assert_awaited_once_with()
 
     @pytest.mark.asyncio
     async def test_recovery_duplicate_after_crash(self):
@@ -408,11 +411,12 @@ class TestStartupRecovery:
         )
 
         mock_repo = MagicMock()
-        mock_repo.list_active.return_value = [mock_a, mock_b]
+        mock_repo.list_active = AsyncMock(return_value=[mock_a, mock_b])
 
         count = await recover_intents_from_db(registry, mock_repo)
         # First order recovered, second blocked as duplicate
         assert count == 1
+        mock_repo.list_active.assert_awaited_once_with()
 
 
 # ---------------------------------------------------------------------------

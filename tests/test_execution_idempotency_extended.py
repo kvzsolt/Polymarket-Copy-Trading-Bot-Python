@@ -815,23 +815,21 @@ class TestAtomicLockFailClosed:
 
 
 class TestAtomicLockConcurrencyStress:
-    @pytest.mark.skip(
-        reason=(
-            "PG migration: pooled-conn concurrency surfaces a TOCTOU window in "
-            "ExecutionService where the existing-row check + try_acquire_submission_lock "
-            "+ save_submission triple is not transactional. Multiple winners observe "
-            "no existing row and INSERT pending_lock successfully via ON CONFLICT DO "
-            "UPDATE (save_submission upgrades pending_lock → pending). Fix "
-            "requires moving the entire pre-submit sequence inside a single asyncpg "
-            "transaction or using a check-and-set primitive on get-or-insert. Tracked "
-            "as follow-up."
-        )
-    )
     @pytest.mark.asyncio
     async def test_n_concurrent_identical_intents_yield_exactly_one_submission(self, tmp_path):
-        """The real SQLite OrderRepository must serialize duplicate-identity
+        """The real Postgres ``OrdersRepo`` must serialize duplicate-identity
         submissions atomically: ``N`` simultaneous execute() calls with the
         same effective idempotency key produce exactly one venue submission.
+
+        The prior PG-migration TOCTOU concern (multiple winners passing the
+        existing-row check then all INSERTing ``pending_lock``) is closed by
+        P1-g: ``try_acquire_submission_lock`` is ``INSERT ... ON CONFLICT DO
+        UPDATE ... WHERE`` where the WHERE only matches an already-stale,
+        never-submitted lock. Concurrent FRESH acquirers therefore fail the
+        WHERE (age ≈ 0 < takeover TTL), so exactly one task wins the INSERT and
+        the losers get ``inflight_lock`` / ``duplicate_ignored`` — no second
+        signed order. Proven here and in the release-gate twin
+        ``test_live_execution_invariants::test_concurrent_identical_intents_durable_state``.
         """
         async with _pg_pool() as pool:
             repo = OrdersRepo(pool)
@@ -846,8 +844,88 @@ class TestAtomicLockConcurrencyStress:
             N = 25  # keep under the asyncio default concurrency without burning the suite
             results = await asyncio.gather(*[svc.execute(req) for _ in range(N)])
 
-            # Exactly one venue submission across all concurrent tasks.
+            # THE safety invariant: exactly one signed order ever reached the
+            # venue across all N concurrent identical intents.
             assert clob.post_signed_order.await_count == 1
-            accepted_unique = [r for r in results if r.status not in ("duplicate_ignored",)]
-            # One winner + (N-1) duplicate_ignored or atomic-lock losers.
-            assert len(accepted_unique) <= 1
+
+            # Every other task must have collapsed to a NON-submitting status —
+            # never a second signed order. Two correct loser outcomes exist and
+            # the split between them is timing-dependent at high concurrency:
+            #   * ``duplicate_ignored`` — the loser saw the winner's persisted
+            #     order row (winner already past save_submission).
+            #   * ``inflight_lock`` — the loser raced in while the winner held
+            #     the submission lock but had not yet persisted an order_id.
+            # Both are safe (no venue POST). The earlier assertion wrongly
+            # treated only ``duplicate_ignored`` as acceptable and so flagged the
+            # ``inflight_lock`` losers; exactly-one-POST already proves the
+            # invariant. Assert exactly one *submitting* winner and that it
+            # carries the venue order_id.
+            NON_SUBMITTING = {"duplicate_ignored", "inflight_lock"}
+            submitting = [r for r in results if r.status not in NON_SUBMITTING]
+            assert len(submitting) == 1, (
+                "exactly one task may submit; got statuses "
+                f"{sorted(r.status for r in submitting)}"
+            )
+            assert submitting[0].order_id == "ord-1"
+            assert len([r for r in results if r.status in NON_SUBMITTING]) == N - 1
+
+    @pytest.mark.asyncio
+    async def test_concurrent_retries_after_expiry_yield_exactly_one_submission(self, tmp_path):
+        """Post-expiry retry stays single-winner under concurrency.
+
+        Once a prior pending lock expires, the strictly fail-closed loser path
+        (P1-n) relies on ``try_acquire_submission_lock`` taking the dead lock
+        over at the pending TTL. That takeover must itself serialise: N
+        concurrent execute() calls that all observe the same expired lock
+        produce exactly ONE venue POST. The winner's takeover resets the row to
+        a fresh ``pending_lock`` (age < TTL) so every other retrier fails the
+        takeover WHERE and fails closed — never a second signed order.
+        """
+        async with _pg_pool() as pool:
+            repo = OrdersRepo(pool)
+            clob = _SimpleClob()
+            svc = ExecutionService(
+                clob, _FeeSvc(), repo,
+                config=_make_exec_config(),
+                market_data_service=_make_mds(),
+            )
+            req = _make_req(signal_id="sig-expiry-race")
+            key = "test-expiry-race-key"
+            now = time.time()
+            with patch(
+                "services.executionService._effective_idempotency_key",
+                return_value=key,
+            ):
+                # Seed an expired pending lock: no order_id, pending TTL elapsed.
+                await svc._save_submission(
+                    idempotency_key=key,
+                    request={
+                        "user_id": req.user_id,
+                        "leader_id": req.leader_id,
+                        "token_id": req.token_id,
+                        "side": "BUY",
+                        "amount": str(req.amount),
+                        "reason": req.reason,
+                        "signal_id": req.signal_id,
+                    },
+                    response={
+                        "success": False,
+                        "status": "pending",
+                        "pending_since": now - 600,
+                        "pending_ttl_seconds": 120,
+                        "pending_expires_at": now - 480,
+                    },
+                )
+
+                N = 25
+                results = await asyncio.gather(*[svc.execute(req) for _ in range(N)])
+
+            # The invariant: exactly one venue POST despite N concurrent
+            # post-expiry retries against the same dead lock.
+            assert clob.post_signed_order.await_count == 1
+            NON_SUBMITTING = {"duplicate_ignored", "inflight_lock"}
+            submitting = [r for r in results if r.status not in NON_SUBMITTING]
+            assert len(submitting) == 1, (
+                "exactly one task may submit after expiry; got "
+                f"{sorted(r.status for r in submitting)}"
+            )

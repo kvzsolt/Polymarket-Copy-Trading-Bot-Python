@@ -83,6 +83,31 @@ _CORE_DDL = [
     CREATE UNIQUE INDEX IF NOT EXISTS idx_fills_dedup
     ON fills(user_id, order_id, condition_id, side, fill_ts)
     """,
+    # P0-1: stable reconciler fill-dedup. The wall-clock ``fill_ts`` discriminator
+    # let a re-applied settlement (after a crash / swallowed watermark error left
+    # the reconciler recomputing the same delta) insert a second fill row in a
+    # later second and double-apply the position delta. The reconciler now writes
+    # ``dedup_key`` = the cumulative-matched total, unique per
+    # (user_id, order_id, condition_id, side). ADD COLUMN before the index that
+    # references it (cf. wallet_role ordering, P1-h). Partial index so
+    # non-reconciler fills (dedup_key NULL) keep their fill_ts dedup unchanged.
+    """ALTER TABLE fills ADD COLUMN IF NOT EXISTS dedup_key text""",
+    # P0-1: make the legacy wall-clock fill_ts dedup PARTIAL so it governs only
+    # non-reconciler fills (dedup_key IS NULL). Reconciler fills carry a stable
+    # dedup_key and must NOT be subject to fill_ts uniqueness — two *distinct*
+    # settlements in the same wall-clock second would otherwise falsely collide
+    # and under-apply. Drop + recreate so existing DBs pick up the WHERE clause.
+    """DROP INDEX IF EXISTS idx_fills_dedup""",
+    """
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_fills_dedup
+    ON fills(user_id, order_id, condition_id, side, fill_ts)
+    WHERE dedup_key IS NULL
+    """,
+    """
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_fills_dedup_v2
+    ON fills(user_id, order_id, condition_id, side, dedup_key)
+    WHERE dedup_key IS NOT NULL
+    """,
     """
     CREATE INDEX IF NOT EXISTS idx_fills_user_condition
     ON fills(user_id, condition_id)
@@ -497,18 +522,19 @@ _DISCOVERY_DDL = [
       END IF;
     END$$
     """,
+    # cubic P1 / audit P1-h: idempotent column-add MUST run before the
+    # role-keyed index. On a DB created before ``wallet_role`` existed,
+    # creating the index first would fail because the column it references
+    # isn't there yet — aborting the single migration transaction so the
+    # bot cannot start. ``ADD COLUMN IF NOT EXISTS`` is a no-op on fresh DBs
+    # where the column was created with the table above.
+    """ALTER TABLE discovery_position_snapshots
+       ADD COLUMN IF NOT EXISTS wallet_role text NOT NULL DEFAULT 'leader'""",
     # New unique index keyed on the role too so leader/own snapshots
     # at the same identity tuple don't collide.
     """CREATE UNIQUE INDEX IF NOT EXISTS idx_disc_pos_snap_unique_v2
        ON discovery_position_snapshots(trader_wallet, condition_id,
                                        token_id, snapshot_ts, wallet_role)""",
-    # cubic P1: idempotent column-add MUST run before the role-keyed
-    # index. On a DB created before ``wallet_role`` existed, creating the
-    # index first would fail because the column it references isn't
-    # there yet. ``ADD COLUMN IF NOT EXISTS`` is a no-op on fresh DBs
-    # where the column was created with the table at line 458.
-    """ALTER TABLE discovery_position_snapshots
-       ADD COLUMN IF NOT EXISTS wallet_role text NOT NULL DEFAULT 'leader'""",
     """CREATE INDEX IF NOT EXISTS idx_disc_pos_snap_role_ts
        ON discovery_position_snapshots(wallet_role, snapshot_ts DESC)""",
 
@@ -668,11 +694,20 @@ _DISCOVERY_DDL = [
         eligible_live boolean NOT NULL DEFAULT false,
         eligible_shadow boolean NOT NULL DEFAULT false,
 
+        balance_usdc text NOT NULL DEFAULT '0',
+        config_hash text NOT NULL DEFAULT '',
+        evaluation_context_json jsonb NOT NULL DEFAULT '{}'::jsonb,
         falcon_raw_json jsonb NOT NULL DEFAULT '{}'::jsonb,
         replay_json jsonb NOT NULL DEFAULT '{}'::jsonb,
         updated_at double precision NOT NULL
     )
     """,
+    """ALTER TABLE falcon_discovery_evaluations
+       ADD COLUMN IF NOT EXISTS balance_usdc text NOT NULL DEFAULT '0'""",
+    """ALTER TABLE falcon_discovery_evaluations
+       ADD COLUMN IF NOT EXISTS config_hash text NOT NULL DEFAULT ''""",
+    """ALTER TABLE falcon_discovery_evaluations
+       ADD COLUMN IF NOT EXISTS evaluation_context_json jsonb NOT NULL DEFAULT '{}'::jsonb""",
     """CREATE INDEX IF NOT EXISTS idx_falcon_eval_status_score
        ON falcon_discovery_evaluations(status, final_score DESC)""",
     """CREATE INDEX IF NOT EXISTS idx_falcon_eval_live
