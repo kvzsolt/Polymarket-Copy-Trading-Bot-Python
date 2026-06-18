@@ -195,3 +195,87 @@ async def test_pre_reconcile_timeout_enters_backoff_without_stalling_risk_checks
     assert prerec.await_count == 1
     assert len(check_calls) >= 2
     assert all(flag is False for flag in check_calls)
+
+
+def test_pre_reconcile_ceiling_defaults_above_sdk_get_timeout(monkeypatch):
+    """The default pre-reconcile ceiling must cover one healthy-but-slow venue GET.
+
+    A single ``get_order`` is bounded by ``clob_v2_gateway._SDK_GET_TIMEOUT_SECONDS``
+    (12.0s) + a transport retry. If the ceiling sat below that, one slow GET would
+    trip the timeout before it even returned — the root cause of the live spam. With
+    no env override and a small poll interval, the default must be >= the SDK GET wall.
+    """
+    from services.risk.risk_monitor import _risk_pre_reconcile_timeout_seconds
+    from integrations.polymarket.clob_v2_gateway import _SDK_GET_TIMEOUT_SECONDS
+
+    monkeypatch.delenv("RISK_PRE_RECONCILE_TIMEOUT_SECONDS", raising=False)
+
+    ceiling = _risk_pre_reconcile_timeout_seconds(0.25)
+    assert ceiling >= _SDK_GET_TIMEOUT_SECONDS, (
+        f"default ceiling {ceiling}s must be >= SDK GET timeout "
+        f"{_SDK_GET_TIMEOUT_SECONDS}s so one slow get_order cannot trip it"
+    )
+    assert ceiling >= 15.0
+
+
+@pytest.mark.asyncio
+async def test_pre_reconcile_timeout_logs_at_warning_not_error(monkeypatch):
+    """The handled pre-reconcile timeout logs at WARNING (expected degradation),
+    not ERROR — the backoff + standalone reconciler are the fail-safe.
+
+    The module logger sets ``propagate=False`` and owns its handler, so caplog
+    can't see it; patch the module ``logger`` and assert which level was used.
+    """
+    from services.risk import risk_monitor as rm
+
+    monkeypatch.setenv("RISK_PRE_RECONCILE_TIMEOUT_SECONDS", "0.05")
+    monkeypatch.setenv("RISK_PRE_RECONCILE_TIMEOUT_BACKOFF_SECONDS", "1.0")
+
+    ctx = _ctx("u-warn")
+
+    async def stuck_pre_reconcile(context):
+        await asyncio.sleep(100)
+        return 0
+
+    async def check(context, *, pre_reconcile: bool = True):
+        await asyncio.sleep(0)
+
+    async def refresh(context, refresh_interval):
+        return None
+
+    readiness = MagicMock()
+    config = SimpleNamespace(
+        polling=SimpleNamespace(risk_check_interval=0.01),
+        risk=SimpleNamespace(),
+        execution=SimpleNamespace(),
+    )
+
+    mock_logger = MagicMock()
+    with patch.object(rm, "logger", mock_logger), patch.object(
+        rm, "_pre_reconcile_for_context", side_effect=stuck_pre_reconcile
+    ), patch.object(
+        rm, "run_risk_check_for_context", side_effect=check
+    ), patch.object(
+        rm, "_refresh_context_price_cache", side_effect=refresh
+    ), patch.object(
+        rm, "_exit_monitor_enabled", return_value=True
+    ):
+        with pytest.raises((asyncio.TimeoutError, asyncio.CancelledError)):
+            await asyncio.wait_for(
+                rm.risk_monitor_loop_for_contexts(
+                    [ctx], readiness, config=config, interval=0.01
+                ),
+                timeout=0.18,
+            )
+
+    def _emitted(mock_call_list) -> list[str]:
+        return [c.args[0] for c in mock_call_list if c.args]
+
+    warning_msgs = _emitted(mock_logger.warning.call_args_list)
+    error_msgs = _emitted(mock_logger.error.call_args_list)
+    assert any("Risk pre-reconcile TIMEOUT" in m for m in warning_msgs), (
+        "TIMEOUT must be logged at WARNING"
+    )
+    assert not any("Risk pre-reconcile TIMEOUT" in m for m in error_msgs), (
+        "TIMEOUT must NOT be logged at ERROR — it is a handled degradation"
+    )

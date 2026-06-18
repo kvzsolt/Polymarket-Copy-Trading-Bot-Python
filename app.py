@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import signal
 from collections.abc import Awaitable, Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 
@@ -812,8 +814,60 @@ async def _shutdown_runtime(
         )
 
 
+_DEFAULT_CLOB_SDK_EXECUTOR_WORKERS = 12
+_MIN_CLOB_SDK_EXECUTOR_WORKERS = 4
+_MAX_CLOB_SDK_EXECUTOR_WORKERS = 64
+
+
+def _sdk_executor_workers() -> int:
+    """Resolve the ``clob-sdk`` thread-pool size from env, clamped to a sane band.
+
+    Infra knob (not trading policy), so it reads ``os.environ`` directly. The
+    default (12) must exceed ``RECONCILE_CONCURRENCY`` (4) + ``TRADE_ANALYSIS_CONCURRENCY``
+    (6) plus headroom so reconcile threads never queue behind analysis threads.
+    """
+    raw = os.environ.get("CLOB_SDK_EXECUTOR_WORKERS")
+    if raw is None or not str(raw).strip():
+        return _DEFAULT_CLOB_SDK_EXECUTOR_WORKERS
+    try:
+        workers = int(str(raw).strip())
+    except (TypeError, ValueError):
+        logger.warning(
+            "CLOB_SDK_EXECUTOR_WORKERS invalid (%r) — using default %d",
+            raw, _DEFAULT_CLOB_SDK_EXECUTOR_WORKERS,
+        )
+        return _DEFAULT_CLOB_SDK_EXECUTOR_WORKERS
+    return max(
+        _MIN_CLOB_SDK_EXECUTOR_WORKERS,
+        min(_MAX_CLOB_SDK_EXECUTOR_WORKERS, workers),
+    )
+
+
+def install_sdk_executor(loop: asyncio.AbstractEventLoop, workers: int) -> ThreadPoolExecutor:
+    """Install a bounded, named pool as ``loop``'s default executor and return it.
+
+    Every blocking py-clob SDK call (``get_order``, ``get_fills``, ``get_tick_size``,
+    book/market lookups) runs via ``run_in_executor(None, ...)``. Without this, those
+    calls share Python's default pool (``min(32, cpu+4)`` ≈ 6 threads on a 2-core VPS),
+    so a few wedged 12s calls starve the risk pre-reconcile ``get_order`` below its
+    timeout ceiling → "Risk pre-reconcile TIMEOUT" spam. A dedicated, sized pool keeps
+    those calls from queueing behind unrelated SDK work.
+
+    Thread-safety: the py-clob singleton ``httpx.Client`` (createClobClient.py, http2=False)
+    is safe for concurrent thread use, and ``workers`` stays well below its
+    ``max_connections=50``. Setting it as the *default* executor means the existing
+    ``run_in_executor(None, ...)`` call sites pick it up with no code changes.
+    """
+    executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="clob-sdk")
+    loop.set_default_executor(executor)
+    return executor
+
+
 async def main() -> int:
     configure_logging(level="INFO")
+    _sdk_workers = _sdk_executor_workers()
+    sdk_executor = install_sdk_executor(asyncio.get_running_loop(), _sdk_workers)
+    logger.info("clob_sdk_executor_installed | workers=%d", _sdk_workers)
 
     try:
         validate_runtime_env()
@@ -1721,6 +1775,9 @@ async def main() -> int:
             user_data_runtimes=user_data_runtimes,
             metrics_runner=metrics_runner,
         )
+        # Drop the clob-sdk pool without joining: a wedged 12s SDK GET must not
+        # delay process exit. cancel_futures discards queued (not in-flight) work.
+        sdk_executor.shutdown(wait=False, cancel_futures=True)
 
 
 if __name__ == "__main__":

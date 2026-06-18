@@ -151,7 +151,11 @@ _MIN_RISK_CACHE_STALE_SECONDS = 0.75
 _DORMANT_TOKEN_TTL_SECONDS = 300.0
 
 _RISK_PRE_RECONCILE_BACKOFF_KEY = "risk_pre_reconcile_backoff"
-_DEFAULT_RISK_PRE_RECONCILE_TIMEOUT_SECONDS = 5.0
+# Must be >= the per-call venue GET wall (clob_v2_gateway._SDK_GET_TIMEOUT_SECONDS
+# = 12.0) plus margin, so a single slow-but-healthy get_order (which the pre-reconcile
+# awaits per unconfirmed order) cannot trip this ceiling before it returns. A ceiling
+# below the SDK GET timeout guaranteed the "Risk pre-reconcile TIMEOUT" spam.
+_DEFAULT_RISK_PRE_RECONCILE_TIMEOUT_SECONDS = 15.0
 _DEFAULT_RISK_PRE_RECONCILE_BACKOFF_SECONDS = 30.0
 _MAX_RISK_PRE_RECONCILE_BACKOFF_SECONDS = 300.0
 
@@ -1834,7 +1838,12 @@ async def risk_monitor_loop_for_contexts(
                         now=time.monotonic(),
                         base_backoff_seconds=prerec_backoff_base,
                     )
-                    logger.error(
+                    # WARNING, not ERROR: this is an expected, handled degradation.
+                    # Risk checks continue this cycle with pre_reconcile=False and the
+                    # standalone WSS-wake reconciler converges the unconfirmed orders;
+                    # the exponential backoff stops per-tick retries. The genuine-failure
+                    # branch below stays at ERROR.
+                    logger.warning(
                         "Risk pre-reconcile TIMEOUT user=%s after %.1fs — "
                         "backing off %.1fs; deferred to standalone reconciler",
                         context.user_id,
