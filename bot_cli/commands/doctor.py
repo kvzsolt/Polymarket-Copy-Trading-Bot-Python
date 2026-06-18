@@ -666,13 +666,13 @@ async def run_doctor_checks(mode: str) -> dict[str, Any]:
         ctx.blocked(
             "leaders",
             "no leader wallets configured and startup auto detection disabled",
-            "set LEADER_WALLETS, or set ALLOW_AUTO_TRADER_DETECTION=true, or run python bot.py rotate-traders after discovery",
+            "set LEADER_WALLETS, or set LEADER_SOURCE=auto / AUTO_LEADER_ENABLED=true, or run python bot.py rotate-traders after discovery",
         )
     elif int(config.discovery.max_auto_traders_count or 0) <= 0:
         ctx.blocked(
             "leaders",
-            "startup auto detection enabled but MAX_AUTO_TRADERS_COUNT <= 0",
-            "set MAX_AUTO_TRADERS_COUNT > 0 or configure LEADER_WALLETS",
+            "startup auto detection enabled but AUTO_LEADER_COUNT <= 0",
+            "set AUTO_LEADER_COUNT > 0 or configure LEADER_WALLETS",
         )
     else:
         try:

@@ -30,13 +30,13 @@ This is a comma-separated list of 42-character Ethereum addresses. Each address 
 
 ### Fallback: USER_ADDRESS
 
-If `LEADER_WALLETS` is not set, the bot falls back to `USER_ADDRESS` as a single leader:
+In manual mode, if `LEADER_WALLETS` is not set, the bot falls back to `USER_ADDRESS` as a single leader:
 
 ```env
 USER_ADDRESS=0xABC123...DEF456
 ```
 
-This is a legacy compatibility option. Prefer `LEADER_WALLETS` for multi-leader support.
+This is a legacy compatibility option. Prefer `LEADER_WALLETS` for multi-leader support. When startup auto leader selection is enabled through `LEADER_SOURCE=auto`, `AUTO_LEADER_ENABLED=true`, or `ALLOW_AUTO_TRADER_DETECTION=true`, empty `LEADER_WALLETS` means no manual leaders and does not fall back to `USER_ADDRESS`.
 
 ### Validation
 
@@ -53,26 +53,38 @@ Startup auto trader detection is opt-in and only applies when no manual leaders 
 
 ```env
 LEADER_WALLETS=
-ALLOW_AUTO_TRADER_DETECTION=true
-MAX_AUTO_TRADERS_COUNT=2
+USER_ADDRESS=
+LEADER_SOURCE=auto
+AUTO_LEADER_ENABLED=true
+AUTO_LEADER_COUNT=2
+ENABLE_TRADER_DISCOVERY=true
+FALCON_SORT_MODES=h_score,pnl,sharpe,roi,win_rate
+LEADER_SCORE_VERSION=leader_score_v2
 DISCOVERY_AUTO_WRITE_LEADERS=false
 DISCOVERY_DYNAMIC_MONITORING_ENABLED=false
+DISCOVERY_REJECT_STALE_EVALUATIONS=true
+DISCOVERY_EVALUATION_TTL_SECONDS=3600
+AUTO_DISCOVER_MIN_SCORE=0.55
 ```
 
 At startup the bot checks existing live-eligible discovery evaluations in the database. If none exist, it runs one synchronous discovery bootstrap before CLOB clients, user runtime state, market data, user-data websockets, risk monitors, or trade monitors are started. If eligible candidates are still unavailable after that bootstrap, live runtime startup is blocked cleanly.
 
-The selector does not write `LEADER_WALLETS`, does not edit runtime env files, does not lower discovery thresholds, and does not hot-add leaders while the bot is already running.
+The selector checks the DB first, then runs one synchronous discovery bootstrap, then checks the DB again. It does not write `LEADER_WALLETS`, does not edit runtime env files, does not lower discovery thresholds, and does not hot-add leaders while the bot is already running unless `DISCOVERY_DYNAMIC_MONITORING_ENABLED=true`.
 
 | Env Var | Default | Effect |
 |---|---|---|
-| `ALLOW_AUTO_TRADER_DETECTION` | `false` | Allows startup-only DB/discovery selection when manual leaders are empty |
-| `MAX_AUTO_TRADERS_COUNT` | `2` | Maximum startup-selected leaders, clamped by `AUTO_DISCOVER_MAX_LEADERS` |
+| `LEADER_SOURCE` | `manual` | `auto` enables startup auto-selection and disables `USER_ADDRESS` fallback when `LEADER_WALLETS` is empty |
+| `AUTO_LEADER_ENABLED` | `false` | Alias for startup auto-selection |
+| `AUTO_LEADER_COUNT` | `2` | Startup-selected leader count |
+| `ALLOW_AUTO_TRADER_DETECTION` | `false` | Legacy alias for startup-only DB/discovery selection |
+| `MAX_AUTO_TRADERS_COUNT` | `2` | Legacy startup-selected leader count, clamped by `AUTO_DISCOVER_MAX_LEADERS` |
+| `AUTO_LEADER_REQUIRE_SCORE_VERSION` | `true` | Only select DB rows matching `LEADER_SCORE_VERSION` |
 
 ---
 
 ## Auto-Discovery Mode
 
-Auto-discovery fetches and scores candidate traders, then stores evaluations in the database. It is DB-only during normal runtime: it does not rewrite env files and does not start live monitors by itself.
+Auto-discovery fetches and scores candidate traders, then stores evaluations in the database. The database is the canonical source of truth for ranked discovered leaders. Normal runtime discovery is DB-only by default: it does not rewrite env files and does not start live monitors by itself.
 
 ### Enabling Auto-Discovery
 
@@ -103,7 +115,7 @@ LEADER_AUTO_COUNT=5
 ```
 
 This enables discovery, promotion, and trader discovery settings. Discovery will:
-1. Query the Polymarket Analytics API for top traders
+1. Query Falcon leaderboard candidates across configured sort modes
 2. Score each candidate
 3. Store candidate evaluations for rotation or startup auto trader detection
 
@@ -117,6 +129,9 @@ This enables discovery, promotion, and trader discovery settings. Discovery will
 | `MIN_ACTIVE_POSITIONS` | `1` | Minimum currently open positions |
 | `DISCOVERY_MAX_RESULTS` | `50` | Maximum API results to evaluate |
 | `AUTO_DISCOVER_MIN_SCORE` | `0.45` | Minimum composite score for promotion |
+| `FALCON_SORT_MODES` | `h_score,pnl,sharpe,roi,win_rate` | Leaderboard sort modes to query and merge |
+| `FALCON_DEDUPE_CANDIDATES` | `true` | Deduplicate candidates by normalized wallet |
+| `FALCON_MAX_CANDIDATES` | `250` | Maximum Falcon candidates per discovery run |
 
 ### Discovery Cadence
 
@@ -132,7 +147,33 @@ This enables discovery, promotion, and trader discovery settings. Discovery will
 
 Every leader (manual or discovered) is assigned a **composite score** between 0 and 1. This score drives the copy decision gate, the trust size multiplier, and the tier promotion/demotion system.
 
+Discovery evaluations store `score_version` and `score_breakdown_json`. The default discovery formula is `leader_score_v2`; `leader_score_v1` remains supported for compatibility.
+
 ### Composite Score Components
+
+For Falcon discovery v2:
+
+| Component | Weight |
+|---|---|
+| Falcon quality | `0.30` |
+| Copyability replay | `0.25` |
+| Recent consistency | `0.15` |
+| Market fit | `0.10` |
+| 15-day volume fit | `0.10` |
+| Leaderboard rank quality | `0.05` |
+| Risk penalty inverse | `0.05` |
+
+Key v2 controls:
+
+| Parameter | Default | Description |
+|---|---|---|
+| `LEADER_SCORE_VERSION` | `leader_score_v2` | Discovery scoring formula version |
+| `DISCOVERY_VOLUME_TARGET_15D` | `10000` | Volume normalization target |
+| `DISCOVERY_MIN_VOLUME_15D` | `0` | Volume floor |
+| `DISCOVERY_RANK_TARGET` | `100` | Rank normalization target |
+| `DISCOVERY_RISK_PENALTY_ENABLED` | `true` | Penalize very low activity, narrow market coverage, suspicious win-rate/trade-count combinations, declining trajectory, and unknown volume |
+
+Legacy leader scoring still uses:
 
 The composite score is a weighted sum of three components:
 
@@ -308,6 +349,14 @@ The `LeaderRegistry` refresh path remains DB/scoring-focused. Live runtime leade
 |---|---|---|
 | `configured` | `LEADER_WALLETS` set | Only manually configured leaders are monitored |
 | `no_configured_leaders` | No manual leaders | Discovery refresh scores DB candidates; live runtime starts only if startup auto trader detection selected eligible leaders |
+
+Dynamic monitoring can hot-add newly selected DB leaders after startup only when `DISCOVERY_DYNAMIC_MONITORING_ENABLED=true`. It is disabled by default. When enabled, the existing startup reconciliation safety path runs before new monitor tasks start.
+
+---
+
+## Config File Placement
+
+Runtime defaults are loaded from `config/runtime.env`, local public overrides from `config/runtime.local.env`, and sensitive values from `secrets.env`. Use `config/runtime.local.example` as the local operator template for leader discovery settings. Keep `FALCON_API_TOKEN` in `secrets.env`; keep leader-selection knobs, wallet lists, discovery thresholds, score controls, and dynamic-monitoring flags out of `secrets.env`.
 
 ---
 

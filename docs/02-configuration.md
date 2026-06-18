@@ -22,17 +22,19 @@ Configuration is loaded from multiple files in a specific order (later files ove
 
 | File | Purpose | Git-ignored? |
 |---|---|---|
-| `config/runtime.env` | Default runtime configuration (committed) | No |
-| `config/runtime.local.env` | Local overrides (not committed) | Yes |
-| `secrets.env` | Sensitive credentials (private key, RPC URL) | Yes |
+| `config/runtime.env` | Shared non-sensitive runtime defaults, loaded first when present | Repo convention |
+| `config/runtime.local.env` | Local public overrides, loaded second | Yes |
+| `secrets.env` | Sensitive credentials only, loaded third | Yes |
+
+Use `config/runtime.local.example` as the operator-facing template for local non-sensitive settings, including leader discovery. Do not put leader-selection knobs, wallet lists, score thresholds, score weights, or dynamic-monitoring flags in `secrets.env`; keep that file for sensitive values such as `PRIVATE_KEY`, `DATABASE_URL`, `RPC_URL`, CLOB credentials, and `FALCON_API_TOKEN`.
 
 ### Loading Order
 
 1. `load_runtime_env()` is called at startup (in `app.py`)
-2. It loads `config/runtime.env` first (shared defaults)
-3. Then `config/runtime.local.env` (operator-specific overrides)
-4. Then `secrets.env` (sensitive values, overrides everything)
-5. Finally, `os.environ` variables take precedence over all files
+2. It loads runtime defaults from `config/runtime.env`
+3. Then local public overrides from `config/runtime.local.env`
+4. Then sensitive values from `secrets.env`
+5. Process-level `os.environ` values that already exist are preserved unless a sensitive allowlisted key is intentionally overridden by `secrets.env`
 
 ---
 
@@ -238,7 +240,10 @@ Leader selection, scoring, and tier management. See [06-leader-selection.md](06-
 | Env Var | Type | Default | Description |
 |---|---|---|---|
 | `LEADER_WALLETS` | string | *(empty)* | Comma-separated leader wallet addresses |
-| `USER_ADDRESS` | string | *(empty)* | Fallback single leader address |
+| `USER_ADDRESS` | string | *(empty)* | Legacy fallback single leader address in manual mode only |
+| `LEADER_SOURCE` | string | `manual` | `manual` preserves legacy `USER_ADDRESS` fallback; `auto` treats empty `LEADER_WALLETS` as no manual leaders |
+| `AUTO_LEADER_ENABLED` | bool | `false` | Alias for startup auto leader selection |
+| `AUTO_LEADER_COUNT` | int | `2` | Alias for startup auto leader count |
 | `LEADER_AUTO` | bool | *(derived)* | Auto-promote discovered leaders |
 | `LEADER_AUTO_COUNT` | int | `5` | Number of leaders to auto-promote |
 | `AUTO_DISCOVER_LEADERS` | bool | `false` | Enable leader auto-discovery |
@@ -325,8 +330,8 @@ Blockchain network and metrics server.
 | Env Var | Type | Default | Description |
 |---|---|---|---|
 | `ENABLE_TRADER_DISCOVERY` | bool | *(derived)* | Enable trader discovery service |
-| `ALLOW_AUTO_TRADER_DETECTION` | bool | `false` | When no manual leaders are configured, allow startup-only DB/discovery leader selection |
-| `MAX_AUTO_TRADERS_COUNT` | int | `2` | Maximum startup auto-selected leaders, clamped by `AUTO_DISCOVER_MAX_LEADERS` |
+| `ALLOW_AUTO_TRADER_DETECTION` | bool | `false` | Legacy alias for startup-only DB/discovery leader selection |
+| `MAX_AUTO_TRADERS_COUNT` | int | `2` | Legacy alias for maximum startup auto-selected leaders, clamped by `AUTO_DISCOVER_MAX_LEADERS` |
 | `DISCOVERY_INTERVAL_SECONDS` | int | `3600` | Seconds between discovery scans |
 | `DISCOVERY_PROMOTE_TO_ACTIVE` | bool | *(derived)* | Promote discovered leaders to active |
 | `MIN_LEADER_PNL` | float | `1000` | Minimum PnL for discovered leaders |
@@ -336,6 +341,18 @@ Blockchain network and metrics server.
 | `DISCOVERY_MAX_RESULTS` | int | `50` | Maximum results from discovery API |
 | `DISCOVERY_CACHE_TTL_SECONDS` | float | `3600` | Discovery cache TTL |
 | `MULTI_USER_CONFIG_FILE` | string | *(empty)* | Path to multi-user configuration file |
+| `FALCON_SORT_MODES` | string | `h_score,pnl,sharpe,roi,win_rate` | Falcon leaderboard sort modes to query and merge |
+| `FALCON_DEDUPE_CANDIDATES` | bool | `true` | Deduplicate Falcon candidates by wallet across sort modes |
+| `FALCON_MAX_CANDIDATES` | int | `250` | Maximum merged Falcon candidates per discovery run |
+| `LEADER_SCORE_VERSION` | string | `leader_score_v2` | Discovery scoring formula version; `leader_score_v1` remains supported |
+| `DISCOVERY_VOLUME_TARGET_15D` | float | `10000` | 15-day volume normalization target for v2 scoring |
+| `DISCOVERY_MIN_VOLUME_15D` | float | `0` | Minimum volume floor for v2 scoring |
+| `DISCOVERY_RANK_TARGET` | int | `100` | Leaderboard rank normalization target for v2 scoring |
+| `DISCOVERY_RISK_PENALTY_ENABLED` | bool | `true` | Enable v2 risk inverse component |
+| `AUTO_LEADER_REQUIRE_SCORE_VERSION` | bool | `true` | Startup auto-selection only uses rows matching `LEADER_SCORE_VERSION` |
+| `DISCOVERY_DYNAMIC_MONITORING_ENABLED` | bool | `false` | Allow refresh loop to hot-add newly selected DB leaders; disabled by default |
+
+DB auto leader selection stores and reads ranked leaders from Postgres. It does not mutate `LEADER_WALLETS`, `config/runtime.local.env`, or any other env file during normal runtime.
 
 ---
 
