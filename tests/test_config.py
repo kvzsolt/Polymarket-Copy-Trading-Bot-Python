@@ -140,6 +140,51 @@ class TestHappyPath:
         cfg = load_config(valid_env)
         assert cfg.leader.wallets == (_VALID_FUNDER, _VALID_USER)
 
+    def test_auto_leader_empty_wallets_does_not_fallback_to_user_address(
+        self, valid_env: dict[str, str]
+    ) -> None:
+        valid_env["LEADER_WALLETS"] = ""
+        valid_env["USER_ADDRESS"] = _VALID_USER
+        valid_env["LEADER_SOURCE"] = "auto"
+        cfg = load_config(valid_env)
+        assert cfg.leader.wallets == ()
+        assert cfg.discovery.allow_auto_trader_detection is True
+
+    def test_auto_leader_enabled_alias_does_not_fallback_to_user_address(
+        self, valid_env: dict[str, str]
+    ) -> None:
+        valid_env["LEADER_WALLETS"] = ""
+        valid_env["USER_ADDRESS"] = _VALID_USER
+        valid_env["AUTO_LEADER_ENABLED"] = "true"
+        cfg = load_config(valid_env)
+        assert cfg.leader.wallets == ()
+        assert cfg.discovery.allow_auto_trader_detection is True
+
+    def test_manual_mode_empty_wallets_falls_back_to_user_address(
+        self, valid_env: dict[str, str]
+    ) -> None:
+        valid_env["LEADER_WALLETS"] = ""
+        valid_env["USER_ADDRESS"] = _VALID_USER
+        valid_env["LEADER_SOURCE"] = "manual"
+        cfg = load_config(valid_env)
+        assert cfg.leader.wallets == (_VALID_USER,)
+        assert cfg.discovery.allow_auto_trader_detection is False
+
+    def test_manual_leader_wallets_win_over_auto_mode(
+        self, valid_env: dict[str, str]
+    ) -> None:
+        valid_env["LEADER_WALLETS"] = _VALID_FUNDER
+        valid_env["USER_ADDRESS"] = _VALID_USER
+        valid_env["LEADER_SOURCE"] = "auto"
+        cfg = load_config(valid_env)
+        assert cfg.leader.wallets == (_VALID_FUNDER,)
+        assert cfg.discovery.allow_auto_trader_detection is True
+
+    def test_invalid_leader_source_rejected(self, valid_env: dict[str, str]) -> None:
+        valid_env["LEADER_SOURCE"] = "database"
+        with pytest.raises(EnvValidationError, match="LEADER_SOURCE"):
+            load_config(valid_env)
+
     def test_leader_auto_cascade_activates_discovery(self, valid_env: dict[str, str]) -> None:
         valid_env["LEADER_AUTO"] = "true"
         cfg = load_config(valid_env)
@@ -159,6 +204,20 @@ class TestHappyPath:
         cfg = load_config(valid_env)
         assert cfg.discovery.allow_auto_trader_detection is False
         assert cfg.discovery.max_auto_traders_count == 2
+        assert cfg.discovery.leader_source == "manual"
+        assert cfg.discovery.auto_leader_enabled is False
+        assert cfg.discovery.auto_leader_count == 2
+        assert cfg.discovery.falcon_sort_modes == (
+            "h_score",
+            "pnl",
+            "sharpe",
+            "roi",
+            "win_rate",
+        )
+        assert cfg.discovery.falcon_dedupe_candidates is True
+        assert cfg.discovery.falcon_max_candidates == 250
+        assert cfg.discovery.leader_score_version == "leader_score_v2"
+        assert cfg.discovery.auto_leader_require_score_version is True
 
     def test_auto_trader_detection_config_loads_env(
         self,
@@ -170,6 +229,17 @@ class TestHappyPath:
         assert cfg.discovery.allow_auto_trader_detection is True
         assert cfg.discovery.max_auto_traders_count == 3
 
+    def test_auto_leader_count_alias_loads_env(
+        self,
+        valid_env: dict[str, str],
+    ) -> None:
+        valid_env["AUTO_LEADER_ENABLED"] = "true"
+        valid_env["AUTO_LEADER_COUNT"] = "4"
+        cfg = load_config(valid_env)
+        assert cfg.discovery.allow_auto_trader_detection is True
+        assert cfg.discovery.max_auto_traders_count == 4
+        assert cfg.discovery.auto_leader_count == 4
+
     def test_auto_trader_detection_config_clamps_to_auto_discover_cap(
         self,
         valid_env: dict[str, str],
@@ -177,8 +247,21 @@ class TestHappyPath:
         valid_env["ALLOW_AUTO_TRADER_DETECTION"] = "true"
         valid_env["MAX_AUTO_TRADERS_COUNT"] = "99"
         valid_env["AUTO_DISCOVER_MAX_LEADERS"] = "4"
+        valid_env["AUTO_DISCOVER_TOP_N"] = "4"
         cfg = load_config(valid_env)
         assert cfg.discovery.max_auto_traders_count == 4
+
+    def test_auto_trader_detection_count_cannot_raise_auto_discover_cap(
+        self,
+        valid_env: dict[str, str],
+    ) -> None:
+        valid_env["AUTO_LEADER_ENABLED"] = "true"
+        valid_env["AUTO_LEADER_COUNT"] = "99"
+        valid_env["AUTO_DISCOVER_MAX_LEADERS"] = "10"
+        cfg = load_config(valid_env)
+        assert cfg.leader.auto_discover_max_leaders == 10
+        assert cfg.leader.auto_discover_top_n == 10
+        assert cfg.discovery.max_auto_traders_count == 10
 
     def test_discovery_startup_safety_config_loads_env(
         self,

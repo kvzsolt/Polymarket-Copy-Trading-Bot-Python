@@ -67,6 +67,37 @@ class TestEnvSecurity:
             with pytest.raises(EnvValidationError):
                 validate_runtime_env()
 
+    def test_rehydrate_env_rejects_invalid_optional_int_cleanly(self):
+        from config.env import EnvValidationError, rehydrate_env
+
+        with patch.dict(os.environ, {"AUTO_LEADER_COUNT": "abc"}, clear=False):
+            with pytest.raises(
+                EnvValidationError,
+                match="AUTO_LEADER_COUNT must be a valid integer",
+            ):
+                rehydrate_env()
+
+        rehydrate_env()
+
+    def test_rehydrate_env_auto_leader_count_cannot_raise_cap(self):
+        from config.env import ENV, rehydrate_env
+
+        with patch.dict(
+            os.environ,
+            {
+                "AUTO_LEADER_COUNT": "99",
+                "AUTO_DISCOVER_MAX_LEADERS": "10",
+            },
+            clear=False,
+        ):
+            rehydrate_env()
+            assert ENV["AUTO_DISCOVER_MAX_LEADERS"] == 10
+            assert ENV["AUTO_DISCOVER_TOP_N"] == 10
+            assert ENV["AUTO_LEADER_COUNT"] == 10
+            assert ENV["MAX_AUTO_TRADERS_COUNT"] == 10
+
+        rehydrate_env()
+
     def test_rehydrate_env_refreshes_snapshot_in_place(self):
         from config.env import ENV, rehydrate_env
 
@@ -75,7 +106,14 @@ class TestEnvSecurity:
 
         with patch.dict(
             os.environ,
-            {"LEADER_WALLETS": "", "USER_ADDRESS": address, "ENABLE_RISK_MGMT": "false"},
+            {
+                "LEADER_WALLETS": "",
+                "USER_ADDRESS": address,
+                "ENABLE_RISK_MGMT": "false",
+                "LEADER_SOURCE": "manual",
+                "AUTO_LEADER_ENABLED": "false",
+                "ALLOW_AUTO_TRADER_DETECTION": "false",
+            },
             clear=False,
         ):
             refreshed = rehydrate_env()

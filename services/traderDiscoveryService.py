@@ -7,6 +7,7 @@ It does not mutate runtime env files and does not start live monitoring.
 from __future__ import annotations
 
 import time
+import uuid
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any
@@ -94,54 +95,96 @@ class TraderDiscoveryService:
             self.logger.warning("falcon_discovery_skipped_missing_token")
             return []
 
-        candidates = await self.falcon_candidates.fetch_candidates()
-        if limit is not None and limit > 0:
-            candidates = candidates[:limit]
-        profiles: list[TraderProfile] = []
+        run_id = f"leader-discovery-{int(time.time() * 1000)}-{uuid.uuid4().hex[:8]}"
+        run_started_at = time.time()
+        await self._create_discovery_run(run_id, run_started_at)
 
-        for idx, cand in enumerate(candidates, start=1):
-            wallet = str(getattr(cand, "wallet", "") or "").lower()
-            self.logger.info(
-                "candidate_eval_started | index=%s total=%s wallet=%s",
-                idx,
-                len(candidates),
-                wallet,
-                extra={
-                    "wallet": wallet,
-                    "candidate_index": idx,
-                    "candidate_total": len(candidates),
-                },
-            )
-            try:
-                profile = await self._evaluate_one(cand)
-            except Exception as exc:
-                wallet = str(getattr(cand, "wallet", "") or "")
-                self.logger.warning(
-                    "candidate_eval_failed | wallet=%s error_type=%s error=%r",
+        candidates = []
+        profiles: list[TraderProfile] = []
+        evaluated_count = 0
+        error_count = 0
+
+        try:
+            candidates = await self.falcon_candidates.fetch_candidates()
+            if limit is not None and limit > 0:
+                candidates = candidates[:limit]
+
+            for idx, cand in enumerate(candidates, start=1):
+                wallet = str(getattr(cand, "wallet", "") or "").lower()
+                self.logger.info(
+                    "candidate_eval_started | index=%s total=%s wallet=%s",
+                    idx,
+                    len(candidates),
                     wallet,
-                    type(exc).__name__,
-                    exc,
-                    exc_info=True,
                     extra={
                         "wallet": wallet,
-                        "error_type": type(exc).__name__,
-                        "error": repr(exc),
+                        "candidate_index": idx,
+                        "candidate_total": len(candidates),
                     },
                 )
-                await self._upsert_failed_evaluation(
-                    cand,
-                    "candidate_eval_exception",
-                    exc,
-                )
-                continue
-            if profile is not None:
-                profiles.append(profile)
-                self._cache[profile.wallet.lower()] = profile
+                await self._upsert_run_candidate(run_id, cand, status="candidate")
+                try:
+                    profile = await self._evaluate_one(cand, run_id=run_id)
+                    evaluated_count += 1
+                except Exception as exc:
+                    error_count += 1
+                    wallet = str(getattr(cand, "wallet", "") or "")
+                    self.logger.warning(
+                        "candidate_eval_failed | wallet=%s error_type=%s error=%r",
+                        wallet,
+                        type(exc).__name__,
+                        exc,
+                        exc_info=True,
+                        extra={
+                            "wallet": wallet,
+                            "error_type": type(exc).__name__,
+                            "error": repr(exc),
+                        },
+                    )
+                    evaluation = await self._upsert_failed_evaluation(
+                        cand,
+                        "candidate_eval_exception",
+                        exc,
+                    )
+                    await self._upsert_run_candidate(
+                        run_id,
+                        cand,
+                        evaluation=evaluation,
+                        status="rejected",
+                        rejection_reason="candidate_eval_exception",
+                    )
+                    continue
+                if profile is not None:
+                    profiles.append(profile)
+                    self._cache[profile.wallet.lower()] = profile
+        except Exception as exc:
+            await self._complete_discovery_run(
+                run_id,
+                candidate_count=len(candidates),
+                evaluated_count=evaluated_count,
+                error_count=error_count + 1,
+                status="failed",
+                error_json={"error": repr(exc), "error_type": type(exc).__name__},
+            )
+            raise
+        else:
+            await self._complete_discovery_run(
+                run_id,
+                candidate_count=len(candidates),
+                evaluated_count=evaluated_count,
+                error_count=error_count,
+                status="completed",
+            )
 
         profiles.sort(key=lambda p: (-p.composite_score, p.wallet))
         return profiles
 
-    async def _evaluate_one(self, cand) -> TraderProfile | None:
+    async def _evaluate_one(
+        self,
+        cand,
+        *,
+        run_id: str | None = None,
+    ) -> TraderProfile | None:
         wallet = str(getattr(cand, "wallet", "") or "").lower()
         self.logger.info("candidate_eval_started", extra={"wallet": wallet})
 
@@ -160,7 +203,14 @@ class TraderDiscoveryService:
                     "error": repr(exc),
                 },
             )
-            await self._upsert_failed_evaluation(cand, "backfill_failed", exc)
+            evaluation = await self._upsert_failed_evaluation(cand, "backfill_failed", exc)
+            await self._upsert_run_candidate(
+                run_id,
+                cand,
+                evaluation=evaluation,
+                status="rejected",
+                rejection_reason="backfill_failed",
+            )
             return None
 
         self.logger.info(
@@ -194,7 +244,14 @@ class TraderDiscoveryService:
                 "candidate_insufficient_history",
                 extra={"wallet": wallet, "reason": reason},
             )
-            await self._upsert_failed_evaluation(cand, reason)
+            evaluation = await self._upsert_failed_evaluation(cand, reason)
+            await self._upsert_run_candidate(
+                run_id,
+                cand,
+                evaluation=evaluation,
+                status="rejected",
+                rejection_reason=reason,
+            )
             return None
 
         signals = self.grouper.group(trades)
@@ -241,6 +298,13 @@ class TraderDiscoveryService:
         await self.evaluation_repo.upsert_evaluation(evaluation)
         if self.trust_store is not None:
             self.trust_store.upsert_evaluation(evaluation)
+        await self._upsert_run_candidate(
+            run_id,
+            cand,
+            evaluation=evaluation,
+            status=evaluation.status,
+            rejection_reason=evaluation.rejection_reason,
+        )
 
         return TraderProfile(
             wallet=wallet,
@@ -259,9 +323,9 @@ class TraderDiscoveryService:
         cand,
         reason: str,
         error: Exception | None = None,
-    ) -> None:
+    ) -> FalconDiscoveryEvaluation | None:
         if self.evaluation_repo is None:
-            return
+            return None
 
         wallet = str(getattr(cand, "wallet", "") or "").lower()
         raw = getattr(cand, "raw", {}) or {}
@@ -306,6 +370,26 @@ class TraderDiscoveryService:
             rejection_reason=reason,
             eligible_live=False,
             eligible_shadow=False,
+            score_version=str(
+                getattr(self.config.discovery, "leader_score_version", "leader_score_v2")
+                if self.config is not None
+                else "leader_score_v2"
+            ),
+            score_breakdown_json={
+                "version": str(
+                    getattr(self.config.discovery, "leader_score_version", "leader_score_v2")
+                    if self.config is not None
+                    else "leader_score_v2"
+                ),
+                "rejection_reason": reason,
+            },
+            leaderboard_rank=getattr(cand, "leaderboard_rank", None),
+            falcon_tier=str(getattr(cand, "tier", "") or ""),
+            total_volume_15d=float(getattr(cand, "total_volume_15d", 0.0) or 0.0),
+            source_agent_id=getattr(cand, "source_agent_id", None),
+            source_sort_by=str(getattr(cand, "source_sort_by", "") or ""),
+            source_rank=getattr(cand, "source_rank", None),
+            all_seen_sort_modes=tuple(getattr(cand, "all_seen_sort_modes", ()) or ()),
             balance_usdc="0",
             config_hash="",
             evaluation_context_json={},
@@ -316,6 +400,7 @@ class TraderDiscoveryService:
             await self.evaluation_repo.upsert_evaluation(evaluation)
             if self.trust_store is not None:
                 self.trust_store.upsert_evaluation(evaluation)
+            return evaluation
         except Exception as exc:
             self.logger.warning(
                 "candidate_failed_evaluation_upsert_failed | wallet=%s reason=%s error_type=%s error=%r",
@@ -328,6 +413,90 @@ class TraderDiscoveryService:
                     "wallet": wallet,
                     "reason": reason,
                     "error_type": type(exc).__name__,
+                    "error": repr(exc),
+                },
+            )
+            return evaluation
+
+    async def _create_discovery_run(self, run_id: str, started_at: float) -> None:
+        repo = self.evaluation_repo
+        create = getattr(repo, "create_discovery_run", None)
+        if not callable(create):
+            return
+        try:
+            await create(
+                run_id=run_id,
+                started_at=started_at,
+                config_hash="",
+                falcon_sort_modes=list(
+                    getattr(self.config.discovery, "falcon_sort_modes", ()) or ()
+                ),
+            )
+        except Exception as exc:
+            self.logger.warning(
+                "discovery_run_history_create_failed",
+                extra={"run_id": run_id, "error": repr(exc)},
+            )
+
+    async def _complete_discovery_run(
+        self,
+        run_id: str,
+        *,
+        candidate_count: int,
+        evaluated_count: int,
+        error_count: int,
+        status: str,
+        error_json: dict[str, Any] | None = None,
+    ) -> None:
+        repo = self.evaluation_repo
+        complete = getattr(repo, "complete_discovery_run", None)
+        if not callable(complete):
+            return
+        try:
+            await complete(
+                run_id=run_id,
+                completed_at=time.time(),
+                candidate_count=candidate_count,
+                evaluated_count=evaluated_count,
+                error_count=error_count,
+                status=status,
+                error_json=error_json or {},
+            )
+        except Exception as exc:
+            self.logger.warning(
+                "discovery_run_history_complete_failed",
+                extra={"run_id": run_id, "status": status, "error": repr(exc)},
+            )
+
+    async def _upsert_run_candidate(
+        self,
+        run_id: str | None,
+        cand,
+        *,
+        evaluation: FalconDiscoveryEvaluation | None = None,
+        status: str | None = None,
+        rejection_reason: str | None = None,
+    ) -> None:
+        if not run_id:
+            return
+        repo = self.evaluation_repo
+        upsert = getattr(repo, "upsert_run_candidate", None)
+        if not callable(upsert):
+            return
+        try:
+            await upsert(
+                run_id=run_id,
+                candidate=cand,
+                evaluation=evaluation,
+                status=status,
+                rejection_reason=rejection_reason,
+            )
+        except Exception as exc:
+            self.logger.warning(
+                "discovery_run_candidate_upsert_failed",
+                extra={
+                    "run_id": run_id,
+                    "wallet": str(getattr(cand, "wallet", "") or "").lower(),
                     "error": repr(exc),
                 },
             )

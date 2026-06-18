@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from typing import TYPE_CHECKING
 
 from orchestrators.leader_registry import LeaderRegistry
+from services.discovery.auto_trader_selector import AutoTraderSelector
+from services.discovery.balance_provider import build_wallet_balance_provider
 from services.metrics import metrics
 from utils.logger import get_logger, redact_error_detail
 
@@ -50,15 +52,90 @@ async def discovery_refresh_loop(
     refresh_interval: int,
     *,
     leaders_repo=None,
-    on_new_leaders: Callable[[list[str]], Awaitable[None]] | None = None,
+    on_new_leaders: Callable[[list[str]], Awaitable[Iterable[str] | None]] | None = None,
     already_monitored: set[str] | None = None,
 ) -> None:
+    if already_monitored is None:
+        already_monitored = set()
+    else:
+        normalized_monitored = {
+            wallet.lower() for wallet in already_monitored if wallet
+        }
+        already_monitored.clear()
+        already_monitored.update(normalized_monitored)
     while True:
         await asyncio.sleep(refresh_interval)
         try:
             await registry.refresh(configured_leaders)
+            config = getattr(registry, "config", None)
+            dynamic_enabled = bool(
+                getattr(
+                    getattr(config, "discovery", None),
+                    "discovery_dynamic_monitoring_enabled",
+                    False,
+                )
+            )
+            if not dynamic_enabled or on_new_leaders is None or leaders_repo is None:
+                continue
+
+            balance_provider = (
+                build_wallet_balance_provider(config)
+                if bool(
+                    getattr(
+                        getattr(config, "discovery", None),
+                        "discovery_reject_stale_evaluations",
+                        True,
+                    )
+                )
+                else None
+            )
+            selector = AutoTraderSelector(
+                leaders_repo,
+                config,
+                balance_provider=balance_provider,
+            )
+            selection = await selector.select_from_db()
+            new_wallets = [
+                wallet
+                for wallet in selection.wallets
+                if wallet and wallet.lower() not in already_monitored
+            ]
+            if not new_wallets:
+                continue
+            try:
+                started_wallets = _normalized_wallet_set(
+                    await on_new_leaders(new_wallets)
+                )
+            except Exception as exc:
+                logger.warning(
+                    "dynamic_leader_callback_failed",
+                    extra={
+                        "wallets": new_wallets,
+                        "error": redact_error_detail(exc),
+                    },
+                )
+                continue
+            if not started_wallets:
+                logger.warning(
+                    "dynamic_leader_callback_started_no_wallets",
+                    extra={"wallets": new_wallets},
+                )
+                continue
+            already_monitored.update(started_wallets)
         except Exception as exc:
             logger.warning(
                 "Background discovery refresh failed",
                 extra={"error": redact_error_detail(exc)},
             )
+
+
+def _normalized_wallet_set(wallets: Iterable[str] | str | None) -> set[str]:
+    if wallets is None:
+        return set()
+    if isinstance(wallets, str):
+        wallets = (wallets,)
+    return {
+        str(wallet).strip().lower()
+        for wallet in wallets
+        if str(wallet).strip()
+    }
