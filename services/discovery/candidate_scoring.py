@@ -26,6 +26,7 @@ def normalize(value: float, low: float, high: float) -> float:
 class RecentState:
     pnl_7d: Decimal = Decimal("0")
     pnl_3d: Decimal = Decimal("0")
+    available: bool = True
 
 
 @dataclass(frozen=True)
@@ -58,6 +59,9 @@ class FalconDiscoveryEvaluation:
     rejection_reason: str | None
     eligible_live: bool
     eligible_shadow: bool
+    balance_usdc: str = "0"
+    config_hash: str = ""
+    evaluation_context_json: dict[str, Any] = field(default_factory=dict)
     falcon_raw_json: dict[str, Any] = field(default_factory=dict)
     replay_json: dict[str, Any] = field(default_factory=dict)
     updated_at: float = field(default_factory=time.time)
@@ -76,10 +80,7 @@ class CandidateScoringService:
         replay,
         recent_state: RecentState | None = None,
     ) -> FalconDiscoveryEvaluation:
-        recent_state = recent_state or RecentState(
-            pnl_7d=Decimal(str(candidate.pnl_15d)),
-            pnl_3d=Decimal("0"),
-        )
+        recent_state = recent_state or RecentState(available=False)
         falcon_score = falcon_quality_score(candidate)
         copy_score = copyability_score(replay)
         recent_score = recent_state_score(recent_state)
@@ -97,16 +98,27 @@ class CandidateScoringService:
             replay=replay,
             recent_state=recent_state,
         )
-        eligible_live = rejection_reason is None
-        eligible_shadow = rejection_reason is None or rejection_reason in {
-            "below_live_score",
-            "insufficient_copyable_signal_ratio",
-            "insufficient_copyable_notional_ratio",
-        }
-        if rejection_reason:
-            status = "shadow" if eligible_shadow else "rejected"
+        score_ok = final_score >= self.config.leader.auto_discover_min_score
+        if rejection_reason is None and not score_ok:
+            rejection_reason = "below_live_score"
+
+        eligible_live = rejection_reason is None and score_ok
+        eligible_shadow = (not eligible_live) and (
+            rejection_reason is None
+            or rejection_reason
+            in {
+                "below_live_score",
+                "insufficient_copyable_signal_ratio",
+                "insufficient_copyable_notional_ratio",
+                "recent_state_unavailable",
+            }
+        )
+        if eligible_live:
+            status = "live_eligible"
+        elif eligible_shadow:
+            status = "shadow"
         else:
-            status = "live_eligible" if final_score >= self.config.leader.auto_discover_min_score else "shadow"
+            status = "rejected"
 
         sports_ratio = (
             sum(1 for c in market_classes if c.is_sports_esports) / len(market_classes)
@@ -121,6 +133,7 @@ class CandidateScoringService:
         fast_crypto_notional_ratio = _fast_crypto_notional_ratio(signals, market_classes)
 
         replay_json = _replay_to_json(replay)
+        replay_details = getattr(replay, "details", {}) or {}
         return FalconDiscoveryEvaluation(
             wallet=candidate.wallet.lower(),
             status=status,
@@ -150,6 +163,11 @@ class CandidateScoringService:
             rejection_reason=rejection_reason,
             eligible_live=eligible_live,
             eligible_shadow=eligible_shadow,
+            balance_usdc=str(replay_details.get("balance_usdc", "0") or "0"),
+            config_hash=str(replay_details.get("config_hash", "") or ""),
+            evaluation_context_json=dict(
+                replay_details.get("evaluation_context", {}) or {}
+            ),
             falcon_raw_json=dict(candidate.raw),
             replay_json=replay_json,
         )
@@ -198,10 +216,19 @@ def copyability_score(replay) -> float:
 
 
 def recent_state_ok(state: RecentState, config) -> tuple[bool, str | None]:
-    if config.discovery.discovery_require_7d_non_negative:
-        if state.pnl_7d < Decimal(str(config.discovery.discovery_min_7d_pnl_usdc)):
+    if (
+        getattr(config.discovery, "discovery_require_recent_state_for_live", True)
+        and not state.available
+    ):
+        return False, "recent_state_unavailable"
+    if getattr(config.discovery, "discovery_require_7d_non_negative", True):
+        if state.pnl_7d < Decimal(
+            str(getattr(config.discovery, "discovery_min_7d_pnl_usdc", 0))
+        ):
             return False, "negative_7d_state"
-    if state.pnl_3d < Decimal(str(config.discovery.discovery_min_3d_pnl_usdc)):
+    if state.pnl_3d < Decimal(
+        str(getattr(config.discovery, "discovery_min_3d_pnl_usdc", -50))
+    ):
         return False, "bad_3d_state"
     return True, None
 
@@ -232,4 +259,3 @@ def _fast_crypto_notional_ratio(signals: list, classes: list[MarketClass]) -> fl
 
 def _replay_to_json(replay) -> dict[str, Any]:
     return json.loads(json.dumps(asdict(replay), default=str))
-

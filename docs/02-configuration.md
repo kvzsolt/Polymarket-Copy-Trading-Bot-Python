@@ -136,7 +136,7 @@ Position sizing strategy and limits.
 | `BUY_MIN_AMOUNT` | float | `6` | Minimum order size in USDC |
 | `BUY_MAX_AMOUNT` | float | `15` | Maximum order size in USDC |
 | `POSITION_THRESHOLD` | int | `0` | Position threshold for sizing adjustments |
-| `MAX_POSITION_PCT` | float | `0.45` | Maximum fraction of freshly fetched funder cash per BUY (0, 1] |
+| `MAX_POSITION_PCT` | float | `0.45` | Maximum fraction of the startup funder-cash snapshot per BUY; refreshed every 24 hours on long runs (0, 1] |
 | `ENABLE_TRUST_SIZE_MULTIPLIERS` | bool | `true` | Scale position size by leader trust score |
 | `TRUST_SIZE_MULTIPLIER_MIN` | float | `0.50` | Minimum trust-based size multiplier |
 | `TRUST_SIZE_MULTIPLIER_MAX` | float | `1.25` | Maximum trust-based size multiplier |
@@ -202,6 +202,8 @@ Order execution quality and decision gates.
 | `NEAR_RESOLUTION_GATE_PRICE` | float | `0.95` | Price threshold for near-resolution gate |
 | `NEAR_RESOLUTION_MAX_AGE_SECONDS` | float | `15` | Maximum signal age for near-resolution |
 | `PENDING_SUBMISSION_TTL_SECONDS` | int | `120` | TTL for pending idempotency locks |
+| `RESERVATION_TTL_SECONDS` | int | `120` | TTL for pre-submit BUY-quote / SELL-share reservations |
+| `RESERVATIONS_ENABLED` | bool | `false` | Master switch for pre-submit reservations — see note below |
 | `RETRY_BACKOFF_BASE` | float | `1.0` | Exponential backoff base (seconds) |
 | `TRANSACTION_FEE_BPS` | float | `20` | Transaction fee in basis points |
 | `GAS_COST_USDC` | float | `0.03` | Estimated gas cost in USDC |
@@ -214,6 +216,18 @@ Order execution quality and decision gates.
 | `CIRCUIT_COOLDOWN_SECONDS` | float | `60` | Circuit breaker cooldown period |
 | `META_CACHE_TTL_GOOD` | float | `300` | Cache TTL for good market metadata (seconds) |
 | `META_CACHE_TTL_THIN` | float | `30` | Cache TTL for thin market metadata (seconds) |
+
+> **`RESERVATIONS_ENABLED` safety note.** Reservations are the pre-submit
+> BUY-quote / SELL-share balance guard that stops two concurrent same-scope
+> intents from both passing the balance check (double-spend). They are
+> **disabled by default on the runtime-hardening branch** because the reservation
+> blocker was over-firing on legitimate same-scope copies (surfaced as
+> `reservation_conflict` copy-skips). With reservations off, duplicate-order
+> protection still holds via the idempotency submission lock + per-scope
+> position coordinator, but the balance double-spend guard is not enforced.
+> Startup logs a `reservations DISABLED` WARNING per user runtime so the
+> reduced guarantee is visible. Set `RESERVATIONS_ENABLED=true` to restore the
+> guard once the blocker is retuned.
 
 ---
 
@@ -275,12 +289,14 @@ Blockchain network and metrics server.
 | Env Var | Type | Default | Description |
 |---|---|---|---|
 | `RPC_URL` | string | *(see WalletConfig)* | Polygon RPC endpoint |
+| `RPC_REQUEST_TIMEOUT_SECONDS` | float | `8.0` | Per-call timeout for the read-only failover RPC provider (balance/allowance/code/gas probes). Bumps for slow/archive endpoints; non-positive/non-numeric values fall back to `8.0` |
 | `ENFORCE_GEOBLOCK` | bool | `true` | Enable geoblock compliance check |
 | `ENABLE_METRICS_SERVER` | bool | `false` | Enable Prometheus-style metrics endpoint |
 | `METRICS_PORT` | int | `9102` | Port for metrics server |
 | `METRICS_BIND_HOST` | string | `127.0.0.1` | Bind address for metrics server |
-| `USDC_CONTRACT_ADDRESS` | string | `0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174` | USDC (bridged) contract on Polygon |
-| `PUSD_CONTRACT_ADDRESS` | string | `0x5731a8987bC70324e2C14d22D95a9cF0E84b687E` | pUSD contract on Polygon |
+| `USDC_CONTRACT_ADDRESS` | string | `0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174` | Legacy USDC.e contract on Polygon |
+| `PUSD_CONTRACT_ADDRESS` | string | `0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB` | Polymarket v2 pUSD collateral on Polygon |
+| `CTF_EXCHANGE_V2_ADDRESS` | string | `0xE111180000d2663C0091e4f400237545B87B996B` | Polymarket v2 CTF exchange on Polygon |
 
 ---
 
@@ -298,6 +314,9 @@ Blockchain network and metrics server.
 | Env Var | Type | Default | Description |
 |---|---|---|---|
 | `ENABLE_AUTO_REDEEM` | bool | `false` | Enable automatic position redemption |
+| `REDEEM_CTF_CONTRACT_ADDRESS` | string | `0xAdA100Db00Ca00073811820692005400218FcE1f` | Polymarket v2 CTF collateral adapter target for `redeemPositions` |
+| `CTF_COLLATERAL_ADAPTER_ADDRESS` | string | `0xAdA100Db00Ca00073811820692005400218FcE1f` | Alias used when `REDEEM_CTF_CONTRACT_ADDRESS` is unset |
+| `REDEEM_COLLATERAL_CONTRACT_ADDRESS` | string | `PUSD_CONTRACT_ADDRESS` | Collateral token passed to `redeemPositions`; v2 uses pUSD |
 
 ---
 

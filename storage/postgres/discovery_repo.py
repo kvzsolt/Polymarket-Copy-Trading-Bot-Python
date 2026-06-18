@@ -329,12 +329,13 @@ class DiscoveryRepo(AbstractDiscoveryRepository):
                     sports_esports_ratio, fast_crypto_signal_ratio,
                     fast_crypto_notional_ratio, pnl_7d, pnl_3d,
                     rejection_reason, eligible_live, eligible_shadow,
+                    balance_usdc, config_hash, evaluation_context_json,
                     falcon_raw_json, replay_json, updated_at
                 ) VALUES (
                     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
                     $11, $12, $13, $14, $15, $16, $17, $18,
                     $19, $20, $21, $22, $23, $24, $25, $26,
-                    $27, $28, $29::jsonb, $30::jsonb, $31
+                    $27, $28, $29, $30, $31::jsonb, $32::jsonb, $33::jsonb, $34
                 )
                 ON CONFLICT(wallet) DO UPDATE SET
                     status = excluded.status,
@@ -364,6 +365,9 @@ class DiscoveryRepo(AbstractDiscoveryRepository):
                     rejection_reason = excluded.rejection_reason,
                     eligible_live = excluded.eligible_live,
                     eligible_shadow = excluded.eligible_shadow,
+                    balance_usdc = excluded.balance_usdc,
+                    config_hash = excluded.config_hash,
+                    evaluation_context_json = excluded.evaluation_context_json,
                     falcon_raw_json = excluded.falcon_raw_json,
                     replay_json = excluded.replay_json,
                     updated_at = excluded.updated_at
@@ -396,6 +400,9 @@ class DiscoveryRepo(AbstractDiscoveryRepository):
                 e.rejection_reason,
                 bool(e.eligible_live),
                 bool(e.eligible_shadow),
+                str(getattr(e, "balance_usdc", "0") or "0"),
+                str(getattr(e, "config_hash", "") or ""),
+                _ensure_json_str(getattr(e, "evaluation_context_json", {}) or {}),
                 _ensure_json_str(e.falcon_raw_json),
                 _ensure_json_str(e.replay_json),
                 float(e.updated_at),
@@ -468,6 +475,9 @@ class DiscoveryRepo(AbstractDiscoveryRepository):
             rejection_reason=r["rejection_reason"],
             eligible_live=bool(r["eligible_live"]),
             eligible_shadow=bool(r["eligible_shadow"]),
+            balance_usdc=str(r["balance_usdc"] or "0"),
+            config_hash=str(r["config_hash"] or ""),
+            evaluation_context_json=_decode_jsonb(r["evaluation_context_json"]) or {},
             falcon_raw_json=_decode_jsonb(r["falcon_raw_json"]) or {},
             replay_json=_decode_jsonb(r["replay_json"]) or {},
             updated_at=float(r["updated_at"] or 0.0),

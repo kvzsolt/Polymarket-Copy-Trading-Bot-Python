@@ -51,6 +51,10 @@ class PositionSyncResult:
     pruned_positions: int
     pruned_condition_ids: tuple[str, ...]
     pruned_token_ids: tuple[str, ...]
+    # True when the live-position snapshot could not be fetched. In that case
+    # pruning is SKIPPED (a transient venue/data-API failure must never be
+    # read as "the wallet holds nothing" and delete the local ledger).
+    fetch_failed: bool = False
 
 
 @dataclass(frozen=True)
@@ -211,9 +215,25 @@ async def reconcile_persisted_positions_to_live(
     positions_repo: PositionsRepo,
     *,
     user_id: str,
-    live_positions: list[dict[str, Any]],
+    live_positions: list[dict[str, Any]] | None,
 ) -> PositionSyncResult:
     persisted = await positions_repo.list_open_positions(user_id)
+
+    # Fail closed: a None snapshot means the live-position fetch failed. We must
+    # not prune — deleting every persisted position because a transient API
+    # error returned "nothing" would destroy the basis for protective exits,
+    # SELL mirroring, and exposure caps.
+    if live_positions is None:
+        return PositionSyncResult(
+            persisted_before=len(persisted),
+            persisted_after=len(persisted),
+            live_count=0,
+            pruned_positions=0,
+            pruned_condition_ids=(),
+            pruned_token_ids=(),
+            fetch_failed=True,
+        )
+
     live_keys = _live_position_keys(live_positions)
 
     stale: list[PositionRecord] = []
@@ -245,8 +265,8 @@ async def normalize_startup_order_statuses(pool, *, user_id: str) -> OrderStartu
             row = await conn.fetchrow(
                 """
                 SELECT
-                    COALESCE(SUM(CASE WHEN status IN ('pending', 'pending_lock') THEN 1 ELSE 0 END), 0) AS pending_count,
-                    COALESCE(SUM(CASE WHEN status = 'delayed' THEN 1 ELSE 0 END), 0) AS delayed_count,
+                    COALESCE(SUM(CASE WHEN status IN ('pending', 'pending_lock') AND order_id IS NULL THEN 1 ELSE 0 END), 0) AS pending_count,
+                    COALESCE(SUM(CASE WHEN status = 'delayed' AND order_id IS NULL THEN 1 ELSE 0 END), 0) AS delayed_count,
                     COALESCE(SUM(CASE WHEN status LIKE 'retry_pending_%' THEN 1 ELSE 0 END), 0) AS retry_pending_count
                 FROM orders
                 WHERE user_id = $1
@@ -258,6 +278,31 @@ async def normalize_startup_order_statuses(pool, *, user_id: str) -> OrderStartu
             delayed_count = int(row["delayed_count"] if row else 0)
             retry_pending_count = int(row["retry_pending_count"] if row else 0)
 
+            # P0-5: a pending/delayed row that carries a venue ``order_id``
+            # reached the venue (e.g. a 'delayed' ack) and is recoverable by
+            # ``startup_reconcile_unconfirmed`` (which runs next and handles
+            # 'delayed' via _UNCONFIRMED_STATES). Marking it terminal_failed and
+            # deleting it here would lose a venue-accepted order as an untracked
+            # off-bot fill. Preserve those rows; only normalize rows with NO
+            # venue handle.
+            preserved_row = await conn.fetchrow(
+                """
+                SELECT COALESCE(SUM(CASE WHEN order_id IS NOT NULL THEN 1 ELSE 0 END), 0) AS preserved_count
+                FROM orders
+                WHERE user_id = $1
+                  AND status IN ('pending', 'pending_lock', 'delayed')
+                """,
+                user_id,
+            )
+            preserved_count = int(preserved_row["preserved_count"] if preserved_row else 0)
+            if preserved_count:
+                logger.info(
+                    "startup_order_normalize_preserved | user=%s order_id_rows=%d "
+                    "(left for startup reconciliation)",
+                    user_id,
+                    preserved_count,
+                )
+
             await conn.execute(
                 """
                 UPDATE orders
@@ -267,7 +312,7 @@ async def normalize_startup_order_statuses(pool, *, user_id: str) -> OrderStartu
                     updated_at = now()
                 WHERE user_id = $1
                   AND (
-                    status IN ('pending', 'pending_lock', 'delayed')
+                    (status IN ('pending', 'pending_lock', 'delayed') AND order_id IS NULL)
                     OR status LIKE 'retry_pending_%'
                   )
                 """,
@@ -424,6 +469,15 @@ def _orders_check(
 
 
 def _position_sync_check(sync: PositionSyncResult) -> StartupHealthCheckItem:
+    if sync.fetch_failed:
+        return StartupHealthCheckItem(
+            status="error",
+            message=(
+                f"live position snapshot fetch failed; skipped pruning "
+                f"{sync.persisted_before} persisted position(s) (fail-closed)"
+            ),
+            details=asdict(sync),
+        )
     if sync.pruned_positions > 0:
         return StartupHealthCheckItem(
             status="warning",
@@ -490,7 +544,7 @@ async def perform_startup_health_check(
     pool,
     positions_repo: PositionsRepo,
     orders_repo=None,  # type: ignore[assignment] | OrdersRepo | None
-    live_positions: list[dict[str, Any]],
+    live_positions: list[dict[str, Any]] | None,
     available_cash: "Decimal | float",
     database_ok: bool,
     rpc_url: str,

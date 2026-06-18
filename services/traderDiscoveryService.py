@@ -14,6 +14,7 @@ from typing import Any
 from config.app_config import AppConfig
 from services.discovery.candidate_scoring import (
     FalconDiscoveryEvaluation,
+    RecentState,
     falcon_quality_score,
 )
 from utils.logger import get_logger
@@ -82,7 +83,9 @@ class TraderDiscoveryService:
         self.logger = logger_instance or logger
         self._cache: dict[str, TraderProfile] = {}
 
-    async def discover_candidates(self, **_ignored: Any) -> list[TraderProfile]:
+    async def discover_candidates(
+        self, *, limit: int | None = None, **_ignored: Any
+    ) -> list[TraderProfile]:
         if not self._fully_wired():
             self.logger.info("discovery_disabled_or_unwired")
             return []
@@ -92,9 +95,23 @@ class TraderDiscoveryService:
             return []
 
         candidates = await self.falcon_candidates.fetch_candidates()
+        if limit is not None and limit > 0:
+            candidates = candidates[:limit]
         profiles: list[TraderProfile] = []
 
-        for cand in candidates:
+        for idx, cand in enumerate(candidates, start=1):
+            wallet = str(getattr(cand, "wallet", "") or "").lower()
+            self.logger.info(
+                "candidate_eval_started | index=%s total=%s wallet=%s",
+                idx,
+                len(candidates),
+                wallet,
+                extra={
+                    "wallet": wallet,
+                    "candidate_index": idx,
+                    "candidate_total": len(candidates),
+                },
+            )
             try:
                 profile = await self._evaluate_one(cand)
             except Exception as exc:
@@ -289,6 +306,9 @@ class TraderDiscoveryService:
             rejection_reason=reason,
             eligible_live=False,
             eligible_shadow=False,
+            balance_usdc="0",
+            config_hash="",
+            evaluation_context_json={},
             falcon_raw_json=raw,
             replay_json=replay_json,
         )
@@ -357,4 +377,4 @@ class TraderDiscoveryService:
                 "candidate_recent_state_failed",
                 extra={"wallet": cand.wallet, "error": repr(exc)},
             )
-            return None
+            return RecentState(available=False)

@@ -50,3 +50,41 @@ def test_unknown_wallet_does_not_crash() -> None:
         ["leader_a"], {}, ["u1"],
     )
     assert blocked == []
+
+
+# ---------------------------------------------------------------------------
+# P0-4 / B4-01: the COLD-START path must apply the same gate. Recording
+# reconciler_ok=False alone is not enough — no monitor reads it — so the
+# affected wallets must actually be removed from the monitored set before
+# the leader monitors spawn.
+# ---------------------------------------------------------------------------
+
+from app import _cold_start_monitored_after_reconcile
+
+
+def test_cold_start_no_failures_returns_all() -> None:
+    leaders = ["leader_a", "leader_b"]
+    out = _cold_start_monitored_after_reconcile(
+        leaders,
+        {"leader_a": [_ctx("u1")], "leader_b": [_ctx("u2")]},
+        [],
+    )
+    assert out == leaders
+
+
+def test_cold_start_drops_wallet_of_failed_user() -> None:
+    out = _cold_start_monitored_after_reconcile(
+        ["leader_a", "leader_b"],
+        {"leader_a": [_ctx("u1")], "leader_b": [_ctx("u2")]},
+        ["u1"],
+    )
+    assert out == ["leader_b"]  # leader_a blocked, leader_b still monitored
+
+
+def test_cold_start_all_blocked_yields_empty() -> None:
+    out = _cold_start_monitored_after_reconcile(
+        ["leader_a"],
+        {"leader_a": [_ctx("u1")]},
+        ["u1"],
+    )
+    assert out == []  # fail closed: no leader monitors spawn

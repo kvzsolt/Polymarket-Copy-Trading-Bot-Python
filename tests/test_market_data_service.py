@@ -557,8 +557,9 @@ class TestRestBootstrapPolicy:
             old = _time.monotonic() - 3.0
             state.last_book_monotonic = old
             state.last_quote_monotonic = old
-        # WSS connection proven live via recent heartbeat.
-        cache.on_market_ws_heartbeat(_time.monotonic())
+        # WSS connection proven live via a recent INBOUND frame (pong). P1-d:
+        # the self-sent outbound heartbeat alone does not prove liveness.
+        cache.on_market_ws_pong(_time.monotonic())
 
         policy = MarketDataPolicy(
             max_quote_age_seconds=2.0,
@@ -633,14 +634,16 @@ class TestWssConnectionLivenessFreshness:
         )
 
     @pytest.mark.asyncio
-    async def test_quiet_wss_book_executable_while_connection_live(self) -> None:
+    async def test_quiet_wss_book_rejected_when_only_outbound_heartbeat(self) -> None:
+        # P1-d: the self-sent outbound PING (heartbeat) must NOT prove
+        # liveness. A silent / half-open feed keeps PINGing but receives
+        # nothing inbound — it must fail the liveness path and be rejected.
         cache = self._aged_wss_cache(age_seconds=8.0)
         cache.on_market_ws_heartbeat(time.monotonic())
         svc = _make_service(cache, policy=self._tight_policy())
 
-        bundle = await svc.require_fresh_data(TOKEN)
-
-        assert bundle.source == MarketDataSource.WSS
+        with pytest.raises(StaleDataError):
+            await svc.require_fresh_data(TOKEN)
 
     @pytest.mark.asyncio
     async def test_quiet_wss_book_executable_on_recent_pong(self) -> None:

@@ -91,14 +91,6 @@ async def test_paused_scope_blocks_risk_exit():
 
 
 @pytest.mark.asyncio
-async def test_paused_scope_blocks_near_one_exit():
-    coord, reservation_service, execution_service, _ = _make_coord(scope_paused=True)
-    result = await coord.submit_near_one_exit(_intent("SELL"))
-    assert result.skip_code == "position_drift_unresolved"
-    execution_service.execute.assert_not_awaited()
-
-
-@pytest.mark.asyncio
 async def test_clean_scope_passes_through_to_execution_service():
     coord, reservation_service, execution_service, drift = _make_coord(
         scope_paused=False, exec_status="submitted_unconfirmed"

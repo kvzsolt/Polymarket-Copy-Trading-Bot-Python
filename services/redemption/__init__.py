@@ -1,10 +1,11 @@
 """On-chain CTF auto-redemption subsystem.
 
 Opt-in settlement loop that claims collateral on resolved Polymarket
-positions via ``CTF.redeemPositions``. Lazily exported because the
-implementation imports ``web3``/``eth_account`` at module load; keeping the
-package import cheap means ``import services.redemption`` does not pull the
-Web3 stack unless the service is actually constructed.
+positions via ``redeemPositions``. Polymarket v2 routes this through the CTF
+collateral adapter. Lazily exported because the implementation imports
+``web3``/``eth_account`` at module load; keeping the package import cheap means
+``import services.redemption`` does not pull the Web3 stack unless the service
+is actually constructed.
 """
 from __future__ import annotations
 

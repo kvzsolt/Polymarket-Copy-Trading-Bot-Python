@@ -53,6 +53,7 @@ def _evaluation(**overrides):
         "pnl_7d": "0",
         "pnl_3d": "0",
         "rejection_reason": "insufficient_history",
+        "replay_json": {},
         "updated_at": 0.0,
     }
     data.update(overrides)
@@ -123,6 +124,59 @@ async def test_discovery_only_once_calls_discover(monkeypatch, capsys):
     assert payload["discovery_ran"] is True
     assert payload["profiles_returned"] == 1
     assert payload["live_eligible_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_discovery_only_eval_limit_caps_discovery_work_not_output(monkeypatch, capsys):
+    module = _load_module()
+    fake_app = _app(
+        [
+            _evaluation(wallet="0x" + "1" * 40),
+            _evaluation(wallet="0x" + "2" * 40),
+        ]
+    )
+    _patch_runner(monkeypatch, fake_app)
+
+    result = await module._amain(["--once", "--eval-limit", "1", "--limit", "2"])
+
+    assert result == 0
+    fake_app.discovery_service.discover_candidates.assert_awaited_once_with(limit=1)
+    fake_app.discovery_repo.list_evaluations.assert_awaited_once_with(limit=2)
+    payload = _stdout_payload(capsys.readouterr().out)
+    assert payload["total_listed"] == 2
+
+
+@pytest.mark.asyncio
+async def test_discovery_only_outputs_uncopyable_reason_counts(monkeypatch, capsys):
+    module = _load_module()
+    fake_app = _app(
+        [
+            _evaluation(
+                replay_json={
+                    "signal_results": [
+                        {"copyable": False, "reason": "below_buy_min_amount"},
+                        {"copyable": False, "reason": "below_buy_min_amount"},
+                        {"copyable": False, "reason": "insufficient_balance_headroom"},
+                        {"copyable": True, "reason": "ok"},
+                    ]
+                }
+            )
+        ]
+    )
+    _patch_runner(monkeypatch, fake_app)
+
+    result = await module._amain(["--list-only"])
+
+    assert result == 0
+    payload = _stdout_payload(capsys.readouterr().out)
+    assert payload["global_uncopyable_reason_counts"] == {
+        "below_buy_min_amount": 2,
+        "insufficient_balance_headroom": 1,
+    }
+    assert payload["top"][0]["uncopyable_reason_counts"] == {
+        "below_buy_min_amount": 2,
+        "insufficient_balance_headroom": 1,
+    }
 
 
 @pytest.mark.asyncio

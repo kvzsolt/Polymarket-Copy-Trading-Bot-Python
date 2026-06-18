@@ -11,7 +11,7 @@ from services.copyStrategy import CopySizingResult, calculate_copy_notional
 from services.entryPermissionService import EntryPermissionService
 from services.healthServer import ReadinessTracker
 from services.leaderScoringService import LeaderScoringService
-from services.positionActionCoordinator import PositionActionCoordinator
+from services.positionCoordinator import PositionCoordinator
 
 if TYPE_CHECKING:
     from orchestrators.market_data_runtime import MarketDataRuntime
@@ -44,7 +44,7 @@ class TradingContext:
     leader_scorer: LeaderScoringService | None = None
     copy_decision_service: CopyDecisionService | None = None
     readiness: ReadinessTracker = field(default_factory=ReadinessTracker)
-    position_coordinator: PositionActionCoordinator = field(default_factory=PositionActionCoordinator)
+    position_coordinator: PositionCoordinator = field(default_factory=PositionCoordinator)
     extra: dict[str, Any] = field(default_factory=dict)
     risk_triggers_repo: Any | None = None
     # Freshness-aware market data wiring. ``market_data_service`` is the

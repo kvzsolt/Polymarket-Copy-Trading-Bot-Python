@@ -6,7 +6,7 @@
 
 ## Overview
 
-When a Polymarket prediction market resolves, winning positions can be redeemed for their USDC value. The bot's auto-redeem system automates this process by scanning for redeemable positions and submitting on-chain redemption transactions.
+When a Polymarket prediction market resolves, winning positions can be redeemed for collateral value. On CLOB v2 that collateral is pUSD. The bot's auto-redeem system automates this process by scanning for redeemable positions and submitting on-chain redemption transactions.
 
 Redemption is a separate lifecycle from trading — it involves on-chain transactions rather than CLOB orders, and it has its own safety checks and validation logic.
 
@@ -35,15 +35,22 @@ The redemption service runs on a configurable interval (`REDEEM_CHECK_INTERVAL`,
 
 ### Redemption Transaction
 
-The redemption transaction calls the CTF (Conditional Token Framework) contract:
+The redemption transaction calls `redeemPositions` on the Polymarket v2 CTF collateral adapter. The collateral token argument is pUSD:
 
 ```python
-ctf_contract.functions.redeemPositions(
-    usdc_contract_address,       # Collateral token
+collateral_adapter.functions.redeemPositions(
+    pusd_contract_address,       # pUSD collateral token
     parent_collection_id,        # Zero bytes (0x00...00)
     condition_id,                # The resolved market's condition ID
     [1, 2],                      # Index sets for both outcome collections
 )
+```
+
+Current Polygon v2 addresses:
+
+```env
+CTF_COLLATERAL_ADAPTER_ADDRESS=0xAdA100Db00Ca00073811820692005400218FcE1f
+PUSD_CONTRACT_ADDRESS=0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB
 ```
 
 The transaction:
@@ -164,21 +171,24 @@ If auto-redeem is disabled or not supported for your wallet type, you can redeem
 3. Click "Redeem" or "Claim Winnings"
 4. Confirm the transaction in your wallet
 
-### Through the CTF Contract Directly
+### Through the Collateral Adapter Directly
 
 If you need to redeem programmatically:
 
 ```python
 from web3 import Web3
 
+CTF_COLLATERAL_ADAPTER_ADDRESS = "0xAdA100Db00Ca00073811820692005400218FcE1f"
+PUSD_ADDRESS = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"
+
 w3 = Web3(Web3.HTTPProvider("YOUR_RPC_URL"))
-ctf = w3.eth.contract(
-    address=Web3.to_checksum_address("0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"),
+collateral_adapter = w3.eth.contract(
+    address=Web3.to_checksum_address(CTF_COLLATERAL_ADAPTER_ADDRESS),
     abi=CTF_REDEEM_ABI,
 )
 
-tx = ctf.functions.redeemPositions(
-    Web3.to_checksum_address("0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"),  # USDC
+tx = collateral_adapter.functions.redeemPositions(
+    Web3.to_checksum_address(PUSD_ADDRESS),
     b"\x00" * 32,  # Parent collection ID
     bytes.fromhex(condition_id[2:]),  # Condition ID (without 0x prefix)
     [1, 2],  # Index sets

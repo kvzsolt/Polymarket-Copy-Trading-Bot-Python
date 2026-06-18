@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from rich.console import Console
+from rich.markup import escape as _escape_markup
 from rich.panel import Panel
 from rich.rule import Rule
 from rich.table import Table
@@ -1013,12 +1014,16 @@ def print_new_trade_detected(trade: dict) -> None:
     console.print(Rule(style="cyan"))
     console.print()
 
+    # P1-l: title / submarket / outcome / trader are leader-controlled; escape
+    # Rich markup so an attacker-named market cannot inject console styling or
+    # a clickable [link=…] phishing target into the operator terminal. The
+    # JSONL file sink below is json.dumps-safe and keeps the raw values.
     lines = [
-        f"[bold]Trader:[/bold]  {addr}",
+        f"[bold]Trader:[/bold]  {_escape_markup(str(addr))}",
         f"[bold]Side:[/bold]    {side}",
-        f"[bold]Title:[/bold]   {title}",
-        f"[bold]Submarket:[/bold]  {submarket or 'N/A'}",
-        f"[bold]Outcome:[/bold]  {outcome or 'N/A'}",
+        f"[bold]Title:[/bold]   {_escape_markup(str(title))}",
+        f"[bold]Submarket:[/bold]  {_escape_markup(str(submarket or 'N/A'))}",
+        f"[bold]Outcome:[/bold]  {_escape_markup(str(outcome or 'N/A'))}",
         f"[bold]Amount:[/bold]  [money]${usdc:.2f}[/money]",
         f"[bold]Price:[/bold]   {price:.4f}",
     ]
@@ -1171,11 +1176,12 @@ def print_manual_trade_detected(trade: dict) -> None:
     console.print(Rule(style=border))
     console.print()
 
+    # P1-l: market / outcome are leader-controlled — escape Rich markup.
     lines = [
-        f"[bold]Market:[/bold]      {market}",
+        f"[bold]Market:[/bold]      {_escape_markup(str(market))}",
     ]
     if outcome:
-        lines.append(f"[bold]Outcome:[/bold]     {outcome}")
+        lines.append(f"[bold]Outcome:[/bold]     {_escape_markup(str(outcome))}")
     lines.extend([
         f"[bold]Side:[/bold]        {side}",
         f"[bold]Size:[/bold]        {size:.4f} tokens",
@@ -1216,7 +1222,7 @@ def print_manual_sync_discrepancy(
     console.print()
 
     lines = [
-        f"[bold]Asset:[/bold]       {market}",
+        f"[bold]Asset:[/bold]       {_escape_markup(str(market))}",  # P1-l: leader-controlled
         f"[bold]Real-World:[/bold]  [success]{real_size:.4f}[/success] shares (proxy wallet)",
         f"[bold]Database:[/bold]    [error]{tracked_size:.4f}[/error] shares (tracked sum)",
         f"[bold]Resolution:[/bold]  [bold cyan]{action}[/bold cyan]",

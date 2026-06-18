@@ -351,7 +351,27 @@ class UserWebSocket:
             coro.close()
             return
         self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
+
+        def _on_done(done: asyncio.Task) -> None:
+            self._tasks.discard(done)
+            if done.cancelled():
+                return
+            try:
+                exc = done.exception()
+            except Exception as callback_exc:
+                logger.warning(
+                    "UserWS: callback task inspection failed: %s",
+                    callback_exc,
+                )
+                return
+            if exc is not None:
+                logger.warning(
+                    "UserWS: callback task failed: %s: %s",
+                    type(exc).__name__,
+                    exc,
+                )
+
+        task.add_done_callback(_on_done)
 
     async def _run_lifecycle_callback(
         self,
@@ -407,11 +427,24 @@ def _emit_lifecycle_for_event(event: dict[str, Any], *, token_id: str | None) ->
     if canonical is None:
         return
     order_id = event.get("order_id") or event.get("orderID") or event.get("id")
+    # WSS user 'trade' events carry a stable trade UUID in ``id`` (Context7:
+    # Polymarket User Channel trade message). Surface it for correlation across
+    # the MATCHED → MINED → CONFIRMED status churn emitted for a single trade.
+    trade_id = event.get("id") or event.get("trade_id")
     side = str(event.get("side") or event.get("makerSide") or "").upper() or "?"
     size_raw = event.get("size") or event.get("matched_size") or event.get("filled_size")
     price_raw = event.get("price") or event.get("avg_price") or event.get("average_price")
     condition_id = event.get("condition_id") or event.get("conditionId") or event.get("market")
-    tx_hash = event.get("tx_hash") or event.get("txHash") or event.get("transactionHash")
+    # WSS trade events carry no tx hash. Only the REST getTrades Trade does,
+    # under the snake_case ``transaction_hash`` — check it first so a
+    # REST-sourced event is not silently dropped (the camelCase variant the
+    # code previously checked never matched the real field name).
+    tx_hash = (
+        event.get("transaction_hash")
+        or event.get("tx_hash")
+        or event.get("txHash")
+        or event.get("transactionHash")
+    )
 
     def _coerce_float(v: Any) -> float | None:
         try:
@@ -439,6 +472,7 @@ def _emit_lifecycle_for_event(event: dict[str, Any], *, token_id: str | None) ->
             usdc_value=usdc,
             venue_status=str(raw).upper(),
             tx_hash=str(tx_hash) if tx_hash else None,
+            meta={"trade_id": str(trade_id)} if trade_id else None,
         )
     except Exception:
         # Logging never breaks the WSS loop.

@@ -149,13 +149,13 @@ The final trade cap is the minimum of `hard_cap`, `market_headroom`, `category_h
 | Parameter | Default | Description |
 |---|---|---|
 | `MAX_OPEN_POSITIONS` | `40` | Maximum number of open positions across all markets |
-| `MAX_POSITION_PCT` | `0.45` | Maximum fraction of freshly fetched funder cash per BUY |
+| `MAX_POSITION_PCT` | `0.45` | Maximum fraction of the startup funder-cash snapshot per BUY; refreshed every 24 hours on long runs |
 | `BUY_MIN_AMOUNT` | `6` | Minimum order size in USDC |
 | `BUY_MAX_AMOUNT` | `15` | Maximum order size in USDC |
 
 If the number of open positions reaches `MAX_OPEN_POSITIONS`, all BUY intents are rejected with reason `max_open_positions_reached`.
 
-`MAX_POSITION_PCT` caps the next BUY at `fresh_funder_cash × MAX_POSITION_PCT` (not total equity, and not existing market exposure). The bot fetches the funder wallet's current cash before the BUY is submitted and resizes or skips if the fresh cap is too small for venue minimums. Existing market, category, and leader exposure are handled by the separate exposure policies.
+`MAX_POSITION_PCT` caps each BUY at `funder_cash_snapshot × MAX_POSITION_PCT` (not total equity, and not existing market exposure). The snapshot is taken at bot startup from the funder wallet balance and refreshed every 24 hours on long-running processes. Existing market, category, and leader exposure are handled by the separate exposure policies.
 
 ---
 
