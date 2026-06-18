@@ -1440,7 +1440,7 @@ async def main() -> int:
     monitored_set: set[str] = set(monitored_leaders)
     fetch_interval = application.config.polling.fetch_interval
 
-    async def _on_new_leaders(new_wallets: list[str]) -> None:
+    async def _on_new_leaders(new_wallets: list[str]) -> list[str]:
         started_wallets = await _refresh_contexts_for_new_leaders(
             new_wallets=new_wallets,
             runtime_users=runtime_users,
@@ -1526,6 +1526,7 @@ async def main() -> int:
                 ]
             )
         )
+        return started_wallets
 
     # Auxiliary long-lived loops are registered as _Supervised specs and driven
     # by the main wait loop below (bounded restart, fail-closed on exhaustion)
@@ -1534,16 +1535,18 @@ async def main() -> int:
     supervised: list[_Supervised] = []
 
     if application.config.discovery.enable_trader_discovery:
-        logger.info(
-            "discovery_dynamic_monitoring_disabled",
-            extra={
-                "discovery_dynamic_monitoring_enabled": False,
-                "configured_value": bool(
-                    application.config.discovery.discovery_dynamic_monitoring_enabled
-                ),
-                "effect": "background discovery will refresh DB only and will not hot-add monitors",
-            },
+        dynamic_monitoring_enabled = bool(
+            application.config.discovery.discovery_dynamic_monitoring_enabled
         )
+        if not dynamic_monitoring_enabled:
+            logger.info(
+                "discovery_dynamic_monitoring_disabled",
+                extra={
+                    "discovery_dynamic_monitoring_enabled": False,
+                    "configured_value": False,
+                    "effect": "background discovery will refresh DB only and will not hot-add monitors",
+                },
+            )
         supervised.append(
             _Supervised(
                 name="discovery-refresh",
@@ -1551,8 +1554,10 @@ async def main() -> int:
                     registry,
                     configured,
                     refresh_interval,
-                    leaders_repo=None,
-                    on_new_leaders=None,
+                    leaders_repo=application.discovery_repo,
+                    on_new_leaders=(
+                        _on_new_leaders if dynamic_monitoring_enabled else None
+                    ),
                     already_monitored=monitored_set,
                 ),
             )

@@ -34,9 +34,13 @@ def _config():
     )
 
 
-def _service(*, logger_name: str = "test.trader_discovery"):
+def _service(*, logger_name: str = "test.trader_discovery", run_history: bool = False):
     candidate = _candidate()
     evaluation_repo = SimpleNamespace(upsert_evaluation=AsyncMock())
+    if run_history:
+        evaluation_repo.create_discovery_run = AsyncMock()
+        evaluation_repo.complete_discovery_run = AsyncMock()
+        evaluation_repo.upsert_run_candidate = AsyncMock()
     service = TraderDiscoveryService(
         config=_config(),
         falcon_candidates=SimpleNamespace(
@@ -104,3 +108,16 @@ async def test_candidate_eval_failed_logs_wallet_and_error_type(caplog):
     assert candidate.wallet in record.getMessage()
     assert "RuntimeError" in record.getMessage()
     assert record.exc_info is not None
+
+
+@pytest.mark.asyncio
+async def test_discovery_run_history_is_best_effort_for_failed_candidate():
+    service, _candidate, evaluation_repo = _service(run_history=True)
+
+    await service.discover_candidates()
+
+    evaluation_repo.create_discovery_run.assert_awaited_once()
+    assert evaluation_repo.upsert_run_candidate.await_count == 2
+    evaluation_repo.complete_discovery_run.assert_awaited_once()
+    assert evaluation_repo.complete_discovery_run.await_args.kwargs["status"] == "completed"
+    assert evaluation_repo.complete_discovery_run.await_args.kwargs["error_count"] == 1
