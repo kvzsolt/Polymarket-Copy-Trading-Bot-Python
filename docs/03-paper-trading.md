@@ -60,7 +60,6 @@ ENABLE_PROFIT_LOCK=true
 ENABLE_NEAR_MAX_EXIT=true
 ENABLE_TRAILING_STOP=true
 ENABLE_STOP_LOSS=true
-ENABLE_AUTO_REDEEM=false   # Not relevant in paper mode
 ```
 
 ---
@@ -103,9 +102,8 @@ If `ENABLE_METRICS_SERVER=true`, the Prometheus-style metrics endpoint exposes t
 
 1. **No real orders** — The CLOB client is never invoked for order submission. This is enforced at the execution layer, not just the configuration layer.
 2. **No on-chain transactions** — No transactions are signed or broadcast. The private key is not used even if configured.
-3. **No redemption** — Auto-redeem is irrelevant in paper mode since no real positions exist.
-4. **No real USDC at risk** — Even if `PRIVATE_KEY` points to a funded wallet, paper mode will not touch those funds.
-5. **Database isolation** — Paper mode uses the same database path, but you can configure a separate `BOT_STATE_DB` for paper testing to avoid mixing simulated and real data.
+3. **No real USDC at risk** — Even if `PRIVATE_KEY` points to a funded wallet, paper mode will not touch those funds.
+4. **Database isolation** — Paper mode uses the same database path, but you can configure a separate `BOT_STATE_DB` for paper testing to avoid mixing simulated and real data.
 
 ---
 
@@ -118,9 +116,8 @@ Before switching, complete every item on this checklist:
 3. **Risk parameters are tuned** — Review your PnL log and adjust exposure limits, drawdown thresholds, and position sizes based on paper results
 4. **Exit strategies are tested** — Confirm that profit lock, trailing stop, and stop-loss triggers fire at the expected price levels
 5. **`PRIVATE_KEY` is configured** — With proper file permissions (0600) or in `secrets.env`
-6. **`FUNDER_ADDRESS` matches your signer** — Run `bot doctor --live` to validate the redemption wallet check
-7. **Geoblock check passes** — You are not in a restricted region
-8. **Kill switch is off** — `KILL_SWITCH=false`
+6. **Geoblock check passes** — You are not in a restricted region
+7. **Kill switch is off** — `KILL_SWITCH=false`
 
 To switch:
 

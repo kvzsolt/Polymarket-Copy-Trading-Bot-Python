@@ -54,7 +54,6 @@ AppConfig
 ├── leader: LeaderConfig
 ├── logging: LoggingConfig
 ├── network: NetworkConfig
-├── redemption: RedemptionConfig
 ├── reconciliation: ReconciliationConfig
 ├── discovery: DiscoveryConfig
 ├── features: FeatureFlagConfig
@@ -112,7 +111,6 @@ Cadence and timing for various bot loops.
 | `FETCH_INTERVAL` | float | `0.25` | Seconds between leader activity fetches |
 | `AGGREGATE_SIGNAL_WINDOW_SECONDS` | float | `0.1` | Window for aggregating signals |
 | `RISK_CHECK_INTERVAL` | float | `15` | Seconds between risk position scans |
-| `REDEEM_CHECK_INTERVAL` | int | `60` | Seconds between redemption scans |
 | `DISCOVERY_REFRESH_INTERVAL_SECONDS` | int | `300` | Seconds between leader discovery refreshes |
 | `LEADER_POSITIONS_MIN_FETCH_SPACING_MS` | int | `250` | Minimum ms between leader position fetches |
 | `LEADER_ACTIVITY_MIN_FETCH_SPACING_MS` | int | `250` | Minimum ms between leader activity fetches |
@@ -178,7 +176,7 @@ Risk management parameters. See [05-risk-controls.md](05-risk-controls.md) for d
 | `PROFIT_LOCK_SELL_FRACTION` | float | `0.50` | Fraction of position to sell at lock |
 | `TRAILING_ACTIVATION_PCT` | float/`auto` | `20` | Profit % to activate trailing stop; blank or `auto` scales activation from max payout |
 | `TRAILING_DISTANCE` | float | `0.05` | Trailing stop distance as peak-drop percentage (`0.10` or `10` = 10%) |
-| `STAGED_TP_LEVELS` | string | `30,50` | Comma-separated take-profit levels |
+| `STAGED_TP_LEVELS` | string | `0.30,0.50` | Comma-separated take-profit profit-ratio levels |
 | `STAGED_TP_FRACTIONS` | string | `0.25,0.35` | Comma-separated TP sell fractions |
 | `STOP_LOSS_THRESHOLD` | float | `0.15` | Price floor for stop-loss exit |
 | `STOP_LOSS_GRACE_PERIOD_SECONDS` | float | `180` | Grace period before stop-loss activates |
@@ -312,19 +310,6 @@ Blockchain network and metrics server.
 | `RECONCILE_STALE_SECONDS` | float | `3600` | Seconds before an order is considered stale |
 | `RECONCILE_AUTO_CANCEL` | bool | `false` | Automatically cancel stale orders |
 
----
-
-## RedemptionConfig
-
-| Env Var | Type | Default | Description |
-|---|---|---|---|
-| `ENABLE_AUTO_REDEEM` | bool | `false` | Enable automatic position redemption |
-| `REDEEM_CTF_CONTRACT_ADDRESS` | string | `0xAdA100Db00Ca00073811820692005400218FcE1f` | Polymarket v2 CTF collateral adapter target for `redeemPositions` |
-| `CTF_COLLATERAL_ADAPTER_ADDRESS` | string | `0xAdA100Db00Ca00073811820692005400218FcE1f` | Alias used when `REDEEM_CTF_CONTRACT_ADDRESS` is unset |
-| `REDEEM_COLLATERAL_CONTRACT_ADDRESS` | string | `PUSD_CONTRACT_ADDRESS` | Collateral token passed to `redeemPositions`; v2 uses pUSD |
-
----
-
 ## DiscoveryConfig
 
 | Env Var | Type | Default | Description |
@@ -381,7 +366,6 @@ Feature toggles for advanced exit strategies.
 | Fill tracking | Simulated fills at signal price | Real venue fills |
 | `PRIVATE_KEY` required | No | Yes |
 | Geoblock enforced | If `ENFORCE_GEOBLOCK=true` | Always enforced |
-| Redemption | Not applicable | Active if `ENABLE_AUTO_REDEEM=true` |
 | Risk blocks | Tracked but not enforced | Fully enforced |
 | `bot doctor` | `--paper` (relaxed checks) | `--live` (strict checks) |
 

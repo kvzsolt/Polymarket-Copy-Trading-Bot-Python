@@ -85,6 +85,9 @@ class TestHappyPath:
         assert cfg.polling.fetch_interval == pytest.approx(0.25)
         # Execution defaults.
         assert cfg.execution.max_retries == 3
+        # Staged TP defaults are profit ratios, not whole-number percentages.
+        assert cfg.risk.staged_tp_levels == "0.30,0.50"
+        assert cfg.risk.staged_tp_fractions == "0.25,0.35"
         # P0-2: fail-closed default — paper unless LIVE_TRADING is explicitly enabled.
         assert cfg.execution.paper_trade_only is True
         assert cfg.execution.reservation_ttl_seconds == 120
@@ -323,19 +326,6 @@ class TestHappyPath:
             cfg.network.ctf_exchange_v2_address
             == "0xE111180000d2663C0091e4f400237545B87B996B"
         )
-        assert (
-            cfg.redemption.collateral_contract_address
-            == "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"
-        )
-        assert (
-            cfg.redemption.ctf_contract_address
-            == "0xAdA100Db00Ca00073811820692005400218FcE1f"
-        )
-
-    def test_redeem_target_accepts_adapter_alias(self, valid_env: dict[str, str]) -> None:
-        valid_env["CTF_COLLATERAL_ADAPTER_ADDRESS"] = "0x" + "4" * 40
-        cfg = load_config(valid_env)
-        assert cfg.redemption.ctf_contract_address == "0x" + "4" * 40
 
     def test_load_without_env_reads_os_environ(
         self, monkeypatch: pytest.MonkeyPatch

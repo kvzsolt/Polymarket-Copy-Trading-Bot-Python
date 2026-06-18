@@ -34,7 +34,6 @@ Expected output: `"status": "ok"` with no `"blocked"` checks. The live doctor pe
 | Kill switch | `KILL_SWITCH=false` |
 | Leaders | At least one leader is configured or discoverable |
 | Order size | `BUY_MIN_AMOUNT` is reasonable |
-| **Redemption wallet** | Signer/funder address compatibility (live-only when auto-redeem is on) |
 
 ### 2. Paper Mode Validation Complete
 
@@ -94,8 +93,6 @@ CIRCUIT_FAILURE_THRESHOLD=5
 # === Geoblock ===
 ENFORCE_GEOBLOCK=true                    # NEVER disable this
 
-# === Redemption (optional) ===
-ENABLE_AUTO_REDEEM=false                 # Enable only after validation
 ```
 
 ---
@@ -149,8 +146,6 @@ The `FUNDER_ADDRESS` is the Polymarket proxy wallet address that holds your USDC
 If you use a Polymarket proxy wallet (Gnosis Safe or Polymarket's own proxy), the funder address will differ from your signer address. In this case:
 - `FUNDER_ADDRESS` = the proxy wallet address
 - `PRIVATE_KEY` = the key that controls the proxy
-
-> **Important:** Auto-redeem currently only supports EOA wallets where signer equals funder. See [08-redemption.md](08-redemption.md) for details.
 
 ---
 

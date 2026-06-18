@@ -64,7 +64,7 @@ Plus a confirmed duplicate-order path on HTTP-5xx-after-accept (the wrapper clas
 | `mypy` (scoped money path, `--explicit-package-bases`) | 110 errors in 16 files (CI runs mypy non-blocking `|| true`; 155 over services+orchestrators+domain) |
 | `bandit` | not installed locally; substituted ruff `S` rules |
 
-Targeted greps: 0 `time.sleep` in prod, 0 `requests.` lib, 0 unbounded `asyncio.Queue()`, 0 naive `datetime.now()/utcnow()` in services/storage/domain, 0 `.acquire()` outside `async with`, 0 live `near_one` references (module deleted; 6 remaining are comments). `services/idempotency.py` vs `utils/idempotency.py` diverged by design (effective-order key vs leader-trade key).
+Targeted greps: 0 `time.sleep` in prod, 0 `requests.` lib, 0 unbounded `asyncio.Queue()`, 0 naive `datetime.now()/utcnow()` in services/storage/domain, 0 `.acquire()` outside `async with`. `services/idempotency.py` vs `utils/idempotency.py` diverged by design (effective-order key vs leader-trade key).
 
 ---
 
@@ -211,7 +211,7 @@ Targeted greps: 0 `time.sleep` in prod, 0 `requests.` lib, 0 unbounded `asyncio.
 
 ## P3 Findings (condensed)
 
-22 `print()` in `services/discovery/rotation_service.py` (CLI tool, acceptable); blocking `input()` in the same (ASYNC250, CLI-only); dead code (`services/position_action_coordinator.py`, `utils/idempotency.py` IO helpers, `test.py`, `services/accountingService.py`, `services/marketStructureService.py`, `services/backtest.py`, stale `near_one_exit` `.pyc`); 40 `# type: ignore` (11 in the gateway); `_raise_classified` typed `-> None` not `NoReturn`; `_safe_audit` swallows audit failures with bare `pass`; `bootstrap.py` excluded from hard ruff (currently clean); no `filterwarnings` config; unclosed aiohttp session at suite teardown (root cause: `utils/fetchData.py` process-global `_session` with no autouse close fixture).
+22 `print()` in `services/discovery/rotation_service.py` (CLI tool, acceptable); blocking `input()` in the same (ASYNC250, CLI-only); dead code (`services/position_action_coordinator.py`, `utils/idempotency.py` IO helpers, `test.py`, `services/accountingService.py`, `services/marketStructureService.py`, `services/backtest.py`); 40 `# type: ignore` (11 in the gateway); `_raise_classified` typed `-> None` not `NoReturn`; `_safe_audit` swallows audit failures with bare `pass`; `bootstrap.py` excluded from hard ruff (currently clean); no `filterwarnings` config; unclosed aiohttp session at suite teardown (root cause: `utils/fetchData.py` process-global `_session` with no autouse close fixture).
 
 ---
 
@@ -445,6 +445,6 @@ Each carries a regression/behavioural test; the whole touched set is green (real
 
 **Adversarially verified:** P0-1 (CONFIRMED — no enclosing transaction, bare-except watermark, wall-clock dedup, no missed guard); P1-a 5xx-duplicate (CONFIRMED — wrapper catches the exception and returns a string-classified dict; gateway `_classify_error` is never reached for the POST path; SDK raises `PolyApiException(status_code=5xx)` proven in installed source); P1-b manual-sync race (CONFIRMED, downgraded to P1 — new-row double-count guarded by a 45s holdoff, residual lost-update on existing rows); P0-2 paper gate (CONFIRMED — both flags default False, no master switch, Docker/compose mitigate container deploys only).
 
-**Refuted by contract/code (kept to prevent re-discovery):** WSS-wake reconcile vs risk-loop is **not** an unguarded race (both route through the per-scope coordinator lock); pipeline vs risk same-scope is serialized in-process and DB-backed cross-process; reservation force-release during grace cannot corrupt fill accounting (order-keyed, independent of the reservation row); the money path is **Decimal-clean end-to-end** on every value-bearing surface (DD-B — only two avoidable PnL/exit round-trips, both P2); `assets_ids` is the correct subscribe field and `price_change` size "0" correctly deletes a level (DD-D CONFIRMED); the S608 SQL sites are parameterized false positives; durable re-entry block correctly fires only on confirmed full close; `near_one_exit` has zero live references.
+**Refuted by contract/code (kept to prevent rediscovery):** WSS-wake reconcile vs risk-loop is **not** an unguarded race (both route through the per-scope coordinator lock); pipeline vs risk same-scope is serialized in-process and DB-backed cross-process; reservation force-release during grace cannot corrupt fill accounting (order-keyed, independent of the reservation row); the money path is **Decimal-clean end-to-end** on every value-bearing surface (DD-B — only two avoidable PnL/exit round-trips, both P2); `assets_ids` is the correct subscribe field and `price_change` size "0" correctly deletes a level (DD-D CONFIRMED); the S608 SQL sites are parameterized false positives; durable re-entry block correctly fires only on confirmed full close.
 
 **HEAD-vs-worktree:** at HEAD, `intent_recovery.py:43` calls `list_active()` without `await` → iterating a coroutine raises `TypeError`, swallowed by the caller → DB-backed restart recovery is a complete no-op. The working-tree fix (the uncommitted `await`) is correct and must be committed (Patch 0).

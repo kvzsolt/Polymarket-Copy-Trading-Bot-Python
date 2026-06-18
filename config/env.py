@@ -24,7 +24,6 @@ from pathlib import Path
 
 from config.addresses import (
     POLYGON_USDCE_ADDRESS,
-    POLYMARKET_CTF_COLLATERAL_ADAPTER_ADDRESS,
     POLYMARKET_CTF_EXCHANGE_V2_ADDRESS,
     POLYMARKET_NEG_RISK_EXCHANGE_V2_ADDRESS,
     POLYMARKET_PUSD_ADDRESS,
@@ -655,7 +654,7 @@ def _build_env_snapshot() -> dict[str, object]:
 
     # Staged take-profit (comma-separated levels and fractions)
     'ENABLE_STAGED_TP': os.getenv('ENABLE_STAGED_TP', 'false').strip().lower() in ('1', 'true', 'yes'),
-    'STAGED_TP_LEVELS': os.getenv('STAGED_TP_LEVELS', '30,50'),
+    'STAGED_TP_LEVELS': os.getenv('STAGED_TP_LEVELS', '0.30,0.50'),
     'STAGED_TP_FRACTIONS': os.getenv('STAGED_TP_FRACTIONS', '0.25,0.35'),
 
     # Leader divergence exit
@@ -684,12 +683,6 @@ def _build_env_snapshot() -> dict[str, object]:
     'DISCOVERY_RISK_PENALTY_ENABLED': _bool('DISCOVERY_RISK_PENALTY_ENABLED', True),
     'AUTO_LEADER_REQUIRE_SCORE_VERSION': _bool('AUTO_LEADER_REQUIRE_SCORE_VERSION', True),
     'DISCOVERY_DYNAMIC_MONITORING_ENABLED': _bool('DISCOVERY_DYNAMIC_MONITORING_ENABLED', False),
-
-    # --- Near-one exit (replaces on-chain redemption) ---
-    'ENABLE_NEAR_ONE_EXIT': os.getenv('ENABLE_NEAR_ONE_EXIT', 'false').strip().lower() in ('1', 'true', 'yes'),
-    'NEAR_ONE_EXIT_THRESHOLD': os.getenv('NEAR_ONE_EXIT_THRESHOLD', '0.99'),
-    'NEAR_ONE_EXIT_DWELL_SECONDS': _int('NEAR_ONE_EXIT_DWELL_SECONDS', '60'),
-    'NEAR_ONE_EXIT_CHECK_INTERVAL': _int('NEAR_ONE_EXIT_CHECK_INTERVAL', '5'),
 
     # --- Execution quality ---
     # Max acceptable slippage (%) before rejecting order
@@ -726,7 +719,6 @@ def _build_env_snapshot() -> dict[str, object]:
     'FALLBACK_RPC_URL': os.getenv('FALLBACK_RPC_URL', ''),
     'USDC_CONTRACT_ADDRESS': os.getenv('USDC_CONTRACT_ADDRESS', POLYGON_USDCE_ADDRESS),
     'PUSD_CONTRACT_ADDRESS': os.getenv('PUSD_CONTRACT_ADDRESS', POLYMARKET_PUSD_ADDRESS),
-    'CTF_COLLATERAL_ADAPTER_ADDRESS': os.getenv('CTF_COLLATERAL_ADAPTER_ADDRESS', POLYMARKET_CTF_COLLATERAL_ADAPTER_ADDRESS),
     'CTF_EXCHANGE_V2_ADDRESS': os.getenv('CTF_EXCHANGE_V2_ADDRESS', POLYMARKET_CTF_EXCHANGE_V2_ADDRESS),
     'NEG_RISK_EXCHANGE_V2_ADDRESS': os.getenv('NEG_RISK_EXCHANGE_V2_ADDRESS', POLYMARKET_NEG_RISK_EXCHANGE_V2_ADDRESS),
     'MIN_PUSD_BALANCE': _float('MIN_PUSD_BALANCE', '1.0'),

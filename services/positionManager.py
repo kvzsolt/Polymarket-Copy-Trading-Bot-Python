@@ -449,7 +449,7 @@ class PositionManager:
         if not getattr(self, "_trailing_activation_auto", False):
             return _to_dec(getattr(self, "_trailing_activation_pct", 0.20))
 
-        # Polymarket winning outcome tokens redeem at 1 USDC per token. The
+        # Polymarket winning outcome tokens settle at 1 USDC per token. The
         # size term cancels out, so the activation scales by payout multiple.
         max_payout_multiple = Decimal("1") / pos.entry_price
         activation_value_multiple = Decimal("0.68") * max_payout_multiple + Decimal("0.28")

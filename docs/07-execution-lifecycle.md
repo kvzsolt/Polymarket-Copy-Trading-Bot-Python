@@ -279,8 +279,8 @@ stable_key = "|".join([
     leader_wallet.lower(),
     condition_id,
     token_id,
-    side,        # BUY | SELL | REDEEM
-    reason,      # copy_buy | copy_sell | risk_exit | auto_redeem
+    side,        # BUY | SELL
+    reason,      # copy_buy | copy_sell | risk_exit
 ])
 ```
 
@@ -291,5 +291,4 @@ This key uniquely identifies a trading intent. The reservation system uses it to
 ## Next Steps
 
 - See [05-risk-controls.md](05-risk-controls.md) for how risk decisions gate execution.
-- See [08-redemption.md](08-redemption.md) for the REDEEM intent lifecycle.
 - See [09-troubleshooting.md](09-troubleshooting.md) for debugging stuck orders.
