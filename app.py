@@ -1440,7 +1440,7 @@ async def main() -> int:
     monitored_set: set[str] = set(monitored_leaders)
     fetch_interval = application.config.polling.fetch_interval
 
-    async def _on_new_leaders(new_wallets: list[str]) -> None:
+    async def _on_new_leaders(new_wallets: list[str]) -> list[str]:
         started_wallets = await _refresh_contexts_for_new_leaders(
             new_wallets=new_wallets,
             runtime_users=runtime_users,
@@ -1526,6 +1526,7 @@ async def main() -> int:
                 ]
             )
         )
+        return started_wallets
 
     # Auxiliary long-lived loops are registered as _Supervised specs and driven
     # by the main wait loop below (bounded restart, fail-closed on exhaustion)
