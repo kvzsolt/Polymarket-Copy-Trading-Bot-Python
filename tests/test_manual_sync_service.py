@@ -751,7 +751,7 @@ async def test_own_trade_probe_failure_falls_back_to_manual():
 
     with (
         patch("services.manual_sync_service.fetch_data", AsyncMock(side_effect=[
-            [_trade(tx="0xfail", asset="0xtokenF")],
+            [_trade(tx="0xprobefail", asset="0xtokenF")],
             [],
         ])),
         patch("services.manual_sync_service.find_activity_by_tx_hash", AsyncMock(return_value=False)),
