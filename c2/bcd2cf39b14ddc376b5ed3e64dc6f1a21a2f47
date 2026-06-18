@@ -1,0 +1,31 @@
+tests/test_risk_loop_parallel_timeout.py
+  s_ee51c5a0c91e95::t_154db885ed7b81 198-221,223,225,230-252,262-264,266-270,281
+  s_ee51c5a0c91e95::t_cfd8d7acf295c5 222,224,226-229,253-261,265,271-280
+app.py
+  s_ee51c5a0c91e95::t_e14ca293ffe75d 1778-1780
+  s_ee51c5a0c91e95::t_19c13d5f31b2d5 868-870
+  s_ee51c5a0c91e95::t_310905d657f999 4,7
+  s_ee51c5a0c91e95::t_e34c448952c771 817-865
+services/risk/risk_monitor.py
+  s_ee51c5a0c91e95::t_e3d6b90adea2e8 1841-1846
+  s_ee51c5a0c91e95::t_47c5588f10ef3c 154-158
+tests/test_clob_sdk_executor.py
+  s_ee51c5a0c91e95::t_b3fa8a7f998a1b 63-64
+  s_ee51c5a0c91e95::t_624ee3729f2ca3 1-62,65-101
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.8",
+  "base_commit_sha": "c2bcd2cf39b14ddc376b5ed3e64dc6f1a21a2f47",
+  "prompts": {},
+  "sessions": {
+    "s_ee51c5a0c91e95": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cdc0040d-381b-4356-90b6-02d64b52918e",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
