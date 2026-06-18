@@ -55,7 +55,14 @@ async def discovery_refresh_loop(
     on_new_leaders: Callable[[list[str]], Awaitable[None]] | None = None,
     already_monitored: set[str] | None = None,
 ) -> None:
-    already_monitored = already_monitored if already_monitored is not None else set()
+    if already_monitored is None:
+        already_monitored = set()
+    else:
+        normalized_monitored = {
+            wallet.lower() for wallet in already_monitored if wallet
+        }
+        already_monitored.clear()
+        already_monitored.update(normalized_monitored)
     while True:
         await asyncio.sleep(refresh_interval)
         try:

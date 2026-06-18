@@ -116,7 +116,12 @@ def _optional_int(key: str) -> int | None:
     raw = _ensure_no_inline_comment(key, _raw(key, ''))
     if not raw:
         return None
-    return int(raw)
+    try:
+        return int(raw)
+    except ValueError as exc:
+        raise EnvValidationError(
+            f"{key} must be a valid integer, got: {raw!r}"
+        ) from exc
 
 
 def _leader_source() -> str:

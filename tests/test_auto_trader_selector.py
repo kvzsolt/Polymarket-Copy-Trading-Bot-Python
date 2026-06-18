@@ -178,6 +178,20 @@ async def test_auto_trader_selector_overfetches_to_find_valid_lower_ranked_candi
     )
 
 
+async def test_auto_trader_selector_does_not_drop_score_version_on_type_error():
+    repo = SimpleNamespace(list_evaluations=AsyncMock(side_effect=TypeError("query bug")))
+
+    with pytest.raises(TypeError, match="query bug"):
+        await AutoTraderSelector(repo, _config(max_count=1)).select_from_db()
+
+    repo.list_evaluations.assert_awaited_once_with(
+        statuses=["perfect_candidate", "live_eligible"],
+        eligible_live=True,
+        score_version="leader_score_v2",
+        limit=25,
+    )
+
+
 async def test_auto_trader_selector_rejects_stale_config_hash():
     cfg = _config(max_count=1, reject_stale=True)
     current_hash, _context = build_evaluation_context_hash(cfg, balance_usdc=Decimal("100"))
