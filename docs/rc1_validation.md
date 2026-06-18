@@ -33,7 +33,6 @@ Release-gate suite (run separately):
 ```bash
 pytest tests/release_gate/test_startup_recovery.py \
        tests/release_gate/test_reconciler_terminal_ownership.py \
-       tests/release_gate/test_near_one_exit.py \
        tests/release_gate/test_e2e_dry_run_buy.py \
        tests/release_gate/test_e2e_dry_run_sell.py \
        --override-ini='addopts='

@@ -219,96 +219,6 @@ the deleted probes, and refreshed the root README to link the new docs.
 
 **Commit SHA.** `11dbb0f` (slice commit on `issue-77`).
 
-## Issue #78 — NearOneExitService replaces on-chain redemption
-
-**Status:** landed on `live-trading` branch (deviation from one-issue-per-branch
-discipline recorded by explicit user direction).
-
-**Summary.** Removed the entire on-chain `CTF.redeemPositions` pipeline
-(`services/redemptionService.py`, `services/autoRedeem.py`,
-`services/redemption/` package, `storage/sqlite/redemptions_repo.py`,
-`AbstractRedemptionRepository`, doctor `redemption_wallet` check, runtime
-summary entry, log renderers, observability schema entries, and three
-test modules). Replaced with `services/near_one_exit.py::NearOneExitService`,
-which fires a SELL for the full held size through the standard
-`ExecutionService.execute()` path when a token quote sustains
-`>= NEAR_ONE_EXIT_THRESHOLD` (default `0.99`) for at least
-`NEAR_ONE_EXIT_DWELL_SECONDS` (default `60`). Reuses `size_sell_order`
-(SELL min-size parity verified explicitly), reservation, idempotency, and
-reconciliation surfaces. Drops the `redemptions` SQLite table via a new
-destructive migration in `storage/sqlite/migrations.py`.
-
-**Files changed.**
-
-- Deleted: `services/redemptionService.py`, `services/autoRedeem.py`,
-  `services/redemption/{__init__,redemption_service,redemption_reconciler,wallet_validator}.py`,
-  `storage/sqlite/redemptions_repo.py`,
-  `tests/test_redemption_service.py`,
-  `tests/test_issue7_redemption_consolidation.py`,
-  `tests/test_wallet_validator.py`.
-- New: `services/near_one_exit.py` *(NearOneExitService + dwell-clock)*.
-- New: `tests/release_gate/test_near_one_exit.py` *(8 release-gate cases:
-  arm, clear, fire, no-fire-before-dwell, no-fire-below-threshold,
-  reset-on-drop, skip-when-held-below-venue-min, disabled-short-circuit)*.
-- Edited: `config/app_config.py` *(RedemptionConfig → NearOneExitConfig,
-  PollingConfig.redeem_check_interval removed)*,
-  `config/__init__.py`, `config/env.py`, `app.py`, `bot_cli/commands/doctor.py`
-  *(redemption_wallet → near_one_exit check)*, `bot_cli/commands/config.py`
-  *(Decimal JSON serialization fix)*, `orchestrators/runtime_summary.py`,
-  `domain/order_lifecycle.py` *(REDEEM/AUTO_REDEEM → NEAR_ONE_EXIT)*,
-  `domain/ports/{__init__,repositories}.py`, `services/accountingService.py`
-  *(record_redemption_attempt removed)*,
-  `services/observability/event_schema.py` *(redemption_\* events →
-  near_one_exit_\* events)*, `services/observability/event_schema.json`
-  *(intent side enum no longer has REDEEM)*, `utils/logger.py`
-  *(redemption renderers removed)*, `storage/sqlite/migrations.py`
-  *(_ensure_redemptions_table → _drop_redemptions_table)*,
-  `tests/test_new_modules.py` *(AutoRedeem block removed)*,
-  `tests/test_storage.py`, `tests/test_domain.py`,
-  `tests/release_gate/test_no_legacy_imports.py` *(FORBIDDEN_PREFIXES
-  gains services.redemption / services.redemptionService /
-  services.autoRedeem)*,
-  `tests/release_gate/test_sizing_metadata_driven.py` *(5 new SELL-parity
-  cases: upsized-when-held-allows, skipped-when-held-short,
-  exactly-at-min, clamp-then-min-check, full-position-at-near-one)*.
-- Docs: `docs/architecture.md`, `docs/migration.md`,
-  `docs/runbooks/00-index.md`, new `docs/runbooks/near-one-exit.md`.
-
-**Tests run locally.**
-
-- `pytest tests/release_gate/test_near_one_exit.py tests/release_gate/test_sizing_metadata_driven.py tests/release_gate/test_no_legacy_imports.py -m ""` — 38 passed.
-- `pytest tests/release_gate -m ""` — 124 passed (was 113 pre-#78),
-  2 pre-existing failures in `test_e2e_dry_run_buy.py` /
-  `test_e2e_dry_run_sell.py` (caused by the uncommitted
-  `executionService.py` change on `live-trading` that requires
-  `market_data_service`, unrelated to NearOne).
-- `python -m compileall -q .` — clean.
-
-**Known remaining risks.**
-
-- DB migration drops the legacy `redemptions` table — destructive,
-  no in-tree rollback. JSONL audit logs preserve forensic trail.
-- NearOne uses `MarketDataService.get_quote_or_none()` (WSS → REST
-  fallback). If both fail, the dwell timer never advances, so the
-  service is fail-closed on no-data. Operators should still monitor
-  WSS uptime via the existing `wss_reconnect_total` /
-  `wss_heartbeat_stall_total` counters.
-- The two e2e dry-run release-gate tests need either a paired
-  `market_data_service` fixture or an executionService rollback;
-  that is pre-existing live-trading-branch debt, not new.
-
-**Min-size handling verification (user item 3).** `services/order_sizing.py`
-applies the same upsize-or-skip + tick / ceiling logic to **both** BUY and
-SELL. Five explicit SELL parity cases now lock that behaviour into the
-release gate. NearOne itself routes its full-position SELL through
-`size_sell_order`, so a too-small SELL skips with
-`sell_held_below_venue_min` instead of submitting a venue-rejected order.
-
-**Branch.** `live-trading` (per user direction; logged here as a deliberate
-deviation from `CLAUDE.md`'s one-issue-per-branch rule).
-
-
-
 ## Phase 5 — Proof & Hardening (commit `f237325`)
 
 **Status:** complete on branch `feat/phase01-position-key-coordinator`.
@@ -358,7 +268,7 @@ idempotency collision.
 **Tests run.** Full suite: 2237 passed, 5 skipped. `compileall` clean.
 
 **Pre-existing release-gate failures (7, unrelated):** sizing, cache TTL,
-CLI redaction, near-one exit, readiness aggregator. None touched by any
+CLI redaction and readiness aggregator. None touched by any
 of the 13 commits in this session. Tracked separately.
 
 **Branch.** `feat/phase01-position-key-coordinator` — phase 5 work and
@@ -415,7 +325,6 @@ production code; no production logic changed.
 |---|---|---|
 | `test_cache_ttl_invalidation::test_invalidate_clears_all_snapshots` | `2d5800b` | Test called `invalidate()` and expected tick cleared; `invalidate()` deliberately keeps tick (own-fill semantic), `evict()` is the full-clear contract |
 | `test_cli_redacted_config` x2 | `bd7f192` | `load_config` rejected Python 3.13; patched `_runtime_python_supported` like other tests do |
-| `test_near_one_exit::test_tick_fires_sell_after_dwell_elapsed` | `0df3bd3` | Live-mode coordinator gate (issue #70) requires a coordinator; test now marks config as paper to exercise the direct `ExecutionService.execute` path |
 | `test_readiness_aggregator::test_strict_passes_when_all_subsystems_ok` | `c03717e` | `_STRICT_REQUIRED_KEYS` gained `drift_ok`; helper now sets it |
 | `test_sizing_metadata_driven` x2 | `3aee7e7` | Tests assumed integer taker_min; `_taker_min_tokens` quantizes to 4 decimals (1.0102 at price 0.99) so inputs were tweaked to actually exercise upsize/below-min branches |
 

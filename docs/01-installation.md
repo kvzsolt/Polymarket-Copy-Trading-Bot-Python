@@ -176,7 +176,6 @@ python bot_cli/main.py doctor --live
 
 This adds additional checks:
 - **Secrets presence** — `PRIVATE_KEY` is configured and not a placeholder
-- **Redemption wallet validation** — Signer/funder address compatibility for auto-redeem
 
 See [04-live-trading.md](04-live-trading.md) for the full live trading checklist.
 

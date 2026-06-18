@@ -69,7 +69,6 @@ python -c "import tomllib; print(tomllib.open('pyproject.toml')['project']['vers
 - Staged take-profit exits
 - Leader divergence exit
 - Stop-loss with grace period
-- Wallet validation for redemption safety
 - Bot doctor diagnostic command (`bot doctor --paper` / `--live`)
 - Structured audit logging (JSONL format)
 - Metrics server (Prometheus-compatible)

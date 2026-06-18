@@ -71,12 +71,6 @@ Takes risk off the table right before a market resolves to avoid last-second ora
 *   **`NEAR_MAX_PRICE_WARN_TRIM_RATIO`**: (e.g., `0.50`) Sells 50% of the position at the warning level.
 *   **`NEAR_MAX_PRICE_EXIT`**: (e.g., `0.99`) Dumps the rest of the position.
 
-### 4. Auto-Redeemer
-Automatically claims USDC from winning positions after a market resolves.
-*   **`ENABLE_AUTO_REDEEM`**: (`true`/`false`) Periodically scans your open positions for fully resolved markets (price >= $0.99 or <= $0.01 with `redeemable=true`).
-*   **`REDEEM_CHECK_INTERVAL`**: (e.g., `60`) How often to scan for redeemable payouts (in seconds).
-*   *(Note: Auto-redeem costs Polygon gas, but saves you from doing it manually on the UI).*
-
 ---
 
 ## 🧭 Leader Discovery & Scoring

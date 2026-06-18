@@ -40,7 +40,7 @@ FORBIDDEN_PREFIXES: tuple[str, ...] = (
     "legacy",
     "test_probe",
     "test_doctor",
-    # issue-78: redemption pipeline removed.
+    # Removed settlement package paths must not re-enter production code.
     "services.redemption",
     "services.redemptionService",
     "services.autoRedeem",
@@ -102,6 +102,9 @@ def _is_forbidden(target: str) -> bool:
     ``scripts.test_probe2`` or ``some.pkg.legacy.foo`` that would slip past a
     head-only check.
     """
+    for prefix in FORBIDDEN_PREFIXES:
+        if target == prefix or target.startswith(f"{prefix}."):
+            return True
     for segment in target.split("."):
         for prefix in FORBIDDEN_PREFIXES:
             if segment == prefix or segment.startswith(prefix):
@@ -142,6 +145,12 @@ def test_legacy_package_was_deleted() -> None:
     )
 
 
+def test_removed_settlement_package_has_no_python_files() -> None:
+    package_dir = REPO_ROOT / "services" / "redemption"
+    survivors = sorted(str(path.relative_to(REPO_ROOT)) for path in package_dir.glob("*.py"))
+    assert not survivors, f"Removed settlement package files must stay deleted: {survivors}"
+
+
 @pytest.mark.parametrize(
     "target",
     [
@@ -153,6 +162,9 @@ def test_legacy_package_was_deleted() -> None:
         "test_doctor_detect",
         "test_doctor_gnosis",
         "test_doctor_anything_else",
+        "services.redemption",
+        "services.redemption.redemption_service",
+        "services.autoRedeem",
         "scripts.test_probe2",          # nested-segment match (issue #77 PR review)
         "some.pkg.legacy.foo",          # nested-segment match
         "pkg.subpkg.test_doctor_x",     # nested-segment + wildcard match

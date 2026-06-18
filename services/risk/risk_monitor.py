@@ -569,7 +569,7 @@ async def _refresh_context_price_cache(
     # Two-stage skip:
     #   1. Resolved markets — MarketStateStore.is_resolved == True. Set by
     #      WSS ``market_resolved`` push or the boot-time REST gate. Never
-    #      polled again; the position is terminal until it gets redeemed.
+    #      polled again; the position is terminal until settlement/claim.
     #   2. Dormant tokens — zero-price cached within TTL (5min). Covers the
     #      "active market, no resting bid right now" case. WSS fill →
     #      ``cache.evict(token_id)`` re-arms the probe before the TTL expires.
@@ -1001,7 +1001,7 @@ async def _attempt_phantom_prune_on_no_fill(
     """Reconcile a forced-exit no-fill against live venue holdings and prune.
 
     Near-max / resolved markets return a terminal ``cancelled`` (not an
-    insufficient-balance drift error), so a manually-sold or redeemed position
+    insufficient-balance drift error), so a manually-sold or settled position
     would otherwise linger in the DB and re-fire the exit forever. This fetches
     live holdings; ``reconcile_position_drift`` deletes the local row only when
     the venue reports ~zero shares and no reservation is active (a real position

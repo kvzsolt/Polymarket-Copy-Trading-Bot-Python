@@ -60,8 +60,8 @@ The composition root is split in two for testability:
 2. **`app.py::main`** — async startup. Calls `build_app`, then per-user
    wires the CLOB client, repos, and `ExecutionService` via
    `orchestrators.runtime_bootstrap`. Hosts the runtime loops
-   (`runtime_monitor`, `runtime_discovery`, `NearOneExitService.loop`,
-   `reconciliation_loop`, the health server).
+   (`runtime_monitor`, `runtime_discovery`, `reconciliation_loop`, the health
+   server).
 
 Configuration is loaded by `config.app_config.load_config()` from
 `config/runtime.env` + `config/runtime.local.env` + `secrets.env`, with
@@ -169,17 +169,9 @@ non-retryable state drift, fetches live holdings, shrinks or deletes the
 local position, releases reservations, and emits
 `manual_position_drift_reconciled`.
 
-### Compliance + near-one exit + discovery
+### Compliance + discovery
 
 - `services/compliance.py` — fail-closed geoblock check.
-- `services/near_one_exit.py` — `NearOneExitService` replaces the prior
-  on-chain CTF redemption pipeline. When a copied position's token quote
-  sits at or above the configured threshold (default `0.99`) continuously
-  for at least `dwell_seconds` (default `60`), the service submits a SELL
-  for the entire held size through the standard `ExecutionService` path
-  — same reservations, sizing, idempotency, and reconciliation surfaces
-  as a risk-monitor protective exit. No `CTF.redeemPositions`
-  transaction is ever issued.
 - `services/discovery/`, `services/traderDiscoveryService.py` — leader
   discovery + ranking.
 

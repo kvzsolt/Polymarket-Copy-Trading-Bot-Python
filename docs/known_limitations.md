@@ -15,11 +15,10 @@ interval and venue HTTP latency.
 
 `services/execution/coordinator.py:ExecutionCoordinator.execute_intent` is
 an intent-shaped V2 architecture wired only in tests. The production trade
-pipeline / risk monitor / near-one exit / protective exit all go through the
-PR6 production methods (`submit_copy_trade`, `submit_risk_exit`,
-`submit_near_one_exit`, `submit_protective_exit`). Migrating the production
-path to the V2 OrderSubmitter is a future PR; RC1 keeps both alive without
-mixing them.
+pipeline, risk monitor, and protective exits all go through the PR6 production
+methods (`submit_copy_trade`, `submit_risk_exit`, `submit_protective_exit`).
+Migrating the production path to the V2 OrderSubmitter is a future PR; RC1
+keeps both alive without mixing them.
 
 ## External / manual positions pause by default
 
@@ -61,9 +60,9 @@ code may not.
 
 ## Direct ExecutionService fallback only behind a live guard
 
-`orchestrators/trade_pipeline.py`, `services/riskMonitor.py`, and
-`services/near_one_exit.py` retain a `getattr(execution_service, "execute")`
-alias that fires when `context.execution_coordinator is None` AND the bot
-is NOT in live mode. Live mode + missing coordinator returns
+`orchestrators/trade_pipeline.py` and `services/riskMonitor.py` retain a
+`getattr(execution_service, "execute")` alias that fires when
+`context.execution_coordinator is None` AND the bot is NOT in live mode.
+Live mode + missing coordinator returns
 `execution_coordinator_missing`. Operators should never see that skip code
 in production; it only appears in test fixtures.

@@ -69,7 +69,6 @@ The reservation system and idempotency layer (see [07-execution-lifecycle.md](07
 | [05-risk-controls.md](05-risk-controls.md) | Kill switch, account cap, position limits, exit policies, circuit breaker |
 | [06-leader-selection.md](06-leader-selection.md) | Manual and auto-discovery leader configuration, scoring, tiers |
 | [07-execution-lifecycle.md](07-execution-lifecycle.md) | Order states, reservation system, reconciliation |
-| [08-redemption.md](08-redemption.md) | Auto-redeem, wallet validation, troubleshooting |
 | [09-troubleshooting.md](09-troubleshooting.md) | Common problems and solutions |
 | [10-security.md](10-security.md) | Secret management, API security, audit logging |
 | [11-legal-disclaimer.md](11-legal-disclaimer.md) | Legal disclaimers and risk disclosures |

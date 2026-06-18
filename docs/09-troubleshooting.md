@@ -138,7 +138,7 @@ sqlite3 data/bot_state.db "SELECT * FROM reservations WHERE status = 'active'"
 
 This can happen when:
 - A fill was missed or not properly persisted
-- A redemption occurred outside the bot
+- A venue-side settlement or manual trade happened outside the bot
 - The positions table is out of sync with reality
 
 **Diagnostic steps:**

@@ -22,8 +22,7 @@ scheduled:
    size against the venue's reported size, plus active reservations. Any
    non-clean record sets `readiness.drift_ok=False` and adds the scope to the
    paused set.
-3. Monitors start (`risk_monitor_loop_for_contexts`, `NearOneExitService`,
-   leader monitors).
+3. Monitors start (`risk_monitor_loop_for_contexts`, leader monitors).
 
 Reordering is enforced by `tests/release_gate/test_startup_recovery.py`.
 

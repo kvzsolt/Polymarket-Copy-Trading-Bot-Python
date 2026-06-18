@@ -243,12 +243,17 @@ This protects gains from resolution uncertainty and avoids liquidity traps near 
 | Parameter | Default | Description |
 |---|---|---|
 | `ENABLE_STAGED_TP` | `false` | Enable staged take-profit |
-| `STAGED_TP_LEVELS` | `30,50` | Comma-separated profit percentage levels |
+| `STAGED_TP_LEVELS` | `0.30,0.50` | Comma-separated profit-ratio levels |
 | `STAGED_TP_FRACTIONS` | `0.25,0.35` | Comma-separated sell fractions at each level |
 
 The staged take-profit sells incrementally at each level. For the default configuration:
 - At 30% profit: Sell 25% of the position
 - At 50% profit: Sell 35% of the remaining position
+
+Levels are profit ratios relative to entry price. For example, `0.30` means
+the position is up 30% and `1.30` means the position is up 130%. Legacy
+integer percentages remain accepted: `30` is treated as `0.30`, and `130` is
+treated as `1.30`.
 
 ### Leader Divergence Exit
 
