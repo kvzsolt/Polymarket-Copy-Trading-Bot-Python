@@ -1,0 +1,21 @@
+.github/workflows/ci.yml
+  s_1529b8fb47e214::t_32d839408422b3 33
+tests/test_manual_sync_service.py
+  s_1529b8fb47e214::t_4b97cbee48b35e 754
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.8",
+  "base_commit_sha": "7148d2657786228f6690f44365dc519aaa970252",
+  "prompts": {},
+  "sessions": {
+    "s_1529b8fb47e214": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2340b7f5-3066-4b6e-a300-db51e2ad8e96",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
