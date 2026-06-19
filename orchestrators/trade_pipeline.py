@@ -1440,8 +1440,20 @@ async def reconcile_submitted_unconfirmed(
                 batch_reconciled += 1
         return batch_reconciled
 
-    reconciled = await _reconcile_batch(buy_pending, "BUY")
-    reconciled += await _reconcile_batch(sell_pending, "SELL")
+    # Reconcile BUY and SELL batches concurrently. The shared semaphore (`sem`,
+    # RECONCILE_CONCURRENCY) still caps TOTAL in-flight reconciles, so peak
+    # venue concurrency — and rate-limit exposure — is unchanged; this only
+    # removes the artificial barrier that made SELL wait for the entire BUY
+    # batch. Per-PositionKey serialization is preserved by
+    # `position_coordinator.acquire` inside `_reconcile_one`, so a BUY and SELL
+    # touching the same position still cannot interleave their state-apply.
+    # "BUYs visible before SELL *signals*" ordering is unaffected: this whole
+    # function still completes before signal normalization/execution downstream.
+    buy_n, sell_n = await asyncio.gather(
+        _reconcile_batch(buy_pending, "BUY"),
+        _reconcile_batch(sell_pending, "SELL"),
+    )
+    reconciled = buy_n + sell_n
 
     if reconciled:
         metrics.inc("reconcile_unconfirmed_total", value=float(reconciled))
