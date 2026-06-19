@@ -1,0 +1,36 @@
+tests/test_gateway_async_get_order.py
+  s_ee51c5a0c91e95::t_49e6d71472ae86 1-290
+orchestrators/trade_pipeline.py
+  s_ee51c5a0c91e95::t_77efe4a270e684 1443-1456
+integrations/polymarket/clob_v2_gateway.py
+  s_ee51c5a0c91e95::t_aa4108d0464cbc 18
+  s_ee51c5a0c91e95::t_e3ed70c6489e08 111-117
+  s_ee51c5a0c91e95::t_2cfdbd1e2b57a9 143-155,161-211,213-222
+  s_ee51c5a0c91e95::t_6aa068684b020e 737-743,745-748,750-757,759-767
+  s_ee51c5a0c91e95::t_6fc64a639462f0 690-700,702
+  s_ee51c5a0c91e95::t_bda074d49a7011 212
+  s_ee51c5a0c91e95::t_85ceca0d90bfd3 27
+  s_ee51c5a0c91e95::t_0eb0cd42e26e3c 59-60
+tests/test_gateway_p2_fixes.py
+  s_ee51c5a0c91e95::t_b1272ad8091534 272-280
+  s_ee51c5a0c91e95::t_effc60a48f85d8 228-230,232,234,236,238,242,244,246,248,250
+  s_ee51c5a0c91e95::t_7d4ae99ad7398d 71-109
+tests/test_issue66_gateway_isolation.py
+  s_ee51c5a0c91e95::t_9e71cc5d48911d 542-543,546-554,557-558,560-563,565-566,569-570,572-574,576-581,584-587,590-591,593-598,602-609,611,613-616,619-627,631,637,640-644,649,654,657-658,663
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.8",
+  "base_commit_sha": "d9bc1a07293b32b9ada27d43de5df3b7fb41f508",
+  "prompts": {},
+  "sessions": {
+    "s_ee51c5a0c91e95": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cdc0040d-381b-4356-90b6-02d64b52918e",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
