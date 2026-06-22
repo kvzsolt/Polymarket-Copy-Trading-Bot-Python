@@ -90,12 +90,17 @@ Read these in order:
 ### 1. Setup Environment
 Ensure you have Python 3.11 or higher installed (3.13 is currently unsupported).
 
+**Using `uv` (Recommended):**
 ```bash
-# Create and activate a virtual environment
+uv venv
+source .venv/bin/activate
+uv pip install -r requirements.txt
+```
+
+**Using standard `pip`:**
+```bash
 python3 -m venv .venv
 source .venv/bin/activate
-
-# Install dependencies using standard pip or uv
 pip install -r requirements.txt
 ```
 
@@ -104,19 +109,31 @@ Copy the configuration templates to set up your environment:
 
 ```bash
 cp config/runtime.local.example config/runtime.local.env
-cp config/secrets.env.example secrets.env
 ```
+*(Note: Create a `secrets.env` file to hold your credentials, as expected by docker-compose and the bot.)*
 
 Open `secrets.env` and add your sensitive credentials:
 ```env
 PRIVATE_KEY=0xYourHexPrivateKey
-RPC_URL=https://polygon-mainnet.infura.io/v3/YourKey
+RPC_URL=https://polygon-mainnet.g.alchemy.com/v2/YourKey
 ```
+Ensure your `config/runtime.local.env` has `LIVE_TRADING=enabled` and `PAPER_TRADE_ONLY=false` if you want to trade live.
 
 ### 3. Run
-Launch the bot:
+Launch the bot using the Operator CLI.
+
+**Native Execution:**
 ```bash
-python3 app.py
+# Activate virtual environment if not already active
+source .venv/bin/activate
+
+# Launch the bot in live mode
+python bot.py run --live
+```
+
+**Docker Execution:**
+```bash
+docker compose up -d
 ```
 
 ### 4. CLI Tools & Testing
