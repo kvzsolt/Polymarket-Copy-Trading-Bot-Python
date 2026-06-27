@@ -139,9 +139,10 @@ docker compose up -d
 ### 4. CLI Tools & Testing
 The bot includes an Operator CLI for manual interventions and checks:
 ```bash
-python3 bot.py doctor
-python3 bot.py drift
-python3 bot.py rotate-traders
+source .venv/bin/activate
+python bot.py doctor
+python bot.py drift
+python bot.py rotate-traders
 ```
 Run the test suite to ensure everything is functioning perfectly:
 ```bash
