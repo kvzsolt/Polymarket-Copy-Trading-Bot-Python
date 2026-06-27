@@ -151,6 +151,19 @@ pytest -q
 
 ---
 
+## 🐛 Bug Reports
+
+If you encounter a bug, unexpected behavior, or a crash, please help improve the bot by opening a [GitHub Issue](https://github.com/kvzsolt/Polymarket-Copy-Trading-Bot-Python/issues/new). Include as much detail as possible:
+
+- Steps to reproduce the issue
+- Expected vs. actual behavior
+- Relevant log snippets (redact any sensitive data like private keys or wallet addresses)
+- Your Python version and OS
+
+Bug reports are the fastest way to help this project improve — every report matters.
+
+---
+
 ## 🤝 Contributing
 
 Contributions are absolutely welcome! Whether it's a bug fix, a new feature, or documentation improvements, we'd love to have your input. Let's build the best copy-trading engine together.
@@ -163,7 +176,7 @@ Contributions are absolutely welcome! Whether it's a bug fix, a new feature, or 
 
 ---
 
-## 🎯 Next Milestone
+## 🗺️ Roadmap
 **Trade detection via blockchain transactions, improve execution flow**
 
 ---
