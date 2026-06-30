@@ -1,0 +1,19 @@
+orchestrators/onchain_detection_runtime.py
+  s_6156e21615bd2e::t_b5f3cb59dee851 20-27,30-31,41,82,97-109,179-183,223-231,243-278,280-286
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "2c880131e824a83f1641745cf91c2f2cdf068c1b",
+  "prompts": {},
+  "sessions": {
+    "s_6156e21615bd2e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "aaaf0b10-7c16-48ae-9cd1-b5ff1588fed5",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
