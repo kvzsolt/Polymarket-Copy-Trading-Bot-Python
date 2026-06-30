@@ -1,6 +1,7 @@
 """Tests for ``services/strategy_profile/leader_history_loader.py`` (PR3)."""
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock
 
 import pytest
@@ -25,6 +26,9 @@ async def test_loader_fetches_all_pages(monkeypatch: pytest.MonkeyPatch) -> None
 
     # Patch _fetch_json_list for /trades and /closed-positions.
     async def fake_json_list(path: str, params: dict) -> list[dict]:
+        # Yield briefly so SonarCloud S7503 sees the function uses an
+        # async feature (the body is otherwise sync-only dispatch).
+        await asyncio.sleep(0)
         if path == "/trades":
             return [{"id": 1}]
         if path == "/closed-positions":
