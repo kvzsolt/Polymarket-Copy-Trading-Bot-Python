@@ -1,0 +1,41 @@
+config/runtime.local.example
+  s_152ac664a7d2cc::t_8e6edc6ba47968 56-65
+tests/test_collateral_readiness.py
+  s_152ac664a7d2cc::t_23fc3abc0fdd78 71-115,277
+  s_152ac664a7d2cc::t_fb507a21c45151 276
+  s_152ac664a7d2cc::t_d204a67da4d3b4 278
+  s_152ac664a7d2cc::t_cb20556247fc80 214-216,227-230,244,253-261,263,306-314,323-325
+config/app_config.py
+  s_152ac664a7d2cc::t_a523db75263880 76
+  s_152ac664a7d2cc::t_46a7e85d87b225 596-600
+  s_152ac664a7d2cc::t_12cd5435683348 1457-1460
+services/collateral_readiness.py
+  s_152ac664a7d2cc::t_d398f751a66025 89
+  s_152ac664a7d2cc::t_1d17d8bb2bf3f0 145-174,179
+  s_152ac664a7d2cc::t_8f0af676c67221 223,232-235,239-240,250,255-256,259
+  s_152ac664a7d2cc::t_3f68109de0044a 56-59
+  s_152ac664a7d2cc::t_9d73958e36510a 45,121,204-206
+tests/test_config.py
+  s_152ac664a7d2cc::t_e104c262a9f854 210-230
+utils/createClobClient.py
+  s_152ac664a7d2cc::t_ed6788496a8e96 962-964
+  s_152ac664a7d2cc::t_008c5ef7e97e95 961
+  s_152ac664a7d2cc::t_f702c60329debf 965-967
+  s_152ac664a7d2cc::t_5f9241a59e44a8 138-140,280,325-327,329-331,351-353,368-372,410-412,417-419,427-429,442-446,456-458,462-464,467-470,487-488,491-493,505-509,511-513,516-518,574-576,580-582,585-593,598-601,627-629,631,662-664,699-702,753-754,822-824,832-835,900-904,917-921,956-958,968,974
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.3",
+  "base_commit_sha": "2c449e2872508f1e83243e5d930ea70ab609804d",
+  "prompts": {},
+  "sessions": {
+    "s_152ac664a7d2cc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d7722760-8f34-4dd9-8bb0-af0f61ab93d4",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
