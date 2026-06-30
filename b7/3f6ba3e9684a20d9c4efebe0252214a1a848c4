@@ -1,0 +1,42 @@
+config/app_config.py
+  s_152ac664a7d2cc::t_dd7fda4029cb44 1201-1202
+  s_152ac664a7d2cc::t_1b009bfb28d888 34,76,87-90,188-230,463-469,518-527,590-594,1189-1200,1232,1243-1245,1295-1298,1411-1413,1601
+  s_152ac664a7d2cc::t_12cd5435683348 1414
+config/runtime.local.example
+  s_152ac664a7d2cc::t_8e6edc6ba47968 56-65
+tests/test_config.py
+  s_152ac664a7d2cc::t_a0a38155117a1a 136-185
+  s_152ac664a7d2cc::t_4bcf2e26a105e8 521
+  s_152ac664a7d2cc::t_fef8e8364b071d 187-189,192
+  s_152ac664a7d2cc::t_e104c262a9f854 195-213
+  s_152ac664a7d2cc::t_d19f85dfab888f 214-221
+  s_152ac664a7d2cc::t_91fb26274429e1 576
+tests/test_env_schema_coverage.py
+  s_152ac664a7d2cc::t_639fa6a94c17d6 43-44
+  s_152ac664a7d2cc::t_5a8af4a0f5bc4e 25-33,39-42
+  s_152ac664a7d2cc::t_81290ba824de96 1-24,34-38,45-78,82-93,95-97
+  s_152ac664a7d2cc::t_53fdd4e7697804 94
+  s_152ac664a7d2cc::t_6de4838a80e959 79-81
+orchestrators/trade_pipeline.py
+  s_152ac664a7d2cc::t_cece61c8f97df3 57,67
+services/executionService.py
+  s_152ac664a7d2cc::t_eb803d5daf5afa 1370,1375
+tests/test_book_quality_gate.py
+  s_152ac664a7d2cc::t_41f7e2a0fdb476 111-112
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.3",
+  "base_commit_sha": "b73f6ba3e9684a20d9c4efebe0252214a1a848c4",
+  "prompts": {},
+  "sessions": {
+    "s_152ac664a7d2cc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d7722760-8f34-4dd9-8bb0-af0f61ab93d4",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
