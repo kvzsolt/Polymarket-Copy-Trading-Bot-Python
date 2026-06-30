@@ -786,6 +786,27 @@ class MarketDataConfig:
 
 
 @dataclass(frozen=True)
+class OnchainDetectionConfig:
+    """Early on-chain trader detection policy (PR2).
+
+    The mined-``OrderFilled`` log subscription is always safe to run because
+    mined fills are authoritative; it is gated only by ``enable_mined_detection``
+    (default True) so operators can disable it for diagnostics. The pending-
+    transaction subscription is provisional and gated by
+    ``enable_onchain_pending_detection`` (default False) — it must not feed
+    the copy path until the operator opts in.
+    """
+
+    enable_onchain_pending_detection: bool = False
+    enable_onchain_mined_detection: bool = True
+    pending_tx_provider: str = "alchemy"
+    pending_tx_ws_url: str = ""
+    pending_tx_hashes_only: bool = False
+    pending_tx_max_signal_age_ms: int = 500
+    pending_tx_detection_confidence_required: str = "pending_probable"
+
+
+@dataclass(frozen=True)
 class AppConfig:
     """Root configuration object. Immutable after construction."""
 
@@ -805,6 +826,7 @@ class AppConfig:
     discovery: DiscoveryConfig
     features: FeatureFlagConfig
     market_data: MarketDataConfig = field(default_factory=MarketDataConfig)
+    onchain_detection: OnchainDetectionConfig = field(default_factory=OnchainDetectionConfig)
     # Global safety: when True the bot runs in paper-only / dry-run mode.
     dry_run: bool = False
     # The raw mapping is kept for transitional backwards compatibility
@@ -1644,6 +1666,17 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
             executable_book_max_age_seconds=p.float_("MARKET_DATA_EXECUTABLE_BOOK_MAX_AGE_SECONDS", 2.0),
             executable_tick_max_age_seconds=p.float_("MARKET_DATA_EXECUTABLE_TICK_MAX_AGE_SECONDS", 300.0),
             wss_connection_max_silence_seconds=p.float_("MARKET_DATA_WSS_CONNECTION_MAX_SILENCE_SECONDS", 20.0),
+        ),
+        onchain_detection=OnchainDetectionConfig(
+            enable_onchain_pending_detection=p.bool_("ENABLE_ONCHAIN_PENDING_DETECTION", False),
+            enable_onchain_mined_detection=p.bool_("ENABLE_ONCHAIN_MINED_DETECTION", True),
+            pending_tx_provider=p.string("PENDING_TX_PROVIDER", "alchemy"),
+            pending_tx_ws_url=p.string("PENDING_TX_WS_URL", ""),
+            pending_tx_hashes_only=p.bool_("PENDING_TX_HASHES_ONLY", False),
+            pending_tx_max_signal_age_ms=p.int_("PENDING_TX_MAX_SIGNAL_AGE_MS", "500"),
+            pending_tx_detection_confidence_required=p.string(
+                "PENDING_TX_DETECTION_CONFIDENCE_REQUIRED", "pending_probable"
+            ),
         ),
         # P0-2: single source — derived from the LIVE_TRADING master switch.
         dry_run=paper_trade_only_effective,
