@@ -1,0 +1,23 @@
+tests/test_collateral_readiness.py
+  s_152ac664a7d2cc::t_23fc3abc0fdd78 71-111
+services/collateral_readiness.py
+  s_152ac664a7d2cc::t_d9d9860d15af70 55-58,88,146-175,180,222,234-235,245
+utils/createClobClient.py
+  s_152ac664a7d2cc::t_156cb48bd27dc2 889-891,897
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.3",
+  "base_commit_sha": "006806abf5721c102154cd56670393a802b43e59",
+  "prompts": {},
+  "sessions": {
+    "s_152ac664a7d2cc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d7722760-8f34-4dd9-8bb0-af0f61ab93d4",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
