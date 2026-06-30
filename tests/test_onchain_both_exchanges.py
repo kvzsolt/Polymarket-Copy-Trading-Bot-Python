@@ -33,13 +33,15 @@ def test_onchain_constant_covers_both() -> None:
 
 def test_log_subscription_covers_both() -> None:
     params = log_subscription_params()
-    addresses = {a.lower() for a in params["logs"]["address"]}
+    assert isinstance(params, list) and params[0] == "logs"
+    addresses = {a.lower() for a in params[1]["address"]}
     assert POLYMARKET_CTF_EXCHANGE_V2_ADDRESS.lower() in addresses
     assert POLYMARKET_NEG_RISK_EXCHANGE_V2_ADDRESS.lower() in addresses
 
 
 def test_pending_subscription_covers_both() -> None:
     params = pending_subscription_params()
-    addresses = {a.lower() for a in params["alchemy_pendingTransactions"]["toAddress"]}
+    assert isinstance(params, list) and params[0] == "alchemy_pendingTransactions"
+    addresses = {a.lower() for a in params[1]["toAddress"]}
     assert POLYMARKET_CTF_EXCHANGE_V2_ADDRESS.lower() in addresses
     assert POLYMARKET_NEG_RISK_EXCHANGE_V2_ADDRESS.lower() in addresses

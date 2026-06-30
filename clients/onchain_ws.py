@@ -51,7 +51,7 @@ class OnchainWebSocket:
         self,
         *,
         ws_url: str,
-        subscribe_params: dict[str, Any],
+        subscribe_params: list[Any],
         name: str,
         on_message: MessageCallback,
         reconnect_min_delay: float = _MIN_RECONNECT_DELAY,

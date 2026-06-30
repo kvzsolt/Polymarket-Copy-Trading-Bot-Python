@@ -259,17 +259,18 @@ def build_signal_from_log(
     )
 
 
-def log_subscription_params(exchange_addresses: tuple[str, ...] | None = None) -> dict:
-    """Build the ``eth_subscribe`` ``logs`` params dict covering both exchanges.
+def log_subscription_params(exchange_addresses: tuple[str, ...] | None = None) -> list:
+    """Build the ``eth_subscribe`` JSON-RPC ``params`` list for mined logs.
 
-    A single subscription with both addresses + the ``OrderFilled`` topic0 is
-    sufficient; maker/taker filtering is done client-side because the watched
-    set can change at runtime and a single sub cannot OR topic2/topic3.
+    ``eth_subscribe`` expects ``params`` as a positional array like
+    ``["logs", filter]``. A single subscription with both exchange
+    addresses + the ``OrderFilled`` topic0 is sufficient; maker/taker
+    filtering is done client-side because the watched set can change at
+    runtime and a single sub cannot OR topic2/topic3.
     """
     addresses = tuple(a.lower() for a in (exchange_addresses or ONCHAIN_EXCHANGE_ADDRESSES))
-    return {
-        "logs": {
-            "address": list(addresses),
-            "topics": ["0x" + ORDER_FILLED_TOPIC0.hex()],
-        }
+    filter_obj = {
+        "address": list(addresses),
+        "topics": ["0x" + ORDER_FILLED_TOPIC0.hex()],
     }
+    return ["logs", filter_obj]

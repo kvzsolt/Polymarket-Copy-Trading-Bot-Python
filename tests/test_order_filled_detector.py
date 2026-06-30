@@ -88,10 +88,15 @@ def test_topic0_matches_canonical_signature() -> None:
 
 def test_both_exchange_addresses_in_subscription() -> None:
     params = log_subscription_params()
-    addresses = [a.lower() for a in params["logs"]["address"]]
+    # JSON-RPC ``eth_subscribe`` expects params as a positional array:
+    # ``["logs", filter]``.
+    assert isinstance(params, list)
+    assert params[0] == "logs"
+    filter_obj = params[1]
+    addresses = [a.lower() for a in filter_obj["address"]]
     assert POLYMARKET_CTF_EXCHANGE_V2_ADDRESS.lower() in addresses
     assert POLYMARKET_NEG_RISK_EXCHANGE_V2_ADDRESS.lower() in addresses
-    assert params["logs"]["topics"] == ["0x" + ORDER_FILLED_TOPIC0.hex()]
+    assert filter_obj["topics"] == ["0x" + ORDER_FILLED_TOPIC0.hex()]
 
 
 def test_onchain_exchange_addresses_covers_both() -> None:

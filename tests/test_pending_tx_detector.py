@@ -80,15 +80,22 @@ def _tx(input_bytes: bytes, to: str = POLYMARKET_CTF_EXCHANGE_V2_ADDRESS, tx_has
 
 def test_pending_subscription_params_covers_both_exchanges() -> None:
     params = pending_subscription_params()
-    to_addresses = [a.lower() for a in params["alchemy_pendingTransactions"]["toAddress"]]
+    # JSON-RPC ``eth_subscribe`` expects params as a positional array:
+    # ``["alchemy_pendingTransactions", options]``.
+    assert isinstance(params, list)
+    assert params[0] == "alchemy_pendingTransactions"
+    options = params[1]
+    to_addresses = [a.lower() for a in options["toAddress"]]
     assert POLYMARKET_CTF_EXCHANGE_V2_ADDRESS.lower() in to_addresses
     assert POLYMARKET_NEG_RISK_EXCHANGE_V2_ADDRESS.lower() in to_addresses
-    assert params["alchemy_pendingTransactions"]["hashesOnly"] is False
+    assert options["hashesOnly"] is False
 
 
 def test_pending_subscription_params_hashes_only_flag() -> None:
     params = pending_subscription_params(hashes_only=True)
-    assert params["alchemy_pendingTransactions"]["hashesOnly"] is True
+    assert isinstance(params, list)
+    assert params[0] == "alchemy_pendingTransactions"
+    assert params[1]["hashesOnly"] is True
 
 
 def test_build_signals_watched_taker() -> None:
