@@ -1,0 +1,131 @@
+{
+  "version": 1,
+  "repo": "kvzsolt/Polymarket-Copy-Trading-Bot-Python",
+  "branch": "develop",
+  "focus": {
+    "paths": [
+      "config/**",
+      "services/**",
+      "orchestrators/**",
+      "integrations/**",
+      "clients/**",
+      "domain/**",
+      "models/**",
+      "utils/**",
+      "bot_cli/**",
+      "app.py",
+      "bot.py",
+      "bootstrap.py",
+      "tests/**",
+      ".github/**"
+    ],
+    "exclude_paths": [
+      ".git/**",
+      ".venv/**",
+      "venv/**",
+      "node_modules/**",
+      "dist/**",
+      "build/**",
+      "**/__pycache__/**",
+      ".ruff_cache/**",
+      ".mypy_cache/**",
+      ".serena/**",
+      "legacy/**",
+      "log/**",
+      "logs/**",
+      "*.sqlite",
+      "*.db"
+    ]
+  },
+  "checks": {
+    "config_drift": {
+      "enabled": true,
+      "description": "Find runtime.env/runtime.local.env keys not represented in AppConfig or a documented legacy allowlist; detect duplicate env keys and contradictory defaults."
+    },
+    "disabled_feature_parsing": {
+      "enabled": true,
+      "description": "Find config values parsed or validated even when the owning feature flag is disabled."
+    },
+    "risk_pre_reconcile": {
+      "enabled": true,
+      "description": "Audit risk startup, pre-reconcile checks, RiskConfig parsing, disabled risk sub-engines, stale positions, reservation lifecycle, and exceptions before reconciliation starts."
+    },
+    "reconciliation_state_machine": {
+      "enabled": true,
+      "description": "Trace order lifecycle states, ambiguous release logic, stale release paths, pending submission TTL behavior, retry behavior, and reservation cleanup."
+    },
+    "market_data_policy": {
+      "enabled": true,
+      "description": "Verify REST snapshot vs WSS policy. REST-primary execution must not silently depend on WSS bootstrap when config says rest_snapshot is primary."
+    },
+    "pending_tx_detection": {
+      "enabled": true,
+      "description": "Audit pending-transaction subscription code, calldata decoding, exchange address coverage, confidence transitions, dropped/reverted tx handling, and dedupe."
+    },
+    "orderfilled_decoding": {
+      "enabled": true,
+      "description": "Verify Polymarket V2 OrderFilled maker/taker side logic, price computation, tokenId usage, and support for both CTF and Neg Risk exchanges."
+    },
+    "idempotency": {
+      "enabled": true,
+      "description": "Look for duplicate order submission risk, weak dedupe keys, missing tx_hash + log_index usage, duplicate pending/mined event handling, and double-copy risk."
+    },
+    "asyncio_websocket_lifecycle": {
+      "enabled": true,
+      "description": "Audit async tasks, cancellation, reconnect backoff, fire-and-forget tasks, queue backpressure, task leaks, missed awaits, and websocket stale connection detection."
+    },
+    "db_consistency": {
+      "enabled": true,
+      "description": "Audit reservation tables, transaction boundaries, stale cleanup, race conditions around reconcile/execute, and consistency between local positions and venue truth."
+    },
+    "secret_leakage": {
+      "enabled": true,
+      "description": "Find logs, reprs, debug outputs, exception messages, config.raw propagation, or test fixtures that could expose secrets."
+    },
+    "strategy_copier_safety": {
+      "enabled": true,
+      "description": "If strategy-copy or env-mutation code exists, ensure dry-run by default, runtime.local.env-only writes, and no secret modification."
+    },
+    "branch_merge_risk": {
+      "enabled": true,
+      "description": "Inspect open PRs and unmerged branches for overlapping edits, migration conflicts, stale architecture, raw env reads, and duplicate feature implementations."
+    }
+  },
+  "severity_rules": {
+    "P0": [
+      "startup config load crashes",
+      "risk pre-reconcile crash",
+      "order duplication causing position drift",
+      "secret leakage",
+      "wrong-side trade execution",
+      "reservation released while order can still fill",
+      "live trading path ignores dry-run/paper mode"
+    ],
+    "P1": [
+      "stale reservation release defects",
+      "partial config migration",
+      "incomplete exchange coverage",
+      "REST/WSS execution policy mismatch",
+      "pending tx treated as final truth",
+      "weak dedupe key",
+      "async websocket task leak",
+      "missing test for critical trading path"
+    ],
+    "P2": [
+      "duplicate env keys",
+      "comment drift",
+      "naming inconsistencies",
+      "dead config",
+      "missing tests for non-critical paths",
+      "non-fatal observability gaps"
+    ]
+  },
+  "expected_artifacts": [
+    "findings_table.md",
+    "env_schema_coverage.txt",
+    "branch_merge_matrix.md",
+    "reconcile_state_machine_notes.md",
+    "pending_detection_notes.md",
+    "strategy_profiler_notes.md"
+  ]
+}
