@@ -37,9 +37,13 @@ class _FakeResp:
         self._body = {} if body is None else body
 
     async def json(self, content_type=None):  # noqa: ARG002
+        # Yield briefly so SonarCloud S7503 sees this as a genuine async
+        # function (aiohttp's caller awaits ``response.json()``).
+        await asyncio.sleep(0)
         return self._body
 
     async def text(self):
+        await asyncio.sleep(0)
         return str(self._body)
 
     async def __aenter__(self):
