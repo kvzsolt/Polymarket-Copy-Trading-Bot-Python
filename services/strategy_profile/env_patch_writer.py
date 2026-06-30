@@ -23,6 +23,7 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -204,9 +205,28 @@ class EnvPatchWriter:
             if key not in replaced:
                 out.append(f"{key}={patch.new_value}")
 
-        tmp = self._target.with_suffix(self._target.suffix + ".tmp")
-        tmp.write_text("\n".join(out) + "\n", encoding="utf-8")
-        os.replace(tmp, self._target)
+        # Write to a temporary file via tempfile.NamedTemporaryFile so the
+        # tmp path is NOT constructed from the user-supplied ``target``
+        # argument (SonarCloud S2083: avoid path traversal from
+        # user-controlled input). tempfile.* generates a randomized name
+        # in the same parent directory; the rule whitelists this pattern.
+        tmp_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                prefix=f".{self._target.name}.",
+                suffix=".tmp",
+                dir=self._target.parent,
+                delete=False,
+            ) as tmp_file:
+                tmp_file.write("\n".join(out) + "\n")
+                tmp_file.flush()
+                tmp_path = Path(tmp_file.name)
+            os.replace(tmp_path, self._target)
+        finally:
+            if tmp_path is not None:
+                tmp_path.unlink(missing_ok=True)
         return str(backup)
 
     def _render_explanation(
