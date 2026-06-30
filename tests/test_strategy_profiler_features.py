@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import time
 
+import pytest
+
 from services.strategy_profile.leader_history_loader import LoadedHistory
 from services.strategy_profile.strategy_profiler import compute_features, profile_leader
 
@@ -58,8 +60,8 @@ def test_compute_features_empty_history() -> None:
     history = LoadedHistory(wallet="0xabc")
     features = compute_features(history)
     # Trade counts are 0 (not None); most other features are None on empty.
-    assert features["trade_count_7d"] == 0.0
-    assert features["trade_count_30d"] == 0.0
+    assert features["trade_count_7d"] == pytest.approx(0.0)
+    assert features["trade_count_30d"] == pytest.approx(0.0)
     assert features["median_notional_usdc"] is None
     assert features["avg_entry_price"] is None
     assert features["market_concentration_hhi"] is None
@@ -74,8 +76,8 @@ def test_compute_features_basic_counts_and_notional() -> None:
     ]
     history = LoadedHistory(wallet="0xabc", activity=activity)
     features = compute_features(history)
-    assert features["trade_count_30d"] == 3.0
-    assert features["median_notional_usdc"] == 5.0  # median of [5, 5, 10] = 5.0
+    assert features["trade_count_30d"] == pytest.approx(3.0)
+    assert features["median_notional_usdc"] == pytest.approx(5.0)  # median of [5, 5, 10] = 5.0
     assert features["avg_entry_price"] is not None
     # HHI: 2/3 A + 1/3 B -> (2/3)^2 + (1/3)^2 = 5/9
     assert abs(features["market_concentration_hhi"] - 5 / 9) < 1e-6
@@ -91,7 +93,7 @@ def test_low_price_entry_ratio() -> None:
     ]
     features = compute_features(LoadedHistory(wallet="0xabc", activity=activity))
     # 2 of 4 entries below 0.10
-    assert features["low_price_entry_ratio"] == 0.5
+    assert features["low_price_entry_ratio"] == pytest.approx(0.5)
 
 
 def test_near_certainty_entry_ratio() -> None:
@@ -127,7 +129,7 @@ def test_win_rate_and_pnl_from_closed_positions() -> None:
     ]
     features = compute_features(LoadedHistory(wallet="0xabc", closed_positions=closed))
     assert features["win_rate_7d"] == 2 / 3
-    assert features["pnl_30d_usdc"] == 25.0
+    assert features["pnl_30d_usdc"] == pytest.approx(25.0)
 
 
 def test_hold_time_from_closed_positions() -> None:
@@ -137,7 +139,7 @@ def test_hold_time_from_closed_positions() -> None:
         _mk_closed(opened_ts_ms=now - 30 * 60_000, closed_ts_ms=now),  # 30 min
     ]
     features = compute_features(LoadedHistory(wallet="0xabc", closed_positions=closed))
-    assert features["avg_hold_time_minutes"] == 45.0
+    assert features["avg_hold_time_minutes"] == pytest.approx(45.0)
 
 
 def test_near_max_exit_ratio() -> None:
@@ -163,7 +165,7 @@ def test_grouped_signal_ratio() -> None:
     ]
     features = compute_features(LoadedHistory(wallet="0xabc", activity=activity))
     # 3 of 4 trades are grouped (within 5s of a neighbour)
-    assert features["grouped_signal_ratio"] == 0.75
+    assert features["grouped_signal_ratio"] == pytest.approx(0.75)
 
 
 def test_crypto_fast_signal_ratio() -> None:
