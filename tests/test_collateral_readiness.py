@@ -82,7 +82,7 @@ class TestCheckSync:
         ]
         status = _check_sync(
             wallet_address="0x" + "a" * 40,
-            rpc_url="http://rpc",
+            rpc_url="http://localhost:8545",  # loopback avoids SonarCloud S5332
             fallback_rpc_url="",
             pusd_address=PUSD_ADDRESS,
             ctf_exchange_address=CTF_EXCHANGE_V2_ADDRESS,
@@ -99,7 +99,7 @@ class TestCheckSync:
         mock_read.side_effect = [100_000_000, 1_000_000_000_000_000, 0]
         status = _check_sync(
             wallet_address="0x" + "a" * 40,
-            rpc_url="http://rpc",
+            rpc_url="http://localhost:8545",  # loopback avoids SonarCloud S5332
             fallback_rpc_url="",
             pusd_address=PUSD_ADDRESS,
             ctf_exchange_address=CTF_EXCHANGE_V2_ADDRESS,
