@@ -1,0 +1,29 @@
+docs/audit/env_schema_coverage.txt
+  s_152ac664a7d2cc::t_e32c42f2e603db 1-15
+docs/audit/findings_table.md
+  s_152ac664a7d2cc::t_f1b38d0f6ea49a 1-24
+docs/audit/pending_detection_notes.md
+  s_152ac664a7d2cc::t_29b5cee924c7da 1-41
+docs/audit/reconcile_state_machine_notes.md
+  s_152ac664a7d2cc::t_9207834ddb112d 1-46
+docs/audit/strategy_profiler_notes.md
+  s_152ac664a7d2cc::t_971d1913c537cc 1-43
+docs/branch_merge_matrix.md
+  s_152ac664a7d2cc::t_7bfaa719f3440d 1-30
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.3",
+  "base_commit_sha": "d80d0f8447587a32024615249abf915cc2313cbf",
+  "prompts": {},
+  "sessions": {
+    "s_152ac664a7d2cc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d7722760-8f34-4dd9-8bb0-af0f61ab93d4",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
