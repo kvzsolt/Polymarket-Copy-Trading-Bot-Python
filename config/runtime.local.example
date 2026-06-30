@@ -53,3 +53,13 @@ MULTI_USER_CONFIG_FILE=
 #
 # Safety:
 # DISCOVERY_DYNAMIC_MONITORING_ENABLED=false
+
+# -----------------------------------------------------------------------------
+# Contract addresses (Polygon Mainnet, chain 137)
+# -----------------------------------------------------------------------------
+# These default to the canonical Polymarket V2 addresses in config/addresses.py
+# and normally need no override. Both exchange contracts are used: orders are
+# signed for the CTF Exchange or the Neg Risk CTF Exchange depending on the
+# market's neg_risk flag, and pUSD must be approved for BOTH.
+# CTF_EXCHANGE_V2_ADDRESS=0xE111180000d2663C0091e4f400237545B87B996B
+# NEG_RISK_CTF_EXCHANGE_V2_ADDRESS=0xe2222d279d744050d28e00520010520000310F59

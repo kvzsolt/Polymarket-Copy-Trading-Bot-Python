@@ -31,7 +31,7 @@ from types import SimpleNamespace
 import sys as _sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, cast
 
 # Re-use the existing validation error type so callers can catch either
 # ``config.env.EnvValidationError`` or ``config.app_config.EnvValidationError``
@@ -73,6 +73,7 @@ logger = logging.getLogger("AppConfig")
 from config.addresses import (  # noqa: E402
     POLYGON_USDCE_ADDRESS,
     POLYMARKET_CTF_EXCHANGE_V2_ADDRESS,
+    POLYMARKET_NEG_RISK_EXCHANGE_V2_ADDRESS,
     POLYMARKET_PUSD_ADDRESS,
 )
 
@@ -83,7 +84,10 @@ from config.addresses import (  # noqa: E402
 
 
 def _has_inline_comment(raw: str) -> bool:
-    return (" #" in raw) or ("\t#" in raw)
+    # A value that is purely a comment (``KEY=   # note``) is what python-dotenv
+    # hands back as a leading-``#`` string for an otherwise-empty assignment;
+    # treat that as a malformed inline comment too, not as a literal value.
+    return raw.strip().startswith("#") or (" #" in raw) or ("\t#" in raw)
 
 
 def _optional_int(p: "_Parser", key: str) -> int | None:
@@ -180,6 +184,49 @@ class _Parser:
                 return 0.0
             return value if math.isfinite(value) else 0.0
         return self._finite_or_error(key, value, default=default)
+
+    def optional_float_or_symbol(
+        self,
+        key: str,
+        default: str,
+        *,
+        allowed_symbols: tuple[str, ...],
+        feature_enabled: bool,
+    ) -> tuple[str, float | None]:
+        """Feature-aware optional numeric/symbolic value.
+
+        Returns ``(mode, value)``:
+
+        * Owning feature disabled -> ``("disabled", None)``. The optional input
+          is never fatal-parsed, so a blank / comment-only / symbolic / even
+          malformed value cannot kill startup (or pre-reconcile) when the
+          sub-engine is off. This is the core of the deep-research finding:
+          a disabled feature must not validate its own inactive knobs.
+        * Blank or comment-only while enabled -> the first allowed symbol mode
+          (e.g. ``("auto", None)``) — the documented default-blank behaviour.
+        * An allowed symbol while enabled -> ``(symbol, None)``.
+        * A finite number while enabled -> ``("fixed", value)``.
+        * Anything else while enabled -> records a validation error and returns
+          ``("fixed", None)`` so all problems still surface together.
+        """
+        if not feature_enabled:
+            return ("disabled", None)
+        stripped = self.raw(key, default).strip()
+        if stripped == "" or stripped.startswith("#"):
+            return ((allowed_symbols[0] if allowed_symbols else "fixed"), None)
+        token = self._strip(key, self.raw(key, default))
+        if token.lower() in allowed_symbols:
+            return (token.lower(), None)
+        try:
+            value = float(token)
+        except ValueError:
+            symbols = ", ".join(f"'{s}'" for s in allowed_symbols)
+            self.errors.append(
+                f"{key} must be a valid float"
+                f"{(' or ' + symbols) if symbols else ''}, got: {token!r}"
+            )
+            return ("fixed", None)
+        return ("fixed", self._finite_or_error(key, value, default=default))
 
     def int_(self, key: str, default: str) -> int:
         raw = self._strip(key, self.raw(key, default))
@@ -413,6 +460,13 @@ class RiskConfig:
     # ``services.risk.risk_monitor.RiskPriceCache`` still honours its env fallback
     # as a legacy adapter (issue #73 allows raw env in legacy/test paths only).
     risk_price_cache_max_size: int
+    # Explicit trailing-activation mode so 'auto' is never smuggled through a
+    # float. "disabled" whenever ENABLE_TRAILING_STOP is off (the activation
+    # input is then never fatal-parsed); "auto" scales activation from max
+    # payout (``trailing_activation_pct`` is None); "fixed" uses the numeric
+    # ``trailing_activation_pct``. Defaulted so existing direct constructors
+    # and fixtures keep working.
+    trailing_activation_mode: Literal["disabled", "fixed", "auto"] = "disabled"
 
 
 @dataclass(frozen=True)
@@ -461,6 +515,16 @@ class ExecutionConfig:
     # Submission concurrency: typed cap so production paths do not depend on
     # raw env reads inside ExecutionService.
     execution_submit_concurrency: int
+    # Per-batch concurrency for trade analysis and unconfirmed-order
+    # reconciliation. Typed so the orchestrator no longer reads ``config.raw``
+    # (closes the partial-config-migration drift the audit flagged). Defaulted
+    # to keep existing direct constructors / fixtures valid.
+    trade_analysis_concurrency: int = 6
+    reconcile_concurrency: int = 4
+    # FAK (fill-and-kill) repost ceilings: how many extra book levels a copy
+    # fill vs a forced protective exit may sweep. Promoted off ``config.raw``.
+    copy_fak_max_attempts: int = 8
+    exit_fak_max_attempts: int = 8
 
 
 @dataclass(frozen=True)
@@ -523,6 +587,11 @@ class NetworkConfig:
     collateral_contract_address: str = ""
     pusd_contract_address: str = ""
     ctf_exchange_v2_address: str = ""
+    # Neg Risk CTF Exchange V2 — the separate settlement contract for
+    # negative-risk markets. Verified against docs.polymarket.com/resources/
+    # contracts. Both exchanges must be covered by on-chain detection and
+    # collateral-allowance checks.
+    neg_risk_ctf_exchange_v2_address: str = ""
 
 
 @dataclass(frozen=True)
@@ -1117,6 +1186,20 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         trust_size_multiplier_max=p.float_("TRUST_SIZE_MULTIPLIER_MAX", "1.25"),
     )
 
+    # ENABLE_TRAILING_STOP is read up front so trailing-activation parsing is
+    # feature-aware: when the sub-engine is off, its activation knob
+    # (blank / comment-only / 'auto' / even garbage) is never fatal-parsed and
+    # cannot crash startup or the risk pre-reconcile pass. This is the typed
+    # half of the deep-research "disabled feature must not validate its inactive
+    # inputs" finding; the FeatureFlagConfig below reuses the same value.
+    _enable_trailing_stop = p.bool_("ENABLE_TRAILING_STOP", False)
+    _trailing_activation_mode, _trailing_activation_pct = p.optional_float_or_symbol(
+        "TRAILING_ACTIVATION_PCT",
+        "20",
+        allowed_symbols=("auto",),
+        feature_enabled=_enable_trailing_stop,
+    )
+
     # Risk
     risk = RiskConfig(
         enable_risk_mgmt=p.bool_("ENABLE_RISK_MGMT", False),
@@ -1146,7 +1229,7 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         near_max_price_exit=p.float_("NEAR_MAX_PRICE_EXIT", "0.95"),
         profit_lock_trigger_pct=p.float_("PROFIT_LOCK_TRIGGER_PCT", "70"),
         profit_lock_sell_fraction=p.float_("PROFIT_LOCK_SELL_FRACTION", "0.50"),
-        trailing_activation_pct=p.float_or_auto("TRAILING_ACTIVATION_PCT", "20"),
+        trailing_activation_pct=_trailing_activation_pct,
         trailing_distance=p.float_("TRAILING_DISTANCE", "0.05"),
         staged_tp_levels=p.string("STAGED_TP_LEVELS", "0.30,0.50"),
         staged_tp_fractions=p.string("STAGED_TP_FRACTIONS", "0.25,0.35"),
@@ -1157,6 +1240,9 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         # directly when no explicit value is passed; this typed value is the
         # production wiring path used when AppConfig is in scope.
         risk_price_cache_max_size=p.int_("RISK_PRICE_CACHE_MAX_SIZE", "5000"),
+        trailing_activation_mode=cast(
+            'Literal["disabled", "fixed", "auto"]', _trailing_activation_mode
+        ),
     )
 
     # P0-2: live-trading master switch — fail-closed. The bot runs in PAPER mode
@@ -1206,6 +1292,10 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         min_book_depth_usdc=p.float_("MIN_BOOK_DEPTH_USDC", "0"),
         book_depth_band_pct=p.float_("BOOK_DEPTH_BAND_PCT", "5"),
         execution_submit_concurrency=p.int_("EXECUTION_SUBMIT_CONCURRENCY", "2"),
+        trade_analysis_concurrency=p.int_("TRADE_ANALYSIS_CONCURRENCY", "6"),
+        reconcile_concurrency=p.int_("RECONCILE_CONCURRENCY", "4"),
+        copy_fak_max_attempts=p.int_("COPY_FAK_MAX_ATTEMPTS", "8"),
+        exit_fak_max_attempts=p.int_("EXIT_FAK_MAX_ATTEMPTS", "8"),
     )
 
     # Leader / discovery cascades — reproduce the same cascading defaults the legacy
@@ -1317,6 +1407,10 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         ctf_exchange_v2_address=p.string(
             "CTF_EXCHANGE_V2_ADDRESS",
             POLYMARKET_CTF_EXCHANGE_V2_ADDRESS,
+        ),
+        neg_risk_ctf_exchange_v2_address=p.string(
+            "NEG_RISK_CTF_EXCHANGE_V2_ADDRESS",
+            POLYMARKET_NEG_RISK_EXCHANGE_V2_ADDRESS,
         ),
     )
 
@@ -1504,7 +1598,7 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
     features = FeatureFlagConfig(
         enable_profit_lock=p.bool_("ENABLE_PROFIT_LOCK", False),
         enable_near_max_exit=p.bool_("ENABLE_NEAR_MAX_EXIT", True),
-        enable_trailing_stop=p.bool_("ENABLE_TRAILING_STOP", False),
+        enable_trailing_stop=_enable_trailing_stop,
         enable_staged_tp=p.bool_("ENABLE_STAGED_TP", False),
         enable_leader_divergence_exit=p.bool_("ENABLE_LEADER_DIVERGENCE_EXIT", False),
         enable_stop_loss=p.bool_("ENABLE_STOP_LOSS", False),
