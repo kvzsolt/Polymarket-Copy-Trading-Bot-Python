@@ -1,0 +1,19 @@
+tests/test_config.py
+  s_152ac664a7d2cc::t_d19f85dfab888f 231-243
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.3",
+  "base_commit_sha": "24cf8bafd1726f63c38780f264988ec99de06746",
+  "prompts": {},
+  "sessions": {
+    "s_152ac664a7d2cc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d7722760-8f34-4dd9-8bb0-af0f61ab93d4",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
