@@ -34,6 +34,12 @@ jobs:
             echo "ERROR: xfail markers found — all tests must pass or be deleted"
             exit 1
           fi
+      - name: config smoke (env files + dummy secrets -> load_config)
+        # Critical fast gate (deep-research P0): the shipped runtime env files
+        # must parse through dotenv into a valid AppConfig, and every runtime
+        # key must be typed or allowlisted. Catches a malformed committed
+        # default here rather than at live startup.
+        run: pytest tests/test_config_smoke.py tests/test_env_schema_coverage.py -q
       - name: pytest (unit tier)
         run: pytest -m "not integration and not release_gate" --maxfail=5 -q
 
