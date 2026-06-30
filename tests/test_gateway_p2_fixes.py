@@ -68,6 +68,45 @@ def _gateway_with_raw(raw_client) -> ClobV2Gateway:
     return ClobV2Gateway(wrapper)
 
 
+# get_order / get_fills are now true-async aiohttp GETs (no thread executor), so
+# they are driven via a fake aiohttp session rather than a sync SDK callable.
+class _RespCM:
+    def __init__(self, status=200, body=None, exc=None):
+        self.status = status
+        self._body = {} if body is None else body
+        self._exc = exc
+
+    async def json(self, content_type=None):  # noqa: ARG002
+        return self._body
+
+    async def text(self):
+        return str(self._body)
+
+    async def __aenter__(self):
+        if self._exc is not None:
+            raise self._exc
+        return self
+
+    async def __aexit__(self, *a):  # noqa: ANN002
+        return False
+
+
+class _SessionStub:
+    def __init__(self, items):
+        self._items = list(items)
+        self.calls = 0
+
+    def get(self, url, headers=None, params=None, timeout=None):  # noqa: ANN001, ARG002
+        self.calls += 1
+        item = self._items.pop(0) if self._items else _RespCM(200, {})
+        return _RespCM(exc=item) if isinstance(item, Exception) else item
+
+
+def _async_raw_client():
+    return MagicMock(host="https://clob.polymarket.com",
+                     _l2_headers=MagicMock(return_value={"k": "v"}))
+
+
 # ===========================================================================
 # P2-k — status-code-first classification
 # ===========================================================================
@@ -186,45 +225,29 @@ class TestCancelOrderNotFoundTerminal:
 class TestGetTimeouts:
     @pytest.mark.asyncio
     async def test_get_order_timeout_raises_unavailable(self, monkeypatch):
-        # Shrink the cap so the test is fast, and make the SDK GET hang.
+        # A per-request aiohttp timeout surfaces as the retryable
+        # VenueUnavailableError after one idempotent retry (no thread is tied up).
+        session = _SessionStub([asyncio.TimeoutError(), asyncio.TimeoutError()])
         monkeypatch.setattr(
-            "integrations.polymarket.clob_v2_gateway._SDK_GET_TIMEOUT_SECONDS", 0.05
+            "integrations.polymarket.clob_v2_gateway._get_session", lambda: session
         )
-        ready = asyncio.Event()
+        gw = _gateway_with_raw(_async_raw_client())
 
-        def _hang(order_id):
-            # Block the executor thread well past the timeout.
-            ready.set()
-            import time
-            time.sleep(5)
-            return {}
-
-        raw = MagicMock()
-        raw.get_order.side_effect = _hang
-        gw = _gateway_with_raw(raw)
-
-        with pytest.raises(VenueUnavailableError) as exc_info:
+        with pytest.raises(VenueUnavailableError):
             await gw.get_order("0xhang")
-        assert "timeout" in str(exc_info.value).lower()
+        assert session.calls == 2  # original + exactly one retry
 
     @pytest.mark.asyncio
     async def test_get_fills_timeout_raises_unavailable(self, monkeypatch):
+        session = _SessionStub([asyncio.TimeoutError(), asyncio.TimeoutError()])
         monkeypatch.setattr(
-            "integrations.polymarket.clob_v2_gateway._SDK_GET_TIMEOUT_SECONDS", 0.05
+            "integrations.polymarket.clob_v2_gateway._get_session", lambda: session
         )
+        gw = _gateway_with_raw(_async_raw_client())
 
-        def _hang(*a, **k):
-            import time
-            time.sleep(5)
-            return []
-
-        raw = MagicMock()
-        raw.get_trades.side_effect = _hang
-        gw = _gateway_with_raw(raw)
-
-        with pytest.raises(VenueUnavailableError) as exc_info:
+        with pytest.raises(VenueUnavailableError):
             await gw.get_fills()
-        assert "timeout" in str(exc_info.value).lower()
+        assert session.calls == 2
 
     @pytest.mark.asyncio
     async def test_get_orderbook_timeout_raises_unavailable(self, monkeypatch):
@@ -246,11 +269,15 @@ class TestGetTimeouts:
         assert "timeout" in str(exc_info.value).lower()
 
     @pytest.mark.asyncio
-    async def test_get_order_fast_path_unaffected(self):
-        # A prompt response well within the cap must still return normally.
-        raw = MagicMock()
-        raw.get_order.return_value = {"id": "0xok", "status": "live", "size": "5"}
-        gw = _gateway_with_raw(raw)
+    async def test_get_order_fast_path_unaffected(self, monkeypatch):
+        # A prompt 200 response must still parse and return normally.
+        session = _SessionStub([
+            _RespCM(200, {"id": "0xok", "status": "live", "size": "5"}),
+        ])
+        monkeypatch.setattr(
+            "integrations.polymarket.clob_v2_gateway._get_session", lambda: session
+        )
+        gw = _gateway_with_raw(_async_raw_client())
 
         state = await gw.get_order("0xok")
         assert state.order_id == "0xok"
