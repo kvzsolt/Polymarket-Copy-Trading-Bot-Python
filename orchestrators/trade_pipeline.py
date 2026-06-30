@@ -54,7 +54,7 @@ def _positive_int(raw: Any, default: int) -> int:
 def _analysis_semaphore(context: TradingContext) -> asyncio.Semaphore:
     semaphore = context.extra.get("_trade_analysis_semaphore")
     if semaphore is None:
-        config_val = context.config.raw.get("TRADE_ANALYSIS_CONCURRENCY", 6) if context.config else 6
+        config_val = context.config.execution.trade_analysis_concurrency if context.config else 6
         semaphore = asyncio.Semaphore(_positive_int(config_val, 6))
         context.extra["_trade_analysis_semaphore"] = semaphore
     return semaphore
@@ -64,7 +64,7 @@ def _analysis_semaphore(context: TradingContext) -> asyncio.Semaphore:
 def _reconcile_semaphore(context: TradingContext) -> asyncio.Semaphore:
     semaphore = context.extra.get("_reconcile_unconfirmed_semaphore")
     if semaphore is None:
-        config_val = context.config.raw.get("RECONCILE_CONCURRENCY", 4) if context.config else 4
+        config_val = context.config.execution.reconcile_concurrency if context.config else 4
         semaphore = asyncio.Semaphore(_positive_int(config_val, 4))
         context.extra["_reconcile_unconfirmed_semaphore"] = semaphore
     return semaphore

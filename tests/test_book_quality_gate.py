@@ -108,6 +108,8 @@ def _make_execution_service(bid: str | None, ask: str | None, quote_price: str =
             near_resolution_max_age_seconds=15,
             meta_cache_ttl_good=300,
             meta_cache_ttl_thin=30,
+            copy_fak_max_attempts=3,
+            exit_fak_max_attempts=8,
         ),
         policy_version="test",
         raw={"COPY_FAK_MAX_ATTEMPTS": "3", "EXIT_FAK_MAX_ATTEMPTS": "8"},
