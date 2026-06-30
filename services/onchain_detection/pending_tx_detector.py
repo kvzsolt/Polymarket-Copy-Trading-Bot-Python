@@ -49,26 +49,31 @@ class PendingTxConfig:
     hashes_only: bool = False
 
 
-def pending_subscription_params(
-    exchange_addresses: tuple[str, ...] | None = None,
-    hashes_only: bool = False,
-) -> dict:
-    """Build the ``eth_subscribe`` params dict for ``alchemy_pendingTransactions``."""
-    addresses = tuple(
-        a.lower() for a in (exchange_addresses or _DEFAULT_EXCHANGES)
-    )
-    return {
-        "alchemy_pendingTransactions": {
-            "toAddress": list(addresses),
-            "hashesOnly": bool(hashes_only),
-        }
-    }
-
-
 _DEFAULT_EXCHANGES = (
     POLYMARKET_CTF_EXCHANGE_V2_ADDRESS.lower(),
     POLYMARKET_NEG_RISK_EXCHANGE_V2_ADDRESS.lower(),
 )
+
+
+def pending_subscription_params(
+    exchange_addresses: tuple[str, ...] | None = None,
+    hashes_only: bool = False,
+) -> list:
+    """Build the ``eth_subscribe`` JSON-RPC ``params`` list for ``alchemy_pendingTransactions``.
+
+    ``eth_subscribe`` expects ``params`` as a positional array like
+    ``["alchemy_pendingTransactions", options]``. The notification payload
+    is a full transaction object (``hash, input, from, to, ...``) when
+    ``hashesOnly`` is False; hashes only when True.
+    """
+    addresses = tuple(
+        a.lower() for a in (exchange_addresses or _DEFAULT_EXCHANGES)
+    )
+    options = {
+        "toAddress": list(addresses),
+        "hashesOnly": bool(hashes_only),
+    }
+    return ["alchemy_pendingTransactions", options]
 
 
 def _tx_to_exchange(tx: dict) -> str:
