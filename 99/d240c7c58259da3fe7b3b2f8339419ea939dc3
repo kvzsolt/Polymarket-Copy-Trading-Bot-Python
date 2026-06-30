@@ -1,0 +1,19 @@
+services/strategy_profile/env_patch_writer.py
+  s_6156e21615bd2e::t_de20ad3341109c 26,208-229
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "99d240c7c58259da3fe7b3b2f8339419ea939dc3",
+  "prompts": {},
+  "sessions": {
+    "s_6156e21615bd2e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "aaaf0b10-7c16-48ae-9cd1-b5ff1588fed5",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
