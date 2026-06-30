@@ -1,6 +1,61 @@
 # SELF_REVIEW — PR1: stabilize `develop` (integration + deep-research audit fixes)
 
+# SELF_REVIEW — PR1 + PR2 + PR3: stabilize `develop` (integration + full deep-research audit)
+
 ## 1. Summary
+
+This review covers the **full deep-research audit** delivered in three staged
+PRs on the `integration/merge-all-prs-and-audit-fixes` branch:
+
+- **PR1 (#123)** — integrated the one live open PR (#122) + P0/P1 config and
+  safety fixes (trailing parser, AppConfig env-drift, Neg Risk collateral,
+  REST-primary WSS-independence verification, reconciliation probe-clean
+  release verification, P0 config smoke gate). See the PR1 sections below.
+- **PR2 (this run)** — early on-chain trader detection
+  (`services/onchain_detection/` + `clients/onchain_ws.py` +
+  `orchestrators/onchain_detection_runtime.py`) on both the CTF Exchange V2
+  and the Neg Risk CTF Exchange V2, plus the Phase 9 `(tx_hash, log_index)`
+  mined-fill dedupe hardening and the state-machine extension to cover the
+  existing-but-unmapped lifecycle states. Pending detection is flag-gated
+  (default off); mined detection is always safe.
+- **PR3 (this run)** — strategy profiler + env tuner
+  (`services/strategy_profile/` + `models/env_patch.py` +
+  `models/strategy_profile.py` + two `bot_cli` commands). Fresh Polymarket
+  Data API fetch, 17 features, 6 archetypes, dry-run-by-default env-patch
+  writer with a protected-key allowlist.
+
+Every deferred deep-research item is now **implemented**. See the compliance
+checklist in §14 for the per-finding mapping.
+
+## 1a. PR2 + PR3 headline outcomes
+
+- **Phase 10 on-chain detection**: `DetectionConfidence` ladder
+  (`market_unattributed` / `pending_probable` / `mined_authoritative` /
+  `confirmed_final`); `matchOrders` calldata decoder (selector `0x6d0fcd6e`,
+  verified V2 `Order` struct); `OrderFilled` log decoder (topic0
+  `0xd543...d8ee`, verified event); pending-tx detector via Alchemy
+  `alchemy_pendingTransactions` (both exchanges, `hashesOnly=false`);
+  runtime dispatcher routes mined signals to `execute_trades` and gates
+  pending signals behind `ENABLE_ONCHAIN_PENDING_DETECTION`.
+- **Phase 9 dedupe hardening**: `MinedFillDeduplicator` keys mined fills on
+  `(tx_hash, log_index)` so one settlement tx with multiple fill logs
+  produces one logical event per log; pending signals are superseded by the
+  mined signal that shares their `tx_hash` (no double dispatch).
+  `services/execution/state_machine.py` `ALLOWED_TRANSITIONS` extended to
+  cover `ORDER_LIVE`, `SUBMITTED_DELAYED`, `MATCHED_PENDING_CONFIRMATION`,
+  `TRADE_MINED`, `TRADE_CONFIRMED`, `TRADE_RETRYING`, `AMBIGUOUS_TIMEOUT`,
+  `AUTO_RELEASED_AMBIGUOUS`; `AUTO_RELEASED_AMBIGUOUS` + `TRADE_CONFIRMED`
+  marked terminal; ambiguous cannot jump directly to live (probe-clean
+  release only).
+- **Phase 11 strategy profiler**: 17 features from fresh Polymarket Data API
+  fetch; 6 `StrategyArchetype` values; archetype -> `EnvPatch` list using the
+  report's example patches; dedicated `EnvPatchWriter` (atomic `.bak` +
+  tmp-then-replace; protected-key allowlist never mutated; dry-run default;
+  `--apply` required; writes only `runtime.local.env`; secret values
+  redacted in the explanation). CLI: `bot.py profile-leader` and
+  `bot.py tune-strategy`.
+
+## 1. PR1 Summary
 
 PR1 integrates the one live open PR (#122) and implements the **P0/P1 config and
 safety** findings from `deep-research-report.md`, cross-checked against the
@@ -72,8 +127,26 @@ order-confirmation safe-default guard (1).
 - The pre-existing 8 release-doc failures are left as-is (out of audit scope).
 - The Neg-Risk collateral check is fail-closed; operators must approve pUSD for
   **both** exchanges before live trading (documented in `runtime.local.example`).
-- `(tx_hash, log_index)` mined-fill dedupe + pending→mined reconcile are **deferred
-  to PR2** (the `OrderFilled` detector is what produces `log_index`).
+- **PR2 — proxy/safe wallet attribution**: the on-chain detectors match on
+  `Order.maker` (the source-of-funds address) per the prompt. Polymarket proxy
+  and Gnosis-Safe wallets where the EOA `signer` differs from `maker` are not
+  attributed to the EOA. Future work: resolve signer->proxy/safe ownership via
+  `PolyProxyLib`/`PolySafeLib` address derivation.
+- **PR2 — mined-signal condition_id enrichment**: the mined `OrderFilled` log
+  carries `tokenId` but not `conditionId`. The runtime resolves condition_id
+  via an injectable `condition_id_resolver` (Gamma API
+  `/markets?clob_token_ids={tokenId}` in production). If the resolver is absent
+  or fails, `condition_id` is empty and `normalize_trade_signal` drops the
+  signal — acceptable for an inert-by-default feature, but the resolver must
+  be wired before enabling live copy on the mined path.
+- **PR2 — decimal scaling**: `makerAmountFilled`/`takerAmountFilled` are scaled
+  by 1e6 (USDC.e / CTF token decimals) in the detector. This is verified in
+  unit tests against synthetic logs; a known-good mainnet fill should be
+  replayed in a follow-up to confirm against a real `OrderFilled` before
+  enabling live copy.
+- **PR3 — feature degradation**: features that the Polymarket Data API does not
+  expose (e.g. maker/taker attribution on `/activity` rows) degrade to `None`;
+  the classifier treats `None` as "unknown" and falls back conservatively.
 
 ## 9. External docs consulted
 - **Firecrawl** → `docs.polymarket.com/resources/contracts`: confirmed Neg Risk CTF
@@ -84,12 +157,19 @@ order-confirmation safe-default guard (1).
 - **Secrets not logged**: no new code logs `PRIVATE_KEY`/CLOB/RPC secrets; collateral
   errors continue to route through `redact_error_detail`. `config.raw` strips
   sensitive keys (unchanged). `git grep "PRIVATE_KEY="` / `CLOB_SECRET=` show only
-  the gitignored env files + tests, never source.
-- **Env mutation safe**: no `.env` writes added; strategy/env tuning (PR3) is
-  dry-run-by-default by design.
-- **Pending detection provisional**: not implemented in PR1; PR2 design note marks it
-  provisional.
-- **Final dedupe `(tx_hash, log_index)`**: deferred to PR2 (documented).
+  the gitignored env files + tests, never source. PR3's `EnvPatchWriter` redacts
+  protected-key old values in the explanation and rejects protected-key patches.
+- **Env mutation safe**: PR3's `EnvPatchWriter` is dry-run by default; `--apply`
+  required; writes only `runtime.local.env`; protected-key allowlist (exact +
+  substring) never mutated; `LEADER_WALLETS` refused unless
+  `--allow-leader-rewrite`; atomic `.bak` + tmp-then-replace.
+- **Pending detection provisional**: PR2's `DetectionConfidence.PENDING_PROBABLE`
+  signals are marked `provisional=True`; the dispatcher only routes them when
+  `ENABLE_ONCHAIN_PENDING_DETECTION=true`; a mined signal with the same
+  `tx_hash` supersedes the pending (no double dispatch).
+- **Final dedupe `(tx_hash, log_index)`**: PR2's `MinedFillDeduplicator` keys
+  mined fills on the composite `(tx_hash, log_index)`; one settlement tx with
+  multiple fill logs produces one logical event per log.
 - **Fail-closed master switch preserved**: `LIVE_TRADING` doctor-or-die behaviour is
   unchanged — see the contradiction note in §14.
 
@@ -100,6 +180,16 @@ order-confirmation safe-default guard (1).
   inconclusive (`require_all_probes_clean`, default True) → reservation held.
 - **Duplicate submits prevented**: atomic submission lock → exactly-one submission
   per logical fill (existing, tested).
+- **State machine extended (PR2)**: `ALLOWED_TRANSITIONS` now covers every
+  non-terminal `OrderLifecycleStatus` value; `AMBIGUOUS_TIMEOUT` can only
+  release to `AUTO_RELEASED_AMBIGUOUS` / `TRADE_CONFIRMED` /
+  `TERMINAL_FAILED` / `RECONCILIATION_REQUIRED` (never directly to a
+  non-terminal live state). `AUTO_RELEASED_AMBIGUOUS` + `TRADE_CONFIRMED`
+  are terminal. Pinned by `test_reconciliation_state_machine_phase9.py`.
+- **(tx_hash, log_index) dedupe (PR2)**: `MinedFillDeduplicator` ensures a
+  single settlement tx with multiple fill logs produces one logical event
+  per log; the runtime's mined handler drops duplicates and supersedes the
+  pending signal for the same tx.
 - New guard test pins the fail-safe defaults. Full notes: `docs/audit/reconcile_state_machine_notes.md`.
 
 ## 12. Rollback plan
@@ -131,9 +221,9 @@ from the editor hook was reverted so the diff is functional-only.
 | BUG-9 duplicate env keys | implemented | (runtime.local.env — gitignored) | test_env_schema_coverage (dup lint) | deduped locally; lint guards future |
 | BUG-10 parser fails on 3.13 / CI matrix | not applicable | — | — | CI already on py3.11/3.12 |
 | Config smoke test (P0) | implemented | .github/workflows/ci.yml | test_config_smoke | dotenv → load_config; CI-safe |
-| Early onchain detection (Phase 10) | deferred to PR2 | — | — | design note: docs/audit/pending_detection_notes.md |
-| Strategy profiler / env tuner (Phase 11) | deferred to PR3 | — | — | design note: docs/audit/strategy_profiler_notes.md |
-| `(tx_hash, log_index)` mined-fill dedupe | deferred to PR2 | — | — | `log_index` produced by the OrderFilled detector |
+| Early onchain detection (Phase 10) | implemented (PR2) | services/onchain_detection/*, clients/onchain_ws.py, orchestrators/onchain_detection_runtime.py, config/app_config.py | test_calldata_decoder, test_order_filled_detector, test_pending_tx_detector, test_onchain_both_exchanges, test_onchain_detection_runtime | mined OrderFilled sub always safe; pending sub gated by ENABLE_ONCHAIN_PENDING_DETECTION (default off); both exchanges covered; (tx_hash, log_index) dedupe |
+| Strategy profiler / env tuner (Phase 11) | implemented (PR3) | services/strategy_profile/*, models/env_patch.py, models/strategy_profile.py, bot_cli/commands/profile_leader.py, bot_cli/commands/tune_strategy.py | test_env_patch_writer, test_strategy_profiler_features, test_strategy_classifier, test_strategy_env_tuner, test_leader_history_loader, test_cli_profile_tune | fresh Polymarket Data API fetch; 17 features; 6 archetypes; dry-run default; protected keys never mutated |
+| `(tx_hash, log_index)` mined-fill dedupe | implemented (PR2) | services/onchain_detection/mined_fill_deduplicator.py, orchestrators/onchain_detection_runtime.py, services/execution/state_machine.py | test_mined_fill_deduplicator, test_reconciliation_state_machine_phase9, test_onchain_detection_runtime | composite key; same-tx multi-log each counted once; pending superseded by mined; state-machine extended to cover existing-but-unmapped lifecycle states |
 
 ## 15. Branch and PR integration matrix
 
@@ -145,6 +235,8 @@ from the editor hook was reverted so the diff is functional-only.
 | `feature/concurrency-hardening` | none | n/a | reaper already on develop; deleted upstream | — | documented |
 | `chore/remove-stale-legacy-test` | none | n/a | legacy test already absent on develop; deleted upstream | — | documented |
 | local WIP on `main` | preserve → fold | n/a | committed to `wip/config-parser-main`; leading-# folded; fail-closed test superseded | test_config | documented |
+| PR2 `feature/onchain-detection` (this run) | new branch off integration | n/a | new module; no conflict with existing paths | 32 PR2 tests + state-machine regression | implemented on integration branch |
+| PR3 `feature/strategy-profiler` (this run) | new branch off integration | n/a | new module; no conflict with existing paths | 51 PR3 tests | implemented on integration branch |
 
 ### LIVE_TRADING contradiction (deep research vs repo)
 The report recommends *replacing* `LIVE_TRADING` with a typed dry-run/live mode
