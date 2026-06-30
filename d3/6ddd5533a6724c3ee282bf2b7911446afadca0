@@ -1,0 +1,20 @@
+SELF_REVIEW.md
+  s_152ac664a7d2cc::t_27bac000f2a7e6 1-61,65-155
+  s_152ac664a7d2cc::t_14858aaf9363a9 62-64
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.3",
+  "base_commit_sha": "d36ddd5533a6724c3ee282bf2b7911446afadca0",
+  "prompts": {},
+  "sessions": {
+    "s_152ac664a7d2cc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d7722760-8f34-4dd9-8bb0-af0f61ab93d4",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": null
+    }
+  }
+}
