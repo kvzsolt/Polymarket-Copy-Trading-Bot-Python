@@ -24,7 +24,7 @@ from services.market_data_service import (
     StaleDataError,
 )
 
-TOKEN = "0xrest_primary_exec"
+TEST_TOKEN_ID = "0x" + ("r" * 16) + "_rest_primary_exec"  # degenerate test-only token id
 
 
 def _book(bid: str, ask: str) -> SimpleNamespace:
@@ -55,7 +55,7 @@ def _rest_primary_service(book_payload: SimpleNamespace) -> MarketDataService:
 async def test_rest_primary_execution_succeeds_with_wss_down_and_fresh_rest() -> None:
     # ~196 bps spread, well inside the 300 bps cap.
     svc = _rest_primary_service(_book("0.50", "0.51"))
-    bundle = await svc.require_fresh_data(TOKEN, side="BUY", condition_id="0xcond")
+    bundle = await svc.require_fresh_data(TEST_TOKEN_ID, side="BUY", condition_id="0xcond")
     assert bundle.source == MarketDataSource.REST_SNAPSHOT
 
 
@@ -64,7 +64,7 @@ async def test_rest_primary_execution_blocked_when_rest_snapshot_spread_wide() -
     # ~3333 bps spread, far past the 300 bps cap -> fail closed.
     svc = _rest_primary_service(_book("0.40", "0.60"))
     with pytest.raises(StaleDataError):
-        await svc.require_fresh_data(TOKEN, side="BUY", condition_id="0xcond")
+        await svc.require_fresh_data(TEST_TOKEN_ID, side="BUY", condition_id="0xcond")
 
 
 @pytest.mark.asyncio
@@ -74,4 +74,4 @@ async def test_rest_primary_execution_blocked_when_book_empty() -> None:
     )
     svc = _rest_primary_service(empty)
     with pytest.raises(StaleDataError):
-        await svc.require_fresh_data(TOKEN, side="BUY", condition_id="0xcond")
+        await svc.require_fresh_data(TEST_TOKEN_ID, side="BUY", condition_id="0xcond")
