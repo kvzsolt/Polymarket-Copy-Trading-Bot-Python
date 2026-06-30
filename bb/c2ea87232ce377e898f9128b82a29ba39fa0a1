@@ -1,0 +1,21 @@
+.github/workflows/ci.yml
+  s_152ac664a7d2cc::t_f6ea1d07e3288e 37-42
+tests/test_config_smoke.py
+  s_152ac664a7d2cc::t_581dc884e9e9c1 1-74
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.3",
+  "base_commit_sha": "bbc2ea87232ce377e898f9128b82a29ba39fa0a1",
+  "prompts": {},
+  "sessions": {
+    "s_152ac664a7d2cc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d7722760-8f34-4dd9-8bb0-af0f61ab93d4",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
