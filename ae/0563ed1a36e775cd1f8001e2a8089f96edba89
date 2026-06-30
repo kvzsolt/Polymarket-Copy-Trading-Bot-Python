@@ -1,0 +1,35 @@
+config/env.py
+  s_240f0866460c0a::t_324180a3207539 60-62,83-86,91-94
+config/app_config.py
+  s_7fb87871706fd2::t_bfb4930729d518 944
+  s_240f0866460c0a::t_324180a3207539 73
+tests/test_config.py
+  s_240f0866460c0a::t_622b05c0680709 229-237
+tests/test_env_security.py
+  s_240f0866460c0a::t_622b05c0680709 91-107,109-111,113,118-132
+  s_240f0866460c0a::t_f69f3fe378ddce 108,112,114-117
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.3",
+  "base_commit_sha": "ae0563ed1a36e775cd1f8001e2a8089f96edba89",
+  "prompts": {},
+  "sessions": {
+    "s_240f0866460c0a": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f15c7-0b0b-7030-b2eb-8232a7ac8760",
+        "model": "gpt-5.3-codex-spark"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    },
+    "s_7fb87871706fd2": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f15d2-efd1-7ea1-8b18-ca3a0e1107de",
+        "model": "gpt-5.3-codex-spark"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
