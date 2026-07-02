@@ -1632,7 +1632,7 @@ async def main() -> int:
             from orchestrators.onchain_detection_runtime import (
                 OnchainDetectionRuntime,
             )
-            from orchestrators.onchain_detection.pending_tx_detector import (
+            from services.onchain_detection.pending_tx_detector import (
                 PendingTxConfig,
             )
             from orchestrators.trade_pipeline import (
