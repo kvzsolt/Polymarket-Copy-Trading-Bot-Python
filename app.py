@@ -1627,26 +1627,50 @@ async def main() -> int:
     ws_url = oc_cfg.onchain_ws_url or oc_cfg.pending_tx_ws_url
     if ws_url and (oc_cfg.enable_onchain_mined_detection or oc_cfg.enable_onchain_pending_detection):
         try:
+            import time as _time_mod
+
             from orchestrators.onchain_detection_runtime import (
                 OnchainDetectionRuntime,
             )
+            from orchestrators.trade_pipeline import (
+                execute_trades as _execute_trade_pipeline,
+            )
 
             async def _onchain_signal_sink(signal) -> None:
-                # TODO(PR-followup): wire to ``trade_pipeline.execute_trades``
-                # via ``normalize_trade_signal(signal.as_raw_signal_dict())``.
-                # For now the sink logs so the runtime is observably active
-                # and the config flags are not inert.
-                logger.info(
-                    "onchain_signal_dispatched | leader=%s tx=%s log_index=%s "
-                    "confidence=%s side=%s size=%s provisional=%s",
-                    signal.leader_wallet,
-                    signal.tx_hash,
-                    signal.log_index,
-                    signal.confidence,
-                    signal.side,
-                    signal.size,
-                    signal.provisional,
-                )
+                # Wire the on-chain signal into the same copy pipeline the
+                # REST-polling leader monitor uses. Each signal is converted
+                # to a raw signal dict (shaped for ``normalize_trade_signal``)
+                # and dispatched to every user context following the signal's
+                # leader. The copy pipeline's ``build_trade_key`` idempotency
+                # (``leader|tx_hash|side|asset``) catches the duplicate when
+                # the slower REST-polling path later reports the same fill.
+                leader = signal.leader_wallet
+                contexts = contexts_by_leader.get(leader, [])
+                if not contexts:
+                    logger.debug(
+                        "onchain_signal_no_followers | leader=%s tx=%s",
+                        leader,
+                        signal.tx_hash,
+                    )
+                    return
+                raw = signal.as_raw_signal_dict()
+                now_ts = _time_mod.time()
+                tasks = [
+                    _execute_trade_pipeline(ctx, leader, [raw], now_ts)
+                    for ctx in contexts
+                ]
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+                for idx, result in enumerate(results):
+                    if isinstance(result, Exception):
+                        ctx = contexts[idx]
+                        logger.warning(
+                            "onchain_signal_pipeline_error | leader=%s user=%s "
+                            "tx=%s error=%s",
+                            leader,
+                            ctx.user_id,
+                            signal.tx_hash,
+                            redact_error_detail(result),
+                        )
 
             onchain_runtime = OnchainDetectionRuntime(
                 watched_wallets=set(application.config.leader.leader_wallets()),
