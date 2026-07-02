@@ -54,7 +54,9 @@ uint256 takerAmountFilled, uint256 fee, bytes32 builder, bytes32 metadata)`.
 
 ## matchOrders calldata decode (verified from source)
 External selector `matchOrders(bytes32,Order,Order[],uint256,uint256[],
-uint256,uint256[])` = `0x6d0fcd6e`. `Order` struct tuple =
+uint256,uint256[])` = `0x3c2b4399`. The selector WITHOUT the standalone
+taker `Order` (`0x6d0fcd6e`) does NOT match production `matchOrders` calls
+and was replaced (Greptile P1 re-review). `Order` struct tuple =
 `(uint256 salt, address maker, address signer, uint256 tokenId, uint256
 makerAmount, uint256 takerAmount, uint8 side, uint8 signatureType, uint256
 timestamp, bytes32 metadata, bytes32 builder, bytes signature)`. The watched
@@ -68,8 +70,13 @@ ownership via `PolyProxyLib`/`PolySafeLib` address derivation.
 ## Dedupe (the Phase 9 hardening)
 `MinedFillDeduplicator` keys mined fills on `(tx_hash, log_index)` — one
 settlement tx with multiple fill logs produces one logical event per log,
-not one per tx. Pending signals are tracked by `tx_hash` so a later mined
-signal with the same `tx_hash` supersedes them (no double dispatch).
+not one per tx. Pending signals are tracked by `(tx_hash, leader_wallet)`
+(not `tx_hash` alone) so a single pending `matchOrders` tx containing
+multiple watched-wallet matches (e.g. taker=walletA, maker=walletB) is
+recorded per leader. A later mined signal for the same `(tx_hash,
+leader_wallet)` supersedes only that leader's pending (per-leader
+`supersede_pending`); a mined for leaderA does NOT suppress a pending for
+leaderB (Greptile P1 re-review: "Pending matches are dropped").
 
 ## Runtime wiring
 `OnchainDetectionRuntime` owns the two WS subscriptions + an
