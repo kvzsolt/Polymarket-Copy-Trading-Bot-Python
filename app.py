@@ -1644,19 +1644,31 @@ async def main() -> int:
                 # leader. The copy pipeline's ``build_trade_key`` idempotency
                 # (``leader|tx_hash|side|asset``) catches the duplicate when
                 # the slower REST-polling path later reports the same fill.
-                leader = signal.leader_wallet
-                contexts = contexts_by_leader.get(leader, [])
+                #
+                # Case-insensitive leader lookup: the on-chain decoders
+                # lowercase ``signal.leader_wallet``, but
+                # ``contexts_by_leader`` is keyed from the configured
+                # ``LEADER_WALLETS`` entries which may be checksummed or
+                # mixed-case. A direct ``.get(signal.leader_wallet)`` would
+                # miss the match and silently drop the signal (Greptile P1
+                # "Leader lookup mismatches").
+                leader_lower = signal.leader_wallet.lower()
+                contexts: list = []
+                for ck, cv in contexts_by_leader.items():
+                    if ck.lower() == leader_lower:
+                        contexts = cv
+                        break
                 if not contexts:
                     logger.debug(
                         "onchain_signal_no_followers | leader=%s tx=%s",
-                        leader,
+                        signal.leader_wallet,
                         signal.tx_hash,
                     )
                     return
                 raw = signal.as_raw_signal_dict()
                 now_ts = _time_mod.time()
                 tasks = [
-                    _execute_trade_pipeline(ctx, leader, [raw], now_ts)
+                    _execute_trade_pipeline(ctx, leader_lower, [raw], now_ts)
                     for ctx in contexts
                 ]
                 results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -1666,7 +1678,7 @@ async def main() -> int:
                         logger.warning(
                             "onchain_signal_pipeline_error | leader=%s user=%s "
                             "tx=%s error=%s",
-                            leader,
+                            leader_lower,
                             ctx.user_id,
                             signal.tx_hash,
                             redact_error_detail(result),
