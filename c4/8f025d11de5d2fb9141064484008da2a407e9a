@@ -1,0 +1,19 @@
+tests/test_onchain_detection_runtime.py
+  s_b1d1292424b92c::t_5824cd8d2a9efd 86-110,166-177,185-187,189-190,218-233,243,247-249,252-254,256,305,307-311
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.8",
+  "base_commit_sha": "c48f025d11de5d2fb9141064484008da2a407e9a",
+  "prompts": {},
+  "sessions": {
+    "s_b1d1292424b92c": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f2195-0969-7c82-a3fb-7dca8b17b5fe",
+        "model": "gpt-5.5"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
