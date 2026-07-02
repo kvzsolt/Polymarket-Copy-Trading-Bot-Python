@@ -96,25 +96,21 @@ class OnchainDetectionRuntime:
         self._dispatcher_task: asyncio.Task | None = None
         self._running = False
         # Per-fill idempotency state for the dispatcher (Greptile P1 #2
-        # re-review). Mined signals are keyed by ``(tx_hash, log_index)``
-        # so a single settlement tx with multiple ``OrderFilled`` logs
-        # produces one dispatch per fill. Pending signals (no log_index)
-        # are keyed by ``tx_hash`` alone. Cross-suppression: if a mined
-        # fill for a tx has already been dispatched, a later pending for
-        # the same tx is dropped (the authoritative copy already placed).
-        #
-        # The reverse direction (pending dispatched first, then mined
-        # arrives) dispatches both; the copy pipeline's
-        # ``build_trade_key`` (leader|tx_hash|side|asset) dedupes at the
-        # copy layer — the dispatcher's job is per-fill uniqueness, not
-        # cross-signal dedup.
+        # re-review). All dispatched keys — mined log keys
+        # ``(tx_hash, log_index)``, pending keys ``(tx_hash, leader)``,
+        # and mined-leader cross-suppression keys ``(tx_hash, leader)`` —
+        # live in a single ``_dispatched_keys`` set + FIFO so that
+        # ``dispatched_cap`` bounds ALL state uniformly (no unbounded
+        # auxiliary set). Mined signals add both their log key and their
+        # leader key; pending signals add only their leader key. Cross-
+        # suppression: a pending is dropped if its ``(tx_hash, leader)``
+        # key is already in the set (a mined or a prior pending for the
+        # same leader already dispatched).
         #
         # FIFO-evicted at ``dispatched_cap`` to bound memory in long-
         # running processes.
         self._dispatched_lock = asyncio.Lock()
-        self._dispatched_log_keys: set[tuple[str, int]] = set()
-        self._dispatched_pending_keys: set[tuple[str, str]] = set()
-        self._dispatched_mined_leaders: set[tuple[str, str]] = set()
+        self._dispatched_keys: set[tuple[str, int] | tuple[str, str]] = set()
         self._dispatched_fifo: deque[tuple[str, int] | tuple[str, str]] = deque()
         self._dispatched_cap = int(dispatched_cap)
 
@@ -274,18 +270,20 @@ class OnchainDetectionRuntime:
         for the same fill already claimed the slot (the duplicate is
         dropped).
 
-        Idempotency key (Greptile P1 #2 re-review):
-          * Mined signals (``log_index`` is not None): ``(tx_hash,
-            log_index)`` so a single settlement tx with multiple
-            ``OrderFilled`` logs produces one dispatch *per fill*, not
-            one per tx.
-          * Pending signals (``log_index`` is None): ``(tx_hash,
-            leader_wallet)`` so a single pending ``matchOrders`` tx with
-            multiple watched-wallet matches produces one dispatch *per
-            leader*. Additionally, if a mined fill for the same
-            ``(tx_hash, leader_wallet)`` has already been dispatched,
-            the pending is dropped (the authoritative mined copy already
-            replaced the provisional).
+        Idempotency keys (Greptile P1 #2 re-review + "Mined keys never
+        expire" re-review):
+          * Mined signals (``log_index`` is not None): the log key
+            ``(tx_hash, log_index)`` is the dedupe key (one dispatch per
+            distinct fill). The leader key ``(tx_hash, leader_wallet)``
+            is ALSO added to the set so a later pending for the same
+            leader is cross-suppressed (dropped — the authoritative copy
+            already placed). Both keys go into the FIFO so the cap bounds
+            all state uniformly.
+          * Pending signals (``log_index`` is None): the leader key
+            ``(tx_hash, leader_wallet)`` is the dedupe key AND the
+            cross-suppression check target. If it is already in the set
+            (a prior pending OR a mined for the same leader already
+            dispatched), the pending is dropped.
 
         The reverse direction (pending dispatched first, then mined
         arrives for the same leader) dispatches both; the copy pipeline's
@@ -301,65 +299,47 @@ class OnchainDetectionRuntime:
         leader = signal.leader_wallet.lower()
         async with self._dispatched_lock:
             if signal.log_index is not None:
-                key: tuple[str, int] | tuple[str, str] = (
-                    signal.tx_hash,
-                    signal.log_index,
-                )
-                if key in self._dispatched_log_keys:
+                log_key: tuple[str, int] = (signal.tx_hash, signal.log_index)
+                if log_key in self._dispatched_keys:
                     logger.debug(
                         "onchain_dispatch_dropped_dup | tx=%s log_index=%s",
                         signal.tx_hash,
                         signal.log_index,
                     )
                     return False
-                self._dispatched_log_keys.add(key)
-                mined_leader_key = (signal.tx_hash, leader)
-                self._dispatched_mined_leaders.add(mined_leader_key)
-                self._dispatched_fifo.append(key)
+                self._dispatched_keys.add(log_key)
+                self._dispatched_fifo.append(log_key)
+                # Cross-suppression key: a later pending for the same
+                # (tx_hash, leader) will see this in the set and drop.
+                leader_key: tuple[str, str] = (signal.tx_hash, leader)
+                if leader_key not in self._dispatched_keys:
+                    self._dispatched_keys.add(leader_key)
+                    self._dispatched_fifo.append(leader_key)
             else:
-                pending_key = (signal.tx_hash, leader)
-                if pending_key in self._dispatched_pending_keys:
+                pending_key: tuple[str, str] = (signal.tx_hash, leader)
+                if pending_key in self._dispatched_keys:
                     logger.debug(
-                        "onchain_dispatch_dropped_dup_pending | tx=%s leader=%s",
+                        "onchain_dispatch_dropped_dup | tx=%s leader=%s",
                         signal.tx_hash,
                         leader,
                     )
                     return False
-                if pending_key in self._dispatched_mined_leaders:
-                    logger.debug(
-                        "onchain_dispatch_dropped_stale_pending | tx=%s leader=%s",
-                        signal.tx_hash,
-                        leader,
-                    )
-                    return False
-                self._dispatched_pending_keys.add(pending_key)
+                self._dispatched_keys.add(pending_key)
                 self._dispatched_fifo.append(pending_key)
             while len(self._dispatched_fifo) > self._dispatched_cap:
                 old = self._dispatched_fifo.popleft()
-                if isinstance(old, tuple) and len(old) == 2 and isinstance(old[1], int):
-                    self._dispatched_log_keys.discard(old)
-                elif isinstance(old, tuple) and len(old) == 2:
-                    self._dispatched_pending_keys.discard(old)
-                    self._dispatched_mined_leaders.discard(old)
-                else:
-                    self._dispatched_pending_keys.discard(old)
-                    self._dispatched_mined_leaders.discard(old)
+                self._dispatched_keys.discard(old)
             return True
 
     def dispatched_tx_hashes_snapshot(
         self,
     ) -> set[tuple[str, int] | tuple[str, str]]:
         """Test-only: return a copy of all dispatched idempotency keys."""
-        return (
-            set(self._dispatched_log_keys)
-            | self._dispatched_pending_keys
-        )
+        return set(self._dispatched_keys)
 
     def reset_dispatched(self) -> None:
         """Test-only: clear all dispatched idempotency state."""
-        self._dispatched_log_keys.clear()
-        self._dispatched_pending_keys.clear()
-        self._dispatched_mined_leaders.clear()
+        self._dispatched_keys.clear()
         self._dispatched_fifo.clear()
 
     async def start(self) -> None:

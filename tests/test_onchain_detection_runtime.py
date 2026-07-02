@@ -288,7 +288,13 @@ async def test_mined_then_pending_same_tx_dispatches_once() -> None:
 @pytest.mark.asyncio
 async def test_dispatcher_idempotency_cap_evicts_oldest() -> None:
     """FIFO eviction at the dispatched_cap keeps the idempotency set
-    bounded in long-running processes."""
+    bounded in long-running processes.
+
+    Greptile P1 re-review ("Mined keys never expire"): a mined signal adds
+    BOTH its log key ``(tx_hash, log_index)`` AND its leader key
+    ``(tx_hash, leader)`` to the single ``_dispatched_keys`` set + FIFO.
+    Both must be evicted by the cap — no unbounded auxiliary set.
+    """
     dispatched: list[OnchainTradeSignal] = []
 
     async def sink(signal: OnchainTradeSignal) -> None:
@@ -300,19 +306,21 @@ async def test_dispatcher_idempotency_cap_evicts_oldest() -> None:
         signal_sink=sink,
         enable_pending=False,
         enable_mined=False,
-        dispatched_cap=3,
+        dispatched_cap=4,  # small cap: 2 mined signals = 4 FIFO entries
     )
-    # Manually drive the idempotency claim for 5 distinct mined fills.
+    # Each mined signal adds 2 FIFO entries (log key + leader key).
+    # With cap=4, 2 mined signals fill the FIFO; the 3rd evicts the 1st.
     for i in range(5):
         sig = _make_mined_signal(tx_hash=f"0x{i:064x}", log_index=i)
         first_ok = await rt._claim_or_drop(sig)
         second_ok = await rt._claim_or_drop(sig)
         assert first_ok is True, f"first arrival for {sig.tx_hash} should dispatch"
         assert second_ok is False, f"second arrival for {sig.tx_hash} should drop"
-    # FIFO-eviction: cap=3 -> set bounded at most 3 entries.
+    # The set is bounded — no unbounded growth of mined-leader keys.
     snapshot = rt.dispatched_tx_hashes_snapshot()
-    assert len(snapshot) <= 3, (
-        f"set should be FIFO-evicted to dispatched_cap=3, got {len(snapshot)}"
+    assert len(snapshot) <= 4, (
+        f"set should be FIFO-evicted to dispatched_cap=4, got {len(snapshot)} "
+        "(mined-leader keys must also be evicted, not just log keys)"
     )
 
 
