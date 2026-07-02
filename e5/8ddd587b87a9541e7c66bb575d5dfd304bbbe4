@@ -1,0 +1,21 @@
+bot_cli/commands/tune_strategy.py
+  s_6dd737c8c2aa63::t_974d9649c5e43f 8-41,83-92,96-106,116,131-133
+tests/test_cli_profile_tune.py
+  s_6dd737c8c2aa63::t_93138aa5399a97 223-344
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.8",
+  "base_commit_sha": "e58ddd587b87a9541e7c66bb575d5dfd304bbbe4",
+  "prompts": {},
+  "sessions": {
+    "s_6dd737c8c2aa63": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f2057-a54e-7be1-9954-a15e79e49f6c",
+        "model": "gpt-5.5"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
