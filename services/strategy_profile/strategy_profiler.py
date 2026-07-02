@@ -173,15 +173,15 @@ def compute_features(history: LoadedHistory) -> dict[str, float | None]:
         maker_fill_ratio = None
         taker_fill_ratio = None
 
-    # Win-rate / ROI / PnL from closed positions.
-    wins = 0
+    # Win-rate / ROI / PnL from closed positions. The per-position pnl
+    # series feeds max_drawdown_30d; win_rate_7d uses its own wins_7d
+    # counter below on the closed_7d subset (so we don't track a global
+    # wins counter here).
     pnl_values: list[float] = []
     for c in closed:
         pnl = _to_decimal(c.get("pnl") or c.get("realizedPnl"))
         if pnl != 0:
             pnl_values.append(float(pnl))
-            if pnl > 0:
-                wins += 1
     win_rate_7d = None
     closed_7d = [
         c for c in closed
