@@ -36,31 +36,38 @@ async def test_same_tx_multiple_logs_each_counted_once() -> None:
 
 
 @pytest.mark.asyncio
-async def test_pending_record_dedupes_by_tx_hash() -> None:
+async def test_pending_record_dedupes_by_tx_and_leader() -> None:
     dedupe = MinedFillDeduplicator()
-    assert await dedupe.record_pending("0xabc") is True
-    # Duplicate pending for the same tx is not new.
-    assert await dedupe.record_pending("0xabc") is False
-    assert await dedupe.record_pending("0xdef") is True
+    assert await dedupe.record_pending("0xabc", "0xleader1") is True
+    # Duplicate pending for the same (tx, leader) is not new.
+    assert await dedupe.record_pending("0xabc", "0xleader1") is False
+    # Same tx, different leader — distinct fill, recorded as new.
+    assert await dedupe.record_pending("0xabc", "0xleader2") is True
+    assert await dedupe.record_pending("0xdef", "0xleader1") is True
 
 
 @pytest.mark.asyncio
 async def test_supersede_pending_returns_true_when_known() -> None:
     dedupe = MinedFillDeduplicator()
-    await dedupe.record_pending("0xabc")
-    assert await dedupe.supersede_pending("0xabc") is True
+    await dedupe.record_pending("0xabc", "0xleader1")
+    assert await dedupe.supersede_pending("0xabc", "0xleader1") is True
     # After supersede, the pending is no longer known.
-    assert await dedupe.pending_known("0xabc") is False
+    assert await dedupe.pending_known("0xabc", "0xleader1") is False
     # Superseding an unknown pending returns False.
-    assert await dedupe.supersede_pending("0xzzz") is False
+    assert await dedupe.supersede_pending("0xzzz", "0xleader1") is False
+    # Superseding a known tx for a DIFFERENT leader returns False (per-leader).
+    await dedupe.record_pending("0xabc", "0xleader2")
+    assert await dedupe.supersede_pending("0xabc", "0xleader1") is False
 
 
 @pytest.mark.asyncio
 async def test_pending_known_reflects_state() -> None:
     dedupe = MinedFillDeduplicator()
-    assert await dedupe.pending_known("0xabc") is False
-    await dedupe.record_pending("0xabc")
-    assert await dedupe.pending_known("0xabc") is True
+    assert await dedupe.pending_known("0xabc", "0xleader1") is False
+    await dedupe.record_pending("0xabc", "0xleader1")
+    assert await dedupe.pending_known("0xabc", "0xleader1") is True
+    # Different leader in the same tx — not known.
+    assert await dedupe.pending_known("0xabc", "0xleader2") is False
 
 
 @pytest.mark.asyncio
@@ -85,7 +92,7 @@ async def test_bulk_record_mined_returns_per_key_flags() -> None:
 async def test_reset_clears_state() -> None:
     dedupe = MinedFillDeduplicator()
     await dedupe.is_duplicate_mined("0xabc", 0)
-    await dedupe.record_pending("0xdef")
+    await dedupe.record_pending("0xdef", "0xleader1")
     dedupe.reset()
     assert dedupe.mined_seen_snapshot() == set()
     assert dedupe.pending_seen_snapshot() == set()

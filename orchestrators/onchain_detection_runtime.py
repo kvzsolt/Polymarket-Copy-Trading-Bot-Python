@@ -113,9 +113,9 @@ class OnchainDetectionRuntime:
         # running processes.
         self._dispatched_lock = asyncio.Lock()
         self._dispatched_log_keys: set[tuple[str, int]] = set()
-        self._dispatched_pending_tx_hashes: set[str] = set()
-        self._dispatched_mined_tx_hashes: set[str] = set()
-        self._dispatched_fifo: deque[str | tuple[str, int]] = deque()
+        self._dispatched_pending_keys: set[tuple[str, str]] = set()
+        self._dispatched_mined_leaders: set[tuple[str, str]] = set()
+        self._dispatched_fifo: deque[tuple[str, int] | tuple[str, str]] = deque()
         self._dispatched_cap = int(dispatched_cap)
 
     @property
@@ -147,9 +147,6 @@ class OnchainDetectionRuntime:
                 decoded.log_index,
             )
             return
-        # If a pending signal for this tx was recorded, mark it superseded so
-        # the dispatcher drops the provisional copy in favour of this mined one.
-        await self._dedupe.supersede_pending(decoded.tx_hash)
         condition_id = await self._resolve_condition_id(str(decoded.token_id))
         event_ts = int(time.time() * 1000)
         signal = build_signal_from_log(
@@ -160,6 +157,14 @@ class OnchainDetectionRuntime:
         )
         if signal is None:
             return
+        # If a pending signal for this (tx_hash, leader_wallet) was recorded,
+        # mark it superseded so the dispatcher drops the provisional copy in
+        # favour of this mined one. Per-leader keying (not tx-wide) ensures a
+        # mined fill for leaderA does NOT suppress a pending for leaderB in
+        # the same tx (Greptile P1 re-review: "Pending matches are dropped").
+        await self._dedupe.supersede_pending(
+            decoded.tx_hash, signal.leader_wallet
+        )
         await self._enqueue(signal)
 
     async def _on_pending_tx(self, tx: dict[str, Any]) -> None:
@@ -175,12 +180,18 @@ class OnchainDetectionRuntime:
         for signal in signals:
             if is_stale_pending(signal, now_ms, self._pending_config.max_signal_age_ms):
                 continue
-            # Record the pending tx_hash; if a pending for this tx was already
-            # recorded, drop the duplicate (do not double-dispatch).
-            is_new = await self._dedupe.record_pending(signal.tx_hash)
+            # Record the pending (tx_hash, leader_wallet); if a pending for
+            # this leader in this tx was already recorded, drop the duplicate
+            # (do not double-dispatch). Per-leader keying allows distinct
+            # watched-wallet matches in the same tx to each be recorded.
+            is_new = await self._dedupe.record_pending(
+                signal.tx_hash, signal.leader_wallet
+            )
             if not is_new:
                 logger.debug(
-                    "onchain_pending_dup_dropped | tx=%s", signal.tx_hash
+                    "onchain_pending_dup_dropped | tx=%s leader=%s",
+                    signal.tx_hash,
+                    signal.leader_wallet,
                 )
                 continue
             await self._enqueue(signal)
@@ -226,9 +237,14 @@ class OnchainDetectionRuntime:
                     # enqueued before the flag was toggled off.
                     if not self._enable_pending:
                         continue
-                    # If a mined signal for this tx has already superseded this
-                    # pending signal, drop it (no double dispatch).
-                    if not await self._dedupe.pending_known(signal.tx_hash):
+                    # If a mined signal for this (tx_hash, leader_wallet)
+                    # has already superseded this pending signal, drop it
+                    # (no double dispatch). Per-leader keying ensures a
+                    # mined for leaderA does not suppress a pending for
+                    # leaderB in the same tx.
+                    if not await self._dedupe.pending_known(
+                        signal.tx_hash, signal.leader_wallet
+                    ):
                         continue
                 # Per-fill idempotency gate (Greptile P1 #2 re-review):
                 # mined signals are keyed by ``(tx_hash, log_index)`` so a
@@ -263,13 +279,16 @@ class OnchainDetectionRuntime:
             log_index)`` so a single settlement tx with multiple
             ``OrderFilled`` logs produces one dispatch *per fill*, not
             one per tx.
-          * Pending signals (``log_index`` is None): ``tx_hash`` alone.
-            Additionally, if a mined fill for the same ``tx_hash`` has
-            already been dispatched, the pending is dropped (the
-            authoritative mined copy already replaced the provisional).
+          * Pending signals (``log_index`` is None): ``(tx_hash,
+            leader_wallet)`` so a single pending ``matchOrders`` tx with
+            multiple watched-wallet matches produces one dispatch *per
+            leader*. Additionally, if a mined fill for the same
+            ``(tx_hash, leader_wallet)`` has already been dispatched,
+            the pending is dropped (the authoritative mined copy already
+            replaced the provisional).
 
         The reverse direction (pending dispatched first, then mined
-        arrives for the same tx) dispatches both; the copy pipeline's
+        arrives for the same leader) dispatches both; the copy pipeline's
         ``build_trade_key`` (``leader|tx_hash|side|asset``) dedupes at
         the copy layer — the dispatcher's job is per-fill uniqueness.
 
@@ -279,9 +298,10 @@ class OnchainDetectionRuntime:
         """
         if not signal.tx_hash:
             return True
+        leader = signal.leader_wallet.lower()
         async with self._dispatched_lock:
             if signal.log_index is not None:
-                key: str | tuple[str, int] = (
+                key: tuple[str, int] | tuple[str, str] = (
                     signal.tx_hash,
                     signal.log_index,
                 )
@@ -293,45 +313,53 @@ class OnchainDetectionRuntime:
                     )
                     return False
                 self._dispatched_log_keys.add(key)
-                self._dispatched_mined_tx_hashes.add(signal.tx_hash)
+                mined_leader_key = (signal.tx_hash, leader)
+                self._dispatched_mined_leaders.add(mined_leader_key)
                 self._dispatched_fifo.append(key)
             else:
-                key = signal.tx_hash
-                if key in self._dispatched_pending_tx_hashes:
+                pending_key = (signal.tx_hash, leader)
+                if pending_key in self._dispatched_pending_keys:
                     logger.debug(
-                        "onchain_dispatch_dropped_dup_pending | tx=%s",
+                        "onchain_dispatch_dropped_dup_pending | tx=%s leader=%s",
                         signal.tx_hash,
+                        leader,
                     )
                     return False
-                if key in self._dispatched_mined_tx_hashes:
+                if pending_key in self._dispatched_mined_leaders:
                     logger.debug(
-                        "onchain_dispatch_dropped_stale_pending | tx=%s",
+                        "onchain_dispatch_dropped_stale_pending | tx=%s leader=%s",
                         signal.tx_hash,
+                        leader,
                     )
                     return False
-                self._dispatched_pending_tx_hashes.add(key)
-                self._dispatched_fifo.append(key)
+                self._dispatched_pending_keys.add(pending_key)
+                self._dispatched_fifo.append(pending_key)
             while len(self._dispatched_fifo) > self._dispatched_cap:
                 old = self._dispatched_fifo.popleft()
-                if isinstance(old, tuple):
+                if isinstance(old, tuple) and len(old) == 2 and isinstance(old[1], int):
                     self._dispatched_log_keys.discard(old)
+                elif isinstance(old, tuple) and len(old) == 2:
+                    self._dispatched_pending_keys.discard(old)
+                    self._dispatched_mined_leaders.discard(old)
                 else:
-                    self._dispatched_pending_tx_hashes.discard(old)
-                    self._dispatched_mined_tx_hashes.discard(old)
+                    self._dispatched_pending_keys.discard(old)
+                    self._dispatched_mined_leaders.discard(old)
             return True
 
-    def dispatched_tx_hashes_snapshot(self) -> set[str | tuple[str, int]]:
+    def dispatched_tx_hashes_snapshot(
+        self,
+    ) -> set[tuple[str, int] | tuple[str, str]]:
         """Test-only: return a copy of all dispatched idempotency keys."""
         return (
             set(self._dispatched_log_keys)
-            | self._dispatched_pending_tx_hashes
+            | self._dispatched_pending_keys
         )
 
     def reset_dispatched(self) -> None:
         """Test-only: clear all dispatched idempotency state."""
         self._dispatched_log_keys.clear()
-        self._dispatched_pending_tx_hashes.clear()
-        self._dispatched_mined_tx_hashes.clear()
+        self._dispatched_pending_keys.clear()
+        self._dispatched_mined_leaders.clear()
         self._dispatched_fifo.clear()
 
     async def start(self) -> None:
