@@ -1632,6 +1632,9 @@ async def main() -> int:
             from orchestrators.onchain_detection_runtime import (
                 OnchainDetectionRuntime,
             )
+            from orchestrators.onchain_detection.pending_tx_detector import (
+                PendingTxConfig,
+            )
             from orchestrators.trade_pipeline import (
                 execute_trades as _execute_trade_pipeline,
             )
@@ -1690,6 +1693,10 @@ async def main() -> int:
                 signal_sink=_onchain_signal_sink,
                 enable_pending=oc_cfg.enable_onchain_pending_detection,
                 enable_mined=oc_cfg.enable_onchain_mined_detection,
+                pending_config=PendingTxConfig(
+                    max_signal_age_ms=oc_cfg.pending_tx_max_signal_age_ms,
+                    hashes_only=oc_cfg.pending_tx_hashes_only,
+                ),
             )
             await onchain_runtime.start()
             logger.info(
