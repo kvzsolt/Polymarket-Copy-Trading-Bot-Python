@@ -17,18 +17,19 @@ Safety invariants:
   * Pending signals are **provisional**: they only reach the sink when the
     pending flag is on, and they are superseded by the mined signal that
     shares their ``tx_hash`` (no double dispatch).
-  * **Shared tx_hash idempotency at the dispatcher** (Greptile P1 #2): a
-    per-runtime ``_dispatched_tx_hashes`` set + lock guarantees that once a
-    signal for a ``tx_hash`` is dispatched to the sink, the second arrival
-    (pending-followed-by-mined OR mined-followed-by-pending OR a second
-    mined log with the same ``tx_hash``) is *dropped* — exactly one sink
-    call per leader fill. The copy-bot model is "one copy order per leader
-    fill" regardless of how many maker-orders matched inside the leader's
-    settlement tx.
-  * Mined signals are deduped by ``(tx_hash, log_index)`` so a single
-    settlement tx with multiple fill logs produces one logical event per log,
-    not one per tx (this dedupe is keyed on the *log* shape; the dispatcher-
-    level idempotency is keyed on ``tx_hash`` and cascades above it).
+  * **Per-fill idempotency at the dispatcher** (Greptile P1 #2 re-review):
+    mined signals are keyed by ``(tx_hash, log_index)`` so a single
+    settlement tx that emits multiple ``OrderFilled`` logs produces one
+    dispatch *per fill*, not one per tx. Pending signals (which have no
+    ``log_index``) are keyed by ``tx_hash`` alone. Cross-suppression: if a
+    mined fill for a ``tx_hash`` has already been dispatched, any later
+    pending signal for that same ``tx_hash`` is dropped (the authoritative
+    mined copy already replaced the provisional). The reverse direction
+    (pending dispatched first, then mined arrives) dispatches both — the
+    copy pipeline's ``build_trade_key`` (keyed on
+    ``leader|tx_hash|side|asset``) catches the duplicate and amends/drops
+    the second at the *copy* layer, which is the correct place for
+    cross-signal dedup.
   * The runtime never blocks the copy path on WSS health: if the WS is down,
     no on-chain signals are produced and the existing REST-polling leader
     path continues unchanged.
@@ -94,18 +95,27 @@ class OnchainDetectionRuntime:
         self._pending_ws: OnchainWebSocket | None = None
         self._dispatcher_task: asyncio.Task | None = None
         self._running = False
-        # Shared tx_hash idempotency key for the dispatcher. Closes the
-        # pending/mined double-dispatch race (Greptile P1 #2): once a
-        # signal for a given ``tx_hash`` is dispatched to the sink, the
-        # second arrival (pending or mined) for the same ``tx_hash`` is
-        # dropped. The copy-bot model is "one copy order per leader fill"
-        # regardless of how many maker-orders matched inside the leader's
-        # settlement tx.
+        # Per-fill idempotency state for the dispatcher (Greptile P1 #2
+        # re-review). Mined signals are keyed by ``(tx_hash, log_index)``
+        # so a single settlement tx with multiple ``OrderFilled`` logs
+        # produces one dispatch per fill. Pending signals (no log_index)
+        # are keyed by ``tx_hash`` alone. Cross-suppression: if a mined
+        # fill for a tx has already been dispatched, a later pending for
+        # the same tx is dropped (the authoritative copy already placed).
+        #
+        # The reverse direction (pending dispatched first, then mined
+        # arrives) dispatches both; the copy pipeline's
+        # ``build_trade_key`` (leader|tx_hash|side|asset) dedupes at the
+        # copy layer — the dispatcher's job is per-fill uniqueness, not
+        # cross-signal dedup.
+        #
         # FIFO-evicted at ``dispatched_cap`` to bound memory in long-
         # running processes.
         self._dispatched_lock = asyncio.Lock()
-        self._dispatched_tx_hashes: set[str] = set()
-        self._dispatched_fifo: deque[str] = deque()
+        self._dispatched_log_keys: set[tuple[str, int]] = set()
+        self._dispatched_pending_tx_hashes: set[str] = set()
+        self._dispatched_mined_tx_hashes: set[str] = set()
+        self._dispatched_fifo: deque[str | tuple[str, int]] = deque()
         self._dispatched_cap = int(dispatched_cap)
 
     @property
@@ -220,14 +230,14 @@ class OnchainDetectionRuntime:
                     # pending signal, drop it (no double dispatch).
                     if not await self._dedupe.pending_known(signal.tx_hash):
                         continue
-                # Shared tx_hash idempotency gate (Greptile P1 #2):
-                # atomically claim the tx_hash before dispatching so a
-                # pending + mined pair for the same tx_hash yields exactly
-                # one sink call. The check-then-mark is performed under
-                # ``_dispatched_lock`` to close the TOCTOU window between
-                # the existing ``pending_known`` check above and the
-                # ``signal_sink`` invocation below.
-                if await self._claim_or_drop(signal.tx_hash) is False:
+                # Per-fill idempotency gate (Greptile P1 #2 re-review):
+                # mined signals are keyed by ``(tx_hash, log_index)`` so a
+                # single settlement tx with multiple ``OrderFilled`` logs
+                # produces one dispatch per fill. Pending signals (no
+                # log_index) are keyed by ``tx_hash`` alone and are dropped
+                # if a mined fill for the same tx already dispatched (the
+                # authoritative copy replaces the provisional).
+                if await self._claim_or_drop(signal) is False:
                     continue
                 await self._signal_sink(signal)
             except asyncio.CancelledError:
@@ -240,40 +250,88 @@ class OnchainDetectionRuntime:
                     redact_error_detail(exc),
                 )
 
-    async def _claim_or_drop(self, tx_hash: str) -> bool:
-        """Atomically claim a ``tx_hash`` for dispatch.
+    async def _claim_or_drop(self, signal: OnchainTradeSignal) -> bool:
+        """Atomically claim a fill for dispatch.
 
-        Returns True if this caller is the first to claim the tx_hash
-        (the sink should be invoked). Returns False if a prior signal for
-        this tx_hash already claimed the slot (the sink should NOT be
-        invoked — the duplicate is dropped).
+        Returns True if this caller is the first to claim the fill
+        (the sink should be invoked). Returns False if a prior signal
+        for the same fill already claimed the slot (the duplicate is
+        dropped).
+
+        Idempotency key (Greptile P1 #2 re-review):
+          * Mined signals (``log_index`` is not None): ``(tx_hash,
+            log_index)`` so a single settlement tx with multiple
+            ``OrderFilled`` logs produces one dispatch *per fill*, not
+            one per tx.
+          * Pending signals (``log_index`` is None): ``tx_hash`` alone.
+            Additionally, if a mined fill for the same ``tx_hash`` has
+            already been dispatched, the pending is dropped (the
+            authoritative mined copy already replaced the provisional).
+
+        The reverse direction (pending dispatched first, then mined
+        arrives for the same tx) dispatches both; the copy pipeline's
+        ``build_trade_key`` (``leader|tx_hash|side|asset``) dedupes at
+        the copy layer — the dispatcher's job is per-fill uniqueness.
 
         Signals without a ``tx_hash`` are always dispatched (they bypass
         the idempotency gate; this preserves the legacy watch path that
         predates the on-chain detection dispatcher).
         """
-        if not tx_hash:
+        if not signal.tx_hash:
             return True
         async with self._dispatched_lock:
-            if tx_hash in self._dispatched_tx_hashes:
-                logger.debug(
-                    "onchain_dispatch_dropped_dup | tx=%s", tx_hash
+            if signal.log_index is not None:
+                key: str | tuple[str, int] = (
+                    signal.tx_hash,
+                    signal.log_index,
                 )
-                return False
-            self._dispatched_tx_hashes.add(tx_hash)
-            self._dispatched_fifo.append(tx_hash)
+                if key in self._dispatched_log_keys:
+                    logger.debug(
+                        "onchain_dispatch_dropped_dup | tx=%s log_index=%s",
+                        signal.tx_hash,
+                        signal.log_index,
+                    )
+                    return False
+                self._dispatched_log_keys.add(key)
+                self._dispatched_mined_tx_hashes.add(signal.tx_hash)
+                self._dispatched_fifo.append(key)
+            else:
+                key = signal.tx_hash
+                if key in self._dispatched_pending_tx_hashes:
+                    logger.debug(
+                        "onchain_dispatch_dropped_dup_pending | tx=%s",
+                        signal.tx_hash,
+                    )
+                    return False
+                if key in self._dispatched_mined_tx_hashes:
+                    logger.debug(
+                        "onchain_dispatch_dropped_stale_pending | tx=%s",
+                        signal.tx_hash,
+                    )
+                    return False
+                self._dispatched_pending_tx_hashes.add(key)
+                self._dispatched_fifo.append(key)
             while len(self._dispatched_fifo) > self._dispatched_cap:
                 old = self._dispatched_fifo.popleft()
-                self._dispatched_tx_hashes.discard(old)
+                if isinstance(old, tuple):
+                    self._dispatched_log_keys.discard(old)
+                else:
+                    self._dispatched_pending_tx_hashes.discard(old)
+                    self._dispatched_mined_tx_hashes.discard(old)
             return True
 
-    def dispatched_tx_hashes_snapshot(self) -> set[str]:
-        """Test-only: return a copy of the dispatched tx_hashes set."""
-        return set(self._dispatched_tx_hashes)
+    def dispatched_tx_hashes_snapshot(self) -> set[str | tuple[str, int]]:
+        """Test-only: return a copy of all dispatched idempotency keys."""
+        return (
+            set(self._dispatched_log_keys)
+            | self._dispatched_pending_tx_hashes
+        )
 
     def reset_dispatched(self) -> None:
-        """Test-only: clear the dispatched tx_hashes idempotency state."""
-        self._dispatched_tx_hashes.clear()
+        """Test-only: clear all dispatched idempotency state."""
+        self._dispatched_log_keys.clear()
+        self._dispatched_pending_tx_hashes.clear()
+        self._dispatched_mined_tx_hashes.clear()
         self._dispatched_fifo.clear()
 
     async def start(self) -> None:

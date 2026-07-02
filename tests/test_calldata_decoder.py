@@ -72,14 +72,26 @@ def _encode_match_orders(
 
 
 def test_selector_matches_canonical_signature() -> None:
+    # The canonical ``matchOrders`` signature includes a STANDALONE taker
+    # ``Order`` (2nd parameter) before the ``Order[]`` array. A selector
+    # computed without it (``0x6d0fcd6e``) does not match production
+    # ``matchOrders`` calls, so the pending-tx decoder would reject every
+    # real payload before ABI decoding (Greptile P1 re-review).
     expected = function_signature_to_4byte_selector(
         "matchOrders(bytes32,"
+        "(uint256,address,address,uint256,uint256,uint256,"
+        "uint8,uint8,uint256,bytes32,bytes32,bytes),"
         "(uint256,address,address,uint256,uint256,uint256,"
         "uint8,uint8,uint256,bytes32,bytes32,bytes)[],"
         "uint256,uint256[],uint256,uint256[])"
     )
     assert MATCH_ORDERS_SELECTOR == expected
-    assert MATCH_ORDERS_SELECTOR.hex() == "6d0fcd6e"
+    # Production selector confirmed via Greptile T-Rex repro against a
+    # real ``matchOrders`` pending transaction.
+    assert MATCH_ORDERS_SELECTOR.hex() == "3c2b4399"
+    # Regression guard: the buggy selector (missing standalone taker
+    # Order) must NOT be used.
+    assert MATCH_ORDERS_SELECTOR.hex() != "6d0fcd6e"
 
 
 def test_decode_round_trip_taker_and_makers() -> None:

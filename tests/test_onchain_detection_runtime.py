@@ -83,6 +83,31 @@ def _make_pending_signal(tx_hash: str = _TX, leader: str = _WATCHED) -> OnchainT
     )
 
 
+def _make_mined_signal(
+    tx_hash: str = _TX,
+    leader: str = _WATCHED,
+    log_index: int = 0,
+) -> OnchainTradeSignal:
+    return OnchainTradeSignal(
+        leader_wallet=leader,
+        token_id="12345",
+        side="BUY",
+        size=Decimal("1"),
+        price=Decimal("2"),
+        usdc_size=Decimal("2"),
+        tx_hash=tx_hash,
+        confidence=DetectionConfidence.MINED_AUTHORITATIVE,
+        maker_side=0,
+        watched_role="maker",
+        event_ts=2000,
+        log_index=log_index,
+        condition_id="cond-x",
+        provisional=False,
+        exchange=POLYMARKET_CTF_EXCHANGE_V2_ADDRESS.lower(),
+        order_hash=None,
+    )
+
+
 def _make_runtime(
     dispatched: list[OnchainTradeSignal],
     *,
@@ -138,20 +163,18 @@ async def test_duplicate_mined_log_not_dispatched_twice() -> None:
 
 
 @pytest.mark.asyncio
-async def test_same_tx_multiple_logs_collapsed_to_single_dispatch() -> None:
-    """Greptile P1 #2: one tx with N mined ``OrderFilled`` logs collapses to
-    ONE dispatcher-level sink call (the "one copy order per leader fill"
-    semantic). Previously each log dispatched separately via the composite
-    ``(tx_hash, log_index)`` MinedFillDeduplicator key — but that kept the
-    pending-then-mined double-dispatch race open. Closing the race at the
-    dispatcher means even multi-log mined arrivals collapse to a single
-    dispatch per ``tx_hash``.
+async def test_same_tx_multiple_logs_each_dispatched() -> None:
+    """Greptile P1 #2 re-review: one tx with N mined ``OrderFilled`` logs
+    (different ``logIndex``) produces N dispatches — one per distinct
+    fill. The previous tx_hash-only idempotency gate collapsed all logs
+    for a tx to a single dispatch, silently dropping distinct fills.
 
-    The MinedFillDeduplicator's ``(tx_hash, log_index)`` _mined_seen set
-    is still used internally — it correctly refuses to re-enqueue a
-    duplicate _delivered_ log from a noisy WebSocket reconnect. The
-    _dispatcher_ adds a separate per-tx_hash idempotency gate above the
-    deduplicator to close the pending-then-mined race."""
+    The ``MinedFillDeduplicator``'s ``(tx_hash, log_index)`` _mined_seen
+    set still guards against re-enqueuing the SAME log on a noisy
+    WebSocket reconnect; the dispatcher's per-fill ``(tx_hash,
+    log_index)`` gate is what ensures each distinct fill reaches the
+    sink exactly once.
+    """
     dispatched: list[OnchainTradeSignal] = []
     rt = _make_runtime(dispatched)
     await rt.start()
@@ -159,10 +182,12 @@ async def test_same_tx_multiple_logs_collapsed_to_single_dispatch() -> None:
         await rt._on_mined_log(_build_log(maker=_WATCHED, log_index=0))
         await rt._on_mined_log(_build_log(maker=_WATCHED, log_index=1))
         await asyncio.sleep(0.05)
-        assert len(dispatched) == 1, (
-            "one dispatch per tx_hash regardless of log_index count"
+        assert len(dispatched) == 2, (
+            "one dispatch per (tx_hash, log_index) — distinct fills must "
+            "not be collapsed"
         )
-        assert dispatched[0].log_index in {0, 1}
+        log_indices = {sig.log_index for sig in dispatched}
+        assert log_indices == {0, 1}
     finally:
         await rt.stop()
 
@@ -190,14 +215,22 @@ async def test_mined_supersedes_pending_no_double_dispatch() -> None:
 
 
 @pytest.mark.asyncio
-async def test_pending_then_mined_same_tx_dispatches_once() -> None:
-    """Greptile P1 #2 regression: a pending signal followed by a mined
-    ``OrderFilled`` log *for the same tx_hash* (the actual race window that
-    the existing ``pending_known`` check alone could not close because the
-    dispatcher may pop+dispatch the pending before ``_on_mined_log`` runs
-    ``supersede_pending``). The shared ``_dispatched_tx_hashes`` gate at
-    the dispatcher atomically claims the tx_hash before invoking the sink,
-    so the second arrival is dropped deterministically.
+async def test_pending_then_mined_same_tx_both_dispatched() -> None:
+    """Greptile P1 #2 re-review: a pending signal followed by a mined
+    ``OrderFilled`` log *for the same tx_hash* dispatches BOTH signals.
+    The pending is provisional (estimated from calldata); the mined is
+    authoritative (from the actual ``OrderFilled`` log). The dispatcher's
+    job is per-fill uniqueness (keyed on ``(tx_hash, log_index)`` for
+    mined, ``tx_hash`` for pending) — cross-signal dedup is the copy
+    pipeline's responsibility via ``build_trade_key`` (keyed on
+    ``leader|tx_hash|side|asset``, which matches for the same fill
+    regardless of provisional vs authoritative).
+
+    The previous tx_hash-only gate collapsed these to one dispatch,
+    which also collapsed distinct multi-fill mined logs — the bug this
+    re-review fixes. The ``supersede_pending`` mechanism still drops
+    not-yet-dispatched pending signals when the mined arrives first
+    (see ``test_mined_then_pending_same_tx_dispatches_once``).
     """
     dispatched: list[OnchainTradeSignal] = []
     rt = _make_runtime(dispatched)
@@ -207,21 +240,20 @@ async def test_pending_then_mined_same_tx_dispatches_once() -> None:
         # Pre-record the pending so _on_pending_tx's record_pending check passes
         assert await rt._dedupe.record_pending(tx) is True
         await rt._enqueue(_make_pending_signal(tx_hash=tx))
-        # Let the dispatcher pull the pending and invoke the sink. We allow
-        # a tiny sleep so the dispatcher's claim-then-sink sequence runs
-        # before the mined log arrives — this is exactly the race window.
+        # Let the dispatcher pull the pending and invoke the sink.
         await asyncio.sleep(0.02)
         assert len(dispatched) == 1, "pending dispatched"
         assert dispatched[0].confidence == DetectionConfidence.PENDING_PROBABLE
-        # Now _on_mined_log arrives for the same tx — it would normally
-        # produce a second authoritative dispatch; the idempotency gate
-        # drops it because tx_hash was already claimed.
+        # Mined for the same tx arrives — dispatches independently
+        # (different idempotency key: (tx_hash, 0) vs tx_hash). The copy
+        # pipeline's build_trade_key catches the duplicate fill.
         await rt._on_mined_log(_build_log(maker=_WATCHED, log_index=0, tx_hash=tx))
         await asyncio.sleep(0.05)
-        assert len(dispatched) == 1, (
-            "mined for same tx_hash dropped — idempotency gate closed the race"
+        assert len(dispatched) == 2, (
+            "mined dispatches alongside the provisional pending — "
+            "copy pipeline dedupes via build_trade_key"
         )
-        assert dispatched[0].confidence == DetectionConfidence.PENDING_PROBABLE
+        assert dispatched[1].confidence == DetectionConfidence.MINED_AUTHORITATIVE
     finally:
         await rt.stop()
 
@@ -270,13 +302,13 @@ async def test_dispatcher_idempotency_cap_evicts_oldest() -> None:
         enable_mined=False,
         dispatched_cap=3,
     )
-    # Manually drive the idempotency claim for 5 distinct tx_hashes.
+    # Manually drive the idempotency claim for 5 distinct mined fills.
     for i in range(5):
-        tx = f"0x{i:064x}"
-        first_ok = await rt._claim_or_drop(tx)
-        second_ok = await rt._claim_or_drop(tx)
-        assert first_ok is True, f"first arrival for {tx} should dispatch"
-        assert second_ok is False, f"second arrival for {tx} should drop"
+        sig = _make_mined_signal(tx_hash=f"0x{i:064x}", log_index=i)
+        first_ok = await rt._claim_or_drop(sig)
+        second_ok = await rt._claim_or_drop(sig)
+        assert first_ok is True, f"first arrival for {sig.tx_hash} should dispatch"
+        assert second_ok is False, f"second arrival for {sig.tx_hash} should drop"
     # FIFO-eviction: cap=3 -> set bounded at most 3 entries.
     snapshot = rt.dispatched_tx_hashes_snapshot()
     assert len(snapshot) <= 3, (
