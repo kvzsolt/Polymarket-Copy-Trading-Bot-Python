@@ -54,7 +54,7 @@ def _positive_int(raw: Any, default: int) -> int:
 def _analysis_semaphore(context: TradingContext) -> asyncio.Semaphore:
     semaphore = context.extra.get("_trade_analysis_semaphore")
     if semaphore is None:
-        config_val = context.config.raw.get("TRADE_ANALYSIS_CONCURRENCY", 6) if context.config else 6
+        config_val = context.config.execution.trade_analysis_concurrency if context.config else 6
         semaphore = asyncio.Semaphore(_positive_int(config_val, 6))
         context.extra["_trade_analysis_semaphore"] = semaphore
     return semaphore
@@ -64,7 +64,7 @@ def _analysis_semaphore(context: TradingContext) -> asyncio.Semaphore:
 def _reconcile_semaphore(context: TradingContext) -> asyncio.Semaphore:
     semaphore = context.extra.get("_reconcile_unconfirmed_semaphore")
     if semaphore is None:
-        config_val = context.config.raw.get("RECONCILE_CONCURRENCY", 4) if context.config else 4
+        config_val = context.config.execution.reconcile_concurrency if context.config else 4
         semaphore = asyncio.Semaphore(_positive_int(config_val, 4))
         context.extra["_reconcile_unconfirmed_semaphore"] = semaphore
     return semaphore
@@ -1440,8 +1440,20 @@ async def reconcile_submitted_unconfirmed(
                 batch_reconciled += 1
         return batch_reconciled
 
-    reconciled = await _reconcile_batch(buy_pending, "BUY")
-    reconciled += await _reconcile_batch(sell_pending, "SELL")
+    # Reconcile BUY and SELL batches concurrently. The shared semaphore (`sem`,
+    # RECONCILE_CONCURRENCY) still caps TOTAL in-flight reconciles, so peak
+    # venue concurrency — and rate-limit exposure — is unchanged; this only
+    # removes the artificial barrier that made SELL wait for the entire BUY
+    # batch. Per-PositionKey serialization is preserved by
+    # `position_coordinator.acquire` inside `_reconcile_one`, so a BUY and SELL
+    # touching the same position still cannot interleave their state-apply.
+    # "BUYs visible before SELL *signals*" ordering is unaffected: this whole
+    # function still completes before signal normalization/execution downstream.
+    buy_n, sell_n = await asyncio.gather(
+        _reconcile_batch(buy_pending, "BUY"),
+        _reconcile_batch(sell_pending, "SELL"),
+    )
+    reconciled = buy_n + sell_n
 
     if reconciled:
         metrics.inc("reconcile_unconfirmed_total", value=float(reconciled))
