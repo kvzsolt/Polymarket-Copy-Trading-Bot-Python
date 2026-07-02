@@ -204,7 +204,7 @@ async def test_mined_supersedes_pending_no_double_dispatch() -> None:
     await rt.start()
     try:
         pending = _make_pending_signal()
-        await rt._dedupe.record_pending(pending.tx_hash)
+        await rt._dedupe.record_pending(pending.tx_hash, pending.leader_wallet)
         await rt._enqueue(pending)
         await rt._on_mined_log(_build_log(maker=_WATCHED, log_index=0, tx_hash=pending.tx_hash))
         await asyncio.sleep(0.05)
@@ -238,7 +238,7 @@ async def test_pending_then_mined_same_tx_both_dispatched() -> None:
     try:
         tx = "0x" + "ff" * 32
         # Pre-record the pending so _on_pending_tx's record_pending check passes
-        assert await rt._dedupe.record_pending(tx) is True
+        assert await rt._dedupe.record_pending(tx, _WATCHED) is True
         await rt._enqueue(_make_pending_signal(tx_hash=tx))
         # Let the dispatcher pull the pending and invoke the sink.
         await asyncio.sleep(0.02)
@@ -274,7 +274,7 @@ async def test_mined_then_pending_same_tx_dispatches_once() -> None:
         assert len(dispatched) == 1
         assert dispatched[0].confidence == DetectionConfidence.MINED_AUTHORITATIVE
         # Pending for same tx arrives late — must be dropped.
-        assert await rt._dedupe.record_pending(tx) is True
+        assert await rt._dedupe.record_pending(tx, _WATCHED) is True
         await rt._enqueue(_make_pending_signal(tx_hash=tx))
         await asyncio.sleep(0.05)
         assert len(dispatched) == 1, (
@@ -318,19 +318,83 @@ async def test_dispatcher_idempotency_cap_evicts_oldest() -> None:
 
 @pytest.mark.asyncio
 async def test_duplicate_pending_no_double_dispatch() -> None:
-    """Two pending signals for the same tx -> only the first is dispatched."""
+    """Two pending signals for the same (tx, leader) -> only the first is dispatched."""
     dispatched: list[OnchainTradeSignal] = []
     rt = _make_runtime(dispatched)
     await rt.start()
     try:
         pending = _make_pending_signal()
-        is_new_1 = await rt._dedupe.record_pending(pending.tx_hash)
+        is_new_1 = await rt._dedupe.record_pending(pending.tx_hash, pending.leader_wallet)
         await rt._enqueue(pending)
-        is_new_2 = await rt._dedupe.record_pending(pending.tx_hash)
+        is_new_2 = await rt._dedupe.record_pending(pending.tx_hash, pending.leader_wallet)
         assert is_new_1 is True
         assert is_new_2 is False
         await asyncio.sleep(0.05)
         assert len(dispatched) == 1
+    finally:
+        await rt.stop()
+
+
+@pytest.mark.asyncio
+async def test_same_tx_multiple_leaders_each_dispatched() -> None:
+    """Greptile P1 re-review: one pending ``matchOrders`` tx containing
+    multiple watched-wallet matches (e.g. taker=walletA, maker=walletB)
+    produces one dispatch *per leader*, not one per tx. The previous
+    tx_hash-only pending key collapsed all matches to a single dispatch,
+    silently dropping distinct leader fills.
+    """
+    dispatched: list[OnchainTradeSignal] = []
+    rt = _make_runtime(dispatched)
+    await rt.start()
+    try:
+        tx = "0x" + "ab" * 32
+        leader_a = "0x" + "11" * 20
+        leader_b = "0x" + "22" * 20
+        pending_a = _make_pending_signal(tx_hash=tx, leader=leader_a)
+        pending_b = _make_pending_signal(tx_hash=tx, leader=leader_b)
+        assert await rt._dedupe.record_pending(tx, leader_a) is True
+        assert await rt._dedupe.record_pending(tx, leader_b) is True
+        await rt._enqueue(pending_a)
+        await rt._enqueue(pending_b)
+        await asyncio.sleep(0.05)
+        assert len(dispatched) == 2, (
+            "one dispatch per (tx_hash, leader_wallet) — distinct leaders "
+            "in the same tx must not be collapsed"
+        )
+        leaders = {sig.leader_wallet for sig in dispatched}
+        assert leaders == {leader_a, leader_b}
+    finally:
+        await rt.stop()
+
+
+@pytest.mark.asyncio
+async def test_mined_for_one_leader_does_not_suppress_pending_for_another() -> None:
+    """Greptile P1 re-review: a mined fill for leaderA must NOT suppress
+    a pending signal for leaderB in the same tx. Per-leader
+    ``supersede_pending`` ensures only the matching leader's pending is
+    superseded.
+    """
+    dispatched: list[OnchainTradeSignal] = []
+    rt = _make_runtime(dispatched)
+    await rt.start()
+    try:
+        tx = "0x" + "cd" * 32
+        leader_a = "0x" + "11" * 20
+        leader_b = "0x" + "22" * 20
+        # Record pending for both leaders.
+        assert await rt._dedupe.record_pending(tx, leader_a) is True
+        assert await rt._dedupe.record_pending(tx, leader_b) is True
+        await rt._enqueue(_make_pending_signal(tx_hash=tx, leader=leader_b))
+        # Mined for leaderA arrives — should supersede only leaderA's pending.
+        await rt._on_mined_log(
+            _build_log(maker=leader_a, log_index=0, tx_hash=tx)
+        )
+        await asyncio.sleep(0.05)
+        # leaderB's pending should still dispatch (not suppressed by leaderA's mined).
+        leaders_dispatched = {sig.leader_wallet for sig in dispatched}
+        assert leader_b in leaders_dispatched, (
+            "leaderB's pending must not be suppressed by leaderA's mined"
+        )
     finally:
         await rt.stop()
 
