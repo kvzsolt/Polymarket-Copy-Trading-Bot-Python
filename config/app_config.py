@@ -800,6 +800,7 @@ class OnchainDetectionConfig:
     enable_onchain_pending_detection: bool = False
     enable_onchain_mined_detection: bool = True
     pending_tx_provider: str = "alchemy"
+    onchain_ws_url: str = ""
     pending_tx_ws_url: str = ""
     pending_tx_hashes_only: bool = False
     pending_tx_max_signal_age_ms: int = 500
@@ -1670,7 +1671,7 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         onchain_detection=OnchainDetectionConfig(
             enable_onchain_pending_detection=p.bool_("ENABLE_ONCHAIN_PENDING_DETECTION", False),
             enable_onchain_mined_detection=p.bool_("ENABLE_ONCHAIN_MINED_DETECTION", True),
-            pending_tx_provider=p.string("PENDING_TX_PROVIDER", "alchemy"),
+            onchain_ws_url=p.string("ONCHAIN_WS_URL", ""),
             pending_tx_ws_url=p.string("PENDING_TX_WS_URL", ""),
             pending_tx_hashes_only=p.bool_("PENDING_TX_HASHES_ONLY", False),
             pending_tx_max_signal_age_ms=p.int_("PENDING_TX_MAX_SIGNAL_AGE_MS", "500"),
