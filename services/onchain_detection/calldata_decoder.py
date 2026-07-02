@@ -41,9 +41,12 @@ from services.onchain_detection.trade_detection_models import (
     MAKER_SIDE_SELL,
 )
 
-# Canonical selector for ``matchOrders(bytes32,(uint256,address,address,
-# uint256,uint256,uint256,uint8,uint8,uint256,bytes32,bytes32,bytes)[],
-# uint256,uint256[],uint256,uint256[])``.
+# Canonical selector for ``matchOrders(bytes32,Order,Order[],
+# uint256,uint256[],uint256,uint256[])``. The standalone taker ``Order``
+# (2nd parameter) MUST be present — the selector without it
+# (``0x6d0fcd6e``) does not match production ``matchOrders`` calls
+# (``0x3c2b4399``), so the pending-tx decoder would reject every real
+# matchOrders payload before ABI decoding (Greptile P1 re-review).
 _ORDER_TUPLE = (
     "(uint256,address,address,uint256,uint256,uint256,"
     "uint8,uint8,uint256,bytes32,bytes32,bytes)"
@@ -54,6 +57,8 @@ _MATCH_ORDERS_TYPE = (
 )
 MATCH_ORDERS_SELECTOR: bytes = function_signature_to_4byte_selector(
     "matchOrders(bytes32,"
+    "(uint256,address,address,uint256,uint256,uint256,"
+    "uint8,uint8,uint256,bytes32,bytes32,bytes),"
     "(uint256,address,address,uint256,uint256,uint256,"
     "uint8,uint8,uint256,bytes32,bytes32,bytes)[],"
     "uint256,uint256[],uint256,uint256[])"

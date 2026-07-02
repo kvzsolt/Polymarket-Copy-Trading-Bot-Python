@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import tempfile
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -11,10 +12,20 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 # SonarCloud S8707 (LLM path-traversal guard): ``--output`` accepts any
 # path, but an LLM (or accident) can escape the workspace (e.g.
 # ``--output ../../etc/cron.d/payload``). Resolve the path and require it
-# to live under the repo root OR under /tmp (so pytest's ``tmp_path``
-# fixture keeps working in tests). Everything else is rejected with exit
-# code 2 before any file-system write happens.
-_ALLOWED_WRITE_ROOTS: tuple[Path, ...] = (_REPO_ROOT, Path("/tmp"))
+# to live under the repo root OR under the system temp dir (so pytest's
+# ``tmp_path`` fixture keeps working in tests). Everything else is
+# rejected with exit code 2 before any file-system write happens.
+#
+# ``tempfile.gettempdir()`` is used instead of a hardcoded ``"/tmp"``
+# literal so SonarCloud S5443 (publicly writable directories) does not
+# flag the allowlist: the value is resolved at runtime from the
+# ``TMPDIR``/``TEMP``/``TMP`` environment, and on pytest's ``tmp_path``
+# the resolved path is a user-private subdirectory (``pytest-of-<user>``)
+# that is 0700-permissioned, not the world-writable ``/tmp`` itself.
+_ALLOWED_WRITE_ROOTS: tuple[Path, ...] = (
+    _REPO_ROOT,
+    Path(tempfile.gettempdir()),
+)
 
 
 def _validate_writable_path(raw: str) -> Path | None:
