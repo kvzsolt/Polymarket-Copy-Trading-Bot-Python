@@ -85,14 +85,189 @@ class TestHappyPath:
         assert cfg.polling.fetch_interval == pytest.approx(0.25)
         # Execution defaults.
         assert cfg.execution.max_retries == 3
-        assert cfg.execution.paper_trade_only is False
+        # Staged TP defaults are profit ratios, not whole-number percentages.
+        assert cfg.risk.staged_tp_levels == "0.30,0.50"
+        assert cfg.risk.staged_tp_fractions == "0.25,0.35"
+        # P0-2: fail-closed default — paper unless LIVE_TRADING is explicitly enabled.
+        assert cfg.execution.paper_trade_only is True
+        assert cfg.execution.reservation_ttl_seconds == 120
         # Logging default path.
         assert cfg.logging.pnl_log_file.endswith("pnl.jsonl")
+
+    # --- P0-2: LIVE_TRADING master switch (fail-closed) ---
+
+    def test_default_is_paper(self, valid_env: dict[str, str]) -> None:
+        cfg = load_config(valid_env)
+        assert cfg.execution.paper_trade_only is True
+        assert cfg.dry_run is True
+
+    @pytest.mark.parametrize("val", ["enabled", "true", "1", "yes", "on", "ENABLED", "True"])
+    def test_explicit_enable_goes_live(self, valid_env: dict[str, str], val: str) -> None:
+        valid_env["LIVE_TRADING"] = val
+        cfg = load_config(valid_env)
+        assert cfg.execution.paper_trade_only is False
+        assert cfg.dry_run is False
+
+    @pytest.mark.parametrize("val", ["", "off", "disabled", "no", "false", "0", "garbage", "  "])
+    def test_unknown_or_disabled_stays_paper(self, valid_env: dict[str, str], val: str) -> None:
+        valid_env["LIVE_TRADING"] = val
+        cfg = load_config(valid_env)
+        assert cfg.execution.paper_trade_only is True
+        assert cfg.dry_run is True
+
+    def test_paper_trade_only_true_forces_paper_even_with_live_switch(
+        self, valid_env: dict[str, str]
+    ) -> None:
+        valid_env["LIVE_TRADING"] = "enabled"
+        valid_env["PAPER_TRADE_ONLY"] = "true"
+        cfg = load_config(valid_env)
+        assert cfg.execution.paper_trade_only is True  # explicit paper force wins
+
+    @pytest.mark.parametrize("raw_value", ["", "auto", "AUTO", "# Profit % comment"])
+    def test_trailing_activation_auto_values(
+        self,
+        valid_env: dict[str, str],
+        raw_value: str,
+    ) -> None:
+        valid_env["TRAILING_ACTIVATION_PCT"] = raw_value
+        cfg = load_config(valid_env)
+        assert cfg.risk.trailing_activation_pct is None
+
+    def test_trailing_activation_blank_defaults_when_disabled(
+        self, valid_env: dict[str, str]
+    ) -> None:
+        valid_env["ENABLE_TRAILING_STOP"] = "false"
+        valid_env["TRAILING_ACTIVATION_PCT"] = ""
+        cfg = load_config(valid_env)
+        assert cfg.features.enable_trailing_stop is False
+        assert cfg.risk.trailing_activation_mode == "disabled"
+        assert cfg.risk.trailing_activation_pct is None
+
+    def test_trailing_activation_comment_only_does_not_crash_when_disabled(
+        self, valid_env: dict[str, str]
+    ) -> None:
+        valid_env["ENABLE_TRAILING_STOP"] = "false"
+        valid_env["TRAILING_ACTIVATION_PCT"] = (
+            "# Auto activation; use a number for fixed profit-% activation."
+        )
+        cfg = load_config(valid_env)
+        assert cfg.risk.trailing_activation_mode == "disabled"
+        assert cfg.risk.trailing_activation_pct is None
+
+    def test_trailing_activation_garbage_ignored_when_disabled(
+        self, valid_env: dict[str, str]
+    ) -> None:
+        valid_env["ENABLE_TRAILING_STOP"] = "false"
+        valid_env["TRAILING_ACTIVATION_PCT"] = "lol-nope"
+        cfg = load_config(valid_env)
+        assert cfg.risk.trailing_activation_mode == "disabled"
+        assert cfg.risk.trailing_activation_pct is None
+
+    def test_trailing_activation_auto_is_accepted_when_enabled(
+        self, valid_env: dict[str, str]
+    ) -> None:
+        valid_env["ENABLE_TRAILING_STOP"] = "true"
+        valid_env["TRAILING_ACTIVATION_PCT"] = "auto"
+        cfg = load_config(valid_env)
+        assert cfg.risk.trailing_activation_mode == "auto"
+        assert cfg.risk.trailing_activation_pct is None
+
+    def test_trailing_activation_invalid_raises_when_enabled(
+        self, valid_env: dict[str, str]
+    ) -> None:
+        valid_env["ENABLE_TRAILING_STOP"] = "true"
+        valid_env["TRAILING_ACTIVATION_PCT"] = "lol-nope"
+        with pytest.raises(
+            EnvValidationError,
+            match="TRAILING_ACTIVATION_PCT must be a valid float or 'auto'",
+        ):
+            load_config(valid_env)
+
+    def test_trailing_activation_numeric_value(self, valid_env: dict[str, str]) -> None:
+        # Feature-aware parsing: a numeric activation only counts as "fixed"
+        # when the trailing-stop sub-engine is actually enabled.
+        valid_env["ENABLE_TRAILING_STOP"] = "true"
+        valid_env["TRAILING_ACTIVATION_PCT"] = "40"
+        cfg = load_config(valid_env)
+        assert cfg.risk.trailing_activation_mode == "fixed"
+        assert cfg.risk.trailing_activation_pct == pytest.approx(40.0)
+
+    def test_both_exchange_addresses_present_and_distinct(
+        self, valid_env: dict[str, str]
+    ) -> None:
+        cfg = load_config(valid_env)
+        ctf = cfg.network.ctf_exchange_v2_address
+        neg = cfg.network.neg_risk_ctf_exchange_v2_address
+        assert ctf, "CTF Exchange V2 default address missing"
+        assert neg, "Neg Risk CTF Exchange V2 default address missing"
+        assert ctf.lower() != neg.lower()
+        assert neg.lower() == "0xe2222d279d744050d28e00520010520000310f59"
+
+    def test_neg_risk_exchange_address_override(
+        self, valid_env: dict[str, str]
+    ) -> None:
+        override = "0x" + "9" * 40
+        valid_env["NEG_RISK_CTF_EXCHANGE_V2_ADDRESS"] = override
+        cfg = load_config(valid_env)
+        assert cfg.network.neg_risk_ctf_exchange_v2_address == override
+
+    def test_order_confirmation_safe_release_defaults(
+        self, valid_env: dict[str, str]
+    ) -> None:
+        cfg = load_config(valid_env)
+        oc = cfg.order_confirmation
+        assert oc.auto_release_require_all_probes_clean is True
+        assert oc.auto_release_max_probe_errors == 0
 
     def test_leader_wallets_parsed_from_csv(self, valid_env: dict[str, str]) -> None:
         valid_env["LEADER_WALLETS"] = f"{_VALID_FUNDER},{_VALID_USER}"
         cfg = load_config(valid_env)
         assert cfg.leader.wallets == (_VALID_FUNDER, _VALID_USER)
+
+    def test_auto_leader_empty_wallets_does_not_fallback_to_user_address(
+        self, valid_env: dict[str, str]
+    ) -> None:
+        valid_env["LEADER_WALLETS"] = ""
+        valid_env["USER_ADDRESS"] = _VALID_USER
+        valid_env["LEADER_SOURCE"] = "auto"
+        cfg = load_config(valid_env)
+        assert cfg.leader.wallets == ()
+        assert cfg.discovery.allow_auto_trader_detection is True
+
+    def test_auto_leader_enabled_alias_does_not_fallback_to_user_address(
+        self, valid_env: dict[str, str]
+    ) -> None:
+        valid_env["LEADER_WALLETS"] = ""
+        valid_env["USER_ADDRESS"] = _VALID_USER
+        valid_env["AUTO_LEADER_ENABLED"] = "true"
+        cfg = load_config(valid_env)
+        assert cfg.leader.wallets == ()
+        assert cfg.discovery.allow_auto_trader_detection is True
+
+    def test_manual_mode_empty_wallets_falls_back_to_user_address(
+        self, valid_env: dict[str, str]
+    ) -> None:
+        valid_env["LEADER_WALLETS"] = ""
+        valid_env["USER_ADDRESS"] = _VALID_USER
+        valid_env["LEADER_SOURCE"] = "manual"
+        cfg = load_config(valid_env)
+        assert cfg.leader.wallets == (_VALID_USER,)
+        assert cfg.discovery.allow_auto_trader_detection is False
+
+    def test_manual_leader_wallets_win_over_auto_mode(
+        self, valid_env: dict[str, str]
+    ) -> None:
+        valid_env["LEADER_WALLETS"] = _VALID_FUNDER
+        valid_env["USER_ADDRESS"] = _VALID_USER
+        valid_env["LEADER_SOURCE"] = "auto"
+        cfg = load_config(valid_env)
+        assert cfg.leader.wallets == (_VALID_FUNDER,)
+        assert cfg.discovery.allow_auto_trader_detection is True
+
+    def test_invalid_leader_source_rejected(self, valid_env: dict[str, str]) -> None:
+        valid_env["LEADER_SOURCE"] = "database"
+        with pytest.raises(EnvValidationError, match="LEADER_SOURCE"):
+            load_config(valid_env)
 
     def test_leader_auto_cascade_activates_discovery(self, valid_env: dict[str, str]) -> None:
         valid_env["LEADER_AUTO"] = "true"
@@ -105,6 +280,96 @@ class TestHappyPath:
     def test_discovery_defaults_include_min_active_positions(self, valid_env: dict[str, str]) -> None:
         cfg = load_config(valid_env)
         assert cfg.discovery.min_active_positions == 1
+
+    def test_auto_trader_detection_config_defaults(
+        self,
+        valid_env: dict[str, str],
+    ) -> None:
+        cfg = load_config(valid_env)
+        assert cfg.discovery.allow_auto_trader_detection is False
+        assert cfg.discovery.max_auto_traders_count == 2
+        assert cfg.discovery.leader_source == "manual"
+        assert cfg.discovery.auto_leader_enabled is False
+        assert cfg.discovery.auto_leader_count == 2
+        assert cfg.discovery.falcon_sort_modes == (
+            "h_score",
+            "pnl",
+            "sharpe",
+            "roi",
+            "win_rate",
+        )
+        assert cfg.discovery.falcon_dedupe_candidates is True
+        assert cfg.discovery.falcon_max_candidates == 250
+        assert cfg.discovery.leader_score_version == "leader_score_v2"
+        assert cfg.discovery.auto_leader_require_score_version is True
+
+    def test_auto_trader_detection_config_loads_env(
+        self,
+        valid_env: dict[str, str],
+    ) -> None:
+        valid_env["ALLOW_AUTO_TRADER_DETECTION"] = "true"
+        valid_env["MAX_AUTO_TRADERS_COUNT"] = "3"
+        cfg = load_config(valid_env)
+        assert cfg.discovery.allow_auto_trader_detection is True
+        assert cfg.discovery.max_auto_traders_count == 3
+
+    def test_auto_leader_count_alias_loads_env(
+        self,
+        valid_env: dict[str, str],
+    ) -> None:
+        valid_env["AUTO_LEADER_ENABLED"] = "true"
+        valid_env["AUTO_LEADER_COUNT"] = "4"
+        cfg = load_config(valid_env)
+        assert cfg.discovery.allow_auto_trader_detection is True
+        assert cfg.discovery.max_auto_traders_count == 4
+        assert cfg.discovery.auto_leader_count == 4
+
+    def test_auto_trader_detection_config_clamps_to_auto_discover_cap(
+        self,
+        valid_env: dict[str, str],
+    ) -> None:
+        valid_env["ALLOW_AUTO_TRADER_DETECTION"] = "true"
+        valid_env["MAX_AUTO_TRADERS_COUNT"] = "99"
+        valid_env["AUTO_DISCOVER_MAX_LEADERS"] = "4"
+        valid_env["AUTO_DISCOVER_TOP_N"] = "4"
+        cfg = load_config(valid_env)
+        assert cfg.discovery.max_auto_traders_count == 4
+
+    def test_auto_trader_detection_count_cannot_raise_auto_discover_cap(
+        self,
+        valid_env: dict[str, str],
+    ) -> None:
+        valid_env["AUTO_LEADER_ENABLED"] = "true"
+        valid_env["AUTO_LEADER_COUNT"] = "99"
+        valid_env["AUTO_DISCOVER_MAX_LEADERS"] = "10"
+        cfg = load_config(valid_env)
+        assert cfg.leader.auto_discover_max_leaders == 10
+        assert cfg.leader.auto_discover_top_n == 10
+        assert cfg.discovery.max_auto_traders_count == 10
+
+    def test_discovery_startup_safety_config_loads_env(
+        self,
+        valid_env: dict[str, str],
+    ) -> None:
+        valid_env.update(
+            {
+                "DISCOVERY_MIN_AUTO_SPORTS_ESPORTS_RATIO": "0.8",
+                "DISCOVERY_AUTO_PREFER_SPORTS_ESPORTS": "false",
+                "DISCOVERY_EVALUATION_TTL_SECONDS": "120",
+                "DISCOVERY_REJECT_STALE_EVALUATIONS": "false",
+                "POLYMARKET_HISTORY_MIN_WINDOW_SECONDS": "3600",
+                "DISCOVERY_REQUIRE_RECENT_STATE_FOR_LIVE": "false",
+            }
+        )
+
+        cfg = load_config(valid_env)
+
+        assert cfg.discovery.discovery_min_auto_sports_esports_ratio == pytest.approx(0.8)
+        assert cfg.discovery.discovery_auto_prefer_sports_esports is False
+        assert cfg.discovery.discovery_evaluation_ttl_seconds == 120
+        assert cfg.discovery.discovery_reject_stale_evaluations is False
+        assert cfg.discovery.polymarket_history_min_window_seconds == 3600
+        assert cfg.discovery.discovery_require_recent_state_for_live is False
 
     def test_raw_env_preserved_for_transition_excludes_secrets(
         self, valid_env: dict[str, str]
@@ -130,6 +395,18 @@ class TestHappyPath:
         valid_env["PUSD_CONTRACT_ADDRESS"] = "0x" + "2" * 40
         cfg = load_config(valid_env)
         assert cfg.network.usdc_contract_address == "0x" + "2" * 40
+
+    def test_v2_contract_defaults(self, valid_env: dict[str, str]) -> None:
+        cfg = load_config(valid_env)
+        assert (
+            cfg.network.pusd_contract_address
+            == "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"
+        )
+        assert cfg.network.usdc_contract_address == cfg.network.pusd_contract_address
+        assert (
+            cfg.network.ctf_exchange_v2_address
+            == "0xE111180000d2663C0091e4f400237545B87B996B"
+        )
 
     def test_load_without_env_reads_os_environ(
         self, monkeypatch: pytest.MonkeyPatch
@@ -237,6 +514,70 @@ class TestMalformedValues:
         with pytest.raises(
             EnvValidationError,
             match="MAX_OPEN_POSITIONS must be a valid int",
+        ):
+            load_config(valid_env)
+
+    def test_invalid_trailing_activation_value(self, valid_env: dict[str, str]) -> None:
+        valid_env["ENABLE_TRAILING_STOP"] = "true"
+        valid_env["TRAILING_ACTIVATION_PCT"] = "not-auto"
+        with pytest.raises(
+            EnvValidationError,
+            match="TRAILING_ACTIVATION_PCT must be a valid float or 'auto'",
+        ):
+            load_config(valid_env)
+
+    @pytest.mark.parametrize("bad_value", ["0", "-1", "-120"])
+    def test_reservation_ttl_seconds_must_be_positive(
+        self, valid_env: dict[str, str], bad_value: str
+    ) -> None:
+        valid_env["RESERVATION_TTL_SECONDS"] = bad_value
+        with pytest.raises(
+            EnvValidationError,
+            match="RESERVATION_TTL_SECONDS must be > 0",
+        ):
+            load_config(valid_env)
+
+    def test_reservation_ttl_seconds_override_applied(
+        self, valid_env: dict[str, str]
+    ) -> None:
+        valid_env["RESERVATION_TTL_SECONDS"] = "45"
+        cfg = load_config(valid_env)
+        assert cfg.execution.reservation_ttl_seconds == 45
+
+    # P2-c — NaN/Inf are valid float() inputs but corrupt downstream gates
+    # (slippage, spread). Fail closed: load_config must raise rather than
+    # silently accept a non-finite numeric config value.
+    @pytest.mark.parametrize("bad_value", ["nan", "NaN", "inf", "Inf", "-inf", "infinity"])
+    def test_slippage_tolerance_rejects_non_finite(
+        self, valid_env: dict[str, str], bad_value: str
+    ) -> None:
+        valid_env["SLIPPAGE_TOLERANCE"] = bad_value
+        with pytest.raises(
+            EnvValidationError,
+            match="SLIPPAGE_TOLERANCE must be a finite number",
+        ):
+            load_config(valid_env)
+
+    @pytest.mark.parametrize("bad_value", ["inf", "nan", "-inf"])
+    def test_max_book_spread_bps_rejects_non_finite(
+        self, valid_env: dict[str, str], bad_value: str
+    ) -> None:
+        # MAX_BOOK_SPREAD_BPS is an int field; int("inf") already raises, but
+        # assert the fail-closed contract holds for the spread gate too.
+        valid_env["MAX_BOOK_SPREAD_BPS"] = bad_value
+        with pytest.raises(EnvValidationError):
+            load_config(valid_env)
+
+    def test_float_or_auto_rejects_non_finite(
+        self, valid_env: dict[str, str]
+    ) -> None:
+        # TRAILING_ACTIVATION_PCT uses the float_or_auto path; 'inf' is not
+        # 'auto' and must not slip through as a finite trailing trigger.
+        valid_env["ENABLE_TRAILING_STOP"] = "true"
+        valid_env["TRAILING_ACTIVATION_PCT"] = "inf"
+        with pytest.raises(
+            EnvValidationError,
+            match="TRAILING_ACTIVATION_PCT must be a finite number",
         ):
             load_config(valid_env)
 

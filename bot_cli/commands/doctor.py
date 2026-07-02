@@ -214,6 +214,31 @@ def _resolve_jsonl_path() -> Path:
     return Path(override) if override else (_resolve_log_dir() / f"{APP_NAME}.jsonl")
 
 
+async def _auto_trader_db_candidate_count(config) -> int:
+    """Probe current DB-backed startup candidates using the production selector."""
+    from services.discovery.auto_trader_selector import AutoTraderSelector
+    from storage.postgres.connection import init_pool, shutdown_pool
+    from storage.postgres.discovery_repo import DiscoveryRepo
+
+    pool = None
+    try:
+        pool = await init_pool(
+            config.database.dsn,
+            min_size=1,
+            max_size=2,
+            command_timeout_seconds=15.0,
+        )
+        selector = AutoTraderSelector(DiscoveryRepo(pool), config)
+        selection = await selector.select_from_db()
+        return int(selection.db_candidate_count)
+    finally:
+        if pool is not None:
+            try:
+                await shutdown_pool()
+            except Exception:
+                pass
+
+
 # ---------------------------------------------------------------------------
 # Main entry
 # ---------------------------------------------------------------------------
@@ -245,19 +270,23 @@ async def run_doctor_checks(mode: str) -> dict[str, Any]:
 
     # ----- mode flags ---------------------------------------------------
     if live:
+        # P0-2: live trading is gated by the LIVE_TRADING master switch (default
+        # paper). If the doctor is asked for "live" but the config resolved to
+        # paper, the operator must set the master switch — there is no silent
+        # fallback to paper, the bot refuses to start.
         if config.execution.paper_trade_only:
             ctx.blocked(
                 "paper_trade_only_false",
-                "PAPER_TRADE_ONLY=true in live mode",
-                "set PAPER_TRADE_ONLY=false",
+                "live mode requested but config resolves to PAPER",
+                "set LIVE_TRADING=enabled (and ensure PAPER_TRADE_ONLY is not 'true')",
             )
         else:
-            ctx.ok("paper_trade_only_false", "PAPER_TRADE_ONLY=false")
+            ctx.ok("paper_trade_only_false", "live trading enabled (paper_trade_only=false)")
         if config.dry_run:
             ctx.blocked(
                 "dry_run_false",
-                "dry_run=true",
-                "disable PAPER_TRADE_ONLY env",
+                "dry_run=true (config resolves to paper)",
+                "set LIVE_TRADING=enabled",
             )
         else:
             ctx.ok("dry_run_false", "dry_run=false")
@@ -378,23 +407,17 @@ async def run_doctor_checks(mode: str) -> dict[str, Any]:
         # the long-running bot owns schema lifecycle. Skip the explicit
         # table-presence probe (was sqlite_master-specific).
         ttl = config.execution.pending_submission_ttl_seconds
-        async with pool.acquire() as conn:
-            count = await conn.fetchval(
-                """
-                SELECT COUNT(*) FROM orders
-                WHERE status IN ('submitted_unconfirmed','delayed','pending',
-                                 'pending_lock','submitting')
-                  AND (EXTRACT(EPOCH FROM now())::bigint
-                       - EXTRACT(EPOCH FROM created_at)::bigint) > $1
-                """,
-                int(ttl),
-            )
-        count = int(count or 0)
+        from storage.postgres.orders_repo import OrdersRepo
+
+        stale_rows = await OrdersRepo(pool).list_stale_submission_locks(
+            ttl_seconds=int(ttl)
+        )
+        count = len(stale_rows)
         if count:
             ctx.warning(
                 "stale_idempotency",
                 f"{count} stale pending orders",
-                "run stale-lock cleanup before live",
+                "run stale-lock resolve and reconciliation before live",
             )
         else:
             ctx.ok("stale_idempotency", "no stale pending orders")
@@ -637,34 +660,46 @@ async def run_doctor_checks(mode: str) -> dict[str, Any]:
         )
 
     # ----- leaders -----------------------------------------------------
-    if not config.leader.wallets:
+    if config.leader.wallets:
+        ctx.ok("leaders", "leader wallets configured")
+    elif not config.discovery.allow_auto_trader_detection:
         ctx.blocked(
             "leaders",
-            "no leader wallets configured",
-            "set LEADER_WALLETS or run python bot.py rotate-traders after discovery",
+            "no leader wallets configured and startup auto detection disabled",
+            "set LEADER_WALLETS, or set LEADER_SOURCE=auto / AUTO_LEADER_ENABLED=true, or run python bot.py rotate-traders after discovery",
+        )
+    elif int(config.discovery.max_auto_traders_count or 0) <= 0:
+        ctx.blocked(
+            "leaders",
+            "startup auto detection enabled but AUTO_LEADER_COUNT <= 0",
+            "set AUTO_LEADER_COUNT > 0 or configure LEADER_WALLETS",
         )
     else:
-        ctx.ok("leaders", "leader wallets configured")
-
-    if config.near_one_exit.enable_near_one_exit:
-        threshold = float(config.near_one_exit.threshold)
-        if not (0.5 < threshold < 1.0):
-            ctx.blocked(
-                "near_one_exit",
-                f"threshold out of range: {threshold}",
-                "0.5 < NEAR_ONE_EXIT_THRESHOLD < 1.0",
-            )
-        elif config.near_one_exit.dwell_seconds <= 0:
-            ctx.blocked(
-                "near_one_exit",
-                f"dwell_seconds invalid: {config.near_one_exit.dwell_seconds}",
-                "set NEAR_ONE_EXIT_DWELL_SECONDS > 0",
+        try:
+            db_candidate_count = await _auto_trader_db_candidate_count(config)
+        except Exception as exc:
+            ctx.warning(
+                "leaders",
+                f"auto detection enabled but DB candidate probe failed: {type(exc).__name__}",
+                "investigate discovery DB access; startup bootstrap will re-check candidates before CLOB init",
             )
         else:
-            ctx.ok(
-                "near_one_exit",
-                f"threshold={threshold} dwell={config.near_one_exit.dwell_seconds}",
-            )
+            if db_candidate_count > 0:
+                ctx.ok(
+                    "leaders",
+                    f"startup auto detection enabled; {db_candidate_count} eligible DB candidates available",
+                )
+            elif config.discovery.falcon_api_token:
+                ctx.ok(
+                    "leaders",
+                    "startup auto detection enabled; no eligible DB candidates yet, bootstrap discovery can run before CLOB init",
+                )
+            else:
+                ctx.blocked(
+                    "leaders",
+                    "no leader wallets configured, no eligible DB candidates found, and FALCON_API_TOKEN is missing",
+                    "set LEADER_WALLETS, or set FALCON_API_TOKEN for bootstrap discovery, or run python bot.py rotate-traders after discovery",
+                )
 
     return ctx.to_dict()
 

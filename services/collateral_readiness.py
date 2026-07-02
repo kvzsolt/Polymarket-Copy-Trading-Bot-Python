@@ -52,6 +52,10 @@ class CollateralStatus:
     rpc_url: str
     ready: bool
     failures: tuple[str, ...]
+    # pUSD allowance for the Neg Risk CTF Exchange. Defaulted so existing
+    # constructors stay valid; populated only when a neg-risk exchange address
+    # is supplied to the readiness check.
+    pusd_allowance_neg_risk: Decimal = Decimal("0")
 
 
 def _erc20_read(
@@ -60,9 +64,13 @@ def _erc20_read(
     contract_address: str,
     method: str,
     args: list[Any],
+    fallback_rpc_url: str = "",
 ) -> int:
-    """Synchronous ERC-20 read call."""
-    w3 = Web3(Web3.HTTPProvider(rpc_url))
+    """Synchronous ERC-20 read call with RPC fallback."""
+    from clients.network.rpc_fallback import FallbackWeb3Provider
+
+    provider = FallbackWeb3Provider(rpc_url, fallback_rpc_url)
+    w3 = provider.get_web3()
     checksum_contract = Web3.to_checksum_address(contract_address)
     contract = w3.eth.contract(address=checksum_contract, abi=_ERC20_ABI)
     func = getattr(contract.functions, method)
@@ -73,9 +81,11 @@ def _check_sync(
     *,
     wallet_address: str,
     rpc_url: str,
+    fallback_rpc_url: str,
     pusd_address: str,
     ctf_exchange_address: str,
     min_pusd_balance: Decimal,
+    neg_risk_exchange_address: str = "",
 ) -> CollateralStatus:
     """Run all collateral checks synchronously (call from thread)."""
     failures: list[str] = []
@@ -91,6 +101,7 @@ def _check_sync(
     try:
         raw_balance = _erc20_read(
             rpc_url=rpc_url,
+            fallback_rpc_url=fallback_rpc_url,
             contract_address=pusd_contract,
             method="balanceOf",
             args=[checksum_wallet],
@@ -114,6 +125,7 @@ def _check_sync(
     try:
         raw_allowance = _erc20_read(
             rpc_url=rpc_url,
+            fallback_rpc_url=fallback_rpc_url,
             contract_address=pusd_contract,
             method="allowance",
             args=[checksum_wallet, Web3.to_checksum_address(ctf_exchange_address)],
@@ -131,10 +143,41 @@ def _check_sync(
             f"{ctf_exchange_address}"
         )
 
+    # 3. Neg Risk CTF Exchange allowance. Neg-risk markets settle on a separate
+    #    exchange contract, so pUSD must be approved there too. Only probed when
+    #    an address is configured; fail-closed like the CTF exchange because a
+    #    copy bot following arbitrary leaders will hit neg-risk markets.
+    pusd_allowance_neg_risk = Decimal("0")
+    if neg_risk_exchange_address:
+        try:
+            raw_neg_allowance = _erc20_read(
+                rpc_url=rpc_url,
+                fallback_rpc_url=fallback_rpc_url,
+                contract_address=pusd_contract,
+                method="allowance",
+                args=[
+                    checksum_wallet,
+                    Web3.to_checksum_address(neg_risk_exchange_address),
+                ],
+            )
+            pusd_allowance_neg_risk = Decimal(raw_neg_allowance) / Decimal(10**6)
+        except Exception as exc:
+            pusd_allowance_neg_risk = Decimal("0")
+            failures.append(
+                f"Neg Risk exchange allowance check failed: {redact_error_detail(exc)}"
+            )
+
+        if pusd_allowance_neg_risk <= 0:
+            failures.append(
+                "Neg Risk CTF Exchange pUSD allowance is 0 — approve pUSD "
+                f"spending for {neg_risk_exchange_address}"
+            )
+
     ready = len(failures) == 0
     return CollateralStatus(
         pusd_balance=pusd_balance,
         pusd_allowance_ctf=pusd_allowance_ctf,
+        pusd_allowance_neg_risk=pusd_allowance_neg_risk,
         wallet_address=wallet_address,
         rpc_url=rpc_url,
         ready=ready,
@@ -172,9 +215,11 @@ async def check_collateral_readiness(
     *,
     wallet_address: str,
     rpc_url: str,
+    fallback_rpc_url: str = "",
     pusd_address: str,
     ctf_exchange_address: str,
     min_pusd_balance: Decimal = Decimal("1.0"),
+    neg_risk_exchange_address: str = "",
 ) -> CollateralStatus:
     """Run pUSD collateral readiness checks.
 
@@ -186,14 +231,18 @@ async def check_collateral_readiness(
     """
     _validate_address("pusd_address", pusd_address)
     _validate_address("ctf_exchange_address", ctf_exchange_address)
+    if neg_risk_exchange_address:
+        _validate_address("neg_risk_exchange_address", neg_risk_exchange_address)
 
     status = await asyncio.to_thread(
         _check_sync,
         wallet_address=wallet_address,
         rpc_url=rpc_url,
+        fallback_rpc_url=fallback_rpc_url,
         pusd_address=pusd_address,
         ctf_exchange_address=ctf_exchange_address,
         min_pusd_balance=min_pusd_balance,
+        neg_risk_exchange_address=neg_risk_exchange_address,
     )
 
     if status.ready:

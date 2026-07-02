@@ -5,7 +5,7 @@ from __future__ import annotations
 from decimal import Decimal
 
 
-from services.riskEngine import (
+from services.risk.risk_engine import (
     AccountCapPolicy,
     compute_hard_cap,
     compute_reserve_cash,
@@ -123,7 +123,7 @@ class TestHeadroomForBuy:
 
     def test_daily_loss_respects_env_drawdown_pct(self):
         from types import SimpleNamespace
-        import services.riskEngine as re
+        import services.risk.risk_engine as re
 
         # headroom_for_buy reads drawdown/exposure limits from injected config,
         # not from ENV — pass a mock config directly.

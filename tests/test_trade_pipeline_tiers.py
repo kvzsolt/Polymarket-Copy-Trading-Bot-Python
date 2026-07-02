@@ -17,7 +17,7 @@ from config.env import rehydrate_env
 from domain.trading_context import TradingContext
 from orchestrators.trade_pipeline import execute_trades, _resolve_leader_tier
 from services.pnlTracker import PnLTracker
-from services.riskEngine import RiskEngine
+from services.risk.risk_engine import RiskEngine
 from services.accountingService import AccountingService
 from services.positionManager import PositionManager
 from storage.postgres.fills_repo import FillsRepo
@@ -206,17 +206,18 @@ def _signal(*, side="BUY", tx_hash="0xabc", asset=FAKE_TOKEN_ID, condition_id="c
 
 class TestResolveLeaderTier:
     @pytest.mark.asyncio
-    async def test_no_repo_returns_live(self, tmp_path):
+    async def test_no_repo_returns_watchlist(self, tmp_path):
+        # P0-2: fail-closed — an absent leaders repo must not auto-promote to live.
         async with _pg_pool() as pool:
             ctx = _make_context(pool, tmp_path=tmp_path)
-            assert await _resolve_leader_tier(ctx, "0xleader") == "live_follow"
+            assert await _resolve_leader_tier(ctx, "0xleader") == "watchlist"
 
     @pytest.mark.asyncio
-    async def test_repo_no_record_returns_live(self, tmp_path):
+    async def test_repo_no_record_returns_watchlist(self, tmp_path):
         async with _pg_pool() as pool:
             repo = _FakeLeadersRepo({})
             ctx = _make_context(pool, leaders_repo=repo, tmp_path=tmp_path)
-            assert await _resolve_leader_tier(ctx, "0xleader") == "live_follow"
+            assert await _resolve_leader_tier(ctx, "0xleader") == "watchlist"
 
     @pytest.mark.asyncio
     async def test_repo_watchlist(self, tmp_path):
@@ -240,19 +241,19 @@ class TestResolveLeaderTier:
             assert await _resolve_leader_tier(ctx, "0xleader") == "live_follow"
 
     @pytest.mark.asyncio
-    async def test_repo_exception_returns_live(self, tmp_path):
+    async def test_repo_exception_returns_watchlist(self, tmp_path):
         async with _pg_pool() as pool:
             repo = MagicMock()
             repo.get_tier = AsyncMock(side_effect=RuntimeError("db gone"))
             ctx = _make_context(pool, leaders_repo=repo, tmp_path=tmp_path)
-            assert await _resolve_leader_tier(ctx, "0xleader") == "live_follow"
+            assert await _resolve_leader_tier(ctx, "0xleader") == "watchlist"
 
     @pytest.mark.asyncio
-    async def test_repo_unknown_tier_returns_live(self, tmp_path):
+    async def test_repo_unknown_tier_returns_watchlist(self, tmp_path):
         async with _pg_pool() as pool:
             repo = _FakeLeadersRepo({"0xleader": "something_unknown"})
             ctx = _make_context(pool, leaders_repo=repo, tmp_path=tmp_path)
-            assert await _resolve_leader_tier(ctx, "0xleader") == "live_follow"
+            assert await _resolve_leader_tier(ctx, "0xleader") == "watchlist"
 
 
 # --- execute_trades tier-gating integration tests ---
@@ -293,21 +294,17 @@ async def test_paper_follow_marks_processed(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_no_repo_allows_execution(tmp_path):
-    """Without a leaders_repo, all trades proceed (backward compat for configured leaders)."""
-    from services.executionService import ExecutionResult
-
+async def test_no_repo_skips_as_watchlist(tmp_path):
+    """P0-2 fail-closed: without a leaders_repo a leader resolves to watchlist and
+    the trade is skipped — never auto-executed as live."""
     async with _pg_pool() as pool:
         exec_svc = AsyncMock()
-        exec_svc.execute = AsyncMock(return_value=ExecutionResult(
-            accepted=True, order_id="ord123", status="filled",
-            requested_amount=Decimal("5"), filled_amount=Decimal("5"),
-            avg_price=Decimal("0.50"), fees_paid=Decimal("0.01"),
-        ))
         ctx = _make_context(pool, leaders_repo=None, execution_service=exec_svc, tmp_path=tmp_path)
         results = await execute_trades(ctx, "0xleader", [_signal()], time.time())
         assert len(results) == 1
-        assert results[0].status not in ("skipped", "paper") or results[0].reason not in ("tier_watchlist", "tier_paper_follow")
+        assert results[0].status == "skipped"
+        assert results[0].reason == "tier_watchlist"
+        exec_svc.execute.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -396,8 +393,9 @@ async def test_paper_trade_only_does_not_affect_watchlist(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_paper_trade_only_false_allows_live(tmp_path):
-    """Typed paper_trade_only=false must not interfere with live execution."""
+async def test_live_trading_enabled_allows_live(tmp_path):
+    """P0-2: with the LIVE_TRADING master switch enabled and a live_follow leader,
+    execution runs live (not demoted to paper)."""
     from services.executionService import ExecutionResult
 
     async with _pg_pool() as pool:
@@ -412,7 +410,7 @@ async def test_paper_trade_only_false_allows_live(tmp_path):
             pool,
             leaders_repo=repo,
             execution_service=exec_svc,
-            config=_config(PAPER_TRADE_ONLY="false"),
+            config=_config(LIVE_TRADING="enabled"),
             tmp_path=tmp_path,
         )
         results = await execute_trades(ctx, "0xleader", [_signal()], time.time())

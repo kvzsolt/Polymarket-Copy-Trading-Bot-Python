@@ -22,6 +22,8 @@ Design notes
 
 from __future__ import annotations
 
+import logging
+import math
 import re
 from collections.abc import Mapping
 from decimal import Decimal
@@ -29,7 +31,7 @@ from types import SimpleNamespace
 import sys as _sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, cast
 
 # Re-use the existing validation error type so callers can catch either
 # ``config.env.EnvValidationError`` or ``config.app_config.EnvValidationError``
@@ -50,7 +52,6 @@ __all__ = [
     "OrderConfirmationConfig",
     "PositionDriftConfig",
     "PollingConfig",
-    "NearOneExitConfig",
     "ReconciliationConfig",
     "RiskConfig",
     "SignatureType",
@@ -62,6 +63,19 @@ __all__ = [
 
 _ETH_ADDR_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
 _HEX_PRIVATE_KEY_RE = re.compile(r"^0x[0-9a-fA-F]{64}$")
+logger = logging.getLogger("AppConfig")
+
+# Contract addresses live in the dependency-free ``config.addresses`` leaf
+# module so the typed config and the legacy ``config.env`` surface share one
+# source of truth (env already imports app_config indirectly, so neither can
+# own the constants without a cycle). Re-exported here for back-compat with
+# existing ``from config.app_config import POLYGON_USDCE_ADDRESS`` call sites.
+from config.addresses import (  # noqa: E402
+    POLYGON_USDCE_ADDRESS,
+    POLYMARKET_CTF_EXCHANGE_V2_ADDRESS,
+    POLYMARKET_NEG_RISK_EXCHANGE_V2_ADDRESS,
+    POLYMARKET_PUSD_ADDRESS,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -70,7 +84,26 @@ _HEX_PRIVATE_KEY_RE = re.compile(r"^0x[0-9a-fA-F]{64}$")
 
 
 def _has_inline_comment(raw: str) -> bool:
-    return (" #" in raw) or ("\t#" in raw)
+    # A value that is purely a comment (``KEY=   # note``) is what python-dotenv
+    # hands back as a leading-``#`` string for an otherwise-empty assignment;
+    # treat that as a malformed inline comment too, not as a literal value.
+    return raw.strip().startswith("#") or (" #" in raw) or ("\t#" in raw)
+
+
+def _optional_int(p: "_Parser", key: str) -> int | None:
+    raw = p._strip(key, p.raw(key, ""))
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        p.errors.append(f"{key} must be a valid int, got: {raw!r}")
+        return None
+
+
+def _csv_tuple(p: "_Parser", key: str, default: str) -> tuple[str, ...]:
+    raw = p.string(key, default)
+    return tuple(item.strip().lower() for item in raw.split(",") if item.strip())
 
 
 class _Parser:
@@ -102,18 +135,98 @@ class _Parser:
     def string(self, key: str, default: str = "") -> str:
         return self._strip(key, self.raw(key, default))
 
+    def _finite_or_error(self, key: str, value: float, *, default: str) -> float:
+        """Reject NaN / +/-Inf for numeric config (P2-c, fail-closed).
+
+        ``float("nan")`` / ``float("inf")`` parse without error but corrupt
+        every downstream comparison gate (slippage tolerance, spread caps),
+        so a non-finite value must surface as a config error rather than be
+        accepted silently. We inline the check here instead of reusing
+        ``config.validation`` because those helpers couple finiteness to a
+        sign check and raise eagerly, whereas this parser accumulates errors
+        and raises once in ``load_config``.
+        """
+        if not math.isfinite(value):
+            self.errors.append(f"{key} must be a finite number, got: {value!r}")
+            try:
+                fallback = float(default)
+            except ValueError:
+                return 0.0
+            return fallback if math.isfinite(fallback) else 0.0
+        return value
+
     def float_(self, key: str, default: str) -> float:
         raw = self._strip(key, self.raw(key, default))
         if raw == "":
             raw = default
         try:
-            return float(raw)
+            value = float(raw)
         except ValueError:
             self.errors.append(f"{key} must be a valid float, got: {raw!r}")
             try:
-                return float(default)
+                value = float(default)
             except ValueError:
                 return 0.0
+            return value if math.isfinite(value) else 0.0
+        return self._finite_or_error(key, value, default=default)
+
+    def float_or_auto(self, key: str, default: str) -> float | None:
+        raw = self._strip(key, self.raw(key, default))
+        if raw == "" or raw.lower() == "auto" or raw.startswith("#"):
+            return None
+        try:
+            value = float(raw)
+        except ValueError:
+            self.errors.append(f"{key} must be a valid float or 'auto', got: {raw!r}")
+            try:
+                value = float(default)
+            except ValueError:
+                return 0.0
+            return value if math.isfinite(value) else 0.0
+        return self._finite_or_error(key, value, default=default)
+
+    def optional_float_or_symbol(
+        self,
+        key: str,
+        default: str,
+        *,
+        allowed_symbols: tuple[str, ...],
+        feature_enabled: bool,
+    ) -> tuple[str, float | None]:
+        """Feature-aware optional numeric/symbolic value.
+
+        Returns ``(mode, value)``:
+
+        * Owning feature disabled -> ``("disabled", None)``. The optional input
+          is never fatal-parsed, so a blank / comment-only / symbolic / even
+          malformed value cannot kill startup (or pre-reconcile) when the
+          sub-engine is off. This is the core of the deep-research finding:
+          a disabled feature must not validate its own inactive knobs.
+        * Blank or comment-only while enabled -> the first allowed symbol mode
+          (e.g. ``("auto", None)``) — the documented default-blank behaviour.
+        * An allowed symbol while enabled -> ``(symbol, None)``.
+        * A finite number while enabled -> ``("fixed", value)``.
+        * Anything else while enabled -> records a validation error and returns
+          ``("fixed", None)`` so all problems still surface together.
+        """
+        if not feature_enabled:
+            return ("disabled", None)
+        stripped = self.raw(key, default).strip()
+        if stripped == "" or stripped.startswith("#"):
+            return ((allowed_symbols[0] if allowed_symbols else "fixed"), None)
+        token = self._strip(key, self.raw(key, default))
+        if token.lower() in allowed_symbols:
+            return (token.lower(), None)
+        try:
+            value = float(token)
+        except ValueError:
+            symbols = ", ".join(f"'{s}'" for s in allowed_symbols)
+            self.errors.append(
+                f"{key} must be a valid float"
+                f"{(' or ' + symbols) if symbols else ''}, got: {token!r}"
+            )
+            return ("fixed", None)
+        return ("fixed", self._finite_or_error(key, value, default=default))
 
     def int_(self, key: str, default: str) -> int:
         raw = self._strip(key, self.raw(key, default))
@@ -165,13 +278,15 @@ class _Parser:
         return result
 
     # ---- specialised parsers ----
-    def leader_wallets(self) -> tuple[str, ...]:
+    def leader_wallets(self, *, allow_user_address_fallback: bool = True) -> tuple[str, ...]:
         raw = self._strip("LEADER_WALLETS", self.raw("LEADER_WALLETS", ""))
         if raw:
             wallets = [w.strip() for w in raw.split(",") if w.strip()]
-        else:
+        elif allow_user_address_fallback:
             single = self._strip("USER_ADDRESS", self.raw("USER_ADDRESS", ""))
             wallets = [single] if single else []
+        else:
+            wallets = []
         for w in wallets:
             if not _ETH_ADDR_RE.match(w):
                 self.errors.append(
@@ -334,7 +449,7 @@ class RiskConfig:
     near_max_price_exit: float
     profit_lock_trigger_pct: float
     profit_lock_sell_fraction: float
-    trailing_activation_pct: float
+    trailing_activation_pct: float | None
     trailing_distance: float
     staged_tp_levels: str
     staged_tp_fractions: str
@@ -342,9 +457,16 @@ class RiskConfig:
     stop_loss_grace_period_seconds: float
     # PR #105 review: bound the in-memory risk price cache via typed config
     # so the production sizing/risk path no longer relies on a raw env read.
-    # ``services.riskMonitor.RiskPriceCache`` still honours its env fallback
+    # ``services.risk.risk_monitor.RiskPriceCache`` still honours its env fallback
     # as a legacy adapter (issue #73 allows raw env in legacy/test paths only).
     risk_price_cache_max_size: int
+    # Explicit trailing-activation mode so 'auto' is never smuggled through a
+    # float. "disabled" whenever ENABLE_TRAILING_STOP is off (the activation
+    # input is then never fatal-parsed); "auto" scales activation from max
+    # payout (``trailing_activation_pct`` is None); "fixed" uses the numeric
+    # ``trailing_activation_pct``. Defaulted so existing direct constructors
+    # and fixtures keep working.
+    trailing_activation_mode: Literal["disabled", "fixed", "auto"] = "disabled"
 
 
 @dataclass(frozen=True)
@@ -360,6 +482,17 @@ class ExecutionConfig:
     near_resolution_gate_price: float
     near_resolution_max_age_seconds: float
     pending_submission_ttl_seconds: int
+    # TTL for pre-submit balance/share reservations. Bounds the window in
+    # which a pending order blocks the next same-scope copy before it is
+    # expired (and reconciled). Mirrors ``pending_submission_ttl_seconds``.
+    reservation_ttl_seconds: int
+    # Master switch for pre-submit BUY-quote / SELL-share reservations. When
+    # False the ReservationService no-ops (returns placeholder reservations)
+    # and double-spend protection falls back to the idempotency submission
+    # lock + position coordinator. Defaults False on this hardening branch
+    # because the reservation blocker was over-firing on legitimate same-scope
+    # copies; flip to True once that is retuned. See docs/02-configuration.md.
+    reservations_enabled: bool
     retry_backoff_base: float
     transaction_fee_bps: float
     gas_cost_usdc: float
@@ -382,6 +515,16 @@ class ExecutionConfig:
     # Submission concurrency: typed cap so production paths do not depend on
     # raw env reads inside ExecutionService.
     execution_submit_concurrency: int
+    # Per-batch concurrency for trade analysis and unconfirmed-order
+    # reconciliation. Typed so the orchestrator no longer reads ``config.raw``
+    # (closes the partial-config-migration drift the audit flagged). Defaulted
+    # to keep existing direct constructors / fixtures valid.
+    trade_analysis_concurrency: int = 6
+    reconcile_concurrency: int = 4
+    # FAK (fill-and-kill) repost ceilings: how many extra book levels a copy
+    # fill vs a forced protective exit may sweep. Promoted off ``config.raw``.
+    copy_fak_max_attempts: int = 8
+    exit_fak_max_attempts: int = 8
 
 
 @dataclass(frozen=True)
@@ -433,15 +576,22 @@ class NetworkConfig:
     enable_metrics_server: bool
     metrics_port: int
     metrics_bind_host: str
+    # Optional fallback RPC when primary returns internal errors (-32603).
+    fallback_rpc_url: str = ""
     # Polymarket-side collateral / exchange contract addresses. These used
     # to be read straight out of ``ENV`` by ``utils/createClobClient.py``
     # and ``utils/getMyBalance.py``; promoted to typed config so the
     # balance-check + CLOB-client paths can drop their raw env reads.
-    # Default-empty strings let the existing usdc_contract_address fallback
-    # chain in load_config keep working when these aren't set.
+    # CLOB v2 defaults to pUSD collateral; ``usdc_contract_address`` is kept
+    # as a legacy field name for callers that still expect that attribute.
     collateral_contract_address: str = ""
     pusd_contract_address: str = ""
     ctf_exchange_v2_address: str = ""
+    # Neg Risk CTF Exchange V2 — the separate settlement contract for
+    # negative-risk markets. Verified against docs.polymarket.com/resources/
+    # contracts. Both exchanges must be covered by on-chain detection and
+    # collateral-allowance checks.
+    neg_risk_ctf_exchange_v2_address: str = ""
 
 
 @dataclass(frozen=True)
@@ -513,22 +663,6 @@ class OrderConfirmationConfig:
 
 
 @dataclass(frozen=True)
-class NearOneExitConfig:
-    """Sell-the-position-near-par exit replaces on-chain redemption.
-
-    When a copied position's token price has been at or above ``threshold`` for
-    at least ``dwell_seconds``, NearOneExitService submits a SELL for the
-    entire held size through the normal CLOB execution path. No CTF
-    ``redeemPositions`` transaction is ever issued.
-    """
-
-    enable_near_one_exit: bool
-    threshold: Decimal
-    dwell_seconds: int
-    check_interval: int
-
-
-@dataclass(frozen=True)
 class DiscoveryConfig:
     enable_trader_discovery: bool
     discovery_interval_seconds: int
@@ -540,10 +674,18 @@ class DiscoveryConfig:
     discovery_max_results: int
     discovery_cache_ttl_seconds: float
     multi_user_config_file: str
+    leader_source: str = "manual"
+    auto_leader_enabled: bool = False
+    auto_leader_count: int = 2
+    allow_auto_trader_detection: bool = False
+    max_auto_traders_count: int = 2
     falcon_api_url: str = "https://narrative.agent.heisenberg.so/api/v2/semantic/retrieve/parameterized"
     falcon_api_token: str = ""
     falcon_page_size: int = 100
     falcon_max_pages: int = 5
+    falcon_sort_modes: tuple[str, ...] = ("h_score", "pnl", "sharpe", "roi", "win_rate")
+    falcon_dedupe_candidates: bool = True
+    falcon_max_candidates: int = 250
     falcon_min_win_rate_15d: float = 0.45
     falcon_max_win_rate_15d: float = 0.90
     falcon_min_roi_15d: float = 0.0
@@ -552,6 +694,7 @@ class DiscoveryConfig:
     falcon_max_trades_15d: int = 750
     polymarket_history_lookback_days: int = 365
     polymarket_history_window_days: int = 7
+    polymarket_history_min_window_seconds: int = 21600
     polymarket_activity_max_offset: int = 10000
     discovery_history_trade_limit: int = 50000
     discovery_signal_group_window_seconds: int = 60
@@ -559,11 +702,22 @@ class DiscoveryConfig:
     discovery_min_group_notional_usdc: float = 5.0
     discovery_min_copyable_grouped_signal_ratio: float = 0.75
     discovery_min_copyable_notional_ratio: float = 0.60
+    discovery_min_auto_sports_esports_ratio: float = 0.75
+    discovery_auto_prefer_sports_esports: bool = True
+    discovery_evaluation_ttl_seconds: int = 3600
+    discovery_reject_stale_evaluations: bool = True
+    discovery_require_recent_state_for_live: bool = True
     discovery_require_7d_non_negative: bool = True
     discovery_min_7d_pnl_usdc: float = 0.0
     discovery_allow_3d_slightly_negative: bool = True
     discovery_min_3d_pnl_usdc: float = -50.0
     discovery_min_3d_roi: float = -0.05
+    leader_score_version: str = "leader_score_v2"
+    discovery_volume_target_15d: float = 10000.0
+    discovery_min_volume_15d: float = 0.0
+    discovery_rank_target: int = 100
+    discovery_risk_penalty_enabled: bool = True
+    auto_leader_require_score_version: bool = True
     discovery_crypto_fast_max_resolution_minutes: float = 30.0
     discovery_crypto_fast_reject_signal_ratio: float = 0.70
     discovery_crypto_fast_reject_notional_ratio: float = 0.70
@@ -632,6 +786,28 @@ class MarketDataConfig:
 
 
 @dataclass(frozen=True)
+class OnchainDetectionConfig:
+    """Early on-chain trader detection policy (PR2).
+
+    The mined-``OrderFilled`` log subscription is always safe to run because
+    mined fills are authoritative; it is gated only by ``enable_mined_detection``
+    (default True) so operators can disable it for diagnostics. The pending-
+    transaction subscription is provisional and gated by
+    ``enable_onchain_pending_detection`` (default False) — it must not feed
+    the copy path until the operator opts in.
+    """
+
+    enable_onchain_pending_detection: bool = False
+    enable_onchain_mined_detection: bool = True
+    pending_tx_provider: str = "alchemy"
+    onchain_ws_url: str = ""
+    pending_tx_ws_url: str = ""
+    pending_tx_hashes_only: bool = False
+    pending_tx_max_signal_age_ms: int = 500
+    pending_tx_detection_confidence_required: str = "pending_probable"
+
+
+@dataclass(frozen=True)
 class AppConfig:
     """Root configuration object. Immutable after construction."""
 
@@ -645,13 +821,13 @@ class AppConfig:
     leader: LeaderConfig
     logging: LoggingConfig
     network: NetworkConfig
-    near_one_exit: NearOneExitConfig
     reconciliation: ReconciliationConfig
     order_confirmation: OrderConfirmationConfig
     position_drift: PositionDriftConfig
     discovery: DiscoveryConfig
     features: FeatureFlagConfig
     market_data: MarketDataConfig = field(default_factory=MarketDataConfig)
+    onchain_detection: OnchainDetectionConfig = field(default_factory=OnchainDetectionConfig)
     # Global safety: when True the bot runs in paper-only / dry-run mode.
     dry_run: bool = False
     # The raw mapping is kept for transitional backwards compatibility
@@ -750,6 +926,8 @@ def _validate_semantics(cfg: AppConfig, errors: list[str]) -> None:
         errors.append("RISK_BUFFER_PCT must be non-negative.")
     if e.pending_submission_ttl_seconds <= 0:
         errors.append("PENDING_SUBMISSION_TTL_SECONDS must be > 0.")
+    if e.reservation_ttl_seconds <= 0:
+        errors.append("RESERVATION_TTL_SECONDS must be > 0.")
     # Phase 4 — balance regime + book depth gate. ``0`` disables a knob.
     if e.max_position_size_usdc < 0:
         errors.append("MAX_POSITION_SIZE_USDC must be non-negative.")
@@ -823,10 +1001,43 @@ def _validate_semantics(cfg: AppConfig, errors: list[str]) -> None:
 
     # Discovery
     d = cfg.discovery
+    if d.leader_source not in {"manual", "auto"}:
+        errors.append('LEADER_SOURCE must be one of: "manual", "auto".')
     if d.min_active_positions <= 0:
         errors.append("MIN_ACTIVE_POSITIONS must be > 0.")
     if d.discovery_max_results <= 0:
         errors.append("DISCOVERY_MAX_RESULTS must be > 0.")
+    if d.falcon_page_size <= 0:
+        errors.append("FALCON_PAGE_SIZE must be > 0.")
+    if d.falcon_max_pages <= 0:
+        errors.append("FALCON_MAX_PAGES must be > 0.")
+    if not d.falcon_sort_modes:
+        errors.append("FALCON_SORT_MODES must include at least one sort mode.")
+    valid_falcon_sorts = {"h_score", "roi", "pnl", "win_rate", "trades", "sharpe"}
+    invalid_falcon_sorts = [
+        mode for mode in d.falcon_sort_modes if mode not in valid_falcon_sorts
+    ]
+    if invalid_falcon_sorts:
+        errors.append(
+            "FALCON_SORT_MODES contains unsupported sort mode(s): "
+            + ", ".join(invalid_falcon_sorts)
+        )
+    if d.falcon_max_candidates <= 0:
+        errors.append("FALCON_MAX_CANDIDATES must be > 0.")
+    if d.leader_score_version not in {"leader_score_v1", "leader_score_v2"}:
+        errors.append(
+            'LEADER_SCORE_VERSION must be one of: "leader_score_v1", "leader_score_v2".'
+        )
+    if d.discovery_volume_target_15d <= 0:
+        errors.append("DISCOVERY_VOLUME_TARGET_15D must be > 0.")
+    if d.discovery_min_volume_15d < 0:
+        errors.append("DISCOVERY_MIN_VOLUME_15D must be non-negative.")
+    if d.discovery_min_volume_15d > d.discovery_volume_target_15d:
+        errors.append(
+            "DISCOVERY_MIN_VOLUME_15D must be <= DISCOVERY_VOLUME_TARGET_15D."
+        )
+    if d.discovery_rank_target <= 0:
+        errors.append("DISCOVERY_RANK_TARGET must be > 0.")
 
     # Market data
     md = cfg.market_data
@@ -873,6 +1084,8 @@ _RAW_SENSITIVE_KEYS: frozenset[str] = frozenset(
         "CLOB_API_KEY",
         "CLOB_SECRET",
         "CLOB_PASSPHRASE",
+        "FALCON_API_TOKEN",
+        "DATABASE_URL",
     }
 )
 
@@ -996,6 +1209,20 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         trust_size_multiplier_max=p.float_("TRUST_SIZE_MULTIPLIER_MAX", "1.25"),
     )
 
+    # ENABLE_TRAILING_STOP is read up front so trailing-activation parsing is
+    # feature-aware: when the sub-engine is off, its activation knob
+    # (blank / comment-only / 'auto' / even garbage) is never fatal-parsed and
+    # cannot crash startup or the risk pre-reconcile pass. This is the typed
+    # half of the deep-research "disabled feature must not validate its inactive
+    # inputs" finding; the FeatureFlagConfig below reuses the same value.
+    _enable_trailing_stop = p.bool_("ENABLE_TRAILING_STOP", False)
+    _trailing_activation_mode, _trailing_activation_pct = p.optional_float_or_symbol(
+        "TRAILING_ACTIVATION_PCT",
+        "20",
+        allowed_symbols=("auto",),
+        feature_enabled=_enable_trailing_stop,
+    )
+
     # Risk
     risk = RiskConfig(
         enable_risk_mgmt=p.bool_("ENABLE_RISK_MGMT", False),
@@ -1025,9 +1252,9 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         near_max_price_exit=p.float_("NEAR_MAX_PRICE_EXIT", "0.95"),
         profit_lock_trigger_pct=p.float_("PROFIT_LOCK_TRIGGER_PCT", "70"),
         profit_lock_sell_fraction=p.float_("PROFIT_LOCK_SELL_FRACTION", "0.50"),
-        trailing_activation_pct=p.float_("TRAILING_ACTIVATION_PCT", "20"),
+        trailing_activation_pct=_trailing_activation_pct,
         trailing_distance=p.float_("TRAILING_DISTANCE", "0.05"),
-        staged_tp_levels=p.string("STAGED_TP_LEVELS", "30,50"),
+        staged_tp_levels=p.string("STAGED_TP_LEVELS", "0.30,0.50"),
         staged_tp_fractions=p.string("STAGED_TP_FRACTIONS", "0.25,0.35"),
         stop_loss_threshold=p.float_("STOP_LOSS_THRESHOLD", "0.15"),
         stop_loss_grace_period_seconds=p.float_("STOP_LOSS_GRACE_PERIOD_SECONDS", "180"),
@@ -1036,6 +1263,21 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         # directly when no explicit value is passed; this typed value is the
         # production wiring path used when AppConfig is in scope.
         risk_price_cache_max_size=p.int_("RISK_PRICE_CACHE_MAX_SIZE", "5000"),
+        trailing_activation_mode=cast(
+            'Literal["disabled", "fixed", "auto"]', _trailing_activation_mode
+        ),
+    )
+
+    # P0-2: live-trading master switch — fail-closed. The bot runs in PAPER mode
+    # unless LIVE_TRADING is EXPLICITLY enabled; a missing / unknown / malformed
+    # value resolves to paper. The legacy PAPER_TRADE_ONLY flag can additionally
+    # force paper but can never enable live. This is the single source for
+    # paper_trade_only / dry_run, so live trading requires an affirmative opt-in
+    # (LIVE_TRADING=enabled) — there is no path where missing config goes live.
+    _live_switch = p._strip("LIVE_TRADING", p.raw("LIVE_TRADING", "")).strip().lower()
+    live_trading_enabled = _live_switch in ("enabled", "true", "1", "yes", "on")
+    paper_trade_only_effective = (
+        p.bool_("PAPER_TRADE_ONLY", False) or not live_trading_enabled
     )
 
     # Execution
@@ -1045,12 +1287,14 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         max_share_price=p.float_("MAX_SHARE_PRICE", "0"),
         max_retries=p.int_("MAX_RETRIES", "3"),
         non_terminal_failure_max_attempts=p.int_("NON_TERMINAL_FAILURE_MAX_ATTEMPTS", "3"),
-        paper_trade_only=p.bool_("PAPER_TRADE_ONLY", False),
+        paper_trade_only=paper_trade_only_effective,
         enable_copy_decision_gate=p.bool_("ENABLE_COPY_DECISION_GATE", False),
         enable_near_resolution_gate=p.bool_("ENABLE_NEAR_RESOLUTION_GATE", False),
         near_resolution_gate_price=p.float_("NEAR_RESOLUTION_GATE_PRICE", "0.95"),
         near_resolution_max_age_seconds=p.float_("NEAR_RESOLUTION_MAX_AGE_SECONDS", "15"),
         pending_submission_ttl_seconds=p.int_("PENDING_SUBMISSION_TTL_SECONDS", "120"),
+        reservation_ttl_seconds=p.int_("RESERVATION_TTL_SECONDS", "120"),
+        reservations_enabled=p.bool_("RESERVATIONS_ENABLED", False),
         retry_backoff_base=p.float_("RETRY_BACKOFF_BASE", "1.0"),
         transaction_fee_bps=p.float_("TRANSACTION_FEE_BPS", "20"),
         gas_cost_usdc=p.float_("GAS_COST_USDC", "0.03"),
@@ -1071,10 +1315,15 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         min_book_depth_usdc=p.float_("MIN_BOOK_DEPTH_USDC", "0"),
         book_depth_band_pct=p.float_("BOOK_DEPTH_BAND_PCT", "5"),
         execution_submit_concurrency=p.int_("EXECUTION_SUBMIT_CONCURRENCY", "2"),
+        trade_analysis_concurrency=p.int_("TRADE_ANALYSIS_CONCURRENCY", "6"),
+        reconcile_concurrency=p.int_("RECONCILE_CONCURRENCY", "4"),
+        copy_fak_max_attempts=p.int_("COPY_FAK_MAX_ATTEMPTS", "8"),
+        exit_fak_max_attempts=p.int_("EXIT_FAK_MAX_ATTEMPTS", "8"),
     )
 
     # Leader / discovery cascades — reproduce the same cascading defaults the legacy
     # ENV snapshot uses so services relying on these derived flags behave identically.
+    leader_source = p.string("LEADER_SOURCE", "manual").lower()
     configured_auto_discover = p.bool_("AUTO_DISCOVER_LEADERS", False)
     configured_trader_discovery = p.bool_("ENABLE_TRADER_DISCOVERY", False)
     configured_promote_to_active = p.bool_("DISCOVERY_PROMOTE_TO_ACTIVE", False)
@@ -1087,28 +1336,50 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
     discovery_promote_to_active = configured_promote_to_active or leader_auto
 
     legacy_auto_count = p.int_("AUTO_DISCOVER_TOP_N", "5")
-    leader_auto_count_raw = p._strip(
-        "LEADER_AUTO_COUNT", p.raw("LEADER_AUTO_COUNT", "")
+    auto_discover_max_leaders_raw = p.int_("AUTO_DISCOVER_MAX_LEADERS", "10")
+    auto_leader_count_override = _optional_int(p, "AUTO_LEADER_COUNT")
+    leader_auto_count_override = _optional_int(p, "LEADER_AUTO_COUNT")
+    auto_discover_max_leaders = max(0, auto_discover_max_leaders_raw)
+    requested_auto_discover_top_n = (
+        auto_leader_count_override
+        if auto_leader_count_override is not None
+        else leader_auto_count_override
+        if leader_auto_count_override is not None
+        else legacy_auto_count
     )
-    if leader_auto_count_raw:
-        try:
-            auto_discover_top_n = int(leader_auto_count_raw)
-        except ValueError:
-            p.errors.append(
-                f"LEADER_AUTO_COUNT must be a valid integer, got: {leader_auto_count_raw!r}"
-            )
-            auto_discover_top_n = legacy_auto_count
-    else:
-        auto_discover_top_n = legacy_auto_count
+    auto_discover_top_n = max(
+        0,
+        min(requested_auto_discover_top_n, auto_discover_max_leaders),
+    )
+
+    auto_leader_enabled_raw = p.bool_("AUTO_LEADER_ENABLED", False)
+    allow_auto_trader_detection_raw = p.bool_("ALLOW_AUTO_TRADER_DETECTION", False)
+    allow_auto_trader_detection = (
+        leader_source == "auto"
+        or auto_leader_enabled_raw
+        or allow_auto_trader_detection_raw
+    )
+    max_auto_traders_override = _optional_int(p, "MAX_AUTO_TRADERS_COUNT")
+    auto_leader_count_raw = (
+        auto_leader_count_override
+        if auto_leader_count_override is not None
+        else max_auto_traders_override
+        if max_auto_traders_override is not None
+        else leader_auto_count_override
+        if leader_auto_count_override is not None
+        else 2
+    )
+    auto_traders_cap = auto_discover_max_leaders
+    max_auto_traders_count = max(0, min(auto_leader_count_raw, auto_traders_cap))
 
     leader = LeaderConfig(
-        wallets=p.leader_wallets(),
+        wallets=p.leader_wallets(
+            allow_user_address_fallback=not allow_auto_trader_detection
+        ),
         leader_auto=leader_auto,
         leader_auto_count=auto_discover_top_n,
         auto_discover_leaders=auto_discover_leaders,
-        auto_discover_max_leaders=max(
-            p.int_("AUTO_DISCOVER_MAX_LEADERS", "10"), auto_discover_top_n
-        ),
+        auto_discover_max_leaders=auto_discover_max_leaders,
         auto_discover_top_n=auto_discover_top_n,
         auto_discover_min_score=p.float_("AUTO_DISCOVER_MIN_SCORE", "0.45"),
         copy_decision_min_score=p.float_("COPY_DECISION_MIN_SCORE", "0.15"),
@@ -1143,19 +1414,27 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
 
     network = NetworkConfig(
         rpc_url=p.string("RPC_URL", ""),
+        fallback_rpc_url=p.string("FALLBACK_RPC_URL", ""),
         chain_id=wallet.chain_id,
         usdc_contract_address=(
             p.string("COLLATERAL_CONTRACT_ADDRESS", "")
-            or p.string("PUSD_CONTRACT_ADDRESS", "")
-            or p.string("USDC_CONTRACT_ADDRESS", "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174")
+            or p.string("PUSD_CONTRACT_ADDRESS", POLYMARKET_PUSD_ADDRESS)
+            or p.string("USDC_CONTRACT_ADDRESS", POLYGON_USDCE_ADDRESS)
         ),
         enforce_geoblock=p.bool_("ENFORCE_GEOBLOCK", True),
         enable_metrics_server=p.bool_("ENABLE_METRICS_SERVER", False),
         metrics_port=p.int_("METRICS_PORT", "9102"),
         metrics_bind_host=p.string("METRICS_BIND_HOST", "127.0.0.1"),
         collateral_contract_address=p.string("COLLATERAL_CONTRACT_ADDRESS", ""),
-        pusd_contract_address=p.string("PUSD_CONTRACT_ADDRESS", ""),
-        ctf_exchange_v2_address=p.string("CTF_EXCHANGE_V2_ADDRESS", ""),
+        pusd_contract_address=p.string("PUSD_CONTRACT_ADDRESS", POLYMARKET_PUSD_ADDRESS),
+        ctf_exchange_v2_address=p.string(
+            "CTF_EXCHANGE_V2_ADDRESS",
+            POLYMARKET_CTF_EXCHANGE_V2_ADDRESS,
+        ),
+        neg_risk_ctf_exchange_v2_address=p.string(
+            "NEG_RISK_CTF_EXCHANGE_V2_ADDRESS",
+            POLYMARKET_NEG_RISK_EXCHANGE_V2_ADDRESS,
+        ),
     )
 
     reconciliation = ReconciliationConfig(
@@ -1203,17 +1482,25 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         ),
     )
 
-    near_one_exit = NearOneExitConfig(
-        enable_near_one_exit=p.bool_("ENABLE_NEAR_ONE_EXIT", False),
-        threshold=Decimal(p.string("NEAR_ONE_EXIT_THRESHOLD", "0.99")),
-        dwell_seconds=p.int_("NEAR_ONE_EXIT_DWELL_SECONDS", "60"),
-        check_interval=p.int_("NEAR_ONE_EXIT_CHECK_INTERVAL", "5"),
-    )
+    if allow_auto_trader_detection and max_auto_traders_count <= 0:
+        logger.warning(
+            "auto_trader_detection_config_invalid",
+            extra={
+                "allow_auto_trader_detection": True,
+                "max_auto_traders_count": max_auto_traders_count,
+                "effect": "auto detection cannot select leaders",
+            },
+        )
 
     discovery = DiscoveryConfig(
         enable_trader_discovery=enable_trader_discovery,
         discovery_interval_seconds=p.int_("DISCOVERY_INTERVAL_SECONDS", "3600"),
         discovery_promote_to_active=discovery_promote_to_active,
+        leader_source=leader_source,
+        auto_leader_enabled=allow_auto_trader_detection,
+        auto_leader_count=max_auto_traders_count,
+        allow_auto_trader_detection=allow_auto_trader_detection,
+        max_auto_traders_count=max_auto_traders_count,
         min_leader_pnl=p.float_("MIN_LEADER_PNL", "1000"),
         min_leader_win_rate=p.float_("MIN_LEADER_WIN_RATE", "0.55"),
         min_leader_positions=p.int_("MIN_LEADER_POSITIONS", "20"),
@@ -1228,6 +1515,11 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         falcon_api_token=p.string("FALCON_API_TOKEN", ""),
         falcon_page_size=p.int_("FALCON_PAGE_SIZE", "100"),
         falcon_max_pages=p.int_("FALCON_MAX_PAGES", "5"),
+        falcon_sort_modes=_csv_tuple(
+            p, "FALCON_SORT_MODES", "h_score,pnl,sharpe,roi,win_rate"
+        ),
+        falcon_dedupe_candidates=p.bool_("FALCON_DEDUPE_CANDIDATES", True),
+        falcon_max_candidates=p.int_("FALCON_MAX_CANDIDATES", "250"),
         falcon_min_win_rate_15d=p.float_("FALCON_MIN_WIN_RATE_15D", "0.45"),
         falcon_max_win_rate_15d=p.float_("FALCON_MAX_WIN_RATE_15D", "0.90"),
         falcon_min_roi_15d=p.float_("FALCON_MIN_ROI_15D", "0"),
@@ -1236,6 +1528,9 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         falcon_max_trades_15d=p.int_("FALCON_MAX_TRADES_15D", "750"),
         polymarket_history_lookback_days=p.int_("POLYMARKET_HISTORY_LOOKBACK_DAYS", "365"),
         polymarket_history_window_days=p.int_("POLYMARKET_HISTORY_WINDOW_DAYS", "7"),
+        polymarket_history_min_window_seconds=p.int_(
+            "POLYMARKET_HISTORY_MIN_WINDOW_SECONDS", "21600"
+        ),
         polymarket_activity_max_offset=p.int_("POLYMARKET_ACTIVITY_MAX_OFFSET", "10000"),
         discovery_history_trade_limit=p.int_("DISCOVERY_HISTORY_TRADE_LIMIT", "50000"),
         discovery_signal_group_window_seconds=p.int_("DISCOVERY_SIGNAL_GROUP_WINDOW_SECONDS", "60"),
@@ -1247,6 +1542,21 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         discovery_min_copyable_notional_ratio=p.float_(
             "DISCOVERY_MIN_COPYABLE_NOTIONAL_RATIO", "0.60"
         ),
+        discovery_min_auto_sports_esports_ratio=p.float_(
+            "DISCOVERY_MIN_AUTO_SPORTS_ESPORTS_RATIO", "0.75"
+        ),
+        discovery_auto_prefer_sports_esports=p.bool_(
+            "DISCOVERY_AUTO_PREFER_SPORTS_ESPORTS", True
+        ),
+        discovery_evaluation_ttl_seconds=p.int_(
+            "DISCOVERY_EVALUATION_TTL_SECONDS", "3600"
+        ),
+        discovery_reject_stale_evaluations=p.bool_(
+            "DISCOVERY_REJECT_STALE_EVALUATIONS", True
+        ),
+        discovery_require_recent_state_for_live=p.bool_(
+            "DISCOVERY_REQUIRE_RECENT_STATE_FOR_LIVE", True
+        ),
         discovery_require_7d_non_negative=p.bool_("DISCOVERY_REQUIRE_7D_NON_NEGATIVE", True),
         discovery_min_7d_pnl_usdc=p.float_("DISCOVERY_MIN_7D_PNL_USDC", "0"),
         discovery_allow_3d_slightly_negative=p.bool_(
@@ -1254,6 +1564,20 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         ),
         discovery_min_3d_pnl_usdc=p.float_("DISCOVERY_MIN_3D_PNL_USDC", "-50"),
         discovery_min_3d_roi=p.float_("DISCOVERY_MIN_3D_ROI", "-0.05"),
+        leader_score_version=p.string(
+            "LEADER_SCORE_VERSION", "leader_score_v2"
+        ).lower(),
+        discovery_volume_target_15d=p.float_(
+            "DISCOVERY_VOLUME_TARGET_15D", "10000"
+        ),
+        discovery_min_volume_15d=p.float_("DISCOVERY_MIN_VOLUME_15D", "0"),
+        discovery_rank_target=p.int_("DISCOVERY_RANK_TARGET", "100"),
+        discovery_risk_penalty_enabled=p.bool_(
+            "DISCOVERY_RISK_PENALTY_ENABLED", True
+        ),
+        auto_leader_require_score_version=p.bool_(
+            "AUTO_LEADER_REQUIRE_SCORE_VERSION", True
+        ),
         discovery_crypto_fast_max_resolution_minutes=p.float_(
             "DISCOVERY_CRYPTO_FAST_MAX_RESOLUTION_MINUTES", "30"
         ),
@@ -1297,7 +1621,7 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
     features = FeatureFlagConfig(
         enable_profit_lock=p.bool_("ENABLE_PROFIT_LOCK", False),
         enable_near_max_exit=p.bool_("ENABLE_NEAR_MAX_EXIT", True),
-        enable_trailing_stop=p.bool_("ENABLE_TRAILING_STOP", False),
+        enable_trailing_stop=_enable_trailing_stop,
         enable_staged_tp=p.bool_("ENABLE_STAGED_TP", False),
         enable_leader_divergence_exit=p.bool_("ENABLE_LEADER_DIVERGENCE_EXIT", False),
         enable_stop_loss=p.bool_("ENABLE_STOP_LOSS", False),
@@ -1316,7 +1640,6 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         leader=leader,
         logging=logging_cfg,
         network=network,
-        near_one_exit=near_one_exit,
         reconciliation=reconciliation,
         order_confirmation=order_confirmation,
         position_drift=position_drift,
@@ -1345,7 +1668,19 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
             executable_tick_max_age_seconds=p.float_("MARKET_DATA_EXECUTABLE_TICK_MAX_AGE_SECONDS", 300.0),
             wss_connection_max_silence_seconds=p.float_("MARKET_DATA_WSS_CONNECTION_MAX_SILENCE_SECONDS", 20.0),
         ),
-        dry_run=p.bool_("PAPER_TRADE_ONLY", False),
+        onchain_detection=OnchainDetectionConfig(
+            enable_onchain_pending_detection=p.bool_("ENABLE_ONCHAIN_PENDING_DETECTION", False),
+            enable_onchain_mined_detection=p.bool_("ENABLE_ONCHAIN_MINED_DETECTION", True),
+            onchain_ws_url=p.string("ONCHAIN_WS_URL", ""),
+            pending_tx_ws_url=p.string("PENDING_TX_WS_URL", ""),
+            pending_tx_hashes_only=p.bool_("PENDING_TX_HASHES_ONLY", False),
+            pending_tx_max_signal_age_ms=p.int_("PENDING_TX_MAX_SIGNAL_AGE_MS", "500"),
+            pending_tx_detection_confidence_required=p.string(
+                "PENDING_TX_DETECTION_CONFIDENCE_REQUIRED", "pending_probable"
+            ),
+        ),
+        # P0-2: single source — derived from the LIVE_TRADING master switch.
+        dry_run=paper_trade_only_effective,
         raw=_strip_sensitive(env),
     )
 

@@ -28,6 +28,17 @@ def _normalize_id(value: Any) -> str:
     return s.lower() if s[:2].lower() == "0x" else s
 
 
+def _normalize_user_id(value: Any) -> str:
+    """Strip whitespace but PRESERVE casing for user_id (P1-k).
+
+    Wallet user_ids are EIP-55 checksum-cased Ethereum addresses and the repos
+    store them exactly as written. Lowercasing here (as ``_normalize_id`` does
+    for the case-insensitive condition/token hashes) forks a position into an
+    orphan row the drift check cannot find — see memory feedback_user_id_casing.
+    """
+    return str(value or "").strip()
+
+
 @dataclass(frozen=True, slots=True)
 class PositionKey:
     """Canonical position identity ``(user_id, condition_id, token_id)``.
@@ -42,7 +53,7 @@ class PositionKey:
     outcome: Optional[str] = None
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "user_id", _normalize_id(self.user_id))
+        object.__setattr__(self, "user_id", _normalize_user_id(self.user_id))
         object.__setattr__(self, "condition_id", _normalize_id(self.condition_id))
         object.__setattr__(self, "token_id", _normalize_id(self.token_id))
         if self.outcome is not None:

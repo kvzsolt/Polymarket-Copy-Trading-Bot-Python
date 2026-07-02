@@ -540,3 +540,18 @@ class TestMarketTokenSubscriptionWake:
         await rt._on_fill({"asset_id": " 12345 ", "side": "BUY"})
 
         callback.assert_awaited_once_with("12345")
+
+    @pytest.mark.asyncio
+    async def test_on_fill_accepts_asset_field_for_seen_token(self) -> None:
+        callback = AsyncMock()
+        rt = UserDataRuntime(
+            market_store=MarketStateStore(),
+            readiness=ReadinessTracker(),
+            api_creds=dict(VALID_CREDS),
+            user_id=USER_ID,
+            on_market_token_seen=callback,
+        )
+
+        await rt._on_fill({"asset": " 67890 ", "side": "SELL"})
+
+        callback.assert_awaited_once_with("67890")

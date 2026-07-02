@@ -22,6 +22,12 @@ from dataclasses import dataclass
 from enum import IntEnum
 from pathlib import Path
 
+from config.addresses import (
+    POLYGON_USDCE_ADDRESS,
+    POLYMARKET_CTF_EXCHANGE_V2_ADDRESS,
+    POLYMARKET_NEG_RISK_EXCHANGE_V2_ADDRESS,
+    POLYMARKET_PUSD_ADDRESS,
+)
 from config.runtime_env import load_runtime_env
 
 # NOTE: Do NOT call load_runtime_env() at import time.
@@ -82,6 +88,18 @@ def _float(key: str, default: str) -> float:
     return float(raw) if raw else float(default)
 
 
+def _float_or_auto(key: str, default: str) -> float | None:
+    raw = _ensure_no_inline_comment(key, _raw(key, default))
+    if not raw or raw.lower() == 'auto' or raw.startswith('#'):
+        return None
+    try:
+        return float(raw)
+    except ValueError as exc:
+        raise EnvValidationError(
+            f"{key} must be a valid float or 'auto', got: {raw!r}"
+        ) from exc
+
+
 def _int(key: str, default: str) -> int:
     raw = _ensure_no_inline_comment(key, _raw(key, default))
     return int(raw) if raw else int(default)
@@ -91,6 +109,30 @@ def _bool(key: str, default: bool = False) -> bool:
     raw_default = 'true' if default else 'false'
     raw = _ensure_no_inline_comment(key, _raw(key, raw_default))
     return raw.strip().lower() in ('1', 'true', 'yes')
+
+
+def _optional_int(key: str) -> int | None:
+    raw = _ensure_no_inline_comment(key, _raw(key, ''))
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError as exc:
+        raise EnvValidationError(
+            f"{key} must be a valid integer, got: {raw!r}"
+        ) from exc
+
+
+def _leader_source() -> str:
+    return _ensure_no_inline_comment('LEADER_SOURCE', _raw('LEADER_SOURCE', 'manual')).lower()
+
+
+def _auto_leader_detection_enabled() -> bool:
+    return (
+        _leader_source() == 'auto'
+        or _bool('AUTO_LEADER_ENABLED', False)
+        or _bool('ALLOW_AUTO_TRADER_DETECTION', False)
+    )
 
 
 def _runtime_python_supported() -> bool:
@@ -120,9 +162,11 @@ def _leader_wallets() -> list[str]:
     raw = _ensure_no_inline_comment('LEADER_WALLETS', _raw('LEADER_WALLETS', ''))
     if raw:
         wallets = [w.strip() for w in raw.split(',') if w.strip()]
-    else:
+    elif not _auto_leader_detection_enabled():
         single = _ensure_no_inline_comment('USER_ADDRESS', _raw('USER_ADDRESS', ''))
         wallets = [single] if single else []
+    else:
+        wallets = []
 
     invalid = [w for w in wallets if not is_valid_eth_address(w)]
     if invalid:
@@ -222,6 +266,11 @@ def get_metrics_bind_host() -> str:
     return _ensure_no_inline_comment('METRICS_BIND_HOST', _raw('METRICS_BIND_HOST', '127.0.0.1'))
 
 
+def get_fallback_rpc_url() -> str:
+    """Return the fallback RPC URL if configured, otherwise empty string."""
+    return _ensure_no_inline_comment('FALLBACK_RPC_URL', _raw('FALLBACK_RPC_URL', ''))
+
+
 def build_wallet_config() -> WalletConfig:
     return WalletConfig(
         private_key=get_private_key(),
@@ -260,17 +309,24 @@ def validate_runtime_env() -> None:
     for key in (
         'USER_ADDRESS',
         'LEADER_WALLETS',
+        'LEADER_SOURCE',
+        'AUTO_LEADER_ENABLED',
+        'AUTO_LEADER_COUNT',
         'LEADER_AUTO',
         'LEADER_AUTO_COUNT',
         'AUTO_DISCOVER_LEADERS',
         'AUTO_DISCOVER_TOP_N',
+        'ALLOW_AUTO_TRADER_DETECTION',
+        'MAX_AUTO_TRADERS_COUNT',
         'DISCOVERY_PROMOTE_TO_ACTIVE',
         'ENABLE_TRADER_DISCOVERY',
+        'FALCON_SORT_MODES',
         'FUNDER_ADDRESS',
         'SIGNATURE_TYPE',
         'CHAIN_ID',
         'MULTI_USER_CONFIG_FILE',
         'RPC_URL',
+        'FALLBACK_RPC_URL',
         'PNL_LOG_FILE',
         'CLOB_HTTP_URL',
         'METRICS_BIND_HOST',
@@ -298,6 +354,11 @@ def validate_runtime_env() -> None:
         errors.append(
             f'Invalid FUNDER_ADDRESS "{funder_address}" (expected 42-char Ethereum address).'
         )
+    try:
+        if _leader_source() not in {'manual', 'auto'}:
+            errors.append('LEADER_SOURCE must be one of: "manual", "auto".')
+    except EnvValidationError as exc:
+        errors.append(str(exc))
 
     # Wallet model validation
     try:
@@ -405,6 +466,16 @@ def validate_runtime_env() -> None:
         errors.append('AUTO_DISCOVER_TOP_N must be > 0.')
     if ENV.get('DISCOVERY_MAX_RESULTS', 0) <= 0:
         errors.append('DISCOVERY_MAX_RESULTS must be > 0.')
+    if ENV.get('FALCON_MAX_CANDIDATES', 0) <= 0:
+        errors.append('FALCON_MAX_CANDIDATES must be > 0.')
+    if ENV.get('LEADER_SCORE_VERSION') not in ('leader_score_v1', 'leader_score_v2'):
+        errors.append('LEADER_SCORE_VERSION must be one of: "leader_score_v1", "leader_score_v2".')
+    if ENV.get('DISCOVERY_VOLUME_TARGET_15D', 0.0) <= 0:
+        errors.append('DISCOVERY_VOLUME_TARGET_15D must be > 0.')
+    if ENV.get('DISCOVERY_MIN_VOLUME_15D', 0.0) < 0:
+        errors.append('DISCOVERY_MIN_VOLUME_15D must be non-negative.')
+    if ENV.get('DISCOVERY_RANK_TARGET', 0) <= 0:
+        errors.append('DISCOVERY_RANK_TARGET must be > 0.')
 
     if errors:
         raise EnvValidationError('Invalid runtime environment:\n- ' + '\n- '.join(errors))
@@ -416,6 +487,7 @@ def validate_runtime_env() -> None:
 # after patching ``os.environ`` to rebuild this snapshot in place.
 def _build_env_snapshot() -> dict[str, object]:
     """Return a parsed environment snapshot from current ``os.environ``."""
+    leader_source = _leader_source()
     configured_auto_discover = _bool('AUTO_DISCOVER_LEADERS', False)
     configured_trader_discovery = _bool('ENABLE_TRADER_DISCOVERY', False)
     configured_promote_to_active = _bool('DISCOVERY_PROMOTE_TO_ACTIVE', False)
@@ -427,16 +499,32 @@ def _build_env_snapshot() -> dict[str, object]:
     enable_trader_discovery = configured_trader_discovery or leader_auto or auto_discover_leaders
     discovery_promote_to_active = configured_promote_to_active or leader_auto
     legacy_auto_count = _int('AUTO_DISCOVER_TOP_N', '5')
-    leader_auto_count_raw = _ensure_no_inline_comment('LEADER_AUTO_COUNT', _raw('LEADER_AUTO_COUNT', ''))
-    if leader_auto_count_raw:
-        try:
-            auto_discover_top_n = int(leader_auto_count_raw)
-        except ValueError as exc:
-            raise EnvValidationError(
-                f'LEADER_AUTO_COUNT must be a valid integer, got: {leader_auto_count_raw!r}'
-            ) from exc
-    else:
-        auto_discover_top_n = legacy_auto_count
+    auto_leader_count_override = _optional_int('AUTO_LEADER_COUNT')
+    leader_auto_count_override = _optional_int('LEADER_AUTO_COUNT')
+    auto_discover_max_leaders = max(0, _int('AUTO_DISCOVER_MAX_LEADERS', '10'))
+    requested_auto_discover_top_n = (
+        auto_leader_count_override
+        if auto_leader_count_override is not None
+        else leader_auto_count_override
+        if leader_auto_count_override is not None
+        else legacy_auto_count
+    )
+    auto_discover_top_n = max(
+        0,
+        min(requested_auto_discover_top_n, auto_discover_max_leaders),
+    )
+    auto_leader_enabled = _auto_leader_detection_enabled()
+    max_auto_traders_override = _optional_int('MAX_AUTO_TRADERS_COUNT')
+    auto_leader_count = (
+        auto_leader_count_override
+        if auto_leader_count_override is not None
+        else max_auto_traders_override
+        if max_auto_traders_override is not None
+        else leader_auto_count_override
+        if leader_auto_count_override is not None
+        else 2
+    )
+    max_auto_traders_count = max(0, min(auto_leader_count, auto_discover_max_leaders))
 
     private_key_file_configured = _configured_if_valid('PRIVATE_KEY_FILE')
     private_key_configured = private_key_file_configured or _configured_if_valid('PRIVATE_KEY')
@@ -468,10 +556,15 @@ def _build_env_snapshot() -> dict[str, object]:
 
     # --- Polling ---
     'FETCH_INTERVAL': _float('FETCH_INTERVAL', '0.25'),
+    'LEADER_SOURCE': leader_source,
+    'AUTO_LEADER_ENABLED': auto_leader_enabled,
+    'AUTO_LEADER_COUNT': max_auto_traders_count,
+    'ALLOW_AUTO_TRADER_DETECTION': auto_leader_enabled,
+    'MAX_AUTO_TRADERS_COUNT': max_auto_traders_count,
     'LEADER_AUTO': leader_auto,
     'LEADER_AUTO_COUNT': auto_discover_top_n,
     'AUTO_DISCOVER_LEADERS': auto_discover_leaders,
-    'AUTO_DISCOVER_MAX_LEADERS': max(_int('AUTO_DISCOVER_MAX_LEADERS', '10'), auto_discover_top_n),
+    'AUTO_DISCOVER_MAX_LEADERS': auto_discover_max_leaders,
     'AUTO_DISCOVER_TOP_N': auto_discover_top_n,
     'AUTO_DISCOVER_MIN_SCORE': _float('AUTO_DISCOVER_MIN_SCORE', '0.45'),
     'AGGREGATE_SIGNAL_WINDOW_SECONDS': _float('AGGREGATE_SIGNAL_WINDOW_SECONDS', '0.1'),
@@ -546,19 +639,22 @@ def _build_env_snapshot() -> dict[str, object]:
     'PROFIT_LOCK_SELL_FRACTION': _float('PROFIT_LOCK_SELL_FRACTION', '0.50'),
 
     # Near-max price exits (default 0.95 = near 95c)
-    'ENABLE_NEAR_MAX_EXIT': os.getenv('ENABLE_NEAR_MAX_EXIT', 'false').strip().lower() in ('1', 'true', 'yes'),
+    # P2-d: aligned to the typed canonical default in config.app_config
+    # (FeatureFlagConfig.enable_near_max_exit defaults True). The legacy
+    # 'false' had drifted from the typed value.
+    'ENABLE_NEAR_MAX_EXIT': os.getenv('ENABLE_NEAR_MAX_EXIT', 'true').strip().lower() in ('1', 'true', 'yes'),
     'NEAR_MAX_PRICE_WARN': _float('NEAR_MAX_PRICE_WARN', '0.95'),
     'NEAR_MAX_PRICE_WARN_TRIM_RATIO': _float('NEAR_MAX_PRICE_WARN_TRIM_RATIO', '0.50'),
     'NEAR_MAX_PRICE_EXIT': _float('NEAR_MAX_PRICE_EXIT', '0.95'),
 
     # Trailing stop
     'ENABLE_TRAILING_STOP': os.getenv('ENABLE_TRAILING_STOP', 'false').strip().lower() in ('1', 'true', 'yes'),
-    'TRAILING_ACTIVATION_PCT': _float('TRAILING_ACTIVATION_PCT', '20'),
+    'TRAILING_ACTIVATION_PCT': _float_or_auto('TRAILING_ACTIVATION_PCT', '20'),
     'TRAILING_DISTANCE': _float('TRAILING_DISTANCE', '0.05'),
 
     # Staged take-profit (comma-separated levels and fractions)
     'ENABLE_STAGED_TP': os.getenv('ENABLE_STAGED_TP', 'false').strip().lower() in ('1', 'true', 'yes'),
-    'STAGED_TP_LEVELS': os.getenv('STAGED_TP_LEVELS', '30,50'),
+    'STAGED_TP_LEVELS': os.getenv('STAGED_TP_LEVELS', '0.30,0.50'),
     'STAGED_TP_FRACTIONS': os.getenv('STAGED_TP_FRACTIONS', '0.25,0.35'),
 
     # Leader divergence exit
@@ -577,12 +673,16 @@ def _build_env_snapshot() -> dict[str, object]:
     'MIN_LEADER_WIN_RATE': _float('MIN_LEADER_WIN_RATE', '0.55'),
     'MIN_LEADER_POSITIONS': _int('MIN_LEADER_POSITIONS', '20'),
     'DISCOVERY_MAX_RESULTS': _int('DISCOVERY_MAX_RESULTS', '50'),
-
-    # --- Near-one exit (replaces on-chain redemption) ---
-    'ENABLE_NEAR_ONE_EXIT': os.getenv('ENABLE_NEAR_ONE_EXIT', 'false').strip().lower() in ('1', 'true', 'yes'),
-    'NEAR_ONE_EXIT_THRESHOLD': os.getenv('NEAR_ONE_EXIT_THRESHOLD', '0.99'),
-    'NEAR_ONE_EXIT_DWELL_SECONDS': _int('NEAR_ONE_EXIT_DWELL_SECONDS', '60'),
-    'NEAR_ONE_EXIT_CHECK_INTERVAL': _int('NEAR_ONE_EXIT_CHECK_INTERVAL', '5'),
+    'FALCON_SORT_MODES': os.getenv('FALCON_SORT_MODES', 'h_score,pnl,sharpe,roi,win_rate').strip(),
+    'FALCON_DEDUPE_CANDIDATES': _bool('FALCON_DEDUPE_CANDIDATES', True),
+    'FALCON_MAX_CANDIDATES': _int('FALCON_MAX_CANDIDATES', '250'),
+    'LEADER_SCORE_VERSION': os.getenv('LEADER_SCORE_VERSION', 'leader_score_v2').strip().lower(),
+    'DISCOVERY_VOLUME_TARGET_15D': _float('DISCOVERY_VOLUME_TARGET_15D', '10000'),
+    'DISCOVERY_MIN_VOLUME_15D': _float('DISCOVERY_MIN_VOLUME_15D', '0'),
+    'DISCOVERY_RANK_TARGET': _int('DISCOVERY_RANK_TARGET', '100'),
+    'DISCOVERY_RISK_PENALTY_ENABLED': _bool('DISCOVERY_RISK_PENALTY_ENABLED', True),
+    'AUTO_LEADER_REQUIRE_SCORE_VERSION': _bool('AUTO_LEADER_REQUIRE_SCORE_VERSION', True),
+    'DISCOVERY_DYNAMIC_MONITORING_ENABLED': _bool('DISCOVERY_DYNAMIC_MONITORING_ENABLED', False),
 
     # --- Execution quality ---
     # Max acceptable slippage (%) before rejecting order
@@ -616,10 +716,11 @@ def _build_env_snapshot() -> dict[str, object]:
     # --- Infrastructure ---
     'MULTI_USER_CONFIG_FILE': os.getenv('MULTI_USER_CONFIG_FILE', ''),
     'RPC_URL': os.getenv('RPC_URL', 'https://polygon-bor-rpc.publicnode.com'),
-    'USDC_CONTRACT_ADDRESS': os.getenv('USDC_CONTRACT_ADDRESS', '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174'),
-    'PUSD_CONTRACT_ADDRESS': os.getenv('PUSD_CONTRACT_ADDRESS', '0x5731a8987bC70324e2C14d22D95a9cF0E84b687E'),
-    'CTF_EXCHANGE_V2_ADDRESS': os.getenv('CTF_EXCHANGE_V2_ADDRESS', '0xE111180000d2663C0091e4f400237545B87B996B'),
-    'NEG_RISK_EXCHANGE_V2_ADDRESS': os.getenv('NEG_RISK_EXCHANGE_V2_ADDRESS', '0xe2222d279d744050d28e00520010520000310F59'),
+    'FALLBACK_RPC_URL': os.getenv('FALLBACK_RPC_URL', ''),
+    'USDC_CONTRACT_ADDRESS': os.getenv('USDC_CONTRACT_ADDRESS', POLYGON_USDCE_ADDRESS),
+    'PUSD_CONTRACT_ADDRESS': os.getenv('PUSD_CONTRACT_ADDRESS', POLYMARKET_PUSD_ADDRESS),
+    'CTF_EXCHANGE_V2_ADDRESS': os.getenv('CTF_EXCHANGE_V2_ADDRESS', POLYMARKET_CTF_EXCHANGE_V2_ADDRESS),
+    'NEG_RISK_EXCHANGE_V2_ADDRESS': os.getenv('NEG_RISK_EXCHANGE_V2_ADDRESS', POLYMARKET_NEG_RISK_EXCHANGE_V2_ADDRESS),
     'MIN_PUSD_BALANCE': _float('MIN_PUSD_BALANCE', '1.0'),
     'BOT_STATE_DB': os.getenv('BOT_STATE_DB', 'data/bot_state.db'),
     'ENABLE_METRICS_SERVER': os.getenv('ENABLE_METRICS_SERVER', 'false').strip().lower() in ('1', 'true', 'yes'),
@@ -633,8 +734,12 @@ def _build_env_snapshot() -> dict[str, object]:
     # - relative_bps: ((ask-bid)/bid) * 10_000
     # - ticks: (ask-bid) / tick_size
     'BOOK_SPREAD_MODE': os.getenv('BOOK_SPREAD_MODE', 'absolute_bps').strip().lower(),
-    # Maximum acceptable book spread in bps for absolute_bps/relative_bps (0 = disabled). Default: 500.
-    'MAX_BOOK_SPREAD_BPS': _int('MAX_BOOK_SPREAD_BPS', '500'),
+    # Maximum acceptable book spread in bps for absolute_bps/relative_bps (0 = disabled).
+    # P2-d: aligned to the typed canonical default in config.app_config
+    # (ExecutionConfig.max_book_spread_bps == 2500). The legacy 500 had drifted
+    # from the typed value, so any transitional ENV-reading call site applied a
+    # tighter spread gate than the production AppConfig path.
+    'MAX_BOOK_SPREAD_BPS': _int('MAX_BOOK_SPREAD_BPS', '2500'),
     # Maximum acceptable spread in ticks when BOOK_SPREAD_MODE=ticks (0 = disabled).
     'MAX_BOOK_SPREAD_TICKS': _int('MAX_BOOK_SPREAD_TICKS', '0'),
     # Require fresh orderbook fetch for execution-time spread checks.

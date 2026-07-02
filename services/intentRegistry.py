@@ -335,7 +335,7 @@ class IntentRegistry:
             record.updated_at = time.time()
             if venue_order_id is not None:
                 record.venue_order_id = venue_order_id
-            return record
+            return copy.deepcopy(record)
 
     async def finalize_intent(
         self,
@@ -391,7 +391,7 @@ class IntentRegistry:
         if record is None:
             raise UnknownIntentError(intent_id)
         if record.is_resolved():
-            return record
+            return copy.deepcopy(record)
 
         record.state = terminal_state
         record.updated_at = time.time()
@@ -432,7 +432,7 @@ class IntentRegistry:
         # Prune oldest resolved intents to prevent unbounded memory growth
         self._maybe_prune_resolved()
 
-        return record
+        return copy.deepcopy(record)
 
     def _maybe_prune_resolved(self) -> None:
         """Remove oldest resolved intents when the registry exceeds _max_resolved."""

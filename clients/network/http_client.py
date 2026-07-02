@@ -103,7 +103,12 @@ class AsyncHttpClient:
                 delay += random.uniform(0, delay * 0.2)
                 await asyncio.sleep(delay)
 
-        raise last_exc
+        if last_exc is not None:
+            raise last_exc
+        # Unreachable in practice (the loop always sets last_exc before the
+        # final attempt re-raises), but keep it fail-closed rather than
+        # ``raise None`` if the invariant ever breaks.
+        raise RuntimeError("http retry loop exhausted without a captured exception")
 
 
 async def build_shared_session() -> aiohttp.ClientSession:

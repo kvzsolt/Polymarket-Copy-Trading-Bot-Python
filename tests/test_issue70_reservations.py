@@ -497,6 +497,7 @@ async def test_expired_reservation_triggers_reconciliation_before_release(tmp_pa
         svc, res_repo, pos_repo, clk = _svc(pool, ttl=60, reconciler_callback=on_expire)
         intent = _make_intent(IntentSide.BUY, size=Decimal("10"), price=Decimal("0.5"))
         res = await svc.reserve_for_intent(intent)
+        await res_repo.link_order(res.id, order_id="order-123")
         assert res.status == "active"
 
         clk.advance(61)
@@ -510,6 +511,32 @@ async def test_expired_reservation_triggers_reconciliation_before_release(tmp_pa
         active = await res_repo.get_active_by_intent_key(intent.key.stable_key())
         assert active is not None
         assert active.id == res.id
+        assert active.order_id == "order-123"
+
+
+@pytest.mark.asyncio
+async def test_expired_unlinked_reservation_reconciles_before_release(tmp_path):
+    async with _pg_pool() as pool:
+        reconciled_ids: list[str] = []
+
+        async def on_expire(res_id: str) -> bool:
+            reconciled_ids.append(res_id)
+            return False
+
+        svc, res_repo, pos_repo, clk = _svc(pool, ttl=60, reconciler_callback=on_expire)
+        intent = _make_intent(IntentSide.BUY, size=Decimal("10"), price=Decimal("0.5"))
+        res = await svc.reserve_for_intent(intent)
+
+        clk.advance(61)
+        released = await svc.release_expired_active()
+
+        assert released == []
+        assert reconciled_ids == [res.id]
+        active = await res_repo.get_active_by_intent_key(intent.key.stable_key())
+        assert active is not None
+        assert active.id == res.id
+        assert active.order_id is None
+        assert active.venue_order_id is None
 
 
 @pytest.mark.asyncio
@@ -577,6 +604,7 @@ async def test_reconciliation_failure_keeps_reservation_active(tmp_path):
         )
         intent = _make_intent(IntentSide.BUY, size=Decimal("10"), price=Decimal("0.5"))
         res = await svc.reserve_for_intent(intent)
+        await res_repo.link_order(res.id, order_id="order-123")
 
         clk.advance(61)
         released = await svc.release_expired_active()
@@ -585,6 +613,7 @@ async def test_reconciliation_failure_keeps_reservation_active(tmp_path):
         active = await res_repo.get_active_by_intent_key(intent.key.stable_key())
         assert active is not None
         assert active.id == res.id
+        assert active.order_id == "order-123"
 
 
 # ---------------------------------------------------------------------------

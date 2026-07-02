@@ -19,6 +19,7 @@ def _config():
             discovery_history_trade_limit=50000,
             rotate_keep_live_if_7d_pnl_positive=True,
             rotate_reject_live_if_7d_pnl_below=0,
+            leader_score_version="LEADER_SCORE_V1",
         ),
         leader=SimpleNamespace(auto_discover_top_n=5),
         sizing=SimpleNamespace(
@@ -122,4 +123,5 @@ async def test_rotation_replays_candidate_with_current_config_before_ranking():
     assert rec.replace == ((current_wallet, candidate_wallet),)
     assert rec.candidates[0].copyable_signal_ratio == 1.0
     assert rec.candidates[0].copyable_notional_ratio == 1.0
+    assert rec.candidates[0].score_version == "leader_score_v1"
     assert rec.candidates[0].final_score > 0.7

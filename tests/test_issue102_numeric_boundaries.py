@@ -13,7 +13,7 @@ invariants asserted match the finding's list:
 * idempotency key **distinct** for distinct intent_ids / tick sizes / sides.
 
 Tick sizes (0.001 / 0.01 / 0.05 / 0.1), prices (0.01 / 0.50 / 0.95 / 0.999),
-sizes (1 / 1.5 / 10 / 100) and a small set of near-one / near-zero edges
+sizes (1 / 1.5 / 10 / 100) and a small set of near-1.0 / near-zero edges
 cover the same fragile zones the audit was worried about.
 """
 from __future__ import annotations
@@ -50,8 +50,8 @@ def test_adapter_on_grid_values_round_trip_exactly(tick: str, multiplier: int):
 
 @pytest.mark.parametrize("tick", TICKS)
 @pytest.mark.parametrize("price", PRICES)
-def test_adapter_quantizes_near_one_prices(tick: str, price: str):
-    """Near-one prices are the typical Polymarket failure zone (binary
+def test_adapter_quantizes_near_1_prices(tick: str, price: str):
+    """Prices close to 1.0 are a typical Polymarket failure zone (binary
     markets quote close to 0.99). When a price is on the tick grid, the
     adapter must accept it; when off-grid by more than epsilon, raise."""
     value = Decimal(price)

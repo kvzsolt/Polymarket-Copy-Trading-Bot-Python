@@ -4,7 +4,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from config.app_config import EnvValidationError, load_config
 from config.env import rehydrate_env
@@ -12,15 +12,6 @@ from config.runtime_env import load_runtime_env
 
 if TYPE_CHECKING:
     import asyncpg
-
-
-_LOCKED_STATUSES = (
-    "pending_lock",
-    "submitting",
-    "pending",
-    "submitted_unconfirmed",
-    "delayed",
-)
 
 
 def register_stale_locks_command(subparsers: argparse._SubParsersAction) -> None:
@@ -37,6 +28,31 @@ def register_stale_locks_command(subparsers: argparse._SubParsersAction) -> None
         help="Override TTL (defaults to EXECUTION_PENDING_SUBMISSION_TTL_SECONDS)",
     )
     list_parser.add_argument("--user-id", default=None, help="Filter by user ID")
+
+    resolve_parser = sub.add_parser(
+        "resolve", help="Resolve stale submission locks that are safe to expire"
+    )
+    resolve_parser.add_argument(
+        "--ttl-seconds",
+        type=int,
+        default=None,
+        help="Override TTL (defaults to EXECUTION_PENDING_SUBMISSION_TTL_SECONDS)",
+    )
+    resolve_parser.add_argument("--user-id", default=None, help="Filter by user ID")
+    mode = resolve_parser.add_mutually_exclusive_group()
+    mode.add_argument(
+        "--dry-run",
+        dest="apply",
+        action="store_false",
+        default=False,
+        help="Report actions without mutating rows (default)",
+    )
+    mode.add_argument(
+        "--apply",
+        dest="apply",
+        action="store_true",
+        help="Mark safe stale no-order locks expired",
+    )
 
 
 def _load_config_or_fail():
@@ -63,40 +79,27 @@ async def _list_stale_locks(
 
     Takes the asyncpg pool so callers (CLI + tests) own pool lifecycle.
     """
-    base = """
-        SELECT idempotency_key, user_id, leader_id, order_id, status,
-               attempt_count, last_error, created_at, updated_at,
-               response_json,
-               COALESCE(
-                   (response_json->>'pending_since')::float8::bigint,
-                   EXTRACT(EPOCH FROM COALESCE(updated_at, created_at))::bigint
-               ) AS pending_since_ts,
-               (EXTRACT(EPOCH FROM now())::bigint - COALESCE(
-                   (response_json->>'pending_since')::float8::bigint,
-                   EXTRACT(EPOCH FROM COALESCE(updated_at, created_at))::bigint
-               )) AS age_seconds
-        FROM orders
-        WHERE status = ANY($1::text[])
-          AND (EXTRACT(EPOCH FROM now())::bigint - COALESCE(
-               (response_json->>'pending_since')::float8::bigint,
-               EXTRACT(EPOCH FROM COALESCE(updated_at, created_at))::bigint
-           )) > $2
-    """
-    params: list = [list(_LOCKED_STATUSES), int(ttl_seconds)]
-    if user_id is not None:
-        params.append(user_id)
-        base += f" AND user_id = ${len(params)}"
-    base += " ORDER BY age_seconds DESC"
+    from storage.postgres.orders_repo import OrdersRepo
 
-    async with pool.acquire() as conn:
-        rows = await conn.fetch(base, *params)
+    repo = OrdersRepo(pool)
+    rows = await repo.list_stale_submission_locks(
+        ttl_seconds=int(ttl_seconds),
+        user_id=user_id,
+    )
+    return _serialize_lock_rows(rows)
 
+
+def _json_safe(value: Any) -> Any:
+    if value is None:
+        return None
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return value
+
+
+def _serialize_lock_rows(rows: list[dict]) -> list[dict]:
     def _ts(value):
-        if value is None:
-            return None
-        if hasattr(value, "isoformat"):
-            return value.isoformat()
-        return value
+        return _json_safe(value)
 
     return [
         {
@@ -113,9 +116,36 @@ async def _list_stale_locks(
             if row["pending_since_ts"] is not None
             else None,
             "age_seconds": int(row["age_seconds"] or 0),
+            "classification": row.get("classification"),
+            "action": row.get("action"),
         }
         for row in rows
     ]
+
+
+async def _resolve_stale_locks(
+    pool: "asyncpg.Pool",
+    *,
+    ttl_seconds: int,
+    user_id: str | None,
+    apply: bool,
+) -> dict:
+    from storage.postgres.orders_repo import OrdersRepo
+
+    repo = OrdersRepo(pool)
+    result = await repo.resolve_stale_submission_locks(
+        ttl_seconds=int(ttl_seconds),
+        user_id=user_id,
+        apply=apply,
+    )
+    return {
+        **result,
+        "expired": _serialize_lock_rows(result["expired"]),
+        "would_expire": _serialize_lock_rows(result["would_expire"]),
+        "deferred_reconciliation_required": _serialize_lock_rows(
+            result["deferred_reconciliation_required"]
+        ),
+    }
 
 
 async def _run_list_async(args: argparse.Namespace) -> int:
@@ -156,9 +186,48 @@ async def _run_list_async(args: argparse.Namespace) -> int:
     return 0
 
 
+async def _run_resolve_async(args: argparse.Namespace) -> int:
+    config = _load_config_or_fail()
+    if config is None:
+        return 1
+
+    ttl = getattr(args, "ttl_seconds", None)
+    if ttl is None:
+        ttl = config.execution.pending_submission_ttl_seconds
+    user_id = getattr(args, "user_id", None)
+    apply = bool(getattr(args, "apply", False))
+
+    from storage.postgres.connection import init_pool, shutdown_pool
+
+    try:
+        pool = await init_pool(
+            config.database.dsn,
+            min_size=1,
+            max_size=2,
+            command_timeout_seconds=15.0,
+        )
+        try:
+            output = await _resolve_stale_locks(
+                pool,
+                ttl_seconds=int(ttl),
+                user_id=user_id,
+                apply=apply,
+            )
+        finally:
+            await shutdown_pool()
+    except Exception as exc:
+        print(json.dumps({"error": "db_error", "details": str(exc)}))
+        return 1
+
+    print(json.dumps(output, indent=2))
+    return 0
+
+
 async def _run_stale_locks_async(args: argparse.Namespace) -> int:
     if args.stale_locks_subcommand == "list":
         return await _run_list_async(args)
+    if args.stale_locks_subcommand == "resolve":
+        return await _run_resolve_async(args)
     return 1
 
 

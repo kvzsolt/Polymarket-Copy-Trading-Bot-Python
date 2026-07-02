@@ -63,7 +63,7 @@ class ExecutionIntent:
     price: Decimal
     notional_usdc: Decimal
     idempotency_key: str | None = None
-    source: str = "copy_trade"  # copy_trade | risk_exit | near_one_exit | protective_exit | manual
+    source: str = "copy_trade"  # copy_trade | risk_exit | protective_exit | manual
     signal_id: str | None = None
     leader_wallet: str | None = None
     max_slippage_bps: int = 200
@@ -111,7 +111,6 @@ def is_live_mode(config: Any) -> bool:
 _SOURCE_TO_REASON: dict[str, IntentReason] = {
     "copy_trade": IntentReason.COPY_BUY,  # overridden for SELL below
     "risk_exit": IntentReason.RISK_EXIT,
-    "near_one_exit": IntentReason.NEAR_ONE_EXIT,
     "protective_exit": IntentReason.RISK_EXIT,
     "manual": IntentReason.RISK_EXIT,
 }
@@ -215,14 +214,18 @@ class ExecutionCoordinator:
         # PR7 — wired per-context by ``build_trading_context``.
         self.position_drift_service: Any | None = None
         # Cache the underlying reservations repo for direct order-id lookups.
-        self.reservations_repo = getattr(reservation_service, "reservations_repo", None)
+        self.reservations_repo = (
+            None
+            if getattr(reservation_service, "enabled", True) is False
+            else getattr(reservation_service, "reservations_repo", None)
+        )
 
     async def execute_intent(self, intent: OrderIntent) -> ExecutionResult:
         """V2 entry point: acquire per-scope lock, then run the execution body.
 
-        Lock acquisition matches ``submit_near_one_exit`` so concurrent V2
-        intents on the same ``(user_id, condition_id, token_id)`` scope
-        serialize against each other and against the production wrapper paths.
+        Acquires per-scope lock so concurrent V2 intents on the same
+        ``(user_id, condition_id, token_id)`` scope serialize against each
+        other and against the production wrapper paths.
         """
         if self.position_coordinator is None:
             # Fail-closed in live mode: serialization is a correctness
@@ -439,6 +442,8 @@ class ExecutionCoordinator:
         order_id: str | None = None,
         venue_order_id: str | None = None,
     ) -> None:
+        if getattr(self.reservation_service, "enabled", True) is False:
+            return
         repo = getattr(self.reservation_service, "reservations_repo", None)
         linker = getattr(repo, "link_order", None)
         if linker is not None:
@@ -510,35 +515,6 @@ class ExecutionCoordinator:
 
     async def submit_protective_exit(self, intent: ExecutionIntent) -> ExecutionCoordinatorResult:
         return await self._submit_with_reservation(intent, source_override="protective_exit")
-
-    async def submit_near_one_exit(self, intent: ExecutionIntent) -> ExecutionCoordinatorResult:
-        # Near-one is the only path whose caller does not already hold the
-        # PositionActionCoordinator scope. Acquire it here when available so
-        # this SELL serialises against copy SELL and risk SELL on the same
-        # (user, condition, token).
-        if self.position_coordinator is None:
-            return await self._submit_with_reservation(intent, source_override="near_one_exit")
-        try:
-            from services.positionActionCoordinator import PositionScope
-        except Exception as exc:
-            # Fail-closed in live mode — SELL submitter must hold the
-            # per-scope lock, never silently downgrade to no-lock.
-            if is_live_mode(getattr(self.execution_service, "_config", None)):
-                raise RuntimeError(
-                    "ExecutionCoordinator.submit_near_one_exit: cannot import "
-                    "PositionScope; refusing to bypass per-scope serialization "
-                    "in live mode"
-                ) from exc
-            PositionScope = None  # type: ignore[assignment]
-        if PositionScope is None:
-            return await self._submit_with_reservation(intent, source_override="near_one_exit")
-        scope = PositionScope(
-            user_id=intent.user_id,
-            condition_id=intent.condition_id,
-            token_id=intent.token_id,
-        )
-        async with self.position_coordinator.acquire(scope):
-            return await self._submit_with_reservation(intent, source_override="near_one_exit")
 
     # ------------------------------------------------------------------
     # Internal — single production funnel.
@@ -758,6 +734,20 @@ class ExecutionCoordinator:
                         "coordinator_link_reservation_failed | reservation_id=%s order_id=%s error=%r",
                         reservation_id, order_id, exc,
                     )
+            # Enqueue reconciliation immediately so an ambiguous forced-exit
+            # ack (e.g. a fully-killed FAK that returned submitted_unconfirmed)
+            # is settled — and its reservation released — within the next
+            # reconcile pass, rather than stranding the reservation until its
+            # TTL expires and the risk-loop reaper picks it up. Mirrors the
+            # _execute_intent_locked non-terminal path.
+            if order_id and self.reconciler is not None:
+                try:
+                    await self.reconciler.enqueue(order_id)
+                except Exception as exc:
+                    logger.debug(
+                        "coordinator_reconcile_enqueue_failed | reservation_id=%s order_id=%s error=%r",
+                        reservation_id, order_id, exc,
+                    )
             return ExecutionCoordinatorResult(
                 accepted=True,
                 status=status or "submitted_unconfirmed",
@@ -797,6 +787,7 @@ class ExecutionCoordinator:
             token_id=intent.token_id,
             side=side,
             reason=reason,
+            source_event_id=intent.signal_id,
         )
         return OrderIntent(
             key=key,

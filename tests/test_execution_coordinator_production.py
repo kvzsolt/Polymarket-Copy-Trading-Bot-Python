@@ -263,32 +263,29 @@ async def test_submit_risk_exit_routes_through_funnel():
 
 
 @pytest.mark.asyncio
-async def test_submit_near_one_exit_acquires_scope_when_position_coordinator_set():
-    reservation = _make_reservation("res-near-one")
+async def test_forced_exit_submitted_unconfirmed_enqueues_reconciliation():
+    """An ambiguous forced-exit ack is enqueued for reconciliation immediately.
+
+    Otherwise the reservation would stay active (kept for the reconciler to
+    release on terminal) but nothing would settle the killed FAK until its TTL
+    expired and the risk-loop reaper picked it up — the deadlock this fixes.
+    """
+    reservation = _make_reservation("res-recon")
     coord, reservation_service, execution_service = _make_coordinator(
         reserve_return=reservation,
-        execute_return=_make_exec_result(status="submitted_unconfirmed"),
+        execute_return=_make_exec_result(status="submitted_unconfirmed", order_id="ord-recon"),
     )
-    scope_mgr = MagicMock()
-    captured = []
+    coord.reconciler = AsyncMock()
+    coord.reservations_repo.link_order = AsyncMock()
 
-    class _Scope:
-        async def __aenter__(self):
-            captured.append("enter")
-            return self
-
-        async def __aexit__(self, *a):
-            captured.append("exit")
-            return False
-
-    scope_mgr.acquire = MagicMock(return_value=_Scope())
-    coord.position_coordinator = scope_mgr
-
-    result = await coord.submit_near_one_exit(_intent(side="SELL", source="near_one_exit"))
+    result = await coord.submit_risk_exit(_intent(side="SELL", source="risk_exit"))
 
     assert result.accepted is True
-    assert captured == ["enter", "exit"]
-    scope_mgr.acquire.assert_called_once()
+    assert result.status == "submitted_unconfirmed"
+    # Reservation stays active — reconciler owns terminal release.
+    reservation_service.release_terminal.assert_not_called()
+    # ...but reconciliation is kicked off now, not at TTL.
+    coord.reconciler.enqueue.assert_awaited_once_with("ord-recon")
 
 
 @pytest.mark.asyncio

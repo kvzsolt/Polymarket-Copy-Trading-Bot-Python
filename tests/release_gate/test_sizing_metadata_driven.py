@@ -162,8 +162,8 @@ def test_sell_clamped_to_held_then_min_check() -> None:
     assert decision.effective_size == Decimal("3")
 
 
-def test_sell_full_position_at_near_one_price() -> None:
-    """The exact path NearOneExitService takes: held=size, price >= 0.99."""
+def test_sell_full_position_at_near_resolution_price() -> None:
+    """Full-position sell at near-resolution price: held=size, price >= 0.99."""
     decision = size_sell_order(
         sell_tokens=42.5,
         held_size=42.5,

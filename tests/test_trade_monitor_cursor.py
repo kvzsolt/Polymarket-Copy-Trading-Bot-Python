@@ -11,6 +11,7 @@ from services.tradeMonitor import (
     LeaderMonitorState,
     _guarded_leader_fetch,
     _monitor_loop_healthy,
+    _persist_cursor,
     fetch_trade_data,
     init,
     trade_monitor,
@@ -347,6 +348,103 @@ async def test_trade_monitor_skips_heartbeat_when_monitor_is_unhealthy():
             await trade_monitor({"leaderWallet": leader_wallet, "FETCH_INTERVAL": 1}, on_trade, readiness_tracker=MagicMock(), config=MagicMock())
 
     heartbeat_tick.assert_not_called()
+
+
+# --- P2-h: guarded cursor persist must not crash the leader monitor ---
+
+
+@pytest.mark.asyncio
+async def test_persist_cursor_swallows_transient_store_error():
+    cursor_store = MagicMock()
+    cursor_store.set_cursor = AsyncMock(side_effect=RuntimeError("pg pool exhausted"))
+    cursor = TradeCursor(timestamp=123, tx_hash="0xabc", trade_id="t1")
+
+    with patch.object(trade_monitor_module.metrics, "inc") as inc:
+        ok = await _persist_cursor(cursor_store, "0xleader", cursor)
+
+    assert ok is False
+    cursor_store.set_cursor.assert_awaited_once_with("0xleader", cursor)
+    inc.assert_any_call("leader_cursor_persist_failed_total")
+
+
+@pytest.mark.asyncio
+async def test_persist_cursor_returns_true_on_success():
+    cursor_store = MagicMock()
+    cursor_store.set_cursor = AsyncMock()
+    cursor = TradeCursor(timestamp=123, tx_hash="0xabc", trade_id="t1")
+
+    ok = await _persist_cursor(cursor_store, "0xleader", cursor)
+
+    assert ok is True
+    cursor_store.set_cursor.assert_awaited_once_with("0xleader", cursor)
+
+
+@pytest.mark.asyncio
+async def test_persist_cursor_propagates_cancellation():
+    cursor_store = MagicMock()
+    cursor_store.set_cursor = AsyncMock(side_effect=asyncio.CancelledError)
+    cursor = TradeCursor(timestamp=1, tx_hash="", trade_id=None)
+
+    with pytest.raises(asyncio.CancelledError):
+        await _persist_cursor(cursor_store, "0xleader", cursor)
+
+
+@pytest.mark.asyncio
+async def test_trade_monitor_survives_set_cursor_failure_and_keeps_looping():
+    """A transient set_cursor failure must NOT crash trade_monitor.
+
+    Pre-fix, an unguarded ``await cursor_store.set_cursor`` propagated out of
+    trade_monitor -> run_leader_monitor and silently killed the leader monitor
+    task (the app supervisor logs-and-drops it without restart). Here the store
+    raises on every write; the loop must keep iterating (proven by it reaching
+    the second sleep and raising the injected CancelledError) rather than
+    bubbling the RuntimeError.
+    """
+    leader_wallet = "0x1111111111111111111111111111111111111111"
+    on_trade = AsyncMock()
+
+    cursor_store = MagicMock()
+    cursor_store.get_cursor = AsyncMock(
+        return_value=TradeCursor(timestamp=0, tx_hash="", trade_id=None)
+    )
+    # Every set_cursor (initial + per-loop) raises a transient error.
+    cursor_store.set_cursor = AsyncMock(side_effect=RuntimeError("transient pg"))
+
+    # Each fetch advances the cursor so the per-loop persist branch is entered.
+    advanced = TradeCursor(timestamp=999, tx_hash="0xnew", trade_id="new")
+
+    async def _fake_fetch(*_args, **_kwargs):
+        # Mutate the caller's state object so the cursor-changed branch fires.
+        state_obj = _args[2]
+        state_obj.last_cursor = advanced
+        return True, 1
+
+    sleeps: list[float] = []
+
+    async def _fake_sleep(_seconds):
+        sleeps.append(_seconds)
+        # Let the loop run twice, then stop it deterministically.
+        if len(sleeps) >= 2:
+            raise asyncio.CancelledError
+
+    with patch("services.tradeMonitor.LeaderCursorStore.create", new_callable=AsyncMock, return_value=cursor_store), \
+         patch("services.tradeMonitor.init", new_callable=AsyncMock), \
+         patch("services.tradeMonitor.fetch_trade_data", side_effect=_fake_fetch), \
+         patch("services.tradeMonitor._monitor_loop_healthy", return_value=False), \
+         patch("services.tradeMonitor.asyncio.sleep", side_effect=_fake_sleep):
+        with pytest.raises(asyncio.CancelledError):
+            await trade_monitor(
+                {"leaderWallet": leader_wallet, "FETCH_INTERVAL": 1},
+                on_trade,
+                readiness_tracker=MagicMock(),
+                config=_MOCK_CONFIG,
+            )
+
+    # Loop iterated at least twice despite set_cursor raising every time —
+    # i.e. the RuntimeError did not escape and kill the monitor.
+    assert len(sleeps) >= 2
+    # set_cursor was attempted (initial + at least one per-loop persist).
+    assert cursor_store.set_cursor.await_count >= 2
 
 
 @pytest.mark.asyncio

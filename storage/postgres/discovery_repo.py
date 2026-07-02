@@ -322,19 +322,25 @@ class DiscoveryRepo(AbstractDiscoveryRepository):
                 INSERT INTO falcon_discovery_evaluations (
                     wallet, status, final_score, falcon_quality_score,
                     copyability_score, recent_state_score, market_fit_score,
+                    score_version, score_breakdown_json,
                     h_score, roi_15d, win_rate_15d, sharpe_15d, pnl_15d,
-                    total_trades_15d, markets_traded_15d, trajectory,
+                    total_trades_15d, markets_traded_15d, leaderboard_rank,
+                    falcon_tier, total_volume_15d, source_agent_id,
+                    source_sort_by, source_rank, all_seen_sort_modes, trajectory,
                     total_grouped_signals, meaningful_signals, copyable_signals,
                     copyable_signal_ratio, copyable_notional_ratio,
                     sports_esports_ratio, fast_crypto_signal_ratio,
                     fast_crypto_notional_ratio, pnl_7d, pnl_3d,
                     rejection_reason, eligible_live, eligible_shadow,
+                    balance_usdc, config_hash, evaluation_context_json,
                     falcon_raw_json, replay_json, updated_at
                 ) VALUES (
-                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+                    $1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10,
                     $11, $12, $13, $14, $15, $16, $17, $18,
-                    $19, $20, $21, $22, $23, $24, $25, $26,
-                    $27, $28, $29::jsonb, $30::jsonb, $31
+                    $19, $20, $21, $22, $23::jsonb, $24, $25, $26,
+                    $27, $28, $29, $30, $31, $32, $33, $34,
+                    $35, $36, $37, $38, $39, $40::jsonb, $41::jsonb,
+                    $42::jsonb, $43
                 )
                 ON CONFLICT(wallet) DO UPDATE SET
                     status = excluded.status,
@@ -343,6 +349,8 @@ class DiscoveryRepo(AbstractDiscoveryRepository):
                     copyability_score = excluded.copyability_score,
                     recent_state_score = excluded.recent_state_score,
                     market_fit_score = excluded.market_fit_score,
+                    score_version = excluded.score_version,
+                    score_breakdown_json = excluded.score_breakdown_json,
                     h_score = excluded.h_score,
                     roi_15d = excluded.roi_15d,
                     win_rate_15d = excluded.win_rate_15d,
@@ -350,6 +358,13 @@ class DiscoveryRepo(AbstractDiscoveryRepository):
                     pnl_15d = excluded.pnl_15d,
                     total_trades_15d = excluded.total_trades_15d,
                     markets_traded_15d = excluded.markets_traded_15d,
+                    leaderboard_rank = excluded.leaderboard_rank,
+                    falcon_tier = excluded.falcon_tier,
+                    total_volume_15d = excluded.total_volume_15d,
+                    source_agent_id = excluded.source_agent_id,
+                    source_sort_by = excluded.source_sort_by,
+                    source_rank = excluded.source_rank,
+                    all_seen_sort_modes = excluded.all_seen_sort_modes,
                     trajectory = excluded.trajectory,
                     total_grouped_signals = excluded.total_grouped_signals,
                     meaningful_signals = excluded.meaningful_signals,
@@ -364,6 +379,9 @@ class DiscoveryRepo(AbstractDiscoveryRepository):
                     rejection_reason = excluded.rejection_reason,
                     eligible_live = excluded.eligible_live,
                     eligible_shadow = excluded.eligible_shadow,
+                    balance_usdc = excluded.balance_usdc,
+                    config_hash = excluded.config_hash,
+                    evaluation_context_json = excluded.evaluation_context_json,
                     falcon_raw_json = excluded.falcon_raw_json,
                     replay_json = excluded.replay_json,
                     updated_at = excluded.updated_at
@@ -375,6 +393,8 @@ class DiscoveryRepo(AbstractDiscoveryRepository):
                 float(e.copyability_score),
                 float(e.recent_state_score),
                 float(e.market_fit_score),
+                str(getattr(e, "score_version", "leader_score_v1") or "leader_score_v1"),
+                _ensure_json_str(getattr(e, "score_breakdown_json", {}) or {}),
                 float(e.h_score),
                 float(e.roi_15d),
                 float(e.win_rate_15d),
@@ -382,6 +402,13 @@ class DiscoveryRepo(AbstractDiscoveryRepository):
                 float(e.pnl_15d),
                 int(e.total_trades_15d),
                 int(e.markets_traded_15d),
+                getattr(e, "leaderboard_rank", None),
+                str(getattr(e, "falcon_tier", "") or ""),
+                float(getattr(e, "total_volume_15d", 0.0) or 0.0),
+                getattr(e, "source_agent_id", None),
+                str(getattr(e, "source_sort_by", "") or ""),
+                getattr(e, "source_rank", None),
+                _ensure_json_str(list(getattr(e, "all_seen_sort_modes", ()) or ())),
                 e.trajectory,
                 int(e.total_grouped_signals),
                 int(e.meaningful_signals),
@@ -396,6 +423,9 @@ class DiscoveryRepo(AbstractDiscoveryRepository):
                 e.rejection_reason,
                 bool(e.eligible_live),
                 bool(e.eligible_shadow),
+                str(getattr(e, "balance_usdc", "0") or "0"),
+                str(getattr(e, "config_hash", "") or ""),
+                _ensure_json_str(getattr(e, "evaluation_context_json", {}) or {}),
                 _ensure_json_str(e.falcon_raw_json),
                 _ensure_json_str(e.replay_json),
                 float(e.updated_at),
@@ -414,6 +444,7 @@ class DiscoveryRepo(AbstractDiscoveryRepository):
         *,
         statuses: list[str] | None = None,
         eligible_live: bool | None = None,
+        score_version: str | None = None,
         limit: int = 50,
     ) -> list[FalconDiscoveryEvaluation]:
         clauses: list[str] = []
@@ -424,6 +455,9 @@ class DiscoveryRepo(AbstractDiscoveryRepository):
         if eligible_live is not None:
             params.append(bool(eligible_live))
             clauses.append(f"eligible_live = ${len(params)}")
+        if score_version:
+            params.append(str(score_version))
+            clauses.append(f"score_version = ${len(params)}")
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         params.append(int(limit))
         async with self._pool.acquire() as conn:
@@ -431,7 +465,7 @@ class DiscoveryRepo(AbstractDiscoveryRepository):
                 f"""
                 SELECT * FROM falcon_discovery_evaluations
                 {where}
-                ORDER BY final_score DESC, wallet ASC
+                ORDER BY final_score DESC, total_volume_15d DESC NULLS LAST, wallet ASC
                 LIMIT ${len(params)}
                 """,
                 *params,
@@ -447,6 +481,8 @@ class DiscoveryRepo(AbstractDiscoveryRepository):
             copyability_score=float(r["copyability_score"] or 0.0),
             recent_state_score=float(r["recent_state_score"] or 0.0),
             market_fit_score=float(r["market_fit_score"] or 0.0),
+            score_version=str(r["score_version"] or "leader_score_v1"),
+            score_breakdown_json=_decode_jsonb(r["score_breakdown_json"]) or {},
             h_score=float(r["h_score"] or 0.0),
             roi_15d=float(r["roi_15d"] or 0.0),
             win_rate_15d=float(r["win_rate_15d"] or 0.0),
@@ -454,6 +490,13 @@ class DiscoveryRepo(AbstractDiscoveryRepository):
             pnl_15d=float(r["pnl_15d"] or 0.0),
             total_trades_15d=int(r["total_trades_15d"] or 0),
             markets_traded_15d=int(r["markets_traded_15d"] or 0),
+            leaderboard_rank=r["leaderboard_rank"],
+            falcon_tier=str(r["falcon_tier"] or ""),
+            total_volume_15d=float(r["total_volume_15d"] or 0.0),
+            source_agent_id=r["source_agent_id"],
+            source_sort_by=str(r["source_sort_by"] or ""),
+            source_rank=r["source_rank"],
+            all_seen_sort_modes=tuple(_decode_jsonb(r["all_seen_sort_modes"]) or []),
             trajectory=str(r["trajectory"] or ""),
             total_grouped_signals=int(r["total_grouped_signals"] or 0),
             meaningful_signals=int(r["meaningful_signals"] or 0),
@@ -468,10 +511,147 @@ class DiscoveryRepo(AbstractDiscoveryRepository):
             rejection_reason=r["rejection_reason"],
             eligible_live=bool(r["eligible_live"]),
             eligible_shadow=bool(r["eligible_shadow"]),
+            balance_usdc=str(r["balance_usdc"] or "0"),
+            config_hash=str(r["config_hash"] or ""),
+            evaluation_context_json=_decode_jsonb(r["evaluation_context_json"]) or {},
             falcon_raw_json=_decode_jsonb(r["falcon_raw_json"]) or {},
             replay_json=_decode_jsonb(r["replay_json"]) or {},
             updated_at=float(r["updated_at"] or 0.0),
         )
+
+    async def create_discovery_run(
+        self,
+        *,
+        run_id: str,
+        started_at: float,
+        config_hash: str = "",
+        falcon_sort_modes: list[str] | tuple[str, ...] | None = None,
+    ) -> None:
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO leader_discovery_runs (
+                    run_id, started_at, config_hash, falcon_sort_modes, status
+                ) VALUES ($1, $2, $3, $4::jsonb, 'running')
+                ON CONFLICT(run_id) DO NOTHING
+                """,
+                str(run_id),
+                float(started_at),
+                str(config_hash or ""),
+                _ensure_json_str(list(falcon_sort_modes or [])),
+            )
+
+    async def complete_discovery_run(
+        self,
+        *,
+        run_id: str,
+        completed_at: float,
+        candidate_count: int,
+        evaluated_count: int,
+        error_count: int,
+        status: str,
+        error_json: dict[str, Any] | None = None,
+    ) -> None:
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE leader_discovery_runs
+                SET completed_at = $2,
+                    candidate_count = $3,
+                    evaluated_count = $4,
+                    error_count = $5,
+                    status = $6,
+                    error_json = $7::jsonb
+                WHERE run_id = $1
+                """,
+                str(run_id),
+                float(completed_at),
+                int(candidate_count),
+                int(evaluated_count),
+                int(error_count),
+                str(status),
+                _ensure_json_str(error_json or {}),
+            )
+
+    async def upsert_run_candidate(
+        self,
+        *,
+        run_id: str,
+        candidate: Any,
+        evaluation: FalconDiscoveryEvaluation | None = None,
+        status: str | None = None,
+        rejection_reason: str | None = None,
+        created_at: float | None = None,
+    ) -> None:
+        wallet = str(getattr(candidate, "wallet", "") or "").lower()
+        raw = getattr(candidate, "raw", {}) or {}
+        if not isinstance(raw, dict):
+            raw = {"raw": raw}
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO leader_discovery_run_candidates (
+                    run_id, wallet, source_agent_id, source_sort_by, source_rank,
+                    leaderboard_rank, falcon_tier, h_score, roi_15d,
+                    win_rate_15d, sharpe_15d, pnl_15d, total_trades_15d,
+                    markets_traded_15d, total_volume_15d, trajectory,
+                    final_score, status, eligible_live, rejection_reason,
+                    raw_json, created_at
+                ) VALUES (
+                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+                    $11, $12, $13, $14, $15, $16, $17, $18,
+                    $19, $20, $21::jsonb, $22
+                )
+                ON CONFLICT(run_id, wallet) DO UPDATE SET
+                    source_agent_id = excluded.source_agent_id,
+                    source_sort_by = excluded.source_sort_by,
+                    source_rank = excluded.source_rank,
+                    leaderboard_rank = excluded.leaderboard_rank,
+                    falcon_tier = excluded.falcon_tier,
+                    h_score = excluded.h_score,
+                    roi_15d = excluded.roi_15d,
+                    win_rate_15d = excluded.win_rate_15d,
+                    sharpe_15d = excluded.sharpe_15d,
+                    pnl_15d = excluded.pnl_15d,
+                    total_trades_15d = excluded.total_trades_15d,
+                    markets_traded_15d = excluded.markets_traded_15d,
+                    total_volume_15d = excluded.total_volume_15d,
+                    trajectory = excluded.trajectory,
+                    final_score = excluded.final_score,
+                    status = excluded.status,
+                    eligible_live = excluded.eligible_live,
+                    rejection_reason = excluded.rejection_reason,
+                    raw_json = excluded.raw_json
+                """,
+                str(run_id),
+                wallet,
+                getattr(candidate, "source_agent_id", None),
+                str(getattr(candidate, "source_sort_by", "") or ""),
+                getattr(candidate, "source_rank", None),
+                getattr(candidate, "leaderboard_rank", None),
+                str(getattr(candidate, "tier", "") or ""),
+                float(getattr(candidate, "h_score", 0.0) or 0.0),
+                float(getattr(candidate, "roi_15d", 0.0) or 0.0),
+                float(getattr(candidate, "win_rate_15d", 0.0) or 0.0),
+                float(getattr(candidate, "sharpe_15d", 0.0) or 0.0),
+                float(getattr(candidate, "pnl_15d", 0.0) or 0.0),
+                int(getattr(candidate, "total_trades_15d", 0) or 0),
+                int(getattr(candidate, "markets_traded_15d", 0) or 0),
+                float(getattr(candidate, "total_volume_15d", 0.0) or 0.0),
+                str(getattr(candidate, "trajectory", "") or ""),
+                float(getattr(evaluation, "final_score", 0.0) or 0.0)
+                if evaluation is not None
+                else None,
+                str(status or getattr(evaluation, "status", "") or ""),
+                bool(getattr(evaluation, "eligible_live", False))
+                if evaluation is not None
+                else False,
+                rejection_reason
+                if rejection_reason is not None
+                else getattr(evaluation, "rejection_reason", None),
+                _ensure_json_str(raw),
+                float(created_at if created_at is not None else time.time()),
+            )
 
     # ------------------------------------------------------------------
     # Position Snapshots

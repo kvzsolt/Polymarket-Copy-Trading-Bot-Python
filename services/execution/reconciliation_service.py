@@ -153,6 +153,12 @@ _VENUE_NON_TERMINAL = frozenset({
     "submitted", "submitted_unconfirmed", "submitted_delayed",
     "order_live", "trade_mined", "trade_retrying",
     "mined", "retrying",
+    # P1-q: a marketable order that did not match after the matching delay is
+    # placed ON THE BOOK as a resting order (Context7: order status 'unmatched'
+    # = "marketable order placed on the book after the delay expired without a
+    # match"). It is live / non-terminal — keep polling; do NOT fall through to
+    # the ("failed","failed") default and settle a live resting order as failed.
+    "unmatched",
 })
 
 # Map normalised venue status -> (local submission status, lifecycle log status).
@@ -160,6 +166,8 @@ _VENUE_TO_LIFECYCLE: dict[str, tuple[str, str]] = {
     "live": ("order_live", "live"),
     "order_status_live": ("order_live", "live"),
     "order_live": ("order_live", "live"),
+    # P1-q: 'unmatched' marketable order is resting on the book → treat as live.
+    "unmatched": ("order_live", "live"),
     "delayed": ("submitted_delayed", "delayed"),
     "submitted_delayed": ("submitted_delayed", "delayed"),
     "matched": ("matched_pending_confirmation", "matched"),
@@ -231,6 +239,20 @@ def _matched_amount_from_response(payload: dict[str, Any] | None) -> Decimal:
         or payload.get("size")
         or 0
     )
+
+
+def _order_id_candidates(order_id: Any) -> list[str]:
+    raw = str(order_id or "").strip()
+    if not raw:
+        return []
+    candidates: list[str] = []
+    for part in raw.split(","):
+        candidate = part.strip()
+        if candidate and candidate not in candidates:
+            candidates.append(candidate)
+    if raw not in candidates:
+        candidates.insert(0, raw)
+    return candidates
 
 
 ConfirmFillCallable = Callable[[str], Awaitable[dict[str, Any]]]
@@ -483,14 +505,21 @@ class ReconciliationService:
             return
         request = record.get("request") if isinstance(record, dict) else None
         reservation_id: Any = None
+        reservation_source: str | None = None
         if isinstance(request, dict):
             reservation_id = request.get("reservation_id")
+            if reservation_id:
+                reservation_source = "request"
             if not reservation_id:
                 recovery = request.get("recovery_metadata")
                 if isinstance(recovery, dict):
                     reservation_id = recovery.get("reservation_id")
+                    if reservation_id:
+                        reservation_source = "request.recovery_metadata"
         if not reservation_id:
             reservation_id = record.get("reservation_id")
+            if reservation_id:
+                reservation_source = "record"
         if not reservation_id:
             order_id = str(record.get("order_id") or "").strip()
             getter = getattr(self.orders_repo, "get_by_order_id", None)
@@ -503,21 +532,64 @@ class ReconciliationService:
                     order_request = order_row.get("request")
                     if isinstance(order_request, dict):
                         reservation_id = order_request.get("reservation_id")
+                        if reservation_id:
+                            reservation_source = "orders.request"
                         if not reservation_id:
                             recovery = order_request.get("recovery_metadata")
                             if isinstance(recovery, dict):
                                 reservation_id = recovery.get("reservation_id")
+                                if reservation_id:
+                                    reservation_source = "orders.request.recovery_metadata"
                     if not reservation_id:
                         reservation_id = order_row.get("reservation_id")
+                        if reservation_id:
+                            reservation_source = "orders.row"
+        if not reservation_id:
+            reservation_id = await self._lookup_active_reservation_id_for_order(
+                record.get("order_id")
+            )
+            if reservation_id:
+                reservation_source = "order_reservations.order_id"
         if not reservation_id:
             return
         try:
+            _log.info(
+                "reconciliation_reservation_release | reservation_id=%s reason=%s source=%s order_id=%s",
+                reservation_id,
+                reason,
+                reservation_source or "unknown",
+                record.get("order_id"),
+            )
+            self._audit(
+                "reconciliation_reservation_release",
+                {
+                    "reservation_id": str(reservation_id),
+                    "reason": reason,
+                    "source": reservation_source or "unknown",
+                    "order_id": record.get("order_id"),
+                },
+            )
             await self.reservation_service.release_terminal(str(reservation_id), reason=reason)
         except Exception as exc:
             _log.warning(
                 "reconciliation_reservation_release_failed | reservation_id=%s reason=%s error=%r",
                 reservation_id, reason, exc,
             )
+
+    async def _lookup_active_reservation_id_for_order(self, order_id: Any) -> str | None:
+        repo = getattr(self.reservation_service, "reservations_repo", None)
+        lookup = getattr(repo, "get_active_by_order_id", None)
+        if not callable(lookup):
+            return None
+        for candidate in _order_id_candidates(order_id):
+            try:
+                reservation = await lookup(candidate)
+            except Exception:
+                continue
+            reservation_id = getattr(reservation, "id", None)
+            if reservation_id:
+                return str(reservation_id)
+        return None
 
     def _emit_lifecycle(
         self,
@@ -1286,8 +1358,28 @@ class ReconciliationService:
         if avg_price <= 0:
             return False
 
+        # P0-1: read entry_price BEFORE the atomic settlement. A SELL apply does
+        # not change avg_entry, but keep the ordering explicit.
+        entry_price: float | None = None
+        if side == "SELL" and get_position is not None:
+            pos = await get_position(record["user_id"], record["condition_id"], token_id=record["asset"])
+            if pos is not None:
+                entry_raw = getattr(pos, "avg_entry_price", None)
+                if entry_raw is not None:
+                    try:
+                        entry_price = float(entry_raw)
+                    except (TypeError, ValueError):
+                        entry_price = None
+
         try:
-            await self.fills_repo.append_fill(
+            # P0-1: append the fill and apply the position delta atomically in a
+            # single transaction, gated on the fill actually inserting and keyed
+            # on a STABLE dedup_key = the cumulative matched total. A re-apply of
+            # the same settlement (after a crash, or a swallowed watermark error
+            # left the reconciler recomputing the same delta) conflicts on
+            # idx_fills_dedup_v2 and returns (0, None), so the delta is applied
+            # exactly once — no more double-apply across a wall-clock second.
+            fill_id, _applied = await self.fills_repo.append_fill_and_apply(
                 FillRecord(
                     user_id=record["user_id"],
                     leader_id=record.get("leader_id"),
@@ -1299,7 +1391,9 @@ class ReconciliationService:
                     price=avg_price,
                     fee=Decimal("0"),
                     fill_ts=int(time.time()),
+                    dedup_key=str(current_matched),
                 ),
+                self.positions_repo,
                 raw_payload={
                     "reconciled_from": "submitted_unconfirmed",
                     "copy_order_id": order_id,
@@ -1307,57 +1401,6 @@ class ReconciliationService:
                     "side": side,
                 },
             )
-
-            entry_price: float | None = None
-            if side == "SELL" and get_position is not None:
-                pos = await get_position(record["user_id"], record["condition_id"], token_id=record["asset"])
-                if pos is not None:
-                    entry_raw = getattr(pos, "avg_entry_price", None)
-                    if entry_raw is not None:
-                        try:
-                            entry_price = float(entry_raw)
-                        except (TypeError, ValueError):
-                            entry_price = None
-
-            await self.positions_repo.apply_fill(
-                user_id=record["user_id"],
-                leader_id=record.get("leader_id"),
-                condition_id=record["condition_id"],
-                token_id=record["asset"],
-                side=side,
-                fill_size=delta_matched,
-                fill_price=avg_price,
-            )
-
-            if side == "SELL" and pnl_tracker is not None:
-                realized_source = "entry_price"
-                if entry_price is None:
-                    if logger is not None:
-                        logger.warning(
-                            "entry_price missing, using fill price for realized PnL | trade_key=%s cond=%s asset=%s",
-                            record.get("trade_key"),
-                            record.get("condition_id"),
-                            record.get("asset"),
-                        )
-                    entry_price = float(avg_price)
-                    realized_source = "fill_price_fallback"
-                # Compute realized PnL in Decimal to avoid IEEE-754 drift on
-                # tick-granular subtractions; cast at the tracker boundary only.
-                entry_d = Decimal(str(entry_price))
-                realized_d = (avg_price - entry_d) * delta_matched
-                pnl_tracker.record_sell(
-                    condition_id=record["condition_id"],
-                    price=float(avg_price),
-                    size_tokens=float(delta_matched),
-                    usdc_value=float(delta_matched * avg_price),
-                    entry_price=entry_price,
-                    realized_pnl=float(realized_d),
-                    exit_reason="reconciled_sell",
-                    leader_wallet=record.get("leader_id", ""),
-                    event_slug="",
-                    title=f"realized_source={realized_source}",
-                )
-
         except Exception as exc:
             if logger is not None:
                 logger.warning(
@@ -1367,6 +1410,46 @@ class ReconciliationService:
                     repr(exc),
                 )
             return False
+
+        if fill_id == 0:
+            # Duplicate settlement — a prior pass already appended this fill and
+            # applied the delta. Do not re-apply or re-record PnL; fall through
+            # so a prior pass that crashed before the status/terminal write still
+            # completes that (idempotent) handling.
+            if logger is not None:
+                logger.info(
+                    "reconcile_duplicate_settlement_skipped | order_id=%s cumulative=%s",
+                    order_id,
+                    current_matched,
+                )
+        elif side == "SELL" and pnl_tracker is not None:
+            realized_source = "entry_price"
+            if entry_price is None:
+                if logger is not None:
+                    logger.warning(
+                        "entry_price missing, using fill price for realized PnL | trade_key=%s cond=%s asset=%s",
+                        record.get("trade_key"),
+                        record.get("condition_id"),
+                        record.get("asset"),
+                    )
+                entry_price = float(avg_price)
+                realized_source = "fill_price_fallback"
+            # Compute realized PnL in Decimal to avoid IEEE-754 drift on
+            # tick-granular subtractions; cast at the tracker boundary only.
+            entry_d = Decimal(str(entry_price))
+            realized_d = (avg_price - entry_d) * delta_matched
+            pnl_tracker.record_sell(
+                condition_id=record["condition_id"],
+                price=float(avg_price),
+                size_tokens=float(delta_matched),
+                usdc_value=float(delta_matched * avg_price),
+                entry_price=entry_price,
+                realized_pnl=float(realized_d),
+                exit_reason="reconciled_sell",
+                leader_wallet=record.get("leader_id", ""),
+                event_slug="",
+                title=f"realized_source={realized_source}",
+            )
 
         if is_final_fill:
             await self.orders_repo.mark_processed_trade(
@@ -1420,8 +1503,18 @@ class ReconciliationService:
                 status=submission_status,
                 response_patch=fill_info,
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            # P0-1: surface a failed watermark write instead of swallowing it.
+            # idx_fills_dedup_v2 (keyed on cumulative matched) is now the durable
+            # idempotency guard, so a stale watermark no longer double-applies —
+            # but a persistent write failure is a real signal worth logging.
+            if logger is not None:
+                logger.warning(
+                    "reconcile_watermark_write_failed | order_id=%s status=%s error=%s",
+                    order_id,
+                    submission_status,
+                    repr(exc),
+                )
 
         if logger is not None:
             logger.info(
@@ -1650,7 +1743,11 @@ class ReconciliationService:
             entry_price = float(avg_price)
 
         try:
-            await self.fills_repo.append_fill(
+            # P0-1: atomic fill+position gated on insert, stable dedup_key = the
+            # cumulative matched total (same idempotency guard as the trade
+            # path). A re-apply of the same settlement returns (0, None) and is
+            # not applied twice.
+            fill_id, updated_pos = await self.fills_repo.append_fill_and_apply(
                 FillRecord(
                     user_id=user_id,
                     leader_id=leader_id,
@@ -1662,22 +1759,15 @@ class ReconciliationService:
                     price=avg_price,
                     fee=Decimal("0"),
                     fill_ts=int(time.time()),
+                    dedup_key=str(current_matched),
                 ),
+                self.positions_repo,
                 raw_payload={
                     "reconciled_from": "risk_submitted_unconfirmed",
                     "copy_order_id": order_id,
                     "status": "reconciled",
                     "side": "SELL",
                 },
-            )
-            updated_pos = await self.positions_repo.apply_fill(
-                user_id=user_id,
-                leader_id=leader_id,
-                condition_id=condition_id,
-                token_id=token_id,
-                side="SELL",
-                fill_size=delta_matched,
-                fill_price=avg_price,
             )
         except Exception as exc:
             if logger is not None:
@@ -1688,6 +1778,28 @@ class ReconciliationService:
                     repr(exc),
                 )
             return False
+
+        reapplied_duplicate = fill_id == 0
+        if reapplied_duplicate:
+            # Duplicate settlement — a prior pass already applied this SELL delta.
+            # Re-derive the live position so the re-entry-block decision below is
+            # made on the true closure state (a prior pass may have crashed
+            # before marking the block; mark_risk_block is idempotent). The PnL
+            # re-record further down is skipped so realized PnL is not double
+            # counted.
+            updated_pos = None
+            if get_position is not None:
+                try:
+                    updated_pos = await get_position(user_id, condition_id, token_id=token_id)
+                except Exception:
+                    updated_pos = None
+            if logger is not None:
+                logger.info(
+                    "risk_reconcile_duplicate_settlement_skipped | user=%s order_id=%s cumulative=%s",
+                    user_id,
+                    order_id,
+                    current_matched,
+                )
 
         # Persist a re-entry block only after a confirmed full close.
         recovery_metadata = request.get("recovery_metadata")
@@ -1719,7 +1831,7 @@ class ReconciliationService:
                 getattr(updated_pos, "size_tokens", None),
             )
 
-        if self.risk_triggers_repo is not None:
+        if not reapplied_duplicate and self.risk_triggers_repo is not None:
             try:
                 trigger_fill_status = "filled" if (is_final_fill and updated_pos is None) else "partial"
                 await self.risk_triggers_repo.record_trigger(
@@ -1735,7 +1847,11 @@ class ReconciliationService:
             except Exception:
                 _log.debug("risk_trigger_record_error order_id=%s", order_id, exc_info=True)
 
-        if pnl_tracker is not None and hasattr(pnl_tracker, "record_sell"):
+        if (
+            not reapplied_duplicate
+            and pnl_tracker is not None
+            and hasattr(pnl_tracker, "record_sell")
+        ):
             # Realized PnL in Decimal to avoid float subtraction drift; cast
             # at the tracker boundary only.
             entry_d = Decimal(str(entry_price))

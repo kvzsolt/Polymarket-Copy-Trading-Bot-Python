@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import random
 import time
 from dataclasses import asdict, is_dataclass, replace
 from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
@@ -102,14 +103,12 @@ def _normalize_side(side: str) -> str:
 _FORCED_EXIT_SOURCES = frozenset({
     "risk_exit",
     "protective_exit",
-    "near_one_exit",
 })
 
 _FORCED_EXIT_REASONS = frozenset({
     "risk_exit",
     "protective_exit",
     "advanced_risk_exit",
-    "near_one_exit",
     "stop_loss",
     "trailing_stop",
 })
@@ -204,6 +203,63 @@ def _response_matched_size(response: dict[str, Any]) -> Decimal:
 def _response_avg_price(response: dict[str, Any]) -> Decimal | None:
     value = _response_decimal(response, "avg_price", "avg_fill_price")
     return value if value > 0 else None
+
+
+def _response_error_text(response: dict[str, Any]) -> str:
+    value = response.get("error")
+    return str(value).strip().lower() if value is not None else ""
+
+
+_DEFERRED_ORDER_ACK_STATUSES = {
+    "live",
+    "matched",
+    "delayed",
+    "submitted",
+    "submitted_unconfirmed",
+    "submitted_delayed",
+    "order_status_live",
+    "order_status_matched",
+}
+
+
+def _is_deferred_order_ack(response: dict[str, Any]) -> bool:
+    """Whether the venue accepted an order whose fill is not known yet.
+
+    A FAK POST can return ``delayed``/``matched`` with an order id before the
+    matched amount is queryable. Treat that as reconciliation-owned, not as a
+    zero-fill cancellation that should be immediately reposted.
+    """
+    if _response_matched_size(response) > 0:
+        return False
+    if not _response_order_id(response):
+        return False
+    status = str(response.get("status") or "").strip().lower()
+    return status in _DEFERRED_ORDER_ACK_STATUSES
+
+
+def _is_fak_repostable_no_fill(response: dict[str, Any]) -> bool:
+    """Whether a zero-fill FAK response should refresh the book and retry."""
+    if bool(response.get("ambiguous_post_failure")):
+        return False
+    if _is_deferred_order_ack(response):
+        return False
+    if _response_matched_size(response) > 0:
+        return False
+    status = str(response.get("status") or "").strip().lower()
+    error = _response_error_text(response)
+    if "fak_no_match" in error or "order_not_fully_fillable" in error:
+        # Explicit no-match: nothing filled, safe to refresh the book and retry.
+        return True
+    # P1-p: a bare 'cancelled' carrying an order id but NO explicit no-match
+    # signal may be a partial-fill-then-cancel whose filled amount the POST
+    # response does not report (size_matched is GET-only; the venue returns
+    # makingAmount/takingAmount, which this path does not parse). Reposting
+    # would double-buy the already-filled portion, so defer to the reconciler —
+    # it settles the real fill via the order id. A cancel with no order id has
+    # nothing to reconcile and stays repostable.
+    if _response_order_id(response):
+        return False
+    return status == "cancelled"
 
 
 def _level_size_at_price(levels: Any, price: Decimal | None) -> Decimal:
@@ -314,12 +370,16 @@ class ExecutionService:
         config: AppConfig,
         clob_gateway: "ClobGateway | None" = None,
         market_data_service: "MarketDataService | None" = None,
+        geoblock_gate=None,
     ):
         self.clob_client = clob_client
         self.fee_service = fee_service
         self.order_repo = order_repo
         self._config = config
         self._market_data_service = market_data_service
+        # P1-j: optional trade-path geoblock gate (services.compliance.GeoblockGate).
+        # None = no enforcement (preserves the configless / test default).
+        self._geoblock_gate = geoblock_gate
 
         # Single CLOB venue boundary. ``runtime_bootstrap`` is expected to pass
         # a pre-constructed gateway so reconciliation, the execution
@@ -342,6 +402,20 @@ class ExecutionService:
         if circuit_breaker is not None:
             self.circuit_breaker = circuit_breaker
         else:
+            # P2-d: honor ``execution.circuit_failure_threshold`` from typed
+            # config on the shared module breaker so the config value is not
+            # dead (it previously hardcoded failure_threshold=5). We only
+            # reconfigure the shared default — an explicitly injected breaker
+            # above keeps its own threshold. The shared instance is preserved
+            # (we mutate the threshold, not the object) so multi-user runtimes
+            # still share one venue-wide backoff window.
+            configured_threshold = getattr(
+                getattr(config, "execution", None),
+                "circuit_failure_threshold",
+                None,
+            )
+            if isinstance(configured_threshold, int) and configured_threshold > 0:
+                _CLOB_CIRCUIT.failure_threshold = configured_threshold
             self.circuit_breaker = _CLOB_CIRCUIT
 
         # Typed concurrency cap; raw env fallback survives only for legacy
@@ -421,6 +495,25 @@ class ExecutionService:
                 fees_paid=Decimal("0"),
                 error=f"CLOB circuit breaker open — retry in {remaining:.0f}s",
             )
+
+        # P1-j: consult the geoblock gate on the trade path (not just at boot)
+        # and revalidate on expiry. Only BUY *entries* are blocked in a
+        # geoblocked region — a protective SELL exit is risk-reducing and must
+        # never be stranded by a compliance gate. The gate is fail-closed and
+        # opt-in; ``None`` means enforcement is disabled.
+        if self._geoblock_gate is not None and side == "BUY":
+            geoblock_decision = await self._geoblock_gate.ensure_allowed()
+            if geoblock_decision is not None and not geoblock_decision.allowed:
+                return ExecutionResult(
+                    accepted=False,
+                    order_id=None,
+                    status="geoblocked",
+                    requested_amount=req.amount,
+                    filled_amount=Decimal("0"),
+                    avg_price=None,
+                    fees_paid=Decimal("0"),
+                    error=f"geoblocked: {geoblock_decision.reason}",
+                )
 
         ec = self._config.execution
         forced_sell_exit = _is_forced_sell_exit_request(req, side)
@@ -841,13 +934,22 @@ class ExecutionService:
         )
 
         existing = await self.order_repo.get_by_idempotency_key(idem_key)
-        if (
+        pending_lock_expired = bool(
             existing
             and not existing.get("order_id")
             and _is_pending_submission_expired(existing, config=self._config)
-        ):
-            ttl_seconds = _pending_submission_ttl_seconds(self._config)
-            ttl_seconds_log = int(ttl_seconds)
+        )
+        if pending_lock_expired:
+            # The prior submission lock for this key passed its pending TTL with
+            # no order_id — a dead, never-submitted lock. Do NOT destructively
+            # re-mark the row (e.g. status="expired") here: under concurrency a
+            # late re-mark clobbers a peer's fresh takeover and lets multiple
+            # retriers each submit (duplicate orders). It is also unnecessary —
+            # is_retry_blocking_existing (below) already treats an expired
+            # pending row as non-blocking, and try_acquire_submission_lock takes
+            # the dead lock over atomically at the pending-TTL threshold (exactly
+            # one winner; see the concurrent-post-expiry stress test). Record it
+            # for observability only.
             existing_status = str(
                 existing.get("status")
                 or existing.get("response", {}).get("status")
@@ -857,37 +959,7 @@ class ExecutionService:
                 "expiring stale %s submission lock | idempotency_key=%s | ttl=%ss",
                 existing_status,
                 idem_key,
-                ttl_seconds_log,
-            )
-            stale_request = existing.get("request")
-            if not isinstance(stale_request, dict):
-                stale_request = {
-                    "user_id": req.user_id,
-                    "leader_id": req.leader_id,
-                    "token_id": req.token_id,
-                    "side": side,
-                    "amount": str(req.amount),
-                    "reason": req.reason,
-                    "signal_id": req.signal_id,
-                }
-            pending_started_at = _pending_since(existing)
-            if pending_started_at is None:
-                pending_started_at = time.time()
-            pending_expires_at = _pending_expires_at(existing)
-            if pending_expires_at is None:
-                pending_expires_at = pending_started_at + max(ttl_seconds, 0.0)
-            await self._save_submission(
-                idempotency_key=idem_key,
-                request=stale_request,
-                response={
-                    "success": False,
-                    "status": "expired",
-                    "error": f"stale {existing_status} submission expired after {ttl_seconds_log}s",
-                    "expired_at": time.time(),
-                    "pending_since": pending_started_at,
-                    "pending_ttl_seconds": ttl_seconds,
-                    "pending_expires_at": pending_expires_at,
-                },
+                int(_pending_submission_ttl_seconds(self._config)),
             )
         existing = await self.order_repo.get_by_idempotency_key(idem_key)
 
@@ -933,8 +1005,23 @@ class ExecutionService:
         # and both submit distinct signed orders.
         has_atomic_lock = hasattr(self.order_repo, "try_acquire_submission_lock")
         if has_atomic_lock:
+            # If THIS call confirmed the prior pending lock is expired (above),
+            # authorise try_acquire to take the dead lock over at the same
+            # pending-submission TTL threshold instead of the conservative
+            # default — the now strictly fail-closed loser path (P1-n) would
+            # otherwise block the legitimate post-expiry retry. Concurrent
+            # post-expiry retriers still serialise to exactly one winner: the
+            # takeover resets the row to a fresh ``pending_lock`` whose age is
+            # < TTL, so the loser's takeover WHERE fails. Non-expiry concurrent
+            # duplicates keep the conservative default and never steal an
+            # actively-submitting lock.
+            _acquire_kwargs: dict[str, Any] = {}
+            if pending_lock_expired:
+                _acquire_kwargs["stale_takeover_seconds"] = int(
+                    _pending_submission_ttl_seconds(self._config)
+                )
             lock_acquired = await self.order_repo.try_acquire_submission_lock(
-                idem_key, req.user_id, req.leader_id, request_doc
+                idem_key, req.user_id, req.leader_id, request_doc, **_acquire_kwargs
             )
         else:
             # Non-atomic locking is unsafe for live trading: two concurrent
@@ -975,17 +1062,36 @@ class ExecutionService:
                     fees_paid=Decimal("0"),
                     error=None,
                 )
-            if has_atomic_lock and await self.order_repo.is_submission_locked(idem_key):
-                return ExecutionResult(
-                    accepted=False,
-                    order_id=None,
-                    status="inflight_lock",
-                    requested_amount=req.amount,
-                    filled_amount=Decimal("0"),
-                    avg_price=None,
-                    fees_paid=Decimal("0"),
-                    error="another task is currently submitting this order",
-                )
+            # CRITICAL duplicate-order fail-closed (P1-n): we did NOT acquire the
+            # submission lock and no durable order_id is visible yet. The lock
+            # primitive serializes to exactly ONE acquirer, so reaching here
+            # means another task is the winner (or the key is in a non-takeable
+            # state). A task that does not own the lock MUST NEVER fall through
+            # to the submit path below — that was the N-concurrent-identical-
+            # intents -> N venue POSTs race: a loser whose is_submission_locked()
+            # momentarily read False (the winner's row sitting between lock
+            # states — pending_lock -> pending-response -> order_id — so its
+            # status was transiently not in the locked set while order_id was
+            # still NULL) would slip past the old guarded return and POST a
+            # duplicate signed order. is_submission_locked is now advisory only
+            # (it shapes the error string); it never gates this fail-closed
+            # return. Proven by tests/test_execution_idempotency_extended.py::
+            # TestAtomicLockConcurrencyStress and the release-gate twin.
+            _lock_held = has_atomic_lock and await self.order_repo.is_submission_locked(idem_key)
+            return ExecutionResult(
+                accepted=False,
+                order_id=None,
+                status="inflight_lock",
+                requested_amount=req.amount,
+                filled_amount=Decimal("0"),
+                avg_price=None,
+                fees_paid=Decimal("0"),
+                error=(
+                    "another task is currently submitting this order"
+                    if _lock_held
+                    else "submission lock not acquired — refusing to submit (fail-closed)"
+                ),
+            )
 
         if not hasattr(self, "_submit_semaphore"):
             cap = getattr(
@@ -1127,6 +1233,11 @@ class ExecutionService:
                         "ambiguous submission (POST possibly delivered): %s",
                         last_error,
                     )
+                    # P1-m: a venue outage surfaces here as the dominant mode.
+                    # Record it so the breaker can trip and stop POSTing into a
+                    # dead venue — the order is already saved submitted_unconfirmed
+                    # for the reconciler, so this only gates further submissions.
+                    self.circuit_breaker.record_failure()
                     break
                 except Exception as exc:
                     # Defensive: anything not classified by the gateway is
@@ -1146,8 +1257,14 @@ class ExecutionService:
                         "unclassified gateway exception (treating as ambiguous): %s",
                         last_error,
                     )
+                    # P1-m: count unclassified gateway failures toward the
+                    # breaker too (same venue-health signal as above).
+                    self.circuit_breaker.record_failure()
                     break
-                await asyncio.sleep(min(0.15 * attempt, 0.30))
+                # Add jitter so concurrent runtimes retrying the same venue
+                # outage do not re-submit in lockstep bursts. Base backoff is
+                # unchanged; jitter only spreads attempts by up to 0.1s.
+                await asyncio.sleep(min(0.15 * attempt, 0.30) + random.uniform(0, 0.1))
             else:
                 self.circuit_breaker.record_failure()
                 await self._save_submission(
@@ -1163,6 +1280,27 @@ class ExecutionService:
                     asset=req.token_id,
                     retry=3,
                     max_retries=3,
+                )
+
+            if requested_order_type == "FAK" and _is_deferred_order_ack(response):
+                venue_status = str(response.get("status") or "submitted_unconfirmed")
+                self._emit_post_lifecycle(
+                    req=req,
+                    side=side,
+                    order_id=_response_order_id(response),
+                    worst_price=worst_price,
+                    venue_status=venue_status,
+                    lifecycle_status=venue_status,
+                )
+                return ExecutionResult(
+                    accepted=True,
+                    order_id=_response_order_id(response),
+                    status="submitted_unconfirmed",
+                    requested_amount=req.amount,
+                    filled_amount=Decimal("0"),
+                    avg_price=None,
+                    fees_paid=Decimal("0"),
+                    error=None,
                 )
 
             if not response.get("success"):
@@ -1185,24 +1323,35 @@ class ExecutionService:
                         fees_paid=Decimal("0"),
                         error=last_error,
                     )
-                self._emit_post_lifecycle(
-                    req=req,
-                    side=side,
-                    order_id=None,
-                    worst_price=worst_price,
-                    venue_status=str(response.get("status") or "failed"),
-                    lifecycle_status=str(response.get("status") or "failed"),
-                )
-                failure_status = str(response.get("status") or "failed").lower()
-                return ExecutionResult(
-                    accepted=False,
-                    order_id=None,
-                    status=failure_status,
-                    requested_amount=req.amount,
-                    filled_amount=Decimal("0"),
-                    avg_price=None,
-                    fees_paid=Decimal("0"),
-                    error=last_error or "order submission failed",
+                if not (
+                    requested_order_type == "FAK"
+                    and _is_fak_repostable_no_fill(response)
+                ):
+                    self._emit_post_lifecycle(
+                        req=req,
+                        side=side,
+                        order_id=None,
+                        worst_price=worst_price,
+                        venue_status=str(response.get("status") or "failed"),
+                        lifecycle_status=str(response.get("status") or "failed"),
+                    )
+                    failure_status = str(response.get("status") or "failed").lower()
+                    return ExecutionResult(
+                        accepted=False,
+                        order_id=None,
+                        status=failure_status,
+                        requested_amount=req.amount,
+                        filled_amount=Decimal("0"),
+                        avg_price=None,
+                        fees_paid=Decimal("0"),
+                        error=last_error or "order submission failed",
+                    )
+                logger.info(
+                    "copy_fak_initial_zero_fill_retry | token=%s side=%s status=%s error=%s",
+                    req.token_id,
+                    side,
+                    str(response.get("status") or "cancelled").lower(),
+                    response.get("error"),
                 )
 
             order_id = _response_order_id(response)
@@ -1211,11 +1360,21 @@ class ExecutionService:
                 matched_size = _response_matched_size(response)
                 avg_fill_price = _response_avg_price(response) or worst_price
                 total_fill_cost = matched_size * avg_fill_price
-                order_ids = [str(order_id)] if order_id else []
-                max_fak_attempts = _positive_int(
-                    self._config.raw.get("COPY_FAK_MAX_ATTEMPTS", 3),
-                    3,
-                )
+                last_no_fill_error = response.get("error")
+                order_ids = [str(order_id)] if order_id and matched_size > 0 else []
+                # Forced exits (near-max / trailing / stop-loss) must fully
+                # offload the position across however many book levels it takes,
+                # so they get a higher repost ceiling than ordinary copy fills.
+                if forced_sell_exit:
+                    max_fak_attempts = _positive_int(
+                        self._config.execution.exit_fak_max_attempts,
+                        8,
+                    )
+                else:
+                    max_fak_attempts = _positive_int(
+                        self._config.execution.copy_fak_max_attempts,
+                        8,
+                    )
                 for fak_attempt in range(2, max_fak_attempts + 1):
                     if side == "BUY":
                         remaining_amount = req.amount - total_fill_cost
@@ -1315,22 +1474,34 @@ class ExecutionService:
                             redact_error_detail(exc),
                         )
                         break
+                    next_order_id = _response_order_id(next_response)
+                    next_matched = _response_matched_size(next_response)
+                    if next_matched > 0:
+                        if next_order_id:
+                            order_ids.append(str(next_order_id))
+                        next_avg = _response_avg_price(next_response) or worst_price
+                        matched_size += next_matched
+                        total_fill_cost += next_matched * next_avg
+                        avg_fill_price = (
+                            total_fill_cost / matched_size
+                            if matched_size > 0
+                            else avg_fill_price
+                        )
+                        continue
+                    last_no_fill_error = next_response.get("error") or last_no_fill_error
+                    if _is_fak_repostable_no_fill(next_response):
+                        logger.info(
+                            "copy_fak_repost_zero_fill_continue | token=%s attempt=%d side=%s status=%s error=%s",
+                            req.token_id,
+                            fak_attempt,
+                            side,
+                            str(next_response.get("status") or "cancelled").lower(),
+                            next_response.get("error"),
+                        )
+                        continue
                     if not next_response.get("success"):
                         break
-                    next_order_id = _response_order_id(next_response)
-                    if next_order_id:
-                        order_ids.append(str(next_order_id))
-                    next_matched = _response_matched_size(next_response)
-                    if next_matched <= 0:
-                        break
-                    next_avg = _response_avg_price(next_response) or worst_price
-                    matched_size += next_matched
-                    total_fill_cost += next_matched * next_avg
-                    avg_fill_price = (
-                        total_fill_cost / matched_size
-                        if matched_size > 0
-                        else avg_fill_price
-                    )
+                    break
 
                 if matched_size > 0:
                     if side == "BUY":
@@ -1350,7 +1521,7 @@ class ExecutionService:
                         side=side,
                         order_id=",".join(order_ids) if order_ids else order_id,
                         worst_price=worst_price,
-                        venue_status=str(response.get("status") or fill_status),
+                        venue_status=fill_status,
                         lifecycle_status=fill_status,
                     )
                     return ExecutionResult(
@@ -1381,7 +1552,7 @@ class ExecutionService:
                     filled_amount=Decimal("0"),
                     avg_price=None,
                     fees_paid=Decimal("0"),
-                    error="FAK order did not fill",
+                    error=str(last_no_fill_error or "FAK order did not fill"),
                 )
             # Settlement is owned by the canonical reconciler.
             # Execution never self-confirms fills — it returns

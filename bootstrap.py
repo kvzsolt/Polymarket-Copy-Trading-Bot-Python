@@ -51,6 +51,7 @@ class Application:
     config: AppConfig
     readiness: ReadinessTracker
     leaders_repo: LeadersRepo
+    discovery_repo: DiscoveryRepo
     discovery_service: TraderDiscoveryService
     trust_store: LeaderTrustStore
     registry: LeaderRegistry
@@ -142,6 +143,7 @@ async def build_app(env: Mapping[str, str] | None = None) -> Application:
         config=config,
         readiness=readiness,
         leaders_repo=leaders_repo,
+        discovery_repo=discovery_repo,
         discovery_service=discovery_service,
         trust_store=trust_store,
         registry=registry,

@@ -646,7 +646,11 @@ def print_startup_summary(
                 "near_max_price_warn_trim_ratio": config.risk.near_max_price_warn_trim_ratio,
                 "near_max_price_exit": config.risk.near_max_price_exit,
                 "enable_trailing_stop": config.features.enable_trailing_stop,
-                "trailing_activation_pct": config.risk.trailing_activation_pct,
+                "trailing_activation_pct": (
+                    "auto"
+                    if config.risk.trailing_activation_pct is None
+                    else config.risk.trailing_activation_pct
+                ),
                 "trailing_distance": config.risk.trailing_distance,
                 "enable_staged_tp": config.features.enable_staged_tp,
                 "staged_tp_levels": config.risk.staged_tp_levels,
@@ -718,16 +722,6 @@ def print_startup_summary(
                 "reconcile_stale_seconds": config.raw.get('RECONCILE_STALE_SECONDS', 'disabled'),
                 "reconcile_auto_cancel": config.raw.get('RECONCILE_AUTO_CANCEL', 'disabled'),
                 "reconcile_interval_seconds": config.raw.get('RECONCILE_INTERVAL_SECONDS', 'disabled'),
-            },
-        ),
-        (
-            "near_one_exit_engine",
-            "NEAR-ONE EXIT ENGINE",
-            {
-                "enable_near_one_exit": config.near_one_exit.enable_near_one_exit,
-                "threshold": str(config.near_one_exit.threshold),
-                "dwell_seconds": config.near_one_exit.dwell_seconds,
-                "check_interval": config.near_one_exit.check_interval,
             },
         ),
     ]
