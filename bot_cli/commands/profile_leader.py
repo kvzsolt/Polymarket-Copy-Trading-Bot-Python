@@ -6,6 +6,40 @@ import asyncio
 import json
 from pathlib import Path
 
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
+# SonarCloud S8707 (LLM path-traversal guard): ``--output`` accepts any
+# path, but an LLM (or accident) can escape the workspace (e.g.
+# ``--output ../../etc/cron.d/payload``). Resolve the path and require it
+# to live under the repo root OR under /tmp (so pytest's ``tmp_path``
+# fixture keeps working in tests). Everything else is rejected with exit
+# code 2 before any file-system write happens.
+_ALLOWED_WRITE_ROOTS: tuple[Path, ...] = (_REPO_ROOT, Path("/tmp"))
+
+
+def _validate_writable_path(raw: str) -> Path | None:
+    """Resolve and validate a user-supplied path against the allowlist.
+
+    Returns the resolved Path, or None if ``raw`` is empty. Raises
+    ``ValueError`` if the resolved path is outside the allowlist.
+    """
+    if not raw:
+        return None
+    resolved = Path(raw).resolve()
+    for root in _ALLOWED_WRITE_ROOTS:
+        try:
+            if resolved.is_relative_to(root):
+                return resolved
+        except AttributeError:  # pragma: no cover — Python < 3.9
+            try:
+                resolved.relative_to(root)
+                return resolved
+            except ValueError:
+                pass
+    raise ValueError(
+        f"--output must resolve under {_REPO_ROOT} or /tmp; got {resolved}"
+    )
+
 
 def register_profile_leader_command(subparsers: argparse._SubParsersAction) -> None:
     parser = subparsers.add_parser(
@@ -20,6 +54,14 @@ def register_profile_leader_command(subparsers: argparse._SubParsersAction) -> N
 async def _run_profile_leader_async(args: argparse.Namespace) -> int:
     from services.strategy_profile.leader_history_loader import LeaderHistoryLoader
     from services.strategy_profile.strategy_profiler import profile_leader
+
+    output_path: Path | None = None
+    if args.output:
+        try:
+            output_path = _validate_writable_path(args.output)
+        except ValueError as exc:
+            print(f"profile-leader: {exc}", flush=True)
+            return 2
 
     loader = LeaderHistoryLoader(lookback_days=args.lookback_days)
     history = await loader.load(args.wallet)
@@ -45,9 +87,9 @@ async def _run_profile_leader_async(args: argparse.Namespace) -> int:
         },
     }
     text = json.dumps(payload, indent=2, default=str)
-    if args.output:
-        Path(args.output).write_text(text + "\n", encoding="utf-8")
-        print(f"profile-leader: wrote {args.output}", flush=True)
+    if output_path is not None:
+        output_path.write_text(text + "\n", encoding="utf-8")
+        print(f"profile-leader: wrote {output_path}", flush=True)
     else:
         print(text, flush=True)
     return 0

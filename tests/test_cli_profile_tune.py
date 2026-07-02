@@ -221,3 +221,124 @@ def test_tune_strategy_noisy_uncopyable_emits_note(
     assert rc == 0
     out = capsys.readouterr().out
     assert "not copyable" in out.lower()
+
+
+# --- S8707 path-traversal rejection (SonarCloud LLM-escape guard) -----------
+
+def test_profile_leader_rejects_path_traversal_in_output(capsys: pytest.CaptureFixture[str]) -> None:
+    """``--output ../../etc/cron.d/payload`` must be rejected with exit 2
+    before any file-system write happens (SonarCloud S8707)."""
+    parser = _build_parser()
+    args = parser.parse_args(
+        ["profile-leader", "--wallet", "0x" + "ab" * 20, "--output", "../../etc/cron.d/payload"]
+    )
+    with patch(
+        "services.strategy_profile.leader_history_loader.LeaderHistoryLoader.load",
+        new_callable=AsyncMock,
+        return_value=LoadedHistory(wallet="0x" + "ab" * 20, activity=[{}], closed_positions=[]),
+    ):
+        rc = run_profile_leader(args)
+    assert rc == 2
+    out = capsys.readouterr().out
+    assert "must resolve under" in out
+    assert "--output" in out
+
+
+def test_profile_leader_rejects_absolute_path_outside_workspace(capsys: pytest.CaptureFixture[str]) -> None:
+    """``--output /etc/passwd`` (absolute path outside repo + /tmp) is rejected."""
+    parser = _build_parser()
+    args = parser.parse_args(
+        ["profile-leader", "--wallet", "0x" + "ab" * 20, "--output", "/etc/passwd"]
+    )
+    with patch(
+        "services.strategy_profile.leader_history_loader.LeaderHistoryLoader.load",
+        new_callable=AsyncMock,
+        return_value=LoadedHistory(wallet="0x" + "ab" * 20, activity=[{}], closed_positions=[]),
+    ):
+        rc = run_profile_leader(args)
+    assert rc == 2
+    assert "must resolve under" in capsys.readouterr().out
+
+
+def test_profile_leader_accepts_tmp_path_output(tmp_path: Path) -> None:
+    """pytest's ``tmp_path`` lives under /tmp and must pass validation
+    (so existing tests + operator scratch-dir invocations still work)."""
+    from bot_cli.commands.profile_leader import _validate_writable_path
+    out = tmp_path / "profile.json"
+    resolved = _validate_writable_path(str(out))
+    assert resolved is not None
+    assert resolved.name == "profile.json"
+
+
+def test_tune_strategy_rejects_path_traversal_in_target(capsys: pytest.CaptureFixture[str]) -> None:
+    """``--target ../../etc/cron.d/payload`` is rejected before EnvPatchWriter
+    is constructed (S8707)."""
+    parser = _build_parser()
+    args = parser.parse_args(
+        ["tune-strategy", "--wallet", "0x" + "ab" * 20, "--dry-run", "--target", "../../etc/cron.d/payload"]
+    )
+    with patch(
+        "services.strategy_profile.leader_history_loader.LeaderHistoryLoader.load",
+        new_callable=AsyncMock,
+        return_value=LoadedHistory(wallet="0x" + "ab" * 20, activity=[{}], closed_positions=[]),
+    ):
+        rc = run_tune_strategy(args)
+    assert rc == 2
+    out = capsys.readouterr().out
+    assert "must resolve under" in out
+    assert "--target" in out
+
+
+def test_tune_strategy_rejects_path_traversal_in_patch_out(capsys: pytest.CaptureFixture[str]) -> None:
+    """``--patch-out /etc/cron.d/payload`` is rejected before write_text."""
+    parser = _build_parser()
+    # Use a tmp_path target so --target validation passes; the rejection
+    # is specifically for --patch-out.
+    import tempfile
+    with tempfile.NamedTemporaryFile(suffix=".env", delete=False) as tf:
+        target = tf.name
+    try:
+        args = parser.parse_args(
+            [
+                "tune-strategy",
+                "--wallet",
+                "0x" + "ab" * 20,
+                "--dry-run",
+                "--target",
+                target,
+                "--patch-out",
+                "/etc/cron.d/payload",
+            ]
+        )
+        with patch(
+            "services.strategy_profile.leader_history_loader.LeaderHistoryLoader.load",
+            new_callable=AsyncMock,
+            return_value=LoadedHistory(wallet="0x" + "ab" * 20, activity=[{}], closed_positions=[]),
+        ), patch(
+            "services.strategy_profile.strategy_profiler.profile_leader",
+            return_value=StrategyProfile(
+                wallet="0x" + "ab" * 20,
+                lookback_days=30,
+                features={"trade_count_30d": 2.0},
+                archetype=StrategyArchetype.NOISY_UNCOPYABLE,
+                copyable=False,
+                computed_at=1700000000,
+            ),
+        ):
+            rc = run_tune_strategy(args)
+        assert rc == 2
+        out = capsys.readouterr().out
+        assert "must resolve under" in out
+        assert "--patch-out" in out
+    finally:
+        import os
+        os.unlink(target)
+
+
+def test_tune_strategy_default_target_passes_validation() -> None:
+    """The default --target (config/runtime.local.env) resolves under the
+    repo root, so existing happy-path invocations are unaffected."""
+    from bot_cli.commands.tune_strategy import _validate_writable_path
+    resolved = _validate_writable_path("config/runtime.local.env", flag_name="target")
+    assert resolved is not None
+    assert resolved.name == "runtime.local.env"

@@ -5,6 +5,40 @@ import argparse
 import asyncio
 from pathlib import Path
 
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
+# SonarCloud S8707 (LLM path-traversal guard): ``--target`` and
+# ``--patch-out`` accept any path, but an LLM (or accident) can escape
+# the workspace (e.g. ``--target /etc/cron.d/payload``). Resolve each
+# path and require it to live under the repo root OR under /tmp (so
+# pytest's ``tmp_path`` fixture keeps working). Everything else is
+# rejected with exit code 2 before any file-system write happens.
+_ALLOWED_WRITE_ROOTS: tuple[Path, ...] = (_REPO_ROOT, Path("/tmp"))
+
+
+def _validate_writable_path(raw: str, *, flag_name: str) -> Path | None:
+    """Resolve and validate a user-supplied path against the allowlist.
+
+    Returns the resolved Path, or None if ``raw`` is empty. Raises
+    ``ValueError`` if the resolved path is outside the allowlist.
+    """
+    if not raw:
+        return None
+    resolved = Path(raw).resolve()
+    for root in _ALLOWED_WRITE_ROOTS:
+        try:
+            if resolved.is_relative_to(root):
+                return resolved
+        except AttributeError:  # pragma: no cover — Python < 3.9
+            try:
+                resolved.relative_to(root)
+                return resolved
+            except ValueError:
+                pass
+    raise ValueError(
+        f"--{flag_name} must resolve under {_REPO_ROOT} or /tmp; got {resolved}"
+    )
+
 
 def register_tune_strategy_command(subparsers: argparse._SubParsersAction) -> None:
     parser = subparsers.add_parser(
@@ -46,9 +80,29 @@ async def _run_tune_strategy_async(args: argparse.Namespace) -> int:
     from services.strategy_profile.strategy_env_tuner import tune_strategy
     from services.strategy_profile.strategy_profiler import profile_leader
 
-    if args.apply and not args.target:
+    # S8707: validate --target before any writer construction. The
+    # default ("config/runtime.local.env") resolves under the repo
+    # root so existing happy-path invocations are unaffected.
+    try:
+        target_path = _validate_writable_path(args.target, flag_name="target")
+    except ValueError as exc:
+        print(f"tune-strategy: {exc}", flush=True)
+        return 2
+
+    if args.apply and not target_path:
         print("tune-strategy: --apply requires --target", flush=True)
         return 2
+
+    # S8707: validate --patch-out before any write_text call.
+    patch_out_path: Path | None = None
+    if args.patch_out:
+        try:
+            patch_out_path = _validate_writable_path(
+                args.patch_out, flag_name="patch-out"
+            )
+        except ValueError as exc:
+            print(f"tune-strategy: {exc}", flush=True)
+            return 2
 
     loader = LeaderHistoryLoader(lookback_days=args.lookback_days)
     history = await loader.load(args.wallet)
@@ -59,7 +113,7 @@ async def _run_tune_strategy_async(args: argparse.Namespace) -> int:
     profile = profile_leader(history)
     patches = tune_strategy(profile)
 
-    writer = EnvPatchWriter(args.target)
+    writer = EnvPatchWriter(target_path)
     result = writer.apply(
         patches,
         apply=bool(args.apply),
@@ -74,9 +128,9 @@ async def _run_tune_strategy_async(args: argparse.Namespace) -> int:
             flush=True,
         )
 
-    if args.patch_out:
-        Path(args.patch_out).write_text(result.explanation + "\n", encoding="utf-8")
-        print(f"tune-strategy: patch table written to {args.patch_out}", flush=True)
+    if patch_out_path is not None:
+        patch_out_path.write_text(result.explanation + "\n", encoding="utf-8")
+        print(f"tune-strategy: patch table written to {patch_out_path}", flush=True)
 
     if result.applied and result.backup_path:
         print(f"tune-strategy: backup written to {result.backup_path}", flush=True)
