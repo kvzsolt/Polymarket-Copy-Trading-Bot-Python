@@ -1367,12 +1367,12 @@ class ExecutionService:
                 # so they get a higher repost ceiling than ordinary copy fills.
                 if forced_sell_exit:
                     max_fak_attempts = _positive_int(
-                        self._config.raw.get("EXIT_FAK_MAX_ATTEMPTS", 8),
+                        self._config.execution.exit_fak_max_attempts,
                         8,
                     )
                 else:
                     max_fak_attempts = _positive_int(
-                        self._config.raw.get("COPY_FAK_MAX_ATTEMPTS", 8),
+                        self._config.execution.copy_fak_max_attempts,
                         8,
                     )
                 for fak_attempt in range(2, max_fak_attempts + 1):
