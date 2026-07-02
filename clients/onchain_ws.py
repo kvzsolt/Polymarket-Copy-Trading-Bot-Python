@@ -36,6 +36,10 @@ _MIN_RECONNECT_DELAY = 1.0
 _MAX_RECONNECT_DELAY = 30.0
 _SUBSCRIBE_TIMEOUT_SECONDS = 10.0
 _RECEIVE_TIMEOUT_SECONDS = 60.0
+# Bounded incoming-message queue cap (backpressure). 1000 messages is
+# roughly one Polygon block worth of OrderFilled events at peak activity;
+# overflow triggers a connection-close + reconnect instead of OOM.
+_MAX_QUEUE: int | None = 1000
 
 MessageCallback = Callable[[dict[str, Any]], Coroutine[Any, Any, None]]
 
@@ -110,7 +114,18 @@ class OnchainWebSocket:
                     ping_interval=20,
                     ping_timeout=20,
                     close_timeout=5,
-                    max_queue=None,
+                    # Backpressure cap: when the on_message callback (which
+                    # may block on _resolve_condition_id HTTP/RPC lookups)
+                    # falls behind the producer during a burst (e.g. a
+                    # high-volume Polygon block with 100s of OrderFilled
+                    # events), the WS library's incoming buffer fills. With
+                    # max_queue=None (unbounded) this can grow without limit
+                    # and OOM the host. With a bounded cap the library
+                    # closes the connection with code 1011 on overflow,
+                    # triggering the reconnect+exponential-backoff below —
+                    # exactly the desired fail-safe (the runtime already
+                    # tolerates WSS drops per its own docstring).
+                    max_queue=_MAX_QUEUE,
                 ) as ws:
                     self._ws = ws
                     self._reconnect_delay = self._reconnect_min_delay
