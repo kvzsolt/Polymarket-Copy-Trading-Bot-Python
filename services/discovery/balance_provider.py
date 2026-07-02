@@ -38,6 +38,7 @@ def build_wallet_balance_provider(config) -> WalletBalanceProvider:
         balance_client=BalanceClient(
             rpc_url=config.network.rpc_url or config.wallet.polygon_rpc_url,
             usdc_contract_address=config.network.usdc_contract_address,
+            fallback_rpc_url=getattr(config.network, "fallback_rpc_url", ""),
         ),
         wallet_address=config.wallet.funder_address,
     )

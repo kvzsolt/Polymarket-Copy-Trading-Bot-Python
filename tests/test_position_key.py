@@ -69,10 +69,14 @@ def test_hex_token_id_lowercased():
 
 
 def test_uppercase_hex_prefix_lowercased():
-    a = PositionKey(user_id="0XUSER", condition_id="0XABCDEF", token_id="0XDEADBEEF")
-    b = PositionKey(user_id="0xuser", condition_id="0xabcdef", token_id="0xdeadbeef")
-    assert a == b
-    assert a.identity() == ("0xuser", "0xabcdef", "0xdeadbeef")
+    # P1-k: condition_id / token_id are case-insensitive hashes and are
+    # lowercased; user_id (an EIP-55 checksum wallet address) PRESERVES its
+    # casing so a PositionKey matches the checksum-cased rows the repos store.
+    a = PositionKey(user_id="0xAbCd", condition_id="0XABCDEF", token_id="0XDEADBEEF")
+    assert a.user_id == "0xAbCd"
+    assert a.condition_id == "0xabcdef"
+    assert a.token_id == "0xdeadbeef"
+    assert a.identity() == ("0xAbCd", "0xabcdef", "0xdeadbeef")
 
 
 def test_non_hex_user_id_preserved_case():

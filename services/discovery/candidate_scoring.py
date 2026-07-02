@@ -26,6 +26,7 @@ def normalize(value: float, low: float, high: float) -> float:
 class RecentState:
     pnl_7d: Decimal = Decimal("0")
     pnl_3d: Decimal = Decimal("0")
+    available: bool = True
 
 
 @dataclass(frozen=True)
@@ -58,6 +59,18 @@ class FalconDiscoveryEvaluation:
     rejection_reason: str | None
     eligible_live: bool
     eligible_shadow: bool
+    score_version: str = "leader_score_v1"
+    score_breakdown_json: dict[str, Any] = field(default_factory=dict)
+    leaderboard_rank: int | None = None
+    falcon_tier: str = ""
+    total_volume_15d: float = 0.0
+    source_agent_id: int | None = None
+    source_sort_by: str = ""
+    source_rank: int | None = None
+    all_seen_sort_modes: tuple[str, ...] = field(default_factory=tuple)
+    balance_usdc: str = "0"
+    config_hash: str = ""
+    evaluation_context_json: dict[str, Any] = field(default_factory=dict)
     falcon_raw_json: dict[str, Any] = field(default_factory=dict)
     replay_json: dict[str, Any] = field(default_factory=dict)
     updated_at: float = field(default_factory=time.time)
@@ -76,20 +89,25 @@ class CandidateScoringService:
         replay,
         recent_state: RecentState | None = None,
     ) -> FalconDiscoveryEvaluation:
-        recent_state = recent_state or RecentState(
-            pnl_7d=Decimal(str(candidate.pnl_15d)),
-            pnl_3d=Decimal("0"),
-        )
+        recent_state = recent_state or RecentState(available=False)
         falcon_score = falcon_quality_score(candidate)
         copy_score = copyability_score(replay)
         recent_score = recent_state_score(recent_state)
         fit_score = market_fit_score(market_classes)
-        final_score = clamp(
-            0.50 * falcon_score
-            + 0.30 * copy_score
-            + 0.15 * recent_score
-            + 0.05 * fit_score
+        score_version = str(
+            getattr(self.config.discovery, "leader_score_version", "leader_score_v2")
+            or "leader_score_v2"
+        ).lower()
+        score_breakdown = score_candidate(
+            candidate=candidate,
+            falcon_quality=falcon_score,
+            copyability=copy_score,
+            recent_consistency=recent_score,
+            market_fit=fit_score,
+            config=self.config,
+            score_version=score_version,
         )
+        final_score = float(score_breakdown["final_score"])
 
         rejection_reason = self._rejection_reason(
             signals=signals,
@@ -97,16 +115,27 @@ class CandidateScoringService:
             replay=replay,
             recent_state=recent_state,
         )
-        eligible_live = rejection_reason is None
-        eligible_shadow = rejection_reason is None or rejection_reason in {
-            "below_live_score",
-            "insufficient_copyable_signal_ratio",
-            "insufficient_copyable_notional_ratio",
-        }
-        if rejection_reason:
-            status = "shadow" if eligible_shadow else "rejected"
+        score_ok = final_score >= self.config.leader.auto_discover_min_score
+        if rejection_reason is None and not score_ok:
+            rejection_reason = "below_live_score"
+
+        eligible_live = rejection_reason is None and score_ok
+        eligible_shadow = (not eligible_live) and (
+            rejection_reason is None
+            or rejection_reason
+            in {
+                "below_live_score",
+                "insufficient_copyable_signal_ratio",
+                "insufficient_copyable_notional_ratio",
+                "recent_state_unavailable",
+            }
+        )
+        if eligible_live:
+            status = "live_eligible"
+        elif eligible_shadow:
+            status = "shadow"
         else:
-            status = "live_eligible" if final_score >= self.config.leader.auto_discover_min_score else "shadow"
+            status = "rejected"
 
         sports_ratio = (
             sum(1 for c in market_classes if c.is_sports_esports) / len(market_classes)
@@ -121,6 +150,7 @@ class CandidateScoringService:
         fast_crypto_notional_ratio = _fast_crypto_notional_ratio(signals, market_classes)
 
         replay_json = _replay_to_json(replay)
+        replay_details = getattr(replay, "details", {}) or {}
         return FalconDiscoveryEvaluation(
             wallet=candidate.wallet.lower(),
             status=status,
@@ -150,6 +180,20 @@ class CandidateScoringService:
             rejection_reason=rejection_reason,
             eligible_live=eligible_live,
             eligible_shadow=eligible_shadow,
+            score_version=score_version,
+            score_breakdown_json=dict(score_breakdown["breakdown"]),
+            leaderboard_rank=getattr(candidate, "leaderboard_rank", None),
+            falcon_tier=str(getattr(candidate, "tier", "") or ""),
+            total_volume_15d=float(getattr(candidate, "total_volume_15d", 0.0) or 0.0),
+            source_agent_id=getattr(candidate, "source_agent_id", None),
+            source_sort_by=str(getattr(candidate, "source_sort_by", "") or ""),
+            source_rank=getattr(candidate, "source_rank", None),
+            all_seen_sort_modes=tuple(getattr(candidate, "all_seen_sort_modes", ()) or ()),
+            balance_usdc=str(replay_details.get("balance_usdc", "0") or "0"),
+            config_hash=str(replay_details.get("config_hash", "") or ""),
+            evaluation_context_json=dict(
+                replay_details.get("evaluation_context", {}) or {}
+            ),
             falcon_raw_json=dict(candidate.raw),
             replay_json=replay_json,
         )
@@ -191,6 +235,144 @@ def falcon_quality_score(candidate) -> float:
     return clamp(0.50 * h + 0.20 * roi + 0.15 * win + 0.10 * sharpe + 0.05 * traj)
 
 
+def score_candidate(
+    *,
+    candidate,
+    falcon_quality: float,
+    copyability: float,
+    recent_consistency: float,
+    market_fit: float,
+    config,
+    score_version: str,
+) -> dict[str, Any]:
+    if score_version == "leader_score_v1":
+        weights = {
+            "falcon_quality": 0.50,
+            "copyability": 0.30,
+            "recent_consistency": 0.15,
+            "market_fit": 0.05,
+        }
+        final_score = clamp(
+            weights["falcon_quality"] * falcon_quality
+            + weights["copyability"] * copyability
+            + weights["recent_consistency"] * recent_consistency
+            + weights["market_fit"] * market_fit
+        )
+        return {
+            "final_score": final_score,
+            "breakdown": {
+                "version": "leader_score_v1",
+                "falcon_quality": falcon_quality,
+                "copyability": copyability,
+                "recent_consistency": recent_consistency,
+                "market_fit": market_fit,
+                "weights": weights,
+                "inputs": _score_inputs(candidate, config),
+            },
+        }
+
+    volume_fit = liquidity_or_volume_fit(candidate, config)
+    rank_score = rank_quality(candidate, config)
+    risk_inverse = risk_penalty_inverse(candidate, config)
+    weights = {
+        "falcon_quality": 0.30,
+        "copyability": 0.25,
+        "recent_consistency": 0.15,
+        "market_fit": 0.10,
+        "volume_fit": 0.10,
+        "rank_quality": 0.05,
+        "risk_penalty_inverse": 0.05,
+    }
+    final_score = clamp(
+        weights["falcon_quality"] * falcon_quality
+        + weights["copyability"] * copyability
+        + weights["recent_consistency"] * recent_consistency
+        + weights["market_fit"] * market_fit
+        + weights["volume_fit"] * volume_fit
+        + weights["rank_quality"] * rank_score
+        + weights["risk_penalty_inverse"] * risk_inverse
+    )
+    return {
+        "final_score": final_score,
+        "breakdown": {
+            "version": "leader_score_v2",
+            "falcon_quality": falcon_quality,
+            "copyability": copyability,
+            "recent_consistency": recent_consistency,
+            "market_fit": market_fit,
+            "volume_fit": volume_fit,
+            "rank_quality": rank_score,
+            "risk_penalty_inverse": risk_inverse,
+            "weights": weights,
+            "inputs": _score_inputs(candidate, config),
+        },
+    }
+
+
+def liquidity_or_volume_fit(candidate, config) -> float:
+    volume = float(getattr(candidate, "total_volume_15d", 0.0) or 0.0)
+    target = float(getattr(config.discovery, "discovery_volume_target_15d", 10000.0) or 10000.0)
+    minimum = float(getattr(config.discovery, "discovery_min_volume_15d", 0.0) or 0.0)
+    return normalize(volume, minimum, target)
+
+
+def rank_quality(candidate, config) -> float:
+    rank = getattr(candidate, "leaderboard_rank", None)
+    if rank is None:
+        return 0.5
+    target = max(int(getattr(config.discovery, "discovery_rank_target", 100) or 100), 1)
+    if target == 1:
+        return 1.0 if int(rank) <= 1 else 0.0
+    return clamp(1.0 - ((int(rank) - 1) / float(target - 1)))
+
+
+def risk_penalty_inverse(candidate, config) -> float:
+    if not bool(getattr(config.discovery, "discovery_risk_penalty_enabled", True)):
+        return 1.0
+    penalty = 0.0
+    trades = int(getattr(candidate, "total_trades_15d", 0) or 0)
+    markets = int(getattr(candidate, "markets_traded_15d", 0) or 0)
+    win_rate = float(getattr(candidate, "win_rate_15d", 0.0) or 0.0)
+    trajectory = str(getattr(candidate, "trajectory", "") or "").lower()
+    volume = float(getattr(candidate, "total_volume_15d", 0.0) or 0.0)
+    min_volume = float(getattr(config.discovery, "discovery_min_volume_15d", 0.0) or 0.0)
+
+    if trades < 5:
+        penalty += 0.35
+    elif trades < 15:
+        penalty += 0.20
+    if markets <= 1:
+        penalty += 0.25
+    elif markets < 3:
+        penalty += 0.15
+    if win_rate >= 85.0 and trades < 50:
+        penalty += 0.25
+    if trajectory == "declining":
+        penalty += 0.20
+    if volume <= max(min_volume, 0.0):
+        penalty += 0.25
+    return clamp(1.0 - penalty)
+
+
+def _score_inputs(candidate, config) -> dict[str, Any]:
+    return {
+        "h_score": float(getattr(candidate, "h_score", 0.0) or 0.0),
+        "roi_15d": float(getattr(candidate, "roi_15d", 0.0) or 0.0),
+        "win_rate_15d": float(getattr(candidate, "win_rate_15d", 0.0) or 0.0),
+        "sharpe_15d": float(getattr(candidate, "sharpe_15d", 0.0) or 0.0),
+        "pnl_15d": float(getattr(candidate, "pnl_15d", 0.0) or 0.0),
+        "total_trades_15d": int(getattr(candidate, "total_trades_15d", 0) or 0),
+        "markets_traded_15d": int(getattr(candidate, "markets_traded_15d", 0) or 0),
+        "total_volume_15d": float(getattr(candidate, "total_volume_15d", 0.0) or 0.0),
+        "leaderboard_rank": getattr(candidate, "leaderboard_rank", None),
+        "trajectory": str(getattr(candidate, "trajectory", "") or ""),
+        "volume_target_15d": float(
+            getattr(config.discovery, "discovery_volume_target_15d", 10000.0) or 10000.0
+        ),
+        "rank_target": int(getattr(config.discovery, "discovery_rank_target", 100) or 100),
+    }
+
+
 def copyability_score(replay) -> float:
     return clamp(
         0.60 * replay.copyable_signal_ratio + 0.40 * replay.copyable_notional_ratio
@@ -198,10 +380,19 @@ def copyability_score(replay) -> float:
 
 
 def recent_state_ok(state: RecentState, config) -> tuple[bool, str | None]:
-    if config.discovery.discovery_require_7d_non_negative:
-        if state.pnl_7d < Decimal(str(config.discovery.discovery_min_7d_pnl_usdc)):
+    if (
+        getattr(config.discovery, "discovery_require_recent_state_for_live", True)
+        and not state.available
+    ):
+        return False, "recent_state_unavailable"
+    if getattr(config.discovery, "discovery_require_7d_non_negative", True):
+        if state.pnl_7d < Decimal(
+            str(getattr(config.discovery, "discovery_min_7d_pnl_usdc", 0))
+        ):
             return False, "negative_7d_state"
-    if state.pnl_3d < Decimal(str(config.discovery.discovery_min_3d_pnl_usdc)):
+    if state.pnl_3d < Decimal(
+        str(getattr(config.discovery, "discovery_min_3d_pnl_usdc", -50))
+    ):
         return False, "bad_3d_state"
     return True, None
 
@@ -232,4 +423,3 @@ def _fast_crypto_notional_ratio(signals: list, classes: list[MarketClass]) -> fl
 
 def _replay_to_json(replay) -> dict[str, Any]:
     return json.loads(json.dumps(asdict(replay), default=str))
-

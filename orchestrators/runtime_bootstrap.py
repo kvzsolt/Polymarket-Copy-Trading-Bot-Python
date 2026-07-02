@@ -8,17 +8,21 @@ from domain.trading_context import TradingContext
 from interfaces.clob_gateway import ClobGateway
 from cache.market_state_store import MarketStateStore
 from services.accountingService import AccountingService
+from services.compliance import GeoblockGate
 from services.executionService import ExecutionService
 from services.feeService import FeeService
 from services.market_data_service import MarketDataService, MarketDataPolicy
 from services.multiUserConfig import RuntimeUser, UserFollowConfig
 from services.pnlTracker import PnLTracker
 from services.positionManager import PositionManager
-from services.riskEngine import RiskEngine, init_risk_engine
+from services.risk.risk_engine import RiskEngine, init_risk_engine
 from services.healthServer import ReadinessTracker
 from services.entryPermissionService import EntryPermissionService
 from services.leaderScoringService import LeaderScoringService
-from services.riskMonitor import rehydrate_position_manager, reconcile_unconfirmed_risk_orders
+from services.risk.risk_monitor import (
+    reconcile_unconfirmed_risk_orders,
+    rehydrate_position_manager,
+)
 from storage.postgres.fills_repo import FillsRepo
 from storage.postgres.orders_repo import OrdersRepo
 from storage.postgres.positions_repo import PositionsRepo
@@ -40,6 +44,8 @@ async def _release_expired_reservations_for_context(context: TradingContext) -> 
         coordinator = getattr(context, "execution_coordinator", None)
         reservation_service = getattr(coordinator, "reservation_service", None)
     release_expired = getattr(reservation_service, "release_expired_active", None)
+    if getattr(reservation_service, "enabled", True) is False:
+        return 0
     if not callable(release_expired):
         return 0
     released_ids = await release_expired()
@@ -171,7 +177,13 @@ class UserRuntimeState:
 def configured_leaders(config: AppConfig) -> list[str]:
     leaders = [str(wallet).strip() for wallet in config.leader.wallets if str(wallet).strip()]
     if not leaders:
-        if config.discovery.enable_trader_discovery:
+        if config.discovery.allow_auto_trader_detection:
+            logger.info(
+                "No leader wallets configured. Startup auto trader detection "
+                "is enabled and will select live-eligible DB/discovery "
+                "candidates without writing LEADER_WALLETS."
+            )
+        elif config.discovery.enable_trader_discovery:
             logger.info(
                 "No leader wallets configured. Discovery is enabled, so the bot "
                 "will score DB candidates only. Live copying requires "
@@ -204,17 +216,24 @@ def ensure_runtime_follows(runtime_users: list[RuntimeUser], leaders: list[str],
                 runtime_user.follows[leader] = default_follow(runtime_user.user_id, leader, config)
 
 
-async def fetch_live_positions(wallet: str) -> list[dict]:
+async def fetch_live_positions(wallet: str) -> list[dict] | None:
+    """Fetch the wallet's live positions from the data API.
+
+    Returns ``None`` when the snapshot could not be fetched (network error,
+    non-list response). Callers MUST distinguish ``None`` (fetch failed →
+    fail closed, do not prune/delete local state) from ``[]`` (the wallet
+    genuinely holds no open positions).
+    """
     try:
         positions = await fetch_data(
             f"https://data-api.polymarket.com/positions?user={wallet}",
             silent=True,
         )
     except Exception:
-        return []
+        return None
 
     if not isinstance(positions, list):
-        return []
+        return None
 
     live_positions: list[dict] = []
     for position in positions:
@@ -322,11 +341,14 @@ def build_user_state(
         config=config,
         clob_gateway=clob_gateway,
         market_data_service=market_data_svc,
+        # P1-j: trade-path geoblock enforcement with expiry revalidation. Opt-in
+        # via ENFORCE_GEOBLOCK (default on); fail-closed; BUY entries only.
+        geoblock_gate=GeoblockGate(config.network.enforce_geoblock),
     )
 
     # PR6 — production execution funnel. ReservationService + ExecutionCoordinator
-    # are wired per user so trade pipeline, risk monitor, and near-one exits
-    # all share reservation + collision scope.
+    # are wired per user so trade pipeline and risk monitor share reservation
+    # and collision scope.
     execution_coordinator = _build_execution_coordinator(
         pool=pool,
         positions_repo=positions_repo,
@@ -337,6 +359,9 @@ def build_user_state(
         config=config,
     )
 
+    reservation_service = getattr(execution_coordinator, "reservation_service", None)
+    reservations_repo = getattr(reservation_service, "reservations_repo", None)
+
     # PR7 — proactive position drift sweep. Built BEFORE manual_sync so the
     # handshake (manual_sync.was_recently_pruned → skip upsert) is wired
     # from boot. Without this ordering manual_sync would resurrect rows
@@ -344,6 +369,7 @@ def build_user_state(
     position_drift_service = _build_position_drift_service(
         pool=pool,
         positions_repo=positions_repo,
+        reservations_repo=reservations_repo,
         config=config,
     )
 
@@ -356,7 +382,9 @@ def build_user_state(
         positions_repo=positions_repo,
         market_store=market_store,
         fills_repo=fills_repo,
+        orders_repo=order_repo,
         position_drift_service=position_drift_service,
+        reservation_service=reservation_service,
     )
 
     return UserRuntimeState(
@@ -388,7 +416,9 @@ def _build_manual_sync_service(
     positions_repo: PositionsRepo,
     market_store: MarketStateStore | None,
     fills_repo: FillsRepo | None,
+    orders_repo: OrdersRepo | None = None,
     position_drift_service=None,
+    reservation_service=None,
 ):
     """Build the per-user ManualSyncService. Returns None when prerequisites are missing."""
     if not funder_address or market_store is None:
@@ -404,7 +434,9 @@ def _build_manual_sync_service(
         positions_repo=positions_repo,
         market_store=market_store,
         fills_repo=fills_repo,
+        orders_repo=orders_repo,
         position_drift_service=position_drift_service,
+        reservation_service=reservation_service,
     )
 
 
@@ -412,6 +444,7 @@ def _build_position_drift_service(
     *,
     pool,
     positions_repo: PositionsRepo,
+    reservations_repo=None,
     config: AppConfig,
 ):
     """Build the per-user PositionDriftService (PR7).
@@ -422,14 +455,18 @@ def _build_position_drift_service(
     """
     try:
         from services.position_drift_service import PositionDriftService
-        from storage.postgres.reservations_repo import ReservationsRepo
     except Exception as exc:
         logger.warning("position_drift_service_unwired error=%r", exc)
         return None
-    reservations_repo = ReservationsRepo(pool)
 
     async def _fetcher(wallet: str):
-        return await fetch_live_positions(wallet)
+        # Fail closed: a None snapshot means the fetch failed. Raise so the
+        # drift service treats it as unresolved (it is designed to fail closed
+        # on a raising fetcher) rather than as "venue holds nothing".
+        result = await fetch_live_positions(wallet)
+        if result is None:
+            raise RuntimeError("live positions snapshot fetch failed")
+        return result
 
     return PositionDriftService(
         positions_repo=positions_repo,
@@ -467,13 +504,38 @@ def _build_execution_coordinator(
         logger.warning("execution_coordinator_unwired error=%r", exc)
         return None
     reservations_repo = ReservationsRepo(pool)
+    # Reservations are a typed-config gate (RESERVATIONS_ENABLED), not a
+    # hard-coded mode. Configless contexts (partial test state) keep the
+    # historical disabled behavior so existing fixtures stay green.
+    reservations_enabled = (
+        config.execution.reservations_enabled if config is not None else False
+    )
+    _reservation_ttl = (
+        config.execution.reservation_ttl_seconds if config is not None else 120
+    )
     reservation_service = ReservationService(
         reservations_repo=reservations_repo,
         positions_repo=positions_repo,
         get_balance_func=get_my_balance,
         funder_address=funder_address,
-        ttl_seconds=120,
+        ttl_seconds=_reservation_ttl,
+        enabled=reservations_enabled,
+        # sym 5 — break the reservation-release deadlock. A reservation linked
+        # to a FAK order the reconciler can never confirm terminal would
+        # otherwise pin its scope forever (the reason RESERVATIONS_ENABLED was
+        # turned off). Force-release once it has been expired by a full extra
+        # TTL window: a fill-and-kill order cannot rest, so by then it is
+        # definitively not live and the held budget is stranded.
+        force_release_grace_seconds=float(_reservation_ttl),
     )
+    if not reservations_enabled:
+        logger.warning(
+            "reservations DISABLED (RESERVATIONS_ENABLED=false): pre-submit "
+            "BUY-quote/SELL-share double-spend reservations are OFF. "
+            "Duplicate-order protection now relies solely on the idempotency "
+            "submission lock + per-scope position coordinator. funder=%s",
+            funder_address,
+        )
     coord = ExecutionCoordinator(
         reservation_service=reservation_service,
         orders_repo=order_repo,
@@ -751,8 +813,8 @@ async def build_trading_context(
         try:
             coord.position_coordinator = context.position_coordinator
         except Exception as exc:
-            # If coord is frozen/slotted the silent bypass would leave
-            # near-one-exit submitting with position_coordinator=None.
+            # If coord is frozen/slotted the silent bypass would leave live
+            # submits without the per-context position coordinator.
             # Surface the wiring failure loudly so ops can fix it.
             logger.error(
                 "runtime_bootstrap.coordinator_wiring_failed user_id=%s error=%r",
@@ -767,6 +829,28 @@ async def build_trading_context(
         ), "runtime_bootstrap: position_coordinator attach silently dropped"
         context.execution_coordinator = coord
         _bind_reservation_runtime(context, coord)
+    # Phase 4 — seed IntentRegistry from durable reservation rows on restart.
+    # Must run after _bind_reservation_runtime so context.extra["reservations_repo"]
+    # is populated.  A missing reservations_repo (test contexts, no-reservation
+    # deployments) is silently skipped — the registry starts empty which is safe.
+    _reservations_repo = context.extra.get("reservations_repo")
+    if _reservations_repo is not None:
+        try:
+            from services.execution.intent_recovery import recover_intents_from_db
+            _recovered = await recover_intents_from_db(
+                registry=context.position_coordinator.intent_registry,
+                reservations_repo=_reservations_repo,
+            )
+            if _recovered:
+                logger.info(
+                    "runtime_bootstrap.intent_recovery user_id=%s recovered=%d",
+                    context.user_id, _recovered,
+                )
+        except Exception as _exc:
+            logger.warning(
+                "runtime_bootstrap.intent_recovery_failed user_id=%s error=%r",
+                context.user_id, _exc,
+            )
     # PR7 — bind position drift service so the coordinator can check
     # ``is_scope_paused`` before submission.
     drift_svc = getattr(user_state, "position_drift_service", None)
@@ -979,5 +1063,59 @@ async def build_context_maps(
             contexts_by_leader[leader].append(context)
             if context.user_id not in risk_contexts_by_user:
                 risk_contexts_by_user[context.user_id] = context
+
+    # P1-i: a user holding open copied positions must still be risk-monitored
+    # even when rotation/discovery leaves them with no enabled follow on any
+    # active leader (empty active_leaders, or a follow set that no longer
+    # intersects the active leaders). Otherwise their open positions go
+    # unmonitored and protective exits (stop-loss / trailing) never run. The
+    # risk-only context is added to ``risk_contexts_by_user`` ONLY — never to
+    # ``contexts_by_leader`` — so it drives protective exits without enabling
+    # any new copy entries.
+    for runtime_user in runtime_users:
+        if runtime_user.user_id in risk_contexts_by_user:
+            continue
+        user_state = user_states.get(runtime_user.user_id)
+        if user_state is None:
+            continue
+        try:
+            open_positions = (
+                await user_state.positions_repo.list_open_positions(
+                    runtime_user.user_id
+                )
+                or []
+            )
+        except Exception:
+            logger.warning(
+                "risk_only_context_open_check_failed | user=%s",
+                runtime_user.user_id,
+                exc_info=True,
+            )
+            continue
+        if not open_positions:
+            continue
+        follow = next(iter(runtime_user.follows.values()), None)
+        if follow is None:
+            logger.warning(
+                "risk_only_context_skipped_no_follow | user=%s open_positions=%d",
+                runtime_user.user_id,
+                len(open_positions),
+            )
+            continue
+        context = await build_trading_context(
+            user_state,
+            follow,
+            config,
+            leaders_repo=leaders_repo,
+            readiness=readiness,
+            trust_store=trust_store,
+        )
+        risk_contexts_by_user[runtime_user.user_id] = context
+        logger.info(
+            "risk_only_context_built | user=%s open_positions=%d "
+            "(no active-leader follow)",
+            runtime_user.user_id,
+            len(open_positions),
+        )
 
     return contexts_by_leader, risk_contexts_by_user

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 from dataclasses import dataclass
 from decimal import ROUND_CEILING, ROUND_DOWN, ROUND_FLOOR, Decimal
@@ -36,6 +37,69 @@ logger = get_logger("ClobClient")
 # defaults; production paths override via ``configure_from_appconfig(cfg)``
 # (called from ``orchestrators/runtime_bootstrap.py`` at startup).
 CLOB_HTTP_URL = "https://clob.polymarket.com"
+_SDK_HTTP_TRANSPORT_CONFIGURED = False
+_SDK_HTTP_TRANSPORT_LOCK = threading.Lock()
+
+
+def _configure_sdk_http_transport() -> None:
+    """Replace py-clob-client-v2's process-wide HTTP/2 client.
+
+    py-clob-client-v2 1.0.0 creates a module-level ``httpx.Client(http2=True)``
+    in ``http_helpers.helpers``. In this bot the sync SDK is called from
+    executor threads across multiple runtime paths, so every ClobClient shares
+    one HTTP/2 connection pool. Polymarket/Cloudflare can reset idle or
+    multiplexed streams, which surfaces as repeated h2 ``ConnectionTerminated``
+    / SDK "request error" log lines.
+
+    HTTP/1.1 is enough for the bot's low request volume and avoids the shared
+    HTTP/2 stream state. Keepalive expiry is intentionally short so stale
+    sockets are not retained long between polling cycles.
+    """
+    global _SDK_HTTP_TRANSPORT_CONFIGURED
+    if _SDK_HTTP_TRANSPORT_CONFIGURED:
+        return
+
+    with _SDK_HTTP_TRANSPORT_LOCK:
+        if _SDK_HTTP_TRANSPORT_CONFIGURED:
+            return
+
+        try:
+            import httpx
+            from py_clob_client_v2.http_helpers import helpers as sdk_http_helpers
+        except Exception as exc:  # pragma: no cover - defensive startup logging
+            logger.warning(
+                "Unable to configure py_clob_client_v2 HTTP transport: %s",
+                redact_error_detail(exc),
+            )
+            return
+
+        old_client = getattr(sdk_http_helpers, "_http_client", None)
+        new_client = httpx.Client(
+            http2=False,
+            limits=httpx.Limits(
+                max_connections=50,
+                max_keepalive_connections=10,
+                keepalive_expiry=2.0,
+            ),
+            timeout=httpx.Timeout(10.0, connect=5.0),
+        )
+        sdk_http_helpers._http_client = new_client
+
+        if old_client is not None and old_client is not new_client:
+            try:
+                old_client.close()
+            except Exception:
+                pass
+
+        _SDK_HTTP_TRANSPORT_CONFIGURED = True
+        logger.info(
+            "Configured py_clob_client_v2 HTTP transport",
+            extra={
+                "type": "clob_sdk_transport",
+                "http2": False,
+                "keepalive_expiry_seconds": 2.0,
+            },
+        )
 
 
 class _PriceTokenNotFound:
@@ -109,6 +173,38 @@ def _safe_decimal(value: Any) -> Decimal | None:
         return Decimal(str(value))
     except Exception:
         return None
+
+
+def _resolve_neg_risk_fail_closed(
+    asset: str,
+    neg_risk_v2: bool | None,
+    book_neg_risk: object | None,
+) -> bool:
+    """Resolve the market's neg_risk flag, failing closed when unknown (P2-j).
+
+    neg_risk decides WHICH exchange contract an order is signed for
+    (standard CTF exchange vs negative-risk exchange). Signing for the wrong
+    one produces an order the venue will reject — or worse, mis-routes against
+    the wrong contract family. So this value must never be *guessed*.
+
+    Precedence:
+    1. The authoritative V2 ``get_neg_risk`` result (``neg_risk_v2``) wins
+       when present — including a pre-fetched value threaded by the caller.
+    2. Otherwise fall back to the book's own ``neg_risk`` field when the book
+       actually reported one (tri-state ``True``/``False``; ``None`` = omitted).
+    3. If neither is determinable, raise. The caller (gateway → execution)
+       then never signs an order with a fabricated neg_risk — submission fails
+       closed instead of silently defaulting to ``False``.
+    """
+    if neg_risk_v2 is not None:
+        return bool(neg_risk_v2)
+    if book_neg_risk is not None:
+        return bool(book_neg_risk)
+    raise RuntimeError(
+        f"neg_risk indeterminate for {asset}: get_neg_risk failed and the "
+        "order book did not report neg_risk. Refusing to default to False — "
+        "signing with a guessed neg_risk would target the wrong exchange."
+    )
 
 
 def _response_order_id(response: Any) -> Any:
@@ -197,7 +293,12 @@ class _RawBook:
         self.asks = asks
         self.tick_size = tick_size
         self.min_order_size = min_order_size
-        self.neg_risk = bool(neg_risk) if neg_risk is not None else False
+        # Preserve the tri-state (P2-j): ``None`` means the book DID NOT report
+        # neg_risk (so it is unknown), distinct from an explicit ``False``.
+        # Collapsing omitted→False here previously let a transport-failed
+        # ``get_neg_risk`` silently sign a neg-risk order for the wrong
+        # exchange. ``get_market_meta`` now fails closed on the ``None`` case.
+        self.neg_risk = bool(neg_risk) if neg_risk is not None else None
 
 
 class ClobClientWrapper:
@@ -253,7 +354,9 @@ class ClobClientWrapper:
                         or data.get("minimum_order_size")
                         or data.get("order_min_size")
                     ),
-                    neg_risk=data.get("neg_risk", False),
+                    # Pass through ``None`` when the venue omits neg_risk so the
+                    # tri-state is preserved (P2-j). Do NOT default to False.
+                    neg_risk=data.get("neg_risk"),
                 )
         except Exception as exc:
             logger.warning("HTTP fallback (book) failed for %s: %s", asset, redact_error_detail(exc))
@@ -309,7 +412,13 @@ class ClobClientWrapper:
                 token_id=asset,
                 tick_size=tick_size_v2 if tick_size_v2 is not None else Decimal(str(getattr(orderbook, "tick_size", "0.01"))),
                 min_order_size=Decimal(str(getattr(orderbook, "min_order_size", "0"))),
-                neg_risk=neg_risk_v2 if neg_risk_v2 is not None else bool(getattr(orderbook, "neg_risk", False)),
+                # Fail closed if neg_risk cannot be determined (P2-j) instead of
+                # defaulting to False. ``getattr(..., None)`` keeps the book's
+                # tri-state: the SDK book always reports neg_risk; the HTTP
+                # ``_RawBook`` yields None when the venue omitted it.
+                neg_risk=_resolve_neg_risk_fail_closed(
+                    asset, neg_risk_v2, getattr(orderbook, "neg_risk", None)
+                ),
                 best_bid=_top_of_book_from_levels(bids, side="bid"),
                 best_ask=_top_of_book_from_levels(asks, side="ask"),
             )
@@ -354,7 +463,13 @@ class ClobClientWrapper:
                     token_id=asset,
                     tick_size=tick_size_v2 if tick_size_v2 is not None else Decimal(str(data.get("tick_size", "0.01"))),
                     min_order_size=Decimal(str(data.get("min_order_size", "0"))),
-                    neg_risk=neg_risk_v2 if neg_risk_v2 is not None else bool(data.get("neg_risk", False)),
+                    # Fail closed when neg_risk is indeterminate (P2-j): V2
+                    # ``get_neg_risk`` failed AND the /book payload omitted
+                    # neg_risk. ``data.get("neg_risk")`` (no False default)
+                    # preserves the tri-state the resolver keys on.
+                    neg_risk=_resolve_neg_risk_fail_closed(
+                        asset, neg_risk_v2, data.get("neg_risk")
+                    ),
                     best_bid=_top_of_book_from_levels(bids, side="bid"),
                     best_ask=_top_of_book_from_levels(asks, side="ask"),
                 )
@@ -561,9 +676,42 @@ class ClobClientWrapper:
             # Do NOT return a simple {success: False} for these — the caller
             # must know this is post-submission ambiguous, not pre-submission safe.
             exc_name = type(exc).__name__.lower()
-            is_ambiguous = any(
-                kw in exc_name or kw in str(exc).lower()
-                for kw in ("timeout", "connectionerror", "connectionreset", "brokenpipe", "readtimeout", "connecttimeout")
+            exc_text = str(exc).lower()
+            raw_lower = raw_body.lower()
+            # A 5xx returned AFTER the venue may have accepted/matched the order
+            # is post-submission AMBIGUOUS, not a clean rejection: the matching
+            # engine can hold the order even though the edge/CDN returned an
+            # error. The SDK sets ``.status_code`` on PolyApiException (a raw
+            # transport failure surfaces as status_code=None). Classify by
+            # status code, not just by substring — a 5xx body ("Service
+            # Unavailable" / "Bad Gateway" / "Internal Server Error") matches
+            # none of the keyword set below, so without this a 5xx-after-accept
+            # would be treated as a plain retryable failure, re-signed, and
+            # re-POSTed as a DUPLICATE order. Routing it to ambiguous makes the
+            # caller persist submitted_unconfirmed and defer to reconciliation.
+            # 4xx validation rejections are intentionally excluded (terminal).
+            status_code = getattr(exc, "status_code", None)
+            is_ambiguous = (
+                status_code in (500, 502, 503, 504)
+                or (type(exc).__name__ == "PolyApiException" and status_code is None)
+            )
+            is_ambiguous = is_ambiguous or any(
+                kw in exc_name or kw in exc_text or kw in raw_lower
+                for kw in (
+                    "timeout",
+                    "connectionerror",
+                    "connectionreset",
+                    "connectionterminated",
+                    "connection terminated",
+                    "connection lost",
+                    "connection closed",
+                    "server disconnected",
+                    "remote protocol",
+                    "brokenpipe",
+                    "readtimeout",
+                    "connecttimeout",
+                    "request exception",
+                )
             )
             # Classify non-retryable validation errors so the caller can
             # fail fast instead of burning retries on an order CLOB will
@@ -663,6 +811,7 @@ async def create_clob_client(
             "Set CLOB_V2_READY=true in your .env once smoke tests pass "
             "(see docs/v2_operator_runbook.md)."
         )
+    _configure_sdk_http_transport()
     host = CLOB_HTTP_URL
     cfg = wallet_config or build_wallet_config()
 
@@ -737,11 +886,15 @@ async def create_clob_client(
             or ""
         )
         _ctf_addr = (getattr(_network, "ctf_exchange_v2_address", "") if _network else "") or ""
+        _neg_risk_addr = (
+            getattr(_network, "neg_risk_ctf_exchange_v2_address", "") if _network else ""
+        ) or ""
         collateral_status = await check_collateral_readiness(
             wallet_address=funder_or_signer,
             rpc_url=runtime_cfg.polygon_rpc_url,
             pusd_address=_pusd_addr,
             ctf_exchange_address=_ctf_addr,
+            neg_risk_exchange_address=_neg_risk_addr,
         )
         if not collateral_status.ready:
             reasons = "; ".join(collateral_status.failures)

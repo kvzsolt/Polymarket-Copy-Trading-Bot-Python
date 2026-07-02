@@ -15,7 +15,6 @@ class IntentReason(StrEnum):
     COPY_BUY = "copy_buy"
     COPY_SELL = "copy_sell"
     RISK_EXIT = "risk_exit"
-    NEAR_ONE_EXIT = "near_one_exit"
     NEG_RISK_ARB = "neg_risk_arb"
 
 
@@ -84,8 +83,48 @@ class OrderIntentKey:
     token_id: str
     side: IntentSide
     reason: IntentReason
+    # Per-trade source identity (e.g. leader tx hash). Two *different* leader
+    # trades on the same (condition, token, side, reason) must reserve
+    # independently; without this they would collide on the reservation key
+    # and the second copy would be dropped as ``reservation_conflict``.
+    # Retries of the *same* trade carry the same id, so they still collide and
+    # remain deduped (alongside the tx-keyed processed-trade claim and the
+    # coordinator idempotency layer).
+    source_event_id: str | None = None
 
     def stable_key(self) -> str:
+        # DEPLOYMENT NOTE: this format gained a 7th (``source_event_id``)
+        # component. Reservations created by an older build store the 6-field
+        # key in ``order_reservations.order_intent_key`` and will not match the
+        # new lookup. The exposure is bounded and fail-safe: reservations are
+        # short-lived (``RESERVATION_TTL_SECONDS``, default 120s) and reclaimed
+        # by reconciliation / the risk-loop reaper, and the tx-keyed
+        # processed-trade claim + coordinator idempotency still prevent
+        # duplicate *orders*. For a zero-transient rollout, drain active
+        # reservations (deploy during a quiescent window) before cutover.
+        return "|".join(
+            [
+                self.user_id.lower(),
+                (self.leader_wallet or "").lower(),
+                self.condition_id,
+                self.token_id,
+                self.side.value,
+                self.reason.value,
+                self.source_event_id or "",
+            ]
+        )
+
+    def legacy_stable_key(self) -> str:
+        """Pre-``source_event_id`` key format (6 components).
+
+        Used only as a transitional dual-read in
+        ``ReservationService.reserve_for_intent`` so an active reservation
+        created by a build that predates the ``source_event_id`` component is
+        still found during rollout (see the ``stable_key`` DEPLOYMENT NOTE).
+        New reservations are always stored under the 7-component
+        ``stable_key``, so this only ever matches pre-deployment rows and
+        becomes a no-op once they drain.
+        """
         return "|".join(
             [
                 self.user_id.lower(),

@@ -15,14 +15,16 @@ from ``integrations.polymarket.models`` and raises structured errors from
 from __future__ import annotations
 
 import asyncio
+import aiohttp
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP
-from typing import Any
+from typing import Any, NoReturn
 
 # Lazy imports for py-clob-client-v2 — SDK may not be installed in test/lint environments.
 try:
     from py_clob_client_v2.clob_types import OrderArgs, OrderPayload, OrderType, TradeParams  # type: ignore[import-untyped]
     from py_clob_client_v2.order_builder.constants import BUY, SELL  # type: ignore[import-untyped]
+    from py_clob_client_v2.endpoints import GET_ORDER, TRADES  # type: ignore[import-untyped]
 except ImportError:  # pragma: no cover
 
     class OrderArgs:  # type: ignore[no-redef]
@@ -41,7 +43,7 @@ except ImportError:  # pragma: no cover
     from dataclasses import dataclass
 
     @dataclass
-    class OrderPayload:
+    class OrderPayload:  # type: ignore[no-redef]
         """Minimal fallback when py_clob_client_v2 is not installed."""
 
         orderID: str
@@ -54,6 +56,8 @@ except ImportError:  # pragma: no cover
 
     BUY = "BUY"
     SELL = "SELL"
+    GET_ORDER = "/data/order/"
+    TRADES = "/data/trades"
 
 
 from integrations.polymarket.errors import (
@@ -104,6 +108,13 @@ except (ImportError, Exception):  # pragma: no cover
     def quantize_and_convert_to_float(value, tick_size, *, epsilon=None):  # type: ignore[misc]
         return float(value)
 
+# Shared process-wide aiohttp session for true-async venue GETs (order status,
+# fills). Module-level name so tests can patch ``clob_v2_gateway._get_session``.
+try:
+    from utils.fetchData import _get_session  # type: ignore[import-untyped]
+except (ImportError, Exception):  # pragma: no cover
+    _get_session = None  # type: ignore[assignment]
+
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -116,10 +127,99 @@ except (ImportError, Exception):  # pragma: no cover
 _MARKET_ORDER_AMOUNT_QUANTIZATION: str = "0.0001"
 _MARKET_ORDER_AMOUNT_STEP = Decimal(_MARKET_ORDER_AMOUNT_QUANTIZATION)
 
+# Hard wall-clock cap for outbound *GET* SDK calls executed in a thread
+# executor (get_order / get_fills / get_order_book). py-clob-client-v2 never
+# retries a GET and the sync SDK can block indefinitely on a wedged
+# HTTP/2 keep-alive socket (Polymarket/Cloudflare half-open connection),
+# which would otherwise stall the reconcile/confirm loop forever (P2-i).
+# A GET is idempotent, so timing it out is safe: it is surfaced as the
+# ambiguous/retryable ``VenueUnavailableError`` exactly like the SDK's own
+# transport failures, letting the reconciler back off and retry instead of
+# parking. Kept slightly above the SDK's internal httpx read timeout (10s,
+# see utils/createClobClient._configure_sdk_http_transport) so the SDK's own
+# timeout fires first when transport is configured.
+_SDK_GET_TIMEOUT_SECONDS: float = 12.0
+
+# Per-request wall-clock bound for the true-async (aiohttp) venue GETs
+# (get_order / get_fills). These no longer use a thread executor, so a wedged
+# socket cannot tie up a pool thread — but we still cap each request so the
+# reconcile loop bails fast. Kept at/just below the SDK's internal 10s httpx
+# read timeout referenced above; a breach surfaces as a retryable
+# ``VenueUnavailableError`` exactly like a transport fault.
+_GET_ORDER_HTTP_TIMEOUT_SECONDS: float = 10.0
+
+# Safety cap on /data/trades pagination so a pathological cursor loop cannot
+# stall the fills fetch (Polymarket returns newest-first; reconciliation only
+# needs the recent page(s)).
+_MAX_FILLS_PAGES: int = 10
+
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+async def _async_signed_get(
+    client: Any,
+    endpoint: str,
+    *,
+    params: dict[str, str] | None = None,
+    timeout_seconds: float = _GET_ORDER_HTTP_TIMEOUT_SECONDS,
+) -> Any:
+    """L2-authenticated CLOB REST GET over true async I/O (aiohttp, no threads).
+
+    Reuses the SDK's own header signing: ``client._l2_headers("GET", endpoint)``
+    is pure-Python HMAC and performs NO network I/O (``_get_timestamp`` is a
+    no-op because the bot builds the SDK client with ``use_server_time=False``),
+    so it is safe to call on the event loop. The request itself goes through the
+    shared aiohttp session, letting N concurrent GETs overlap on the loop instead
+    of each blocking a thread-pool thread.
+
+    A GET is idempotent, so a transport fault (or per-request timeout) is retried
+    once before surfacing as the retryable ``VenueUnavailableError``. Returns the
+    parsed JSON body; non-2xx is mapped to the same typed venue errors the rest of
+    the gateway raises (notably 404 -> ``VenueOrderNotFoundError`` which the
+    reconciler's consecutive-404 settlement guard depends on).
+    """
+    if _get_session is None:  # pragma: no cover - SDK/aiohttp absent in lint env
+        raise VenueUnavailableError("async_http_session_unavailable")
+    url = client.host + endpoint
+    headers = client._l2_headers("GET", endpoint)
+    session = _get_session()
+    timeout = aiohttp.ClientTimeout(total=timeout_seconds)
+    attempts = 0
+    while True:
+        try:
+            async with session.get(
+                url, headers=headers, params=params or None, timeout=timeout
+            ) as resp:
+                status = resp.status
+                if status == 200:
+                    return await resp.json(content_type=None)
+                if status == 404:
+                    raise VenueOrderNotFoundError("order_not_found: status_404")
+                if status == 429:
+                    raise VenueRateLimitError("rate_limited: status_429")
+                if status in (401, 403):
+                    raise VenueAuthError(f"auth_failed: status_{status}")
+                if status == 408 or 500 <= status <= 599:
+                    # Retryable server/transport-ish error — one idempotent retry.
+                    if attempts < 1:
+                        attempts += 1
+                        await asyncio.sleep(0.15)
+                        continue
+                    raise VenueUnavailableError(f"server_error_{status}")
+                raise VenueInvalidOrderError(f"invalid_request: status_{status}")
+        except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+            # GET is idempotent — evict the dead keep-alive connection and retry
+            # once on a fresh one (mirrors the prior SDK-path behaviour). NEVER
+            # apply this to POST paths.
+            if attempts < 1:
+                attempts += 1
+                await asyncio.sleep(0.15)
+                continue
+            raise VenueUnavailableError(
+                f"poly_api_transport: {redact_error_detail(exc)}"
+            ) from exc
 
 def _safe_decimal(value: Any) -> Decimal | None:
     try:
@@ -167,13 +267,38 @@ def _quantize_marketable_amount_to_float(value: Decimal, side: str) -> float:
 def _classify_error(exc: Exception) -> tuple[bool, str]:
     """Classify an exception as (retryable, reason).
 
-    Heuristic classification based on exception type name and message.
-    TODO: Replace substring matching with explicit SDK exception types
-    once py_clob_client_v2 exports structured exception classes.
+    Classification is **status-code first** (P2-k): the venue's HTTP status
+    code is the authoritative signal, so when the SDK exception carries one we
+    map it directly (404→not_found, 401/403→auth, 400→invalid_order,
+    429→rate_limited, 5xx→retryable server_error). Only when no status code is
+    present do we fall back to the (less reliable) exception-name / message
+    substring matching kept below for legacy/transport shapes. The one
+    deliberate exception is ``PolyApiException`` with ``status_code is None``,
+    which the SDK uses for *all* httpx transport failures — that is handled by
+    its dedicated transport branch further down, not here.
     """
     exc_name = type(exc).__name__.lower()
     msg = str(exc).lower()
+    # ``getattr(...) or getattr(...)`` is intentional: a real HTTP status is
+    # always truthy (>= 100), and ``status_code`` taking the value ``None``
+    # falls through to the camelCase alias. 0 is not a valid HTTP code.
     status_code = getattr(exc, "status_code", None) or getattr(exc, "statusCode", None)
+
+    # --- Status-code-first dispatch (P2-k) ---------------------------------
+    # Authoritative when present. ``PolyApiException(status_code=None)`` (the
+    # SDK's transport-failure shape) deliberately has no code, so it skips
+    # this block and is caught by the transport branch below.
+    if isinstance(status_code, int):
+        if status_code == 404:
+            return False, "not_found"
+        if status_code in (401, 403):
+            return False, "auth_failure"
+        if status_code == 429:
+            return True, "rate_limited"
+        if status_code == 400:
+            return False, "invalid_order"
+        if 500 <= status_code <= 599:
+            return True, f"server_error_{status_code}"
 
     # Timeout / connection errors are ambiguous (order may have landed).
     # Match on either the exception type name OR the message — generic
@@ -208,6 +333,12 @@ def _classify_error(exc: Exception) -> tuple[bool, str]:
     if any(kw in msg for kw in ("unauthorized", "forbidden", "invalid api key", "invalid credentials")):
         return False, "auth_failure"
 
+    # Not-found via message (status-code-less 404 shapes). Terminal: the venue
+    # has no such order. Used by cancel_order (P2-l) to treat an
+    # already-gone order as a terminal success rather than retry forever.
+    if any(kw in msg for kw in ("not found", "not_found", "order does not exist", "no order", "unknown order")):
+        return False, "not_found"
+
     # Invalid order / validation errors.
     if any(kw in msg for kw in (
         "lower than the minimum",
@@ -226,9 +357,9 @@ def _classify_error(exc: Exception) -> tuple[bool, str]:
     )):
         return False, "invalid_order"
 
-    # 5xx / server errors — include status code in reason when available.
-    if status_code in (500, 502, 503, 504):
-        return True, f"server_error_{status_code}"
+    # 5xx / server errors via message substring — only reached when the
+    # exception carried no numeric status_code (the int dispatch above already
+    # handled coded 5xx). Kept for SDK shapes that embed the code in the text.
     if any(kw in msg for kw in ("500", "502", "503", "504", "internal server", "bad gateway", "service unavailable", "gateway timeout")):
         return True, "server_error"
 
@@ -250,7 +381,7 @@ def _classify_error(exc: Exception) -> tuple[bool, str]:
     return False, "unknown"
 
 
-def _raise_classified(exc: Exception) -> None:
+def _raise_classified(exc: Exception) -> NoReturn:
     """Raise the appropriate typed venue error based on classification.
 
     Issue #100: an *unknown* exception (no substring match in
@@ -405,7 +536,18 @@ class ClobV2Gateway:
     async def get_orderbook(self, token_id: str) -> OrderBook:
         """Fetch and return a snapshotted order book."""
         try:
-            raw_book = await self._client.get_order_book(token_id)
+            # Bound the outbound GET (P2-i): the wrapper ultimately runs the
+            # sync SDK ``get_order_book`` in a thread executor with no timeout,
+            # so a wedged keep-alive socket could hang a trading decision /
+            # reconcile poll indefinitely. A book GET is idempotent → safe to
+            # surface as ambiguous/retryable ``VenueUnavailableError``.
+            async with asyncio.timeout(_SDK_GET_TIMEOUT_SECONDS):
+                raw_book = await self._client.get_order_book(token_id)
+        except TimeoutError as exc:
+            logger.warning("get_orderbook timed out for %s after %ss", token_id, _SDK_GET_TIMEOUT_SECONDS)
+            raise VenueUnavailableError(
+                f"get_orderbook_timeout after {_SDK_GET_TIMEOUT_SECONDS}s"
+            ) from exc
         except Exception as exc:
             logger.error("get_orderbook failed for %s (%s)", token_id, redact_error_detail(exc))
             _raise_classified(exc)
@@ -464,6 +606,11 @@ class ClobV2Gateway:
             size=str(request.size),
             price=str(request.price),
         )
+        if not request.condition_id:
+            # Fail closed: condition_id selects the neg-risk exchange at signing.
+            # Missing it means we cannot prove the correct venue, so refuse to
+            # submit rather than sign for a possibly-wrong market (P2-a).
+            return VenueSubmitResult(success=False, error="missing_condition_id")
         try:
             result = await self._client.post_order(args, condition_id=request.condition_id)
         except Exception as exc:
@@ -540,51 +687,19 @@ class ClobV2Gateway:
     # --- Order state -----------------------------------------------------------
 
     async def get_order(self, order_id: str) -> VenueOrderState:
-        """Fetch the current state of an order from the venue."""
+        """Fetch the current state of an order from the venue.
+
+        True async I/O: an L2-authenticated REST GET to ``/data/order/{id}`` via
+        the shared aiohttp session (no thread executor), so many order-status
+        fetches overlap on the event loop during reconciliation instead of each
+        blocking a pool thread. ``_async_signed_get`` maps 404 ->
+        ``VenueOrderNotFoundError`` (the reconciler's consecutive-poll settlement
+        guard depends on it) and surfaces transport/5xx/timeout as the retryable
+        ``VenueUnavailableError`` (with the same ``poly_api_transport`` /
+        ``server_error_*`` detail), mirroring the prior SDK-path semantics.
+        """
         client = self._require_raw_client()
-        loop = asyncio.get_running_loop()
-        attempts = 0
-        while True:
-            try:
-                raw = await loop.run_in_executor(None, lambda: client.get_order(order_id))
-                break
-            except Exception as exc:
-                status_code = (
-                    getattr(exc, "status_code", None) or getattr(exc, "statusCode", None)
-                )
-                # 404 = the venue has no order with this id. Terminal by HTTP
-                # semantics (re-querying keeps returning 404). Surface a
-                # distinct type so the reconciler applies its consecutive-poll
-                # guard before settling — a just-submitted order can 404
-                # briefly before the venue indexes it.
-                if status_code == 404:
-                    logger.warning("get_order not found for %s (404)", order_id)
-                    raise VenueOrderNotFoundError(
-                        f"order_not_found: {redact_error_detail(exc)}"
-                    ) from exc
-
-                retryable, reason = _classify_error(exc)
-                # GET is idempotent — a transport disconnect (the SDK reuses a
-                # stale HTTP/2 keep-alive connection from its process-wide
-                # singleton httpx client; Polymarket/Cloudflare closes idle
-                # connections → "Server disconnected") is safe to retry once.
-                # The failed request makes httpx evict the dead connection, so
-                # the retry opens a fresh one and usually succeeds — letting
-                # confirm_fill progress instead of parking on a 5s backoff.
-                # NEVER apply this to POST paths (duplicate-order risk).
-                if retryable and reason == "poly_api_transport" and attempts < 1:
-                    attempts += 1
-                    await asyncio.sleep(0.15)
-                    continue
-
-                log_fn = logger.warning if retryable else logger.error
-                log_fn(
-                    "get_order failed for %s (%s reason=%s)",
-                    order_id,
-                    redact_error_detail(exc),
-                    reason,
-                )
-                _raise_classified(exc)
+        raw = await _async_signed_get(client, GET_ORDER + order_id)
 
         if not isinstance(raw, dict):
             raw = {}
@@ -619,19 +734,37 @@ class ClobV2Gateway:
     # --- Fills -----------------------------------------------------------------
 
     async def get_fills(self, market: str | None = None) -> list[VenueFill]:
-        """Fetch recent fills from the venue."""
+        """Fetch recent fills from the venue via true async REST (no threads).
+
+        L2-authenticated GET ``/data/trades`` (the venue signs the bare path and
+        takes ``market`` as a query param). Pages are followed via ``next_cursor``
+        up to ``_MAX_FILLS_PAGES`` so a pathological cursor loop cannot stall the
+        fetch. A 404 means "no trades" -> empty list.
+        """
         client = self._require_raw_client()
-        loop = asyncio.get_running_loop()
+        base_params: dict[str, str] = {"market": market} if market else {}
+
+        raw_fills: list[Any] = []
+        next_cursor: str | None = None
         try:
-            if market:
-                raw_fills = await loop.run_in_executor(
-                    None, lambda: client.get_trades(params=TradeParams(market=market))
-                )
-            else:
-                raw_fills = await loop.run_in_executor(None, lambda: client.get_trades())
-        except Exception as exc:
-            logger.error("get_fills failed (%s)", redact_error_detail(exc))
-            _raise_classified(exc)
+            for _ in range(_MAX_FILLS_PAGES):
+                page_params = dict(base_params)
+                if next_cursor:
+                    page_params["next_cursor"] = next_cursor
+                body = await _async_signed_get(client, TRADES, params=page_params or None)
+                if isinstance(body, dict):
+                    data = body.get("data") or []
+                    next_cursor = body.get("next_cursor")
+                else:
+                    data = body or []
+                    next_cursor = None
+                if isinstance(data, list):
+                    raw_fills.extend(item for item in data if isinstance(item, dict))
+                # ``LTE=`` is Polymarket's end-of-pagination sentinel.
+                if not next_cursor or next_cursor in ("LTE=", ""):
+                    break
+        except VenueOrderNotFoundError:
+            return []
 
         if not isinstance(raw_fills, list):
             return []
@@ -677,6 +810,23 @@ class ClobV2Gateway:
             )
         except Exception as exc:
             retryable, reason = _classify_error(exc)
+            # P2-l: a 404 / not-found on cancel means the order is already gone
+            # from the venue (filled, already cancelled, or never indexed).
+            # That is the desired end state for a cancel, so treat it as a
+            # terminal SUCCESS instead of an ambiguous failure that the caller
+            # would retry forever. Detect via the status-code-first
+            # classification (``not_found``) so it works whether the SDK
+            # surfaces a numeric 404 or a not-found message.
+            if reason == "not_found":
+                logger.info(
+                    "cancel_order: order %s already gone (404/not_found) — terminal success",
+                    order_id,
+                )
+                return VenueCancelResult(
+                    success=True,
+                    order_id=order_id,
+                    status="already_gone",
+                )
             if retryable:
                 raise VenueUnavailableError(f"cancel failed: {reason}") from exc
             raise VenueInvalidOrderError(f"cancel failed: {reason}") from exc

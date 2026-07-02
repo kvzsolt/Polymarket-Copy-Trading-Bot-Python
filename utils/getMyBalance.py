@@ -6,6 +6,7 @@ from typing import Any
 
 from web3 import Web3
 
+from clients.network.rpc_fallback import FallbackWeb3Provider
 from clients.network.web3_adapter import AsyncWeb3Adapter
 from utils.logger import get_logger
 
@@ -61,7 +62,7 @@ def _masked_address(address: str | None) -> str:
 
 
 
-def _get_balance_sync(address: str) -> Decimal | None:
+def _get_balance_sync(address: str, fallback_rpc_url: str = "") -> Decimal | None:
     rpc_url = _RPC_URL
 
     if not rpc_url:
@@ -95,7 +96,8 @@ def _get_balance_sync(address: str) -> Decimal | None:
         return None
 
     try:
-        w3 = Web3(Web3.HTTPProvider(rpc_url))
+        provider = FallbackWeb3Provider(rpc_url, fallback_rpc_url)
+        w3 = provider.get_web3()
     except Exception as exc:
         logger.error("Balance lookup failed: could not create Web3 provider: %s", exc)
         return None
@@ -156,12 +158,13 @@ async def get_my_balance(address: str) -> Decimal | None:
         return None
 
 
-async def get_native_balance_wei(address: str) -> int | None:
+async def get_native_balance_wei(address: str, fallback_rpc_url: str = "") -> int | None:
     rpc_url = _RPC_URL
     if not rpc_url:
         return None
     try:
-        w3 = Web3(Web3.HTTPProvider(rpc_url))
+        provider = FallbackWeb3Provider(rpc_url, fallback_rpc_url)
+        w3 = provider.get_web3()
         adapter = AsyncWeb3Adapter(w3, logger=logger)
         checksum_address = Web3.to_checksum_address(address)
         return int(await adapter.get_native_balance(checksum_address))

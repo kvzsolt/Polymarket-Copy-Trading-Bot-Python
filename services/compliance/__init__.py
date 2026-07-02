@@ -85,4 +85,56 @@ async def check_geoblock() -> ComplianceDecision:
     )
 
 
-__all__ = ["GEOBLOCK_URL", "check_geoblock", "ComplianceDecision"]
+class GeoblockGate:
+    """Trade-path geoblock gate with caching + expiry revalidation (P1-j).
+
+    ``check_geoblock`` is fail-closed, but it was consulted only at startup and
+    its 15-minute ``expires_at`` was consumed by nothing — so a region change
+    mid-session was never re-evaluated and enforcement never touched the trade
+    path. This gate caches the decision and revalidates it: an ``allowed``
+    decision is trusted until its ``expires_at`` (~15 min); a blocked /
+    fail-closed decision (``expires_at is None``) is re-checked after a short
+    interval so a recovered region can resume and a transient block is not
+    trusted forever. Strictly opt-in — when ``enabled`` is False it enforces
+    nothing and returns ``None``.
+    """
+
+    def __init__(
+        self,
+        enabled: bool,
+        *,
+        check=check_geoblock,
+        block_recheck_seconds: float = 60.0,
+    ) -> None:
+        self._enabled = bool(enabled)
+        self._check = check
+        self._block_recheck_seconds = float(block_recheck_seconds)
+        self._decision: ComplianceDecision | None = None
+        self._next_check_at: datetime | None = None
+
+    @property
+    def enabled(self) -> bool:
+        return self._enabled
+
+    async def ensure_allowed(self) -> ComplianceDecision | None:
+        """Current ComplianceDecision (revalidating on expiry), or ``None`` when
+        geoblock enforcement is disabled."""
+        if not self._enabled:
+            return None
+        now = utcnow()
+        if (
+            self._decision is None
+            or self._next_check_at is None
+            or now >= self._next_check_at
+        ):
+            self._decision = await self._check()
+            if self._decision.allowed and self._decision.expires_at is not None:
+                self._next_check_at = self._decision.expires_at
+            else:
+                self._next_check_at = now + timedelta(
+                    seconds=self._block_recheck_seconds
+                )
+        return self._decision
+
+
+__all__ = ["GEOBLOCK_URL", "check_geoblock", "ComplianceDecision", "GeoblockGate"]

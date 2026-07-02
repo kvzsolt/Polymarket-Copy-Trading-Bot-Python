@@ -44,6 +44,12 @@ def _as_float(value: object, default: float) -> float:
         return default
 
 
+def _as_pct_ratio(value: object, default: float) -> float:
+    raw = _as_float(value, default)
+    ratio = raw / 100.0 if raw > 1.0 else raw
+    return max(0.0, min(1.0, ratio))
+
+
 def _to_dec(value: object, default: Decimal = Decimal("0")) -> Decimal:
     """Normalise any numeric input to Decimal at the position-manager boundary.
 
@@ -78,6 +84,17 @@ def _parse_csv_floats(raw: str) -> list[float]:
     return [float(x.strip()) for x in raw.split(",") if x.strip()]
 
 
+def _parse_staged_tp_levels(raw: str) -> list[float]:
+    """Parse staged TP levels, preserving legacy integer-percent syntax."""
+    levels: list[float] = []
+    for token in (x.strip() for x in raw.split(",") if x.strip()):
+        level = float(token)
+        if "." not in token and "e" not in token.lower() and level > 1.0:
+            level /= 100.0
+        levels.append(level)
+    return levels
+
+
 @dataclass
 class PositionExitState:
     """Per-position state tracking for advanced exits."""
@@ -93,6 +110,12 @@ class PositionExitState:
     near_max_warn_done: bool = False
     # Leader divergence
     leader_divergence_pending: bool = False
+    # Steady-state full-exit log de-dup. The risk loop re-evaluates every
+    # ~0.25s; a position parked at/above near-max (or under stop-loss / trailing
+    # trigger) would otherwise emit the same INFO line every tick. We log INFO
+    # once per state transition and demote repeats to DEBUG. A key is discarded
+    # when its branch condition clears so a genuine re-entry logs again.
+    logged_steady_exits: set[str] = field(default_factory=set)
 
 
 @dataclass
@@ -198,16 +221,27 @@ class PositionManager:
 
             # Trailing stop
             self._enable_trailing = _as_bool(getattr(fc, "enable_trailing_stop", False), False)
-            self._trailing_activation_pct = _as_float(getattr(rc, "trailing_activation_pct", 20.0), 20.0) / 100.0
-            self._trailing_distance = _as_float(getattr(rc, "trailing_distance", 0.05), 0.05)
+            trailing_activation_raw = getattr(rc, "trailing_activation_pct", 20.0)
+            self._trailing_activation_auto = (
+                trailing_activation_raw is None
+                or (
+                    isinstance(trailing_activation_raw, str)
+                    and trailing_activation_raw.strip().lower() in ("", "auto")
+                )
+            )
+            self._trailing_activation_pct = (
+                0.0
+                if self._trailing_activation_auto
+                else _as_float(trailing_activation_raw, 20.0) / 100.0
+            )
+            self._trailing_distance = _as_pct_ratio(getattr(rc, "trailing_distance", 0.05), 0.05)
 
             # Staged TP
             self._enable_staged_tp = _as_bool(getattr(fc, "enable_staged_tp", False), False)
             staged_levels_raw = getattr(rc, "staged_tp_levels", "")
             staged_fractions_raw = getattr(rc, "staged_tp_fractions", "")
-            self._staged_levels = _parse_csv_floats(staged_levels_raw) if staged_levels_raw else [0.30, 0.50]
+            self._staged_levels = _parse_staged_tp_levels(staged_levels_raw) if staged_levels_raw else [0.30, 0.50]
             self._staged_fractions = _parse_csv_floats(staged_fractions_raw) if staged_fractions_raw else [0.25, 0.35]
-            self._staged_levels = [l / 100.0 if l >= 100.0 else l for l in self._staged_levels]
 
             # Leader divergence
             self._enable_leader_divergence = _as_bool(getattr(fc, "enable_leader_divergence_exit", False), False)
@@ -234,6 +268,7 @@ class PositionManager:
             self._near_max_warn = 0.92
             self._near_max_warn_ratio = 0.50
             self._enable_trailing = False
+            self._trailing_activation_auto = False
             self._trailing_activation_pct = 0.20
             self._trailing_distance = 0.05
             self._enable_staged_tp = False
@@ -401,6 +436,36 @@ class PositionManager:
             pos.exit_state.leader_divergence_pending = True
             logger.info(f"🤝 Leader divergence signaled: {condition_id[:12]}…")
 
+    @staticmethod
+    def _log_steady_exit(es: "PositionExitState", key: str, message: str) -> None:
+        """Log a steady-state full-exit trigger at INFO once per transition.
+
+        Repeats (the risk loop re-evaluates every tick while the position stays
+        parked at/above the exit threshold) drop to DEBUG so the operator sees
+        the trigger once, not hundreds of identical lines. ``_clear_steady_exit``
+        resets the key when the branch condition clears.
+        """
+        if key in es.logged_steady_exits:
+            logger.debug(message)
+        else:
+            es.logged_steady_exits.add(key)
+            logger.info(message)
+
+    @staticmethod
+    def _clear_steady_exit(es: "PositionExitState", key: str) -> None:
+        es.logged_steady_exits.discard(key)
+
+    def _trailing_activation_threshold(self, pos: TrackedPosition) -> Decimal:
+        if not getattr(self, "_trailing_activation_auto", False):
+            return _to_dec(getattr(self, "_trailing_activation_pct", 0.20))
+
+        # Polymarket winning outcome tokens settle at 1 USDC per token. The
+        # size term cancels out, so the activation scales by payout multiple.
+        max_payout_multiple = Decimal("1") / pos.entry_price
+        activation_value_multiple = Decimal("0.68") * max_payout_multiple + Decimal("0.28")
+        activation_value_multiple = max(Decimal("1"), activation_value_multiple)
+        return activation_value_multiple - Decimal("1")
+
     def evaluate_risk_action(
         self,
         condition_id: str,
@@ -455,23 +520,29 @@ class PositionManager:
             grace = getattr(self, "_stop_loss_grace_period_seconds", 180.0)
             age_seconds = time.time() - pos.entry_time
             if cp <= sl_threshold and age_seconds > grace:
-                logger.info(
+                self._log_steady_exit(
+                    es,
+                    "stop_loss",
                     f"STOP-LOSS triggered: {condition_id[:12]}… "
                     f"price={float(cp):.4f} <= threshold={float(sl_threshold):.4f} "
-                    f"age={age_seconds:.0f}s > grace={grace:.0f}s"
+                    f"age={age_seconds:.0f}s > grace={grace:.0f}s",
                 )
                 return {"reason": "stop_loss", "size_fraction": 1.0}
+            self._clear_steady_exit(es, "stop_loss")
 
         # ── Priority 1: NEAR-MAX-PRICE EXIT ──
         if self._enable_near_max and cp > 0:
             near_max_exit_d = _to_dec(self._near_max_exit)
             near_max_warn_d = _to_dec(self._near_max_warn)
             if cp >= near_max_exit_d:
-                logger.info(
+                self._log_steady_exit(
+                    es,
+                    "near_max_full_exit",
                     f"🏁 NEAR-MAX full exit: {condition_id[:12]}… "
-                    f"price={float(cp):.4f} >= {self._near_max_exit}"
+                    f"price={float(cp):.4f} >= {self._near_max_exit}",
                 )
                 return {"reason": "near_max_full_exit", "size_fraction": 1.0}
+            self._clear_steady_exit(es, "near_max_full_exit")
 
             if (
                 cp >= near_max_warn_d
@@ -524,24 +595,35 @@ class PositionManager:
         # ── Priority 4: TRAILING STOP ──
         if self._enable_trailing:
             # Auto-activate trailing after activation threshold
-            if not es.trailing_active and pct_change >= _to_dec(self._trailing_activation_pct):
+            activation_threshold = self._trailing_activation_threshold(pos)
+            if not es.trailing_active and pct_change >= activation_threshold:
                 es.trailing_active = True
                 es.trailing_high_price = cp
+                activation_mode = "dynamic" if getattr(self, "_trailing_activation_auto", False) else "fixed"
                 logger.info(
                     f"📈 TRAILING STOP activated: {condition_id[:12]}… "
-                    f"profit={float(pct_change)*100:.1f}% peak={float(cp):.4f}"
+                    f"profit={float(pct_change)*100:.1f}% >= {float(activation_threshold) * 100:.1f}% "
+                    f"({activation_mode}) peak={float(cp):.4f}"
                 )
 
             if es.trailing_active and es.trailing_high_price > 0:
                 trail_distance_d = _to_dec(self._trailing_distance)
-                trail_trigger = es.trailing_high_price - trail_distance_d
-                if cp <= trail_trigger and cp > pos.entry_price:
-                    logger.info(
+                trail_trigger = es.trailing_high_price * (Decimal("1") - trail_distance_d)
+                # P1-e: fire on the retrace from the in-profit peak regardless
+                # of entry. The old ``and cp > pos.entry_price`` clause silently
+                # suppressed the trailing stop once price fell through entry,
+                # letting a position round-trip the whole move (and then some)
+                # with only the opt-in absolute stop-loss as a backstop.
+                if cp <= trail_trigger:
+                    self._log_steady_exit(
+                        es,
+                        "trailing_stop",
                         f"📉 TRAILING STOP triggered: {condition_id[:12]}… "
                         f"price={float(cp):.4f} <= trail={float(trail_trigger):.4f} "
-                        f"(peak={float(es.trailing_high_price):.4f} - {self._trailing_distance})"
+                        f"(peak={float(es.trailing_high_price):.4f}, distance={self._trailing_distance * 100:.2f}%)",
                     )
                     return {"reason": "trailing_stop", "size_fraction": 1.0}
+                self._clear_steady_exit(es, "trailing_stop")
 
         # ── Priority 5: LEADER DIVERGENCE ──
         if self._enable_leader_divergence and es.leader_divergence_pending:

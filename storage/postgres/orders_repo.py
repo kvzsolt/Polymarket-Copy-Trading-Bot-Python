@@ -76,6 +76,62 @@ _PROCESSED_TRADE_TERMINAL_STATES = [
     "terminal_failed",
 ]
 
+# Order statuses that are *not terminally settled* and therefore still need
+# reconciliation — NOT only "never reached the venue". The set deliberately
+# includes live/matched states: an order that was ``live`` or ``matched`` when
+# the bot stopped can accrue fills while it is down, so startup reconciliation
+# must re-poll those orders too. This is safe because every consumer of this
+# set is a *reconcile-only* path (``reconcile_unconfirmed_risk_orders``,
+# ``reconcile_unconfirmed_*`` in the trade pipeline): they look the order up by
+# venue ``order_id`` and apply only the incremental positive delta of the
+# cumulative ``matched_total`` — never resubmit, never double-apply. Restricting
+# this to truly pre-venue states would silently drop in-flight fills across a
+# restart, which is the more dangerous failure mode. Terminal states live in
+# ``_PROCESSED_TRADE_TERMINAL_STATES`` / ``_FAILURE_STATES``.
+_UNCONFIRMED_SUBMISSION_STATES = (
+    "submitted_unconfirmed",
+    "submitted",
+    "matched",
+    "matched_pending_confirmation",
+    "order_status_matched",
+    "submitted_delayed",
+    "delayed",
+    "order_live",
+    "live",
+)
+
+_STALE_SUBMISSION_LOCK_STATUSES = (
+    "pending_lock",
+    "submitting",
+    "pending",
+    "submitted_unconfirmed",
+    "delayed",
+)
+_DIRECT_EXPIRABLE_STALE_LOCK_STATUSES = (
+    "pending_lock",
+    "submitting",
+    "pending",
+)
+# Columns are qualified with ``orders.`` so this expression is unambiguous
+# inside an ``INSERT ... ON CONFLICT DO UPDATE ... WHERE`` clause (where both the
+# target ``orders`` row and the ``excluded`` pseudo-row expose the same column
+# names). The qualification is also valid in the plain ``FROM orders`` SELECTs
+# that use this expression (P1-g follow-up: bare names raised AmbiguousColumnError
+# in the takeover path).
+_STALE_LOCK_AGE_EXPR = """
+COALESCE(
+    (orders.response_json->>'pending_since')::float8::bigint,
+    EXTRACT(EPOCH FROM COALESCE(orders.updated_at, orders.created_at))::bigint
+)
+"""
+
+# P1-g: generous TTL after which a never-submitted (order_id IS NULL) submission
+# lock is considered a dead holder and may be taken over by a fresh acquirer.
+# A live submission completes in seconds; a pending_lock row older than this has
+# almost certainly lost its holder. Kept well above realistic submit durations
+# so a slow-but-alive submitter is never stolen from.
+_DEFAULT_STALE_LOCK_TAKEOVER_SECONDS = 300
+
 
 @dataclass
 class OrderSubmissionRecord:
@@ -125,13 +181,25 @@ class OrdersRepo(AbstractOrderRepository):
         user_id: str,
         leader_id: str | None,
         request_payload: dict,
+        *,
+        stale_takeover_seconds: int = _DEFAULT_STALE_LOCK_TAKEOVER_SECONDS,
     ) -> bool:
         request_json = _json_str(request_payload) or "{}"
         async with self._pool.acquire() as conn:
-            # RETURNING returns the inserted row's key when INSERT happens;
-            # when ON CONFLICT DO NOTHING fires there is no returned row.
+            # RETURNING yields the key when the INSERT happens. P1-g: the
+            # ON CONFLICT was previously DO NOTHING, so a task that died holding
+            # a ``pending_lock`` row (before it ever POSTed — hence
+            # ``order_id IS NULL``) blocked that idempotency key until the next
+            # boot, with no runtime auto-release. DO UPDATE ... WHERE makes the
+            # lock self-healing: a fresh acquirer takes it over ONLY when the
+            # existing row is a never-submitted (``order_id IS NULL``)
+            # direct-expirable lock that has been stale longer than the generous
+            # takeover TTL — exactly the ``safe_to_expire`` condition the batch
+            # reaper uses. A live (recent) or already-submitted (``order_id`` set)
+            # lock fails the WHERE, the UPDATE is skipped, RETURNING is empty,
+            # and acquisition returns False as before.
             returned = await conn.fetchval(
-                """
+                f"""
                 INSERT INTO orders (
                     idempotency_key, user_id, leader_id, order_id, status,
                     request_json, response_json, attempt_count, last_error,
@@ -141,13 +209,29 @@ class OrdersRepo(AbstractOrderRepository):
                     $4::jsonb, NULL, 0, NULL,
                     now(), now()
                 )
-                ON CONFLICT(idempotency_key) DO NOTHING
+                ON CONFLICT(idempotency_key) DO UPDATE SET
+                    user_id = excluded.user_id,
+                    leader_id = excluded.leader_id,
+                    request_json = excluded.request_json,
+                    response_json = NULL,
+                    status = 'pending_lock',
+                    attempt_count = 0,
+                    last_error = 'stale_lock_taken_over',
+                    created_at = now(),
+                    updated_at = now()
+                WHERE orders.order_id IS NULL
+                  AND orders.status = ANY($5::text[])
+                  AND (
+                      EXTRACT(EPOCH FROM now())::bigint - {_STALE_LOCK_AGE_EXPR}
+                  ) > $6
                 RETURNING idempotency_key
                 """,
                 key,
                 user_id,
                 leader_id,
                 request_json,
+                list(_DIRECT_EXPIRABLE_STALE_LOCK_STATUSES),
+                int(stale_takeover_seconds),
             )
         return returned is not None
 
@@ -158,6 +242,225 @@ class OrdersRepo(AbstractOrderRepository):
         if rec.get("order_id"):
             return False
         return rec.get("status") in ("pending", "pending_lock")
+
+    @staticmethod
+    def _stale_lock_row_to_dict(row: asyncpg.Record) -> dict[str, Any]:
+        status = str(row["status"] or "").lower()
+        order_id = row["order_id"]
+        direct_expire = (
+            not order_id
+            and status in _DIRECT_EXPIRABLE_STALE_LOCK_STATUSES
+        )
+        return {
+            "idempotency_key": row["idempotency_key"],
+            "user_id": row["user_id"],
+            "leader_id": row["leader_id"],
+            "order_id": order_id,
+            "status": row["status"],
+            "attempt_count": row["attempt_count"],
+            "last_error": row["last_error"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+            "pending_since_ts": int(row["pending_since_ts"])
+            if row["pending_since_ts"] is not None
+            else None,
+            "age_seconds": int(row["age_seconds"] or 0),
+            "classification": (
+                "safe_to_expire"
+                if direct_expire
+                else "deferred_reconciliation_required"
+            ),
+            "action": "expire" if direct_expire else "defer",
+        }
+
+    async def list_stale_submission_locks(
+        self,
+        *,
+        ttl_seconds: int,
+        user_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        base = f"""
+            SELECT idempotency_key, user_id, leader_id, order_id, status,
+                   attempt_count, last_error, created_at, updated_at,
+                   {_STALE_LOCK_AGE_EXPR} AS pending_since_ts,
+                   (
+                       EXTRACT(EPOCH FROM now())::bigint
+                       - {_STALE_LOCK_AGE_EXPR}
+                   ) AS age_seconds
+            FROM orders
+            WHERE status = ANY($1::text[])
+              AND (
+                  EXTRACT(EPOCH FROM now())::bigint
+                  - {_STALE_LOCK_AGE_EXPR}
+              ) > $2
+        """
+        params: list[Any] = [list(_STALE_SUBMISSION_LOCK_STATUSES), int(ttl_seconds)]
+        if user_id is not None:
+            params.append(user_id)
+            base += f" AND user_id = ${len(params)}"
+        base += " ORDER BY age_seconds DESC"
+
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(base, *params)
+        return [self._stale_lock_row_to_dict(row) for row in rows]
+
+    async def count_fresh_submission_locks(
+        self,
+        *,
+        ttl_seconds: int,
+        user_id: str | None = None,
+    ) -> int:
+        base = f"""
+            SELECT COUNT(*) FROM orders
+            WHERE status = ANY($1::text[])
+              AND (
+                  EXTRACT(EPOCH FROM now())::bigint
+                  - {_STALE_LOCK_AGE_EXPR}
+              ) <= $2
+        """
+        params: list[Any] = [list(_STALE_SUBMISSION_LOCK_STATUSES), int(ttl_seconds)]
+        if user_id is not None:
+            params.append(user_id)
+            base += f" AND user_id = ${len(params)}"
+        async with self._pool.acquire() as conn:
+            count = await conn.fetchval(base, *params)
+        return int(count or 0)
+
+    async def expire_stale_submission_lock(
+        self,
+        *,
+        idempotency_key: str,
+        ttl_seconds: int,
+        reason: str = "stale_lock_resolve",
+    ) -> dict[str, Any] | None:
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    f"""
+                    SELECT idempotency_key, user_id, leader_id, order_id, status,
+                           attempt_count, last_error, created_at, updated_at,
+                           {_STALE_LOCK_AGE_EXPR} AS pending_since_ts,
+                           (
+                               EXTRACT(EPOCH FROM now())::bigint
+                               - {_STALE_LOCK_AGE_EXPR}
+                           ) AS age_seconds,
+                           response_json
+                    FROM orders
+                    WHERE idempotency_key = $1
+                    FOR UPDATE
+                    """,
+                    idempotency_key,
+                )
+                if row is None:
+                    return None
+                lock_row = self._stale_lock_row_to_dict(row)
+                if (
+                    lock_row["classification"] != "safe_to_expire"
+                    or lock_row["age_seconds"] <= int(ttl_seconds)
+                ):
+                    return None
+
+                pending_since = lock_row["pending_since_ts"]
+                pending_expires_at = (
+                    pending_since + int(ttl_seconds)
+                    if pending_since is not None
+                    else None
+                )
+                response = _parse_jsonb(row["response_json"])
+                response.update(
+                    {
+                        "success": False,
+                        "status": "expired",
+                        "error": (
+                            "stale submission lock expired after "
+                            f"{int(ttl_seconds)}s"
+                        ),
+                        "expired_at": time.time(),
+                        "pending_ttl_seconds": int(ttl_seconds),
+                        "cleanup_reason": reason,
+                    }
+                )
+                if pending_since is not None:
+                    response["pending_since"] = pending_since
+                if pending_expires_at is not None:
+                    response["pending_expires_at"] = pending_expires_at
+
+                updated = await conn.fetchrow(
+                    """
+                    UPDATE orders
+                    SET status = 'expired',
+                        response_json = $2::jsonb,
+                        last_error = COALESCE(last_error, $3),
+                        updated_at = now()
+                    WHERE idempotency_key = $1
+                      AND order_id IS NULL
+                      AND status = ANY($4::text[])
+                    RETURNING idempotency_key, user_id, leader_id, order_id,
+                              status, attempt_count, last_error, created_at,
+                              updated_at,
+                              $5::bigint AS pending_since_ts,
+                              $6::bigint AS age_seconds
+                    """,
+                    idempotency_key,
+                    _json_str(response) or "{}",
+                    response["error"],
+                    list(_DIRECT_EXPIRABLE_STALE_LOCK_STATUSES),
+                    pending_since,
+                    lock_row["age_seconds"],
+                )
+        if updated is None:
+            return None
+        result = self._stale_lock_row_to_dict(updated)
+        result["classification"] = "expired"
+        result["action"] = "expired"
+        return result
+
+    async def resolve_stale_submission_locks(
+        self,
+        *,
+        ttl_seconds: int,
+        user_id: str | None = None,
+        apply: bool = False,
+    ) -> dict[str, Any]:
+        stale_rows = await self.list_stale_submission_locks(
+            ttl_seconds=ttl_seconds,
+            user_id=user_id,
+        )
+        fresh_count = await self.count_fresh_submission_locks(
+            ttl_seconds=ttl_seconds,
+            user_id=user_id,
+        )
+        safe_rows = [
+            row for row in stale_rows if row["classification"] == "safe_to_expire"
+        ]
+        deferred_rows = [
+            row for row in stale_rows
+            if row["classification"] == "deferred_reconciliation_required"
+        ]
+        expired_rows: list[dict[str, Any]] = []
+        if apply:
+            for row in safe_rows:
+                expired = await self.expire_stale_submission_lock(
+                    idempotency_key=row["idempotency_key"],
+                    ttl_seconds=ttl_seconds,
+                )
+                if expired is not None:
+                    expired_rows.append(expired)
+
+        return {
+            "applied": bool(apply),
+            "ttl_seconds": int(ttl_seconds),
+            "expired": expired_rows,
+            "would_expire": [] if apply else safe_rows,
+            "deferred_reconciliation_required": deferred_rows,
+            "kept_fresh": fresh_count,
+            "summary": {
+                "expired": len(expired_rows),
+                "would_expire": 0 if apply else len(safe_rows),
+                "deferred_reconciliation_required": len(deferred_rows),
+                "kept_fresh": fresh_count,
+            },
+        }
 
     @staticmethod
     def _row_to_order_record(row: asyncpg.Record | None) -> dict[str, Any] | None:
@@ -562,10 +865,10 @@ class OrdersRepo(AbstractOrderRepository):
                    created_at, updated_at,
                    COALESCE(matched_total, '0') AS matched_total
             FROM orders
-            WHERE status IN ('submitted_unconfirmed', 'submitted')
+            WHERE status = ANY($1::text[])
               AND order_id IS NOT NULL
         """
-        params: list[Any] = []
+        params: list[Any] = [list(_UNCONFIRMED_SUBMISSION_STATES)]
         if user_id is not None:
             query += f" AND user_id = ${len(params) + 1}"
             params.append(user_id)
@@ -587,42 +890,90 @@ class OrdersRepo(AbstractOrderRepository):
         ]
 
     async def get_unconfirmed_buys(
-        self, max_age_seconds: float = 300.0
+        self,
+        max_age_seconds: float = 300.0,
+        *,
+        user_id: str | None = None,
     ) -> list[dict]:
         cutoff = time.time() - max_age_seconds
-        async with self._pool.acquire() as conn:
-            rows = await conn.fetch(
-                """
+        query = """
                 SELECT trade_key, user_id, leader_id, tx_hash, asset,
                        condition_id, order_id, processed_at
                 FROM processed_trades
-                WHERE status IN ('submitted_unconfirmed', 'submitted')
+                WHERE status = ANY($2::text[])
                   AND side = 'BUY'
                   AND (order_id IS NOT NULL OR processed_at <= $1)
-                ORDER BY processed_at ASC
-                """,
-                cutoff,
-            )
+        """
+        params: list[Any] = [cutoff, list(_UNCONFIRMED_SUBMISSION_STATES)]
+        if user_id:
+            query += f" AND (user_id = ${len(params) + 1} OR user_id IS NULL OR user_id = '')"
+            params.append(user_id)
+        query += " ORDER BY processed_at ASC"
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(query, *params)
         return [dict(r) for r in rows]
 
     async def get_unconfirmed_sells(
-        self, max_age_seconds: float = 300.0
+        self,
+        max_age_seconds: float = 300.0,
+        *,
+        user_id: str | None = None,
     ) -> list[dict]:
         cutoff = time.time() - max_age_seconds
-        async with self._pool.acquire() as conn:
-            rows = await conn.fetch(
-                """
+        query = """
                 SELECT trade_key, user_id, leader_id, tx_hash, asset,
                        condition_id, order_id, processed_at
                 FROM processed_trades
-                WHERE status IN ('submitted_unconfirmed', 'submitted')
+                WHERE status = ANY($2::text[])
                   AND side = 'SELL'
                   AND (order_id IS NOT NULL OR processed_at <= $1)
-                ORDER BY processed_at ASC
-                """,
-                cutoff,
-            )
+        """
+        params: list[Any] = [cutoff, list(_UNCONFIRMED_SUBMISSION_STATES)]
+        if user_id:
+            query += f" AND (user_id = ${len(params) + 1} OR user_id IS NULL OR user_id = '')"
+            params.append(user_id)
+        query += " ORDER BY processed_at ASC"
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(query, *params)
         return [dict(r) for r in rows]
+
+    async def has_recent_processed_trade(
+        self,
+        *,
+        user_id: str,
+        asset: str,
+        side: str | None = None,
+        max_age_seconds: float = 300.0,
+    ) -> bool:
+        """Whether a bot-originated processed trade exists for this scope recently.
+
+        Used by manual-sync to recognise the bot's OWN copy fills before the
+        async reconciler settles them. ``processed_trades`` rows are written at
+        submit time (see ``mark_processed_trade``), BEFORE reconciliation, so a
+        recent row on ``(user_id, asset[, side])`` is the authoritative "the bot
+        acted on this scope" signal that closes the manual-sync race window.
+
+        Matches ANY status so both in-flight (``submitted_unconfirmed``) and
+        just-settled rows count. ``processed_at`` is a unix-epoch numeric column
+        (same comparison basis as ``get_unconfirmed_buys``).
+        """
+        if not user_id or not asset:
+            return False
+        cutoff = time.time() - max(0.0, float(max_age_seconds))
+        query = """
+            SELECT 1 FROM processed_trades
+            WHERE user_id = $1
+              AND asset = $2
+              AND processed_at >= $3
+        """
+        params: list[Any] = [user_id, asset, cutoff]
+        if side is not None:
+            query += f" AND UPPER(side) = ${len(params) + 1}"
+            params.append(str(side).upper())
+        query += " LIMIT 1"
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(query, *params)
+        return row is not None
 
     async def persist_execution_atomically(
         self,
@@ -703,8 +1054,10 @@ class OrdersRepo(AbstractOrderRepository):
                         if current:
                             cur_size = Decimal(str(current["size_tokens"] or "0"))
                             cur_avg = Decimal(str(current["avg_entry_price"] or "0"))
-                            new_fill = Decimal(fill_size)
-                            new_price = Decimal(fill_price)
+                            # P2-r: str()-wrap so a float caller can't inject
+                            # binary-float noise into the avg-price math.
+                            new_fill = Decimal(str(fill_size))
+                            new_price = Decimal(str(fill_price))
                             new_size = cur_size + new_fill
                             if new_size > 0:
                                 avg = (
@@ -758,7 +1111,8 @@ class OrdersRepo(AbstractOrderRepository):
                     elif side_u == "SELL":
                         if current:
                             cur_size = Decimal(str(current["size_tokens"] or "0"))
-                            if Decimal(fill_size) > cur_size:
+                            # P2-r: str()-wrap (defensive; matches file convention).
+                            if Decimal(str(fill_size)) > cur_size:
                                 logger.warning(
                                     "Atomic SELL fill exceeds held size; clamping "
                                     "user=%s cond=%s token=%s fill_size=%s current_size=%s",
@@ -768,7 +1122,7 @@ class OrdersRepo(AbstractOrderRepository):
                                     fill_size,
                                     current["size_tokens"],
                                 )
-                            sell_size = min(Decimal(fill_size), cur_size)
+                            sell_size = min(Decimal(str(fill_size)), cur_size)
                             new_size = cur_size - sell_size
                             if new_size <= Decimal("1e-12"):
                                 await conn.execute(

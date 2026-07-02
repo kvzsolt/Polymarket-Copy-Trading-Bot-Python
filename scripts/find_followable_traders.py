@@ -7,22 +7,27 @@ it never edits LEADER_WALLETS and never starts monitors. Use
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
 import time
 from pathlib import Path
 
-from config.app_config import load_config
-from config.db import connect_db
-from config.env import rehydrate_env
-from config.runtime_env import load_runtime_env
-from storage.postgres.connection import get_pool
-from storage.postgres.discovery_repo import DiscoveryRepo
 from utils.logger import get_logger
 
 
 logger = get_logger("TraderFinder")
 OUTPUT_JSON = Path("data/followable_traders.json")
+
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Write a read-only JSON snapshot of Falcon/Polymarket discovery "
+            "candidates from the configured database."
+        )
+    )
+    return parser.parse_args()
 
 
 def _row(row) -> dict:
@@ -47,6 +52,17 @@ def _row(row) -> dict:
 
 
 async def main() -> None:
+    _parse_args()
+
+    # Import after argument parsing so --help remains side-effect free and does
+    # not require DB/runtime dependencies.
+    from config.app_config import load_config
+    from config.db import connect_db
+    from config.env import rehydrate_env
+    from config.runtime_env import load_runtime_env
+    from storage.postgres.connection import get_pool
+    from storage.postgres.discovery_repo import DiscoveryRepo
+
     load_runtime_env(override_secrets=True)
     rehydrate_env(load_dotenv_file=False)
     await connect_db()
@@ -77,4 +93,3 @@ async def main() -> None:
 
 if __name__ == "__main__":
     asyncio.run(main())
-

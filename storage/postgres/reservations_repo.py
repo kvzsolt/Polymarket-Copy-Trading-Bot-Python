@@ -81,6 +81,34 @@ class ReservationsRepo:
             )
         return self._row_to_reservation(row) if row else None
 
+    async def get_active_by_order_id(self, order_id: str) -> Reservation | None:
+        """Return the active reservation linked to a venue/local order id.
+
+        Reconciliation usually receives only the venue ``order_id`` from the
+        processed-trade row. The reservation id may live only in the
+        ``order_reservations`` link columns, especially after restart or when a
+        legacy processed row lacks ``reservation_id`` metadata.
+        """
+        if not order_id:
+            return None
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT * FROM order_reservations
+                WHERE status = 'active'
+                  AND (
+                    order_id = $1
+                    OR venue_order_id = $1
+                    OR $1 = ANY(regexp_split_to_array(COALESCE(order_id, ''), '\\s*,\\s*'))
+                    OR $1 = ANY(regexp_split_to_array(COALESCE(venue_order_id, ''), '\\s*,\\s*'))
+                  )
+                ORDER BY updated_at DESC
+                LIMIT 1
+                """,
+                order_id,
+            )
+        return self._row_to_reservation(row) if row else None
+
     async def create_buy_reservation(
         self, intent: OrderIntent, reserved_usdc: Decimal, expires_at: int
     ) -> Reservation:
@@ -401,15 +429,19 @@ class ReservationsRepo:
                 "SELECT * FROM order_reservations WHERE id = $1", res_id
             )
 
-    async def list_expired_active(self, now_ts: int) -> list[Reservation]:
+    async def list_expired_active(
+        self, now_ts: int, user_id: str | None = None
+    ) -> list[Reservation]:
+        query = """
+            SELECT * FROM order_reservations
+            WHERE status = 'active' AND expires_at < $1
+        """
+        params: list[object] = [now_ts]
+        if user_id is not None:
+            params.append(user_id)
+            query += f" AND user_id = ${len(params)}"
         async with self._pool.acquire() as conn:
-            rows = await conn.fetch(
-                """
-                SELECT * FROM order_reservations
-                WHERE status = 'active' AND expires_at < $1
-                """,
-                now_ts,
-            )
+            rows = await conn.fetch(query, *params)
         return [self._row_to_reservation(r) for r in rows]
 
     async def list_active(self) -> list[Reservation]:

@@ -19,7 +19,7 @@ from services.executionService import ExecutionRequest
 from services.metrics import metrics
 from domain.position_key import PositionKey
 from services.positionActionCoordinator import PositionScope  # noqa: F401  back-compat alias
-from services.riskEngine import headroom_for_buy
+from services.risk.risk_engine import headroom_for_buy
 from storage.postgres.fills_repo import FillRecord
 from storage.postgres.positions_repo import PositionRecord
 from utils import is_valid_clob_token_id
@@ -35,6 +35,7 @@ from utils.logger import (
     print_executing_strategy,
     print_skip_reason,
     print_trade_result,
+    print_warning,
     shorten_addr,
 )
 
@@ -53,7 +54,7 @@ def _positive_int(raw: Any, default: int) -> int:
 def _analysis_semaphore(context: TradingContext) -> asyncio.Semaphore:
     semaphore = context.extra.get("_trade_analysis_semaphore")
     if semaphore is None:
-        config_val = context.config.raw.get("TRADE_ANALYSIS_CONCURRENCY", 6) if context.config else 6
+        config_val = context.config.execution.trade_analysis_concurrency if context.config else 6
         semaphore = asyncio.Semaphore(_positive_int(config_val, 6))
         context.extra["_trade_analysis_semaphore"] = semaphore
     return semaphore
@@ -63,7 +64,7 @@ def _analysis_semaphore(context: TradingContext) -> asyncio.Semaphore:
 def _reconcile_semaphore(context: TradingContext) -> asyncio.Semaphore:
     semaphore = context.extra.get("_reconcile_unconfirmed_semaphore")
     if semaphore is None:
-        config_val = context.config.raw.get("RECONCILE_CONCURRENCY", 4) if context.config else 4
+        config_val = context.config.execution.reconcile_concurrency if context.config else 4
         semaphore = asyncio.Semaphore(_positive_int(config_val, 4))
         context.extra["_reconcile_unconfirmed_semaphore"] = semaphore
     return semaphore
@@ -514,7 +515,7 @@ async def _prefetch_market_data_rest_snapshot(
         return_exceptions=True,
     )
     for entry in results:
-        if isinstance(entry, Exception):
+        if isinstance(entry, BaseException):
             logger.warning(
                 "trade_pipeline_market_data_snapshot_rejected | reason=gather_error error=%r",
                 entry,
@@ -625,7 +626,7 @@ async def _prefetch_market_data_wss(
             sides_by_token.setdefault(signal.token_id, set()).add(side)
 
     for entry in results:
-        if isinstance(entry, Exception):
+        if isinstance(entry, BaseException):
             logger.warning(
                 "trade_pipeline_market_data_prefetch_error | error=%s",
                 repr(entry),
@@ -758,6 +759,11 @@ class _BuyRiskCap:
     cap_notional_usdc: Decimal
 
 
+_POSITION_PCT_CAP_BALANCE_KEY = "_max_position_pct_balance_snapshot_usdc"
+_POSITION_PCT_CAP_BALANCE_AT_KEY = "_max_position_pct_balance_snapshot_at"
+_POSITION_PCT_CAP_BALANCE_WALLET_KEY = "_max_position_pct_balance_snapshot_wallet"
+_POSITION_PCT_CAP_REFRESH_SECONDS = 24 * 60 * 60
+
 
 def _normalize(value: Any) -> str:
     return str(value or "").strip().lower()
@@ -809,16 +815,24 @@ def _extract_trade_submarket(raw: dict[str, Any]) -> str:
 
 
 async def _resolve_leader_tier(context: TradingContext, leader_id: str) -> str:
-    """Look up the follow tier for a leader. Defaults to live_follow if no repo/record."""
+    """Look up the follow tier for a leader.
+
+    P0-2: fail-closed. An absent repo, a lookup error, or an unknown/missing
+    tier resolves to ``watchlist`` (the non-live, no-submission tier), never
+    ``live_follow``. A DB glitch or a misconfiguration must not auto-promote a
+    leader to live copy trading. (The global LIVE_TRADING master switch already
+    forces paper unless explicitly enabled; this is defense-in-depth within
+    live mode.)
+    """
     if not hasattr(context, "leaders_repo") or context.leaders_repo is None:
-        return "live_follow"
+        return "watchlist"
     try:
         rec = await context.leaders_repo.get_tier(leader_id)
         tier = rec.follow_tier if rec and rec.follow_tier else None
     except Exception:
-        return "live_follow"
+        return "watchlist"
     if not tier or tier not in ("watchlist", "paper_follow", "live_follow"):
-        return "live_follow"
+        return "watchlist"
     return tier
 
 
@@ -836,6 +850,61 @@ def _to_decimal(value: Any, default: str = "0") -> Decimal:
         return Decimal(str(value))
     except Exception:
         return Decimal(default)
+
+
+def seed_position_pct_cap_snapshot(
+    context: TradingContext,
+    balance_usdc: Any,
+    *,
+    timestamp: float | None = None,
+) -> None:
+    """Seed the MAX_POSITION_PCT cap basis from a wallet balance snapshot.
+
+    The position percentage cap is intentionally based on a coarse wallet
+    snapshot: startup balance, then a refresh at most once per 24 hours. Other
+    balance policies may still use live free cash.
+    """
+    balance = max(Decimal("0"), _to_decimal(balance_usdc))
+    context.extra[_POSITION_PCT_CAP_BALANCE_KEY] = balance
+    context.extra[_POSITION_PCT_CAP_BALANCE_AT_KEY] = (
+        float(timestamp) if timestamp is not None else time.time()
+    )
+    context.extra[_POSITION_PCT_CAP_BALANCE_WALLET_KEY] = _funder_wallet_address(context)
+
+
+def _position_pct_cap_snapshot_is_fresh(
+    context: TradingContext,
+    *,
+    now: float | None = None,
+) -> bool:
+    wallet = _funder_wallet_address(context)
+    cached_wallet = str(
+        context.extra.get(_POSITION_PCT_CAP_BALANCE_WALLET_KEY) or ""
+    ).strip()
+    try:
+        cached_at = float(context.extra.get(_POSITION_PCT_CAP_BALANCE_AT_KEY))
+    except (TypeError, ValueError):
+        return False
+    cached_balance = _to_decimal(
+        context.extra.get(_POSITION_PCT_CAP_BALANCE_KEY),
+        default="-1",
+    )
+    wallet_matches = not cached_wallet or cached_wallet.lower() == wallet.lower()
+    age_seconds = max(0.0, (time.time() if now is None else now) - cached_at)
+    return (
+        cached_balance >= 0
+        and wallet_matches
+        and age_seconds < _POSITION_PCT_CAP_REFRESH_SECONDS
+    )
+
+
+def _seed_position_pct_cap_snapshot_if_stale(
+    context: TradingContext,
+    balance_usdc: Any,
+) -> None:
+    if _position_pct_cap_snapshot_is_fresh(context):
+        return
+    seed_position_pct_cap_snapshot(context, balance_usdc)
 
 
 def _to_optional_float(value: Any) -> float | None:
@@ -883,6 +952,12 @@ def _retry_attempt_from_status(status: str | None, retry_attempt: int | None = N
 
 def _account_cap_policy_enabled(context: TradingContext) -> bool:
     return bool(_trade_config(context).risk.enable_balance_tiered_policy)
+
+
+def _funder_wallet_address(context: TradingContext) -> str:
+    config = getattr(context, "config", None)
+    configured = str(getattr(getattr(config, "wallet", None), "funder_address", "") or "").strip()
+    return configured or str(getattr(context, "wallet_address", "") or "").strip()
 
 
 def _trade_config(context: TradingContext) -> AppConfig:
@@ -1010,11 +1085,12 @@ async def _fetch_balance_snapshot(
     leader_id: str,
 ) -> _BalanceSnapshot | None:
     """Single balance + positions fetch shared by both cap resolvers."""
-    balance_usdc = await get_my_balance(context.wallet_address)
+    balance_usdc = await get_my_balance(_funder_wallet_address(context))
     if balance_usdc is None:
         return None
 
     free_cash_usdc = Decimal(str(balance_usdc))
+    _seed_position_pct_cap_snapshot_if_stale(context, free_cash_usdc)
     open_positions = await context.positions_repo.list_open_positions(context.user_id)
     total_exposure_usdc = Decimal("0")
     market_exposure_usdc = Decimal("0")
@@ -1036,13 +1112,28 @@ async def _fetch_balance_snapshot(
     )
 
 
+async def _position_pct_cap_balance_usdc(context: TradingContext) -> Decimal | None:
+    now = time.time()
+    cached_balance = _to_decimal(
+        context.extra.get(_POSITION_PCT_CAP_BALANCE_KEY),
+        default="-1",
+    )
+    if _position_pct_cap_snapshot_is_fresh(context, now=now):
+        return cached_balance
+
+    wallet = _funder_wallet_address(context)
+    refreshed = await get_my_balance(wallet)
+    if refreshed is None:
+        return None
+    seed_position_pct_cap_snapshot(context, refreshed, timestamp=now)
+    return _to_decimal(refreshed)
+
+
 async def _resolve_position_pct_cap(
     context: TradingContext,
     signal: TradeSignal,
     snapshot: _BalanceSnapshot,
 ) -> _BuyRiskCap:
-    free_cash_usdc = snapshot.free_cash_usdc
-    market_exposure_usdc = snapshot.market_exposure_usdc
     max_position_pct = Decimal(str(_trade_config(context).sizing.max_position_pct or 0))
     if max_position_pct <= 0:
         # MAX_POSITION_PCT <= 0 means the cap is intentionally disabled by the
@@ -1054,15 +1145,24 @@ async def _resolve_position_pct_cap(
             allow=True,
             reason="disabled",
             policy_name="max_position_pct",
+            cap_notional_usdc=snapshot.free_cash_usdc,
+        )
+
+    cap_balance_usdc = await _position_pct_cap_balance_usdc(context)
+    if cap_balance_usdc is None:
+        return _BuyRiskCap(
+            allow=False,
+            reason="position_pct_cap_balance_unavailable",
+            policy_name="max_position_pct",
             cap_notional_usdc=Decimal("0"),
         )
 
-    # Cap against FREE CASH only (not total equity). Using equity as the
-    # denominator was allowing one position to consume the entire deposit
-    # when existing open positions inflated the equity figure.
-    cap_total_usdc = free_cash_usdc * max_position_pct
-    remaining_cap_usdc = max(Decimal("0"), cap_total_usdc - market_exposure_usdc)
-    if remaining_cap_usdc <= 0:
+    # Coarse wallet-snapshot per-BUY cap. Existing position exposure is
+    # enforced by the market/account exposure policies; MAX_POSITION_PCT only
+    # limits how much of the startup/24h wallet snapshot this new BUY may
+    # consume.
+    cap_notional_usdc = max(Decimal("0"), cap_balance_usdc * max_position_pct)
+    if cap_notional_usdc <= 0:
         return _BuyRiskCap(
             allow=False,
             reason="max_position_pct_reached",
@@ -1074,7 +1174,7 @@ async def _resolve_position_pct_cap(
         allow=True,
         reason="ok",
         policy_name="max_position_pct",
-        cap_notional_usdc=min(remaining_cap_usdc, free_cash_usdc),
+        cap_notional_usdc=cap_notional_usdc,
     )
 
 
@@ -1113,6 +1213,53 @@ async def _resolve_buy_risk_cap(
     )
 
 
+def _buy_required_cash_with_fees(
+    notional_usdc: Decimal,
+    fee_bps: int,
+) -> Decimal:
+    """Cash a BUY actually consumes once venue fees are added (P2-e).
+
+    A BUY that is affordable on notional alone can still be unaffordable once
+    fees are charged on top. ``required_cash = notional * (1 + fee_bps/10_000)``
+    in Decimal so the headroom/affordability comparison never silently lets a
+    BUY through that the wallet cannot cover net-of-fees. Fees affect ONLY this
+    affordability gate — never order sizing or the effective-idempotency key.
+    """
+    if notional_usdc <= 0:
+        return Decimal("0")
+    fee_multiplier = Decimal("1") + (Decimal(int(fee_bps)) / Decimal("10000"))
+    return notional_usdc * fee_multiplier
+
+
+async def _buy_fee_bps_or_none(context: TradingContext, token_id: str) -> int | None:
+    """Best-effort venue fee in bps for the BUY affordability gate.
+
+    Returns ``None`` when no fee source is wired (configless/legacy/test paths)
+    so the caller can keep the pre-existing no-fee cash gates authoritative
+    instead of regressing previously-allowed trades. ``FeeService.get_fee_bps``
+    is itself cached and never raises (it falls back to its default bps), so a
+    non-None result is always a usable integer.
+    """
+    exec_service = getattr(context, "execution_service", None)
+    fee_service = getattr(exec_service, "fee_service", None)
+    getter = getattr(fee_service, "get_fee_bps", None)
+    if getter is None:
+        return None
+    try:
+        fee_bps = await getter(token_id)
+    except Exception as exc:  # defensive — get_fee_bps should not raise
+        logger.warning(
+            "buy_fee_lookup_failed | token=%s error=%s",
+            shorten_addr(token_id, 8, 6),
+            repr(exc),
+        )
+        return None
+    try:
+        return int(fee_bps)
+    except (TypeError, ValueError):
+        return None
+
+
 
 def normalize_signals(raw_signals: list[dict[str, Any]], leader_id: str) -> list[tuple[TradeSignal, dict[str, Any]]]:
     out: list[tuple[TradeSignal, dict[str, Any]]] = []
@@ -1125,6 +1272,13 @@ def normalize_signals(raw_signals: list[dict[str, Any]], leader_id: str) -> list
         token_id = str(raw.get("tokenID") or raw.get("token_id") or raw.get("asset") or "")
         tx_hash = str(raw.get("transactionHash") or raw.get("txHash") or "")
         if not condition_id or not token_id or not tx_hash:
+            # A detected TRADE that is missing core market identifiers cannot be
+            # copied. Surface a concise line so the operator is not left with a
+            # silent "NEW TRADE DETECTED" followed by nothing.
+            print_warning(
+                f"Ignored — missing market identifiers "
+                f"({side} {raw.get('title') or raw.get('slug') or 'unknown market'})"
+            )
             continue
         if not is_valid_clob_token_id(token_id):
             logger.warning("normalize_signals: skipping signal with invalid token_id=%r", token_id)
@@ -1206,8 +1360,15 @@ async def reconcile_submitted_unconfirmed(
     if context.execution_service is None:
         return 0
 
-    buy_pending = await context.orders_repo.get_unconfirmed_buys(max_age_seconds=max_age_seconds)
-    sell_pending = await context.orders_repo.get_unconfirmed_sells(max_age_seconds=max_age_seconds)
+    reconcile_user_id = str(getattr(context, "user_id", "") or "") or None
+    buy_pending = await context.orders_repo.get_unconfirmed_buys(
+        max_age_seconds=max_age_seconds,
+        user_id=reconcile_user_id,
+    )
+    sell_pending = await context.orders_repo.get_unconfirmed_sells(
+        max_age_seconds=max_age_seconds,
+        user_id=reconcile_user_id,
+    )
     if not buy_pending and not sell_pending:
         return 0
 
@@ -1279,13 +1440,49 @@ async def reconcile_submitted_unconfirmed(
                 batch_reconciled += 1
         return batch_reconciled
 
-    reconciled = await _reconcile_batch(buy_pending, "BUY")
-    reconciled += await _reconcile_batch(sell_pending, "SELL")
+    # Reconcile BUY and SELL batches concurrently. The shared semaphore (`sem`,
+    # RECONCILE_CONCURRENCY) still caps TOTAL in-flight reconciles, so peak
+    # venue concurrency — and rate-limit exposure — is unchanged; this only
+    # removes the artificial barrier that made SELL wait for the entire BUY
+    # batch. Per-PositionKey serialization is preserved by
+    # `position_coordinator.acquire` inside `_reconcile_one`, so a BUY and SELL
+    # touching the same position still cannot interleave their state-apply.
+    # "BUYs visible before SELL *signals*" ordering is unaffected: this whole
+    # function still completes before signal normalization/execution downstream.
+    buy_n, sell_n = await asyncio.gather(
+        _reconcile_batch(buy_pending, "BUY"),
+        _reconcile_batch(sell_pending, "SELL"),
+    )
+    reconciled = buy_n + sell_n
 
     if reconciled:
         metrics.inc("reconcile_unconfirmed_total", value=float(reconciled))
 
     return reconciled
+
+
+def _decision_live_price(signal: Any, bundle: Any) -> float:
+    """Price used to score the copy decision (drift/edge gates + BUY sizing).
+
+    P1-c: this must be the FRESH executable quote — ``best_ask`` for a BUY,
+    ``best_bid`` for a SELL — not the stale leader signal price. Scoring against
+    ``signal.price`` made ``price_drift_pct`` / ``edge_decay_pct`` identically
+    zero (the signal compared against itself) and sized BUYs off the old price,
+    leaving the protective drift gate inert on every copy. Falls back to the
+    signal price when no fresh quote is available; the degraded/REST path is
+    gated separately upstream.
+    """
+    fallback = float(getattr(signal, "price", 0) or 0)
+    quote = getattr(bundle, "quote", None) if bundle is not None else None
+    if quote is None:
+        return fallback
+    side = str(getattr(signal, "side", "") or "").upper()
+    fresh = getattr(quote, "best_ask", None) if side == "BUY" else getattr(quote, "best_bid", None)
+    try:
+        fresh_f = float(fresh) if fresh is not None else 0.0
+    except (TypeError, ValueError):
+        return fallback
+    return fresh_f if fresh_f > 0 else fallback
 
 
 async def execute_trades(
@@ -1335,7 +1532,13 @@ async def execute_trades(
     tick_size_by_token: dict[str, float] = {}
     market_data_stale_tokens: set[str] = set()
     market_data_stale_codes: dict[tuple[str, str], str] = {}
-    if normalized and _market_data_primary_source(context) != "rest_snapshot":
+    # ``_prefetch_market_data_for_signals`` dispatches on the primary source
+    # internally (rest_snapshot -> REST /book prefetch; otherwise the WSS
+    # subscribe/bootstrap/require_fresh_data path), so this gate must run for
+    # BOTH modes — restricting it to one mode disables the other's pre-loop
+    # bundling and its per-signal freshness gate. (2dea338 inverted this gate
+    # to ``== rest_snapshot``, which silently dropped WSS-mode stale gating.)
+    if normalized:
         (
             bundles_by_token,
             market_data_stale_tokens,
@@ -1418,6 +1621,11 @@ async def execute_trades(
             skip_code = market_data_stale_codes.get(
                 _stale_pair_key, "market_data_stale"
             )
+            print_skip_reason(
+                "Market data stale",
+                f"{signal.side} {signal.title or shorten_addr(signal.token_id, 8, 6)} "
+                f"— {skip_code} (fail-closed: no fresh quote/book)",
+            )
             log_trade_skip(
                 logger,
                 side=signal.side,
@@ -1476,6 +1684,11 @@ async def execute_trades(
                         signal.token_id,
                     )
                     skip_reason = "entry_policy_unavailable"
+                    print_skip_reason(
+                        "Entry policy unavailable",
+                        "BUY blocked fail-closed — entry-permission service is "
+                        "not wired; cannot evaluate re-entry safety",
+                    )
                     metrics.inc("trades_skipped_total", labels={**labels, "reason": skip_reason})
                     await context.orders_repo.mark_processed_trade(
                         trade_key=trade_key,
@@ -1516,6 +1729,13 @@ async def execute_trades(
 
                 if _decision is not None and not _decision.allowed:
                     skip_reason = "market_risk_quarantined"
+                    _quarantine_detail = (
+                        f"entry denied by policy [{_decision.reason}]"
+                        + (f": {_decision.deny_detail}" if _decision.deny_detail else "")
+                    )
+                    print_skip_reason(
+                        "Market quarantined by risk monitor", _quarantine_detail
+                    )
                     log_trade_skip(
                         logger,
                         side=signal.side,
@@ -1525,10 +1745,7 @@ async def execute_trades(
                         price=float(signal.price or 0),
                         usdc_value=float(signal.usdc_size),
                         skip_code=skip_reason,
-                        reason=(
-                            f"entry denied by policy [{_decision.reason}]"
-                            + (f": {_decision.deny_detail}" if _decision.deny_detail else "")
-                        ),
+                        reason=_quarantine_detail,
                         event_slug=signal.event_slug,
                         meta={"user_id": context.user_id, "leader_id": leader_id, "policy_reason": _decision.reason},
                     )
@@ -1614,8 +1831,10 @@ async def execute_trades(
             # --- Decision gate: score the leader and this specific trade ---
             copy_decision_svc = context.copy_decision_service
 
-            # Fetch live price for decision scoring
-            live_price = float(signal.price or 0)
+            # Fetch live price for decision scoring from the FRESH quote
+            # (best_ask for BUY / best_bid for SELL), not the stale leader
+            # signal price — see _decision_live_price (P1-c).
+            live_price = _decision_live_price(signal, _bundle_for_pair)
             market_min_size = market_min_size_by_token.get(signal.token_id, 0.0)
             market_tick_size = tick_size_by_token.get(signal.token_id, 0.0)
 
@@ -1853,13 +2072,13 @@ async def execute_trades(
                 )
 
                 if not decision.allow:
-                    if decision.skip_code != "signal_too_old":
-                        skip_title = (
-                            "BUY blocked by execution minimums/risk cap"
-                            if decision.skip_code in {"risk_cap_too_low_for_min_order", "buy_below_minimum_order_requirements", "buy_cap_blocks_upsize_to_venue_min"}
-                            else "Decision gate rejected BUY"
-                        )
-                        print_skip_reason(skip_title, decision.reason)
+                    if decision.skip_code == "signal_too_old":
+                        skip_title = "Signal too old"
+                    elif decision.skip_code in {"risk_cap_too_low_for_min_order", "buy_below_minimum_order_requirements", "buy_cap_blocks_upsize_to_venue_min"}:
+                        skip_title = "BUY blocked by execution minimums/risk cap"
+                    else:
+                        skip_title = "Decision gate rejected BUY"
+                    print_skip_reason(skip_title, decision.reason)
                     log_trade_skip(
                         logger,
                         side=signal.side,
@@ -1890,18 +2109,82 @@ async def execute_trades(
                 # Use decision-gated notional (may be adjusted by scoring)
                 gated_notional = Decimal(str(decision.target_notional_usdc)) if decision.target_notional_usdc > 0 else target_notional
 
+                # --- P2-e: fee-aware affordability gate ---
+                # The upstream cash gates (headroom_for_buy / balance regime)
+                # compare against the BARE notional and ignore venue fees, so a
+                # BUY affordable on notional alone but NOT once fees are added
+                # could slip through. Compare required_cash = notional*(1+fee)
+                # against live free cash and fail closed if it does not fit. This
+                # runs BEFORE the regime reservation so a rejection never leaks a
+                # held reservation, and it does NOT alter sizing — the order
+                # amount stays exactly ``gated_notional``.
+                buy_fee_bps = await _buy_fee_bps_or_none(context, signal.token_id)
+                if buy_fee_bps is not None and buy_fee_bps > 0:
+                    required_cash_with_fees = _buy_required_cash_with_fees(
+                        gated_notional, buy_fee_bps
+                    )
+                    if required_cash_with_fees > snapshot.free_cash_usdc:
+                        reason = (
+                            f"insufficient cash for BUY net of fees: "
+                            f"need {required_cash_with_fees} "
+                            f"(notional {gated_notional} + {buy_fee_bps}bps), "
+                            f"free {snapshot.free_cash_usdc}"
+                        )
+                        skip_code = "insufficient_cash_with_fees"
+                        print_skip_reason("Insufficient cash (fees)", reason)
+                        logger.warning(
+                            "buy_insufficient_cash_with_fees | cond=%s leader=%s "
+                            "notional=%s fee_bps=%d required=%s free_cash=%s",
+                            signal.condition_id[:12],
+                            leader_id[:12],
+                            str(gated_notional),
+                            buy_fee_bps,
+                            str(required_cash_with_fees),
+                            str(snapshot.free_cash_usdc),
+                            extra={
+                                "type": skip_code,
+                                "user_id": context.user_id,
+                                "condition_id": signal.condition_id,
+                                "leader_id": leader_id,
+                                "notional_usdc": str(gated_notional),
+                                "fee_bps": buy_fee_bps,
+                                "required_cash_usdc": str(required_cash_with_fees),
+                                "free_cash_usdc": str(snapshot.free_cash_usdc),
+                            },
+                        )
+                        log_trade_skip(
+                            logger,
+                            side=signal.side,
+                            condition_id=signal.condition_id,
+                            asset=signal.token_id,
+                            size=float(signal.size) if signal.size else None,
+                            price=live_price,
+                            usdc_value=float(gated_notional),
+                            skip_code=skip_code,
+                            reason=reason,
+                            event_slug=signal.event_slug,
+                            meta={"user_id": context.user_id, "leader_id": leader_id},
+                        )
+                        metrics.inc(
+                            "trades_skipped_total",
+                            labels={**labels, "reason": skip_code},
+                        )
+                        await context.orders_repo.mark_processed_trade(
+                            trade_key=trade_key,
+                            user_id=context.user_id,
+                            leader_id=leader_id,
+                            tx_hash=signal.tx_hash,
+                            side=signal.side,
+                            asset=signal.token_id,
+                            condition_id=signal.condition_id,
+                            status=f"skipped_{skip_code}",
+                        )
+                        results.append(
+                            TradePipelineResult(trade_key, "skipped", skip_code, None)
+                        )
+                        continue
+
                 # --- Phase 4 balance regime gate ---
-                # Refresh the balance snapshot immediately before the regime
-                # check so that any prior fill/cancel in this batch (and any
-                # upstream balance movement since the first fetch at the top
-                # of the BUY branch) is reflected. The earlier snapshot is
-                # still used by sizing/cap resolvers above; only the regime
-                # gate needs the freshest possible free_cash reading.
-                _refreshed = await _fetch_balance_snapshot(
-                    context, signal.condition_id, leader_id,
-                )
-                if _refreshed is not None:
-                    snapshot = _refreshed
                 regime = getattr(context, "balance_regime", None)
                 if regime is not None:
                     # Greptile P1 (PR #106 review): replace the non-atomic
@@ -2018,6 +2301,7 @@ async def execute_trades(
                     else:
                         skip_detail = "never held — we never entered this market"
                         skip_code = "never_held"
+                    print_skip_reason("SELL skipped", skip_detail)
                     logger.debug(
                         "sell_skip",
                         extra={
@@ -2057,6 +2341,7 @@ async def execute_trades(
                 if pos.size_tokens <= Decimal("0"):
                     skip_detail = "already closed — position size is zero"
                     skip_code = "already_closed"
+                    print_skip_reason("SELL skipped", skip_detail)
                     logger.debug(
                         "sell_skip",
                         extra={
@@ -2126,6 +2411,66 @@ async def execute_trades(
                         if venue_sell_cap <= Decimal("0") and live_sellable_tokens <= Decimal("0"):
                             await context.positions_repo.delete_position(context.user_id, signal.condition_id, token_id=signal.token_id)
                         max_sell_tokens = venue_sell_cap
+                else:
+                    # P2-m: live-holdings fetch returned None (transport error /
+                    # unknown). We cannot determine the on-chain sellable size,
+                    # so selling against the (possibly stale) DB position size is
+                    # unsafe — it can oversell or sell shares we no longer hold.
+                    # Fail closed: skip this SELL. ``None`` (unknown) is distinct
+                    # from ``Decimal("0")`` (known-zero), which the clamp above
+                    # already handles as a close/delete.
+                    reason = "live holdings unavailable — cannot confirm sellable size"
+                    skip_code = "sell_clamp_live_holdings_unavailable"
+                    print_skip_reason("SELL skipped", reason)
+                    logger.warning(
+                        "sell_clamp_live_holdings_unavailable | cond=%s leader=%s token=%s db_size=%.4f",
+                        signal.condition_id[:12],
+                        leader_id[:12],
+                        shorten_addr(signal.token_id, 8, 6),
+                        float(max_sell_tokens),
+                        extra={
+                            "type": skip_code,
+                            "user_id": context.user_id,
+                            "condition_id": signal.condition_id,
+                            "leader_id": leader_id,
+                            "token_id": signal.token_id,
+                            "db_position_size_tokens": float(max_sell_tokens),
+                        },
+                    )
+                    log_trade_skip(
+                        logger,
+                        side=signal.side,
+                        condition_id=signal.condition_id,
+                        asset=signal.token_id,
+                        size=float(requested_sell_tokens),
+                        price=live_price,
+                        usdc_value=float(signal.usdc_size),
+                        skip_code=skip_code,
+                        reason=reason,
+                        event_slug=signal.event_slug,
+                        meta={"user_id": context.user_id, "leader_id": leader_id},
+                    )
+                    metrics.inc("trades_skipped_total", labels={**labels, "reason": skip_code})
+                    # Transient/unknown — persist a RETRYABLE status (not a
+                    # terminal one). A missing live-holdings read is not a final
+                    # decision; the atomic claim above already inserted an
+                    # ``in_progress`` row, so we must downgrade it to
+                    # ``retryable_failed`` to release the claim and let the next
+                    # poll retry the protective SELL once the venue/data-API
+                    # recovers (same retryable status the transient venue-failure
+                    # path uses).
+                    await context.orders_repo.mark_processed_trade(
+                        trade_key=trade_key,
+                        user_id=context.user_id,
+                        leader_id=leader_id,
+                        tx_hash=signal.tx_hash,
+                        side=signal.side,
+                        asset=signal.token_id,
+                        condition_id=signal.condition_id,
+                        status=_RETRYABLE_FAILED_STATUS,
+                    )
+                    results.append(TradePipelineResult(trade_key, "skipped", skip_code, None))
+                    continue
 
                 leader_sell_fraction = _extract_leader_sell_fraction(raw) or Decimal("1")
                 sell_tokens = _resolve_leader_sell_tokens(
@@ -2217,6 +2562,10 @@ async def execute_trades(
             )
 
             if exec_result.status == "duplicate_ignored":
+                print_skip_reason(
+                    "Duplicate ignored",
+                    exec_result.error or "an in-flight order already covers this trade",
+                )
                 metrics.inc("duplicate_order_prevented_total", labels=labels)
                 # Greptile P1: roll back the regime reservation taken at the
                 # pre-submit ``reserve()`` so the daily cap is not double-
@@ -2278,7 +2627,31 @@ async def execute_trades(
                     except Exception:  # pragma: no cover — defensive
                         pass
 
-            if exec_result.accepted and exec_result.filled_amount <= 0:
+            if exec_result.accepted and _decimal_or_zero(exec_result.filled_amount) <= 0:
+                # Execution is settlement-deferred by design: a FAK that the
+                # venue accepts returns filled_amount=0 / submitted_unconfirmed
+                # and the reconciler owns final accounting. This is NOT a "price
+                # moved past limit" kill (a genuine kill returns accepted=False);
+                # the order may well have filled. Report it as pending, not dead.
+                print_skip_reason(
+                    "Order submitted — awaiting fill confirmation",
+                    f"{signal.side} FAK accepted at limit {signal.price}; fill "
+                    f"not yet confirmed by the venue — reconciliation will settle it",
+                )
+                # Copy-scoped display values. ``exec_req`` carries the COPY size,
+                # not the leader's ``signal.size``: for a BUY the request amount
+                # is USDC notional (tokens ≈ notional / limit price); for a SELL
+                # it is shares directly.
+                _copy_amount = _decimal_or_zero(getattr(exec_req, "amount", 0))
+                _limit_px = _decimal_or_zero(
+                    getattr(exec_req, "price_limit", None) or signal.price or 0
+                )
+                if exec_req.side == "BUY":
+                    _copy_usdc = _copy_amount
+                    _copy_tokens = (_copy_amount / _limit_px) if _limit_px > 0 else None
+                else:
+                    _copy_tokens = _copy_amount
+                    _copy_usdc = (_copy_amount * _limit_px) if _limit_px > 0 else None
                 await context.orders_repo.mark_processed_trade(
                     trade_key=trade_key,
                     user_id=context.user_id,
@@ -2295,9 +2668,9 @@ async def execute_trades(
                     side=signal.side,
                     condition_id=signal.condition_id,
                     asset=signal.token_id,
-                    size=float(signal.size) if signal.size else None,
-                    price=float(signal.price) if signal.price else None,
-                    usdc_value=float(signal.usdc_size),
+                    size=float(_copy_tokens) if _copy_tokens is not None else None,
+                    price=float(_limit_px) if _limit_px > 0 else None,
+                    usdc_value=float(_copy_usdc) if _copy_usdc is not None else None,
                     event_slug=signal.event_slug,
                     meta={
                         "user_id": context.user_id,
@@ -2329,6 +2702,10 @@ async def execute_trades(
                         except Exception:  # pragma: no cover — defensive
                             pass
                 metrics.inc("execution_failures_total", labels={**labels, "reason": exec_result.status})
+                print_skip_reason(
+                    f"Copy not accepted: {exec_result.status}",
+                    exec_result.error or exec_result.status,
+                )
                 log_trade_skip(
                     logger,
                     side=signal.side,

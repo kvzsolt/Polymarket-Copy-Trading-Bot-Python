@@ -21,6 +21,9 @@ _BASE_LIVE_ENV = {
     "LEADER_WALLETS": "0x" + "d" * 40,
     "RPC_URL": "https://polygon-rpc.example.com",
     "CHAIN_ID": "137",
+    # P0-2: live mode requires the explicit master switch (PAPER_TRADE_ONLY=false
+    # alone no longer enables live — the fail-closed default is paper).
+    "LIVE_TRADING": "enabled",
     "PAPER_TRADE_ONLY": "false",
     "CLOB_V2_READY": "true",
     "KILL_SWITCH": "false",
@@ -230,6 +233,66 @@ async def test_doctor_live_passes_when_all_subsystems_wired(tmp_path):
     out = await _run_doctor("live", tmp_log=tmp_path, tmp_path=tmp_path)
     # status may be ok or warning (e.g. metrics disabled); should NOT be blocked
     assert out["status"] in {"ok", "warning"}, [c for c in out["checks"] if c["status"] == "blocked"]
+
+
+@pytest.mark.asyncio
+async def test_doctor_live_blocks_when_no_manual_leaders_and_auto_detection_disabled(
+    tmp_path,
+):
+    out = await _run_doctor(
+        "live",
+        {
+            "LEADER_WALLETS": "",
+            "USER_ADDRESS": "",
+            "ALLOW_AUTO_TRADER_DETECTION": "false",
+        },
+        tmp_log=tmp_path,
+        tmp_path=tmp_path,
+    )
+    rec = _checks_by_name(out)["leaders"]
+    assert rec["status"] == "blocked"
+    assert "auto detection disabled" in rec["detail"]
+
+
+@pytest.mark.asyncio
+async def test_doctor_live_passes_when_auto_detection_enabled_without_manual_leaders(
+    tmp_path,
+):
+    out = await _run_doctor(
+        "live",
+        {
+            "LEADER_WALLETS": "",
+            "USER_ADDRESS": "",
+            "ALLOW_AUTO_TRADER_DETECTION": "true",
+            "MAX_AUTO_TRADERS_COUNT": "2",
+            "FALCON_API_TOKEN": "test-token",
+        },
+        tmp_log=tmp_path,
+        tmp_path=tmp_path,
+    )
+    rec = _checks_by_name(out)["leaders"]
+    assert rec["status"] == "ok"
+    assert "startup auto detection enabled" in rec["detail"]
+    assert out["status"] in {"ok", "warning"}
+
+
+@pytest.mark.asyncio
+async def test_doctor_live_blocks_when_auto_detection_cannot_resolve_leaders(tmp_path):
+    out = await _run_doctor(
+        "live",
+        {
+            "LEADER_WALLETS": "",
+            "USER_ADDRESS": "",
+            "ALLOW_AUTO_TRADER_DETECTION": "true",
+            "MAX_AUTO_TRADERS_COUNT": "2",
+            "FALCON_API_TOKEN": "",
+        },
+        tmp_log=tmp_path,
+        tmp_path=tmp_path,
+    )
+    rec = _checks_by_name(out)["leaders"]
+    assert rec["status"] == "blocked"
+    assert "FALCON_API_TOKEN" in rec["fix"]
 
 
 def test_console_summary_renders_fix_line(tmp_path):

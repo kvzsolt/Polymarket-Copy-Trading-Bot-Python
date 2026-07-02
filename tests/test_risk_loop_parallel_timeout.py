@@ -26,7 +26,7 @@ def _ctx(user_id: str):
 
 @pytest.mark.asyncio
 async def test_one_stalled_context_does_not_block_the_others():
-    from services.riskMonitor import risk_monitor_loop_for_contexts
+    from services.risk.risk_monitor import risk_monitor_loop_for_contexts
 
     ctx_fast = _ctx("fast")
     ctx_slow = _ctx("slow")
@@ -34,7 +34,7 @@ async def test_one_stalled_context_does_not_block_the_others():
     started: dict[str, float] = {}
     finished: dict[str, float] = {}
 
-    async def check(context):
+    async def check(context, *, pre_reconcile: bool = True):
         started[context.user_id] = time.monotonic()
         if context.user_id == "slow":
             # Stall indefinitely — the wait_for ceiling must fire.
@@ -57,13 +57,13 @@ async def test_one_stalled_context_does_not_block_the_others():
     # cancellation. The internal post-cycle asyncio.sleep stays real so
     # wait_for inside the loop still works correctly.
     with patch(
-        "services.riskMonitor.run_risk_check_for_context",
+        "services.risk.risk_monitor.run_risk_check_for_context",
         side_effect=check,
     ), patch(
-        "services.riskMonitor._refresh_context_price_cache",
+        "services.risk.risk_monitor._refresh_context_price_cache",
         side_effect=refresh,
     ), patch(
-        "services.riskMonitor._exit_monitor_enabled", return_value=True
+        "services.risk.risk_monitor._exit_monitor_enabled", return_value=True
     ):
         # Outer wait_for is 5x the per-context timeout — gives one full
         # cycle plus a sleep tick to complete before we cancel.
@@ -83,3 +83,115 @@ async def test_one_stalled_context_does_not_block_the_others():
     assert "fast" in finished, "fast context must complete in parallel"
     assert "slow" in started, "slow context must have been started"
     assert "slow" not in finished, "slow context must NOT complete — timeout cancels"
+
+
+@pytest.mark.asyncio
+async def test_pre_reconcile_runs_outside_protective_exit_timeout():
+    """Pre-reconcile (venue order-status round-trips) runs in its OWN untimed
+    phase, and the timed protective-exit check is invoked with
+    ``pre_reconcile=False`` so slow reconciliation cannot starve the stop-loss
+    evaluation every cycle (sym 1)."""
+    from services.risk.risk_monitor import risk_monitor_loop_for_contexts
+
+    ctx = _ctx("u1")
+    check_calls: list[bool] = []
+
+    async def slow_pre_reconcile(context):
+        await asyncio.sleep(0.2)  # untimed — does not count against the budget
+        return 0
+
+    async def check(context, *, pre_reconcile: bool = True):
+        check_calls.append(pre_reconcile)
+        await asyncio.sleep(0)
+
+    async def refresh(context, refresh_interval):
+        return None
+
+    readiness = MagicMock()
+    config = SimpleNamespace(
+        polling=SimpleNamespace(risk_check_interval=0.05),
+        risk=SimpleNamespace(),
+        execution=SimpleNamespace(),
+    )
+
+    with patch(
+        "services.risk.risk_monitor._pre_reconcile_for_context",
+        side_effect=slow_pre_reconcile,
+    ) as prerec, patch(
+        "services.risk.risk_monitor.run_risk_check_for_context", side_effect=check
+    ), patch(
+        "services.risk.risk_monitor._refresh_context_price_cache", side_effect=refresh
+    ), patch(
+        "services.risk.risk_monitor._exit_monitor_enabled", return_value=True
+    ):
+        with pytest.raises((asyncio.TimeoutError, asyncio.CancelledError)):
+            await asyncio.wait_for(
+                risk_monitor_loop_for_contexts(
+                    [ctx], readiness, config=config, interval=0.05
+                ),
+                timeout=2.0,
+            )
+
+    # Pre-reconcile ran in its own phase...
+    prerec.assert_awaited()
+    # ...and every timed check was told NOT to repeat it.
+    assert check_calls and all(flag is False for flag in check_calls)
+
+
+@pytest.mark.asyncio
+async def test_pre_reconcile_timeout_enters_backoff_without_stalling_risk_checks(monkeypatch):
+    """A stuck pre-reconcile must not burn the timeout every risk tick.
+
+    The live failure mode was a log every ~6s:
+    ``Risk pre-reconcile TIMEOUT ... after 5.0s``. That means each cycle waited
+    for the same stuck venue reconciliation before evaluating protective exits.
+    After the first timeout we back off that user's pre-reconcile attempts while
+    still running the risk check phase every tick.
+    """
+    from services.risk.risk_monitor import risk_monitor_loop_for_contexts
+
+    monkeypatch.setenv("RISK_PRE_RECONCILE_TIMEOUT_SECONDS", "0.05")
+    monkeypatch.setenv("RISK_PRE_RECONCILE_TIMEOUT_BACKOFF_SECONDS", "1.0")
+
+    ctx = _ctx("u-timeout")
+    check_calls: list[bool] = []
+
+    async def stuck_pre_reconcile(context):
+        await asyncio.sleep(100)
+        return 0
+
+    async def check(context, *, pre_reconcile: bool = True):
+        check_calls.append(pre_reconcile)
+        await asyncio.sleep(0)
+
+    async def refresh(context, refresh_interval):
+        return None
+
+    readiness = MagicMock()
+    config = SimpleNamespace(
+        polling=SimpleNamespace(risk_check_interval=0.01),
+        risk=SimpleNamespace(),
+        execution=SimpleNamespace(),
+    )
+
+    with patch(
+        "services.risk.risk_monitor._pre_reconcile_for_context",
+        side_effect=stuck_pre_reconcile,
+    ) as prerec, patch(
+        "services.risk.risk_monitor.run_risk_check_for_context", side_effect=check
+    ), patch(
+        "services.risk.risk_monitor._refresh_context_price_cache", side_effect=refresh
+    ), patch(
+        "services.risk.risk_monitor._exit_monitor_enabled", return_value=True
+    ):
+        with pytest.raises((asyncio.TimeoutError, asyncio.CancelledError)):
+            await asyncio.wait_for(
+                risk_monitor_loop_for_contexts(
+                    [ctx], readiness, config=config, interval=0.01
+                ),
+                timeout=0.18,
+            )
+
+    assert prerec.await_count == 1
+    assert len(check_calls) >= 2
+    assert all(flag is False for flag in check_calls)

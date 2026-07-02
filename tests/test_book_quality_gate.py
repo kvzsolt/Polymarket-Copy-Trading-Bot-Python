@@ -108,9 +108,11 @@ def _make_execution_service(bid: str | None, ask: str | None, quote_price: str =
             near_resolution_max_age_seconds=15,
             meta_cache_ttl_good=300,
             meta_cache_ttl_thin=30,
+            copy_fak_max_attempts=3,
+            exit_fak_max_attempts=8,
         ),
         policy_version="test",
-        raw={},
+        raw={"COPY_FAK_MAX_ATTEMPTS": "3", "EXIT_FAK_MAX_ATTEMPTS": "8"},
     )
 
     return ExecutionService(
@@ -323,16 +325,100 @@ class TestBookQualityGate:
             assert call.kwargs["order_type"] == "FAK"
         assert svc._market_data_service.require_fresh_data.await_count == 2
 
-    def test_copy_trade_fak_no_match_does_not_retry_or_trip_circuit(self):
-        """A venue FAK no-match cancellation is terminal, not a CLOB outage."""
+    def test_copy_trade_fak_zero_fill_retries_then_fills(self):
+        """A zero-fill FAK should refresh the book and repost within bounds."""
+        svc = _make_execution_service("0.10", "0.90")
+        svc.clob_client.post_signed_order = AsyncMock(
+            side_effect=[
+                {
+                    "success": False,
+                    "orderID": "ord-fak-0",
+                    "status": "cancelled",
+                    "error": "fak_no_match",
+                    "non_retryable": True,
+                },
+                {
+                    "success": True,
+                    "orderID": "ord-fak-1",
+                    "status": "matched",
+                    "size_matched": "4",
+                    "avg_price": "0.25",
+                },
+            ]
+        )
+        req = _req(
+            amount="1",
+            order_type="FAK",
+            price_limit=Decimal("0.25"),
+            recovery_metadata={"order_type": "FAK", "price_limit": "0.25"},
+        )
+
+        result = asyncio.new_event_loop().run_until_complete(svc.execute(req))
+
+        assert result.accepted is True
+        assert result.status == "filled"
+        assert result.filled_amount == Decimal("4")
+        assert result.order_id == "ord-fak-1"
+        assert svc.clob_client.create_market_order.await_count == 2
+        assert svc.clob_client.post_signed_order.await_count == 2
+        assert svc._market_data_service.require_fresh_data.await_count == 2
+        assert svc.circuit_breaker.allow_request() is True
+
+    def test_copy_trade_fak_delayed_ack_is_not_reposted(self):
+        """Delayed FAK acks are reconciliation-owned, not zero-fill cancels."""
         svc = _make_execution_service("0.10", "0.90")
         svc.clob_client.post_signed_order = AsyncMock(
             return_value={
-                "success": False,
-                "status": "cancelled",
-                "error": "fak_no_match",
-                "non_retryable": True,
+                "success": True,
+                "orderID": "ord-fak-delayed",
+                "status": "delayed",
             }
+        )
+        req = _req(
+            amount="5",
+            order_type="FAK",
+            price_limit=Decimal("0.85"),
+            recovery_metadata={"order_type": "FAK", "price_limit": "0.85"},
+        )
+
+        result = asyncio.new_event_loop().run_until_complete(svc.execute(req))
+
+        assert result.accepted is True
+        assert result.status == "submitted_unconfirmed"
+        assert result.order_id == "ord-fak-delayed"
+        assert result.filled_amount == Decimal("0")
+        assert result.error is None
+        assert svc.clob_client.create_market_order.await_count == 1
+        assert svc.clob_client.post_signed_order.await_count == 1
+        assert svc._market_data_service.require_fresh_data.await_count == 1
+
+    def test_copy_trade_fak_no_match_retries_bounded_without_tripping_circuit(self):
+        """Repeated FAK no-match cancellations should exhaust bounded retries."""
+        svc = _make_execution_service("0.10", "0.90")
+        svc.clob_client.post_signed_order = AsyncMock(
+            side_effect=[
+                {
+                    "success": False,
+                    "orderID": "ord-fak-0",
+                    "status": "cancelled",
+                    "error": "fak_no_match",
+                    "non_retryable": True,
+                },
+                {
+                    "success": False,
+                    "orderID": "ord-fak-1",
+                    "status": "cancelled",
+                    "error": "fak_no_match",
+                    "non_retryable": True,
+                },
+                {
+                    "success": False,
+                    "orderID": "ord-fak-2",
+                    "status": "cancelled",
+                    "error": "fak_no_match",
+                    "non_retryable": True,
+                },
+            ]
         )
         req = _req(
             amount="2",
@@ -346,7 +432,9 @@ class TestBookQualityGate:
         assert result.accepted is False
         assert result.status == "cancelled"
         assert result.error == "fak_no_match"
-        assert svc.clob_client.post_signed_order.await_count == 1
+        assert svc.clob_client.post_signed_order.await_count == 3
+        assert svc.clob_client.create_market_order.await_count == 3
+        assert svc._market_data_service.require_fresh_data.await_count == 3
         assert svc.circuit_breaker.allow_request() is True
 
     def test_custom_threshold(self):

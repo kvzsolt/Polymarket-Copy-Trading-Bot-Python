@@ -3,7 +3,7 @@
 Per the Polymarket OpenAPI spec, ``GET /price`` returning ``404 not_found``
 means the token has no orderbook — the market resolved / archived and the
 token is retired. ``utils.createClobClient.get_price`` surfaces this via the
-``PRICE_TOKEN_NOT_FOUND`` sentinel so ``services.riskMonitor`` can:
+``PRICE_TOKEN_NOT_FOUND`` sentinel so ``services.risk.risk_monitor`` can:
 
   1. Mark the token resolved in ``MarketStateStore`` (no further polling
      anywhere — refresh + stop-loss both short-circuit via
@@ -26,7 +26,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from cache.market_state_store import MarketStateStore
-from services.riskMonitor import (
+from services.risk.risk_monitor import (
     RiskPriceCache,
     VenueCircuitBreaker,
     _active_sell_reserved_size,

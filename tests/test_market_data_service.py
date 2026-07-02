@@ -557,8 +557,9 @@ class TestRestBootstrapPolicy:
             old = _time.monotonic() - 3.0
             state.last_book_monotonic = old
             state.last_quote_monotonic = old
-        # WSS connection proven live via recent heartbeat.
-        cache.on_market_ws_heartbeat(_time.monotonic())
+        # WSS connection proven live via a recent INBOUND frame (pong). P1-d:
+        # the self-sent outbound heartbeat alone does not prove liveness.
+        cache.on_market_ws_pong(_time.monotonic())
 
         policy = MarketDataPolicy(
             max_quote_age_seconds=2.0,
@@ -633,14 +634,16 @@ class TestWssConnectionLivenessFreshness:
         )
 
     @pytest.mark.asyncio
-    async def test_quiet_wss_book_executable_while_connection_live(self) -> None:
+    async def test_quiet_wss_book_rejected_when_only_outbound_heartbeat(self) -> None:
+        # P1-d: the self-sent outbound PING (heartbeat) must NOT prove
+        # liveness. A silent / half-open feed keeps PINGing but receives
+        # nothing inbound — it must fail the liveness path and be rejected.
         cache = self._aged_wss_cache(age_seconds=8.0)
         cache.on_market_ws_heartbeat(time.monotonic())
         svc = _make_service(cache, policy=self._tight_policy())
 
-        bundle = await svc.require_fresh_data(TOKEN)
-
-        assert bundle.source == MarketDataSource.WSS
+        with pytest.raises(StaleDataError):
+            await svc.require_fresh_data(TOKEN)
 
     @pytest.mark.asyncio
     async def test_quiet_wss_book_executable_on_recent_pong(self) -> None:
@@ -1041,3 +1044,63 @@ class TestBundleFromCacheRestSnapshot:
         bundle = await svc.require_fresh_data(TOKEN)
 
         assert bundle.source == MarketDataSource.WSS
+
+    # ------------------------------------------------------------------
+    # REST prefetch, WSS after subscription: side-scoped execution reads
+    # ------------------------------------------------------------------
+    # REST is the prefetch/bootstrap source; once the market WSS subscription
+    # warms the cache, ``require_fresh_data(..., side=...)`` must prefer the
+    # live WSS bundle instead of re-fetching a REST snapshot, and only fall
+    # back to a fresh gated REST snapshot when the cache is not yet executable.
+
+    @pytest.mark.asyncio
+    async def test_require_fresh_data_side_prefers_wss_cache(self) -> None:
+        cache = _make_fresh_cache(TOKEN)  # WSS-sourced quote+book+tick
+        svc = _make_service(cache, policy=self._rest_snap_policy())
+        svc.require_execution_snapshot = AsyncMock()  # must NOT be called
+
+        bundle = await svc.require_fresh_data(TOKEN, side="BUY")
+
+        assert bundle.source == MarketDataSource.WSS
+        svc.require_execution_snapshot.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_require_fresh_data_side_uses_fresh_rest_snapshot_in_cache(self) -> None:
+        # Bridge window: a still-fresh REST snapshot already seeded by the
+        # prefetch is reused for a side-scoped read without a second REST
+        # round-trip, until the first WSS delta upgrades the source.
+        cache = self._make_rest_snapshot_cache(stale_ms=10.0)
+        svc = _make_service(cache, policy=self._rest_snap_policy())
+        svc.require_execution_snapshot = AsyncMock()
+
+        bundle = await svc.require_fresh_data(TOKEN, side="BUY")
+
+        assert bundle.source == MarketDataSource.REST_SNAPSHOT
+        svc.require_execution_snapshot.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_require_fresh_data_side_falls_back_to_rest_when_cache_cold(self) -> None:
+        cache = MarketStateStore()  # cold: no WSS, no REST snapshot yet
+        svc = _make_service(cache, policy=self._rest_snap_policy())
+        sentinel = object()
+        svc.require_execution_snapshot = AsyncMock(return_value=sentinel)
+
+        result = await svc.require_fresh_data(TOKEN, side="BUY")
+
+        assert result is sentinel
+        svc.require_execution_snapshot.assert_awaited_once()
+        assert svc.require_execution_snapshot.await_args.kwargs.get("side") == "BUY"
+
+    @pytest.mark.asyncio
+    async def test_require_fresh_data_side_stale_rest_cache_falls_back_to_rest(self) -> None:
+        # Stale REST snapshot in cache (past the ms age cap) and no WSS yet →
+        # cache returns None → fresh gated REST fetch (fail-closed bridge).
+        cache = self._make_rest_snapshot_cache(stale_ms=600.0)
+        svc = _make_service(cache, policy=self._rest_snap_policy())
+        sentinel = object()
+        svc.require_execution_snapshot = AsyncMock(return_value=sentinel)
+
+        result = await svc.require_fresh_data(TOKEN, side="BUY")
+
+        assert result is sentinel
+        svc.require_execution_snapshot.assert_awaited_once()

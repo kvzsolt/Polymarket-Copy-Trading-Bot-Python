@@ -15,13 +15,18 @@ from config.app_config import load_config
 from config.env import rehydrate_env
 from domain.trading_context import TradingContext
 from orchestrators.runtime_bootstrap import startup_reconcile_unconfirmed
-from orchestrators.trade_pipeline import execute_trades, build_trade_key, reconcile_submitted_unconfirmed
+from orchestrators.trade_pipeline import (
+    build_trade_key,
+    execute_trades,
+    reconcile_submitted_unconfirmed,
+    seed_position_pct_cap_snapshot,
+)
 from storage.postgres.risk_blocks_repo import RiskBlocksRepo
 from services.copyDecisionService import CopyDecision
 from services.executionService import ExecutionResult
 from services.pnlTracker import PnLTracker
 from services.positionManager import PositionManager
-from services.riskEngine import RiskEngine
+from services.risk.risk_engine import RiskEngine
 from services.accountingService import AccountingService
 from storage.postgres.fills_repo import FillRecord, FillsRepo
 
@@ -827,7 +832,7 @@ async def test_startup_reconciled_risk_sell_blocks_reentry_on_same_scope(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_max_position_pct_enforced_even_when_balance_policy_disabled(tmp_path):
+async def test_max_position_pct_caps_cash_only_even_when_balance_policy_disabled(tmp_path):
     async with _pg_pool() as pool:
         exec_svc = AsyncMock()
         exec_svc.execute.return_value = _exec_result(
@@ -849,6 +854,9 @@ async def test_max_position_pct_enforced_even_when_balance_policy_disabled(tmp_p
             )
         )
 
+        decision_service = _RecordingDecisionService()
+        ctx.copy_decision_service = decision_service
+
         with patch(
             "orchestrators.trade_pipeline.get_my_balance",
             new_callable=AsyncMock,
@@ -856,9 +864,11 @@ async def test_max_position_pct_enforced_even_when_balance_policy_disabled(tmp_p
         ):
             results = await execute_trades(ctx, "leader1", [_signal(tx_hash="0xbal-off")], time.time())
 
-        assert results[0].status == "skipped"
-        assert results[0].reason == "max_position_pct_reached"
-        exec_svc.execute.assert_not_called()
+        assert results[0].status == "executed"
+        assert decision_service.buy_calls[0]["max_notional_usdc"] == pytest.approx(16.0)
+        req = exec_svc.execute.await_args.args[0]
+        assert req.side == "BUY"
+        assert req.amount == Decimal("16")
 
 
 @pytest.mark.asyncio
@@ -926,14 +936,77 @@ async def test_max_position_pct_caps_additional_buy_on_same_market(tmp_path):
 
         assert results[0].status == "executed"
         assert decision_service.buy_calls
-        # After fix: cap is against free_cash ($90 * 0.20 = $18), minus existing market
-        # exposure ($10) = $8. Strategy produces $5 (100% of $5 signal), but the
-        # decision layer may trust-upsize up to min($1000 buy_max, $8 pct_cap) = $8.
-        assert decision_service.buy_calls[0]["max_notional_usdc"] == pytest.approx(8.0)
+        # MAX_POSITION_PCT is cash-only: $90 free cash * 0.20 = $18.
+        # Existing market exposure is handled by separate exposure policies.
+        assert decision_service.buy_calls[0]["max_notional_usdc"] == pytest.approx(18.0)
 
         req = exec_svc.execute.await_args.args[0]
         assert req.side == "BUY"
-        assert req.amount == Decimal("8")
+        assert req.amount == Decimal("18")
+
+
+@pytest.mark.asyncio
+async def test_max_position_pct_uses_startup_snapshot_before_submit(tmp_path):
+    async with _pg_pool() as pool:
+        exec_svc = AsyncMock()
+        exec_svc.execute.return_value = _exec_result(
+            accepted=True, filled=Decimal("10"), status="filled", order_id="ord-fresh-cash"
+        )
+        ctx = _make_context(
+            pool,
+            tmp_path,
+            execution_service=exec_svc,
+            config=_config(ENABLE_BALANCE_TIERED_POLICY="false", MAX_POSITION_PCT="0.20"),
+        )
+        decision_service = _RecordingDecisionService()
+        ctx.copy_decision_service = decision_service
+
+        balance_mock = AsyncMock(side_effect=[100.0, 50.0])
+        with patch("orchestrators.trade_pipeline.get_my_balance", balance_mock):
+            results = await execute_trades(ctx, "leader1", [_signal(tx_hash="0xfresh-cash")], time.time())
+
+        assert results[0].status == "executed"
+        assert balance_mock.await_count == 1
+        assert [call.args[0] for call in balance_mock.await_args_list] == [
+            ctx.config.wallet.funder_address,
+        ]
+        assert decision_service.buy_calls[0]["max_notional_usdc"] == pytest.approx(20.0)
+        req = exec_svc.execute.await_args.args[0]
+        assert req.side == "BUY"
+        assert req.amount == Decimal("20")
+
+
+@pytest.mark.asyncio
+async def test_max_position_pct_refreshes_snapshot_after_24_hours(tmp_path):
+    async with _pg_pool() as pool:
+        exec_svc = AsyncMock()
+        exec_svc.execute.return_value = _exec_result(
+            accepted=True, filled=Decimal("10"), status="filled", order_id="ord-refreshed-cash"
+        )
+        ctx = _make_context(
+            pool,
+            tmp_path,
+            execution_service=exec_svc,
+            config=_config(ENABLE_BALANCE_TIERED_POLICY="false", MAX_POSITION_PCT="0.20"),
+        )
+        decision_service = _RecordingDecisionService()
+        ctx.copy_decision_service = decision_service
+        seed_position_pct_cap_snapshot(
+            ctx,
+            Decimal("100"),
+            timestamp=time.time() - (24 * 60 * 60) - 1,
+        )
+
+        balance_mock = AsyncMock(return_value=50.0)
+        with patch("orchestrators.trade_pipeline.get_my_balance", balance_mock):
+            results = await execute_trades(ctx, "leader1", [_signal(tx_hash="0xstale-cash")], time.time())
+
+        assert results[0].status == "executed"
+        assert balance_mock.await_count == 1
+        assert decision_service.buy_calls[0]["max_notional_usdc"] == pytest.approx(10.0)
+        req = exec_svc.execute.await_args.args[0]
+        assert req.side == "BUY"
+        assert req.amount == Decimal("10")
 
 
 @pytest.mark.asyncio
