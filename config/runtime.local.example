@@ -53,3 +53,27 @@ MULTI_USER_CONFIG_FILE=
 #
 # Safety:
 # DISCOVERY_DYNAMIC_MONITORING_ENABLED=false
+
+# -----------------------------------------------------------------------------
+# Contract addresses (Polygon Mainnet, chain 137)
+# -----------------------------------------------------------------------------
+# These default to the canonical Polymarket V2 addresses in config/addresses.py
+# and normally need no override. Both exchange contracts are used: orders are
+# signed for the CTF Exchange or the Neg Risk CTF Exchange depending on the
+# market's neg_risk flag, and pUSD must be approved for BOTH.
+# CTF_EXCHANGE_V2_ADDRESS=0xE111180000d2663C0091e4f400237545B87B996B
+# NEG_RISK_CTF_EXCHANGE_V2_ADDRESS=0xe2222d279d744050d28e00520010520000310F59
+
+# -----------------------------------------------------------------------------
+# On-chain early detection (PR2)
+# -----------------------------------------------------------------------------
+# Mined OrderFilled log detection is always safe (authoritative). Pending-tx
+# detection is provisional and OFF by default; enable only with an Alchemy
+# WebSocket URL that supports alchemy_pendingTransactions.
+# ENABLE_ONCHAIN_MINED_DETECTION=true
+# ENABLE_ONCHAIN_PENDING_DETECTION=false
+# PENDING_TX_PROVIDER=alchemy
+# PENDING_TX_WS_URL=
+# PENDING_TX_HASHES_ONLY=false
+# PENDING_TX_MAX_SIGNAL_AGE_MS=500
+# PENDING_TX_DETECTION_CONFIDENCE_REQUIRED=pending_probable

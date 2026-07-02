@@ -886,11 +886,15 @@ async def create_clob_client(
             or ""
         )
         _ctf_addr = (getattr(_network, "ctf_exchange_v2_address", "") if _network else "") or ""
+        _neg_risk_addr = (
+            getattr(_network, "neg_risk_ctf_exchange_v2_address", "") if _network else ""
+        ) or ""
         collateral_status = await check_collateral_readiness(
             wallet_address=funder_or_signer,
             rpc_url=runtime_cfg.polygon_rpc_url,
             pusd_address=_pusd_addr,
             ctf_exchange_address=_ctf_addr,
+            neg_risk_exchange_address=_neg_risk_addr,
         )
         if not collateral_status.ready:
             reasons = "; ".join(collateral_status.failures)

@@ -24,6 +24,14 @@ from bot_cli.commands.rotate_traders import (
     register_rotate_traders_command,
     run_rotate_traders,
 )
+from bot_cli.commands.profile_leader import (
+    register_profile_leader_command,
+    run_profile_leader,
+)
+from bot_cli.commands.tune_strategy import (
+    register_tune_strategy_command,
+    run_tune_strategy,
+)
 
 __all__ = [
     "register_doctor_command",
@@ -48,4 +56,8 @@ __all__ = [
     "run_drift",
     "register_rotate_traders_command",
     "run_rotate_traders",
+    "register_profile_leader_command",
+    "run_profile_leader",
+    "register_tune_strategy_command",
+    "run_tune_strategy",
 ]
