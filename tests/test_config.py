@@ -133,10 +133,91 @@ class TestHappyPath:
         cfg = load_config(valid_env)
         assert cfg.risk.trailing_activation_pct is None
 
+    def test_trailing_activation_blank_defaults_when_disabled(
+        self, valid_env: dict[str, str]
+    ) -> None:
+        valid_env["ENABLE_TRAILING_STOP"] = "false"
+        valid_env["TRAILING_ACTIVATION_PCT"] = ""
+        cfg = load_config(valid_env)
+        assert cfg.features.enable_trailing_stop is False
+        assert cfg.risk.trailing_activation_mode == "disabled"
+        assert cfg.risk.trailing_activation_pct is None
+
+    def test_trailing_activation_comment_only_does_not_crash_when_disabled(
+        self, valid_env: dict[str, str]
+    ) -> None:
+        valid_env["ENABLE_TRAILING_STOP"] = "false"
+        valid_env["TRAILING_ACTIVATION_PCT"] = (
+            "# Auto activation; use a number for fixed profit-% activation."
+        )
+        cfg = load_config(valid_env)
+        assert cfg.risk.trailing_activation_mode == "disabled"
+        assert cfg.risk.trailing_activation_pct is None
+
+    def test_trailing_activation_garbage_ignored_when_disabled(
+        self, valid_env: dict[str, str]
+    ) -> None:
+        valid_env["ENABLE_TRAILING_STOP"] = "false"
+        valid_env["TRAILING_ACTIVATION_PCT"] = "lol-nope"
+        cfg = load_config(valid_env)
+        assert cfg.risk.trailing_activation_mode == "disabled"
+        assert cfg.risk.trailing_activation_pct is None
+
+    def test_trailing_activation_auto_is_accepted_when_enabled(
+        self, valid_env: dict[str, str]
+    ) -> None:
+        valid_env["ENABLE_TRAILING_STOP"] = "true"
+        valid_env["TRAILING_ACTIVATION_PCT"] = "auto"
+        cfg = load_config(valid_env)
+        assert cfg.risk.trailing_activation_mode == "auto"
+        assert cfg.risk.trailing_activation_pct is None
+
+    def test_trailing_activation_invalid_raises_when_enabled(
+        self, valid_env: dict[str, str]
+    ) -> None:
+        valid_env["ENABLE_TRAILING_STOP"] = "true"
+        valid_env["TRAILING_ACTIVATION_PCT"] = "lol-nope"
+        with pytest.raises(
+            EnvValidationError,
+            match="TRAILING_ACTIVATION_PCT must be a valid float or 'auto'",
+        ):
+            load_config(valid_env)
+
     def test_trailing_activation_numeric_value(self, valid_env: dict[str, str]) -> None:
+        # Feature-aware parsing: a numeric activation only counts as "fixed"
+        # when the trailing-stop sub-engine is actually enabled.
+        valid_env["ENABLE_TRAILING_STOP"] = "true"
         valid_env["TRAILING_ACTIVATION_PCT"] = "40"
         cfg = load_config(valid_env)
+        assert cfg.risk.trailing_activation_mode == "fixed"
         assert cfg.risk.trailing_activation_pct == pytest.approx(40.0)
+
+    def test_both_exchange_addresses_present_and_distinct(
+        self, valid_env: dict[str, str]
+    ) -> None:
+        cfg = load_config(valid_env)
+        ctf = cfg.network.ctf_exchange_v2_address
+        neg = cfg.network.neg_risk_ctf_exchange_v2_address
+        assert ctf, "CTF Exchange V2 default address missing"
+        assert neg, "Neg Risk CTF Exchange V2 default address missing"
+        assert ctf.lower() != neg.lower()
+        assert neg.lower() == "0xe2222d279d744050d28e00520010520000310f59"
+
+    def test_neg_risk_exchange_address_override(
+        self, valid_env: dict[str, str]
+    ) -> None:
+        override = "0x" + "9" * 40
+        valid_env["NEG_RISK_CTF_EXCHANGE_V2_ADDRESS"] = override
+        cfg = load_config(valid_env)
+        assert cfg.network.neg_risk_ctf_exchange_v2_address == override
+
+    def test_order_confirmation_safe_release_defaults(
+        self, valid_env: dict[str, str]
+    ) -> None:
+        cfg = load_config(valid_env)
+        oc = cfg.order_confirmation
+        assert oc.auto_release_require_all_probes_clean is True
+        assert oc.auto_release_max_probe_errors == 0
 
     def test_leader_wallets_parsed_from_csv(self, valid_env: dict[str, str]) -> None:
         valid_env["LEADER_WALLETS"] = f"{_VALID_FUNDER},{_VALID_USER}"
@@ -437,6 +518,7 @@ class TestMalformedValues:
             load_config(valid_env)
 
     def test_invalid_trailing_activation_value(self, valid_env: dict[str, str]) -> None:
+        valid_env["ENABLE_TRAILING_STOP"] = "true"
         valid_env["TRAILING_ACTIVATION_PCT"] = "not-auto"
         with pytest.raises(
             EnvValidationError,
@@ -491,6 +573,7 @@ class TestMalformedValues:
     ) -> None:
         # TRAILING_ACTIVATION_PCT uses the float_or_auto path; 'inf' is not
         # 'auto' and must not slip through as a finite trailing trigger.
+        valid_env["ENABLE_TRAILING_STOP"] = "true"
         valid_env["TRAILING_ACTIVATION_PCT"] = "inf"
         with pytest.raises(
             EnvValidationError,

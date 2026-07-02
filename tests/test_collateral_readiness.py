@@ -68,6 +68,47 @@ class TestCheckSync:
         assert status.ready is True
         assert status.pusd_balance == Decimal("100")
         assert status.pusd_allowance_ctf > 0
+        assert mock_read.call_count == 2
+        assert status.pusd_allowance_neg_risk == Decimal("0")
+
+    NEG_RISK_EXCHANGE_V2_ADDRESS = "0xe2222d279d744050d28e00520010520000310F59"
+
+    @patch("services.collateral_readiness._erc20_read")
+    def test_neg_risk_allowance_probed_and_green(self, mock_read: MagicMock) -> None:
+        mock_read.side_effect = [
+            100_000_000,
+            1_000_000_000_000_000,
+            1_000_000_000_000_000,
+        ]
+        status = _check_sync(
+            wallet_address="0x" + "a" * 40,
+            rpc_url="http://localhost:8545",  # loopback avoids SonarCloud S5332
+            fallback_rpc_url="",
+            pusd_address=PUSD_ADDRESS,
+            ctf_exchange_address=CTF_EXCHANGE_V2_ADDRESS,
+            min_pusd_balance=Decimal("1.0"),
+            neg_risk_exchange_address=self.NEG_RISK_EXCHANGE_V2_ADDRESS,
+        )
+        assert status.ready is True
+        assert status.pusd_allowance_ctf > 0
+        assert status.pusd_allowance_neg_risk > 0
+        assert mock_read.call_count == 3
+
+    @patch("services.collateral_readiness._erc20_read")
+    def test_neg_risk_allowance_zero_fails_closed(self, mock_read: MagicMock) -> None:
+        mock_read.side_effect = [100_000_000, 1_000_000_000_000_000, 0]
+        status = _check_sync(
+            wallet_address="0x" + "a" * 40,
+            rpc_url="http://localhost:8545",  # loopback avoids SonarCloud S5332
+            fallback_rpc_url="",
+            pusd_address=PUSD_ADDRESS,
+            ctf_exchange_address=CTF_EXCHANGE_V2_ADDRESS,
+            min_pusd_balance=Decimal("1.0"),
+            neg_risk_exchange_address=self.NEG_RISK_EXCHANGE_V2_ADDRESS,
+        )
+        assert status.ready is False
+        assert any("Neg Risk" in failure for failure in status.failures)
+        assert status.pusd_allowance_neg_risk == Decimal("0")
 
     @patch("services.collateral_readiness._erc20_read")
     def test_low_balance_fails(self, mock_read: MagicMock) -> None:

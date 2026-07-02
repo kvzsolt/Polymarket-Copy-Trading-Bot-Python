@@ -7,6 +7,7 @@ without hitting the configless fail-closed short-circuit owned by issue #73.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import sys
 import time as _time
@@ -539,118 +540,129 @@ def test_build_submit_result_handles_non_retryable_rejection():
 # ---------------------------------------------------------------------------
 
 
-class _FakeHttpResp:
-    """Minimal httpx.Response stand-in for building a real SDK PolyApiException."""
+import aiohttp as _aiohttp
+from integrations.polymarket import clob_v2_gateway as _gw_mod
 
-    def __init__(self, status_code: int, body):
-        self.status_code = status_code
-        self._body = body
-        self.text = str(body)
 
-    def json(self):
+class _AsyncRespCM:
+    """Async-CM aiohttp response stand-in (or transport-fault on entry)."""
+
+    def __init__(self, status: int | None = None, body=None, exc: Exception | None = None):
+        self.status = status or 200
+        self._body = {} if body is None else body
+        self._exc = exc
+
+    async def json(self, content_type=None):  # noqa: ARG002
+        # Yield briefly so SonarCloud S7503 sees this as a genuine async
+        # function (aiohttp's caller awaits ``response.json()``).
+        await asyncio.sleep(0)
         return self._body
 
+    async def text(self):
+        await asyncio.sleep(0)
+        return str(self._body)
 
-def _sdk_transport_exc():
-    """The exact wrapper py-clob-client-v2 raises on an httpx transport failure."""
-    from py_clob_client_v2.exceptions import PolyApiException as SDKExc
+    async def __aenter__(self):
+        if self._exc is not None:
+            raise self._exc
+        return self
 
-    return SDKExc(error_msg="Request exception!")
+    async def __aexit__(self, *a):  # noqa: ANN002
+        return False
 
 
-def _sdk_404_exc():
-    from py_clob_client_v2.exceptions import PolyApiException as SDKExc
+class _AsyncFakeSession:
+    """Yields queued responses/exceptions, one per ``get`` call."""
 
-    return SDKExc(_FakeHttpResp(404, {"error": "order not found"}))
+    def __init__(self, items):
+        self._items = list(items)
+        self.calls = 0
+
+    def get(self, url, headers=None, params=None, timeout=None):  # noqa: ANN001, ARG002
+        self.calls += 1
+        item = self._items.pop(0) if self._items else _AsyncRespCM(200, {})
+        if isinstance(item, Exception):
+            return _AsyncRespCM(exc=item)
+        return item
+
+
+def _async_gateway(monkeypatch, items):
+    monkeypatch.setattr(_gw_mod, "_get_session", lambda: _AsyncFakeSession_singleton(items))
+    raw = SimpleNamespace(host="https://clob.polymarket.com", _l2_headers=lambda m, e: {"k": "v"})
+    return ClobV2Gateway(SimpleNamespace(client=raw))
+
+
+# One session instance so call-count assertions see every ``get``.
+_SESSIONS: dict[int, _AsyncFakeSession] = {}
+
+
+def _AsyncFakeSession_singleton(items):
+    key = id(items)
+    if key not in _SESSIONS:
+        _SESSIONS[key] = _AsyncFakeSession(items)
+    return _SESSIONS[key]
 
 
 @pytest.mark.asyncio
-async def test_get_order_retries_once_on_transport_disconnect_then_succeeds():
+async def test_get_order_retries_once_on_transport_disconnect_then_succeeds(monkeypatch):
     """GET is idempotent — a 'Server disconnected' transport failure is retried
-    exactly once; the retry opens a fresh connection and succeeds."""
-    calls = {"n": 0}
-
-    def _sync_get_order(order_id: str):
-        calls["n"] += 1
-        if calls["n"] == 1:
-            raise _sdk_transport_exc()
-        return {"id": order_id, "status": "live", "size_matched": "0"}
-
-    wrapper = SimpleNamespace(client=SimpleNamespace(get_order=_sync_get_order))
-    gw = ClobV2Gateway(wrapper)
+    exactly once over async aiohttp; the retry succeeds on a fresh connection."""
+    items = [
+        _aiohttp.ServerDisconnectedError("disc"),
+        _AsyncRespCM(200, {"id": "0xorder", "status": "live", "size_matched": "0"}),
+    ]
+    gw = _async_gateway(monkeypatch, items)
 
     state = await gw.get_order("0xorder")
 
-    assert calls["n"] == 2  # one failure + one retry
+    assert _SESSIONS[id(items)].calls == 2  # one failure + one retry
     assert isinstance(state, VenueOrderState)
     assert state.status == "live"
     assert state.order_id == "0xorder"
 
 
 @pytest.mark.asyncio
-async def test_get_order_retries_once_on_direct_connection_terminated_then_succeeds():
-    """Some stacks surface HTTP/2 disconnects directly as ConnectionTerminated.
-
-    That is still a safe-to-retry GET transport failure, not a terminal venue
-    response.
-    """
-    calls = {"n": 0}
-
-    class ConnectionTerminated(Exception):
-        pass
-
-    def _sync_get_order(order_id: str):
-        calls["n"] += 1
-        if calls["n"] == 1:
-            raise ConnectionTerminated(
-                "<ConnectionTerminated error_code:1, last_stream_id:10065>"
-            )
-        return {"id": order_id, "status": "matched", "size_matched": "1"}
-
-    wrapper = SimpleNamespace(client=SimpleNamespace(get_order=_sync_get_order))
-    gw = ClobV2Gateway(wrapper)
+async def test_get_order_retries_once_on_payload_error_then_succeeds(monkeypatch):
+    """Another aiohttp transport-class fault (payload/connection) is still a
+    safe-to-retry GET, not a terminal venue response."""
+    items = [
+        _aiohttp.ClientPayloadError("truncated"),
+        _AsyncRespCM(200, {"id": "0xorder", "status": "matched", "size_matched": "1"}),
+    ]
+    gw = _async_gateway(monkeypatch, items)
 
     state = await gw.get_order("0xorder")
 
-    assert calls["n"] == 2
+    assert _SESSIONS[id(items)].calls == 2
     assert state.status == "matched"
     assert state.filled_size == Decimal("1")
 
 
 @pytest.mark.asyncio
-async def test_get_order_retries_transport_only_once_then_raises_unavailable():
+async def test_get_order_retries_transport_only_once_then_raises_unavailable(monkeypatch):
     """A persistent transport failure raises VenueUnavailableError after the
     single retry (no infinite loop)."""
-    calls = {"n": 0}
-
-    def _always_disconnect(order_id: str):
-        calls["n"] += 1
-        raise _sdk_transport_exc()
-
-    wrapper = SimpleNamespace(client=SimpleNamespace(get_order=_always_disconnect))
-    gw = ClobV2Gateway(wrapper)
+    items = [
+        _aiohttp.ServerDisconnectedError("disc"),
+        _aiohttp.ServerDisconnectedError("disc"),
+    ]
+    gw = _async_gateway(monkeypatch, items)
 
     with pytest.raises(VenueUnavailableError) as exc_info:
         await gw.get_order("0xorder")
 
-    assert calls["n"] == 2  # original + exactly one retry
+    assert _SESSIONS[id(items)].calls == 2  # original + exactly one retry
     assert "poly_api_transport" in str(exc_info.value)
 
 
 @pytest.mark.asyncio
-async def test_get_order_404_raises_not_found_without_retry():
+async def test_get_order_404_raises_not_found_without_retry(monkeypatch):
     """A 404 is terminal-not-retryable; it raises VenueOrderNotFoundError and
     is NOT retried (unlike transport failures)."""
-    calls = {"n": 0}
-
-    def _not_found(order_id: str):
-        calls["n"] += 1
-        raise _sdk_404_exc()
-
-    wrapper = SimpleNamespace(client=SimpleNamespace(get_order=_not_found))
-    gw = ClobV2Gateway(wrapper)
+    items = [_AsyncRespCM(404, {"error": "order not found"})]
+    gw = _async_gateway(monkeypatch, items)
 
     with pytest.raises(VenueOrderNotFoundError):
         await gw.get_order("0xorder")
 
-    assert calls["n"] == 1  # no retry on 404
+    assert _SESSIONS[id(items)].calls == 1  # no retry on 404

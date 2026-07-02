@@ -24,6 +24,10 @@ from bot_cli.commands import (
     run_drift,
     register_rotate_traders_command,
     run_rotate_traders,
+    register_profile_leader_command,
+    run_profile_leader,
+    register_tune_strategy_command,
+    run_tune_strategy,
 )
 
 _COMMANDS = [
@@ -38,6 +42,8 @@ _COMMANDS = [
     ("stale-locks", register_stale_locks_command, run_stale_locks),
     ("drift", register_drift_command, run_drift),
     ("rotate-traders", register_rotate_traders_command, run_rotate_traders),
+    ("profile-leader", register_profile_leader_command, run_profile_leader),
+    ("tune-strategy", register_tune_strategy_command, run_tune_strategy),
 ]
 
 _COMMAND_RUNNERS = {name: runner for name, _, runner in _COMMANDS}

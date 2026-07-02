@@ -751,6 +751,7 @@ async def _shutdown_runtime(
     market_data_runtimes: dict[str, MarketDataRuntime],
     user_data_runtimes: list[UserDataRuntime],
     metrics_runner,
+    onchain_runtime=None,
 ) -> None:
     shutdown_tasks = list(monitor_tasks)
 
@@ -764,6 +765,15 @@ async def _shutdown_runtime(
 
     if shutdown_tasks:
         await asyncio.gather(*shutdown_tasks, return_exceptions=True)
+
+    if onchain_runtime is not None:
+        try:
+            await onchain_runtime.stop()
+        except Exception as exc:
+            logger.warning(
+                "onchain_runtime_shutdown_failed",
+                extra={"error": redact_error_detail(exc)},
+            )
 
     for runtime in user_data_runtimes:
         try:
@@ -1607,6 +1617,102 @@ async def main() -> int:
     for spec in supervised:
         spec.spawn()
 
+    # On-chain detection runtime (PR2): construct + start if the operator
+    # configured a WSS endpoint. The mined ``OrderFilled`` subscription is
+    # always safe (authoritative); the pending-tx subscription is gated by
+    # ``ENABLE_ONCHAIN_PENDING_DETECTION``. Without this wiring the config
+    # flags were inert (Greptile P1 "On-chain config unused").
+    onchain_runtime = None
+    oc_cfg = application.config.onchain_detection
+    ws_url = oc_cfg.onchain_ws_url or oc_cfg.pending_tx_ws_url
+    if ws_url and (oc_cfg.enable_onchain_mined_detection or oc_cfg.enable_onchain_pending_detection):
+        try:
+            import time as _time_mod
+
+            from orchestrators.onchain_detection_runtime import (
+                OnchainDetectionRuntime,
+            )
+            from services.onchain_detection.pending_tx_detector import (
+                PendingTxConfig,
+            )
+            from orchestrators.trade_pipeline import (
+                execute_trades as _execute_trade_pipeline,
+            )
+
+            async def _onchain_signal_sink(signal) -> None:
+                # Wire the on-chain signal into the same copy pipeline the
+                # REST-polling leader monitor uses. Each signal is converted
+                # to a raw signal dict (shaped for ``normalize_trade_signal``)
+                # and dispatched to every user context following the signal's
+                # leader. The copy pipeline's ``build_trade_key`` idempotency
+                # (``leader|tx_hash|side|asset``) catches the duplicate when
+                # the slower REST-polling path later reports the same fill.
+                #
+                # Case-insensitive leader lookup: the on-chain decoders
+                # lowercase ``signal.leader_wallet``, but
+                # ``contexts_by_leader`` is keyed from the configured
+                # ``LEADER_WALLETS`` entries which may be checksummed or
+                # mixed-case. A direct ``.get(signal.leader_wallet)`` would
+                # miss the match and silently drop the signal (Greptile P1
+                # "Leader lookup mismatches").
+                leader_lower = signal.leader_wallet.lower()
+                contexts: list = []
+                for ck, cv in contexts_by_leader.items():
+                    if ck.lower() == leader_lower:
+                        contexts = cv
+                        break
+                if not contexts:
+                    logger.debug(
+                        "onchain_signal_no_followers | leader=%s tx=%s",
+                        signal.leader_wallet,
+                        signal.tx_hash,
+                    )
+                    return
+                raw = signal.as_raw_signal_dict()
+                now_ts = _time_mod.time()
+                tasks = [
+                    _execute_trade_pipeline(ctx, leader_lower, [raw], now_ts)
+                    for ctx in contexts
+                ]
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+                for idx, result in enumerate(results):
+                    if isinstance(result, Exception):
+                        ctx = contexts[idx]
+                        logger.warning(
+                            "onchain_signal_pipeline_error | leader=%s user=%s "
+                            "tx=%s error=%s",
+                            leader_lower,
+                            ctx.user_id,
+                            signal.tx_hash,
+                            redact_error_detail(result),
+                        )
+
+            onchain_runtime = OnchainDetectionRuntime(
+                watched_wallets=set(application.config.leader.leader_wallets()),
+                ws_url=ws_url,
+                signal_sink=_onchain_signal_sink,
+                enable_pending=oc_cfg.enable_onchain_pending_detection,
+                enable_mined=oc_cfg.enable_onchain_mined_detection,
+                pending_config=PendingTxConfig(
+                    max_signal_age_ms=oc_cfg.pending_tx_max_signal_age_ms,
+                    hashes_only=oc_cfg.pending_tx_hashes_only,
+                ),
+            )
+            await onchain_runtime.start()
+            logger.info(
+                "onchain_detection_started | mined=%s pending=%s watched=%d",
+                oc_cfg.enable_onchain_mined_detection,
+                oc_cfg.enable_onchain_pending_detection,
+                len(application.config.leader.leader_wallets()),
+            )
+        except Exception as exc:
+            logger.warning(
+                "onchain_detection_start_failed | error=%s — bot continues "
+                "without on-chain detection (REST-polling leader path unaffected)",
+                redact_error_detail(exc),
+            )
+            onchain_runtime = None
+
     monitor_tasks.extend(
         asyncio.create_task(
             run_leader_monitor(
@@ -1720,6 +1826,7 @@ async def main() -> int:
             market_data_runtimes=market_data_runtimes,
             user_data_runtimes=user_data_runtimes,
             metrics_runner=metrics_runner,
+            onchain_runtime=onchain_runtime,
         )
 
 
