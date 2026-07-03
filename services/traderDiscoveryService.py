@@ -6,6 +6,7 @@ It does not mutate runtime env files and does not start live monitoring.
 
 from __future__ import annotations
 
+import asyncio
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -49,6 +50,23 @@ class RankedLeader:
     score: float
     recent_trade_count: int
     recent_notional_usdc: float
+
+
+@dataclass(frozen=True)
+class _CandidateEvalOutcome:
+    profile: TraderProfile | None
+    status: str
+    final_score: float = 0.0
+    eligible_live: bool = False
+    eligible_shadow: bool = False
+    rejection_reason: str | None = None
+
+
+@dataclass(frozen=True)
+class _CandidateEvalTaskResult:
+    profile: TraderProfile | None
+    evaluated: bool
+    error: bool
 
 
 class TraderDiscoveryService:
@@ -109,54 +127,29 @@ class TraderDiscoveryService:
             if limit is not None and limit > 0:
                 candidates = candidates[:limit]
 
-            for idx, cand in enumerate(candidates, start=1):
-                wallet = str(getattr(cand, "wallet", "") or "").lower()
-                self.logger.info(
-                    "candidate_eval_started | index=%s total=%s wallet=%s",
-                    idx,
-                    len(candidates),
-                    wallet,
-                    extra={
-                        "wallet": wallet,
-                        "candidate_index": idx,
-                        "candidate_total": len(candidates),
-                    },
+            concurrency = self._candidate_eval_concurrency()
+            semaphore = asyncio.Semaphore(concurrency)
+            eval_results = await asyncio.gather(
+                *(
+                    self._evaluate_candidate_for_run(
+                        cand,
+                        run_id=run_id,
+                        index=idx,
+                        total=len(candidates),
+                        semaphore=semaphore,
+                        concurrency=concurrency,
+                    )
+                    for idx, cand in enumerate(candidates, start=1)
                 )
-                await self._upsert_run_candidate(run_id, cand, status="candidate")
-                try:
-                    profile = await self._evaluate_one(cand, run_id=run_id)
+            )
+            for result in eval_results:
+                if result.evaluated:
                     evaluated_count += 1
-                except Exception as exc:
+                if result.error:
                     error_count += 1
-                    wallet = str(getattr(cand, "wallet", "") or "")
-                    self.logger.warning(
-                        "candidate_eval_failed | wallet=%s error_type=%s error=%r",
-                        wallet,
-                        type(exc).__name__,
-                        exc,
-                        exc_info=True,
-                        extra={
-                            "wallet": wallet,
-                            "error_type": type(exc).__name__,
-                            "error": repr(exc),
-                        },
-                    )
-                    evaluation = await self._upsert_failed_evaluation(
-                        cand,
-                        "candidate_eval_exception",
-                        exc,
-                    )
-                    await self._upsert_run_candidate(
-                        run_id,
-                        cand,
-                        evaluation=evaluation,
-                        status="rejected",
-                        rejection_reason="candidate_eval_exception",
-                    )
-                    continue
-                if profile is not None:
-                    profiles.append(profile)
-                    self._cache[profile.wallet.lower()] = profile
+                if result.profile is not None:
+                    profiles.append(result.profile)
+                    self._cache[result.profile.wallet.lower()] = result.profile
         except Exception as exc:
             await self._complete_discovery_run(
                 run_id,
@@ -176,17 +169,174 @@ class TraderDiscoveryService:
                 status="completed",
             )
 
+        self.logger.info(
+            "candidate_eval_run_completed",
+            extra={
+                "type": "discovery_candidate_eval",
+                "event": "run_completed",
+                "run_id": run_id,
+                "candidate_total": len(candidates),
+                "evaluated_count": evaluated_count,
+                "error_count": error_count,
+                "selected_count": len(profiles),
+                "concurrency": self._candidate_eval_concurrency(),
+                "duration_seconds": round(time.time() - run_started_at, 3),
+            },
+        )
         profiles.sort(key=lambda p: (-p.composite_score, p.wallet))
         return profiles
+
+    def _candidate_eval_concurrency(self) -> int:
+        configured = getattr(
+            getattr(self.config, "discovery", None),
+            "discovery_candidate_eval_concurrency",
+            1,
+        )
+        try:
+            return max(1, int(configured or 1))
+        except (TypeError, ValueError):
+            return 1
+
+    async def _evaluate_candidate_for_run(
+        self,
+        cand,
+        *,
+        run_id: str,
+        index: int,
+        total: int,
+        semaphore: asyncio.Semaphore,
+        concurrency: int,
+    ) -> _CandidateEvalTaskResult:
+        async with semaphore:
+            wallet = str(getattr(cand, "wallet", "") or "").lower()
+            started_at = time.monotonic()
+            self._log_candidate_eval_event(
+                "started",
+                run_id=run_id,
+                wallet=wallet,
+                index=index,
+                total=total,
+                concurrency=concurrency,
+            )
+            await self._upsert_run_candidate(run_id, cand, status="candidate")
+            try:
+                outcome = await self._evaluate_one(cand, run_id=run_id)
+            except Exception as exc:
+                self.logger.warning(
+                    "candidate_eval_failed | wallet=%s error_type=%s error=%r",
+                    wallet,
+                    type(exc).__name__,
+                    exc,
+                    exc_info=True,
+                    extra={
+                        "wallet": wallet,
+                        "error_type": type(exc).__name__,
+                        "error": repr(exc),
+                    },
+                )
+                evaluation = await self._upsert_failed_evaluation(
+                    cand,
+                    "candidate_eval_exception",
+                    exc,
+                )
+                await self._upsert_run_candidate(
+                    run_id,
+                    cand,
+                    evaluation=evaluation,
+                    status="rejected",
+                    rejection_reason="candidate_eval_exception",
+                )
+                self._log_candidate_eval_event(
+                    "failed",
+                    run_id=run_id,
+                    wallet=wallet,
+                    index=index,
+                    total=total,
+                    concurrency=concurrency,
+                    duration_seconds=time.monotonic() - started_at,
+                    status="rejected",
+                    rejection_reason="candidate_eval_exception",
+                    error_type=type(exc).__name__,
+                    error=repr(exc),
+                )
+                return _CandidateEvalTaskResult(
+                    profile=None,
+                    evaluated=False,
+                    error=True,
+                )
+
+            self._log_candidate_eval_event(
+                "completed",
+                run_id=run_id,
+                wallet=wallet,
+                index=index,
+                total=total,
+                concurrency=concurrency,
+                duration_seconds=time.monotonic() - started_at,
+                status=outcome.status,
+                final_score=outcome.final_score,
+                eligible_live=outcome.eligible_live,
+                eligible_shadow=outcome.eligible_shadow,
+                rejection_reason=outcome.rejection_reason,
+                selected=outcome.profile is not None,
+            )
+            return _CandidateEvalTaskResult(
+                profile=outcome.profile,
+                evaluated=True,
+                error=False,
+            )
+
+    def _log_candidate_eval_event(
+        self,
+        event: str,
+        *,
+        run_id: str,
+        wallet: str,
+        index: int,
+        total: int,
+        concurrency: int,
+        duration_seconds: float | None = None,
+        status: str | None = None,
+        final_score: float | None = None,
+        eligible_live: bool | None = None,
+        eligible_shadow: bool | None = None,
+        rejection_reason: str | None = None,
+        selected: bool | None = None,
+        error_type: str | None = None,
+        error: str | None = None,
+    ) -> None:
+        extra: dict[str, Any] = {
+            "type": "discovery_candidate_eval",
+            "event": event,
+            "run_id": run_id,
+            "wallet": wallet,
+            "candidate_index": index,
+            "candidate_total": total,
+            "concurrency": concurrency,
+        }
+        optional = {
+            "duration_seconds": (
+                round(duration_seconds, 3) if duration_seconds is not None else None
+            ),
+            "status": status,
+            "final_score": final_score,
+            "eligible_live": eligible_live,
+            "eligible_shadow": eligible_shadow,
+            "rejection_reason": rejection_reason,
+            "selected": selected,
+            "error_type": error_type,
+            "error": error,
+        }
+        extra.update({key: value for key, value in optional.items() if value is not None})
+        self.logger.info(f"candidate_eval_{event}", extra=extra)
 
     async def _evaluate_one(
         self,
         cand,
         *,
         run_id: str | None = None,
-    ) -> TraderProfile | None:
+    ) -> _CandidateEvalOutcome:
         wallet = str(getattr(cand, "wallet", "") or "").lower()
-        self.logger.info("candidate_eval_started", extra={"wallet": wallet})
 
         try:
             backfill = await self.history_backfill.backfill_wallet(wallet)
@@ -211,7 +361,11 @@ class TraderDiscoveryService:
                 status="rejected",
                 rejection_reason="backfill_failed",
             )
-            return None
+            return _CandidateEvalOutcome(
+                profile=None,
+                status="rejected",
+                rejection_reason="backfill_failed",
+            )
 
         self.logger.info(
             "candidate_backfill_complete",
@@ -252,7 +406,11 @@ class TraderDiscoveryService:
                 status="rejected",
                 rejection_reason=reason,
             )
-            return None
+            return _CandidateEvalOutcome(
+                profile=None,
+                status="rejected",
+                rejection_reason=reason,
+            )
 
         signals = self.grouper.group(trades)
         self.logger.info(
@@ -306,7 +464,7 @@ class TraderDiscoveryService:
             rejection_reason=evaluation.rejection_reason,
         )
 
-        return TraderProfile(
+        profile = TraderProfile(
             wallet=wallet,
             composite_score=evaluation.final_score,
             total_positions=replay.meaningful_signals,
@@ -316,6 +474,14 @@ class TraderDiscoveryService:
             event_count=len(signals),
             total_current_value=float(replay.copyable_target_notional_sum),
             tags=evaluation.status,
+        )
+        return _CandidateEvalOutcome(
+            profile=profile,
+            status=evaluation.status,
+            final_score=evaluation.final_score,
+            eligible_live=evaluation.eligible_live,
+            eligible_shadow=evaluation.eligible_shadow,
+            rejection_reason=evaluation.rejection_reason,
         )
 
     async def _upsert_failed_evaluation(
