@@ -1,0 +1,21 @@
+services/risk/risk_monitor.py
+  s_cd7ee16003588c::t_c382f04f0e8b66 154-156
+tests/test_risk_loop_parallel_timeout.py
+  s_cd7ee16003588c::t_c382f04f0e8b66 27-39
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "fdfad1a72bd640ef9f3e423f87a08d86a366c75d",
+  "prompts": {},
+  "sessions": {
+    "s_cd7ee16003588c": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f29bd-2f37-77a3-90f6-8f95ed976515",
+        "model": "gpt-5.5"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
