@@ -1,0 +1,33 @@
+services/traderDiscoveryService.py
+  s_cd7ee16003588c::t_3892228de9fc9b 9,55-71,130-142,144-146,148,150-152,172-185,189-332,338,364-368,409-413,467,478-485
+utils/logger.py
+  s_cd7ee16003588c::t_b7e1e7930b1bbc 267-269,272-342
+  s_cd7ee16003588c::t_dc1bdb2aa4128a 343
+tests/test_trader_discovery_service.py
+  s_cd7ee16003588c::t_fdf493722c9835 3,11,14,16,34,78-127,176-228
+  s_cd7ee16003588c::t_c393acd9fc87a2 229-231
+tests/test_config.py
+  s_cd7ee16003588c::t_2f71ea26fa7ac0 303,317-336
+  s_cd7ee16003588c::t_acebfd6154254d 337
+config/app_config.py
+  s_cd7ee16003588c::t_340939d191915b 689,1028-1029,1526-1528
+tests/test_logger.py
+  s_cd7ee16003588c::t_2e14f8eae3aebb 192-209,278-304
+  s_cd7ee16003588c::t_457a09668a3816 305
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "1a18afb2c1dceb40088c2265bab9c09e4b7ae388",
+  "prompts": {},
+  "sessions": {
+    "s_cd7ee16003588c": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f29bd-2f37-77a3-90f6-8f95ed976515",
+        "model": "gpt-5.5"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
