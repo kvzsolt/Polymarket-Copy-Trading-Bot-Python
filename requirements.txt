@@ -144,6 +144,8 @@ pytest==8.4.2
     # via
     #   poly-eip712-structs
     #   py-order-utils
+pytest-asyncio==0.24.0
+    # via polymarket-copy-trading-bot (pyproject.toml)
 python-dotenv==1.2.2
     # via polymarket-copy-trading-bot (pyproject.toml)
 pyunormalize==17.0.0
