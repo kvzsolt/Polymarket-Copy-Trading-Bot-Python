@@ -176,7 +176,13 @@ async def test_multi_user_positions_and_pnl_are_isolated(monkeypatch):
     async def _fake_balance(_wallet: str):
         return 1000.0
 
+    async def _fake_live_position_size(_context, *, token_id: str):
+        return Decimal("20")
+
     monkeypatch.setattr(trade_pipeline, "get_my_balance", _fake_balance)
+    monkeypatch.setattr(
+        trade_pipeline, "_fetch_live_position_size", _fake_live_position_size
+    )
 
     async with _pg_pool() as pool:
         leader_id = "0xleader"
