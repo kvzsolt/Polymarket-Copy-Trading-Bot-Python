@@ -1,0 +1,98 @@
+integrations/polymarket/errors.py
+  s_c2b13da16890bc::t_27dfaa63e82b27 48-59
+config/app_config.py
+  s_c2b13da16890bc::t_14b121463c0e30 470-474
+  s_c2b13da16890bc::t_7402ba72b70c5a 1277-1279
+tests/test_risk_exit_reject_cooldown.py
+  s_c2b13da16890bc::t_bbc079925fa31b 154-156
+  s_c2b13da16890bc::t_47e048f3546393 218,246,266,284,300
+  s_c2b13da16890bc::t_1ac78fe973c38b 1-43,45-50,52-62,64-65,67-81,83-84,86-94,96-97,99-103,105-153,157-166,168-217,219-245,247-265,267-283,285-299,301-317
+  s_c2b13da16890bc::t_cec77f0b957a83 44
+  s_c2b13da16890bc::t_a3d789667bc8ca 51
+  s_c2b13da16890bc::t_a46384c292ae60 63
+  s_c2b13da16890bc::t_cdf3135f1e2d0c 66
+  s_c2b13da16890bc::t_8df9cccf9fdbb8 82
+  s_c2b13da16890bc::t_af89c42aced655 85
+  s_c2b13da16890bc::t_77a8c2cc17c0da 95
+  s_c2b13da16890bc::t_69653657227e11 98
+  s_c2b13da16890bc::t_993b76fb086a30 104
+  s_c2b13da16890bc::t_595b9442de546e 167
+tests/test_collateral_readiness.py
+  s_42819eaedc61c5::t_155b06d094f4a4 302-304,306-307
+  s_42819eaedc61c5::t_3a1430bab8fa44 276
+  s_42819eaedc61c5::t_48d7fa81165981 260
+services/executionService.py
+  s_c2b13da16890bc::t_e6baa3ff7a17de 27
+  s_c2b13da16890bc::t_a2d2f254ec672e 1191-1196
+utils/createClobClient.py
+  s_4c249c59576a88::t_26896e55a1a2a7 159
+  s_4c249c59576a88::t_8e96262659dd59 138,147,170-171,175,927-930
+  s_229c9f50948c00::t_5436b41efdd558 160
+  s_229c9f50948c00::t_92ccc1abe1dbe2 18,43-61,64,79,83,125-137,139-146,148-149,154-158,161-169,173-174,176-177
+  s_229c9f50948c00::t_d877c71f6474de 150-153
+  s_42819eaedc61c5::t_8aee211d0d2607 172,178-179
+tests/test_insufficient_balance_classification.py
+  s_c2b13da16890bc::t_22f68e331ff626 1-200
+  s_c2b13da16890bc::t_aef57f9624239a 201-203
+  s_c2b13da16890bc::t_7444184b6dd211 204-213
+config/runtime.local.example
+  s_c2b13da16890bc::t_bcea92529ac52b 56-61
+tests/test_clob_client_startup.py
+  s_229c9f50948c00::t_b4aba7d94ceee2 13-14
+  s_4c249c59576a88::t_cbb95d95805667 8,12,17,27,34,39,44,47,53
+  s_229c9f50948c00::t_ebc9eb24102b54 1-7,9-11,15-16,18-26,28-33,35-38,40-43,45-46,48-52
+integrations/polymarket/clob_v2_gateway.py
+  s_c2b13da16890bc::t_15c10d6db0fb65 436-437
+  s_c2b13da16890bc::t_ff85161bb3d22f 268-277
+  s_c2b13da16890bc::t_02e93827bd41e1 355-359
+  s_c2b13da16890bc::t_87bcab9ee07fcf 65
+  s_c2b13da16890bc::t_86cf473d552a61 310-311
+services/risk/risk_monitor.py
+  s_c2b13da16890bc::t_7afb642e8aa4a5 1654-1660
+  s_c2b13da16890bc::t_f7735c4e71c96f 98-100
+  s_c2b13da16890bc::t_d34c44974394ab 1079-1084,1091-1099
+  s_c2b13da16890bc::t_0165e72500180c 1078,1085-1090,1100-1140
+  s_c2b13da16890bc::t_e83ec0da899aa3 1475-1489
+  s_c2b13da16890bc::t_a54262cc1acc72 168-176
+  s_c2b13da16890bc::t_f1319f4d302ccd 1586-1593
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "04b0fbdf707f3267488d54c0c637f087a6842375",
+  "prompts": {},
+  "sessions": {
+    "s_229c9f50948c00": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f2a1f-4b25-7f62-ad91-4485048e2025",
+        "model": "gpt-5.5"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    },
+    "s_42819eaedc61c5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a1dd9d9b-9b58-4c8a-b902-43e3f7690533",
+        "model": "claude-fable-5"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    },
+    "s_4c249c59576a88": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f2a30-73e8-7911-8f5d-4abf56069749",
+        "model": "gpt-5.5"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    },
+    "s_c2b13da16890bc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ec1366b1-781e-430a-9133-9fdd134ecbb7",
+        "model": "claude-fable-5"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
