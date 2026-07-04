@@ -22,6 +22,7 @@ from services.risk.risk_monitor import (
     _arm_risk_exit_reject_cooldown,
     _risk_exit_cooldown_active,
     _risk_exit_reject_cooldown_seconds,
+    _should_arm_risk_exit_reject_cooldown,
 )
 
 _COND = "cond-storm"
@@ -129,6 +130,22 @@ class TestCooldownHelpers:
             "risk_exit_reject_cooldown_seconds"
         ]
         assert field.default == 60.0
+
+    @pytest.mark.parametrize("status", ["rejected", "cancelled"])
+    def test_terminal_statuses_arm_cooldown(self, status):
+        assert _should_arm_risk_exit_reject_cooldown(status, "opaque") is True
+
+    def test_failed_insufficient_balance_arms_cooldown(self):
+        assert (
+            _should_arm_risk_exit_reject_cooldown(
+                "failed",
+                "insufficient_balance | not enough balance / allowance",
+            )
+            is True
+        )
+
+    def test_failed_transient_error_does_not_arm_cooldown(self):
+        assert _should_arm_risk_exit_reject_cooldown("failed", "timeout") is False
 
 
 # --------------------------------------------------------------------------
@@ -279,6 +296,26 @@ async def test_transient_failure_not_suppressed(monkeypatch):
         await run_risk_check_for_context(context)
 
         assert exec_svc.calls == 2
+
+
+@_integration
+@pytest.mark.asyncio
+async def test_failed_insufficient_balance_suppressed(monkeypatch):
+    """Observed CLOB shape: status='failed' with balance/allowance text."""
+    monkeypatch.delenv("RISK_EXIT_REJECT_COOLDOWN_SECONDS", raising=False)
+    async with _pg_pool() as pool:
+        await _seed_position(pool)
+        exec_svc = _CountingExecutionService(
+            status="failed",
+            error="insufficient_balance | {'error': 'not enough balance / allowance'}",
+        )
+        context = _make_context(pool, execution_service=exec_svc)
+        await rehydrate_position_manager(context)
+
+        await run_risk_check_for_context(context)
+        await run_risk_check_for_context(context)
+
+        assert exec_svc.calls == 1
 
 
 @_integration

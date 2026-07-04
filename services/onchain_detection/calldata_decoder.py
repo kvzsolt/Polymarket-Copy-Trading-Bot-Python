@@ -101,6 +101,7 @@ class WatchedMatch:
     token_id: int
     maker_amount: int
     taker_amount: int
+    maker_index: int | None = None
 
 
 def _to_decoded_order(raw: tuple) -> DecodedOrder:
@@ -181,10 +182,11 @@ def find_watched_wallets(
                 token_id=call.taker_order.token_id,
                 maker_amount=call.taker_order.maker_amount,
                 taker_amount=call.taker_order.taker_amount,
+                maker_index=None,
             )
         )
 
-    for maker_order in call.maker_orders:
+    for idx, maker_order in enumerate(call.maker_orders):
         if maker_order.maker in watched_lower:
             matches.append(
                 WatchedMatch(
@@ -194,6 +196,7 @@ def find_watched_wallets(
                     token_id=maker_order.token_id,
                     maker_amount=maker_order.maker_amount,
                     taker_amount=maker_order.taker_amount,
+                    maker_index=idx,
                 )
             )
 

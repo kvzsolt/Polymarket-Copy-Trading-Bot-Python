@@ -63,6 +63,12 @@ __all__ = [
 
 _ETH_ADDR_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
 _HEX_PRIVATE_KEY_RE = re.compile(r"^0x[0-9a-fA-F]{64}$")
+_ONCHAIN_DETECTION_CONFIDENCE_VALUES = {
+    "market_unattributed",
+    "pending_probable",
+    "mined_authoritative",
+    "confirmed_final",
+}
 logger = logging.getLogger("AppConfig")
 
 # Contract addresses live in the dependency-free ``config.addresses`` leaf
@@ -1004,6 +1010,18 @@ def _validate_semantics(cfg: AppConfig, errors: list[str]) -> None:
         + le.leader_score_weight_activity
     ) <= 0:
         errors.append("LEADER_SCORE_WEIGHT_* values must sum to > 0.")
+
+    # On-chain detection
+    oc = cfg.onchain_detection
+    confidence_required = str(
+        oc.pending_tx_detection_confidence_required or ""
+    ).strip().lower()
+    if confidence_required not in _ONCHAIN_DETECTION_CONFIDENCE_VALUES:
+        allowed = ", ".join(sorted(_ONCHAIN_DETECTION_CONFIDENCE_VALUES))
+        errors.append(
+            "PENDING_TX_DETECTION_CONFIDENCE_REQUIRED must be one of: "
+            f"{allowed}."
+        )
     if le.auto_discover_top_n <= 0:
         errors.append("AUTO_DISCOVER_TOP_N must be > 0.")
 
