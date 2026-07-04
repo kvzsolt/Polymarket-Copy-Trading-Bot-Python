@@ -1,0 +1,37 @@
+tests/test_pre_reconcile_skip_locked.py
+  s_fdb79452ecd3ef::t_1ccaaa93e301f2 1-215
+  s_fdb79452ecd3ef::t_8ecdbac44546c8 216-217
+tests/test_risk_loop_parallel_timeout.py
+  s_fdb79452ecd3ef::t_a2522eb3895882 35-42
+app.py
+  s_fdb79452ecd3ef::t_622c90c68cde1c 1691
+  s_fdb79452ecd3ef::t_bd7b5ec97893d8 1706
+services/risk/risk_monitor.py
+  s_fdb79452ecd3ef::t_43f0765fb99472 1127-1132
+  s_fdb79452ecd3ef::t_0f0aa790731c66 1076-1080,1088-1093
+  s_fdb79452ecd3ef::t_7dbb22e7bb6b24 154-161
+  s_fdb79452ecd3ef::t_d77dc342ce5d4f 1244-1249
+  s_fdb79452ecd3ef::t_52414cd42dff3e 1250-1251
+tests/test_app_leader_config_attrs.py
+  s_fdb79452ecd3ef::t_7637da19be11f6 1-42
+orchestrators/trade_pipeline.py
+  s_fdb79452ecd3ef::t_fe2673a9e13fc6 1437-1451
+  s_fdb79452ecd3ef::t_efe4885450bef2 1347,1360-1367
+  s_fdb79452ecd3ef::t_52414cd42dff3e 1436
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "3c3ca5e0451a5d3ad7aae2c72513b7a2f9b43a91",
+  "prompts": {},
+  "sessions": {
+    "s_fdb79452ecd3ef": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d4061922-9727-4d38-828e-c360ceb3fab2",
+        "model": "claude-fable-5"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
