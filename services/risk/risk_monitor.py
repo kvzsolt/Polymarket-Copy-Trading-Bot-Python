@@ -151,9 +151,14 @@ _MIN_RISK_CACHE_STALE_SECONDS = 0.75
 _DORMANT_TOKEN_TTL_SECONDS = 300.0
 
 _RISK_PRE_RECONCILE_BACKOFF_KEY = "risk_pre_reconcile_backoff"
-# Must exceed the 10s async CLOB order-status GET timeout plus retry delay so
-# healthy slow venue calls resolve before the outer pre-reconcile guard fires.
-_DEFAULT_RISK_PRE_RECONCILE_TIMEOUT_SECONDS = 12.0
+# Must exceed the worst case of ONE healthy-but-slow venue order-status GET:
+# the first aiohttp attempt can burn its full 10s total timeout, and
+# ``_async_signed_get`` then retries once (idempotent GET) after 0.15s, which
+# can burn another full 10s — ~20.15s end to end. The previous 12.0s default
+# undercounted the retry as "retry delay" (0.15s) instead of a second full
+# request, so the outer guard cancelled every in-flight reconcile whenever the
+# venue was slow and live-spammed "Risk pre-reconcile TIMEOUT ... after 12.0s".
+_DEFAULT_RISK_PRE_RECONCILE_TIMEOUT_SECONDS = 25.0
 _DEFAULT_RISK_PRE_RECONCILE_BACKOFF_SECONDS = 30.0
 _MAX_RISK_PRE_RECONCILE_BACKOFF_SECONDS = 300.0
 
@@ -1068,7 +1073,11 @@ def _risk_exit_fully_closed_position(updated_pos: object | None) -> bool:
     return updated_pos is None
 
 
-async def reconcile_unconfirmed_risk_orders(context: TradingContext) -> int:
+async def reconcile_unconfirmed_risk_orders(
+    context: TradingContext,
+    *,
+    skip_locked_scopes: bool = False,
+) -> int:
     """Converge risk-monitor-originated submitted_unconfirmed SELLs.
 
     Issue #71 — per-record settlement delegates to ``ReconciliationService``,
@@ -1076,6 +1085,12 @@ async def reconcile_unconfirmed_risk_orders(context: TradingContext) -> int:
     function still orchestrates the batch (filtering, scope locking) so that
     risk SELLs serialize against the trade pipeline and live risk-monitor
     actions on the same scoped position.
+
+    ``skip_locked_scopes`` — the risk loop's pre-reconcile phase passes True
+    so a record whose scope lock is held by another consumer (execute_trades
+    submit/confirm, manual sync, standalone reconciler) is skipped instead of
+    queued behind that holder's venue I/O inside the pre-reconcile ceiling;
+    the holder converges the position, or the next tick retries the row.
     """
     if not context.execution_service:
         return 0
@@ -1109,6 +1124,12 @@ async def reconcile_unconfirmed_risk_orders(context: TradingContext) -> int:
             condition_id=condition_id,
             token_id=token_id,
         )
+        if skip_locked_scopes and context.position_coordinator.is_locked(scope):
+            logger.debug(
+                "risk_reconcile_skip_locked_scope | order_id=%s",
+                order_id,
+            )
+            continue
         async with context.position_coordinator.acquire(scope):
             applied = await reconciler.reconcile_risk_record(
                 record,
@@ -1220,8 +1241,14 @@ async def _pre_reconcile_for_context(context: TradingContext) -> int:
         return 0
     try:
         from orchestrators.trade_pipeline import reconcile_submitted_unconfirmed
-        trade_n = await reconcile_submitted_unconfirmed(context)
-        risk_n = await reconcile_unconfirmed_risk_orders(context)
+        # skip_locked_scopes: this phase is best-effort and runs under the
+        # pre-reconcile wait_for ceiling. Blocking on a scope lock held by an
+        # in-flight execute_trades submit/confirm or manual sync (both do venue
+        # round-trips inside the lock) burned the whole ceiling and produced
+        # the recurring "Risk pre-reconcile TIMEOUT" ops spam; the lock holder
+        # (or the next tick / standalone reconciler) converges skipped rows.
+        trade_n = await reconcile_submitted_unconfirmed(context, skip_locked_scopes=True)
+        risk_n = await reconcile_unconfirmed_risk_orders(context, skip_locked_scopes=True)
         total_n = trade_n + risk_n
         if total_n:
             logger.info(

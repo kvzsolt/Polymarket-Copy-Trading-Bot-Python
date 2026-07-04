@@ -32,8 +32,14 @@ def test_pre_reconcile_default_timeout_exceeds_venue_get_timeout(monkeypatch):
 
     timeout = _risk_pre_reconcile_timeout_seconds(0.05)
 
-    assert timeout >= 12.0
-    assert timeout > _GET_ORDER_HTTP_TIMEOUT_SECONDS
+    # Worst case for ONE healthy-but-slow venue GET: the first attempt burns
+    # the full aiohttp total timeout (10s), then _async_signed_get retries
+    # once after 0.15s and that retry may burn another full 10s before the
+    # result lands. 12.0s ("timeout plus retry delay") undercounted the retry
+    # as 0.15s instead of a second full request — the outer guard cancelled
+    # every in-flight reconcile whenever the venue was slow, live-spamming
+    # "Risk pre-reconcile TIMEOUT ... after 12.0s".
+    assert timeout > 2 * _GET_ORDER_HTTP_TIMEOUT_SECONDS + 0.15
     assert _risk_pre_reconcile_timeout_seconds(30.0) == 30.0
 
 

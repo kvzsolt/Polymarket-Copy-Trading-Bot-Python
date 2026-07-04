@@ -1344,6 +1344,7 @@ async def reconcile_submitted_unconfirmed(
     context: TradingContext,
     *,
     max_age_seconds: float = 300.0,
+    skip_locked_scopes: bool = False,
 ) -> int:
     """Poll exchange for BUY and SELL orders stuck at submitted_unconfirmed.
 
@@ -1356,6 +1357,14 @@ async def reconcile_submitted_unconfirmed(
 
     Called at the top of each execute_trades invocation.
     Returns the total number of orders reconciled (fills applied + retries unlocked).
+
+    ``skip_locked_scopes`` — best-effort callers (the risk loop's pre-reconcile
+    phase) pass True so a record whose scoped position lock is currently held
+    by another consumer (execute_trades submit/confirm, manual sync, the
+    standalone reconciler) is skipped instead of queued behind that holder's
+    venue I/O; the lock holder converges the position, or the next sweep
+    retries the row. The execute_trades path keeps the blocking default: BUY
+    fills must become visible before the batch's SELL signals are processed.
     """
     if context.execution_service is None:
         return 0
@@ -1424,6 +1433,22 @@ async def reconcile_submitted_unconfirmed(
                         or f"__legacy_token__{_legacy_salt}"
                     ),
                 )
+            if skip_locked_scopes and context.position_coordinator.is_locked(_scope):
+                # Another consumer is actively converging this scope and may
+                # hold the lock through venue round-trips; queueing here would
+                # burn the best-effort caller's wall-clock ceiling (live
+                # symptom: "Risk pre-reconcile TIMEOUT ... after 12.0s" right
+                # after manual_sync_run / a new BUY execution).
+                metrics.inc(
+                    "pre_reconcile_skipped_locked_total",
+                    labels={"side": side},
+                )
+                logger.debug(
+                    "reconcile_skip_locked_scope | side=%s order_id=%s",
+                    side,
+                    record.get("order_id"),
+                )
+                return False
             async with sem:
                 async with context.position_coordinator.acquire(_scope):
                     return await _reconcile_one(context, record, side)
