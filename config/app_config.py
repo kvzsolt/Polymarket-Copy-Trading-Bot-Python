@@ -467,6 +467,11 @@ class RiskConfig:
     # ``trailing_activation_pct``. Defaulted so existing direct constructors
     # and fixtures keep working.
     trailing_activation_mode: Literal["disabled", "fixed", "auto"] = "disabled"
+    # Cooldown (seconds) before re-dispatching a risk exit for a scope whose
+    # previous protective SELL ended terminal (rejected/cancelled). Stops the
+    # 1 Hz resubmission storm against phantom positions (2026-07-04 incident).
+    # 0 disables. Defaulted so existing direct constructors keep working.
+    risk_exit_reject_cooldown_seconds: float = 60.0
 
 
 @dataclass(frozen=True)
@@ -1268,6 +1273,9 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         risk_price_cache_max_size=p.int_("RISK_PRICE_CACHE_MAX_SIZE", "5000"),
         trailing_activation_mode=cast(
             'Literal["disabled", "fixed", "auto"]', _trailing_activation_mode
+        ),
+        risk_exit_reject_cooldown_seconds=p.float_(
+            "RISK_EXIT_REJECT_COOLDOWN_SECONDS", "60"
         ),
     )
 

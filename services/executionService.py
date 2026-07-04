@@ -24,6 +24,7 @@ if TYPE_CHECKING:
 # imported here. See ``interfaces/clob_gateway.py`` and issue #66.
 from integrations.polymarket.errors import (
     VenueAuthError,
+    VenueInsufficientBalanceError,
     VenueInvalidOrderError,
     VenueRateLimitError,
     VenueUnavailableError,
@@ -1187,6 +1188,12 @@ class ExecutionService:
                     logger.warning("clob rate limited (attempt %s): %s", attempt, last_error)
                 except (VenueAuthError, VenueInvalidOrderError) as exc:
                     last_error = redact_error_detail(exc)
+                    if isinstance(exc, VenueInsufficientBalanceError):
+                        # Redaction strips the venue's balance text; restore the
+                        # canonical marker so the risk monitor's drift detector
+                        # (``_is_drift_error``) fires on this rejection shape,
+                        # mirroring the SDK-wrapper dict path.
+                        last_error = f"insufficient_balance | {last_error}"
                     response = {
                         "success": False,
                         "status": "rejected",
