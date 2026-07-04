@@ -300,6 +300,7 @@ class TestHappyPath:
         )
         assert cfg.discovery.falcon_dedupe_candidates is True
         assert cfg.discovery.falcon_max_candidates == 250
+        assert cfg.discovery.discovery_candidate_eval_concurrency == 1
         assert cfg.discovery.leader_score_version == "leader_score_v2"
         assert cfg.discovery.auto_leader_require_score_version is True
 
@@ -312,6 +313,27 @@ class TestHappyPath:
         cfg = load_config(valid_env)
         assert cfg.discovery.allow_auto_trader_detection is True
         assert cfg.discovery.max_auto_traders_count == 3
+
+    def test_discovery_candidate_eval_concurrency_loads_env(
+        self,
+        valid_env: dict[str, str],
+    ) -> None:
+        valid_env["DISCOVERY_CANDIDATE_EVAL_CONCURRENCY"] = "4"
+        cfg = load_config(valid_env)
+        assert cfg.discovery.discovery_candidate_eval_concurrency == 4
+
+    @pytest.mark.parametrize("value", ["0", "-1"])
+    def test_discovery_candidate_eval_concurrency_must_be_positive(
+        self,
+        valid_env: dict[str, str],
+        value: str,
+    ) -> None:
+        valid_env["DISCOVERY_CANDIDATE_EVAL_CONCURRENCY"] = value
+        with pytest.raises(
+            EnvValidationError,
+            match="DISCOVERY_CANDIDATE_EVAL_CONCURRENCY",
+        ):
+            load_config(valid_env)
 
     def test_auto_leader_count_alias_loads_env(
         self,
