@@ -1688,7 +1688,7 @@ async def main() -> int:
                         )
 
             onchain_runtime = OnchainDetectionRuntime(
-                watched_wallets=set(application.config.leader.leader_wallets()),
+                watched_wallets=set(application.config.leader.wallets),
                 ws_url=ws_url,
                 signal_sink=_onchain_signal_sink,
                 enable_pending=oc_cfg.enable_onchain_pending_detection,
@@ -1703,7 +1703,7 @@ async def main() -> int:
                 "onchain_detection_started | mined=%s pending=%s watched=%d",
                 oc_cfg.enable_onchain_mined_detection,
                 oc_cfg.enable_onchain_pending_detection,
-                len(application.config.leader.leader_wallets()),
+                len(application.config.leader.wallets),
             )
         except Exception as exc:
             logger.warning(

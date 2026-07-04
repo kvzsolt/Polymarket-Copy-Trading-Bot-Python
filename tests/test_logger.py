@@ -189,6 +189,24 @@ class TestJsonFormatter:
         result = json.loads(fmt.format(record))
         assert result["custom_field"] == "custom_value"
 
+    def test_format_discovery_candidate_eval_extras(self):
+        fmt = JsonFormatter()
+        record = logging.LogRecord(
+            name="test", level=logging.INFO, pathname="", lineno=0,
+            msg="candidate_eval_completed", args=(), exc_info=None,
+        )
+        record.type = "discovery_candidate_eval"
+        record.event = "completed"
+        record.wallet = "0x" + "a" * 40
+        record.candidate_index = 1
+        record.candidate_total = 250
+        record.final_score = 0.82
+        result = json.loads(fmt.format(record))
+        assert result["type"] == "discovery_candidate_eval"
+        assert result["event"] == "completed"
+        assert result["candidate_index"] == 1
+        assert result["final_score"] == pytest.approx(0.82)
+
     def test_format_exception(self):
         fmt = JsonFormatter()
         try:
@@ -256,6 +274,34 @@ class TestRichConsoleHandler:
         assert isinstance(traceback_renderable, Traceback)
         assert traceback_renderable.trace.stacks[-1].exc_type == "ValueError"
         assert "record-backed error" in str(traceback_renderable.trace.stacks[-1].exc_value)
+
+    def test_emit_discovery_candidate_eval_structured_line(self):
+        handler = RichConsoleHandler()
+        handler.setFormatter(logging.Formatter("%(message)s"))
+        record = logging.LogRecord(
+            name="test", level=logging.INFO, pathname="", lineno=0,
+            msg="candidate_eval_completed", args=(), exc_info=None,
+        )
+        record.type = "discovery_candidate_eval"
+        record.event = "completed"
+        record.wallet = "0x" + "a" * 40
+        record.candidate_index = 1
+        record.candidate_total = 250
+        record.concurrency = 4
+        record.status = "live"
+        record.final_score = 0.82
+        record.eligible_live = True
+        record.duration_seconds = 1.25
+
+        with patch("utils.logger.console.print") as print_mock:
+            handler.emit(record)
+
+        assert print_mock.call_count == 1
+        rendered = print_mock.call_args.args[0]
+        assert "DISCOVERY CANDIDATE" in rendered
+        assert "001/250" in rendered
+        assert "concurrency=4" in rendered
+        assert "score=0.820" in rendered
 
 
 class TestUrlHelpers:
