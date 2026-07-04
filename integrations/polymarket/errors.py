@@ -45,6 +45,18 @@ class VenueInvalidOrderError(TerminalVenueError):
     pass
 
 
+class VenueInsufficientBalanceError(VenueInvalidOrderError):
+    """The venue rejected the order because the wallet balance/allowance is
+    insufficient for the requested amount.
+
+    Subclasses ``VenueInvalidOrderError`` so every existing terminal handler
+    keeps catching it; the distinct type lets the risk monitor treat it as a
+    position-drift signal (phantom position) instead of an opaque rejection.
+    """
+
+    pass
+
+
 class VenueOrderNotFoundError(TerminalVenueError):
     """The venue reports no order with this id (HTTP 404).
 

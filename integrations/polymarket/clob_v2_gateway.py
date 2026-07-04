@@ -62,6 +62,7 @@ except ImportError:  # pragma: no cover
 
 from integrations.polymarket.errors import (
     VenueAuthError,
+    VenueInsufficientBalanceError,
     VenueInvalidOrderError,
     VenueOrderNotFoundError,
     VenueRateLimitError,
@@ -264,6 +265,16 @@ def _quantize_marketable_amount_to_float(value: Decimal, side: str) -> float:
     return float(rounded)
 
 
+# Venue balance/allowance rejection markers. Kept separate from the generic
+# invalid-order substrings because an insufficient-balance rejection is a
+# position-drift signal (phantom position) the risk monitor must act on.
+_INSUFFICIENT_BALANCE_KEYWORDS = (
+    "not enough balance",
+    "insufficient balance",
+    "allowance",
+)
+
+
 def _classify_error(exc: Exception) -> tuple[bool, str]:
     """Classify an exception as (retryable, reason).
 
@@ -296,6 +307,8 @@ def _classify_error(exc: Exception) -> tuple[bool, str]:
         if status_code == 429:
             return True, "rate_limited"
         if status_code == 400:
+            if any(kw in msg for kw in _INSUFFICIENT_BALANCE_KEYWORDS):
+                return False, "insufficient_balance"
             return False, "invalid_order"
         if 500 <= status_code <= 599:
             return True, f"server_error_{status_code}"
@@ -339,6 +352,11 @@ def _classify_error(exc: Exception) -> tuple[bool, str]:
     if any(kw in msg for kw in ("not found", "not_found", "order does not exist", "no order", "unknown order")):
         return False, "not_found"
 
+    # Insufficient balance/allowance (status-code-less shapes). Terminal, but
+    # distinct from generic invalid_order: signals a phantom position.
+    if any(kw in msg for kw in _INSUFFICIENT_BALANCE_KEYWORDS):
+        return False, "insufficient_balance"
+
     # Invalid order / validation errors.
     if any(kw in msg for kw in (
         "lower than the minimum",
@@ -351,9 +369,6 @@ def _classify_error(exc: Exception) -> tuple[bool, str]:
         "crosses the book",
         "banned",
         "closed only",
-        "not enough balance",
-        "allowance",
-        "insufficient balance",
     )):
         return False, "invalid_order"
 
@@ -418,6 +433,8 @@ def _raise_classified(exc: Exception) -> NoReturn:
             type(exc).__name__, safe_detail,
         )
         raise VenueUnavailableError(f"unknown_ambiguous: {safe_detail}") from exc
+    if reason == "insufficient_balance":
+        raise VenueInsufficientBalanceError(f"{reason}: {safe_detail}") from exc
     raise VenueInvalidOrderError(f"{reason}: {safe_detail}") from exc
 
 
