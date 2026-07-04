@@ -24,6 +24,25 @@ def _ctx(user_id: str):
     return SimpleNamespace(user_id=user_id, extra={})
 
 
+def test_pre_reconcile_default_timeout_exceeds_venue_get_timeout(monkeypatch):
+    from integrations.polymarket.clob_v2_gateway import _GET_ORDER_HTTP_TIMEOUT_SECONDS
+    from services.risk.risk_monitor import _risk_pre_reconcile_timeout_seconds
+
+    monkeypatch.delenv("RISK_PRE_RECONCILE_TIMEOUT_SECONDS", raising=False)
+
+    timeout = _risk_pre_reconcile_timeout_seconds(0.05)
+
+    # Worst case for ONE healthy-but-slow venue GET: the first attempt burns
+    # the full aiohttp total timeout (10s), then _async_signed_get retries
+    # once after 0.15s and that retry may burn another full 10s before the
+    # result lands. 12.0s ("timeout plus retry delay") undercounted the retry
+    # as 0.15s instead of a second full request — the outer guard cancelled
+    # every in-flight reconcile whenever the venue was slow, live-spamming
+    # "Risk pre-reconcile TIMEOUT ... after 12.0s".
+    assert timeout > 2 * _GET_ORDER_HTTP_TIMEOUT_SECONDS + 0.15
+    assert _risk_pre_reconcile_timeout_seconds(30.0) == 30.0
+
+
 @pytest.mark.asyncio
 async def test_one_stalled_context_does_not_block_the_others():
     from services.risk.risk_monitor import risk_monitor_loop_for_contexts

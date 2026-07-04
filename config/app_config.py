@@ -381,6 +381,8 @@ class DatabaseConfig:
 class ClobConfig:
     http_url: str
     api_key: str
+    api_secret: str = ""
+    api_passphrase: str = ""
     # CLOB V2 gate — fail-closed default. The bot will not attempt the
     # py-clob-client-v2 surface unless this is explicitly enabled.
     clob_v2_ready: bool = False
@@ -467,6 +469,11 @@ class RiskConfig:
     # ``trailing_activation_pct``. Defaulted so existing direct constructors
     # and fixtures keep working.
     trailing_activation_mode: Literal["disabled", "fixed", "auto"] = "disabled"
+    # Cooldown (seconds) before re-dispatching a risk exit for a scope whose
+    # previous protective SELL ended terminal (rejected/cancelled). Stops the
+    # 1 Hz resubmission storm against phantom positions (2026-07-04 incident).
+    # 0 disables. Defaulted so existing direct constructors keep working.
+    risk_exit_reject_cooldown_seconds: float = 60.0
 
 
 @dataclass(frozen=True)
@@ -686,6 +693,7 @@ class DiscoveryConfig:
     falcon_sort_modes: tuple[str, ...] = ("h_score", "pnl", "sharpe", "roi", "win_rate")
     falcon_dedupe_candidates: bool = True
     falcon_max_candidates: int = 250
+    discovery_candidate_eval_concurrency: int = 1
     falcon_min_win_rate_15d: float = 0.45
     falcon_max_win_rate_15d: float = 0.90
     falcon_min_roi_15d: float = 0.0
@@ -1024,6 +1032,8 @@ def _validate_semantics(cfg: AppConfig, errors: list[str]) -> None:
         )
     if d.falcon_max_candidates <= 0:
         errors.append("FALCON_MAX_CANDIDATES must be > 0.")
+    if d.discovery_candidate_eval_concurrency <= 0:
+        errors.append("DISCOVERY_CANDIDATE_EVAL_CONCURRENCY must be > 0.")
     if d.leader_score_version not in {"leader_score_v1", "leader_score_v2"}:
         errors.append(
             'LEADER_SCORE_VERSION must be one of: "leader_score_v1", "leader_score_v2".'
@@ -1174,6 +1184,8 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
     clob = ClobConfig(
         http_url=p.string("CLOB_HTTP_URL", "https://clob.polymarket.com/"),
         api_key=p.string("CLOB_API_KEY", ""),
+        api_secret=p.string("CLOB_SECRET", ""),
+        api_passphrase=p.string("CLOB_PASSPHRASE", ""),
         clob_v2_ready=p.bool_("CLOB_V2_READY", False),
     )
 
@@ -1265,6 +1277,9 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         risk_price_cache_max_size=p.int_("RISK_PRICE_CACHE_MAX_SIZE", "5000"),
         trailing_activation_mode=cast(
             'Literal["disabled", "fixed", "auto"]', _trailing_activation_mode
+        ),
+        risk_exit_reject_cooldown_seconds=p.float_(
+            "RISK_EXIT_REJECT_COOLDOWN_SECONDS", "60"
         ),
     )
 
@@ -1520,6 +1535,9 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         ),
         falcon_dedupe_candidates=p.bool_("FALCON_DEDUPE_CANDIDATES", True),
         falcon_max_candidates=p.int_("FALCON_MAX_CANDIDATES", "250"),
+        discovery_candidate_eval_concurrency=p.int_(
+            "DISCOVERY_CANDIDATE_EVAL_CONCURRENCY", "1"
+        ),
         falcon_min_win_rate_15d=p.float_("FALCON_MIN_WIN_RATE_15D", "0.45"),
         falcon_max_win_rate_15d=p.float_("FALCON_MAX_WIN_RATE_15D", "0.90"),
         falcon_min_roi_15d=p.float_("FALCON_MIN_ROI_15D", "0"),

@@ -57,6 +57,13 @@ def test_clob_credentials_stripped_from_raw():
         )
 
 
+def test_clob_credentials_loaded_into_typed_config():
+    cfg = load_config(_valid_env())
+    assert cfg.clob.api_key == "supersecret-key"
+    assert cfg.clob.api_secret == "supersecret-secret"
+    assert cfg.clob.api_passphrase == "supersecret-passphrase"
+
+
 def test_sensitive_set_documented():
     """The sensitive-key set itself is part of the contract — drift here
     needs an explicit decision (and probably a new test)."""

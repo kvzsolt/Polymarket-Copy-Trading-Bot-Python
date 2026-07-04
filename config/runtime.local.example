@@ -53,6 +53,12 @@ MULTI_USER_CONFIG_FILE=
 #
 # Safety:
 # DISCOVERY_DYNAMIC_MONITORING_ENABLED=false
+#
+# Risk exits:
+# Cooldown before re-dispatching a protective SELL for a scope whose previous
+# attempt ended terminal (rejected/cancelled). Stops 1 Hz resubmission storms
+# against phantom positions. 0 disables.
+# RISK_EXIT_REJECT_COOLDOWN_SECONDS=60
 
 # -----------------------------------------------------------------------------
 # Contract addresses (Polygon Mainnet, chain 137)
