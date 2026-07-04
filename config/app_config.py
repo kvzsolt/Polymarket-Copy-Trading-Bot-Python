@@ -381,6 +381,8 @@ class DatabaseConfig:
 class ClobConfig:
     http_url: str
     api_key: str
+    api_secret: str = ""
+    api_passphrase: str = ""
     # CLOB V2 gate — fail-closed default. The bot will not attempt the
     # py-clob-client-v2 surface unless this is explicitly enabled.
     clob_v2_ready: bool = False
@@ -1182,6 +1184,8 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
     clob = ClobConfig(
         http_url=p.string("CLOB_HTTP_URL", "https://clob.polymarket.com/"),
         api_key=p.string("CLOB_API_KEY", ""),
+        api_secret=p.string("CLOB_SECRET", ""),
+        api_passphrase=p.string("CLOB_PASSPHRASE", ""),
         clob_v2_ready=p.bool_("CLOB_V2_READY", False),
     )
 
