@@ -1,0 +1,54 @@
+tests/test_pending_tx_detector.py
+  s_39563937cbe340::t_dd0e8f6e94a1bd 128-130,146-189,286-287
+  s_39563937cbe340::t_5eb1c89f513048 57-66
+tests/test_config.py
+  s_39563937cbe340::t_126e454b4c8422 682-691
+tests/test_app_onchain_wiring.py
+  s_39563937cbe340::t_e6496d8397c58c 12-13,17,22,33,35,37-38,40,42-84
+tests/test_calldata_decoder.py
+  s_39563937cbe340::t_86d907c8456a57 136-139,194
+services/risk/risk_monitor.py
+  s_39563937cbe340::t_f93e94675a9251 1141-1149,1595-1601
+tests/test_onchain_detection_runtime.py
+  s_39563937cbe340::t_76424010450976 5,66-72,84,122,137,543
+  s_39563937cbe340::t_a6623e30d874f3 431-471
+services/onchain_detection/calldata_decoder.py
+  s_39563937cbe340::t_d312637e9151fd 104,185,189,199,208
+config/app_config.py
+  s_39563937cbe340::t_90098337eddf2b 66-71,1013-1024
+orchestrators/onchain_detection_runtime.py
+  s_39563937cbe340::t_884758bf70e9f6 59,69-82,249-274,440
+services/onchain_detection/condition_id_resolver.py
+  s_39563937cbe340::t_2f99f9ea040070 1-101
+orchestrators/trade_pipeline.py
+  s_39563937cbe340::t_dedc89fcd5b349 841-847
+app.py
+  s_39563937cbe340::t_444ad2b6280374 162-208
+  s_39563937cbe340::t_e748ddbce4b580 1675-1683,1749-1750
+tests/test_onchain_condition_id_resolver.py
+  s_39563937cbe340::t_89a361c42df2f9 1-46
+tests/test_risk_exit_reject_cooldown.py
+  s_39563937cbe340::t_b6f93649174bc2 25,134-149,301-318
+  s_39563937cbe340::t_7f7cbc1f3c559e 319-320
+services/onchain_detection/pending_tx_detector.py
+  s_39563937cbe340::t_a47231d83bafa9 50,222
+  s_39563937cbe340::t_7e00c39df06a73 90-92,96-115,173-174
+tests/test_trade_pipeline_safety.py
+  s_39563937cbe340::t_05f1f534cb1765 1563-1568
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "101323c02bbd1b01faed852b4d06cdb3178e01fa",
+  "prompts": {},
+  "sessions": {
+    "s_39563937cbe340": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f2f03-26fe-7190-b3aa-c13ba59a4fe3",
+        "model": "gpt-5.5"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
