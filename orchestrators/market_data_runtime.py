@@ -23,6 +23,7 @@ from typing import Any
 
 from cache.market_state_store import MarketStateStore
 from clients.market_ws import DEFAULT_MARKET_WS_URL, MarketWebSocket
+from integrations.polymarket.errors import VenueOrderbookNotFoundError
 from interfaces.clob_gateway import ClobGateway
 from services.healthServer import ReadinessTracker
 from utils.logger import get_logger
@@ -242,6 +243,13 @@ class MarketDataRuntime:
                 token_id,
             )
             return False
+        except VenueOrderbookNotFoundError:
+            self.market_store.mark_resolved(token_id, condition_id)
+            logger.info(
+                "market_data_rest_bootstrap_rejected | token_id=%s reason=no_orderbook",
+                token_id,
+            )
+            return False
         except Exception as exc:
             logger.warning(
                 "market_data_rest_bootstrap_rejected | token_id=%s reason=fetch_error error=%r",
@@ -442,6 +450,12 @@ class MarketDataRuntime:
         for token_id in normalized:
             try:
                 await self._bootstrap_one_token(token_id)
+            except VenueOrderbookNotFoundError:
+                self.market_store.mark_resolved(token_id)
+                logger.info(
+                    "market_data_bootstrap_skipped | token_id=%s reason=no_orderbook",
+                    token_id,
+                )
             except Exception as exc:
                 self.market_store.mark_dirty(token_id, "rest_bootstrap_failed")
                 self._status.last_error = repr(exc)

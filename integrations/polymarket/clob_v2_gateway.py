@@ -65,6 +65,7 @@ from integrations.polymarket.errors import (
     VenueInsufficientBalanceError,
     VenueInvalidOrderError,
     VenueOrderNotFoundError,
+    VenueOrderbookNotFoundError,
     VenueRateLimitError,
     VenueUnavailableError,
 )
@@ -566,8 +567,15 @@ class ClobV2Gateway:
                 f"get_orderbook_timeout after {_SDK_GET_TIMEOUT_SECONDS}s"
             ) from exc
         except Exception as exc:
+            retryable, reason = _classify_error(exc)
+            if not retryable and reason == "not_found":
+                logger.info("get_orderbook not found for %s", token_id)
+                raise VenueOrderbookNotFoundError(f"orderbook_not_found: {token_id}") from exc
             logger.error("get_orderbook failed for %s (%s)", token_id, redact_error_detail(exc))
             _raise_classified(exc)
+
+        if getattr(raw_book, "orderbook_not_found", False):
+            raise VenueOrderbookNotFoundError(f"orderbook_not_found: {token_id}")
 
         bids: list[OrderBookLevel] = []
         asks: list[OrderBookLevel] = []

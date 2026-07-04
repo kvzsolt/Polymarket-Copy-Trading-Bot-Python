@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from cache.market_state_store import MarketStateStore
+from integrations.polymarket.errors import VenueOrderbookNotFoundError
 from integrations.polymarket.models import OrderBook, OrderBookLevel
 from orchestrators.market_data_runtime import (
     MarketDataRuntime,
@@ -285,6 +286,20 @@ class TestBootstrap:
         await rt.bootstrap_tokens([TOKEN_A])
 
         assert store.is_dirty(TOKEN_A)
+
+    @pytest.mark.asyncio
+    async def test_bootstrap_orderbook_not_found_marks_resolved_not_failed(self) -> None:
+        store = MarketStateStore()
+        gw = AsyncMock()
+        gw.get_orderbook = AsyncMock(side_effect=VenueOrderbookNotFoundError("no orderbook"))
+        gw.get_market_info = AsyncMock()
+        rt = _make_runtime(store=store, gateway=gw)
+        await rt.bootstrap_tokens([TOKEN_A])
+
+        assert store.is_resolved(TOKEN_A)
+        assert store.get_book(TOKEN_A) is None
+        assert rt.status().last_error is None
+        gw.get_market_info.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_bootstrap_after_rest_token_immediately_executable(self) -> None:
@@ -809,6 +824,24 @@ class TestEnsureTokenReadyOrBootstrapped:
         result = await rt.ensure_token_ready_or_bootstrapped(TOKEN_A)
 
         assert result is False
+
+    @pytest.mark.asyncio
+    async def test_bootstrap_rejected_when_orderbook_not_found_marks_resolved(self) -> None:
+        store = MarketStateStore()
+        gw = AsyncMock()
+        gw.get_orderbook = AsyncMock(side_effect=VenueOrderbookNotFoundError("no orderbook"))
+        gw.get_market_info = AsyncMock(return_value={})
+        rt = _make_runtime_with_config(store=store, gateway=gw)
+
+        result = await rt.ensure_token_ready_or_bootstrapped(
+            TOKEN_A,
+            condition_id="0xcond",
+        )
+
+        assert result is False
+        assert store.is_resolved(TOKEN_A)
+        assert store.get_state(TOKEN_A).condition_id == "0xcond"
+        gw.get_market_info.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_bootstrap_uses_defaults_when_no_market_data_config(self) -> None:
