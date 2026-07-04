@@ -1,0 +1,36 @@
+tests/test_clob_sdk_transport.py
+  s_59f9d9ab2d59a3::t_6e137d34088624 3,7,10,57-77,82-90
+  s_59f9d9ab2d59a3::t_bfa97e38773d91 78-81
+orchestrators/market_data_runtime.py
+  s_59f9d9ab2d59a3::t_4e96ad52d6d34c 26,246-252,453-458
+integrations/polymarket/clob_v2_gateway.py
+  s_59f9d9ab2d59a3::t_4e96ad52d6d34c 68,570-573,577-578
+  s_59f9d9ab2d59a3::t_5d11209961c4ac 579
+tests/test_gateway_p2_fixes.py
+  s_59f9d9ab2d59a3::t_6e137d34088624 38,276-295
+  s_59f9d9ab2d59a3::t_f55d2385658262 296
+utils/createClobClient.py
+  s_59f9d9ab2d59a3::t_bfa97e38773d91 257-260,415-422
+  s_59f9d9ab2d59a3::t_4e96ad52d6d34c 253-256,261-263,432,438,470-476,485-496
+integrations/polymarket/errors.py
+  s_59f9d9ab2d59a3::t_4e96ad52d6d34c 70-79
+tests/test_market_data_runtime.py
+  s_59f9d9ab2d59a3::t_6e137d34088624 20,290-303,828-844
+  s_59f9d9ab2d59a3::t_e2f8d7a0db10d6 845
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "e435bc0989a238439c88d83b7c3f202943bdc35d",
+  "prompts": {},
+  "sessions": {
+    "s_59f9d9ab2d59a3": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f2f5c-bfe7-7bb0-a4c7-9bdd662d921f",
+        "model": "gpt-5.5"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
