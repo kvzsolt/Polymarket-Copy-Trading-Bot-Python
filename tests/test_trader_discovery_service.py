@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -7,12 +8,12 @@ from unittest.mock import AsyncMock
 import pytest
 
 from services.discovery.falcon_candidate_service import FalconCandidate
-from services.traderDiscoveryService import TraderDiscoveryService
+from services.traderDiscoveryService import TraderDiscoveryService, TraderProfile
 
 
-def _candidate() -> FalconCandidate:
+def _candidate(wallet_char: str = "a") -> FalconCandidate:
     return FalconCandidate(
-        wallet="0x" + "a" * 40,
+        wallet="0x" + wallet_char * 40,
         h_score=80.0,
         roi_15d=25.0,
         win_rate_15d=60.0,
@@ -30,6 +31,7 @@ def _config():
         discovery=SimpleNamespace(
             falcon_api_token="token",
             discovery_history_trade_limit=500,
+            discovery_candidate_eval_concurrency=1,
         )
     )
 
@@ -71,6 +73,56 @@ def _service(*, logger_name: str = "test.trader_discovery", run_history: bool = 
         logger_instance=logging.getLogger(logger_name),
     )
     return service, candidate, evaluation_repo
+
+
+def _concurrent_service(
+    candidates: list[FalconCandidate],
+    *,
+    concurrency: int,
+    run_history: bool = False,
+) -> tuple[TraderDiscoveryService, SimpleNamespace]:
+    evaluation_repo = SimpleNamespace(upsert_evaluation=AsyncMock())
+    if run_history:
+        evaluation_repo.create_discovery_run = AsyncMock()
+        evaluation_repo.complete_discovery_run = AsyncMock()
+        evaluation_repo.upsert_run_candidate = AsyncMock()
+    service = TraderDiscoveryService(
+        config=SimpleNamespace(
+            discovery=SimpleNamespace(
+                falcon_api_token="token",
+                discovery_history_trade_limit=500,
+                discovery_candidate_eval_concurrency=concurrency,
+                falcon_sort_modes=("h_score",),
+            )
+        ),
+        falcon_candidates=SimpleNamespace(
+            fetch_candidates=AsyncMock(return_value=candidates)
+        ),
+        history_backfill=object(),
+        discovery_repo=object(),
+        evaluation_repo=evaluation_repo,
+        grouper=object(),
+        classifier=object(),
+        replay_service=object(),
+        scoring_service=object(),
+        logger_instance=logging.getLogger("test.trader_discovery.concurrent"),
+    )
+    return service, evaluation_repo
+
+
+def _outcome(wallet: str, score: float):
+    return SimpleNamespace(
+        profile=TraderProfile(
+            wallet=wallet,
+            composite_score=score,
+            tags="live",
+        ),
+        status="live",
+        final_score=score,
+        eligible_live=True,
+        eligible_shadow=True,
+        rejection_reason=None,
+    )
 
 
 @pytest.mark.asyncio
@@ -118,6 +170,62 @@ async def test_discovery_run_history_is_best_effort_for_failed_candidate():
 
     evaluation_repo.create_discovery_run.assert_awaited_once()
     assert evaluation_repo.upsert_run_candidate.await_count == 2
+    evaluation_repo.complete_discovery_run.assert_awaited_once()
+    assert evaluation_repo.complete_discovery_run.await_args.kwargs["status"] == "completed"
+    assert evaluation_repo.complete_discovery_run.await_args.kwargs["error_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_candidate_evaluations_run_concurrently_with_semaphore():
+    candidates = [_candidate(ch) for ch in ("a", "b", "c", "d")]
+    service, _evaluation_repo = _concurrent_service(candidates, concurrency=2)
+    state = {"in_flight": 0, "max_in_flight": 0}
+    scores = {
+        candidates[0].wallet: 1.0,
+        candidates[1].wallet: 4.0,
+        candidates[2].wallet: 2.0,
+        candidates[3].wallet: 3.0,
+    }
+
+    async def evaluate_one(cand, *, run_id=None):  # noqa: ARG001
+        state["in_flight"] += 1
+        state["max_in_flight"] = max(state["max_in_flight"], state["in_flight"])
+        try:
+            await asyncio.sleep(0.02)
+            return _outcome(cand.wallet, scores[cand.wallet])
+        finally:
+            state["in_flight"] -= 1
+
+    service._evaluate_one = evaluate_one  # type: ignore[method-assign]
+
+    profiles = await service.discover_candidates()
+
+    assert state["max_in_flight"] == 2
+    assert [profile.composite_score for profile in profiles] == [4.0, 3.0, 2.0, 1.0]
+
+
+@pytest.mark.asyncio
+async def test_candidate_eval_exception_does_not_cancel_other_candidates():
+    good = _candidate("a")
+    bad = _candidate("b")
+    service, evaluation_repo = _concurrent_service(
+        [good, bad],
+        concurrency=2,
+        run_history=True,
+    )
+
+    async def evaluate_one(cand, *, run_id=None):  # noqa: ARG001
+        await asyncio.sleep(0)
+        if cand.wallet == bad.wallet:
+            raise RuntimeError("candidate failed")
+        return _outcome(cand.wallet, 2.0)
+
+    service._evaluate_one = evaluate_one  # type: ignore[method-assign]
+
+    profiles = await service.discover_candidates()
+
+    assert [profile.wallet for profile in profiles] == [good.wallet]
+    evaluation_repo.upsert_evaluation.assert_awaited_once()
     evaluation_repo.complete_discovery_run.assert_awaited_once()
     assert evaluation_repo.complete_discovery_run.await_args.kwargs["status"] == "completed"
     assert evaluation_repo.complete_discovery_run.await_args.kwargs["error_count"] == 1

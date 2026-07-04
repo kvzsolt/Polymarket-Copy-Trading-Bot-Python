@@ -264,7 +264,82 @@ class RichConsoleHandler(logging.Handler):
         if log_type == "clob_client_init":
             self._render_clob_client_init(record, ts)
             return True
+        if log_type == "discovery_candidate_eval":
+            self._render_discovery_candidate_eval(record, ts)
+            return True
         return False
+
+    def _render_discovery_candidate_eval(self, record: LogRecord, ts: str) -> None:
+        event = str(getattr(record, "event", "") or "").lower()
+        concurrency = getattr(record, "concurrency", None)
+        duration = getattr(record, "duration_seconds", None)
+
+        if event == "run_completed":
+            total = getattr(record, "candidate_total", 0)
+            evaluated = getattr(record, "evaluated_count", 0)
+            errors = getattr(record, "error_count", 0)
+            selected = getattr(record, "selected_count", 0)
+            parts = [
+                f"[muted][{ts}][/muted]",
+                "[bold cyan]DISCOVERY CANDIDATE RUN[/bold cyan]",
+                "[success]COMPLETED[/success]",
+                f"total={total}",
+                f"evaluated={evaluated}",
+                f"errors={errors}",
+                f"selected={selected}",
+            ]
+            if concurrency is not None:
+                parts.append(f"concurrency={concurrency}")
+            if duration is not None:
+                parts.append(f"{float(duration):.1f}s")
+            console.print(" | ".join(parts), highlight=False)
+            return
+
+        idx = getattr(record, "candidate_index", 0)
+        total = getattr(record, "candidate_total", 0)
+        wallet = _escape_markup(shorten_addr(getattr(record, "wallet", None), 6, 4))
+        status = str(getattr(record, "status", "") or "")
+        score = getattr(record, "final_score", None)
+        reason = getattr(record, "rejection_reason", None)
+        error_type = getattr(record, "error_type", None)
+        live = getattr(record, "eligible_live", None)
+        selected = getattr(record, "selected", None)
+
+        if event == "failed":
+            event_style = "error"
+            event_label = "FAILED"
+        elif event == "completed" and status == "rejected":
+            event_style = "warning"
+            event_label = "REJECTED"
+        elif event == "completed":
+            event_style = "success" if selected else "info"
+            event_label = "COMPLETED"
+        else:
+            event_style = "info"
+            event_label = "STARTED"
+
+        parts = [
+            f"[muted][{ts}][/muted]",
+            "[bold cyan]DISCOVERY CANDIDATE[/bold cyan]",
+            f"{int(idx):03d}/{int(total):03d}" if total else str(idx),
+            f"[address]{wallet}[/address]",
+            f"[{event_style}]{event_label}[/{event_style}]",
+        ]
+        if concurrency is not None:
+            parts.append(f"concurrency={concurrency}")
+        if status:
+            parts.append(f"status={_escape_markup(status)}")
+        if score is not None:
+            parts.append(f"score={float(score):.3f}")
+        if live is not None:
+            parts.append(f"live={str(bool(live)).lower()}")
+        if reason:
+            parts.append(f"reason={_escape_markup(str(reason))}")
+        if error_type:
+            parts.append(f"error={_escape_markup(str(error_type))}")
+        if duration is not None:
+            parts.append(f"{float(duration):.1f}s")
+        console.print(" | ".join(parts), highlight=False)
 
     def _render_api_error(self, record: LogRecord, ts: str) -> None:
         side = getattr(record, "side", "?")

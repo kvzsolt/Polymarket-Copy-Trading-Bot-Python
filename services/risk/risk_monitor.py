@@ -151,7 +151,9 @@ _MIN_RISK_CACHE_STALE_SECONDS = 0.75
 _DORMANT_TOKEN_TTL_SECONDS = 300.0
 
 _RISK_PRE_RECONCILE_BACKOFF_KEY = "risk_pre_reconcile_backoff"
-_DEFAULT_RISK_PRE_RECONCILE_TIMEOUT_SECONDS = 5.0
+# Must exceed the 10s async CLOB order-status GET timeout plus retry delay so
+# healthy slow venue calls resolve before the outer pre-reconcile guard fires.
+_DEFAULT_RISK_PRE_RECONCILE_TIMEOUT_SECONDS = 12.0
 _DEFAULT_RISK_PRE_RECONCILE_BACKOFF_SECONDS = 30.0
 _MAX_RISK_PRE_RECONCILE_BACKOFF_SECONDS = 300.0
 

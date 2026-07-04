@@ -686,6 +686,7 @@ class DiscoveryConfig:
     falcon_sort_modes: tuple[str, ...] = ("h_score", "pnl", "sharpe", "roi", "win_rate")
     falcon_dedupe_candidates: bool = True
     falcon_max_candidates: int = 250
+    discovery_candidate_eval_concurrency: int = 1
     falcon_min_win_rate_15d: float = 0.45
     falcon_max_win_rate_15d: float = 0.90
     falcon_min_roi_15d: float = 0.0
@@ -1024,6 +1025,8 @@ def _validate_semantics(cfg: AppConfig, errors: list[str]) -> None:
         )
     if d.falcon_max_candidates <= 0:
         errors.append("FALCON_MAX_CANDIDATES must be > 0.")
+    if d.discovery_candidate_eval_concurrency <= 0:
+        errors.append("DISCOVERY_CANDIDATE_EVAL_CONCURRENCY must be > 0.")
     if d.leader_score_version not in {"leader_score_v1", "leader_score_v2"}:
         errors.append(
             'LEADER_SCORE_VERSION must be one of: "leader_score_v1", "leader_score_v2".'
@@ -1520,6 +1523,9 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         ),
         falcon_dedupe_candidates=p.bool_("FALCON_DEDUPE_CANDIDATES", True),
         falcon_max_candidates=p.int_("FALCON_MAX_CANDIDATES", "250"),
+        discovery_candidate_eval_concurrency=p.int_(
+            "DISCOVERY_CANDIDATE_EVAL_CONCURRENCY", "1"
+        ),
         falcon_min_win_rate_15d=p.float_("FALCON_MIN_WIN_RATE_15D", "0.45"),
         falcon_max_win_rate_15d=p.float_("FALCON_MAX_WIN_RATE_15D", "0.90"),
         falcon_min_roi_15d=p.float_("FALCON_MIN_ROI_15D", "0"),

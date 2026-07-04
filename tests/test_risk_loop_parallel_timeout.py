@@ -24,6 +24,19 @@ def _ctx(user_id: str):
     return SimpleNamespace(user_id=user_id, extra={})
 
 
+def test_pre_reconcile_default_timeout_exceeds_venue_get_timeout(monkeypatch):
+    from integrations.polymarket.clob_v2_gateway import _GET_ORDER_HTTP_TIMEOUT_SECONDS
+    from services.risk.risk_monitor import _risk_pre_reconcile_timeout_seconds
+
+    monkeypatch.delenv("RISK_PRE_RECONCILE_TIMEOUT_SECONDS", raising=False)
+
+    timeout = _risk_pre_reconcile_timeout_seconds(0.05)
+
+    assert timeout >= 12.0
+    assert timeout > _GET_ORDER_HTTP_TIMEOUT_SECONDS
+    assert _risk_pre_reconcile_timeout_seconds(30.0) == 30.0
+
+
 @pytest.mark.asyncio
 async def test_one_stalled_context_does_not_block_the_others():
     from services.risk.risk_monitor import risk_monitor_loop_for_contexts
