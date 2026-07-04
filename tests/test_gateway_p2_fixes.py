@@ -35,6 +35,7 @@ from integrations.polymarket.errors import (
     VenueAuthError,
     VenueInvalidOrderError,
     VenueOrderNotFoundError,
+    VenueOrderbookNotFoundError,
     VenueRateLimitError,
     VenueUnavailableError,
 )
@@ -271,6 +272,27 @@ class TestGetTimeouts:
         with pytest.raises(VenueUnavailableError) as exc_info:
             await gw.get_orderbook("0xhang")
         assert "timeout" in str(exc_info.value).lower()
+
+    @pytest.mark.asyncio
+    async def test_get_orderbook_404_marker_raises_orderbook_not_found(self):
+        raw_book = MagicMock(bids=[], asks=[], orderbook_not_found=True)
+        wrapper = MagicMock()
+        wrapper.client = MagicMock()
+        wrapper.get_order_book = AsyncMock(return_value=raw_book)
+        gw = ClobV2Gateway(wrapper)
+
+        with pytest.raises(VenueOrderbookNotFoundError):
+            await gw.get_orderbook("0xdead")
+
+    @pytest.mark.asyncio
+    async def test_get_orderbook_404_exception_raises_orderbook_not_found(self):
+        wrapper = MagicMock()
+        wrapper.client = MagicMock()
+        wrapper.get_order_book = AsyncMock(side_effect=_CodedExc(404, "not_found"))
+        gw = ClobV2Gateway(wrapper)
+
+        with pytest.raises(VenueOrderbookNotFoundError):
+            await gw.get_orderbook("0xdead")
 
     @pytest.mark.asyncio
     async def test_get_order_fast_path_unaffected(self, monkeypatch):

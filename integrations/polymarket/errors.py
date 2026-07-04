@@ -67,3 +67,13 @@ class VenueOrderNotFoundError(TerminalVenueError):
     """
 
     pass
+
+
+class VenueOrderbookNotFoundError(TerminalVenueError):
+    """The venue reports no orderbook for this token id (HTTP 404).
+
+    This is market state, not venue health: the token is unavailable/resolved
+    and retrying the same book request will not repair local market data.
+    """
+
+    pass

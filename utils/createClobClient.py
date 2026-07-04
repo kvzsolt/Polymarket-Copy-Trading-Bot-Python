@@ -250,6 +250,17 @@ class _PriceTokenNotFound:
 PRICE_TOKEN_NOT_FOUND = _PriceTokenNotFound()
 
 
+def _is_orderbook_not_found_error(exc: Exception) -> bool:
+    status_code = getattr(exc, "status_code", None) or getattr(exc, "statusCode", None)
+    if status_code == 404:
+        return True
+    detail = (
+        f"{type(exc).__name__} {exc} "
+        f"{getattr(exc, 'error_msg', '')} {getattr(exc, 'message', '')}"
+    ).lower()
+    return "no orderbook" in detail or "not_found" in detail
+
+
 def configure_from_appconfig(config: Any) -> None:
     """Override module-level CLOB constants from a typed AppConfig.
 
@@ -401,7 +412,14 @@ def _top_of_book_from_levels(levels: list[Any], *, side: str) -> Decimal | None:
 
 class _RawBook:
     """Minimal book object returned by the HTTP fallback so gateway attribute access works."""
-    __slots__ = ("bids", "asks", "tick_size", "min_order_size", "neg_risk")
+    __slots__ = (
+        "bids",
+        "asks",
+        "tick_size",
+        "min_order_size",
+        "neg_risk",
+        "orderbook_not_found",
+    )
 
     def __init__(
         self,
@@ -411,11 +429,13 @@ class _RawBook:
         tick_size: object | None = None,
         min_order_size: object | None = None,
         neg_risk: object | None = None,
+        orderbook_not_found: bool = False,
     ) -> None:
         self.bids = bids
         self.asks = asks
         self.tick_size = tick_size
         self.min_order_size = min_order_size
+        self.orderbook_not_found = bool(orderbook_not_found)
         # Preserve the tri-state (P2-j): ``None`` means the book DID NOT report
         # neg_risk (so it is unknown), distinct from an explicit ``False``.
         # Collapsing omitted→False here previously let a transport-failed
@@ -447,6 +467,13 @@ class ClobClientWrapper:
         try:
             return await loop.run_in_executor(None, lambda: self.client.get_order_book(asset))
         except Exception as exc:
+            if _is_orderbook_not_found_error(exc):
+                logger.info(
+                    "orderbook_not_found | token_id=%s source=sdk",
+                    asset,
+                    extra={"type": "orderbook_not_found", "token_id": asset, "source": "sdk"},
+                )
+                return _RawBook(bids=[], asks=[], orderbook_not_found=True)
             logger.warning("SDK book fetch failed for %s: %s", asset, redact_error_detail(exc))
             return _RawBook(bids=[], asks=[])
 
@@ -455,6 +482,18 @@ class ClobClientWrapper:
         session = _get_session()
         try:
             async with session.get(url) as resp:
+                if resp.status == 404:
+                    logger.info(
+                        "orderbook_not_found | token_id=%s source=http status=404",
+                        asset,
+                        extra={
+                            "type": "orderbook_not_found",
+                            "token_id": asset,
+                            "source": "http",
+                            "httpStatus": 404,
+                        },
+                    )
+                    return _RawBook(bids=[], asks=[], orderbook_not_found=True)
                 if resp.status != 200:
                     log_api_response(
                         logger,
