@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import random
 import threading
 import time
 from dataclasses import dataclass
@@ -8,6 +9,7 @@ from decimal import ROUND_CEILING, ROUND_DOWN, ROUND_FLOOR, Decimal
 from typing import Any
 
 
+from py_clob_client_v2 import ApiCreds
 from py_clob_client_v2.client import ClobClient
 from py_clob_client_v2.clob_types import (
     MarketOrderArgs,
@@ -40,8 +42,10 @@ logger = get_logger("ClobClient")
 CLOB_HTTP_URL = "https://clob.polymarket.com"
 _SDK_HTTP_TRANSPORT_CONFIGURED = False
 _SDK_HTTP_TRANSPORT_LOCK = threading.Lock()
-_API_KEY_DERIVE_ATTEMPTS = 4
-_API_KEY_DERIVE_BASE_DELAY_SECONDS = 0.5
+_API_KEY_DERIVE_ATTEMPTS = 8
+_API_KEY_DERIVE_BASE_DELAY_SECONDS = 0.75
+_API_KEY_DERIVE_MAX_DELAY_SECONDS = 15.0
+_API_KEY_DERIVE_JITTER_RATIO = 0.15
 _API_KEY_DERIVE_RETRYABLE_STATUS_CODES = {408, 425, 429, 500, 502, 503, 504}
 _API_KEY_DERIVE_TRANSIENT_KEYWORDS = (
     "timeout",
@@ -135,11 +139,51 @@ def _is_retryable_api_key_derivation_error(exc: Exception) -> bool:
     return any(keyword in detail for keyword in _API_KEY_DERIVE_TRANSIENT_KEYWORDS)
 
 
+def _configured_api_creds_from_config(config: Any) -> ApiCreds | None:
+    clob_config = getattr(config, "clob", None) if config is not None else None
+    if clob_config is None:
+        return None
+
+    api_key = str(getattr(clob_config, "api_key", "") or "").strip()
+    api_secret = str(getattr(clob_config, "api_secret", "") or "").strip()
+    api_passphrase = str(getattr(clob_config, "api_passphrase", "") or "").strip()
+
+    if api_key and api_secret and api_passphrase:
+        return ApiCreds(
+            api_key=api_key,
+            api_secret=api_secret,
+            api_passphrase=api_passphrase,
+        )
+
+    if api_key or api_secret or api_passphrase:
+        logger.warning(
+            "Ignoring incomplete configured CLOB API credentials; set all of "
+            "CLOB_API_KEY, CLOB_SECRET, and CLOB_PASSPHRASE to skip API key derivation",
+            extra={"type": "clob_api_creds_incomplete"},
+        )
+
+    return None
+
+
+def _api_key_derivation_retry_delay(
+    attempt: int,
+    *,
+    base_delay_seconds: float,
+    max_delay_seconds: float,
+) -> float:
+    if base_delay_seconds <= 0 or max_delay_seconds <= 0:
+        return 0.0
+    delay = min(max_delay_seconds, base_delay_seconds * (2 ** (attempt - 1)))
+    jitter = delay * _API_KEY_DERIVE_JITTER_RATIO
+    return delay + random.uniform(0.0, jitter)
+
+
 async def _create_or_derive_api_key_with_retry(
     client: ClobClient,
     *,
     max_attempts: int = _API_KEY_DERIVE_ATTEMPTS,
     base_delay_seconds: float = _API_KEY_DERIVE_BASE_DELAY_SECONDS,
+    max_delay_seconds: float = _API_KEY_DERIVE_MAX_DELAY_SECONDS,
 ) -> Any:
     last_exc: Exception | None = None
     for attempt in range(1, max_attempts + 1):
@@ -154,7 +198,11 @@ async def _create_or_derive_api_key_with_retry(
                 break
 
             _configure_sdk_http_transport(force=True)
-            delay = base_delay_seconds * (2 ** (attempt - 1))
+            delay = _api_key_derivation_retry_delay(
+                attempt,
+                base_delay_seconds=base_delay_seconds,
+                max_delay_seconds=max_delay_seconds,
+            )
             logger.warning(
                 "CLOB API credential create/derive failed; retrying | "
                 "attempt=%s max_attempts=%s delay=%.2fs error=%s",
@@ -917,6 +965,7 @@ async def create_clob_client(
         funder_address=cfg.funder_address,
         polygon_rpc_url=cfg.polygon_rpc_url,
     )
+    configured_api_creds = _configured_api_creds_from_config(config)
     client = ClobClient(
         host,
         key=runtime_cfg.private_key,
@@ -924,10 +973,17 @@ async def create_clob_client(
         signature_type=int(runtime_cfg.signature_type),
         funder=(runtime_cfg.funder_address if runtime_cfg.signature_type != SignatureType.EOA else None),
     )
-    # L1 signer client (secret key) -> create or derive L2/HMAC credentials.
-    # py-clob-client-v2's wrapper handles both first-run wallets and wallets
-    # that already have a CLOB API key.
-    user_api_creds = await _create_or_derive_api_key_with_retry(client)
+    if configured_api_creds is not None:
+        user_api_creds = configured_api_creds
+        logger.info(
+            "Using configured CLOB API credentials; skipping create_or_derive_api_key",
+            extra={"type": "clob_api_creds_configured"},
+        )
+    else:
+        # L1 signer client (secret key) -> create or derive L2/HMAC credentials.
+        # py-clob-client-v2's wrapper handles both first-run wallets and wallets
+        # that already have a CLOB API key.
+        user_api_creds = await _create_or_derive_api_key_with_retry(client)
     client.set_api_creds(user_api_creds)
     logger.info(
         "CLOB client ready",
