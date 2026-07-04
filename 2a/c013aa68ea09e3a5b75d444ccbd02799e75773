@@ -1,0 +1,25 @@
+utils/createClobClient.py
+  s_a6c7fe7a22694a::t_cf93cc7cc80f19 4,12,45-48,142-180,186,201-205,968,976-986
+tests/test_clob_client_startup.py
+  s_a6c7fe7a22694a::t_2c8682f64c00fe 3-4,10-12,43-72,89-157
+config/app_config.py
+  s_a6c7fe7a22694a::t_745527740055d8 384-385,1187-1188
+tests/test_app_config_raw_no_secrets.py
+  s_a6c7fe7a22694a::t_ab90b0a02f7073 60-66
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "2ac013aa68ea09e3a5b75d444ccbd02799e75773",
+  "prompts": {},
+  "sessions": {
+    "s_a6c7fe7a22694a": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f2b1a-0712-73a0-9b3a-d5f75a85e870",
+        "model": "gpt-5.5"
+      },
+      "human_author": "kvzsolt <32572393+kvzsolt@users.noreply.github.com>"
+    }
+  }
+}
