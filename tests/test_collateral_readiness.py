@@ -257,7 +257,7 @@ class TestFailClosedStartup:
 
     @pytest.mark.asyncio
     @patch("services.collateral_readiness.check_collateral_readiness")
-    async def test_startup_derives_l2_creds_without_create_attempt(self, mock_check: AsyncMock) -> None:
+    async def test_startup_provisions_l2_creds_via_create_or_derive(self, mock_check: AsyncMock) -> None:
         from config.env import SignatureType, WalletConfig
         from utils.createClobClient import create_clob_client
         from types import SimpleNamespace
@@ -273,7 +273,7 @@ class TestFailClosedStartup:
         )
         mock_client = MagicMock()
         mock_creds = MagicMock()
-        mock_client.derive_api_key.return_value = mock_creds
+        mock_client.create_or_derive_api_key.return_value = mock_creds
         mock_cfg = SimpleNamespace(
             clob=SimpleNamespace(
                 clob_v2_ready=True,
@@ -299,8 +299,11 @@ class TestFailClosedStartup:
 
             wrapper = await create_clob_client(private_key="0x" + "a" * 64, config=mock_cfg)
 
+        # Startup uses the SDK's create-or-derive wrapper (works for first-run
+        # wallets AND wallets with an existing CLOB API key); it must never
+        # call ``create_api_key`` directly.
         mock_client.create_api_key.assert_not_called()
-        mock_client.create_or_derive_api_key.assert_not_called()
-        mock_client.derive_api_key.assert_called_once()
+        mock_client.create_or_derive_api_key.assert_called_once()
+        mock_client.derive_api_key.assert_not_called()
         mock_client.set_api_creds.assert_called_once_with(mock_creds)
         assert wrapper.api_creds is mock_creds

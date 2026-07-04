@@ -95,6 +95,9 @@ _INSUFFICIENT_BALANCE_PATTERNS = (
     "insufficient balance",
     "not enough balance",
     "allowance",
+    # ``redact_error_detail`` maps venue balance text to this category, so an
+    # already-redacted error string must still register as a drift signal.
+    "insufficient_funds",
 )
 
 
@@ -161,6 +164,15 @@ _RISK_PRE_RECONCILE_BACKOFF_KEY = "risk_pre_reconcile_backoff"
 _DEFAULT_RISK_PRE_RECONCILE_TIMEOUT_SECONDS = 25.0
 _DEFAULT_RISK_PRE_RECONCILE_BACKOFF_SECONDS = 30.0
 _MAX_RISK_PRE_RECONCILE_BACKOFF_SECONDS = 300.0
+
+# Cooldown after a terminal (rejected/cancelled) risk-exit submission. The
+# near-max/stop-loss decision is stateless — it re-fires whenever the live
+# price still satisfies the trigger — so without a cooldown a doomed SELL is
+# resubmitted at the risk-loop cadence (observed 2026-07-04: 1 Hz for ~3 min
+# against a phantom position, plus one risk_triggers spam row per attempt).
+# 0 disables (legacy behavior). Transient failures are NOT suppressed.
+_DEFAULT_RISK_EXIT_REJECT_COOLDOWN_SECONDS = 60.0
+_RISK_EXIT_REJECT_COOLDOWN_KEY = "risk_exit_reject_cooldown_until"
 
 
 @dataclass
@@ -1063,6 +1075,69 @@ def _should_attempt_no_fill_prune(
     return True
 
 
+def _risk_exit_reject_cooldown_seconds(context: TradingContext) -> float:
+    """Resolve the terminal-exit cooldown: typed AppConfig first, env fallback.
+
+    0 is a valid, meaningful value (operator opt-out to legacy behavior), so
+    this does NOT go through ``_float_env_or_default`` (which maps <=0 to the
+    default).
+    """
+    config = getattr(context, "config", None)
+    if config is not None:
+        risk_cfg = getattr(config, "risk", None)
+        val = getattr(risk_cfg, "risk_exit_reject_cooldown_seconds", None)
+        if isinstance(val, (int, float)) and float(val) >= 0.0:
+            return float(val)
+    raw = os.environ.get("RISK_EXIT_REJECT_COOLDOWN_SECONDS")
+    if raw is not None and str(raw).strip() != "":
+        try:
+            env_val = float(raw)
+        except (TypeError, ValueError):
+            env_val = None
+        if env_val is not None and env_val >= 0.0:
+            return env_val
+    return _DEFAULT_RISK_EXIT_REJECT_COOLDOWN_SECONDS
+
+
+def _risk_exit_cooldown_active(
+    context: TradingContext,
+    *,
+    condition_id: str,
+    token_id: str,
+    now: float | None = None,
+) -> bool:
+    current = time.time() if now is None else now
+    state = context.extra.get(_RISK_EXIT_REJECT_COOLDOWN_KEY)
+    if not isinstance(state, dict):
+        return False
+    try:
+        until = float(state.get(f"{condition_id}:{token_id}", 0.0) or 0.0)
+    except Exception:
+        return False
+    return current < until
+
+
+def _arm_risk_exit_reject_cooldown(
+    context: TradingContext,
+    *,
+    condition_id: str,
+    token_id: str,
+    now: float | None = None,
+) -> None:
+    """Suppress re-dispatch for this scope after a terminal exit failure.
+
+    Keyed on ``ExecutionResult.status`` by the callers (rejected/cancelled),
+    deliberately NOT on error-string classification, so the storm-stopper
+    holds even if venue error classification regresses to an opaque shape.
+    """
+    seconds = _risk_exit_reject_cooldown_seconds(context)
+    if seconds <= 0:
+        return
+    current = time.time() if now is None else now
+    state = context.extra.setdefault(_RISK_EXIT_REJECT_COOLDOWN_KEY, {})
+    state[f"{condition_id}:{token_id}"] = current + seconds
+
+
 def _risk_exit_fully_closed_position(updated_pos: object | None) -> bool:
     """Return True only when the protective SELL fully closed the position.
 
@@ -1397,6 +1472,21 @@ async def run_risk_check_for_context(
                         )
                     continue
 
+                if _risk_exit_cooldown_active(
+                    context,
+                    condition_id=pos.condition_id,
+                    token_id=pos.token_id,
+                ):
+                    # Recent terminal rejection for this scope — skip before
+                    # record_trigger so the DB is not spammed either.
+                    logger.debug(
+                        "risk_exit_reject_cooldown_active | cond=%s token=%s reason=%s",
+                        pos.condition_id[:12],
+                        pos.token_id[:12],
+                        reason,
+                    )
+                    continue
+
                 _trigger_id: int | None = None
                 if context.risk_triggers_repo is not None:
                     try:
@@ -1493,6 +1583,14 @@ async def run_risk_check_for_context(
                             )
                         except Exception:
                             logger.debug("risk_trigger_update_error", exc_info=True)
+                    # Terminal statuses only: transient failures ("failed",
+                    # coordinator skips) keep the normal loop cadence.
+                    if str(result.status or "").lower() in ("rejected", "cancelled"):
+                        _arm_risk_exit_reject_cooldown(
+                            context,
+                            condition_id=pos.condition_id,
+                            token_id=pos.token_id,
+                        )
                     continue
                 if result.filled_amount <= 0 and result.status in ("submitted_unconfirmed",):
                     logger.info(
@@ -1553,6 +1651,13 @@ async def run_risk_check_for_context(
                             )
                         except Exception:
                             logger.debug("risk_trigger_update_error", exc_info=True)
+                    # Accepted-but-zero-fill is terminal for this attempt (fully
+                    # killed FAK) — same 1 Hz refire shape as a rejection.
+                    _arm_risk_exit_reject_cooldown(
+                        context,
+                        condition_id=pos.condition_id,
+                        token_id=pos.token_id,
+                    )
                     continue
 
                 fill_size = Decimal(str(result.filled_amount))
