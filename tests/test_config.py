@@ -679,6 +679,16 @@ class TestSemanticInvariants:
         with pytest.raises(EnvValidationError, match="MIN_ACTIVE_POSITIONS must be > 0"):
             load_config(valid_env)
 
+    def test_pending_confidence_required_must_be_known(
+        self, valid_env: dict[str, str]
+    ) -> None:
+        valid_env["PENDING_TX_DETECTION_CONFIDENCE_REQUIRED"] = "wishful"
+        with pytest.raises(
+            EnvValidationError,
+            match="PENDING_TX_DETECTION_CONFIDENCE_REQUIRED",
+        ):
+            load_config(valid_env)
+
 
 # ---------------------------------------------------------------------------
 # Aggregation of multiple errors

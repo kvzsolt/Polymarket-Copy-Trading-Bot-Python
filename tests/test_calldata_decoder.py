@@ -133,6 +133,10 @@ def test_find_watched_wallets_matches_taker_and_makers() -> None:
     assert sides[_WATCHED_TAKER] == 0  # taker order side
     assert sides[_WATCHED_MAKER_A] == 1  # maker side
     assert sides[_WATCHED_MAKER_B] == 1
+    maker_indexes = {m.wallet: m.maker_index for m in matches}
+    assert maker_indexes[_WATCHED_TAKER] is None
+    assert maker_indexes[_WATCHED_MAKER_A] == 0
+    assert maker_indexes[_WATCHED_MAKER_B] == 1
 
 
 def test_find_watched_wallets_case_insensitive() -> None:
