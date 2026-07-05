@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from decimal import Decimal
 
 import pytest
@@ -62,7 +63,13 @@ def _build_log(
     }
 
 
-def _make_pending_signal(tx_hash: str = _TX, leader: str = _WATCHED) -> OnchainTradeSignal:
+def _make_pending_signal(
+    tx_hash: str = _TX,
+    leader: str = _WATCHED,
+    event_ts: int | None = None,
+) -> OnchainTradeSignal:
+    if event_ts is None:
+        event_ts = int(time.time() * 1000)
     return OnchainTradeSignal(
         leader_wallet=leader,
         token_id="12345",
@@ -74,7 +81,7 @@ def _make_pending_signal(tx_hash: str = _TX, leader: str = _WATCHED) -> OnchainT
         confidence=DetectionConfidence.PENDING_PROBABLE,
         maker_side=0,
         watched_role="taker",
-        event_ts=1000,
+        event_ts=event_ts,
         log_index=None,
         condition_id="cond-x",
         provisional=True,
@@ -112,6 +119,7 @@ def _make_runtime(
     dispatched: list[OnchainTradeSignal],
     *,
     enable_pending: bool = True,
+    pending_config: PendingTxConfig | None = None,
 ) -> OnchainDetectionRuntime:
     async def sink(signal: OnchainTradeSignal) -> None:
         # Yield control briefly so SonarCloud S7503 recognises this as a
@@ -126,7 +134,7 @@ def _make_runtime(
         signal_sink=sink,
         enable_pending=enable_pending,
         enable_mined=True,
-        pending_config=PendingTxConfig(max_signal_age_ms=10_000),
+        pending_config=pending_config or PendingTxConfig(max_signal_age_ms=10_000),
         condition_id_resolver=None,
     )
 
@@ -416,6 +424,47 @@ async def test_pending_not_dispatched_when_flag_off() -> None:
         await rt._enqueue(_make_pending_signal())
         await asyncio.sleep(0.05)
         assert len(dispatched) == 0
+    finally:
+        await rt.stop()
+
+
+@pytest.mark.asyncio
+async def test_pending_stale_checked_at_dispatch_time() -> None:
+    dispatched: list[OnchainTradeSignal] = []
+    rt = _make_runtime(
+        dispatched,
+        pending_config=PendingTxConfig(max_signal_age_ms=1),
+    )
+    await rt.start()
+    try:
+        pending = _make_pending_signal(event_ts=int(time.time() * 1000) - 10_000)
+        assert await rt._dedupe.record_pending(pending.tx_hash, pending.leader_wallet)
+        await rt._enqueue(pending)
+        await asyncio.sleep(0.05)
+        assert dispatched == []
+        assert rt.dispatched_tx_hashes_snapshot() == set()
+    finally:
+        await rt.stop()
+
+
+@pytest.mark.asyncio
+async def test_pending_below_required_confidence_not_dispatched() -> None:
+    dispatched: list[OnchainTradeSignal] = []
+    rt = _make_runtime(
+        dispatched,
+        pending_config=PendingTxConfig(
+            max_signal_age_ms=10_000,
+            confidence_required=DetectionConfidence.MINED_AUTHORITATIVE,
+        ),
+    )
+    await rt.start()
+    try:
+        pending = _make_pending_signal()
+        assert await rt._dedupe.record_pending(pending.tx_hash, pending.leader_wallet)
+        await rt._enqueue(pending)
+        await asyncio.sleep(0.05)
+        assert dispatched == []
+        assert rt.dispatched_tx_hashes_snapshot() == set()
     finally:
         await rt.stop()
 

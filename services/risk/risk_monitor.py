@@ -1138,6 +1138,15 @@ def _arm_risk_exit_reject_cooldown(
     state[f"{condition_id}:{token_id}"] = current + seconds
 
 
+def _should_arm_risk_exit_reject_cooldown(status: object, error: object = None) -> bool:
+    status_lower = str(status or "").lower()
+    if status_lower in ("rejected", "cancelled"):
+        return True
+    if status_lower == "failed" and _is_drift_error(str(error or "")):
+        return True
+    return False
+
+
 def _risk_exit_fully_closed_position(updated_pos: object | None) -> bool:
     """Return True only when the protective SELL fully closed the position.
 
@@ -1583,9 +1592,13 @@ async def run_risk_check_for_context(
                             )
                         except Exception:
                             logger.debug("risk_trigger_update_error", exc_info=True)
-                    # Terminal statuses only: transient failures ("failed",
-                    # coordinator skips) keep the normal loop cadence.
-                    if str(result.status or "").lower() in ("rejected", "cancelled"):
+                    # Terminal statuses and failed insufficient-balance/allowance
+                    # rejections arm cooldown. Plain transient failures keep the
+                    # normal retry cadence.
+                    if _should_arm_risk_exit_reject_cooldown(
+                        result.status,
+                        result.error,
+                    ):
                         _arm_risk_exit_reject_cooldown(
                             context,
                             condition_id=pos.condition_id,

@@ -56,6 +56,7 @@ from services.onchain_detection.pending_tx_detector import (
     pending_subscription_params,
 )
 from services.onchain_detection.trade_detection_models import (
+    DetectionConfidence,
     OnchainTradeSignal,
 )
 from utils.logger import get_logger, redact_error_detail
@@ -64,6 +65,20 @@ logger = get_logger("OnchainDetectionRuntime")
 
 SignalSink = Callable[[OnchainTradeSignal], Coroutine[Any, Any, None]]
 ConditionIdResolver = Callable[[str], Coroutine[Any, Any, str]]
+
+_CONFIDENCE_RANK = {
+    DetectionConfidence.MARKET_UNATTRIBUTED: 0,
+    DetectionConfidence.PENDING_PROBABLE: 1,
+    DetectionConfidence.MINED_AUTHORITATIVE: 2,
+    DetectionConfidence.CONFIRMED_FINAL: 3,
+}
+
+
+def _confidence_meets_required(
+    confidence: DetectionConfidence,
+    required: DetectionConfidence,
+) -> bool:
+    return _CONFIDENCE_RANK.get(confidence, -1) >= _CONFIDENCE_RANK.get(required, 0)
 
 
 class OnchainDetectionRuntime:
@@ -174,8 +189,6 @@ class OnchainDetectionRuntime:
             config=self._pending_config,
         )
         for signal in signals:
-            if is_stale_pending(signal, now_ms, self._pending_config.max_signal_age_ms):
-                continue
             # Record the pending (tx_hash, leader_wallet); if a pending for
             # this leader in this tx was already recorded, drop the duplicate
             # (do not double-dispatch). Per-leader keying allows distinct
@@ -232,6 +245,32 @@ class OnchainDetectionRuntime:
                     # belt-and-braces guard in case a pending signal was
                     # enqueued before the flag was toggled off.
                     if not self._enable_pending:
+                        continue
+                    now_ms = int(time.time() * 1000)
+                    if is_stale_pending(
+                        signal,
+                        now_ms,
+                        self._pending_config.max_signal_age_ms,
+                    ):
+                        logger.debug(
+                            "onchain_pending_stale_dropped | tx=%s leader=%s age_ms=%s",
+                            signal.tx_hash,
+                            signal.leader_wallet,
+                            now_ms - signal.event_ts,
+                        )
+                        continue
+                    if not _confidence_meets_required(
+                        signal.confidence,
+                        self._pending_config.confidence_required,
+                    ):
+                        logger.debug(
+                            "onchain_pending_confidence_dropped | tx=%s leader=%s "
+                            "confidence=%s required=%s",
+                            signal.tx_hash,
+                            signal.leader_wallet,
+                            signal.confidence,
+                            self._pending_config.confidence_required,
+                        )
                         continue
                     # If a mined signal for this (tx_hash, leader_wallet)
                     # has already superseded this pending signal, drop it
