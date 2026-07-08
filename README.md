@@ -177,7 +177,13 @@ Contributions are absolutely welcome! Whether it's a bug fix, a new feature, or 
 ---
 
 ## 🗺️ Roadmap
-**Trade detection via blockchain transactions, improve execution flow**
+**Trade detection via blockchain transactions**
+**Improve execution flow**
+**Fix known bugs, like risk management timeout**
+**Trader discovery V3**
+**Simplify codebase, refactor**
 
+## Rust version
+A version written in Rust, with all functions, logic, mechanism ported is coming soon, with much faster detection and execution time, make it able to copy nearly every type of traders.
 ---
 *Disclaimer: This software is for educational and experimental purposes only. Trading involves risk, and this system does not guarantee profit. You can and may lose money. Run at your own risk.*
