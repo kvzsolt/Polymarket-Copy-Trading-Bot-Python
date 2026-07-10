@@ -375,18 +375,18 @@ class PolymarketGateway:
 
         secure = self._client.require_secure()
         try:
-            if side == BUY:
+            if side == "BUY":
                 response = await secure.place_market_order(
                     token_id=request.token_id,
-                    side=BUY,
+                    side="BUY",
                     amount=request.size,
                     max_price=request.price_limit,
                     order_type=order_type,
                 )
-            elif side == SELL:
+            elif side == "SELL":
                 response = await secure.place_market_order(
                     token_id=request.token_id,
-                    side=SELL,
+                    side="SELL",
                     shares=request.size,
                     min_price=request.price_limit,
                     order_type=order_type,
