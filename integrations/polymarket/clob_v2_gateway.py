@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from http import HTTPStatus
 from types import SimpleNamespace
-from typing import Any, NoReturn
+from typing import Any, Literal, NoReturn
 
 from polymarket import (
     AcceptedOrder,
@@ -61,7 +61,26 @@ _GET_ORDER_HTTP_TIMEOUT_SECONDS = _SDK_READ_TIMEOUT_SECONDS
 _SDK_GET_TIMEOUT_SECONDS = _SDK_READ_TIMEOUT_SECONDS
 _MAX_TRADE_PAGES = 20
 _EXPECTED_CHAIN_ID = 137
-_MARKET_ORDER_TYPES = frozenset({"FAK", "FOK"})
+OrderSide = Literal["BUY", "SELL"]
+MarketOrderType = Literal["FAK", "FOK"]
+
+
+def _normalize_order_side(value: object) -> OrderSide:
+    normalized = str(value).upper()
+    if normalized == "BUY":
+        return "BUY"
+    if normalized == "SELL":
+        return "SELL"
+    raise VenueInvalidOrderError(f"unsupported order side: {value!r}")
+
+
+def _normalize_market_order_type(value: object) -> MarketOrderType:
+    normalized = str(value or "FOK").upper()
+    if normalized == "FAK":
+        return "FAK"
+    if normalized == "FOK":
+        return "FOK"
+    raise VenueInvalidOrderError(f"unsupported market order type: {normalized}")
 
 
 def _raw_model(value: object) -> dict[str, Any]:
@@ -291,12 +310,13 @@ class PolymarketGateway:
                 error="missing_condition_id",
                 non_retryable=True,
             )
+        side = _normalize_order_side(request.side)
         if not isinstance(self._client, PolymarketClient):
             try:
                 raw = await self._client.post_order(
                     SimpleNamespace(
                         token_id=request.token_id,
-                        side=request.side,
+                        side=side,
                         price=request.price,
                         size=request.size,
                     ),
@@ -312,7 +332,7 @@ class PolymarketGateway:
         try:
             response = await secure.place_limit_order(
                 token_id=request.token_id,
-                side=request.side.upper(),
+                side=side,
                 price=request.price,
                 size=request.size,
             )
@@ -321,7 +341,7 @@ class PolymarketGateway:
                 raise
             logger.warning("limit order submission failed: %s", redact_error_detail(exc))
             return _submission_exception(exc)
-        return _submission_from_response(response, side=request.side)
+        return _submission_from_response(response, side=side)
 
     async def submit_marketable_order(self, request: MarketableOrderRequest) -> VenueSubmitResult:
         if request.price_limit is None:
@@ -329,15 +349,14 @@ class PolymarketGateway:
         if request.tick_size is None or request.neg_risk is None:
             await self.get_execution_metadata(request.token_id)
 
-        order_type = str(request.order_type or "FOK").upper()
-        if order_type not in _MARKET_ORDER_TYPES:
-            raise VenueInvalidOrderError(f"unsupported market order type: {order_type}")
+        order_type = _normalize_market_order_type(request.order_type)
+        side = _normalize_order_side(request.side)
 
         if not isinstance(self._client, PolymarketClient):
             try:
                 signed = await self._client.create_market_order(
                     token_id=request.token_id,
-                    side=request.side,
+                    side=side,
                     amount=request.size,
                     max_price=request.price_limit,
                     tick_size=str(request.tick_size),
@@ -355,7 +374,6 @@ class PolymarketGateway:
             return _submission_from_legacy_dict(raw)
 
         secure = self._client.require_secure()
-        side = request.side.upper()
         try:
             if side == BUY:
                 response = await secure.place_market_order(
