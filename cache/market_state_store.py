@@ -116,7 +116,7 @@ class TokenMarketState:
 
     tick_size: Decimal | None = None
     min_order_size: Decimal | None = None
-    neg_risk: bool = False
+    neg_risk: bool | None = None
 
     active: bool = True
     resolved: bool = False
@@ -268,7 +268,11 @@ class MarketStateStore:
             state = self._states.get(token_id)
             if state is None:
                 return None
-            if state.tick_size is None or state.min_order_size is None:
+            if (
+                state.tick_size is None
+                or state.min_order_size is None
+                or not isinstance(state.neg_risk, bool)
+            ):
                 return None
             return TickSnapshot(
                 token_id=state.token_id,
@@ -514,8 +518,6 @@ class MarketStateStore:
         with self._lock:
             state = self._ensure_state_locked(token_id)
             state.tick_size = Decimal(str(tick_size))
-            if state.min_order_size is None:
-                state.min_order_size = Decimal("0")
 
             now = time.monotonic()
             state.last_tick_monotonic = now
@@ -541,7 +543,7 @@ class MarketStateStore:
         *,
         tick_size: Decimal,
         min_order_size: Decimal,
-        neg_risk: bool = False,
+        neg_risk: bool,
         source: str = "rest_snapshot",
         fetched_at_monotonic: float | None = None,
     ) -> None:
@@ -639,7 +641,7 @@ class MarketStateStore:
         asks: dict[Decimal, Decimal],
         tick_size: Decimal | None,
         min_order_size: Decimal | None,
-        neg_risk: bool = False,
+        neg_risk: bool,
         fetched_at_monotonic: float,
     ) -> dict[str, Any]:
         """Write a fresh REST `/book` snapshot atomically.

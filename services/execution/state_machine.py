@@ -95,10 +95,10 @@ ALLOWED_TRANSITIONS: dict[OrderLifecycleStatus, set[OrderLifecycleStatus]] = {
         OrderLifecycleStatus.TERMINAL_FAILED,
         OrderLifecycleStatus.RECONCILIATION_REQUIRED,
     },
-    OrderLifecycleStatus.TRADE_CONFIRMED: {
-        # Terminal success state; no outgoing transitions. Listed for
-        # documentation so readers can see the ladder terminates here.
-    },
+    # Terminal success state; no outgoing transitions.  ``set()`` is
+    # intentional: ``{# comment}`` previously produced a dict and silently
+    # violated the declared transition-map type.
+    OrderLifecycleStatus.TRADE_CONFIRMED: set(),
     OrderLifecycleStatus.UNKNOWN_UNCONFIRMED: {
         OrderLifecycleStatus.RECONCILIATION_REQUIRED,
         OrderLifecycleStatus.FILLED,
@@ -140,7 +140,12 @@ ALLOWED_TRANSITIONS: dict[OrderLifecycleStatus, set[OrderLifecycleStatus]] = {
         OrderLifecycleStatus.TERMINAL_FAILED,
         OrderLifecycleStatus.RECONCILIATION_REQUIRED,
     },
-    # AUTO_RELEASED_AMBIGUOUS is terminal-success for the held branch.
+    OrderLifecycleStatus.AUTO_RELEASED_AMBIGUOUS: set(),
+    OrderLifecycleStatus.FILLED: set(),
+    OrderLifecycleStatus.CANCELLED: set(),
+    OrderLifecycleStatus.EXPIRED: set(),
+    OrderLifecycleStatus.REJECTED: set(),
+    OrderLifecycleStatus.TERMINAL_FAILED: set(),
 }
 
 

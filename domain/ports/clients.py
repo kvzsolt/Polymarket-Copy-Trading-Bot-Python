@@ -5,7 +5,7 @@ SDK coupling. Phase 3 will provide concrete adapters in ``clients/``; all
 application services in Phase 4 will depend on the ABCs declared here.
 
 Async methods mirror the real adapters' call shape (``aiohttp`` /
-``py_clob_client_v2`` / ``web3``).
+the unified Polymarket SDK / ``web3``).
 """
 
 from __future__ import annotations
@@ -18,8 +18,8 @@ from typing import Any
 class AbstractMarketClient(ABC):
     """CLOB / market-data surface.
 
-    Implementations wrap ``py_clob_client_v2.ClobClient`` plus the market-meta
-    cache currently sitting in ``utils/createClobClient.py``.
+    Implementations wrap the unified async Polymarket client behind typed
+    application models.
     """
 
     @abstractmethod

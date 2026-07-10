@@ -288,9 +288,12 @@ class TestTickSizeChange:
         })
         market_ws._handle_message(event)
 
-        tick = cache.get_tick("0xaaa_yes")
-        assert tick is not None
-        assert tick.tick_size == Decimal("0.001")
+        # A tick-size-only event updates raw state and invalidates sizing, but
+        # cannot create executable metadata without min_order_size/neg_risk.
+        state = cache.get_state("0xaaa_yes")
+        assert state is not None
+        assert state.tick_size == Decimal("0.001")
+        assert cache.get_tick("0xaaa_yes") is None
 
 
 # ---------------------------------------------------------------------------
@@ -339,9 +342,6 @@ class TestReconnect:
                 raise ConnectionError("dead")
 
         mock_ws_instance.send = mock_send
-
-        # Message loop returns immediately (no messages)
-        msg_queue: asyncio.Queue[str] = asyncio.Queue()
 
         async def mock_aiter(self_ws: object) -> None:
             # Block forever until cancel
@@ -971,7 +971,12 @@ class TestTokenExecutability:
     def test_wss_book_with_pretick_leaves_clean_state(
         self, market_ws: MarketWebSocket, cache: MarketStateStore
     ) -> None:
-        cache.set_tick(_ASSET_A, tick_size=Decimal("0.01"), min_order_size=Decimal("1"))
+        cache.set_tick(
+            _ASSET_A,
+            tick_size=Decimal("0.01"),
+            min_order_size=Decimal("1"),
+            neg_risk=False,
+        )
         market_ws._handle_message(json.dumps(BOOK_EVENT_TWO_SIDED))
 
         assert not cache.is_dirty(_ASSET_A)
@@ -1005,7 +1010,12 @@ class TestDebugStateTick:
     def test_debug_state_has_tick_size_when_set(
         self, cache: MarketStateStore
     ) -> None:
-        cache.set_tick(_ASSET_A, tick_size=Decimal("0.01"), min_order_size=Decimal("1"))
+        cache.set_tick(
+            _ASSET_A,
+            tick_size=Decimal("0.01"),
+            min_order_size=Decimal("1"),
+            neg_risk=False,
+        )
         debug = cache.get_debug_state(_ASSET_A)
         assert "tick_size" in debug
         assert debug["tick_size"] == "0.01"

@@ -4,9 +4,8 @@
 #   docker compose up -d postgres                 # PG only (run bot via venv)
 #   docker compose up                             # full stack — bot + PG
 #
-# DATABASE_URL inside the compose network defaults to postgres:5432;
-# the host-side .venv runs read DATABASE_URL=postgresql://bot:bot@localhost:5432/polymarket_copytrading_python
-# (see secrets.env.example).
+# Set POSTGRES_PASSWORD in a mode-0600 local secrets file or shell before
+# starting the stack. There is deliberately no production default password.
 
 services:
   postgres:
@@ -15,12 +14,13 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: bot
-      POSTGRES_PASSWORD: bot
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}"
       POSTGRES_DB: polymarket_copytrading_python
       # Keep WAL retained briefly so a crashed bot can replay; tune in prod.
       POSTGRES_INITDB_ARGS: "--data-checksums"
     ports:
-      - "5432:5432"
+      # Development-only host access; never expose PostgreSQL on 0.0.0.0.
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -41,10 +41,9 @@ services:
       - secrets.env
     environment:
       # Inside the compose network the bot reaches PG via the service name.
-      DATABASE_URL: "postgresql://bot:bot@postgres:5432/polymarket_copytrading_python"
-      # P0-2: fail-closed by default (config layer is paper unless LIVE_TRADING
-      # is explicitly enabled). To go live set LIVE_TRADING=enabled (e.g. in
-      # secrets.env). PAPER_TRADE_ONLY=true still force-overrides to paper.
+      DATABASE_URL: "postgresql://bot:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@postgres:5432/polymarket_copytrading_python"
+      # TRADING_MODE comes from secrets.env and defaults to paper when absent.
+      # Live mode also remains paused in PostgreSQL until an operator resumes it.
       ENABLE_METRICS_SERVER: "true"
       METRICS_PORT: "9102"
     ports:

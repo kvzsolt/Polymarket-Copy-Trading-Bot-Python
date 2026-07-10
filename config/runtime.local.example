@@ -24,6 +24,10 @@ MULTI_USER_CONFIG_FILE=
 # -----------------------------------------------------------------------------
 # Optional local behavior overrides
 # -----------------------------------------------------------------------------
+# Single startup mode selector. Live mode still starts paused in PostgreSQL;
+# resume only after ``pmcopy doctor`` passes.
+TRADING_MODE=paper
+
 # Override leader polling cadence locally if needed.
 # FETCH_INTERVAL=0.25
 

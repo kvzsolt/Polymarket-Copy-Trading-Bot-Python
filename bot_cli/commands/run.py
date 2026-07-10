@@ -9,23 +9,20 @@ from config.env import rehydrate_env
 
 
 def register_run_command(subparsers: argparse._SubParsersAction) -> None:
-    parser = subparsers.add_parser("run", help="Start the main trading loop")
-    mode_group = parser.add_mutually_exclusive_group(required=True)
-    mode_group.add_argument("--paper", action="store_true", help="Run in paper-trading mode")
-    mode_group.add_argument("--live", action="store_true", help="Run in live-trading mode")
+    subparsers.add_parser(
+        "run",
+        help="Start the main loop using the fail-closed configured trading mode",
+    )
 
 
-async def _run_bot(mode: str) -> int:
-    """Delegate to app.py's main() after setting the appropriate mode flag."""
-    import os
+async def _run_bot() -> int:
+    """Delegate to app.py without a CLI mode override.
 
-    # Ensure PAPER_TRADE_ONLY reflects the requested mode before app.py loads config.
-    if mode == "paper":
-        os.environ["PAPER_TRADE_ONLY"] = "true"
-    else:
-        os.environ["PAPER_TRADE_ONLY"] = "false"
-
-    # Re-initialise runtime env so the updated env var is picked up.
+    The previous ``--live`` flag could conflict with the environment master
+    switch and create two sources of truth.  Missing/unknown configuration now
+    always remains paper mode; live also requires the database control to be
+    explicitly resumed.
+    """
     load_runtime_env()
     rehydrate_env()
 
@@ -40,8 +37,8 @@ async def _run_bot(mode: str) -> int:
 
 
 async def _run_run_async(args: argparse.Namespace) -> int:
-    mode = "paper" if args.paper else "live"
-    return await _run_bot(mode)
+    del args
+    return await _run_bot()
 
 
 def run_run(args: argparse.Namespace) -> int:

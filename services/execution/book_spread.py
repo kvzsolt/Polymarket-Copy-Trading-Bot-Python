@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal, ROUND_CEILING
+from domain.units import BASIS_POINTS_PER_UNIT
 from typing import Any, Mapping
 
 from .types import BookSpreadMetrics, _SUPPORTED_BOOK_SPREAD_MODES
@@ -46,12 +47,12 @@ def calculate_book_spread_metrics(
 ) -> BookSpreadMetrics:
     absolute = best_ask - best_bid
     absolute_bps = int(
-        (absolute * Decimal(10_000)).to_integral_value(rounding=ROUND_CEILING)
+        (absolute * BASIS_POINTS_PER_UNIT).to_integral_value(rounding=ROUND_CEILING)
     )
     relative_bps: int | None = None
     if best_bid > 0:
         relative_bps = int(
-            ((absolute / best_bid) * Decimal(10_000)).to_integral_value(
+            ((absolute / best_bid) * BASIS_POINTS_PER_UNIT).to_integral_value(
                 rounding=ROUND_CEILING
             )
         )

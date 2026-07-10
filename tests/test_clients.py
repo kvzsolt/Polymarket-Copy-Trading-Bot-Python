@@ -14,6 +14,7 @@ Goals:
 
 from __future__ import annotations
 
+from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -123,26 +124,26 @@ class TestPolymarketClobClient:
         wrapper.get_market_meta.assert_awaited_once_with("cond-1")
 
     @pytest.mark.asyncio
-    async def test_get_last_trade_price_offloads(self) -> None:
+    async def test_get_last_trade_price_uses_async_sdk(self) -> None:
         sdk = MagicMock()
-        sdk.get_last_trade_price = MagicMock(return_value={"price": "0.5"})
+        sdk.get_last_trade_price = AsyncMock(return_value=Decimal("0.5"))
         wrapper = MagicMock()
-        wrapper.client = sdk
+        wrapper.public_client = sdk
         client = PolymarketClobClient(wrapper)
         result = await client.get_last_trade_price("tok1")
-        assert result == {"price": "0.5"}
-        sdk.get_last_trade_price.assert_called_once_with("tok1")
+        assert result == Decimal("0.5")
+        sdk.get_last_trade_price.assert_awaited_once_with(token_id="tok1")
 
     @pytest.mark.asyncio
-    async def test_get_midpoint_offloads(self) -> None:
+    async def test_get_midpoint_uses_async_sdk(self) -> None:
         sdk = MagicMock()
-        sdk.get_midpoint = MagicMock(return_value={"mid": "0.5"})
+        sdk.get_midpoint = AsyncMock(return_value=Decimal("0.5"))
         wrapper = MagicMock()
-        wrapper.client = sdk
+        wrapper.public_client = sdk
         client = PolymarketClobClient(wrapper)
         result = await client.get_midpoint("tok1")
-        assert result == {"mid": "0.5"}
-        sdk.get_midpoint.assert_called_once_with("tok1")
+        assert result == Decimal("0.5")
+        sdk.get_midpoint.assert_awaited_once_with(token_id="tok1")
 
 
 # ---------------------------------------------------------------------------
@@ -176,37 +177,53 @@ class TestBalanceClient:
 class TestOrderGateway:
     @pytest.mark.asyncio
     async def test_post_order_builds_args_and_decorates_response(self) -> None:
-        wrapper = MagicMock()
-        wrapper.post_order = AsyncMock(return_value={"success": True, "orderID": "x1"})
-        gateway = OrderGateway(wrapper)
+        from integrations.polymarket.models import VenueSubmitResult
+
+        gateway = OrderGateway(MagicMock())
+        gateway._gateway.submit_limit_order = AsyncMock(
+            return_value=VenueSubmitResult(success=True, order_id="x1", status="live")
+        )
         result = await gateway.post_order(
             token_id="tok1",
             side="BUY",
             size=10.0,
             price=0.5,
-            order_type="FOK",
+            order_type="GTC",
             idempotency_key="idem-1",
             extra={"condition_id": "cond-1"},
         )
         assert result["success"] is True
         assert result["idempotency_key"] == "idem-1"
-        assert result["order_type"]  # populated from OrderType enum
-        wrapper.post_order.assert_awaited_once()
-        _, kwargs = wrapper.post_order.call_args
-        assert kwargs["condition_id"] == "cond-1"
+        assert result["order_type"] == "GTC"
+        request = gateway._gateway.submit_limit_order.await_args.args[0]
+        assert request.condition_id == "cond-1"
 
     @pytest.mark.asyncio
-    async def test_cancel_order_offloads(self) -> None:
-        sdk = MagicMock()
-        sdk.cancel_order = MagicMock(return_value={"cancelled": True})
-        wrapper = MagicMock()
-        wrapper.client = sdk
-        gateway = OrderGateway(wrapper)
+    async def test_cancel_order_uses_typed_gateway(self) -> None:
+        from integrations.polymarket.models import VenueCancelResult
+
+        gateway = OrderGateway(MagicMock())
+        gateway._gateway.cancel_order = AsyncMock(
+            return_value=VenueCancelResult(success=True, order_id="ord-1", status="cancelled")
+        )
         result = await gateway.cancel_order("ord-1")
-        assert result == {"cancelled": True}
-        sdk.cancel_order.assert_called_once()
-        call_args = sdk.cancel_order.call_args[0][0]
-        assert getattr(call_args, "orderID", None) == "ord-1"
+        assert result["success"] is True
+        gateway._gateway.cancel_order.assert_awaited_once_with("ord-1")
+
+    @pytest.mark.asyncio
+    async def test_market_order_requires_positive_venue_minimum(self) -> None:
+        gateway = OrderGateway(MagicMock())
+
+        with pytest.raises(ValueError, match="min_order_size must be positive"):
+            await gateway.post_market_order(
+                token_id="tok1",
+                side="BUY",
+                amount=5.0,
+                max_price=0.5,
+                tick_size="0.01",
+                neg_risk=False,
+                min_order_size=0.0,
+            )
 
 
 # ---------------------------------------------------------------------------

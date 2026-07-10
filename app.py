@@ -76,7 +76,7 @@ from services.healthServer import start_health_server
 from services.metrics import metrics
 from services.multiUserConfig import RuntimeUser, UserFollowConfig, load_runtime_users
 from storage.postgres.leaders_repo import LeadersRepo
-from utils.createClobClient import create_clob_client
+from integrations.polymarket.sdk_client import create_polymarket_client
 from utils.getMyBalance import get_my_balance
 from utils.logger import (
     configure_logging,
@@ -324,10 +324,10 @@ async def _refresh_contexts_for_new_leaders(
 
 
 def _get_clob_wrapper_from_user_state(user_state: UserRuntimeState) -> Any | None:
-    """Best-effort access to the ClobClientWrapper.
+    """Best-effort access to the unified SDK owner.
 
-    Preferred source is user_state.clob_client. The wrapper should expose
-    `.api_creds`, set by create_clob_client() after create_or_derive_api_key().
+    Preferred source is ``user_state.client``. The facade exposes the secure
+    SDK client's derived or configured ``api_creds`` for user-stream auth.
     """
     for attr_name in (
         "clob_client",
@@ -368,15 +368,19 @@ def _get_clob_wrapper_from_user_state(user_state: UserRuntimeState) -> Any | Non
     return None
 
 
+def _empty_user_ws_api_creds() -> dict[str, str]:
+    """Return the unauthenticated user-stream credential shape."""
+    return {
+        field: ""
+        for field in ("api_key", "api_secret", "api_passphrase")
+    }
+
+
 def _normalise_user_ws_api_creds(raw_creds: Any) -> dict[str, str]:
-    """Normalize py-clob-client API creds into UserWebSocket's expected shape."""
+    """Normalize SDK API credentials into UserWebSocket's expected shape."""
 
     if raw_creds is None:
-        return {
-            "api_key": "",
-            "api_secret": "",
-            "api_passphrase": "",
-        }
+        return _empty_user_ws_api_creds()
 
     def read(*names: str) -> str:
         if isinstance(raw_creds, dict):
@@ -407,17 +411,13 @@ def _user_ws_api_creds(user_state: UserRuntimeState) -> dict[str, str]:
     """Read already-derived CLOB API credentials from the CLOB client wrapper.
 
     Do not read these from AppConfig or wallet config. The bot uses one private
-    key to create the L1 signer, then create_or_derive_api_key() produces the
-    CLOB API creds used for user websocket auth.
+    key to create the secure SDK client, which exposes the CLOB API credentials
+    used for user websocket authentication.
     """
     wrapper = _get_clob_wrapper_from_user_state(user_state)
 
     if wrapper is None:
-        return {
-            "api_key": "",
-            "api_secret": "",
-            "api_passphrase": "",
-        }
+        return _empty_user_ws_api_creds()
 
     for attr_name in (
         "api_creds",
@@ -442,11 +442,7 @@ def _user_ws_api_creds(user_state: UserRuntimeState) -> dict[str, str]:
             if all(creds.values()):
                 return creds
 
-    return {
-        "api_key": "",
-        "api_secret": "",
-        "api_passphrase": "",
-    }
+    return _empty_user_ws_api_creds()
 
 
 async def _start_market_data_runtimes(
@@ -869,7 +865,7 @@ async def _shutdown_runtime(
         )
 
 
-async def main() -> int:
+async def _run_application(client_registry: list[Any]) -> int:
     configure_logging(level="INFO")
 
     try:
@@ -1042,7 +1038,13 @@ async def main() -> int:
     user_states: dict[str, UserRuntimeState] = {}
 
     for runtime_user in runtime_users:
-        client = await create_clob_client(wallet_config=runtime_user.wallet, config=application.config)
+        client = await create_polymarket_client(
+            wallet_config=runtime_user.wallet,
+            config=application.config,
+        )
+        # Register ownership immediately. If any later startup stage fails,
+        # main() still closes the SDK transports from its outer finally.
+        client_registry.append(client)
         user_states[runtime_user.user_id] = build_user_state(
             runtime_user,
             client,
@@ -1879,6 +1881,35 @@ async def main() -> int:
             metrics_runner=metrics_runner,
             onchain_runtime=onchain_runtime,
         )
+
+
+async def _close_polymarket_clients(clients: list[Any]) -> None:
+    """Close each distinct SDK owner without masking the shutdown reason."""
+    seen: set[int] = set()
+    for client in reversed(clients):
+        identity = id(client)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        close = getattr(client, "close", None)
+        if not callable(close):
+            continue
+        try:
+            await close()
+        except Exception as exc:
+            logger.warning(
+                "polymarket_client_shutdown_failed",
+                extra={"error": redact_error_detail(exc)},
+            )
+
+
+async def main() -> int:
+    """Run the application while owning every created Polymarket SDK client."""
+    clients: list[Any] = []
+    try:
+        return await _run_application(clients)
+    finally:
+        await _close_polymarket_clients(clients)
 
 
 if __name__ == "__main__":

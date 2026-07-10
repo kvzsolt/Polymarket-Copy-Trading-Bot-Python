@@ -23,11 +23,13 @@ from services.risk.risk_monitor import (
     reconcile_unconfirmed_risk_orders,
     rehydrate_position_manager,
 )
+from services.trading_permission import TradingPermissionService
 from storage.postgres.fills_repo import FillsRepo
 from storage.postgres.orders_repo import OrdersRepo
 from storage.postgres.positions_repo import PositionsRepo
 from storage.postgres.risk_blocks_repo import RiskBlocksRepo
 from storage.postgres.risk_triggers_repo import RiskTriggersRepo
+from storage.postgres.trading_control_repo import TradingControlRepo
 from utils.fetchData import fetch_data
 from utils.logger import get_logger
 
@@ -256,12 +258,6 @@ def build_user_state(
 ) -> UserRuntimeState:
     init_risk_engine(config)
 
-    # Push typed config into the CLOB-client module so its CLOB_HTTP_URL +
-    # meta-cache TTLs follow AppConfig rather than the raw env (legacy-kill
-    # slice #77). Safe to call repeatedly per-user.
-    from utils.createClobClient import configure_from_appconfig as _configure_clob_module
-    _configure_clob_module(config)
-
     # Same pattern for the balance-lookup module (RPC_URL + collateral
     # contract addresses) so utils/getMyBalance.py drops its ENV reads.
     from utils.getMyBalance import configure_from_appconfig as _configure_balance_module
@@ -344,6 +340,10 @@ def build_user_state(
         # P1-j: trade-path geoblock enforcement with expiry revalidation. Opt-in
         # via ENFORCE_GEOBLOCK (default on); fail-closed; BUY entries only.
         geoblock_gate=GeoblockGate(config.network.enforce_geoblock),
+        trading_permission=TradingPermissionService(
+            TradingControlRepo(pool),
+            live_mode=not config.execution.paper_trade_only,
+        ),
     )
 
     # PR6 — production execution funnel. ReservationService + ExecutionCoordinator

@@ -17,13 +17,13 @@ from decimal import Decimal
 from typing import Any
 
 import aiohttp
+from polymarket import PRODUCTION
 
 from domain.discovery_models import ObservedTrade, OrderbookSnapshot
 from services.discovery.ingestion_service import IngestionService
 from storage.postgres.connection import get_pool
 from storage.postgres.discovery_repo import DiscoveryRepo
 from utils import is_valid_clob_token_id
-from utils.createClobClient import CLOB_HTTP_URL
 from utils.fetchData import fetch_data
 from utils.logger import get_logger, redact_error_detail, safe_error_detail
 
@@ -129,7 +129,7 @@ class DiscoveryCaptureService:
             )
             return
 
-        url = f"{CLOB_HTTP_URL}/book?token_id={trade.token_id}"
+        url = f"{PRODUCTION.clob_url}/book?token_id={trade.token_id}"
         try:
             payload = await fetch_data(url, silent=True)
         except Exception as exc:

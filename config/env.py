@@ -771,7 +771,6 @@ def _build_env_snapshot() -> dict[str, object]:
     # --- V2 Migration readiness ---
     # Set to true once smoke tests pass and pUSD balance/allowance confirmed.
     # When false, a startup warning is logged. This is a safety signal, not a feature toggle.
-    'CLOB_V2_READY': _bool('CLOB_V2_READY', False),
 }
 
 

@@ -145,11 +145,11 @@ async def _run_orders_reconcile_async(args: argparse.Namespace) -> int:
         errors: list[str] = []
         if unconfirmed:
             try:
-                from utils.createClobClient import create_clob_client
+                from integrations.polymarket.sdk_client import create_polymarket_client
                 from services.reconciliation import ReconciliationService
 
                 wallet = config.wallet
-                client = await create_clob_client(wallet_config=wallet, config=config)
+                client = await create_polymarket_client(wallet_config=wallet, config=config)
                 orders_repo = OrdersRepo(pool)
                 svc = ReconciliationService(
                     clob_client=client,

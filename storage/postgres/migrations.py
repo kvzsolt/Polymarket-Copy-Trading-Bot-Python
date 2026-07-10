@@ -34,6 +34,25 @@ import asyncpg
 # ---------------------------------------------------------------------------
 
 _CORE_DDL = [
+    # ----- operator trading control --------------------------------------
+    # Singleton, database-backed kill switch.  It defaults paused and is
+    # checked immediately before every live venue submission.  Database
+    # unavailability is also interpreted as paused by TradingPermissionService.
+    """
+    CREATE TABLE IF NOT EXISTS trading_control (
+        singleton_id smallint PRIMARY KEY CHECK (singleton_id = 1),
+        enabled      boolean NOT NULL DEFAULT false,
+        generation   bigint NOT NULL DEFAULT 0,
+        reason       text NOT NULL DEFAULT 'initially_paused',
+        updated_at   timestamptz NOT NULL DEFAULT now(),
+        updated_by   text NOT NULL DEFAULT 'migration'
+    )
+    """,
+    """
+    INSERT INTO trading_control(singleton_id, enabled, reason, updated_by)
+    VALUES (1, false, 'initially_paused', 'migration')
+    ON CONFLICT (singleton_id) DO NOTHING
+    """,
     # ----- orders ---------------------------------------------------------
     """
     CREATE TABLE IF NOT EXISTS orders (
