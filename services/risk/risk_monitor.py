@@ -21,7 +21,7 @@ from services.positionActionCoordinator import PositionScope
 from services.risk.risk_engine import active_policy
 from storage.postgres.fills_repo import FillRecord
 from utils import is_valid_clob_token_id
-from utils.createClobClient import PRICE_TOKEN_NOT_FOUND
+from integrations.polymarket.models import PRICE_TOKEN_NOT_FOUND
 from utils.fetchData import fetch_data
 from utils.logger import get_logger
 
@@ -1857,7 +1857,7 @@ async def run_risk_check_for_context(
                     },
                 )
                 if hasattr(context.position_manager, "track_sell"):
-                    closed_pos = context.position_manager.track_sell(
+                    context.position_manager.track_sell(
                         pos.condition_id,
                         float(fill_price),
                         float(fill_size),

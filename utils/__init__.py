@@ -1,6 +1,7 @@
 """Utility package exports."""
 
 import re as _re
+import threading as _threading
 
 # Polymarket CLOB token IDs are CTF (Conditional Token Framework) uint256
 # values represented as decimal digit strings, typically 70-80 characters.
@@ -17,7 +18,7 @@ def is_valid_clob_token_id(token_id: str | None) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Lazy imports for modules that depend on web3/py_clob_client_v2.
+# Lazy imports for modules that depend on Web3 or venue clients.
 # These are imported on first access to avoid requiring all optional
 # dependencies at module load time.
 #
@@ -25,8 +26,6 @@ def is_valid_clob_token_id(token_id: str | None) -> bool:
 # below can be resolved via lazy import.  Arbitrary attribute access
 # will raise AttributeError as normal — no dynamic code execution.
 # ---------------------------------------------------------------------------
-import threading as _threading
-
 _LAZY_IMPORTS: dict[str, str] = {
     # symbol_name: module_path
     "ClobClientWrapper": "utils.createClobClient",
@@ -58,7 +57,7 @@ def __getattr__(name: str):
 
 
 # Eagerly import lightweight modules that don't require optional deps
-from .logger import (
+from .logger import (  # noqa: E402 - kept after lazy-export definitions intentionally
     configure_logging,
     get_logger,
     print_startup_banner,

@@ -39,10 +39,22 @@ def _make_gateway(
 ) -> AsyncMock:
     gw = AsyncMock()
     if empty_book:
-        book = OrderBook(token_id=TOKEN_A, bids=[], asks=[], best_bid=None, best_ask=None)
+        book = OrderBook(
+            token_id=TOKEN_A,
+            tick_size=Decimal("0.01"),
+            min_order_size=Decimal("5"),
+            neg_risk=False,
+            bids=[],
+            asks=[],
+            best_bid=None,
+            best_ask=None,
+        )
     else:
         book = OrderBook(
             token_id=TOKEN_A,
+            tick_size=Decimal("0.01"),
+            min_order_size=Decimal("5"),
+            neg_risk=False,
             bids=[OrderBookLevel(price=Decimal("0.50"), size=Decimal("100"))],
             asks=[OrderBookLevel(price=Decimal("0.55"), size=Decimal("80"))],
             best_bid=Decimal("0.50"),
@@ -601,6 +613,9 @@ def _make_good_book(token_id: str = TOKEN_A):
     from integrations.polymarket.models import OrderBook, OrderBookLevel
     return OrderBook(
         token_id=token_id,
+        tick_size=Decimal("0.01"),
+        min_order_size=Decimal("5"),
+        neg_risk=False,
         bids=[OrderBookLevel(price=Decimal("0.49"), size=Decimal("200"))],
         asks=[OrderBookLevel(price=Decimal("0.50"), size=Decimal("150"))],
         best_bid=Decimal("0.49"),
@@ -750,11 +765,14 @@ class TestEnsureTokenReadyOrBootstrapped:
         assert result is False
 
     @pytest.mark.asyncio
-    async def test_bootstrap_allows_wide_spread(self) -> None:
+    async def test_bootstrap_rejects_wide_spread(self) -> None:
         from integrations.polymarket.models import OrderBook, OrderBookLevel
 
         wide_book = OrderBook(
             token_id=TOKEN_A,
+            tick_size=Decimal("0.01"),
+            min_order_size=Decimal("5"),
+            neg_risk=False,
             bids=[OrderBookLevel(price=Decimal("0.10"), size=Decimal("100"))],
             asks=[OrderBookLevel(price=Decimal("0.90"), size=Decimal("100"))],
             best_bid=Decimal("0.10"),
@@ -768,7 +786,7 @@ class TestEnsureTokenReadyOrBootstrapped:
 
         result = await rt.ensure_token_ready_or_bootstrapped(TOKEN_A)
 
-        assert result is True
+        assert result is False
 
     @pytest.mark.asyncio
     async def test_bootstrap_rejected_when_wss_required_and_disconnected(self) -> None:
@@ -814,7 +832,16 @@ class TestEnsureTokenReadyOrBootstrapped:
     async def test_bootstrap_rejected_when_empty_book(self) -> None:
         from integrations.polymarket.models import OrderBook
 
-        empty_book = OrderBook(token_id=TOKEN_A, bids=[], asks=[], best_bid=None, best_ask=None)
+        empty_book = OrderBook(
+            token_id=TOKEN_A,
+            tick_size=Decimal("0.01"),
+            min_order_size=Decimal("5"),
+            neg_risk=False,
+            bids=[],
+            asks=[],
+            best_bid=None,
+            best_ask=None,
+        )
         gw = AsyncMock()
         gw.get_orderbook = AsyncMock(return_value=empty_book)
         gw.get_market_info = AsyncMock(return_value={})

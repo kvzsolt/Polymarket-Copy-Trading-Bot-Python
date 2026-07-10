@@ -4,7 +4,7 @@ from __future__ import annotations
 # Eagerly import lightweight modules
 from services.risk.exit_policy import ExitDecision, evaluate_exit
 
-# Lazy imports for modules that depend on web3/py_clob_client_v2
+# Lazy imports for modules that depend on Web3 or venue clients.
 def __getattr__(name: str):
     _lazy_map = {
         # risk_engine

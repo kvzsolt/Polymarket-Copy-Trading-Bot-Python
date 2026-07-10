@@ -93,10 +93,10 @@ def _check_wss_endpoint(host: str, port: int = 443, timeout: float = 3.0) -> tup
 
 def _check_gateway_sdk() -> tuple[bool, str]:
     try:
-        from utils.createClobClient import ClobClient  # noqa: F401
+        from polymarket import AsyncPublicClient, AsyncSecureClient  # noqa: F401
     except Exception as exc:
         return False, f"clob_sdk_import_failed: {exc}"
-    return True, "CLOB SDK importable"
+    return True, "polymarket-client unified SDK importable"
 
 
 _REQUIRED_DB_TABLES = (
@@ -278,7 +278,7 @@ async def run_doctor_checks(mode: str) -> dict[str, Any]:
             ctx.blocked(
                 "paper_trade_only_false",
                 "live mode requested but config resolves to PAPER",
-                "set LIVE_TRADING=enabled (and ensure PAPER_TRADE_ONLY is not 'true')",
+                "set TRADING_MODE=live and restart",
             )
         else:
             ctx.ok("paper_trade_only_false", "live trading enabled (paper_trade_only=false)")
@@ -286,29 +286,10 @@ async def run_doctor_checks(mode: str) -> dict[str, Any]:
             ctx.blocked(
                 "dry_run_false",
                 "dry_run=true (config resolves to paper)",
-                "set LIVE_TRADING=enabled",
+                "set TRADING_MODE=live and restart",
             )
         else:
             ctx.ok("dry_run_false", "dry_run=false")
-        # Read CLOB V2 gate from typed config (added to ClobConfig in the
-        # legacy-kill slice #77). Fall back to `config.raw` for parity with
-        # any test injections that pre-date the typed field.
-        clob_ready = bool(getattr(getattr(config, "clob", None), "clob_v2_ready", False))
-        if not clob_ready and hasattr(config, "raw"):
-            raw_clob = config.raw.get("CLOB_V2_READY")
-            if isinstance(raw_clob, str):
-                clob_ready = raw_clob.strip().lower() in {"1", "true", "yes"}
-            else:
-                clob_ready = bool(raw_clob)
-        if not clob_ready:
-            ctx.blocked(
-                "clob_v2_ready",
-                "CLOB_V2_READY is not true",
-                "set CLOB_V2_READY=true after manually confirming readiness",
-            )
-        else:
-            ctx.ok("clob_v2_ready", "CLOB_V2_READY=true")
-
     # ----- kill switch --------------------------------------------------
     if config.risk.kill_switch:
         ctx.blocked(
@@ -486,7 +467,7 @@ async def run_doctor_checks(mode: str) -> dict[str, Any]:
     if live:
         ok, detail = _check_gateway_sdk()
         (ctx.ok if ok else ctx.blocked)(
-            "gateway_sdk", detail, "" if ok else "install py-clob-client-v2"
+            "gateway_sdk", detail, "" if ok else "install polymarket-client"
         )
 
     # ----- subsystem wiring (dry import) --------------------------------

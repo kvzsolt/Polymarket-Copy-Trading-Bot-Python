@@ -93,6 +93,7 @@ class TestHappyPath:
         assert cfg.execution.reservation_ttl_seconds == 120
         # Logging default path.
         assert cfg.logging.pnl_log_file.endswith("pnl.jsonl")
+        assert "bot:bot" not in cfg.database.dsn
 
     # --- P0-2: LIVE_TRADING master switch (fail-closed) ---
 

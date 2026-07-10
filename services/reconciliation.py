@@ -833,7 +833,7 @@ class ReconciliationService:
         raw = await loop.run_in_executor(
             None, lambda: orders_client.get_orders()
         )
-        # py-clob-client-v2 returns a list or paginated dict
+        # Normalize legacy/list and paginated repository response shapes.
         if isinstance(raw, list):
             return raw
         if isinstance(raw, dict):

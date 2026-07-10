@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import stat
 import warnings
 from pathlib import Path
 
@@ -17,6 +18,9 @@ _LOCAL_NON_SENSITIVE_ENV_PATH = _REPO_ROOT / "config" / "runtime.local.env"
 # override the per-user runtime.local.env wallet config without warning.
 _SECRETS_OVERRIDE_KEYS = {
     "RPC_URL",
+    "FALLBACK_RPC_URL",
+    "ONCHAIN_WS_URL",
+    "PENDING_TX_WS_URL",
     "CLOB_API_KEY",
     "CLOB_SECRET",
     "CLOB_PASSPHRASE",
@@ -25,6 +29,28 @@ _SECRETS_OVERRIDE_KEYS = {
     "FALCON_API_TOKEN",
     "DATABASE_URL",
 }
+
+
+def _validate_secrets_file(path: Path) -> None:
+    """Reject secret containers readable by another local user.
+
+    This check happens before parsing so a live private key is never accepted
+    from the mode-0664 file shape found during the security audit.
+    """
+    try:
+        info = path.lstat()
+    except OSError as exc:
+        raise PermissionError(f"Unable to inspect secrets file: {path}") from exc
+    if stat.S_ISLNK(info.st_mode):
+        raise PermissionError(f"Secrets file must not be a symlink: {path}")
+    if not stat.S_ISREG(info.st_mode):
+        raise PermissionError(f"Secrets path must be a regular file: {path}")
+    if os.name != "nt":
+        mode = stat.S_IMODE(info.st_mode)
+        if mode != 0o600:
+            raise PermissionError(
+                f"Secrets file must have permissions 0600 exactly (chmod 600): {path}"
+            )
 
 
 def _load_env_values(path: Path) -> dict[str, str]:
@@ -81,6 +107,7 @@ def load_runtime_env(
     # <repo>/secrets.env so the lookup is deterministic regardless of call depth.
     resolved_secrets = Path(secrets_path).expanduser() if secrets_path else _REPO_ROOT / "secrets.env"
     if resolved_secrets.exists():
+        _validate_secrets_file(resolved_secrets)
         secret_values = _load_env_values(resolved_secrets)
         _warn_on_conflicting_public_overrides(
             local_public=local_public_values,

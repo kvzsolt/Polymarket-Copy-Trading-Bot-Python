@@ -5,7 +5,6 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, TYPE_CHECKING
 
-from config.env import get_funder_address
 from services.leaderCursorStore import LeaderCursorStore
 from services.metrics import metrics
 from storage.postgres.cursors_repo import TradeCursor
@@ -617,7 +616,6 @@ async def trade_monitor(
 
     await init(leader_wallet, state)
     await _persist_cursor(cursor_store, leader_wallet, state.last_cursor)
-    proxy_wallet = config.wallet.funder_address or get_funder_address()
     monitored_leader_count = int(bot_params.get('MONITORED_LEADER_COUNT', 1) or 1)
     while True:
         previous_cursor = state.last_cursor

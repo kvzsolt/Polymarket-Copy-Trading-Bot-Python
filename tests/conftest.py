@@ -4,7 +4,7 @@ Promotes the ad-hoc ``_make_exec_config`` / ``_make_gateway`` / ``_StubClob``
 helpers that lived inline in ``tests/test_issue66_gateway_isolation.py`` to
 the project-wide fixture surface so the release-gate suite (and any future
 integration tests) can construct a fail-closed-compatible configuration and
-a mock CLOB V2 gateway without duplicating boilerplate.
+    a mock unified CLOB gateway without duplicating boilerplate.
 
 The fixtures here are deliberately minimal: they expose just enough surface
 for ``ExecutionService``, ``ReconciliationService``, ``ReservationService``,
@@ -12,6 +12,7 @@ and the WSS clients to function under a paper-trade harness.
 """
 from __future__ import annotations
 
+import asyncio
 import sys
 from decimal import Decimal
 from pathlib import Path
@@ -28,6 +29,51 @@ from integrations.polymarket.models import (
     VenueSubmitResult,
 )
 from interfaces.clob_gateway import ClobGateway
+
+
+@pytest.fixture(autouse=True)
+def _run_unit_thread_work_inline(
+    request: pytest.FixtureRequest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Keep unit tests deterministic and free of real executor threads.
+
+    Integration and release-gate tests retain the real ``asyncio.to_thread``
+    behavior. Unit tests use mocked synchronous boundaries, so starting real
+    worker threads only adds teardown risk and cannot validate RPC behavior.
+    Dedicated adapter tests replace this shim to verify non-blocking calls.
+    """
+    if request.node.get_closest_marker("integration") is not None:
+        return
+    if request.node.get_closest_marker("release_gate") is not None:
+        return
+
+    async def _inline(function, *args, **kwargs):
+        return function(*args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "to_thread", _inline)
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """Keep Docker/Testcontainers tests out of the portable default tier.
+
+    Several historical tests instantiated ``PostgresContainer`` but forgot an
+    integration marker, making a plain ``pytest`` depend on a Docker socket.
+    Classify by source dependency so new Testcontainers tests cannot repeat the
+    same mistake.
+    """
+    source_cache: dict[Path, bool] = {}
+    for item in items:
+        path = Path(str(item.path))
+        if path not in source_cache:
+            try:
+                source = path.read_text(encoding="utf-8")
+            except OSError:
+                source = ""
+            source_cache[path] = "testcontainers" in source or "PostgresContainer" in source
+        if source_cache[path]:
+            item.add_marker(pytest.mark.integration)
 
 
 def make_exec_config(

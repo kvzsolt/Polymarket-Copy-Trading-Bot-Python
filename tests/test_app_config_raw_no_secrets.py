@@ -73,7 +73,11 @@ def test_sensitive_set_documented():
         "CLOB_API_KEY",
         "CLOB_SECRET",
         "CLOB_PASSPHRASE",
-        "FALCON_API_TOKEN",
-        "DATABASE_URL",
-    }
+            "FALCON_API_TOKEN",
+            "DATABASE_URL",
+            "RPC_URL",
+            "FALLBACK_RPC_URL",
+            "ONCHAIN_WS_URL",
+            "PENDING_TX_WS_URL",
+        }
     assert set(_RAW_SENSITIVE_KEYS) == expected

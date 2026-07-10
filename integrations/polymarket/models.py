@@ -1,7 +1,7 @@
 """Venue model types for the CLOB gateway.
 
-Canonical dataclasses that decouple the rest of the codebase from
-py_clob_client_v2's own types.  All gateway methods return these types;
+Canonical dataclasses that decouple the rest of the codebase from the
+unified Polymarket SDK's own types.  All gateway methods return these types;
 callers should never depend on raw SDK shapes directly.
 """
 from __future__ import annotations
@@ -9,6 +9,16 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
+
+
+class _PriceTokenNotFound:
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return "PRICE_TOKEN_NOT_FOUND"
+
+
+PRICE_TOKEN_NOT_FOUND = _PriceTokenNotFound()
 
 
 @dataclass(frozen=True)
@@ -74,7 +84,7 @@ class VenueCancelResult:
     error: str | None = None
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class OrderBook:
     """Snapshotted order book for a token.
 
@@ -85,15 +95,15 @@ class OrderBook:
     """
 
     token_id: str
+    tick_size: Decimal
+    min_order_size: Decimal
+    neg_risk: bool
     bids: list[OrderBookLevel] = field(default_factory=list)
     asks: list[OrderBookLevel] = field(default_factory=list)
     best_bid: Decimal | None = None
     best_ask: Decimal | None = None
     spread_bps: int | None = None
     timestamp: datetime | None = None
-    tick_size: Decimal | None = None
-    min_order_size: Decimal | None = None
-    neg_risk: bool = False
 
 
 @dataclass(frozen=True)

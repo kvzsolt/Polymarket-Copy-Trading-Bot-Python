@@ -149,7 +149,7 @@ def _run_config_validate(_args: argparse.Namespace) -> int:
     try:
         load_runtime_env()
         rehydrate_env()
-        config = load_config()
+        load_config()
     except EnvValidationError as exc:
         errors = str(exc).split("\n")
         output = {"valid": False, "errors": errors}

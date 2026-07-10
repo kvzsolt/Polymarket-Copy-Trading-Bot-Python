@@ -281,7 +281,7 @@ class TestBookQualityGate:
         assert snapshot_kwargs["policy"].require_book_depth is False
         svc.clob_client.create_market_order.assert_awaited_once()
         assert svc.clob_client.create_market_order.await_args.kwargs["order_type"] == "FAK"
-        assert svc.clob_client.create_market_order.await_args.kwargs["max_price"] == 0.92
+        assert svc.clob_client.create_market_order.await_args.kwargs["max_price"] == Decimal("0.92")
 
     def test_copy_trade_fak_reposts_remaining_partial_fill(self):
         """Partial FAK fills refresh the book before bounded FAK reposts."""

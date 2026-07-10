@@ -21,12 +21,13 @@ RUN groupadd -r botuser && useradd -r -g botuser -d /app -s /usr/sbin/nologin bo
 WORKDIR /app
 
 # Install dependencies first (layer caching)
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY requirements.runtime.txt .
+RUN pip install --no-cache-dir -r requirements.runtime.txt
 
 # Copy the bot source. Respect .dockerignore so secrets.env / .git /
 # data / log never bake into image layers.
 COPY . .
+RUN pip install --no-cache-dir --no-deps .
 
 # Ensure runtime paths are writable by the non-root user. data + log
 # are the only paths the bot writes; everything else is read-only. We
@@ -40,13 +41,9 @@ RUN mkdir -p /app/data /app/log && chown -R botuser:botuser /app/data /app/log
 # rather than surfacing only at first DB use inside a running container.
 RUN python -c "from config.app_config import load_config; import storage.postgres.connection; print('OK')"
 
-# Fail-closed live-trading gate (P0-2). Live trading is OFF unless LIVE_TRADING
-# is EXPLICITLY enabled; the config layer (config/app_config.py) defaults to
-# PAPER when the master switch is absent/unknown, so a deployment missing config
-# can never silently go live — no Docker env bake is required for safety.
-# To go live: set ``LIVE_TRADING=enabled``. (Setting ``PAPER_TRADE_ONLY=true``
-# still force-overrides to paper.) The legacy ``ENV PAPER_TRADE_ONLY=true`` bake
-# is removed so the master switch is the single live gate.
+# Fail-closed mode selection lives in AppConfig. ``TRADING_MODE`` defaults to
+# paper when absent and is immutable after startup. Live submission additionally
+# requires an explicit database-backed ``pmcopy trading resume`` decision.
 ENV ENABLE_METRICS_SERVER=true
 ENV METRICS_PORT=9102
 
@@ -61,4 +58,4 @@ EXPOSE 9102
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
     CMD python -c "import urllib.request, os; urllib.request.urlopen('http://localhost:' + os.environ.get('METRICS_PORT', '9102') + '/health/ready')" || exit 1
 
-ENTRYPOINT ["python", "app.py"]
+ENTRYPOINT ["pmcopy", "run"]

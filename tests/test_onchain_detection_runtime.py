@@ -21,6 +21,20 @@ _OTHER = "0x" + "cd" * 20
 _TX = "0x" + "12" * 32
 
 
+class _NoopWebSocket:
+    """Lifecycle-compatible socket double; unit tests inject events directly."""
+
+    def start(self) -> None:
+        return None
+
+    async def stop(self) -> None:
+        return None
+
+
+def _noop_websocket_factory(**_kwargs) -> _NoopWebSocket:
+    return _NoopWebSocket()
+
+
 def _pad32(hexstr: str) -> str:
     if hexstr.startswith("0x") or hexstr.startswith("0X"):
         hexstr = hexstr[2:]
@@ -136,6 +150,7 @@ def _make_runtime(
         enable_mined=True,
         pending_config=pending_config or PendingTxConfig(max_signal_age_ms=10_000),
         condition_id_resolver=None,
+        websocket_factory=_noop_websocket_factory,
     )
 
 
@@ -531,6 +546,7 @@ async def test_mined_condition_id_resolver_invoked() -> None:
         enable_pending=True,
         enable_mined=True,
         condition_id_resolver=resolver,
+        websocket_factory=_noop_websocket_factory,
     )
     await rt.start()
     try:
