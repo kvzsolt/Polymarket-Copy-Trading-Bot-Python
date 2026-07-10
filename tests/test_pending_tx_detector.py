@@ -54,8 +54,16 @@ def _mk_order(maker: str, side: int = MAKER_SIDE_BUY, token_id: int = 456, maker
     )
 
 
-def _encode(taker: tuple, makers: list[tuple]) -> bytes:
-    payload = [(_COND, taker, makers, 1_000_000, [500_000] * len(makers), 0, [0] * len(makers))]
+def _encode(
+    taker: tuple,
+    makers: list[tuple],
+    *,
+    taker_fill: int = 1_000_000,
+    maker_fills: list[int] | None = None,
+) -> bytes:
+    if maker_fills is None:
+        maker_fills = [500_000] * len(makers)
+    payload = [(_COND, taker, makers, taker_fill, maker_fills, 0, [0] * len(makers))]
     return MATCH_ORDERS_SELECTOR + encode([_MATCH_ORDERS_TYPE], payload)
 
 
@@ -117,9 +125,9 @@ def test_build_signals_watched_taker() -> None:
     assert sig.token_id == "789"
     # taker BUY -> side BUY
     assert sig.side == "BUY"
-    # size = taker_amount (tokens) / 1e6 = 1.0; usdc = maker_amount / 1e6 = 2.0
-    assert sig.size == Decimal("1")
-    assert sig.usdc_size == Decimal("2")
+    # default takerFillAmount partially fills half the order
+    assert sig.size == Decimal("0.5")
+    assert sig.usdc_size == Decimal("1")
 
 
 def test_build_signals_watched_maker() -> None:
@@ -135,9 +143,50 @@ def test_build_signals_watched_maker() -> None:
     assert sig.maker_side == MAKER_SIDE_SELL
     # maker SELL -> watched side SELL
     assert sig.side == "SELL"
-    # maker SELL -> size = maker_amount / 1e6 = 1.0; usdc = taker_amount / 1e6 = 2.0
-    assert sig.size == Decimal("1")
-    assert sig.usdc_size == Decimal("2")
+    # default makerFillAmounts partially fill half the order
+    assert sig.size == Decimal("0.5")
+    assert sig.usdc_size == Decimal("1")
+
+
+def test_build_signals_sizes_watched_taker_from_taker_fill_amount() -> None:
+    taker = _mk_order(
+        _WATCHED,
+        side=MAKER_SIDE_BUY,
+        maker_amount=10_000_000,
+        taker_amount=5_000_000,
+    )
+    calldata = _encode(
+        taker,
+        [_mk_order(_UNWATCHED, side=MAKER_SIDE_SELL)],
+        taker_fill=2_000_000,
+    )
+    tx = _tx(calldata)
+    signals = build_signals_from_pending_tx(tx, {_WATCHED}, recv_ts_ms=1000)
+
+    assert len(signals) == 1
+    assert signals[0].usdc_size == Decimal("2")
+    assert signals[0].size == Decimal("1")
+
+
+def test_build_signals_sizes_watched_maker_from_indexed_maker_fill_amount() -> None:
+    taker = _mk_order(_UNWATCHED, side=MAKER_SIDE_BUY)
+    unfilled_watched = _mk_order(
+        _WATCHED_MAKER,
+        side=MAKER_SIDE_SELL,
+        maker_amount=10_000_000,
+        taker_amount=5_000_000,
+    )
+    calldata = _encode(
+        taker,
+        [_mk_order(_UNWATCHED, side=MAKER_SIDE_SELL), unfilled_watched],
+        maker_fills=[3_000_000, 2_000_000],
+    )
+    tx = _tx(calldata)
+    signals = build_signals_from_pending_tx(tx, {_WATCHED_MAKER}, recv_ts_ms=1000)
+
+    assert len(signals) == 1
+    assert signals[0].size == Decimal("2")
+    assert signals[0].usdc_size == Decimal("1")
 
 
 def test_build_signals_both_watched_emits_two() -> None:
@@ -235,3 +284,4 @@ def test_pending_config_defaults() -> None:
     cfg = PendingTxConfig()
     assert cfg.max_signal_age_ms == 500
     assert cfg.hashes_only is False
+    assert cfg.confidence_required == DetectionConfidence.PENDING_PROBABLE

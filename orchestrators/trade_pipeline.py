@@ -838,7 +838,13 @@ async def _resolve_leader_tier(context: TradingContext, leader_id: str) -> str:
 
 
 def build_trade_key(user_id: str, leader_id: str, trade: dict[str, Any]) -> str:
-    tx_hash = trade.get("transactionHash") or trade.get("txHash") or ""
+    tx_hash = (
+        trade.get("transactionHash")
+        or trade.get("txHash")
+        or trade.get("transaction_hash")
+        or trade.get("tx_hash")
+        or ""
+    )
     side = str(trade.get("side") or "").strip().upper()
     asset = trade.get("tokenID") or trade.get("token_id") or trade.get("asset") or ""
     return f"{_normalize(user_id)}|{_normalize(leader_id)}|{_normalize(tx_hash)}|{side}|{_normalize(asset)}"
