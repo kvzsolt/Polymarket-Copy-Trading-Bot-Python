@@ -1560,6 +1560,12 @@ class TestTokenIdFieldPriority:
         assert FAKE_TOKEN_ID in key
         assert HEX_ASSET not in key
 
+    def test_build_trade_key_reads_onchain_snake_case_tx_hash(self):
+        """On-chain raw signals carry tx_hash, not transactionHash/txHash."""
+        trade = {"tx_hash": "0xabc", "side": "BUY", "token_id": FAKE_TOKEN_ID}
+        key = build_trade_key("u1", "l1", trade)
+        assert "0xabc" in key
+
 
 @pytest.mark.asyncio
 async def test_full_flow_persisted_token_id(tmp_path):

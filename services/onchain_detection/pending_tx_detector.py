@@ -47,6 +47,7 @@ from config.addresses import (
 class PendingTxConfig:
     max_signal_age_ms: int = 500
     hashes_only: bool = False
+    confidence_required: DetectionConfidence = DetectionConfidence.PENDING_PROBABLE
 
 
 _DEFAULT_EXCHANGES = (
@@ -86,18 +87,32 @@ def _tx_to_exchange(tx: dict) -> str:
 def _amounts_for_pending(match: object, call: MatchOrdersCall) -> tuple[int, int]:
     """Return ``(maker_filled, taker_filled)`` raw amounts for a pending match.
 
-    Pending calldata carries the *full* order amounts (not yet filled
-    amounts). For the taker match we use ``takerOrder.makerAmount``/
-    ``takerOrder.takerAmount``; for each maker match we use that maker
-    order's amounts. These are upper bounds on the eventual fill (the match
-    may be partial), so the signal's ``size``/``usdc_size`` are provisional
-    estimates — the authoritative numbers come from the mined
-    ``OrderFilled`` log.
+    ``matchOrders`` fill arguments are expressed in maker-amount units. Compute
+    the paired taker amount from the order ratio so partial pending matches do
+    not copy the full order size.
     """
     role = getattr(match, "role")
     if role == "taker":
-        return call.taker_order.maker_amount, call.taker_order.taker_amount
-    return match.maker_amount, match.taker_amount
+        return _fill_pair(call.taker_fill_amount, call.taker_order)
+    maker_index = getattr(match, "maker_index", None)
+    if maker_index is None:
+        return 0, 0
+    try:
+        fill_amount = call.maker_fill_amounts[int(maker_index)]
+        maker_order = call.maker_orders[int(maker_index)]
+    except (IndexError, TypeError, ValueError):
+        return 0, 0
+    return _fill_pair(fill_amount, maker_order)
+
+
+def _fill_pair(maker_fill_amount: int, order: object) -> tuple[int, int]:
+    maker_total = int(getattr(order, "maker_amount", 0) or 0)
+    taker_total = int(getattr(order, "taker_amount", 0) or 0)
+    maker_filled = int(maker_fill_amount or 0)
+    if maker_total <= 0 or taker_total <= 0 or maker_filled <= 0:
+        return 0, 0
+    taker_filled = (maker_filled * taker_total) // maker_total
+    return maker_filled, taker_filled
 
 
 def build_signals_from_pending_tx(
@@ -155,6 +170,8 @@ def build_signals_from_pending_tx(
     tx_hash = str(tx.get("hash") or "").lower()
     for match in matches:
         maker_filled, taker_filled = _amounts_for_pending(match, call)
+        if maker_filled <= 0 or taker_filled <= 0:
+            continue
         # Size/USDC scale: 6 decimals (CTF tokens + USDC.e).
         maker_side = match.side
         if maker_side not in (MAKER_SIDE_BUY, MAKER_SIDE_SELL):

@@ -159,6 +159,53 @@ def _flatten_contexts(
     ]
 
 
+def _onchain_missing_wss_warning_reason(config: object) -> str | None:
+    oc_cfg = getattr(config, "onchain_detection", None)
+    if oc_cfg is None:
+        return None
+    if getattr(oc_cfg, "onchain_ws_url", "") or getattr(oc_cfg, "pending_tx_ws_url", ""):
+        return None
+    if bool(getattr(oc_cfg, "enable_onchain_pending_detection", False)):
+        return "pending_enabled"
+
+    raw = getattr(config, "raw", {}) or {}
+    explicit_mined = str(raw.get("ENABLE_ONCHAIN_MINED_DETECTION") or "").strip()
+    if bool(getattr(oc_cfg, "enable_onchain_mined_detection", False)) and explicit_mined:
+        return "mined_enabled"
+    return None
+
+
+def _detection_confidence_from_config(value: object):
+    from services.onchain_detection.trade_detection_models import DetectionConfidence
+
+    try:
+        return DetectionConfidence(str(value or "").strip().lower())
+    except ValueError:
+        return DetectionConfidence.PENDING_PROBABLE
+
+
+def _build_pending_tx_config(oc_cfg: object):
+    from services.onchain_detection.pending_tx_detector import PendingTxConfig
+
+    return PendingTxConfig(
+        max_signal_age_ms=int(getattr(oc_cfg, "pending_tx_max_signal_age_ms", 500)),
+        hashes_only=bool(getattr(oc_cfg, "pending_tx_hashes_only", False)),
+        confidence_required=_detection_confidence_from_config(
+            getattr(
+                oc_cfg,
+                "pending_tx_detection_confidence_required",
+                "pending_probable",
+            )
+        ),
+    )
+
+
+def _build_onchain_condition_id_resolver():
+    from services.onchain_detection.condition_id_resolver import GammaConditionIdResolver
+
+    return GammaConditionIdResolver().resolve
+
+
 async def _reap_reservations_once(contexts: list["TradingContext"]) -> None:
     """Reconcile-and-release TTL-expired reservations across *contexts*.
 
@@ -1625,15 +1672,21 @@ async def main() -> int:
     onchain_runtime = None
     oc_cfg = application.config.onchain_detection
     ws_url = oc_cfg.onchain_ws_url or oc_cfg.pending_tx_ws_url
+    missing_wss_reason = _onchain_missing_wss_warning_reason(application.config)
+    if not ws_url and missing_wss_reason:
+        logger.warning(
+            "onchain_detection_wss_missing | reason=%s mined=%s pending=%s "
+            "required=ONCHAIN_WS_URL_or_PENDING_TX_WS_URL",
+            missing_wss_reason,
+            oc_cfg.enable_onchain_mined_detection,
+            oc_cfg.enable_onchain_pending_detection,
+        )
     if ws_url and (oc_cfg.enable_onchain_mined_detection or oc_cfg.enable_onchain_pending_detection):
         try:
             import time as _time_mod
 
             from orchestrators.onchain_detection_runtime import (
                 OnchainDetectionRuntime,
-            )
-            from services.onchain_detection.pending_tx_detector import (
-                PendingTxConfig,
             )
             from orchestrators.trade_pipeline import (
                 execute_trades as _execute_trade_pipeline,
@@ -1693,10 +1746,8 @@ async def main() -> int:
                 signal_sink=_onchain_signal_sink,
                 enable_pending=oc_cfg.enable_onchain_pending_detection,
                 enable_mined=oc_cfg.enable_onchain_mined_detection,
-                pending_config=PendingTxConfig(
-                    max_signal_age_ms=oc_cfg.pending_tx_max_signal_age_ms,
-                    hashes_only=oc_cfg.pending_tx_hashes_only,
-                ),
+                pending_config=_build_pending_tx_config(oc_cfg),
+                condition_id_resolver=_build_onchain_condition_id_resolver(),
             )
             await onchain_runtime.start()
             logger.info(
