@@ -1,20 +1,23 @@
 # Local dev stack for the Polymarket copy-trading bot.
 #
 # Usage:
-#   docker compose up -d postgres                 # PG only (run bot via venv)
-#   docker compose up                             # full stack — bot + PG
+#   docker compose up -d postgres  # PG only
+#   docker compose up              # bot + PG
 #
-# Set POSTGRES_PASSWORD in a mode-0600 local secrets file or shell before
-# starting the stack. There is deliberately no production default password.
+# Set POSTGRES_PASSWORD and DATABASE_URL in mode-0600 secrets.env (see
+# secrets.env.example). Both services pick them up via env_file, so no
+# --env-file flag is needed. There is deliberately no production default
+# password; postgres itself refuses to start if POSTGRES_PASSWORD is unset.
 
 services:
   postgres:
     image: postgres:16-alpine
     container_name: polymarket-bot-postgres
     restart: unless-stopped
+    env_file:
+      - secrets.env
     environment:
       POSTGRES_USER: bot
-      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}"
       POSTGRES_DB: polymarket_copytrading_python
       # Keep WAL retained briefly so a crashed bot can replay; tune in prod.
       POSTGRES_INITDB_ARGS: "--data-checksums"
@@ -40,8 +43,9 @@ services:
     env_file:
       - secrets.env
     environment:
-      # Inside the compose network the bot reaches PG via the service name.
-      DATABASE_URL: "postgresql://bot:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@postgres:5432/polymarket_copytrading_python"
+      # DATABASE_URL comes from secrets.env (see secrets.env.example); inside
+      # the compose network the bot reaches PG via the "postgres" service name,
+      # e.g. postgresql://bot:<POSTGRES_PASSWORD>@postgres:5432/polymarket_copytrading_python
       # TRADING_MODE comes from secrets.env and defaults to paper when absent.
       # Live mode also remains paused in PostgreSQL until an operator resumes it.
       ENABLE_METRICS_SERVER: "true"
