@@ -334,6 +334,37 @@ async def test_list_open_orders_consumes_sdk_paginator() -> None:
 
 
 @pytest.mark.asyncio
+async def test_open_order_pagination_uses_fresh_timeout_per_page(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    timeout_entries = 0
+
+    class _Timeout:
+        async def __aenter__(self):
+            nonlocal timeout_entries
+            timeout_entries += 1
+
+        async def __aexit__(self, *_exc):
+            return False
+
+    async def pages():
+        yield SimpleNamespace(items=())
+        yield SimpleNamespace(items=())
+
+    secure = SimpleNamespace(list_open_orders=MagicMock(return_value=pages()))
+    subject, _, _ = gateway(secure=secure)
+    monkeypatch.setattr(
+        "integrations.polymarket.clob_v2_gateway.asyncio.timeout",
+        lambda _seconds: _Timeout(),
+    )
+
+    assert await subject.list_open_orders() == []
+    # Two data pages plus the terminal ``StopAsyncIteration`` probe. Each one
+    # gets a new deadline instead of sharing a total timeout across pagination.
+    assert timeout_entries == 3
+
+
+@pytest.mark.asyncio
 async def test_client_closes_both_transports_once() -> None:
     public = SimpleNamespace(close=AsyncMock())
     secure = SimpleNamespace(close=AsyncMock(), credentials=None)

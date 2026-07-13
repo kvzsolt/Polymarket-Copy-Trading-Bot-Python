@@ -92,6 +92,12 @@ def _raw_model(value: object) -> dict[str, Any]:
     return {}
 
 
+async def _next_page(iterator: Any) -> Any:
+    """Fetch one SDK paginator page with an independent read deadline."""
+    async with asyncio.timeout(_SDK_READ_TIMEOUT_SECONDS):
+        return await anext(iterator)
+
+
 def _status_code(exc: BaseException) -> int | None:
     raw = getattr(exc, "status", None)
     return raw if isinstance(raw, int) else None
@@ -432,29 +438,29 @@ class PolymarketGateway:
         paginator = secure.list_open_orders()
         orders: list[VenueOrderState] = []
         try:
-            async with asyncio.timeout(_SDK_READ_TIMEOUT_SECONDS):
-                page_count = 0
-                async for page in paginator:
-                    page_count += 1
-                    for raw in page.items:
-                        filled = Decimal(raw.size_matched)
-                        orders.append(
-                            VenueOrderState(
-                                order_id=raw.id,
-                                status=raw.status,
-                                side=raw.side,
-                                price=Decimal(raw.price),
-                                size=Decimal(raw.original_size),
-                                filled_size=filled,
-                                avg_fill_price=(
-                                    Decimal(raw.price) if filled > 0 else Decimal("0")
-                                ),
-                                created_at=raw.created_at,
-                                raw=_raw_model(raw),
-                            )
+            iterator = paginator.__aiter__()
+            for _ in range(_MAX_ORDER_PAGES):
+                try:
+                    page = await _next_page(iterator)
+                except StopAsyncIteration:
+                    break
+                for raw in page.items:
+                    filled = Decimal(raw.size_matched)
+                    orders.append(
+                        VenueOrderState(
+                            order_id=raw.id,
+                            status=raw.status,
+                            side=raw.side,
+                            price=Decimal(raw.price),
+                            size=Decimal(raw.original_size),
+                            filled_size=filled,
+                            avg_fill_price=(
+                                Decimal(raw.price) if filled > 0 else Decimal("0")
+                            ),
+                            created_at=raw.created_at,
+                            raw=_raw_model(raw),
                         )
-                    if page_count >= _MAX_ORDER_PAGES:
-                        break
+                    )
         except BaseException as exc:
             if isinstance(exc, (KeyboardInterrupt, SystemExit, asyncio.CancelledError)):
                 raise
@@ -466,26 +472,26 @@ class PolymarketGateway:
         paginator = secure.list_account_trades(market=market)
         fills: list[VenueFill] = []
         try:
-            async with asyncio.timeout(_SDK_READ_TIMEOUT_SECONDS):
-                page_count = 0
-                async for page in paginator:
-                    page_count += 1
-                    for raw in page.items:
-                        fills.append(
-                            VenueFill(
-                                fill_id=raw.id,
-                                order_id=raw.taker_order_id,
-                                token_id=str(raw.token_id),
-                                side=raw.side,
-                                size=Decimal(raw.size),
-                                price=Decimal(raw.price),
-                                fee=Decimal("0"),
-                                timestamp=int(raw.matched_at.timestamp()),
-                                raw=_raw_model(raw),
-                            )
+            iterator = paginator.__aiter__()
+            for _ in range(_MAX_TRADE_PAGES):
+                try:
+                    page = await _next_page(iterator)
+                except StopAsyncIteration:
+                    break
+                for raw in page.items:
+                    fills.append(
+                        VenueFill(
+                            fill_id=raw.id,
+                            order_id=raw.taker_order_id,
+                            token_id=str(raw.token_id),
+                            side=raw.side,
+                            size=Decimal(raw.size),
+                            price=Decimal(raw.price),
+                            fee=Decimal("0"),
+                            timestamp=int(raw.matched_at.timestamp()),
+                            raw=_raw_model(raw),
                         )
-                    if page_count >= _MAX_TRADE_PAGES:
-                        break
+                    )
         except BaseException as exc:
             if isinstance(exc, (KeyboardInterrupt, SystemExit, asyncio.CancelledError)):
                 raise
