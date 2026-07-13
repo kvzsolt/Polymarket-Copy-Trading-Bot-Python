@@ -39,7 +39,10 @@ RUN mkdir -p /app/data /app/log && chown -R botuser:botuser /app/data /app/log
 # Verify the install. Import the Postgres connection layer too so a future
 # requirements.txt drop of ``asyncpg`` (the runtime DB driver) fails the build
 # rather than surfacing only at first DB use inside a running container.
-RUN python -c "from config.app_config import load_config; import storage.postgres.connection; print('OK')"
+# Run this outside /app so the check proves the installed console entry point
+# can import the top-level application modules from site-packages. Checking
+# from /app masks missing ``py-modules`` packaging because cwd is importable.
+RUN cd /tmp && python -c "import app; from config.app_config import load_config; import storage.postgres.connection; print('OK')"
 
 # Fail-closed mode selection lives in AppConfig. ``TRADING_MODE`` defaults to
 # paper when absent and is immutable after startup. Live submission additionally

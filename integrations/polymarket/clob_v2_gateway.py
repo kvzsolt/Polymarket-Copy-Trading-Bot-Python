@@ -60,6 +60,7 @@ _SDK_READ_TIMEOUT_SECONDS = 10.0
 _GET_ORDER_HTTP_TIMEOUT_SECONDS = _SDK_READ_TIMEOUT_SECONDS
 _SDK_GET_TIMEOUT_SECONDS = _SDK_READ_TIMEOUT_SECONDS
 _MAX_TRADE_PAGES = 20
+_MAX_ORDER_PAGES = 20
 _EXPECTED_CHAIN_ID = 137
 OrderSide = Literal["BUY", "SELL"]
 MarketOrderType = Literal["FAK", "FOK"]
@@ -424,6 +425,41 @@ class PolymarketGateway:
             created_at=raw.created_at,
             raw=_raw_model(raw),
         )
+
+    async def list_open_orders(self) -> list[VenueOrderState]:
+        """Return the authenticated account's open orders via the SDK paginator."""
+        secure = self._client.require_secure()
+        paginator = secure.list_open_orders()
+        orders: list[VenueOrderState] = []
+        try:
+            async with asyncio.timeout(_SDK_READ_TIMEOUT_SECONDS):
+                page_count = 0
+                async for page in paginator:
+                    page_count += 1
+                    for raw in page.items:
+                        filled = Decimal(raw.size_matched)
+                        orders.append(
+                            VenueOrderState(
+                                order_id=raw.id,
+                                status=raw.status,
+                                side=raw.side,
+                                price=Decimal(raw.price),
+                                size=Decimal(raw.original_size),
+                                filled_size=filled,
+                                avg_fill_price=(
+                                    Decimal(raw.price) if filled > 0 else Decimal("0")
+                                ),
+                                created_at=raw.created_at,
+                                raw=_raw_model(raw),
+                            )
+                        )
+                    if page_count >= _MAX_ORDER_PAGES:
+                        break
+        except BaseException as exc:
+            if isinstance(exc, (KeyboardInterrupt, SystemExit, asyncio.CancelledError)):
+                raise
+            _raise_read_error(exc, not_found="order")
+        return orders
 
     async def get_fills(self, market: str | None = None) -> list[VenueFill]:
         secure = self._client.require_secure()

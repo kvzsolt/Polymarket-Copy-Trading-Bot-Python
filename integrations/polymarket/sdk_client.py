@@ -138,12 +138,14 @@ async def create_polymarket_client(
     *,
     wallet_config: Any = None,
     config: Any = None,
+    authenticated: bool = True,
 ) -> PolymarketClient:
     """Create a public client and, when key material exists, a secure client.
 
-    Paper mode deliberately works without a private key.  In live mode the
-    startup health gate requires ``secure_client`` and validates the SDK's
-    detected wallet and chain before an order can be submitted.
+    Set ``authenticated=False`` for paper runtimes so configured key material
+    cannot trigger credential derivation or create a live-capable transport.
+    Live startup requires ``secure_client`` and validates the SDK's detected
+    wallet and chain before an order can be submitted.
     """
     resolved_key = str(
         private_key
@@ -158,7 +160,7 @@ async def create_polymarket_client(
     ).strip()
 
     public_client = AsyncPublicClient()
-    if not resolved_key:
+    if not authenticated or not resolved_key:
         return PolymarketClient(public_client, wallet_config=wallet_config)
 
     try:

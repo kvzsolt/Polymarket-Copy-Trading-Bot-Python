@@ -32,9 +32,11 @@ requires = ["setuptools>=69", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
+py-modules = ["app", "bootstrap", "bot"]
 
 [tool.setuptools.packages.find]
 include = [
+  "cache*",
   "clients*",
   "config*",
   "interfaces*",

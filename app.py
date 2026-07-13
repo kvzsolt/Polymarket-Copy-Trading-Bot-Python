@@ -63,7 +63,6 @@ from orchestrators.runtime_monitor import run_leader_monitor
 from orchestrators.runtime_summary import print_startup_summary
 from orchestrators.startup_health import perform_startup_health_check
 from orchestrators.user_data_runtime import UserDataRuntime
-from services.compliance import check_geoblock
 from services.discovery.auto_trader_selector import AutoTraderSelector
 from services.discovery.balance_provider import build_wallet_balance_provider
 from services.discovery.capture_service import DiscoveryCaptureService
@@ -910,12 +909,6 @@ async def _run_application(client_registry: list[Any]) -> int:
                     check.get("detail"),
                     check.get("fix"),
                 )
-    elif startup_config.network.enforce_geoblock:
-        decision = await check_geoblock()
-        if not decision.allowed:
-            print_error(f"Trading disabled by geoblock policy: {decision.reason}")
-            return 1
-
     application = await build_app()
 
     application.readiness.update(
@@ -1041,6 +1034,7 @@ async def _run_application(client_registry: list[Any]) -> int:
         client = await create_polymarket_client(
             wallet_config=runtime_user.wallet,
             config=application.config,
+            authenticated=not application.config.execution.paper_trade_only,
         )
         # Register ownership immediately. If any later startup stage fails,
         # main() still closes the SDK transports from its outer finally.
@@ -1910,6 +1904,18 @@ async def main() -> int:
         return await _run_application(clients)
     finally:
         await _close_polymarket_clients(clients)
+        # Startup can return before ``_shutdown_runtime`` exists (doctor,
+        # validation, or compliance failures). Always close the process-wide
+        # HTTP pool here too; ``close_session`` is intentionally idempotent.
+        try:
+            from utils.fetchData import close_session
+
+            await close_session()
+        except Exception as exc:
+            logger.warning(
+                "shared_http_client_shutdown_failed",
+                extra={"error": redact_error_detail(exc)},
+            )
 
 
 if __name__ == "__main__":

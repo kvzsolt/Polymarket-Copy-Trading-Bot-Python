@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -304,6 +305,35 @@ async def test_get_order_404_is_not_venue_outage() -> None:
 
 
 @pytest.mark.asyncio
+async def test_list_open_orders_consumes_sdk_paginator() -> None:
+    created_at = datetime.now(tz=timezone.utc)
+
+    async def pages():
+        yield SimpleNamespace(items=(
+            SimpleNamespace(
+                id="order-open",
+                status="LIVE",
+                side="BUY",
+                price=Decimal("0.42"),
+                original_size=Decimal("10"),
+                size_matched=Decimal("2"),
+                created_at=created_at,
+            ),
+        ))
+
+    secure = SimpleNamespace(list_open_orders=MagicMock(return_value=pages()))
+    subject, _, _ = gateway(secure=secure)
+
+    orders = await subject.list_open_orders()
+
+    assert len(orders) == 1
+    assert orders[0].order_id == "order-open"
+    assert orders[0].filled_size == Decimal("2")
+    assert orders[0].created_at == created_at
+    secure.list_open_orders.assert_called_once_with()
+
+
+@pytest.mark.asyncio
 async def test_client_closes_both_transports_once() -> None:
     public = SimpleNamespace(close=AsyncMock())
     secure = SimpleNamespace(close=AsyncMock(), credentials=None)
@@ -344,6 +374,34 @@ async def test_factory_builds_public_only_without_private_key(monkeypatch: pytes
         secure_create,
     )
     client = await create_polymarket_client(config=SimpleNamespace())
+    assert client.secure_client is None
+    secure_create.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_factory_paper_mode_never_bootstraps_secure_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    public = SimpleNamespace(close=AsyncMock())
+    secure_create = AsyncMock()
+    monkeypatch.setattr(
+        "integrations.polymarket.sdk_client.AsyncPublicClient",
+        MagicMock(return_value=public),
+    )
+    monkeypatch.setattr(
+        "integrations.polymarket.sdk_client.AsyncSecureClient.create",
+        secure_create,
+    )
+    config = SimpleNamespace(
+        wallet=SimpleNamespace(
+            private_key="0x" + "a" * 64,
+            funder_address="0x" + "b" * 40,
+        ),
+        clob=SimpleNamespace(api_key="k", api_secret="s", api_passphrase="p"),
+    )
+
+    client = await create_polymarket_client(config=config, authenticated=False)
+
     assert client.secure_client is None
     secure_create.assert_not_awaited()
 
