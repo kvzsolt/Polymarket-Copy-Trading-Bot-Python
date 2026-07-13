@@ -75,6 +75,7 @@ def _seed_executable_wss(cache: MarketStateStore, token_id: str) -> None:
         token_id,
         tick_size=Decimal("0.01"),
         min_order_size=Decimal("5"),
+        neg_risk=False,
         source="wss",
     )
     # Clear dirty flag set by set_tick

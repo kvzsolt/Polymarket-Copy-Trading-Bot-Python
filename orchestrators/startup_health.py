@@ -494,7 +494,11 @@ def _position_sync_check(sync: PositionSyncResult) -> StartupHealthCheckItem:
     )
 
 
-async def _check_clob_gateway(gateway: ClobGateway | None) -> StartupHealthCheckItem:
+async def _check_clob_gateway(
+    gateway: ClobGateway | None,
+    *,
+    require_authenticated: bool = False,
+) -> StartupHealthCheckItem:
     """Probe CLOB V2 gateway compatibility (issue #66).
 
     Always returns a check item — never raises. The caller decides whether to
@@ -530,9 +534,15 @@ async def _check_clob_gateway(gateway: ClobGateway | None) -> StartupHealthCheck
             message=str(report.get("error") or "CLOB SDK not available"),
             details=report,
         )
+    if require_authenticated and not bool(report.get("authenticated")):
+        return StartupHealthCheckItem(
+            status="error",
+            message="Unified Polymarket SDK is public-only; live authentication is required",
+            details=report,
+        )
     return StartupHealthCheckItem(
         status="ok",
-        message="CLOB V2 gateway ready",
+        message="Unified Polymarket gateway ready",
         details=report,
     )
 
@@ -554,7 +564,10 @@ async def perform_startup_health_check(
     rpc_check, polymarket_check, clob_check = await asyncio.gather(
         _check_rpc(rpc_url),
         _check_polymarket_api(),
-        _check_clob_gateway(clob_gateway),
+        _check_clob_gateway(
+            clob_gateway,
+            require_authenticated=require_live_clob,
+        ),
     )
     # In live mode, downgrade clob_check warnings to errors so the report
     # refuses to mark the runtime healthy. Paper mode keeps the warning.

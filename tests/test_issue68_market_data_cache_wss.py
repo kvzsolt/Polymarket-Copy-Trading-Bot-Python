@@ -49,6 +49,9 @@ def mock_gateway():
     gw = AsyncMock()
     gw.get_orderbook = AsyncMock(return_value=OrderBook(
         token_id=TOKEN_A,
+        tick_size=Decimal("0.01"),
+        min_order_size=Decimal("5"),
+        neg_risk=False,
         bids=[
             OrderBookLevel(price=Decimal("0.50"), size=Decimal("100")),
             OrderBookLevel(price=Decimal("0.48"), size=Decimal("200")),

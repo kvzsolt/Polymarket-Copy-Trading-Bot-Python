@@ -126,3 +126,27 @@ async def test_blocked_live_doctor_short_circuits_before_build_app(monkeypatch):
     await app_module.main()
 
     build_app.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_paper_mode_does_not_call_geoblock_gate(monkeypatch):
+    import app as app_module
+
+    fake_config = SimpleNamespace(
+        execution=SimpleNamespace(paper_trade_only=True),
+        network=SimpleNamespace(enforce_geoblock=True),
+    )
+    geoblock = AsyncMock()
+
+    async def _stop_after_gate():
+        raise RuntimeError("stop_after_gate")
+
+    monkeypatch.setattr(app_module, "validate_runtime_env", lambda: None)
+    monkeypatch.setattr(app_module, "load_config", lambda: fake_config)
+    monkeypatch.setattr(app_module, "check_geoblock", geoblock, raising=False)
+    monkeypatch.setattr(app_module, "build_app", _stop_after_gate)
+
+    with pytest.raises(RuntimeError, match="stop_after_gate"):
+        await app_module.main()
+
+    geoblock.assert_not_awaited()

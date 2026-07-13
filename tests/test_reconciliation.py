@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import contextlib
 import time
-from unittest.mock import AsyncMock, MagicMock, patch
+from datetime import datetime, timezone
+from decimal import Decimal
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -14,6 +16,7 @@ from services.reconciliation import (
     _order_age_seconds,
     _safe_int,
 )
+from integrations.polymarket.models import VenueCancelResult, VenueOrderState
 from storage.postgres.orders_repo import OrderSubmissionRecord, OrdersRepo
 
 
@@ -73,6 +76,11 @@ class TestHelpers:
     def test_order_age_no_ts(self):
         assert _order_age_seconds({}, time.time()) == 0.0
 
+    def test_order_age_datetime(self):
+        now = 1_700_000_000.0
+        created_at = datetime.fromtimestamp(now - 90, tz=timezone.utc)
+        assert _order_age_seconds({"created_at": created_at}, now) == pytest.approx(90.0)
+
 
 # ---------------------------------------------------------------------------
 # Mock CLOB client
@@ -92,6 +100,37 @@ def _make_mock_clob(orders: list[dict] | None = None, cancel_side_effect=None):
 # ---------------------------------------------------------------------------
 
 class TestReconciliationService:
+
+    @pytest.mark.asyncio
+    async def test_typed_async_gateway_surface(self):
+        now = datetime.fromtimestamp(time.time() - 7200, tz=timezone.utc)
+        gateway = MagicMock()
+        gateway.list_open_orders = AsyncMock(return_value=[
+            VenueOrderState(
+                order_id="typed-stale",
+                status="LIVE",
+                size=Decimal("10"),
+                filled_size=Decimal("2"),
+                created_at=now,
+            )
+        ])
+        gateway.cancel_order = AsyncMock(return_value=VenueCancelResult(
+            success=True,
+            order_id="typed-stale",
+            status="cancelled",
+        ))
+
+        svc = ReconciliationService(
+            clob_client=gateway,
+            stale_threshold_seconds=3600,
+            auto_cancel_stale=True,
+        )
+        result = await svc.reconcile()
+
+        assert result.open_orders_on_exchange == 1
+        assert result.stale_orders_cancelled == 1
+        gateway.list_open_orders.assert_awaited_once_with()
+        gateway.cancel_order.assert_awaited_once_with("typed-stale")
 
     @pytest.mark.asyncio
     async def test_empty_exchange(self):

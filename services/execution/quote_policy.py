@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal
+from domain.units import BASIS_POINTS_PER_UNIT
 
 
 @dataclass(frozen=True)
@@ -80,7 +81,7 @@ def evaluate_quote_quality(
         )
 
     spread = best_ask - best_bid
-    spread_bps = int((spread / mid) * 10000)
+    spread_bps = int((spread / mid) * BASIS_POINTS_PER_UNIT)
 
     if spread_bps > max_spread_bps:
         return QuoteQuality(

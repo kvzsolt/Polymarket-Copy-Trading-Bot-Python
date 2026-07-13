@@ -65,6 +65,7 @@ logger = get_logger("OnchainDetectionRuntime")
 
 SignalSink = Callable[[OnchainTradeSignal], Coroutine[Any, Any, None]]
 ConditionIdResolver = Callable[[str], Coroutine[Any, Any, str]]
+WebSocketFactory = Callable[..., OnchainWebSocket]
 
 _CONFIDENCE_RANK = {
     DetectionConfidence.MARKET_UNATTRIBUTED: 0,
@@ -94,6 +95,7 @@ class OnchainDetectionRuntime:
         enable_mined: bool = True,
         pending_config: PendingTxConfig | None = None,
         condition_id_resolver: ConditionIdResolver | None = None,
+        websocket_factory: WebSocketFactory = OnchainWebSocket,
         queue_maxsize: int = 1000,
         dispatched_cap: int = 10_000,
     ) -> None:
@@ -104,6 +106,7 @@ class OnchainDetectionRuntime:
         self._enable_mined = bool(enable_mined)
         self._pending_config = pending_config or PendingTxConfig()
         self._resolver = condition_id_resolver
+        self._websocket_factory = websocket_factory
         self._dedupe = MinedFillDeduplicator()
         self._queue: asyncio.Queue[OnchainTradeSignal] = asyncio.Queue(maxsize=queue_maxsize)
         self._mined_ws: OnchainWebSocket | None = None
@@ -393,7 +396,7 @@ class OnchainDetectionRuntime:
             return
         self._running = True
         if self._enable_mined:
-            self._mined_ws = OnchainWebSocket(
+            self._mined_ws = self._websocket_factory(
                 ws_url=self._ws_url,
                 subscribe_params=log_subscription_params(),
                 name="orderfilled",
@@ -401,7 +404,7 @@ class OnchainDetectionRuntime:
             )
             self._mined_ws.start()
         if self._enable_pending:
-            self._pending_ws = OnchainWebSocket(
+            self._pending_ws = self._websocket_factory(
                 ws_url=self._ws_url,
                 subscribe_params=pending_subscription_params(
                     hashes_only=self._pending_config.hashes_only,

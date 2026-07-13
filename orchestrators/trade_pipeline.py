@@ -12,6 +12,7 @@ from typing import Any
 
 from config.app_config import AppConfig
 from domain.models import TradeSignal
+from domain.units import BASIS_POINTS_PER_UNIT, UNIX_MILLISECONDS_THRESHOLD
 from domain.trading_context import TradingContext
 from services.entryPermissionService import EntryDecision, EntryPermissionService
 from services.execution.reconciliation_service import ReconciliationService
@@ -491,7 +492,9 @@ async def _prefetch_market_data_rest_snapshot(
             spread_bps: int | None = None
             if best_bid is not None and best_ask is not None and best_ask > 0:
                 try:
-                    spread_bps = int(((best_ask - best_bid) / best_ask) * 10000)
+                    spread_bps = int(
+                        ((best_ask - best_bid) / best_ask) * BASIS_POINTS_PER_UNIT
+                    )
                 except Exception:
                     spread_bps = None
             bid_count = len(getattr(book, "bids", {}) or {}) if book is not None else 0
@@ -1233,7 +1236,9 @@ def _buy_required_cash_with_fees(
     """
     if notional_usdc <= 0:
         return Decimal("0")
-    fee_multiplier = Decimal("1") + (Decimal(int(fee_bps)) / Decimal("10000"))
+    fee_multiplier = Decimal("1") + (
+        Decimal(int(fee_bps)) / BASIS_POINTS_PER_UNIT
+    )
     return notional_usdc * fee_multiplier
 
 
@@ -1297,7 +1302,11 @@ def normalize_signals(raw_signals: list[dict[str, Any]], leader_id: str) -> list
             usdc_size = size * price
 
         ts_raw = raw.get("timestamp") or int(time.time())
-        ts = int(float(ts_raw) / 1000) if float(ts_raw) > 1e12 else int(float(ts_raw))
+        ts = (
+            int(float(ts_raw) / 1000)
+            if float(ts_raw) > UNIX_MILLISECONDS_THRESHOLD
+            else int(float(ts_raw))
+        )
 
         signal = TradeSignal(
             leader_id=leader_id,

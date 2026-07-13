@@ -5,6 +5,12 @@
 secrets.env
 .env
 config/runtime.local.env
+secrets.toml
+*.env.bak
+*.env.bak.*
+*.env.backup
+*.env.backup.*
+config/bot.toml
 
 # VCS / CI metadata — image does not need them.
 .git/

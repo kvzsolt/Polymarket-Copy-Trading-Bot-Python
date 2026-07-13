@@ -70,7 +70,21 @@ class BalanceClient(AbstractBalanceClient):
     async def get_usdc_balance(self, address: str) -> Decimal | None:
         if not address:
             return None
-        return await asyncio.to_thread(self._get_usdc_balance_sync, address)
+        # Reject malformed configuration before allocating an executor thread.
+        # The synchronous worker validates again at the RPC boundary, but this
+        # cheap preflight keeps obviously invalid input on the event loop and
+        # avoids needless thread-pool lifecycle work.
+        try:
+            Web3.to_checksum_address(self._usdc_contract_address)
+        except (TypeError, ValueError) as exc:
+            self._logger.error("Invalid USDC contract address config: %s", exc)
+            return None
+        try:
+            checksum_address = Web3.to_checksum_address(address)
+        except (TypeError, ValueError) as exc:
+            self._logger.error("Invalid wallet address: %s", exc)
+            return None
+        return await asyncio.to_thread(self._get_usdc_balance_sync, checksum_address)
 
     async def get_native_balance_wei(self, address: str) -> int | None:
         if not address:

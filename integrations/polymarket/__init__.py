@@ -1,11 +1,9 @@
-"""Polymarket integrations — CLOB V2 gateway."""
+"""Polymarket integrations backed by the official unified Python SDK."""
 
 from integrations.polymarket.clob_v2_gateway import (
     BUY,
     ClobV2Gateway,
-    OrderArgs,
-    OrderPayload,
-    OrderType,
+    PolymarketGateway,
     SELL,
 )
 from integrations.polymarket.errors import (
@@ -27,17 +25,23 @@ from integrations.polymarket.models import (
     VenueOrderState,
     VenueSubmitResult,
 )
+from integrations.polymarket.sdk_client import (
+    MarketMeta,
+    PolymarketClient,
+    create_polymarket_client,
+)
 
 __all__ = [
     "BUY",
     "ClobV2Gateway",
+    "PolymarketGateway",
+    "PolymarketClient",
+    "MarketMeta",
+    "create_polymarket_client",
     "LimitOrderRequest",
     "MarketableOrderRequest",
-    "OrderArgs",
     "OrderBook",
     "OrderBookLevel",
-    "OrderPayload",
-    "OrderType",
     "SELL",
     "RetryableVenueError",
     "TerminalVenueError",

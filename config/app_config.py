@@ -389,9 +389,6 @@ class ClobConfig:
     api_key: str
     api_secret: str = ""
     api_passphrase: str = ""
-    # CLOB V2 gate — fail-closed default. The bot will not attempt the
-    # py-clob-client-v2 surface unless this is explicitly enabled.
-    clob_v2_ready: bool = False
 
 
 @dataclass(frozen=True)
@@ -1114,6 +1111,12 @@ _RAW_SENSITIVE_KEYS: frozenset[str] = frozenset(
         "CLOB_PASSPHRASE",
         "FALCON_API_TOKEN",
         "DATABASE_URL",
+        # Provider URLs commonly embed project IDs/tokens and are credentials,
+        # even though they look like ordinary network configuration.
+        "RPC_URL",
+        "FALLBACK_RPC_URL",
+        "ONCHAIN_WS_URL",
+        "PENDING_TX_WS_URL",
     }
 )
 
@@ -1182,7 +1185,7 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
     database = DatabaseConfig(
         dsn=p.string(
             "DATABASE_URL",
-            "postgresql://bot:bot@localhost:5432/polymarket_copytrading_python",
+            "postgresql://localhost:5432/polymarket_copytrading_python",
         ),
         pool_min_size=_pool_min,
         pool_max_size=_pool_max,
@@ -1204,7 +1207,6 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         api_key=p.string("CLOB_API_KEY", ""),
         api_secret=p.string("CLOB_SECRET", ""),
         api_passphrase=p.string("CLOB_PASSPHRASE", ""),
-        clob_v2_ready=p.bool_("CLOB_V2_READY", False),
     )
 
     # Polling / cadence
@@ -1301,17 +1303,26 @@ def load_config(env: Mapping[str, str] | None = None) -> AppConfig:
         ),
     )
 
-    # P0-2: live-trading master switch — fail-closed. The bot runs in PAPER mode
-    # unless LIVE_TRADING is EXPLICITLY enabled; a missing / unknown / malformed
-    # value resolves to paper. The legacy PAPER_TRADE_ONLY flag can additionally
-    # force paper but can never enable live. This is the single source for
-    # paper_trade_only / dry_run, so live trading requires an affirmative opt-in
-    # (LIVE_TRADING=enabled) — there is no path where missing config goes live.
-    _live_switch = p._strip("LIVE_TRADING", p.raw("LIVE_TRADING", "")).strip().lower()
-    live_trading_enabled = _live_switch in ("enabled", "true", "1", "yes", "on")
-    paper_trade_only_effective = (
-        p.bool_("PAPER_TRADE_ONLY", False) or not live_trading_enabled
-    )
+    # One public mode selector, fail-closed.  Legacy flags are read only when
+    # TRADING_MODE is absent so existing local files can be migrated without a
+    # surprise live transition; all generated docs/examples use TRADING_MODE.
+    _trading_mode = p.string("TRADING_MODE", "").lower()
+    if _trading_mode:
+        if _trading_mode not in {"paper", "live"}:
+            p.errors.append("TRADING_MODE must be 'paper' or 'live'.")
+        paper_trade_only_effective = _trading_mode != "live"
+    else:
+        _legacy_live_switch = p.string("LIVE_TRADING", "").lower()
+        _legacy_live_enabled = _legacy_live_switch in {
+            "enabled",
+            "true",
+            "1",
+            "yes",
+            "on",
+        }
+        paper_trade_only_effective = (
+            p.bool_("PAPER_TRADE_ONLY", False) or not _legacy_live_enabled
+        )
 
     # Execution
     execution = ExecutionConfig(

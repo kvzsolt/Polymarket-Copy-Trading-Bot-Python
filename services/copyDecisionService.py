@@ -151,7 +151,6 @@ class CopyDecisionService:
             else 1.0
         )
         unconstrained_notional = base_notional_usdc * trust_mult
-        desired_notional = min(unconstrained_notional, max_notional_usdc)
 
         if decision_gate_enabled:
             trade_score = self.trade_scorer.score_buy_trade(

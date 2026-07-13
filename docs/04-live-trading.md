@@ -1,91 +1,64 @@
-# 04 - Live Trading Cutover
+# Live Trading Cutover
 
-When you are ready to execute real trades on the Polymarket CLOB V2, follow this checklist to ensure a safe cutover.
+Live execution has two independent, fail-closed gates:
 
-## 1. Environment & Configuration Check
+1. `TRADING_MODE=live` in `config/runtime.local.env`, read once at startup.
+2. The PostgreSQL `trading_control` row, checked immediately before every venue submission.
 
-Before launching the bot in live mode, ensure your configuration files are set correctly.
+There is no `--live` CLI override and environment files are not hot-reloaded.
 
-**`config/runtime.local.env`**
-Make sure the following flags and values are explicitly set:
-- `LIVE_TRADING=enabled`
-- `PAPER_TRADE_ONLY=false`
-- `CLOB_V2_READY=true`
-- `FUNDER_ADDRESS`: Your Polymarket funding wallet address.
-- `LEADER_WALLETS`: The comma-separated list of wallets you want to copy (if not using auto-discovery).
-- `DATABASE_URL`: Ensure your PostgreSQL connection string is correct (e.g., `postgresql://bot:bot@localhost:5432/polymarket_copytrading_python`).
-
-**`secrets.env` (Secrets)**
-Your `secrets.env` file must contain the sensitive keys required to sign transactions and interact with the blockchain. Ensure it includes:
-- `PRIVATE_KEY=0xYourHexPrivateKey` (The private key corresponding to `FUNDER_ADDRESS`, starting with `0x`)
-- `RPC_URL=https://polygon-mainnet.g.alchemy.com/v2/YourKey` (Your reliable Polygon Mainnet RPC)
-
-## 2. Wallet Preparation
-
-- **Polygon MATIC**: Ensure the `FUNDER_ADDRESS` has enough MATIC to cover gas for approvals (though Polymarket CLOB is largely gasless for limit orders, proxy approvals may require gas).
-- **pUSD / USDC.e**: The bot requires collateral. Ensure you have unlocked and deposited pUSD on the Polymarket V2 contracts.
-- **Approvals**: The bot's `CollateralReadiness` service should handle checking allowances, but verify your CTF Exchange V2 approvals are set.
-
-## 3. Installation & Setup
-
-If you haven't already, install the dependencies in a virtual environment. You can use either `uv` (recommended for speed) or standard `pip`.
-
-**Using `uv` (Recommended):**
-```bash
-uv venv
-source .venv/bin/activate
-uv pip install -r requirements.txt
-```
-
-**Using standard `pip`:**
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-```
-
-## 4. Starting the Engine
-
-You can run the bot natively via the CLI or using Docker.
-
-### Option A: Native Execution (CLI)
-
-Ensure your virtual environment is active, then start the bot using the `run` command with the `--live` flag to enforce live trading execution:
+## Prepare
 
 ```bash
-# Activate virtual environment if not already active
-source .venv/bin/activate
-
-# Launch the bot in live mode
-python bot.py run --live
+cp secrets.env.example secrets.env
+chmod 600 secrets.env
 ```
 
-### Option B: Docker Execution
+Populate the private key, RPC URL, database URL, and optional CLOB credentials.
+Set the public wallet address and leaders in `config/runtime.local.env`. The
+unified SDK detects EOA/proxy/Safe/deposit-wallet signing mode; do not configure
+a numeric signature type.
 
-If you prefer containerized deployment, use Docker Compose to start the bot and its PostgreSQL database in detached mode:
+Install and validate:
+
+```bash
+uv sync --frozen --extra dev
+pmcopy doctor
+uv run pytest -q
+```
+
+Keep the control paused while starting:
+
+```bash
+pmcopy trading pause --reason "preflight"
+pmcopy run
+```
+
+After startup reconciliation, market/user streams, database health, wallet
+identity, and the doctor output are all healthy, explicitly resume:
+
+```bash
+pmcopy trading resume --confirm LIVE --reason "preflight passed"
+pmcopy trading status
+```
+
+The resume command is an operator action; deployments and tests must never run
+it automatically.
+
+## Docker
+
+Set a non-default `POSTGRES_PASSWORD`, keep `secrets.env` mode `0600`, and run:
 
 ```bash
 docker compose up -d
+docker compose exec bot pmcopy trading status
 ```
 
-*(Note: The default `docker-compose.yml` is configured with `PAPER_TRADE_ONLY: "true"`. You must change this to `"false"` in the `docker-compose.yml` file, or the bot will run in paper mode. The container entrypoint also defaults to `python bot.py run`; it will automatically trade live if `PAPER_TRADE_ONLY` is false and `LIVE_TRADING` is enabled in your env.)*
+PostgreSQL is bound to `127.0.0.1` for development and remains reachable to the
+bot over the internal Compose network.
 
-## 5. Immediate Monitoring
+## Stop or pause
 
-Watch the initialization logs:
-1. **Reconciliation**: The `ReconciliationService` will run first. It pulls your on-chain positions and aligns them with the Postgres DB. Ensure it reports `0 drift`.
-2. **WebSockets**: Ensure `market_ws` and `user_ws` connect cleanly and report the 5-second `PING` heartbeats.
-3. **Execution Ready**: Look for the log indicating `ClobGateway` is armed and listening.
-
-## 6. Ongoing Operations
-
-Use the Operator CLI in a separate terminal to check the health and state of your bot while it runs:
-```bash
-source .venv/bin/activate
-python bot.py doctor
-python bot.py reservations
-python bot.py drift
-python bot.py status
-```
-
-If anything looks anomalous, `Ctrl+C` (or `docker compose stop`) immediately. The Postgres backend ensures you can restart safely without state corruption.
+Use `pmcopy trading pause --reason "..."` for an immediate submission stop.
+Use SIGTERM, `Ctrl+C`, or `docker compose stop bot` for graceful process
+shutdown. Reconciliation remains mandatory before the next resume.

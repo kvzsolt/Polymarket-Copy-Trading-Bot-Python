@@ -9,15 +9,11 @@ from hashlib import sha256
 from typing import Any, TYPE_CHECKING
 
 from config.app_config import AppConfig
+from domain.units import BASIS_POINTS_PER_UNIT
 
 if TYPE_CHECKING:
     from interfaces.clob_gateway import ClobGateway
-    from services.market_data_service import (
-        MarketDataBundle,
-        MarketDataService,
-        MarketDataNotReady,
-        StaleDataError,
-    )
+    from services.market_data_service import MarketDataService
 
 # CLOB venue access flows through the gateway; SDK-shaped types
 # (``OrderType`` / ``OrderArgs`` / ``BUY`` / ``SELL`` constants) are not
@@ -30,17 +26,16 @@ from integrations.polymarket.errors import (
     VenueUnavailableError,
 )
 from integrations.polymarket.models import MarketableOrderRequest
-from services.circuitBreaker import CircuitBreaker, CircuitOpen
+from services.circuitBreaker import CircuitBreaker
 from services.idempotency import compute_effective_key as _compute_effective_key
+from services.trading_permission import TradingPausedError, TradingPermissionService
 from utils.logger import get_logger, log_api_error, log_api_response, redact_error_detail
-from utils.createClobClient import _is_thin_or_empty_book
+from services.market_data_quality import is_thin_or_empty_book as _is_thin_or_empty_book
 
 # Re-exported from submodules for backward compatibility
 from services.execution.types import (
     ExecutionRequest,
     ExecutionResult,
-    BookSpreadMetrics as _BookSpreadMetrics,
-    _SUPPORTED_BOOK_SPREAD_MODES,
 )
 from services.execution.book_spread import (
     resolve_book_spread_mode as _resolve_book_spread_mode,
@@ -48,15 +43,10 @@ from services.execution.book_spread import (
     calculate_book_depth_metrics as _calculate_book_depth_metrics,
 )
 from services.execution.submission import (
-    truncate_text as _truncate_text,
-    sanitize_submission_value as _sanitize_submission_value,
+    truncate_text as _truncate_text,  # noqa: F401 - compatibility export
     sanitize_submission_request as _sanitize_submission_request,
     sanitize_submission_response as _sanitize_submission_response,
-    coerce_bool as _coerce_bool,
-    coerce_timestamp as _coerce_timestamp,
     pending_submission_ttl_seconds as _pending_submission_ttl_seconds,
-    pending_since as _pending_since,
-    pending_expires_at as _pending_expires_at,
     build_pending_response as _build_pending_response,
     is_pending_submission_expired as _is_pending_submission_expired,
     is_retry_blocking_existing as _is_retry_blocking_existing,
@@ -372,6 +362,7 @@ class ExecutionService:
         clob_gateway: "ClobGateway | None" = None,
         market_data_service: "MarketDataService | None" = None,
         geoblock_gate=None,
+        trading_permission: TradingPermissionService | None = None,
     ):
         self.clob_client = clob_client
         self.fee_service = fee_service
@@ -381,6 +372,7 @@ class ExecutionService:
         # P1-j: optional trade-path geoblock gate (services.compliance.GeoblockGate).
         # None = no enforcement (preserves the configless / test default).
         self._geoblock_gate = geoblock_gate
+        self._trading_permission = trading_permission
 
         # Single CLOB venue boundary. ``runtime_bootstrap`` is expected to pass
         # a pre-constructed gateway so reconciliation, the execution
@@ -484,6 +476,21 @@ class ExecutionService:
                 error="amount must be > 0",
             )
 
+        if self._trading_permission is not None:
+            try:
+                await self._trading_permission.require_submission_allowed()
+            except TradingPausedError as exc:
+                return ExecutionResult(
+                    accepted=False,
+                    order_id=None,
+                    status="trading_paused",
+                    requested_amount=req.amount,
+                    filled_amount=Decimal("0"),
+                    avg_price=None,
+                    fees_paid=Decimal("0"),
+                    error=str(exc),
+                )
+
         if not self.circuit_breaker.allow_request():
             remaining = self.circuit_breaker.remaining_cooldown()
             return ExecutionResult(
@@ -556,7 +563,7 @@ class ExecutionService:
                 )
 
         try:
-            from services.market_data_service import MarketDataNotReady, StaleDataError
+            from services.market_data_service import MarketDataNotReady
             market_data_policy = None
             if instant_fak or forced_sell_exit:
                 base_policy = getattr(self._market_data_service, "_policy", None)
@@ -577,7 +584,6 @@ class ExecutionService:
                 **market_data_kwargs,
             )
         except Exception as exc:
-            from services.market_data_service import MarketDataNotReady, StaleDataError
             if isinstance(exc, MarketDataNotReady):
                 status = "market_not_ready"
             else:
@@ -870,7 +876,7 @@ class ExecutionService:
                 error=f"price above max_share_price ({quote_price} > {max_share_price})",
             )
 
-        slippage = Decimal(req.max_slippage_bps) / Decimal(10_000)
+        slippage = Decimal(req.max_slippage_bps) / BASIS_POINTS_PER_UNIT
         if side == "BUY":
             worst_price = quote_price * (Decimal("1") + slippage)
         else:
@@ -904,6 +910,21 @@ class ExecutionService:
                 effective_order_amount,
                 quote_price,
                 top_level_amount,
+            )
+
+        if effective_order_amount < min_order_size:
+            return ExecutionResult(
+                accepted=False,
+                order_id=None,
+                status="size_below_min",
+                requested_amount=req.amount,
+                filled_amount=Decimal("0"),
+                avg_price=None,
+                fees_paid=Decimal("0"),
+                error=(
+                    f"effective size {effective_order_amount} is below venue minimum "
+                    f"{min_order_size}"
+                ),
             )
 
         # Effective idempotency key computed after sizing/rounding so
@@ -980,8 +1001,6 @@ class ExecutionService:
         # ``side`` is already the canonical "BUY"/"SELL" string (see
         # ``_normalize_side``). The gateway request consumes the same form;
         # SDK constants are an implementation detail of the gateway.
-        fee_bps = await self.fee_service.get_fee_bps(req.token_id)
-
         request_doc = asdict(req)
         request_doc["amount"] = str(effective_order_amount)
         request_doc["requested_amount"] = str(req.amount)
@@ -1128,6 +1147,31 @@ class ExecutionService:
             )
 
             for attempt in range(1, 4):
+                if self._trading_permission is not None:
+                    try:
+                        await self._trading_permission.require_submission_allowed()
+                    except TradingPausedError as exc:
+                        response = {
+                            "success": False,
+                            "status": "trading_paused",
+                            "error": str(exc),
+                            "non_retryable": True,
+                        }
+                        await self._save_submission(
+                            idempotency_key=idem_key,
+                            request=request_doc,
+                            response=response,
+                        )
+                        return ExecutionResult(
+                            accepted=False,
+                            order_id=None,
+                            status="trading_paused",
+                            requested_amount=req.amount,
+                            filled_amount=Decimal("0"),
+                            avg_price=None,
+                            fees_paid=Decimal("0"),
+                            error=str(exc),
+                        )
                 try:
                     submit_result = await self.clob_gateway.submit_marketable_order(
                         gateway_request
@@ -1389,6 +1433,17 @@ class ExecutionService:
                         remaining_amount = req.amount - matched_size
                     if remaining_amount <= Decimal("0.0001"):
                         break
+                    if self._trading_permission is not None:
+                        try:
+                            await self._trading_permission.require_submission_allowed()
+                        except TradingPausedError as exc:
+                            last_no_fill_error = str(exc)
+                            logger.warning(
+                                "copy_fak_repost_blocked_by_trading_control | token=%s attempt=%d",
+                                req.token_id,
+                                fak_attempt,
+                            )
+                            break
                     try:
                         next_bundle = await self._market_data_service.require_fresh_data(
                             req.token_id,

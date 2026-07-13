@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import time
 from dataclasses import dataclass
 
@@ -28,19 +27,11 @@ class FeeService:
         if cached and (now - cached.ts) < self._ttl_seconds:
             return cached.fee_bps
 
-        try:
-            loop = asyncio.get_running_loop()
-            fee_bps = await loop.run_in_executor(
-                None,
-                lambda: int(self._clob_client.client.get_fee_rate_bps(token_id)),
-            )
-            self._cache[token_id] = _FeeCache(fee_bps=fee_bps, ts=now)
-            return fee_bps
-        except Exception as exc:
-            logger.warning(
-                "Failed to fetch fee rate for token=%s, using default=%s bps: %s",
-                token_id,
-                self._default_fee_bps,
-                exc,
-            )
-            return self._default_fee_bps
+        # The unified SDK applies the current dynamic fee schedule while it
+        # builds the order and deliberately does not expose the old standalone
+        # ``get_fee_rate_bps`` endpoint.  This service therefore supplies only
+        # the configured conservative estimate used by local sizing/telemetry;
+        # it must never override the SDK's signed amounts.
+        fee_bps = self._default_fee_bps
+        self._cache[token_id] = _FeeCache(fee_bps=fee_bps, ts=now)
+        return fee_bps

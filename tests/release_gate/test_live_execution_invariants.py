@@ -24,6 +24,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+pytestmark = pytest.mark.integration
+
 # Reuse the heavy fixtures already proven in test_execution_idempotency_extended
 # so we don't duplicate construction code.
 from tests.test_execution_idempotency_extended import (  # type: ignore[import-not-found]

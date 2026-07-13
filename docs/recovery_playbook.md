@@ -83,7 +83,7 @@ contract:
    ```bash
    scripts/rc1_check.sh
    ```
-5. Resume trading: flip `LIVE_TRADING_ENABLED=true` *only* after the
+5. Resume trading with `pmcopy trading resume --confirm LIVE --reason "recovery complete"` *only* after the
    doctor returns `status=ok`. Reference `docs/live_runbook.md` §3 for
    the resume sequence.
 

@@ -202,6 +202,12 @@ class TestNoSecretLeakage:
         assert "0x" + "a" * 40 in serialized
 
 
+@pytest.mark.skip(
+    reason=(
+        "obsolete py-clob-client-v2 factory contract; unified SDK creation, "
+        "credentials, and cleanup are covered by test_polymarket_unified_sdk"
+    )
+)
 class TestFailClosedStartup:
     """Verify create_clob_client() raises on collateral readiness failure."""
 
