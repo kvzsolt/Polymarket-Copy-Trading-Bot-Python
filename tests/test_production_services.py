@@ -264,8 +264,8 @@ class TestExecutionService:
         assert "o1" in {rec.get("order_id") for rec in repo.store.values()}
 
     @pytest.mark.asyncio
-    async def test_executable_order_guard_rejects_small_buy_when_enabled(self):
-        """Small buys fail when the CLOB client is not fully mocked (guard removed, actual execution attempted)."""
+    async def test_execution_boundary_rejects_size_below_venue_minimum(self):
+        """Fresh venue metadata prevents an invalid tiny order submission."""
         clob = SimpleNamespace(get_price=AsyncMock(return_value={"price": "0.5"}))
         svc = ExecutionService(
             clob,
@@ -287,11 +287,9 @@ class TestExecutionService:
 
         res = await svc.execute(req)
 
-        # The executable order guard was removed; tiny orders go through to
-        # execution. The clob mock lacks create_market_order → AttributeError
-        # → classified as unknown → ambiguous (issue #100). Reconciliation
-        # owns the resolution; the duplicate-lock stays.
-        assert res.status == "submitted_unconfirmed"
+        assert res.accepted is False
+        assert res.status == "size_below_min"
+        assert "below venue minimum" in (res.error or "")
 
     @pytest.mark.asyncio
     async def test_executable_order_guard_can_be_disabled_for_small_buy(self):

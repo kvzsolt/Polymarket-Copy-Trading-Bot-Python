@@ -6,7 +6,6 @@ from typing import TYPE_CHECKING, Any, Iterable
 from urllib.parse import urlparse
 
 from rich.panel import Panel
-from rich.rule import Rule
 
 from orchestrators.startup_health import StartupHealthReport
 from utils.logger import console, get_logger, shorten_addr
@@ -485,9 +484,9 @@ def print_startup_summary(
         if isinstance(w, str) and w.strip()
     }
     active_leaders_set = {
-        l.lower()
-        for l in (active_leaders or [])
-        if isinstance(l, str) and l.strip()
+        leader.lower()
+        for leader in (active_leaders or [])
+        if isinstance(leader, str) and leader.strip()
     }
 
     if copied_wallets_set == active_leaders_set:

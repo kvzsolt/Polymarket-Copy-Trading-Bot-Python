@@ -9,6 +9,21 @@ from utils import fetchData
 async def test_http_client_recreated_when_session_closed():
     await fetchData.close_session()
 
+
+@pytest.mark.asyncio
+async def test_app_main_closes_shared_session_on_early_return(monkeypatch):
+    import app as app_module
+
+    async def _early_return(_clients):
+        fetchData._get_http_client()
+        return 1
+
+    monkeypatch.setattr(app_module, "_run_application", _early_return)
+
+    assert await app_module.main() == 1
+    assert fetchData._session is None
+    assert fetchData._http_client is None
+
     first_client = fetchData._get_http_client()
     first_session = first_client.session
 

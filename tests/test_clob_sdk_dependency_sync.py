@@ -14,9 +14,10 @@ def test_clob_sdk_dependency_is_synced_between_pyproject_and_requirements() -> N
         if line.strip() and not line.strip().startswith("#")
     ]
 
-    pyproject_clob = [dep for dep in project_deps if dep.startswith("py-clob-client")]
-    requirements_clob = [dep for dep in requirements if dep.startswith("py-clob-client")]
+    pyproject_clob = [dep for dep in project_deps if dep.startswith("polymarket-client")]
+    requirements_clob = [dep for dep in requirements if dep.startswith("polymarket-client")]
 
-    assert pyproject_clob == ["py-clob-client-v2==1.0.0"]
-    assert requirements_clob == ["py-clob-client-v2==1.0.0"]
+    assert pyproject_clob == ["polymarket-client==0.1.0b18"]
+    assert requirements_clob == ["polymarket-client==0.1.0b18"]
     assert pyproject_clob == requirements_clob
+    assert all(not dep.startswith("py-clob-client") for dep in project_deps)

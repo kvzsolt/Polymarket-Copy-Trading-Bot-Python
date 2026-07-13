@@ -103,6 +103,7 @@ def test_set_tick_only_touches_tick_and_metadata_sources() -> None:
         TOKEN,
         tick_size=Decimal("0.01"),
         min_order_size=Decimal("5"),
+        neg_risk=False,
         source="rest_snapshot",
     )
 

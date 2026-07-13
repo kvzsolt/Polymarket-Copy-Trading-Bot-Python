@@ -1,8 +1,8 @@
-"""Canonical CLOB V2 gateway protocol.
+"""Canonical Polymarket venue gateway protocol.
 
 `ExecutionService`, the execution coordinator, the reconciler, and the risk
-monitor must depend on this Protocol instead of the concrete `ClobV2Gateway`
-class or any `py_clob_client_v2` SDK type. Vendor SDK details live behind
+monitor must depend on this Protocol instead of a concrete SDK adapter.
+Vendor SDK details live behind
 ``integrations/polymarket/clob_v2_gateway.py`` and never leak past it.
 
 This module is the single source of truth for the gateway shape; previously
@@ -54,6 +54,8 @@ class ClobGateway(Protocol):
     ) -> VenueSubmitResult: ...
 
     async def get_order(self, order_id: str) -> VenueOrderState: ...
+
+    async def list_open_orders(self) -> list[VenueOrderState]: ...
 
     async def get_fills(
         self, market: str | None = None

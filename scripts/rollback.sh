@@ -2,7 +2,7 @@
 # Audit #103 — one-command rollback for live trading.
 #
 # Phases (each phase is idempotent / re-runnable):
-#   1. pause trading via the kill switch (LIVE_TRADING_ENABLED=false)
+#   1. pause trading via the database-backed operator control
 #   2. snapshot SQLite + log/audit artifacts to backups/<timestamp>/
 #   3. revert to the previous known-good commit (operator-supplied SHA)
 #   4. run startup reconciliation (bot doctor) before resuming
@@ -54,13 +54,9 @@ run()  {
 ts="$(date -u +%Y%m%dT%H%M%SZ)"
 BACKUP_DIR="backups/$ts"
 
-log "phase 1/6 — pause trading (kill switch off)"
-if [[ "$DRY_RUN" == 0 ]]; then
-  grep -q '^LIVE_TRADING_ENABLED=' secrets.env 2>/dev/null \
-    && sed -i 's/^LIVE_TRADING_ENABLED=.*/LIVE_TRADING_ENABLED=false/' secrets.env \
-    || echo "LIVE_TRADING_ENABLED=false" >> secrets.env
-fi
-log "  → LIVE_TRADING_ENABLED=false"
+log "phase 1/6 — pause live venue submissions"
+run pmcopy trading pause --reason "code rollback"
+log "  → trading_control paused"
 
 log "phase 2/6 — snapshot SQLite + logs to $BACKUP_DIR"
 run mkdir -p "$BACKUP_DIR"
@@ -77,7 +73,7 @@ else
 fi
 
 log "phase 4/6 — startup reconciliation (bot doctor live)"
-run python -m bot_cli.doctor --live --no-trade
+run pmcopy doctor --live
 
 log "phase 5/6 — smoke checks"
 run scripts/rc1_check.sh
@@ -104,5 +100,5 @@ else
   log "phase 6/6 — no canary requested; live trading still paused"
 fi
 
-log "DONE. Resume is operator-gated: flip LIVE_TRADING_ENABLED=true manually"
+log "DONE. Resume is operator-gated: run 'pmcopy trading resume --confirm LIVE --reason <reason>'"
 log "once doctor + smoke + canary window are all green."

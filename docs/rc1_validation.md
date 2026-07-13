@@ -128,7 +128,7 @@ explicit operator review because their absence breaks the RC1 release:
 - If `PRIVATE_KEY` / `FUNDER_ADDRESS` are not exported, the rc1_check.sh
   **skips** phase 4 (doctor live) and logs "skipped" — this is
   intentional and the script still completes the other checks. Operators
-  must run phase 4 manually before flipping `LIVE_TRADING_ENABLED`.
+  must run phase 4 manually before `pmcopy trading resume --confirm LIVE`.
 - The forbid scans cover production Python only; test code may reference
   legacy tokens (intentionally — used in documenting them).
 - `pytest` here is the full default tier; CI additionally runs release-

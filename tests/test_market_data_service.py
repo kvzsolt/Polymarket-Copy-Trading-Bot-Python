@@ -797,6 +797,22 @@ class TestRequireExecutionSnapshot:
         gw.get_market_info.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_rest_snapshot_missing_neg_risk_fails_closed(self) -> None:
+        store = MarketStateStore()
+        book = _book(
+            {Decimal("0.495"): Decimal("100")},
+            {Decimal("0.505"): Decimal("100")},
+        )
+        del book.neg_risk
+        gw = _gateway_returning(book)
+        svc = MarketDataService(store, gw, policy=_rest_policy())
+
+        with pytest.raises(StaleDataError, match="execution metadata"):
+            await svc.require_execution_snapshot(TOKEN, side="BUY")
+
+        assert store.get_tick(TOKEN) is None
+
+    @pytest.mark.asyncio
     async def test_timeout_yields_market_data_timeout(self) -> None:
         store = MarketStateStore()
         gw = MagicMock()

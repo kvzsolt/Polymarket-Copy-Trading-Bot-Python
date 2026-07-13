@@ -61,7 +61,7 @@ The bot operates through specialized engines, each handling a distinct domain of
 
 - **Language:** Python 3.11+ (3.13 unsupported).
 - **Persistence:** PostgreSQL (positions, orders, fills, intents, reservations) — schema-versioned migrations.
-- **Venue:** Polymarket CLOB V2 (`py_clob_client_v2`); requires `CLOB_V2_READY=true`.
+- **Venue:** official unified `polymarket-client` SDK, pinned and isolated behind the typed gateway.
 - **Composition root:** `bootstrap.py::build_app` (pure, no I/O) wires the shared graph; `app.py::main` adds async / per-user wiring.
 - **Execution:** `interfaces.clob_gateway.ClobGateway` (port) → `integrations.polymarket.clob_v2_gateway` (adapter) → `services.executionService.ExecutionService` + `services/execution/` subsystem.
 - **Coordination:** canonical `domain.position_key.PositionKey` everywhere; `services.positionActionCoordinator.PositionActionCoordinator` serialises per-position actions at runtime.
@@ -94,7 +94,7 @@ Ensure you have Python 3.11 or higher installed (3.13 is currently unsupported).
 ```bash
 uv venv
 source .venv/bin/activate
-uv pip install -r requirements.txt
+uv sync --frozen --extra dev
 ```
 
 **Using standard `pip`:**
@@ -109,15 +109,16 @@ Copy the configuration templates to set up your environment:
 
 ```bash
 cp config/runtime.local.example config/runtime.local.env
+cp secrets.env.example secrets.env
+chmod 600 secrets.env
 ```
-*(Note: Create a `secrets.env` file to hold your credentials, as expected by docker-compose and the bot.)*
-
 Open `secrets.env` and add your sensitive credentials:
 ```env
 PRIVATE_KEY=0xYourHexPrivateKey
 RPC_URL=https://polygon-mainnet.g.alchemy.com/v2/YourKey
 ```
-Ensure your `config/runtime.local.env` has `LIVE_TRADING=enabled` and `PAPER_TRADE_ONLY=false` if you want to trade live.
+Keep `TRADING_MODE=paper` through validation. Live startup requires
+`TRADING_MODE=live` **and** a separate database-backed resume command.
 
 ### 3. Run
 Launch the bot using the Operator CLI.
@@ -127,8 +128,8 @@ Launch the bot using the Operator CLI.
 # Activate virtual environment if not already active
 source .venv/bin/activate
 
-# Launch the bot in live mode
-python bot.py run --live
+# Run using the configured fail-closed mode
+pmcopy run
 ```
 
 **Docker Execution:**
@@ -140,9 +141,10 @@ docker compose up -d
 The bot includes an Operator CLI for manual interventions and checks:
 ```bash
 source .venv/bin/activate
-python bot.py doctor
-python bot.py drift
-python bot.py rotate-traders
+pmcopy doctor
+pmcopy drift
+pmcopy rotate-traders
+pmcopy trading status
 ```
 Run the test suite to ensure everything is functioning perfectly:
 ```bash

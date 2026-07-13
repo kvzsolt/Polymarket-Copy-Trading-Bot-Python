@@ -12,6 +12,11 @@ eggs/
 .eggs/
 .env
 secrets.env
+secrets.toml
+*.env.bak
+*.env.bak.*
+*.env.backup
+*.env.backup.*
 /data
 .ai
 .remember
@@ -44,6 +49,7 @@ ENV/
 # Environment variables
 .env.local
 config/runtime.local.env
+config/bot.toml
 .kilo
 config/runtime.env
 

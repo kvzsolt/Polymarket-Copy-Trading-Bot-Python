@@ -28,6 +28,8 @@ from enum import Enum
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
+from domain.units import BASIS_POINTS_PER_UNIT
+
 from cache.market_state_store import (
     BookSnapshot,
     MarketStateStore,
@@ -363,7 +365,9 @@ class MarketDataService:
                     f"REST snapshot invalid spread for {token_id}",
                     skip_code="market_data_stale",
                 )
-            spread_bps = int(((best_ask - best_bid) / best_ask) * 10000)
+            spread_bps = int(
+                ((best_ask - best_bid) / best_ask) * BASIS_POINTS_PER_UNIT
+            )
             if max_spread_bps > 0 and spread_bps > max_spread_bps:
                 # FAIL CLOSED. Pre-fix this gate logged "allowed" and
                 # let the order proceed — orders could land in 1000bps
@@ -412,9 +416,10 @@ class MarketDataService:
                 skip_code="market_data_timeout",
             )
 
-        # Tick metadata: prefer book payload, fall back to existing cache, then
-        # consult the gateway only when no tick is known and there is still
-        # budget left.
+        # The unified SDK's typed OrderBook is the canonical metadata source.
+        # Do not merge partial book metadata with a cache or a second endpoint:
+        # that can create a combination which never existed atomically at the
+        # venue, and missing neg_risk must never silently become False.
         tick_size = _to_decimal(
             getattr(book_payload, "tick_size", None)
             or getattr(book_payload, "minimum_tick_size", None)
@@ -424,40 +429,22 @@ class MarketDataService:
             or getattr(book_payload, "minimum_order_size", None)
             or getattr(book_payload, "order_min_size", None)
         )
-        neg_risk = bool(getattr(book_payload, "neg_risk", False))
-
-        cached_tick = self._cache.get_tick(token_id)
-        if (tick_size is None or min_order_size is None) and cached_tick is None:
-            remaining_ms = total_budget_ms - (time.monotonic() - t_start) * 1000.0
-            if remaining_ms > 10:
-                try:
-                    info = await asyncio.wait_for(
-                        self._gateway.get_market_info(token_id),
-                        timeout=min(
-                            remaining_ms / 1000.0,
-                            request_timeout_s,
-                        ),
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "market_data_rest_snapshot_rejected | token_id=%s reason=meta_fetch_error"
-                        " error=%r",
-                        token_id,
-                        exc,
-                    )
-                    raise StaleDataError(
-                        f"REST snapshot meta fetch failed for {token_id}: {exc!r}",
-                        skip_code="market_data_stale",
-                    ) from exc
-                tick_size = tick_size or _to_decimal(
-                    info.get("tick_size") or info.get("minimum_tick_size")
-                )
-                min_order_size = min_order_size or _to_decimal(
-                    info.get("min_order_size")
-                    or info.get("minimum_order_size")
-                    or info.get("order_min_size")
-                )
-                neg_risk = neg_risk or bool(info.get("neg_risk", False))
+        neg_risk = getattr(book_payload, "neg_risk", None)
+        if (
+            tick_size is None
+            or tick_size <= 0
+            or min_order_size is None
+            or min_order_size <= 0
+            or not isinstance(neg_risk, bool)
+        ):
+            logger.warning(
+                "market_data_rest_snapshot_rejected | token_id=%s reason=invalid_metadata",
+                token_id,
+            )
+            raise StaleDataError(
+                f"REST snapshot missing valid execution metadata for {token_id}",
+                skip_code="market_data_stale",
+            )
 
         self._cache.store_rest_snapshot(
             token_id,
@@ -848,7 +835,7 @@ class MarketDataService:
             or info.get("minimum_order_size")
             or info.get("order_min_size")
         )
-        neg_risk = bool(info.get("neg_risk", False))
+        neg_risk = info.get("neg_risk")
 
         if tick_size is None or tick_size <= 0:
             self._mark_dirty(token_id, "rest_tick_missing")
@@ -861,6 +848,13 @@ class MarketDataService:
             self._mark_dirty(token_id, "rest_min_order_missing")
             raise StaleDataError(
                 f"REST missing valid min_order_size for {token_id}",
+                skip_code="market_data_stale",
+            )
+
+        if not isinstance(neg_risk, bool):
+            self._mark_dirty(token_id, "rest_neg_risk_missing")
+            raise StaleDataError(
+                f"REST missing valid neg_risk for {token_id}",
                 skip_code="market_data_stale",
             )
 

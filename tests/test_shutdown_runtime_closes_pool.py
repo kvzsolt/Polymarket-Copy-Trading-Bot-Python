@@ -48,3 +48,16 @@ async def test_shutdown_runtime_pool_failure_is_warning_only(monkeypatch):
         user_data_runtimes=[],
         metrics_runner=None,
     )
+
+
+async def test_close_polymarket_clients_is_deduplicated_and_warning_only():
+    from unittest.mock import AsyncMock
+
+    healthy = AsyncMock()
+    failing = AsyncMock()
+    failing.close.side_effect = RuntimeError("transport already gone")
+
+    await app._close_polymarket_clients([healthy, failing, healthy])
+
+    healthy.close.assert_awaited_once()
+    failing.close.assert_awaited_once()

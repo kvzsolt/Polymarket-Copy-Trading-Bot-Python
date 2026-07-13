@@ -19,6 +19,7 @@ import asyncio
 import time
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
+from domain.units import BASIS_POINTS_PER_UNIT
 from typing import Any
 
 from cache.market_state_store import MarketStateStore
@@ -299,15 +300,18 @@ class MarketDataRuntime:
                 token_id,
             )
             return False
-        spread_bps = int(((best_ask - best_bid) / best_ask) * 10000)
+        spread_bps = int(
+            ((best_ask - best_bid) / best_ask) * BASIS_POINTS_PER_UNIT
+        )
         if cfg["max_spread_bps"] > 0 and spread_bps > cfg["max_spread_bps"]:
-            logger.info(
-                "market_data_rest_bootstrap_wide_spread_allowed | token_id=%s"
+            logger.warning(
+                "market_data_rest_bootstrap_rejected | token_id=%s reason=wide_spread"
                 " spread_bps=%d configured_max_bps=%d",
                 token_id,
                 spread_bps,
                 cfg["max_spread_bps"],
             )
+            return False
 
         self.market_store.replace_book_snapshot(
             token_id,
@@ -337,18 +341,19 @@ class MarketDataRuntime:
                         or info.get("minimum_order_size")
                         or info.get("order_min_size")
                     )
-                    neg_risk = bool(info.get("neg_risk", False))
+                    neg_risk_raw = info.get("neg_risk")
                     if (
                         tick_size is not None
                         and tick_size > 0
                         and min_order_size is not None
                         and min_order_size > 0
+                        and isinstance(neg_risk_raw, bool)
                     ):
                         self.market_store.set_tick(
                             token_id,
                             tick_size=tick_size,
                             min_order_size=min_order_size,
-                            neg_risk=neg_risk,
+                            neg_risk=neg_risk_raw,
                             source="rest_bootstrap",
                         )
                 except Exception as exc:
@@ -571,11 +576,16 @@ class MarketDataRuntime:
             self.market_store.mark_dirty(token_id, "rest_bootstrap_missing_min_order")
             return
 
+        neg_risk = info.get("neg_risk")
+        if not isinstance(neg_risk, bool):
+            self.market_store.mark_dirty(token_id, "rest_bootstrap_missing_neg_risk")
+            return
+
         self.market_store.set_tick(
             token_id,
             tick_size=tick_size,
             min_order_size=min_order_size,
-            neg_risk=bool(info.get("neg_risk", False)),
+            neg_risk=neg_risk,
             source="rest_snapshot",
         )
 

@@ -7,7 +7,7 @@ automatic fund wrapping or movement is performed.
 Called during startup via ``check_collateral_readiness()`` which logs a
 structured summary and returns a boolean.  When the check fails the bot
 should NOT start live trading — the operator must resolve the shortfall
-or explicitly acknowledge via ``CLOB_V2_READY=true``.
+before the database-backed live control can be resumed.
 """
 
 from __future__ import annotations
@@ -192,7 +192,7 @@ def _check_sync(
 # collateral probe by reading the wrong contract.
 #
 # Both previously listed addresses (0xC011... collateral, 0xE111... exchange_v2)
-# are correct Polymarket v2 contracts on Polygon per py-clob-client-v2
+# are the canonical Polymarket contracts on Polygon.
 # get_contract_config(137). The "incorrect" labels were based on Ethereum
 # mainnet identity — wrong chain context. Set is empty; empty-string guard
 # in _validate_address is the primary protection against missing config.
@@ -257,7 +257,7 @@ async def check_collateral_readiness(
             logger.warning("V2 collateral readiness FAILURE: %s", failure)
         logger.warning(
             "Live trading should NOT start until these issues are resolved. "
-            "Set CLOB_V2_READY=true only after manually confirming readiness."
+            "Keep live trading paused until collateral readiness is restored."
         )
 
     return status

@@ -236,6 +236,7 @@ class TestEnvSecurity:
         shared.write_text("LEADER_WALLETS=0xshared\nRPC_URL=https://shared\n", encoding="utf-8")
         local_public.write_text("LEADER_WALLETS=0xlocal\nFUNDER_ADDRESS=0xabc\n", encoding="utf-8")
         secrets.write_text("RPC_URL=https://secret\nPRIVATE_KEY=0x" + ("ab" * 32) + "\n", encoding="utf-8")
+        secrets.chmod(0o600)
 
         with patch.dict(os.environ, {}, clear=True):
             reload(runtime_env)
@@ -260,6 +261,7 @@ class TestEnvSecurity:
         shared.write_text("", encoding="utf-8")
         local_public.write_text("LEADER_WALLETS=0xlocal1,0xlocal2\n", encoding="utf-8")
         secrets.write_text("LEADER_WALLETS=0xsecret_only\n", encoding="utf-8")
+        secrets.chmod(0o600)
 
         with patch.dict(os.environ, {}, clear=True):
             reload(runtime_env)
@@ -277,3 +279,14 @@ class TestEnvSecurity:
                 "defines non-sensitive key 'LEADER_WALLETS'" in str(w.message)
                 for w in caught
             )
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX permission semantics")
+    def test_runtime_env_rejects_group_readable_secrets(self, tmp_path):
+        from config import runtime_env
+
+        secrets = tmp_path / "secrets.env"
+        secrets.write_text("PRIVATE_KEY=never-loaded\n", encoding="utf-8")
+        secrets.chmod(0o640)
+
+        with pytest.raises(PermissionError, match="0600"):
+            runtime_env.load_runtime_env(secrets_path=secrets)
