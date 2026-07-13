@@ -131,7 +131,8 @@ def _order_age_seconds(order: dict[str, Any], now: float) -> float:
         ts = order.get(key)
         if ts is not None:
             try:
-                ts_f = float(ts)
+                timestamp = getattr(ts, "timestamp", None)
+                ts_f = float(timestamp()) if callable(timestamp) else float(ts)
                 # If it looks like milliseconds, convert
                 if ts_f > 1e12:
                     ts_f /= 1000.0
@@ -189,12 +190,28 @@ class ReconciliationService:
             self.max_closed_probes = 10
 
     @staticmethod
-    def _supports_order_management(candidate: Any) -> bool:
+    def _declares_method(candidate: Any, method_name: str) -> bool:
+        """Avoid treating MagicMock's arbitrary child attributes as API methods."""
         if candidate is None:
             return False
-        return all(
-            callable(getattr(candidate, method_name, None))
-            for method_name in ("get_orders", "cancel_orders")
+        return (
+            callable(getattr(type(candidate), method_name, None))
+            or method_name in vars(candidate)
+        )
+
+    @classmethod
+    def _supports_order_management(cls, candidate: Any) -> bool:
+        if candidate is None:
+            return False
+        return (
+            all(
+                cls._declares_method(candidate, method_name)
+                for method_name in ("list_open_orders", "cancel_order")
+            )
+            or all(
+                callable(getattr(candidate, method_name, None))
+                for method_name in ("get_orders", "cancel_orders")
+            )
         )
 
     def _orders_client(self) -> Any:
@@ -785,10 +802,12 @@ class ReconciliationService:
         if not callable(getter):
             return None
         try:
-            loop = asyncio.get_running_loop()
-            raw = await loop.run_in_executor(
-                None, lambda: getter(order_id)
-            )
+            if inspect.iscoroutinefunction(getter):
+                raw = await getter(order_id)
+            else:
+                loop = asyncio.get_running_loop()
+                raw = await loop.run_in_executor(None, lambda: getter(order_id))
+                raw = await _maybe_await(raw)
         except Exception as exc:
             logger.debug(
                 "reconcile_single_order_fetch_failed | order_id=%s err=%s",
@@ -828,22 +847,52 @@ class ReconciliationService:
 
     async def _fetch_open_orders(self) -> list[dict[str, Any]]:
         """Fetch all open orders from the CLOB."""
-        loop = asyncio.get_running_loop()
         orders_client = self._orders_client()
-        raw = await loop.run_in_executor(
-            None, lambda: orders_client.get_orders()
-        )
+        list_open_orders = getattr(orders_client, "list_open_orders", None)
+        if self._declares_method(orders_client, "list_open_orders"):
+            raw = await _maybe_await(list_open_orders())
+        else:
+            loop = asyncio.get_running_loop()
+            raw = await loop.run_in_executor(None, lambda: orders_client.get_orders())
         # Normalize legacy/list and paginated repository response shapes.
         if isinstance(raw, list):
-            return raw
+            return [self._normalize_order(order) for order in raw]
         if isinstance(raw, dict):
             return raw.get("data", raw.get("orders", []))
         return []
 
+    @staticmethod
+    def _normalize_order(order: Any) -> dict[str, Any]:
+        """Convert a typed gateway order into the legacy reconciler shape."""
+        if isinstance(order, dict):
+            return order
+        raw = getattr(order, "raw", None)
+        normalized = dict(raw) if isinstance(raw, dict) else {}
+        field_map = {
+            "order_id": "id",
+            "status": "status",
+            "side": "side",
+            "price": "price",
+            "size": "original_size",
+            "filled_size": "size_matched",
+            "created_at": "created_at",
+        }
+        for attr, key in field_map.items():
+            value = getattr(order, attr, None)
+            if value is not None:
+                normalized[key] = value
+        return normalized
+
     async def _cancel_order(self, order_id: str) -> None:
         """Cancel a single order on the CLOB."""
-        loop = asyncio.get_running_loop()
         orders_client = self._orders_client()
+        cancel_order = getattr(orders_client, "cancel_order", None)
+        if self._declares_method(orders_client, "cancel_order"):
+            result = await _maybe_await(cancel_order(order_id))
+            if result is not None and getattr(result, "success", True) is False:
+                raise RuntimeError(getattr(result, "error", None) or "order cancellation failed")
+            return
+        loop = asyncio.get_running_loop()
         await loop.run_in_executor(
             None, lambda: orders_client.cancel_orders([order_id])
         )
