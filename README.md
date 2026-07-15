@@ -186,6 +186,6 @@ Contributions are absolutely welcome! Whether it's a bug fix, a new feature, or 
 **Simplify codebase, refactor**
 
 ## Rust version
-A version written in Rust, with all functions, logic, mechanism ported is coming soon, with much faster detection and execution time, make it able to copy nearly every type of traders.
+A new version rewritten in Rust is coming soon! By porting all functions, logic, and core mechanisms, we have significantly improved detection and execution speeds. This update will also enable you to seamlessly copy virtually any type of trader.
 ---
 *Disclaimer: This software is for educational and experimental purposes only. Trading involves risk, and this system does not guarantee profit. You can and may lose money. Run at your own risk.*
