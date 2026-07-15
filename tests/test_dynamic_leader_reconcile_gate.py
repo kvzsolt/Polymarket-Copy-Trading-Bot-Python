@@ -59,7 +59,7 @@ def test_unknown_wallet_does_not_crash() -> None:
 # the leader monitors spawn.
 # ---------------------------------------------------------------------------
 
-from app import _cold_start_monitored_after_reconcile
+from app import _cold_start_monitored_after_reconcile  # noqa: E402
 
 
 def test_cold_start_no_failures_returns_all() -> None:

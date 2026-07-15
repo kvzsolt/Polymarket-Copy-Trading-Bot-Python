@@ -19,7 +19,6 @@ only nail down the specific posture asked for in Review B.
 from __future__ import annotations
 
 import asyncio
-import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -236,11 +235,6 @@ def test_runtime_bootstrap_raises_when_coordinator_wiring_blocked():
 
     coord = _FrozenCoord()
 
-    user_state = SimpleNamespace(
-        execution_coordinator=coord,
-        risk_triggers_repo=None,
-        position_drift_service=None,
-    )
     context = SimpleNamespace(
         user_id="u-frozen",
         position_coordinator=pos_coord,

@@ -38,6 +38,23 @@ _DEFAULT_LOT_SIZE = Decimal("0.0001")
 Number = Union[Decimal, float, int, str]
 
 
+def longitudinal_sizing_multiplier(
+    score: Number,
+    *,
+    minimum: Number,
+    maximum: Number,
+    exponent: Number = 1,
+) -> Decimal:
+    """Map a normalized longitudinal score to a bounded size multiplier."""
+    value = max(Decimal("0"), min(Decimal("1"), _to_decimal(score)))
+    lower = _to_decimal(minimum)
+    upper = _to_decimal(maximum)
+    power = _to_decimal(exponent)
+    if lower <= 0 or upper < lower or power <= 0:
+        raise ValueError("invalid longitudinal sizing multiplier configuration")
+    return lower + (upper - lower) * (value**power)
+
+
 def _to_decimal(value: Number) -> Decimal:
     """Coerce *value* to Decimal losslessly via ``Decimal(str(x))`` for floats."""
     if isinstance(value, Decimal):

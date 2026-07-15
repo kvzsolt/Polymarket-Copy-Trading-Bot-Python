@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 from domain.trading_context import TradingContext
@@ -179,21 +180,19 @@ class UserRuntimeState:
 def configured_leaders(config: AppConfig) -> list[str]:
     leaders = [str(wallet).strip() for wallet in config.leader.wallets if str(wallet).strip()]
     if not leaders:
-        if config.discovery.allow_auto_trader_detection:
+        if config.discovery.scheduler.start_from_roster:
             logger.info(
-                "No leader wallets configured. Startup auto trader detection "
-                "is enabled and will select live-eligible DB/discovery "
-                "candidates without writing LEADER_WALLETS."
+                "No manual leader wallets configured. Startup will use the "
+                "hysteresis-qualified leader roster."
             )
-        elif config.discovery.enable_trader_discovery:
+        elif config.discovery.scheduler.enabled:
             logger.info(
-                "No leader wallets configured. Discovery is enabled, so the bot "
-                "will score DB candidates only. Live copying requires "
-                "python bot.py rotate-traders or manual LEADER_WALLETS."
+                "No manual leader wallets configured. Discovery will refresh "
+                "the watchlist, but roster startup is disabled."
             )
         else:
             logger.warning(
-                "No leader wallets configured. Both LEADER_WALLETS and USER_ADDRESS "
+                "No leader wallets configured. Both leader.wallets and the per-user follow list "
                 "are empty. Add manual leader wallets or run "
                 "python bot.py rotate-traders after discovery has candidates."
             )
@@ -774,9 +773,28 @@ async def build_trading_context(
     config: AppConfig,
     leaders_repo=None,
     readiness: ReadinessTracker | None = None,
-    trust_store=None,
 ) -> TradingContext:
-    leader_scorer = LeaderScoringService(config=config, trust_store=trust_store)
+    rank_multiplier = Decimal("1")
+    roster_score: float | None = None
+    if leaders_repo is not None and hasattr(leaders_repo, "get_roster"):
+        roster_entry = await leaders_repo.get_roster(follow.leader_id)
+        if roster_entry is not None:
+            from services.order_sizing import longitudinal_sizing_multiplier
+
+            longitudinal = config.discovery.longitudinal
+            roster_score = float(roster_entry.score)
+            rank_multiplier = longitudinal_sizing_multiplier(
+                roster_entry.longitudinal_score
+                if roster_entry.longitudinal_score is not None
+                else roster_entry.score,
+                minimum=longitudinal.sizing_multiplier_min,
+                maximum=longitudinal.sizing_multiplier_max,
+                exponent=longitudinal.sizing_multiplier_exponent,
+            )
+    leader_scorer = LeaderScoringService(
+        config=config,
+        roster_score=roster_score,
+    )
     context = TradingContext(
         user_id=user_state.user.user_id,
         wallet_address=user_state.user.wallet.funder_address,
@@ -798,6 +816,7 @@ async def build_trading_context(
         buy_min_amount=config.sizing.buy_min_amount,
         buy_max_amount=min(config.sizing.buy_max_amount, follow.max_trade_usdc),
         max_market_exposure_usdc=follow.max_market_exposure_usdc,
+        rank_size_multiplier=rank_multiplier,
         readiness=readiness or ReadinessTracker(),
         market_data_service=getattr(user_state, "market_data_service", None),
         extra={
@@ -1041,7 +1060,6 @@ async def build_context_maps(
     *,
     leaders_repo=None,
     readiness: ReadinessTracker | None = None,
-    trust_store=None,
 ) -> tuple[dict[str, list[TradingContext]], dict[str, TradingContext]]:
     contexts_by_leader: dict[str, list[TradingContext]] = {leader: [] for leader in active_leaders}
     risk_contexts_by_user: dict[str, TradingContext] = {}
@@ -1058,7 +1076,6 @@ async def build_context_maps(
                 config,
                 leaders_repo=leaders_repo,
                 readiness=readiness,
-                trust_store=trust_store,
             )
             contexts_by_leader[leader].append(context)
             if context.user_id not in risk_contexts_by_user:
@@ -1108,7 +1125,6 @@ async def build_context_maps(
             config,
             leaders_repo=leaders_repo,
             readiness=readiness,
-            trust_store=trust_store,
         )
         risk_contexts_by_user[runtime_user.user_id] = context
         logger.info(

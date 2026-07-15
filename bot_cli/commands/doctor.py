@@ -28,11 +28,11 @@ from pathlib import Path
 from typing import Any
 
 from config.app_config import (
+    AppConfig,
     EnvValidationError,
     load_config,
 )
-from config.env import rehydrate_env
-from config.runtime_env import load_runtime_env
+from config.env import secret_value
 
 
 # ---------------------------------------------------------------------------
@@ -199,26 +199,27 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
-def _resolve_log_dir() -> Path:
+def _resolve_log_dir(config=None) -> Path:
+    if config is not None:
+        return Path(config.logging.log_dir)
     from utils.logger import _default_log_dir  # noqa: WPS437
 
     return _default_log_dir()
 
 
-def _resolve_jsonl_path() -> Path:
-    import os
-
+def _resolve_jsonl_path(config=None) -> Path:
     from utils.logger import APP_NAME
 
-    override = (os.getenv("APP_LOG_JSONL_FILE") or "").strip()
-    return Path(override) if override else (_resolve_log_dir() / f"{APP_NAME}.jsonl")
+    if config is not None and str(config.logging.app_log_jsonl_file).strip():
+        return Path(config.logging.app_log_jsonl_file)
+    return _resolve_log_dir(config) / f"{APP_NAME}.jsonl"
 
 
 async def _auto_trader_db_candidate_count(config) -> int:
-    """Probe current DB-backed startup candidates using the production selector."""
-    from services.discovery.auto_trader_selector import AutoTraderSelector
+    """Count hysteresis-qualified active roster entries."""
     from storage.postgres.connection import init_pool, shutdown_pool
-    from storage.postgres.discovery_repo import DiscoveryRepo
+    from storage.postgres.leaders_repo import LeadersRepo
+    from services.discovery.models import discovery_config_hash
 
     pool = None
     try:
@@ -228,9 +229,12 @@ async def _auto_trader_db_candidate_count(config) -> int:
             max_size=2,
             command_timeout_seconds=15.0,
         )
-        selector = AutoTraderSelector(DiscoveryRepo(pool), config)
-        selection = await selector.select_from_db()
-        return int(selection.db_candidate_count)
+        return len(
+            await LeadersRepo(pool).list_active(
+                limit=config.discovery.scheduler.max_active_leaders,
+                config_hash=discovery_config_hash(config.discovery),
+            )
+        )
     finally:
         if pool is not None:
             try:
@@ -249,21 +253,24 @@ def register_doctor_command(subparsers: argparse._SubParsersAction) -> None:
     group.add_argument("--paper", action="store_true", help="Check readiness for paper trading")
 
 
-async def run_doctor_checks(mode: str) -> dict[str, Any]:
+async def run_doctor_checks(
+    mode: str,
+    *,
+    config: AppConfig | None = None,
+) -> dict[str, Any]:
     """Structured readiness gate. Returns dict shape documented above."""
     ctx = _DoctorContext(mode=mode)
 
     # ----- config_load --------------------------------------------------
-    try:
-        load_runtime_env()
-        rehydrate_env()
-        config = load_config()
-    except EnvValidationError as exc:
-        ctx.blocked("config_load", "validation_error", str(exc))
-        return ctx.to_dict()
-    except Exception as exc:
-        ctx.blocked("config_load", f"unexpected error: {exc!r}", "review config")
-        return ctx.to_dict()
+    if config is None:
+        try:
+            config = load_config()
+        except EnvValidationError as exc:
+            ctx.blocked("config_load", "validation_error", str(exc))
+            return ctx.to_dict()
+        except Exception as exc:
+            ctx.blocked("config_load", f"unexpected error: {exc!r}", "review config")
+            return ctx.to_dict()
     ctx.ok("config_load", "AppConfig loaded")
 
     live = mode == "live"
@@ -278,7 +285,7 @@ async def run_doctor_checks(mode: str) -> dict[str, Any]:
             ctx.blocked(
                 "paper_trade_only_false",
                 "live mode requested but config resolves to PAPER",
-                "set TRADING_MODE=live and restart",
+                "set execution.trading_mode: live in config/runtime.local.yml and restart",
             )
         else:
             ctx.ok("paper_trade_only_false", "live trading enabled (paper_trade_only=false)")
@@ -286,7 +293,7 @@ async def run_doctor_checks(mode: str) -> dict[str, Any]:
             ctx.blocked(
                 "dry_run_false",
                 "dry_run=true (config resolves to paper)",
-                "set TRADING_MODE=live and restart",
+                "set execution.trading_mode: live in config/runtime.local.yml and restart",
             )
         else:
             ctx.ok("dry_run_false", "dry_run=false")
@@ -294,30 +301,30 @@ async def run_doctor_checks(mode: str) -> dict[str, Any]:
     if config.risk.kill_switch:
         ctx.blocked(
             "kill_switch_off",
-            "KILL_SWITCH=true",
-            "set KILL_SWITCH=false to enable trading",
+            "risk.kill_switch=true",
+            "set risk.kill_switch: false in config/runtime.local.yml",
         )
     else:
-        ctx.ok("kill_switch_off", "KILL_SWITCH=false")
+        ctx.ok("kill_switch_off", "risk.kill_switch=false")
 
     # ----- wallet basics ------------------------------------------------
     if live:
-        if not config.wallet.private_key:
+        if not secret_value(config.wallet.private_key):
             ctx.blocked(
                 "wallet_private_key",
-                "missing PRIVATE_KEY",
-                "set PRIVATE_KEY or PRIVATE_KEY_FILE",
+                "wallet.private_key is missing",
+                "set PMCOPY__WALLET__PRIVATE_KEY in secrets.env",
             )
         else:
-            ctx.ok("wallet_private_key", "PRIVATE_KEY present")
+            ctx.ok("wallet_private_key", "wallet.private_key present")
         funder = config.wallet.funder_address or ""
         if re.match(r"^0x[0-9a-fA-F]{40}$", funder):
             ctx.ok("wallet_funder_valid", funder)
         else:
             ctx.blocked(
                 "wallet_funder_valid",
-                f"invalid FUNDER_ADDRESS: {funder!r}",
-                "set FUNDER_ADDRESS to a 42-char hex address",
+                f"invalid wallet.funder_address: {funder!r}",
+                "set wallet.funder_address to a 42-char hex address",
             )
         try:
             detected_sig, detected_wallet_type, detected_signer = await detect_wallet_signature_type(
@@ -327,7 +334,7 @@ async def run_doctor_checks(mode: str) -> dict[str, Any]:
             ctx.blocked(
                 "wallet_signature_type",
                 f"RPC probe failed: {exc}",
-                "verify RPC_URL connectivity or set SIGNATURE_TYPE explicitly",
+                "verify wallet.polygon_rpc_url or set wallet.signature_type",
             )
         else:
             configured_sig = getattr(config.wallet, "signature_type", None)
@@ -347,7 +354,7 @@ async def run_doctor_checks(mode: str) -> dict[str, Any]:
     from storage.postgres.connection import init_pool, shutdown_pool
 
     pool = None
-    db_label = config.database.dsn or config.database.db_path
+    db_label = config.database.dsn or "<database.dsn is empty>"
     try:
         pool = await init_pool(
             config.database.dsn,
@@ -429,7 +436,7 @@ async def run_doctor_checks(mode: str) -> dict[str, Any]:
         ctx.blocked(
             "network_rpc",
             f"rpc unreachable: {getattr(rpc, 'details', '')}",
-            "verify RPC_URL",
+            "verify network.rpc_url",
         )
     else:
         ctx.ok("network_rpc", "RPC reachable")
@@ -572,7 +579,7 @@ async def run_doctor_checks(mode: str) -> dict[str, Any]:
 
     # ----- log paths ----------------------------------------------------
     try:
-        log_dir = _resolve_log_dir()
+        log_dir = _resolve_log_dir(config)
         log_dir.mkdir(parents=True, exist_ok=True)
         probe = log_dir / ".doctor_probe"
         probe.write_text("ok", encoding="utf-8")
@@ -582,10 +589,10 @@ async def run_doctor_checks(mode: str) -> dict[str, Any]:
         ctx.blocked(
             "log_directory_writable",
             f"log directory not writable: {exc}",
-            "set APP_LOG_DIR to a writable path",
+            "set logging.log_dir in config/runtime.local.yml",
         )
     try:
-        jsonl = _resolve_jsonl_path()
+        jsonl = _resolve_jsonl_path(config)
         jsonl.parent.mkdir(parents=True, exist_ok=True)
         with jsonl.open("a", encoding="utf-8"):
             pass
@@ -594,7 +601,7 @@ async def run_doctor_checks(mode: str) -> dict[str, Any]:
         ctx.blocked(
             "jsonl_log_writable",
             f"jsonl path not writable: {exc}",
-            "set APP_LOG_JSONL_FILE to a writable path",
+            "set logging.app_log_jsonl_file in config/runtime.local.yml",
         )
 
     # ----- log type registration --------------------------------------
@@ -631,29 +638,23 @@ async def run_doctor_checks(mode: str) -> dict[str, Any]:
             ctx.warning(
                 "metrics_port_bindable",
                 detail,
-                "free the port or change METRICS_PORT",
+                "free the port or change network.metrics_port",
             )
     else:
         ctx.warning(
             "metrics_port_bindable",
             "metrics server disabled",
-            "enable ENABLE_METRICS_SERVER for live observability",
+            "set network.enable_metrics_server: true",
         )
 
     # ----- leaders -----------------------------------------------------
     if config.leader.wallets:
         ctx.ok("leaders", "leader wallets configured")
-    elif not config.discovery.allow_auto_trader_detection:
+    elif not config.discovery.scheduler.start_from_roster:
         ctx.blocked(
             "leaders",
-            "no leader wallets configured and startup auto detection disabled",
-            "set LEADER_WALLETS, or set LEADER_SOURCE=auto / AUTO_LEADER_ENABLED=true, or run python bot.py rotate-traders after discovery",
-        )
-    elif int(config.discovery.max_auto_traders_count or 0) <= 0:
-        ctx.blocked(
-            "leaders",
-            "startup auto detection enabled but AUTO_LEADER_COUNT <= 0",
-            "set AUTO_LEADER_COUNT > 0 or configure LEADER_WALLETS",
+            "no manual leader wallets and roster startup is disabled",
+            "configure leader.wallets in runtime.local.yml or enable discovery.scheduler.start_from_roster",
         )
     else:
         try:
@@ -670,16 +671,16 @@ async def run_doctor_checks(mode: str) -> dict[str, Any]:
                     "leaders",
                     f"startup auto detection enabled; {db_candidate_count} eligible DB candidates available",
                 )
-            elif config.discovery.falcon_api_token:
+            elif config.discovery.api.has_token and config.discovery.scheduler.enabled:
                 ctx.ok(
                     "leaders",
-                    "startup auto detection enabled; no eligible DB candidates yet, bootstrap discovery can run before CLOB init",
+                    "no active roster entry yet; startup discovery is configured",
                 )
             else:
                 ctx.blocked(
                     "leaders",
-                    "no leader wallets configured, no eligible DB candidates found, and FALCON_API_TOKEN is missing",
-                    "set LEADER_WALLETS, or set FALCON_API_TOKEN for bootstrap discovery, or run python bot.py rotate-traders after discovery",
+                    "no manual leaders, no active roster entry, or discovery credentials are missing",
+                    "set leader.wallets or discovery.api.token in secrets.env and enable the discovery scheduler",
                 )
 
     return ctx.to_dict()

@@ -11,8 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 import config.app_config as app_config_mod
-from config.app_config import load_config
-from config.env import rehydrate_env
+from tests.config_helpers import load_test_config
 from domain.trading_context import TradingContext
 from orchestrators.runtime_bootstrap import startup_reconcile_unconfirmed
 from orchestrators.trade_pipeline import (
@@ -43,7 +42,6 @@ def _lower_decision_gates_for_tests(monkeypatch):
     monkeypatch.setenv("BUY_MIN_AMOUNT", "0.01")
     monkeypatch.setenv("MAX_POSITION_PCT", "0")
     monkeypatch.setenv("ENABLE_BALANCE_TIERED_POLICY", "false")
-    rehydrate_env()
 
 
 @pytest.fixture(autouse=True)
@@ -83,9 +81,9 @@ def _config(**overrides):
     }
     env.update(overrides)
     with patch.object(app_config_mod, "_runtime_python_supported", return_value=True):
-        return load_config(env)
-from storage.postgres.orders_repo import OrderSubmissionRecord, OrdersRepo
-from storage.postgres.positions_repo import PositionsRepo
+        return load_test_config(env)
+from storage.postgres.orders_repo import OrderSubmissionRecord, OrdersRepo  # noqa: E402
+from storage.postgres.positions_repo import PositionsRepo  # noqa: E402
 
 FAKE_TOKEN_ID = "71321045679252212594626385532706912750332728571942532223535764789812338637396"
 
@@ -1471,7 +1469,7 @@ async def test_sell_realized_pnl_falls_back_to_signal_price_when_position_prices
 # Regression: token_id field-mapping priority (tokenID > token_id > asset)
 # ---------------------------------------------------------------------------
 
-from orchestrators.trade_pipeline import normalize_signals
+from orchestrators.trade_pipeline import normalize_signals  # noqa: E402
 
 HEX_ASSET = "0x951403abcdef1234567890abcdef1234567890ab8665"
 

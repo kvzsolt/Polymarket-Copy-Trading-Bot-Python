@@ -2,7 +2,7 @@
 
 Backed by a per-test ``postgres:16-alpine`` testcontainer (PG-A5 sweep) —
 each ``_run_doctor`` call spins a fresh container, applies the schema,
-and injects the container DSN through ``DATABASE_URL`` so the doctor's
+and injects the container DSN through the typed database setting so the doctor's
 async DB probes hit a real Postgres instance instead of a stub file.
 """
 from __future__ import annotations
@@ -12,6 +12,7 @@ from unittest.mock import patch
 import pytest
 
 import config.app_config as app_config_mod
+from tests.config_helpers import load_test_config
 
 
 _BASE_LIVE_ENV = {
@@ -21,25 +22,21 @@ _BASE_LIVE_ENV = {
     "LEADER_WALLETS": "0x" + "d" * 40,
     "RPC_URL": "https://polygon-rpc.example.com",
     "CHAIN_ID": "137",
-    # P0-2: live mode requires the explicit master switch (PAPER_TRADE_ONLY=false
-    # alone no longer enables live — the fail-closed default is paper).
-    "LIVE_TRADING": "enabled",
-    "PAPER_TRADE_ONLY": "false",
-    "CLOB_V2_READY": "true",
+    "TRADING_MODE": "live",
     "KILL_SWITCH": "false",
     "POSITION_DRIFT_CHECK_ON_STARTUP": "true",
     "ENFORCE_GEOBLOCK": "false",
 }
 
 
-def _patch_env(env_overrides: dict[str, str] | None = None):
+def _config_loader(env_overrides: dict[str, str] | None = None):
     env = {**_BASE_LIVE_ENV, **(env_overrides or {})}
 
     def _load():
         with patch.object(app_config_mod, "_runtime_python_supported", return_value=True):
-            return app_config_mod.load_config(env)
+            return load_test_config(env)
 
-    return env, _load
+    return _load
 
 
 class _PgFixture:
@@ -114,7 +111,7 @@ async def _run_doctor(
     async with _PgFixture() as dsn:
         overrides = dict(env_overrides or {})
         overrides["DATABASE_URL"] = dsn
-        env, loader = _patch_env(overrides)
+        loader = _config_loader(overrides)
         from bot_cli.commands import doctor as doctor_mod
         import orchestrators.startup_health as startup_health_mod
         import services.compliance as compliance_mod
@@ -133,7 +130,6 @@ async def _run_doctor(
 
         patches = [
             patch.object(doctor_mod, "load_config", new=lambda *a, **kw: loader()),
-            patch.dict("config.env.ENV", env, clear=False),
             patch.object(doctor_mod, "_check_wss_endpoint", return_value=(True, "ok")),
             patch.object(startup_health_mod, "_check_rpc", new=_fake_rpc),
             patch.object(compliance_mod, "check_geoblock", new=_fake_geoblock),
@@ -165,20 +161,10 @@ async def test_doctor_paper_returns_structured_list(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_doctor_live_blocked_when_clob_v2_ready_missing(tmp_path):
-    out = await _run_doctor(
-        "live", {"CLOB_V2_READY": "false"}, tmp_log=tmp_path, tmp_path=tmp_path
-    )
-    assert out["status"] == "blocked"
-    rec = _checks_by_name(out)["clob_v2_ready"]
-    assert rec["status"] == "blocked"
-    assert "CLOB_V2_READY" in rec["fix"]
-
-
 @pytest.mark.asyncio
-async def test_doctor_live_blocked_when_paper_trade_only_true(tmp_path):
+async def test_doctor_live_blocked_when_trading_mode_is_paper(tmp_path):
     out = await _run_doctor(
-        "live", {"PAPER_TRADE_ONLY": "true"}, tmp_log=tmp_path, tmp_path=tmp_path
+        "live", {"TRADING_MODE": "paper"}, tmp_log=tmp_path, tmp_path=tmp_path
     )
     rec = _checks_by_name(out)["paper_trade_only_false"]
     assert rec["status"] == "blocked"
@@ -236,7 +222,7 @@ async def test_doctor_live_passes_when_all_subsystems_wired(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_doctor_live_blocks_when_no_manual_leaders_and_auto_detection_disabled(
+async def test_doctor_live_blocks_when_no_manual_leaders_and_roster_start_disabled(
     tmp_path,
 ):
     out = await _run_doctor(
@@ -244,18 +230,18 @@ async def test_doctor_live_blocks_when_no_manual_leaders_and_auto_detection_disa
         {
             "LEADER_WALLETS": "",
             "USER_ADDRESS": "",
-            "ALLOW_AUTO_TRADER_DETECTION": "false",
+            "DISCOVERY_SCHEDULER_START_FROM_ROSTER": "false",
         },
         tmp_log=tmp_path,
         tmp_path=tmp_path,
     )
     rec = _checks_by_name(out)["leaders"]
     assert rec["status"] == "blocked"
-    assert "auto detection disabled" in rec["detail"]
+    assert "roster startup is disabled" in rec["detail"]
 
 
 @pytest.mark.asyncio
-async def test_doctor_live_passes_when_auto_detection_enabled_without_manual_leaders(
+async def test_doctor_live_passes_when_discovery_enabled_without_manual_leaders(
     tmp_path,
 ):
     out = await _run_doctor(
@@ -263,36 +249,32 @@ async def test_doctor_live_passes_when_auto_detection_enabled_without_manual_lea
         {
             "LEADER_WALLETS": "",
             "USER_ADDRESS": "",
-            "ALLOW_AUTO_TRADER_DETECTION": "true",
-            "MAX_AUTO_TRADERS_COUNT": "2",
-            "FALCON_API_TOKEN": "test-token",
+            "DISCOVERY_API_TOKEN": "test-token",
         },
         tmp_log=tmp_path,
         tmp_path=tmp_path,
     )
     rec = _checks_by_name(out)["leaders"]
     assert rec["status"] == "ok"
-    assert "startup auto detection enabled" in rec["detail"]
+    assert "startup discovery is configured" in rec["detail"]
     assert out["status"] in {"ok", "warning"}
 
 
 @pytest.mark.asyncio
-async def test_doctor_live_blocks_when_auto_detection_cannot_resolve_leaders(tmp_path):
+async def test_doctor_live_blocks_when_discovery_credentials_are_missing(tmp_path):
     out = await _run_doctor(
         "live",
         {
             "LEADER_WALLETS": "",
             "USER_ADDRESS": "",
-            "ALLOW_AUTO_TRADER_DETECTION": "true",
-            "MAX_AUTO_TRADERS_COUNT": "2",
-            "FALCON_API_TOKEN": "",
+            "DISCOVERY_API_TOKEN": "",
         },
         tmp_log=tmp_path,
         tmp_path=tmp_path,
     )
     rec = _checks_by_name(out)["leaders"]
     assert rec["status"] == "blocked"
-    assert "FALCON_API_TOKEN" in rec["fix"]
+    assert "discovery.api.token" in rec["fix"]
 
 
 def test_console_summary_renders_fix_line(tmp_path):

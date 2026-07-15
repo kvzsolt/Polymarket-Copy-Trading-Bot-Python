@@ -24,8 +24,8 @@ The validation contract below is enforced by `scripts/rc1_check.sh`, which:
    `execution_service.execute` alias scan (the single permitted call site
    is `services/execution/coordinator.py`, which is deny-list-exempt
    because it carries the `execution_coordinator_missing` guard).
-4. Runs the doctor live readiness gate (`doctor --live`) when `PRIVATE_KEY`
-   and `FUNDER_ADDRESS` are exported.
+4. Runs the doctor live readiness gate (`doctor --live`) unconditionally
+   against the layered YAML + `secrets.env` configuration.
 
 ## 2. Manual checklist (operator runs these top to bottom)
 
@@ -121,14 +121,12 @@ explicit operator review because their absence breaks the RC1 release:
 - The Neg Risk exchange V2 readiness gate is fail-closed: operators must
   approve pUSD for BOTH the CTF and the Neg Risk exchanges before live
   trading, even if the leader wallet only ever trades on one of them.
-  See `config/runtime.local.example` for the documented operator step.
+  See `config/runtime.local.example.yml` for the documented operator step.
 
 ## 5. Caveats
 
-- If `PRIVATE_KEY` / `FUNDER_ADDRESS` are not exported, the rc1_check.sh
-  **skips** phase 4 (doctor live) and logs "skipped" — this is
-  intentional and the script still completes the other checks. Operators
-  must run phase 4 manually before `pmcopy trading resume --confirm LIVE`.
+- Phase 4 never skips. Missing or invalid file-backed wallet settings block
+  `scripts/rc1_check.sh`, matching the application startup contract.
 - The forbid scans cover production Python only; test code may reference
   legacy tokens (intentionally — used in documenting them).
 - `pytest` here is the full default tier; CI additionally runs release-
@@ -139,4 +137,4 @@ explicit operator review because their absence breaks the RC1 release:
 - `docs/live_runbook.md` — daily live-trading operator workflow.
 - `docs/runbooks/rollback.md` — rollback procedure invoked after a
   failed RC1 gate.
-- `docs/audit/findings_table.md` — deep-research audit findings matrix.
+- `docs/trader_discovery.md` — the single discovery/ranking pipeline.

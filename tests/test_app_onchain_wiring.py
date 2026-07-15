@@ -49,11 +49,11 @@ def test_onchain_condition_resolver_builder_returns_callable() -> None:
     assert callable(_build_onchain_condition_id_resolver())
 
 
-def test_missing_wss_warning_only_for_operator_enabled_detection() -> None:
+def test_missing_wss_warning_reflects_typed_detection_config() -> None:
     from app import _onchain_missing_wss_warning_reason
     from config.app_config import OnchainDetectionConfig
 
-    default_cfg = SimpleNamespace(onchain_detection=OnchainDetectionConfig(), raw={})
+    default_cfg = SimpleNamespace(onchain_detection=OnchainDetectionConfig())
     assert _onchain_missing_wss_warning_reason(default_cfg) is None
 
     pending_cfg = SimpleNamespace(
@@ -61,7 +61,6 @@ def test_missing_wss_warning_only_for_operator_enabled_detection() -> None:
             enable_onchain_pending_detection=True,
             enable_onchain_mined_detection=True,
         ),
-        raw={},
     )
     assert _onchain_missing_wss_warning_reason(pending_cfg) == "pending_enabled"
 
@@ -70,7 +69,6 @@ def test_missing_wss_warning_only_for_operator_enabled_detection() -> None:
             enable_onchain_pending_detection=False,
             enable_onchain_mined_detection=True,
         ),
-        raw={"ENABLE_ONCHAIN_MINED_DETECTION": "true"},
     )
     assert _onchain_missing_wss_warning_reason(mined_cfg) == "mined_enabled"
 
@@ -79,6 +77,5 @@ def test_missing_wss_warning_only_for_operator_enabled_detection() -> None:
             enable_onchain_pending_detection=True,
             onchain_ws_url="wss://example.invalid",
         ),
-        raw={},
     )
     assert _onchain_missing_wss_warning_reason(with_ws_cfg) is None

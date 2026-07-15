@@ -40,7 +40,7 @@
   "checks": {
     "config_drift": {
       "enabled": true,
-      "description": "Find runtime.env/runtime.local.env keys not represented in AppConfig or a documented legacy allowlist; detect duplicate env keys and contradictory defaults."
+      "description": "Check runtime.yml, runtime.local.yml, trader_discovery.yaml, and nested PMCOPY overrides against AppConfig; detect duplicate or contradictory settings."
     },
     "disabled_feature_parsing": {
       "enabled": true,
@@ -84,7 +84,7 @@
     },
     "strategy_copier_safety": {
       "enabled": true,
-      "description": "If strategy-copy or env-mutation code exists, ensure dry-run by default, runtime.local.env-only writes, and no secret modification."
+      "description": "Reject runtime config mutation and ensure secrets are never written or rendered."
     },
     "branch_merge_risk": {
       "enabled": true,
@@ -121,11 +121,8 @@
     ]
   },
   "expected_artifacts": [
-    "findings_table.md",
-    "env_schema_coverage.txt",
-    "branch_merge_matrix.md",
+    "trader_discovery.md",
     "reconcile_state_machine_notes.md",
-    "pending_detection_notes.md",
-    "strategy_profiler_notes.md"
+    "pending_detection_notes.md"
   ]
 }

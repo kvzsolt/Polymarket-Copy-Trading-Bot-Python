@@ -32,7 +32,9 @@ async def run_leader_monitor(
         metrics.inc("no_leaders_monitored_total")
         return
 
-    trade_queue: asyncio.Queue[list[dict]] = asyncio.Queue(maxsize=200)
+    trade_queue: asyncio.Queue[list[dict]] = asyncio.Queue(
+        maxsize=max(1, int(config.polling.trade_queue_max_batches))
+    )
 
     async def worker() -> None:
         while True:
@@ -59,9 +61,28 @@ async def run_leader_monitor(
                         metrics.inc("trade_pipeline_crashes_total")
             finally:
                 trade_queue.task_done()
+                metrics.set_gauge(
+                    "trade_queue_depth",
+                    float(trade_queue.qsize()),
+                    labels={"leader_id": leader_wallet},
+                )
 
     async def on_trade(trades: list[dict]) -> None:
-        await trade_queue.put(trades)
+        batch = trades
+        if trade_queue.full():
+            oldest = trade_queue.get_nowait()
+            trade_queue.task_done()
+            batch = _coalesce_trade_batches(oldest, trades)
+            metrics.inc(
+                "trade_queue_batches_coalesced_total",
+                labels={"leader_id": leader_wallet},
+            )
+        trade_queue.put_nowait(batch)
+        metrics.set_gauge(
+            "trade_queue_depth",
+            float(trade_queue.qsize()),
+            labels={"leader_id": leader_wallet},
+        )
 
     worker_task = asyncio.create_task(worker())
     try:
@@ -79,3 +100,28 @@ async def run_leader_monitor(
     finally:
         worker_task.cancel()
         await asyncio.gather(worker_task, return_exceptions=True)
+
+
+def _coalesce_trade_batches(
+    first: list[dict],
+    second: list[dict],
+) -> list[dict]:
+    by_identity: dict[tuple[str, str, str, str], dict] = {}
+    for trade in [*first, *second]:
+        identity = (
+            str(trade.get("transactionHash") or trade.get("txHash") or ""),
+            str(
+                trade.get("tradeId")
+                or trade.get("tradeID")
+                or trade.get("trade_id")
+                or trade.get("id")
+                or ""
+            ),
+            str(trade.get("asset") or trade.get("tokenID") or ""),
+            str(trade.get("side") or "").upper(),
+        )
+        by_identity[identity] = trade
+    return sorted(
+        by_identity.values(),
+        key=lambda trade: float(trade.get("timestamp") or 0),
+    )

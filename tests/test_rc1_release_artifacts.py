@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
@@ -88,3 +90,22 @@ def test_rc1_check_script_runs_forbid_scans(repo_root: Path) -> None:
         "pytest",
     ):
         assert token in text, token
+
+
+def test_rc1_live_doctor_detects_file_backed_wallet_config(repo_root: Path) -> None:
+    text = (repo_root / "scripts/rc1_check.sh").read_text(encoding="utf-8")
+    assert "python -m bot_cli.main doctor --live" in text
+    assert '${PMCOPY__WALLET__PRIVATE_KEY-}' not in text
+
+
+def test_bot_cli_module_executes_its_entrypoint(repo_root: Path) -> None:
+    result = subprocess.run(
+        [sys.executable, "-m", "bot_cli.main", "--help"],
+        cwd=repo_root,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert result.returncode == 0
+    assert "usage:" in result.stdout.lower()

@@ -28,10 +28,6 @@ from bot_cli.commands.profile_leader import (
     register_profile_leader_command,
     run_profile_leader,
 )
-from bot_cli.commands.tune_strategy import (
-    register_tune_strategy_command,
-    run_tune_strategy,
-)
 from bot_cli.commands.trading import register_trading_command, run_trading
 
 __all__ = [
@@ -59,8 +55,6 @@ __all__ = [
     "run_rotate_traders",
     "register_profile_leader_command",
     "run_profile_leader",
-    "register_tune_strategy_command",
-    "run_tune_strategy",
     "register_trading_command",
     "run_trading",
 ]

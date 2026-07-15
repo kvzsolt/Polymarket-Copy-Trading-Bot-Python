@@ -23,8 +23,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 import config.app_config as app_config_mod
-from config.app_config import load_config
-from config.env import rehydrate_env
+from tests.config_helpers import load_test_config
 from domain.trading_context import TradingContext
 from orchestrators.trade_pipeline import execute_trades
 from services.accountingService import AccountingService
@@ -85,7 +84,6 @@ def _lower_decision_gates_for_tests(monkeypatch):
     monkeypatch.setenv("BUY_MIN_AMOUNT", "0.01")
     monkeypatch.setenv("MAX_POSITION_PCT", "0")
     monkeypatch.setenv("ENABLE_BALANCE_TIERED_POLICY", "false")
-    rehydrate_env()
 
 
 @pytest.fixture(autouse=True)
@@ -117,7 +115,7 @@ def _config(**overrides):
     }
     env.update(overrides)
     with patch.object(app_config_mod, "_runtime_python_supported", return_value=True):
-        return load_config(env)
+        return load_test_config(env)
 
 
 def _make_fresh_bundle():

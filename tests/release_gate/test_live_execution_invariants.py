@@ -28,7 +28,7 @@ pytestmark = pytest.mark.integration
 
 # Reuse the heavy fixtures already proven in test_execution_idempotency_extended
 # so we don't duplicate construction code.
-from tests.test_execution_idempotency_extended import (  # type: ignore[import-not-found]
+from tests.test_execution_idempotency_extended import (  # type: ignore[import-not-found]  # noqa: E402
     _FeeSvc,
     _SimpleClob,
     _make_exec_config,
@@ -37,8 +37,8 @@ from tests.test_execution_idempotency_extended import (  # type: ignore[import-n
     _pg_pool,
     _reset_circuit,  # noqa: F401 — re-export so the autouse fixture applies
 )
-from services.executionService import ExecutionService
-from storage.postgres.orders_repo import OrdersRepo
+from services.executionService import ExecutionService  # noqa: E402
+from storage.postgres.orders_repo import OrdersRepo  # noqa: E402
 
 
 @pytest.mark.asyncio
