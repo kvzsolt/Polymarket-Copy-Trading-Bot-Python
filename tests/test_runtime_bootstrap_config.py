@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 import config.app_config as app_config_mod
+from config.env import SignatureType
 from tests.config_helpers import load_test_config
 import orchestrators.runtime_bootstrap as runtime_bootstrap
 from orchestrators.runtime_bootstrap import (
@@ -15,7 +17,7 @@ from orchestrators.runtime_bootstrap import (
     default_follow,
     startup_reconcile_unconfirmed,
 )
-from services.multiUserConfig import load_runtime_users
+from services.multiUserConfig import bind_resolved_deposit_wallet, load_runtime_users
 
 
 _VALID_PRIVATE_KEY = "0x" + "a" * 64
@@ -59,9 +61,50 @@ def test_load_runtime_users_single_user_uses_typed_config_defaults():
     users = load_runtime_users(["0x" + "d" * 40], cfg)
     assert len(users) == 1
     user = users[0]
-    assert user.wallet.funder_address == _VALID_FUNDER
+    assert user.wallet.funder_address == ""
+    assert user.wallet.signature_type == SignatureType.DEPOSIT_WALLET
     assert user.follows["0x" + "d" * 40].allocation_pct == 0.07
     assert user.follows["0x" + "d" * 40].max_trade_usdc == 42.0
+
+
+def test_bind_resolved_deposit_wallet_sets_runtime_identity():
+    cfg = _config(LEADER_WALLETS="0x" + "d" * 40)
+    user = load_runtime_users(["0x" + "d" * 40], cfg)[0]
+
+    bind_resolved_deposit_wallet(user, _VALID_FUNDER)
+
+    assert user.wallet.funder_address == _VALID_FUNDER
+    assert user.wallet.signature_type == SignatureType.DEPOSIT_WALLET
+    assert user.user_id == _VALID_FUNDER
+    assert user.follows["0x" + "d" * 40].user_id == _VALID_FUNDER
+
+
+def test_load_runtime_users_accepts_deposit_wallet_signature_type(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    config_path = tmp_path / "users.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "users": [
+                    {
+                        "user_id": "deposit-user",
+                        "private_key": _VALID_PRIVATE_KEY,
+                        "funder_address": _VALID_FUNDER,
+                        "signature_type": 3,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    cfg = _config(MULTI_USER_CONFIG_FILE=str(config_path))
+
+    users = load_runtime_users([], cfg)
+
+    assert users[0].wallet.signature_type == SignatureType.DEPOSIT_WALLET
 
 
 @pytest.mark.asyncio

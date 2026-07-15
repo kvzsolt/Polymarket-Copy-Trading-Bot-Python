@@ -22,6 +22,7 @@ from utils.logger import (
     configure_logging,
     event_link,
     get_logger,
+    get_wallet_type,
     log_api_response,
     log_monitor_heartbeat,
     log_trade_detected,
@@ -414,6 +415,22 @@ class TestRichDisplayHelpers:
         class DummyClient:
             signature_type = 0
         print_clob_client_status(DummyClient())
+
+    def test_sdk_deposit_wallet_type_is_authoritative(self):
+        class InnerClient:
+            wallet_type = "DEPOSIT_WALLET"
+            signature_type = 0
+
+        class DummyClient:
+            client = InnerClient()
+
+        assert get_wallet_type(DummyClient()) == ("DEPOSIT_WALLET", 3)
+
+    def test_legacy_signature_type_three_logs_as_deposit_wallet(self):
+        class DummyClient:
+            signature_type = 3
+
+        assert get_wallet_type(DummyClient()) == ("DEPOSIT_WALLET", 3)
 
     def test_print_service_start(self):
         print_service_start(trader_count=3)

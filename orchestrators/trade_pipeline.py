@@ -1294,7 +1294,13 @@ def normalize_signals(raw_signals: list[dict[str, Any]], leader_id: str) -> list
 
         condition_id = str(raw.get("conditionId") or raw.get("condition_id") or "")
         token_id = str(raw.get("tokenID") or raw.get("token_id") or raw.get("asset") or "")
-        tx_hash = str(raw.get("transactionHash") or raw.get("txHash") or "")
+        tx_hash = str(
+            raw.get("transactionHash")
+            or raw.get("txHash")
+            or raw.get("transaction_hash")
+            or raw.get("tx_hash")
+            or ""
+        )
         if not condition_id or not token_id or not tx_hash:
             # A detected TRADE that is missing core market identifiers cannot be
             # copied. Surface a concise line so the operator is not left with a

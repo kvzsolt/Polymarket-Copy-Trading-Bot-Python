@@ -98,15 +98,6 @@ class DatabaseConfig:
 @dataclass(frozen=True)
 class ClobConfig:
     http_url: str
-    api_key: SecretStr
-    api_secret: SecretStr = field(default_factory=lambda: SecretStr(""))
-    api_passphrase: SecretStr = field(default_factory=lambda: SecretStr(""))
-
-    def __post_init__(self) -> None:
-        for name in ("api_key", "api_secret", "api_passphrase"):
-            value = getattr(self, name)
-            if not isinstance(value, SecretStr):
-                object.__setattr__(self, name, SecretStr(str(value or "")))
 
 
 @dataclass(frozen=True)
@@ -789,9 +780,7 @@ def _validate_semantics(cfg: AppConfig, errors: list[str]) -> None:
         errors.append("PRIVATE_KEY is required.")
     if private_key and not _HEX_PRIVATE_KEY_RE.match(private_key):
         errors.append("PRIVATE_KEY must be a 66-char hex key (0x + 64 hex digits).")
-    if not cfg.wallet.funder_address:
-        errors.append("FUNDER_ADDRESS is required.")
-    elif not _ETH_ADDR_RE.match(cfg.wallet.funder_address):
+    if cfg.wallet.funder_address and not _ETH_ADDR_RE.match(cfg.wallet.funder_address):
         errors.append(
             f'Invalid FUNDER_ADDRESS "{cfg.wallet.funder_address}" '
             f"(expected 42-char Ethereum address)."
@@ -1239,6 +1228,17 @@ def load_config(
         raise EnvValidationError("Invalid application configuration:\n- " + "\n- ".join(messages)) from exc
 
     validated = settings.model_dump()
+    # One RPC setting is enough for operators.  ``WalletConfig`` keeps these
+    # compatibility fields because legacy service boundaries still consume
+    # them, but their values are sourced from the canonical network section.
+    validated["wallet"]["polygon_rpc_url"] = (
+        validated["wallet"].get("polygon_rpc_url")
+        or validated["network"]["rpc_url"]
+    )
+    validated["wallet"]["fallback_rpc_url"] = (
+        validated["wallet"].get("fallback_rpc_url")
+        or validated["network"].get("fallback_rpc_url", "")
+    )
     validated["dry_run"] = settings.execution.paper_trade_only
     try:
         cfg = TypeAdapter(AppConfig).validate_python(validated)

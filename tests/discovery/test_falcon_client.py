@@ -45,6 +45,11 @@ def test_body_uses_integer_pagination_and_raw_formatter() -> None:
     }
 
 
+def test_body_rejects_page_sizes_below_live_falcon_minimum() -> None:
+    with pytest.raises(ValueError, match=r"\[10, 200\]"):
+        FalconClient.build_body(581, {"window_days": "3"}, limit=1, offset=0)
+
+
 def test_token_bucket_always_has_capacity_for_one_request() -> None:
     bucket = TokenBucket(rate=0.1)
     assert bucket.capacity == 1.0
@@ -76,6 +81,23 @@ async def test_query_reuses_injected_pooled_client_and_parses_data() -> None:
 
 
 @pytest.mark.asyncio
+async def test_query_clamps_page_size_to_live_falcon_minimum() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert json.loads(request.content)["pagination"]["limit"] == 10
+        return httpx.Response(200, json={"data": {"results": []}})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as transport_client:
+        client = FalconClient(_config(), client=transport_client)
+        await client.query(
+            agent_id=581,
+            params={"proxy_wallet": "0x" + "a" * 40, "window_days": "3"},
+            limit=1,
+        )
+
+
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "payload",
     [
@@ -100,7 +122,7 @@ async def test_pagination_stops_when_records_less_than_limit() -> None:
 
     async def query(**kwargs) -> FalconPage:
         calls.append(kwargs["offset"])
-        rows = ({"id": 1}, {"id": 2}) if kwargs["offset"] == 0 else ({"id": 3},)
+        rows = tuple({"id": value} for value in range(10)) if kwargs["offset"] == 0 else ({"id": 10},)
         return FalconPage(results=rows, returned=len(rows))
 
     client.query = query  # type: ignore[method-assign]
@@ -114,8 +136,8 @@ async def test_pagination_stops_when_records_less_than_limit() -> None:
         )
     ]
     await client.aclose()
-    assert [row["id"] for row in rows] == [1, 2, 3]
-    assert calls == [0, 2]
+    assert [row["id"] for row in rows] == list(range(11))
+    assert calls == [0, 10]
 
 
 @pytest.mark.asyncio

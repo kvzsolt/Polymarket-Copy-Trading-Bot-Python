@@ -528,6 +528,7 @@ class PolymarketGateway:
         try:
             environment = self._client.public_client.environment
             secure = self._client.secure_client
+            signature_type = self._client.signature_type
             correct_chain = environment.chain_id == _EXPECTED_CHAIN_ID
             return {
                 "sdk_available": correct_chain,
@@ -540,7 +541,8 @@ class PolymarketGateway:
                 "negative_risk_supported": True,
                 "authenticated": secure is not None,
                 "wallet": str(secure.wallet) if secure is not None else None,
-                "wallet_type": secure.wallet_type if secure is not None else None,
+                "wallet_type": self._client.wallet_type,
+                "signature_type": int(signature_type) if signature_type is not None else None,
                 "error": None if correct_chain else "unexpected SDK chain",
             }
         except Exception as exc:  # compatibility probes must never raise

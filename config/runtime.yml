@@ -13,21 +13,14 @@ database:
 wallet:
   private_key: ""
   chain_id: 137
-  funder_address: ""
-  polygon_rpc_url: ""
-  signature_type: 0
-  fallback_rpc_url: ""
 
 clob:
   http_url: https://clob.polymarket.com/
-  api_key: ""
-  api_secret: ""
-  api_passphrase: ""
 
 polling:
   fetch_interval: 0.25
   aggregate_signal_window_seconds: 0.1
-  risk_check_interval: 15.0
+  risk_check_interval: 6.0
   discovery_refresh_interval_seconds: 300
   leader_positions_min_fetch_spacing_ms: 250
   leader_activity_min_fetch_spacing_ms: 250
@@ -37,7 +30,7 @@ polling:
 
 sizing:
   mode: proportional
-  percentage: 2.0
+  percentage: 5.0
   fixed_amount: 3.0
   trade_multiplier: 1.0
   tiered_trade_multipliers: ""
@@ -45,16 +38,16 @@ sizing:
   adaptive_min_percent: 0.0
   adaptive_max_percent: 0.0
   adaptive_threshold_usdc: 500.0
-  buy_min_amount: 6.0
-  buy_max_amount: 15.0
+  buy_min_amount: 5.0
+  buy_max_amount: 10.0
   position_threshold: 0
   max_position_pct: 0.45
-  enable_trust_size_multipliers: true
+  enable_trust_size_multipliers: false
   trust_size_multiplier_min: 0.5
   trust_size_multiplier_max: 1.25
 
 risk:
-  enable_risk_mgmt: false
+  enable_risk_mgmt: true
   max_market_exposure_usdc: 300.0
   max_category_exposure_usdc: 600.0
   max_leader_exposure_usdc: 500.0
@@ -75,8 +68,8 @@ risk:
   balance_policy_dynamic_threshold_raise: false
   day_start_equity_usdc: 50.0
   near_max_price_warn: 0.95
-  near_max_price_warn_trim_ratio: 0.5
-  near_max_price_exit: 0.95
+  near_max_price_warn_trim_ratio: 0.6
+  near_max_price_exit: 0.99
   profit_lock_trigger_pct: 70.0
   profit_lock_sell_fraction: 0.5
   trailing_activation_pct: null
@@ -97,7 +90,7 @@ execution:
   max_share_price: 0.0
   max_retries: 3
   non_terminal_failure_max_attempts: 3
-  trading_mode: paper
+  trading_mode: 'live'
   enable_copy_decision_gate: false
   enable_near_resolution_gate: false
   near_resolution_gate_price: 0.95
@@ -147,7 +140,9 @@ logging:
   pnl_log_file: log/pnl.jsonl
 
 network:
-  rpc_url: ""
+  # Public default shared by wallet preflight, balances and on-chain reads.
+  # Override PMCOPY__NETWORK__RPC_URL only when using a private provider.
+  rpc_url: https://polygon.drpc.org
   chain_id: 137
   usdc_contract_address: "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"
   enforce_geoblock: true
@@ -202,7 +197,7 @@ market_data:
   rest_snapshot_max_age_ms: 500
   rest_snapshot_request_timeout_ms: 750
   rest_snapshot_total_budget_ms: 1000
-  rest_snapshot_max_spread_bps: 300
+  rest_snapshot_max_spread_bps: 2000
   allow_rest_when_wss_down: false
   wss_down_after_seconds: 15.0
   rest_degraded_max_age_seconds: 2.0
@@ -221,9 +216,9 @@ market_data:
   subscribe_timeout_seconds: 2.0
 
 onchain_detection:
-  enable_onchain_pending_detection: false
+  enable_onchain_pending_detection: true
   # Opt in only when an on-chain WebSocket endpoint is configured locally.
-  enable_onchain_mined_detection: false
+  enable_onchain_mined_detection: true
   pending_tx_provider: alchemy
   onchain_ws_url: ""
   pending_tx_ws_url: ""

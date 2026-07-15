@@ -163,10 +163,64 @@ class TestBalanceClient:
         assert await client.get_native_balance_wei("") is None
 
     @pytest.mark.asyncio
-    async def test_usdc_invalid_contract_returns_none(self) -> None:
-        client = BalanceClient(rpc_url="http://rpc", usdc_contract_address="not-a-hex")
-        # Invalid checksum address path is caught inside the sync helper.
-        assert await client.get_usdc_balance("0x" + "b" * 40) is None
+    @pytest.mark.parametrize(
+        ("contract_address", "wallet_address", "expected_log"),
+        [
+            ("not-a-contract", "0x" + "b" * 40, "USDC contract address"),
+            ("0x" + "a" * 40, "not-a-wallet", "wallet address"),
+        ],
+    )
+    async def test_usdc_invalid_addresses_fail_before_thread_work(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        contract_address: str,
+        wallet_address: str,
+        expected_log: str,
+    ) -> None:
+        logger = MagicMock()
+        to_thread = AsyncMock()
+        monkeypatch.setattr("clients.balance_client.asyncio.to_thread", to_thread)
+        client = BalanceClient(
+            rpc_url="http://rpc",
+            usdc_contract_address=contract_address,
+            logger=logger,
+        )
+
+        assert await client.get_usdc_balance(wallet_address) is None
+
+        to_thread.assert_not_awaited()
+        assert expected_log in logger.error.call_args.args[0]
+
+    @pytest.mark.parametrize(
+        ("contract_address", "wallet_address", "expected_log"),
+        [
+            ("not-a-contract", "0x" + "b" * 40, "USDC contract address"),
+            ("0x" + "a" * 40, "not-a-wallet", "wallet address"),
+        ],
+    )
+    def test_usdc_sync_fallback_logs_invalid_addresses_distinctly(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        contract_address: str,
+        wallet_address: str,
+        expected_log: str,
+    ) -> None:
+        logger = MagicMock()
+        provider = MagicMock()
+        monkeypatch.setattr(
+            "clients.balance_client.FallbackWeb3Provider",
+            provider,
+        )
+        client = BalanceClient(
+            rpc_url="http://rpc",
+            usdc_contract_address=contract_address,
+            logger=logger,
+        )
+
+        assert client._get_usdc_balance_sync(wallet_address) is None
+
+        provider.assert_not_called()
+        assert expected_log in logger.error.call_args.args[0]
 
 
 # ---------------------------------------------------------------------------

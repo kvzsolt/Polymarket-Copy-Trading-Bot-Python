@@ -82,7 +82,13 @@ class LeaderRegistry:
         discovery = self.config.discovery
         candidates: list[Candidate] = []
         should_run = (
-            (discovery.scheduler.enabled or force_discovery)
+            (
+                force_discovery
+                or (
+                    discovery.scheduler.enabled
+                    and not configured_clean
+                )
+            )
             and discovery.api.has_token
         )
         if should_run:
@@ -114,7 +120,7 @@ class LeaderRegistry:
                 limit=discovery.scheduler.max_active_leaders,
                 config_hash=str(self.discovery_service.config_hash),
             )
-            if discovery.scheduler.start_from_roster
+            if discovery.scheduler.start_from_roster and not configured_clean
             else []
         )
         active_monitored = _ordered_unique([*configured_clean, *auto_active])

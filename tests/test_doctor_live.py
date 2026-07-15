@@ -12,6 +12,7 @@ from unittest.mock import patch
 import pytest
 
 import config.app_config as app_config_mod
+from config.env import SignatureType
 from tests.config_helpers import load_test_config
 
 
@@ -27,6 +28,22 @@ _BASE_LIVE_ENV = {
     "POSITION_DRIFT_CHECK_ON_STARTUP": "true",
     "ENFORCE_GEOBLOCK": "false",
 }
+
+
+def test_doctor_formats_deposit_wallet_diagnostics() -> None:
+    from bot_cli.commands.doctor import _wallet_signature_detail
+
+    detail = _wallet_signature_detail(
+        detected_signature_type=SignatureType.DEPOSIT_WALLET,
+        detected_wallet_type="DEPOSIT_WALLET",
+        detected_signer="0x" + "a" * 40,
+        funder_address="0x" + "b" * 40,
+        configured_signature_type=SignatureType.DEPOSIT_WALLET,
+    )
+
+    assert "walletType=DEPOSIT_WALLET" in detail
+    assert "signature_type=3" in detail
+    assert "sdk_wallet_type_authoritative=true" in detail
 
 
 def _config_loader(env_overrides: dict[str, str] | None = None):

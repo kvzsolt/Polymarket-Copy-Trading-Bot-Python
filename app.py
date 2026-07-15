@@ -41,7 +41,12 @@ from orchestrators.startup_health import perform_startup_health_check
 from orchestrators.user_data_runtime import UserDataRuntime
 from services.healthServer import start_health_server
 from services.metrics import metrics
-from services.multiUserConfig import RuntimeUser, UserFollowConfig, load_runtime_users
+from services.multiUserConfig import (
+    RuntimeUser,
+    UserFollowConfig,
+    bind_resolved_deposit_wallet,
+    load_runtime_users,
+)
 from storage.postgres.leaders_repo import LeadersRepo
 from integrations.polymarket.sdk_client import create_polymarket_client
 from utils.getMyBalance import get_my_balance
@@ -1055,6 +1060,8 @@ async def _run_application(client_registry: list[Any]) -> int:
             config=application.config,
             authenticated=not application.config.execution.paper_trade_only,
         )
+        if client.wallet_address is not None:
+            bind_resolved_deposit_wallet(runtime_user, client.wallet_address)
         # Register ownership immediately. If any later startup stage fails,
         # main() still closes the SDK transports from its outer finally.
         client_registry.append(client)
@@ -1537,7 +1544,7 @@ async def _run_application(client_registry: list[Any]) -> int:
     # awaitable per call so a crashed loop can be respawned.
     supervised: list[_Supervised] = []
 
-    if application.config.discovery.scheduler.enabled:
+    if application.config.discovery.scheduler.enabled and not configured:
         dynamic_monitoring_enabled = bool(
             application.config.discovery.scheduler.start_from_roster
         )
@@ -1563,6 +1570,11 @@ async def _run_application(client_registry: list[Any]) -> int:
                     already_monitored=monitored_set,
                 ),
             )
+        )
+    elif configured:
+        logger.info(
+            "discovery_skipped_manual_leaders",
+            extra={"configured_leader_count": len(configured)},
         )
 
     if application.config.risk.enable_risk_mgmt:

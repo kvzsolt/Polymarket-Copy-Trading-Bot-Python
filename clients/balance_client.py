@@ -49,9 +49,14 @@ class BalanceClient(AbstractBalanceClient):
     def _get_usdc_balance_sync(self, address: str) -> Decimal | None:
         try:
             checksum_contract = Web3.to_checksum_address(self._usdc_contract_address)
+        except (TypeError, ValueError) as exc:
+            self._logger.error("Invalid USDC contract address configuration: %s", exc)
+            return None
+
+        try:
             checksum_address = Web3.to_checksum_address(address)
         except (TypeError, ValueError) as exc:
-            self._logger.error("Invalid address config: %s", exc)
+            self._logger.error("Invalid wallet address: %s", exc)
             return None
 
         try:
@@ -77,7 +82,7 @@ class BalanceClient(AbstractBalanceClient):
         try:
             Web3.to_checksum_address(self._usdc_contract_address)
         except (TypeError, ValueError) as exc:
-            self._logger.error("Invalid USDC contract address config: %s", exc)
+            self._logger.error("Invalid USDC contract address configuration: %s", exc)
             return None
         try:
             checksum_address = Web3.to_checksum_address(address)

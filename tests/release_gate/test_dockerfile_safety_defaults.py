@@ -17,6 +17,7 @@ at the source level so any regression is caught before merge.
 from __future__ import annotations
 
 from pathlib import Path
+import tomllib
 
 import pytest
 
@@ -70,6 +71,19 @@ def test_healthcheck_port_matches_metrics_port(dockerfile_text: str) -> None:
 def test_metrics_server_enabled_by_default(dockerfile_text: str) -> None:
     assert "ENV PMCOPY__NETWORK__ENABLE_METRICS_SERVER=true" in dockerfile_text, (
         "Metrics server must start by default so the HEALTHCHECK has a port"
+    )
+
+
+def test_console_entrypoint_modules_are_in_the_installed_wheel() -> None:
+    project = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())
+    modules = set(project["tool"]["setuptools"]["py-modules"])
+    packages = set(project["tool"]["setuptools"]["packages"]["find"]["include"])
+    assert {"app", "bootstrap"} <= modules, (
+        "pmcopy run imports top-level app/bootstrap modules, so both must be "
+        "packaged for non-editable Docker installs"
+    )
+    assert "cache*" in packages, (
+        "app imports the cache package, so it must be included in the wheel"
     )
 
 

@@ -21,7 +21,6 @@ import asyncio
 import json
 import re
 import socket
-from services.wallet_signature_detector import detect_wallet_signature_type
 
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -97,6 +96,36 @@ def _check_gateway_sdk() -> tuple[bool, str]:
     except Exception as exc:
         return False, f"clob_sdk_import_failed: {exc}"
     return True, "polymarket-client unified SDK importable"
+
+
+def _wallet_signature_detail(
+    *,
+    detected_signature_type: Any,
+    detected_wallet_type: str,
+    detected_signer: str | None,
+    funder_address: str,
+    configured_signature_type: Any,
+) -> str:
+    """Render preflight diagnostics without treating the config hint as authority."""
+    shortened_signer = (
+        (detected_signer or "")[:10] + "…" if detected_signer else "unknown"
+    )
+    shortened_funder = funder_address[:10] + "…" if funder_address else "unknown"
+    detail = (
+        f"walletType={detected_wallet_type} "
+        f"signature_type={int(detected_signature_type)} "
+        f"signer={shortened_signer} "
+        f"funder={shortened_funder} "
+        "sdk_wallet_type_authoritative=true"
+    )
+    if (
+        configured_signature_type is not None
+        and int(configured_signature_type) != int(detected_signature_type)
+    ):
+        detail += (
+            f" configured_hint={int(configured_signature_type)} (diagnostic-only)"
+        )
+    return detail
 
 
 _REQUIRED_DB_TABLES = (
@@ -318,37 +347,23 @@ async def run_doctor_checks(
         else:
             ctx.ok("wallet_private_key", "wallet.private_key present")
         funder = config.wallet.funder_address or ""
-        if re.match(r"^0x[0-9a-fA-F]{40}$", funder):
-            ctx.ok("wallet_funder_valid", funder)
+        if not funder:
+            ctx.ok(
+                "wallet_funder_resolution",
+                "auto-derived Deposit Wallet (POLY_1271/signature type 3)",
+            )
+        elif re.match(r"^0x[0-9a-fA-F]{40}$", funder):
+            ctx.ok("wallet_funder_valid", f"optional consistency check: {funder}")
         else:
             ctx.blocked(
                 "wallet_funder_valid",
                 f"invalid wallet.funder_address: {funder!r}",
-                "set wallet.funder_address to a 42-char hex address",
+                "remove wallet.funder_address or set a 42-char Deposit Wallet address",
             )
-        try:
-            detected_sig, detected_wallet_type, detected_signer = await detect_wallet_signature_type(
-                config.wallet, fail_closed_on_rpc_error=True
-            )
-        except RuntimeError as exc:
-            ctx.blocked(
-                "wallet_signature_type",
-                f"RPC probe failed: {exc}",
-                "verify wallet.polygon_rpc_url or set wallet.signature_type",
-            )
-        else:
-            configured_sig = getattr(config.wallet, "signature_type", None)
-            shortened_signer = (detected_signer or "")[:10] + "…" if detected_signer else "unknown"
-            shortened_funder = (config.wallet.funder_address or "")[:10] + "…" if config.wallet.funder_address else "unknown"
-            detail = (
-                f"walletType={detected_wallet_type} "
-                f"signature_type={int(detected_sig)} "
-                f"signer={shortened_signer} "
-                f"funder={shortened_funder}"
-            )
-            if configured_sig is not None and int(configured_sig) != int(detected_sig):
-                detail += f" runtime_autodetect=override (configured={int(configured_sig)})"
-            ctx.ok("wallet_signature_type", detail)
+        ctx.ok(
+            "wallet_signature_type",
+            "DEPOSIT_WALLET / POLY_1271 / signature_type=3 enforced by unified SDK",
+        )
 
     # ----- database -----------------------------------------------------
     from storage.postgres.connection import init_pool, shutdown_pool

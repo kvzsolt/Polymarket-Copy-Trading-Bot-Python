@@ -754,13 +754,32 @@ def get_wallet_type(clob_client: Any) -> tuple[str, int | None]:
 
     Returns:
         tuple: (wallet_type_name, signature_type_value)
-            - wallet_type_name: "EOA", "POLY_PROXY", "GNOSIS_SAFE", or "UNKNOWN"
+            - wallet_type_name: "EOA", "POLY_PROXY", "GNOSIS_SAFE",
+              "DEPOSIT_WALLET", or "UNKNOWN"
             - signature_type_value: The raw signature_type value or None if not found
     """
     # Check if this is a wrapper with an inner client
     inner_client = getattr(clob_client, "client", None)
 
-    # Try to get signature_type from inner client first, then from the object itself
+    # The unified SDK's public wallet_type is authoritative over legacy numeric
+    # configuration hints. Check the inner SDK client first, then a facade.
+    wallet_type = getattr(inner_client, "wallet_type", None) if inner_client else None
+    if wallet_type is None:
+        wallet_type = getattr(clob_client, "wallet_type", None)
+    if wallet_type is not None:
+        normalized = str(wallet_type).strip().upper()
+        signature_by_wallet = {
+            "EOA": 0,
+            "POLY_PROXY": 1,
+            "GNOSIS_SAFE": 2,
+            "DEPOSIT_WALLET": 3,
+        }
+        mapped = signature_by_wallet.get(normalized)
+        if mapped is not None:
+            return (normalized, mapped)
+        return (f"UNKNOWN({normalized})", None)
+
+    # Legacy fallback for clients that expose only a numeric signature type.
     signature_type = getattr(inner_client, "signature_type", None) if inner_client else None
     if signature_type is None:
         signature_type = getattr(clob_client, "signature_type", None)
@@ -768,7 +787,9 @@ def get_wallet_type(clob_client: Any) -> tuple[str, int | None]:
     if signature_type is None:
         return ("UNKNOWN", None)
 
-    if signature_type == 2:
+    if signature_type == 3:
+        return ("DEPOSIT_WALLET", signature_type)
+    elif signature_type == 2:
         return ("GNOSIS_SAFE", signature_type)
     elif signature_type == 1:
         return ("POLY_PROXY", signature_type)
