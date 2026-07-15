@@ -3,7 +3,7 @@
 #
 # Runs compileall + pytest + Python source forbid scans + an unguarded
 # execution_service.execute alias scan, plus the doctor live gate if
-# PRIVATE_KEY / FUNDER_ADDRESS are exported. Exits non-zero on the first
+# nested wallet settings are exported. Exits non-zero on the first
 # blocker so CI / operators see the failure clearly.
 
 set -euo pipefail
@@ -68,10 +68,10 @@ if [ "$fail" -ne 0 ]; then
 fi
 
 echo "[4/4] doctor live..."
-if [ -n "${PRIVATE_KEY-}" ] && [ -n "${FUNDER_ADDRESS-}" ]; then
+if [ -n "${PMCOPY__WALLET__PRIVATE_KEY-}" ] && [ -n "${PMCOPY__WALLET__FUNDER_ADDRESS-}" ]; then
     python -m bot_cli.main doctor --live
 else
-    echo "  skipped: PRIVATE_KEY / FUNDER_ADDRESS not exported"
+    echo "  skipped: nested wallet settings not exported"
 fi
 
 echo "RC1 check complete."

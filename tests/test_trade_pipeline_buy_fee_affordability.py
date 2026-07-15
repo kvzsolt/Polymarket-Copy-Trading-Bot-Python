@@ -17,7 +17,6 @@ import asyncio
 from decimal import Decimal
 from types import SimpleNamespace
 
-import pytest
 
 from orchestrators.trade_pipeline import (
     _buy_fee_bps_or_none,

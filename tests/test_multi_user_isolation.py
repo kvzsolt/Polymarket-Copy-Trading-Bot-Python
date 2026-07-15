@@ -89,7 +89,23 @@ def _build_context(*, user_id: str, pool) -> TradingContext:
     from services.market_data_service import MarketDataBundle, MarketDataSource
 
     with patch.object(app_config_mod, "_runtime_python_supported", return_value=True):
-        cfg = load_config()
+        cfg = load_config(
+            {
+                "database": {"dsn": "postgresql://test:test@localhost/test"},
+                "wallet": {
+                    "funder_address": "0x" + "b" * 40,
+                    "polygon_rpc_url": "https://polygon-rpc.example.com",
+                },
+                "network": {"rpc_url": "https://polygon-rpc.example.com"},
+                "leader": {
+                    "wallets": ["0x" + "c" * 40],
+                    "copy_decision_min_score": 0.01,
+                    "copy_max_signal_age_seconds": 999999,
+                    "copy_max_price_drift_pct": 100,
+                    "copy_max_edge_decay_pct": 100,
+                },
+            }
+        )
 
     now = time.monotonic()
     bundle = MarketDataBundle(
@@ -159,16 +175,6 @@ def _build_context(*, user_id: str, pool) -> TradingContext:
 
 @pytest.mark.asyncio
 async def test_multi_user_positions_and_pnl_are_isolated(monkeypatch):
-    monkeypatch.setenv("COPY_DECISION_MIN_SCORE", "0.01")
-    monkeypatch.setenv("COPY_MAX_SIGNAL_AGE_SECONDS", "999999")
-    monkeypatch.setenv("COPY_MAX_PRICE_DRIFT_PCT", "100")
-    monkeypatch.setenv("COPY_MAX_EDGE_DECAY_PCT", "100")
-    monkeypatch.setenv("PRIVATE_KEY", "0x" + "a" * 64)
-    monkeypatch.setenv("FUNDER_ADDRESS", "0x" + "b" * 40)
-    monkeypatch.setenv("RPC_URL", "https://polygon-rpc.example.com")
-    monkeypatch.setenv("CHAIN_ID", "137")
-    monkeypatch.setenv("LEADER_WALLETS", "0x" + "c" * 40)
-    monkeypatch.setenv("SIGNATURE_TYPE", "0")
     from config.env import rehydrate_env
     rehydrate_env()
     import orchestrators.trade_pipeline as trade_pipeline

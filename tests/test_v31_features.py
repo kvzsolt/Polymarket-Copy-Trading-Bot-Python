@@ -19,19 +19,24 @@ import pytest
 
 def _scorer_config() -> SimpleNamespace:
     return SimpleNamespace(
-        leader=SimpleNamespace(
-            leader_score_balance_target_usdc=500.0,
-            leader_score_pnl_bonus_cap=0.1,
-            leader_score_activity_target=8,
-            leader_score_weight_balance=0.35,
-            leader_score_weight_analytics=0.45,
-            leader_score_weight_activity=0.20,
-            leader_score_floor=0.10,
-        ),
         sizing=SimpleNamespace(
             enable_trust_size_multipliers=True,
             trust_size_multiplier_min=0.50,
             trust_size_multiplier_max=1.25,
+        ),
+        discovery=SimpleNamespace(
+            scoring=SimpleNamespace(
+                runtime_default_roster_score=0.50,
+                runtime_pnl_target_usdc=100.0,
+                runtime_activity_target=8,
+                runtime_score_floor=0.10,
+                runtime_weights=SimpleNamespace(
+                    roster_score=0.70,
+                    win_rate=0.15,
+                    pnl=0.10,
+                    activity=0.05,
+                ),
+            )
         ),
     )
 
@@ -344,10 +349,10 @@ class TestPositionExitSystem(unittest.TestCase):
         assert action is None
 
     def test_staged_tp_uses_typed_config_defaults(self):
-        from config.app_config import load_config
+        from tests.config_helpers import load_test_config
         from services.positionManager import PositionManager
 
-        cfg = load_config({
+        cfg = load_test_config({
             "PRIVATE_KEY": "0x" + "a" * 64,
             "FUNDER_ADDRESS": "0x" + "b" * 40,
             "RPC_URL": "https://polygon-rpc.example.com",
@@ -367,10 +372,10 @@ class TestPositionExitSystem(unittest.TestCase):
         assert action["size_fraction"] == pytest.approx(0.25)
 
     def test_staged_tp_normalizes_whole_number_ratio_values(self):
-        from config.app_config import load_config
+        from tests.config_helpers import load_test_config
         from services.positionManager import PositionManager
 
-        cfg = load_config({
+        cfg = load_test_config({
             "PRIVATE_KEY": "0x" + "a" * 64,
             "FUNDER_ADDRESS": "0x" + "b" * 40,
             "RPC_URL": "https://polygon-rpc.example.com",
@@ -393,10 +398,10 @@ class TestPositionExitSystem(unittest.TestCase):
         assert action["size_fraction"] == pytest.approx(0.25)
 
     def test_staged_tp_preserves_decimal_ratio_above_one(self):
-        from config.app_config import load_config
+        from tests.config_helpers import load_test_config
         from services.positionManager import PositionManager
 
-        cfg = load_config({
+        cfg = load_test_config({
             "PRIVATE_KEY": "0x" + "a" * 64,
             "FUNDER_ADDRESS": "0x" + "b" * 40,
             "RPC_URL": "https://polygon-rpc.example.com",
@@ -419,10 +424,10 @@ class TestPositionExitSystem(unittest.TestCase):
         assert action["size_fraction"] == pytest.approx(0.25)
 
     def test_staged_tp_accepts_legacy_percentage_levels(self):
-        from config.app_config import load_config
+        from tests.config_helpers import load_test_config
         from services.positionManager import PositionManager
 
-        cfg = load_config({
+        cfg = load_test_config({
             "PRIVATE_KEY": "0x" + "a" * 64,
             "FUNDER_ADDRESS": "0x" + "b" * 40,
             "RPC_URL": "https://polygon-rpc.example.com",
@@ -586,61 +591,6 @@ class TestPositionExitSystem(unittest.TestCase):
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# Trader Discovery Scoring Tests
-# ═══════════════════════════════════════════════════════════════════════
-
-
-class TestTraderDiscoveryScoring(unittest.TestCase):
-
-    def test_falcon_quality_high_profile(self):
-        from services.discovery.candidate_scoring import falcon_quality_score
-
-        candidate = SimpleNamespace(
-            h_score=90,
-            roi_15d=125,
-            win_rate_15d=73,
-            sharpe_15d=4,
-            trajectory="improving",
-        )
-        score = falcon_quality_score(candidate)
-        assert score > 0.5
-        assert score <= 1.0
-
-    def test_falcon_quality_weak_profile(self):
-        from services.discovery.candidate_scoring import falcon_quality_score
-
-        candidate = SimpleNamespace(
-            h_score=5,
-            roi_15d=-50,
-            win_rate_15d=30,
-            sharpe_15d=-1,
-            trajectory="declining",
-        )
-        self.assertLess(falcon_quality_score(candidate), 0.3)
-
-    def test_copyability_score_empty(self):
-        from services.discovery.candidate_scoring import copyability_score
-
-        replay = SimpleNamespace(
-            copyable_signal_ratio=0.0,
-            copyable_notional_ratio=0.0,
-        )
-        assert copyability_score(replay) == pytest.approx(0.0)
-
-    def test_pct_win_rate_normalization(self):
-        from services.discovery.candidate_scoring import falcon_quality_score
-
-        candidate = SimpleNamespace(
-            h_score=50,
-            roi_15d=10,
-            win_rate_15d=73.3,
-            sharpe_15d=1,
-            trajectory="stable",
-        )
-        assert falcon_quality_score(candidate) > 0.3
-
-
-# ═══════════════════════════════════════════════════════════════════════
 # Leader Scoring + Discovery Integration Tests
 # ═══════════════════════════════════════════════════════════════════════
 
@@ -662,7 +612,7 @@ class TestLeaderScoringIntegration(unittest.TestCase):
 
     def test_scoring_without_discovery(self):
         import services.leaderScoringService as ls_mod
-        scorer = ls_mod.LeaderScoringService(discovery_service=None, config=_scorer_config())
+        scorer = ls_mod.LeaderScoringService(config=_scorer_config())
         result = scorer.score_leader(
             "0x1234567890abcdef1234567890abcdef12345678",
             leader_balance=300.0,
@@ -670,29 +620,6 @@ class TestLeaderScoringIntegration(unittest.TestCase):
             recent_trade_count=5,
         )
         assert result.score > 0.0
-        assert result.discovery_score == 0.0
-
-    def test_scoring_with_discovery(self):
-        from services.traderDiscoveryService import TraderProfile
-        import services.leaderScoringService as ls_mod
-
-        mock_profile = TraderProfile(
-            wallet="0x1234567890abcdef1234567890abcdef12345678",
-            overall_gain=2_000_000, win_rate=0.80, total_positions=150,
-            event_count=60, active_positions=5, total_current_value=10_000,
-        )
-        mock_profile.composite_score = 0.75
-
-        mock_disc = MagicMock()
-        mock_disc.get_cached_profile.return_value = mock_profile
-
-        scorer = ls_mod.LeaderScoringService(discovery_service=mock_disc, config=_scorer_config())
-        result = scorer.score_leader(
-            "0x1234567890abcdef1234567890abcdef12345678",
-            leader_balance=300.0,
-        )
-        assert result.discovery_score > 0.0
-        assert "discovery_pnl" in result.details
 
     def test_trust_multiplier(self):
         import services.leaderScoringService as ls_mod

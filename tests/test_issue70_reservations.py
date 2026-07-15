@@ -699,7 +699,7 @@ async def test_release_then_re_open():
     await reg.release_on_cancel_or_fail(r1.intent_id, IntentState.CANCELLED)
     assert reg.reserved_for(scope).is_zero()
 
-    r2 = await reg.begin_intent(
+    await reg.begin_intent(
         scope, RegistryIntentSide.BUY, Reservation(quote_usdc=Decimal("5"))
     )
     assert reg.reserved_for(scope).quote_usdc == Decimal("5")

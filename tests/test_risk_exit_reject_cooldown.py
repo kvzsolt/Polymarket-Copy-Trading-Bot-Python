@@ -36,8 +36,7 @@ def _ctx(config=None):
 
 
 class TestCooldownHelpers:
-    def test_arm_then_active_within_ttl_and_expired_after(self, monkeypatch):
-        monkeypatch.delenv("RISK_EXIT_REJECT_COOLDOWN_SECONDS", raising=False)
+    def test_arm_then_active_within_ttl_and_expired_after(self):
         ctx = _ctx()
         _arm_risk_exit_reject_cooldown(
             ctx, condition_id=_COND, token_id=_TOKEN, now=1000.0
@@ -56,8 +55,7 @@ class TestCooldownHelpers:
             is False
         )
 
-    def test_scope_keyed_not_global(self, monkeypatch):
-        monkeypatch.delenv("RISK_EXIT_REJECT_COOLDOWN_SECONDS", raising=False)
+    def test_scope_keyed_not_global(self):
         ctx = _ctx()
         _arm_risk_exit_reject_cooldown(
             ctx, condition_id=_COND, token_id=_TOKEN, now=1000.0
@@ -75,9 +73,10 @@ class TestCooldownHelpers:
             is False
         )
 
-    def test_env_zero_disables(self, monkeypatch):
-        monkeypatch.setenv("RISK_EXIT_REJECT_COOLDOWN_SECONDS", "0")
-        ctx = _ctx()
+    def test_typed_zero_disables(self):
+        ctx = _ctx(
+            SimpleNamespace(risk=SimpleNamespace(risk_exit_reject_cooldown_seconds=0))
+        )
         _arm_risk_exit_reject_cooldown(
             ctx, condition_id=_COND, token_id=_TOKEN, now=1000.0
         )
@@ -88,9 +87,12 @@ class TestCooldownHelpers:
             is False
         )
 
-    def test_env_short_ttl_expiry(self, monkeypatch):
-        monkeypatch.setenv("RISK_EXIT_REJECT_COOLDOWN_SECONDS", "0.05")
-        ctx = _ctx()
+    def test_typed_short_ttl_expiry(self):
+        ctx = _ctx(
+            SimpleNamespace(
+                risk=SimpleNamespace(risk_exit_reject_cooldown_seconds=0.05)
+            )
+        )
         _arm_risk_exit_reject_cooldown(
             ctx, condition_id=_COND, token_id=_TOKEN, now=1000.0
         )
@@ -107,19 +109,13 @@ class TestCooldownHelpers:
             is False
         )
 
-    def test_typed_config_takes_priority_over_env(self, monkeypatch):
-        monkeypatch.setenv("RISK_EXIT_REJECT_COOLDOWN_SECONDS", "999")
+    def test_typed_config_is_used(self):
         cfg = SimpleNamespace(
             risk=SimpleNamespace(risk_exit_reject_cooldown_seconds=5.0)
         )
         assert _risk_exit_reject_cooldown_seconds(_ctx(config=cfg)) == 5.0
 
-    def test_env_fallback_when_no_config(self, monkeypatch):
-        monkeypatch.setenv("RISK_EXIT_REJECT_COOLDOWN_SECONDS", "17.5")
-        assert _risk_exit_reject_cooldown_seconds(_ctx()) == 17.5
-
-    def test_default_is_60(self, monkeypatch):
-        monkeypatch.delenv("RISK_EXIT_REJECT_COOLDOWN_SECONDS", raising=False)
+    def test_default_is_60(self):
         assert _risk_exit_reject_cooldown_seconds(_ctx()) == 60.0
 
     def test_appconfig_field_typed_default(self):
@@ -234,10 +230,9 @@ async def _seed_position(pool):
 
 @_integration
 @pytest.mark.asyncio
-async def test_storm_regression_second_cycle_suppressed(monkeypatch):
+async def test_storm_regression_second_cycle_suppressed():
     """The 03:16 storm: rejected exit re-dispatched every cycle. Post-fix:
     one dispatch, one trigger row, second cycle silent."""
-    monkeypatch.delenv("RISK_EXIT_REJECT_COOLDOWN_SECONDS", raising=False)
     async with _pg_pool() as pool:
         await _seed_position(pool)
         risk_triggers_repo = RiskTriggersRepo(pool)
@@ -262,10 +257,9 @@ async def test_storm_regression_second_cycle_suppressed(monkeypatch):
 
 @_integration
 @pytest.mark.asyncio
-async def test_opaque_error_still_arms_cooldown(monkeypatch):
+async def test_opaque_error_still_arms_cooldown():
     """Defect-B independence: even the pre-fix opaque error string arms the
     cooldown — status is the signal, not the error text."""
-    monkeypatch.delenv("RISK_EXIT_REJECT_COOLDOWN_SECONDS", raising=False)
     async with _pg_pool() as pool:
         await _seed_position(pool)
         exec_svc = _CountingExecutionService(
@@ -282,10 +276,9 @@ async def test_opaque_error_still_arms_cooldown(monkeypatch):
 
 @_integration
 @pytest.mark.asyncio
-async def test_transient_failure_not_suppressed(monkeypatch):
+async def test_transient_failure_not_suppressed():
     """status='failed' (retries exhausted, transient) must keep the normal
     cadence — a genuine exit may succeed next cycle."""
-    monkeypatch.delenv("RISK_EXIT_REJECT_COOLDOWN_SECONDS", raising=False)
     async with _pg_pool() as pool:
         await _seed_position(pool)
         exec_svc = _CountingExecutionService(status="failed", error="timeout")
@@ -300,9 +293,8 @@ async def test_transient_failure_not_suppressed(monkeypatch):
 
 @_integration
 @pytest.mark.asyncio
-async def test_failed_insufficient_balance_suppressed(monkeypatch):
+async def test_failed_insufficient_balance_suppressed():
     """Observed CLOB shape: status='failed' with balance/allowance text."""
-    monkeypatch.delenv("RISK_EXIT_REJECT_COOLDOWN_SECONDS", raising=False)
     async with _pg_pool() as pool:
         await _seed_position(pool)
         exec_svc = _CountingExecutionService(
@@ -320,12 +312,14 @@ async def test_failed_insufficient_balance_suppressed(monkeypatch):
 
 @_integration
 @pytest.mark.asyncio
-async def test_env_zero_disables_suppression(monkeypatch):
-    monkeypatch.setenv("RISK_EXIT_REJECT_COOLDOWN_SECONDS", "0")
+async def test_typed_zero_disables_suppression():
     async with _pg_pool() as pool:
         await _seed_position(pool)
         exec_svc = _CountingExecutionService(status="rejected")
         context = _make_context(pool, execution_service=exec_svc)
+        context.config = SimpleNamespace(
+            risk=SimpleNamespace(risk_exit_reject_cooldown_seconds=0)
+        )
         await rehydrate_position_manager(context)
 
         await run_risk_check_for_context(context)
@@ -336,10 +330,9 @@ async def test_env_zero_disables_suppression(monkeypatch):
 
 @_integration
 @pytest.mark.asyncio
-async def test_zero_fill_accepted_also_arms_cooldown(monkeypatch):
+async def test_zero_fill_accepted_also_arms_cooldown():
     """Accepted-but-zero-fill (fully killed FAK) has the same 1 Hz refire
     shape — both branches arm the cooldown."""
-    monkeypatch.delenv("RISK_EXIT_REJECT_COOLDOWN_SECONDS", raising=False)
     async with _pg_pool() as pool:
         await _seed_position(pool)
         exec_svc = _CountingExecutionService(

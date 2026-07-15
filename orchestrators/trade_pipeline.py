@@ -17,7 +17,7 @@ from domain.trading_context import TradingContext
 from services.entryPermissionService import EntryDecision, EntryPermissionService
 from services.execution.reconciliation_service import ReconciliationService
 from services.executionService import ExecutionRequest
-from services.metrics import metrics
+from services.metrics import COPY_LATENCY_BUCKETS, METRIC_COPY_LATENCY, metrics
 from domain.position_key import PositionKey
 from services.positionActionCoordinator import PositionScope  # noqa: F401  back-compat alias
 from services.risk.risk_engine import headroom_for_buy
@@ -41,6 +41,22 @@ from utils.logger import (
 )
 
 logger = get_logger("TradePipeline")
+
+
+def _observe_copy_latency(
+    raw_trade: dict[str, Any],
+    labels: dict[str, str],
+    submission_state: str,
+) -> None:
+    detected = raw_trade.get("_copy_detected_monotonic")
+    if not isinstance(detected, (int, float)):
+        return
+    metrics.observe(
+        METRIC_COPY_LATENCY,
+        max(0.0, time.monotonic() - float(detected)),
+        buckets=COPY_LATENCY_BUCKETS,
+        labels={**labels, "state": submission_state},
+    )
 
 
 def _positive_int(raw: Any, default: int) -> int:
@@ -238,13 +254,10 @@ _MDS_DEFAULT_TIMEOUT_S = 2.0
 
 
 def _market_data_subscribe_timeout(context: TradingContext) -> float:
-    raw = None
-    if context.config is not None:
-        raw = context.config.raw.get("MARKET_DATA_SUBSCRIBE_TIMEOUT_SECONDS")
-    try:
-        value = float(raw) if raw is not None else _MDS_DEFAULT_TIMEOUT_S
-    except (TypeError, ValueError):
-        value = _MDS_DEFAULT_TIMEOUT_S
+    market_data = getattr(getattr(context, "config", None), "market_data", None)
+    value = float(
+        getattr(market_data, "subscribe_timeout_seconds", _MDS_DEFAULT_TIMEOUT_S)
+    )
     return max(0.2, value)
 
 
@@ -2719,6 +2732,7 @@ async def execute_trades(
                         "copyOrderId": exec_result.order_id,
                     },
                 )
+                _observe_copy_latency(raw, labels, "submitted_unconfirmed")
                 results.append(
                     TradePipelineResult(
                         trade_key=trade_key,
@@ -3062,6 +3076,7 @@ async def execute_trades(
                     "outcome": signal.outcome,
                 },
             )
+            _observe_copy_latency(raw, labels, "submitted")
             log_trade_execution(
                 logger,
                 side=signal.side,

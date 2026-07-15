@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from storage.postgres.cursors_repo import TradeCursor
     from storage.postgres.fills_repo import FillRecord
-    from storage.postgres.leaders_repo import LeaderCandidateRecord, LeaderTierRecord
+    from storage.postgres.leaders_repo import LeaderTierRecord
     from storage.postgres.orders_repo import OrderSubmissionRecord
     from storage.postgres.positions_repo import PositionRecord
 
@@ -138,28 +138,17 @@ class AbstractFillRepository(ABC):
 
 
 class AbstractLeaderRepository(ABC):
-    """Leader candidate and tier persistence."""
+    """Active-roster lookup used by the copy-trading hot path."""
 
     @abstractmethod
-    async def upsert_candidates(self, records: list[LeaderCandidateRecord]) -> None: ...
-
-    @abstractmethod
-    async def list_active(self) -> list[str]: ...
+    async def list_active(
+        self,
+        limit: int | None = None,
+        config_hash: str | None = None,
+    ) -> list[str]: ...
 
     @abstractmethod
     async def get_tier(self, wallet: str) -> LeaderTierRecord: ...
-
-    @abstractmethod
-    async def update_tier(
-        self, wallet: str, follow_tier: str, tier_changed_at: float
-    ) -> None: ...
-
-    @abstractmethod
-    async def get_tier_for_leader(self, wallet: str) -> str: ...
-
-    @abstractmethod
-    async def get_leaders_by_tier(self, tier: str) -> list[str]: ...
-
 
 class AbstractCursorRepository(ABC):
     """Per-leader trade-ingestion cursor."""

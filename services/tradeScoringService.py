@@ -4,7 +4,6 @@ import time
 from dataclasses import dataclass
 from typing import Any, TYPE_CHECKING
 
-from config import env as env_mod
 from utils.logger import get_logger
 
 if TYPE_CHECKING:
@@ -39,9 +38,6 @@ class TradeScore:
     details: dict[str, Any]
 
 
-_ENV_FALLBACK_WARNED = False
-
-
 class TradeScoringService:
     """Score trade quality before copy execution.
 
@@ -54,33 +50,18 @@ class TradeScoringService:
     """
 
     def __init__(self, config: AppConfig | None = None) -> None:
+        if config is None:
+            from config.app_config import load_config
+
+            config = load_config()
         self._config = config
-        if config is not None:
-            self._max_age_seconds = config.leader.copy_max_signal_age_seconds
-            self._max_drift_pct = config.leader.copy_max_price_drift_pct
-            self._max_edge_decay = config.leader.copy_max_edge_decay_pct
-            self._liquidity_target = config.leader.copy_liquidity_target_usdc
-            self._near_res_enabled = config.execution.enable_near_resolution_gate
-            self._near_res_price = config.execution.near_resolution_gate_price
-            self._near_res_max_age = config.execution.near_resolution_max_age_seconds
-        else:
-            global _ENV_FALLBACK_WARNED
-            if not _ENV_FALLBACK_WARNED:
-                _ENV_FALLBACK_WARNED = True
-                logger.warning(
-                    "trade_scoring_env_fallback_active | typed AppConfig was "
-                    "not injected; reading COPY_* / NEAR_RESOLUTION_* env vars "
-                    "directly. Production bootstrap must construct "
-                    "TradeScoringService(config=<AppConfig>)."
-                )
-            env = env_mod.ENV
-            self._max_age_seconds = float(env.get("COPY_MAX_SIGNAL_AGE_SECONDS", 120.0))
-            self._max_drift_pct = float(env.get("COPY_MAX_PRICE_DRIFT_PCT", 6.0))
-            self._max_edge_decay = float(env.get("COPY_MAX_EDGE_DECAY_PCT", 70.0))
-            self._liquidity_target = float(env.get("COPY_LIQUIDITY_TARGET_USDC", 50.0))
-            self._near_res_enabled = str(env.get("ENABLE_NEAR_RESOLUTION_GATE", True)).lower() in {"1", "true", "yes"}
-            self._near_res_price = float(env.get("NEAR_RESOLUTION_GATE_PRICE", 0.95))
-            self._near_res_max_age = float(env.get("NEAR_RESOLUTION_MAX_AGE_SECONDS", 15.0))
+        self._max_age_seconds = config.leader.copy_max_signal_age_seconds
+        self._max_drift_pct = config.leader.copy_max_price_drift_pct
+        self._max_edge_decay = config.leader.copy_max_edge_decay_pct
+        self._liquidity_target = config.leader.copy_liquidity_target_usdc
+        self._near_res_enabled = config.execution.enable_near_resolution_gate
+        self._near_res_price = config.execution.near_resolution_gate_price
+        self._near_res_max_age = config.execution.near_resolution_max_age_seconds
 
     def score_buy_trade(
         self,

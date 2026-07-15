@@ -201,7 +201,6 @@ async def test_run_stale_locks_emits_json(capsys, monkeypatch) -> None:
     from testcontainers.postgres import PostgresContainer
     import asyncpg
 
-    from bot_cli.commands.stale_locks import run_stale_locks
     from storage.postgres.connection import shutdown_pool
     from storage.postgres.migrations import apply_migrations as pg_apply
 

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import json
+import orjson
 import time
 from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any, Callable, Coroutine, Iterable
@@ -119,12 +119,12 @@ class MarketWebSocket:
             return
         self._asset_ids.extend(new_ids)
         if self._ws is not None:
-            await self._ws.send(json.dumps({
+            await self._ws.send(orjson.dumps({
                 "assets_ids": new_ids,
                 "operation": "subscribe",
                 "level": 2,
                 "custom_feature_enabled": True,
-            }))
+            }).decode())
             logger.info("MarketWS: dynamically subscribed to %d asset(s)", len(new_ids))
 
     async def unsubscribe(self, asset_ids: list[str]) -> None:
@@ -134,10 +134,10 @@ class MarketWebSocket:
         remove_set = set(remove_ids)
         self._asset_ids = [a for a in self._asset_ids if a not in remove_set]
         if self._ws is not None:
-            await self._ws.send(json.dumps({
+            await self._ws.send(orjson.dumps({
                 "assets_ids": remove_ids,
                 "operation": "unsubscribe",
-            }))
+            }).decode())
             logger.info("MarketWS: dynamically unsubscribed from %d asset(s)", len(remove_ids))
         for asset_id in remove_ids:
             self._mark_asset_stale(asset_id, "unsubscribed")
@@ -232,7 +232,7 @@ class MarketWebSocket:
             "level": 2,
             "custom_feature_enabled": True,
         }
-        await ws.send(json.dumps(payload))
+        await ws.send(orjson.dumps(payload).decode())
         logger.info("MarketWS: subscribed to %d asset(s)", len(self._asset_ids))
 
     async def _heartbeat(self, ws: Any) -> None:
@@ -325,8 +325,8 @@ class MarketWebSocket:
             return
 
         try:
-            data = json.loads(raw_msg)
-        except (json.JSONDecodeError, TypeError):
+            data = orjson.loads(raw_msg)
+        except (orjson.JSONDecodeError, TypeError):
             logger.debug("MarketWS: non-JSON message: %s", str(raw_msg)[:100])
             return
 

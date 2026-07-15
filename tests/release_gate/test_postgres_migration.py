@@ -27,11 +27,11 @@ pytest.importorskip("testcontainers.postgres")
 _EXPECTED_TABLES = {
     # Core
     "orders",
+    "trading_control",
     "fills",
     "positions",
     "processed_trades",
     "leader_cursors",
-    "discovered_leaders",
     "market_structure_events",
     "market_structure_event_applied",
     "risk_blocks",
@@ -47,6 +47,19 @@ _EXPECTED_TABLES = {
     "daily_equity_snapshots",
     "arb_baskets",
     # Discovery
+    "discovery_cycles",
+    "discovery_candidate_snapshots",
+    "discovery_score_history",
+    "leader_roster",
+    "wallet360_snapshots",
+    "wallet_pnl_daily",
+    "wallet_rank_history",
+    "wallet_metric_timeseries",
+    "app_schema_migrations",
+}
+
+_REMOVED_DISCOVERY_TABLES = {
+    "discovered_leaders",
     "discovery_traders",
     "discovery_markets",
     "discovery_trades",
@@ -94,6 +107,7 @@ async def test_migration_creates_every_expected_table(_pg_container) -> None:
         assert not missing, (
             f"PG migration missing expected tables: {sorted(missing)}"
         )
+        assert present.isdisjoint(_REMOVED_DISCOVERY_TABLES)
     finally:
         await conn.close()
 
@@ -113,6 +127,61 @@ async def test_migration_is_idempotent(_pg_container) -> None:
         await apply_migrations(conn)
         # Second apply on a populated DB must be a no-op.
         await apply_migrations(conn)
+    finally:
+        await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_discovery_reset_preserves_existing_trading_rows(_pg_container) -> None:
+    """The destructive rewrite is scoped to superseded discovery data."""
+    import asyncpg
+
+    from storage.postgres.migrations import apply_migrations
+
+    dsn = _pg_container.get_connection_url(driver="asyncpg").replace(
+        "postgresql+asyncpg://", "postgresql://"
+    )
+    conn = await asyncpg.connect(dsn)
+    try:
+        await conn.execute("DROP SCHEMA public CASCADE")
+        await conn.execute("CREATE SCHEMA public")
+        await conn.execute(
+            """
+            CREATE TABLE positions (
+                user_id text NOT NULL,
+                condition_id text NOT NULL,
+                token_id text NOT NULL,
+                leader_id text,
+                size_tokens text NOT NULL,
+                avg_entry_price text NOT NULL,
+                updated_at timestamptz NOT NULL DEFAULT now(),
+                PRIMARY KEY (user_id, condition_id, token_id)
+            )
+            """
+        )
+        await conn.execute(
+            """
+            INSERT INTO positions (
+                user_id, condition_id, token_id, size_tokens, avg_entry_price
+            ) VALUES ('user', 'condition', 'token', '5', '0.4')
+            """
+        )
+        await conn.execute("CREATE TABLE discovery_traders (wallet text)")
+        await conn.execute("INSERT INTO discovery_traders VALUES ('legacy')")
+
+        await apply_migrations(conn)
+        assert await conn.fetchval(
+            "SELECT size_tokens FROM positions WHERE user_id = 'user'"
+        ) == "5"
+        assert await conn.fetchval(
+            "SELECT to_regclass('public.discovery_traders')"
+        ) is None
+        assert await conn.fetchval(
+            "SELECT to_regclass('public.leader_roster')"
+        ) == "leader_roster"
+
+        await apply_migrations(conn)
+        assert await conn.fetchval("SELECT count(*) FROM positions") == 1
     finally:
         await conn.close()
 

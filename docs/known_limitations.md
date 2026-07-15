@@ -119,5 +119,5 @@ limitation here, add a corresponding regression test to the unit suite.
   survives the external-integration surface).
 - `docs/emergency_shutdown.md` — operator response when an external
   integration drops (kill-switch + doctor).
-- `docs/audit/findings_table.md` — the deep-research audit findings
-  matrix mapping each finding to the corresponding code fix / test.
+- `docs/trader_discovery.md` — discovery data caveats, ranking evidence,
+  and roster behavior.

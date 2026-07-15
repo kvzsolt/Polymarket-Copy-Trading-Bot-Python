@@ -74,6 +74,13 @@ async def test_live_doctor_runs_before_build_app(monkeypatch):
     fake_config = SimpleNamespace(
         execution=SimpleNamespace(paper_trade_only=False),
         network=SimpleNamespace(enforce_geoblock=False),
+        logging=SimpleNamespace(
+            level="INFO",
+            log_dir="log",
+            app_log_jsonl_file="log/test.jsonl",
+            log_max_bytes=1024,
+            log_backup_count=1,
+        ),
     )
 
     async def _fake_doctor(_mode: str):
@@ -84,7 +91,6 @@ async def test_live_doctor_runs_before_build_app(monkeypatch):
         events.append("build_app")
         raise RuntimeError("stop_after_build")
 
-    monkeypatch.setattr(app_module, "validate_runtime_env", lambda: None)
     monkeypatch.setattr(app_module, "load_config", lambda: fake_config)
     monkeypatch.setattr(app_module, "build_app", _fake_build_app)
     monkeypatch.setattr("bot_cli.commands.doctor.run_doctor_checks", _fake_doctor)
@@ -102,6 +108,13 @@ async def test_blocked_live_doctor_short_circuits_before_build_app(monkeypatch):
     fake_config = SimpleNamespace(
         execution=SimpleNamespace(paper_trade_only=False),
         network=SimpleNamespace(enforce_geoblock=False),
+        logging=SimpleNamespace(
+            level="INFO",
+            log_dir="log",
+            app_log_jsonl_file="log/test.jsonl",
+            log_max_bytes=1024,
+            log_backup_count=1,
+        ),
     )
     build_app = AsyncMock()
 
@@ -113,12 +126,11 @@ async def test_blocked_live_doctor_short_circuits_before_build_app(monkeypatch):
                     "name": "leaders",
                     "status": "blocked",
                     "detail": "no leaders",
-                    "fix": "set LEADER_WALLETS",
+                    "fix": "set leader.wallets",
                 }
             ],
         }
 
-    monkeypatch.setattr(app_module, "validate_runtime_env", lambda: None)
     monkeypatch.setattr(app_module, "load_config", lambda: fake_config)
     monkeypatch.setattr(app_module, "build_app", build_app)
     monkeypatch.setattr("bot_cli.commands.doctor.run_doctor_checks", _fake_doctor)
@@ -135,13 +147,19 @@ async def test_paper_mode_does_not_call_geoblock_gate(monkeypatch):
     fake_config = SimpleNamespace(
         execution=SimpleNamespace(paper_trade_only=True),
         network=SimpleNamespace(enforce_geoblock=True),
+        logging=SimpleNamespace(
+            level="INFO",
+            log_dir="log",
+            app_log_jsonl_file="log/test.jsonl",
+            log_max_bytes=1024,
+            log_backup_count=1,
+        ),
     )
     geoblock = AsyncMock()
 
     async def _stop_after_gate():
         raise RuntimeError("stop_after_gate")
 
-    monkeypatch.setattr(app_module, "validate_runtime_env", lambda: None)
     monkeypatch.setattr(app_module, "load_config", lambda: fake_config)
     monkeypatch.setattr(app_module, "check_geoblock", geoblock, raising=False)
     monkeypatch.setattr(app_module, "build_app", _stop_after_gate)

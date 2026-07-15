@@ -3,7 +3,7 @@
 A 24/7 bot watching many leader wallets across many Polymarket markets
 accumulates token state indefinitely if these caches are unbounded.
 Both stores now keep an OrderedDict bounded by ``max_tokens`` /
-``max_size`` (configurable via env or constructor); oldest-touched
+``max_size`` (configured through AppConfig or the constructor); oldest-touched
 tokens evict first, active tokens stay because every WSS/REST touch
 moves them to the MRU end.
 """
@@ -80,32 +80,25 @@ class TestRiskPriceCacheBounded:
 
 class TestRiskPriceCacheTypedConfig:
     """PR #105 review: typed AppConfig.risk.risk_price_cache_max_size is
-    the production wiring path. The raw env read inside RiskPriceCache
-    stays as a legacy adapter for callers that don't have a config in
-    scope (e.g. ad-hoc test harnesses)."""
+    the production wiring path; cache-local environment parsing is gone."""
 
-    _MIN_ENV = {
-        "PRIVATE_KEY": "0x" + "a" * 64,
-        "FUNDER_ADDRESS": "0x" + "b" * 40,
-        "USER_ADDRESS": "0x" + "c" * 40,
-        "LEADER_WALLETS": "0x" + "d" * 40,
-        "RPC_URL": "https://polygon-rpc.example.com",
-        "CHAIN_ID": "137",
-    }
+    def _load_config(self, max_size: int | None = None):
+        from config.app_config import load_config
 
-    def _load_config(self, overrides=None):
-        from unittest.mock import patch
-
-        import config.app_config as app_config_mod
-
-        env = {**self._MIN_ENV, **(overrides or {})}
-        with patch.object(
-            app_config_mod, "_runtime_python_supported", return_value=True
-        ):
-            return app_config_mod.load_config(env)
+        overrides = {
+            "database": {"dsn": "postgresql://test:test@localhost/test"},
+            "wallet": {
+                "funder_address": "0x" + "b" * 40,
+                "polygon_rpc_url": "https://polygon-rpc.example.com",
+            },
+            "network": {"rpc_url": "https://polygon-rpc.example.com"},
+        }
+        if max_size is not None:
+            overrides["risk"] = {"risk_price_cache_max_size": max_size}
+        return load_config(overrides)
 
     def test_app_config_exposes_typed_field(self):
-        config = self._load_config({"RISK_PRICE_CACHE_MAX_SIZE": "777"})
+        config = self._load_config(777)
         assert config.risk.risk_price_cache_max_size == 777
 
     def test_app_config_falls_back_to_default_when_env_absent(self):
@@ -114,10 +107,10 @@ class TestRiskPriceCacheTypedConfig:
 
     def test_ensure_context_price_cache_uses_typed_cap(self):
         """A TradingContext carrying an AppConfig must construct the cache
-        with the typed cap, not whatever the env happens to say."""
+        with the typed cap from the YAML settings graph."""
         from unittest.mock import MagicMock
 
-        config = self._load_config({"RISK_PRICE_CACHE_MAX_SIZE": "42"})
+        config = self._load_config(42)
 
         ctx = MagicMock()
         ctx.extra = {}

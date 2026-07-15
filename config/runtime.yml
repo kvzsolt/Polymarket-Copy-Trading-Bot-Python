@@ -1,0 +1,234 @@
+# Shared, non-secret runtime configuration.
+#
+# Precedence (lowest -> highest):
+#   runtime.yml -> runtime.local.yml -> trader_discovery.yaml -> secrets.env
+#   -> PMCOPY__SECTION__FIELD process environment overrides.
+
+database:
+  dsn: ""
+  pool_min_size: 2
+  pool_max_size: 20
+  command_timeout_seconds: 30.0
+
+wallet:
+  private_key: ""
+  chain_id: 137
+  funder_address: ""
+  polygon_rpc_url: ""
+  signature_type: 0
+  fallback_rpc_url: ""
+
+clob:
+  http_url: https://clob.polymarket.com/
+  api_key: ""
+  api_secret: ""
+  api_passphrase: ""
+
+polling:
+  fetch_interval: 0.25
+  aggregate_signal_window_seconds: 0.1
+  risk_check_interval: 15.0
+  discovery_refresh_interval_seconds: 300
+  leader_positions_min_fetch_spacing_ms: 250
+  leader_activity_min_fetch_spacing_ms: 250
+  reconcile_interval_seconds: 300
+  retention_max_age_seconds: 2592000.0
+  trade_queue_max_batches: 64
+
+sizing:
+  mode: proportional
+  percentage: 2.0
+  fixed_amount: 3.0
+  trade_multiplier: 1.0
+  tiered_trade_multipliers: ""
+  adaptive_basis: trade_size
+  adaptive_min_percent: 0.0
+  adaptive_max_percent: 0.0
+  adaptive_threshold_usdc: 500.0
+  buy_min_amount: 6.0
+  buy_max_amount: 15.0
+  position_threshold: 0
+  max_position_pct: 0.45
+  enable_trust_size_multipliers: true
+  trust_size_multiplier_min: 0.5
+  trust_size_multiplier_max: 1.25
+
+risk:
+  enable_risk_mgmt: false
+  max_market_exposure_usdc: 300.0
+  max_category_exposure_usdc: 600.0
+  max_leader_exposure_usdc: 500.0
+  max_open_positions: 40
+  max_daily_drawdown_pct: 20.0
+  kill_switch: false
+  enable_balance_tiered_policy: false
+  balance_policy_reserve_pct: 0.12
+  balance_policy_reserve_floor: 7.0
+  balance_policy_hard_cap_pct: 0.15
+  balance_policy_hard_cap_ceiling: 8.0
+  balance_policy_max_open_positions: 12
+  balance_policy_allow_partial_exits: false
+  balance_policy_allow_pyramiding: false
+  balance_policy_max_adds_per_position: 1
+  balance_policy_base_min_score: 0.22
+  balance_policy_min_notional_usdc: 0.00001
+  balance_policy_dynamic_threshold_raise: false
+  day_start_equity_usdc: 50.0
+  near_max_price_warn: 0.95
+  near_max_price_warn_trim_ratio: 0.5
+  near_max_price_exit: 0.95
+  profit_lock_trigger_pct: 70.0
+  profit_lock_sell_fraction: 0.5
+  trailing_activation_pct: null
+  trailing_distance: 0.05
+  staged_tp_levels: "0.30,0.50"
+  staged_tp_fractions: "0.25,0.35"
+  stop_loss_threshold: 0.15
+  stop_loss_grace_period_seconds: 180.0
+  risk_price_cache_max_size: 5000
+  trailing_activation_mode: disabled
+  risk_exit_reject_cooldown_seconds: 60.0
+  risk_pre_reconcile_timeout_seconds: 25.0
+  risk_pre_reconcile_backoff_seconds: 30.0
+
+execution:
+  slippage_tolerance: 2.0
+  min_share_price: 0.03
+  max_share_price: 0.0
+  max_retries: 3
+  non_terminal_failure_max_attempts: 3
+  trading_mode: paper
+  enable_copy_decision_gate: false
+  enable_near_resolution_gate: false
+  near_resolution_gate_price: 0.95
+  near_resolution_max_age_seconds: 15.0
+  pending_submission_ttl_seconds: 120
+  reservation_ttl_seconds: 120
+  reservations_enabled: false
+  retry_backoff_base: 1.0
+  transaction_fee_bps: 20.0
+  gas_cost_usdc: 0.03
+  risk_buffer_pct: 0.1
+  book_spread_mode: absolute_bps
+  max_book_spread_bps: 2500
+  max_book_spread_ticks: 0
+  execution_require_fresh_book: true
+  circuit_failure_threshold: 15
+  circuit_cooldown_seconds: 60.0
+  meta_cache_ttl_good: 300.0
+  meta_cache_ttl_thin: 30.0
+  max_position_size_usdc: 0.0
+  max_daily_spend_usdc: 0.0
+  min_balance_headroom_usdc: 0.0
+  min_book_depth_usdc: 0.0
+  book_depth_band_pct: 5.0
+  execution_submit_concurrency: 2
+  trade_analysis_concurrency: 6
+  reconcile_concurrency: 4
+  copy_fak_max_attempts: 8
+  exit_fak_max_attempts: 8
+
+leader:
+  wallets: []
+  copy_decision_min_score: 0.15
+  tiny_leader_high_confidence_score: 0.75
+  copy_max_price_drift_pct: 15.0
+  copy_max_edge_decay_pct: 90.0
+  copy_max_signal_age_seconds: 100.0
+  copy_liquidity_target_usdc: 50.0
+  min_leader_trade_notional_usdc: 1.0
+
+logging:
+  level: INFO
+  log_dir: log
+  app_log_jsonl_file: log/PolymarketCopyTradingBot.jsonl
+  log_max_bytes: 5242880
+  log_backup_count: 3
+  pnl_log_file: log/pnl.jsonl
+
+network:
+  rpc_url: ""
+  chain_id: 137
+  usdc_contract_address: "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"
+  enforce_geoblock: true
+  enable_metrics_server: false
+  metrics_port: 9102
+  metrics_bind_host: 127.0.0.1
+  fallback_rpc_url: ""
+  collateral_contract_address: ""
+  pusd_contract_address: "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"
+  ctf_exchange_v2_address: "0xE111180000d2663C0091e4f400237545B87B996B"
+  neg_risk_ctf_exchange_v2_address: "0xe2222d279d744050d28e00520010520000310F59"
+
+reconciliation:
+  stale_threshold_seconds: 3600.0
+  auto_cancel_stale: false
+  max_closed_probes: 10
+
+order_confirmation:
+  initial_delay_seconds: 2.0
+  poll_interval_seconds: 3.0
+  max_wait_seconds: 90.0
+  delayed_extra_seconds: 2.0
+  token_delay_overrides: {}
+  condition_delay_overrides: {}
+  auto_release_ambiguous: true
+  auto_release_grace_seconds: 300.0
+  auto_release_require_all_probes_clean: true
+  auto_release_max_probe_errors: 0
+
+position_drift:
+  check_on_startup: true
+  fail_closed: true
+  allow_auto_prune_zero: true
+  allow_external_position_tracking: false
+  pause_scope_on_unresolved: true
+  max_size_epsilon: "0.000001"
+  prune_holdoff_seconds: 60.0
+
+features:
+  enable_profit_lock: false
+  enable_near_max_exit: true
+  enable_trailing_stop: false
+  enable_staged_tp: false
+  enable_leader_divergence_exit: false
+  enable_stop_loss: false
+  enable_tier_gate_watchlist: false
+  enable_tier_gate_watchlist_log: false
+
+market_data:
+  primary_source: rest_snapshot
+  rest_snapshot_enable: true
+  rest_snapshot_max_age_ms: 500
+  rest_snapshot_request_timeout_ms: 750
+  rest_snapshot_total_budget_ms: 1000
+  rest_snapshot_max_spread_bps: 300
+  allow_rest_when_wss_down: false
+  wss_down_after_seconds: 15.0
+  rest_degraded_max_age_seconds: 2.0
+  rest_degraded_max_spread_bps: 500
+  rest_degraded_log_every_seconds: 30.0
+  enable_rest_bootstrap: true
+  rest_bootstrap_max_age_ms: 500
+  rest_bootstrap_request_timeout_ms: 750
+  rest_bootstrap_total_budget_ms: 1000
+  rest_bootstrap_max_spread_bps: 300
+  rest_bootstrap_require_wss_connected: true
+  executable_quote_max_age_seconds: 2.0
+  executable_book_max_age_seconds: 2.0
+  executable_tick_max_age_seconds: 300.0
+  wss_connection_max_silence_seconds: 20.0
+  subscribe_timeout_seconds: 2.0
+
+onchain_detection:
+  enable_onchain_pending_detection: false
+  enable_onchain_mined_detection: true
+  pending_tx_provider: alchemy
+  onchain_ws_url: ""
+  pending_tx_ws_url: ""
+  pending_tx_hashes_only: false
+  pending_tx_max_signal_age_ms: 500
+  pending_tx_detection_confidence_required: pending_probable
+
+files:
+  multi_user_config_file: ""
