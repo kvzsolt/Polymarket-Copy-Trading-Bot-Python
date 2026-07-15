@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import signal
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 
@@ -76,7 +76,8 @@ async def _discovery_refresh_loop(
     registry: LeaderRegistry,
     configured_leaders: list[str],
     refresh_interval: int,
-    on_new_leaders: Callable[[list[str]], Awaitable[None]] | None = None,
+    on_new_leaders: Callable[[list[str]], Awaitable[Iterable[str] | None]]
+    | None = None,
     already_monitored: set[str] | None = None,
 ) -> None:
     await _discovery_refresh_loop_impl(

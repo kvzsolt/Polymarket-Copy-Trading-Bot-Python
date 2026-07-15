@@ -23,5 +23,6 @@ def test_single_generation_schema_contains_roster_and_longitudinal_tables() -> N
         "wallet360_snapshots",
         "wallet_rank_history",
         "wallet_metric_timeseries",
+        "wallet_backfill_state",
     ):
         assert f"CREATE TABLE IF NOT EXISTS {table}" in schema

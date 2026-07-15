@@ -364,9 +364,36 @@ async def wallet_trades(
             page_size=page_size,
             max_pages=max_pages,
         ):
+            transaction_hash = str(
+                row_value(
+                    row,
+                    "transaction_hash",
+                    "transactionHash",
+                    "tx_hash",
+                    "txHash",
+                    default="",
+                )
+            )
+            trade_id = str(
+                row_value(
+                    row,
+                    "trade_id",
+                    "tradeID",
+                    "tradeId",
+                    "id",
+                    default="",
+                )
+            )
+            if not transaction_hash and not trade_id:
+                # Preserve distinct anonymous records while still collapsing
+                # exact duplicate pages returned by the upstream agent.
+                trade_id = orjson.dumps(
+                    row,
+                    option=orjson.OPT_SORT_KEYS,
+                ).decode("utf-8")
             identity = (
-                str(row_value(row, "transaction_hash", "tx_hash", default="")),
-                str(row_value(row, "trade_id", "id", default="")),
+                transaction_hash,
+                trade_id,
                 side,
             )
             if identity in seen:

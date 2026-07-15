@@ -66,9 +66,14 @@ async def discovery_refresh_loop(
         ),
     )
     rescore_seconds = max(1, int(scheduler.rescore_seconds))
-    monitored = {
-        wallet.lower() for wallet in (already_monitored or set()) if wallet
-    }
+    # Keep the caller-owned set as the durable in-process monitor registry.
+    # The supervisor may recreate this coroutine after a crash; mutating the
+    # shared set prevents the replacement loop from hot-adding the same wallet
+    # a second time.
+    monitored = already_monitored if already_monitored is not None else set()
+    normalized_monitored = _normalized_wallet_set(monitored)
+    monitored.clear()
+    monitored.update(normalized_monitored)
     loop = asyncio.get_running_loop()
     next_discovery = loop.time() + rediscover_seconds
     next_rescore = loop.time() + rescore_seconds
@@ -81,7 +86,12 @@ async def discovery_refresh_loop(
             now = loop.time()
             if now >= next_discovery:
                 state = await registry.refresh(configured_leaders)
-                next_discovery = loop.time() + rediscover_seconds
+                completed_at = loop.time()
+                next_discovery = completed_at + rediscover_seconds
+                # A full discovery also computes current scores. Move the
+                # cached-rescore deadline forward so coincident deadlines do
+                # not trigger a redundant rescore immediately afterward.
+                next_rescore = completed_at + rescore_seconds
             else:
                 state = await registry.rescore(configured_leaders)
                 next_rescore = loop.time() + rescore_seconds

@@ -11,6 +11,11 @@ Precedence, highest first:
 4. Optional ignored `config/runtime.local.yml`
 5. Checked-in `config/runtime.yml`
 
+The checked-in runtime and discovery YAML files ship with the package. The
+optional `config/runtime.local.yml` and `secrets.env` are resolved from the
+process working directory, allowing a non-editable installation to use the
+operator files beside its deployment without writing into `site-packages`.
+
 Use `config/runtime.local.example.yml` as the local template. Public wallet
 addresses, manual leaders, limits, and the paper/live selector belong there.
 Credentials and private RPC URLs belong in `secrets.env`:

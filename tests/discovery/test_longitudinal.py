@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
 from services.discovery.longitudinal import decay_weight, longitudinal_rank, shrink
-from services.discovery.backfill import _date
+from services.discovery.backfill import LongitudinalBackfillService, _date
 from services.order_sizing import longitudinal_sizing_multiplier
 
 
@@ -72,3 +73,47 @@ def test_backfill_parses_string_epoch_seconds_and_milliseconds() -> None:
 
     assert _date(str(seconds)) == expected.date()
     assert _date(str(seconds * 1000)) == expected.date()
+
+
+@pytest.mark.asyncio
+async def test_live_metric_row_does_not_count_as_completed_backfill() -> None:
+    repository = SimpleNamespace(
+        has_completed_backfill=AsyncMock(return_value=False),
+        has_metric_history=AsyncMock(return_value=True),
+        mark_backfill_complete=AsyncMock(),
+    )
+    service = LongitudinalBackfillService(
+        client=object(),  # type: ignore[arg-type]
+        repository=repository,
+        config=SimpleNamespace(backfill_concurrency=1),
+        config_hash="config-hash",
+    )
+    service._backfill = AsyncMock()  # type: ignore[method-assign]
+
+    assert await service.ensure_wallet("0xABC") is True
+    assert repository.has_completed_backfill.await_count == 2
+    repository.has_metric_history.assert_not_awaited()
+    service._backfill.assert_awaited_once_with("0xABC")
+    repository.mark_backfill_complete.assert_awaited_once_with(
+        "0xABC",
+        "config-hash",
+    )
+
+
+@pytest.mark.asyncio
+async def test_completed_backfill_marker_skips_remote_history_fetch() -> None:
+    repository = SimpleNamespace(
+        has_completed_backfill=AsyncMock(return_value=True),
+        mark_backfill_complete=AsyncMock(),
+    )
+    service = LongitudinalBackfillService(
+        client=object(),  # type: ignore[arg-type]
+        repository=repository,
+        config=SimpleNamespace(backfill_concurrency=1),
+        config_hash="config-hash",
+    )
+    service._backfill = AsyncMock()  # type: ignore[method-assign]
+
+    assert await service.ensure_wallet("0xABC") is False
+    service._backfill.assert_not_awaited()
+    repository.mark_backfill_complete.assert_not_awaited()

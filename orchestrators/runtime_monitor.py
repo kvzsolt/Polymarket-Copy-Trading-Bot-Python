@@ -110,7 +110,13 @@ def _coalesce_trade_batches(
     for trade in [*first, *second]:
         identity = (
             str(trade.get("transactionHash") or trade.get("txHash") or ""),
-            str(trade.get("tradeId") or trade.get("id") or ""),
+            str(
+                trade.get("tradeId")
+                or trade.get("tradeID")
+                or trade.get("trade_id")
+                or trade.get("id")
+                or ""
+            ),
             str(trade.get("asset") or trade.get("tokenID") or ""),
             str(trade.get("side") or "").upper(),
         )

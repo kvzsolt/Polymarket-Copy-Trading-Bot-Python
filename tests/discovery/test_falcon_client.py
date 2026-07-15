@@ -6,7 +6,12 @@ import httpx
 import pytest
 
 from config.app_config import DiscoveryApiConfig
-from integrations.falcon.client import FalconClient, FalconPage, TokenBucket
+from integrations.falcon.client import (
+    FalconClient,
+    FalconPage,
+    TokenBucket,
+    wallet_trades,
+)
 
 
 def _config(**overrides) -> DiscoveryApiConfig:
@@ -136,3 +141,47 @@ async def test_retry_after_is_honoured_without_leaking_token(
         await client.query(agent_id=584, params={"sort_by": "h_score"})
     assert calls == 2
     assert sleeps == [0.01]
+
+
+@pytest.mark.asyncio
+async def test_wallet_trades_preserves_camel_case_trade_ids() -> None:
+    class _Client:
+        async def paginate(self, *, params, **_kwargs):
+            if params["side"] == "BUY":
+                for row in (
+                    {"tradeID": "trade-a", "asset": "asset-1"},
+                    {"tradeID": "trade-b", "asset": "asset-1"},
+                    {"tradeID": "trade-a", "asset": "asset-1"},
+                ):
+                    yield row
+
+    rows = await wallet_trades(
+        _Client(),  # type: ignore[arg-type]
+        "0x" + "1" * 40,
+        start_time=1,
+        end_time=2,
+        page_size=200,
+        max_pages=1,
+    )
+
+    assert [row["tradeID"] for row in rows] == ["trade-a", "trade-b"]
+
+
+@pytest.mark.asyncio
+async def test_wallet_trades_keeps_distinct_anonymous_records() -> None:
+    class _Client:
+        async def paginate(self, *, params, **_kwargs):
+            if params["side"] == "BUY":
+                yield {"timestamp": "1", "asset": "asset-1", "size": "10"}
+                yield {"timestamp": "2", "asset": "asset-1", "size": "10"}
+
+    rows = await wallet_trades(
+        _Client(),  # type: ignore[arg-type]
+        "0x" + "1" * 40,
+        start_time=1,
+        end_time=2,
+        page_size=200,
+        max_pages=1,
+    )
+
+    assert len(rows) == 2

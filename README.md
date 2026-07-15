@@ -119,6 +119,9 @@ PMCOPY__WALLET__PRIVATE_KEY=0xYourHexPrivateKey
 PMCOPY__WALLET__POLYGON_RPC_URL=https://polygon-mainnet.g.alchemy.com/v2/YourKey
 PMCOPY__DATABASE__DSN=postgresql://bot:password@localhost/polymarket_copytrading_python
 ```
+The local YAML and secrets paths are resolved from the process working
+directory, so launch `pmcopy` from this deployment directory. Packaged
+`runtime.yml` and `trader_discovery.yaml` remain the canonical defaults.
 Keep `execution.trading_mode: paper` through validation. Live startup requires
 `execution.trading_mode: live` **and** a separate database-backed resume command.
 
