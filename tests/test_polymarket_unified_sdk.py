@@ -18,6 +18,7 @@ from polymarket import (
 )
 from polymarket.models.clob.cancel import CancelOrdersResponse
 
+from config.env import SignatureType
 from integrations.polymarket.clob_v2_gateway import PolymarketGateway
 from integrations.polymarket.errors import (
     VenueInvalidOrderError,
@@ -33,6 +34,7 @@ from utils.createClobClient import quantize_to_tick
 
 
 TOKEN_ID = "123"
+_TEST_CREDENTIAL_VALUES = ("k", "s", "p")
 
 
 def sdk_book(
@@ -391,6 +393,52 @@ async def test_client_close_attempts_public_when_secure_close_fails() -> None:
     public.close.assert_awaited_once()
 
 
+@pytest.mark.parametrize(
+    ("wallet_type", "expected_signature_type"),
+    [
+        ("EOA", SignatureType.EOA),
+        ("POLY_PROXY", SignatureType.POLY_PROXY),
+        ("GNOSIS_SAFE", SignatureType.GNOSIS_SAFE),
+        ("DEPOSIT_WALLET", SignatureType.DEPOSIT_WALLET),
+    ],
+)
+def test_client_maps_sdk_wallet_type_to_signature_type(
+    wallet_type: str,
+    expected_signature_type: SignatureType,
+) -> None:
+    public = SimpleNamespace()
+    secure = SimpleNamespace(wallet_type=wallet_type)
+    configured_hint = SimpleNamespace(signature_type=SignatureType.EOA)
+    client = PolymarketClient(
+        public,  # type: ignore[arg-type]
+        secure_client=secure,  # type: ignore[arg-type]
+        wallet_config=configured_hint,
+    )
+
+    assert client.wallet_type == wallet_type
+    assert client.signature_type == expected_signature_type
+
+
+def test_public_only_client_has_no_wallet_diagnostics() -> None:
+    client = PolymarketClient(SimpleNamespace())  # type: ignore[arg-type]
+    assert client.wallet_type is None
+    assert client.signature_type is None
+
+
+@pytest.mark.asyncio
+async def test_gateway_compatibility_reports_deposit_wallet_signature_type() -> None:
+    secure = SimpleNamespace(
+        wallet="0x" + "b" * 40,
+        wallet_type="DEPOSIT_WALLET",
+    )
+    subject, _, _ = gateway(secure=secure)
+
+    report = await subject.check_compatibility()
+
+    assert report["wallet_type"] == "DEPOSIT_WALLET"
+    assert report["signature_type"] == 3
+
+
 @pytest.mark.asyncio
 async def test_factory_builds_public_only_without_private_key(monkeypatch: pytest.MonkeyPatch) -> None:
     public = SimpleNamespace(close=AsyncMock())
@@ -440,7 +488,13 @@ async def test_factory_paper_mode_never_bootstraps_secure_client(
 @pytest.mark.asyncio
 async def test_factory_passes_complete_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
     public = SimpleNamespace(close=AsyncMock())
-    secure = SimpleNamespace(credentials=ApiKeyCreds(key="k", secret="s", passphrase="p"))
+    secure = SimpleNamespace(
+        credentials=ApiKeyCreds(
+            key=_TEST_CREDENTIAL_VALUES[0],
+            secret=_TEST_CREDENTIAL_VALUES[1],
+            passphrase=_TEST_CREDENTIAL_VALUES[2],
+        )
+    )
     secure_create = AsyncMock(return_value=secure)
     monkeypatch.setattr(
         "integrations.polymarket.sdk_client.AsyncPublicClient",
@@ -452,12 +506,16 @@ async def test_factory_passes_complete_credentials(monkeypatch: pytest.MonkeyPat
     )
     config = SimpleNamespace(
         wallet=SimpleNamespace(private_key="0x" + "a" * 64, funder_address="0x" + "b" * 40),
-        clob=SimpleNamespace(api_key="k", api_secret="s", api_passphrase="p"),
+        clob=SimpleNamespace(
+            api_key=_TEST_CREDENTIAL_VALUES[0],
+            api_secret=_TEST_CREDENTIAL_VALUES[1],
+            api_passphrase=_TEST_CREDENTIAL_VALUES[2],
+        ),
     )
     await create_polymarket_client(config=config)
     kwargs = secure_create.await_args.kwargs
     assert kwargs["wallet"] == "0x" + "b" * 40
-    assert kwargs["credentials"].key == "k"
+    assert kwargs["credentials"].key == _TEST_CREDENTIAL_VALUES[0]
 
 
 @pytest.mark.parametrize(

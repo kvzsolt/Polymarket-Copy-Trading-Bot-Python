@@ -56,13 +56,27 @@ def _classify_wallet_signature_type(
     signer_address: str | None,
     funder_address: str,
     funder_has_code: bool,
+    configured_signature_type: SignatureType | int | None = None,
 ) -> tuple[SignatureType, str]:
+    """Return a pre-SDK diagnostic classification.
+
+    Contract bytecode alone cannot distinguish a Safe from a deposit wallet,
+    so an explicit type-3 compatibility hint is used only to label that
+    diagnostic case. The unified SDK's public ``wallet_type`` remains
+    authoritative when the authenticated client is constructed.
+    """
     signer = str(signer_address or "").strip().lower()
     funder = str(funder_address or "").strip().lower()
 
     if signer and funder and signer == funder:
         return (SignatureType.EOA, "EOA")
     if funder_has_code:
+        try:
+            configured = SignatureType(configured_signature_type)
+        except (TypeError, ValueError):
+            configured = None
+        if configured == SignatureType.DEPOSIT_WALLET:
+            return (SignatureType.DEPOSIT_WALLET, "DEPOSIT_WALLET")
         return (SignatureType.GNOSIS_SAFE, "GNOSIS_SAFE")
     if signer and funder and signer != funder:
         return (SignatureType.POLY_PROXY, "POLY_PROXY")
@@ -74,15 +88,16 @@ async def detect_wallet_signature_type(
     *,
     fail_closed_on_rpc_error: bool = False,
 ) -> tuple[SignatureType, str, str | None]:
-    """Detect wallet signature type via private-key derivation and RPC probe.
+    """Diagnose wallet signature type via key derivation and an RPC probe.
 
     Returns a 3-tuple ``(signature_type, wallet_type_label, signer_address)``.
 
     *fail_closed_on_rpc_error*:
         When True, if the RPC code probe fails while the signer differs
         from the funder, a ``RuntimeError`` is raised instead of falling
-        back silently to ``POLY_PROXY``.  This prevents the doctor from
-        silently accepting a stale or wrong type.
+        back silently to ``POLY_PROXY``. This prevents the doctor from
+        silently accepting a stale or wrong preflight diagnosis. The SDK's
+        public ``wallet_type`` is authoritative once a client is created.
     """
     signer_address = _derive_signer_address(secret_value(wallet_config.private_key))
     funder_address = str(wallet_config.funder_address or "").strip()
@@ -107,12 +122,14 @@ async def detect_wallet_signature_type(
             if fail_closed_on_rpc_error:
                 raise RuntimeError(
                     f"Could not probe wallet type via RPC: {redact_error_detail(exc)}. "
-                    "Set SIGNATURE_TYPE explicitly or verify RPC_URL connectivity."
+                    "Verify RPC_URL connectivity; SIGNATURE_TYPE is only a "
+                    "compatibility/diagnostic hint."
                 ) from exc
 
     signature_type, wallet_type = _classify_wallet_signature_type(
         signer_address=signer_address,
         funder_address=funder_address,
         funder_has_code=funder_has_code,
+        configured_signature_type=getattr(wallet_config, "signature_type", None),
     )
     return (signature_type, wallet_type, signer_address)

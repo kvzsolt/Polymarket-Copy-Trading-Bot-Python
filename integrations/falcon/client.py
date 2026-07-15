@@ -32,6 +32,8 @@ class Agent(IntEnum):
 
 
 _RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
+_MIN_PAGE_SIZE = 10
+_MAX_PAGE_SIZE = 200
 _RETRYABLE_EXCEPTIONS = (
     httpx.ConnectError,
     httpx.ConnectTimeout,
@@ -150,8 +152,11 @@ class FalconClient:
                 "all Heisenberg params values must be strings; invalid keys: "
                 + ", ".join(sorted(non_strings))
             )
-        if not 1 <= int(limit) <= 200:
-            raise ValueError("Heisenberg pagination limit must be in [1, 200]")
+        if not _MIN_PAGE_SIZE <= int(limit) <= _MAX_PAGE_SIZE:
+            raise ValueError(
+                "Heisenberg pagination limit must be in "
+                f"[{_MIN_PAGE_SIZE}, {_MAX_PAGE_SIZE}]"
+            )
         if int(offset) < 0:
             raise ValueError("Heisenberg pagination offset must be non-negative")
         return orjson.dumps(
@@ -173,7 +178,10 @@ class FalconClient:
     ) -> FalconPage:
         if self._closed:
             raise RuntimeError("FalconClient is closed")
-        bounded_limit = min(int(limit), 200)
+        # Falcon's generic docs say pagination starts at one, but the live
+        # parameterized endpoint rejects values below ten (including for
+        # Wallet360 and Market Insights) with a misleading HTTP 404.
+        bounded_limit = min(max(_MIN_PAGE_SIZE, int(limit)), _MAX_PAGE_SIZE)
         body = self.build_body(
             agent_id,
             params,
@@ -239,7 +247,7 @@ class FalconClient:
         page_size: int = 100,
         max_pages: int = 10,
     ) -> AsyncIterator[dict[str, Any]]:
-        limit = min(max(1, int(page_size)), 200)
+        limit = min(max(_MIN_PAGE_SIZE, int(page_size)), _MAX_PAGE_SIZE)
         offset = 0
         for _ in range(max(1, int(max_pages))):
             page = await self.query(

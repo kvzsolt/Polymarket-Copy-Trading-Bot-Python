@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -35,12 +35,19 @@ def _parse_signature_type(value) -> SignatureType:
 
 
 def _runtime_user_from_payload(payload: dict, config: AppConfig) -> RuntimeUser:
+    legacy_signature_type = payload.get("signature_type", 3)
+    if int(legacy_signature_type) != int(SignatureType.DEPOSIT_WALLET):
+        raise ValueError(
+            "multi-user signature_type is no longer configurable; "
+            "only Deposit Wallet/POLY_1271 type 3 is supported"
+        )
     wallet = WalletConfig(
         private_key=SecretStr(str(payload["private_key"])),
         chain_id=int(payload.get("chain_id", config.wallet.chain_id)),
-        signature_type=_parse_signature_type(payload.get("signature_type", 0)),
-        funder_address=str(payload["funder_address"]),
-        polygon_rpc_url=str(payload.get("polygon_rpc_url", config.network.rpc_url)),
+        signature_type=SignatureType.DEPOSIT_WALLET,
+        funder_address=str(payload.get("funder_address", "")),
+        polygon_rpc_url=config.network.rpc_url,
+        fallback_rpc_url=config.network.fallback_rpc_url,
     )
     follows: dict[str, UserFollowConfig] = {}
     for item in payload.get("follows", []):
@@ -75,10 +82,10 @@ def load_runtime_users(leader_wallets: list[str], config: AppConfig) -> list[Run
         base_wallet = WalletConfig(
             private_key=config.wallet.private_key,
             chain_id=config.wallet.chain_id,
-            signature_type=getattr(config.wallet, "signature_type", SignatureType(0))
-                or SignatureType(0),
+            signature_type=SignatureType.DEPOSIT_WALLET,
             funder_address=config.wallet.funder_address,
             polygon_rpc_url=config.wallet.polygon_rpc_url,
+            fallback_rpc_url=config.wallet.fallback_rpc_url,
         )
         follows = {
             leader: UserFollowConfig(
@@ -121,6 +128,27 @@ def load_runtime_users(leader_wallets: list[str], config: AppConfig) -> list[Run
     payload = json.loads(resolved.read_text(encoding="utf-8"))
     users = [_runtime_user_from_payload(p, config) for p in payload.get("users", [])]
     return users
+
+
+def bind_resolved_deposit_wallet(
+    runtime_user: RuntimeUser,
+    wallet_address: str,
+) -> None:
+    """Bind the SDK-authoritative type-3 wallet before runtime services wire."""
+    resolved = str(wallet_address or "").strip()
+    if not resolved:
+        raise ValueError("the unified SDK did not resolve a Deposit Wallet address")
+    runtime_user.wallet = replace(
+        runtime_user.wallet,
+        funder_address=resolved,
+        signature_type=SignatureType.DEPOSIT_WALLET,
+    )
+    if runtime_user.user_id in {"", "default"}:
+        runtime_user.user_id = resolved
+        runtime_user.follows = {
+            leader_id: replace(follow, user_id=resolved)
+            for leader_id, follow in runtime_user.follows.items()
+        }
 
 
 def _is_descendant(child: Path, parent: Path) -> bool:

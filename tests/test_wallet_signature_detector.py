@@ -15,13 +15,17 @@ _SIGNER_ADDRESS = "0x19E7E376E7C213B7E7E7E46CC70A5DD086DAFF2A"
 _FUNDER_EOA = _SIGNER_ADDRESS
 _FUNDER_PROXY = "0x2222222222222222222222222222222222222222"
 _FUNDER_SAFE = "0x3333333333333333333333333333333333333333"
+_FUNDER_DEPOSIT = "0x4444444444444444444444444444444444444444"
 
 
-def _wallet_config(funder_address: str) -> WalletConfig:
+def _wallet_config(
+    funder_address: str,
+    signature_type: SignatureType = SignatureType.EOA,
+) -> WalletConfig:
     return WalletConfig(
         private_key=_PRIVATE_KEY,
         chain_id=137,
-        signature_type=SignatureType.EOA,
+        signature_type=signature_type,
         funder_address=funder_address,
         polygon_rpc_url="https://polygon-rpc.example.com",
     )
@@ -55,6 +59,17 @@ def test_classify_wallet_signature_type_gnosis_safe():
     )
     assert signature_type == SignatureType.GNOSIS_SAFE
     assert wallet_type == "GNOSIS_SAFE"
+
+
+def test_classify_wallet_signature_type_deposit_wallet_hint():
+    signature_type, wallet_type = _classify_wallet_signature_type(
+        signer_address=_SIGNER_ADDRESS,
+        funder_address=_FUNDER_DEPOSIT,
+        funder_has_code=True,
+        configured_signature_type=SignatureType.DEPOSIT_WALLET,
+    )
+    assert signature_type == SignatureType.DEPOSIT_WALLET
+    assert wallet_type == "DEPOSIT_WALLET"
 
 
 @pytest.mark.asyncio
@@ -95,6 +110,26 @@ async def test_detect_wallet_signature_type_gnosis_safe_from_contract_code(monke
 
     assert signature_type == SignatureType.GNOSIS_SAFE
     assert wallet_type == "GNOSIS_SAFE"
+    assert signer_address == _SIGNER_ADDRESS
+
+
+@pytest.mark.asyncio
+async def test_detect_wallet_signature_type_deposit_wallet_diagnostic(monkeypatch):
+    monkeypatch.setattr(
+        "services.wallet_signature_detector._derive_signer_address",
+        lambda _pk: _SIGNER_ADDRESS,
+    )
+    monkeypatch.setattr(
+        "services.wallet_signature_detector._fetch_contract_code_hex",
+        lambda _rpc_url, _address, _fallback_rpc="": "0x1234",
+    )
+
+    signature_type, wallet_type, signer_address = await detect_wallet_signature_type(
+        _wallet_config(_FUNDER_DEPOSIT, SignatureType.DEPOSIT_WALLET)
+    )
+
+    assert signature_type == SignatureType.DEPOSIT_WALLET
+    assert wallet_type == "DEPOSIT_WALLET"
     assert signer_address == _SIGNER_ADDRESS
 
 

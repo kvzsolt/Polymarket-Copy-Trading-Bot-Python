@@ -19,15 +19,36 @@ class SignatureType(IntEnum):
     EOA = 0
     POLY_PROXY = 1
     GNOSIS_SAFE = 2
+    DEPOSIT_WALLET = 3
+
+
+_SIGNATURE_TYPE_BY_WALLET_TYPE: dict[str, SignatureType] = {
+    "EOA": SignatureType.EOA,
+    "POLY_PROXY": SignatureType.POLY_PROXY,
+    "GNOSIS_SAFE": SignatureType.GNOSIS_SAFE,
+    "DEPOSIT_WALLET": SignatureType.DEPOSIT_WALLET,
+}
+
+
+def signature_type_from_wallet_type(wallet_type: object) -> SignatureType | None:
+    """Map the SDK public wallet type diagnostic to the compatibility enum."""
+    normalized = str(wallet_type or "").strip().upper()
+    return _SIGNATURE_TYPE_BY_WALLET_TYPE.get(normalized)
 
 
 @dataclass(frozen=True)
 class WalletConfig:
     private_key: SecretStr
     chain_id: int
-    funder_address: str
-    polygon_rpc_url: str
-    signature_type: SignatureType | int
+    # The unified SDK derives the default Deposit Wallet from ``private_key``
+    # and exposes the resolved address after authenticated startup.  This
+    # optional value is retained only for paper-mode identity and as a live
+    # consistency check; it is never sent to the SDK as wallet authority.
+    funder_address: str = ""
+    polygon_rpc_url: str = ""
+    # Runtime compatibility value.  Operator configuration is intentionally
+    # fixed to the new Deposit Wallet / POLY_1271 flow.
+    signature_type: SignatureType | int = SignatureType.DEPOSIT_WALLET
     fallback_rpc_url: str = ""
 
     def __post_init__(self) -> None:
@@ -56,7 +77,7 @@ def is_valid_eth_address(address: str) -> bool:
 def validate_wallet_config(config: WalletConfig) -> None:
     if not secret_value(config.private_key):
         raise EnvValidationError("PRIVATE_KEY is required.")
-    if not is_valid_eth_address(config.funder_address):
+    if config.funder_address and not is_valid_eth_address(config.funder_address):
         raise EnvValidationError("FUNDER_ADDRESS must be a 42-character hex address.")
     if config.chain_id not in {137, 80002}:
         raise EnvValidationError("CHAIN_ID must be 137 or 80002.")
@@ -70,5 +91,6 @@ __all__ = [
     "WalletConfig",
     "is_valid_eth_address",
     "secret_value",
+    "signature_type_from_wallet_type",
     "validate_wallet_config",
 ]

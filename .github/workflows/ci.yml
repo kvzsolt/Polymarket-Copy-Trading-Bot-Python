@@ -146,6 +146,12 @@ jobs:
     needs: [unit]
     steps:
       - uses: actions/checkout@v4
+      - name: docker compose config (secrets.env only)
+        run: |
+          install -m 600 secrets.env.example secrets.env
+          sed -i "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=$(openssl rand -hex 24)/" secrets.env
+          test "$(stat -c '%a' secrets.env)" = "600"
+          env -u POSTGRES_PASSWORD docker compose --env-file secrets.env config >/dev/null
       - name: docker build
         run: docker build -t polymarket-copy-trader:ci .
       - name: start PostgreSQL
@@ -184,6 +190,9 @@ jobs:
             polymarket-copy-trader:ci
       - name: container readiness probe
         run: |
+          # Give the console entrypoint time to import and begin startup; an
+          # immediate inspect can report running just before an import crash.
+          sleep 5
           for i in $(seq 1 12); do
             if [ "$(docker inspect -f '{{.State.Running}}' pmct-smoke 2>/dev/null)" = "true" ]; then
               echo "container running (attempt $i)"

@@ -8,7 +8,7 @@ import yaml
 from pydantic import SecretStr, ValidationError
 
 from config.app_config import DiscoveryConfig, EnvValidationError, load_config
-from config.env import secret_value
+from config.env import SignatureType, secret_value
 
 ROOT = Path(__file__).resolve().parents[1]
 ADDRESS = "0x" + "1" * 40
@@ -35,6 +35,27 @@ def test_checked_in_yaml_loads_as_immutable_typed_config() -> None:
         config.database.dsn = "changed"  # type: ignore[misc]
     with pytest.raises(ValidationError):
         config.discovery.scheduler.enabled = True  # type: ignore[misc]
+
+
+@pytest.mark.parametrize(
+    ("raw_value", "expected"),
+    [
+        (0, SignatureType.EOA),
+        (1, SignatureType.POLY_PROXY),
+        (2, SignatureType.GNOSIS_SAFE),
+        (3, SignatureType.DEPOSIT_WALLET),
+    ],
+)
+def test_all_wallet_signature_hints_are_accepted(
+    raw_value: int,
+    expected: SignatureType,
+) -> None:
+    overrides = _overrides()
+    overrides["wallet"]["signature_type"] = raw_value
+
+    config = load_config(overrides)
+
+    assert config.wallet.signature_type == expected
 
 
 def test_runtime_local_overrides_runtime_yaml(tmp_path: Path) -> None:
@@ -107,31 +128,25 @@ def test_process_env_beats_mode_0600_secrets_and_yaml(
     assert "top-secret-value" not in repr(config.discovery.api.token)
 
 
-def test_wallet_and_clob_credentials_are_secret_types() -> None:
+def test_wallet_private_key_is_secret_and_clob_credentials_are_removed() -> None:
     private_key = "0x" + "a" * 64
     overrides = _overrides()
     overrides["wallet"]["private_key"] = private_key
-    overrides["clob"] = {
-        "api_key": "key-value",
-        "api_secret": "secret-value",
-        "api_passphrase": "passphrase-value",
-    }
 
     config = load_config(overrides)
 
     assert isinstance(config.wallet.private_key, SecretStr)
-    assert isinstance(config.clob.api_key, SecretStr)
-    assert isinstance(config.clob.api_secret, SecretStr)
-    assert isinstance(config.clob.api_passphrase, SecretStr)
     assert secret_value(config.wallet.private_key) == private_key
-    dumped = repr(config)
-    for raw_secret in (
-        private_key,
-        "key-value",
-        "secret-value",
-        "passphrase-value",
-    ):
-        assert raw_secret not in dumped
+    assert not hasattr(config.clob, "api_key")
+    assert private_key not in repr(config)
+
+
+def test_obsolete_clob_credentials_fail_with_migration_error() -> None:
+    overrides = _overrides()
+    overrides["clob"] = {"api_key": "obsolete"}
+
+    with pytest.raises(EnvValidationError, match="clob.api_key"):
+        load_config(overrides)
 
 
 def test_empty_secret_entries_do_not_erase_yaml_values(tmp_path: Path) -> None:
@@ -220,9 +235,13 @@ def test_runtime_network_rpc_url_is_required() -> None:
         load_config(overrides)
 
 
-def test_secrets_template_includes_required_funder_address() -> None:
+def test_secrets_template_omits_runtime_derived_clob_auth() -> None:
     template = (ROOT / "secrets.env.example").read_text(encoding="utf-8")
-    assert "PMCOPY__WALLET__FUNDER_ADDRESS=" in template
+    assert "PMCOPY__WALLET__PRIVATE_KEY=" in template
+    assert "PMCOPY__WALLET__FUNDER_ADDRESS=" not in template
+    assert "PMCOPY__CLOB__API_KEY=" not in template
+    assert "PMCOPY__CLOB__API_SECRET=" not in template
+    assert "PMCOPY__CLOB__API_PASSPHRASE=" not in template
 
 
 def test_validation_error_never_echoes_secret(

@@ -16,7 +16,13 @@ from .app_config import (
     load_config,
 )
 from .db import connect_db
-from .env import EnvValidationError, SignatureType, WalletConfig, is_valid_eth_address
+from .env import (
+    EnvValidationError,
+    SignatureType,
+    WalletConfig,
+    is_valid_eth_address,
+    signature_type_from_wallet_type,
+)
 
 __all__ = [
     "AppConfig",
@@ -37,4 +43,5 @@ __all__ = [
     "connect_db",
     "is_valid_eth_address",
     "load_config",
+    "signature_type_from_wallet_type",
 ]

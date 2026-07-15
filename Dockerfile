@@ -39,7 +39,7 @@ RUN mkdir -p /app/data /app/log && chown -R botuser:botuser /app/data /app/log
 # Run this outside /app so the check proves the installed console entry point
 # can import the top-level application modules from site-packages. Checking
 # from /app masks missing ``py-modules`` packaging because cwd is importable.
-RUN cd /tmp && python -c "import app; from config.app_config import load_config; import storage.postgres.connection; print('OK')"
+RUN cd /tmp && python -c "import app, bootstrap; from config.app_config import load_config; import storage.postgres.connection; print('OK')"
 
 # Fail-closed mode selection lives in AppConfig. ``execution.trading_mode``
 # defaults to paper and is immutable after startup. Live submission additionally

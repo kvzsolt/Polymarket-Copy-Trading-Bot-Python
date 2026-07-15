@@ -115,8 +115,8 @@ chmod 600 secrets.env
 Put public/local overrides in `config/runtime.local.yml`. Open `secrets.env`
 and add only sensitive nested settings:
 ```env
+POSTGRES_PASSWORD=choose-a-unique-database-password
 PMCOPY__WALLET__PRIVATE_KEY=0xYourHexPrivateKey
-PMCOPY__WALLET__POLYGON_RPC_URL=https://polygon-mainnet.g.alchemy.com/v2/YourKey
 PMCOPY__DATABASE__DSN=postgresql://bot:password@localhost/polymarket_copytrading_python
 ```
 The local YAML and secrets paths are resolved from the process working
@@ -124,6 +124,10 @@ directory, so launch `pmcopy` from this deployment directory. Packaged
 `runtime.yml` and `trader_discovery.yaml` remain the canonical defaults.
 Keep `execution.trading_mode: paper` through validation. Live startup requires
 `execution.trading_mode: live` **and** a separate database-backed resume command.
+The private key is the only Polymarket auth secret. The unified SDK uses it for
+L1 credential create-or-derive, keeps the resulting L2 HMAC credentials in
+memory, and derives the Deposit Wallet used with signature type 3. Do not add
+CLOB API credentials or a signature type to `secrets.env`.
 
 ### 3. Run
 Launch the bot using the Operator CLI.

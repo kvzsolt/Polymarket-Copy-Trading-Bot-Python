@@ -1526,6 +1526,23 @@ class TestTokenIdFieldPriority:
         assert len(signals) == 1
         assert signals[0][0].token_id == FAKE_TOKEN_ID
 
+    def test_onchain_snake_case_identifiers_are_accepted(self):
+        """OnchainTradeSignal uses condition_id/token_id/tx_hash aliases."""
+        raw = _raw_trade(
+            conditionId=None,
+            transactionHash=None,
+            condition_id="cond-onchain",
+            token_id=FAKE_TOKEN_ID,
+            tx_hash="0xonchain",
+        )
+
+        signals = normalize_signals([raw], leader_id="L1")
+
+        assert len(signals) == 1
+        assert signals[0][0].condition_id == "cond-onchain"
+        assert signals[0][0].token_id == FAKE_TOKEN_ID
+        assert signals[0][0].tx_hash == "0xonchain"
+
     def test_trade_metadata_primary_fields(self):
         raw = _raw_trade(
             tokenID=FAKE_TOKEN_ID,

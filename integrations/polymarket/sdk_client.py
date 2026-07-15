@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal, cast
 
 from polymarket import (
     ApiKeyCreds,
@@ -19,7 +19,7 @@ from polymarket import (
     RequestRejectedError,
 )
 
-from config.env import secret_value
+from config.env import SignatureType, secret_value, signature_type_from_wallet_type
 from integrations.polymarket.models import PRICE_TOKEN_NOT_FOUND
 
 
@@ -61,6 +61,27 @@ class PolymarketClient:
     def credentials(self) -> ApiKeyCreds | None:
         return self.api_creds
 
+    @property
+    def wallet_address(self) -> str | None:
+        """SDK-resolved trading wallet address, never a config guess."""
+        if self.secure_client is None:
+            return None
+        wallet = getattr(self.secure_client, "wallet", None)
+        return str(wallet) if wallet is not None else None
+
+    @property
+    def wallet_type(self) -> str | None:
+        """SDK-classified wallet type, authoritative over config hints."""
+        if self.secure_client is None:
+            return None
+        wallet_type = getattr(self.secure_client, "wallet_type", None)
+        return str(wallet_type) if wallet_type is not None else None
+
+    @property
+    def signature_type(self) -> SignatureType | None:
+        """Compatibility signature value mapped from the SDK wallet type."""
+        return signature_type_from_wallet_type(self.wallet_type)
+
     def require_secure(self) -> AsyncSecureClient:
         if self.secure_client is None:
             raise RuntimeError("authenticated Polymarket client is unavailable in paper mode")
@@ -71,10 +92,13 @@ class PolymarketClient:
 
     async def get_price(self, token_id: str, side: str) -> dict[str, str] | object | None:
         """Compatibility shape for the risk monitor while it adopts the port."""
+        normalized_side = str(side).upper()
+        if normalized_side not in {"BUY", "SELL"}:
+            return None
         try:
             value = await self.public_client.get_price(
                 token_id=token_id,
-                side=str(side).upper(),
+                side=cast(Literal["BUY", "SELL"], normalized_side),
             )
         except RequestRejectedError as exc:
             if exc.status == 404:
@@ -103,7 +127,7 @@ class PolymarketClient:
         # AsyncSecureClient owns its own public transports. A separate public
         # client is still used in paper/live alike for a uniform market-data
         # path, so both must be given a chance to close even when one fails.
-        clients = [self.public_client]
+        clients: list[AsyncSecureClient | AsyncPublicClient] = [self.public_client]
         if self.secure_client is not None:
             clients.insert(0, self.secure_client)
         results = await asyncio.gather(
@@ -119,19 +143,6 @@ class PolymarketClient:
 
     async def __aexit__(self, *_exc: object) -> None:
         await self.close()
-
-
-def _configured_credentials(config: Any) -> ApiKeyCreds | None:
-    clob = getattr(config, "clob", None)
-    key = secret_value(getattr(clob, "api_key", "")).strip()
-    secret = secret_value(getattr(clob, "api_secret", "")).strip()
-    passphrase = secret_value(getattr(clob, "api_passphrase", "")).strip()
-    populated = tuple(bool(value) for value in (key, secret, passphrase))
-    if any(populated) and not all(populated):
-        raise ValueError("CLOB API credentials must be all configured or all omitted")
-    if not all(populated):
-        return None
-    return ApiKeyCreds(key=key, secret=secret, passphrase=passphrase)
 
 
 async def create_polymarket_client(
@@ -154,7 +165,7 @@ async def create_polymarket_client(
     if not secret_value(key_material):
         key_material = getattr(getattr(config, "wallet", None), "private_key", "")
     resolved_key = secret_value(key_material).strip()
-    wallet = str(
+    configured_wallet = str(
         getattr(wallet_config, "funder_address", "")
         or getattr(getattr(config, "wallet", None), "funder_address", "")
         or ""
@@ -165,12 +176,27 @@ async def create_polymarket_client(
         return PolymarketClient(public_client, wallet_config=wallet_config)
 
     try:
+        # One secret drives the complete official auth chain. The SDK uses the
+        # EOA private key for L1 create-or-derive, owns the resulting L2
+        # credentials in memory, derives the default Deposit Wallet and maps
+        # it to POLY_1271/signature type 3.
         secure_client = await AsyncSecureClient.create(
             private_key=resolved_key,
-            wallet=wallet or None,
-            credentials=_configured_credentials(config),
         )
+        resolved_wallet = str(secure_client.wallet)
+        if str(secure_client.wallet_type) != "DEPOSIT_WALLET":
+            raise RuntimeError(
+                "authenticated wallet must resolve to DEPOSIT_WALLET "
+                "(POLY_1271/signature type 3)"
+            )
+        if configured_wallet and configured_wallet.lower() != resolved_wallet.lower():
+            raise ValueError(
+                "configured wallet.funder_address does not match the Deposit "
+                "Wallet resolved by the unified SDK"
+            )
     except BaseException:
+        if "secure_client" in locals():
+            await secure_client.close()
         await public_client.close()
         raise
 

@@ -38,6 +38,9 @@ class MemoryLeadersRepo:
 class Service:
     config_hash = "hash"
 
+    async def run(self):
+        raise AssertionError("manual leaders must not start discovery")
+
 
 def _candidate(score: float) -> Candidate:
     return Candidate(
@@ -92,3 +95,21 @@ async def test_registry_requires_consecutive_cycles_and_prevents_churn() -> None
     )
     await registry.reconcile_candidates([_candidate(0.10)])
     assert repository.records[WALLET].tier == "watchlist"
+
+
+@pytest.mark.asyncio
+async def test_registry_uses_manual_leaders_without_discovery_or_roster() -> None:
+    discovery = DiscoveryConfig.model_validate({"api": {"token": "secret"}})
+    repository = MemoryLeadersRepo()
+    registry = LeaderRegistry(
+        discovery_service=Service(),
+        leaders_repo=repository,  # type: ignore[arg-type]
+        config=SimpleNamespace(discovery=discovery),  # type: ignore[arg-type]
+    )
+
+    state = await registry.refresh([WALLET])
+
+    assert state.configured == [WALLET]
+    assert state.active_monitored == [WALLET]
+    assert state.discovered == []
+    assert state.mode == "configured"
