@@ -18,13 +18,29 @@ async def wait_for_active_leaders(
     config: object,
     initial_state: LeaderRegistryState | None = None,
 ) -> list[str]:
-    del config
     state = initial_state or await registry.refresh(configured_leaders)
     if state.active_monitored:
         return state.active_monitored
+    scheduler = getattr(getattr(config, "discovery", None), "scheduler", None)
+    timeout_seconds = max(
+        1,
+        int(getattr(scheduler, "startup_wait_timeout_seconds", 3900)),
+    )
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout_seconds
     while True:
         metrics.inc("no_leaders_monitored_total")
-        await asyncio.sleep(max(1, int(refresh_interval)))
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            logger.error(
+                "startup_discovery_wait_timed_out",
+                extra={"timeout_seconds": timeout_seconds},
+            )
+            metrics.inc("startup_discovery_wait_timeout_total")
+            return []
+        await asyncio.sleep(min(max(1, int(refresh_interval)), remaining))
+        if loop.time() >= deadline:
+            continue
         state = await registry.refresh(configured_leaders)
         if state.active_monitored:
             return state.active_monitored
@@ -35,13 +51,11 @@ async def discovery_refresh_loop(
     configured_leaders: list[str],
     refresh_interval: int | None = None,
     *,
-    leaders_repo: object | None = None,
     on_new_leaders: Callable[[list[str]], Awaitable[Iterable[str] | None]]
     | None = None,
     already_monitored: set[str] | None = None,
 ) -> None:
     """Run non-overlapping rediscovery and cached-rescore schedules."""
-    del leaders_repo
     scheduler = registry.config.discovery.scheduler
     rediscover_seconds = max(
         1,

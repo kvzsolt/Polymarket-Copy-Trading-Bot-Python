@@ -141,3 +141,6 @@ discovery:
     max_evaluation_error_ratio: 0.25
     max_active_leaders: 2
     start_from_roster: true
+    # Discovery-only startup remains observable and fails instead of waiting
+    # forever when no candidate can complete the promotion tenure.
+    startup_wait_timeout_seconds: 3900

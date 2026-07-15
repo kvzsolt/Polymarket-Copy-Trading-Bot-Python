@@ -38,8 +38,13 @@ class Application:
 
 async def build_app(
     overrides: Mapping[str, Any] | None = None,
+    *,
+    config: AppConfig | None = None,
 ) -> Application:
-    config = load_config(overrides)
+    if config is not None and overrides is not None:
+        raise ValueError("provide either config or overrides, not both")
+    if config is None:
+        config = load_config(overrides)
     pool = await init_pool(
         config.database.dsn,
         min_size=config.database.pool_min_size,

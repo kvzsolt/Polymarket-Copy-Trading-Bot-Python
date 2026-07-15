@@ -88,3 +88,9 @@ def test_rc1_check_script_runs_forbid_scans(repo_root: Path) -> None:
         "pytest",
     ):
         assert token in text, token
+
+
+def test_rc1_live_doctor_detects_file_backed_wallet_config(repo_root: Path) -> None:
+    text = (repo_root / "scripts/rc1_check.sh").read_text(encoding="utf-8")
+    assert "python -m bot_cli.main doctor --live" in text
+    assert '${PMCOPY__WALLET__PRIVATE_KEY-}' not in text

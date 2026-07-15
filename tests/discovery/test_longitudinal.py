@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
 
 from services.discovery.longitudinal import decay_weight, longitudinal_rank, shrink
+from services.discovery.backfill import _date
 from services.order_sizing import longitudinal_sizing_multiplier
 
 
@@ -62,3 +64,11 @@ def test_rank_sizing_feedback_is_bounded() -> None:
     assert longitudinal_sizing_multiplier(
         1, minimum=0.75, maximum=1.25
     ) == pytest.approx(1.25)
+
+
+def test_backfill_parses_string_epoch_seconds_and_milliseconds() -> None:
+    expected = datetime(2026, 7, 15, tzinfo=timezone.utc)
+    seconds = int(expected.timestamp())
+
+    assert _date(str(seconds)) == expected.date()
+    assert _date(str(seconds * 1000)) == expected.date()
