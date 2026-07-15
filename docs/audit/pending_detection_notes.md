@@ -89,6 +89,5 @@ signals is resolved via an injectable `condition_id_resolver` (Gamma API
 is extracted directly from the `matchOrders` calldata first arg.
 
 ## Config
-`OnchainDetectionConfig` (7 typed fields) in `config/app_config.py`,
-documented in `config/runtime.local.example`, covered by
-`test_env_schema_coverage.py`.
+`OnchainDetectionConfig` is typed in `config/app_config.py` and documented in
+`config/runtime.yml`; local overrides belong in `config/runtime.local.yml`.

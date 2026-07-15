@@ -230,9 +230,9 @@ def test_print_startup_summary_emits_health_payload_with_reconciliation_state(
         "config.app_config.sys.version_info",
         SimpleNamespace(major=3, minor=12),
     )
-    from config.app_config import load_config
+    from tests.config_helpers import load_test_config
 
-    _config = load_config(env)
+    _config = load_test_config(env)
     app = SimpleNamespace(config=_config)
     report = StartupHealthReport(
         healthy=True,

@@ -1,19 +1,5 @@
-"""Configuration package."""
+"""Typed, layered application configuration."""
 
-from .env import (
-    ENV,
-    EnvValidationError,
-    SignatureType,
-    WalletConfig,
-    build_wallet_config,
-    get_chain_id,
-    get_funder_address,
-    get_private_key,
-    rehydrate_env,
-    validate_runtime_env,
-    validate_wallet_config,
-)
-from .db import connect_db
 from .app_config import (
     AppConfig,
     ClobConfig,
@@ -29,24 +15,15 @@ from .app_config import (
     SizingConfig,
     load_config,
 )
+from .db import connect_db
+from .env import EnvValidationError, SignatureType, WalletConfig, is_valid_eth_address
 
 __all__ = [
-    "ENV",
-    "EnvValidationError",
-    "SignatureType",
-    "WalletConfig",
-    "build_wallet_config",
-    "get_chain_id",
-    "get_funder_address",
-    "rehydrate_env",
-    "validate_runtime_env",
-    "validate_wallet_config",
-    "get_private_key",
-    "connect_db",
     "AppConfig",
     "ClobConfig",
     "DatabaseConfig",
     "DiscoveryConfig",
+    "EnvValidationError",
     "ExecutionConfig",
     "FeatureFlagConfig",
     "LeaderConfig",
@@ -54,6 +31,10 @@ __all__ = [
     "NetworkConfig",
     "PollingConfig",
     "RiskConfig",
+    "SignatureType",
     "SizingConfig",
+    "WalletConfig",
+    "connect_db",
+    "is_valid_eth_address",
     "load_config",
 ]

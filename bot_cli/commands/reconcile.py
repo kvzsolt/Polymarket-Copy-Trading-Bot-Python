@@ -5,8 +5,6 @@ import argparse
 import asyncio
 import json
 
-from config.runtime_env import load_runtime_env
-from config.env import rehydrate_env
 from config.app_config import load_config, EnvValidationError
 
 
@@ -56,8 +54,6 @@ async def _fetch_unconfirmed_pg(pool, user_id: str | None) -> list[dict]:
 
 async def _run_reconcile_async(args: argparse.Namespace) -> int:
     try:
-        load_runtime_env()
-        rehydrate_env()
         config = load_config()
     except EnvValidationError as exc:
         print(json.dumps({"error": "config_validation_failed", "details": str(exc)}))

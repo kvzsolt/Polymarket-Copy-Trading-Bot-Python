@@ -187,6 +187,7 @@ def calculate_copy_notional(
     adaptive_max_percent=None,
     adaptive_threshold_usdc=None,
     performance_win_rate=None,
+    rank_multiplier=None,
 ) -> CopySizingResult:
     strategy_name = normalize_strategy(strategy)
     leader_notional = max(_DECIMAL_ZERO, _to_decimal(leader_notional_usdc))
@@ -235,6 +236,7 @@ def calculate_copy_notional(
         tiered_multipliers=tiered_multipliers,
         trade_multiplier=trade_multiplier,
     )
+    multiplier *= max(_DECIMAL_ZERO, _to_decimal(rank_multiplier, "1"))
     final_notional = base_notional * multiplier
     if multiplier != _DECIMAL_ONE:
         reasoning += f" → multiplier {multiplier:.4f}x"

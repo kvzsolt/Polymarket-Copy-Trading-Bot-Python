@@ -364,6 +364,8 @@ class ExecutionService:
         geoblock_gate=None,
         trading_permission: TradingPermissionService | None = None,
     ):
+        if config is None:
+            raise TypeError("ExecutionService requires a typed AppConfig")
         self.clob_client = clob_client
         self.fee_service = fee_service
         self.order_repo = order_repo
@@ -411,17 +413,13 @@ class ExecutionService:
                 _CLOB_CIRCUIT.failure_threshold = configured_threshold
             self.circuit_breaker = _CLOB_CIRCUIT
 
-        # Typed concurrency cap; raw env fallback survives only for legacy
-        # callers that bypass AppConfig.execution.
         submit_concurrency = getattr(
             getattr(config, "execution", None),
             "execution_submit_concurrency",
             None,
         )
         if not isinstance(submit_concurrency, int) or submit_concurrency <= 0:
-            submit_concurrency = _positive_int(
-                config.raw.get("EXECUTION_SUBMIT_CONCURRENCY", 2), 2
-            )
+            submit_concurrency = 2
         self._submit_semaphore = asyncio.Semaphore(submit_concurrency)
 
     async def _save_submission(
@@ -1120,9 +1118,7 @@ class ExecutionService:
                 None,
             )
             if not isinstance(cap, int) or cap <= 0:
-                cap = _positive_int(
-                    self._config.raw.get("EXECUTION_SUBMIT_CONCURRENCY"), 2
-                )
+                cap = 2
             self._submit_semaphore = asyncio.Semaphore(cap)
 
         async with self._submit_semaphore:

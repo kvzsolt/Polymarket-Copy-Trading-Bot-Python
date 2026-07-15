@@ -6,7 +6,6 @@ from typing import Any
 
 from aiohttp import web
 
-from config.env import get_metrics_bind_host
 from services.metrics import metrics
 
 
@@ -208,7 +207,10 @@ def _readiness_payload(tracker: ReadinessTracker | None) -> dict[str, Any]:
 
 
 async def start_health_server(
-    port: int = 9102, *, tracker: ReadinessTracker | None = None
+    port: int = 9102,
+    *,
+    tracker: ReadinessTracker | None = None,
+    host: str = "127.0.0.1",
 ) -> web.AppRunner:
     if tracker is not None:
         tracker.update(started_ts=int(time.time()))
@@ -242,7 +244,6 @@ async def start_health_server(
     app.router.add_get("/metrics", metrics_handler)
     runner = web.AppRunner(app)
     await runner.setup()
-    host = get_metrics_bind_host()
     site = web.TCPSite(runner, host=host, port=port)
     await site.start()
     return runner

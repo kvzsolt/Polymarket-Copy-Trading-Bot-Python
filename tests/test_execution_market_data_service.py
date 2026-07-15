@@ -17,7 +17,7 @@ import contextlib
 import inspect
 import time
 from decimal import Decimal
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -160,8 +160,7 @@ def _request(**overrides) -> ExecutionRequest:
 def _reset_circuit():
     import services.executionService as _es
     _es._CLOB_CIRCUIT.reset()
-    with patch.dict("config.env.ENV", {"MAX_BOOK_SPREAD_BPS": "5000"}, clear=False):
-        yield
+    yield
     _es._CLOB_CIRCUIT.reset()
 
 

@@ -316,7 +316,7 @@ class TestMarketDataConfig:
     def test_market_data_config_env_parse(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from types import SimpleNamespace
         monkeypatch.setattr("config.app_config.sys.version_info", SimpleNamespace(major=3, minor=12))
-        from config.app_config import load_config as build_app_config
+        from tests.config_helpers import load_test_config
         _VALID_KEY = "0x" + "a" * 64
         _VALID_ADDR = "0x" + "a" * 40
         env = {
@@ -329,7 +329,7 @@ class TestMarketDataConfig:
             "MARKET_DATA_WSS_DOWN_AFTER_SECONDS": "30",
             "MARKET_DATA_REST_DEGRADED_MAX_SPREAD_BPS": "200",
         }
-        cfg = build_app_config(env)
+        cfg = load_test_config(env)
         assert cfg.market_data.allow_rest_when_wss_down is True
         assert cfg.market_data.wss_down_after_seconds == 30.0
         assert cfg.market_data.rest_degraded_max_spread_bps == 200

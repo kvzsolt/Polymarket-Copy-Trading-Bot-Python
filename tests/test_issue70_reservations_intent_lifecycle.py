@@ -46,24 +46,24 @@ async def _pg_pool():
     finally:
         ctr.stop()
 
-from domain.order_lifecycle import (
+from domain.order_lifecycle import (  # noqa: E402
     IntentReason,
     IntentSide,
     OrderIntent,
     OrderIntentKey,
     Reservation,
 )
-from services.execution.reservation_service import (
+from services.execution.reservation_service import (  # noqa: E402
     ReservationService,
 )
-from services.intentRegistry import (
+from services.intentRegistry import (  # noqa: E402
     DuplicateIntentError,
     IllegalTransitionError,
     IntentRegistry,
     IntentState,
     Reservation as IntentReservation,
 )
-from services.positionActionCoordinator import PositionScope
+from services.positionActionCoordinator import PositionScope  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -131,7 +131,7 @@ class TestConcurrentBuyProtection:
         registry = IntentRegistry()
         scope = _scope()
         reservation = IntentReservation(quote_usdc=Decimal("100"), token_shares=Decimal("0"))
-        rec1 = await registry.begin_intent(scope, IntentSide.BUY, reservation, intent_id="buy-1")
+        await registry.begin_intent(scope, IntentSide.BUY, reservation, intent_id="buy-1")
         await registry.finalize_intent("buy-1", IntentState.DONE, by_reconciler=True)
 
         rec2 = await registry.begin_intent(scope, IntentSide.BUY, reservation, intent_id="buy-2")
@@ -179,7 +179,7 @@ class TestReservationRelease:
         registry = IntentRegistry()
         scope = _scope()
         reservation = IntentReservation(quote_usdc=Decimal("100"), token_shares=Decimal("0"))
-        rec = await registry.begin_intent(scope, IntentSide.BUY, reservation, intent_id="buy-1")
+        await registry.begin_intent(scope, IntentSide.BUY, reservation, intent_id="buy-1")
 
         released = await registry.release_on_cancel_or_fail("buy-1", IntentState.CANCELLED)
         assert released.state == IntentState.CANCELLED
@@ -194,7 +194,7 @@ class TestReservationRelease:
         registry = IntentRegistry()
         scope = _scope()
         reservation = IntentReservation(quote_usdc=Decimal("0"), token_shares=Decimal("5"))
-        rec = await registry.begin_intent(scope, IntentSide.SELL, reservation, intent_id="sell-1")
+        await registry.begin_intent(scope, IntentSide.SELL, reservation, intent_id="sell-1")
 
         released = await registry.release_on_cancel_or_fail("sell-1", IntentState.ERROR)
         assert released.state == IntentState.ERROR

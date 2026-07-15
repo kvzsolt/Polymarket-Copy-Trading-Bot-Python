@@ -20,7 +20,7 @@ async def test_main_returns_1_on_env_validation_failure(monkeypatch):
     # The EnvValidationError branch is the very first thing in main(), before
     # build_app(), so this exercises the exit-code path without standing up the
     # whole application.
-    monkeypatch.setattr(app, "validate_runtime_env", _boom)
+    monkeypatch.setattr(app, "load_config", _boom)
 
     result = await app.main()
     assert result == 1

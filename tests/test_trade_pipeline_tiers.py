@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import time
 from dataclasses import dataclass
@@ -12,8 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 import config.app_config as app_config_mod
-from config.app_config import load_config
-from config.env import rehydrate_env
+from tests.config_helpers import load_test_config
 from domain.trading_context import TradingContext
 from orchestrators.trade_pipeline import execute_trades, _resolve_leader_tier
 from services.pnlTracker import PnLTracker
@@ -79,7 +77,7 @@ def _config(**overrides):
     env.update(overrides)
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(app_config_mod, "_runtime_python_supported", lambda: True)
-        return load_config(env)
+        return load_test_config(env)
 
 
 @pytest.fixture(autouse=True)
@@ -93,7 +91,6 @@ def _reset_singletons(monkeypatch):
     monkeypatch.setenv("BUY_MIN_AMOUNT", "0.01")
     monkeypatch.setenv("ENABLE_TIER_GATE_WATCHLIST", "true")
     monkeypatch.setenv("ENABLE_TIER_GATE_WATCHLIST_LOG", "true")
-    rehydrate_env()
 
 
 @dataclass
@@ -352,7 +349,7 @@ async def test_watchlist_gate_can_be_disabled(tmp_path):
         assert results[0].reason != "tier_watchlist"
 
 
-# --- PAPER_TRADE_ONLY global override tests ---
+# --- immutable paper trading-mode override tests ---
 
 @pytest.mark.asyncio
 async def test_paper_trade_only_overrides_live_follow(tmp_path):
@@ -364,7 +361,7 @@ async def test_paper_trade_only_overrides_live_follow(tmp_path):
             pool,
             leaders_repo=repo,
             execution_service=exec_svc,
-            config=_config(PAPER_TRADE_ONLY="true"),
+            config=_config(TRADING_MODE="paper"),
             tmp_path=tmp_path,
         )
         results = await execute_trades(ctx, "0xleader", [_signal()], time.time())
@@ -383,7 +380,7 @@ async def test_paper_trade_only_does_not_affect_watchlist(tmp_path):
             pool,
             leaders_repo=repo,
             execution_service=MagicMock(),
-            config=_config(PAPER_TRADE_ONLY="true"),
+            config=_config(TRADING_MODE="paper"),
             tmp_path=tmp_path,
         )
         results = await execute_trades(ctx, "0xleader", [_signal()], time.time())

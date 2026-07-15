@@ -29,7 +29,7 @@ from domain.ports import (
 from storage.postgres.cursors_repo import CursorsRepo, TradeCursor
 from storage.postgres.discovery_repo import DiscoveryRepo
 from storage.postgres.fills_repo import FillRecord, FillsRepo
-from storage.postgres.leaders_repo import LeaderCandidateRecord, LeadersRepo
+from storage.postgres.leaders_repo import LeaderRosterRecord, LeadersRepo
 from storage.postgres.orders_repo import OrdersRepo, OrderSubmissionRecord
 from storage.postgres.positions_repo import PositionRecord, PositionsRepo
 
@@ -213,30 +213,48 @@ class TestFillsRepo:
 
 class TestLeadersRepo:
     @pytest.mark.asyncio
-    async def test_upsert_candidates_and_list_active(self) -> None:
+    async def test_save_roster_and_list_active(self) -> None:
         async with _pg_pool() as pool:
             repo = LeadersRepo(pool)
-            await repo.upsert_candidates(
+            await repo.save_roster(
                 [
-                    LeaderCandidateRecord(
-                        leader_id="0xaaa",
+                    LeaderRosterRecord(
+                        wallet="0xaaa",
+                        tier="active",
                         score=1.0,
-                        recent_trades=5,
-                        active=True,
-                        source="test",
+                        base_score=1.0,
+                        longitudinal_score=1.0,
+                        cycles_in_tier=3,
+                        promote_streak=0,
+                        demote_streak=0,
+                        tier_changed_at=1.0,
+                        first_promoted_at=1.0,
+                        last_seen_at=1.0,
+                        config_hash="test",
                     ),
-                    LeaderCandidateRecord(
-                        leader_id="0xbbb",
+                    LeaderRosterRecord(
+                        wallet="0xbbb",
+                        tier="watchlist",
                         score=0.5,
-                        recent_trades=1,
-                        active=False,
-                        source="test",
+                        base_score=0.5,
+                        longitudinal_score=0.5,
+                        cycles_in_tier=1,
+                        promote_streak=1,
+                        demote_streak=0,
+                        tier_changed_at=1.0,
+                        first_promoted_at=None,
+                        last_seen_at=1.0,
+                        config_hash="test",
                     ),
                 ]
             )
             actives = await repo.list_active()
+            matching = await repo.list_active(config_hash="test")
+            stale = await repo.list_active(config_hash="different")
         assert "0xaaa" in actives
         assert "0xbbb" not in actives
+        assert matching == ["0xaaa"]
+        assert stale == []
 
 
 class TestCursorsRepo:

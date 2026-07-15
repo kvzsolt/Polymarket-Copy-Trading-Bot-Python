@@ -24,11 +24,9 @@ def _ctx(user_id: str):
     return SimpleNamespace(user_id=user_id, extra={})
 
 
-def test_pre_reconcile_default_timeout_exceeds_venue_get_timeout(monkeypatch):
+def test_pre_reconcile_default_timeout_exceeds_venue_get_timeout():
     from integrations.polymarket.clob_v2_gateway import _GET_ORDER_HTTP_TIMEOUT_SECONDS
     from services.risk.risk_monitor import _risk_pre_reconcile_timeout_seconds
-
-    monkeypatch.delenv("RISK_PRE_RECONCILE_TIMEOUT_SECONDS", raising=False)
 
     timeout = _risk_pre_reconcile_timeout_seconds(0.05)
 
@@ -158,7 +156,7 @@ async def test_pre_reconcile_runs_outside_protective_exit_timeout():
 
 
 @pytest.mark.asyncio
-async def test_pre_reconcile_timeout_enters_backoff_without_stalling_risk_checks(monkeypatch):
+async def test_pre_reconcile_timeout_enters_backoff_without_stalling_risk_checks():
     """A stuck pre-reconcile must not burn the timeout every risk tick.
 
     The live failure mode was a log every ~6s:
@@ -168,9 +166,6 @@ async def test_pre_reconcile_timeout_enters_backoff_without_stalling_risk_checks
     still running the risk check phase every tick.
     """
     from services.risk.risk_monitor import risk_monitor_loop_for_contexts
-
-    monkeypatch.setenv("RISK_PRE_RECONCILE_TIMEOUT_SECONDS", "0.05")
-    monkeypatch.setenv("RISK_PRE_RECONCILE_TIMEOUT_BACKOFF_SECONDS", "1.0")
 
     ctx = _ctx("u-timeout")
     check_calls: list[bool] = []
@@ -189,7 +184,10 @@ async def test_pre_reconcile_timeout_enters_backoff_without_stalling_risk_checks
     readiness = MagicMock()
     config = SimpleNamespace(
         polling=SimpleNamespace(risk_check_interval=0.01),
-        risk=SimpleNamespace(),
+        risk=SimpleNamespace(
+            risk_pre_reconcile_timeout_seconds=0.05,
+            risk_pre_reconcile_backoff_seconds=1.0,
+        ),
         execution=SimpleNamespace(),
     )
 

@@ -6,38 +6,14 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 
-# Load non-sensitive runtime config + local .env as early as possible.
-# IMPORTANT: importing from config triggers config/__init__.py which freezes
-# the ENV snapshot before load_runtime_env() runs. We must call rehydrate_env()
-# immediately after so ENV reflects the freshly populated os.environ.
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from orchestrators.runtime_bootstrap import TradingContext
-try:
-    from config.runtime_env import load_runtime_env
-    from config.env import rehydrate_env
-
-    load_runtime_env()
-    rehydrate_env()
-except Exception as exc:  # pragma: no cover
-    import sys
-    import traceback
-
-    # Pre-fix this was a WARNING-and-continue. A secrets-load failure
-    # (missing python-dotenv, permission error on secrets.env, malformed
-    # runtime env file) silently let the bot proceed with un-hydrated
-    # ENV; in the worst case a partial env from a prior process let
-    # validate_runtime_env appear to pass on a stale snapshot. Boot
-    # failure is the correct fail-closed response.
-    print(f"[FATAL] Failed to load runtime env: {exc}", file=sys.stderr)
-    traceback.print_exc(file=sys.stderr)
-    sys.exit(1)
 
 from bootstrap import build_app
 from config.app_config import EnvValidationError, load_config
-from config.env import is_valid_eth_address, validate_runtime_env
-from orchestrators.auto_trader_bootstrap import resolve_startup_leaders
+from config.env import is_valid_eth_address
 from orchestrators.leader_registry import LeaderRegistry
 from orchestrators.market_data_runtime import (
     MarketDataRuntime,
@@ -63,14 +39,6 @@ from orchestrators.runtime_monitor import run_leader_monitor
 from orchestrators.runtime_summary import print_startup_summary
 from orchestrators.startup_health import perform_startup_health_check
 from orchestrators.user_data_runtime import UserDataRuntime
-from services.discovery.auto_trader_selector import AutoTraderSelector
-from services.discovery.balance_provider import build_wallet_balance_provider
-from services.discovery.capture_service import DiscoveryCaptureService
-from services.discovery.position_snapshot_service import (
-    SnapshotResult,
-    snapshot_followed_leaders,
-)
-from services.tradeMonitor import _guarded_leader_fetch
 from services.healthServer import start_health_server
 from services.metrics import metrics
 from services.multiUserConfig import RuntimeUser, UserFollowConfig, load_runtime_users
@@ -93,12 +61,14 @@ async def _wait_for_active_leaders(
     refresh_interval: int,
     *,
     config,
+    initial_state=None,
 ) -> list[str]:
     return await _wait_for_active_leaders_impl(
         registry,
         configured_leaders,
         refresh_interval,
         config=config,
+        initial_state=initial_state,
     )
 
 
@@ -167,9 +137,7 @@ def _onchain_missing_wss_warning_reason(config: object) -> str | None:
     if bool(getattr(oc_cfg, "enable_onchain_pending_detection", False)):
         return "pending_enabled"
 
-    raw = getattr(config, "raw", {}) or {}
-    explicit_mined = str(raw.get("ENABLE_ONCHAIN_MINED_DETECTION") or "").strip()
-    if bool(getattr(oc_cfg, "enable_onchain_mined_detection", False)) and explicit_mined:
+    if bool(getattr(oc_cfg, "enable_onchain_mined_detection", False)):
         return "mined_enabled"
     return None
 
@@ -288,7 +256,6 @@ async def _refresh_contexts_for_new_leaders(
     leaders_repo: LeadersRepo,
     config,
     readiness,
-    trust_store=None,
 ) -> list[str]:
     started_wallets: list[str] = []
     ensure_runtime_follows(runtime_users, new_wallets, config)
@@ -312,7 +279,6 @@ async def _refresh_contexts_for_new_leaders(
                 config,
                 leaders_repo=leaders_repo,
                 readiness=readiness,
-                trust_store=trust_store,
             )
             contexts_by_leader[wallet].append(context)
 
@@ -868,11 +834,18 @@ async def _run_application(client_registry: list[Any]) -> int:
     configure_logging(level="INFO")
 
     try:
-        validate_runtime_env()
         startup_config = load_config()
     except EnvValidationError as exc:
         print_error(str(exc))
         return 1
+
+    configure_logging(
+        level=startup_config.logging.level,
+        log_dir=startup_config.logging.log_dir,
+        jsonl_file=startup_config.logging.app_log_jsonl_file,
+        max_bytes=startup_config.logging.log_max_bytes,
+        backup_count=startup_config.logging.log_backup_count,
+    )
 
     from bot_cli.commands.doctor import run_doctor_checks
 
@@ -910,6 +883,7 @@ async def _run_application(client_registry: list[Any]) -> int:
                     check.get("fix"),
                 )
     application = await build_app()
+    client_registry.append(application.falcon_client)
 
     application.readiness.update(
         wss_market_ok=False,
@@ -930,17 +904,8 @@ async def _run_application(client_registry: list[Any]) -> int:
             )
         return 1
 
-    startup_selection = await resolve_startup_leaders(
-        configured_leaders=configured,
-        config=application.config,
-        selector=AutoTraderSelector(
-            repo=application.discovery_repo,
-            config=application.config,
-            balance_provider=build_wallet_balance_provider(application.config),
-        ),
-        discovery_service=application.discovery_service,
-    )
-    active_leaders = startup_selection.active_leaders
+    registry_state = await application.registry.refresh(configured)
+    active_leaders = registry_state.active_monitored
 
     invalid_active = [
         wallet for wallet in active_leaders if not is_valid_eth_address(wallet)
@@ -949,14 +914,12 @@ async def _run_application(client_registry: list[Any]) -> int:
         logger.error(
             "startup_blocked_no_active_leaders",
             extra={
-                "mode": startup_selection.mode,
+                "mode": registry_state.mode,
                 "reason": "invalid_active_leaders",
                 "invalid_wallets": invalid_active,
-                "allow_auto_trader_detection": (
-                    application.config.discovery.allow_auto_trader_detection
-                ),
-                "max_auto_traders_count": (
-                    application.config.discovery.max_auto_traders_count
+                "discovery_enabled": application.config.discovery.scheduler.enabled,
+                "max_active_leaders": (
+                    application.config.discovery.scheduler.max_active_leaders
                 ),
             },
         )
@@ -964,21 +927,40 @@ async def _run_application(client_registry: list[Any]) -> int:
         return 1
 
     if not active_leaders:
+        discovery_ready = (
+            application.config.discovery.scheduler.enabled
+            and application.config.discovery.api.has_token
+        )
+        if discovery_ready:
+            logger.info(
+                "startup_waiting_for_discovery_roster",
+                extra={
+                    "rediscover_seconds": application.config.discovery.scheduler.rediscover_seconds,
+                    "required_cycles": application.config.discovery.hysteresis.min_tenure_cycles,
+                },
+            )
+            active_leaders = await _wait_for_active_leaders(
+                application.registry,
+                configured,
+                application.config.discovery.scheduler.rediscover_seconds,
+                config=application.config,
+                initial_state=registry_state,
+            )
+
+    if not active_leaders:
         logger.error(
             "startup_blocked_no_active_leaders",
             extra={
-                "mode": startup_selection.mode,
-                "reason": startup_selection.reason,
-                "allow_auto_trader_detection": (
-                    application.config.discovery.allow_auto_trader_detection
-                ),
-                "max_auto_traders_count": (
-                    application.config.discovery.max_auto_traders_count
+                "mode": registry_state.mode,
+                "reason": "manual_and_roster_empty",
+                "discovery_enabled": application.config.discovery.scheduler.enabled,
+                "max_active_leaders": (
+                    application.config.discovery.scheduler.max_active_leaders
                 ),
             },
         )
         print_error(
-            "No active leaders available. Manual LEADER_WALLETS are empty and "
+            "No active leaders available. leader.wallets is empty and "
             "auto trader detection did not find eligible candidates."
         )
         return 1
@@ -1021,10 +1003,10 @@ async def _run_application(client_registry: list[Any]) -> int:
     if purged:
         logger.info("Startup cleanup: purged %s stale records", purged)
 
-    research_capture_service = await DiscoveryCaptureService.create()
+    research_capture_service = None
     leaders_repo = application.leaders_repo
     registry = application.registry
-    refresh_interval = application.config.discovery.discovery_interval_seconds
+    refresh_interval = application.config.discovery.scheduler.rediscover_seconds
 
     ensure_runtime_follows(runtime_users, active_leaders, application.config)
 
@@ -1141,7 +1123,6 @@ async def _run_application(client_registry: list[Any]) -> int:
         application.config,
         leaders_repo=leaders_repo,
         readiness=application.readiness,
-        trust_store=application.trust_store,
     )
     from orchestrators.trade_pipeline import seed_position_pct_cap_snapshot
 
@@ -1412,49 +1393,6 @@ async def _run_application(client_registry: list[Any]) -> int:
         startup_purged_failed_orders=startup_purged_failed_orders,
     )
 
-    # Boot-time position snapshot — persists leader + own wallet
-    # snapshots into discovery_position_snapshots tagged with
-    # wallet_role, and surfaces an in-memory tree so the new
-    # TRADERS YOU'RE COPYING + YOUR POSITIONS panels can render
-    # without re-fetching. Fail-soft so PG-pool-not-online (transition)
-    # / data-api degradation never blocks boot.
-    snapshot_result: SnapshotResult | None = None
-    try:
-        logger.info(
-            "startup_stage | stage=boot_snapshot_started leaders=%d users=%d",
-            len(monitored_leaders),
-            len(runtime_users),
-        )
-        from storage.postgres.connection import get_pool
-        from storage.postgres.discovery_repo import DiscoveryRepo
-
-        pool = await get_pool()
-        discovery_repo = DiscoveryRepo(pool)
-
-        async def _boot_snapshot_fetcher(url: str):
-            # Reuse the rate-limited leader fetcher so a 20-leader
-            # watchlist does not 429 the data-api on boot. The kind
-            # tag separates the boot snapshot from the live trade
-            # monitor's positions probe.
-            wallet = url.split("user=")[-1].split("&")[0]
-            return await _guarded_leader_fetch("boot_positions", wallet, url)
-
-        snapshot_result = await snapshot_followed_leaders(
-            leader_wallets=list(monitored_leaders),
-            own_wallets=[u.wallet.funder_address for u in runtime_users],
-            repo=discovery_repo,
-            fetcher=_boot_snapshot_fetcher,
-        )
-        logger.info("startup_stage | stage=boot_snapshot_completed")
-    except Exception as exc:
-        logger.warning(
-            "boot_snapshot_skipped",
-            extra={
-                "reason": "snapshot_pipeline_unavailable",
-                "error": repr(exc),
-            },
-        )
-
     print_startup_summary(
         wallet=first_user.wallet.funder_address,
         available_cash=available_cash,
@@ -1463,7 +1401,6 @@ async def _run_application(client_registry: list[Any]) -> int:
         active_leaders=monitored_leaders,
         config=application.config,
         health_report=health_report,
-        snapshot_result=snapshot_result,
     )
 
     metrics_runner = None
@@ -1487,6 +1424,7 @@ async def _run_application(client_registry: list[Any]) -> int:
         metrics_runner = await start_health_server(
             application.config.network.metrics_port,
             tracker=application.readiness,
+            host=application.config.network.metrics_bind_host,
         )
 
     monitor_tasks: list[asyncio.Task] = []
@@ -1502,7 +1440,6 @@ async def _run_application(client_registry: list[Any]) -> int:
             leaders_repo=leaders_repo,
             config=application.config,
             readiness=application.readiness,
-            trust_store=application.trust_store,
         )
 
         monitored_leader_count = len(
@@ -1587,15 +1524,15 @@ async def _run_application(client_registry: list[Any]) -> int:
     # awaitable per call so a crashed loop can be respawned.
     supervised: list[_Supervised] = []
 
-    if application.config.discovery.enable_trader_discovery:
+    if application.config.discovery.scheduler.enabled:
         dynamic_monitoring_enabled = bool(
-            application.config.discovery.discovery_dynamic_monitoring_enabled
+            application.config.discovery.scheduler.start_from_roster
         )
         if not dynamic_monitoring_enabled:
             logger.info(
-                "discovery_dynamic_monitoring_disabled",
+                "discovery_roster_hot_add_disabled",
                 extra={
-                    "discovery_dynamic_monitoring_enabled": False,
+                    "roster_hot_add_enabled": False,
                     "configured_value": False,
                     "effect": "background discovery will refresh DB only and will not hot-add monitors",
                 },
@@ -1607,7 +1544,7 @@ async def _run_application(client_registry: list[Any]) -> int:
                     registry,
                     configured,
                     refresh_interval,
-                    leaders_repo=application.discovery_repo,
+                    leaders_repo=application.leaders_repo,
                     on_new_leaders=(
                         _on_new_leaders if dynamic_monitoring_enabled else None
                     ),
@@ -1700,7 +1637,7 @@ async def _run_application(client_registry: list[Any]) -> int:
                 # Case-insensitive leader lookup: the on-chain decoders
                 # lowercase ``signal.leader_wallet``, but
                 # ``contexts_by_leader`` is keyed from the configured
-                # ``LEADER_WALLETS`` entries which may be checksummed or
+                # configured ``leader.wallets`` entries which may be checksummed or
                 # mixed-case. A direct ``.get(signal.leader_wallet)`` would
                 # miss the match and silently drop the signal (Greptile P1
                 # "Leader lookup mismatches").
@@ -1737,7 +1674,7 @@ async def _run_application(client_registry: list[Any]) -> int:
                         )
 
             onchain_runtime = OnchainDetectionRuntime(
-                watched_wallets=set(application.config.leader.wallets),
+                watched_wallets=set(monitored_leaders),
                 ws_url=ws_url,
                 signal_sink=_onchain_signal_sink,
                 enable_pending=oc_cfg.enable_onchain_pending_detection,
@@ -1750,7 +1687,7 @@ async def _run_application(client_registry: list[Any]) -> int:
                 "onchain_detection_started | mined=%s pending=%s watched=%d",
                 oc_cfg.enable_onchain_mined_detection,
                 oc_cfg.enable_onchain_pending_detection,
-                len(application.config.leader.wallets),
+                len(monitored_leaders),
             )
         except Exception as exc:
             logger.warning(
@@ -1919,7 +1856,9 @@ async def main() -> int:
 
 
 if __name__ == "__main__":
-    loop = asyncio.new_event_loop()
+    from utils.event_loop import new_event_loop
+
+    loop = new_event_loop()
     main_task = loop.create_task(main())
 
     def _shutdown_handler(sig, _frame):
