@@ -28,9 +28,11 @@ from pathlib import Path
 from typing import Any
 
 from config.app_config import (
+    AppConfig,
     EnvValidationError,
     load_config,
 )
+from config.env import secret_value
 
 
 # ---------------------------------------------------------------------------
@@ -251,19 +253,24 @@ def register_doctor_command(subparsers: argparse._SubParsersAction) -> None:
     group.add_argument("--paper", action="store_true", help="Check readiness for paper trading")
 
 
-async def run_doctor_checks(mode: str) -> dict[str, Any]:
+async def run_doctor_checks(
+    mode: str,
+    *,
+    config: AppConfig | None = None,
+) -> dict[str, Any]:
     """Structured readiness gate. Returns dict shape documented above."""
     ctx = _DoctorContext(mode=mode)
 
     # ----- config_load --------------------------------------------------
-    try:
-        config = load_config()
-    except EnvValidationError as exc:
-        ctx.blocked("config_load", "validation_error", str(exc))
-        return ctx.to_dict()
-    except Exception as exc:
-        ctx.blocked("config_load", f"unexpected error: {exc!r}", "review config")
-        return ctx.to_dict()
+    if config is None:
+        try:
+            config = load_config()
+        except EnvValidationError as exc:
+            ctx.blocked("config_load", "validation_error", str(exc))
+            return ctx.to_dict()
+        except Exception as exc:
+            ctx.blocked("config_load", f"unexpected error: {exc!r}", "review config")
+            return ctx.to_dict()
     ctx.ok("config_load", "AppConfig loaded")
 
     live = mode == "live"
@@ -302,7 +309,7 @@ async def run_doctor_checks(mode: str) -> dict[str, Any]:
 
     # ----- wallet basics ------------------------------------------------
     if live:
-        if not config.wallet.private_key:
+        if not secret_value(config.wallet.private_key):
             ctx.blocked(
                 "wallet_private_key",
                 "wallet.private_key is missing",

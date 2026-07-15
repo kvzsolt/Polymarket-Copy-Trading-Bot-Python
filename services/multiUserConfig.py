@@ -5,6 +5,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from pydantic import SecretStr
+
 from config.env import SignatureType, WalletConfig
 
 if TYPE_CHECKING:
@@ -34,7 +36,7 @@ def _parse_signature_type(value) -> SignatureType:
 
 def _runtime_user_from_payload(payload: dict, config: AppConfig) -> RuntimeUser:
     wallet = WalletConfig(
-        private_key=str(payload["private_key"]),
+        private_key=SecretStr(str(payload["private_key"])),
         chain_id=int(payload.get("chain_id", config.wallet.chain_id)),
         signature_type=_parse_signature_type(payload.get("signature_type", 0)),
         funder_address=str(payload["funder_address"]),

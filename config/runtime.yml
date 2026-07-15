@@ -222,7 +222,8 @@ market_data:
 
 onchain_detection:
   enable_onchain_pending_detection: false
-  enable_onchain_mined_detection: true
+  # Opt in only when an on-chain WebSocket endpoint is configured locally.
+  enable_onchain_mined_detection: false
   pending_tx_provider: alchemy
   onchain_ws_url: ""
   pending_tx_ws_url: ""

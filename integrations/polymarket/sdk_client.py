@@ -19,6 +19,7 @@ from polymarket import (
     RequestRejectedError,
 )
 
+from config.env import secret_value
 from integrations.polymarket.models import PRICE_TOKEN_NOT_FOUND
 
 
@@ -122,9 +123,9 @@ class PolymarketClient:
 
 def _configured_credentials(config: Any) -> ApiKeyCreds | None:
     clob = getattr(config, "clob", None)
-    key = str(getattr(clob, "api_key", "") or "").strip()
-    secret = str(getattr(clob, "api_secret", "") or "").strip()
-    passphrase = str(getattr(clob, "api_passphrase", "") or "").strip()
+    key = secret_value(getattr(clob, "api_key", "")).strip()
+    secret = secret_value(getattr(clob, "api_secret", "")).strip()
+    passphrase = secret_value(getattr(clob, "api_passphrase", "")).strip()
     populated = tuple(bool(value) for value in (key, secret, passphrase))
     if any(populated) and not all(populated):
         raise ValueError("CLOB API credentials must be all configured or all omitted")
@@ -147,12 +148,12 @@ async def create_polymarket_client(
     Live startup requires ``secure_client`` and validates the SDK's detected
     wallet and chain before an order can be submitted.
     """
-    resolved_key = str(
-        private_key
-        or getattr(wallet_config, "private_key", "")
-        or getattr(getattr(config, "wallet", None), "private_key", "")
-        or ""
-    ).strip()
+    key_material: Any = private_key
+    if not key_material:
+        key_material = getattr(wallet_config, "private_key", "")
+    if not secret_value(key_material):
+        key_material = getattr(getattr(config, "wallet", None), "private_key", "")
+    resolved_key = secret_value(key_material).strip()
     wallet = str(
         getattr(wallet_config, "funder_address", "")
         or getattr(getattr(config, "wallet", None), "funder_address", "")

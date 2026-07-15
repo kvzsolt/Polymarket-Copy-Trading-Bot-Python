@@ -34,7 +34,7 @@ from pydantic_settings import (
     SettingsConfigDict,
 )
 
-from config.env import EnvValidationError, SignatureType, WalletConfig
+from config.env import EnvValidationError, SignatureType, WalletConfig, secret_value
 
 __all__ = [
     "AppConfig",
@@ -97,9 +97,15 @@ class DatabaseConfig:
 @dataclass(frozen=True)
 class ClobConfig:
     http_url: str
-    api_key: str
-    api_secret: str = ""
-    api_passphrase: str = ""
+    api_key: SecretStr
+    api_secret: SecretStr = field(default_factory=lambda: SecretStr(""))
+    api_passphrase: SecretStr = field(default_factory=lambda: SecretStr(""))
+
+    def __post_init__(self) -> None:
+        for name in ("api_key", "api_secret", "api_passphrase"):
+            value = getattr(self, name)
+            if not isinstance(value, SecretStr):
+                object.__setattr__(self, name, SecretStr(str(value or "")))
 
 
 @dataclass(frozen=True)
@@ -624,6 +630,7 @@ class DiscoverySchedulerConfig(_FrozenSettingsModel):
     max_evaluation_error_ratio: float = Field(0.25, ge=0, le=1)
     max_active_leaders: int = Field(2, ge=1)
     start_from_roster: bool = True
+    startup_wait_timeout_seconds: int = Field(3900, ge=1)
 
 
 class DiscoveryConfig(_FrozenSettingsModel):
@@ -694,15 +701,15 @@ class OnchainDetectionConfig:
     """Early on-chain trader detection policy (PR2).
 
     The mined-``OrderFilled`` log subscription is always safe to run because
-    mined fills are authoritative; it is gated only by ``enable_mined_detection``
-    (default True) so operators can disable it for diagnostics. The pending-
+    mined fills are authoritative; it is gated by ``enable_mined_detection``
+    (default False) so operators explicitly opt in with a WebSocket URL. The pending-
     transaction subscription is provisional and gated by
     ``enable_onchain_pending_detection`` (default False) — it must not feed
     the copy path until the operator opts in.
     """
 
     enable_onchain_pending_detection: bool = False
-    enable_onchain_mined_detection: bool = True
+    enable_onchain_mined_detection: bool = False
     pending_tx_provider: str = "alchemy"
     onchain_ws_url: str = ""
     pending_tx_ws_url: str = ""
@@ -776,9 +783,10 @@ def _validate_semantics(cfg: AppConfig, errors: list[str]) -> None:
         errors.append("database.dsn must use postgresql:// or postgres://.")
 
     # Wallet essentials
-    if not cfg.execution.paper_trade_only and not cfg.wallet.private_key:
+    private_key = secret_value(cfg.wallet.private_key)
+    if not cfg.execution.paper_trade_only and not private_key:
         errors.append("PRIVATE_KEY is required.")
-    if cfg.wallet.private_key and not _HEX_PRIVATE_KEY_RE.match(cfg.wallet.private_key):
+    if private_key and not _HEX_PRIVATE_KEY_RE.match(private_key):
         errors.append("PRIVATE_KEY must be a 66-char hex key (0x + 64 hex digits).")
     if not cfg.wallet.funder_address:
         errors.append("FUNDER_ADDRESS is required.")
@@ -791,6 +799,8 @@ def _validate_semantics(cfg: AppConfig, errors: list[str]) -> None:
         errors.append(f'Unsupported CHAIN_ID "{cfg.wallet.chain_id}". Use 137 or 80002.')
     if not cfg.wallet.polygon_rpc_url:
         errors.append("RPC_URL is required.")
+    if not cfg.network.rpc_url:
+        errors.append("network.rpc_url is required.")
     for wallet in cfg.leader.wallets:
         if not _ETH_ADDR_RE.match(wallet):
             errors.append(
@@ -1146,6 +1156,12 @@ def _read_secret_overrides(path: Path) -> dict[str, Any]:
         )
         if len(path_parts) < 2 or any(not part for part in path_parts):
             raise EnvValidationError(f"Malformed nested secrets key: {key}")
+        # dotenv is merged manually, outside BaseSettings' env source, so
+        # ``env_ignore_empty`` does not apply automatically. Treat blank
+        # template entries as absent instead of allowing them to erase a
+        # valid YAML value at higher precedence.
+        if value is None or not str(value).strip():
+            continue
         cursor = output
         for part in path_parts[:-1]:
             child = cursor.get(part)

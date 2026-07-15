@@ -32,6 +32,15 @@ def test_main_is_annotated_to_return_int():
     assert inspect.signature(app.main).return_annotation in ("int", int)
 
 
+def test_startup_reuses_one_config_snapshot_for_doctor_and_bootstrap():
+    import inspect
+
+    source = inspect.getsource(app._run_application)
+    assert source.count("startup_config = load_config()") == 1
+    assert 'run_doctor_checks("live", config=startup_config)' in source
+    assert "build_app(config=startup_config)" in source
+
+
 def test_dunder_main_exits_with_main_result():
     # __main__ must propagate main()'s return code, not swallow it.
     src = (app.__file__ and open(app.__file__, encoding="utf-8").read()) or ""

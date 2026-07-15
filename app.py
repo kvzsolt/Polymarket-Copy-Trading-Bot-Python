@@ -76,7 +76,6 @@ async def _discovery_refresh_loop(
     registry: LeaderRegistry,
     configured_leaders: list[str],
     refresh_interval: int,
-    leaders_repo: LeadersRepo | None = None,
     on_new_leaders: Callable[[list[str]], Awaitable[None]] | None = None,
     already_monitored: set[str] | None = None,
 ) -> None:
@@ -84,7 +83,6 @@ async def _discovery_refresh_loop(
         registry,
         configured_leaders,
         refresh_interval,
-        leaders_repo=leaders_repo,
         on_new_leaders=on_new_leaders,
         already_monitored=already_monitored,
     )
@@ -704,6 +702,23 @@ async def _subscribe_context_tokens(
 
 
 @dataclass
+class _HealthServerResource:
+    """Idempotent owner for an aiohttp health-server runner."""
+
+    runner: Any
+    closed: bool = False
+
+    async def close(self) -> None:
+        if self.closed:
+            return
+        self.closed = True
+        await self.runner.cleanup()
+
+    async def cleanup(self) -> None:
+        await self.close()
+
+
+@dataclass
 class _Supervised:
     """A long-lived auxiliary background loop owned by the main supervisor.
 
@@ -852,7 +867,7 @@ async def _run_application(client_registry: list[Any]) -> int:
     mode = "paper" if startup_config.execution.paper_trade_only else "live"
 
     if mode == "live":
-        doctor_result = await run_doctor_checks("live")
+        doctor_result = await run_doctor_checks("live", config=startup_config)
         if doctor_result.get("status") == "blocked":
             print_error("Live mode doctor check failed. Refusing to start.")
             blocked = [
@@ -882,7 +897,7 @@ async def _run_application(client_registry: list[Any]) -> int:
                     check.get("detail"),
                     check.get("fix"),
                 )
-    application = await build_app()
+    application = await build_app(config=startup_config)
     client_registry.append(application.falcon_client)
 
     application.readiness.update(
@@ -892,6 +907,27 @@ async def _run_application(client_registry: list[Any]) -> int:
         wss_user_connecting=False,
         market_data_ready=False,
     )
+
+    # Start observability before any discovery-only promotion wait. A fresh
+    # roster can require multiple longitudinal cycles; operators must still be
+    # able to inspect a fail-closed readiness payload during that warm-up.
+    _slowest_loop_interval = max(
+        float(application.config.polling.fetch_interval),
+        float(application.config.polling.risk_check_interval),
+    )
+    application.readiness.configure_heartbeat_budget(
+        staleness_seconds=_slowest_loop_interval * 3.0,
+    )
+    metrics_runner: _HealthServerResource | None = None
+    if application.config.network.enable_metrics_server:
+        metrics_runner = _HealthServerResource(
+            await start_health_server(
+                application.config.network.metrics_port,
+                tracker=application.readiness,
+                host=application.config.network.metrics_bind_host,
+            )
+        )
+        client_registry.append(metrics_runner)
 
     configured = configured_leaders(application.config)
     invalid = [wallet for wallet in configured if not is_valid_eth_address(wallet)]
@@ -1403,30 +1439,6 @@ async def _run_application(client_registry: list[Any]) -> int:
         health_report=health_report,
     )
 
-    metrics_runner = None
-
-    # P2-g: derive the strict-readiness heartbeat staleness budget from the
-    # slowest monitored loop interval (trade-poll FETCH_INTERVAL vs risk
-    # RISK_CHECK_INTERVAL), times 3 — mirroring the per-loop lag tolerance in
-    # ``tradeMonitor._monitor_loop_healthy``. ReadinessTracker floors this so a
-    # sub-second poll interval cannot produce a flappy budget. Configured BEFORE
-    # the metrics server begins serving /health/ready so a loop that dies after
-    # ticking flips the endpoint to 503 instead of staying green.
-    _slowest_loop_interval = max(
-        float(application.config.polling.fetch_interval),
-        float(application.config.polling.risk_check_interval),
-    )
-    application.readiness.configure_heartbeat_budget(
-        staleness_seconds=_slowest_loop_interval * 3.0,
-    )
-
-    if application.config.network.enable_metrics_server:
-        metrics_runner = await start_health_server(
-            application.config.network.metrics_port,
-            tracker=application.readiness,
-            host=application.config.network.metrics_bind_host,
-        )
-
     monitor_tasks: list[asyncio.Task] = []
     monitored_set: set[str] = set(monitored_leaders)
     fetch_interval = application.config.polling.fetch_interval
@@ -1544,7 +1556,6 @@ async def _run_application(client_registry: list[Any]) -> int:
                     registry,
                     configured,
                     refresh_interval,
-                    leaders_repo=application.leaders_repo,
                     on_new_leaders=(
                         _on_new_leaders if dynamic_monitoring_enabled else None
                     ),

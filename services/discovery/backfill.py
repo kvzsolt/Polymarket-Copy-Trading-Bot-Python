@@ -263,6 +263,12 @@ def _date(value: Any) -> date | None:
     if not text:
         return None
     try:
+        numeric_timestamp = float(text)
+    except ValueError:
+        pass
+    else:
+        return _date(numeric_timestamp)
+    try:
         return date.fromisoformat(text[:10])
     except ValueError:
         try:

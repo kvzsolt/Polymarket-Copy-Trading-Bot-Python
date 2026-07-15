@@ -23,7 +23,7 @@ def _ast_tree() -> ast.AST:
 def test_app_runs_live_doctor_only_when_not_paper_mode():
     src = _app_source()
     # Look for the live doctor call inside a `mode == "live"` branch.
-    assert 'run_doctor_checks("live")' in src
+    assert 'run_doctor_checks("live", config=startup_config)' in src
     # And there should be a paper guard preceding it.
     assert 'paper_trade_only' in src or 'mode == "live"' in src
 
@@ -83,11 +83,13 @@ async def test_live_doctor_runs_before_build_app(monkeypatch):
         ),
     )
 
-    async def _fake_doctor(_mode: str):
+    async def _fake_doctor(_mode: str, *, config=None):
+        assert config is fake_config
         events.append("doctor")
         return {"status": "ok", "checks": []}
 
-    async def _fake_build_app():
+    async def _fake_build_app(*, config=None):
+        assert config is fake_config
         events.append("build_app")
         raise RuntimeError("stop_after_build")
 
@@ -118,7 +120,8 @@ async def test_blocked_live_doctor_short_circuits_before_build_app(monkeypatch):
     )
     build_app = AsyncMock()
 
-    async def _fake_doctor(_mode: str):
+    async def _fake_doctor(_mode: str, *, config=None):
+        assert config is fake_config
         return {
             "status": "blocked",
             "checks": [
@@ -157,7 +160,8 @@ async def test_paper_mode_does_not_call_geoblock_gate(monkeypatch):
     )
     geoblock = AsyncMock()
 
-    async def _stop_after_gate():
+    async def _stop_after_gate(*, config=None):
+        assert config is fake_config
         raise RuntimeError("stop_after_gate")
 
     monkeypatch.setattr(app_module, "load_config", lambda: fake_config)

@@ -5,9 +5,10 @@ from pathlib import Path
 
 import pytest
 import yaml
-from pydantic import ValidationError
+from pydantic import SecretStr, ValidationError
 
 from config.app_config import DiscoveryConfig, EnvValidationError, load_config
+from config.env import secret_value
 
 ROOT = Path(__file__).resolve().parents[1]
 ADDRESS = "0x" + "1" * 40
@@ -82,6 +83,52 @@ def test_process_env_beats_mode_0600_secrets_and_yaml(
     assert "top-secret-value" not in repr(config.discovery.api.token)
 
 
+def test_wallet_and_clob_credentials_are_secret_types() -> None:
+    private_key = "0x" + "a" * 64
+    overrides = _overrides()
+    overrides["wallet"]["private_key"] = private_key
+    overrides["clob"] = {
+        "api_key": "key-value",
+        "api_secret": "secret-value",
+        "api_passphrase": "passphrase-value",
+    }
+
+    config = load_config(overrides)
+
+    assert isinstance(config.wallet.private_key, SecretStr)
+    assert isinstance(config.clob.api_key, SecretStr)
+    assert isinstance(config.clob.api_secret, SecretStr)
+    assert isinstance(config.clob.api_passphrase, SecretStr)
+    assert secret_value(config.wallet.private_key) == private_key
+    dumped = repr(config)
+    for raw_secret in (
+        private_key,
+        "key-value",
+        "secret-value",
+        "passphrase-value",
+    ):
+        assert raw_secret not in dumped
+
+
+def test_empty_secret_entries_do_not_erase_yaml_values(tmp_path: Path) -> None:
+    secrets = tmp_path / "secrets.env"
+    secrets.write_text(
+        "PMCOPY__WALLET__POLYGON_RPC_URL=\n"
+        "PMCOPY__NETWORK__RPC_URL=   \n"
+        "PMCOPY__DISCOVERY__API__TOKEN=\n",
+        encoding="utf-8",
+    )
+    secrets.chmod(0o600)
+    overrides = _overrides()
+    overrides["discovery"] = {"api": {"token": "yaml-token"}}
+
+    config = load_config(overrides, secrets_path=secrets)
+
+    assert config.wallet.polygon_rpc_url == "https://rpc.invalid"
+    assert config.network.rpc_url == "https://rpc.invalid"
+    assert config.discovery.api.token.get_secret_value() == "yaml-token"
+
+
 def test_secrets_file_requires_exact_0600(tmp_path: Path) -> None:
     secrets = tmp_path / "secrets.env"
     secrets.write_text("PMCOPY__DISCOVERY__API__TOKEN=secret\n", encoding="utf-8")
@@ -140,6 +187,18 @@ def test_nested_process_json_decodes_wallet_tuple(
     monkeypatch.setenv("PMCOPY__LEADER__WALLETS", f'["{wallet}"]')
     config = load_config(_overrides())
     assert config.leader.wallets == (wallet,)
+
+
+def test_runtime_network_rpc_url_is_required() -> None:
+    overrides = _overrides()
+    overrides["network"]["rpc_url"] = ""
+    with pytest.raises(EnvValidationError, match="network.rpc_url is required"):
+        load_config(overrides)
+
+
+def test_secrets_template_includes_required_funder_address() -> None:
+    template = (ROOT / "secrets.env.example").read_text(encoding="utf-8")
+    assert "PMCOPY__WALLET__FUNDER_ADDRESS=" in template
 
 
 def test_validation_error_never_echoes_secret(

@@ -54,7 +54,7 @@ def test_missing_wss_warning_reflects_typed_detection_config() -> None:
     from config.app_config import OnchainDetectionConfig
 
     default_cfg = SimpleNamespace(onchain_detection=OnchainDetectionConfig())
-    assert _onchain_missing_wss_warning_reason(default_cfg) == "mined_enabled"
+    assert _onchain_missing_wss_warning_reason(default_cfg) is None
 
     pending_cfg = SimpleNamespace(
         onchain_detection=OnchainDetectionConfig(
