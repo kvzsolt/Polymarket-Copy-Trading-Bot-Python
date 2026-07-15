@@ -65,6 +65,30 @@ def test_runtime_local_overrides_runtime_yaml(tmp_path: Path) -> None:
     assert config.wallet.polygon_rpc_url == "https://local-rpc.invalid"
 
 
+def test_default_local_and_secrets_paths_follow_deployment_cwd(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "runtime.local.yml").write_text(
+        yaml.safe_dump({"sizing": {"percentage": 9.5}}),
+        encoding="utf-8",
+    )
+    secrets = tmp_path / "secrets.env"
+    secrets.write_text(
+        "PMCOPY__DISCOVERY__API__TOKEN=deployment-token\n",
+        encoding="utf-8",
+    )
+    secrets.chmod(0o600)
+    monkeypatch.chdir(tmp_path)
+
+    config = load_config(_overrides())
+
+    assert config.sizing.percentage == 9.5
+    assert config.discovery.api.token.get_secret_value() == "deployment-token"
+
+
 def test_process_env_beats_mode_0600_secrets_and_yaml(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

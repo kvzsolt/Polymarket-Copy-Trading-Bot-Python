@@ -387,18 +387,38 @@ class DiscoveryRepo:
                 records,
             )
 
-    async def has_metric_history(self, wallet: str) -> bool:
+    async def has_completed_backfill(self, wallet: str) -> bool:
         async with self._pool.acquire() as connection:
             return bool(
                 await connection.fetchval(
                     """
                     SELECT 1
-                    FROM wallet_metric_timeseries
+                    FROM wallet_backfill_state
                     WHERE wallet = $1
                     LIMIT 1
                     """,
                     wallet.lower(),
                 )
+            )
+
+    async def mark_backfill_complete(
+        self,
+        wallet: str,
+        config_hash: str,
+    ) -> None:
+        async with self._pool.acquire() as connection:
+            await connection.execute(
+                """
+                INSERT INTO wallet_backfill_state (
+                    wallet, completed_at, config_hash
+                ) VALUES ($1, $2, $3)
+                ON CONFLICT (wallet) DO UPDATE SET
+                    completed_at = excluded.completed_at,
+                    config_hash = excluded.config_hash
+                """,
+                wallet.lower(),
+                time.time(),
+                config_hash,
             )
 
     async def upsert_metric_timeseries(

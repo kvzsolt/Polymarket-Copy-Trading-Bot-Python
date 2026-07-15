@@ -1,9 +1,9 @@
 """Immutable application configuration loaded from layered YAML settings.
 
-Source precedence, from lowest to highest:
-config/runtime.yml -> optional config/runtime.local.yml ->
-config/trader_discovery.yaml -> mode-0600 secrets.env -> process variables
-named PMCOPY__SECTION__FIELD.
+Source precedence, from lowest to highest: packaged ``config/runtime.yml`` ->
+optional deployment-CWD ``config/runtime.local.yml`` -> packaged
+``config/trader_discovery.yaml`` -> deployment-CWD mode-0600 ``secrets.env``
+-> process variables named ``PMCOPY__SECTION__FIELD``.
 
 The public object remains a graph of frozen dataclasses so the trading runtime
 gets an immutable, typed contract. Pydantic Settings owns loading, coercion,
@@ -20,6 +20,7 @@ import sys as _sys
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from decimal import Decimal
+from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Literal
@@ -979,11 +980,10 @@ def _validate_semantics(cfg: AppConfig, errors: list[str]) -> None:
 # ---------------------------------------------------------------------------
 
 _CONFIG_ROOT = Path(__file__).resolve().parent
-_REPO_ROOT = _CONFIG_ROOT.parent
 _RUNTIME_YAML = _CONFIG_ROOT / "runtime.yml"
-_RUNTIME_LOCAL_YAML = _CONFIG_ROOT / "runtime.local.yml"
+_RUNTIME_LOCAL_YAML = Path("config/runtime.local.yml")
 _TRADER_DISCOVERY_YAML = _CONFIG_ROOT / "trader_discovery.yaml"
-_SECRETS_ENV = _REPO_ROOT / "secrets.env"
+_SECRETS_ENV = Path("secrets.env")
 
 
 class _LayeredSettings(BaseSettings):
@@ -1124,9 +1124,10 @@ def _read_secret_overrides(path: Path) -> dict[str, Any]:
     """Parse nested application secrets while allowing Compose's PG key."""
     seen: set[str] = set()
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
+        contents = path.read_text(encoding="utf-8")
     except OSError as exc:
         raise EnvValidationError(f"Unable to read secrets file: {path}") from exc
+    lines = contents.splitlines()
     for line_number, raw_line in enumerate(lines, 1):
         stripped = raw_line.strip()
         if not stripped or stripped.startswith("#") or "=" not in stripped:
@@ -1140,7 +1141,10 @@ def _read_secret_overrides(path: Path) -> dict[str, Any]:
             )
         seen.add(key)
 
-    values = dotenv_values(path)
+    # Parse the same immutable snapshot used for duplicate detection. Reading
+    # the path twice left a TOCTOU window where validation and applied values
+    # could come from different file contents.
+    values = dotenv_values(stream=StringIO(contents))
     output: dict[str, Any] = {}
     for raw_key, value in values.items():
         key = str(raw_key)
@@ -1199,9 +1203,18 @@ def load_config(
     ``PMCOPY__EXECUTION__TRADING_MODE=live``.
     """
     runtime_file = Path(runtime_path) if runtime_path else _RUNTIME_YAML
-    local_file = Path(local_path) if local_path else _RUNTIME_LOCAL_YAML
+    deployment_root = Path.cwd()
+    local_file = (
+        Path(local_path)
+        if local_path
+        else deployment_root / _RUNTIME_LOCAL_YAML
+    )
     discovery_file = Path(discovery_path) if discovery_path else _TRADER_DISCOVERY_YAML
-    secrets_file = Path(secrets_path) if secrets_path else _SECRETS_ENV
+    secrets_file = (
+        Path(secrets_path)
+        if secrets_path
+        else deployment_root / _SECRETS_ENV
+    )
 
     payload = _read_yaml(runtime_file, required=True)
     payload = _deep_merge(payload, _read_yaml(local_file, required=False))

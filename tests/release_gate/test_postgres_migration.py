@@ -55,6 +55,7 @@ _EXPECTED_TABLES = {
     "wallet_pnl_daily",
     "wallet_rank_history",
     "wallet_metric_timeseries",
+    "wallet_backfill_state",
     "app_schema_migrations",
 }
 

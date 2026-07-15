@@ -552,6 +552,13 @@ _DISCOVERY_DDL = [
     """,
     """CREATE INDEX IF NOT EXISTS idx_wallet_metrics_wallet_ts
        ON wallet_metric_timeseries(wallet, ts DESC)""",
+    """
+    CREATE TABLE IF NOT EXISTS wallet_backfill_state (
+        wallet       text PRIMARY KEY,
+        completed_at double precision NOT NULL,
+        config_hash  text NOT NULL
+    )
+    """,
 ]
 
 
