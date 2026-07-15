@@ -22,7 +22,7 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING
 
-from config.env import SignatureType
+from config.env import SignatureType, secret_value
 from utils.logger import get_logger, redact_error_detail
 
 if TYPE_CHECKING:
@@ -84,7 +84,7 @@ async def detect_wallet_signature_type(
         back silently to ``POLY_PROXY``.  This prevents the doctor from
         silently accepting a stale or wrong type.
     """
-    signer_address = _derive_signer_address(wallet_config.private_key)
+    signer_address = _derive_signer_address(secret_value(wallet_config.private_key))
     funder_address = str(wallet_config.funder_address or "").strip()
     funder_has_code = False
 

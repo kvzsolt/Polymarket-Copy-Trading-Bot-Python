@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import json
+import orjson
 import time
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
@@ -179,7 +179,7 @@ class UserWebSocket:
                 "passphrase": self._api_creds.get("api_passphrase", ""),
             },
         }
-        await ws.send(json.dumps(auth_payload))
+        await ws.send(orjson.dumps(auth_payload).decode())
         logger.info("UserWS: authentication sent")
         # Polymarket user WS has no auth-ack response; connection alive = authenticated.
         if not self._authenticated:
@@ -256,8 +256,8 @@ class UserWebSocket:
             return
 
         try:
-            data = json.loads(raw_msg)
-        except (json.JSONDecodeError, TypeError):
+            data = orjson.loads(raw_msg)
+        except (orjson.JSONDecodeError, TypeError):
             logger.debug("UserWS: non-JSON message: %s", str(raw_msg)[:100])
             return
 

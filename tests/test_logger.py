@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import time
 from pathlib import Path
 from unittest.mock import patch
@@ -65,12 +64,7 @@ from utils.logger import (
 
 
 @pytest.fixture(autouse=True)
-def _clean_loggers(monkeypatch):
-    # Strip env vars that override the jsonl path so an upstream test that
-    # set ``APP_LOG_JSONL_FILE`` / ``LOG_DIR`` cannot leak into this module
-    # and redirect log writes away from each test's per-tmp_path log dir.
-    monkeypatch.delenv("APP_LOG_JSONL_FILE", raising=False)
-    monkeypatch.delenv("LOG_DIR", raising=False)
+def _clean_loggers():
     _CONFIGURED_LOGGERS.clear()
     root = logging.getLogger(APP_NAME)
     root.handlers.clear()
@@ -124,10 +118,9 @@ class TestConfigureLogging:
             assert "level" in parsed
             assert "ts" in parsed
 
-    def test_env_level_override(self, tmp_log_dir):
-        with patch.dict(os.environ, {"POLYMARKET_LOG_LEVEL": "WARNING"}):
-            log = configure_logging(log_dir=tmp_log_dir)
-            assert log.level == logging.WARNING
+    def test_explicit_level(self, tmp_log_dir):
+        log = configure_logging(log_dir=tmp_log_dir, level="WARNING")
+        assert log.level == logging.WARNING
 
     def test_reconfigure_removes_old_handlers(self, tmp_log_dir):
         log1 = configure_logging(log_dir=tmp_log_dir)
@@ -392,8 +385,8 @@ class TestBuildPanelLines:
     def test_filters_none_values(self):
         lines = _build_panel_lines(Side="BUY", Status=None, Message="test")
         assert len(lines) == 2
-        assert any("Side" in l for l in lines)
-        assert any("Message" in l for l in lines)
+        assert any("Side" in line for line in lines)
+        assert any("Message" in line for line in lines)
 
     def test_all_none(self):
         lines = _build_panel_lines(A=None, B=None)
@@ -544,7 +537,7 @@ class TestTradeLogging:
         for h in log.handlers:
             h.flush()
         jsonl = tmp_log_dir / f"{APP_NAME}.jsonl"
-        trade_lines = [json.loads(l) for l in jsonl.read_text().strip().splitlines() if "EXECUTED" in l]
+        trade_lines = [json.loads(line) for line in jsonl.read_text().strip().splitlines() if "EXECUTED" in line]
         assert len(trade_lines) >= 1
         entry = trade_lines[0]
         assert entry["type"] == "trade_execution"
@@ -561,7 +554,7 @@ class TestTradeLogging:
         for h in log.handlers:
             h.flush()
         jsonl = tmp_log_dir / f"{APP_NAME}.jsonl"
-        trade_lines = [json.loads(l) for l in jsonl.read_text().strip().splitlines() if "DETECTED" in l]
+        trade_lines = [json.loads(line) for line in jsonl.read_text().strip().splitlines() if "DETECTED" in line]
         assert len(trade_lines) >= 1
         assert trade_lines[0]["type"] == "trade_detected"
 
@@ -574,7 +567,7 @@ class TestTradeLogging:
         for h in log.handlers:
             h.flush()
         jsonl = tmp_log_dir / f"{APP_NAME}.jsonl"
-        trade_lines = [json.loads(l) for l in jsonl.read_text().strip().splitlines() if "SUBMIT" in l]
+        trade_lines = [json.loads(line) for line in jsonl.read_text().strip().splitlines() if "SUBMIT" in line]
         assert len(trade_lines) >= 1
         assert trade_lines[0]["type"] == "trade_submitted"
 
@@ -595,7 +588,7 @@ class TestTradeLogging:
         for h in log.handlers:
             h.flush()
         jsonl = tmp_log_dir / f"{APP_NAME}.jsonl"
-        lines = [json.loads(l) for l in jsonl.read_text().strip().splitlines()]
+        lines = [json.loads(line) for line in jsonl.read_text().strip().splitlines()]
         assert any(e.get("type") == "trade_skip" for e in lines)
         assert not any("EXECUTED" in e.get("message", "") for e in lines if e.get("type") == "trade_skip")
 
@@ -613,7 +606,7 @@ class TestTradeLogging:
         for h in log.handlers:
             h.flush()
         jsonl = tmp_log_dir / f"{APP_NAME}.jsonl"
-        entries = [json.loads(l) for l in jsonl.read_text().strip().splitlines()]
+        entries = [json.loads(line) for line in jsonl.read_text().strip().splitlines()]
         decision_rows = [e for e in entries if e.get("type") == "trade_decision"]
         assert len(decision_rows) >= 1
         assert decision_rows[0]["allow"] is True
@@ -624,7 +617,7 @@ class TestTradeLogging:
         for h in log.handlers:
             h.flush()
         jsonl = tmp_log_dir / f"{APP_NAME}.jsonl"
-        hb_lines = [json.loads(l) for l in jsonl.read_text().strip().splitlines() if "heartbeat" in l.lower()]
+        hb_lines = [json.loads(line) for line in jsonl.read_text().strip().splitlines() if "heartbeat" in line.lower()]
         assert len(hb_lines) >= 1
         assert hb_lines[0]["type"] == "monitor_heartbeat"
         assert hb_lines[0]["checkedActivities"] == 42
@@ -645,7 +638,7 @@ class TestTradeLogging:
         for h in log.handlers:
             h.flush()
         jsonl = tmp_log_dir / f"{APP_NAME}.jsonl"
-        trade_lines = [json.loads(l) for l in jsonl.read_text().strip().splitlines() if "EXECUTED" in l]
+        trade_lines = [json.loads(line) for line in jsonl.read_text().strip().splitlines() if "EXECUTED" in line]
         assert trade_lines[0].get("custom_key") == "custom_value"
 
 

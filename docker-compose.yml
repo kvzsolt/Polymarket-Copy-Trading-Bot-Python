@@ -4,7 +4,7 @@
 #   docker compose up -d postgres  # PG only
 #   docker compose up              # bot + PG
 #
-# Set POSTGRES_PASSWORD and DATABASE_URL in mode-0600 secrets.env (see
+# Set POSTGRES_PASSWORD and PMCOPY__DATABASE__DSN in mode-0600 secrets.env (see
 # secrets.env.example). Both services pick them up via env_file, so no
 # --env-file flag is needed. There is deliberately no production default
 # password; postgres itself refuses to start if POSTGRES_PASSWORD is unset.
@@ -43,13 +43,13 @@ services:
     env_file:
       - secrets.env
     environment:
-      # DATABASE_URL comes from secrets.env (see secrets.env.example); inside
+      # PMCOPY__DATABASE__DSN comes from secrets.env; inside
       # the compose network the bot reaches PG via the "postgres" service name,
       # e.g. postgresql://bot:<POSTGRES_PASSWORD>@postgres:5432/polymarket_copytrading_python
-      # TRADING_MODE comes from secrets.env and defaults to paper when absent.
+      # execution.trading_mode defaults to paper in config/runtime.yml.
       # Live mode also remains paused in PostgreSQL until an operator resumes it.
-      ENABLE_METRICS_SERVER: "true"
-      METRICS_PORT: "9102"
+      PMCOPY__NETWORK__ENABLE_METRICS_SERVER: "true"
+      PMCOPY__NETWORK__METRICS_PORT: "9102"
     ports:
       - "9102:9102"
     volumes:

@@ -26,8 +26,6 @@ from bot_cli.commands import (
     run_rotate_traders,
     register_profile_leader_command,
     run_profile_leader,
-    register_tune_strategy_command,
-    run_tune_strategy,
     register_trading_command,
     run_trading,
 )
@@ -45,7 +43,6 @@ _COMMANDS = [
     ("drift", register_drift_command, run_drift),
     ("rotate-traders", register_rotate_traders_command, run_rotate_traders),
     ("profile-leader", register_profile_leader_command, run_profile_leader),
-    ("tune-strategy", register_tune_strategy_command, run_tune_strategy),
     ("trading", register_trading_command, run_trading),
 ]
 
@@ -67,3 +64,7 @@ def main() -> int:
 
     print(f"Unknown command: {args.command}", file=sys.stderr)
     return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

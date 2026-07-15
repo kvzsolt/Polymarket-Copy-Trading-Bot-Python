@@ -5,6 +5,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from pydantic import SecretStr
+
 from config.env import SignatureType, WalletConfig
 
 if TYPE_CHECKING:
@@ -34,7 +36,7 @@ def _parse_signature_type(value) -> SignatureType:
 
 def _runtime_user_from_payload(payload: dict, config: AppConfig) -> RuntimeUser:
     wallet = WalletConfig(
-        private_key=str(payload["private_key"]),
+        private_key=SecretStr(str(payload["private_key"])),
         chain_id=int(payload.get("chain_id", config.wallet.chain_id)),
         signature_type=_parse_signature_type(payload.get("signature_type", 0)),
         funder_address=str(payload["funder_address"]),
@@ -63,7 +65,7 @@ def load_runtime_users(leader_wallets: list[str], config: AppConfig) -> list[Run
     Fallback behavior keeps the existing single-user flow but sources defaults
     from the strongly typed AppConfig instead of the legacy ENV snapshot.
     """
-    config_file = (config.discovery.multi_user_config_file or "").strip()
+    config_file = (config.files.multi_user_config_file or "").strip()
     if not config_file:
         # Pre-fix: signature_type=None left a hole that crashed
         # downstream callers doing ``int(wallet.signature_type)``.

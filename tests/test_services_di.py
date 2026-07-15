@@ -10,14 +10,12 @@ Each test constructs a service with explicit mocked ports and verifies:
 from __future__ import annotations
 
 import inspect
-import pytest
 from unittest.mock import MagicMock
 
 from services.circuitBreaker import CircuitBreaker
 from services.executionService import ExecutionService, _CLOB_CIRCUIT
 from services.healthServer import ReadinessTracker
 from domain.trading_context import TradingContext
-from config.app_config import load_config
 from types import SimpleNamespace
 
 
@@ -90,14 +88,7 @@ class TestOrchestratorDISeams:
         assert "readiness_tracker" in sig.parameters
         assert "config" in sig.parameters
 
-    def test_trading_context_has_readiness_tracker(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # Pretend Python 3.12 — the runtime guard rejects 3.13
-        monkeypatch.setattr("config.app_config._runtime_python_supported", lambda: True)
-        monkeypatch.setenv("PRIVATE_KEY", "0x" + "a" * 64)
-        monkeypatch.setenv("FUNDER_ADDRESS", "0x" + "b" * 40)
-        monkeypatch.setenv("RPC_URL", "https://polygon-rpc.example.com")
-        monkeypatch.setenv("CHAIN_ID", "137")
-        config = load_config()
+    def test_trading_context_has_readiness_tracker(self) -> None:
         tracker = ReadinessTracker()
         ctx = TradingContext(
             user_id="test",
@@ -121,4 +112,3 @@ class TestOrchestratorDISeams:
         sig = inspect.signature(trade_monitor)
         assert "readiness_tracker" in sig.parameters
         assert "config" in sig.parameters
-

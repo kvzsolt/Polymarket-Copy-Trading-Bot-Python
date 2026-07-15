@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
@@ -202,12 +201,7 @@ class RiskPriceCache:
     # them back to the MRU end.
     def __init__(self, *, max_size: int | None = None) -> None:
         if max_size is None:
-            try:
-                max_size = int(os.environ.get("RISK_PRICE_CACHE_MAX_SIZE", "5000"))
-            except (TypeError, ValueError):
-                max_size = 5000
-            if max_size <= 0:
-                max_size = 5000
+            max_size = 5000
         self._max_size = max_size
         self._entries: OrderedDict[str, CachedRiskPrice] = OrderedDict()
 
@@ -1088,14 +1082,6 @@ def _risk_exit_reject_cooldown_seconds(context: TradingContext) -> float:
         val = getattr(risk_cfg, "risk_exit_reject_cooldown_seconds", None)
         if isinstance(val, (int, float)) and float(val) >= 0.0:
             return float(val)
-    raw = os.environ.get("RISK_EXIT_REJECT_COOLDOWN_SECONDS")
-    if raw is not None and str(raw).strip() != "":
-        try:
-            env_val = float(raw)
-        except (TypeError, ValueError):
-            env_val = None
-        if env_val is not None and env_val >= 0.0:
-            return env_val
     return _DEFAULT_RISK_EXIT_REJECT_COOLDOWN_SECONDS
 
 
@@ -1231,41 +1217,34 @@ async def reconcile_unconfirmed_risk_orders(
     return reconciled
 
 
-def _float_env_or_default(name: str, default: float, *, minimum: float) -> float:
-    raw = os.environ.get(name)
-    if raw is None or str(raw).strip() == "":
-        return default
-    try:
-        value = float(raw)
-    except (TypeError, ValueError):
-        return default
-    if value <= 0:
-        return default
-    return max(minimum, value)
-
-
-def _risk_pre_reconcile_timeout_seconds(poll_interval: float) -> float:
-    default = max(float(poll_interval or 0.0), _DEFAULT_RISK_PRE_RECONCILE_TIMEOUT_SECONDS)
-    return _float_env_or_default(
-        "RISK_PRE_RECONCILE_TIMEOUT_SECONDS",
-        default,
-        minimum=0.05,
+def _risk_pre_reconcile_timeout_seconds(
+    poll_interval: float,
+    configured: float | None = None,
+) -> float:
+    return max(
+        0.05,
+        float(poll_interval or 0.0),
+        float(
+            configured
+            if configured is not None
+            else _DEFAULT_RISK_PRE_RECONCILE_TIMEOUT_SECONDS
+        ),
     )
 
 
 def _risk_pre_reconcile_backoff_base_seconds(
     poll_interval: float,
     timeout_seconds: float,
+    configured: float | None = None,
 ) -> float:
-    default = max(
+    return max(
         float(poll_interval or 0.0),
         timeout_seconds,
-        _DEFAULT_RISK_PRE_RECONCILE_BACKOFF_SECONDS,
-    )
-    return _float_env_or_default(
-        "RISK_PRE_RECONCILE_TIMEOUT_BACKOFF_SECONDS",
-        default,
-        minimum=timeout_seconds,
+        float(
+            configured
+            if configured is not None
+            else _DEFAULT_RISK_PRE_RECONCILE_BACKOFF_SECONDS
+        ),
     )
 
 
@@ -1953,10 +1932,15 @@ async def risk_monitor_loop_for_contexts(
         # back off this user's pre-reconcile attempts; the standalone reconciler
         # and WSS wake path can still converge state, while risk checks keep
         # running with ``pre_reconcile=False`` instead of parking behind venue IO.
-        prerec_ceiling = _risk_pre_reconcile_timeout_seconds(poll_interval)
+        risk_config = getattr(config, "risk", None)
+        prerec_ceiling = _risk_pre_reconcile_timeout_seconds(
+            poll_interval,
+            getattr(risk_config, "risk_pre_reconcile_timeout_seconds", None),
+        )
         prerec_backoff_base = _risk_pre_reconcile_backoff_base_seconds(
             poll_interval,
             prerec_ceiling,
+            getattr(risk_config, "risk_pre_reconcile_backoff_seconds", None),
         )
         prerec_now = time.monotonic()
         prerec_contexts = [

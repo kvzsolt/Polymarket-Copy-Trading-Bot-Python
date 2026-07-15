@@ -7,8 +7,6 @@ import json
 from typing import TYPE_CHECKING, Any
 
 from config.app_config import EnvValidationError, load_config
-from config.env import rehydrate_env
-from config.runtime_env import load_runtime_env
 
 if TYPE_CHECKING:
     import asyncpg
@@ -57,8 +55,6 @@ def register_stale_locks_command(subparsers: argparse._SubParsersAction) -> None
 
 def _load_config_or_fail():
     try:
-        load_runtime_env()
-        rehydrate_env()
         return load_config()
     except EnvValidationError as exc:
         print(json.dumps({"error": "config_validation_failed", "details": str(exc)}))

@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 from collections import defaultdict
 from dataclasses import dataclass, field
+from math import inf
 
 
 
@@ -14,9 +15,20 @@ def _metric_key(name: str, labels: dict[str, str] | None = None) -> str:
 
 
 @dataclass
+class HistogramState:
+    name: str
+    boundaries: tuple[float, ...]
+    counts: list[int]
+    labels: dict[str, str]
+    count: int = 0
+    total: float = 0.0
+
+
+@dataclass
 class MetricsRegistry:
     counters: dict[str, float] = field(default_factory=lambda: defaultdict(float))
     gauges: dict[str, float] = field(default_factory=lambda: defaultdict(float))
+    histograms: dict[str, HistogramState] = field(default_factory=dict)
     _lock: threading.Lock = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -43,6 +55,34 @@ class MetricsRegistry:
         with self._lock:
             self.gauges[key] = value
 
+    def observe(
+        self,
+        name: str,
+        value: float,
+        *,
+        buckets: tuple[float, ...],
+        labels: dict[str, str] | None = None,
+    ) -> None:
+        key = _metric_key(name, labels)
+        boundaries = tuple(sorted(set(float(bucket) for bucket in buckets))) + (inf,)
+        with self._lock:
+            state = self.histograms.get(key)
+            if state is None:
+                state = HistogramState(
+                    name=name,
+                    boundaries=boundaries,
+                    counts=[0 for _ in boundaries],
+                    labels=dict(labels or {}),
+                )
+                self.histograms[key] = state
+            elif state.boundaries != boundaries:
+                raise ValueError(f"histogram bucket mismatch for {name}")
+            for index, boundary in enumerate(boundaries):
+                if value <= boundary:
+                    state.counts[index] += 1
+            state.count += 1
+            state.total += float(value)
+
     def snapshot(self) -> tuple[dict[str, float], dict[str, float]]:
         with self._lock:
             return dict(self.counters), dict(self.gauges)
@@ -51,9 +91,22 @@ class MetricsRegistry:
         with self._lock:
             self.counters.clear()
             self.gauges.clear()
+            self.histograms.clear()
 
     def render_prometheus(self) -> str:
         counters, gauges = self.snapshot()
+        with self._lock:
+            histograms = [
+                HistogramState(
+                    name=state.name,
+                    boundaries=state.boundaries,
+                    counts=list(state.counts),
+                    labels=dict(state.labels),
+                    count=state.count,
+                    total=state.total,
+                )
+                for state in self.histograms.values()
+            ]
         lines: list[str] = []
         for name, value in sorted(counters.items()):
             metric_name = name.split("{", 1)[0]
@@ -63,6 +116,21 @@ class MetricsRegistry:
             metric_name = name.split("{", 1)[0]
             lines.append(f"# TYPE {metric_name} gauge")
             lines.append(f"{name} {value}")
+        for state in histograms:
+            name = state.name
+            labels = state.labels
+            lines.append(f"# TYPE {name} histogram")
+            for boundary, count in zip(state.boundaries, state.counts):
+                le = "+Inf" if boundary == inf else str(boundary)
+                lines.append(
+                    f"{_metric_key(name + '_bucket', {**labels, 'le': le})} {count}"
+                )
+            lines.append(
+                f"{_metric_key(name + '_sum', labels)} {state.total}"
+            )
+            lines.append(
+                f"{_metric_key(name + '_count', labels)} {state.count}"
+            )
         return "\n".join(lines) + "\n"
 
 
@@ -82,6 +150,8 @@ METRIC_RISK_EXIT_TRIGGERED = "risk_exits_total"  # legacy site already emits thi
 METRIC_WSS_RECONNECT = "wss_reconnect_total"
 METRIC_WSS_HEARTBEAT_STALL = "wss_heartbeat_stall_total"
 METRIC_CACHE_STALE_EVICTIONS = "cache_stale_evictions_total"
+METRIC_COPY_LATENCY = "copy_latency_seconds"
+COPY_LATENCY_BUCKETS = (0.05, 0.10, 0.25, 0.50, 1.0, 2.0, 5.0, 10.0)
 # Gauges
 GAUGE_RESERVATION_ACTIVE = "reservation_active"
 GAUGE_STALE_LOCKS_ACTIVE = "stale_locks_active"

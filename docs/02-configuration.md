@@ -1,29 +1,53 @@
-# 02 - Configuration Reference
+# Configuration
 
-The bot uses a strictly typed configuration system (`config.app_config.AppConfig`). It fails closed if required variables are missing.
+`AppConfig` is immutable and loaded once. There is no flat environment parser
+and no hot reload.
 
-## File Structure
-- `secrets.env`: Holds sensitive keys (ignored by git).
-- `config/runtime.local.env`: Holds your operational overrides (leaders, sizing, limits).
+Precedence, highest first:
 
-## Core Variables
+1. Process variables named `PMCOPY__SECTION__FIELD`
+2. Mode-`0600` `secrets.env`
+3. `config/trader_discovery.yaml`
+4. Optional ignored `config/runtime.local.yml`
+5. Checked-in `config/runtime.yml`
 
-### Identity & Funding (`secrets.env` & `runtime.local.env`)
-- `PRIVATE_KEY`: Your Polygon wallet private key. (Required for live trading).
-- `FUNDER_ADDRESS`: The public address of the wallet funding the trades.
-- `USER_ADDRESS`: Fallback leader wallet to follow (if explicit list is empty).
-- `LEADER_WALLETS`: Comma-separated list of wallets to strictly follow.
-- `FALCON_API_TOKEN`: Used by the Discovery engine to fetch wallet history.
+The checked-in runtime and discovery YAML files ship with the package. The
+optional `config/runtime.local.yml` and `secrets.env` are resolved from the
+process working directory, allowing a non-editable installation to use the
+operator files beside its deployment without writing into `site-packages`.
 
-### Risk & Sizing (`runtime.local.env`)
-- `DAILY_DRAWDOWN_LIMIT_PCT`: Max percentage of portfolio you are willing to lose in 24h before the kill switch triggers.
-- `MAX_POSITION_SIZE_USDC`: Hard cap on how much USDC can be allocated to a single position, regardless of the leader's sizing.
-- `CIRCUIT_BREAKER_ENABLED`: Set to `true` to enable global trading halts on anomalous errors.
+Use `config/runtime.local.example.yml` as the local template. Public wallet
+addresses, manual leaders, limits, and the paper/live selector belong there.
+Credentials and private RPC URLs belong in `secrets.env`:
 
-### Auto Discovery Engine
-- `FALCON_MIN_WIN_RATE_15D`: Minimum win rate (e.g., 0.55) to consider a candidate.
-- `FALCON_MIN_PNL_15D`: Minimum profit in the last 15 days.
-- `DISCOVERY_DYNAMIC_MONITORING_ENABLED`: Set `true` to let the bot auto-rotate leaders.
+```dotenv
+POSTGRES_PASSWORD=change-me
+PMCOPY__DATABASE__DSN=postgresql://bot:change-me@localhost/polymarket_copytrading_python
+PMCOPY__WALLET__PRIVATE_KEY=0x...
+PMCOPY__WALLET__POLYGON_RPC_URL=https://...
+PMCOPY__NETWORK__RPC_URL=https://...
+PMCOPY__DISCOVERY__API__TOKEN=...
+```
 
-## Multi-User / Allocator Mode
-If running for multiple sub-accounts, you can specify `MULTI_USER_CONFIG_FILE`. Keep this blank for standard single-wallet operations.
+The plain `POSTGRES_PASSWORD` name is retained only because the official
+PostgreSQL image consumes it. The application itself accepts nested
+`PMCOPY__...` keys only.
+
+`database.dsn`, `wallet.funder_address`, and the Polygon RPC URL are required
+even in paper mode because idempotency, reconciliation, discovery history, and
+the roster are PostgreSQL-backed. Unknown YAML, secret, or nested process keys
+fail validation instead of being silently ignored.
+
+Discovery thresholds, component weights, normalization ranges, decay,
+shrinkage, scheduler cadence, backfill limits, hysteresis, and rank-driven
+sizing multipliers all live in `config/trader_discovery.yaml`.
+
+Useful checks:
+
+```bash
+pmcopy config validate
+pmcopy config print
+python scripts/run_discovery_only.py --list-only
+```
+
+`pmcopy config print` always redacts secrets; it has no unsafe unredacted mode.

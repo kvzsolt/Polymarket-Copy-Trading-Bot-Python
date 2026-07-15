@@ -34,12 +34,10 @@ jobs:
             echo "ERROR: xfail markers found — all tests must pass or be deleted"
             exit 1
           fi
-      - name: config smoke (env files + dummy secrets -> load_config)
-        # Critical fast gate (deep-research P0): the shipped runtime env files
-        # must parse through dotenv into a valid AppConfig, and every runtime
-        # key must be typed or allowlisted. Catches a malformed committed
-        # default here rather than at live startup.
-        run: pytest tests/test_config_smoke.py tests/test_env_schema_coverage.py -q
+      - name: config and discovery smoke
+        # Parse the checked-in YAML layers, exercise dotenv/process precedence,
+        # and validate the single discovery pipeline before the broad suite.
+        run: pytest tests/test_config.py tests/discovery -q
       - name: pytest (unit tier)
         run: pytest -m "not integration and not release_gate" --maxfail=5 -q
 
@@ -150,17 +148,39 @@ jobs:
       - uses: actions/checkout@v4
       - name: docker build
         run: docker build -t polymarket-copy-trader:ci .
+      - name: start PostgreSQL
+        run: |
+          docker network create pmct-smoke-net
+          docker run -d --name pmct-postgres --network pmct-smoke-net \
+            -e POSTGRES_USER=bot \
+            -e POSTGRES_PASSWORD=paper-smoke-only \
+            -e POSTGRES_DB=polymarket_copytrading_python \
+            --health-cmd='pg_isready -U bot -d polymarket_copytrading_python' \
+            --health-interval=2s --health-timeout=2s --health-retries=20 \
+            postgres:16-alpine
+          for i in $(seq 1 20); do
+            if [ "$(docker inspect -f '{{.State.Health.Status}}' pmct-postgres)" = "healthy" ]; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs pmct-postgres
+          exit 1
       - name: docker run (paper mode)
         run: |
-          docker run -d --name pmct-smoke \
-            -e PAPER_TRADE_ONLY=true \
-            -e PRIVATE_KEY=0x0000000000000000000000000000000000000000000000000000000000000001 \
-            -e FUNDER_ADDRESS=0x0000000000000000000000000000000000000001 \
-            -e CHAIN_ID=137 \
-            -e RPC_URL=https://polygon-bor-rpc.publicnode.com \
-            -e ENABLE_METRICS_SERVER=true \
-            -e METRICS_PORT=9090 \
-            -p 9090:9090 \
+          docker run -d --name pmct-smoke --network pmct-smoke-net \
+            -e PMCOPY__EXECUTION__TRADING_MODE=paper \
+            -e PMCOPY__DATABASE__DSN=postgresql://bot:paper-smoke-only@pmct-postgres:5432/polymarket_copytrading_python \
+            -e PMCOPY__WALLET__PRIVATE_KEY=0x0000000000000000000000000000000000000000000000000000000000000001 \
+            -e PMCOPY__WALLET__FUNDER_ADDRESS=0x0000000000000000000000000000000000000001 \
+            -e PMCOPY__WALLET__POLYGON_RPC_URL=https://polygon-bor-rpc.publicnode.com \
+            -e PMCOPY__NETWORK__RPC_URL=https://polygon-bor-rpc.publicnode.com \
+            -e 'PMCOPY__LEADER__WALLETS=["0x0000000000000000000000000000000000000002"]' \
+            -e PMCOPY__DISCOVERY__SCHEDULER__ENABLED=false \
+            -e PMCOPY__NETWORK__ENABLE_METRICS_SERVER=true \
+            -e PMCOPY__NETWORK__METRICS_BIND_HOST=0.0.0.0 \
+            -e PMCOPY__NETWORK__METRICS_PORT=9102 \
+            -p 9102:9102 \
             polymarket-copy-trader:ci
       - name: container readiness probe
         run: |
@@ -180,3 +200,7 @@ jobs:
           docker logs pmct-smoke || true
           docker stop pmct-smoke || true
           docker rm pmct-smoke || true
+          docker logs pmct-postgres || true
+          docker stop pmct-postgres || true
+          docker rm pmct-postgres || true
+          docker network rm pmct-smoke-net || true

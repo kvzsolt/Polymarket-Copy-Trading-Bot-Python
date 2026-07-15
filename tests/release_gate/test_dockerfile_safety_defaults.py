@@ -42,12 +42,12 @@ def test_dockerfile_does_not_enable_live_trading(dockerfile_text: str) -> None:
         stripped = line.strip()
         if not stripped.startswith("ENV "):
             continue
-        assert "LIVE_TRADING" not in stripped, (
-            f"Dockerfile must not set LIVE_TRADING via ENV (live must be an "
-            f"explicit per-deployment opt-in): {stripped!r}"
-        )
-        assert not ("PAPER_TRADE_ONLY" in stripped and "false" in stripped.lower()), (
-            f"Dockerfile must not bake PAPER_TRADE_ONLY=false: {stripped!r}"
+        assert not (
+            "PMCOPY__EXECUTION__TRADING_MODE" in stripped
+            and "live" in stripped.lower()
+        ), (
+            "Dockerfile must not bake execution.trading_mode=live: "
+            f"{stripped!r}"
         )
 
 
@@ -61,20 +61,20 @@ def test_non_root_user_directive(dockerfile_text: str) -> None:
 
 
 def test_healthcheck_port_matches_metrics_port(dockerfile_text: str) -> None:
-    # The healthcheck must read METRICS_PORT (default 9102) instead of
+    # The healthcheck must read the nested metrics port (default 9102) instead of
     # hardcoding the historical 9090.
     assert "METRICS_PORT" in dockerfile_text
     assert "EXPOSE 9102" in dockerfile_text or "EXPOSE 9090" not in dockerfile_text
 
 
 def test_metrics_server_enabled_by_default(dockerfile_text: str) -> None:
-    assert "ENV ENABLE_METRICS_SERVER=true" in dockerfile_text, (
+    assert "ENV PMCOPY__NETWORK__ENABLE_METRICS_SERVER=true" in dockerfile_text, (
         "Metrics server must start by default so the HEALTHCHECK has a port"
     )
 
 
 def test_dockerignore_excludes_secrets(dockerignore_text: str) -> None:
-    for sensitive in ("secrets.env", ".env", "config/runtime.local.env", ".git/"):
+    for sensitive in ("secrets.env", ".env", "config/runtime.local.yml", ".git/"):
         assert sensitive in dockerignore_text, (
             f".dockerignore must exclude {sensitive!r} so it never bakes into "
             f"image layer history"

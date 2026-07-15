@@ -200,7 +200,6 @@ class TestWorstPriceMinSize:
         """At price 0.59, 2% slippage → worst 0.61, 5 tokens → 3.05 USDC > 2.5 cap."""
         quote = Decimal("0.59")
         slippage = Decimal("0.02")
-        worst = (quote * (Decimal("1") + slippage)).quantize(Decimal("0.01"))
         # worst = 0.6018 → ceil to tick 0.01 = 0.61
         import math
         worst_ceil = Decimal(str(math.ceil(float(quote * (Decimal("1") + slippage)) * 100) / 100))

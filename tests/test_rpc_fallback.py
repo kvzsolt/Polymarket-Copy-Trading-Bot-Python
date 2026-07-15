@@ -11,7 +11,6 @@ All tests are pure unit tests — no network I/O.
 
 from __future__ import annotations
 
-from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -314,7 +313,6 @@ class TestGetMyBalanceFallback:
 
 class TestCollateralReadinessSignature:
     def test_check_collateral_accepts_fallback_param(self) -> None:
-        import asyncio
         from services.collateral_readiness import check_collateral_readiness
         import inspect
 
@@ -361,23 +359,6 @@ class TestWalletSignatureDetectorFallback:
         params = list(sig.parameters.keys())
         assert "fallback_rpc_url" in params
         assert sig.parameters["fallback_rpc_url"].default == ""
-
-
-# ---------------------------------------------------------------------------
-# Env helper
-# ---------------------------------------------------------------------------
-
-
-class TestEnvFallback:
-    def test_get_fallback_rpc_url_reads_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from config import env
-        monkeypatch.setenv("FALLBACK_RPC_URL", "https://fallback.example")
-        assert env.get_fallback_rpc_url() == "https://fallback.example"
-
-    def test_get_fallback_rpc_url_default_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from config import env
-        monkeypatch.delenv("FALLBACK_RPC_URL", raising=False)
-        assert env.get_fallback_rpc_url() == ""
 
 
 # ---------------------------------------------------------------------------

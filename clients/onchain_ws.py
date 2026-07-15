@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import json
+import orjson
 import random
 from typing import Any, Callable, Coroutine
 
@@ -168,7 +168,7 @@ class OnchainWebSocket:
             "method": "eth_subscribe",
             "params": self._subscribe_params,
         }
-        await ws.send(json.dumps(request))
+        await ws.send(orjson.dumps(request).decode())
         # Wait for the subscription ack. The first frame after the request is
         # the ack (``{"id":1,"result":"<sub_id>"}``); subsequent frames are
         # notifications. We read synchronously here with a timeout.
@@ -178,8 +178,8 @@ class OnchainWebSocket:
             logger.warning("OnchainWS[%s]: subscribe ack timed out", self._name)
             raise ConnectionClosed(None, None)  # trigger reconnect
         try:
-            ack = json.loads(raw)
-        except (json.JSONDecodeError, TypeError):
+            ack = orjson.loads(raw)
+        except (orjson.JSONDecodeError, TypeError):
             logger.warning("OnchainWS[%s]: non-JSON ack: %s", self._name, str(raw)[:100])
             raise ConnectionClosed(None, None)
         if not isinstance(ack, dict) or "result" not in ack:
@@ -192,8 +192,8 @@ class OnchainWebSocket:
         if raw in ("", b""):
             return
         try:
-            data = json.loads(raw)
-        except (json.JSONDecodeError, TypeError):
+            data = orjson.loads(raw)
+        except (orjson.JSONDecodeError, TypeError):
             logger.debug("OnchainWS[%s]: non-JSON frame: %s", self._name, str(raw)[:100])
             return
         if not isinstance(data, dict):

@@ -4,7 +4,7 @@ import sys
 import time
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 import os
 
 import pytest
@@ -14,7 +14,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from services.copyDecisionService import CopyDecisionService
 from services.leaderScoringService import LeaderScore
 from services.tradeAnalyticsService import TradeAnalyticsService
-from services.traderDiscoveryService import TraderDiscoveryService, TraderProfile
 
 
 def _test_config() -> SimpleNamespace:
@@ -28,13 +27,6 @@ def _test_config() -> SimpleNamespace:
         ),
         leader=SimpleNamespace(
             copy_decision_min_score=0.0,
-            leader_score_balance_target_usdc=500.0,
-            leader_score_pnl_bonus_cap=0.1,
-            leader_score_activity_target=8,
-            leader_score_weight_balance=0.35,
-            leader_score_weight_analytics=0.45,
-            leader_score_weight_activity=0.20,
-            leader_score_floor=0.10,
             copy_max_signal_age_seconds=120.0,
             copy_max_price_drift_pct=6.0,
             copy_max_edge_decay_pct=0.1,
@@ -45,6 +37,20 @@ def _test_config() -> SimpleNamespace:
             trust_size_multiplier_min=0.50,
             trust_size_multiplier_max=1.25,
         ),
+        discovery=SimpleNamespace(
+            scoring=SimpleNamespace(
+                runtime_default_roster_score=0.50,
+                runtime_pnl_target_usdc=100.0,
+                runtime_activity_target=8,
+                runtime_score_floor=0.10,
+                runtime_weights=SimpleNamespace(
+                    roster_score=0.70,
+                    win_rate=0.15,
+                    pnl=0.10,
+                    activity=0.05,
+                ),
+            )
+        ),
     )
 
 
@@ -52,8 +58,8 @@ def _leader(score: float = 0.9) -> LeaderScore:
     return LeaderScore(
         wallet="0x" + ("1" * 40),
         score=score,
-        balance_score=score,
-        analytics_score=score,
+        roster_score=score,
+        runtime_score=score,
         activity_score=score,
         sample_size=20,
         details={},
@@ -275,44 +281,6 @@ class TestCopyDecisionService:
         assert decision.target_size_tokens == pytest.approx(2.5)
         assert decision.sizing is not None
         assert decision.sizing.upsized is True
-
-
-class TestTraderDiscoveryService:
-    @pytest.mark.asyncio
-    async def test_unwired_discovery_returns_no_candidates(self):
-        # No-config TraderDiscoveryService is intentionally inert. Discovery
-        # now scores DB candidates only and must not mutate live leaders.
-        svc = TraderDiscoveryService()
-        assert await svc.discover_candidates() == []
-        assert await svc.discover_ranked_leaders() == []
-
-    @pytest.mark.asyncio
-    async def test_discover_ranked_leaders_maps_profiles_without_auto_following(self):
-        svc = TraderDiscoveryService()
-        profiles = [
-            TraderProfile(
-                wallet="0x" + ("2" * 40),
-                composite_score=0.8,
-                total_positions=12,
-                total_current_value=42,
-            )
-        ]
-        with patch.object(
-            svc,
-            "discover_candidates",
-            new=AsyncMock(return_value=profiles),
-        ):
-            ranked = await svc.discover_ranked_leaders(limit=5)
-        assert [r.wallet for r in ranked] == [profiles[0].wallet]
-        assert ranked[0].score == pytest.approx(0.8)
-        assert ranked[0].recent_trade_count == 12
-
-    @pytest.mark.asyncio
-    async def test_cached_profile_lookup_is_lowercase(self):
-        svc = TraderDiscoveryService()
-        profile = TraderProfile(wallet="0x" + ("A" * 40), composite_score=0.7)
-        svc._cache[profile.wallet.lower()] = profile
-        assert svc.get_cached_profile(profile.wallet.upper()) is profile
 
 
 class TestTradeAnalyticsService:

@@ -7,7 +7,7 @@ from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 import config.app_config as app_config_mod
-from config.app_config import load_config
+from tests.config_helpers import load_test_config
 import orchestrators.runtime_bootstrap as runtime_bootstrap
 from orchestrators.runtime_bootstrap import (
     build_trading_context,
@@ -38,7 +38,7 @@ def _config(**overrides):
     }
     env.update(overrides)
     with patch.object(app_config_mod, "_runtime_python_supported", return_value=True):
-        return load_config(env)
+        return load_test_config(env)
 
 
 def test_configured_leaders_uses_typed_config_wallets():
@@ -302,7 +302,6 @@ def test_build_trading_context_uses_typed_sizing_execution_values():
         risk_triggers_repo=None,
     )
 
-    trust_store = object()
     with patch("orchestrators.runtime_bootstrap.rehydrate_position_manager", new=AsyncMock(return_value=None)):
         ctx = asyncio.run(
             build_trading_context(
@@ -310,7 +309,6 @@ def test_build_trading_context_uses_typed_sizing_execution_values():
                 follow,
                 cfg,
                 readiness=object(),
-                trust_store=trust_store,
             )
         )
 
@@ -320,7 +318,7 @@ def test_build_trading_context_uses_typed_sizing_execution_values():
     assert ctx.entry_permission_service is not None
     assert ctx.entry_permission_service._repo is risk_blocks_repo
     assert ctx.config is cfg
-    assert ctx.leader_scorer._trust_store is trust_store
+    assert ctx.leader_scorer._config is cfg
     assert ctx.copy_decision_service._config is cfg
 
 

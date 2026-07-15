@@ -1,12 +1,4 @@
-"""Async asyncpg port of storage/sqlite/leaders_repo.py.
-
-Translation:
-  * ``active`` column is native Postgres ``boolean`` (was integer
-    0/1 in SQLite). Pass Python ``bool`` directly.
-  * Parameter style ``?`` → ``$N``.
-  * Single transaction wraps the bulk UPSERT loop so a mid-batch
-    crash does not leave a partial set of leaders.
-"""
+"""Leader roster repository backed by the single discovery schema."""
 
 from __future__ import annotations
 
@@ -18,118 +10,177 @@ import asyncpg
 from domain.ports.repositories import AbstractLeaderRepository
 
 
-@dataclass
-class LeaderCandidateRecord:
-    leader_id: str
-    score: float
-    recent_trades: int
-    active: bool
-    rejection_reason: str | None = None
-    source: str | None = None
-
-
-@dataclass
+@dataclass(frozen=True, slots=True)
 class LeaderTierRecord:
     wallet: str
     follow_tier: str
     tier_changed_at: float | None
 
 
+@dataclass(frozen=True, slots=True)
+class LeaderRosterRecord:
+    wallet: str
+    tier: str
+    score: float
+    base_score: float
+    longitudinal_score: float | None
+    cycles_in_tier: int
+    promote_streak: int
+    demote_streak: int
+    tier_changed_at: float
+    first_promoted_at: float | None
+    last_seen_at: float | None
+    config_hash: str
+
+
 class LeadersRepo(AbstractLeaderRepository):
-    def __init__(self, pool: asyncpg.Pool):
+    def __init__(self, pool: asyncpg.Pool) -> None:
         self._pool = pool
 
-    async def upsert_candidates(
-        self, records: list[LeaderCandidateRecord]
-    ) -> None:
-        if not records:
-            return
-        async with self._pool.acquire() as conn:
-            async with conn.transaction():
-                for rec in records:
-                    await conn.execute(
-                        """
-                        INSERT INTO discovered_leaders (
-                            wallet, composite_score, total_positions, active,
-                            rejection_reason, source, updated_at
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7)
-                        ON CONFLICT(wallet) DO UPDATE SET
-                            composite_score  = excluded.composite_score,
-                            total_positions  = excluded.total_positions,
-                            active           = excluded.active,
-                            rejection_reason = excluded.rejection_reason,
-                            source           = excluded.source,
-                            updated_at       = excluded.updated_at
-                        """,
-                        rec.leader_id.lower(),
-                        float(rec.score),
-                        int(rec.recent_trades),
-                        bool(rec.active),
-                        rec.rejection_reason,
-                        rec.source,
-                        time.time(),
-                    )
-
-    async def list_active(self) -> list[str]:
-        async with self._pool.acquire() as conn:
-            rows = await conn.fetch(
+    async def list_roster(self) -> list[LeaderRosterRecord]:
+        async with self._pool.acquire() as connection:
+            rows = await connection.fetch(
                 """
-                SELECT wallet
-                FROM discovered_leaders
-                WHERE active = TRUE
-                ORDER BY composite_score DESC, wallet ASC
+                SELECT wallet, tier, score, base_score, longitudinal_score,
+                       cycles_in_tier, promote_streak, demote_streak,
+                       tier_changed_at, first_promoted_at, last_seen_at,
+                       config_hash
+                FROM leader_roster
+                ORDER BY score DESC, wallet ASC
                 """
             )
-        return [str(r["wallet"]) for r in rows]
+        return [_roster_record(row) for row in rows]
 
-    async def get_tier(self, wallet: str) -> LeaderTierRecord:
-        async with self._pool.acquire() as conn:
-            row = await conn.fetchrow(
-                "SELECT wallet, follow_tier, tier_changed_at FROM discovered_leaders WHERE wallet = $1",
+    async def get_roster(self, wallet: str) -> LeaderRosterRecord | None:
+        async with self._pool.acquire() as connection:
+            row = await connection.fetchrow(
+                """
+                SELECT wallet, tier, score, base_score, longitudinal_score,
+                       cycles_in_tier, promote_streak, demote_streak,
+                       tier_changed_at, first_promoted_at, last_seen_at,
+                       config_hash
+                FROM leader_roster
+                WHERE wallet = $1
+                """,
                 wallet.lower(),
             )
-        if row is None:
+        return _roster_record(row) if row is not None else None
+
+    async def save_roster(self, records: list[LeaderRosterRecord]) -> None:
+        if not records:
+            return
+        now = time.time()
+        values = [
+            (
+                record.wallet.lower(),
+                record.tier,
+                float(record.score),
+                float(record.base_score),
+                record.longitudinal_score,
+                int(record.cycles_in_tier),
+                int(record.promote_streak),
+                int(record.demote_streak),
+                float(record.tier_changed_at),
+                record.first_promoted_at,
+                record.last_seen_at,
+                record.config_hash,
+                now,
+            )
+            for record in records
+        ]
+        async with self._pool.acquire() as connection:
+            await connection.executemany(
+                """
+                INSERT INTO leader_roster (
+                    wallet, tier, score, base_score, longitudinal_score,
+                    cycles_in_tier, promote_streak, demote_streak,
+                    tier_changed_at, first_promoted_at, last_seen_at,
+                    config_hash, updated_at
+                ) VALUES (
+                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
+                )
+                ON CONFLICT (wallet) DO UPDATE SET
+                    tier = excluded.tier,
+                    score = excluded.score,
+                    base_score = excluded.base_score,
+                    longitudinal_score = excluded.longitudinal_score,
+                    cycles_in_tier = excluded.cycles_in_tier,
+                    promote_streak = excluded.promote_streak,
+                    demote_streak = excluded.demote_streak,
+                    tier_changed_at = excluded.tier_changed_at,
+                    first_promoted_at = excluded.first_promoted_at,
+                    last_seen_at = excluded.last_seen_at,
+                    config_hash = excluded.config_hash,
+                    updated_at = excluded.updated_at
+                """,
+                values,
+            )
+
+    async def list_active(
+        self,
+        limit: int | None = None,
+        config_hash: str | None = None,
+    ) -> list[str]:
+        query = """
+            SELECT wallet
+            FROM leader_roster
+            WHERE tier = 'active'
+        """
+        values: list[object] = []
+        if config_hash is not None:
+            values.append(config_hash)
+            query += f" AND config_hash = ${len(values)}"
+        query += " ORDER BY score DESC, wallet ASC"
+        if limit is not None:
+            values.append(max(0, int(limit)))
+            query += f" LIMIT ${len(values)}"
+        async with self._pool.acquire() as connection:
+            rows = await connection.fetch(query, *values)
+        return [str(row["wallet"]) for row in rows]
+
+    async def get_tier(self, wallet: str) -> LeaderTierRecord:
+        record = await self.get_roster(wallet)
+        if record is None:
             return LeaderTierRecord(
                 wallet=wallet.lower(),
                 follow_tier="watchlist",
                 tier_changed_at=None,
             )
         return LeaderTierRecord(
-            wallet=str(row["wallet"]),
-            follow_tier=str(row["follow_tier"]) if row["follow_tier"] else "watchlist",
-            # cubic P2: ``if row["tier_changed_at"]`` treats epoch 0
-                # as missing. ``is not None`` preserves a valid 0.0.
-            tier_changed_at=(
-                float(row["tier_changed_at"])
-                if row["tier_changed_at"] is not None
-                else None
-            ),
+            wallet=record.wallet,
+            follow_tier="live_follow" if record.tier == "active" else "watchlist",
+            tier_changed_at=record.tier_changed_at,
         )
 
-    async def update_tier(
-        self, wallet: str, follow_tier: str, tier_changed_at: float
-    ) -> None:
-        async with self._pool.acquire() as conn:
-            await conn.execute(
-                """
-                UPDATE discovered_leaders
-                SET follow_tier = $1, tier_changed_at = $2, updated_at = $3
-                WHERE wallet = $4
-                """,
-                follow_tier,
-                tier_changed_at,
-                time.time(),
-                wallet.lower(),
-            )
+def _roster_record(row: asyncpg.Record) -> LeaderRosterRecord:
+    return LeaderRosterRecord(
+        wallet=str(row["wallet"]),
+        tier=str(row["tier"]),
+        score=float(row["score"] or 0.0),
+        base_score=float(row["base_score"] or 0.0),
+        longitudinal_score=(
+            float(row["longitudinal_score"])
+            if row["longitudinal_score"] is not None
+            else None
+        ),
+        cycles_in_tier=int(row["cycles_in_tier"] or 0),
+        promote_streak=int(row["promote_streak"] or 0),
+        demote_streak=int(row["demote_streak"] or 0),
+        tier_changed_at=float(row["tier_changed_at"]),
+        first_promoted_at=(
+            float(row["first_promoted_at"])
+            if row["first_promoted_at"] is not None
+            else None
+        ),
+        last_seen_at=(
+            float(row["last_seen_at"]) if row["last_seen_at"] is not None else None
+        ),
+        config_hash=str(row["config_hash"] or ""),
+    )
 
-    async def get_tier_for_leader(self, wallet: str) -> str:
-        rec = await self.get_tier(wallet)
-        return rec.follow_tier
 
-    async def get_leaders_by_tier(self, tier: str) -> list[str]:
-        async with self._pool.acquire() as conn:
-            rows = await conn.fetch(
-                "SELECT wallet FROM discovered_leaders WHERE follow_tier = $1",
-                tier,
-            )
-        return [row["wallet"] for row in rows]
+__all__ = [
+    "LeaderRosterRecord",
+    "LeaderTierRecord",
+    "LeadersRepo",
+]

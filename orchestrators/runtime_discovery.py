@@ -2,16 +2,10 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable, Iterable
-from typing import TYPE_CHECKING
 
-from orchestrators.leader_registry import LeaderRegistry
-from services.discovery.auto_trader_selector import AutoTraderSelector
-from services.discovery.balance_provider import build_wallet_balance_provider
+from orchestrators.leader_registry import LeaderRegistry, LeaderRegistryState
 from services.metrics import metrics
 from utils.logger import get_logger, redact_error_detail
-
-if TYPE_CHECKING:
-    from config.app_config import AppConfig
 
 logger = get_logger("RuntimeDiscovery")
 
@@ -21,115 +15,128 @@ async def wait_for_active_leaders(
     configured_leaders: list[str],
     refresh_interval: int,
     *,
-    config: AppConfig,
+    config: object,
+    initial_state: LeaderRegistryState | None = None,
 ) -> list[str]:
-    state = await registry.refresh(configured_leaders)
+    state = initial_state or await registry.refresh(configured_leaders)
     if state.active_monitored:
         return state.active_monitored
-
-    if not configured_leaders:
-        logger.error(
-            "No active leaders after initial refresh. No LEADER_WALLETS configured. "
-            "Discovery may score DB candidates, but live copying requires "
-            "python bot.py rotate-traders or manual LEADER_WALLETS."
-        )
-    else:
-        logger.warning(
-            "No active leaders available; entering discovery-only mode and continuing refresh."
-        )
+    scheduler = getattr(getattr(config, "discovery", None), "scheduler", None)
+    timeout_seconds = max(
+        1,
+        int(getattr(scheduler, "startup_wait_timeout_seconds", 3900)),
+    )
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout_seconds
     while True:
         metrics.inc("no_leaders_monitored_total")
-        await asyncio.sleep(refresh_interval)
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            logger.error(
+                "startup_discovery_wait_timed_out",
+                extra={"timeout_seconds": timeout_seconds},
+            )
+            metrics.inc("startup_discovery_wait_timeout_total")
+            return []
+        await asyncio.sleep(min(max(1, int(refresh_interval)), remaining))
+        if loop.time() >= deadline:
+            continue
         state = await registry.refresh(configured_leaders)
         if state.active_monitored:
-            logger.info("Configured active leaders available; resuming live monitoring")
             return state.active_monitored
 
 
 async def discovery_refresh_loop(
     registry: LeaderRegistry,
     configured_leaders: list[str],
-    refresh_interval: int,
+    refresh_interval: int | None = None,
     *,
-    leaders_repo=None,
-    on_new_leaders: Callable[[list[str]], Awaitable[Iterable[str] | None]] | None = None,
+    on_new_leaders: Callable[[list[str]], Awaitable[Iterable[str] | None]]
+    | None = None,
     already_monitored: set[str] | None = None,
 ) -> None:
-    if already_monitored is None:
-        already_monitored = set()
-    else:
-        normalized_monitored = {
-            wallet.lower() for wallet in already_monitored if wallet
-        }
-        already_monitored.clear()
-        already_monitored.update(normalized_monitored)
-    while True:
-        await asyncio.sleep(refresh_interval)
-        try:
-            await registry.refresh(configured_leaders)
-            config = getattr(registry, "config", None)
-            dynamic_enabled = bool(
-                getattr(
-                    getattr(config, "discovery", None),
-                    "discovery_dynamic_monitoring_enabled",
-                    False,
-                )
-            )
-            if not dynamic_enabled or on_new_leaders is None or leaders_repo is None:
-                continue
+    """Run non-overlapping rediscovery and cached-rescore schedules."""
+    scheduler = registry.config.discovery.scheduler
+    rediscover_seconds = max(
+        1,
+        int(
+            refresh_interval
+            if refresh_interval is not None
+            else scheduler.rediscover_seconds
+        ),
+    )
+    rescore_seconds = max(1, int(scheduler.rescore_seconds))
+    # Keep the caller-owned set as the durable in-process monitor registry.
+    # The supervisor may recreate this coroutine after a crash; mutating the
+    # shared set prevents the replacement loop from hot-adding the same wallet
+    # a second time.
+    monitored = already_monitored if already_monitored is not None else set()
+    normalized_monitored = _normalized_wallet_set(monitored)
+    monitored.clear()
+    monitored.update(normalized_monitored)
+    loop = asyncio.get_running_loop()
+    next_discovery = loop.time() + rediscover_seconds
+    next_rescore = loop.time() + rescore_seconds
 
-            balance_provider = (
-                build_wallet_balance_provider(config)
-                if bool(
-                    getattr(
-                        getattr(config, "discovery", None),
-                        "discovery_reject_stale_evaluations",
-                        True,
-                    )
-                )
-                else None
-            )
-            selector = AutoTraderSelector(
-                leaders_repo,
-                config,
-                balance_provider=balance_provider,
-            )
-            selection = await selector.select_from_db()
-            new_wallets = [
-                wallet
-                for wallet in selection.wallets
-                if wallet and wallet.lower() not in already_monitored
-            ]
-            if not new_wallets:
-                continue
-            try:
-                started_wallets = _normalized_wallet_set(
-                    await on_new_leaders(new_wallets)
-                )
-            except Exception as exc:
-                logger.warning(
-                    "dynamic_leader_callback_failed",
-                    extra={
-                        "wallets": new_wallets,
-                        "error": redact_error_detail(exc),
-                    },
-                )
-                continue
-            if not started_wallets:
-                logger.warning(
-                    "dynamic_leader_callback_started_no_wallets",
-                    extra={"wallets": new_wallets},
-                )
-                continue
-            already_monitored.update(started_wallets)
+    while True:
+        await asyncio.sleep(
+            max(0.05, min(next_discovery, next_rescore) - loop.time())
+        )
+        try:
+            now = loop.time()
+            if now >= next_discovery:
+                state = await registry.refresh(configured_leaders)
+                completed_at = loop.time()
+                next_discovery = completed_at + rediscover_seconds
+                # A full discovery also computes current scores. Move the
+                # cached-rescore deadline forward so coincident deadlines do
+                # not trigger a redundant rescore immediately afterward.
+                next_rescore = completed_at + rescore_seconds
+            else:
+                state = await registry.rescore(configured_leaders)
+                next_rescore = loop.time() + rescore_seconds
+            await _start_new_monitors(state.active_monitored, monitored, on_new_leaders)
+        except asyncio.CancelledError:
+            raise
         except Exception as exc:
             logger.warning(
-                "Background discovery refresh failed",
+                "background_discovery_cycle_failed",
                 extra={"error": redact_error_detail(exc)},
             )
+            # Advance both due deadlines after failure. This is the loop's
+            # misfire guard: a slow or failing cycle never overlaps or spins.
+            now = loop.time()
+            if now >= next_discovery:
+                next_discovery = now + rediscover_seconds
+            if now >= next_rescore:
+                next_rescore = now + rescore_seconds
 
 
-def _normalized_wallet_set(wallets: Iterable[str] | str | None) -> set[str]:
+async def _start_new_monitors(
+    active_wallets: list[str],
+    monitored: set[str],
+    callback: Callable[[list[str]], Awaitable[Iterable[str] | None]] | None,
+) -> None:
+    if callback is None:
+        return
+    new_wallets = [
+        wallet for wallet in active_wallets if wallet.lower() not in monitored
+    ]
+    if not new_wallets:
+        return
+    started = _normalized_wallet_set(await callback(new_wallets))
+    if not started:
+        logger.warning(
+            "dynamic_leader_callback_started_no_wallets",
+            extra={"wallets": new_wallets},
+        )
+        return
+    monitored.update(started)
+
+
+def _normalized_wallet_set(
+    wallets: Iterable[str] | str | None,
+) -> set[str]:
     if wallets is None:
         return set()
     if isinstance(wallets, str):
@@ -139,3 +146,6 @@ def _normalized_wallet_set(wallets: Iterable[str] | str | None) -> set[str]:
         for wallet in wallets
         if str(wallet).strip()
     }
+
+
+__all__ = ["discovery_refresh_loop", "wait_for_active_leaders"]

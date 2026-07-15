@@ -452,6 +452,7 @@ def _monitor_loop_healthy(*, fetch_ok: bool, fetch_interval_s: int, readiness_tr
 
 
 def _log_detected_trade(leader_wallet: str, trade: dict) -> None:
+    trade.setdefault("_copy_detected_monotonic", time.monotonic())
     submarket = (
         trade.get("submarket")
         or trade.get("subMarket")

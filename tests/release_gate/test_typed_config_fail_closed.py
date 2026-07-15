@@ -52,12 +52,7 @@ def test_execution_service_explicit_config_none_raises() -> None:
     order_repo = MagicMock()
     clob_gateway = MagicMock()
 
-    # Today this surfaces as AttributeError on `config.raw`. The contract is
-    # "construction must raise" — accept TypeError/AttributeError/ValueError
-    # so subsequent hardening (e.g. an explicit ConfigError) does not break
-    # the gate. What must NOT happen is silent construction with a default
-    # policy snapshot derived from os.environ.
-    with pytest.raises((TypeError, AttributeError, ValueError)):
+    with pytest.raises(TypeError, match="requires a typed AppConfig"):
         ExecutionService(
             stub_clob_client,
             fee_service,

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 import sys
 import time
@@ -72,8 +71,7 @@ def _project_root() -> Path:
 
 
 def _default_log_dir() -> Path:
-    configured = (os.getenv("LOG_DIR") or DEFAULT_LOG_SUBDIR).strip() or DEFAULT_LOG_SUBDIR
-    return _project_root() / configured
+    return _project_root() / DEFAULT_LOG_SUBDIR
 
 
 _STANDARD_RECORD_ATTRS = frozenset(
@@ -638,17 +636,6 @@ class RichConsoleHandler(logging.Handler):
         ))
 
 
-def _env_level(default: str) -> str:
-    return os.getenv("POLYMARKET_LOG_LEVEL", default).upper()
-
-
-def _env_int(name: str, default: int) -> int:
-    try:
-        return int(str(os.getenv(name, str(default))).strip())
-    except (TypeError, ValueError):
-        return default
-
-
 def _remove_managed_handlers(logger: logging.Logger) -> None:
     keep: list[Handler] = []
     for h in logger.handlers:
@@ -668,19 +655,19 @@ def configure_logging(
     name: str = APP_NAME,
     level: str | int = "INFO",
     log_dir: Path | str | None = None,
+    jsonl_file: Path | str | None = None,
+    max_bytes: int = DEFAULT_MAX_BYTES,
+    backup_count: int = DEFAULT_BACKUP_COUNT,
 ) -> logging.Logger:
     logging.raiseExceptions = False
 
     if isinstance(level, str):
-        resolved_level = getattr(logging, _env_level(level), logging.INFO)
+        resolved_level = getattr(logging, level.upper(), logging.INFO)
     else:
         resolved_level = level
 
     log_dir_path = Path(log_dir) if log_dir else _default_log_dir()
-    jsonl_override = (os.getenv("APP_LOG_JSONL_FILE") or "").strip()
-    jsonl_path = Path(jsonl_override) if jsonl_override else (log_dir_path / f"{APP_NAME}.jsonl")
-    max_bytes = _env_int("LOG_MAX_BYTES", DEFAULT_MAX_BYTES)
-    backup_count = _env_int("LOG_BACKUP_COUNT", DEFAULT_BACKUP_COUNT)
+    jsonl_path = Path(jsonl_file) if jsonl_file else (log_dir_path / f"{APP_NAME}.jsonl")
 
     logger = logging.getLogger(name)
     logger.setLevel(resolved_level)
@@ -695,10 +682,10 @@ def configure_logging(
 
     try:
         log_dir_path.mkdir(parents=True, exist_ok=True)
-        file_handler = RotatingFileHandler(
+        file_handler: logging.Handler = RotatingFileHandler(
             filename=str(jsonl_path),
-            maxBytes=max_bytes,
-            backupCount=backup_count,
+            maxBytes=max(1, int(max_bytes)),
+            backupCount=max(0, int(backup_count)),
             encoding="utf-8",
         )
     except Exception:
@@ -736,7 +723,7 @@ def format_usdc(value: float | int | None) -> str:
 def tx_link(tx_hash: str | None, chain: str | None = None) -> str:
     if not tx_hash:
         return ""
-    chain = (chain or os.getenv("POLYMARKET_CHAIN") or "polygon").lower()
+    chain = (chain or "polygon").lower()
     explorers = {
         "polygon": "https://polygonscan.com/tx/",
         "mumbai": "https://mumbai.polygonscan.com/tx/",

@@ -6,8 +6,6 @@ import asyncio
 import json
 import time
 
-from config.runtime_env import load_runtime_env
-from config.env import rehydrate_env
 from config.app_config import load_config, EnvValidationError
 
 
@@ -28,8 +26,6 @@ async def _gather_status() -> dict:
     }
 
     try:
-        load_runtime_env()
-        rehydrate_env()
         config = load_config()
     except EnvValidationError:
         result["config_error"] = "validation_failed"

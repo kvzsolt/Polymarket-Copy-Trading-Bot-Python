@@ -28,8 +28,8 @@ This project was built to change that. I wanted a bot that I could trust to run 
 The bot operates through specialized engines, each handling a distinct domain of the trading lifecycle. Here is what they do and why they matter:
 
 ### 🔍 Auto Trader Discovery Engine (NEW)
-**What it is:** A fully automated subsystem (`services/discovery/`) that continuously ingests wallet data from Falcon and Polymarket history. It scores candidates based on PnL, win rates, and trading frequency. 
-**Why it's good:** You no longer need to manually hunt for profitable wallets. The engine includes a **Copyability Replay Service** which simulates whether a trader's signals can actually be executed against your specific budget and risk parameters. The **Rotation Service** then automatically promotes hidden alphas to your active leader set and demotes failing wallets before they drain your portfolio.
+**What it is:** One automated funnel (`services/discovery/`) that shortlists wallets with H-Score, audits Wallet 360 across 1/3/7/15-day windows, validates recent trades and market quality, and builds a decay-weighted longitudinal rank.
+**Why it's good:** Every threshold and coefficient lives in `config/trader_discovery.yaml`. A PostgreSQL roster applies consecutive-cycle hysteresis before promotion or demotion, and the same persisted rank feeds runtime trade decisions and bounded position sizing.
 
 ### 🧠 Copy Decision Engine
 **What it is:** The brains behind signal translation (`CopyDecisionService`). It doesn't just buy when a leader buys. It perfectly reconstructs leader portfolios in real-time, calculates exact percentage sell-offs, and mimics partial exits or complex position scaling.
@@ -47,7 +47,7 @@ The bot operates through specialized engines, each handling a distinct domain of
 
 ## ⚡ Core Capabilities
 
-* 🔍 **Trader Discovery & Ranking:** Automatically discovers profitable leaders, ranks them, and simulates their copyability against your actual budget.
+* 🔍 **Trader Discovery & Ranking:** Automatically audits leaders across multiple windows, tracks longitudinal evidence, and stabilizes the active roster with hysteresis.
 * 🎯 **Copy Decision Engine:** Reconstructs leader positions, calculates exact percentage sell-offs, and mimics partial exits flawlessly.
 * 💰 **Portfolio-Aware Risk Sizing:** Adapts order sizes dynamically based on your available USDC, open exposure to the market/leader, daily drawdown limits, and max position caps.
 * 🚧 **Orderbook Quality Gates:** Refuses to execute in thin, manipulated, or spread-gapped orderbooks. 
@@ -62,12 +62,12 @@ The bot operates through specialized engines, each handling a distinct domain of
 - **Language:** Python 3.11+ (3.13 unsupported).
 - **Persistence:** PostgreSQL (positions, orders, fills, intents, reservations) — schema-versioned migrations.
 - **Venue:** official unified `polymarket-client` SDK, pinned and isolated behind the typed gateway.
-- **Composition root:** `bootstrap.py::build_app` (pure, no I/O) wires the shared graph; `app.py::main` adds async / per-user wiring.
+- **Composition root:** `bootstrap.py::build_app` validates config, initializes PostgreSQL, and wires the shared graph; `app.py::main` adds per-user runtimes.
 - **Execution:** `interfaces.clob_gateway.ClobGateway` (port) → `integrations.polymarket.clob_v2_gateway` (adapter) → `services.executionService.ExecutionService` + `services/execution/` subsystem.
 - **Coordination:** canonical `domain.position_key.PositionKey` everywhere; `services.positionActionCoordinator.PositionActionCoordinator` serialises per-position actions at runtime.
 - **Reconciliation:** `ReconciliationService` owns terminal settlement; startup reconciliation runs before risk and trade loops.
-- **Market data:** `clients/market_ws.py` + `clients/user_ws.py` with 5s PING, REST snapshot on reconnect, `assets_ids` subscriptions; TTL-based price caches. Decisions fail closed on stale data.
-- **Config:** typed `config.app_config.AppConfig`; production paths fail closed without it.
+- **Market data:** REST book snapshots are execution authority; market/user WebSockets maintain background state, subscriptions, and lifecycle events. Decisions fail closed on stale metadata.
+- **Config:** immutable `config.app_config.AppConfig`, layered from YAML, mode-0600 secrets, and nested process overrides.
 - **Observability:** `services.healthServer` exposes `/health`, `/ready`, `/metrics`; structured JSONL audit logs.
 - **Operator CLI:** `bot.py` → `bot_cli.main` → `doctor`, `config`, `reservations`, `stale-locks`, `drift`.
 
@@ -108,17 +108,22 @@ pip install -r requirements.txt
 Copy the configuration templates to set up your environment:
 
 ```bash
-cp config/runtime.local.example config/runtime.local.env
+cp config/runtime.local.example.yml config/runtime.local.yml
 cp secrets.env.example secrets.env
 chmod 600 secrets.env
 ```
-Open `secrets.env` and add your sensitive credentials:
+Put public/local overrides in `config/runtime.local.yml`. Open `secrets.env`
+and add only sensitive nested settings:
 ```env
-PRIVATE_KEY=0xYourHexPrivateKey
-RPC_URL=https://polygon-mainnet.g.alchemy.com/v2/YourKey
+PMCOPY__WALLET__PRIVATE_KEY=0xYourHexPrivateKey
+PMCOPY__WALLET__POLYGON_RPC_URL=https://polygon-mainnet.g.alchemy.com/v2/YourKey
+PMCOPY__DATABASE__DSN=postgresql://bot:password@localhost/polymarket_copytrading_python
 ```
-Keep `TRADING_MODE=paper` through validation. Live startup requires
-`TRADING_MODE=live` **and** a separate database-backed resume command.
+The local YAML and secrets paths are resolved from the process working
+directory, so launch `pmcopy` from this deployment directory. Packaged
+`runtime.yml` and `trader_discovery.yaml` remain the canonical defaults.
+Keep `execution.trading_mode: paper` through validation. Live startup requires
+`execution.trading_mode: live` **and** a separate database-backed resume command.
 
 ### 3. Run
 Launch the bot using the Operator CLI.
@@ -182,7 +187,7 @@ Contributions are absolutely welcome! Whether it's a bug fix, a new feature, or 
 **Trade detection via blockchain transactions**
 **Improve execution flow**
 **Fix known bugs, like risk management timeout**
-**Trader discovery V3**
+**Longitudinal trader discovery and stable roster selection**
 **Simplify codebase, refactor**
 
 ## Rust version

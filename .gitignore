@@ -48,10 +48,9 @@ ENV/
 
 # Environment variables
 .env.local
-config/runtime.local.env
+config/runtime.local.yml
 config/bot.toml
 .kilo
-config/runtime.env
 
 # Generated config-local runtime state
 config/data/
@@ -91,5 +90,3 @@ CODEX.md
 KILOCODE.md
 
 pytest_output.txt
-
-config/runtime.env

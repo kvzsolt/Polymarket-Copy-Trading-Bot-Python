@@ -41,16 +41,15 @@ from services.market_data_service import MarketDataBundle, MarketDataSource
 
 
 # ---------------------------------------------------------------------------
-# Autouse fixture: reset circuit breaker + stabilize ENV spread-gate
+# Autouse fixture: reset the process-wide circuit breaker
 # ---------------------------------------------------------------------------
 
 @pytest.fixture(autouse=True)
 def _reset_circuit():
-    """Reset circuit breaker and stabilize ENV spread-gate for all tests."""
+    """Reset the circuit breaker around every test."""
     import services.executionService as _es
     _es._CLOB_CIRCUIT.reset()
-    with patch.dict("config.env.ENV", {"MAX_BOOK_SPREAD_BPS": "500"}, clear=False):
-        yield
+    yield
     _es._CLOB_CIRCUIT.reset()
 
 

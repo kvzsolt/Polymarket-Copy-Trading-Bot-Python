@@ -41,6 +41,7 @@ class TradingContext:
     buy_min_amount: float = 1.0
     buy_max_amount: float = 100.0
     max_market_exposure_usdc: float = 300.0
+    rank_size_multiplier: Decimal = Decimal("1")
     leader_scorer: LeaderScoringService | None = None
     copy_decision_service: CopyDecisionService | None = None
     readiness: ReadinessTracker = field(default_factory=ReadinessTracker)
@@ -122,4 +123,5 @@ class TradingContext:
             adaptive_min_percent=sizing.adaptive_min_percent,
             adaptive_max_percent=sizing.adaptive_max_percent,
             adaptive_threshold_usdc=sizing.adaptive_threshold_usdc,
+            rank_multiplier=self.rank_size_multiplier,
         )
