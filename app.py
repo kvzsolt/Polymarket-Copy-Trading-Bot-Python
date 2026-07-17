@@ -132,6 +132,57 @@ def _flatten_contexts(
     ]
 
 
+def _refresh_onchain_watched_wallets(
+    onchain_runtime: object | None,
+    wallets: Iterable[str],
+) -> bool:
+    """Point the on-chain runtime at the current monitored-leader set.
+
+    The runtime is built once at startup, so leaders promoted later by
+    discovery must be pushed into its mined/pending wallet filters or they
+    never receive fast-path signals. Returns False (never raises) when
+    on-chain detection is absent or disabled: it is an accelerator, and the
+    REST-polling path already covers the hot-added leader.
+    """
+    if onchain_runtime is None:
+        return False
+    update = getattr(onchain_runtime, "update_watched_wallets", None)
+    if not callable(update):
+        return False
+    watched = {
+        str(wallet).strip().lower() for wallet in wallets if str(wallet).strip()
+    }
+    try:
+        update(watched)
+    except Exception as exc:
+        logger.warning(
+            "onchain_watched_wallets_update_failed | error=%s — hot-added "
+            "leaders keep the REST-polling path only",
+            redact_error_detail(exc),
+        )
+        return False
+    logger.info("onchain_watched_wallets_updated | watched=%d", len(watched))
+    return True
+
+
+def _should_wait_for_discovery_roster(config: object) -> bool:
+    """Whether waiting for a discovery roster can actually yield leaders.
+
+    Mirrors ``LeaderRegistry.refresh``, which only reads the roster when
+    ``start_from_roster`` is set. Without that flag the wait can never
+    succeed, so startup fails fast on the empty-roster path instead of
+    blocking for ``startup_wait_timeout_seconds``.
+    """
+    discovery = getattr(config, "discovery", None)
+    scheduler = getattr(discovery, "scheduler", None)
+    api = getattr(discovery, "api", None)
+    return bool(
+        getattr(scheduler, "enabled", False)
+        and getattr(scheduler, "start_from_roster", False)
+        and getattr(api, "has_token", False)
+    )
+
+
 def _onchain_missing_wss_warning_reason(config: object) -> str | None:
     oc_cfg = getattr(config, "onchain_detection", None)
     if oc_cfg is None:
@@ -969,11 +1020,7 @@ async def _run_application(client_registry: list[Any]) -> int:
         return 1
 
     if not active_leaders:
-        discovery_ready = (
-            application.config.discovery.scheduler.enabled
-            and application.config.discovery.api.has_token
-        )
-        if discovery_ready:
+        if _should_wait_for_discovery_roster(application.config):
             logger.info(
                 "startup_waiting_for_discovery_roster",
                 extra={
@@ -987,6 +1034,22 @@ async def _run_application(client_registry: list[Any]) -> int:
                 application.config.discovery.scheduler.rediscover_seconds,
                 config=application.config,
                 initial_state=registry_state,
+            )
+        else:
+            # Fall through to the fail-closed branch below rather than waiting
+            # startup_wait_timeout_seconds for a roster that cannot arrive.
+            logger.info(
+                "startup_roster_wait_skipped",
+                extra={
+                    "reason": "roster cannot supply startup wallets",
+                    "discovery_enabled": (
+                        application.config.discovery.scheduler.enabled
+                    ),
+                    "start_from_roster": (
+                        application.config.discovery.scheduler.start_from_roster
+                    ),
+                    "discovery_has_token": application.config.discovery.api.has_token,
+                },
             )
 
     if not active_leaders:
@@ -1450,6 +1513,10 @@ async def _run_application(client_registry: list[Any]) -> int:
     monitor_tasks: list[asyncio.Task] = []
     monitored_set: set[str] = set(monitored_leaders)
     fetch_interval = application.config.polling.fetch_interval
+    # Bound before ``_on_new_leaders`` closes over it: the discovery loop is
+    # spawned before the on-chain runtime is constructed below, so the name
+    # must already exist for the closure to read at call time.
+    onchain_runtime = None
 
     async def _on_new_leaders(new_wallets: list[str]) -> list[str]:
         started_wallets = await _refresh_contexts_for_new_leaders(
@@ -1526,6 +1593,15 @@ async def _run_application(client_registry: list[Any]) -> int:
                 )
             )
             logger.info("dynamic_leader_monitor_started", extra={"leader": wallet})
+
+        # Give the promoted leaders the mined/pending fast path too. Uses the
+        # wallets whose monitors actually started, so a leader blocked by a
+        # reconcile failure above is not watched on-chain either.
+        if started_wallets:
+            _refresh_onchain_watched_wallets(
+                onchain_runtime,
+                monitored_set | set(started_wallets),
+            )
 
         application.readiness.update(
             monitored_leader_count=len(
@@ -1626,7 +1702,6 @@ async def _run_application(client_registry: list[Any]) -> int:
     # always safe (authoritative); the pending-tx subscription is gated by
     # ``ENABLE_ONCHAIN_PENDING_DETECTION``. Without this wiring the config
     # flags were inert (Greptile P1 "On-chain config unused").
-    onchain_runtime = None
     oc_cfg = application.config.onchain_detection
     ws_url = oc_cfg.onchain_ws_url or oc_cfg.pending_tx_ws_url
     missing_wss_reason = _onchain_missing_wss_warning_reason(application.config)

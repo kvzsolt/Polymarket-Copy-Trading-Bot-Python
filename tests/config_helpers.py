@@ -38,6 +38,10 @@ def _leaf_paths() -> dict[str, list[tuple[str, ...]]]:
 _PATHS = _leaf_paths()
 _ALIASES: dict[str, tuple[tuple[str, ...], ...]] = {
     "DATABASE_URL": (("database", "dsn"),),
+    # runtime.yml's wallet section ships no funder_address key, so the
+    # leaf-path scan cannot discover this one; without an explicit alias the
+    # value fixtures already pass would be silently dropped.
+    "FUNDER_ADDRESS": (("wallet", "funder_address"),),
     "RPC_URL": (("wallet", "polygon_rpc_url"), ("network", "rpc_url")),
     "CHAIN_ID": (("wallet", "chain_id"), ("network", "chain_id")),
     "LEADER_WALLETS": (("leader", "wallets"),),
@@ -96,6 +100,12 @@ def load_test_config(flat: Mapping[str, Any] | None = None, **nested: Any):
     overrides.setdefault("database", {})["dsn"] = overrides.get(
         "database", {}
     ).get("dsn", "postgresql://test:test@localhost/test")
+    # Required in paper mode (where it is the wallet identity). Defaulted here
+    # — like database.dsn above — so fixtures exercising unrelated behaviour
+    # need not restate it. Fixtures that pass one keep theirs.
+    overrides.setdefault("wallet", {}).setdefault(
+        "funder_address", "0x" + "1" * 40
+    )
     for key, value in nested.items():
         overrides[key] = value
     return load_config(overrides)

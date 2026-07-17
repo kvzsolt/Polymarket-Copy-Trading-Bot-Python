@@ -387,17 +387,25 @@ class DiscoveryRepo:
                 records,
             )
 
-    async def has_completed_backfill(self, wallet: str) -> bool:
+    async def has_completed_backfill(self, wallet: str, config_hash: str) -> bool:
+        """Whether this wallet was backfilled under ``config_hash``.
+
+        Scoped to the hash because ``mark_backfill_complete`` stores it: a row
+        written under an older longitudinal config must not suppress the
+        backfill the current config requires. The upsert keeps one row per
+        wallet, so a re-backfill moves that row to the new hash.
+        """
         async with self._pool.acquire() as connection:
             return bool(
                 await connection.fetchval(
                     """
                     SELECT 1
                     FROM wallet_backfill_state
-                    WHERE wallet = $1
+                    WHERE wallet = $1 AND config_hash = $2
                     LIMIT 1
                     """,
                     wallet.lower(),
+                    config_hash,
                 )
             )
 

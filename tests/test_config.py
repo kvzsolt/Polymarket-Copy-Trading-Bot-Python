@@ -38,6 +38,69 @@ def test_checked_in_yaml_loads_as_immutable_typed_config() -> None:
         config.discovery.scheduler.enabled = True  # type: ignore[misc]
 
 
+def test_checked_in_yaml_keeps_pending_onchain_detection_opt_in() -> None:
+    """Pending/mempool signals are provisional — never on by default.
+
+    ``app.main()`` starts the pending subscription as soon as an on-chain WS
+    URL is present and this flag is true, so a checked-in ``true`` would feed
+    unconfirmed mempool signals into the copy path for every operator who
+    configures a WS endpoint for the (authoritative) mined subscription.
+    """
+    config = load_config(_overrides())
+
+    assert config.onchain_detection.enable_onchain_pending_detection is False
+
+
+def test_funder_address_is_required_in_paper_mode() -> None:
+    """Paper has no SDK-resolved wallet, so the funder IS the identity.
+
+    ``create_polymarket_client(authenticated=False)`` returns a public client
+    whose ``wallet_address`` is None, so nothing back-fills the funder later.
+    An empty value would reach ``get_my_balance("")`` and fail readiness with
+    no actionable error, so this must fail closed at config validation.
+    """
+    overrides = _overrides()
+    overrides["wallet"].pop("funder_address")
+
+    with pytest.raises(EnvValidationError, match="FUNDER_ADDRESS is required"):
+        load_config(overrides)
+
+
+def test_funder_address_stays_optional_in_live_mode() -> None:
+    """Live derives the Deposit Wallet from PRIVATE_KEY — one secret, as designed.
+
+    ``create_polymarket_client`` resolves the wallet through the SDK and only
+    cross-checks a configured funder, so requiring one here would break the
+    documented single-secret auth chain.
+    """
+    overrides = _overrides()
+    overrides["wallet"].pop("funder_address")
+    overrides["wallet"]["private_key"] = "0x" + "a" * 64
+    overrides["execution"] = {"trading_mode": "live"}
+
+    config = load_config(overrides)
+
+    assert config.wallet.funder_address == ""
+    assert config.execution.paper_trade_only is False
+
+
+def test_funder_address_still_rejects_malformed_values() -> None:
+    overrides = _overrides()
+    overrides["wallet"]["funder_address"] = "0xnope"
+
+    with pytest.raises(EnvValidationError, match="Invalid FUNDER_ADDRESS"):
+        load_config(overrides)
+
+
+def test_packaged_yaml_pending_detection_matches_typed_default() -> None:
+    """The YAML layer must not silently re-enable a fail-closed code default."""
+    packaged = yaml.safe_load((ROOT / "config" / "runtime.yml").read_text())
+
+    assert (
+        packaged["onchain_detection"]["enable_onchain_pending_detection"] is False
+    )
+
+
 @pytest.mark.parametrize(
     ("raw_value", "expected"),
     [

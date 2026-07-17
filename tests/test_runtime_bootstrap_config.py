@@ -61,7 +61,12 @@ def test_load_runtime_users_single_user_uses_typed_config_defaults():
     users = load_runtime_users(["0x" + "d" * 40], cfg)
     assert len(users) == 1
     user = users[0]
-    assert user.wallet.funder_address == ""
+    # The fixture configures FUNDER_ADDRESS, so the single-user path must
+    # carry it onto the RuntimeUser wallet: in paper mode nothing else ever
+    # resolves an address, and it is the identity health probes use.
+    assert user.wallet.funder_address == _VALID_FUNDER
+    assert user.user_id == _VALID_FUNDER
+    assert user.follows["0x" + "d" * 40].user_id == _VALID_FUNDER
     assert user.wallet.signature_type == SignatureType.DEPOSIT_WALLET
     assert user.follows["0x" + "d" * 40].allocation_pct == 0.07
     assert user.follows["0x" + "d" * 40].max_trade_usdc == 42.0

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
+from hashlib import blake2b
 from typing import Any, TYPE_CHECKING
 
 from domain.trading_context import TradingContext
@@ -102,25 +104,52 @@ async def run_leader_monitor(
         await asyncio.gather(worker_task, return_exceptions=True)
 
 
+def _stable_row_fingerprint(trade: dict) -> str:
+    """Deterministic digest of a whole trade row.
+
+    Used only as the identity of last resort. ``sort_keys`` keeps the digest
+    independent of dict ordering and ``default=str`` tolerates Decimal/None
+    payload values, so the same row always fingerprints the same way within
+    and across runs.
+    """
+    try:
+        canonical = json.dumps(trade, sort_keys=True, default=str)
+    except (TypeError, ValueError):
+        canonical = repr(sorted(trade.items(), key=lambda item: str(item[0])))
+    return blake2b(canonical.encode("utf-8"), digest_size=16).hexdigest()
+
+
+def _trade_identity(trade: dict) -> tuple[str, str, str, str]:
+    tx_hash = str(trade.get("transactionHash") or trade.get("txHash") or "")
+    trade_id = str(
+        trade.get("tradeId")
+        or trade.get("tradeID")
+        or trade.get("trade_id")
+        or trade.get("id")
+        or ""
+    )
+    if not tx_hash and not trade_id:
+        # No venue identity to dedupe on. Keying these rows on (asset, side)
+        # alone would collapse two different anonymous fills of the same token
+        # into one and silently drop a leader trade. Fall back to the whole
+        # row so distinct fills stay distinct while a row echoed by both
+        # batches still dedupes to one.
+        trade_id = f"row:{_stable_row_fingerprint(trade)}"
+    return (
+        tx_hash,
+        trade_id,
+        str(trade.get("asset") or trade.get("tokenID") or ""),
+        str(trade.get("side") or "").upper(),
+    )
+
+
 def _coalesce_trade_batches(
     first: list[dict],
     second: list[dict],
 ) -> list[dict]:
     by_identity: dict[tuple[str, str, str, str], dict] = {}
     for trade in [*first, *second]:
-        identity = (
-            str(trade.get("transactionHash") or trade.get("txHash") or ""),
-            str(
-                trade.get("tradeId")
-                or trade.get("tradeID")
-                or trade.get("trade_id")
-                or trade.get("id")
-                or ""
-            ),
-            str(trade.get("asset") or trade.get("tokenID") or ""),
-            str(trade.get("side") or "").upper(),
-        )
-        by_identity[identity] = trade
+        by_identity[_trade_identity(trade)] = trade
     return sorted(
         by_identity.values(),
         key=lambda trade: float(trade.get("timestamp") or 0),

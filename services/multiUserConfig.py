@@ -87,9 +87,13 @@ def load_runtime_users(leader_wallets: list[str], config: AppConfig) -> list[Run
             polygon_rpc_url=config.wallet.polygon_rpc_url,
             fallback_rpc_url=config.wallet.fallback_rpc_url,
         )
+        # One identity for the user and its follows. Deriving them separately
+        # left every funder-configured deployment with a RuntimeUser keyed on
+        # the funder while its follows still said "default".
+        user_id = config.wallet.funder_address or "default"
         follows = {
             leader: UserFollowConfig(
-                user_id="default",
+                user_id=user_id,
                 leader_id=leader,
                 enabled=True,
                 allocation_pct=config.sizing.percentage / 100.0,
@@ -98,7 +102,7 @@ def load_runtime_users(leader_wallets: list[str], config: AppConfig) -> list[Run
             )
             for leader in leader_wallets
         }
-        return [RuntimeUser(user_id=config.wallet.funder_address or "default", wallet=base_wallet, follows=follows)]
+        return [RuntimeUser(user_id=user_id, wallet=base_wallet, follows=follows)]
 
     # Confined-deputy guard: an operator-supplied path is read as JSON
     # into the process. ``Path(x).resolve()`` so symlinks are followed,

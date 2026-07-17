@@ -40,11 +40,11 @@ class LongitudinalBackfillService:
         self._semaphore = asyncio.Semaphore(config.backfill_concurrency)
 
     async def ensure_wallet(self, wallet: str) -> bool:
-        if await self.repository.has_completed_backfill(wallet):
+        if await self.repository.has_completed_backfill(wallet, self.config_hash):
             return False
         async with self._semaphore:
             # Re-check after acquiring: two concurrent funnels may have raced.
-            if await self.repository.has_completed_backfill(wallet):
+            if await self.repository.has_completed_backfill(wallet, self.config_hash):
                 return False
             try:
                 await self._backfill(wallet)

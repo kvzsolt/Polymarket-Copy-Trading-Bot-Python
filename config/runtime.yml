@@ -216,8 +216,12 @@ market_data:
   subscribe_timeout_seconds: 2.0
 
 onchain_detection:
-  enable_onchain_pending_detection: true
-  # Opt in only when an on-chain WebSocket endpoint is configured locally.
+  # Pending/mempool signals are provisional: a watched tx may be dropped or
+  # reordered before it mines. Opt in explicitly (runtime.local.yml) only
+  # after accepting that the copy path may act on a trade that never lands.
+  enable_onchain_pending_detection: false
+  # Mined OrderFilled logs are authoritative. Inert until an on-chain
+  # WebSocket endpoint is configured locally.
   enable_onchain_mined_detection: true
   pending_tx_provider: alchemy
   onchain_ws_url: ""

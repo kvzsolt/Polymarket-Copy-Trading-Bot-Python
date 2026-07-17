@@ -42,6 +42,23 @@ class Service:
         raise AssertionError("manual leaders must not start discovery")
 
 
+class RescoreService(Service):
+    """Stands in for the funnel's cached rescore.
+
+    ``DiscoveryFunnel.rescore`` re-ranks the last accepted roster from stored
+    snapshots without any external call, so it observes nothing new about a
+    wallet.
+    """
+
+    def __init__(self, score: float = 0.80) -> None:
+        self.score = score
+        self.rescore_calls = 0
+
+    async def rescore(self):
+        self.rescore_calls += 1
+        return [_candidate(self.score)]
+
+
 def _candidate(score: float) -> Candidate:
     return Candidate(
         wallet=WALLET,
@@ -95,6 +112,93 @@ async def test_registry_requires_consecutive_cycles_and_prevents_churn() -> None
     )
     await registry.reconcile_candidates([_candidate(0.10)])
     assert repository.records[WALLET].tier == "watchlist"
+
+
+def _tenure_registry(service, repository):
+    discovery = DiscoveryConfig.model_validate(
+        {"hysteresis": {"min_tenure_cycles": 3, "min_dwell_seconds": 100}}
+    )
+    return LeaderRegistry(
+        discovery_service=service,
+        leaders_repo=repository,  # type: ignore[arg-type]
+        config=SimpleNamespace(discovery=discovery),  # type: ignore[arg-type]
+    )
+
+
+@pytest.mark.asyncio
+async def test_cached_rescore_does_not_advance_promotion_tenure() -> None:
+    """Only fresh evaluation cycles may count toward promotion tenure.
+
+    The rescore schedule fires far more often than rediscovery, so counting
+    cached re-ranks as cycles would let a wallet reach ``min_tenure_cycles``
+    and start being copied without ever being freshly re-evaluated.
+    """
+    service = RescoreService()
+    repository = MemoryLeadersRepo()
+    registry = _tenure_registry(service, repository)
+
+    for _ in range(2):
+        await registry.reconcile_candidates([_candidate(0.80)])
+    assert repository.records[WALLET].tier == "watchlist"
+    assert repository.records[WALLET].promote_streak == 2
+
+    for _ in range(5):
+        await registry.rescore([])
+
+    assert service.rescore_calls == 5
+    assert repository.records[WALLET].tier == "watchlist"
+    assert repository.records[WALLET].promote_streak == 2
+    assert repository.records[WALLET].cycles_in_tier == 1
+
+    # A genuine evaluation cycle still completes the tenure.
+    await registry.reconcile_candidates([_candidate(0.80)])
+    assert repository.records[WALLET].tier == "active"
+
+
+@pytest.mark.asyncio
+async def test_cached_rescore_does_not_advance_demotion_tenure() -> None:
+    service = RescoreService(score=0.10)
+    repository = MemoryLeadersRepo()
+    registry = _tenure_registry(service, repository)
+
+    for _ in range(3):
+        await registry.reconcile_candidates([_candidate(0.80)])
+    assert repository.records[WALLET].tier == "active"
+    repository.records[WALLET] = replace(
+        repository.records[WALLET],
+        tier_changed_at=0,
+        demote_streak=3,
+    )
+
+    for _ in range(5):
+        await registry.rescore([])
+
+    assert repository.records[WALLET].tier == "active"
+    assert repository.records[WALLET].demote_streak == 3
+
+    # Fresh cycles remain able to demote a leader that has gone bad.
+    repository.records[WALLET] = replace(
+        repository.records[WALLET], demote_streak=0
+    )
+    for _ in range(3):
+        await registry.reconcile_candidates([_candidate(0.10)])
+    assert repository.records[WALLET].tier == "watchlist"
+
+
+@pytest.mark.asyncio
+async def test_cached_rescore_still_refreshes_score_and_ranking() -> None:
+    """Freezing tenure must not freeze the score the roster ranks on."""
+    service = RescoreService(score=0.42)
+    repository = MemoryLeadersRepo()
+    registry = _tenure_registry(service, repository)
+
+    await registry.reconcile_candidates([_candidate(0.80)])
+    assert repository.records[WALLET].score == 0.80
+
+    await registry.rescore([])
+
+    assert repository.records[WALLET].score == 0.42
+    assert repository.records[WALLET].longitudinal_score == 0.42
 
 
 @pytest.mark.asyncio
