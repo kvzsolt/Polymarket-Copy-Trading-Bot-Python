@@ -486,14 +486,21 @@ async def test_factory_paper_mode_never_bootstraps_secure_client(
 
 
 @pytest.mark.asyncio
-async def test_factory_passes_complete_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_factory_derives_credentials_and_validates_deposit_wallet(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private_key = "0x" + "a" * 64
+    wallet = "0x" + "b" * 40
     public = SimpleNamespace(close=AsyncMock())
     secure = SimpleNamespace(
         credentials=ApiKeyCreds(
             key=_TEST_CREDENTIAL_VALUES[0],
             secret=_TEST_CREDENTIAL_VALUES[1],
             passphrase=_TEST_CREDENTIAL_VALUES[2],
-        )
+        ),
+        wallet=wallet,
+        wallet_type="DEPOSIT_WALLET",
+        close=AsyncMock(),
     )
     secure_create = AsyncMock(return_value=secure)
     monkeypatch.setattr(
@@ -505,17 +512,16 @@ async def test_factory_passes_complete_credentials(monkeypatch: pytest.MonkeyPat
         secure_create,
     )
     config = SimpleNamespace(
-        wallet=SimpleNamespace(private_key="0x" + "a" * 64, funder_address="0x" + "b" * 40),
-        clob=SimpleNamespace(
-            api_key=_TEST_CREDENTIAL_VALUES[0],
-            api_secret=_TEST_CREDENTIAL_VALUES[1],
-            api_passphrase=_TEST_CREDENTIAL_VALUES[2],
-        ),
+        wallet=SimpleNamespace(private_key=private_key, funder_address=wallet),
     )
-    await create_polymarket_client(config=config)
-    kwargs = secure_create.await_args.kwargs
-    assert kwargs["wallet"] == "0x" + "b" * 40
-    assert kwargs["credentials"].key == _TEST_CREDENTIAL_VALUES[0]
+    client = await create_polymarket_client(config=config)
+
+    secure_create.assert_awaited_once_with(private_key=private_key)
+    assert client.secure_client is secure
+    assert client.wallet_address == wallet
+    assert client.wallet_type == "DEPOSIT_WALLET"
+    assert client.signature_type == SignatureType.DEPOSIT_WALLET
+    assert client.api_creds is secure.credentials
 
 
 @pytest.mark.parametrize(

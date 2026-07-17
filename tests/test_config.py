@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import FrozenInstanceError
 from pathlib import Path
 
@@ -176,6 +177,47 @@ def test_secrets_file_requires_exact_0600(tmp_path: Path) -> None:
         load_config(_overrides(), secrets_path=secrets)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX O_NOFOLLOW hardening")
+def test_secrets_file_rejects_symlink(tmp_path: Path) -> None:
+    target = tmp_path / "target.env"
+    target.write_text("PMCOPY__SIZING__PERCENTAGE=6\n", encoding="utf-8")
+    target.chmod(0o600)
+    secrets = tmp_path / "secrets.env"
+    secrets.symlink_to(target)
+
+    with pytest.raises(EnvValidationError, match="non-symlink"):
+        load_config(_overrides(), secrets_path=secrets)
+
+
+def test_secrets_read_uses_validated_file_descriptor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secrets = tmp_path / "secrets.env"
+    secrets.write_text("PMCOPY__SIZING__PERCENTAGE=6\n", encoding="utf-8")
+    secrets.chmod(0o600)
+    replacement = tmp_path / "replacement.env"
+    replacement.write_text("PMCOPY__SIZING__PERCENTAGE=9\n", encoding="utf-8")
+    replacement.chmod(0o600)
+    real_fstat = os.fstat
+    swapped = False
+
+    def replace_path_after_open(fd: int) -> os.stat_result:
+        nonlocal swapped
+        info = real_fstat(fd)
+        if not swapped:
+            os.replace(replacement, secrets)
+            swapped = True
+        return info
+
+    monkeypatch.setattr("config.app_config.os.fstat", replace_path_after_open)
+
+    config = load_config(_overrides(), secrets_path=secrets)
+
+    assert swapped is True
+    assert config.sizing.percentage == 6
+
+
 def test_secrets_reject_duplicate_and_non_nested_application_keys(
     tmp_path: Path,
 ) -> None:
@@ -237,6 +279,7 @@ def test_runtime_network_rpc_url_is_required() -> None:
 
 def test_secrets_template_omits_runtime_derived_clob_auth() -> None:
     template = (ROOT / "secrets.env.example").read_text(encoding="utf-8")
+    assert template.endswith("\n")
     assert "PMCOPY__WALLET__PRIVATE_KEY=" in template
     assert "PMCOPY__WALLET__FUNDER_ADDRESS=" not in template
     assert "PMCOPY__CLOB__API_KEY=" not in template

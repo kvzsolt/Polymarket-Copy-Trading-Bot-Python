@@ -90,7 +90,7 @@ execution:
   max_share_price: 0.0
   max_retries: 3
   non_terminal_failure_max_attempts: 3
-  trading_mode: 'live'
+  trading_mode: paper
   enable_copy_decision_gate: false
   enable_near_resolution_gate: false
   near_resolution_gate_price: 0.95
