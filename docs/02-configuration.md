@@ -34,10 +34,18 @@ The plain `POSTGRES_PASSWORD` name is retained only because the official
 PostgreSQL image consumes it. The application itself accepts nested
 `PMCOPY__...` keys only.
 
-`database.dsn`, `wallet.funder_address`, and the Polygon RPC URL are required
-even in paper mode because idempotency, reconciliation, discovery history, and
-the roster are PostgreSQL-backed. Unknown YAML, secret, or nested process keys
-fail validation instead of being silently ignored.
+`database.dsn` and the Polygon RPC URL are required even in paper mode because
+idempotency, reconciliation, discovery history, and the roster are
+PostgreSQL-backed.
+
+`wallet.funder_address` is required in paper mode: paper never authenticates,
+so the SDK resolves no wallet and this public address is the identity the
+balance and live-position health probes use. In live mode it is optional — the
+SDK derives the Deposit Wallet from `PMCOPY__WALLET__PRIVATE_KEY` — but when
+set it must match that wallet or startup fails closed.
+
+Unknown YAML, secret, or nested process keys fail validation instead of being
+silently ignored.
 
 Discovery thresholds, component weights, normalization ranges, decay,
 shrinkage, scheduler cadence, backfill limits, hysteresis, and rank-driven

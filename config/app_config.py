@@ -781,7 +781,20 @@ def _validate_semantics(cfg: AppConfig, errors: list[str]) -> None:
         errors.append("PRIVATE_KEY is required.")
     if private_key and not _HEX_PRIVATE_KEY_RE.match(private_key):
         errors.append("PRIVATE_KEY must be a 66-char hex key (0x + 64 hex digits).")
-    if cfg.wallet.funder_address and not _ETH_ADDR_RE.match(cfg.wallet.funder_address):
+    # Required in paper mode only. Live authenticates, so the SDK derives the
+    # Deposit Wallet from the private key and this value is just an optional
+    # cross-check — keeping it optional preserves the one-secret auth chain.
+    # Paper deliberately never builds a secure client, so nothing resolves an
+    # address and this is the bot's only wallet identity: left empty, the
+    # balance and live-position probes query "" and fail readiness with no
+    # actionable error.
+    if cfg.execution.paper_trade_only and not cfg.wallet.funder_address:
+        errors.append(
+            "FUNDER_ADDRESS is required in paper mode (it is the wallet "
+            "identity used by the balance/live-position health probes; live "
+            "mode derives it from PRIVATE_KEY instead)."
+        )
+    elif cfg.wallet.funder_address and not _ETH_ADDR_RE.match(cfg.wallet.funder_address):
         errors.append(
             f'Invalid FUNDER_ADDRESS "{cfg.wallet.funder_address}" '
             f"(expected 42-char Ethereum address)."

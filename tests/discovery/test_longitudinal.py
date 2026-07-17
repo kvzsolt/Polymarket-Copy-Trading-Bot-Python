@@ -101,6 +101,38 @@ async def test_live_metric_row_does_not_count_as_completed_backfill() -> None:
 
 
 @pytest.mark.asyncio
+async def test_backfill_completion_is_scoped_to_the_current_config_hash() -> None:
+    """A completion marker only counts for the config that produced it.
+
+    ``mark_backfill_complete`` records the config hash, so the completion probe
+    must ask about the *current* hash. Otherwise a wallet backfilled under an
+    older longitudinal config keeps its stale marker and the new, required
+    backfill is skipped forever.
+    """
+    repository = SimpleNamespace(
+        has_completed_backfill=AsyncMock(return_value=False),
+        has_metric_history=AsyncMock(return_value=False),
+        mark_backfill_complete=AsyncMock(),
+    )
+    service = LongitudinalBackfillService(
+        client=object(),  # type: ignore[arg-type]
+        repository=repository,
+        config=SimpleNamespace(backfill_concurrency=1),
+        config_hash="new-config-hash",
+    )
+    service._backfill = AsyncMock()  # type: ignore[method-assign]
+
+    assert await service.ensure_wallet("0xABC") is True
+
+    for call in repository.has_completed_backfill.await_args_list:
+        assert call.args == ("0xABC", "new-config-hash")
+    repository.mark_backfill_complete.assert_awaited_once_with(
+        "0xABC",
+        "new-config-hash",
+    )
+
+
+@pytest.mark.asyncio
 async def test_completed_backfill_marker_skips_remote_history_fetch() -> None:
     repository = SimpleNamespace(
         has_completed_backfill=AsyncMock(return_value=True),

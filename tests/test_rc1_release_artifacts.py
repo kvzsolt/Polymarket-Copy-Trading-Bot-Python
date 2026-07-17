@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 
 import pytest
+import yaml
 
 
 @pytest.fixture(scope="module")
@@ -96,6 +98,51 @@ def test_rc1_live_doctor_detects_file_backed_wallet_config(repo_root: Path) -> N
     text = (repo_root / "scripts/rc1_check.sh").read_text(encoding="utf-8")
     assert "python -m bot_cli.main doctor --live" in text
     assert '${PMCOPY__WALLET__PRIVATE_KEY-}' not in text
+
+
+def test_documented_config_templates_exist(repo_root: Path) -> None:
+    """Every ``config/*.example.*`` path named in the docs must be shippable.
+
+    The setup instructions are literal ``cp`` commands, so a template that is
+    referenced but absent breaks first-run setup for every new operator.
+    """
+    sources = [repo_root / "README.md", *(repo_root / "docs").rglob("*.md")]
+    referenced: dict[str, list[str]] = {}
+    for source in sources:
+        for match in re.finditer(
+            r"config/[\w./-]*example[\w./-]*\.ya?ml", source.read_text(encoding="utf-8")
+        ):
+            referenced.setdefault(match.group(0), []).append(
+                str(source.relative_to(repo_root))
+            )
+
+    assert referenced, "expected the docs to reference a config template"
+    missing = {
+        rel: sorted(set(where))
+        for rel, where in referenced.items()
+        if not (repo_root / rel).is_file()
+    }
+    assert not missing, f"documented config templates do not exist: {missing}"
+
+
+def test_runtime_local_example_is_paper_safe_and_secret_free(repo_root: Path) -> None:
+    """The copied-verbatim template must never arm live trading or hold keys."""
+    path = repo_root / "config" / "runtime.local.example.yml"
+    payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+
+    assert payload["execution"]["trading_mode"] == "paper"
+    assert payload["risk"]["kill_switch"] is False
+    # A funder address is required even in paper mode; the template must ship
+    # a syntactically valid placeholder so `pmcopy config validate` explains
+    # the next step instead of failing on the template itself.
+    assert re.fullmatch(r"0x[0-9a-fA-F]{40}", payload["wallet"]["funder_address"])
+
+    # Naming the secret's env var in a comment is fine; carrying its value is
+    # not. Assert on key material rather than on prose.
+    assert "private_key" not in payload.get("wallet", {})
+    assert not re.search(
+        r"0x[0-9a-fA-F]{64}", path.read_text(encoding="utf-8")
+    ), "secrets belong in mode-0600 secrets.env, never in committed YAML"
 
 
 def test_bot_cli_module_executes_its_entrypoint(repo_root: Path) -> None:

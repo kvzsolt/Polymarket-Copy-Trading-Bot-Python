@@ -1,0 +1,40 @@
+# Copy to config/runtime.local.yml. This file is intentionally non-secret and
+# is the documented home for public/local overrides:
+#
+#   cp config/runtime.local.example.yml config/runtime.local.yml
+#
+# Precedence (lowest -> highest):
+#   runtime.yml -> runtime.local.yml -> trader_discovery.yaml -> secrets.env
+#   -> PMCOPY__SECTION__FIELD process environment overrides.
+#
+# Secrets (private key, database DSN, Falcon token, private RPC URLs) belong in
+# mode-0600 secrets.env, never here — config/runtime.local.yml is gitignored,
+# but this example file is committed.
+
+wallet:
+  # Required in paper mode: paper never authenticates, so this is the bot's
+  # only wallet identity for the balance/live-position health probes. Replace
+  # with your own public address.
+  # Optional in live mode, where the SDK derives the Deposit Wallet from
+  # PMCOPY__WALLET__PRIVATE_KEY; if set, it must match that wallet or startup
+  # fails closed.
+  funder_address: "0x0000000000000000000000000000000000000000"
+
+leader:
+  # Public addresses of the traders to copy. Leave empty to start from the
+  # discovery roster instead (requires discovery.scheduler.start_from_roster).
+  wallets:
+    - "0x0000000000000000000000000000000000000000"
+
+execution:
+  # Keep paper until the full runtime is validated. Live trading additionally
+  # requires a separate database-backed resume command.
+  trading_mode: paper
+
+risk:
+  kill_switch: false
+
+network:
+  enable_metrics_server: true
+  metrics_bind_host: 127.0.0.1
+  metrics_port: 9102

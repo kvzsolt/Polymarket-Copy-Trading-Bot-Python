@@ -165,7 +165,9 @@ class LeaderRegistry:
     ) -> LeaderRegistryState:
         candidates = await self.discovery_service.rescore()
         if candidates:
-            await self._reconcile_roster(candidates)
+            # Cached re-rank of stored snapshots: refresh scores and ranking,
+            # but do not let it count toward promotion/demotion tenure.
+            await self._reconcile_roster(candidates, advance_tenure=False)
         configured_clean = _configured_wallets(configured or [])
         active = await self.leaders_repo.list_active(
             limit=self.config.discovery.scheduler.max_active_leaders,
@@ -203,7 +205,19 @@ class LeaderRegistry:
     async def reconcile_candidates(self, candidates: list[Candidate]) -> None:
         await self._reconcile_roster(candidates)
 
-    async def _reconcile_roster(self, candidates: list[Candidate]) -> None:
+    async def _reconcile_roster(
+        self,
+        candidates: list[Candidate],
+        *,
+        advance_tenure: bool = True,
+    ) -> None:
+        """Fold a candidate set into the persisted roster.
+
+        ``advance_tenure=False`` refreshes scores and ranking but freezes the
+        hysteresis counters. Use it for cached rescores, which re-rank stored
+        snapshots without observing the wallet again — letting those count as
+        cycles would satisfy ``min_tenure_cycles`` with no fresh evidence.
+        """
         now = time.time()
         config = self.config.discovery.hysteresis
         config_hash = str(self.discovery_service.config_hash)
@@ -221,16 +235,20 @@ class LeaderRegistry:
             candidate = current.get(wallet)
             score = candidate.score if candidate is not None else 0.0
             demote_streak = (
-                record.demote_streak + 1
-                if score < config.demote_score
-                else 0
+                (record.demote_streak + 1 if score < config.demote_score else 0)
+                if advance_tenure
+                else record.demote_streak
             )
-            next_tier = apply_hysteresis(
-                "active",
-                score,
-                max(0.0, now - record.tier_changed_at),
-                demote_streak,
-                config,
+            next_tier = (
+                apply_hysteresis(
+                    "active",
+                    score,
+                    max(0.0, now - record.tier_changed_at),
+                    demote_streak,
+                    config,
+                )
+                if advance_tenure
+                else record.tier
             )
             changed = next_tier != record.tier
             updates[wallet] = replace(
@@ -245,7 +263,13 @@ class LeaderRegistry:
                     if candidate is not None
                     else record.longitudinal_score
                 ),
-                cycles_in_tier=0 if changed else record.cycles_in_tier + 1,
+                cycles_in_tier=(
+                    0
+                    if changed
+                    else record.cycles_in_tier + 1
+                    if advance_tenure
+                    else record.cycles_in_tier
+                ),
                 promote_streak=0,
                 demote_streak=0 if changed else demote_streak,
                 tier_changed_at=now if changed else record.tier_changed_at,
@@ -271,17 +295,26 @@ class LeaderRegistry:
             candidate = current.get(wallet)
             previous = existing.get(wallet)
             score = candidate.score if candidate is not None else 0.0
+            previous_promote_streak = previous.promote_streak if previous else 0
             promote_streak = (
-                (previous.promote_streak if previous else 0) + 1
-                if score >= config.promote_score
-                else 0
+                (
+                    previous_promote_streak + 1
+                    if score >= config.promote_score
+                    else 0
+                )
+                if advance_tenure
+                else previous_promote_streak
             )
-            recommended = apply_hysteresis(
-                "watchlist",
-                score,
-                max(0.0, now - previous.tier_changed_at) if previous else 0.0,
-                promote_streak,
-                config,
+            recommended = (
+                previous.tier
+                if previous is not None and not advance_tenure
+                else apply_hysteresis(
+                    "watchlist",
+                    score,
+                    max(0.0, now - previous.tier_changed_at) if previous else 0.0,
+                    promote_streak,
+                    config,
+                )
             )
             if (
                 recommended == "active"
@@ -307,7 +340,11 @@ class LeaderRegistry:
                     else None
                 ),
                 cycles_in_tier=(
-                    0 if changed or previous is None else previous.cycles_in_tier + 1
+                    0
+                    if changed or previous is None
+                    else previous.cycles_in_tier + 1
+                    if advance_tenure
+                    else previous.cycles_in_tier
                 ),
                 promote_streak=0 if newly_promoted else promote_streak,
                 demote_streak=0,
