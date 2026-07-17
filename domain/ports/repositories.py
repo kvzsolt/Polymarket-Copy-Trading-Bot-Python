@@ -16,6 +16,9 @@ calls return a coroutine.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Iterable, Mapping, Sequence
+from datetime import date
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 # Record dataclasses live alongside the concrete repos. We import them under
@@ -165,34 +168,92 @@ class AbstractDiscoveryRepository(ABC):
 
     Only the methods actually consumed by services are declared here.
     Concrete `DiscoveryRepo` implementations may offer additional helpers.
+
+    This mirrors the single-generation discovery pipeline: cycle lifecycle
+    (``begin_cycle`` / ``persist_cycle`` / ``complete_cycle``), roster reads
+    consumed by ``DiscoveryFunnel`` and the reporting scripts, and the
+    longitudinal backfill store consumed by ``BackfillService``. The
+    structural ``services.discovery.funnel.DiscoveryRepository`` Protocol
+    covers the funnel's subset of this same surface.
     """
 
     @abstractmethod
-    async def upsert_trader(self, trader: Any) -> None: ...
+    async def begin_cycle(self, config_hash: str) -> str: ...
 
     @abstractmethod
-    async def get_trader(self, wallet: str) -> Any | None: ...
+    async def persist_cycle(
+        self,
+        cycle_id: str,
+        candidates: list[Any],
+        config_hash: str,
+    ) -> None: ...
 
     @abstractmethod
-    async def list_traders(self, *, limit: int = 100, offset: int = 0) -> list[Any]: ...
+    async def complete_cycle(
+        self,
+        cycle_id: str,
+        *,
+        status: str,
+        candidate_count: int,
+        kept_count: int,
+        error: str | None = None,
+    ) -> None: ...
 
     @abstractmethod
-    async def upsert_market(self, market: Any) -> None: ...
+    async def score_history(
+        self,
+        wallet: str,
+        *,
+        since_ts: float,
+    ) -> list[Mapping[str, Any]]: ...
 
     @abstractmethod
-    async def get_market(self, condition_id: str) -> Any | None: ...
+    async def latest_candidates(
+        self,
+        *,
+        config_hash: str | None = None,
+    ) -> list[Any]:
+        """Accepted candidates from the latest completed cycle.
+
+        ``config_hash`` scopes the read to cycles scored under that config so
+        callers that re-stamp rows with the current hash cannot publish a
+        base score computed under an older one.
+        """
 
     @abstractmethod
-    async def insert_trade(self, trade: Any) -> int | None: ...
+    async def persist_rescore(
+        self,
+        candidates: Sequence[Any],
+        config_hash: str,
+    ) -> None: ...
 
     @abstractmethod
-    async def list_trades(self, *args: Any, **kwargs: Any) -> list[Any]: ...
+    async def list_snapshots(self, *, limit: int = 100) -> list[dict[str, Any]]: ...
 
     @abstractmethod
-    async def insert_position_snapshot(self, snapshot: Any) -> int | None: ...
+    async def upsert_pnl_daily(
+        self,
+        wallet: str,
+        rows: Iterable[tuple[date, Decimal, Mapping[str, Any]]],
+    ) -> None: ...
 
     @abstractmethod
-    async def latest_position_snapshot(self, *args: Any, **kwargs: Any) -> Any | None: ...
+    async def upsert_rank_history(
+        self,
+        wallet: str,
+        rows: Iterable[tuple[float, int, int, float, Mapping[str, Any]]],
+    ) -> None: ...
 
     @abstractmethod
-    async def insert_orderbook_snapshot(self, snapshot: Any) -> int | None: ...
+    async def has_completed_backfill(self, wallet: str, config_hash: str) -> bool: ...
+
+    @abstractmethod
+    async def mark_backfill_complete(self, wallet: str, config_hash: str) -> None: ...
+
+    @abstractmethod
+    async def upsert_metric_timeseries(
+        self,
+        wallet: str,
+        rows: Iterable[Mapping[str, Any]],
+        config_hash: str,
+    ) -> None: ...

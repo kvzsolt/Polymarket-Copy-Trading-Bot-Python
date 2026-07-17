@@ -201,6 +201,190 @@ async def test_cached_rescore_still_refreshes_score_and_ranking() -> None:
     assert repository.records[WALLET].longitudinal_score == 0.42
 
 
+# ---------------------------------------------------------------------------
+# Degraded cycles must not demote wallets they never looked at.
+#
+# A partial H-Score sort-mode failure still returns usable candidates, so the
+# funnel completes the cycle and reports ``last_cycle_degraded``. Without that
+# signal every active leader missing from the partial set scores 0.0 and grows
+# a demote streak — so a persistent one-mode outage would demote exactly the
+# leaders that mode surfaces.
+# ---------------------------------------------------------------------------
+
+OTHER = "0x" + "b" * 40
+
+# A scoring-config change moves the hash; roster rows stay pinned to the hash
+# they were last scored under.
+OLD_HASH = "hash-before-config-change"
+NEW_HASH = "hash-after-config-change"
+
+
+class DiscoveryService:
+    """Stands in for ``DiscoveryFunnel``: a run() plus its degraded flag."""
+
+    def __init__(
+        self,
+        candidates: list[Candidate],
+        *,
+        degraded: bool = False,
+        config_hash: str = "hash",
+    ) -> None:
+        self._candidates = candidates
+        self.last_cycle_degraded = degraded
+        self.config_hash = config_hash
+
+    async def run(self) -> list[Candidate]:
+        return list(self._candidates)
+
+
+def _discovery_registry(service, repository) -> LeaderRegistry:
+    discovery = DiscoveryConfig.model_validate(
+        {
+            "api": {"token": "secret"},
+            "scheduler": {"enabled": True},
+            "hysteresis": {"min_tenure_cycles": 1, "min_dwell_seconds": 0},
+        }
+    )
+    return LeaderRegistry(
+        discovery_service=service,
+        leaders_repo=repository,  # type: ignore[arg-type]
+        config=SimpleNamespace(discovery=discovery),  # type: ignore[arg-type]
+    )
+
+
+async def _seed_active_leader(
+    repository: MemoryLeadersRepo,
+    wallet: str,
+    *,
+    config_hash: str = "hash",
+) -> None:
+    service = DiscoveryService(
+        [_candidate_for(wallet, 0.90)], config_hash=config_hash
+    )
+    await _discovery_registry(service, repository).refresh([])
+    assert repository.records[wallet].tier == "active"
+
+
+def _candidate_for(wallet: str, score: float) -> Candidate:
+    return Candidate(
+        wallet=wallet,
+        hscore={},
+        base_score=score,
+        longitudinal_score=score,
+        score=score,
+    )
+
+
+@pytest.mark.asyncio
+async def test_degraded_cycle_does_not_demote_an_absent_wallet() -> None:
+    """A one-sort-mode outage must not look like evidence a leader went bad."""
+    repository = MemoryLeadersRepo()
+    await _seed_active_leader(repository, WALLET)
+    seeded = repository.records[WALLET]
+
+    # OTHER is present; WALLET is missing purely because a sort mode failed.
+    service = DiscoveryService([_candidate_for(OTHER, 0.95)], degraded=True)
+    registry = _discovery_registry(service, repository)
+
+    for _ in range(5):
+        await registry.refresh([])
+
+    record = repository.records[WALLET]
+    assert record.tier == "active"
+    assert record.demote_streak == 0
+    # Its score must not be rewritten to 0.0 — that is what drives demotion.
+    assert record.score == seeded.score
+    assert record.cycles_in_tier == seeded.cycles_in_tier
+    # The wallet the degraded cycle *did* see still updates normally.
+    assert repository.records[OTHER].score == 0.95
+
+
+@pytest.mark.asyncio
+async def test_degraded_cycle_keeps_the_old_config_hash_on_frozen_rows() -> None:
+    """A frozen row must keep the hash its score was actually scored under.
+
+    ``list_active`` filters on ``config_hash`` so that a scoring-config change
+    invalidates every roster row until a cycle recomputes it. A degraded cycle
+    recomputes nothing for a wallet it never observed, so stamping the current
+    hash onto the carried-forward row would re-qualify, under the new config,
+    a score that only the old config ever justified.
+    """
+    repository = MemoryLeadersRepo()
+    await _seed_active_leader(repository, WALLET, config_hash=OLD_HASH)
+    seeded = repository.records[WALLET]
+    assert seeded.config_hash == OLD_HASH
+
+    # The config changes, and the first cycle under the new hash is degraded
+    # and never observes WALLET.
+    service = DiscoveryService(
+        [_candidate_for(OTHER, 0.95)], degraded=True, config_hash=NEW_HASH
+    )
+    registry = _discovery_registry(service, repository)
+
+    state = await registry.refresh([])
+
+    # The row is carried forward unchanged — old hash included.
+    assert repository.records[WALLET] == seeded
+
+    # So its stale score stays ineligible under the new hash...
+    assert await repository.list_active(config_hash=NEW_HASH) == [OTHER]
+    assert WALLET not in state.active_monitored
+    # ...while the wallet this cycle did observe is scored under it.
+    assert repository.records[OTHER].config_hash == NEW_HASH
+
+
+@pytest.mark.asyncio
+async def test_healthy_cycle_still_demotes_a_wallet_absent_from_the_shortlist() -> None:
+    """Preservation: suppression is scoped to degraded cycles only.
+
+    If absence stopped demoting on healthy cycles too, a leader that genuinely
+    stopped qualifying would stay active forever.
+    """
+    repository = MemoryLeadersRepo()
+    await _seed_active_leader(repository, WALLET)
+
+    # Same absence, but the cycle is complete — so absence is real evidence.
+    service = DiscoveryService([_candidate_for(OTHER, 0.95)], degraded=False)
+    registry = _discovery_registry(service, repository)
+
+    await registry.refresh([])
+
+    record = repository.records[WALLET]
+    assert record.score == 0.0
+    assert record.tier == "watchlist"
+
+
+@pytest.mark.asyncio
+async def test_degraded_cycle_still_promotes_the_candidates_it_did_see() -> None:
+    """Suppressing absence-based demotion must not freeze the whole roster."""
+    repository = MemoryLeadersRepo()
+    service = DiscoveryService([_candidate_for(OTHER, 0.95)], degraded=True)
+    registry = _discovery_registry(service, repository)
+
+    await registry.refresh([])
+
+    assert repository.records[OTHER].tier == "active"
+    assert repository.records[OTHER].score == 0.95
+
+
+@pytest.mark.asyncio
+async def test_recovered_cycle_resumes_demoting_absent_wallets() -> None:
+    """Suppression must not outlive the degraded cycle that caused it."""
+    repository = MemoryLeadersRepo()
+    await _seed_active_leader(repository, WALLET)
+
+    service = DiscoveryService([_candidate_for(OTHER, 0.95)], degraded=True)
+    registry = _discovery_registry(service, repository)
+    await registry.refresh([])
+    assert repository.records[WALLET].tier == "active"
+
+    # Upstream recovers: the same absence is now real evidence again.
+    service.last_cycle_degraded = False
+    await registry.refresh([])
+
+    assert repository.records[WALLET].tier == "watchlist"
+
+
 @pytest.mark.asyncio
 async def test_registry_uses_manual_leaders_without_discovery_or_roster() -> None:
     discovery = DiscoveryConfig.model_validate({"api": {"token": "secret"}})

@@ -15,6 +15,10 @@ from typing import Any
 import httpx
 import orjson
 
+from utils.logger import get_logger, redact_error_detail
+
+logger = get_logger("FalconClient")
+
 
 class Agent(IntEnum):
     MARKETS = 574
@@ -48,6 +52,24 @@ _RETRYABLE_EXCEPTIONS = (
 class FalconPage:
     results: tuple[dict[str, Any], ...]
     returned: int
+
+
+@dataclass(frozen=True, slots=True)
+class HScoreShortlist:
+    """Shortlist rows plus the sort modes that failed to contribute to them.
+
+    ``degraded`` marks the row set as *incomplete* rather than merely small.
+    The surviving modes still carry usable candidates, so callers should keep
+    scoring them — but absence from ``rows`` no longer means a wallet stopped
+    qualifying, only that nobody looked.
+    """
+
+    rows: tuple[dict[str, Any], ...]
+    failed_sort_modes: tuple[str, ...] = ()
+
+    @property
+    def degraded(self) -> bool:
+        return bool(self.failed_sort_modes)
 
 
 class TokenBucket:
@@ -291,7 +313,7 @@ def row_value(row: Mapping[str, Any], *aliases: str, default: Any = None) -> Any
     return default
 
 
-async def hscore_rows(client: FalconClient, config: Any) -> list[dict[str, Any]]:
+async def hscore_rows(client: FalconClient, config: Any) -> HScoreShortlist:
     async def _fetch_mode(sort_by: str) -> list[dict[str, Any]]:
         params = {
             "min_win_rate_15d": str(config.min_win_rate_15d),
@@ -312,11 +334,51 @@ async def hscore_rows(client: FalconClient, config: Any) -> list[dict[str, Any]]
             )
         ]
 
+    sort_modes = tuple(str(sort_by) for sort_by in config.sort_modes)
     # The shared token bucket remains the global rate authority; scheduling
     # sort modes together lets pooled HTTP/2 connections overlap network wait.
-    modes = await asyncio.gather(
-        *(_fetch_mode(str(sort_by)) for sort_by in config.sort_modes)
+    settled = await asyncio.gather(
+        *(_fetch_mode(sort_by) for sort_by in sort_modes),
+        return_exceptions=True,
     )
+
+    # One sort mode failing is a partial degradation, not a shortlist outage:
+    # the modes query the same agent and overlap heavily, so the survivors
+    # still carry usable candidates. Discarding them would starve the funnel
+    # and let a single transient 5xx look like "no wallet qualifies".
+    # The failures are reported back on ``HScoreShortlist.failed_sort_modes``
+    # so callers can tell "this wallet stopped qualifying" from "this wallet
+    # was never looked at" — see ``DiscoveryFunnel.last_cycle_degraded``.
+    modes: list[list[dict[str, Any]]] = []
+    failed_modes: list[str] = []
+    for sort_by, result in zip(sort_modes, settled):
+        if isinstance(result, asyncio.CancelledError):
+            # Never swallow cooperative cancellation into a degraded result.
+            raise result
+        if isinstance(result, BaseException):
+            failed_modes.append(sort_by)
+            logger.warning(
+                "hscore_sort_mode_failed",
+                extra={
+                    "sort_by": sort_by,
+                    # The bearer token can surface in transport errors.
+                    "error": redact_error_detail(result),
+                },
+            )
+            continue
+        modes.append(result)
+
+    if failed_modes and not modes:
+        # Total outage must stay loud. Returning [] here would surface as
+        # "H-Score returned no valid wallets" and let LeaderRegistry read an
+        # agent outage as evidence that every active wallet deserves demotion.
+        raise RuntimeError(
+            "all H-Score sort modes failed: "
+            + ", ".join(
+                f"{sort_by}={redact_error_detail(result)}"
+                for sort_by, result in zip(sort_modes, settled)
+            )
+        )
 
     output: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -334,8 +396,14 @@ async def hscore_rows(client: FalconClient, config: Any) -> list[dict[str, Any]]
             seen.add(wallet)
             output.append(row)
             if len(output) >= config.candidate_pool_size:
-                return output
-    return output
+                return HScoreShortlist(
+                    rows=tuple(output),
+                    failed_sort_modes=tuple(failed_modes),
+                )
+    return HScoreShortlist(
+        rows=tuple(output),
+        failed_sort_modes=tuple(failed_modes),
+    )
 
 
 async def wallet360(client: FalconClient, wallet: str, window_days: str) -> dict[str, Any]:
@@ -357,7 +425,7 @@ async def wallet_trades(
     max_pages: int,
 ) -> list[dict[str, Any]]:
     output: list[dict[str, Any]] = []
-    seen: set[tuple[str, str, str]] = set()
+    seen: set[tuple[str, ...]] = set()
     for side in ("BUY", "SELL"):
         params = {
             "wallet_proxy": wallet.lower(),
@@ -392,18 +460,26 @@ async def wallet_trades(
                     default="",
                 )
             )
-            if not transaction_hash and not trade_id:
-                # Preserve distinct anonymous records while still collapsing
-                # exact duplicate pages returned by the upstream agent.
-                trade_id = orjson.dumps(
-                    row,
-                    option=orjson.OPT_SORT_KEYS,
-                ).decode("utf-8")
-            identity = (
-                transaction_hash,
-                trade_id,
-                side,
-            )
+            identity: tuple[str, ...]
+            if trade_id:
+                # A venue trade id already names exactly one fill, so key on
+                # it alone. Folding in asset/condition would let harmless
+                # metadata drift between overlapping pages (``asset`` on one
+                # copy, ``token_id`` on the next; a condition id present only
+                # once) split a single fill into two.
+                identity = ("id", transaction_hash, trade_id, side)
+            else:
+                # No venue id. One transaction settles many fills at once, so
+                # (tx_hash, side) would keep only the first leg and
+                # under-report the leader's real activity. Keying on the whole
+                # row keeps distinct fills apart — they differ in size, price,
+                # or timestamp — while still collapsing the byte-identical
+                # rows that overlapping pages re-emit.
+                identity = (
+                    "raw",
+                    side,
+                    orjson.dumps(row, option=orjson.OPT_SORT_KEYS).decode("utf-8"),
+                )
             if identity in seen:
                 continue
             seen.add(identity)
@@ -493,6 +569,7 @@ __all__ = [
     "Agent",
     "FalconClient",
     "FalconPage",
+    "HScoreShortlist",
     "TokenBucket",
     "hscore_rows",
     "leaderboard_history",

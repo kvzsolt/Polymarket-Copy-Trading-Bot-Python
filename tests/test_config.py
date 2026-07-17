@@ -92,6 +92,94 @@ def test_funder_address_still_rejects_malformed_values() -> None:
         load_config(overrides)
 
 
+# ---------------------------------------------------------------------------
+# Non-finite numeric rejection. A NaN threshold makes every comparison against
+# it False, silently disabling the limit it encodes; an infinite one pins the
+# limit open. Both must fail closed at load, whatever layer supplied them.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("literal", [float("nan"), float("inf"), float("-inf")])
+@pytest.mark.parametrize(
+    ("section", "payload", "location"),
+    [
+        # Frozen-dataclass section: inherits the shell's allow_inf_nan.
+        ("sizing", {"percentage": None}, "sizing.percentage"),
+        ("polling", {"fetch_interval": None}, "polling.fetch_interval"),
+        ("risk", {"max_market_exposure_usdc": None}, "risk.max_market_exposure_usdc"),
+        # Pydantic BaseModel section: carries its own model_config, so it only
+        # rejects because _FrozenSettingsModel sets allow_inf_nan=False.
+        (
+            "discovery",
+            {"shortlist": {"min_pnl_15d": None}},
+            "discovery.shortlist.min_pnl_15d",
+        ),
+    ],
+)
+def test_non_finite_numbers_are_rejected_in_every_section(
+    literal: float,
+    section: str,
+    payload: dict,
+    location: str,
+) -> None:
+    def _fill(node: dict) -> dict:
+        return {
+            key: _fill(value) if isinstance(value, dict) else literal
+            for key, value in node.items()
+        }
+
+    overrides = _overrides()
+    overrides[section] = _fill(payload)
+
+    with pytest.raises(EnvValidationError) as excinfo:
+        load_config(overrides)
+
+    message = str(excinfo.value)
+    assert f"{location}: Input should be a finite number" in message
+    # Aggregated + redacted: the rejected input is never echoed back.
+    assert "Invalid application configuration:" in message
+    assert repr(literal) not in message
+
+
+@pytest.mark.parametrize("raw", ["nan", "inf", "-inf"])
+def test_non_finite_numbers_are_rejected_from_environment_strings(
+    raw: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Env values arrive as strings and still coerce to non-finite floats."""
+    monkeypatch.setenv("PMCOPY__SIZING__PERCENTAGE", raw)
+
+    with pytest.raises(EnvValidationError, match="Input should be a finite number"):
+        load_config(_overrides())
+
+
+@pytest.mark.parametrize("raw", [".nan", ".inf", "-.inf"])
+def test_non_finite_numbers_are_rejected_from_yaml_literals(
+    raw: str,
+    tmp_path: Path,
+) -> None:
+    """``.nan``/``.inf`` are valid YAML floats, not strings."""
+    local = tmp_path / "runtime.local.yml"
+    local.write_text(f"sizing:\n  percentage: {raw}\n", encoding="utf-8")
+
+    assert isinstance(yaml.safe_load(local.read_text())["sizing"]["percentage"], float)
+
+    with pytest.raises(EnvValidationError, match="Input should be a finite number"):
+        load_config(_overrides(), local_path=local)
+
+
+def test_finite_numeric_values_still_load() -> None:
+    """Preservation: the constraint must only reject non-finite values."""
+    overrides = _overrides()
+    overrides["sizing"] = {"percentage": 12.5}
+    overrides["discovery"] = {"shortlist": {"min_pnl_15d": -250.0}}
+
+    config = load_config(overrides)
+
+    assert config.sizing.percentage == 12.5
+    assert config.discovery.shortlist.min_pnl_15d == -250.0
+
+
 def test_packaged_yaml_pending_detection_matches_typed_default() -> None:
     """The YAML layer must not silently re-enable a fail-closed code default."""
     packaged = yaml.safe_load((ROOT / "config" / "runtime.yml").read_text())

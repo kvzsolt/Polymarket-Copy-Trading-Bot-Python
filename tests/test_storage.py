@@ -26,6 +26,7 @@ from domain.ports import (
     AbstractOrderRepository,
     AbstractPositionRepository,
 )
+from services.discovery.models import Candidate
 from storage.postgres.cursors_repo import CursorsRepo, TradeCursor
 from storage.postgres.discovery_repo import DiscoveryRepo
 from storage.postgres.fills_repo import FillRecord, FillsRepo
@@ -255,6 +256,49 @@ class TestLeadersRepo:
         assert "0xbbb" not in actives
         assert matching == ["0xaaa"]
         assert stale == []
+
+
+class TestDiscoveryRepo:
+    @pytest.mark.asyncio
+    async def test_latest_candidates_scopes_to_the_requested_config_hash(self) -> None:
+        """A base_score is only meaningful under the config that produced it.
+
+        ``DiscoveryFunnel.rescore`` reuses the stored base_score and re-stamps
+        the row with the *current* hash, so an old-hash snapshot must not be
+        readable through the current roster.
+        """
+        async with _pg_pool() as pool:
+            repo = DiscoveryRepo(pool)
+
+            async def _cycle(config_hash: str, wallet: str) -> None:
+                cycle_id = await repo.begin_cycle(config_hash)
+                candidate = Candidate(wallet=wallet, hscore={})
+                candidate.base_score = 1.0
+                candidate.score = 1.0
+                await repo.persist_cycle(cycle_id, [candidate], config_hash)
+                await repo.complete_cycle(
+                    cycle_id,
+                    status="completed",
+                    candidate_count=1,
+                    kept_count=1,
+                )
+
+            await _cycle("old-hash", "0xold")
+            await _cycle("current-hash", "0xcurrent")
+
+            scoped = await repo.latest_candidates(config_hash="current-hash")
+            stale = await repo.latest_candidates(config_hash="old-hash")
+            unknown = await repo.latest_candidates(config_hash="never-used")
+            unscoped = await repo.latest_candidates()
+
+        assert [candidate.wallet for candidate in scoped] == ["0xcurrent"]
+        # An older cycle is still readable when explicitly asked for by hash.
+        assert [candidate.wallet for candidate in stale] == ["0xold"]
+        # A hash no cycle ever ran under yields nothing — never a silent
+        # fallback to the newest cycle.
+        assert unknown == []
+        # None keeps the unscoped latest-completed-cycle read.
+        assert [candidate.wallet for candidate in unscoped] == ["0xcurrent"]
 
 
 class TestCursorsRepo:
