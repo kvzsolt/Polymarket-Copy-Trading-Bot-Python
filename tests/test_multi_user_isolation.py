@@ -175,8 +175,8 @@ def _build_context(*, user_id: str, pool) -> TradingContext:
 
 @pytest.mark.asyncio
 async def test_multi_user_positions_and_pnl_are_isolated(monkeypatch):
-    from config.env import rehydrate_env
-    rehydrate_env()
+    # ``_build_context`` passes an explicit override dict to ``load_config``,
+    # so this test never reads process env for its config.
     import orchestrators.trade_pipeline as trade_pipeline
 
     async def _fake_balance(_wallet: str):
