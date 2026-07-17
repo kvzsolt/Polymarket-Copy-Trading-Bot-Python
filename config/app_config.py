@@ -12,6 +12,7 @@ nested environment overrides, and error aggregation.
 
 from __future__ import annotations
 
+import errno
 import logging
 import os
 import re
@@ -1095,27 +1096,45 @@ def _deep_merge(base: dict[str, Any], override: Mapping[str, Any]) -> dict[str, 
     return merged
 
 
-def _validate_secrets_path(path: Path) -> None:
-    """Require the local dotenv secret container to be a regular 0600 file."""
+def _read_secrets_contents(path: Path) -> str | None:
+    """Read one validated secrets snapshot without following symlinks."""
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
     try:
-        info = path.lstat()
+        fd = os.open(path, flags)
+    except FileNotFoundError:
+        return None
     except OSError as exc:
-        raise EnvValidationError(f"Unable to inspect secrets file: {path}") from exc
-    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
-        raise EnvValidationError(f"Secrets path must be a regular non-symlink file: {path}")
-    if os.name != "nt" and stat.S_IMODE(info.st_mode) != 0o600:
-        raise EnvValidationError(
-            f"Secrets file must have permissions 0600 exactly (chmod 600): {path}"
-        )
+        if exc.errno == errno.ELOOP:
+            raise EnvValidationError(
+                f"Secrets path must be a regular non-symlink file: {path}"
+            ) from exc
+        raise EnvValidationError(f"Unable to securely open secrets file: {path}") from exc
+
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise EnvValidationError(
+                f"Secrets path must be a regular non-symlink file: {path}"
+            )
+        if os.name != "nt" and stat.S_IMODE(info.st_mode) != 0o600:
+            raise EnvValidationError(
+                f"Secrets file must have permissions 0600 exactly (chmod 600): {path}"
+            )
+        stream = os.fdopen(fd, "r", encoding="utf-8")
+        fd = -1
+        with stream:
+            return stream.read()
+    except (OSError, UnicodeError) as exc:
+        raise EnvValidationError(f"Unable to read secrets file: {path}") from exc
+    finally:
+        if fd >= 0:
+            os.close(fd)
 
 
-def _read_secret_overrides(path: Path) -> dict[str, Any]:
+def _read_secret_overrides(contents: str) -> dict[str, Any]:
     """Parse nested application secrets while allowing Compose's PG key."""
     seen: set[str] = set()
-    try:
-        contents = path.read_text(encoding="utf-8")
-    except OSError as exc:
-        raise EnvValidationError(f"Unable to read secrets file: {path}") from exc
     lines = contents.splitlines()
     for line_number, raw_line in enumerate(lines, 1):
         stripped = raw_line.strip()
@@ -1217,9 +1236,9 @@ def load_config(
             )
         payload = _deep_merge(payload, overrides)
 
-    if secrets_file.exists():
-        _validate_secrets_path(secrets_file)
-        payload = _deep_merge(payload, _read_secret_overrides(secrets_file))
+    secrets_contents = _read_secrets_contents(secrets_file)
+    if secrets_contents is not None:
+        payload = _deep_merge(payload, _read_secret_overrides(secrets_contents))
 
     try:
         settings = _LayeredSettings(**payload)

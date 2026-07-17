@@ -190,17 +190,17 @@ jobs:
             polymarket-copy-trader:ci
       - name: container readiness probe
         run: |
-          # Give the console entrypoint time to import and begin startup; an
-          # immediate inspect can report running just before an import crash.
+          # Wait for the image HEALTHCHECK to prove the actual readiness
+          # endpoint, not merely that the process has not exited yet.
           sleep 5
           for i in $(seq 1 12); do
-            if [ "$(docker inspect -f '{{.State.Running}}' pmct-smoke 2>/dev/null)" = "true" ]; then
-              echo "container running (attempt $i)"
+            if [ "$(docker inspect -f '{{.State.Health.Status}}' pmct-smoke 2>/dev/null)" = "healthy" ]; then
+              echo "container healthy (attempt $i)"
               exit 0
             fi
             sleep 5
           done
-          echo "container failed to stay running"
+          echo "container failed to become healthy"
           docker logs pmct-smoke || true
           exit 1
       - name: cleanup
