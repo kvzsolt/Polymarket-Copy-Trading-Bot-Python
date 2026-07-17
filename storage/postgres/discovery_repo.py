@@ -12,6 +12,7 @@ from typing import Any
 import asyncpg
 import orjson
 
+from domain.ports.repositories import AbstractDiscoveryRepository
 from services.discovery.models import Candidate
 
 
@@ -34,7 +35,7 @@ def _decoded(value: Any, default: Any) -> Any:
     return default
 
 
-class DiscoveryRepo:
+class DiscoveryRepo(AbstractDiscoveryRepository):
     """Batched cycle, score, roster-input, and time-series persistence."""
 
     def __init__(self, pool: asyncpg.Pool) -> None:
@@ -236,7 +237,19 @@ class DiscoveryRepo:
             )
         return [dict(row) for row in rows]
 
-    async def latest_candidates(self) -> list[Candidate]:
+    async def latest_candidates(
+        self,
+        *,
+        config_hash: str | None = None,
+    ) -> list[Candidate]:
+        """Accepted candidates from the latest completed cycle.
+
+        ``config_hash`` scopes the result to cycles scored under that config.
+        A snapshot's ``base_score`` is only meaningful under the config that
+        produced it, so a caller that re-stamps rows with the current hash
+        must pass it; ``None`` keeps the unscoped read used by reporting
+        scripts that only display what was recorded.
+        """
         async with self._pool.acquire() as connection:
             rows = await connection.fetch(
                 """
@@ -244,6 +257,7 @@ class DiscoveryRepo:
                     SELECT cycle_id
                     FROM discovery_cycles
                     WHERE status = 'completed'
+                      AND ($1::text IS NULL OR config_hash = $1)
                     ORDER BY completed_at DESC NULLS LAST
                     LIMIT 1
                 )
@@ -251,8 +265,10 @@ class DiscoveryRepo:
                 FROM discovery_candidate_snapshots AS snapshots
                 JOIN latest_cycle USING (cycle_id)
                 WHERE snapshots.rejected_reason IS NULL
+                  AND ($1::text IS NULL OR snapshots.config_hash = $1)
                 ORDER BY snapshots.final_score DESC, snapshots.wallet ASC
-                """
+                """,
+                config_hash,
             )
         output: list[Candidate] = []
         for row in rows:

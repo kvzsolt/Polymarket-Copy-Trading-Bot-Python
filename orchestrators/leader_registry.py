@@ -96,7 +96,15 @@ class LeaderRegistry:
             metrics.inc("discovery_refresh_started_total")
             try:
                 candidates = await self.discovery_service.run()
-                await self._reconcile_roster(candidates)
+                await self._reconcile_roster(
+                    candidates,
+                    # ``discovery_service`` is duck-typed, so read the flag
+                    # defensively: a service that reports nothing is reporting
+                    # a healthy cycle.
+                    allow_absence_demotion=not getattr(
+                        self.discovery_service, "last_cycle_degraded", False
+                    ),
+                )
             except Exception as exc:
                 self.logger.warning(
                     "discovery_refresh_failed",
@@ -210,6 +218,7 @@ class LeaderRegistry:
         candidates: list[Candidate],
         *,
         advance_tenure: bool = True,
+        allow_absence_demotion: bool = True,
     ) -> None:
         """Fold a candidate set into the persisted roster.
 
@@ -217,6 +226,13 @@ class LeaderRegistry:
         hysteresis counters. Use it for cached rescores, which re-rank stored
         snapshots without observing the wallet again — letting those count as
         cycles would satisfy ``min_tenure_cycles`` with no fresh evidence.
+
+        ``allow_absence_demotion=False`` marks a *degraded* cycle whose
+        candidate set is known to be incomplete (e.g. an H-Score sort mode
+        failed). Wallets present in it still score, rank, and promote
+        normally; active wallets missing from it are carried forward untouched
+        instead of being scored 0.0, so a persistent one-mode outage cannot
+        demote the leaders that mode surfaces.
         """
         now = time.time()
         config = self.config.discovery.hysteresis
@@ -233,6 +249,18 @@ class LeaderRegistry:
             if record.tier != "active":
                 continue
             candidate = current.get(wallet)
+            if candidate is None and not allow_absence_demotion:
+                # Incomplete cycle: this wallet was never looked at, so
+                # absence is missing evidence, not evidence of decay. Carry
+                # the row forward verbatim — including its old ``config_hash``,
+                # which ``list_active`` filters on: the frozen score was never
+                # recomputed under the current config, so restamping it here
+                # would re-qualify stale data the config change invalidated.
+                # It stays in ``updates`` so it keeps holding its promotion
+                # slot and the watchlist pass below leaves it alone — dropping
+                # it would let that pass re-tier an active leader at score 0.0.
+                updates[wallet] = record
+                continue
             score = candidate.score if candidate is not None else 0.0
             demote_streak = (
                 (record.demote_streak + 1 if score < config.demote_score else 0)

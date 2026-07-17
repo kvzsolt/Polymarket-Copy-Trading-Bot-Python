@@ -372,7 +372,12 @@ class OrderConfirmationConfig:
 
 
 class _FrozenSettingsModel(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    # ``allow_inf_nan=False`` is set here rather than per-field: Pydantic
+    # resolves it from the model owning the schema, so a nested BaseModel
+    # ignores the shell's setting. Every settings model inherits this base,
+    # so NaN/+Inf/-Inf are rejected graph-wide without a field allowlist to
+    # drift. Nested frozen dataclasses inherit it from ``_LayeredSettings``.
+    model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
 
 
 class DiscoveryApiConfig(_FrozenSettingsModel):
@@ -999,6 +1004,13 @@ class _LayeredSettings(BaseSettings):
         env_ignore_empty=True,
         extra="forbid",
         frozen=True,
+        # Rejects NaN/+Inf/-Inf for every float/Decimal reachable from this
+        # shell, including the frozen dataclass sections, which carry no
+        # config of their own. YAML (``.nan``/``.inf``) and env strings
+        # ("nan"/"inf") both coerce to non-finite floats before this gate.
+        # A non-finite threshold silently disables the comparison that
+        # depends on it, so this must fail closed at load time.
+        allow_inf_nan=False,
     )
 
     database: DatabaseConfig

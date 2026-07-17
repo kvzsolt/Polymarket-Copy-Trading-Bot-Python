@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import json
+import logging
 
 import httpx
 import pytest
 
-from config.app_config import DiscoveryApiConfig
+from config.app_config import DiscoveryApiConfig, ShortlistConfig
+from integrations.falcon import client as falcon_client
 from integrations.falcon.client import (
     FalconClient,
     FalconPage,
     TokenBucket,
+    hscore_rows,
     wallet_trades,
 )
 
@@ -207,3 +210,338 @@ async def test_wallet_trades_keeps_distinct_anonymous_records() -> None:
     )
 
     assert len(rows) == 2
+
+
+# ---------------------------------------------------------------------------
+# wallet_trades dedup identity — one transaction settles many fills, and rows
+# without a venue trade id must not collapse into a single leg.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_wallet_trades_keeps_batched_fills_across_assets() -> None:
+    """A tx_hash+side pair is not an identity: it batches many fills.
+
+    Deduping on (tx_hash, trade_id, side) alone dropped every leg but the
+    first whenever the agent omitted a trade id, silently under-reporting the
+    leader's real activity to every downstream recency/market gate.
+    """
+
+    class _Client:
+        async def paginate(self, *, params, **_kwargs):
+            if params["side"] == "BUY":
+                yield {"transactionHash": "0xtx", "asset": "asset-1", "size": "10"}
+                yield {"transactionHash": "0xtx", "asset": "asset-2", "size": "20"}
+
+    rows = await wallet_trades(
+        _Client(),  # type: ignore[arg-type]
+        "0x" + "1" * 40,
+        start_time=1,
+        end_time=2,
+        page_size=200,
+        max_pages=1,
+    )
+
+    assert [row["asset"] for row in rows] == ["asset-1", "asset-2"]
+
+
+@pytest.mark.asyncio
+async def test_wallet_trades_keeps_batched_fills_across_conditions() -> None:
+    """Same asset alias, different market — both legs must survive."""
+
+    class _Client:
+        async def paginate(self, *, params, **_kwargs):
+            if params["side"] == "SELL":
+                yield {"tx_hash": "0xtx", "asset": "a", "condition_id": "condition-1"}
+                yield {"tx_hash": "0xtx", "asset": "a", "conditionId": "condition-2"}
+
+    rows = await wallet_trades(
+        _Client(),  # type: ignore[arg-type]
+        "0x" + "1" * 40,
+        start_time=1,
+        end_time=2,
+        page_size=200,
+        max_pages=1,
+    )
+
+    assert len(rows) == 2
+
+
+@pytest.mark.asyncio
+async def test_wallet_trades_keeps_fills_differing_only_in_size_and_price() -> None:
+    """Two fills can agree on tx, side, asset *and* condition, and still differ.
+
+    A partial fill ladder settles in one transaction against one token: only
+    size/price/timestamp separate the legs. Any identity built from
+    (tx, side, asset, condition) collapses them into one and under-reports the
+    leader — so the no-trade-id fallback keys on the whole row instead.
+    """
+
+    class _Client:
+        async def paginate(self, *, params, **_kwargs):
+            if params["side"] == "BUY":
+                yield {
+                    "tx_hash": "0xtx",
+                    "asset": "asset-1",
+                    "condition_id": "condition-1",
+                    "size": "10",
+                    "price": "0.40",
+                    "timestamp": 1_700_000_000,
+                }
+                yield {
+                    "tx_hash": "0xtx",
+                    "asset": "asset-1",
+                    "condition_id": "condition-1",
+                    "size": "25",
+                    "price": "0.41",
+                    "timestamp": 1_700_000_001,
+                }
+
+    rows = await wallet_trades(
+        _Client(),  # type: ignore[arg-type]
+        "0x" + "1" * 40,
+        start_time=1,
+        end_time=2,
+        page_size=200,
+        max_pages=1,
+    )
+
+    assert [row["size"] for row in rows] == ["10", "25"]
+
+
+@pytest.mark.asyncio
+async def test_wallet_trades_dedupes_on_trade_id_despite_metadata_drift() -> None:
+    """A real trade id is the identity; incidental metadata must not defeat it.
+
+    The same fill re-emitted on an overlapping page can carry a different
+    asset alias (``asset`` vs ``token_id``), gain a condition id, or pick up an
+    extra field. It is still one fill. Folding asset/condition into the identity
+    would double-count it and inflate the leader's recent-trade count.
+    """
+
+    class _Client:
+        async def paginate(self, *, params, **_kwargs):
+            if params["side"] == "BUY":
+                yield {
+                    "transactionHash": "0xtx",
+                    "trade_id": "venue-trade-1",
+                    "asset": "asset-1",
+                }
+                yield {
+                    "transactionHash": "0xtx",
+                    "trade_id": "venue-trade-1",
+                    "token_id": "asset-1",
+                    "condition_id": "condition-1",
+                    "fee_rate_bps": "0",
+                }
+
+    rows = await wallet_trades(
+        _Client(),  # type: ignore[arg-type]
+        "0x" + "1" * 40,
+        start_time=1,
+        end_time=2,
+        page_size=200,
+        max_pages=1,
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["asset"] == "asset-1"
+
+
+@pytest.mark.asyncio
+async def test_wallet_trades_still_dedupes_repeated_rows_without_a_trade_id() -> None:
+    """Preservation: the whole-row fallback must not stop real dedup.
+
+    An overlapping page re-emits a byte-identical row; it is one fill, not two.
+    """
+
+    class _Client:
+        async def paginate(self, *, params, **_kwargs):
+            if params["side"] == "BUY":
+                for _ in range(3):
+                    yield {
+                        "transactionHash": "0xtx",
+                        "asset": "asset-1",
+                        "condition_id": "condition-1",
+                        "size": "10",
+                    }
+
+    rows = await wallet_trades(
+        _Client(),  # type: ignore[arg-type]
+        "0x" + "1" * 40,
+        start_time=1,
+        end_time=2,
+        page_size=200,
+        max_pages=1,
+    )
+
+    assert len(rows) == 1
+
+
+# ---------------------------------------------------------------------------
+# hscore_rows sort-mode fan-out — one failing mode must not discard the rest,
+# but a total outage must stay loud.
+# ---------------------------------------------------------------------------
+
+
+def _shortlist(**overrides) -> ShortlistConfig:
+    return ShortlistConfig.model_validate(
+        {"sort_modes": ["h_score", "roi"], **overrides}
+    )
+
+
+class _ModeClient:
+    """Falcon stub whose ``sort_by`` modes can be made to fail individually."""
+
+    def __init__(
+        self, rows_by_mode: dict[str, list[dict]], failing: dict[str, Exception]
+    ):
+        self._rows_by_mode = rows_by_mode
+        self._failing = failing
+
+    async def paginate(self, *, params, **_kwargs):
+        sort_by = params["sort_by"]
+        if sort_by in self._failing:
+            raise self._failing[sort_by]
+        for row in self._rows_by_mode.get(sort_by, []):
+            yield row
+
+
+@pytest.mark.asyncio
+async def test_hscore_rows_keeps_surviving_modes_when_one_sort_mode_fails() -> None:
+    """A single mode's 500 must not empty the whole shortlist.
+
+    ``asyncio.gather`` without ``return_exceptions`` propagated the first
+    failure and discarded every already-fetched row, so one flaky sort mode
+    looked to the funnel like "no wallet qualifies".
+    """
+    client = _ModeClient(
+        rows_by_mode={"roi": [{"proxy_wallet": "0xAAA"}, {"proxy_wallet": "0xBBB"}]},
+        failing={"h_score": httpx.HTTPError("boom")},
+    )
+
+    shortlist = await hscore_rows(client, _shortlist())  # type: ignore[arg-type]
+
+    assert [row["proxy_wallet"] for row in shortlist.rows] == ["0xAAA", "0xBBB"]
+    # The survivors are usable, but the caller must be told the set is partial
+    # so a wallet only "h_score" surfaces is not read as having dropped out.
+    assert shortlist.failed_sort_modes == ("h_score",)
+    assert shortlist.degraded is True
+
+
+@pytest.mark.asyncio
+async def test_hscore_rows_raises_when_every_sort_mode_fails() -> None:
+    """Total outage must not masquerade as an empty shortlist.
+
+    Returning [] would surface as "H-Score returned no valid wallets" and let
+    LeaderRegistry read an agent outage as evidence for demoting every wallet.
+    """
+    client = _ModeClient(
+        rows_by_mode={},
+        failing={
+            "h_score": httpx.HTTPError("boom"),
+            "roi": httpx.HTTPError("boom"),
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="all H-Score sort modes failed"):
+        await hscore_rows(client, _shortlist())  # type: ignore[arg-type]
+
+
+class _RecordingHandler(logging.Handler):
+    """Keeps raw ``LogRecord``s so ``extra`` survives as record attributes."""
+
+    def __init__(self) -> None:
+        super().__init__(level=logging.NOTSET)
+        self.records: list[logging.LogRecord] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append(record)
+
+
+@pytest.fixture
+def falcon_log_records():
+    """Capture the production logger's own records.
+
+    ``caplog`` cannot see these. ``utils.logger`` sets ``propagate = False`` on
+    the app logger, so nothing this module logs ever reaches the root handler
+    pytest installs — and caplog's default formatter renders only ``%(message)s``,
+    which would drop the ``extra`` fields even if it did. A test built on caplog
+    therefore asserts against an empty string and passes no matter what the
+    production code logs. Attach to the real logger object and read the
+    ``LogRecord`` instead.
+    """
+    handler = _RecordingHandler()
+    logger = falcon_client.logger
+    previous_level = logger.level
+    # Pin the level so the assertion cannot depend on ambient log config.
+    logger.setLevel(logging.WARNING)
+    logger.addHandler(handler)
+    try:
+        yield handler.records
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(previous_level)
+
+
+@pytest.mark.asyncio
+async def test_hscore_rows_failure_log_redacts_the_bearer_token(
+    falcon_log_records: list[logging.LogRecord],
+) -> None:
+    """Transport errors can carry the Authorization header, so the log must not.
+
+    Discriminating on purpose: this fails if production ever logs
+    ``str(result)`` in place of ``redact_error_detail(result)``.
+    """
+    token = "supersecrettoken"
+    client = _ModeClient(
+        rows_by_mode={"roi": [{"proxy_wallet": "0xAAA"}]},
+        failing={"h_score": httpx.HTTPError(f"401 Bearer {token}")},
+    )
+
+    shortlist = await hscore_rows(client, _shortlist())  # type: ignore[arg-type]
+
+    assert [row["proxy_wallet"] for row in shortlist.rows] == ["0xAAA"]
+
+    # The warning must actually be emitted — an absent log is not a pass.
+    warnings = [
+        record
+        for record in falcon_log_records
+        if record.levelno == logging.WARNING
+        and record.getMessage() == "hscore_sort_mode_failed"
+    ]
+    assert len(warnings) == 1, [record.getMessage() for record in falcon_log_records]
+    record = warnings[0]
+    assert record.sort_by == "h_score"  # type: ignore[attr-defined]
+
+    # ``redact_error_detail`` collapses an error it cannot categorise to its
+    # exception class name; ``str(exc)`` would have kept the token verbatim.
+    assert record.error == "HTTPError"  # type: ignore[attr-defined]
+    assert token not in record.error  # type: ignore[attr-defined]
+    # Nothing else on the record may smuggle it out either.
+    assert token not in str(record.__dict__)
+
+
+@pytest.mark.asyncio
+async def test_hscore_rows_still_interleaves_every_healthy_mode() -> None:
+    """Preservation: the round-robin merge across modes is unchanged."""
+    client = _ModeClient(
+        rows_by_mode={
+            "h_score": [{"proxy_wallet": "0xAAA"}, {"proxy_wallet": "0xCCC"}],
+            "roi": [{"proxy_wallet": "0xBBB"}],
+        },
+        failing={},
+    )
+
+    shortlist = await hscore_rows(client, _shortlist())  # type: ignore[arg-type]
+
+    # Round-robin by index, deduped on wallet.
+    assert [row["proxy_wallet"] for row in shortlist.rows] == [
+        "0xAAA",
+        "0xBBB",
+        "0xCCC",
+    ]
+    # A complete cycle must not be marked degraded, or absence-based demotion
+    # would be suppressed forever and no leader could ever be demoted.
+    assert shortlist.failed_sort_modes == ()
+    assert shortlist.degraded is False

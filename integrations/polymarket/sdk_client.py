@@ -165,11 +165,21 @@ async def create_polymarket_client(
     if not secret_value(key_material):
         key_material = getattr(getattr(config, "wallet", None), "private_key", "")
     resolved_key = secret_value(key_material).strip()
-    configured_wallet = str(
-        getattr(wallet_config, "funder_address", "")
-        or getattr(getattr(config, "wallet", None), "funder_address", "")
-        or ""
-    ).strip()
+    # The supplied ``wallet_config`` is the authoritative identity for this
+    # client. Falling back to the global ``config.wallet.funder_address`` here
+    # cross-checked a multi-user entry's own SDK-derived Deposit Wallet against
+    # a *different* user's funder and failed startup. A multi-user entry may
+    # legitimately omit its funder (``WalletConfig.funder_address`` defaults to
+    # "") and let its own key derive the wallet — ``bind_resolved_deposit_wallet``
+    # then binds the resolved address back. The single-user path keeps its
+    # cross-check because ``load_runtime_users`` copies the configured funder
+    # into that user's own ``WalletConfig``.
+    if wallet_config is not None:
+        configured_wallet = str(getattr(wallet_config, "funder_address", "") or "").strip()
+    else:
+        configured_wallet = str(
+            getattr(getattr(config, "wallet", None), "funder_address", "") or ""
+        ).strip()
 
     public_client = AsyncPublicClient()
     if not authenticated or not resolved_key:

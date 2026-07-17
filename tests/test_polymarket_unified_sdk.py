@@ -524,6 +524,124 @@ async def test_factory_derives_credentials_and_validates_deposit_wallet(
     assert client.api_creds is secure.credentials
 
 
+# ---------------------------------------------------------------------------
+# Funder cross-check scoping
+#
+# The wallet_config handed to create_polymarket_client is that client's
+# authoritative identity. Reaching past it to the global config.wallet funder
+# cross-checked one user's SDK-derived Deposit Wallet against another user's
+# configured funder.
+# ---------------------------------------------------------------------------
+
+
+def _sdk_doubles(monkeypatch: pytest.MonkeyPatch, resolved_wallet: str):
+    public = SimpleNamespace(close=AsyncMock())
+    secure = SimpleNamespace(
+        credentials=ApiKeyCreds(
+            key=_TEST_CREDENTIAL_VALUES[0],
+            secret=_TEST_CREDENTIAL_VALUES[1],
+            passphrase=_TEST_CREDENTIAL_VALUES[2],
+        ),
+        wallet=resolved_wallet,
+        wallet_type="DEPOSIT_WALLET",
+        close=AsyncMock(),
+    )
+    monkeypatch.setattr(
+        "integrations.polymarket.sdk_client.AsyncPublicClient",
+        MagicMock(return_value=public),
+    )
+    monkeypatch.setattr(
+        "integrations.polymarket.sdk_client.AsyncSecureClient.create",
+        AsyncMock(return_value=secure),
+    )
+    return public, secure
+
+
+@pytest.mark.asyncio
+async def test_multi_user_entry_without_a_funder_derives_its_own_deposit_wallet(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A per-user entry may omit its funder and let its key derive the wallet.
+
+    ``WalletConfig.funder_address`` defaults to "" for multi-user entries, and
+    ``bind_resolved_deposit_wallet`` binds the SDK-resolved address afterwards.
+    Falling back to the global funder here compared this user's wallet against
+    a *different* user's configured funder and failed startup outright.
+    """
+    user_key = "0x" + "c" * 64
+    user_wallet = "0x" + "d" * 40
+    _sdk_doubles(monkeypatch, user_wallet)
+
+    client = await create_polymarket_client(
+        wallet_config=SimpleNamespace(private_key=user_key, funder_address=""),
+        # A different user's funder — must never be applied to this client.
+        config=SimpleNamespace(
+            wallet=SimpleNamespace(private_key=user_key, funder_address="0x" + "e" * 40),
+        ),
+    )
+
+    assert client.wallet_address == user_wallet
+
+
+@pytest.mark.asyncio
+async def test_single_user_configured_funder_mismatch_still_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Preservation: a wallet_config carrying a funder is still cross-checked.
+
+    ``load_runtime_users`` copies the configured funder into the single user's
+    own WalletConfig, so that path keeps its guard against signing from a key
+    that does not own the configured wallet.
+    """
+    _sdk_doubles(monkeypatch, "0x" + "d" * 40)
+
+    with pytest.raises(ValueError, match="does not match the Deposit"):
+        await create_polymarket_client(
+            wallet_config=SimpleNamespace(
+                private_key="0x" + "c" * 64,
+                funder_address="0x" + "f" * 40,
+            ),
+            config=SimpleNamespace(wallet=SimpleNamespace(funder_address="0x" + "f" * 40)),
+        )
+
+
+@pytest.mark.asyncio
+async def test_configured_funder_mismatch_still_fails_closed_without_wallet_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Preservation: with no wallet_config, the global funder is authoritative."""
+    _sdk_doubles(monkeypatch, "0x" + "d" * 40)
+
+    with pytest.raises(ValueError, match="does not match the Deposit"):
+        await create_polymarket_client(
+            config=SimpleNamespace(
+                wallet=SimpleNamespace(
+                    private_key="0x" + "c" * 64,
+                    funder_address="0x" + "f" * 40,
+                ),
+            ),
+        )
+
+
+@pytest.mark.asyncio
+async def test_matching_wallet_config_funder_still_authenticates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Preservation: an agreeing configured funder is accepted."""
+    wallet = "0x" + "d" * 40
+    _sdk_doubles(monkeypatch, wallet)
+
+    client = await create_polymarket_client(
+        wallet_config=SimpleNamespace(
+            private_key="0x" + "c" * 64,
+            funder_address=wallet,
+        ),
+        config=SimpleNamespace(wallet=SimpleNamespace(funder_address="0x" + "e" * 40)),
+    )
+
+    assert client.wallet_address == wallet
+
+
 @pytest.mark.parametrize(
     ("side", "expected"),
     [

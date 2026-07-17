@@ -46,7 +46,11 @@ class DiscoveryRepository(Protocol):
 
     async def score_history(self, wallet: str, *, since_ts: float) -> list[Mapping[str, Any]]: ...
 
-    async def latest_candidates(self) -> list[Candidate]: ...
+    async def latest_candidates(
+        self,
+        *,
+        config_hash: str | None = None,
+    ) -> list[Candidate]: ...
 
     async def persist_rescore(
         self,
@@ -72,13 +76,36 @@ class DiscoveryFunnel:
         self.repository = repository
         self.backfill_service = backfill_service
         self.config_hash = discovery_config_hash(config)
+        self.last_cycle_degraded = False
 
     async def run(self) -> list[Candidate]:
+        """Run one discovery cycle and return the accepted roster.
+
+        Sets ``last_cycle_degraded`` to describe *this* cycle's shortlist:
+        True means at least one H-Score sort mode failed, so the candidate set
+        is incomplete and a wallet's absence from it is missing evidence
+        rather than bad evidence. ``LeaderRegistry`` reads the flag to suppress
+        absence-based demotion for the cycle.
+        """
+        # Reset first: a degraded cycle must never colour the next one, and
+        # this runs before any await so an exception mid-cycle cannot leave a
+        # stale True behind for a later healthy run to inherit.
+        self.last_cycle_degraded = False
         cycle_id = await self.repository.begin_cycle(self.config_hash)
         candidates: list[Candidate] = []
         try:
-            rows = await hscore_rows(self.client, self.config.shortlist)
-            for row in rows:
+            shortlist = await hscore_rows(self.client, self.config.shortlist)
+            self.last_cycle_degraded = shortlist.degraded
+            if shortlist.degraded:
+                logger.warning(
+                    "discovery_cycle_degraded",
+                    extra={
+                        "cycle_id": cycle_id,
+                        "failed_sort_modes": list(shortlist.failed_sort_modes),
+                        "candidate_rows": len(shortlist.rows),
+                    },
+                )
+            for row in shortlist.rows:
                 wallet = str(
                     row_value(
                         row,
@@ -160,8 +187,18 @@ class DiscoveryFunnel:
         return candidates if limit is None else candidates[: max(0, int(limit))]
 
     async def rescore(self) -> list[Candidate]:
-        """Re-rank the latest accepted roster without external API calls."""
-        candidates = await self.repository.latest_candidates()
+        """Re-rank the latest accepted roster without external API calls.
+
+        Scoped to ``config_hash``: ``_apply_longitudinal`` reuses each
+        snapshot's ``base_score`` and ``persist_rescore`` stamps the result
+        with the *current* hash. Rescoring a snapshot scored under an older
+        config would therefore publish a stale base score as if the current
+        config had produced it. A config change must be picked up by a full
+        ``run()``, so an empty result here is correct and fail-closed.
+        """
+        candidates = await self.repository.latest_candidates(
+            config_hash=self.config_hash,
+        )
         for candidate in candidates:
             await self._apply_longitudinal(candidate)
         candidates.sort(key=lambda candidate: (-candidate.score, candidate.wallet))
