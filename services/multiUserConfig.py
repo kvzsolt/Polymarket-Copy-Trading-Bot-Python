@@ -41,11 +41,27 @@ def _runtime_user_from_payload(payload: dict, config: AppConfig) -> RuntimeUser:
             "multi-user signature_type is no longer configurable; "
             "only Deposit Wallet/POLY_1271 type 3 is supported"
         )
+    funder_address = str(payload.get("funder_address", "")).strip()
+    # Mirrors the single-user AppConfig invariant. Paper never authenticates,
+    # so no secure client resolves a Deposit Wallet and
+    # ``bind_resolved_deposit_wallet`` never runs: the configured funder is
+    # this entry's only wallet identity. Left empty, the balance and
+    # live-position probes query "" and fail readiness with no actionable
+    # error. Live may omit it — the authenticated SDK derives the address from
+    # this entry's own private_key and binds it back.
+    if config.execution.paper_trade_only and not funder_address:
+        entry = str(payload.get("user_id", "")).strip() or "<unknown>"
+        raise ValueError(
+            f"multi-user entry {entry!r} is missing funder_address, which is "
+            "required in paper mode (it is the wallet identity used by the "
+            "balance/live-position health probes; live mode derives it from "
+            "the entry's private_key instead)"
+        )
     wallet = WalletConfig(
         private_key=SecretStr(str(payload["private_key"])),
         chain_id=int(payload.get("chain_id", config.wallet.chain_id)),
         signature_type=SignatureType.DEPOSIT_WALLET,
-        funder_address=str(payload.get("funder_address", "")),
+        funder_address=funder_address,
         polygon_rpc_url=config.network.rpc_url,
         fallback_rpc_url=config.network.fallback_rpc_url,
     )
@@ -136,9 +152,15 @@ def load_runtime_users(leader_wallets: list[str], config: AppConfig) -> list[Run
 
 def bind_resolved_deposit_wallet(
     runtime_user: RuntimeUser,
-    wallet_address: str,
+    wallet_address: str | None,
 ) -> None:
-    """Bind the SDK-authoritative type-3 wallet before runtime services wire."""
+    """Bind the SDK-authoritative type-3 wallet before runtime services wire.
+
+    ``wallet_address`` is the SDK's ``PolymarketClient.wallet_address``, which
+    is None when no secure client was built. Callers pass it through as-is: for
+    a live user that is an unresolved wallet, and rejecting it here is what
+    stops an empty funder from reaching the runtime.
+    """
     resolved = str(wallet_address or "").strip()
     if not resolved:
         raise ValueError("the unified SDK did not resolve a Deposit Wallet address")

@@ -8,6 +8,10 @@
 # secrets.env.example). Both services pick them up via env_file, so no
 # --env-file flag is needed. There is deliberately no production default
 # password; postgres itself refuses to start if POSTGRES_PASSWORD is unset.
+#
+# The bot service additionally bind-mounts config/runtime.local.yml, so run the
+# documented setup first or compose refuses to start it:
+#   cp config/runtime.local.example.yml config/runtime.local.yml
 
 services:
   postgres:
@@ -53,6 +57,20 @@ services:
     ports:
       - "9102:9102"
     volumes:
+      # config/runtime.local.yml is .dockerignore'd so local-only overrides
+      # never bake into image layers, which means this mount is the only way
+      # the documented `cp config/runtime.local.example.yml
+      # config/runtime.local.yml` step reaches the container. Read-only: the
+      # bot only ever reads it. create_host_path must stay false — the short
+      # `./a:/b` syntax silently creates a *directory* when the source file is
+      # missing, and AppConfig then dies on "Is a directory" instead of
+      # naming the setup step the operator skipped.
+      - type: bind
+        source: ./config/runtime.local.yml
+        target: /app/config/runtime.local.yml
+        read_only: true
+        bind:
+          create_host_path: false
       # Persist bot logs to the host so operator can tail them.
       - ./log:/app/log
 

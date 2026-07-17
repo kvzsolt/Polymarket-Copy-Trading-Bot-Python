@@ -112,6 +112,65 @@ def test_load_runtime_users_accepts_deposit_wallet_signature_type(
     assert users[0].wallet.signature_type == SignatureType.DEPOSIT_WALLET
 
 
+def _multi_user_file(tmp_path, entry: dict) -> str:
+    path = tmp_path / "users.json"
+    path.write_text(json.dumps({"users": [entry]}), encoding="utf-8")
+    return str(path)
+
+
+@pytest.mark.parametrize("funder", [None, "", "   "])
+def test_load_runtime_users_rejects_paper_entry_without_funder(
+    funder,
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Paper entries must carry a funder, matching the single-user invariant.
+
+    Paper never authenticates, so no secure client resolves a Deposit Wallet
+    and ``bind_resolved_deposit_wallet`` never runs. An omitted funder leaves
+    "" as the entry's only wallet identity, which the balance/live-position
+    probes then query — failing readiness with no actionable error.
+    """
+    entry = {
+        "user_id": "paper-user",
+        "private_key": _VALID_PRIVATE_KEY,
+        "signature_type": 3,
+    }
+    if funder is not None:
+        entry["funder_address"] = funder
+    config_path = _multi_user_file(tmp_path, entry)
+    monkeypatch.chdir(tmp_path)
+    cfg = _config(MULTI_USER_CONFIG_FILE=config_path, TRADING_MODE="paper")
+
+    with pytest.raises(ValueError, match=r"'paper-user' is missing funder_address"):
+        load_runtime_users([], cfg)
+
+
+def test_load_runtime_users_allows_live_entry_without_funder(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Live entries may omit the funder — the authenticated SDK derives it.
+
+    Requiring it here would break the one-secret auth chain; the resolved
+    address is bound back by ``bind_resolved_deposit_wallet`` after startup.
+    """
+    config_path = _multi_user_file(
+        tmp_path,
+        {
+            "user_id": "live-user",
+            "private_key": _VALID_PRIVATE_KEY,
+            "signature_type": 3,
+        },
+    )
+    monkeypatch.chdir(tmp_path)
+    cfg = _config(MULTI_USER_CONFIG_FILE=config_path, TRADING_MODE="live")
+
+    users = load_runtime_users([], cfg)
+
+    assert users[0].wallet.funder_address == ""
+
+
 @pytest.mark.asyncio
 async def test_startup_reconcile_unconfirmed_dedupes_user_contexts_and_rehydrates_once():
     ctx1 = SimpleNamespace(user_id="user-1", execution_service=object())

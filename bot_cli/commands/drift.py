@@ -8,10 +8,14 @@ from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from config.app_config import EnvValidationError, load_config
-from services.multiUserConfig import load_runtime_users
+from services.multiUserConfig import bind_resolved_deposit_wallet, load_runtime_users
+from utils.logger import redact_error_detail
 
 if TYPE_CHECKING:
     import asyncpg
+
+    from config.app_config import AppConfig
+    from services.multiUserConfig import RuntimeUser
 
 
 def register_drift_command(subparsers: argparse._SubParsersAction) -> None:
@@ -115,6 +119,44 @@ def _classify_drift(
     return "phantom_grow"
 
 
+async def _resolve_live_deposit_wallets(
+    runtime_users: list[RuntimeUser], config: AppConfig
+) -> None:
+    """Bind each live user's SDK-resolved Deposit Wallet, in place.
+
+    A live one-secret config legitimately omits ``wallet.funder_address`` and
+    lets the authenticated SDK derive the wallet from ``private_key``. Without
+    this pass every such user has an empty wallet, gets skipped by the holdings
+    loop, and the check reports ``checked_users: 0`` on a wallet that may well
+    be drifting. Mirrors the startup binding in ``app.py``.
+
+    Paper never authenticates, so no secure client exists to resolve an address
+    and the configured funder (which AppConfig requires in paper) stands
+    unchanged — hence the early return. Only client construction and wallet
+    reads happen here; no order or trading calls are made.
+
+    Binding is unconditional. Past the paper guard a ``wallet_address`` of None
+    means the SDK built no secure client for a *live* user, so binding rejects
+    it and the check fails loudly; skipping it instead would leave that user's
+    funder empty and report the same clean ``checked_users: 0``.
+    """
+    if config.execution.paper_trade_only:
+        return
+
+    from integrations.polymarket.sdk_client import create_polymarket_client
+
+    for runtime_user in runtime_users:
+        client = await create_polymarket_client(
+            wallet_config=runtime_user.wallet,
+            config=config,
+            authenticated=True,
+        )
+        try:
+            bind_resolved_deposit_wallet(runtime_user, client.wallet_address)
+        finally:
+            await client.close()
+
+
 async def _run_check_async(args: argparse.Namespace) -> int:
     config = _load_config_or_fail()
     if config is None:
@@ -127,6 +169,25 @@ async def _run_check_async(args: argparse.Namespace) -> int:
         epsilon = Decimal("0.000001")
 
     runtime_users = load_runtime_users(config.leader.wallets or [], config)
+
+    # Bind before filtering: binding rewrites an empty/"default" user_id to the
+    # resolved wallet, so --user-id must be matched against the bound identity.
+    try:
+        await _resolve_live_deposit_wallets(runtime_users, config)
+    except Exception as exc:
+        # Never fall through to a silent ``checked_users: 0`` — an unresolvable
+        # live wallet means the check did not run, which is not the same as
+        # "no drift".
+        print(
+            json.dumps(
+                {
+                    "error": "wallet_resolution_failed",
+                    "details": redact_error_detail(exc),
+                }
+            )
+        )
+        return 1
+
     if user_filter is not None:
         runtime_users = [ru for ru in runtime_users if ru.user_id == user_filter]
 
@@ -142,6 +203,7 @@ async def _run_check_async(args: argparse.Namespace) -> int:
 
     drifts: list[dict] = []
     checked_users: list[str] = []
+    skipped_users: list[str] = []
 
     from orchestrators.runtime_bootstrap import fetch_live_positions
     from storage.postgres.connection import init_pool, shutdown_pool
@@ -156,6 +218,10 @@ async def _run_check_async(args: argparse.Namespace) -> int:
         for runtime_user in runtime_users:
             wallet_addr = runtime_user.wallet.funder_address or ""
             if not wallet_addr:
+                # Unreachable for a valid config: paper requires a funder and
+                # live binds one above. Recorded rather than dropped so a skip
+                # can never be mistaken for a clean check.
+                skipped_users.append(runtime_user.user_id)
                 continue
             checked_users.append(runtime_user.user_id)
 
@@ -216,8 +282,13 @@ async def _run_check_async(args: argparse.Namespace) -> int:
         "drift_count": len(drifts),
         "drifts": drifts,
     }
+    if skipped_users:
+        # An incomplete check must not exit 0: "we could not look" reads
+        # identically to "nothing drifted" to any script checking drift_count.
+        output["skipped_users"] = skipped_users
+        output["error"] = "users_without_wallet_skipped"
     print(json.dumps(output, indent=2))
-    return 0
+    return 1 if skipped_users else 0
 
 
 async def _run_drift_async(args: argparse.Namespace) -> int:
