@@ -186,12 +186,18 @@ jobs:
             -e PMCOPY__NETWORK__ENABLE_METRICS_SERVER=true \
             -e PMCOPY__NETWORK__METRICS_BIND_HOST=0.0.0.0 \
             -e PMCOPY__NETWORK__METRICS_PORT=9102 \
+            --health-cmd='python -c "import json, urllib.request; payload = json.load(urllib.request.urlopen(\"http://localhost:9102/health\", timeout=3)); raise SystemExit(0 if payload.get(\"ok\") else 1)"' \
+            --health-interval=2s --health-timeout=5s --health-retries=30 \
             -p 9102:9102 \
             polymarket-copy-trader:ci
       - name: container readiness probe
         run: |
-          # Wait for the image HEALTHCHECK to prove the actual readiness
-          # endpoint, not merely that the process has not exited yet.
+          # The production image deliberately checks strict /health/ready,
+          # which requires live venue WSS and executable market data. This
+          # hermetic paper smoke uses fake wallets, so docker run overrides
+          # the probe with /health and verifies its db_ok + api_ok payload.
+          # Still require Docker's real health state instead of treating a
+          # merely-running process as a successful startup.
           sleep 5
           for i in $(seq 1 12); do
             if [ "$(docker inspect -f '{{.State.Health.Status}}' pmct-smoke 2>/dev/null)" = "healthy" ]; then

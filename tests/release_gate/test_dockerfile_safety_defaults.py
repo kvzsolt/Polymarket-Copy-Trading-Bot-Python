@@ -34,6 +34,11 @@ def dockerignore_text() -> str:
     return (REPO_ROOT / ".dockerignore").read_text()
 
 
+@pytest.fixture(scope="module")
+def ci_workflow_text() -> str:
+    return (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text()
+
+
 def test_dockerfile_does_not_enable_live_trading(dockerfile_text: str) -> None:
     # P0-2: the live-trading gate moved to the config layer — the LIVE_TRADING
     # master switch defaults to PAPER when absent/unknown (see
@@ -72,6 +77,30 @@ def test_metrics_server_enabled_by_default(dockerfile_text: str) -> None:
     assert "ENV PMCOPY__NETWORK__ENABLE_METRICS_SERVER=true" in dockerfile_text, (
         "Metrics server must start by default so the HEALTHCHECK has a port"
     )
+
+
+def test_docker_smoke_uses_hermetic_health_contract(
+    ci_workflow_text: str,
+) -> None:
+    """CI cannot satisfy the production probe with fake paper credentials.
+
+    The image keeps strict ``/health/ready`` for real deployments.  The smoke
+    run must override that probe with the local DB/API health payload while
+    still waiting for Docker's health state (not merely ``State.Running``).
+    """
+    smoke_run = ci_workflow_text.split(
+        "- name: docker run (paper mode)", maxsplit=1
+    )[1].split("- name: container readiness probe", maxsplit=1)[0]
+    readiness_probe = ci_workflow_text.split(
+        "- name: container readiness probe", maxsplit=1
+    )[1].split("- name: cleanup", maxsplit=1)[0]
+
+    assert "--health-cmd=" in smoke_run
+    assert "http://localhost:9102/health" in smoke_run
+    assert "/health/ready" not in smoke_run
+    assert "payload.get(\\\"ok\\\")" in smoke_run
+    assert ".State.Health.Status" in readiness_probe
+    assert ".State.Running" not in readiness_probe
 
 
 def test_console_entrypoint_modules_are_in_the_installed_wheel() -> None:
