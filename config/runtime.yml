@@ -30,7 +30,7 @@ polling:
 
 sizing:
   mode: proportional
-  percentage: 5.0
+  percentage: 4.0
   fixed_amount: 3.0
   trade_multiplier: 1.0
   tiered_trade_multipliers: ""
@@ -39,15 +39,19 @@ sizing:
   adaptive_max_percent: 0.0
   adaptive_threshold_usdc: 500.0
   buy_min_amount: 5.0
-  buy_max_amount: 10.0
+  buy_max_amount: 8.0
   position_threshold: 0
-  max_position_pct: 0.45
+  max_position_pct: 0.10
   enable_trust_size_multipliers: false
   trust_size_multiplier_min: 0.5
   trust_size_multiplier_max: 1.25
 
 risk:
   enable_risk_mgmt: true
+  # Reject best-bid risk marks from crossed or extremely wide books (bps of
+  # mid). Stops transient/stale quotes from triggering spurious near-max
+  # trims/exits. 0 disables the spread check.
+  risk_mark_max_spread_bps: 2000
   max_market_exposure_usdc: 300.0
   max_category_exposure_usdc: 600.0
   max_leader_exposure_usdc: 500.0
@@ -66,7 +70,7 @@ risk:
   balance_policy_base_min_score: 0.22
   balance_policy_min_notional_usdc: 0.00001
   balance_policy_dynamic_threshold_raise: false
-  day_start_equity_usdc: 50.0
+  day_start_equity_usdc: 500.0
   near_max_price_warn: 0.95
   near_max_price_warn_trim_ratio: 0.6
   near_max_price_exit: 0.99
@@ -85,6 +89,11 @@ risk:
   risk_pre_reconcile_backoff_seconds: 30.0
 
 execution:
+  # Leader SELL with unknown sell fraction (positions API down): "skip" drops
+  # the copy sell (fail closed; risk: a leader full-exit during the outage is
+  # copied late), "full_close" sells the whole position (risk: any outage
+  # turns a leader trim into a 100% dump).
+  sell_fraction_missing_policy: "skip"
   slippage_tolerance: 2.0
   min_share_price: 0.03
   max_share_price: 0.0
@@ -142,7 +151,7 @@ logging:
 network:
   # Public default shared by wallet preflight, balances and on-chain reads.
   # Override PMCOPY__NETWORK__RPC_URL only when using a private provider.
-  rpc_url: https://polygon.drpc.org
+  rpc_url: https://polygon-mainnet.g.alchemy.com/v2/REDACTED_ALCHEMY_KEY
   chain_id: 137
   usdc_contract_address: "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"
   enforce_geoblock: true
@@ -170,7 +179,14 @@ order_confirmation:
   auto_release_ambiguous: true
   auto_release_grace_seconds: 300.0
   auto_release_require_all_probes_clean: true
+  # Transient venue unavailability (5xx/rate-limit) counts as an inconclusive
+  # probe, not an error, so 0 means: any *unexpected* probe failure blocks the
+  # release (fail closed).
   auto_release_max_probe_errors: 0
+  # Escalating re-probe schedule for a stuck ambiguous order: 30s doubling up
+  # to 15min between auto-release attempts.
+  auto_release_retry_backoff_seconds: 30.0
+  auto_release_retry_backoff_max_seconds: 900.0
 
 position_drift:
   check_on_startup: true

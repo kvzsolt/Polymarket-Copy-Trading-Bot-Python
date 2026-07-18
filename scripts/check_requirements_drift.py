@@ -20,6 +20,10 @@ Run standalone (``python scripts/check_requirements_drift.py``) or import
 
 from __future__ import annotations
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 import pathlib
 import re
 import sys

@@ -98,8 +98,10 @@ def _orders_repo(*, has_recent=False):
     repo = MagicMock()
     if isinstance(has_recent, BaseException):
         repo.has_recent_processed_trade = AsyncMock(side_effect=has_recent)
+        repo.has_unconfirmed_processed_trade = AsyncMock(side_effect=has_recent)
     else:
         repo.has_recent_processed_trade = AsyncMock(return_value=has_recent)
+        repo.has_unconfirmed_processed_trade = AsyncMock(return_value=has_recent)
     return repo
 
 
@@ -819,7 +821,7 @@ async def test_position_seed_held_off_while_bot_order_in_flight():
     mock_disc.assert_not_called()
     # Seed hold-off probes the BUY side (the row-creating side that races the
     # reconciler's first incremental write) within the short hold-off window.
-    probe_kwargs = orders_repo.has_recent_processed_trade.call_args.kwargs
+    probe_kwargs = orders_repo.has_unconfirmed_processed_trade.call_args.kwargs
     assert probe_kwargs["asset"] == "0xasset1"
     assert probe_kwargs["side"] == "BUY"
 

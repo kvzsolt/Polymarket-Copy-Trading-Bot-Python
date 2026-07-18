@@ -71,6 +71,10 @@ class VenueFill:
     price: Decimal = Decimal("0")
     fee: Decimal = Decimal("0")
     timestamp: int | None = None
+    status: str | None = None
+    transaction_hash: str | None = None
+    trader_side: str | None = None
+    bucket_index: int | None = None
     raw: dict | None = None
 
 

@@ -70,7 +70,9 @@ if TYPE_CHECKING:
 
 logger = get_logger("ManualSync")
 
-_ACTIVITY_URL = "https://data-api.polymarket.com/activity?user={wallet}&type=TRADE&limit=20"
+_ACTIVITY_URL = (
+    "https://data-api.polymarket.com/activity?user={wallet}&type=TRADE&limit=20"
+)
 _POSITIONS_URL = "https://data-api.polymarket.com/positions?user={wallet}"
 
 # Size-comparison epsilon. Matches the TS ZERO_THRESHOLD constant.
@@ -84,11 +86,9 @@ _DEFAULT_WSS_SETTLE_DELAY_SECONDS = 10.0
 # within this window is the rare, low-harm trade-off (the position sync still
 # reflects it). See classification path in ``_sync_manual_trades``.
 _DEFAULT_OWN_TRADE_DEDUP_WINDOW_SECONDS = 300.0
-# Shorter hold-off used before SEEDING a brand-new position row from the venue.
-# While a bot order is this-recently in-flight, the reconciler owns the first
-# write (incremental delta); seeding the absolute venue size here would race it
-# and double-count. Kept short so a genuinely-failed reconciliation still gets
-# the safety-net seed quickly (minimising the unprotected-position window).
+# Compatibility hold-off for injected/legacy repositories that do not expose
+# the durable pending-order probe. Production blocks a seed for as long as
+# reconciliation owns a non-terminal BUY.
 _DEFAULT_OWN_FILL_SEED_HOLDOFF_SECONDS = 45.0
 
 
@@ -251,7 +251,8 @@ class ManualSyncService:
             return
         logger.info(
             "manual_sync_rest_fallback_started | interval_s=%.1f funder=%s",
-            self._rest_poll_interval, self._funder,
+            self._rest_poll_interval,
+            self._funder,
         )
         self._rest_task = asyncio.create_task(
             self._rest_fallback_loop(),
@@ -310,7 +311,8 @@ class ManualSyncService:
             except Exception as exc:
                 logger.warning(
                     "manual_sync_dedup_check_failed | tx=%s error=%s",
-                    tx_hash, redact_error_detail(exc),
+                    tx_hash,
+                    redact_error_detail(exc),
                 )
                 continue
 
@@ -332,15 +334,33 @@ class ManualSyncService:
                     await self._record_own_bot_activity(trade)
                     logger.info(
                         "manual_sync_own_fill_recognized | token=%s side=%s tx=%s",
-                        own_token_id, side, tx_hash,
+                        own_token_id,
+                        side,
+                        tx_hash,
                     )
+                    # Correlation breadcrumb: a recognized own fill while a bot
+                    # order for this token is still unconfirmed usually means
+                    # the fill settled under an identifier the reconciler is
+                    # not tracking (e.g. an ambiguous_timeout order). Operators
+                    # can pair this with reconciliation_ambiguous_stalled.
+                    if await self._has_pending_bot_trade(
+                        token_id=own_token_id, side=side
+                    ):
+                        logger.warning(
+                            "manual_sync_own_fill_with_pending_order | token=%s "
+                            "side=%s tx=%s",
+                            own_token_id,
+                            side,
+                            tx_hash,
+                        )
                 except Exception as exc:
                     # Insert failed → do NOT claim recognition. The processed_trades
                     # row is still fresh, so the next sweep re-detects and retries
                     # (insert_many is idempotent on the tx_hash).
                     logger.warning(
                         "manual_sync_own_activity_insert_failed | tx=%s error=%s",
-                        tx_hash, redact_error_detail(exc),
+                        tx_hash,
+                        redact_error_detail(exc),
                     )
                 continue
 
@@ -358,7 +378,8 @@ class ManualSyncService:
             except Exception as exc:
                 logger.warning(
                     "manual_sync_activity_insert_failed | tx=%s error=%s",
-                    tx_hash, redact_error_detail(exc),
+                    tx_hash,
+                    redact_error_detail(exc),
                 )
                 continue
             inserted += 1
@@ -370,13 +391,15 @@ class ManualSyncService:
                 except Exception as exc:
                     logger.debug(
                         "manual_sync_cache_evict_failed | token=%s error=%s",
-                        token_id, redact_error_detail(exc),
+                        token_id,
+                        redact_error_detail(exc),
                     )
 
         if silent and inserted > 0:
             logger.info(
                 "manual_sync_startup_seeded | inserted=%d funder=%s",
-                inserted, self._funder,
+                inserted,
+                self._funder,
             )
 
     async def _insert_manual_activity(self, trade: dict[str, Any]) -> None:
@@ -422,9 +445,52 @@ class ManualSyncService:
         except Exception as exc:
             logger.warning(
                 "manual_sync_own_trade_probe_failed | token=%s side=%s error=%s",
-                token_id, side, redact_error_detail(exc),
+                token_id,
+                side,
+                redact_error_detail(exc),
             )
             return False
+
+    async def _has_pending_bot_trade(
+        self,
+        *,
+        token_id: str,
+        side: str | None,
+    ) -> bool:
+        """Return True while reconciliation owns a non-terminal bot order.
+
+        Probe failures are conservative for position seeding: an unavailable
+        orders repository must not permit an absolute venue size to race an
+        incremental reconciliation write.
+        """
+        repo = self._orders_repo
+        if repo is None or not token_id:
+            return False
+        probe = getattr(repo, "has_unconfirmed_processed_trade", None)
+        if not callable(probe):
+            # Compatibility for older injected repositories: retain the
+            # bounded guard until they implement the durable pending probe.
+            return await self._is_own_recent_bot_trade(
+                token_id=token_id,
+                side=side,
+                max_age_seconds=self._own_fill_seed_holdoff,
+            )
+        try:
+            return bool(
+                await probe(
+                    user_id=self._user_id,
+                    asset=token_id,
+                    side=side,
+                )
+            )
+        except Exception as exc:
+            logger.warning(
+                "manual_sync_pending_trade_probe_failed | token=%s side=%s error=%s",
+                token_id,
+                side,
+                redact_error_detail(exc),
+            )
+            return True
 
     async def _record_own_bot_activity(self, trade: dict[str, Any]) -> None:
         """Persist the bot's OWN settlement activity (``bot=True``) keyed by the
@@ -484,7 +550,9 @@ class ManualSyncService:
 
         for pos in live:
             token_id = str(pos.get("asset") or pos.get("tokenId") or "").strip()
-            condition_id = str(pos.get("conditionId") or pos.get("condition_id") or "").strip()
+            condition_id = str(
+                pos.get("conditionId") or pos.get("condition_id") or ""
+            ).strip()
             if not token_id or not condition_id:
                 continue
             live_tokens.add(token_id)
@@ -517,7 +585,9 @@ class ManualSyncService:
                     logger.info(
                         "manual_sync_skipped_recent_prune | "
                         "token=%s cond=%s venue_size=%s",
-                        token_id, condition_id, venue_size,
+                        token_id,
+                        condition_id,
+                        venue_size,
                     )
                     continue
 
@@ -529,18 +599,18 @@ class ManualSyncService:
             # (manual SET 2.55, then reconciler ADD 2.55 -> 5.10). Skip creating
             # the row; reconciliation will create it with correct accounting.
             # Scoped to BUY (the row-creating side) so a recent SELL exit does
-            # not suppress seeding a residual. Bounded by a short hold-off so a
-            # genuinely-failed reconciliation still gets the safety-net seed on a
-            # later sweep.
-            if existing is None and await self._is_own_recent_bot_trade(
+            # not suppress seeding a residual. Production holds this guard for
+            # the full non-terminal lifetime, including prolonged venue outages.
+            if existing is None and await self._has_pending_bot_trade(
                 token_id=token_id,
                 side="BUY",
-                max_age_seconds=self._own_fill_seed_holdoff,
             ):
                 logger.info(
                     "manual_sync_skipped_pending_bot_fill | "
                     "token=%s cond=%s venue_size=%s",
-                    token_id, condition_id, venue_size,
+                    token_id,
+                    condition_id,
+                    venue_size,
                 )
                 continue
 
@@ -574,7 +644,8 @@ class ManualSyncService:
             except Exception as exc:
                 logger.warning(
                     "manual_sync_positions_repo_upsert_failed | token=%s error=%s",
-                    token_id, redact_error_detail(exc),
+                    token_id,
+                    redact_error_detail(exc),
                 )
 
         # Guard: skip deletion when the Data-API response cannot be trusted as a
@@ -597,8 +668,7 @@ class ManualSyncService:
         if not positions:
             if persisted_by_token:
                 logger.warning(
-                    "manual_sync_deletion_skipped_empty_api | "
-                    "local_count=%d user=%s",
+                    "manual_sync_deletion_skipped_empty_api | local_count=%d user=%s",
                     len(persisted_by_token),
                     self._user_id,
                 )
@@ -634,7 +704,8 @@ class ManualSyncService:
                     except Exception as exc:
                         logger.debug(
                             "manual_sync_cache_evict_failed | token=%s error=%s",
-                            token_id, redact_error_detail(exc),
+                            token_id,
+                            redact_error_detail(exc),
                         )
                     logger.info(
                         "manual_sync_deleted_stale_position | user=%s cond=%s token=%s",
@@ -645,7 +716,8 @@ class ManualSyncService:
                 except Exception as exc:
                     logger.warning(
                         "manual_sync_positions_repo_delete_failed | token=%s error=%s",
-                        token_id, redact_error_detail(exc),
+                        token_id,
+                        redact_error_detail(exc),
                     )
 
         await self._reap_expired_reservations_after_position_change(
@@ -695,7 +767,9 @@ class ManualSyncService:
             return
         if changed_scopes <= 0:
             return
-        release_expired = getattr(self._reservation_service, "release_expired_active", None)
+        release_expired = getattr(
+            self._reservation_service, "release_expired_active", None
+        )
         if not callable(release_expired):
             return
         try:

@@ -98,6 +98,8 @@ _UNCONFIRMED_SUBMISSION_STATES = (
     "delayed",
     "order_live",
     "live",
+    "ambiguous_timeout",
+    "reconciliation_required",
 )
 
 _STALE_SUBMISSION_LOCK_STATUSES = (
@@ -967,6 +969,37 @@ class OrdersRepo(AbstractOrderRepository):
               AND processed_at >= $3
         """
         params: list[Any] = [user_id, asset, cutoff]
+        if side is not None:
+            query += f" AND UPPER(side) = ${len(params) + 1}"
+            params.append(str(side).upper())
+        query += " LIMIT 1"
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(query, *params)
+        return row is not None
+
+    async def has_unconfirmed_processed_trade(
+        self,
+        *,
+        user_id: str,
+        asset: str,
+        side: str | None = None,
+    ) -> bool:
+        """Whether reconciliation still owns a bot trade for this scope.
+
+        Unlike the activity-classification helper above, this probe has no age
+        cutoff. A venue outage can keep a legitimate BUY pending for hours;
+        manual sync must not seed the venue's absolute position and later let
+        reconciliation add the same fill as a delta.
+        """
+        if not user_id or not asset:
+            return False
+        query = """
+            SELECT 1 FROM processed_trades
+            WHERE user_id = $1
+              AND asset = $2
+              AND status = ANY($3::text[])
+        """
+        params: list[Any] = [user_id, asset, list(_UNCONFIRMED_SUBMISSION_STATES)]
         if side is not None:
             query += f" AND UPPER(side) = ${len(params) + 1}"
             params.append(str(side).upper())

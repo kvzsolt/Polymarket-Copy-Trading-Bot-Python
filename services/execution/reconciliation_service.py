@@ -30,10 +30,13 @@ Both concrete methods enforce:
 
 from __future__ import annotations
 
+import logging
+import random
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from decimal import Decimal
-from typing import Any, Awaitable, Callable, Protocol
+from typing import Any, Awaitable, Callable, Protocol, cast
 
 from domain.order_lifecycle import OrderLifecycleStatus
 from utils.logger import get_logger, redact_error_detail
@@ -53,15 +56,21 @@ class ReconciliationResult:
     error: str = ""
 
     @classmethod
-    def resolved(cls, order_id: str, status: OrderLifecycleStatus) -> "ReconciliationResult":
+    def resolved(
+        cls, order_id: str, status: OrderLifecycleStatus
+    ) -> "ReconciliationResult":
         return cls(order_id=order_id, is_resolved=True, status=status)
 
     @classmethod
-    def pending(cls, order_id: str, status: OrderLifecycleStatus) -> "ReconciliationResult":
+    def pending(
+        cls, order_id: str, status: OrderLifecycleStatus
+    ) -> "ReconciliationResult":
         return cls(order_id=order_id, is_resolved=False, status=status)
 
     @classmethod
-    def unresolved(cls, order_id: str, status: OrderLifecycleStatus, error: str = "") -> "ReconciliationResult":
+    def unresolved(
+        cls, order_id: str, status: OrderLifecycleStatus, error: str = ""
+    ) -> "ReconciliationResult":
         return cls(order_id=order_id, is_resolved=False, status=status, error=error)
 
 
@@ -100,7 +109,19 @@ class ReservationService(Protocol):
 # See issue #66 for context.
 class OrderQueryGateway(Protocol):
     async def get_order(self, venue_order_id: str) -> Any: ...
-    async def get_fills(self, market: str | None = None) -> list[Any]: ...
+    async def list_open_orders(
+        self,
+        *,
+        order_id: str | None = None,
+        market: str | None = None,
+    ) -> list[Any]: ...
+    async def get_fills(
+        self,
+        market: str | None = None,
+        *,
+        trade_id: str | None = None,
+        order_id: str | None = None,
+    ) -> list[Any]: ...
 
 
 # Backward-compatible alias for any out-of-tree imports that referenced the
@@ -121,45 +142,57 @@ class DbProvider(Protocol):
 # ---------------------------------------------------------------------------
 # Constants shared by the concrete record paths
 # ---------------------------------------------------------------------------
-_TERMINAL_NO_FILL_STATUSES = frozenset({
-    "cancelled", "canceled", "expired", "rejected", "failed",
-    "order_status_canceled", "order_status_canceled_market_resolved",
-    "order_status_invalid",
-    # Order the venue has no record of (HTTP 404) after the confirm_fill
-    # consecutive-poll guard — see ``confirm_fill`` / ``_VENUE_ORDER_NOT_FOUND_*``.
-    "not_found",
-})
-# Eventual-consistency guard for venue 404s: a just-submitted order can 404
-# briefly before the venue indexes it, so confirm_fill only settles an order
-# as terminal ``not_found`` after this many CONSECUTIVE not-found polls. The
-# reconcile loop runs periodically, so consecutive polls span real wall-clock
-# time — protecting the submitted-unconfirmed safety net against a single
-# transient 404. Any successful poll resets the per-order counter.
+_TERMINAL_NO_FILL_STATUSES = frozenset(
+    {
+        "cancelled",
+        "canceled",
+        "expired",
+        "rejected",
+        "failed",
+        "order_status_canceled",
+        "order_status_canceled_market_resolved",
+        "order_status_invalid",
+    }
+)
+# Repeated 404s are tracked only to throttle observability. They never settle an
+# order: a missing order lookup plus missing fallback evidence is inconclusive.
 _VENUE_ORDER_NOT_FOUND_THRESHOLD = 3
 
-_FINAL_FILL_STATUSES_TRADE = frozenset({"filled", "matched", "confirmed"})
+_FINAL_FILL_STATUSES_TRADE = frozenset({"filled", "confirmed"})
 # Risk reconcile historically treated empty status + matched > 0 as final fill
 # (see services/riskMonitor.reconcile_unconfirmed_risk_orders) — preserve.
-_FINAL_FILL_STATUSES_RISK = frozenset({"filled", "matched", "confirmed", ""})
+_FINAL_FILL_STATUSES_RISK = frozenset({"filled", "confirmed", ""})
 # Non-terminal intermediate statuses that should keep the order row alive in
 # its current submitted/delayed/live state. Polymarket POST /order can
-# return live/matched/delayed; ``matched``/`order_status_matched`/`filled` are
-# treated as terminal fill by the reconciler (existing contract). WSS trade
-# events report MATCHED / MINED / RETRYING and are handled in UserWebSocket;
-# the reconciler only sees POST-poll results.
-_VENUE_NON_TERMINAL = frozenset({
-    "live", "delayed",
-    "order_status_live",
-    "submitted", "submitted_unconfirmed", "submitted_delayed",
-    "order_live", "trade_mined", "trade_retrying",
-    "mined", "retrying",
-    # P1-q: a marketable order that did not match after the matching delay is
-    # placed ON THE BOOK as a resting order (Context7: order status 'unmatched'
-    # = "marketable order placed on the book after the delay expired without a
-    # match"). It is live / non-terminal — keep polling; do NOT fall through to
-    # the ("failed","failed") default and settle a live resting order as failed.
-    "unmatched",
-})
+# return live/matched/delayed. ``matched``/``mined``/``retrying`` remain pending
+# until authenticated trade history reports CONFIRMED or FAILED.
+_VENUE_NON_TERMINAL = frozenset(
+    {
+        "live",
+        "delayed",
+        "order_status_live",
+        "submitted",
+        "submitted_unconfirmed",
+        "submitted_delayed",
+        "order_live",
+        "matched",
+        "order_status_matched",
+        "matched_pending_confirmation",
+        "trade_mined",
+        "trade_retrying",
+        "mined",
+        "retrying",
+        "poll_unavailable",
+        "poll_deferred",
+        "ambiguous_timeout",
+        # P1-q: a marketable order that did not match after the matching delay is
+        # placed ON THE BOOK as a resting order (Context7: order status 'unmatched'
+        # = "marketable order placed on the book after the delay expired without a
+        # match"). It is live / non-terminal — keep polling; do NOT fall through to
+        # the ("failed","failed") default and settle a live resting order as failed.
+        "unmatched",
+    }
+)
 
 # Map normalised venue status -> (local submission status, lifecycle log status).
 _VENUE_TO_LIFECYCLE: dict[str, tuple[str, str]] = {
@@ -188,10 +221,6 @@ _VENUE_TO_LIFECYCLE: dict[str, tuple[str, str]] = {
     "order_status_invalid": ("rejected", "failed"),
     "failed": ("failed", "failed"),
     "expired": ("expired", "failed"),
-    # Venue 404 confirmed across the consecutive-poll guard — the order never
-    # landed (or was pruned). Settle as cancelled so the trade key unlocks for
-    # retry and the reservation is released (terminal-no-fill branch).
-    "not_found": ("cancelled", "cancelled"),
     "submitted_unconfirmed": ("submitted_unconfirmed", "submitted_unconfirmed"),
     "submitted": ("submitted_unconfirmed", "submitted_unconfirmed"),
 }
@@ -201,12 +230,30 @@ def _normalize_venue_status(raw: Any) -> str:
     return str(raw or "").strip().lower()
 
 
+def _normalize_trade_status(raw: Any) -> str:
+    status = _normalize_venue_status(raw)
+    for prefix in ("trade_status_", "trade_"):
+        if status.startswith(prefix):
+            status = status[len(prefix) :]
+    return status
+
+
 def _record_created_at(record: dict[str, Any]) -> float | None:
     """Best-effort timestamp from a processed_trade / order row."""
-    for key in ("created_at", "createdAt", "submitted_at", "submittedAt", "timestamp"):
+    for key in (
+        "created_at",
+        "createdAt",
+        "submitted_at",
+        "submittedAt",
+        "processed_at",
+        "processedAt",
+        "timestamp",
+    ):
         value = record.get(key)
         if value is None:
             continue
+        if isinstance(value, datetime):
+            return value.timestamp()
         try:
             ts = float(value)
         except (TypeError, ValueError):
@@ -284,6 +331,7 @@ class ReconciliationService:
         risk_blocks_repo: Any | None = None,
         risk_triggers_repo: Any | None = None,
         funder_address: str | None = None,
+        order_confirmation_cfg: Any | None = None,
     ):
         self.orders_repo = orders_repo
         self.fills_repo = fills_repo
@@ -294,71 +342,211 @@ class ReconciliationService:
         self.audit_logger = audit_logger
         self.risk_blocks_repo = risk_blocks_repo
         self.risk_triggers_repo = risk_triggers_repo
+        self.order_confirmation_cfg = order_confirmation_cfg
         # Funder wallet for the user_activities write-back. When set, every
         # terminal "filled_reconciled" emission also writes a bot=true row
         # into user_activities so the manual-sync detector has a single
         # source of truth for tx_hash dedup. None preserves legacy behaviour
         # for bot_cli / test contexts that don't need the write-back.
         self.funder_address = funder_address.lower() if funder_address else None
-        self._venue_poll_backoff_until = 0.0
-        self._venue_poll_backoff_reason = ""
-        self._venue_poll_log_after = 0.0
-        # Per-order consecutive venue-404 counter for the not-found settlement
-        # guard (see ``_VENUE_ORDER_NOT_FOUND_THRESHOLD``). Reset on any
-        # successful poll; popped once the order settles as ``not_found``.
+        self._venue_poll_backoffs: dict[str, dict[str, Any]] = {}
+        self._last_order_poll_at: dict[str, float] = {}
+        # Per-order 404 streak used only for throttled observability. Missing
+        # lookup evidence never settles or unlocks an order.
         self._venue_not_found_counts: dict[str, int] = {}
+        # Per-order auto-release pacing: (next_probe_at_monotonic, interval).
+        # An ambiguous order that cannot be released (venue outage, probe
+        # errors) is re-probed on an escalating schedule instead of every
+        # reconcile tick.
+        self._auto_release_next_probe_at: dict[str, tuple[float, float]] = {}
+        # Per-order abort streak, used to throttle abort logs/audits.
+        self._auto_release_abort_counts: dict[str, int] = {}
+        # Per-order monotonic timestamp of the last "stalled" audit emission.
+        self._ambiguous_stalled_last_audit: dict[str, float] = {}
 
     # ------------------------------------------------------------------
     # Fill confirmation (venue poll)
     # ------------------------------------------------------------------
-    async def confirm_fill(self, order_id: str) -> dict[str, Any]:
-        """Poll the CLOB gateway for order status.
-
-        Returns a dict with at least ``status`` and ``size_matched`` keys.
-        This replaces the former ``ExecutionService._confirm_fill`` so that
-        the reconciler owns the full settlement lifecycle (issue #71).
-        """
-        if self.clob_gateway is None:
-            return {"status": "unknown", "size_matched": "0"}
-        now = time.monotonic()
-        if now < self._venue_poll_backoff_until:
-            return {
-                "status": "poll_unavailable",
-                "size_matched": "0",
-                "poll_error": self._venue_poll_backoff_reason,
-                "retryable": True,
-            }
+    async def _hydrate_order_record(self, order_id: str) -> dict[str, Any]:
+        getter = getattr(self.orders_repo, "get_by_order_id", None)
+        if not callable(getter):
+            return {}
         try:
-            venue_state = await self.clob_gateway.get_order(order_id)
-            self._venue_poll_backoff_until = 0.0
-            self._venue_poll_backoff_reason = ""
-            # Found at the venue → clear any pending not-found streak.
-            self._venue_not_found_counts.pop(order_id, None)
-            if venue_state is None:
-                return {"status": "unknown", "size_matched": "0"}
-            # VenueOrderState or raw dict — normalise to a plain dict.
-            if isinstance(venue_state, dict):
-                return venue_state
-            # Protocol-based VenueOrderState — convert to dict.
-            matched = (
-                getattr(venue_state, "size_matched", None)
-                or getattr(venue_state, "filled_size", None)
-                or getattr(venue_state, "matched_size", None)
-                or getattr(venue_state, "matched_amount", None)
-                or "0"
+            row = await cast(Callable[[str], Awaitable[Any]], getter)(order_id)
+        except Exception as exc:
+            _log.debug(
+                "confirm_fill order hydration failed | order_id=%s error=%s",
+                order_id,
+                redact_error_detail(exc),
             )
-            avg_price = (
-                getattr(venue_state, "avg_price", None)
-                or getattr(venue_state, "avg_fill_price", None)
-                or getattr(venue_state, "average_price", None)
-                or "0"
-            )
-            return {
-                "status": getattr(venue_state, "status", "unknown"),
-                "size_matched": str(matched),
-                "avg_price": str(avg_price),
-                "order_id": getattr(venue_state, "order_id", order_id),
-            }
+            return {}
+        return row if isinstance(row, dict) else {}
+
+    @staticmethod
+    def _submission_sequences(record: dict[str, Any]) -> tuple[list[str], list[str]]:
+        response = record.get("response")
+        if not isinstance(response, dict):
+            return [], []
+        raw = response.get("raw")
+        if not isinstance(raw, dict):
+            raw = {}
+        raw_data = raw.get("data")
+        if not isinstance(raw_data, dict):
+            raw_data = {}
+
+        def _values(*keys: str) -> list[str]:
+            value: Any = None
+            for source in (response, raw, raw_data):
+                for key in keys:
+                    if source.get(key) is not None:
+                        value = source.get(key)
+                        break
+                if value is not None:
+                    break
+            if isinstance(value, str):
+                value = [value]
+            if not isinstance(value, (list, tuple, set)):
+                return []
+            return [str(item) for item in value if str(item or "").strip()]
+
+        return (
+            _values("trade_ids", "tradeIds"),
+            _values("transactions_hashes", "transaction_hashes", "transactionHashes"),
+        )
+
+    @staticmethod
+    def _venue_state_dict(venue_state: Any, order_id: str) -> dict[str, Any]:
+        if venue_state is None:
+            return {"status": "unknown", "size_matched": "0"}
+        if isinstance(venue_state, dict):
+            return dict(venue_state)
+        matched = (
+            getattr(venue_state, "size_matched", None)
+            or getattr(venue_state, "filled_size", None)
+            or getattr(venue_state, "matched_size", None)
+            or getattr(venue_state, "matched_amount", None)
+            or "0"
+        )
+        avg_price = (
+            getattr(venue_state, "avg_price", None)
+            or getattr(venue_state, "avg_fill_price", None)
+            or getattr(venue_state, "average_price", None)
+            or "0"
+        )
+        return {
+            "status": getattr(venue_state, "status", "unknown"),
+            "size_matched": str(matched),
+            "avg_price": str(avg_price),
+            "order_id": getattr(venue_state, "order_id", order_id),
+        }
+
+    @staticmethod
+    def _fill_value(fill: Any, key: str, default: Any = None) -> Any:
+        if isinstance(fill, dict):
+            return fill.get(key, default)
+        return getattr(fill, key, default)
+
+    @classmethod
+    def _aggregate_fills(
+        cls,
+        fills: list[Any],
+        *,
+        status: str,
+        source: str,
+    ) -> dict[str, Any]:
+        total = Decimal("0")
+        notional = Decimal("0")
+        tx_hashes: list[str] = []
+        fill_ids: list[str] = []
+        for fill in fills:
+            size = _decimal_or_zero(cls._fill_value(fill, "size", 0))
+            price = _decimal_or_zero(cls._fill_value(fill, "price", 0))
+            if size <= 0 or price <= 0:
+                continue
+            total += size
+            notional += size * price
+            tx_hash = str(cls._fill_value(fill, "transaction_hash", "") or "")
+            fill_id = str(cls._fill_value(fill, "fill_id", "") or "")
+            if tx_hash and tx_hash not in tx_hashes:
+                tx_hashes.append(tx_hash)
+            if fill_id and fill_id not in fill_ids:
+                fill_ids.append(fill_id)
+        avg_price = notional / total if total > 0 else Decimal("0")
+        return {
+            "status": status,
+            "size_matched": str(total),
+            "avg_price": str(avg_price),
+            "transaction_hashes": tx_hashes,
+            "trade_ids": fill_ids,
+            "confirmation_source": source,
+        }
+
+    def _source_backed_off(self, source: str) -> tuple[bool, str]:
+        state = self._venue_poll_backoffs.get(source)
+        if not state:
+            return False, ""
+        if time.monotonic() >= float(state.get("until", 0.0)):
+            return False, ""
+        return True, str(state.get("reason") or "venue_unavailable")
+
+    def _record_poll_success(self, source: str) -> None:
+        # Decay instead of reset: one lucky success (or a 404) during a
+        # flapping outage must not wipe the exponential ladder that repeated
+        # failures built up. The source becomes immediately pollable again,
+        # but the next failure escalates from the decayed count.
+        state = self._venue_poll_backoffs.get(source)
+        if not state:
+            return
+        failures = int(state.get("failures", 0)) - 1
+        if failures <= 0:
+            self._venue_poll_backoffs.pop(source, None)
+            return
+        self._venue_poll_backoffs[source] = {
+            "failures": failures,
+            "until": 0.0,
+            "reason": str(state.get("reason") or ""),
+            "base_delay": float(state.get("base_delay", 0.0)),
+        }
+
+    def _record_poll_failure(self, source: str, order_id: str, exc: Exception) -> str:
+        previous = self._venue_poll_backoffs.get(source, {})
+        if previous and time.monotonic() < float(previous.get("until", 0.0)):
+            # A backoff window is already active: concurrent callers that
+            # slipped past the gate before it was set must not escalate the
+            # failure count (thundering-herd guard).
+            return str(previous.get("reason") or "venue_unavailable")
+        failures = int(previous.get("failures", 0)) + 1
+        base_delay = min(5.0 * (2 ** (failures - 1)), 60.0)
+        delay = base_delay * random.uniform(0.8, 1.2)
+        reason = redact_error_detail(exc)
+        self._venue_poll_backoffs[source] = {
+            "failures": failures,
+            "until": time.monotonic() + delay,
+            "reason": reason,
+            "base_delay": base_delay,
+        }
+        _log.warning(
+            "confirm_fill transient source failure; backing off CLOB polls | "
+            "source=%s base_delay_s=%.0f retry_in_s=%.1f order_id=%s error=%s",
+            source,
+            base_delay,
+            delay,
+            order_id,
+            reason,
+        )
+        return reason
+
+    async def _poll_source(
+        self,
+        source: str,
+        order_id: str,
+        operation: Callable[[], Awaitable[Any]],
+    ) -> tuple[str, Any, str]:
+        backed_off, reason = self._source_backed_off(source)
+        if backed_off:
+            return "unavailable", None, reason
+        try:
+            value = await operation()
         except Exception as exc:
             try:
                 from integrations.polymarket.errors import (
@@ -366,59 +554,303 @@ class ReconciliationService:
                     VenueRateLimitError,
                     VenueUnavailableError,
                 )
-                retryable_poll_error = isinstance(
-                    exc, (VenueRateLimitError, VenueUnavailableError)
-                )
-                not_found_error = isinstance(exc, VenueOrderNotFoundError)
+
+                if isinstance(exc, VenueOrderNotFoundError):
+                    self._record_poll_success(source)
+                    return "not_found", None, "order_not_found"
+                if isinstance(exc, (VenueRateLimitError, VenueUnavailableError)):
+                    return (
+                        "unavailable",
+                        None,
+                        self._record_poll_failure(source, order_id, exc),
+                    )
             except Exception:
-                retryable_poll_error = False
-                not_found_error = False
+                pass
+            reason = redact_error_detail(exc)
+            _log.warning(
+                "confirm_fill source failed | source=%s order_id=%s error=%s",
+                source,
+                order_id,
+                reason,
+            )
+            return "error", None, reason
+        self._record_poll_success(source)
+        return "ok", value, ""
 
-            # Venue 404 — the order is not (yet?) at the venue. Apply the
-            # eventual-consistency guard: only settle as terminal ``not_found``
-            # after THRESHOLD consecutive not-found polls; below that, keep the
-            # order alive ("unknown") so a just-submitted order that hasn't been
-            # indexed is not wrongly cancelled (submitted-unconfirmed safety).
-            if not_found_error:
-                count = self._venue_not_found_counts.get(order_id, 0) + 1
-                self._venue_not_found_counts[order_id] = count
-                if count >= _VENUE_ORDER_NOT_FOUND_THRESHOLD:
-                    self._venue_not_found_counts.pop(order_id, None)
-                    _log.warning(
-                        "confirm_fill order not found at venue after %d consecutive polls; "
-                        "settling as terminal not_found | order_id=%s",
-                        count,
-                        order_id,
-                    )
-                    return {"status": "not_found", "size_matched": "0"}
+    async def confirm_fill(self, order_id: str) -> dict[str, Any]:
+        """Resolve an order from independent authenticated venue evidence.
+
+        A failing single-order endpoint no longer blocks trade history and open
+        order fallbacks. Missing evidence is always fail-closed: it keeps the
+        order pending and never implies cancellation or permission to resubmit.
+        """
+        gateway = self.clob_gateway
+        if gateway is None:
+            return {"status": "unknown", "size_matched": "0"}
+
+        record = await self._hydrate_order_record(order_id)
+        cfg = self.order_confirmation_cfg
+        response_value = record.get("response")
+        response: dict[str, Any] = (
+            response_value if isinstance(response_value, dict) else {}
+        )
+        last_status = _normalize_venue_status(response.get("status"))
+        if self._should_skip_for_delay(
+            record,
+            order_confirmation_cfg=cfg,
+            last_known_venue_status=last_status,
+        ):
+            return {"status": "poll_deferred", "size_matched": "0"}
+        if cfg is not None:
+            now = time.monotonic()
+            last_poll = self._last_order_poll_at.get(order_id)
+            interval = max(0.0, float(cfg.poll_interval_seconds))
+            if last_poll is not None and now - last_poll < interval:
+                return {"status": "poll_deferred", "size_matched": "0"}
+            self._last_order_poll_at[order_id] = now
+
+        trade_ids, transaction_hashes = self._submission_sequences(record)
+        legacy_matched = _matched_amount_from_response(response)
+        if transaction_hashes and not trade_ids and legacy_matched > 0:
+            legacy = dict(response)
+            legacy.update(
+                {
+                    "status": "confirmed",
+                    "size_matched": str(legacy_matched),
+                    "confirmation_source": "submission_transaction_hash",
+                }
+            )
+            return legacy
+
+        request_value = record.get("request")
+        request: dict[str, Any] = (
+            request_value if isinstance(request_value, dict) else {}
+        )
+        market_id = (
+            str(
+                request.get("market")
+                or request.get("market_id")
+                or request.get("condition_id")
+                or ""
+            )
+            or None
+        )
+        unavailable: list[tuple[str, str]] = []
+        direct: dict[str, Any] | None = None
+
+        order_probe, venue_state, reason = await self._poll_source(
+            "order",
+            order_id,
+            lambda: gateway.get_order(order_id),
+        )
+        if order_probe == "ok":
+            self._venue_not_found_counts.pop(order_id, None)
+            # Venue is answering for this order again: drop the escalated
+            # auto-release pacing so the next grace check probes promptly.
+            self._clear_auto_release_state(order_id)
+            direct = self._venue_state_dict(venue_state, order_id)
+            direct_status = _normalize_venue_status(direct.get("status"))
+            direct_matched = _matched_amount_from_response(direct)
+            if direct_status in _TERMINAL_NO_FILL_STATUSES and direct_matched <= 0:
+                direct["confirmation_source"] = "order"
+                return direct
+            if direct_status in {"confirmed", "filled"} and direct_matched > 0:
+                direct["confirmation_source"] = "order"
+                return direct
+        elif order_probe == "not_found":
+            count = self._venue_not_found_counts.get(order_id, 0) + 1
+            self._venue_not_found_counts[order_id] = count
+            if count == 1 or count == _VENUE_ORDER_NOT_FOUND_THRESHOLD:
                 _log.info(
-                    "confirm_fill order not found at venue (%d/%d) — deferring settlement | order_id=%s",
-                    count,
-                    _VENUE_ORDER_NOT_FOUND_THRESHOLD,
+                    "confirm_fill order lookup absent; checking fallback evidence | "
+                    "order_id=%s consecutive=%d",
                     order_id,
+                    count,
                 )
-                return {"status": "unknown", "size_matched": "0"}
+        else:
+            unavailable.append(("order", reason))
 
-            if retryable_poll_error:
-                reason = redact_error_detail(exc)
-                self._venue_poll_backoff_until = time.monotonic() + 5.0
-                self._venue_poll_backoff_reason = reason
-                if time.monotonic() >= self._venue_poll_log_after:
-                    _log.warning(
-                        "confirm_fill transient poll failure; backing off CLOB order polls for 5s | order_id=%s error=%s",
-                        order_id,
-                        reason,
+        confirmed_trade_fills: list[Any] = []
+        trade_states: list[str] = []
+        if trade_ids:
+            for trade_id in trade_ids:
+
+                async def _get_trade_fills(tid: str = trade_id) -> list[Any]:
+                    return await gateway.get_fills(
+                        market=market_id,
+                        trade_id=tid,
+                        order_id=order_id,
                     )
-                    self._venue_poll_log_after = time.monotonic() + 5.0
+
+                probe, fills, reason = await self._poll_source(
+                    "trade_fills", order_id, _get_trade_fills
+                )
+                if probe != "ok":
+                    if probe in {"unavailable", "error"}:
+                        unavailable.append(("trade_fills", reason))
+                    trade_states.append("missing")
+                    continue
+                related = list(fills or [])
+                if not related:
+                    trade_states.append("missing")
+                    continue
+                statuses = {
+                    _normalize_trade_status(self._fill_value(fill, "status", ""))
+                    for fill in related
+                }
+                if "confirmed" in statuses:
+                    trade_states.append("confirmed")
+                    confirmed_trade_fills.extend(
+                        fill
+                        for fill in related
+                        if _normalize_trade_status(self._fill_value(fill, "status", ""))
+                        == "confirmed"
+                    )
+                elif statuses and statuses <= {"failed"}:
+                    trade_states.append("failed")
+                else:
+                    pending = next(
+                        (s for s in ("retrying", "mined", "matched") if s in statuses),
+                        "matched",
+                    )
+                    trade_states.append(pending)
+
+            if len(trade_states) == len(trade_ids) and all(
+                state in {"confirmed", "failed"} for state in trade_states
+            ):
+                if confirmed_trade_fills:
+                    return self._aggregate_fills(
+                        confirmed_trade_fills,
+                        status="confirmed",
+                        source="trade_ids",
+                    )
                 return {
-                    "status": "poll_unavailable",
+                    "status": "failed",
                     "size_matched": "0",
-                    "poll_error": reason,
-                    "retryable": True,
+                    "confirmation_source": "trade_ids",
                 }
 
-            _log.warning("confirm_fill poll failed for %s: %s", order_id, redact_error_detail(exc))
-            return {"status": "unknown", "size_matched": "0"}
+        async def _list_open_orders() -> list[Any]:
+            try:
+                return await gateway.list_open_orders(
+                    order_id=order_id,
+                    market=market_id,
+                )
+            except TypeError:
+                orders = await gateway.list_open_orders()
+                return [
+                    item
+                    for item in orders or []
+                    if str(self._fill_value(item, "order_id", "")) == order_id
+                ]
+
+        open_probe, open_orders, reason = await self._poll_source(
+            "open_orders", order_id, _list_open_orders
+        )
+        if open_probe != "ok":
+            unavailable.append(("open_orders", reason))
+            open_orders = []
+        is_open = bool(open_orders)
+
+        async def _get_order_fills() -> list[Any]:
+            try:
+                return await gateway.get_fills(
+                    market=market_id,
+                    order_id=order_id,
+                )
+            except TypeError:
+                fills = await gateway.get_fills(market=market_id)
+                return [
+                    fill
+                    for fill in fills or []
+                    if str(self._fill_value(fill, "order_id", "")) == order_id
+                ]
+
+        fill_probe, account_fills, reason = await self._poll_source(
+            "account_fills", order_id, _get_order_fills
+        )
+        if fill_probe != "ok":
+            unavailable.append(("account_fills", reason))
+            account_fills = []
+
+        related_fills = list(account_fills or [])
+        pending_statuses = {
+            _normalize_trade_status(self._fill_value(fill, "status", ""))
+            for fill in related_fills
+            if _normalize_trade_status(self._fill_value(fill, "status", ""))
+            not in {"confirmed", "failed"}
+        }
+        confirmed = [
+            fill
+            for fill in related_fills
+            if _normalize_trade_status(self._fill_value(fill, "status", ""))
+            == "confirmed"
+        ]
+        if pending_statuses:
+            pending = next(
+                (s for s in ("retrying", "mined", "matched") if s in pending_statuses),
+                "matched",
+            )
+            return {
+                "status": pending,
+                "size_matched": "0",
+                "confirmation_source": "account_trades",
+            }
+        if confirmed:
+            return self._aggregate_fills(
+                confirmed,
+                status="live" if is_open else "confirmed",
+                source="account_trades",
+            )
+        if (
+            related_fills
+            and all(
+                _normalize_trade_status(self._fill_value(fill, "status", ""))
+                == "failed"
+                for fill in related_fills
+            )
+            and not is_open
+        ):
+            return {
+                "status": "failed",
+                "size_matched": "0",
+                "confirmation_source": "account_trades",
+            }
+        if is_open:
+            state = self._venue_state_dict(open_orders[0], order_id)
+            state.update(
+                {
+                    "status": _normalize_venue_status(state.get("status")) or "live",
+                    "size_matched": "0",
+                    "confirmation_source": "open_orders",
+                }
+            )
+            return state
+        if trade_states:
+            pending = next(
+                (s for s in ("retrying", "mined", "matched") if s in trade_states),
+                "matched",
+            )
+            return {
+                "status": pending,
+                "size_matched": "0",
+                "confirmation_source": "trade_ids",
+            }
+        if direct is not None:
+            if _matched_amount_from_response(direct) > 0:
+                direct["status"] = "matched"
+            direct["size_matched"] = "0"
+            direct["confirmation_source"] = "order"
+            return direct
+        if unavailable:
+            return {
+                "status": "poll_unavailable",
+                "size_matched": "0",
+                "poll_error": unavailable[0][1],
+                "unavailable_sources": [source for source, _ in unavailable],
+                "retryable": True,
+            }
+        return {"status": "unknown", "size_matched": "0"}
 
     # ------------------------------------------------------------------
     # Manual-sync write-back
@@ -472,7 +904,8 @@ class ReconciliationService:
             # logging-only side effect.
             _log.debug(
                 "reconcile_funder_activity_writeback_failed | tx=%s error=%s",
-                tx_hash, redact_error_detail(exc),
+                tx_hash,
+                redact_error_detail(exc),
             )
 
     # ------------------------------------------------------------------
@@ -539,7 +972,9 @@ class ReconciliationService:
                             if isinstance(recovery, dict):
                                 reservation_id = recovery.get("reservation_id")
                                 if reservation_id:
-                                    reservation_source = "orders.request.recovery_metadata"
+                                    reservation_source = (
+                                        "orders.request.recovery_metadata"
+                                    )
                     if not reservation_id:
                         reservation_id = order_row.get("reservation_id")
                         if reservation_id:
@@ -569,14 +1004,20 @@ class ReconciliationService:
                     "order_id": record.get("order_id"),
                 },
             )
-            await self.reservation_service.release_terminal(str(reservation_id), reason=reason)
+            await self.reservation_service.release_terminal(
+                str(reservation_id), reason=reason
+            )
         except Exception as exc:
             _log.warning(
                 "reconciliation_reservation_release_failed | reservation_id=%s reason=%s error=%r",
-                reservation_id, reason, exc,
+                reservation_id,
+                reason,
+                exc,
             )
 
-    async def _lookup_active_reservation_id_for_order(self, order_id: Any) -> str | None:
+    async def _lookup_active_reservation_id_for_order(
+        self, order_id: Any
+    ) -> str | None:
         repo = getattr(self.reservation_service, "reservations_repo", None)
         lookup = getattr(repo, "get_active_by_order_id", None)
         if not callable(lookup):
@@ -625,7 +1066,9 @@ class ReconciliationService:
                 price=float(price) if price is not None else None,
                 usdc_value=float(usdc_value) if usdc_value is not None else None,
                 venue_status=venue_status,
-                signal_id=signal_id or record.get("trade_key") or record.get("signal_id"),
+                signal_id=signal_id
+                or record.get("trade_key")
+                or record.get("signal_id"),
                 meta=meta,
             )
         except Exception:
@@ -654,7 +1097,9 @@ class ReconciliationService:
             return False
 
         token_id = str(record.get("asset") or record.get("token_id") or "")
-        condition_id = str(record.get("condition_id") or record.get("conditionId") or "")
+        condition_id = str(
+            record.get("condition_id") or record.get("conditionId") or ""
+        )
         delay = order_confirmation_cfg.resolve_initial_delay(
             token_id=token_id,
             condition_id=condition_id,
@@ -678,7 +1123,9 @@ class ReconciliationService:
         created_at = _record_created_at(record)
         if created_at is None:
             return False
-        return (time.time() - created_at) >= float(order_confirmation_cfg.max_wait_seconds)
+        return (time.time() - created_at) >= float(
+            order_confirmation_cfg.max_wait_seconds
+        )
 
     def _is_past_auto_release_grace(
         self,
@@ -693,11 +1140,34 @@ class ReconciliationService:
         created_at = _record_created_at(record)
         if created_at is None:
             return False
-        threshold = (
-            float(order_confirmation_cfg.max_wait_seconds)
-            + float(order_confirmation_cfg.auto_release_grace_seconds)
+        threshold = float(order_confirmation_cfg.max_wait_seconds) + float(
+            order_confirmation_cfg.auto_release_grace_seconds
         )
         return (time.time() - created_at) >= threshold
+
+    @staticmethod
+    def _classify_probe_exception(exc: Exception) -> str:
+        """Classify an auto-release probe exception.
+
+        ``clean``: the venue affirmatively knows nothing about the order (404).
+        ``inconclusive``: transient venue trouble (5xx/rate-limit) — we cannot
+        know right now; release stays blocked, but this is expected during an
+        outage and must not count as a hard probe error.
+        ``error``: anything else (fail-closed).
+        """
+        try:
+            from integrations.polymarket.errors import (
+                VenueOrderNotFoundError,
+                VenueRateLimitError,
+                VenueUnavailableError,
+            )
+        except Exception:
+            return "error"
+        if isinstance(exc, VenueOrderNotFoundError):
+            return "clean"
+        if isinstance(exc, (VenueRateLimitError, VenueUnavailableError)):
+            return "inconclusive"
+        return "error"
 
     async def _run_auto_release_probes(
         self,
@@ -705,23 +1175,40 @@ class ReconciliationService:
         order_id: str,
         venue_order_id: str | None,
         market_id: str | None,
+        trade_ids: list[str],
         user_id: str,
         condition_id: str,
         token_id: str,
         expected_size: Decimal,
     ) -> dict[str, Any]:
-        """Run all four safety probes. Returns dict with probe outcomes.
+        """Run every independent safety probe and classify its outcome.
 
         Each probe is classified as clean/inconclusive/error. The caller
         decides whether to auto-release based on the configured policy.
         """
-        result: dict[str, Any] = {"errors": 0, "inconclusive": 0, "clean": 0, "details": {}}
+        result: dict[str, Any] = {
+            "errors": 0,
+            "inconclusive": 0,
+            "clean": 0,
+            "details": {},
+        }
 
         gw = self.clob_gateway
         if gw is None:
             result["errors"] += 1
             result["details"]["clob_gateway_missing"] = True
             return result
+
+        # A backed-off venue source cannot produce an all-clean probe battery
+        # anyway; defer without touching the gateway so the auto-release path
+        # stays silent (instead of spamming errors) during an outage.
+        for source in ("order", "open_orders", "trade_fills", "account_fills"):
+            backed_off, reason = self._source_backed_off(source)
+            if backed_off:
+                result["deferred"] = True
+                result["details"]["deferred_source"] = source
+                result["details"]["deferred_reason"] = reason
+                return result
 
         # Probe 1: get_order
         try:
@@ -731,41 +1218,120 @@ class ReconciliationService:
                 if not isinstance(venue_state, dict)
                 else venue_state.get("status")
             )
-            if status in ("live", "matched", "delayed", "order_status_live", "order_status_matched"):
-                result["inconclusive"] += 1
-                result["details"]["get_order"] = status
-            else:
+            if status in _TERMINAL_NO_FILL_STATUSES or status in {
+                "",
+                "absent",
+                "not_found",
+            }:
                 result["clean"] += 1
                 result["details"]["get_order"] = status or "absent"
+            else:
+                result["inconclusive"] += 1
+                result["details"]["get_order"] = status
         except Exception as exc:
-            result["errors"] += 1
-            result["details"]["get_order_error"] = repr(exc)
+            kind = self._classify_probe_exception(exc)
+            if kind == "clean":
+                result["clean"] += 1
+                result["details"]["get_order"] = "absent"
+            elif kind == "inconclusive":
+                self._record_poll_failure("order", order_id, exc)
+                result["inconclusive"] += 1
+                result["details"]["get_order"] = "venue_unavailable"
+            else:
+                result["errors"] += 1
+                result["details"]["get_order_error"] = redact_error_detail(exc)
 
-        # Probe 2: get_orders_for_market (optional)
-        list_orders = getattr(gw, "get_orders_for_market", None)
+        # Probe 2: exact authenticated open-order lookup.
+        list_orders = getattr(gw, "list_open_orders", None)
         if callable(list_orders):
             try:
-                orders = await list_orders(market_id) if market_id else []
-                ids = {str(o.get("id") if isinstance(o, dict) else getattr(o, "id", "")) for o in orders or []}
+                try:
+                    orders = await list_orders(
+                        order_id=venue_order_id or order_id,
+                        market=market_id,
+                    )
+                except TypeError:
+                    orders = await list_orders()
+                ids = {
+                    str(
+                        o.get("order_id") or o.get("id")
+                        if isinstance(o, dict)
+                        else getattr(o, "order_id", None) or getattr(o, "id", "")
+                    )
+                    for o in orders or []
+                }
                 if order_id in ids or (venue_order_id and venue_order_id in ids):
                     result["inconclusive"] += 1
-                    result["details"]["get_orders_for_market"] = "order_present"
+                    result["details"]["list_open_orders"] = "order_present"
                 else:
                     result["clean"] += 1
-                    result["details"]["get_orders_for_market"] = "absent"
+                    result["details"]["list_open_orders"] = "absent"
             except Exception as exc:
-                result["errors"] += 1
-                result["details"]["get_orders_for_market_error"] = repr(exc)
+                kind = self._classify_probe_exception(exc)
+                if kind == "clean":
+                    result["clean"] += 1
+                    result["details"]["list_open_orders"] = "absent"
+                elif kind == "inconclusive":
+                    self._record_poll_failure("open_orders", order_id, exc)
+                    result["inconclusive"] += 1
+                    result["details"]["list_open_orders"] = "venue_unavailable"
+                else:
+                    result["errors"] += 1
+                    result["details"]["list_open_orders_error"] = redact_error_detail(
+                        exc
+                    )
         else:
             result["inconclusive"] += 1
-            result["details"]["get_orders_for_market"] = "not_supported"
+            result["details"]["list_open_orders"] = "not_supported"
 
-        # Probe 3: get_fills
+        # Probe 3: each persisted trade ID. Any returned trade means settlement
+        # evidence still exists and release is unsafe, regardless of its status.
+        for trade_id in trade_ids:
+            try:
+                trade_fills = await gw.get_fills(
+                    market=market_id,
+                    trade_id=trade_id,
+                    order_id=venue_order_id or order_id,
+                )
+                if trade_fills:
+                    result["inconclusive"] += 1
+                    result["details"][f"trade:{trade_id}"] = "present"
+                else:
+                    result["clean"] += 1
+                    result["details"][f"trade:{trade_id}"] = "absent"
+            except Exception as exc:
+                kind = self._classify_probe_exception(exc)
+                if kind == "clean":
+                    result["clean"] += 1
+                    result["details"][f"trade:{trade_id}"] = "absent"
+                elif kind == "inconclusive":
+                    self._record_poll_failure("trade_fills", order_id, exc)
+                    result["inconclusive"] += 1
+                    result["details"][f"trade:{trade_id}"] = "venue_unavailable"
+                else:
+                    result["errors"] += 1
+                    result["details"][f"trade:{trade_id}:error"] = redact_error_detail(
+                        exc
+                    )
+
+        # Probe 4: exact account fills for the order.
         try:
-            fills = await gw.get_fills(market=market_id)
+            try:
+                fills = await gw.get_fills(
+                    market=market_id,
+                    order_id=venue_order_id or order_id,
+                )
+            except TypeError:
+                fills = await gw.get_fills(market=market_id)
             related = [
-                f for f in fills or []
-                if str(f.get("order_id") if isinstance(f, dict) else getattr(f, "order_id", "")) == order_id
+                f
+                for f in fills or []
+                if str(
+                    f.get("order_id")
+                    if isinstance(f, dict)
+                    else getattr(f, "order_id", "")
+                )
+                in {order_id, venue_order_id}
             ]
             if related:
                 result["inconclusive"] += 1
@@ -774,12 +1340,23 @@ class ReconciliationService:
                 result["clean"] += 1
                 result["details"]["get_fills"] = "absent"
         except Exception as exc:
-            result["errors"] += 1
-            result["details"]["get_fills_error"] = repr(exc)
+            kind = self._classify_probe_exception(exc)
+            if kind == "clean":
+                result["clean"] += 1
+                result["details"]["get_fills"] = "absent"
+            elif kind == "inconclusive":
+                self._record_poll_failure("account_fills", order_id, exc)
+                result["inconclusive"] += 1
+                result["details"]["get_fills"] = "venue_unavailable"
+            else:
+                result["errors"] += 1
+                result["details"]["get_fills_error"] = redact_error_detail(exc)
 
-        # Probe 4: local position delta
+        # Probe 5: local position delta.
         try:
-            pos = await self.positions_repo.get_position(user_id, condition_id, token_id=token_id)
+            pos = await self.positions_repo.get_position(
+                user_id, condition_id, token_id=token_id
+            )
             local_size = Decimal(str(getattr(pos, "size_tokens", 0) or 0))
             if local_size >= expected_size > 0:
                 # Position already absorbed at least the expected size — order
@@ -791,9 +1368,85 @@ class ReconciliationService:
                 result["details"]["position_delta"] = f"local_size={local_size}"
         except Exception as exc:
             result["errors"] += 1
-            result["details"]["position_delta_error"] = repr(exc)
+            result["details"]["position_delta_error"] = redact_error_detail(exc)
 
         return result
+
+    def _clear_auto_release_state(self, order_id: str) -> None:
+        self._auto_release_next_probe_at.pop(order_id, None)
+        self._auto_release_abort_counts.pop(order_id, None)
+        self._ambiguous_stalled_last_audit.pop(order_id, None)
+
+    def _maybe_emit_ambiguous_stalled(
+        self, order_id: str, record: dict[str, Any]
+    ) -> None:
+        """Surface a stuck ambiguous order at most once per hour.
+
+        The per-attempt abort logs are throttled; this is the operator-facing
+        heartbeat that a reservation is still parked behind an unresolvable
+        order.
+        """
+        now = time.monotonic()
+        last = self._ambiguous_stalled_last_audit.get(order_id)
+        if last is not None and (now - last) < 3600.0:
+            return
+        self._ambiguous_stalled_last_audit[order_id] = now
+        _log.warning(
+            "reconciliation_ambiguous_stalled | order_id=%s status=%s "
+            "reservation_id=%s abort_count=%d",
+            order_id,
+            record.get("status"),
+            record.get("reservation_id"),
+            self._auto_release_abort_counts.get(order_id, 0),
+        )
+        self._audit(
+            "reconciliation_ambiguous_stalled",
+            {
+                "order_id": order_id,
+                "status": record.get("status"),
+                "reservation_id": record.get("reservation_id"),
+                "abort_count": self._auto_release_abort_counts.get(order_id, 0),
+            },
+        )
+
+    def _log_throttled_auto_release_abort(
+        self,
+        *,
+        order_id: str,
+        reason: str,
+        probe: dict[str, Any],
+        level: int,
+        message: str,
+    ) -> None:
+        """Emit the abort log/audit on the 1st and every 10th streak occurrence.
+
+        A stuck ambiguous order re-aborts on every probe attempt; unthrottled
+        that floods the log and audit trail with identical lines.
+        """
+        count = self._auto_release_abort_counts.get(order_id, 0) + 1
+        self._auto_release_abort_counts[order_id] = count
+        emit = count == 1 or count % 10 == 0
+        if not emit:
+            level = logging.DEBUG
+        _log.log(
+            level,
+            "%s | order_id=%s errors=%d abort_count=%d details=%s",
+            message,
+            order_id,
+            probe["errors"],
+            count,
+            probe["details"],
+        )
+        if emit:
+            self._audit(
+                "reconciliation_auto_release_aborted",
+                {
+                    "order_id": order_id,
+                    "reason": reason,
+                    "probe": probe,
+                    "abort_count": count,
+                },
+            )
 
     async def _maybe_auto_release_ambiguous(
         self,
@@ -814,45 +1467,61 @@ class ReconciliationService:
         venue_order_id = str(record.get("venue_order_id") or order_id)
         market_id = str(request.get("market") or request.get("market_id") or "") or None
         user_id = str(record.get("user_id") or request.get("user_id") or "")
-        condition_id = str(record.get("condition_id") or request.get("condition_id") or "")
+        condition_id = str(
+            record.get("condition_id") or request.get("condition_id") or ""
+        )
         token_id = str(record.get("asset") or request.get("token_id") or "")
         try:
-            expected_size = Decimal(str(request.get("amount") or request.get("size") or "0"))
+            expected_size = Decimal(
+                str(request.get("amount") or request.get("size") or "0")
+            )
         except Exception:
             expected_size = Decimal("0")
+        trade_ids, _ = self._submission_sequences(record)
 
         probe = await self._run_auto_release_probes(
             order_id=order_id,
             venue_order_id=venue_order_id,
             market_id=market_id,
+            trade_ids=trade_ids,
             user_id=user_id,
             condition_id=condition_id,
             token_id=token_id,
             expected_size=expected_size,
         )
 
-        max_errors = int(order_confirmation_cfg.auto_release_max_probe_errors)
-        require_clean = bool(order_confirmation_cfg.auto_release_require_all_probes_clean)
-        if probe["errors"] > max_errors:
-            _log.warning(
-                "auto_release_aborted_probe_errors | order_id=%s errors=%d details=%s",
-                order_id, probe["errors"], probe["details"],
+        if probe.get("deferred"):
+            _log.debug(
+                "auto_release_deferred_backoff | order_id=%s source=%s reason=%s",
+                order_id,
+                probe["details"].get("deferred_source"),
+                probe["details"].get("deferred_reason"),
             )
-            self._audit(
-                "reconciliation_auto_release_aborted",
-                {"order_id": order_id, "reason": "probe_errors", "probe": probe},
+            return False
+
+        max_errors = int(order_confirmation_cfg.auto_release_max_probe_errors)
+        require_clean = bool(
+            order_confirmation_cfg.auto_release_require_all_probes_clean
+        )
+        if probe["errors"] > max_errors:
+            self._log_throttled_auto_release_abort(
+                order_id=order_id,
+                reason="probe_errors",
+                probe=probe,
+                level=logging.WARNING,
+                message="auto_release_aborted_probe_errors",
             )
             return False
         if require_clean and probe["inconclusive"] > 0:
-            _log.info(
-                "auto_release_aborted_inconclusive | order_id=%s details=%s",
-                order_id, probe["details"],
-            )
-            self._audit(
-                "reconciliation_auto_release_aborted",
-                {"order_id": order_id, "reason": "inconclusive", "probe": probe},
+            self._log_throttled_auto_release_abort(
+                order_id=order_id,
+                reason="inconclusive",
+                probe=probe,
+                level=logging.INFO,
+                message="auto_release_aborted_inconclusive",
             )
             return False
+        self._auto_release_abort_counts.pop(order_id, None)
 
         # All probes clean — release.
         try:
@@ -864,18 +1533,10 @@ class ReconciliationService:
         except Exception:
             pass
 
-        reservation_id = record.get("reservation_id") or request.get("reservation_id")
-        if reservation_id and self.reservation_service is not None:
-            try:
-                await self.reservation_service.release_terminal(
-                    str(reservation_id),
-                    reason="auto_release_after_ambiguous_timeout",
-                )
-            except Exception as exc:
-                _log.warning(
-                    "auto_release_reservation_release_failed | order_id=%s error=%r",
-                    order_id, exc,
-                )
+        await self._release_reservation_if_present(
+            record,
+            reason="auto_release_after_ambiguous_timeout",
+        )
 
         self._emit_lifecycle(
             status="auto_released_ambiguous",
@@ -901,6 +1562,98 @@ class ReconciliationService:
         except Exception:
             pass
         return True
+
+    async def _handle_unresolved_confirmation_timeout(
+        self,
+        record: dict[str, Any],
+        *,
+        side: str,
+        fill_info: dict[str, Any],
+    ) -> tuple[bool, bool]:
+        """Persist timeout state and optionally run strict auto-release.
+
+        Returns ``(timed_out, released)``. A timeout never implies a fill or a
+        cancellation; reconciliation continues unless every configured safety
+        probe is clean after the grace period.
+        """
+        cfg = self.order_confirmation_cfg
+        if cfg is None:
+            return False, False
+        order_id = str(record.get("order_id") or "")
+        hydrated = await self._hydrate_order_record(order_id)
+        combined = {**record, **hydrated}
+        for key in ("trade_key", "asset", "condition_id", "user_id", "reservation_id"):
+            if not combined.get(key) and record.get(key):
+                combined[key] = record[key]
+        if not self._is_past_ambiguous_timeout(
+            combined,
+            order_confirmation_cfg=cfg,
+        ):
+            return False, False
+
+        if str(combined.get("status") or "") != "ambiguous_timeout":
+            try:
+                await self.orders_repo.update_submission_status(
+                    order_id=order_id,
+                    status="ambiguous_timeout",
+                    response_patch={
+                        "last_confirmation_status": fill_info.get("status"),
+                        "ambiguous_since": time.time(),
+                    },
+                )
+            except Exception as exc:
+                _log.warning(
+                    "ambiguous_timeout_persist_failed | order_id=%s error=%s",
+                    order_id,
+                    redact_error_detail(exc),
+                )
+            combined["status"] = "ambiguous_timeout"
+            self._emit_lifecycle(
+                status="ambiguous_timeout",
+                side=side,
+                record=combined,
+                order_id=order_id,
+                venue_status=_normalize_venue_status(fill_info.get("status")),
+            )
+
+        if not self._is_past_auto_release_grace(
+            combined,
+            order_confirmation_cfg=cfg,
+        ):
+            return True, False
+
+        now = time.monotonic()
+        schedule = self._auto_release_next_probe_at.get(order_id)
+        if schedule is not None and now < schedule[0]:
+            # Escalating per-order pacing: a stuck ambiguous order is re-probed
+            # on a widening schedule instead of every reconcile tick.
+            self._maybe_emit_ambiguous_stalled(order_id, combined)
+            return True, False
+
+        released = await self._maybe_auto_release_ambiguous(
+            combined,
+            side=side,
+            order_confirmation_cfg=cfg,
+        )
+        if released:
+            self._clear_auto_release_state(order_id)
+        else:
+            base = float(getattr(cfg, "auto_release_retry_backoff_seconds", 30.0))
+            cap = float(getattr(cfg, "auto_release_retry_backoff_max_seconds", 900.0))
+            interval = schedule[1] * 2 if schedule is not None else base
+            interval = min(max(interval, base), cap)
+            self._auto_release_next_probe_at[order_id] = (now + interval, interval)
+            self._maybe_emit_ambiguous_stalled(order_id, combined)
+        if released and combined.get("trade_key"):
+            try:
+                await self.orders_repo.delete_processed_trade(combined["trade_key"])
+            except Exception as exc:
+                _log.warning(
+                    "auto_release_processed_trade_unlock_failed | order_id=%s error=%s",
+                    order_id,
+                    redact_error_detail(exc),
+                )
+        return True, released
 
     def _record_negative_delta_anomaly(
         self,
@@ -996,7 +1749,11 @@ class ReconciliationService:
         request = row.get("request") or {}
         if not isinstance(request, dict):
             return Decimal("0")
-        raw = request.get("amount") if request.get("amount") is not None else request.get("size")
+        raw = (
+            request.get("amount")
+            if request.get("amount") is not None
+            else request.get("size")
+        )
         try:
             return Decimal(str(raw or 0))
         except Exception:
@@ -1027,14 +1784,18 @@ class ReconciliationService:
         if not order.venue_order_id:
             await self.orders_repo.mark_reconciliation_required(order.id)
             return ReconciliationResult.unresolved(
-                order.id, OrderLifecycleStatus.RECONCILIATION_REQUIRED, "no_venue_order_id"
+                order.id,
+                OrderLifecycleStatus.RECONCILIATION_REQUIRED,
+                "no_venue_order_id",
             )
 
         try:
             venue_order = await self.clob_gateway.get_order(order.venue_order_id)
             venue_fills = await self.clob_gateway.get_fills(market=order.market_id)
         except Exception as exc:
-            self._audit("reconciliation_unreachable", {"order_id": order.id, "error": str(exc)})
+            self._audit(
+                "reconciliation_unreachable", {"order_id": order.id, "error": str(exc)}
+            )
             return ReconciliationResult.unresolved(
                 order.id, OrderLifecycleStatus.UNKNOWN_UNCONFIRMED, str(exc)
             )
@@ -1048,12 +1809,14 @@ class ReconciliationService:
             # matches order.venue_order_id. Fills missing an order_id are
             # inconclusive and must NOT be attributed to this order.
             matching_fills = [
-                f for f in venue_fills
+                f
+                for f in venue_fills
                 if (
                     f.get("order_id") or f.get("orderID")
                     if isinstance(f, dict)
                     else getattr(f, "order_id", None)
-                ) == order.venue_order_id
+                )
+                == order.venue_order_id
             ]
             if matching_fills:
                 # PR #108 finding: the previous ``async with self.db.transaction()``
@@ -1074,7 +1837,9 @@ class ReconciliationService:
                         reason="venue_fill_confirmed",
                     )
                 self._audit("reconciliation_resolved_filled", {"order_id": order.id})
-                return ReconciliationResult.resolved(order.id, OrderLifecycleStatus.FILLED)
+                return ReconciliationResult.resolved(
+                    order.id, OrderLifecycleStatus.FILLED
+                )
             # venue_fills was non-empty but none matched this order — treat
             # as inconclusive (fills belong to a different order in the same
             # market, or lack order_id and cannot be safely attributed).
@@ -1085,9 +1850,15 @@ class ReconciliationService:
 
         if venue_order and venue_order.status.lower() in {"live", "open", "pending"}:
             await self.orders_repo.mark_submitted_unconfirmed(order.id)
-            return ReconciliationResult.pending(order.id, OrderLifecycleStatus.SUBMITTED_UNCONFIRMED)
+            return ReconciliationResult.pending(
+                order.id, OrderLifecycleStatus.SUBMITTED_UNCONFIRMED
+            )
 
-        if venue_order and venue_order.status.lower() in {"cancelled", "expired", "rejected"}:
+        if venue_order and venue_order.status.lower() in {
+            "cancelled",
+            "expired",
+            "rejected",
+        }:
             # PR #108 finding: same as the matching_fills branch — the
             # outer ``self.db.transaction()`` was a no-op in production.
             await self.orders_repo.mark_terminal(order.id, venue_order.status.lower())
@@ -1183,7 +1954,25 @@ class ReconciliationService:
                 )
             return False
 
-        previous_matched = await self._previous_matched_for_order(self.orders_repo, order_id)
+        unresolved_status = (
+            order_status not in _FINAL_FILL_STATUSES_TRADE
+            and order_status not in _TERMINAL_NO_FILL_STATUSES
+            and current_matched <= 0
+        )
+        if unresolved_status:
+            timed_out, released = await self._handle_unresolved_confirmation_timeout(
+                record,
+                side=side,
+                fill_info=fill_info,
+            )
+            if released:
+                return True
+            if timed_out:
+                return False
+
+        previous_matched = await self._previous_matched_for_order(
+            self.orders_repo, order_id
+        )
         delta_matched = current_matched - previous_matched
 
         if current_matched < previous_matched:
@@ -1332,9 +2121,15 @@ class ReconciliationService:
                     )
                     self._audit(
                         "reconciliation_terminal_no_new_delta",
-                        {"order_id": order_id, "side": side, "matched_total": str(current_matched)},
+                        {
+                            "order_id": order_id,
+                            "side": side,
+                            "matched_total": str(current_matched),
+                        },
                     )
-                    await self._release_reservation_if_present(record, reason="confirmed")
+                    await self._release_reservation_if_present(
+                        record, reason="confirmed"
+                    )
                     await self._record_funder_activity(
                         record=record,
                         side=side,
@@ -1362,7 +2157,9 @@ class ReconciliationService:
         # not change avg_entry, but keep the ordering explicit.
         entry_price: float | None = None
         if side == "SELL" and get_position is not None:
-            pos = await get_position(record["user_id"], record["condition_id"], token_id=record["asset"])
+            pos = await get_position(
+                record["user_id"], record["condition_id"], token_id=record["asset"]
+            )
             if pos is not None:
                 entry_raw = getattr(pos, "avg_entry_price", None)
                 if entry_raw is not None:
@@ -1480,7 +2277,9 @@ class ReconciliationService:
                 venue_status=order_status,
                 size=current_matched,
                 price=avg_price,
-                usdc_value=float(current_matched * avg_price) if current_matched and avg_price else None,
+                usdc_value=float(current_matched * avg_price)
+                if current_matched and avg_price
+                else None,
             )
         else:
             # Non-terminal partial fill — keep the order row alive in
@@ -1602,6 +2401,26 @@ class ReconciliationService:
 
         venue_status = _normalize_venue_status(fill_info.get("status", ""))
         current_matched = _matched_amount_from_response(fill_info)
+        unresolved_status = (
+            venue_status not in _FINAL_FILL_STATUSES_RISK
+            and venue_status not in _TERMINAL_NO_FILL_STATUSES
+            and current_matched <= 0
+        )
+        if unresolved_status:
+            timed_out, released = await self._handle_unresolved_confirmation_timeout(
+                {
+                    **record,
+                    "user_id": user_id,
+                    "condition_id": condition_id,
+                    "asset": token_id,
+                },
+                side="SELL",
+                fill_info=fill_info,
+            )
+            if released:
+                return True
+            if timed_out:
+                return False
         # CRITICAL: read previous matched from the persisted orders row,
         # not the in-memory ``record["response"]``. Pre-fix, on restart
         # the in-memory record was rebuilt without the prior fill
@@ -1609,7 +2428,9 @@ class ReconciliationService:
         # zero — re-applying the entire cumulative venue size as a
         # fresh delta and double-counting every risk SELL fill that was
         # in-flight across the restart.
-        previous_matched = await self._previous_matched_for_order(self.orders_repo, order_id)
+        previous_matched = await self._previous_matched_for_order(
+            self.orders_repo, order_id
+        )
         delta_matched = current_matched - previous_matched
         if current_matched < previous_matched:
             self._record_negative_delta_anomaly(
@@ -1665,7 +2486,11 @@ class ReconciliationService:
             if self.risk_triggers_repo is not None:
                 try:
                     recovery_metadata = request.get("recovery_metadata")
-                    trigger_meta = dict(recovery_metadata) if isinstance(recovery_metadata, dict) else {}
+                    trigger_meta = (
+                        dict(recovery_metadata)
+                        if isinstance(recovery_metadata, dict)
+                        else {}
+                    )
                     trigger_meta["venue_status"] = venue_status
                     await self.risk_triggers_repo.record_trigger(
                         user_id=user_id,
@@ -1678,7 +2503,9 @@ class ReconciliationService:
                         metadata=trigger_meta,
                     )
                 except Exception:
-                    _log.debug("risk_trigger_record_error order_id=%s", order_id, exc_info=True)
+                    _log.debug(
+                        "risk_trigger_record_error order_id=%s", order_id, exc_info=True
+                    )
             await self._release_reservation_if_present(record, reason=venue_status)
             mapped = _VENUE_TO_LIFECYCLE.get(venue_status, ("failed", "failed"))
             self._emit_lifecycle(
@@ -1734,11 +2561,17 @@ class ReconciliationService:
         existing_pos = None
         if get_position is not None:
             try:
-                existing_pos = await get_position(user_id, condition_id, token_id=token_id)
+                existing_pos = await get_position(
+                    user_id, condition_id, token_id=token_id
+                )
             except Exception:
                 existing_pos = None
         try:
-            entry_price = float(getattr(existing_pos, "avg_entry_price", avg_price)) if existing_pos else float(avg_price)
+            entry_price = (
+                float(getattr(existing_pos, "avg_entry_price", avg_price))
+                if existing_pos
+                else float(avg_price)
+            )
         except (TypeError, ValueError):
             entry_price = float(avg_price)
 
@@ -1790,7 +2623,9 @@ class ReconciliationService:
             updated_pos = None
             if get_position is not None:
                 try:
-                    updated_pos = await get_position(user_id, condition_id, token_id=token_id)
+                    updated_pos = await get_position(
+                        user_id, condition_id, token_id=token_id
+                    )
                 except Exception:
                     updated_pos = None
             if logger is not None:
@@ -1803,15 +2638,13 @@ class ReconciliationService:
 
         # Persist a re-entry block only after a confirmed full close.
         recovery_metadata = request.get("recovery_metadata")
-        block_metadata = dict(recovery_metadata) if isinstance(recovery_metadata, dict) else {}
+        block_metadata = (
+            dict(recovery_metadata) if isinstance(recovery_metadata, dict) else {}
+        )
         block_metadata["fill_price"] = float(avg_price)
         block_metadata["fill_size_tokens"] = float(delta_matched)
         block_metadata["fill_order_id"] = order_id
-        if (
-            is_final_fill
-            and updated_pos is None
-            and self.risk_blocks_repo is not None
-        ):
+        if is_final_fill and updated_pos is None and self.risk_blocks_repo is not None:
             await self.risk_blocks_repo.mark_risk_block(
                 user_id=user_id,
                 condition_id=condition_id,
@@ -1833,7 +2666,9 @@ class ReconciliationService:
 
         if not reapplied_duplicate and self.risk_triggers_repo is not None:
             try:
-                trigger_fill_status = "filled" if (is_final_fill and updated_pos is None) else "partial"
+                trigger_fill_status = (
+                    "filled" if (is_final_fill and updated_pos is None) else "partial"
+                )
                 await self.risk_triggers_repo.record_trigger(
                     user_id=user_id,
                     condition_id=condition_id,
@@ -1845,7 +2680,9 @@ class ReconciliationService:
                     metadata=block_metadata,
                 )
             except Exception:
-                _log.debug("risk_trigger_record_error order_id=%s", order_id, exc_info=True)
+                _log.debug(
+                    "risk_trigger_record_error order_id=%s", order_id, exc_info=True
+                )
 
         if (
             not reapplied_duplicate
@@ -1867,7 +2704,9 @@ class ReconciliationService:
                 leader_wallet=leader_id,
             )
 
-        submission_status = "filled_reconciled" if is_final_fill else "submitted_unconfirmed"
+        submission_status = (
+            "filled_reconciled" if is_final_fill else "submitted_unconfirmed"
+        )
         await self.orders_repo.update_submission_status(
             order_id=order_id,
             status=submission_status,
@@ -1897,7 +2736,9 @@ class ReconciliationService:
             venue_status=venue_status,
             size=current_matched,
             price=avg_price,
-            usdc_value=float(current_matched * avg_price) if current_matched and avg_price else None,
+            usdc_value=float(current_matched * avg_price)
+            if current_matched and avg_price
+            else None,
         )
         return True
 
@@ -1936,11 +2777,19 @@ class ReconciliationService:
         except Exception as exc:
             _log.warning(
                 "reconcile_position_drift_fetch_failed | user=%s cond=%s token=%s error=%s",
-                user_id, condition_id, token_id, repr(exc),
+                user_id,
+                condition_id,
+                token_id,
+                repr(exc),
             )
             self._audit(
                 "manual_position_drift_fetch_failed",
-                {"user_id": user_id, "condition_id": condition_id, "token_id": token_id, "error": str(exc)},
+                {
+                    "user_id": user_id,
+                    "condition_id": condition_id,
+                    "token_id": token_id,
+                    "error": str(exc),
+                },
             )
             return result
 
@@ -1949,8 +2798,12 @@ class ReconciliationService:
         if live_size is None:
             return result
 
-        existing = await self.positions_repo.get_position(user_id, condition_id, token_id=token_id)
-        local_size = getattr(existing, "size_tokens", Decimal("0")) if existing else Decimal("0")
+        existing = await self.positions_repo.get_position(
+            user_id, condition_id, token_id=token_id
+        )
+        local_size = (
+            getattr(existing, "size_tokens", Decimal("0")) if existing else Decimal("0")
+        )
 
         if local_size <= Decimal("1e-12") and live_size <= Decimal("1e-12"):
             result["action"] = "no_drift"
@@ -1960,21 +2813,31 @@ class ReconciliationService:
             result["action"] = "no_drift"
             return result
 
-        avg_entry_price = getattr(existing, "avg_entry_price", Decimal("0")) if existing else Decimal("0")
+        avg_entry_price = (
+            getattr(existing, "avg_entry_price", Decimal("0"))
+            if existing
+            else Decimal("0")
+        )
 
         if live_size <= Decimal("1e-12"):
-            await self.positions_repo.delete_position(user_id, condition_id, token_id=token_id)
+            await self.positions_repo.delete_position(
+                user_id, condition_id, token_id=token_id
+            )
             result["action"] = "deleted"
             result["reconciled"] = True
 
             if reservation_service is not None:
                 try:
-                    reservations_repo = getattr(reservation_service, "reservations_repo", None)
+                    reservations_repo = getattr(
+                        reservation_service, "reservations_repo", None
+                    )
                     if reservations_repo is not None:
-                        active_reservations = await reservations_repo.list_active_for_scope(
-                            user_id=user_id,
-                            condition_id=condition_id,
-                            token_id=token_id,
+                        active_reservations = (
+                            await reservations_repo.list_active_for_scope(
+                                user_id=user_id,
+                                condition_id=condition_id,
+                                token_id=token_id,
+                            )
                         )
                         for res in active_reservations:
                             if res.side.value == "SELL":
@@ -1985,6 +2848,7 @@ class ReconciliationService:
                     _log.debug("drift_reservation_cleanup_failed", exc_info=True)
         else:
             from storage.postgres.positions_repo import PositionRecord
+
             await self.positions_repo.upsert_position(
                 PositionRecord(
                     user_id=user_id,
@@ -2000,15 +2864,22 @@ class ReconciliationService:
 
             if reservation_service is not None:
                 try:
-                    reservations_repo = getattr(reservation_service, "reservations_repo", None)
+                    reservations_repo = getattr(
+                        reservation_service, "reservations_repo", None
+                    )
                     if reservations_repo is not None:
-                        active_reservations = await reservations_repo.list_active_for_scope(
-                            user_id=user_id,
-                            condition_id=condition_id,
-                            token_id=token_id,
+                        active_reservations = (
+                            await reservations_repo.list_active_for_scope(
+                                user_id=user_id,
+                                condition_id=condition_id,
+                                token_id=token_id,
+                            )
                         )
                         for res in active_reservations:
-                            if res.side.value == "SELL" and res.reserved_size > live_size:
+                            if (
+                                res.side.value == "SELL"
+                                and res.reserved_size > live_size
+                            ):
                                 await reservation_service.release_terminal(
                                     res.id, reason="manual_position_drift_shrunk"
                                 )
@@ -2030,6 +2901,11 @@ class ReconciliationService:
         )
         _log.info(
             "manual_position_drift_reconciled | user=%s cond=%s token=%s local=%s live=%s action=%s",
-            user_id, condition_id, token_id, str(local_size), str(result["live_size"]), result["action"],
+            user_id,
+            condition_id,
+            token_id,
+            str(local_size),
+            str(result["live_size"]),
+            result["action"],
         )
         return result
