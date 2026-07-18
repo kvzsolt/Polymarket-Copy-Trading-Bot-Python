@@ -932,3 +932,105 @@ async def test_risk_price_cache_reuses_recent_price_between_checks():
         assert await positions_repo.get_position("u1", "cond-1") is not None
         assert pnl_tracker.sells == 0
         assert client.calls == 1
+
+
+# ---------------------------------------------------------------------------
+# Durable near-max warn state: a 60% partial trim must not re-fire after a
+# restart. The trim's ``risk_triggers`` row (reason="near_max_partial_trim")
+# is the durable record; rehydration restores ``near_max_warn_done`` from it.
+# ---------------------------------------------------------------------------
+
+
+async def _rehydrated_pm_with_trigger(pool, fill_status):
+    from storage.postgres.risk_triggers_repo import RiskTriggersRepo
+
+    fills_repo = FillsRepo(pool)
+    positions_repo = PositionsRepo(pool)
+    triggers_repo = RiskTriggersRepo(pool)
+
+    await positions_repo.upsert_position(
+        PositionRecord(
+            user_id="u1",
+            condition_id="cond-1",
+            token_id=FAKE_TOKEN_ID,
+            leader_id="l1",
+            size_tokens=Decimal("10"),
+            avg_entry_price=Decimal("0.60"),
+        )
+    )
+    if fill_status is not None:
+        trigger_id = await triggers_repo.record_trigger(
+            user_id="u1",
+            condition_id="cond-1",
+            token_id=FAKE_TOKEN_ID,
+            reason="near_max_partial_trim",
+            fill_status="pending",
+        )
+        if fill_status != "pending":
+            await triggers_repo.update_fill_status(trigger_id, fill_status)
+
+    context = TradingContext(
+        user_id="u1",
+        wallet_address="wallet-u1",
+        client=_FakeClient(price="0.96"),
+        positions_repo=positions_repo,
+        fills_repo=fills_repo,
+        orders_repo=OrdersRepo(pool),
+        risk_blocks_repo=RiskBlocksRepo(pool),
+        pnl_tracker=_FakePnlTracker(),
+        risk_engine=object(),
+        accounting_service=object(),
+        position_manager=PositionManager(),
+        execution_service=_FakeExecutionService(),
+        risk_triggers_repo=triggers_repo,
+        extra={"slippage_tolerance_bps": 50},
+    )
+    await rehydrate_position_manager(context)
+    return context.position_manager
+
+
+@pytest.mark.asyncio
+async def test_rehydrate_restores_near_max_warn_done_and_suppresses_repeat_trim():
+    async with _pg_pool() as pool:
+        pm = await _rehydrated_pm_with_trigger(pool, "filled")
+        pos = pm.get_position("cond-1", FAKE_TOKEN_ID)
+        assert pos is not None
+        assert pos.exit_state.near_max_warn_done is True
+
+        # cp in the warn band [0.92, 0.95): the trim must NOT re-fire after restart.
+        assert pm.evaluate_risk_action("cond-1", FAKE_TOKEN_ID, 0.93) is None
+        # The full-exit tier (>= 0.95 default) is unaffected by warn persistence.
+        action = pm.evaluate_risk_action("cond-1", FAKE_TOKEN_ID, 0.96)
+        assert action is not None
+        assert action["reason"] == "near_max_full_exit"
+
+
+@pytest.mark.asyncio
+async def test_rehydrate_pending_trim_counts_as_done():
+    async with _pg_pool() as pool:
+        pm = await _rehydrated_pm_with_trigger(pool, "pending")
+        pos = pm.get_position("cond-1", FAKE_TOKEN_ID)
+        assert pos is not None
+        assert pos.exit_state.near_max_warn_done is True
+        assert pm.evaluate_risk_action("cond-1", FAKE_TOKEN_ID, 0.93) is None
+
+
+@pytest.mark.asyncio
+async def test_rehydrate_failed_trim_rearms_warn():
+    async with _pg_pool() as pool:
+        pm = await _rehydrated_pm_with_trigger(pool, "failed")
+        pos = pm.get_position("cond-1", FAKE_TOKEN_ID)
+        assert pos is not None
+        assert pos.exit_state.near_max_warn_done is False
+        action = pm.evaluate_risk_action("cond-1", FAKE_TOKEN_ID, 0.93)
+        assert action is not None
+        assert action["reason"] == "near_max_partial_trim"
+
+
+@pytest.mark.asyncio
+async def test_rehydrate_without_trigger_rows_keeps_warn_armed():
+    async with _pg_pool() as pool:
+        pm = await _rehydrated_pm_with_trigger(pool, None)
+        pos = pm.get_position("cond-1", FAKE_TOKEN_ID)
+        assert pos is not None
+        assert pos.exit_state.near_max_warn_done is False

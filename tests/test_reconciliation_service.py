@@ -6,12 +6,15 @@ from services.execution.reconciliation_service import ReconciliationService, Ord
 
 
 class MockOrder(OrderRecord):
-    def __init__(self, order_id, venue_order_id, reservation_id, status, market_id=None):
+    def __init__(
+        self, order_id, venue_order_id, reservation_id, status, market_id=None
+    ):
         self.id = order_id
         self.venue_order_id = venue_order_id
         self.reservation_id = reservation_id
         self.status = status
         self.market_id = market_id
+
 
 class MockOrdersRepo:
     def __init__(self, order, by_order_id=None):
@@ -37,20 +40,25 @@ class MockOrdersRepo:
     async def mark_filled_or_partially_filled(self, order_id: str) -> None:
         self.marked.append(("filled", order_id))
 
+
 class MockFillsRepo:
     async def upsert_venue_fill(self, order: MockOrder, venue_fill: Any) -> Any:
         return {"fill": venue_fill}
 
+
 class MockPositionsRepo:
     def __init__(self):
         self.upserted = []
+
     async def upsert_position(self, fill: Any) -> None:
         self.upserted.append(fill)
+
 
 class MockReservationService:
     def __init__(self, reservations_repo=None):
         self.released = []
         self.reservations_repo = reservations_repo
+
     async def release_terminal(self, reservation_id: str, reason: str) -> None:
         self.released.append((reservation_id, reason))
 
@@ -64,9 +72,11 @@ class MockReservationsRepo:
         self.lookups.append(order_id)
         return self.by_order_id.get(order_id)
 
+
 class MockVenueOrder:
     def __init__(self, status):
         self.status = status
+
 
 class MockClobGateway:
     def __init__(self, order_status=None, fills=None, raise_exc=False):
@@ -86,19 +96,27 @@ class MockClobGateway:
             raise RuntimeError("API down")
         return self.fills
 
+
 class MockTransaction:
-    async def __aenter__(self): pass
-    async def __aexit__(self, exc_type, exc_val, exc_tb): pass
+    async def __aenter__(self):
+        pass
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        pass
+
 
 class MockDbProvider:
     def transaction(self):
         return MockTransaction()
 
+
 class MockAuditLogger:
     def __init__(self):
         self.events = []
+
     def log_event(self, event_name: str, payload: dict) -> None:
         self.events.append((event_name, payload))
+
 
 def make_service(order, gateway) -> ReconciliationService:
     return ReconciliationService(
@@ -108,7 +126,7 @@ def make_service(order, gateway) -> ReconciliationService:
         reservation_service=MockReservationService(),
         clob_gateway=gateway,
         db=MockDbProvider(),
-        audit_logger=MockAuditLogger()
+        audit_logger=MockAuditLogger(),
     )
 
 
@@ -152,7 +170,9 @@ async def test_release_reservation_falls_back_to_order_request_metadata():
 async def test_release_reservation_falls_back_to_active_order_reservation_link():
     reservations_repo = MockReservationsRepo(
         by_order_id={
-            "venue-order-2": type("ReservationRow", (), {"id": "reservation-from-link"})()
+            "venue-order-2": type(
+                "ReservationRow", (), {"id": "reservation-from-link"}
+            )()
         }
     )
     reservation_service = MockReservationService(reservations_repo=reservations_repo)
@@ -181,7 +201,9 @@ async def test_release_reservation_falls_back_to_active_order_reservation_link()
 async def test_release_reservation_fallback_splits_merged_order_ids():
     reservations_repo = MockReservationsRepo(
         by_order_id={
-            "venue-order-b": type("ReservationRow", (), {"id": "reservation-from-merged-link"})()
+            "venue-order-b": type(
+                "ReservationRow", (), {"id": "reservation-from-merged-link"}
+            )()
         }
     )
     reservation_service = MockReservationService(reservations_repo=reservations_repo)
@@ -216,13 +238,14 @@ async def test_restart_with_pending_order_preserves_reservation():
     order = MockOrder("o1", "v1", "r1", "submitted_unconfirmed")
     gateway = MockClobGateway(order_status="live")
     svc = make_service(order, gateway)
-    
+
     res = await svc.reconcile_order("o1")
-    
+
     assert res.is_resolved is False
     assert res.status == OrderLifecycleStatus.SUBMITTED_UNCONFIRMED
     assert ("submitted_unconfirmed", "o1") in svc.orders_repo.marked
     assert len(svc.reservation_service.released) == 0
+
 
 @pytest.mark.asyncio
 async def test_venue_fill_resolves_unconfirmed_order():
@@ -233,9 +256,9 @@ async def test_venue_fill_resolves_unconfirmed_order():
         order_status="matched", fills=[{"size": "10", "order_id": "v1"}]
     )
     svc = make_service(order, gateway)
-    
+
     res = await svc.reconcile_order("o1")
-    
+
     assert res.is_resolved is True
     assert res.status == OrderLifecycleStatus.FILLED
     assert ("filled", "o1") in svc.orders_repo.marked
@@ -243,45 +266,49 @@ async def test_venue_fill_resolves_unconfirmed_order():
     assert len(svc.reservation_service.released) == 1
     assert svc.reservation_service.released[0] == ("r1", "venue_fill_confirmed")
 
+
 @pytest.mark.asyncio
 async def test_venue_cancel_releases_reservation():
     order = MockOrder("o1", "v1", "r1", "submitted_unconfirmed")
     gateway = MockClobGateway(order_status="cancelled")
     svc = make_service(order, gateway)
-    
+
     res = await svc.reconcile_order("o1")
-    
+
     assert res.is_resolved is True
     assert res.status == OrderLifecycleStatus.CANCELLED
     assert ("terminal", "o1", "cancelled") in svc.orders_repo.marked
     assert len(svc.reservation_service.released) == 1
     assert svc.reservation_service.released[0] == ("r1", "cancelled")
 
+
 @pytest.mark.asyncio
 async def test_venue_unreachable_keeps_safe_reserved_state():
     order = MockOrder("o1", "v1", "r1", "submitted_unconfirmed")
     gateway = MockClobGateway(raise_exc=True)
     svc = make_service(order, gateway)
-    
+
     res = await svc.reconcile_order("o1")
-    
+
     assert res.is_resolved is False
     assert res.status == OrderLifecycleStatus.UNKNOWN_UNCONFIRMED
     assert len(svc.orders_repo.marked) == 0
     assert len(svc.reservation_service.released) == 0
+
 
 @pytest.mark.asyncio
 async def test_venue_unknown_requires_reconciliation():
     order = MockOrder("o1", "v1", "r1", "submitted_unconfirmed")
     gateway = MockClobGateway(order_status="what_is_this_status")
     svc = make_service(order, gateway)
-    
+
     res = await svc.reconcile_order("o1")
-    
+
     assert res.is_resolved is False
     assert res.status == OrderLifecycleStatus.RECONCILIATION_REQUIRED
     assert ("reconciliation_required", "o1") in svc.orders_repo.marked
     assert len(svc.reservation_service.released) == 0
+
 
 @pytest.mark.asyncio
 async def test_no_local_position_change_without_fill():
@@ -289,9 +316,9 @@ async def test_no_local_position_change_without_fill():
     # Status is matched but no fills returned
     gateway = MockClobGateway(order_status="matched", fills=[])
     svc = make_service(order, gateway)
-    
+
     res = await svc.reconcile_order("o1")
-    
+
     assert res.is_resolved is False
     assert res.status == OrderLifecycleStatus.RECONCILIATION_REQUIRED
     assert len(svc.positions_repo.upserted) == 0
@@ -420,7 +447,9 @@ async def test_reconciler_releases_reservation_on_terminal_state():
     """Reconciler releases reservations after terminal state (any of
     cancelled / expired / rejected)."""
     for venue_status in ("cancelled", "expired", "rejected"):
-        order = MockOrder("oTerm", f"vTerm_{venue_status}", "rTerm", "submitted_unconfirmed")
+        order = MockOrder(
+            "oTerm", f"vTerm_{venue_status}", "rTerm", "submitted_unconfirmed"
+        )
         gateway = MockClobGateway(order_status=venue_status, fills=None)
         mock_reservation = MockReservationService()
         svc = ReconciliationService(
@@ -458,9 +487,9 @@ async def test_fills_from_unrelated_orders_are_skipped():
     gateway = MockClobGateway(
         order_status="matched",
         fills=[
-            {"size": "3", "order_id": "v-other"},   # different order — must skip
+            {"size": "3", "order_id": "v-other"},  # different order — must skip
             {"size": "7", "order_id": "v-target"},  # matching — must apply
-            {"size": "2", "order_id": "v-third"},   # different — must skip
+            {"size": "2", "order_id": "v-third"},  # different — must skip
         ],
     )
     svc = make_service(order, gateway)
@@ -471,7 +500,9 @@ async def test_fills_from_unrelated_orders_are_skipped():
     assert res.status == OrderLifecycleStatus.FILLED
     # Exactly one upsert from the single matching fill.
     assert len(svc.positions_repo.upserted) == 1
-    assert svc.positions_repo.upserted[0] == {"fill": {"size": "7", "order_id": "v-target"}}
+    assert svc.positions_repo.upserted[0] == {
+        "fill": {"size": "7", "order_id": "v-target"}
+    }
 
 
 @pytest.mark.asyncio
@@ -521,11 +552,12 @@ async def test_all_fills_belong_to_other_orders_no_apply():
 
 
 @pytest.mark.asyncio
-async def test_confirm_fill_not_found_guard_defers_then_settles():
-    """A venue 404 must NOT settle on the first poll — a just-submitted order
-    can 404 briefly before the venue indexes it (submitted-unconfirmed safety).
-    Only after THRESHOLD consecutive not-found polls does confirm_fill return
-    terminal ``not_found``; before that it returns ``unknown`` (keep-alive)."""
+async def test_confirm_fill_not_found_remains_pending_without_positive_evidence():
+    """Repeated 404s plus empty fallbacks never prove cancellation.
+
+    The order stays pending so an outage/indexing delay cannot unlock a retry
+    that might duplicate an already accepted order.
+    """
     from integrations.polymarket.errors import VenueOrderNotFoundError
     from services.execution.reconciliation_service import (
         _VENUE_ORDER_NOT_FOUND_THRESHOLD,
@@ -535,7 +567,10 @@ async def test_confirm_fill_not_found_guard_defers_then_settles():
         async def get_order(self, venue_order_id):
             raise VenueOrderNotFoundError("order_not_found: 404")
 
-        async def get_fills(self, market=None):
+        async def list_open_orders(self, **kwargs):
+            return []
+
+        async def get_fills(self, market=None, **kwargs):
             return []
 
     svc = make_service(
@@ -543,15 +578,9 @@ async def test_confirm_fill_not_found_guard_defers_then_settles():
         _NotFoundGateway(),
     )
 
-    # First THRESHOLD-1 polls keep the order alive.
-    for i in range(_VENUE_ORDER_NOT_FOUND_THRESHOLD - 1):
+    for i in range(_VENUE_ORDER_NOT_FOUND_THRESHOLD + 2):
         res = await svc.confirm_fill("v404")
         assert res["status"] == "unknown", f"poll {i} should defer settlement"
-
-    # THRESHOLD-th consecutive not-found settles terminal.
-    res = await svc.confirm_fill("v404")
-    assert res["status"] == "not_found"
-    assert res["size_matched"] == "0"
 
 
 @pytest.mark.asyncio
@@ -571,7 +600,10 @@ async def test_confirm_fill_not_found_counter_resets_on_success():
                 return MockVenueOrder("live")
             raise VenueOrderNotFoundError("order_not_found: 404")
 
-        async def get_fills(self, market=None):
+        async def list_open_orders(self, **kwargs):
+            return []
+
+        async def get_fills(self, market=None, **kwargs):
             return []
 
     svc = make_service(
@@ -590,3 +622,264 @@ async def test_confirm_fill_not_found_counter_resets_on_success():
     # Streak restarts: a single later 404 must NOT settle.
     state["found"] = False
     assert (await svc.confirm_fill("vFlk"))["status"] == "unknown"
+
+
+@pytest.mark.asyncio
+async def test_confirm_fill_uses_confirmed_trade_id_when_order_endpoint_is_down():
+    from decimal import Decimal
+
+    from integrations.polymarket.errors import VenueUnavailableError
+    from integrations.polymarket.models import VenueFill
+
+    class _TradeFallbackGateway:
+        async def get_order(self, venue_order_id):
+            raise VenueUnavailableError("order endpoint unavailable")
+
+        async def list_open_orders(self, **kwargs):
+            return []
+
+        async def get_fills(self, market=None, *, trade_id=None, order_id=None):
+            if trade_id == "trade-1":
+                return [
+                    VenueFill(
+                        fill_id="trade-1",
+                        order_id=order_id,
+                        size=Decimal("5"),
+                        price=Decimal("0.42"),
+                        status="TRADE_STATUS_CONFIRMED",
+                        transaction_hash="0xsettled",
+                    )
+                ]
+            return []
+
+    svc = make_service(
+        MockOrder("oFallback", "vFallback", "rFallback", "submitted_unconfirmed"),
+        _TradeFallbackGateway(),
+    )
+    svc.orders_repo.by_order_id["vFallback"] = {
+        "order_id": "vFallback",
+        "request": {"market": "market-1"},
+        "response": {"raw": {"trade_ids": ["trade-1"]}},
+    }
+
+    result = await svc.confirm_fill("vFallback")
+
+    assert result["status"] == "confirmed"
+    assert result["size_matched"] == "5"
+    assert result["avg_price"] == "0.42"
+    assert result["confirmation_source"] == "trade_ids"
+
+
+@pytest.mark.asyncio
+async def test_confirm_fill_keeps_nonterminal_trade_id_pending():
+    from decimal import Decimal
+
+    from integrations.polymarket.models import VenueFill
+
+    class _PendingTradeGateway:
+        async def get_order(self, venue_order_id):
+            return MockVenueOrder("matched")
+
+        async def list_open_orders(self, **kwargs):
+            return []
+
+        async def get_fills(self, market=None, *, trade_id=None, order_id=None):
+            return [
+                VenueFill(
+                    fill_id=trade_id or "trade-1",
+                    order_id=order_id,
+                    size=Decimal("5"),
+                    price=Decimal("0.42"),
+                    status="MINED",
+                )
+            ]
+
+    svc = make_service(
+        MockOrder("oPending", "vPending", "rPending", "submitted_unconfirmed"),
+        _PendingTradeGateway(),
+    )
+    svc.orders_repo.by_order_id["vPending"] = {
+        "order_id": "vPending",
+        "request": {"market": "market-1"},
+        "response": {"raw": {"trade_ids": ["trade-1"]}},
+    }
+
+    result = await svc.confirm_fill("vPending")
+
+    assert result["status"] == "mined"
+    assert result["size_matched"] == "0"
+
+
+@pytest.mark.asyncio
+async def test_confirm_fill_mixed_confirmed_and_failed_trades_uses_successful_size():
+    from decimal import Decimal
+
+    from integrations.polymarket.models import VenueFill
+
+    class _MixedTradeGateway:
+        async def get_order(self, venue_order_id):
+            return MockVenueOrder("matched")
+
+        async def list_open_orders(self, **kwargs):
+            return []
+
+        async def get_fills(self, market=None, *, trade_id=None, order_id=None):
+            status = "CONFIRMED" if trade_id == "trade-ok" else "FAILED"
+            size = Decimal("3") if trade_id == "trade-ok" else Decimal("2")
+            return [
+                VenueFill(
+                    fill_id=trade_id,
+                    order_id=order_id,
+                    size=size,
+                    price=Decimal("0.40"),
+                    status=status,
+                )
+            ]
+
+    svc = make_service(
+        MockOrder("oMixed", "vMixed", "rMixed", "submitted_unconfirmed"),
+        _MixedTradeGateway(),
+    )
+    svc.orders_repo.by_order_id["vMixed"] = {
+        "order_id": "vMixed",
+        "request": {"market": "market-1"},
+        "response": {"raw": {"trade_ids": ["trade-ok", "trade-failed"]}},
+    }
+
+    result = await svc.confirm_fill("vMixed")
+
+    assert result["status"] == "confirmed"
+    assert result["size_matched"] == "3"
+
+
+@pytest.mark.asyncio
+async def test_confirm_fill_uses_endpoint_specific_exponential_backoff():
+    from integrations.polymarket.errors import VenueUnavailableError
+
+    class _OutageGateway:
+        def __init__(self):
+            self.order_calls = 0
+            self.open_calls = 0
+            self.fill_calls = 0
+
+        async def get_order(self, venue_order_id):
+            self.order_calls += 1
+            raise VenueUnavailableError("order endpoint unavailable")
+
+        async def list_open_orders(self, **kwargs):
+            self.open_calls += 1
+            return []
+
+        async def get_fills(self, market=None, **kwargs):
+            self.fill_calls += 1
+            return []
+
+    gateway = _OutageGateway()
+    svc = make_service(
+        MockOrder("oBackoff", "vBackoff", "rBackoff", "submitted_unconfirmed"),
+        gateway,
+    )
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            "services.execution.reconciliation_service.random.uniform",
+            lambda _low, _high: 1.0,
+        )
+        assert (await svc.confirm_fill("vBackoff"))["status"] == "poll_unavailable"
+        assert svc._venue_poll_backoffs["order"]["base_delay"] == 5.0
+
+        # Immediate retry skips only the failing order source; healthy fallback
+        # probes still run and can settle the order if evidence appears.
+        assert (await svc.confirm_fill("vBackoff"))["status"] == "poll_unavailable"
+        assert gateway.order_calls == 1
+        assert gateway.open_calls == 2
+        assert gateway.fill_calls == 2
+
+        # Once the source backoff expires, the next failure advances 5 -> 10.
+        svc._venue_poll_backoffs["order"]["until"] = 0.0
+        assert (await svc.confirm_fill("vBackoff"))["status"] == "poll_unavailable"
+        assert gateway.order_calls == 2
+        assert svc._venue_poll_backoffs["order"]["base_delay"] == 10.0
+
+
+def _outage_service():
+    class _NeverCalledGateway:
+        pass
+
+    return make_service(
+        MockOrder("oBackoff", "vBackoff", "rBackoff", "submitted_unconfirmed"),
+        _NeverCalledGateway(),
+    )
+
+
+def test_poll_failure_does_not_escalate_inside_active_window():
+    from integrations.polymarket.errors import VenueUnavailableError
+
+    svc = _outage_service()
+    svc._record_poll_failure("order", "o1", VenueUnavailableError("down"))
+    assert svc._venue_poll_backoffs["order"]["failures"] == 1
+    # Stragglers that already passed the backed-off gate must not escalate
+    # the shared counter while the window is still active.
+    svc._record_poll_failure("order", "o2", VenueUnavailableError("down"))
+    svc._record_poll_failure("order", "o3", VenueUnavailableError("down"))
+    assert svc._venue_poll_backoffs["order"]["failures"] == 1
+    assert svc._venue_poll_backoffs["order"]["base_delay"] == 5.0
+
+
+def test_poll_success_decays_failure_count_instead_of_resetting():
+    from integrations.polymarket.errors import VenueUnavailableError
+
+    svc = _outage_service()
+    for _ in range(3):
+        svc._record_poll_failure("order", "o1", VenueUnavailableError("down"))
+        svc._venue_poll_backoffs["order"]["until"] = 0.0
+    assert svc._venue_poll_backoffs["order"]["failures"] == 3
+
+    svc._record_poll_success("order")
+    state = svc._venue_poll_backoffs["order"]
+    assert state["failures"] == 2
+    # Source is immediately pollable again after a success...
+    assert svc._source_backed_off("order") == (False, "")
+    # ...but the next failure escalates from the decayed count (3 -> 20s),
+    # not from scratch (1 -> 5s).
+    svc._record_poll_failure("order", "o1", VenueUnavailableError("down"))
+    assert svc._venue_poll_backoffs["order"]["base_delay"] == 20.0
+
+    # Full recovery clears the entry entirely.
+    svc._venue_poll_backoffs["order"]["until"] = 0.0
+    for _ in range(3):
+        svc._record_poll_success("order")
+    assert "order" not in svc._venue_poll_backoffs
+
+
+@pytest.mark.asyncio
+async def test_concurrent_poll_failures_count_as_one():
+    import asyncio
+
+    from integrations.polymarket.errors import VenueUnavailableError
+
+    svc = _outage_service()
+
+    async def _failing_op():
+        await asyncio.sleep(0)
+        raise VenueUnavailableError("down")
+
+    await asyncio.gather(
+        *(svc._poll_source("order", f"o{i}", _failing_op) for i in range(5))
+    )
+    assert svc._venue_poll_backoffs["order"]["failures"] == 1
+    assert svc._venue_poll_backoffs["order"]["base_delay"] == 5.0
+
+
+def test_trade_fills_success_does_not_decay_account_fills_backoff():
+    from integrations.polymarket.errors import VenueUnavailableError
+
+    svc = _outage_service()
+    for _ in range(2):
+        svc._record_poll_failure("account_fills", "o1", VenueUnavailableError("down"))
+        svc._venue_poll_backoffs["account_fills"]["until"] = 0.0
+    svc._record_poll_failure("trade_fills", "o1", VenueUnavailableError("down"))
+
+    svc._record_poll_success("trade_fills")
+    assert "trade_fills" not in svc._venue_poll_backoffs
+    assert svc._venue_poll_backoffs["account_fills"]["failures"] == 2

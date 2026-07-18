@@ -114,6 +114,10 @@ class FalconClient:
         self._retry_max = float(config.retry_max_delay_seconds)
         self._retry_jitter = float(config.retry_jitter_ratio)
         self._bucket = TokenBucket(config.requests_per_second, config.burst)
+        # A 429 applies to the API credential, not just the coroutine that
+        # happened to receive it.  Coalesce concurrent retry delays so a
+        # discovery fan-out cannot stampede Falcon again immediately.
+        self._cooldown_until = 0.0
         self._closed = False
         self._owns_client = client is None
         token = (
@@ -212,6 +216,7 @@ class FalconClient:
         )
         delay = self._retry_base
         for attempt in range(1, self._max_retries + 1):
+            await self._wait_for_shared_cooldown()
             await self._bucket.acquire()
             try:
                 response = await self._client.post(
@@ -226,13 +231,20 @@ class FalconClient:
                 delay = min(delay * 2.0, self._retry_max)
                 continue
 
-            if response.status_code in _RETRYABLE_STATUS and attempt < self._max_retries:
+            if response.status_code == 429:
                 retry_after = _retry_after_seconds(response.headers.get("Retry-After"))
-                await asyncio.sleep(
+                await self._extend_shared_cooldown(
                     min(retry_after, self._retry_max)
                     if retry_after is not None
                     else _jitter(delay, self._retry_jitter)
                 )
+                if attempt >= self._max_retries:
+                    response.raise_for_status()
+                delay = min(delay * 2.0, self._retry_max)
+                continue
+
+            if response.status_code in _RETRYABLE_STATUS and attempt < self._max_retries:
+                await asyncio.sleep(_jitter(delay, self._retry_jitter))
                 delay = min(delay * 2.0, self._retry_max)
                 continue
 
@@ -260,6 +272,21 @@ class FalconClient:
             return FalconPage(results=results, returned=len(results))
 
         raise RuntimeError(f"Heisenberg agent {int(agent_id)} exhausted retries")
+
+    async def _extend_shared_cooldown(self, delay: float) -> None:
+        # Event-loop tasks cannot interleave between this read and assignment,
+        # so concurrent 429 responses safely extend one common deadline.
+        self._cooldown_until = max(
+            self._cooldown_until,
+            time.monotonic() + max(0.0, delay),
+        )
+
+    async def _wait_for_shared_cooldown(self) -> None:
+        while True:
+            delay = self._cooldown_until - time.monotonic()
+            if delay <= 0:
+                return
+            await asyncio.sleep(delay)
 
     async def paginate(
         self,

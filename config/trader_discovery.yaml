@@ -7,14 +7,14 @@ discovery:
     base_url: https://narrative.agent.heisenberg.so/api/v2/semantic/retrieve/parameterized
     token: ""
     timeout_seconds: 20.0
-    max_retries: 4
-    requests_per_second: 5.0
-    burst: 5.0
+    max_retries: 6
+    requests_per_second: 1.0
+    burst: 1.0
     max_connections: 32
     max_keepalive_connections: 16
     keepalive_expiry_seconds: 30.0
-    retry_base_delay_seconds: 0.25
-    retry_max_delay_seconds: 8.0
+    retry_base_delay_seconds: 1.0
+    retry_max_delay_seconds: 30.0
     retry_jitter_ratio: 0.50
 
   shortlist:
@@ -34,7 +34,7 @@ discovery:
     max_drawdown_pct: 35.0
     min_market_diversity: 3
     reject_bot_flagged: true
-    max_stake_cv: 2.5
+    max_stake_cv: 3.2
     min_win_rate_consistency: 0.60
 
   recency:
@@ -135,7 +135,7 @@ discovery:
     enabled: true
     rediscover_seconds: 1800
     rescore_seconds: 900
-    evaluation_concurrency: 8
+    evaluation_concurrency: 2
     # Fail the cycle instead of mass-demoting the roster when an upstream
     # agent outage turns too many candidate evaluations into errors.
     max_evaluation_error_ratio: 0.25

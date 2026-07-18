@@ -158,7 +158,7 @@ async def test_delta_full_apply_when_previous_zero() -> None:
 @pytest.mark.asyncio
 async def test_delta_increment_applies_only_difference() -> None:
     svc, orders, fills, positions, _ = _make_service(previous_matched="5")
-    confirm_fill = await _confirm_factory("8", status="matched")
+    confirm_fill = await _confirm_factory("8", status="confirmed")
 
     applied = await svc.reconcile_trade_record(_record(), "BUY", confirm_fill=confirm_fill)
 
@@ -171,7 +171,7 @@ async def test_delta_increment_applies_only_difference() -> None:
 @pytest.mark.asyncio
 async def test_delta_zero_when_already_applied_records_terminal_only() -> None:
     svc, orders, fills, positions, audit = _make_service(previous_matched="8")
-    confirm_fill = await _confirm_factory("8", status="matched")
+    confirm_fill = await _confirm_factory("8", status="confirmed")
 
     applied = await svc.reconcile_trade_record(_record(), "BUY", confirm_fill=confirm_fill)
 
@@ -195,7 +195,7 @@ async def test_delta_zero_when_already_applied_records_terminal_only() -> None:
 @pytest.mark.asyncio
 async def test_negative_delta_clamps_to_zero_logs_and_audits(caplog) -> None:
     svc, orders, fills, positions, audit = _make_service(previous_matched="8")
-    confirm_fill = await _confirm_factory("5", status="matched")
+    confirm_fill = await _confirm_factory("5", status="confirmed")
 
     with patch("services.metrics.metrics.inc_sync") as inc_sync, caplog.at_level(
         logging.WARNING, logger="TradePipeline"

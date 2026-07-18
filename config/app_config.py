@@ -29,7 +29,15 @@ from typing import Any, Literal
 import orjson
 import yaml
 from dotenv import dotenv_values
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, TypeAdapter, ValidationError, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    TypeAdapter,
+    ValidationError,
+    model_validator,
+)
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -190,6 +198,11 @@ class RiskConfig:
     risk_exit_reject_cooldown_seconds: float = 60.0
     risk_pre_reconcile_timeout_seconds: float = 25.0
     risk_pre_reconcile_backoff_seconds: float = 30.0
+    # Sanity gate for the best-bid risk mark: reject crossed books outright and
+    # reject marks whose bid/ask spread exceeds this cap (mid-relative bps).
+    # A rejected mark means "no risk action this tick" — fail closed for the
+    # protective-exit feature set. 0 disables the spread check.
+    risk_mark_max_spread_bps: int = 2000
 
 
 @dataclass(frozen=True)
@@ -248,6 +261,11 @@ class ExecutionConfig:
     # fill vs a forced protective exit may sweep. Promoted off ``config.raw``.
     copy_fak_max_attempts: int = 8
     exit_fak_max_attempts: int = 8
+    # What to do with a leader SELL whose sell fraction cannot be determined
+    # (leader positions fetch failed / annotation missing). "skip" fails
+    # closed: the copy sell is dropped and retried on the next signal.
+    # "full_close" preserves the legacy dump-everything behaviour.
+    sell_fraction_missing_policy: str = "skip"
 
     @property
     def paper_trade_only(self) -> bool:
@@ -353,6 +371,12 @@ class OrderConfirmationConfig:
     auto_release_grace_seconds: float
     auto_release_require_all_probes_clean: bool
     auto_release_max_probe_errors: int
+    # Per-order pacing for repeated auto-release attempts: the first failed
+    # attempt reschedules after ``auto_release_retry_backoff_seconds`` and the
+    # interval doubles per failed attempt up to the ``_max`` cap. Keeps a stuck
+    # ambiguous order from being probed on every reconcile tick.
+    auto_release_retry_backoff_seconds: float = 30.0
+    auto_release_retry_backoff_max_seconds: float = 900.0
 
     def resolve_initial_delay(
         self,
@@ -381,17 +405,19 @@ class _FrozenSettingsModel(BaseModel):
 
 
 class DiscoveryApiConfig(_FrozenSettingsModel):
-    base_url: str = "https://narrative.agent.heisenberg.so/api/v2/semantic/retrieve/parameterized"
+    base_url: str = (
+        "https://narrative.agent.heisenberg.so/api/v2/semantic/retrieve/parameterized"
+    )
     token: SecretStr = SecretStr("")
     timeout_seconds: float = Field(20.0, gt=0)
-    max_retries: int = Field(4, ge=1, le=10)
-    requests_per_second: float = Field(5.0, gt=0)
-    burst: float = Field(5.0, ge=1)
+    max_retries: int = Field(6, ge=1, le=10)
+    requests_per_second: float = Field(1.0, gt=0)
+    burst: float = Field(1.0, ge=1)
     max_connections: int = Field(32, ge=1)
     max_keepalive_connections: int = Field(16, ge=0)
     keepalive_expiry_seconds: float = Field(30.0, gt=0)
-    retry_base_delay_seconds: float = Field(0.25, gt=0)
-    retry_max_delay_seconds: float = Field(8.0, gt=0)
+    retry_base_delay_seconds: float = Field(1.0, gt=0)
+    retry_max_delay_seconds: float = Field(30.0, gt=0)
     retry_jitter_ratio: float = Field(0.50, ge=0, le=1)
 
     @property
@@ -597,9 +623,7 @@ class LongitudinalConfig(_FrozenSettingsModel):
         if abs(self.base_score_weight + self.longitudinal_score_weight - 1.0) > 1e-6:
             raise ValueError("base and longitudinal score weights must sum to 1.0")
         if self.sizing_multiplier_max < self.sizing_multiplier_min:
-            raise ValueError(
-                "longitudinal sizing multiplier max must be >= min"
-            )
+            raise ValueError("longitudinal sizing multiplier max must be >= min")
         for name in ("sharpe_range", "roi_slope_range", "rank_slope_range"):
             lower, upper = getattr(self, name)
             if upper <= lower:
@@ -624,7 +648,7 @@ class DiscoverySchedulerConfig(_FrozenSettingsModel):
     enabled: bool = True
     rediscover_seconds: int = Field(1800, ge=30)
     rescore_seconds: int = Field(900, ge=30)
-    evaluation_concurrency: int = Field(8, ge=1)
+    evaluation_concurrency: int = Field(2, ge=1)
     max_evaluation_error_ratio: float = Field(0.25, ge=0, le=1)
     max_active_leaders: int = Field(2, ge=1)
     start_from_roster: bool = True
@@ -741,11 +765,12 @@ class AppConfig:
     discovery: DiscoveryConfig
     features: FeatureFlagConfig
     market_data: MarketDataConfig = field(default_factory=MarketDataConfig)
-    onchain_detection: OnchainDetectionConfig = field(default_factory=OnchainDetectionConfig)
+    onchain_detection: OnchainDetectionConfig = field(
+        default_factory=OnchainDetectionConfig
+    )
     files: RuntimeFilesConfig = field(default_factory=RuntimeFilesConfig)
     # Global safety: when True the bot runs in paper-only / dry-run mode.
     dry_run: bool = False
-
 
 
 # Factory & validation.
@@ -780,6 +805,11 @@ def _validate_semantics(cfg: AppConfig, errors: list[str]) -> None:
     elif not cfg.database.dsn.startswith(("postgresql://", "postgres://")):
         errors.append("database.dsn must use postgresql:// or postgres://.")
 
+    if cfg.execution.sell_fraction_missing_policy not in ("skip", "full_close"):
+        errors.append(
+            "execution.sell_fraction_missing_policy must be 'skip' or 'full_close'."
+        )
+
     # Wallet essentials
     private_key = secret_value(cfg.wallet.private_key)
     if not cfg.execution.paper_trade_only and not private_key:
@@ -805,7 +835,9 @@ def _validate_semantics(cfg: AppConfig, errors: list[str]) -> None:
             f"(expected 42-char Ethereum address)."
         )
     if cfg.wallet.chain_id not in (137, 80002):
-        errors.append(f'Unsupported CHAIN_ID "{cfg.wallet.chain_id}". Use 137 or 80002.')
+        errors.append(
+            f'Unsupported CHAIN_ID "{cfg.wallet.chain_id}". Use 137 or 80002.'
+        )
     if not cfg.wallet.polygon_rpc_url:
         errors.append("RPC_URL is required.")
     if not cfg.network.rpc_url:
@@ -904,9 +936,7 @@ def _validate_semantics(cfg: AppConfig, errors: list[str]) -> None:
     if r.risk_pre_reconcile_timeout_seconds <= 0:
         errors.append("risk.risk_pre_reconcile_timeout_seconds must be > 0.")
     if r.risk_pre_reconcile_backoff_seconds < r.risk_pre_reconcile_timeout_seconds:
-        errors.append(
-            "risk.risk_pre_reconcile_backoff_seconds must be >= timeout."
-        )
+        errors.append("risk.risk_pre_reconcile_backoff_seconds must be >= timeout.")
 
     # Leader
     le = cfg.leader
@@ -925,14 +955,13 @@ def _validate_semantics(cfg: AppConfig, errors: list[str]) -> None:
 
     # On-chain detection
     oc = cfg.onchain_detection
-    confidence_required = str(
-        oc.pending_tx_detection_confidence_required or ""
-    ).strip().lower()
+    confidence_required = (
+        str(oc.pending_tx_detection_confidence_required or "").strip().lower()
+    )
     if confidence_required not in _ONCHAIN_DETECTION_CONFIDENCE_VALUES:
         allowed = ", ".join(sorted(_ONCHAIN_DETECTION_CONFIDENCE_VALUES))
         errors.append(
-            "PENDING_TX_DETECTION_CONFIDENCE_REQUIRED must be one of: "
-            f"{allowed}."
+            f"PENDING_TX_DETECTION_CONFIDENCE_REQUIRED must be one of: {allowed}."
         )
     # Discovery is field-constrained by its Pydantic models. Keep only
     # invariants that span nested sections here.
@@ -980,7 +1009,6 @@ def _validate_semantics(cfg: AppConfig, errors: list[str]) -> None:
         errors.append("MARKET_DATA_EXECUTABLE_TICK_MAX_AGE_SECONDS must be > 0.")
     if md.wss_connection_max_silence_seconds <= 0:
         errors.append("MARKET_DATA_WSS_CONNECTION_MAX_SILENCE_SECONDS must be > 0.")
-
 
 
 # Layered YAML settings loader.
@@ -1102,7 +1130,9 @@ def _read_yaml(path: Path, *, required: bool) -> dict[str, Any]:
     try:
         payload = yaml.safe_load(path.read_text(encoding="utf-8"))
     except (OSError, yaml.YAMLError) as exc:
-        raise EnvValidationError(f"Unable to read YAML configuration {path}: {exc}") from exc
+        raise EnvValidationError(
+            f"Unable to read YAML configuration {path}: {exc}"
+        ) from exc
     if payload is None:
         return {}
     if not isinstance(payload, dict):
@@ -1238,15 +1268,11 @@ def load_config(
     runtime_file = Path(runtime_path) if runtime_path else _RUNTIME_YAML
     deployment_root = Path.cwd()
     local_file = (
-        Path(local_path)
-        if local_path
-        else deployment_root / _RUNTIME_LOCAL_YAML
+        Path(local_path) if local_path else deployment_root / _RUNTIME_LOCAL_YAML
     )
     discovery_file = Path(discovery_path) if discovery_path else _TRADER_DISCOVERY_YAML
     secrets_file = (
-        Path(secrets_path)
-        if secrets_path
-        else deployment_root / _SECRETS_ENV
+        Path(secrets_path) if secrets_path else deployment_root / _SECRETS_ENV
     )
 
     payload = _read_yaml(runtime_file, required=True)
@@ -1269,26 +1295,28 @@ def load_config(
         settings = _LayeredSettings(**payload)
     except ValidationError as exc:
         messages = _validation_messages(exc)
-        raise EnvValidationError("Invalid application configuration:\n- " + "\n- ".join(messages)) from exc
+        raise EnvValidationError(
+            "Invalid application configuration:\n- " + "\n- ".join(messages)
+        ) from exc
 
     validated = settings.model_dump()
     # One RPC setting is enough for operators.  ``WalletConfig`` keeps these
     # compatibility fields because legacy service boundaries still consume
     # them, but their values are sourced from the canonical network section.
     validated["wallet"]["polygon_rpc_url"] = (
-        validated["wallet"].get("polygon_rpc_url")
-        or validated["network"]["rpc_url"]
+        validated["wallet"].get("polygon_rpc_url") or validated["network"]["rpc_url"]
     )
-    validated["wallet"]["fallback_rpc_url"] = (
-        validated["wallet"].get("fallback_rpc_url")
-        or validated["network"].get("fallback_rpc_url", "")
-    )
+    validated["wallet"]["fallback_rpc_url"] = validated["wallet"].get(
+        "fallback_rpc_url"
+    ) or validated["network"].get("fallback_rpc_url", "")
     validated["dry_run"] = settings.execution.paper_trade_only
     try:
         cfg = TypeAdapter(AppConfig).validate_python(validated)
     except ValidationError as exc:
         messages = _validation_messages(exc)
-        raise EnvValidationError("Invalid application configuration:\n- " + "\n- ".join(messages)) from exc
+        raise EnvValidationError(
+            "Invalid application configuration:\n- " + "\n- ".join(messages)
+        ) from exc
 
     semantic_errors: list[str] = []
     _validate_semantics(cfg, semantic_errors)

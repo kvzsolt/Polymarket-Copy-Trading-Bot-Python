@@ -55,10 +55,19 @@ class ClobGateway(Protocol):
 
     async def get_order(self, order_id: str) -> VenueOrderState: ...
 
-    async def list_open_orders(self) -> list[VenueOrderState]: ...
+    async def list_open_orders(
+        self,
+        *,
+        order_id: str | None = None,
+        market: str | None = None,
+    ) -> list[VenueOrderState]: ...
 
     async def get_fills(
-        self, market: str | None = None
+        self,
+        market: str | None = None,
+        *,
+        trade_id: str | None = None,
+        order_id: str | None = None,
     ) -> list[VenueFill]: ...
 
     async def cancel_order(self, order_id: str) -> VenueCancelResult: ...

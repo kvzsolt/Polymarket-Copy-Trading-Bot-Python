@@ -336,6 +336,67 @@ async def test_list_open_orders_consumes_sdk_paginator() -> None:
 
 
 @pytest.mark.asyncio
+async def test_list_open_orders_passes_exact_sdk_filters() -> None:
+    async def pages():
+        if False:
+            yield None
+
+    secure = SimpleNamespace(list_open_orders=MagicMock(return_value=pages()))
+    subject, _, _ = gateway(secure=secure)
+
+    assert await subject.list_open_orders(order_id="order-1", market="market-1") == []
+    secure.list_open_orders.assert_called_once_with(id="order-1", market="market-1")
+
+
+@pytest.mark.asyncio
+async def test_get_fills_attributes_maker_leg_and_deduplicates_pages() -> None:
+    matched_at = datetime.now(tz=timezone.utc)
+    maker = SimpleNamespace(
+        order_id="maker-order",
+        token_id="maker-token",
+        side="SELL",
+        matched_amount=Decimal("4"),
+        price=Decimal("0.41"),
+    )
+    raw_trade = SimpleNamespace(
+        id="trade-1",
+        taker_order_id="taker-order",
+        token_id="taker-token",
+        side="BUY",
+        size=Decimal("4"),
+        price=Decimal("0.41"),
+        trader_side="MAKER",
+        maker_orders=(maker,),
+        status="CONFIRMED",
+        bucket_index=7,
+        transaction_hash="0xsettled",
+        matched_at=matched_at,
+    )
+
+    async def pages():
+        yield SimpleNamespace(items=(raw_trade,))
+        yield SimpleNamespace(items=(raw_trade,))
+
+    secure = SimpleNamespace(list_account_trades=MagicMock(return_value=pages()))
+    subject, _, _ = gateway(secure=secure)
+
+    fills = await subject.get_fills(
+        market="market-1",
+        trade_id="trade-1",
+        order_id="maker-order",
+    )
+
+    assert len(fills) == 1
+    assert fills[0].order_id == "maker-order"
+    assert fills[0].token_id == "maker-token"
+    assert fills[0].size == Decimal("4")
+    assert fills[0].status == "CONFIRMED"
+    assert fills[0].trader_side == "MAKER"
+    assert fills[0].bucket_index == 7
+    secure.list_account_trades.assert_called_once_with(id="trade-1", market="market-1")
+
+
+@pytest.mark.asyncio
 async def test_open_order_pagination_uses_fresh_timeout_per_page(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 
@@ -149,6 +150,7 @@ async def test_retry_after_is_honoured_without_leaking_token(
 ) -> None:
     calls = 0
     sleeps: list[float] = []
+    now = 0.0
 
     def handler(_request: httpx.Request) -> httpx.Response:
         nonlocal calls
@@ -158,14 +160,59 @@ async def test_retry_after_is_honoured_without_leaking_token(
         return httpx.Response(200, json={"results": []})
 
     async def fake_sleep(delay: float) -> None:
+        nonlocal now
         sleeps.append(delay)
+        now += delay
 
     monkeypatch.setattr("integrations.falcon.client.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr("integrations.falcon.client.time.monotonic", lambda: now)
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as transport_client:
         client = FalconClient(_config(max_retries=2), client=transport_client)
         await client.query(agent_id=584, params={"sort_by": "h_score"})
     assert calls == 2
     assert sleeps == [0.01]
+
+
+@pytest.mark.asyncio
+async def test_concurrent_rate_limits_share_one_cooldown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+    sleeps: list[float] = []
+    now = 0.0
+    both_started = asyncio.Event()
+    original_sleep = asyncio.sleep
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls <= 2:
+            if calls == 1:
+                await both_started.wait()
+            else:
+                both_started.set()
+            return httpx.Response(429, headers={"Retry-After": "0.02"})
+        return httpx.Response(200, json={"results": []})
+
+    async def fake_sleep(delay: float) -> None:
+        nonlocal now
+        sleeps.append(delay)
+        wake_at = now + delay
+        await original_sleep(0)
+        now = max(now, wake_at)
+
+    monkeypatch.setattr("integrations.falcon.client.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr("integrations.falcon.client.time.monotonic", lambda: now)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as transport_client:
+        client = FalconClient(_config(max_retries=2), client=transport_client)
+        await asyncio.gather(
+            client.query(agent_id=584, params={"sort_by": "h_score"}),
+            client.query(agent_id=584, params={"sort_by": "roi"}),
+        )
+
+    assert calls == 4
+    assert sleeps == [0.02, 0.02]
+    assert now == 0.02
 
 
 @pytest.mark.asyncio

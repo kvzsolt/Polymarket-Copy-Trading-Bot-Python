@@ -432,12 +432,22 @@ class PolymarketGateway:
             raw=_raw_model(raw),
         )
 
-    async def list_open_orders(self) -> list[VenueOrderState]:
-        """Return the authenticated account's open orders via the SDK paginator."""
+    async def list_open_orders(
+        self,
+        *,
+        order_id: str | None = None,
+        market: str | None = None,
+    ) -> list[VenueOrderState]:
+        """Return authenticated open orders, optionally filtered exactly."""
         secure = self._client.require_secure()
-        paginator = secure.list_open_orders()
+        filters: dict[str, str] = {}
+        if order_id:
+            filters["id"] = order_id
+        if market:
+            filters["market"] = market
         orders: list[VenueOrderState] = []
         try:
+            paginator = secure.list_open_orders(**filters)
             iterator = paginator.__aiter__()
             for _ in range(_MAX_ORDER_PAGES):
                 try:
@@ -467,11 +477,30 @@ class PolymarketGateway:
             _raise_read_error(exc, not_found="order")
         return orders
 
-    async def get_fills(self, market: str | None = None) -> list[VenueFill]:
+    async def get_fills(
+        self,
+        market: str | None = None,
+        *,
+        trade_id: str | None = None,
+        order_id: str | None = None,
+    ) -> list[VenueFill]:
+        """Return account-side fills with exact maker/taker attribution.
+
+        Polymarket returns the taker order at the trade root and maker orders
+        in ``maker_orders``. Mapping every account trade to the root taker ID
+        loses maker fills, so choose the leg indicated by ``trader_side`` and
+        optionally filter it by the requested venue order ID.
+        """
         secure = self._client.require_secure()
-        paginator = secure.list_account_trades(market=market)
+        filters: dict[str, str] = {}
+        if market:
+            filters["market"] = market
+        if trade_id:
+            filters["id"] = trade_id
         fills: list[VenueFill] = []
+        seen: set[tuple[str, str, int | None, str, str]] = set()
         try:
+            paginator = secure.list_account_trades(**filters)
             iterator = paginator.__aiter__()
             for _ in range(_MAX_TRADE_PAGES):
                 try:
@@ -479,19 +508,65 @@ class PolymarketGateway:
                 except StopAsyncIteration:
                     break
                 for raw in page.items:
-                    fills.append(
-                        VenueFill(
-                            fill_id=raw.id,
-                            order_id=raw.taker_order_id,
-                            token_id=str(raw.token_id),
-                            side=raw.side,
-                            size=Decimal(raw.size),
-                            price=Decimal(raw.price),
-                            fee=Decimal("0"),
-                            timestamp=int(raw.matched_at.timestamp()),
-                            raw=_raw_model(raw),
+                    trader_side = str(getattr(raw, "trader_side", "TAKER") or "TAKER").upper()
+                    raw_payload = _raw_model(raw)
+                    legs: list[tuple[str, str, str, Decimal, Decimal]] = []
+                    if trader_side == "MAKER":
+                        for maker in getattr(raw, "maker_orders", ()) or ():
+                            legs.append(
+                                (
+                                    str(maker.order_id),
+                                    str(maker.token_id),
+                                    str(maker.side),
+                                    Decimal(maker.matched_amount),
+                                    Decimal(maker.price),
+                                )
+                            )
+                    else:
+                        legs.append(
+                            (
+                                str(raw.taker_order_id),
+                                str(raw.token_id),
+                                str(raw.side),
+                                Decimal(raw.size),
+                                Decimal(raw.price),
+                            )
                         )
-                    )
+
+                    for leg_order_id, token_id, side, size, price in legs:
+                        if order_id and leg_order_id != order_id:
+                            continue
+                        bucket_index = getattr(raw, "bucket_index", None)
+                        transaction_hash = str(
+                            getattr(raw, "transaction_hash", "") or ""
+                        )
+                        dedup_key = (
+                            str(raw.id),
+                            leg_order_id,
+                            bucket_index,
+                            str(size),
+                            str(price),
+                        )
+                        if dedup_key in seen:
+                            continue
+                        seen.add(dedup_key)
+                        fills.append(
+                            VenueFill(
+                                fill_id=str(raw.id),
+                                order_id=leg_order_id,
+                                token_id=token_id,
+                                side=side,
+                                size=size,
+                                price=price,
+                                fee=Decimal("0"),
+                                timestamp=int(raw.matched_at.timestamp()),
+                                status=str(getattr(raw, "status", "") or "") or None,
+                                transaction_hash=transaction_hash or None,
+                                trader_side=trader_side,
+                                bucket_index=bucket_index,
+                                raw=raw_payload,
+                            )
+                        )
         except BaseException as exc:
             if isinstance(exc, (KeyboardInterrupt, SystemExit, asyncio.CancelledError)):
                 raise
