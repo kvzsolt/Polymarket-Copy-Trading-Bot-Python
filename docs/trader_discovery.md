@@ -1,62 +1,86 @@
 # Trader Discovery
 
-The project has one discovery pipeline and one PostgreSQL roster. There are no
-generation switches, legacy evaluators, env-file rotators, or deprecated
-realtime activity detector.
+The project has one discovery pipeline and one PostgreSQL roster. The live
+discovery service is the Heisenberg-backed
+`services.discovery.heisenberg_discovery_service.HeisenbergDiscoveryService`,
+which consumes `integrations.heisenberg.client.HeisenbergClient` (the
+`narrative.agent.heisenberg.so` parameterized-agent endpoint) and produces
+`services.discovery.models.Candidate` rows persisted by
+`storage.postgres.discovery_repo.DiscoveryRepo`. There is no legacy funnel,
+falcon client, scoring, longitudinal, or backfill module anymore.
+
 Polymarket's public Data API polling and the existing mined/pending on-chain
 detector remain the live leader-signal sources.
 
-## Funnel
+## Pipeline
 
 ```text
-H-Score 584
-   ↓ round-robin shortlist across configured sorts
-Wallet 360 581 (1/3/7/15-day audit)
-   ↓ bot, drawdown, diversity, stake-CV, consistency gates
+Heisenberg leaderboard (agent 584)
+   ↓ H-Score shortlist, EVM-address + h_score threshold gates
+Wallet360 581 (1/3/7/15-day) + all-time 586
+   ↓ sybil, drawdown, concentration, missing-evidence, freshness gates
 Trades 556
-   ↓ activity age and sample-size gates
-Market Insights 575
-   ↓ per-traded-market liquidity/participation pass ratio
-Social Pulse 585 (optional)
+   ↓ recency, sample-size, short-duration-market gates
+Markets 574 + Market360 575
+   ↓ liquidity, toxic-market, capacity gates
+Realized PnL 569 + official PnL leaderboard 579
+   ↓ realized-PnL corroboration, official-rank corroboration
+Optional CCXT visible-depth probe (ccxt.prediction.polymarket order book)
+   ↓ bankroll-compatible copy ratio
+bankroll-aware composite score (0..1)
    ↓
-configured composite score
-   ↓
-decay-weighted longitudinal score + low-sample shrinkage
-   ↓
-PostgreSQL watchlist/active roster with hysteresis
+PostgreSQL watchlist/active roster with hysteresis (LeaderRegistry)
 ```
 
-One pooled HTTP/2 client serves every Heisenberg agent ID. Every parameter
-value is serialized as a string; pagination limit/offset remain integers and
-pagination stops when a page returns fewer rows than requested. Retries use a
-bounded exponential backoff and honor numeric or HTTP-date `Retry-After`.
+The discovery service ranks wallets by **bankroll-compatible copyability**, not
+raw PnL or H-Score alone. Every wallet is re-evaluated with fresh trades,
+Wallet360 windows, market duration, Market360 quality, realized PnL, price-jump
+risk, and a follower-specific bankroll-fit calculation.
 
-## Longitudinal evidence
+## Bankroll source
 
-- Wallet 360 snapshots are stored each cycle.
-- Agent 569 seeds realized-only daily PnL; it does not represent open-position
-  risk.
-- Agent 556 seeds trade counts and turnover.
-- Agent 579 stores 1/3/7/30-day ranks.
-- Metric history is decay-weighted, then shrunk toward the configured prior for
-  low-trade wallets.
+The live discovery reads the operator's USDC bankroll each cycle via the
+read-only `utils.getMyBalance.get_my_balance` on-chain `balanceOf` call,
+using the **first runtime user's** funder address (single-user default:
+`config.wallet.funder_address`). A missing or non-positive balance fails
+closed: the cycle is recorded as `failed`, `last_cycle_degraded` is set, and
+no candidates are returned — discovery never ranks against an unknown or zero
+bankroll. No order, approval, or mutation is performed by the discovery path.
+
+## Fail-closed provider semantics
+
+- Auth, permission, schema, or configuration errors fail closed.
+- Transient outage/rate-limit raises propagate as a failed cycle
+  (`last_cycle_degraded=True`); the roster is not mass-demoted on missing
+  evidence.
+- A successful Heisenberg run that produces zero safe wallets returns zero
+  candidates and does not silently substitute weaker candidates.
+- All provider secrets and error bodies are redacted before logging.
+
+## Roster and hysteresis
 
 Roster promotion requires consecutive observations above `promote_score`.
 Demotion requires consecutive observations below `demote_score` and the dwell
 timer. The gap between the thresholds prevents score noise from churning live
-monitors. Longitudinal rank also scales copy sizing inside the configured
-minimum/maximum multipliers; portfolio and per-order risk caps remain binding.
-At startup, active rows are accepted only when their decision-config hash
-matches the current gates and formulas. Transport rate limits and scheduler
-cadence do not invalidate the roster.
+monitors. At startup, active rows are accepted only when their decision-config
+hash matches the current gates and formulas. A `rescore` re-ranks the last
+accepted roster from stored snapshots without an API call and does not advance
+hysteresis tenure. Transport rate limits and scheduler cadence do not
+invalidate the roster; the `heisenberg` policy thresholds do.
+
 The execution-time leader score is not a second ranking system: it blends the
 persisted roster score with fresh local win-rate, realized PnL, and activity
 using `scoring.runtime_weights` from the same YAML file.
 
-Every setting and formula coefficient is in
-`config/trader_discovery.yaml`. Process overrides use paths such as:
+## Configuration
+
+Every discovery setting and policy threshold is in
+`config/trader_discovery.yaml` under `discovery.heisenberg`. The API key is
+supplied via env and never committed:
 
 ```dotenv
+PMCOPY__DISCOVERY__HEISENBERG__API_KEY=...
+PMCOPY__DISCOVERY__HEISENBERG__ENABLED=true
 PMCOPY__DISCOVERY__SCHEDULER__REDISCOVER_SECONDS=900
 PMCOPY__DISCOVERY__HYSTERESIS__MIN_DWELL_SECONDS=21600
 PMCOPY__DISCOVERY__API__REQUESTS_PER_SECOND=3
@@ -69,3 +93,19 @@ python scripts/run_discovery_only.py
 python scripts/run_discovery_only.py --list-only
 pmcopy rotate-traders --rescore-only
 ```
+
+## Operator ranking CLI (bankroll report)
+
+`scripts/rank_copy_wallets.py` is a standalone, read-only operator tool that
+ranks Polymarket wallets for an explicitly supplied USDC bankroll and prints a
+ranked report. It performs no live trading, accepts no private keys, and never
+mutates venue state.
+
+```bash
+python scripts/rank_copy_wallets.py --funds 500 --top 10
+python scripts/rank_copy_wallets.py --funds 2000 --top 20 --json
+python scripts/rank_copy_wallets.py --funds 100 --ccxt-depth auto
+```
+
+See `docs/discovery_bankroll_ranking.md` for how to choose a bankroll and read
+the report.

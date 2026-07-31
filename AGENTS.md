@@ -58,3 +58,43 @@ only confirmed by reading that file — the hard-coded four-value tick table in
 `polymarket_order_raw_amounts`, the single-page `fetch_open_orders`, the
 cached-outcome-price fallback when `create_order` is called without a price,
 and the `negRisk` default of `False`.
+
+## Hybrid Polymarket backend work
+
+Before touching Polymarket execution, discovery, reconciliation, authentication, or market data:
+
+1. Read the repository-root `CLAUDE.md` completely.
+2. Read every applicable `AGENTS.md` from root to the target directory.
+3. Preserve the official `polymarket-client` SDK as the production default unless a task explicitly changes that decision.
+4. Keep CCXT optional and isolated behind `ClobGateway`.
+5. Keep custom CLOB/WebSocket detection in the latency-sensitive path.
+6. Never allow shadow mode to mutate venue state.
+7. Never retry an ambiguous order submission without reconciliation.
+8. Never infer live mode from available credentials.
+9. Use exact decimal arithmetic for money, shares, prices, tick sizes, and limits.
+10. Write failing tests before changing behavior.
+
+## Heisenberg discovery
+
+Treat Heisenberg as an external analytics provider, not an execution authority.
+
+- Rank wallets by bankroll-compatible copyability, not raw PnL or H-Score alone.
+- Validate multi-window Wallet360 evidence, sample size, liquidity, capacity, drawdown, concentration, recency, and anomalies.
+- Provider authentication/schema/config errors fail closed.
+- Transient outage fallback is allowed only when explicitly configured.
+- A successful provider response yielding zero safe wallets must remain zero; do not silently substitute weaker candidates.
+- Never log API keys, bearer headers, private keys, CLOB credentials, or unredacted provider errors.
+
+## TDD and commits
+
+For each behavior slice:
+
+1. add/update focused tests;
+2. demonstrate RED for the intended reason;
+3. commit tests separately when practical;
+4. implement the smallest safe change;
+5. run focused GREEN;
+6. run relevant regressions;
+7. do a money-path and secret-leak review before commit.
+
+Do not edit generated CCXT source files. Keep compatibility work adapter-local and covered by tests.
