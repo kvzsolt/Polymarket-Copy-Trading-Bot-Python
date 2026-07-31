@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Protocol
 
 import orjson
 
@@ -31,6 +32,47 @@ class RosterEntry:
     cycles_in_tier: int
     tier_changed_at: float
     first_promoted_at: float | None
+
+
+class DiscoveryRepository(Protocol):
+    """Structural port for the live discovery service's persistence backend.
+
+    Implemented by ``storage.postgres.discovery_repo.DiscoveryRepo`` and
+    consumed by ``services.discovery.heisenberg_discovery_service.HeisenbergDiscoveryService``.
+    """
+
+    async def begin_cycle(self, config_hash: str) -> str: ...
+
+    async def persist_cycle(
+        self,
+        cycle_id: str,
+        candidates: list[Candidate],
+        config_hash: str,
+    ) -> None: ...
+
+    async def complete_cycle(
+        self,
+        cycle_id: str,
+        *,
+        status: str,
+        candidate_count: int,
+        kept_count: int,
+        error: str | None = None,
+    ) -> None: ...
+
+    async def score_history(self, wallet: str, *, since_ts: float) -> list[Mapping[str, Any]]: ...
+
+    async def latest_candidates(
+        self,
+        *,
+        config_hash: str | None = None,
+    ) -> list[Candidate]: ...
+
+    async def persist_rescore(
+        self,
+        candidates: list[Candidate],
+        config_hash: str,
+    ) -> None: ...
 
 
 def discovery_config_hash(config: Any) -> str:
@@ -66,4 +108,4 @@ def discovery_config_hash(config: Any) -> str:
     ).hexdigest()
 
 
-__all__ = ["Candidate", "RosterEntry", "discovery_config_hash"]
+__all__ = ["Candidate", "DiscoveryRepository", "RosterEntry", "discovery_config_hash"]

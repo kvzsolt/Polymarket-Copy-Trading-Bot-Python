@@ -1,7 +1,16 @@
-"""Single-generation trader discovery and longitudinal ranking."""
+"""Heisenberg-backed trader discovery and ranking.
 
-from services.discovery.funnel import DiscoveryFunnel
-from services.discovery.models import Candidate
-from services.discovery.scoring import CompositeScorer
+The live discovery service is ``HeisenbergDiscoveryService`` (bankroll-aware,
+Heisenberg analytics provider). The persisted candidate row and the discovery
+config hash live in ``services.discovery.models``.
+"""
 
-__all__ = ["Candidate", "CompositeScorer", "DiscoveryFunnel"]
+from services.discovery.heisenberg_discovery_service import HeisenbergDiscoveryService
+from services.discovery.models import Candidate, DiscoveryRepository, discovery_config_hash
+
+__all__ = [
+    "Candidate",
+    "DiscoveryRepository",
+    "HeisenbergDiscoveryService",
+    "discovery_config_hash",
+]

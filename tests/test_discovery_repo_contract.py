@@ -17,7 +17,7 @@ from __future__ import annotations
 import inspect
 
 from domain.ports import AbstractDiscoveryRepository
-from services.discovery.funnel import DiscoveryRepository
+from services.discovery.models import DiscoveryRepository
 from storage.postgres.discovery_repo import DiscoveryRepo
 
 # Methods the pre-rewrite port declared, none of which the single-generation

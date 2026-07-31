@@ -43,11 +43,11 @@ class Service:
 
 
 class RescoreService(Service):
-    """Stands in for the funnel's cached rescore.
+    """Stands in for the discovery service's cached rescore.
 
-    ``DiscoveryFunnel.rescore`` re-ranks the last accepted roster from stored
-    snapshots without any external call, so it observes nothing new about a
-    wallet.
+    ``HeisenbergDiscoveryService.rescore`` re-ranks the last accepted roster
+    from stored snapshots without any external call, so it observes nothing
+    new about a wallet.
     """
 
     def __init__(self, score: float = 0.80) -> None:
@@ -205,7 +205,7 @@ async def test_cached_rescore_still_refreshes_score_and_ranking() -> None:
 # Degraded cycles must not demote wallets they never looked at.
 #
 # A partial H-Score sort-mode failure still returns usable candidates, so the
-# funnel completes the cycle and reports ``last_cycle_degraded``. Without that
+# discovery service completes the cycle and reports ``last_cycle_degraded``.
 # signal every active leader missing from the partial set scores 0.0 and grows
 # a demote streak — so a persistent one-mode outage would demote exactly the
 # leaders that mode surfaces.
@@ -220,7 +220,7 @@ NEW_HASH = "hash-after-config-change"
 
 
 class DiscoveryService:
-    """Stands in for ``DiscoveryFunnel``: a run() plus its degraded flag."""
+    """Stands in for ``HeisenbergDiscoveryService``: a run() plus its degraded flag."""
 
     def __init__(
         self,
