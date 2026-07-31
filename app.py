@@ -25,6 +25,7 @@ from orchestrators.runtime_bootstrap import (
     build_context_maps,
     build_trading_context,
     build_user_state,
+    build_user_venue_backend,
     configured_leaders,
     ensure_runtime_follows,
     fetch_live_positions,
@@ -1128,11 +1129,23 @@ async def _run_application(client_registry: list[Any]) -> int:
         # Register ownership immediately. If any later startup stage fails,
         # main() still closes the SDK transports from its outer finally.
         client_registry.append(client)
+        # Resolve the venue backend at the single composition root. This is
+        # the official SDK gateway unless an operator explicitly opts into the
+        # experimental hybrid backend; the bundle owns only the optional CCXT
+        # transport, so register that separately for shutdown.
+        venue_backend = await build_user_venue_backend(
+            runtime_user,
+            client,
+            application.config,
+        )
+        if venue_backend.ccxt_client is not None:
+            client_registry.append(venue_backend.ccxt_client)
         user_states[runtime_user.user_id] = build_user_state(
             runtime_user,
             client,
             _pool,
             application.config,
+            clob_gateway=venue_backend.gateway,
         )
 
     logger.info(

@@ -36,6 +36,7 @@ from utils.logger import get_logger
 
 if TYPE_CHECKING:
     from config.app_config import AppConfig
+    from integrations.polymarket.runtime_gateway import RuntimeGatewayBundle
 
 logger = get_logger("RuntimeBootstrap")
 
@@ -254,6 +255,7 @@ def build_user_state(
     client: object,
     pool,
     config: AppConfig,
+    clob_gateway: "ClobGateway | None" = None,
 ) -> UserRuntimeState:
     init_risk_engine(config)
 
@@ -274,8 +276,14 @@ def build_user_state(
     # Single CLOB venue boundary — same instance used by ExecutionService and,
     # when issue #71 lands, the reconciler / execution coordinator. SDK-shaped
     # types stay behind the gateway. See issue #66.
-    from integrations.polymarket.clob_v2_gateway import ClobV2Gateway
-    clob_gateway = ClobV2Gateway(client, config)
+    #
+    # ``clob_gateway`` is injected by ``build_user_venue_backend`` when the
+    # optional hybrid venue backend is selected. Left None — the default and
+    # the only path any existing caller takes — this constructs the official
+    # SDK gateway exactly as before.
+    if clob_gateway is None:
+        from integrations.polymarket.clob_v2_gateway import ClobV2Gateway
+        clob_gateway = ClobV2Gateway(client, config)
 
     # Freshness-aware market data layer (issue #hardening PR-1).
     # The store is fed by WSS deltas; the MDS falls back to REST via the
@@ -405,6 +413,38 @@ def build_user_state(
         execution_coordinator=execution_coordinator,
         position_drift_service=position_drift_service,
         manual_sync_service=manual_sync_service,
+    )
+
+
+async def build_user_venue_backend(
+    runtime_user: RuntimeUser,
+    client: object,
+    config: AppConfig,
+    **selector_kwargs,
+) -> "RuntimeGatewayBundle":
+    """Resolve which venue backend this user's runtime executes against.
+
+    This is the single composition point for the optional hybrid Polymarket
+    backend. The official SDK gateway is always constructed and is always the
+    production default; ``sdk-shadow-ccxt`` wraps it with a read-only shadow
+    and ``ccxt`` replaces it only when explicitly selected (and, in live mode,
+    only behind the separate experimental gate).
+
+    The returned bundle owns *only* the optional CCXT transport. The runtime
+    keeps ownership of the SDK client it passed in, so
+    ``close_optional_backend()`` never closes the primary.
+    """
+    from integrations.polymarket.clob_v2_gateway import ClobV2Gateway
+    from integrations.polymarket.runtime_gateway import (
+        build_runtime_polymarket_gateway,
+    )
+
+    sdk_gateway = ClobV2Gateway(client, config)
+    return await build_runtime_polymarket_gateway(
+        sdk_gateway=sdk_gateway,
+        config=config,
+        wallet_config=getattr(runtime_user, "wallet", None),
+        **selector_kwargs,
     )
 
 
