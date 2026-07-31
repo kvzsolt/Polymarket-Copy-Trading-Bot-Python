@@ -307,15 +307,17 @@ class HybridClobGateway:
             "sdk_available": not isinstance(primary, BaseException)
             and bool(primary.get("sdk_available")),
             "backend": "sdk-shadow-ccxt",
+            # Compatibility reports are surfaced by startup health gating and
+            # end up in logs, so probe failures carry a redacted category only.
             "primary": (
                 primary
                 if not isinstance(primary, BaseException)
-                else {"sdk_available": False, "error": f"{type(primary).__name__}: {primary}"}
+                else {"sdk_available": False, "error": redact_error_detail(primary)}
             ),
             "shadow": (
                 shadow
                 if not isinstance(shadow, BaseException)
-                else {"sdk_available": False, "error": f"{type(shadow).__name__}: {shadow}"}
+                else {"sdk_available": False, "error": redact_error_detail(shadow)}
             ),
             "pending_comparisons": len(self._tasks),
             "dropped_comparisons": self.dropped_comparisons,

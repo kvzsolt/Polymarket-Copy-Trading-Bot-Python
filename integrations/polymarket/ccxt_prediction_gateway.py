@@ -44,6 +44,7 @@ from integrations.polymarket.models import (
     VenueOrderState,
     VenueSubmitResult,
 )
+from utils.logger import redact_error_detail
 
 _READ_TIMEOUT_SECONDS = 10.0
 _MAX_PRIVATE_HISTORY_PAGES = 1000
@@ -1024,11 +1025,13 @@ class CcxtPredictionGateway:
                 "error": None if compatible else "CCXT prediction compatibility gate failed",
             }
         except Exception as exc:  # compatibility probes must never raise
+            # Matches the SDK gateway: a probe failure reports a redacted
+            # category, never a CCXT exception body that may echo the request.
             return {
                 "sdk_available": False,
                 "sdk": "ccxt.prediction.polymarket",
                 "authenticated": False,
-                "error": f"{type(exc).__name__}: {exc}",
+                "error": redact_error_detail(exc),
             }
 
     async def close(self) -> None:
