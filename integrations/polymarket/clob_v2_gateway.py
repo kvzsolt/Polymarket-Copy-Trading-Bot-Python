@@ -84,6 +84,19 @@ def _normalize_market_order_type(value: object) -> MarketOrderType:
     raise VenueInvalidOrderError(f"unsupported market order type: {normalized}")
 
 
+def _exchange_average(raw: object) -> Decimal:
+    """Return the venue-reported weighted average fill price, else zero.
+
+    The order's limit ``price`` is not a fill average: a partially filled
+    order can match at several levels.  Substituting the limit price poisons
+    PnL and reconciliation, so an unknown average stays honestly unknown.
+    """
+    average_raw = getattr(raw, "avg_price", None)
+    if average_raw is None:
+        average_raw = getattr(raw, "average_price", None)
+    return Decimal(str(average_raw)) if average_raw is not None else Decimal("0")
+
+
 def _raw_model(value: object) -> dict[str, Any]:
     dump = getattr(value, "model_dump", None)
     if callable(dump):
@@ -353,8 +366,17 @@ class PolymarketGateway:
     async def submit_marketable_order(self, request: MarketableOrderRequest) -> VenueSubmitResult:
         if request.price_limit is None:
             raise VenueInvalidOrderError("price_limit is required for marketable orders")
-        if request.tick_size is None or request.neg_risk is None:
-            await self.get_execution_metadata(request.token_id)
+        tick_size = request.tick_size
+        neg_risk = request.neg_risk
+        if tick_size is None or neg_risk is None:
+            # The fetched metadata must be *used*, not merely validated: the
+            # legacy/injected client below signs against these values, and
+            # forwarding ``None`` makes it fall back to its own assumptions.
+            metadata = await self.get_execution_metadata(request.token_id)
+            if tick_size is None:
+                tick_size = Decimal(str(metadata["tick_size"]))
+            if neg_risk is None:
+                neg_risk = bool(metadata["neg_risk"])
 
         order_type = _normalize_market_order_type(request.order_type)
         side = _normalize_order_side(request.side)
@@ -366,8 +388,8 @@ class PolymarketGateway:
                     side=side,
                     amount=request.size,
                     max_price=request.price_limit,
-                    tick_size=str(request.tick_size),
-                    neg_risk=request.neg_risk,
+                    tick_size=str(tick_size),
+                    neg_risk=neg_risk,
                     order_type=order_type,
                 )
                 raw = await self._client.post_signed_order(
@@ -427,7 +449,7 @@ class PolymarketGateway:
             price=Decimal(raw.price),
             size=Decimal(raw.original_size),
             filled_size=filled,
-            avg_fill_price=Decimal(raw.price) if filled > 0 else Decimal("0"),
+            avg_fill_price=_exchange_average(raw),
             created_at=raw.created_at,
             raw=_raw_model(raw),
         )
@@ -464,9 +486,7 @@ class PolymarketGateway:
                             price=Decimal(raw.price),
                             size=Decimal(raw.original_size),
                             filled_size=filled,
-                            avg_fill_price=(
-                                Decimal(raw.price) if filled > 0 else Decimal("0")
-                            ),
+                            avg_fill_price=_exchange_average(raw),
                             created_at=raw.created_at,
                             raw=_raw_model(raw),
                         )
