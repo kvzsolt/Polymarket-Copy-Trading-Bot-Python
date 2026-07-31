@@ -30,6 +30,15 @@ GOOD = "0x" + "1" * 40
 WHALE = "0x" + "2" * 40
 
 
+def _config() -> Any:
+    from config.app_config import DiscoveryConfig
+
+    class _C:
+        discovery = DiscoveryConfig.model_validate({})
+
+    return _C()
+
+
 def _ranked(wallet: str, score: Decimal) -> RankedTrader:
     return RankedTrader(
         wallet=wallet,
@@ -101,8 +110,10 @@ class FakeRepo:
 
 
 def _config() -> Any:
+    from config.app_config import DiscoveryConfig
+
     class _C:
-        discovery = type("D", (), {"scheduler": type("S", (), {"enabled": True, "evaluation_concurrency": 1})(), "hysteresis": type("H", (), {"min_tenure_cycles": 1})()})()
+        discovery = DiscoveryConfig.model_validate({})
 
     return _C()
 
@@ -144,9 +155,10 @@ async def test_run_reads_funds_discovers_persists_and_returns_candidates() -> No
 
     candidates = await adapter.run()
 
+    expected_hash = adapter.config_hash
     assert funds_seen == [Decimal("500")]
     assert service.discover_calls == [Decimal("500")]
-    assert repo.cycles == ["test-hash"]
+    assert repo.cycles == [expected_hash]
     assert repo.completed and repo.completed[0][1]["status"] == "completed"
     assert len(candidates) == 1
     assert candidates[0].wallet == GOOD
@@ -244,7 +256,7 @@ async def test_rescore_reranks_stored_candidates_without_an_api_call() -> None:
     rescored = await adapter.rescore()
 
     assert [c.wallet for c in rescored] == [WHALE, GOOD]  # sorted by score desc
-    assert repo.rescored and repo.rescored[0][1] == "test-hash"
+    assert repo.rescored and repo.rescored[0][1] == adapter.config_hash
     # No discover call made during rescore.
     assert adapter._service.discover_calls == []  # type: ignore[attr-defined]
 

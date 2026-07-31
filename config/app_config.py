@@ -655,6 +655,68 @@ class DiscoverySchedulerConfig(_FrozenSettingsModel):
     startup_wait_timeout_seconds: int = Field(3900, ge=1)
 
 
+class HeisenbergBankrollConfig(_FrozenSettingsModel):
+    """Bankroll-compatibility thresholds (mirrors BankrollCompatibilityPolicy).
+
+    Semantic validation is enforced by the dataclass ``__post_init__`` when
+    ``discovery_policy_from_config`` constructs the policy; the Pydantic
+    model only parses and holds the values.
+    """
+
+    reserve_fraction: Decimal = Decimal("0.20")
+    max_positions: int = Field(12, ge=1)
+    max_position_fraction: Decimal = Decimal("0.10")
+    target_trade_fraction: Decimal = Decimal("0.08")
+    min_order_usdc: Decimal = Decimal("1")
+    min_practical_copy_ratio: Decimal = Decimal("0.001")
+    max_copy_ratio: Decimal = Decimal("1")
+    min_copyable_trade_share: Decimal = Decimal("0.55")
+    min_fit_score: Decimal = Decimal("0.55")
+    visible_capacity_utilization: Decimal = Decimal("1")
+
+
+class HeisenbergDiscoveryConfig(_FrozenSettingsModel):
+    """Heisenberg analytics/discovery provider settings.
+
+    The api_key is loaded from env (``PMCOPY__DISCOVERY__HEISENBERG__API_KEY``)
+    and never committed. When ``enabled`` is false or the key is empty the
+    discovery adapter fails closed (no candidates) rather than silently
+    substituting a weaker source. Threshold fields mirror
+    ``HeisenbergDiscoveryPolicy``; semantic validation is enforced by the
+    dataclass ``__post_init__`` at policy construction.
+    """
+
+    enabled: bool = True
+    api_key: SecretStr = SecretStr("")
+    candidate_limit: int = Field(50, ge=1)
+    candidate_concurrency: int = Field(6, ge=1)
+    wallet360_windows: tuple[int, ...] = (1, 3, 7, 15)
+    required_wallet360_windows: int = Field(3, ge=1)
+    max_wallet360_snapshot_age_hours: int = Field(72, ge=1)
+    recent_trade_lookback_hours: int = Field(48, ge=1)
+    max_last_trade_age_hours: int = Field(12, ge=1)
+    min_today_trades: int = Field(1, ge=0)
+    min_recent_trades: int = Field(10, ge=0)
+    max_recent_trades: int = Field(500, ge=1)
+    min_h_score: Decimal = Decimal("65")
+    min_liquidity_percentile: Decimal = Decimal("50")
+    max_toxic_market_share: Decimal = Decimal("0.25")
+    max_market_concentration: Decimal = Decimal("0.65")
+    max_missing_field_ratio: Decimal = Decimal("0.25")
+    max_drawdown: Decimal = Decimal("0.35")
+    max_sybil_score: Decimal = Decimal("20")
+    short_market_max_days: int = Field(30, ge=1)
+    min_short_trade_count: int = Field(10, ge=0)
+    min_short_trade_share: Decimal = Decimal("0.50")
+    leaderboard_min_win_rate_15d: Decimal = Decimal("0.45")
+    leaderboard_max_win_rate_15d: Decimal = Decimal("0.95")
+    leaderboard_min_roi_15d: Decimal = Decimal("0")
+    leaderboard_min_trades_15d: int = Field(25, ge=0)
+    leaderboard_max_trades_15d: int = Field(100_000, ge=1)
+    leaderboard_min_pnl_15d: Decimal = Decimal("0")
+    bankroll: HeisenbergBankrollConfig = HeisenbergBankrollConfig.model_validate({})
+
+
 class DiscoveryConfig(_FrozenSettingsModel):
     api: DiscoveryApiConfig = DiscoveryApiConfig.model_validate({})
     shortlist: ShortlistConfig = ShortlistConfig.model_validate({})
@@ -666,6 +728,7 @@ class DiscoveryConfig(_FrozenSettingsModel):
     longitudinal: LongitudinalConfig = LongitudinalConfig.model_validate({})
     hysteresis: HysteresisConfig = HysteresisConfig.model_validate({})
     scheduler: DiscoverySchedulerConfig = DiscoverySchedulerConfig.model_validate({})
+    heisenberg: HeisenbergDiscoveryConfig = HeisenbergDiscoveryConfig.model_validate({})
 
 
 @dataclass(frozen=True)

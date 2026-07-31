@@ -54,6 +54,7 @@ def discovery_config_hash(config: Any) -> str:
         "scoring",
         "longitudinal",
         "hysteresis",
+        "heisenberg",
     )
     if isinstance(payload, dict):
         payload = {

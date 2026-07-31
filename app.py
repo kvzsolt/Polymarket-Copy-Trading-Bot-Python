@@ -956,7 +956,8 @@ async def _run_application(client_registry: list[Any]) -> int:
                     check.get("fix"),
                 )
     application = await build_app(config=startup_config)
-    client_registry.append(application.falcon_client)
+    if application.heisenberg_client is not None:
+        client_registry.append(application.heisenberg_client)
 
     application.readiness.update(
         wss_market_ok=False,
