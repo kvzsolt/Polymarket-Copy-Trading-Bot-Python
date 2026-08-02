@@ -1,8 +1,9 @@
-"""Lifecycle-safe optional client factory for ``ccxt.prediction.polymarket``.
+"""Lifecycle-safe client factory for ``ccxt.prediction.polymarket``.
 
 The official ``polymarket-client`` remains the production default.  CCXT is
-loaded lazily so the normal SDK path and paper startup do not gain a mandatory
-runtime dependency or accidentally initialize an authenticated transport.
+loaded lazily so the normal SDK path and paper startup do not initialize an
+authenticated transport accidentally. The dependency itself is mandatory at
+installation time; backend selection remains optional and explicitly gated.
 """
 
 from __future__ import annotations
@@ -19,7 +20,7 @@ _REQUIRED_CCXT_VERSION = (4, 5, 70)
 
 
 class CcxtPredictionUnavailable(RuntimeError):
-    """Raised when the optional CCXT prediction dependency is unavailable."""
+    """Raised when the mandatory CCXT prediction dependency is unavailable."""
 
 
 class CcxtPredictionConfigurationError(ValueError):
@@ -57,7 +58,8 @@ def _load_default_factory() -> tuple[Callable[[dict[str, Any]], Any], str | None
         prediction = importlib.import_module("ccxt.prediction")
     except (ImportError, ModuleNotFoundError) as exc:
         raise CcxtPredictionUnavailable(
-            "CCXT prediction support is optional; install requirements.ccxt.txt"
+            "CCXT prediction support is unavailable; install the project runtime "
+            "requirements (or requirements.ccxt.txt for a targeted install)"
         ) from exc
 
     factory = getattr(prediction, "polymarket", None)

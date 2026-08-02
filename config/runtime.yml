@@ -4,6 +4,12 @@
 #   runtime.yml -> runtime.local.yml -> trader_discovery.yaml -> secrets.env
 #   -> PMCOPY__SECTION__FIELD process environment overrides.
 
+# C1 — global master kill switch. When true the bot observes but submits
+# nothing (supersedes all per-engine switches). Enforced at act-time in
+# ExecutionService.execute so flipping it is a live hot-stop.
+global:
+  kill_switch: false
+
 database:
   dsn: ""
   pool_min_size: 2
@@ -18,8 +24,8 @@ clob:
   http_url: https://clob.polymarket.com/
 
 polling:
-  fetch_interval: 0.25
-  aggregate_signal_window_seconds: 0.1
+  fetch_interval: 0.50
+  aggregate_signal_window_seconds: 4
   risk_check_interval: 6.0
   discovery_refresh_interval_seconds: 300
   leader_positions_min_fetch_spacing_ms: 250
@@ -52,6 +58,11 @@ risk:
   # mid). Stops transient/stale quotes from triggering spurious near-max
   # trims/exits. 0 disables the spread check.
   risk_mark_max_spread_bps: 2000
+  # Phase 2.8 — absolute bid/ask distance cap for the risk mark. The bps-of-
+  # mid gate is inert near 1.0 (bid >= 0.82 -> max spread < 2000 bps of mid),
+  # exactly where near-max triggers live. 0.03 rejects books wider than 3
+  # price points near 1.0. 0 disables.
+  risk_mark_max_abs_distance: 0.03
   max_market_exposure_usdc: 300.0
   max_category_exposure_usdc: 600.0
   max_leader_exposure_usdc: 500.0
@@ -70,9 +81,18 @@ risk:
   balance_policy_base_min_score: 0.22
   balance_policy_min_notional_usdc: 0.00001
   balance_policy_dynamic_threshold_raise: false
-  day_start_equity_usdc: 500.0
+  # M3 — day-start equity baseline for the daily-drawdown cap. 0 (default)
+  # means "unset": the pipeline consults the persisted day-equity helper
+  # (utils/dayEquity.py) for the real value. The previous 500.0 fiction made
+  # the drawdown limit always $100 regardless of actual bankroll.
+  day_start_equity_usdc: 0.0
   near_max_price_warn: 0.95
   near_max_price_warn_trim_ratio: 0.6
+  # Phase 2.8 — min-hold grace (seconds) for the near-max partial trim. A
+  # fresh BUY at the ask with the risk mark at the best bid satisfies the trim
+  # condition at the instant of the fill; the grace prevents selling back
+  # across the spread for an instant loss. 0 disables (legacy instant trim).
+  near_max_grace_period_seconds: 30.0
   near_max_price_exit: 0.99
   profit_lock_trigger_pct: 70.0
   profit_lock_sell_fraction: 0.5
@@ -89,6 +109,16 @@ risk:
   risk_pre_reconcile_backoff_seconds: 30.0
 
 execution:
+  # C1 — execution-level kill switch. When true the bot refuses BUY entries
+  # but still allows protective SELL exits (closing a position is
+  # risk-reducing). The global master is global.kill_switch (below).
+  kill_switch: false
+  # Hybrid venue backend selection (typed). "sdk" is the production default;
+  # "ccxt" / "sdk-shadow-ccxt" are optional and gated. The single-underscore
+  # PMCOPY_VENUE_BACKEND / PMCOPY_ALLOW_EXPERIMENTAL_CCXT_LIVE env vars remain
+  # a fallback for backward compatibility.
+  venue_backend: sdk
+  allow_experimental_ccxt_live: false
   # Leader SELL with unknown sell fraction (positions API down): "skip" drops
   # the copy sell (fail closed; risk: a leader full-exit during the outage is
   # copied late), "full_close" sells the whole position (risk: any outage
@@ -96,7 +126,11 @@ execution:
   sell_fraction_missing_policy: "skip"
   slippage_tolerance: 2.0
   min_share_price: 0.03
-  max_share_price: 0.0
+  # Phase 2.8 — buy-side cap. 0 disables (legacy). 0.95 refuses BUYs whose
+  # quote price is already at/above near-resolution, so the risk mark (best
+  # bid) cannot satisfy the near-max trim condition at the instant of the
+  # fill and sell back across the spread for an instant loss.
+  max_share_price: 0.95
   max_retries: 3
   non_terminal_failure_max_attempts: 3
   trading_mode: paper
@@ -149,9 +183,10 @@ logging:
   pnl_log_file: log/pnl.jsonl
 
 network:
-  # Public default shared by wallet preflight, balances and on-chain reads.
-  # Override PMCOPY__NETWORK__RPC_URL only when using a private provider.
-  rpc_url: https://polygon-mainnet.g.alchemy.com/v2/REDACTED_ALCHEMY_KEY
+  # Keyless public Polygon RPC default. Operators with a private provider
+  # (Alchemy/Infura/etc.) override PMCOPY__NETWORK__RPC_URL in secrets.env.
+  # Never commit a private provider URL/key here — it lands in git history.
+  rpc_url: https://polygon-rpc.com
   chain_id: 137
   usdc_contract_address: "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"
   enforce_geoblock: true

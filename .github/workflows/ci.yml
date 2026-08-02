@@ -41,12 +41,11 @@ jobs:
       - name: pytest (unit tier)
         run: pytest -m "not integration and not release_gate" --maxfail=5 -q
 
-  unit-ccxt:
-    # Optional-dependency matrix: prove the optional CCXT integration does not
-    # make CCXT a mandatory production dependency. The default `unit` job runs
-    # with CCXT absent; this job installs requirements.ccxt.txt and re-runs the
-    # CCXT-focused suite plus the broad suite so both environments stay green.
-    name: unit-ccxt (py${{ matrix.python-version }})
+  ccxt-runtime:
+    # Mandatory-runtime integration matrix: the normal editable install pulls
+    # CCXT from [project].dependencies. Keep the focused suite explicit so the
+    # prediction adapter contract remains visible in CI.
+    name: ccxt-runtime (py${{ matrix.python-version }})
     runs-on: ubuntu-latest
     timeout-minutes: 20
     needs: [unit]
@@ -64,7 +63,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
-          pip install -r requirements.ccxt.txt
+          python -c "import ccxt; print(f'ccxt {ccxt.__version__}')"
       - name: ccxt focused suite
         run: |
           pytest -q \
@@ -79,9 +78,6 @@ jobs:
             tests/test_runtime_bootstrap_venue_backend.py \
             tests/test_sdk_gateway_regressions.py \
             tests/test_ccxt_optional_dependency.py
-      - name: pytest (unit tier, CCXT installed)
-        run: pytest -m "not integration and not release_gate" --maxfail=5 -q
-
   release-gate:
     name: release-gate (py${{ matrix.python-version }})
     runs-on: ubuntu-latest

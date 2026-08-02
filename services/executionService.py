@@ -474,6 +474,29 @@ class ExecutionService:
                 error="amount must be > 0",
             )
 
+        # C1 — kill switches enforced at act-time, immediately before any
+        # venue POST. The global master (config.global_kill_switch) supersedes
+        # everything: the bot observes but submits nothing, including
+        # protective SELL exits (a true full stop). The execution-level switch
+        # (config.execution.kill_switch) refuses BUY entries but still allows
+        # protective SELL exits — closing a position is risk-reducing and must
+        # not be stranded by a hot-stop (mirrors geoblock semantics).
+        forced_sell_exit = _is_forced_sell_exit_request(req, side)
+        global_cfg = getattr(self._config, "global_config", None)
+        global_kill = bool(getattr(global_cfg, "kill_switch", False))
+        exec_kill = bool(getattr(self._config.execution, "kill_switch", False))
+        if global_kill or (exec_kill and not forced_sell_exit):
+            return ExecutionResult(
+                accepted=False,
+                order_id=None,
+                status="kill_switch",
+                requested_amount=req.amount,
+                filled_amount=Decimal("0"),
+                avg_price=None,
+                fees_paid=Decimal("0"),
+                error="kill_switch engaged — submission refused",
+            )
+
         if self._trading_permission is not None:
             try:
                 await self._trading_permission.require_submission_allowed()
@@ -522,7 +545,6 @@ class ExecutionService:
                 )
 
         ec = self._config.execution
-        forced_sell_exit = _is_forced_sell_exit_request(req, side)
         metadata = req.recovery_metadata if isinstance(req.recovery_metadata, dict) else {}
         requested_order_type = str(
             req.order_type or metadata.get("order_type") or ""
@@ -880,6 +902,24 @@ class ExecutionService:
         else:
             worst_price = quote_price * (Decimal("1") - slippage)
         worst_price = _quantize_price(worst_price, tick_size, side)
+        # H2 — honor the caller's explicit price_limit (the leader/signal
+        # price) as a hard cap on the fill. Previously the price_limit was
+        # validated for positivity then ignored; the gateway got the
+        # quote-derived worst_price instead, so the leader price never capped
+        # the fill. Cap worst_price at price_limit for BUY (never pay more
+        # than the signal) and floor it at price_limit for SELL (never sell
+        # below the signal).
+        if instant_fak and req.price_limit is not None:
+            try:
+                caller_cap = Decimal(str(req.price_limit))
+                if caller_cap > 0:
+                    if side == "BUY":
+                        worst_price = min(worst_price, caller_cap)
+                    else:
+                        worst_price = max(worst_price, caller_cap)
+                    worst_price = _quantize_price(worst_price, tick_size, side)
+            except Exception:
+                logger.debug("price_limit_cap_apply_failed", exc_info=True)
 
         effective_order_amount = req.amount
         if instant_fak:
@@ -910,7 +950,17 @@ class ExecutionService:
                 top_level_amount,
             )
 
-        if effective_order_amount < min_order_size:
+        # M5 — BUY min-size check is a unit mismatch: ``effective_order_amount``
+        # is USDC spend for BUY but shares for SELL, while ``min_order_size`` is
+        # always share-denominated. Compare in shares: for BUY, the share count
+        # is ``effective_order_amount / quote_price``. Previously a 3 USDC BUY
+        # at 0.10 (≈30 shares) was rejected against a 5-share minimum, while a
+        # 6 USDC BUY at 0.95 (≈6.3 shares) passed — both wrong directions.
+        if side == "BUY" and quote_price > 0:
+            min_check_amount = effective_order_amount / quote_price
+        else:
+            min_check_amount = effective_order_amount
+        if min_check_amount < min_order_size:
             return ExecutionResult(
                 accepted=False,
                 order_id=None,
@@ -920,7 +970,7 @@ class ExecutionService:
                 avg_price=None,
                 fees_paid=Decimal("0"),
                 error=(
-                    f"effective size {effective_order_amount} is below venue minimum "
+                    f"effective size {min_check_amount} is below venue minimum "
                     f"{min_order_size}"
                 ),
             )
@@ -1405,7 +1455,13 @@ class ExecutionService:
             immediate_fak_fill = requested_order_type == "FAK"
             if immediate_fak_fill:
                 matched_size = _response_matched_size(response)
-                avg_fill_price = _response_avg_price(response) or worst_price
+                # C5b — never substitute the slippage ceiling (worst_price)
+                # for an unknown average fill price. CLAUDE.md requires unknown
+                # averages to stay unknown (zero); fabricating the limit price
+                # biases cost basis, under-buys across the repost loop, and
+                # skews all PnL/exit math. Use zero so total_fill_cost stays
+                # exact for the filled portion whose price IS known.
+                avg_fill_price = _response_avg_price(response) or Decimal("0")
                 total_fill_cost = matched_size * avg_fill_price
                 last_no_fill_error = response.get("error")
                 order_ids = [str(order_id)] if order_id and matched_size > 0 else []
@@ -1524,12 +1580,38 @@ class ExecutionService:
                             response=next_response,
                         )
                     except Exception as exc:
+                        # C5 — a POST that hit the wire then raised (timeout /
+                        # connection drop) is ambiguous: the order may have
+                        # reached the venue. Persist a ``submitted_unconfirmed``
+                        # row for the reconciler before breaking, mirroring the
+                        # first-attempt ambiguity handling. Previously this only
+                        # logged + ``break``ed, leaving a live venue order with
+                        # no local record and no reconciliation path.
+                        last_error = redact_error_detail(exc)
+                        ambiguity_response = {
+                            "success": False,
+                            "status": "submitted_unconfirmed",
+                            "error": last_error,
+                        }
+                        ambiguity_doc = dict(request_doc)
+                        ambiguity_doc["amount"] = str(next_order_amount)
+                        ambiguity_doc["remaining_amount"] = str(remaining_amount)
+                        ambiguity_doc["worst_price"] = str(next_worst_price)
+                        ambiguity_doc["fak_attempt"] = fak_attempt
+                        try:
+                            await self._save_submission(
+                                idempotency_key=f"{idem_key}:fak:{fak_attempt}",
+                                request=ambiguity_doc,
+                                response=ambiguity_response,
+                            )
+                        except Exception:
+                            logger.debug("copy_fak_repost_ambiguity_persist_failed", exc_info=True)
                         logger.warning(
                             "copy_fak_repost_failed | token=%s attempt=%d remaining=%s error=%s",
                             req.token_id,
                             fak_attempt,
                             str(remaining_amount),
-                            redact_error_detail(exc),
+                            last_error,
                         )
                         break
                     next_order_id = _response_order_id(next_response)
@@ -1537,7 +1619,9 @@ class ExecutionService:
                     if next_matched > 0:
                         if next_order_id:
                             order_ids.append(str(next_order_id))
-                        next_avg = _response_avg_price(next_response) or worst_price
+                        # C5b — unknown avg fill stays unknown (zero), never
+                        # the slippage ceiling. See the initial-fill note above.
+                        next_avg = _response_avg_price(next_response) or Decimal("0")
                         matched_size += next_matched
                         total_fill_cost += next_matched * next_avg
                         avg_fill_price = (

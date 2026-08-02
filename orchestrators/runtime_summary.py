@@ -314,7 +314,14 @@ def print_startup_summary(
                 "discovery_interval_seconds": config.discovery.scheduler.rediscover_seconds,
                 "rescore_interval_seconds": config.discovery.scheduler.rescore_seconds,
                 "max_active_leaders": config.discovery.scheduler.max_active_leaders,
+                # Phase 3.13 — report both discovery credentials. The
+                # heisenberg api_key is the actual Bearer header; the legacy
+                # api.token is the boolean gate. Both should be mirrored in
+                # secrets.env.
                 "falcon_token_configured": config.discovery.api.has_token,
+                "heisenberg_api_key_configured": bool(
+                    config.discovery.heisenberg.api_key.get_secret_value()
+                ),
                 "promote_score": config.discovery.hysteresis.promote_score,
                 "demote_score": config.discovery.hysteresis.demote_score,
             },

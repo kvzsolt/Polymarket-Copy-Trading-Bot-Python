@@ -33,15 +33,26 @@ class AccountCapPolicy:
 
 
 def _policy_from_config(config: AppConfig) -> AccountCapPolicy:
-    """Build AccountCapPolicy from the typed AppConfig."""
+    """Build AccountCapPolicy from the typed AppConfig.
+
+    C2 — when ``enable_balance_tiered_policy`` is False the open-positions cap
+    honors ``risk.max_open_positions`` (the non-tiered limit) instead of the
+    tiered ``balance_policy_max_open_positions``. Previously
+    ``risk.max_open_positions`` was dead (the tiered value was always used),
+    so the operator's configured 40-position limit was silently capped at 12.
+    """
     rc = config.risk
+    if getattr(rc, "enable_balance_tiered_policy", False):
+        max_open_positions = rc.balance_policy_max_open_positions
+    else:
+        max_open_positions = rc.max_open_positions
     return AccountCapPolicy(
         name="account_cap",
         reserve_pct=Decimal(str(rc.balance_policy_reserve_pct)),
         reserve_floor=Decimal(str(rc.balance_policy_reserve_floor)),
         hard_cap_pct=Decimal(str(rc.balance_policy_hard_cap_pct)),
         hard_cap_ceiling=Decimal(str(rc.balance_policy_hard_cap_ceiling)),
-        max_open_positions=rc.balance_policy_max_open_positions,
+        max_open_positions=max_open_positions,
         allow_partial_exits=rc.balance_policy_allow_partial_exits,
         allow_pyramiding=rc.balance_policy_allow_pyramiding,
         max_adds_per_position=rc.balance_policy_max_adds_per_position,

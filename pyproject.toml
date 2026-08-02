@@ -18,6 +18,10 @@ dependencies = [
   # Exact beta pin: the unified SDK is intentionally upgraded only after its
   # adapter contract suite and paper-trading soak pass.
   "polymarket-client==0.1.0b18",
+  # CCXT prediction namespace: a mandatory runtime dependency, not an extra.
+  # Range pin so patch releases are picked up but a breaking major (5.x) is
+  # not installed without review.
+  "ccxt>=4.5.70,<5",
   "rich==14.3.3",
   "websockets>=13.0",
   "asyncpg>=0.30.0",

@@ -81,6 +81,23 @@ class LeaderRegistry:
         configured_clean = _configured_wallets(configured or [])
         discovery = self.config.discovery
         candidates: list[Candidate] = []
+        # Phase 3.13 — gate on the credential actually sent as the Bearer
+        # header (``discovery.heisenberg.api_key``), not ONLY the legacy
+        # ``discovery.api.token`` boolean. Previously setting only the
+        # heisenberg key never fired (the gate checked only api.token) while
+        # setting only the legacy token fired with an empty Bearer (zero
+        # candidates). Now EITHER credential triggers the gate; the config
+        # collapse (both keys mirrored in secrets.env) ensures the Bearer is
+        # populated. The heisenberg key is the authoritative credential.
+        heisenberg_cfg = getattr(discovery, "heisenberg", None)
+        heisenberg_key = ""
+        if heisenberg_cfg is not None:
+            api_key = getattr(heisenberg_cfg, "api_key", None)
+            if api_key is not None and hasattr(api_key, "get_secret_value"):
+                heisenberg_key = str(api_key.get_secret_value() or "")
+        credential_configured = bool(heisenberg_key) or bool(
+            getattr(discovery.api, "has_token", False)
+        )
         should_run = (
             (
                 force_discovery
@@ -89,7 +106,7 @@ class LeaderRegistry:
                     and not configured_clean
                 )
             )
-            and discovery.api.has_token
+            and credential_configured
         )
         if should_run:
             self.logger.info("discovery_refresh_started")
@@ -118,9 +135,10 @@ class LeaderRegistry:
                 )
                 metrics.inc("discovery_refresh_succeeded_total")
                 metrics.set_gauge("discovery_candidates", float(len(candidates)))
-        elif force_discovery and not discovery.api.has_token:
+        elif force_discovery and not credential_configured:
             raise RuntimeError(
-                "Discovery was requested but discovery.api.token is empty"
+                "Discovery was requested but no discovery credential is set "
+                "(discovery.heisenberg.api_key or discovery.api.token)"
             )
 
         auto_active = (

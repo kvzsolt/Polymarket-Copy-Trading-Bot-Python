@@ -74,9 +74,9 @@ Before touching Polymarket execution, discovery, reconciliation, authentication,
 9. Use exact decimal arithmetic for money, shares, prices, tick sizes, and limits.
 10. Write failing tests before changing behavior.
 
-## Heisenberg discovery
+## Falcon discovery
 
-Treat Heisenberg as an external analytics provider, not an execution authority.
+Treat Falcon Api as an external analytics provider, not an execution authority.
 
 - Rank wallets by bankroll-compatible copyability, not raw PnL or H-Score alone.
 - Validate multi-window Wallet360 evidence, sample size, liquidity, capacity, drawdown, concentration, recency, and anomalies.
@@ -97,4 +97,4 @@ For each behavior slice:
 6. run relevant regressions;
 7. do a money-path and secret-leak review before commit.
 
-Do not edit generated CCXT source files. Keep compatibility work adapter-local and covered by tests.
+

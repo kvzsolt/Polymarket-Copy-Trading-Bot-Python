@@ -40,6 +40,22 @@ class RuntimeGatewayBundle:
         if self.ccxt_client is not None:
             await self.ccxt_client.close()
 
+    async def close(self) -> None:
+        """Shutdown alias used by the composition root's client registry.
+
+        Phase 4.15 — drains the hybrid shadow comparison queue (bounded) and
+        closes the optional CCXT transport. The SDK gateway remains owned by
+        the runtime and is closed separately.
+        """
+        if self.ccxt_gateway is not None:
+            close = getattr(self.gateway, "close", None)
+            if callable(close):
+                try:
+                    await close()
+                except Exception:
+                    pass
+        await self.close_optional_backend()
+
 
 def _attr(source: Any, name: str, default: Any = None) -> Any:
     if source is None:

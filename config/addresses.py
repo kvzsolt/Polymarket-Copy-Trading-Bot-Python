@@ -13,16 +13,21 @@ import these constants — moves with it.
 
 from __future__ import annotations
 
-# USDC.e (bridged USDC) on Polygon PoS — Polymarket settlement collateral.
+# USDC.e (bridged USDC) on Polygon PoS — Polymarket legacy settlement collateral.
 POLYGON_USDCE_ADDRESS = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
 
-# Polymarket pUSD collateral token.
+# Polymarket pUSD collateral token (CLOB v2 default collateral). Verified
+# against docs.polymarket.com/resources/contracts (pUSD — CollateralToken
+# proxy). The legacy ``network.usdc_contract_address`` field aliases this
+# value for callers that still expect that attribute name.
 POLYMARKET_PUSD_ADDRESS = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"
 
-# Polymarket CTF Exchange (V2).
+# Polymarket CTF Exchange (V2). Verified against
+# docs.polymarket.com/resources/contracts (CTF Exchange).
 POLYMARKET_CTF_EXCHANGE_V2_ADDRESS = "0xE111180000d2663C0091e4f400237545B87B996B"
 
-# Polymarket negative-risk CTF Exchange (V2).
+# Polymarket negative-risk CTF Exchange (V2). Verified against
+# docs.polymarket.com/resources/contracts (Neg Risk CTF Exchange).
 POLYMARKET_NEG_RISK_EXCHANGE_V2_ADDRESS = "0xe2222d279d744050d28e00520010520000310F59"
 
 __all__ = [

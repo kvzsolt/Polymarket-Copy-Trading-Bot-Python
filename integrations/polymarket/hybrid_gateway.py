@@ -223,9 +223,25 @@ class HybridClobGateway:
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
 
-    async def drain(self) -> None:
-        if self._tasks:
-            await asyncio.gather(*tuple(self._tasks), return_exceptions=True)
+    async def drain(self, *, timeout_seconds: float = 5.0) -> None:
+        # Phase 4.15 — bound the shadow comparison drain so a hung shadow
+        # task cannot block shutdown indefinitely. Mismatches are observational
+        # only; dropping a straggler comparison is preferable to hanging the
+        # process. ``timeout_seconds=0`` disables the timeout (legacy).
+        if not self._tasks:
+            return
+        pending_count = len(self._tasks)
+        coro = asyncio.gather(*tuple(self._tasks), return_exceptions=True)
+        if timeout_seconds > 0:
+            try:
+                await asyncio.wait_for(coro, timeout=timeout_seconds)
+            except asyncio.TimeoutError:
+                # Count stragglers that were still pending at timeout. The
+                # done-callback may have discarded some between the gather
+                # and here, so use the snapshot taken before the await.
+                self.dropped_comparisons += pending_count
+        else:
+            await coro
 
     async def get_market_info(self, token_id: str) -> dict[str, Any]:
         value = await self.primary.get_market_info(token_id)

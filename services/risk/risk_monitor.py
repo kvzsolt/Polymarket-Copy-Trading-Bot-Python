@@ -105,6 +105,60 @@ def _is_drift_error(msg: str) -> bool:
     return any(p in lower for p in _INSUFFICIENT_BALANCE_PATTERNS)
 
 
+def _risk_exit_signal_id(
+    pos: Any,
+    *,
+    reason: str,
+    position_manager: Any | None = None,
+) -> str:
+    """Build a stable idempotency key for a protective risk-exit SELL.
+
+    C3 — the key must be stable across retries for the same position so the
+    submission idempotency lock can collapse a duplicate dispatch against an
+    in-flight prior POST (previously ``time.time_ns()`` produced a fresh key
+    every tick, defeating dedup and causing oversell/phantom-prune storms).
+
+    The key is ``risk:{reason}:{condition_id}:{token_id}:{epoch}`` where
+    ``epoch`` is the in-memory tracked position's ``entry_time`` (which resets
+    on re-entry, so a freshly re-entered position is not dedup-suppressed by
+    the prior position's one-shot trim). When the tracked position is absent
+    (e.g. fresh boot before rehydrate) the epoch falls back to a stable hash
+    of immutable DB fields — never the wall clock.
+    """
+    condition_id = str(getattr(pos, "condition_id", "") or "")
+    token_id = str(getattr(pos, "token_id", "") or "")
+    epoch: Any = None
+    if position_manager is not None:
+        get_position = getattr(position_manager, "get_position", None)
+        if callable(get_position):
+            try:
+                tracked = get_position(condition_id, token_id)
+            except TypeError:
+                try:
+                    tracked = get_position(condition_id)
+                except Exception:
+                    tracked = None
+            except Exception:
+                tracked = None
+            if tracked is not None:
+                epoch = getattr(tracked, "entry_time", None)
+    if epoch is None:
+        # Stable fallback: hash immutable DB position fields so the same
+        # position yields the same key across ticks even without the in-memory
+        # tracked position.
+        leader_id = str(getattr(pos, "leader_id", "") or "")
+        avg_entry = str(getattr(pos, "avg_entry_price", "") or "")
+        size_tokens = str(getattr(pos, "size_tokens", "") or "")
+        epoch = _stable_hash(f"{condition_id}|{token_id}|{leader_id}|{avg_entry}|{size_tokens}")
+    return f"risk:{reason}:{condition_id}:{token_id}:{epoch}"
+
+
+def _stable_hash(value: str) -> str:
+    import hashlib
+
+    return hashlib.sha1(value.encode("utf-8")).hexdigest()[:16]
+
+
 async def _fetch_live_risk_position_size(
     context: TradingContext,
     *,
@@ -582,6 +636,16 @@ def _risk_mark_max_spread_bps(context: TradingContext) -> float:
         return 2000.0
 
 
+def _risk_mark_max_abs_distance(context: TradingContext) -> float:
+    cfg = getattr(context, "config", None)
+    risk_cfg = getattr(cfg, "risk", None) if cfg is not None else None
+    value = getattr(risk_cfg, "risk_mark_max_abs_distance", 0.0)
+    try:
+        return max(0.0, float(value))
+    except Exception:
+        return 0.0
+
+
 def _risk_mark_passes_sanity(
     context: TradingContext,
     *,
@@ -616,6 +680,16 @@ def _risk_mark_passes_sanity(
                 spread_bps = float((ask - best_bid) / mid) * 10_000.0
                 if spread_bps > max_spread_bps:
                     reason = "wide_spread"
+        # Phase 2.8 — absolute bid/ask distance check. The bps-of-mid gate is
+        # inert near 1.0 (bid >= 0.82 -> max spread < 2000 bps of mid), exactly
+        # where near-max triggers live. This absolute price-point gap rejects
+        # wide books near 1.0 that the bps gate misses. 0 disables.
+        if reason is None:
+            max_abs_distance = _risk_mark_max_abs_distance(context)
+            if max_abs_distance > 0:
+                abs_distance = float(ask - best_bid)
+                if abs_distance >= max_abs_distance:
+                    reason = "wide_abs_distance"
     if reason is None:
         return True
     if _should_log_active_reservation_skip(
@@ -1634,25 +1708,38 @@ async def run_risk_check_for_context(
                     amount=sell_size,
                     max_slippage_bps=slippage_bps,
                     reason=reason,
-                    signal_id=f"risk:{reason}:{pos.condition_id}:{time.time_ns()}",
+                    signal_id=_risk_exit_signal_id(
+                        pos,
+                        reason=reason,
+                        position_manager=getattr(context, "position_manager", None),
+                    ),
                     condition_id=pos.condition_id,
                     recovery_metadata=_block_metadata,
                 )
-                result = await _dispatch_risk_exit(
-                    coordinator=getattr(context, "execution_coordinator", None),
-                    execution_service=context.execution_service,
-                    exec_req=req,
-                    user_id=context.user_id,
-                    condition_id=pos.condition_id,
-                    token_id=pos.token_id,
-                    side="SELL",
-                    price=float(current_price) if current_price is not None else 0.0,
-                    notional=float(
-                        Decimal(str(pos.size_tokens)) * Decimal(str(current_price or 0))
-                    ),
-                    source="risk_exit",
-                    leader_wallet=pos.leader_id,
-                    signal_id=req.signal_id,
+                # C4 — shield the protective-exit POST from the outer
+                # ``wait_for`` ceiling so a loop timeout cannot cancel the
+                # venue POST mid-flight (which previously left a live venue
+                # order with no local record, then C3 re-fired a duplicate).
+                # The shielded task completes its POST + persistence even if
+                # the parent ``wait_for`` raises TimeoutError; the stable
+                # idempotency key (C3) collapses any duplicate the next tick.
+                result = await asyncio.shield(
+                    _dispatch_risk_exit(
+                        coordinator=getattr(context, "execution_coordinator", None),
+                        execution_service=context.execution_service,
+                        exec_req=req,
+                        user_id=context.user_id,
+                        condition_id=pos.condition_id,
+                        token_id=pos.token_id,
+                        side="SELL",
+                        price=float(current_price) if current_price is not None else 0.0,
+                        notional=float(
+                            Decimal(str(pos.size_tokens)) * Decimal(str(current_price or 0))
+                        ),
+                        source="risk_exit",
+                        leader_wallet=pos.leader_id,
+                        signal_id=req.signal_id,
+                    )
                 )
                 if not result.accepted:
                     logger.info(

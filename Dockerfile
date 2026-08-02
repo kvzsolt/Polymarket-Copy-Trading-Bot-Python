@@ -1,6 +1,9 @@
 # Polymarket Copy Trading Bot — Production Docker image
 # Build: docker build -t polymarket-copy-trader .
-# Run:   docker run --env-file .env -v ./data:/app/data polymarket-copy-trader
+# Run:   docker run --env-file secrets.env -v ./data:/app/data polymarket-copy-trader
+#
+# Phase 4.17 — the run command uses secrets.env (0600, PMCOPY__* keys), not a
+# stale .env. Compose consumes secrets.env via env_file (see docker-compose.yml).
 
 FROM python:3.11-slim-bookworm
 

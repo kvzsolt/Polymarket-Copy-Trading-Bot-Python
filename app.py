@@ -61,6 +61,25 @@ from utils.logger import (
 logger = get_logger("Main")
 
 
+def _log_shadow_mismatch(mismatch: Any) -> None:
+    """Phase 4.15 — log shadow-comparison mismatches instead of dropping them.
+
+    The hybrid gateway's shadow comparison is observational only; mismatches
+    were previously log-only inside the gateway. This sink gives the
+    composition root a single place to surface (or future-wire) mismatches
+    for monitoring without blocking execution.
+    """
+    try:
+        logger.warning(
+            "shadow_venue_mismatch | method=%s token=%s detail=%s",
+            getattr(mismatch, "method", "unknown"),
+            str(getattr(mismatch, "token_id", ""))[:16],
+            redact_error_detail(getattr(mismatch, "detail", mismatch)),
+        )
+    except Exception:
+        logger.debug("shadow_mismatch_sink_failed", exc_info=True)
+
+
 async def _wait_for_active_leaders(
     registry: LeaderRegistry,
     configured_leaders: list[str],
@@ -1138,9 +1157,14 @@ async def _run_application(client_registry: list[Any]) -> int:
             runtime_user,
             client,
             application.config,
+            mismatch_sink=_log_shadow_mismatch,
         )
         if venue_backend.ccxt_client is not None:
             client_registry.append(venue_backend.ccxt_client)
+            # Phase 4.15 — register the bundle's dedicated close so the shadow
+            # comparison queue is drained and the optional CCXT transport is
+            # closed at shutdown, not just the SDK client.
+            client_registry.append(venue_backend)
         user_states[runtime_user.user_id] = build_user_state(
             runtime_user,
             client,

@@ -29,7 +29,15 @@ def _bool(value: Any) -> bool:
 
 
 def resolve_backend_settings(config: Any = None) -> tuple[VenueBackend, bool]:
-    """Resolve optional settings without changing the existing config schema."""
+    """Resolve optional settings from typed config, falling back to env.
+
+    Typed config (``execution.venue_backend`` /
+    ``execution.allow_experimental_ccxt_live``) is the primary source so the
+    selector participates in layered validation. The single-underscore env
+    vars (``PMCOPY_VENUE_BACKEND`` / ``PMCOPY_ALLOW_EXPERIMENTAL_CCXT_LIVE``)
+    remain a backward-compatible fallback for operators that have not migrated
+    their config files yet.
+    """
 
     execution = _attr(config, "execution")
     raw_backend = (

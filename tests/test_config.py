@@ -31,7 +31,7 @@ def test_checked_in_yaml_loads_as_immutable_typed_config() -> None:
     assert config.execution.trading_mode == "paper"
     assert config.execution.paper_trade_only is True
     assert config.dry_run is True
-    assert config.discovery.shortlist.candidate_pool_size == 250
+    assert config.discovery.shortlist.candidate_pool_size == 150
     with pytest.raises(FrozenInstanceError):
         config.database.dsn = "changed"  # type: ignore[misc]
     with pytest.raises(ValidationError):

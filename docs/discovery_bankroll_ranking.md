@@ -34,10 +34,11 @@ can actually reproduce.
   export PMCOPY_HEISENBERG_API_KEY=...   # or HEISENBERG_API_KEY
   ```
 
-- The Python environment installed (`pip install -e ".[dev]"`).
-- (Optional) CCXT installed for public order-book visible-depth evidence:
-  `pip install -r requirements.ccxt.txt`. Without it, `--ccxt-depth auto`
-  falls back to Heisenberg liquidity evidence only.
+- The Python environment installed (`pip install -e ".[dev]"`), which includes
+  the mandatory CCXT runtime dependency.
+- Public order-book visible-depth probing remains operationally optional:
+  `--ccxt-depth auto` can be disabled or will fall back to Heisenberg
+  liquidity evidence if the CCXT runtime is unavailable.
 
 ## Choosing a bankroll
 

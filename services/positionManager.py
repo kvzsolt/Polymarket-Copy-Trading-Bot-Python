@@ -218,6 +218,15 @@ class PositionManager:
                 0.0,
                 min(1.0, _as_float(getattr(rc, "near_max_price_warn_trim_ratio", 0.5), 0.5)),
             )
+            # Phase 2.8 — min-hold grace for the near-max partial trim. A
+            # fresh BUY at the ask with the risk mark at the best bid satisfies
+            # the trim condition at the instant of the fill, selling back
+            # across the spread for an instant loss. The full exit at the exit
+            # threshold is NOT grace-protected (it caps a position that has
+            # already reached near-resolution). 0 disables the grace.
+            self._near_max_grace_period_seconds = _as_float(
+                getattr(rc, "near_max_grace_period_seconds", 0.0), 0.0
+            )
 
             # Trailing stop
             self._enable_trailing = _as_bool(getattr(fc, "enable_trailing_stop", False), False)
@@ -549,12 +558,24 @@ class PositionManager:
                 and not es.near_max_warn_done
                 and self._near_max_warn_ratio > 0
             ):
-                es.near_max_warn_done = True
-                logger.info(
-                    f"✂️ NEAR-MAX warn trim: {condition_id[:12]}… "
-                    f"price={float(cp):.4f} >= {self._near_max_warn}"
-                )
-                return {"reason": "near_max_partial_trim", "size_fraction": self._near_max_warn_ratio}
+                # Phase 2.8 — grace-protect the partial trim so a freshly
+                # entered position is not trimmed before it settles (the
+                # bid/ask spread asymmetry would sell back across the spread
+                # for an instant loss). The full exit above is NOT grace-
+                # protected. 0 grace disables the check (legacy behavior).
+                grace = getattr(self, "_near_max_grace_period_seconds", 0.0) or 0.0
+                age_seconds = time.time() - pos.entry_time
+                if grace > 0 and age_seconds <= grace:
+                    self._clear_steady_exit(es, "near_max_partial_trim")
+                    # Fall through to lower-priority exits (the position is
+                    # still held; trailing/profit-lock may still act).
+                else:
+                    es.near_max_warn_done = True
+                    logger.info(
+                        f"✂️ NEAR-MAX warn trim: {condition_id[:12]}… "
+                        f"price={float(cp):.4f} >= {self._near_max_warn}"
+                    )
+                    return {"reason": "near_max_partial_trim", "size_fraction": self._near_max_warn_ratio}
 
         # ── Priority 2: PROFIT LOCK ──
         # Advanced mode: partial sell at trigger then trail remainder.

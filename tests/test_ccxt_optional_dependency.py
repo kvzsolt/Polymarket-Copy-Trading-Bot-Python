@@ -1,10 +1,10 @@
-"""CCXT must stay optional and lazily loaded.
+"""CCXT is mandatory at installation time but remains lazily loaded in code.
 
 The overlay suite always injects an ``exchange_factory`` test double, so it
-never exercises the real import path. These tests cover the contract an
-operator actually hits: the default SDK backend must work with CCXT absent,
-and asking for a CCXT backend without the optional dependency must fail with
-an actionable error instead of an opaque ImportError.
+never exercises the real import path. These tests cover the defensive runtime
+contract: the default SDK backend must not import CCXT eagerly, and a broken
+or incomplete environment must fail with an actionable error instead of an
+opaque ImportError.
 """
 from __future__ import annotations
 
@@ -58,8 +58,8 @@ def test_default_sdk_backend_never_imports_ccxt() -> None:
     assert bundle.gateway is sdk
     assert bundle.backend is VenueBackend.SDK
     assert bundle.ccxt_client is None
-    # The production default must not drag the optional dependency into the
-    # import graph, so a deployment without it stays fully usable.
+    # The production default must not drag the mandatory dependency into the
+    # import graph before a CCXT backend is selected.
     assert "ccxt" not in sys.modules
 
 

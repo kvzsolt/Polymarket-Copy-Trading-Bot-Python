@@ -327,14 +327,34 @@ async def run_doctor_checks(
         else:
             ctx.ok("dry_run_false", "dry_run=false")
     # ----- kill switch --------------------------------------------------
-    if config.risk.kill_switch:
+    # C1 — three kill switches are now enforced at act-time in
+    # ExecutionService.execute: global (master, observe-only), execution
+    # (refuses BUY entries, allows protective SELL exits), and the legacy
+    # risk.kill_switch (kept for backward compatibility). Any one engaged
+    # blocks a live restart.
+    global_kill = bool(getattr(config, "global_config", None) and config.global_config.kill_switch)
+    exec_kill = bool(getattr(config.execution, "kill_switch", False))
+    risk_kill = bool(config.risk.kill_switch)
+    if global_kill:
         ctx.blocked(
             "kill_switch_off",
-            "risk.kill_switch=true",
+            "global.kill_switch=true (master: observe only, submits nothing)",
+            "set global.kill_switch: false in config/runtime.local.yml",
+        )
+    elif exec_kill:
+        ctx.blocked(
+            "kill_switch_off",
+            "execution.kill_switch=true (refuses BUY entries)",
+            "set execution.kill_switch: false in config/runtime.local.yml",
+        )
+    elif risk_kill:
+        ctx.blocked(
+            "kill_switch_off",
+            "risk.kill_switch=true (legacy)",
             "set risk.kill_switch: false in config/runtime.local.yml",
         )
     else:
-        ctx.ok("kill_switch_off", "risk.kill_switch=false")
+        ctx.ok("kill_switch_off", "global/execution/risk kill_switch=false")
 
     # ----- wallet basics ------------------------------------------------
     if live:

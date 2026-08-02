@@ -54,6 +54,7 @@ __all__ = [
     "EnvValidationError",
     "ExecutionConfig",
     "FeatureFlagConfig",
+    "GlobalConfig",
     "LeaderConfig",
     "LoggingConfig",
     "MarketDataConfig",
@@ -102,6 +103,19 @@ class DatabaseConfig:
     pool_min_size: int = 2
     pool_max_size: int = 20
     command_timeout_seconds: float = 30.0
+
+
+@dataclass(frozen=True)
+class GlobalConfig:
+    """C1 — global master kill switch.
+
+    When ``kill_switch`` is True the bot observes but submits nothing; this
+    supersedes every per-engine switch. Enforced at act-time in
+    ``ExecutionService.execute`` so flipping it is a live hot-stop, not a
+    construction-time no-op.
+    """
+
+    kill_switch: bool = False
 
 
 @dataclass(frozen=True)
@@ -203,6 +217,16 @@ class RiskConfig:
     # A rejected mark means "no risk action this tick" — fail closed for the
     # protective-exit feature set. 0 disables the spread check.
     risk_mark_max_spread_bps: int = 2000
+    # Phase 2.8 — absolute bid/ask distance cap for the risk mark. The bps-
+    # of-mid gate is inert near 1.0 (bid >= 0.82 -> max spread < 2000 bps of
+    # mid), exactly where near-max triggers live. This absolute price-point
+    # gap rejects wide books near 1.0 that the bps gate misses. 0 disables.
+    risk_mark_max_abs_distance: float = 0.0
+    # Phase 2.8 — min-hold grace (seconds) for the near-max partial trim. 0
+    # disables (legacy instant-trim behavior). A fresh BUY at the ask with
+    # the risk mark at the best bid satisfies the trim condition at the
+    # instant of the fill; the grace prevents selling back across the spread.
+    near_max_grace_period_seconds: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -266,6 +290,23 @@ class ExecutionConfig:
     # closed: the copy sell is dropped and retried on the next signal.
     # "full_close" preserves the legacy dump-everything behaviour.
     sell_fraction_missing_policy: str = "skip"
+    # Phase 2.8 — sub-minimum leader sell policy. "round_up" (legacy) sells
+    # the venue minimum when the proportional sell is below it (a leader's
+    # small nibble becomes a near-full exit on small positions). "skip"
+    # (fail-closed) drops the copy sell rather than overshoot.
+    sub_min_sell_policy: str = "round_up"
+    # C1 — execution-level kill switch, enforced at act-time in
+    # ExecutionService.execute (not just in RiskEngine.evaluate). When True
+    # the service refuses BUY entries but still allows protective SELL exits
+    # (closing a position is risk-reducing and must not be stranded). The
+    # global master (AppConfig.global_kill_switch) supersedes this and blocks
+    # every submission including protective exits.
+    kill_switch: bool = False
+    # Optional CCXT/hybrid venue backend selection. Typed so the selector no
+    # longer relies on a raw single-underscore env read that bypasses layered
+    # validation. "sdk" is the production default.
+    venue_backend: str = "sdk"
+    allow_experimental_ccxt_live: bool = False
 
     @property
     def paper_trade_only(self) -> bool:
@@ -834,6 +875,13 @@ class AppConfig:
     files: RuntimeFilesConfig = field(default_factory=RuntimeFilesConfig)
     # Global safety: when True the bot runs in paper-only / dry-run mode.
     dry_run: bool = False
+    # C1 — global master kill switch. When True the bot observes but submits
+    # nothing (supersedes all per-engine switches). Enforced at act-time in
+    # ExecutionService.execute immediately before any venue POST so flipping
+    # it is a live hot-stop, not a construction-time no-op. Sourced from the
+    # YAML ``global:`` section (renamed to ``global_config`` because ``global``
+    # is a Python reserved word).
+    global_config: GlobalConfig = field(default_factory=GlobalConfig)
 
 
 # Factory & validation.
@@ -1080,9 +1128,50 @@ def _validate_semantics(cfg: AppConfig, errors: list[str]) -> None:
 
 _CONFIG_ROOT = Path(__file__).resolve().parent
 _RUNTIME_YAML = _CONFIG_ROOT / "runtime.yml"
-_RUNTIME_LOCAL_YAML = Path("config/runtime.local.yml")
 _TRADER_DISCOVERY_YAML = _CONFIG_ROOT / "trader_discovery.yaml"
-_SECRETS_ENV = Path("secrets.env")
+# Deployment-local layers are resolved relative to a deployment root, not the
+# process CWD (Phase 3.11). The root is, in priority order: the
+# ``PMCOPY_DEPLOYMENT_ROOT`` env var, or the nearest ancestor directory (walked
+# up from CWD) that contains a ``config/runtime.yml`` marker or a
+# ``secrets.env`` file. Falls back to CWD when no marker is found so existing
+# behavior is preserved.
+_RUNTIME_LOCAL_YAML = "config/runtime.local.yml"
+_SECRETS_ENV = "secrets.env"
+
+
+def _resolve_deployment_root(runtime_file: Path | None = None) -> Path:
+    """Find the deployment root so local config/secrets are not CWD-relative.
+
+    Phase 3.11 — running ``pmcopy`` from a foreign directory previously
+    silently dropped ``secrets.env`` and ``config/runtime.local.yml`` because
+    they resolved against the process CWD. The root is, in priority order:
+    the ``PMCOPY_DEPLOYMENT_ROOT`` env var; the deployment root implied by an
+    explicit ``runtime.yml`` location (``<root>/config/runtime.yml`` ->
+    ``<root>`` — only when the caller passed a deployment-specific
+    ``runtime_path``, not the packaged default); the nearest ancestor of CWD
+    containing a ``config/runtime.yml`` marker or a ``secrets.env`` file;
+    finally CWD.
+    """
+    explicit = os.getenv("PMCOPY_DEPLOYMENT_ROOT")
+    if explicit:
+        root = Path(explicit).expanduser().resolve()
+        if root.is_dir():
+            return root
+    # An explicit deployment runtime.yml lives in
+    # <deployment_root>/config/runtime.yml, so its grandparent is the
+    # deployment root. The packaged default is not passed here (it is a
+    # package resource, not a deployment marker), so CWD walk-up applies.
+    if runtime_file is not None:
+        runtime_parent = runtime_file.resolve().parent
+        if runtime_parent.name == "config" and (runtime_parent / "runtime.yml").exists():
+            return runtime_parent.parent
+    cwd = Path.cwd()
+    for candidate in [cwd, *cwd.parents]:
+        if (candidate / "config" / "runtime.yml").exists() or (
+            candidate / "secrets.env"
+        ).exists():
+            return candidate
+    return cwd
 
 
 class _LayeredSettings(BaseSettings):
@@ -1122,12 +1211,18 @@ class _LayeredSettings(BaseSettings):
     market_data: MarketDataConfig
     onchain_detection: OnchainDetectionConfig
     files: RuntimeFilesConfig
+    global_config: GlobalConfig = GlobalConfig()
 
     @model_validator(mode="before")
     @classmethod
     def _decode_nested_structures(cls, values: Any) -> Any:
         if not isinstance(values, dict):
             return values
+        # The YAML section is named ``global`` (per the per-engine kill-switch
+        # restructure) but ``global`` is a Python reserved word, so the typed
+        # field is ``global_config``. Rename here so both YAML keys work.
+        if "global" in values and "global_config" not in values:
+            values["global_config"] = values.pop("global")
         structured_paths = (
             ("leader", "wallets"),
             ("order_confirmation", "token_delay_overrides"),
@@ -1206,6 +1301,13 @@ def _read_yaml(path: Path, *, required: bool) -> dict[str, Any]:
 def _deep_merge(base: dict[str, Any], override: Mapping[str, Any]) -> dict[str, Any]:
     merged = dict(base)
     for key, value in override.items():
+        # Phase 3.11 — "null means unset": a YAML null in a local override
+        # must NOT erase the packaged value. Previously a null
+        # ``leader.wallets`` overrode the packaged ``[]`` with ``None`` and
+        # bricked startup (Pydantic tuple validation). Skip nulls so the
+        # packaged/default value survives.
+        if value is None:
+            continue
         current = merged.get(str(key))
         if isinstance(current, dict) and isinstance(value, Mapping):
             merged[str(key)] = _deep_merge(current, value)
@@ -1329,7 +1431,9 @@ def load_config(
     ``PMCOPY__EXECUTION__TRADING_MODE=live``.
     """
     runtime_file = Path(runtime_path) if runtime_path else _RUNTIME_YAML
-    deployment_root = Path.cwd()
+    deployment_root = _resolve_deployment_root(
+        runtime_file if runtime_path else None
+    )
     local_file = (
         Path(local_path) if local_path else deployment_root / _RUNTIME_LOCAL_YAML
     )
@@ -1338,9 +1442,34 @@ def load_config(
         Path(secrets_path) if secrets_path else deployment_root / _SECRETS_ENV
     )
 
+    # Phase 3.11 — log which config layers were found so a foreign-CWD run
+    # that silently drops secrets/local config is diagnosable. Precedence
+    # (lowest -> highest): runtime.yml -> trader_discovery.yaml ->
+    # runtime.local.yml -> secrets.env -> PMCOPY__* env. The packaged
+    # discovery file now merges BEFORE the deployment-local file so
+    # ``discovery.*`` keys can be overridden from ``runtime.local.yml``
+    # (previously the packaged file merged last and silently won).
+    layers: list[tuple[str, Path, bool]] = [
+        ("runtime", runtime_file, True),
+        ("discovery", discovery_file, True),
+        ("runtime.local", local_file, False),
+        ("secrets", secrets_file, False),
+    ]
+    found_layers: list[str] = []
+    for name, path, required in layers:
+        exists = path.exists()
+        if exists:
+            found_layers.append(f"{name}={path}")
+        elif required:
+            logger.warning("config_layer_missing | name=%s path=%s (required)", name, path)
+    if found_layers:
+        logger.info("config_layers_loaded | %s", " ".join(found_layers))
+    else:
+        logger.warning("config_layers_loaded | none found beyond packaged runtime.yml")
+
     payload = _read_yaml(runtime_file, required=True)
-    payload = _deep_merge(payload, _read_yaml(local_file, required=False))
     payload = _deep_merge(payload, _read_yaml(discovery_file, required=True))
+    payload = _deep_merge(payload, _read_yaml(local_file, required=False))
     if overrides:
         flat_keys = [key for key in overrides if str(key).upper() == str(key)]
         if flat_keys:

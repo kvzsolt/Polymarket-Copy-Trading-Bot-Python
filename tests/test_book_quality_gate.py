@@ -265,8 +265,8 @@ class TestBookQualityGate:
         req = _req(
             amount="1",
             order_type="FAK",
-            price_limit=Decimal("0.25"),
-            recovery_metadata={"order_type": "FAK", "price_limit": "0.25"},
+            price_limit=Decimal("0.95"),
+            recovery_metadata={"order_type": "FAK", "price_limit": "0.95"},
         )
 
         result = asyncio.new_event_loop().run_until_complete(svc.execute(req))
@@ -281,6 +281,8 @@ class TestBookQualityGate:
         assert snapshot_kwargs["policy"].require_book_depth is False
         svc.clob_client.create_market_order.assert_awaited_once()
         assert svc.clob_client.create_market_order.await_args.kwargs["order_type"] == "FAK"
+        # H2: the caller price_limit (0.95) caps the fill; the slippage-derived
+        # worst_price (0.92) is below the cap so it stands.
         assert svc.clob_client.create_market_order.await_args.kwargs["max_price"] == Decimal("0.92")
 
     def test_copy_trade_fak_reposts_remaining_partial_fill(self):
