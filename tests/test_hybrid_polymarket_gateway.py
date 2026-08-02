@@ -189,3 +189,27 @@ def test_shadow_mode_is_sdk_primary() -> None:
     )
     assert isinstance(selected, HybridClobGateway)
     assert selected.primary is sdk
+
+
+@pytest.mark.asyncio
+async def test_drain_timeout_drops_straggler_shadow_comparison() -> None:
+    """Phase 4.15 — drain() must bound a hung shadow task so shutdown cannot
+    hang indefinitely. A straggler comparison is dropped (counted), not
+    awaited forever."""
+    import asyncio
+
+    primary = Gateway()
+    shadow = Gateway()
+    release = asyncio.Event()
+
+    async def hung(_token):
+        await release.wait()
+        return book()
+
+    shadow.get_orderbook = hung
+    hybrid = HybridClobGateway(primary, shadow)
+    await hybrid.get_orderbook("123")
+    # 0.01s timeout — the hung shadow task cannot finish in time.
+    await hybrid.drain(timeout_seconds=0.01)
+    assert hybrid.dropped_comparisons >= 1
+    release.set()  # cleanup so the task can finish before teardown

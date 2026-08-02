@@ -885,6 +885,39 @@ def build_trade_key(user_id: str, leader_id: str, trade: dict[str, Any]) -> str:
     return f"{_normalize(user_id)}|{_normalize(leader_id)}|{_normalize(tx_hash)}|{side}|{_normalize(asset)}"
 
 
+def all_tx_hashes_for_trade(trade: dict[str, Any]) -> list[str]:
+    """Return every tx hash associated with a trade, deduped, order-preserved.
+
+    Phase 2.10 (H6) — aggregated signals carry constituent hashes in
+    ``_txHashes`` / ``txHashes``. Dedup must consider ALL of them, not just
+    the primary ``transactionHash``, so a second detection channel (e.g.
+    on-chain WS) cannot re-trigger an already-processed aggregated signal.
+    The primary hash is first; constituents follow in their list order.
+    """
+    primary = (
+        trade.get("transactionHash")
+        or trade.get("txHash")
+        or trade.get("transaction_hash")
+        or trade.get("tx_hash")
+        or ""
+    )
+    seen: set[str] = set()
+    out: list[str] = []
+    if primary:
+        out.append(str(primary))
+        seen.add(str(primary))
+    constituents = trade.get("_txHashes") or trade.get("txHashes") or []
+    if isinstance(constituents, (list, tuple)):
+        for txh in constituents:
+            if not txh:
+                continue
+            h = str(txh)
+            if h not in seen:
+                out.append(h)
+                seen.add(h)
+    return out
+
+
 def _to_decimal(value: Any, default: str = "0") -> Decimal:
     try:
         return Decimal(str(value))
@@ -1099,15 +1132,23 @@ def _resolve_leader_sell_tokens(
     requested_sell_tokens: Decimal,
     max_sell_tokens: Decimal,
     market_min_size: float,
+    sub_min_sell_policy: str = "round_up",
 ) -> Decimal:
     """Resolve leader-follow SELL size without decision-gate scoring.
 
     Leader SELLs are authoritative exits: copy the same fraction of our held
-    position, capped by what we can actually sell. If that fraction is below
-    the venue minimum, sell the minimum when possible; otherwise sell the
-    largest remaining sellable amount. Risk-management exits may still use
-    their own logic, but leader SELLs should not be blocked by copy-decision
-    scoring.
+    position, capped by what we can actually sell. ``sub_min_sell_policy``
+    controls what happens when that fraction is below the venue minimum:
+
+    - ``round_up`` (legacy): sell the minimum when possible; otherwise sell
+      the largest remaining sellable amount. A leader's small nibble becomes
+      a near-full exit on small positions.
+    - ``skip`` (fail-closed, Phase 2.8): drop the copy sell (return 0) rather
+      than overshoot the leader's intent. The signal is retried on the next
+      poll when the leader's remaining fraction crosses the minimum.
+
+    Risk-management exits may still use their own logic, but leader SELLs
+    should not be blocked by copy-decision scoring.
     """
     max_sell_tokens = max(Decimal("0"), max_sell_tokens)
     target = min(max(Decimal("0"), requested_sell_tokens), max_sell_tokens)
@@ -1116,6 +1157,9 @@ def _resolve_leader_sell_tokens(
 
     min_tokens = _to_decimal(market_min_size)
     if min_tokens > 0 and target < min_tokens:
+        if str(sub_min_sell_policy).strip().lower() == "skip":
+            # Fail-closed: do not overshoot a sub-minimum proportional sell.
+            return Decimal("0")
         return min(max_sell_tokens, min_tokens)
     return target
 
@@ -1725,6 +1769,41 @@ async def execute_trades(
                 )
             )
             continue
+
+        # Phase 2.10 (H6) — claim ALL constituent tx hashes for an aggregated
+        # signal so a second detection channel (on-chain WS) cannot re-trigger
+        # an already-processed trade via a different constituent hash. The
+        # primary claim above is the atomic gate; these are best-effort marks
+        # for the remaining constituents (a concurrent claim on a constituent
+        # just means that channel already saw it).
+        for _constituent_hash in all_tx_hashes_for_trade(raw):
+            if _constituent_hash and _constituent_hash != str(_raw_tx_hash):
+                _constituent_key = build_trade_key(
+                    context.user_id,
+                    leader_id,
+                    {
+                        "transactionHash": _constituent_hash,
+                        "side": _raw_side,
+                        "asset": _raw_asset,
+                    },
+                )
+                try:
+                    await context.orders_repo.try_claim_processed_trade(
+                        trade_key=_constituent_key,
+                        user_id=context.user_id,
+                        leader_id=leader_id,
+                        tx_hash=_constituent_hash,
+                        side=_raw_side,
+                        asset=str(_raw_asset),
+                        condition_id=str(_raw_condition),
+                        status="in_progress",
+                    )
+                except Exception:
+                    logger.debug(
+                        "constituent_tx_hash_claim_failed | hash=%s",
+                        _constituent_hash[:16],
+                        exc_info=True,
+                    )
 
         # ------------------------------------------------------------------
         # Market-data freshness gate — fail closed when WSS is not ready
@@ -2752,6 +2831,9 @@ async def execute_trades(
                     requested_sell_tokens=requested_sell_tokens,
                     max_sell_tokens=max_sell_tokens,
                     market_min_size=market_min_size,
+                    sub_min_sell_policy=str(
+                        getattr(_trade_config(context).execution, "sub_min_sell_policy", "round_up")
+                    ),
                 )
 
                 if sell_tokens <= Decimal("0"):
