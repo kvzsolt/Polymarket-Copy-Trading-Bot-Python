@@ -28,6 +28,8 @@ from __future__ import annotations
 
 import asyncpg
 
+from storage.postgres.v1_migration_runner import apply_v1_migrations
+
 
 # ---------------------------------------------------------------------------
 # Core tables (translated from storage/sqlite/migrations.py)
@@ -590,3 +592,6 @@ async def apply_migrations(conn: asyncpg.Connection) -> None:
 
         for statement in _DISCOVERY_DDL:
             await conn.execute(statement)
+
+
+__all__ = ["apply_migrations", "apply_v1_migrations"]
