@@ -1,0 +1,46 @@
+# V5 copy sizing addendum for feature/hybrid-ccxt-implementation.
+# Existing legacy fields stay in config/runtime.yml under `sizing:`. This file
+# adds balance-aware controls without forcing unknown keys through the branch's
+# current frozen AppConfig model before the native config migration is merged.
+sizing_v5:
+  # Canonical modes: fixed, exact_mirror, proportional, portfolio_weighted.
+  # Legacy aliases percentage_based/adaptive/tiered remain accepted.
+  mode: proportional
+
+  # Existing branch sizing values requested for the canonical defaults.
+  percentage: 4.0
+  fixed_amount: 3.0
+  trade_multiplier: 1.0
+  tiered_trade_multipliers: ""
+  adaptive_basis: trade_size
+  adaptive_min_percent: 0.0
+  adaptive_max_percent: 0.0
+  adaptive_threshold_usdc: 500.0
+  buy_min_amount: 5.0
+  buy_max_amount: 8.0
+  position_threshold: 0
+  max_position_pct: 0.10
+  enable_trust_size_multipliers: false
+  trust_size_multiplier_min: 0.5
+  trust_size_multiplier_max: 1.25
+
+  # V5 pUSD-balance-aware envelope.
+  copyable_balance_percent: 75.0
+  proportional_balance_cap_enabled: true
+  require_leader_balance_for_proportional: true
+
+  # Portfolio weighted: follower target = 75% pUSD budget x leader market
+  # portfolio weight x this multiplier, minus current follower market exposure.
+  portfolio_weight_multiplier: 1.0
+
+  # Fixed and exact modes preserve their names: if the selected amount cannot
+  # fit the current pUSD/risk envelope, skip rather than silently resize.
+  strict_fixed_amount: true
+  strict_exact_mirror: true
+
+  # Niche conviction may scale proportional/portfolio modes, but the pUSD cap
+  # is always applied last. Fixed and exact remain exact by default.
+
+  balances:
+    follower_cache_ttl_seconds: 2.0
+    leader_cache_ttl_seconds: 30.0
