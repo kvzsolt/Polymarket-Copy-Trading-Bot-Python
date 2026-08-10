@@ -503,7 +503,7 @@ class TestRestBootstrapPolicy:
         )
         svc = _make_service(cache, policy=policy)
 
-        with pytest.raises(Exception):
+        with pytest.raises(StaleDataError):
             await svc.require_fresh_data(TOKEN)
 
     @pytest.mark.asyncio
@@ -518,7 +518,7 @@ class TestRestBootstrapPolicy:
         )
         svc = _make_service(cache, policy=policy)
 
-        with pytest.raises(Exception):
+        with pytest.raises(StaleDataError):
             await svc.require_fresh_data(TOKEN)
 
     @pytest.mark.asyncio

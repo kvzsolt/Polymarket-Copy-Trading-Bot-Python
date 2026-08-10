@@ -63,6 +63,7 @@ from services.intentRegistry import (  # noqa: E402
     IllegalTransitionError,
     IntentRegistry,
     IntentState,
+    UnknownIntentError,
     Reservation as IntentReservation,
 )
 from services.positionActionCoordinator import PositionScope  # noqa: E402
@@ -524,7 +525,7 @@ class TestReservationEdgeCases:
     async def test_unknown_intent_transition_rejected(self):
         """Transition on unknown intent_id raises UnknownIntentError."""
         registry = IntentRegistry()
-        with pytest.raises(Exception):
+        with pytest.raises(UnknownIntentError):
             await registry.transition("nonexistent", IntentState.SUBMITTED)
 
     @pytest.mark.asyncio

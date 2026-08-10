@@ -12,7 +12,7 @@ import asyncio
 import inspect
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
-from typing import Any, Iterable, Sequence
+from typing import Any, Sequence
 
 
 class CcxtPredictionMarketDataError(RuntimeError):

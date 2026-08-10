@@ -272,9 +272,15 @@ def print_startup_summary(
             f"🪪 wallets: {_render_value('leader', 'active_leaders', active_leaders) if active_leaders else 'none'}",
         ]
     else:
+        copied_wallets = config.copy_trading.wallets
+        copied_rendered = (
+            _render_value("copy_trading", "copied_wallets", copied_wallets)
+            if copied_wallets
+            else "none"
+        )
         leader_lines = [
-            f"👥 copied wallets: {len(config.copy_trading.wallets)}",
-            f"🪪 wallets: {_render_value('copy_trading', 'copied_wallets', config.copy_trading.wallets) if config.copy_trading.wallets else 'none'}",
+            f"👥 copied wallets: {len(copied_wallets)}",
+            f"🪪 wallets: {copied_rendered}",
             f"📡 active leaders: {len(active_leaders)}",
             f"🛰️ monitored: {_render_value('leader', 'active_leaders', active_leaders) if active_leaders else 'none'}",
         ]

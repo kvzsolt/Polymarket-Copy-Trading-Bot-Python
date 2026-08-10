@@ -189,7 +189,7 @@ async def _submit_copy_through_coordinator(
                 fees_paid=Decimal("0"),
                 error="ExecutionCoordinator not wired in live mode",
             )
-        submitter = getattr(context.execution_service, "execute")
+        submitter = context.execution_service.execute
         return await submitter(exec_req)
 
     from services.execution.coordinator import ExecutionIntent
@@ -2487,7 +2487,10 @@ async def execute_trades(
                     )
                     wrong_token_held = any(p.token_id != signal.token_id for p in candidates)
                     if wrong_token_held:
-                        skip_detail = f"wrong token held — leader sells {shorten_addr(signal.token_id, 8, 6)} but we hold a different outcome"
+                        skip_detail = (
+                            f"wrong token held — leader sells "
+                            f"{shorten_addr(signal.token_id, 8, 6)} but we hold a different outcome"
+                        )
                         skip_code = "wrong_token_held"
                     else:
                         skip_detail = "never held — we never entered this market"
@@ -2627,7 +2630,8 @@ async def execute_trades(
                         venue_sell_cap = live_sellable_tokens
                     if venue_sell_cap < max_sell_tokens:
                         logger.info(
-                            "sell_size_clamped_to_live_balance | cond=%s leader=%s requested=%.4f live_balance=%.4f clamped=%.4f",
+                            "sell_size_clamped_to_live_balance | cond=%s leader=%s "
+                            "requested=%.4f live_balance=%.4f clamped=%.4f",
                             signal.condition_id[:12],
                             leader_id[:12],
                             float(requested_sell_tokens),
@@ -3020,8 +3024,8 @@ async def execute_trades(
                         condition_id=signal.condition_id,
                         token_id=signal.token_id,
                         leader_id=leader_id,
-                        live_position_fetcher=lambda: _fetch_live_position_size(
-                            context, token_id=signal.token_id
+                        live_position_fetcher=lambda _token_id=signal.token_id: (
+                            _fetch_live_position_size(context, token_id=_token_id)
                         ),
                         reservation_service=context.extra.get("reservation_service"),
                     )

@@ -7,7 +7,7 @@ import random
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from decimal import Decimal
-from typing import Any, Awaitable, Callable, Mapping, Sequence
+from typing import Any, Awaitable, Callable, Mapping
 
 from integrations.heisenberg.errors import (
     HeisenbergAuthenticationError,

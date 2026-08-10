@@ -119,7 +119,7 @@ class MetricsRegistry:
             name = state.name
             labels = state.labels
             lines.append(f"# TYPE {name} histogram")
-            for boundary, count in zip(state.boundaries, state.counts):
+            for boundary, count in zip(state.boundaries, state.counts, strict=True):
                 le = "+Inf" if boundary == inf else str(boundary)
                 lines.append(f"{_metric_key(name + '_bucket', {**labels, 'le': le})} {count}")
             lines.append(f"{_metric_key(name + '_sum', labels)} {state.total}")

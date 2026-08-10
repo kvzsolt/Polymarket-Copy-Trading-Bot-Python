@@ -611,7 +611,11 @@ class PositionManager:
 
         # ── Priority 3: STAGED TAKE-PROFIT ──
         if self._enable_staged_tp and self._staged_levels and self._staged_fractions:
-            for i, (level, fraction) in enumerate(zip(self._staged_levels, self._staged_fractions)):
+            # strict=False preserved: operator config may supply unequal-length
+            # level/fraction lists; truncation to the shorter is long-standing behavior.
+            for i, (level, fraction) in enumerate(
+                zip(self._staged_levels, self._staged_fractions, strict=False)
+            ):
                 if i in es.staged_tp_triggered:
                     continue
                 if pct_change >= _to_dec(level):

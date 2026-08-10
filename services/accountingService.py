@@ -113,7 +113,8 @@ class AccountingService:
             await conn.execute(
                 """
                 INSERT INTO positions_ledger
-                (user_id, condition_id, token_id, size_tokens, avg_entry_price, leader_id, category, created_at, updated_at)
+                (user_id, condition_id, token_id, size_tokens, avg_entry_price,
+                 leader_id, category, created_at, updated_at)
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
                 ON CONFLICT(user_id, condition_id, token_id) DO UPDATE SET
                   size_tokens = excluded.size_tokens,

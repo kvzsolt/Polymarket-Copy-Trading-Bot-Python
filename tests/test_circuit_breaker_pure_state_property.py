@@ -36,7 +36,7 @@ def test_reading_state_does_not_consume_probe_budget():
         # Read .state 100 times — pre-fix this would have reset the probe
         # counter 100 times.
         for _ in range(100):
-            cb.state
+            _ = cb.state
 
         # No transition yet — .state must be pure read.
         assert cb._state == CircuitState.OPEN, (

@@ -306,7 +306,8 @@ async def run_doctor_checks(
             ctx.blocked(
                 "paper_trade_only_false",
                 "live mode requested but config resolves to PAPER",
-                "set trading_mode: live in config/environments/live/execution.yml (PMCOPY_ENVIRONMENT=live) and restart",
+                "set trading_mode: live in config/environments/live/execution.yml "
+                "(PMCOPY_ENVIRONMENT=live) and restart",
             )
         else:
             ctx.ok("paper_trade_only_false", "live trading enabled (paper_trade_only=false)")
@@ -314,7 +315,8 @@ async def run_doctor_checks(
             ctx.blocked(
                 "dry_run_false",
                 "dry_run=true (config resolves to paper)",
-                "set trading_mode: live in config/environments/live/execution.yml (PMCOPY_ENVIRONMENT=live) and restart",
+                "set trading_mode: live in config/environments/live/execution.yml "
+                "(PMCOPY_ENVIRONMENT=live) and restart",
             )
         else:
             ctx.ok("dry_run_false", "dry_run=false")
@@ -677,7 +679,8 @@ async def run_doctor_checks(
         ctx.blocked(
             "leaders",
             "no manual leader wallets and roster startup is disabled",
-            "configure wallets in config/copy_trading.yml (or environments/live) or enable discovery.scheduler.start_from_roster",
+            "configure wallets in config/copy_trading.yml (or environments/live) "
+            "or enable discovery.scheduler.start_from_roster",
         )
     else:
         try:

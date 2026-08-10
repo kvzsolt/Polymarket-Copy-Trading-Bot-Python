@@ -175,14 +175,14 @@ class OnchainWebSocket:
         # notifications. We read synchronously here with a timeout.
         try:
             raw = await asyncio.wait_for(ws.recv(), timeout=_SUBSCRIBE_TIMEOUT_SECONDS)
-        except asyncio.TimeoutError:
+        except asyncio.TimeoutError as exc:
             logger.warning("OnchainWS[%s]: subscribe ack timed out", self._name)
-            raise ConnectionClosed(None, None)  # trigger reconnect
+            raise ConnectionClosed(None, None) from exc  # trigger reconnect
         try:
             ack = orjson.loads(raw)
-        except (orjson.JSONDecodeError, TypeError):
+        except (orjson.JSONDecodeError, TypeError) as exc:
             logger.warning("OnchainWS[%s]: non-JSON ack: %s", self._name, str(raw)[:100])
-            raise ConnectionClosed(None, None)
+            raise ConnectionClosed(None, None) from exc
         if not isinstance(ack, dict) or "result" not in ack:
             logger.warning("OnchainWS[%s]: subscribe failed: %s", self._name, ack)
             raise ConnectionClosed(None, None)

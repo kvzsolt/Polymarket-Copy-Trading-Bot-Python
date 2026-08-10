@@ -18,7 +18,6 @@ from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-import pytest
 
 from services.risk.risk_monitor import _risk_exit_signal_id
 

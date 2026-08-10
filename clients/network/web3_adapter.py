@@ -28,7 +28,10 @@ class AsyncWeb3Adapter:
         except Exception:
             return str(tx_hash)
 
-    async def wait_for_receipt(self, tx_hash: str, timeout: int = 120) -> Any:
+    # ASYNC109 suppressed: the timeout parameter is forwarded to web3's
+    # wait_for_transaction_receipt and mirrored in asyncio.wait_for; removing
+    # it would change this adapter's public contract.
+    async def wait_for_receipt(self, tx_hash: str, timeout: int = 120) -> Any:  # noqa: ASYNC109
         return await asyncio.wait_for(
             asyncio.to_thread(self.web3.eth.wait_for_transaction_receipt, tx_hash, timeout),
             timeout=timeout + 5,

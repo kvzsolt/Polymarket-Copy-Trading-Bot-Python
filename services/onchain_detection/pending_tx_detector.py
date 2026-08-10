@@ -90,7 +90,7 @@ def _amounts_for_pending(match: object, call: MatchOrdersCall) -> tuple[int, int
     the paired taker amount from the order ratio so partial pending matches do
     not copy the full order size.
     """
-    role = getattr(match, "role")
+    role = match.role
     if role == "taker":
         return _fill_pair(call.taker_fill_amount, call.taker_order)
     maker_index = getattr(match, "maker_index", None)

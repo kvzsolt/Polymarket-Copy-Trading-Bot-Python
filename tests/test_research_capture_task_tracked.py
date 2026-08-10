@@ -59,7 +59,9 @@ async def test_task_exception_does_not_leak_or_destroy_pending():
 
     _research_capture_tasks.clear()
     task = _spawn_research_capture(svc, [{"x": 1}])
-    while not task.done():
+    # Deliberate loop-tick polling: the test must let the event loop run the
+    # spawned task to completion without changing scheduling order.
+    while not task.done():  # noqa: ASYNC110
         await asyncio.sleep(0)
     # done-callbacks are scheduled via call_soon — give the loop a tick.
     await asyncio.sleep(0)

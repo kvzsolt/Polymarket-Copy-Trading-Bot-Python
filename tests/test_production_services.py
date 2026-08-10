@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from cache.market_state_store import BookSnapshot, QuoteSnapshot, TickSnapshot
 from services.market_data_service import MarketDataBundle, MarketDataSource
-from config.env import SignatureType, WalletConfig, validate_wallet_config
+from config.env import EnvValidationError, SignatureType, WalletConfig, validate_wallet_config
 from services.executionService import (
     ExecutionRequest,
     ExecutionService,
@@ -108,7 +108,7 @@ class TestWalletValidation:
             funder_address="0x" + ("1" * 40),
             polygon_rpc_url="https://polygon-rpc.com",
         )
-        with pytest.raises(Exception):
+        with pytest.raises(EnvValidationError):
             validate_wallet_config(cfg)
 
 

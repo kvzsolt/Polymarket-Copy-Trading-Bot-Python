@@ -702,7 +702,7 @@ def configure_logging(
     ch = RichConsoleHandler()
     ch.setLevel(resolved_level)
     ch.setFormatter(logging.Formatter("%(message)s"))
-    setattr(ch, "_pm_bot_managed", True)
+    ch._pm_bot_managed = True
     logger.addHandler(ch)
 
     try:
@@ -717,7 +717,7 @@ def configure_logging(
         file_handler = logging.StreamHandler(sys.stderr)
     file_handler.setLevel(logging.DEBUG)
     file_handler.setFormatter(JsonFormatter())
-    setattr(file_handler, "_pm_bot_managed", True)
+    file_handler._pm_bot_managed = True
     logger.addHandler(file_handler)
 
     _CONFIGURED_LOGGERS[name] = logger
@@ -940,7 +940,8 @@ def print_traders_copying(traders: list[dict] | None = None) -> None:
     if traders:
         for t in traders:
             console.print(
-                f"   📋 {shorten_addr(t.get('address'))}: {t.get('positions', 0)} positions {t.get('leader_balance'):.2f} USDC"
+                f"   📋 {shorten_addr(t.get('address'))}: {t.get('positions', 0)} positions "
+                f"{t.get('leader_balance'):.2f} USDC"
             )
     else:
         console.print("   No traders configured")

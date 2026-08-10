@@ -219,7 +219,7 @@ class TestJsonFormatter:
     def test_format_exception(self):
         fmt = JsonFormatter()
         try:
-            1 / 0
+            _ = 1 / 0
         except ZeroDivisionError:
             exc_info = sys.exc_info()
         record = logging.LogRecord(

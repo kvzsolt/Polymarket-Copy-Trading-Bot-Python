@@ -101,7 +101,9 @@ _CONFIG_EXPLANATIONS: dict[str, str] = {
     "RECONCILE_INTERVAL_SECONDS": "Seconds between reconciliation passes.",
     "PENDING_SUBMISSION_TTL_SECONDS": "Seconds before a pending order is considered stale.",
     "ENFORCE_GEOBLOCK": "If true, check geoblock compliance before trading.",
-    "DISCOVERY.SCHEDULER.ENABLED": "Runs the configured Heisenberg funnel, longitudinal ranker, and hysteresis roster scheduler.",
+    "DISCOVERY.SCHEDULER.ENABLED": (
+        "Runs the configured Heisenberg funnel, longitudinal ranker, and hysteresis roster scheduler."
+    ),
     "DISCOVERY.HYSTERESIS.PROMOTE_SCORE": "Minimum configured score required for consecutive promotion cycles.",
     "DISCOVERY.HYSTERESIS.DEMOTE_SCORE": "Score below which an active leader starts a demotion streak.",
     "COPY_DECISION_MIN_SCORE": "Minimum leader score (0–1) required to copy a trade.",

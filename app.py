@@ -1167,7 +1167,7 @@ async def _run_application(client_registry: list[Any]) -> int:
     # consumers cast to float only at display boundaries.
     user_balances: dict[str, Decimal] = {
         runtime_user.user_id: _to_decimal_balance(balance)
-        for runtime_user, balance in zip(runtime_users, user_balances_raw)
+        for runtime_user, balance in zip(runtime_users, user_balances_raw, strict=True)
     }
 
     api_ok = all(value is not None for value in leader_balances_raw) and all(

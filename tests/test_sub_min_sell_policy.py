@@ -10,7 +10,6 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-import pytest
 
 from orchestrators.trade_pipeline import _resolve_leader_sell_tokens
 

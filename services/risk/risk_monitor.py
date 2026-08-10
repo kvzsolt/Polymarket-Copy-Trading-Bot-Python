@@ -934,7 +934,7 @@ async def _dispatch_risk_exit(
             fees_paid=_D("0"),
             error="ExecutionCoordinator not wired in live mode",
         )
-    submitter = getattr(execution_service, "execute")
+    submitter = execution_service.execute
     return await submitter(exec_req)
 
 
@@ -1080,7 +1080,7 @@ async def _active_sell_reserved_size(
             if callable(release):
                 try:
                     await release(
-                        getattr(reservation, "id"),
+                        reservation.id,
                         reason="expired_orphan_before_risk_exit",
                     )
                     logger.info(

@@ -104,7 +104,7 @@ class TestDecimalPrecision:
     def test_many_buys_decimal_accumulation(self):
         """100 micro-buys should not accumulate float error."""
         pm = _make_pm()
-        for i in range(100):
+        for _ in range(100):
             pm.track_buy("cond-d4", "asset-1", 0.33, 1.0, 0.33)
         pos = pm.get_position("cond-d4")
         # 100 buys at 0.33 → avg should be exactly 0.33

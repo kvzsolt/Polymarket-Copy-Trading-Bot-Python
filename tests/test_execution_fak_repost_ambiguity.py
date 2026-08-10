@@ -16,7 +16,6 @@ must remain unknown (zero), not be fabricated from the slippage ceiling.
 
 from __future__ import annotations
 
-import asyncio
 import time
 from decimal import Decimal
 from types import SimpleNamespace
@@ -185,7 +184,7 @@ async def test_c5_repost_leg_persists_ambiguity_when_post_raises():
     gw.get_order = AsyncMock(return_value=None)
     svc = _build_svc(gateway=gw)
 
-    result = await svc.execute(_req(amount="10"))
+    await svc.execute(_req(amount="10"))
 
     # The repost leg must have persisted an ambiguity row (status contains
     # submitted_unconfirmed) even though the POST raised. The repost-leg
@@ -201,7 +200,7 @@ async def test_c5_repost_leg_persists_ambiguity_when_post_raises():
     ]
     assert repost_ambiguity, (
         "repost leg must persist submitted_unconfirmed on POST exception, "
-        f"got records: {[(getattr(c.args[0], 'idempotency_key'), getattr(c.args[0], 'status')) for c in saved if c.args]}"
+        f"got records: {[(c.args[0].idempotency_key, c.args[0].status) for c in saved if c.args]}"
     )
 
 

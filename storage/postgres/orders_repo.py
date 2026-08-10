@@ -569,14 +569,18 @@ class OrdersRepo(AbstractOrderRepository):
                     leader_id = COALESCE(excluded.leader_id, orders.leader_id),
                     order_id  = COALESCE(excluded.order_id, orders.order_id),
                     status = CASE
-                        WHEN orders.status IN ('submitted','submitted_unconfirmed','partially_filled','filled','cancelled','rejected','duplicate_ignored')
+                        WHEN orders.status IN ('submitted','submitted_unconfirmed',
+                                               'partially_filled','filled','cancelled',
+                                               'rejected','duplicate_ignored')
                              AND excluded.status IN ('failed','submission_failed','created')
                         THEN orders.status
                         ELSE excluded.status
                     END,
                     request_json = excluded.request_json,
                     response_json = CASE
-                        WHEN orders.status IN ('submitted','submitted_unconfirmed','partially_filled','filled','cancelled','rejected','duplicate_ignored')
+                        WHEN orders.status IN ('submitted','submitted_unconfirmed',
+                                               'partially_filled','filled','cancelled',
+                                               'rejected','duplicate_ignored')
                              AND excluded.status IN ('failed','submission_failed','created')
                         THEN orders.response_json
                         ELSE excluded.response_json

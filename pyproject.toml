@@ -80,6 +80,14 @@ extend-exclude = [".venv", "polymarket_copy_trading_bot.egg-info"]
 # ASYNC: flake8-async (this is an asyncio-heavy codebase), PLE: pylint errors.
 select = ["E", "F", "W", "B", "ASYNC", "PLE"]
 
+[tool.ruff.lint.pycodestyle]
+# The formatter wraps to 100 where it can; E501 is only a backstop for lines
+# the formatter cannot break (long literals), so it flags at 120.
+max-line-length = 120
+
 [tool.ruff.lint.per-file-ignores]
 # Tests intentionally use asserts, fixtures, and long literal lines.
 "tests/**" = ["E501"]
+# Operational scripts bootstrap sys.path/dotenv before imports (E402) and are
+# allowed simple blocking pathlib IO in their one-shot async mains (ASYNC240).
+"scripts/**" = ["E402", "ASYNC240"]

@@ -16,7 +16,6 @@ from services.discovery.heisenberg_candidate_service import (
 from services.discovery.heisenberg_discovery_service import (
     HeisenbergDiscoveryService,
 )
-from services.discovery.models import discovery_config_hash
 from services.discovery.policy_config import discovery_policy_from_config
 from services.healthServer import ReadinessTracker
 from storage.postgres.connection import init_pool

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 from eth_abi import encode
 from eth_utils import function_signature_to_4byte_selector
@@ -195,5 +197,5 @@ def test_decoded_order_is_frozen() -> None:
     calldata = _encode_match_orders(taker, [])
     call = decode_match_orders(calldata)
     assert call is not None
-    with pytest.raises(Exception):
+    with pytest.raises(dataclasses.FrozenInstanceError):
         call.taker_order.maker = _UNWATCHED  # type: ignore[misc]

@@ -11,12 +11,8 @@ a chance to settle.
 from __future__ import annotations
 
 import time
-from types import SimpleNamespace
-from unittest.mock import patch
 
-import pytest
 
-import services.positionManager as pm_mod
 from services.positionManager import PositionManager
 
 

@@ -266,8 +266,10 @@ async def normalize_startup_order_statuses(pool, *, user_id: str) -> OrderStartu
             row = await conn.fetchrow(
                 """
                 SELECT
-                    COALESCE(SUM(CASE WHEN status IN ('pending', 'pending_lock') AND order_id IS NULL THEN 1 ELSE 0 END), 0) AS pending_count,
-                    COALESCE(SUM(CASE WHEN status = 'delayed' AND order_id IS NULL THEN 1 ELSE 0 END), 0) AS delayed_count,
+                    COALESCE(SUM(CASE WHEN status IN ('pending', 'pending_lock')
+                                       AND order_id IS NULL THEN 1 ELSE 0 END), 0) AS pending_count,
+                    COALESCE(SUM(CASE WHEN status = 'delayed'
+                                       AND order_id IS NULL THEN 1 ELSE 0 END), 0) AS delayed_count,
                     COALESCE(SUM(CASE WHEN status LIKE 'retry_pending_%' THEN 1 ELSE 0 END), 0) AS retry_pending_count
                 FROM orders
                 WHERE user_id = $1
