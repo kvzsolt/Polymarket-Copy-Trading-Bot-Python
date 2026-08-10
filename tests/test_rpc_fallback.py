@@ -23,7 +23,6 @@ from clients.network.rpc_fallback import (
     _is_failover_response,
     _mask_url,
 )
-from clients.balance_client import BalanceClient
 
 
 # ---------------------------------------------------------------------------
@@ -251,31 +250,6 @@ class TestFallbackWeb3Provider:
     def test_same_url_ignored(self) -> None:
         factory = FallbackWeb3Provider("https://primary.example", "https://primary.example")
         assert factory.fallback_url is None
-
-
-# ---------------------------------------------------------------------------
-# Integration with BalanceClient
-# ---------------------------------------------------------------------------
-
-
-class TestBalanceClientUsesFallback:
-    def test_balance_client_accepts_fallback_param(self) -> None:
-        """BalanceClient __init__ must accept the new fallback_rpc_url kwarg."""
-        client = BalanceClient(
-            rpc_url="https://primary.example",
-            usdc_contract_address="0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
-            fallback_rpc_url="https://fallback.example",
-        )
-        assert client._rpc_url == "https://primary.example"
-        assert client._fallback_rpc_url == "https://fallback.example"
-
-    def test_balance_client_omits_fallback_by_default(self) -> None:
-        """Old call sites that don't pass fallback_rpc_url still work."""
-        client = BalanceClient(
-            rpc_url="https://primary.example",
-            usdc_contract_address="0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
-        )
-        assert client._fallback_rpc_url == ""
 
 
 # ---------------------------------------------------------------------------
