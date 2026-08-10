@@ -19,7 +19,6 @@ from services.execution.reconciliation_service import ReconciliationService
 from services.executionService import ExecutionRequest
 from services.metrics import COPY_LATENCY_BUCKETS, METRIC_COPY_LATENCY, metrics
 from domain.position_key import PositionKey
-from services.positionActionCoordinator import PositionScope  # noqa: F401  back-compat alias
 from services.risk.risk_engine import headroom_for_buy
 from storage.postgres.fills_repo import FillRecord
 from storage.postgres.positions_repo import PositionRecord

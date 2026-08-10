@@ -21,7 +21,6 @@ def __getattr__(name: str):
         "headroom_for_buy": "services.risk.risk_engine",
         "init_risk_engine": "services.risk.risk_engine",
         "policy_from_config": "services.risk.risk_engine",
-        "policy_from_env": "services.risk.risk_engine",
         "policy_name_for_equity": "services.risk.risk_engine",
         # risk_monitor
         "CachedRiskPrice": "services.risk.risk_monitor",
@@ -60,7 +59,6 @@ __all__ = [
     "headroom_for_buy",
     "init_risk_engine",
     "policy_from_config",
-    "policy_from_env",
     "policy_name_for_equity",
     "reconcile_unconfirmed_risk_orders",
     "rehydrate_position_manager",

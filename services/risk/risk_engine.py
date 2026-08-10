@@ -322,20 +322,3 @@ def policy_from_config(config: AppConfig) -> RiskPolicy:
     )
 
 
-# Legacy alias for backward compat
-def policy_from_env() -> RiskPolicy:
-    """DEPRECATED: Use policy_from_config() instead."""
-    if _cached_config is not None:
-        return policy_from_config(_cached_config)
-    # Bare hardcoded fallback matching production defaults in AppConfig.
-    return RiskPolicy(
-        max_trade_usdc=Decimal("100"),
-        max_portfolio_pct_per_trade=Decimal("0.45"),
-        max_market_exposure_usdc=Decimal("300"),
-        max_category_exposure_usdc=Decimal("600"),
-        max_leader_exposure_usdc=Decimal("500"),
-        max_open_positions=12,
-        max_daily_drawdown_pct=Decimal("20"),
-        max_slippage_bps=200,
-        kill_switch=False,
-    )
