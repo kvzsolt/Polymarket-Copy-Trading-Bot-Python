@@ -593,5 +593,13 @@ async def apply_migrations(conn: asyncpg.Connection) -> None:
         for statement in _DISCOVERY_DDL:
             await conn.execute(statement)
 
+    # The v1 copy-task migration owns its own transaction (and records its
+    # id in ``app_schema_migrations``), so it runs after the core DDL commits
+    # rather than nested inside it. Both runners are idempotent; running the
+    # v1 slice at every startup keeps deployed schemas complete without a
+    # separate operator step. Referenced via the module global so tests can
+    # observe/patch the seam.
+    await apply_v1_migrations(conn)
+
 
 __all__ = ["apply_migrations", "apply_v1_migrations"]

@@ -33,6 +33,7 @@ async def test_builder_creates_one_shared_cache_and_bounded_worker_supervisor() 
     )
     config = CopyTasksRuntimeConfig.model_validate(
         {
+            "enabled": True,
             "workers": {
                 "queue_size": 3,
                 "global_concurrency": 2,
@@ -90,7 +91,11 @@ async def test_disabled_workers_yields_no_supervisor() -> None:
         leader_handler=handler,
     )
     config = CopyTasksRuntimeConfig.model_validate(
-        {"workers": {"enabled": False}, "shared_price_cache": {"enabled": False}}
+        {
+            "enabled": True,
+            "workers": {"enabled": False},
+            "shared_price_cache": {"enabled": False},
+        }
     )
     bundle = builder.build(config)
     assert bundle.enabled is True

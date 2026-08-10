@@ -1428,6 +1428,33 @@ async def _run_application(client_registry: list[Any]) -> int:
             extra={"error": redact_error_detail(exc)},
         )
 
+    # v1 copy-task runtime (Phase B slice 2). Restoration of durable
+    # task/budget/lock state runs here — after startup reconciliation and
+    # drift checks, before any market-data subscription or detection source —
+    # matching the canonical startup order. Disabled config (the shipped
+    # default) constructs nothing.
+    from config.v1_runtime import load_v1_runtime_config
+    from orchestrators.v1_runtime_bootstrap import start_v1_copy_task_runtime
+
+    logger.info("startup_stage | stage=v1_copy_task_restoration_started")
+    try:
+        v1_runtime = await start_v1_copy_task_runtime(
+            pool=_pool,
+            config=application.config,
+            v1_config=load_v1_runtime_config(),
+        )
+    except EnvValidationError as exc:
+        print_error(str(exc))
+        return 1
+    if v1_runtime is not None:
+        # The handle exposes ``close()`` so the shared client registry drains
+        # the leader workers at shutdown alongside the venue transports.
+        client_registry.append(v1_runtime)
+    logger.info(
+        "startup_stage | stage=v1_copy_task_restoration_completed enabled=%s",
+        v1_runtime is not None,
+    )
+
     # Start market-data WSS only after portfolio/database convergence. Starting
     # it earlier can subscribe/probe stale tokens that manual_sync has not yet
     # filtered and drift has not yet pruned.

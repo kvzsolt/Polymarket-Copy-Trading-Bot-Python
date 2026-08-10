@@ -1,5 +1,9 @@
+# Copy-task v1 engine. `enabled: false` is the paper-safe shipped default —
+# the v1 runtime (leader workers, durable task budgets, reentry locks) starts
+# only when an operator explicitly opts in here. The nested safety features
+# stay `true` so opting in cannot silently shed a protection.
 copy_tasks:
-  enabled: true
+  enabled: false
   workers:
     enabled: true
     queue_size: 64
