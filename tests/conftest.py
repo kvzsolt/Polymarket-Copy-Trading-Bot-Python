@@ -32,6 +32,24 @@ from interfaces.clob_gateway import ClobGateway
 
 
 @pytest.fixture(autouse=True)
+def _hermetic_deployment_root(
+    tmp_path_factory: pytest.TempPathFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pin the config deployment root to an empty per-test directory.
+
+    ``config.app_config._resolve_deployment_root`` walks up from the CWD and
+    would otherwise merge the operator's real ``config/runtime.local.yml``
+    (e.g. ``trading_mode: live``) and ``secrets.env`` into any test that calls
+    ``load_config()`` with default paths, making the suite non-hermetic.
+    Tests that exercise the walk-up/env-var resolution itself delete or
+    override ``PMCOPY_DEPLOYMENT_ROOT`` explicitly via ``monkeypatch``.
+    """
+    root = tmp_path_factory.mktemp("hermetic-deployment-root")
+    monkeypatch.setenv("PMCOPY_DEPLOYMENT_ROOT", str(root))
+
+
+@pytest.fixture(autouse=True)
 def _run_unit_thread_work_inline(
     request: pytest.FixtureRequest,
     monkeypatch: pytest.MonkeyPatch,

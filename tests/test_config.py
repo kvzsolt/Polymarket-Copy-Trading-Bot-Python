@@ -31,7 +31,10 @@ def test_checked_in_yaml_loads_as_immutable_typed_config() -> None:
     assert config.execution.trading_mode == "paper"
     assert config.execution.paper_trade_only is True
     assert config.dry_run is True
-    assert config.discovery.shortlist.candidate_pool_size == 150
+    # Characterizes the shipped deployment value: 250 has been the packaged
+    # trader_discovery.yaml value (and the ShortlistConfig default) since the
+    # discovery-architecture rewrite (93988d4); the previous 150 here was drift.
+    assert config.discovery.shortlist.candidate_pool_size == 250
     with pytest.raises(FrozenInstanceError):
         config.database.dsn = "changed"  # type: ignore[misc]
     with pytest.raises(ValidationError):
@@ -255,6 +258,9 @@ def test_default_local_and_secrets_paths_follow_deployment_cwd(
     )
     secrets.chmod(0o600)
     monkeypatch.chdir(tmp_path)
+    # This test exercises the CWD walk-up itself, so drop the hermetic
+    # deployment-root pin installed by the autouse conftest fixture.
+    monkeypatch.delenv("PMCOPY_DEPLOYMENT_ROOT", raising=False)
 
     config = load_config(_overrides())
 
