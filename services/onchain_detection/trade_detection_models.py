@@ -71,16 +71,15 @@ class OnchainTradeSignal:
     order_hash: str | None
 
     def as_raw_signal_dict(self) -> dict[str, object]:
-        """Render as a raw signal dict shaped for ``normalize_trade_signal``.
+        """Render as a raw signal dict shaped for the copy pipeline.
 
-        ``normalize_trade_signal`` (services/copy/signal_normalizer.py) reads
+        ``orchestrators.trade_pipeline.execute_trades`` consumes
         ``leader_id``/``leader_wallet``, ``condition_id``, ``token_id``,
         ``side`` in {BUY,SELL}, ``size``/``size_tokens``, ``price``,
         ``usdc_size``/``notional``, ``tx_hash``, ``event_ts``/``timestamp``.
-        A blank ``condition_id`` makes the normalizer return ``None`` (signal
-        dropped) — acceptable for an inert-by-default feature; the runtime
-        enriches condition_id where it can (pending: from calldata; mined:
-        via Gamma lookup).
+        A blank ``condition_id`` drops the signal downstream — acceptable for
+        an inert-by-default feature; the runtime enriches condition_id where
+        it can (pending: from calldata; mined: via Gamma lookup).
         """
         return {
             "leader_id": self.leader_wallet,
