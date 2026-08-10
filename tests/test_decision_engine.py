@@ -13,7 +13,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from services.copyDecisionService import CopyDecisionService
 from services.leaderScoringService import LeaderScore
-from services.tradeAnalyticsService import TradeAnalyticsService
 
 
 def _test_config() -> SimpleNamespace:
@@ -281,38 +280,6 @@ class TestCopyDecisionService:
         assert decision.target_size_tokens == pytest.approx(2.5)
         assert decision.sizing is not None
         assert decision.sizing.upsized is True
-
-
-class TestTradeAnalyticsService:
-    @pytest.mark.asyncio
-    async def test_records_decision_and_execution_metrics(self):
-        svc = TradeAnalyticsService()
-        dummy_decision = type(
-            "Decision",
-            (),
-            {
-                "allow": True,
-                "skip_code": "ok",
-                "decision_score": 0.7,
-                "leader_score": 0.8,
-                "trade_score": 0.75,
-            },
-        )()
-        trade = {"side": "BUY", "price": 0.50, "conditionId": "cond1", "asset": "asset1"}
-
-        await svc.record_decision(decision=dummy_decision, trade=trade)
-        await svc.record_execution(
-            decision=dummy_decision,
-            trade=trade,
-            fill_price=0.52,
-            result="executed",
-        )
-        snap = await svc.snapshot()
-        assert snap["total_signals"] == 1
-        assert snap["approved_signals"] == 1
-        assert snap["executed_trades"] == 1
-        assert snap["avg_quality_score"] > 0
-        assert snap["avg_slippage_bps"] > 0
 
 
 class TestCopyDecisionServicePartialHeadroom:

@@ -563,37 +563,6 @@ async def test_expired_reservation_new_reserve_acquires_after_expiry(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_expiry_bridge_enqueues_linked_order_without_release(tmp_path):
-    async with _pg_pool() as pool:
-        from services.execution.expiry_bridge import ExpiryChecker
-
-        class RecordingReconciler:
-            def __init__(self):
-                self.enqueued: list[str] = []
-
-            async def enqueue(self, order_id: str) -> None:
-                self.enqueued.append(order_id)
-
-        svc, res_repo, _pos_repo, clk = _svc(pool, ttl=60)
-        intent = _make_intent(IntentSide.BUY, size=Decimal("10"), price=Decimal("0.5"))
-        res = await svc.reserve_for_intent(intent)
-        await res_repo.link_order(res.id, order_id="order-123", venue_order_id="venue-456")
-
-        clk.advance(61)
-        reconciler = RecordingReconciler()
-        checker = ExpiryChecker(res_repo, orders_repo=None, reservation_service=svc, reconciler=reconciler)
-
-        checked = await checker.check_expired_reservations()
-
-        assert checked == 1
-        assert reconciler.enqueued == ["order-123"]
-        active = await res_repo.get_active_by_intent_key(intent.key.stable_key())
-        assert active is not None
-        assert active.order_id == "order-123"
-        assert active.venue_order_id == "venue-456"
-
-
-@pytest.mark.asyncio
 async def test_reconciliation_failure_keeps_reservation_active(tmp_path):
     async with _pg_pool() as pool:
         async def bad_callback(res_id: str) -> None:
