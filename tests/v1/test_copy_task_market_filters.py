@@ -100,10 +100,7 @@ def test_crypto_token_and_timeframe_filters_are_normalized() -> None:
         context(token_symbol="BTC", market_timeframe="5m"),
     ).allowed
     assert engine.evaluate(candidate, context(token_symbol="SOL")).reason == "token_filtered"
-    assert (
-        engine.evaluate(candidate, context(market_timeframe="1h")).reason
-        == "timeframe_filtered"
-    )
+    assert engine.evaluate(candidate, context(market_timeframe="1h")).reason == "timeframe_filtered"
 
 
 def test_one_entry_per_sports_type_is_task_scoped_and_amount_independent() -> None:

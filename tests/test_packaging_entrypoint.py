@@ -22,6 +22,5 @@ def test_docker_import_check_runs_outside_source_tree() -> None:
     dockerfile = (root / "Dockerfile").read_text(encoding="utf-8")
 
     assert any(
-        line.strip().startswith('RUN cd /tmp && python -c "')
-        for line in dockerfile.splitlines()
+        line.strip().startswith('RUN cd /tmp && python -c "') for line in dockerfile.splitlines()
     ), "Docker import verification must run outside the /app source tree"

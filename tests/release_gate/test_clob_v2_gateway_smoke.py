@@ -5,6 +5,7 @@ required method, weakens an awaitable signature, or unwraps the gateway in
 ``ExecutionService`` breaks the gate immediately. The full SDK isolation
 tests live in ``tests/test_issue66_gateway_isolation.py``.
 """
+
 from __future__ import annotations
 
 import inspect
@@ -34,9 +35,7 @@ def test_gateway_protocol_has_required_methods() -> None:
 def test_gateway_methods_are_coroutines() -> None:
     for name in REQUIRED_METHODS:
         method = getattr(ClobGateway, name)
-        assert inspect.iscoroutinefunction(method), (
-            f"ClobGateway.{name} must be async"
-        )
+        assert inspect.iscoroutinefunction(method), f"ClobGateway.{name} must be async"
 
 
 @pytest.mark.asyncio

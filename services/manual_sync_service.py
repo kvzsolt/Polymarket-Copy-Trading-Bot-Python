@@ -70,9 +70,7 @@ if TYPE_CHECKING:
 
 logger = get_logger("ManualSync")
 
-_ACTIVITY_URL = (
-    "https://data-api.polymarket.com/activity?user={wallet}&type=TRADE&limit=20"
-)
+_ACTIVITY_URL = "https://data-api.polymarket.com/activity?user={wallet}&type=TRADE&limit=20"
 _POSITIONS_URL = "https://data-api.polymarket.com/positions?user={wallet}"
 
 # Size-comparison epsilon. Matches the TS ZERO_THRESHOLD constant.
@@ -343,12 +341,9 @@ class ManualSyncService:
                     # the fill settled under an identifier the reconciler is
                     # not tracking (e.g. an ambiguous_timeout order). Operators
                     # can pair this with reconciliation_ambiguous_stalled.
-                    if await self._has_pending_bot_trade(
-                        token_id=own_token_id, side=side
-                    ):
+                    if await self._has_pending_bot_trade(token_id=own_token_id, side=side):
                         logger.warning(
-                            "manual_sync_own_fill_with_pending_order | token=%s "
-                            "side=%s tx=%s",
+                            "manual_sync_own_fill_with_pending_order | token=%s side=%s tx=%s",
                             own_token_id,
                             side,
                             tx_hash,
@@ -542,17 +537,13 @@ class ManualSyncService:
             )
             persisted = []
 
-        persisted_by_token: dict[str, Any] = {
-            str(record.token_id): record for record in persisted
-        }
+        persisted_by_token: dict[str, Any] = {str(record.token_id): record for record in persisted}
         live_tokens: set[str] = set()
         increased_position_scopes = 0
 
         for pos in live:
             token_id = str(pos.get("asset") or pos.get("tokenId") or "").strip()
-            condition_id = str(
-                pos.get("conditionId") or pos.get("condition_id") or ""
-            ).strip()
+            condition_id = str(pos.get("conditionId") or pos.get("condition_id") or "").strip()
             if not token_id or not condition_id:
                 continue
             live_tokens.add(token_id)
@@ -583,8 +574,7 @@ class ManualSyncService:
                     pruned_recently = False
                 if pruned_recently:
                     logger.info(
-                        "manual_sync_skipped_recent_prune | "
-                        "token=%s cond=%s venue_size=%s",
+                        "manual_sync_skipped_recent_prune | token=%s cond=%s venue_size=%s",
                         token_id,
                         condition_id,
                         venue_size,
@@ -606,8 +596,7 @@ class ManualSyncService:
                 side="BUY",
             ):
                 logger.info(
-                    "manual_sync_skipped_pending_bot_fill | "
-                    "token=%s cond=%s venue_size=%s",
+                    "manual_sync_skipped_pending_bot_fill | token=%s cond=%s venue_size=%s",
                     token_id,
                     condition_id,
                     venue_size,
@@ -675,8 +664,7 @@ class ManualSyncService:
             _can_delete = False
         elif len(positions) < len(persisted_by_token):
             logger.warning(
-                "manual_sync_deletion_skipped_sparse_api | "
-                "api_count=%d local_count=%d user=%s",
+                "manual_sync_deletion_skipped_sparse_api | api_count=%d local_count=%d user=%s",
                 len(positions),
                 len(persisted_by_token),
                 self._user_id,
@@ -767,9 +755,7 @@ class ManualSyncService:
             return
         if changed_scopes <= 0:
             return
-        release_expired = getattr(
-            self._reservation_service, "release_expired_active", None
-        )
+        release_expired = getattr(self._reservation_service, "release_expired_active", None)
         if not callable(release_expired):
             return
         try:
@@ -819,7 +805,5 @@ def _is_live_position(position: dict[str, Any]) -> bool:
     if "currentValue" not in position and "current_value" not in position:
         return True
 
-    current_value = _decimal_or_zero(
-        position.get("currentValue") or position.get("current_value")
-    )
+    current_value = _decimal_or_zero(position.get("currentValue") or position.get("current_value"))
     return current_value > _SIZE_EPSILON

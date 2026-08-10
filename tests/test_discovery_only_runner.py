@@ -48,9 +48,7 @@ def _application() -> SimpleNamespace:
 async def test_list_only_uses_persisted_roster(monkeypatch, capsys) -> None:
     application = _application()
     monkeypatch.setattr("bootstrap.build_app", AsyncMock(return_value=application))
-    monkeypatch.setattr(
-        "storage.postgres.connection.shutdown_pool", AsyncMock()
-    )
+    monkeypatch.setattr("storage.postgres.connection.shutdown_pool", AsyncMock())
     result = await _module()._amain(["--list-only"])
     assert result == 0
     application.discovery_service.run.assert_not_awaited()
@@ -64,9 +62,7 @@ async def test_run_calls_funnel_without_constructing_trading_clients(
 ) -> None:
     application = _application()
     monkeypatch.setattr("bootstrap.build_app", AsyncMock(return_value=application))
-    monkeypatch.setattr(
-        "storage.postgres.connection.shutdown_pool", AsyncMock()
-    )
+    monkeypatch.setattr("storage.postgres.connection.shutdown_pool", AsyncMock())
     result = await _module()._amain([])
     assert result == 0
     application.discovery_service.run.assert_awaited_once()

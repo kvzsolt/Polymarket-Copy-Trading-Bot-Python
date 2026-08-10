@@ -32,7 +32,9 @@ class FakeHttpClient:
         self.requests: list[dict[str, Any]] = []
         self.closed = False
 
-    async def post(self, url: str, *, headers: dict[str, str], json: dict[str, Any]) -> FakeResponse:
+    async def post(
+        self, url: str, *, headers: dict[str, str], json: dict[str, Any]
+    ) -> FakeResponse:
         self.requests.append({"url": url, "headers": headers, "json": json})
         return self.responses.pop(0)
 
@@ -40,7 +42,9 @@ class FakeHttpClient:
         self.closed = True
 
 
-def page(results: list[dict[str, Any]], *, offset: int, has_more: bool, request_id: str = "req") -> dict[str, Any]:
+def page(
+    results: list[dict[str, Any]], *, offset: int, has_more: bool, request_id: str = "req"
+) -> dict[str, Any]:
     return {
         "timestamp": "2026-07-30T00:00:00Z",
         "params": {},
@@ -163,6 +167,7 @@ async def test_endpoint_helpers_use_documented_agent_ids() -> None:
         569,
         596,
     ]
+
 
 @pytest.mark.asyncio
 async def test_fetch_all_truncates_final_page_to_requested_row_cap() -> None:

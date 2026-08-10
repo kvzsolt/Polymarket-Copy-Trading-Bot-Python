@@ -118,13 +118,9 @@ async def test_auto_release_fires_when_all_probes_clean():
         )
 
     assert released is True
-    assert reservation.releases == [
-        ("res-amb-1", "auto_release_after_ambiguous_timeout")
-    ]
+    assert reservation.releases == [("res-amb-1", "auto_release_after_ambiguous_timeout")]
     assert any(c["status"] == "auto_released_ambiguous" for c in orders.update_calls)
-    metric_calls = [
-        c for c in inc_sync.call_args_list if "auto_release_ambiguous" in str(c.args)
-    ]
+    metric_calls = [c for c in inc_sync.call_args_list if "auto_release_ambiguous" in str(c.args)]
     assert metric_calls
 
 
@@ -225,9 +221,7 @@ async def test_auto_release_disabled_via_config():
     # called directly (defensive).
     cfg = _cfg(auto_release_ambiguous=False)
     assert (
-        svc._is_past_auto_release_grace(
-            _record(age_seconds=10_000), order_confirmation_cfg=cfg
-        )
+        svc._is_past_auto_release_grace(_record(age_seconds=10_000), order_confirmation_cfg=cfg)
         is False
     )
 
@@ -294,9 +288,7 @@ async def test_auto_release_aborts_when_list_open_orders_unsupported():
     assert released is False
     assert reservation.releases == []
     # The order row must NOT have been transitioned to auto_released_ambiguous.
-    assert not any(
-        c["status"] == "auto_released_ambiguous" for c in orders.update_calls
-    )
+    assert not any(c["status"] == "auto_released_ambiguous" for c in orders.update_calls)
 
 
 @pytest.mark.asyncio
@@ -340,9 +332,7 @@ def _svc(gw, *, reservation=None, positions=None, orders=None, cfg=None):
         orders_repo=orders if orders is not None else _OrdersRepo(),
         fills_repo=None,
         positions_repo=positions if positions is not None else _PositionsRepo("0"),
-        reservation_service=reservation
-        if reservation is not None
-        else _ReservationService(),
+        reservation_service=reservation if reservation is not None else _ReservationService(),
         clob_gateway=gw,
         order_confirmation_cfg=cfg,
     )
@@ -433,9 +423,7 @@ async def test_repeated_aborts_are_log_throttled():
             assert released is False
 
     abort_calls = [
-        c
-        for c in log_spy.call_args_list
-        if "auto_release_aborted_probe_errors" in str(c.args)
+        c for c in log_spy.call_args_list if "auto_release_aborted_probe_errors" in str(c.args)
     ]
     levels = [c.args[0] for c in abort_calls]
     # 1st and 10th abort are WARNING, the other nine are DEBUG.

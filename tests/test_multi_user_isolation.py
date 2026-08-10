@@ -5,6 +5,7 @@ user_id. A SELL from one user must not touch another user's open
 positions. This pins that scoping invariant via the canonical
 ``orchestrators.trade_pipeline.execute_trades`` entry point.
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -110,9 +111,31 @@ def _build_context(*, user_id: str, pool) -> TradingContext:
     now = time.monotonic()
     bundle = MarketDataBundle(
         token_id=FAKE_TOKEN_ID,
-        quote=QuoteSnapshot(token_id=FAKE_TOKEN_ID, best_bid=_D("0.49"), best_ask=_D("0.51"), last_trade_price=None, source="wss", monotonic_ts=now),
-        book=BookSnapshot(token_id=FAKE_TOKEN_ID, bids={_D("0.49"): _D("100")}, asks={_D("0.51"): _D("100")}, best_bid=_D("0.49"), best_ask=_D("0.51"), source="wss", monotonic_ts=now),
-        tick=TickSnapshot(token_id=FAKE_TOKEN_ID, tick_size=_D("0.01"), min_order_size=_D("0.001"), neg_risk=False, source="wss", monotonic_ts=now),
+        quote=QuoteSnapshot(
+            token_id=FAKE_TOKEN_ID,
+            best_bid=_D("0.49"),
+            best_ask=_D("0.51"),
+            last_trade_price=None,
+            source="wss",
+            monotonic_ts=now,
+        ),
+        book=BookSnapshot(
+            token_id=FAKE_TOKEN_ID,
+            bids={_D("0.49"): _D("100")},
+            asks={_D("0.51"): _D("100")},
+            best_bid=_D("0.49"),
+            best_ask=_D("0.51"),
+            source="wss",
+            monotonic_ts=now,
+        ),
+        tick=TickSnapshot(
+            token_id=FAKE_TOKEN_ID,
+            tick_size=_D("0.01"),
+            min_order_size=_D("0.001"),
+            neg_risk=False,
+            source="wss",
+            monotonic_ts=now,
+        ),
         source=MarketDataSource.WSS,
     )
     mds = AsyncMock()
@@ -186,9 +209,7 @@ async def test_multi_user_positions_and_pnl_are_isolated(monkeypatch):
         return Decimal("20")
 
     monkeypatch.setattr(trade_pipeline, "get_my_balance", _fake_balance)
-    monkeypatch.setattr(
-        trade_pipeline, "_fetch_live_position_size", _fake_live_position_size
-    )
+    monkeypatch.setattr(trade_pipeline, "_fetch_live_position_size", _fake_live_position_size)
 
     async with _pg_pool() as pool:
         leader_id = "0xleader"

@@ -1,8 +1,10 @@
 """Risk management services — engine, exit policy, monitoring."""
+
 from __future__ import annotations
 
 # Eagerly import lightweight modules
 from services.risk.exit_policy import ExitDecision, evaluate_exit
+
 
 # Lazy imports for modules that depend on Web3 or venue clients.
 def __getattr__(name: str):
@@ -33,6 +35,7 @@ def __getattr__(name: str):
     }
     if name in _lazy_map:
         import importlib
+
         mod = importlib.import_module(_lazy_map[name])
         value = getattr(mod, name)
         globals()[name] = value

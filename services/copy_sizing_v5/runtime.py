@@ -24,9 +24,7 @@ class CopySizingV5Runtime:
         hydrated = request
         if self.balances is not None:
             try:
-                follower, leader = await self.balances.balances_for(
-                    request.leader_wallet
-                )
+                follower, leader = await self.balances.balances_for(request.leader_wallet)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:

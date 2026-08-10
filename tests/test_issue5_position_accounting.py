@@ -55,6 +55,7 @@ async def _pg_pool():
 # Decimal precision in PositionManager — pure-function tests, no DB
 # ---------------------------------------------------------------------------
 
+
 class TestDecimalPrecision:
     # Phase 2 (Decimal sweep): TrackedPosition money fields are now
     # ``Decimal``. The legacy ``pytest.approx(float)`` form raises
@@ -111,14 +112,13 @@ class TestDecimalPrecision:
         assert float(pos.size_tokens) == pytest.approx(100.0)
 
 
-_TOKEN = (
-    "21742633143463906290569050155826241533067272736897614950488156847949938836495"
-)
+_TOKEN = "21742633143463906290569050155826241533067272736897614950488156847949938836495"
 
 
 # ---------------------------------------------------------------------------
 # DB oversell clamp in PositionsRepo (PG)
 # ---------------------------------------------------------------------------
+
 
 class TestDBOversellClamp:
     @pytest.mark.asyncio
@@ -183,14 +183,13 @@ class TestDBOversellClamp:
             )
 
             assert result is None
-            assert await repo.get_position(
-                "u1", "cond-exact", token_id=_TOKEN
-            ) is None
+            assert await repo.get_position("u1", "cond-exact", token_id=_TOKEN) is None
 
 
 # ---------------------------------------------------------------------------
 # Atomic execution persistence (PG)
 # ---------------------------------------------------------------------------
+
 
 class TestAtomicExecutionPersistence:
     @pytest.mark.asyncio
@@ -301,7 +300,7 @@ class TestAtomicExecutionPersistence:
                 fill_price="0.30",
                 fill_fee="0",
                 fill_ts=ts,
-                fill_json='{}',
+                fill_json="{}",
                 trade_key="trade-as-buy",
                 tx_hash=None,
                 asset=_TOKEN,
@@ -321,7 +320,7 @@ class TestAtomicExecutionPersistence:
                 fill_price="0.60",
                 fill_fee="0",
                 fill_ts=ts + 1,
-                fill_json='{}',
+                fill_json="{}",
                 trade_key="trade-as-sell",
                 tx_hash=None,
                 asset=_TOKEN,
@@ -330,7 +329,6 @@ class TestAtomicExecutionPersistence:
 
             async with pool.acquire() as conn:
                 pos = await conn.fetchrow(
-                    "SELECT * FROM positions "
-                    "WHERE user_id = 'u1' AND condition_id = 'cond-as'"
+                    "SELECT * FROM positions WHERE user_id = 'u1' AND condition_id = 'cond-as'"
                 )
                 assert pos is None  # position should be deleted

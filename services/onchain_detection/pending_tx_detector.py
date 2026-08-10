@@ -19,6 +19,7 @@ replaced. They only feed the copy path when ``ENABLE_ONCHAIN_PENDING_DETECTION``
 is on, and they are superseded by the mined ``OrderFilled`` signal that
 shares their ``tx_hash``.
 """
+
 from __future__ import annotations
 
 import time
@@ -67,9 +68,7 @@ def pending_subscription_params(
     is a full transaction object (``hash, input, from, to, ...``) when
     ``hashesOnly`` is False; hashes only when True.
     """
-    addresses = tuple(
-        a.lower() for a in (exchange_addresses or _DEFAULT_EXCHANGES)
-    )
+    addresses = tuple(a.lower() for a in (exchange_addresses or _DEFAULT_EXCHANGES))
     options = {
         "toAddress": list(addresses),
         "hashesOnly": bool(hashes_only),

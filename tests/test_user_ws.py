@@ -6,6 +6,7 @@ Phase 2 test coverage:
   - Heartbeat interval compliance (5s PING)
   - Reconnect on connection failure
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -24,6 +25,7 @@ from clients.user_ws import UserWebSocket, HEARTBEAT_INTERVAL
 # Fixtures
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def cache() -> MarketStateStore:
     return MarketStateStore()
@@ -38,12 +40,17 @@ def user_ws(cache: MarketStateStore) -> UserWebSocket:
 
 
 TOKEN_A = "0xaaa_token_yes"
-API_CREDS = {"api_key": "test_key", "api_secret": "test_secret", "api_passphrase": "test_passphrase"}
+API_CREDS = {
+    "api_key": "test_key",
+    "api_secret": "test_secret",
+    "api_passphrase": "test_passphrase",
+}
 
 
 # ---------------------------------------------------------------------------
 # Fill event handling
 # ---------------------------------------------------------------------------
+
 
 class TestFillEvent:
     """Verify fill events trigger cache invalidation."""
@@ -56,18 +63,22 @@ class TestFillEvent:
         """User fill event triggers cache invalidation."""
         # Pre-populate cache
         cache.set_quote(TOKEN_A, best_bid=Decimal("0.55"), best_ask=Decimal("0.60"))
-        cache.set_book(TOKEN_A, bids={Decimal("0.55"): Decimal("100")}, asks={Decimal("0.60"): Decimal("50")})
+        cache.set_book(
+            TOKEN_A, bids={Decimal("0.55"): Decimal("100")}, asks={Decimal("0.60"): Decimal("50")}
+        )
         assert cache.get_quote(TOKEN_A) is not None
         assert cache.get_book(TOKEN_A) is not None
 
         # Simulate fill event
-        event = json.dumps({
-            "event_type": "trade",
-            "asset_id": TOKEN_A,
-            "side": "BUY",
-            "size": "100",
-            "price": "0.55",
-        })
+        event = json.dumps(
+            {
+                "event_type": "trade",
+                "asset_id": TOKEN_A,
+                "side": "BUY",
+                "size": "100",
+                "price": "0.55",
+            }
+        )
         user_ws._handle_message(event)
 
         # Cache should be invalidated
@@ -82,11 +93,13 @@ class TestFillEvent:
         """order_fill event type also triggers invalidation."""
         cache.set_quote(TOKEN_A, best_bid=Decimal("0.55"), best_ask=Decimal("0.60"))
 
-        event = json.dumps({
-            "event_type": "order_fill",
-            "asset_id": TOKEN_A,
-            "side": "SELL",
-        })
+        event = json.dumps(
+            {
+                "event_type": "order_fill",
+                "asset_id": TOKEN_A,
+                "side": "SELL",
+            }
+        )
         user_ws._handle_message(event)
 
         assert cache.get_quote(TOKEN_A) is None
@@ -99,11 +112,13 @@ class TestFillEvent:
         """fill event type also triggers invalidation."""
         cache.set_quote(TOKEN_A, best_bid=Decimal("0.55"), best_ask=Decimal("0.60"))
 
-        event = json.dumps({
-            "event_type": "fill",
-            "token_id": TOKEN_A,
-            "side": "BUY",
-        })
+        event = json.dumps(
+            {
+                "event_type": "fill",
+                "token_id": TOKEN_A,
+                "side": "BUY",
+            }
+        )
         user_ws._handle_message(event)
 
         assert cache.get_quote(TOKEN_A) is None
@@ -116,11 +131,13 @@ class TestFillEvent:
         """Fill event missing token_id is safely ignored."""
         cache.set_quote(TOKEN_A, best_bid=Decimal("0.55"), best_ask=Decimal("0.60"))
 
-        event = json.dumps({
-            "event_type": "trade",
-            "side": "BUY",
-            # no asset_id/market/token_id
-        })
+        event = json.dumps(
+            {
+                "event_type": "trade",
+                "side": "BUY",
+                # no asset_id/market/token_id
+            }
+        )
         user_ws._handle_message(event)
 
         # Cache NOT invalidated (can't identify which token)
@@ -132,6 +149,7 @@ class TestFillEvent:
         cache: MarketStateStore,
     ) -> None:
         """Spawned event callbacks must not fail outside structured logs."""
+
         async def _raise(_event: dict) -> None:
             raise RuntimeError("callback boom")
 
@@ -142,11 +160,15 @@ class TestFillEvent:
         )
 
         with patch("clients.user_ws.logger.warning") as warning:
-            ws._handle_message(json.dumps({
-                "event_type": "trade",
-                "asset_id": TOKEN_A,
-                "side": "BUY",
-            }))
+            ws._handle_message(
+                json.dumps(
+                    {
+                        "event_type": "trade",
+                        "asset_id": TOKEN_A,
+                        "side": "BUY",
+                    }
+                )
+            )
             await asyncio.sleep(0)
             await asyncio.sleep(0)
 
@@ -169,6 +191,7 @@ class TestFillEvent:
 # Order update handling
 # ---------------------------------------------------------------------------
 
+
 class TestOrderUpdate:
     """Verify order lifecycle events are handled without side effects."""
 
@@ -180,12 +203,14 @@ class TestOrderUpdate:
         """Order update events are logged but don't invalidate cache."""
         cache.set_quote(TOKEN_A, best_bid=Decimal("0.55"), best_ask=Decimal("0.60"))
 
-        event = json.dumps({
-            "event_type": "order_update",
-            "order_id": "ord_123",
-            "status": "open",
-            "asset_id": TOKEN_A,
-        })
+        event = json.dumps(
+            {
+                "event_type": "order_update",
+                "order_id": "ord_123",
+                "status": "open",
+                "asset_id": TOKEN_A,
+            }
+        )
         user_ws._handle_message(event)
 
         # Cache NOT invalidated for order updates
@@ -195,6 +220,7 @@ class TestOrderUpdate:
 # ---------------------------------------------------------------------------
 # Authentication
 # ---------------------------------------------------------------------------
+
 
 class TestAuthentication:
     """Verify authentication message format."""
@@ -222,16 +248,19 @@ class TestAuthentication:
         user_ws: UserWebSocket,
     ) -> None:
         """Auth success response is handled gracefully."""
-        event = json.dumps({
-            "type": "auth",
-            "status": "success",
-        })
+        event = json.dumps(
+            {
+                "type": "auth",
+                "status": "success",
+            }
+        )
         user_ws._handle_message(event)  # Should not raise
 
 
 # ---------------------------------------------------------------------------
 # Heartbeat
 # ---------------------------------------------------------------------------
+
 
 class TestHeartbeat:
     """Verify heartbeat sends PING every 5 seconds."""
@@ -329,6 +358,7 @@ class TestHeartbeat:
 # Reconnect
 # ---------------------------------------------------------------------------
 
+
 class TestReconnect:
     """Verify reconnect lifecycle."""
 
@@ -367,6 +397,7 @@ class TestReconnect:
 # Message edge cases
 # ---------------------------------------------------------------------------
 
+
 class TestMessageEdgeCases:
     """Edge cases in message handling."""
 
@@ -388,10 +419,12 @@ class TestMessageEdgeCases:
         """Array of events is processed individually."""
         cache.set_quote(TOKEN_A, best_bid=Decimal("0.55"), best_ask=Decimal("0.60"))
 
-        events = json.dumps([
-            {"event_type": "trade", "asset_id": TOKEN_A, "side": "BUY"},
-            {"event_type": "order_update", "order_id": "ord_1", "status": "open"},
-        ])
+        events = json.dumps(
+            [
+                {"event_type": "trade", "asset_id": TOKEN_A, "side": "BUY"},
+                {"event_type": "order_update", "order_id": "ord_1", "status": "open"},
+            ]
+        )
         user_ws._handle_message(events)
 
         # Fill invalidated the cache

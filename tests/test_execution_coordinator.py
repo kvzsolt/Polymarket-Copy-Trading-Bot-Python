@@ -5,12 +5,24 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-from domain.order_lifecycle import OrderIntent, OrderIntentKey, IntentSide, IntentReason, OrderLifecycleStatus
-from services.execution.coordinator import ExecutionCoordinator, VenueSubmitResult, RetryableVenueError
+from domain.order_lifecycle import (
+    OrderIntent,
+    OrderIntentKey,
+    IntentSide,
+    IntentReason,
+    OrderLifecycleStatus,
+)
+from services.execution.coordinator import (
+    ExecutionCoordinator,
+    VenueSubmitResult,
+    RetryableVenueError,
+)
+
 
 class MockReservation:
     def __init__(self, res_id):
         self.id = res_id
+
 
 class MockReservationService:
     def __init__(self):
@@ -35,7 +47,9 @@ class MockOrdersRepo:
     async def create_from_intent(self, intent, reservation_id, status):
         return MockOrder("ord1")
 
-    async def transition(self, order_id, from_status, to_status, venue_order_id=None, metadata=None):
+    async def transition(
+        self, order_id, from_status, to_status, venue_order_id=None, metadata=None
+    ):
         self.transitions.append((from_status, to_status))
 
 
@@ -108,7 +122,7 @@ async def test_coordinator_retryable_failed():
         positions_repo=MockPositionsRepo(),
         clob_gateway=gateway,
         reconciler=MockReconciler(),
-        audit_logger=MockAuditLogger()
+        audit_logger=MockAuditLogger(),
     )
 
     intent = create_intent()
@@ -116,10 +130,16 @@ async def test_coordinator_retryable_failed():
 
     assert result.status == OrderLifecycleStatus.RETRYABLE_FAILED
     assert result.error == "Timeout"
-    
+
     # Verify transitions
-    assert (OrderLifecycleStatus.RESERVED, OrderLifecycleStatus.SUBMITTING) in orders_repo.transitions
-    assert (OrderLifecycleStatus.SUBMITTING, OrderLifecycleStatus.RETRYABLE_FAILED) in orders_repo.transitions
+    assert (
+        OrderLifecycleStatus.RESERVED,
+        OrderLifecycleStatus.SUBMITTING,
+    ) in orders_repo.transitions
+    assert (
+        OrderLifecycleStatus.SUBMITTING,
+        OrderLifecycleStatus.RETRYABLE_FAILED,
+    ) in orders_repo.transitions
 
     # Issue #98: reservation MUST be released on RetryableVenueError when no
     # live venue_order_id exists — leaving capital/shares locked indefinitely
@@ -135,7 +155,7 @@ async def test_coordinator_filled_sync():
     res_svc = MockReservationService()
     orders_repo = MockOrdersRepo()
     pos_repo = MockPositionsRepo()
-    
+
     coordinator = ExecutionCoordinator(
         reservation_service=res_svc,
         orders_repo=orders_repo,
@@ -143,7 +163,7 @@ async def test_coordinator_filled_sync():
         positions_repo=pos_repo,
         clob_gateway=gateway,
         reconciler=MockReconciler(),
-        audit_logger=MockAuditLogger()
+        audit_logger=MockAuditLogger(),
     )
 
     intent = create_intent()
@@ -161,7 +181,7 @@ async def test_coordinator_unconfirmed_enqueues_reconciliation():
     gateway = MockClobGateway(result=VenueSubmitResult(order_id="v1", status="live"))
     res_svc = MockReservationService()
     reconciler = MockReconciler()
-    
+
     coordinator = ExecutionCoordinator(
         reservation_service=res_svc,
         orders_repo=MockOrdersRepo(),
@@ -169,7 +189,7 @@ async def test_coordinator_unconfirmed_enqueues_reconciliation():
         positions_repo=MockPositionsRepo(),
         clob_gateway=gateway,
         reconciler=reconciler,
-        audit_logger=MockAuditLogger()
+        audit_logger=MockAuditLogger(),
     )
 
     intent = create_intent()
@@ -178,7 +198,7 @@ async def test_coordinator_unconfirmed_enqueues_reconciliation():
     assert result.status == OrderLifecycleStatus.SUBMITTED_UNCONFIRMED
     assert len(reconciler.enqueued) == 1
     assert reconciler.enqueued[0] == "ord1"
-    
+
     # Reservation must NOT be released
     assert len(res_svc.released) == 0
 
@@ -196,7 +216,7 @@ async def test_coordinator_unconfirmed_awaits_reservation_linking():
         positions_repo=MockPositionsRepo(),
         clob_gateway=gateway,
         reconciler=MockReconciler(),
-        audit_logger=MockAuditLogger()
+        audit_logger=MockAuditLogger(),
     )
 
     result = await coordinator.execute_intent(create_intent())
@@ -216,7 +236,7 @@ async def test_coordinator_terminal_failed_releases_reservation():
     gateway = MockClobGateway(result=VenueSubmitResult(order_id="v1", status="rejected"))
     res_svc = MockReservationService()
     reconciler = MockReconciler()
-    
+
     coordinator = ExecutionCoordinator(
         reservation_service=res_svc,
         orders_repo=MockOrdersRepo(),
@@ -224,7 +244,7 @@ async def test_coordinator_terminal_failed_releases_reservation():
         positions_repo=MockPositionsRepo(),
         clob_gateway=gateway,
         reconciler=reconciler,
-        audit_logger=MockAuditLogger()
+        audit_logger=MockAuditLogger(),
     )
 
     intent = create_intent()

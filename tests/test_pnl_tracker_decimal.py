@@ -13,6 +13,7 @@ The test pins:
   * metrics() never returns a value with > 2 decimal places of slop
     relative to the exact Decimal sum.
 """
+
 from __future__ import annotations
 
 from decimal import Decimal

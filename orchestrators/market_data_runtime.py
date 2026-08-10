@@ -300,9 +300,7 @@ class MarketDataRuntime:
                 token_id,
             )
             return False
-        spread_bps = int(
-            ((best_ask - best_bid) / best_ask) * BASIS_POINTS_PER_UNIT
-        )
+        spread_bps = int(((best_ask - best_bid) / best_ask) * BASIS_POINTS_PER_UNIT)
         if cfg["max_spread_bps"] > 0 and spread_bps > cfg["max_spread_bps"]:
             logger.warning(
                 "market_data_rest_bootstrap_rejected | token_id=%s reason=wide_spread"
@@ -333,9 +331,7 @@ class MarketDataRuntime:
                             cfg["request_timeout_ms"] / 1000.0,
                         ),
                     )
-                    tick_size = _to_decimal(
-                        info.get("tick_size") or info.get("minimum_tick_size")
-                    )
+                    tick_size = _to_decimal(info.get("tick_size") or info.get("minimum_tick_size"))
                     min_order_size = _to_decimal(
                         info.get("min_order_size")
                         or info.get("minimum_order_size")
@@ -400,15 +396,9 @@ class MarketDataRuntime:
         return {
             "enable": bool(getattr(cfg_obj, "enable_rest_bootstrap", True)),
             "max_age_ms": int(getattr(cfg_obj, "rest_bootstrap_max_age_ms", 500)),
-            "request_timeout_ms": int(
-                getattr(cfg_obj, "rest_bootstrap_request_timeout_ms", 750)
-            ),
-            "total_budget_ms": int(
-                getattr(cfg_obj, "rest_bootstrap_total_budget_ms", 1000)
-            ),
-            "max_spread_bps": int(
-                getattr(cfg_obj, "rest_bootstrap_max_spread_bps", 300)
-            ),
+            "request_timeout_ms": int(getattr(cfg_obj, "rest_bootstrap_request_timeout_ms", 750)),
+            "total_budget_ms": int(getattr(cfg_obj, "rest_bootstrap_total_budget_ms", 1000)),
+            "max_spread_bps": int(getattr(cfg_obj, "rest_bootstrap_max_spread_bps", 300)),
             "require_wss_connected": bool(
                 getattr(cfg_obj, "rest_bootstrap_require_wss_connected", True)
             ),
@@ -558,10 +548,7 @@ class MarketDataRuntime:
 
         info = await self.gateway.get_market_info(token_id)
 
-        tick_size = _to_decimal(
-            info.get("tick_size")
-            or info.get("minimum_tick_size")
-        )
+        tick_size = _to_decimal(info.get("tick_size") or info.get("minimum_tick_size"))
         min_order_size = _to_decimal(
             info.get("min_order_size")
             or info.get("minimum_order_size")
@@ -638,8 +625,7 @@ class MarketDataRuntime:
         self._refresh_counts()
 
         all_executable = bool(self._subscribed_tokens) and all(
-            self._token_executable(token_id)
-            for token_id in self._subscribed_tokens
+            self._token_executable(token_id) for token_id in self._subscribed_tokens
         )
 
         market_ready = (

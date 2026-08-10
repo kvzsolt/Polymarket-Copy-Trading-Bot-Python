@@ -65,8 +65,7 @@ def _load_default_factory() -> tuple[Callable[[dict[str, Any]], Any], str | None
     factory = getattr(prediction, "polymarket", None)
     if factory is None:
         raise CcxtPredictionUnavailable(
-            "installed CCXT does not expose ccxt.prediction.polymarket; "
-            "CCXT >= 4.5.70 is required"
+            "installed CCXT does not expose ccxt.prediction.polymarket; CCXT >= 4.5.70 is required"
         )
     return factory, str(getattr(ccxt, "__version__", "") or "") or None
 
@@ -128,9 +127,7 @@ async def create_ccxt_prediction_client(
     if not resolved_wallet:
         resolved_wallet = str(_attr(wallet_config, "funder_address", "") or "").strip()
     if not resolved_wallet:
-        resolved_wallet = str(
-            _attr(_attr(config, "wallet"), "funder_address", "") or ""
-        ).strip()
+        resolved_wallet = str(_attr(_attr(config, "wallet"), "funder_address", "") or "").strip()
 
     detected_version = ccxt_version
     if exchange_factory is None:

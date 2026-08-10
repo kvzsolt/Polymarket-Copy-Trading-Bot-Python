@@ -11,6 +11,7 @@ Also pins:
     removed — Python anti-pattern, masks state-sharing bugs if Clock
     ever gains state).
 """
+
 from __future__ import annotations
 
 import inspect

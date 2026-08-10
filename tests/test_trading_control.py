@@ -52,9 +52,7 @@ async def test_paper_mode_does_not_query_live_control() -> None:
 @pytest.mark.asyncio
 async def test_execution_stops_before_market_or_gateway_when_paused() -> None:
     permission = SimpleNamespace(
-        require_submission_allowed=AsyncMock(
-            side_effect=TradingPausedError("paused by operator")
-        )
+        require_submission_allowed=AsyncMock(side_effect=TradingPausedError("paused by operator"))
     )
     market_data = SimpleNamespace(require_fresh_data=AsyncMock())
     gateway = SimpleNamespace(submit_marketable_order=AsyncMock())
@@ -88,9 +86,7 @@ def test_trading_cli_requires_explicit_live_confirmation() -> None:
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="command", required=True)
     register_trading_command(subparsers)
-    args = parser.parse_args(
-        ["trading", "resume", "--confirm", "LIVE", "--reason", "validated"]
-    )
+    args = parser.parse_args(["trading", "resume", "--confirm", "LIVE", "--reason", "validated"])
     assert args.trading_action == "resume"
     assert args.confirm == "LIVE"
 

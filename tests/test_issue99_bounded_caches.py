@@ -7,6 +7,7 @@ Both stores now keep an OrderedDict bounded by ``max_tokens`` /
 tokens evict first, active tokens stay because every WSS/REST touch
 moves them to the MRU end.
 """
+
 from __future__ import annotations
 
 from decimal import Decimal

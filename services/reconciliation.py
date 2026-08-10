@@ -57,6 +57,7 @@ class ReconciliationResult:
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 async def _maybe_await(value: Any) -> Any:
     """Await ``value`` only when it is awaitable.
 
@@ -146,6 +147,7 @@ def _order_age_seconds(order: dict[str, Any], now: float) -> float:
 # Reconciliation Service
 # ---------------------------------------------------------------------------
 
+
 class ReconciliationService:
     """Compares local order state against exchange state."""
 
@@ -169,14 +171,14 @@ class ReconciliationService:
         # Priority: explicit arg > AppConfig > fail-closed default.
         if stale_threshold_seconds is not None:
             self.stale_threshold = float(stale_threshold_seconds)
-        elif config is not None and hasattr(config, 'reconciliation'):
+        elif config is not None and hasattr(config, "reconciliation"):
             self.stale_threshold = config.reconciliation.stale_threshold_seconds
         else:
             self.stale_threshold = 3600.0
 
         if auto_cancel_stale is not None:
             self.auto_cancel = auto_cancel_stale
-        elif config is not None and hasattr(config, 'reconciliation'):
+        elif config is not None and hasattr(config, "reconciliation"):
             self.auto_cancel = config.reconciliation.auto_cancel_stale
         else:
             self.auto_cancel = False
@@ -184,7 +186,7 @@ class ReconciliationService:
         # Cap on per-pass closed-order venue probes (N+1 protection). The
         # venue rate-limits order lookups, so an unbounded local in-flight
         # backlog must not translate into an unbounded probe storm.
-        if config is not None and hasattr(config, 'reconciliation'):
+        if config is not None and hasattr(config, "reconciliation"):
             self.max_closed_probes = max(1, int(config.reconciliation.max_closed_probes))
         else:
             self.max_closed_probes = 10
@@ -194,24 +196,20 @@ class ReconciliationService:
         """Avoid treating MagicMock's arbitrary child attributes as API methods."""
         if candidate is None:
             return False
-        return (
-            callable(getattr(type(candidate), method_name, None))
-            or method_name in vars(candidate)
+        return callable(getattr(type(candidate), method_name, None)) or method_name in vars(
+            candidate
         )
 
     @classmethod
     def _supports_order_management(cls, candidate: Any) -> bool:
         if candidate is None:
             return False
-        return (
-            all(
-                cls._declares_method(candidate, method_name)
-                for method_name in ("list_open_orders", "cancel_order")
-            )
-            or all(
-                callable(getattr(candidate, method_name, None))
-                for method_name in ("get_orders", "cancel_orders")
-            )
+        return all(
+            cls._declares_method(candidate, method_name)
+            for method_name in ("list_open_orders", "cancel_order")
+        ) or all(
+            callable(getattr(candidate, method_name, None))
+            for method_name in ("get_orders", "cancel_orders")
         )
 
     def _orders_client(self) -> Any:
@@ -281,7 +279,8 @@ class ReconciliationService:
                 except Exception as exc:
                     logger.warning(
                         "reconcile_repo_lookup_failed | order_id=%s err=%r",
-                        order_id, exc,
+                        order_id,
+                        exc,
                     )
                 if local_record is None:
                     unknown_count += 1
@@ -295,7 +294,8 @@ class ReconciliationService:
             except Exception as exc:  # pragma: no cover — defensive
                 logger.error(
                     "reconcile_classify_failed | order_id=%s err=%s",
-                    order_id, exc,
+                    order_id,
+                    exc,
                 )
                 delta = None
             if delta is not None:
@@ -328,7 +328,9 @@ class ReconciliationService:
                 stale_order_ids.append(order_id)
                 logger.warning(
                     "Stale open order detected: %s (age=%.0fs, threshold=%.0fs)",
-                    order_id, age, self.stale_threshold,
+                    order_id,
+                    age,
+                    self.stale_threshold,
                 )
 
         # 2b. Detect terminal states (fills / cancels) on orders we believe
@@ -339,9 +341,7 @@ class ReconciliationService:
         # individually, and classify it the same way as if it had appeared
         # in the open list.
         try:
-            seen_open_ids = {
-                str(o.get("id") or "") for o in exchange_orders if o.get("id")
-            }
+            seen_open_ids = {str(o.get("id") or "") for o in exchange_orders if o.get("id")}
             # Bound the per-pass venue probes. ``_fetch_single_order`` is one
             # venue call each; an unbounded backlog of stale-but-open local
             # rows would otherwise turn into an N+1 storm against the venue's
@@ -380,7 +380,8 @@ class ReconciliationService:
                 except Exception as exc:  # pragma: no cover — defensive
                     logger.error(
                         "reconcile_classify_failed_closed | order_id=%s err=%s",
-                        local_oid, exc,
+                        local_oid,
+                        exc,
                     )
                     delta = None
                 if delta is None:
@@ -393,8 +394,7 @@ class ReconciliationService:
                     # alerting fires and book-keeping reconciles.
                     unexpected_fills += 1
                     logger.warning(
-                        "reconcile_unexpected_fill_closed | order_id=%s "
-                        "matched=%s status=%s",
+                        "reconcile_unexpected_fill_closed | order_id=%s matched=%s status=%s",
                         local_oid,
                         str(delta.get("venue") or delta.get("matched")),
                         _order_status(probed),
@@ -416,7 +416,8 @@ class ReconciliationService:
                     unexpected_fills += 1
                     logger.warning(
                         "reconcile_filled_off_open | order_id=%s matched=%s",
-                        local_oid, str(delta.get("venue") or delta.get("matched")),
+                        local_oid,
+                        str(delta.get("venue") or delta.get("matched")),
                     )
             if probe_cap_hit:
                 logger.warning(
@@ -448,7 +449,8 @@ class ReconciliationService:
                         except Exception as exc:
                             logger.warning(
                                 "reconcile_repo_lookup_failed | order_id=%s err=%r",
-                                oid, exc,
+                                oid,
+                                exc,
                             )
                             local_row = None
                         self._rollback_balance_regime_on_cancel(
@@ -525,14 +527,16 @@ class ReconciliationService:
                 logger.warning(
                     "reconcile_unexpected_fill | order_id=%s status=%s matched=%s "
                     "(no local record)",
-                    order_id, venue_status, venue_matched,
+                    order_id,
+                    venue_status,
+                    venue_matched,
                 )
                 return {"kind": "unexpected_fill", "matched": venue_matched}
             if venue_status in _TERMINAL_CANCELLED_STATUSES:
                 logger.info(
-                    "reconcile_unexpected_cancellation | order_id=%s status=%s "
-                    "(no local record)",
-                    order_id, venue_status,
+                    "reconcile_unexpected_cancellation | order_id=%s status=%s (no local record)",
+                    order_id,
+                    venue_status,
                 )
                 return {"kind": "unexpected_cancellation"}
             return None
@@ -547,7 +551,9 @@ class ReconciliationService:
                 logger.info(
                     "reconcile_unexpected_cancellation | order_id=%s "
                     "venue_status=%s local_status=%s",
-                    order_id, venue_status, local_status,
+                    order_id,
+                    venue_status,
+                    local_status,
                 )
                 return {"kind": "unexpected_cancellation"}
 
@@ -566,7 +572,10 @@ class ReconciliationService:
                 logger.info(
                     "reconcile_cancel_after_partial | order_id=%s "
                     "venue_status=%s local_matched=%s venue_matched=%s",
-                    order_id, venue_status, local_matched, venue_matched,
+                    order_id,
+                    venue_status,
+                    local_matched,
+                    venue_matched,
                 )
                 return {
                     "kind": "cancel_after_partial",
@@ -589,16 +598,19 @@ class ReconciliationService:
             # logic (which expects partial → more fills to come) ends up
             # double-counting on the next reconcile pass.
             original_size = _original_size(order)
-            is_complete = (
-                venue_status in _TERMINAL_FILLED_STATUSES
-                or (original_size > 0 and venue_matched >= original_size)
+            is_complete = venue_status in _TERMINAL_FILLED_STATUSES or (
+                original_size > 0 and venue_matched >= original_size
             )
             if is_complete:
                 logger.info(
                     "reconcile_filled | order_id=%s status=%s "
                     "local_matched=%s venue_matched=%s delta=%s original=%s",
-                    order_id, venue_status, local_matched, venue_matched,
-                    delta, original_size,
+                    order_id,
+                    venue_status,
+                    local_matched,
+                    venue_matched,
+                    delta,
+                    original_size,
                 )
                 return {
                     "kind": "filled",
@@ -610,7 +622,11 @@ class ReconciliationService:
             logger.info(
                 "reconcile_partial_fill | order_id=%s status=%s "
                 "local_matched=%s venue_matched=%s delta=%s",
-                order_id, venue_status, local_matched, venue_matched, delta,
+                order_id,
+                venue_status,
+                local_matched,
+                venue_matched,
+                delta,
             )
             return {
                 "kind": "partial_fill",
@@ -678,11 +694,7 @@ class ReconciliationService:
             return
         if not order_id:
             return
-        side = (
-            (local_record or {}).get("side")
-            or (local_record or {}).get("Side")
-            or ""
-        )
+        side = (local_record or {}).get("side") or (local_record or {}).get("Side") or ""
         if isinstance(side, str) and side.upper() == "SELL":
             return  # SELLs do not consume the daily-spend budget
 
@@ -703,7 +715,9 @@ class ReconciliationService:
                     logger.warning(
                         "partial_cancel_price_unresolved | order_id=%s matched=%s "
                         "requested=%s — skipping refund (manual reconcile required)",
-                        order_id, str(matched), str(requested),
+                        order_id,
+                        str(matched),
+                        str(requested),
                     )
                     return
                 filled_notional = matched * price
@@ -727,7 +741,8 @@ class ReconciliationService:
         except Exception as exc:  # pragma: no cover — defensive
             logger.error(
                 "balance_regime_rollback_failed | order_id=%s err=%s",
-                order_id, exc,
+                order_id,
+                exc,
             )
 
     async def _record_partial_fill(
@@ -758,7 +773,8 @@ class ReconciliationService:
         except Exception as exc:
             logger.error(
                 "reconcile_partial_fill_persist_failed | order_id=%s err=%s",
-                order_id, exc,
+                order_id,
+                exc,
             )
 
     async def _local_in_flight_orders(self) -> list[dict[str, Any]]:
@@ -811,7 +827,8 @@ class ReconciliationService:
         except Exception as exc:
             logger.debug(
                 "reconcile_single_order_fetch_failed | order_id=%s err=%s",
-                order_id, exc,
+                order_id,
+                exc,
             )
             return None
         if raw is None:
@@ -841,7 +858,8 @@ class ReconciliationService:
         except Exception as exc:
             logger.warning(
                 "reconcile_single_order_extract_failed | order_id=%s err=%r",
-                order_id, exc,
+                order_id,
+                exc,
             )
             return None
 
@@ -893,14 +911,13 @@ class ReconciliationService:
                 raise RuntimeError(getattr(result, "error", None) or "order cancellation failed")
             return
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(
-            None, lambda: orders_client.cancel_orders([order_id])
-        )
+        await loop.run_in_executor(None, lambda: orders_client.cancel_orders([order_id]))
 
 
 # ---------------------------------------------------------------------------
 # Periodic reconciliation loop (for use from app.py)
 # ---------------------------------------------------------------------------
+
 
 async def reconciliation_loop(
     service: ReconciliationService,
@@ -912,7 +929,7 @@ async def reconciliation_loop(
     """Run reconciliation periodically."""
     if interval_seconds is not None:
         interval = float(interval_seconds)
-    elif config is not None and hasattr(config, 'polling'):
+    elif config is not None and hasattr(config, "polling"):
         interval = float(config.reconciliation.reconcile_interval_seconds)
     else:
         # Fail-closed default; production always passes config.reconciliation.

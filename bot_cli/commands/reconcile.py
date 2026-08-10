@@ -1,4 +1,5 @@
 """bot reconcile — trigger reconciliation of all unconfirmed orders."""
+
 from __future__ import annotations
 
 import argparse
@@ -10,7 +11,9 @@ from config.app_config import load_config, EnvValidationError
 
 def register_reconcile_command(subparsers: argparse._SubParsersAction) -> None:
     parser = subparsers.add_parser("reconcile", help="Trigger reconciliation of unconfirmed orders")
-    parser.add_argument("--dry-run", action="store_true", help="Show what would be reconciled without acting")
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Show what would be reconciled without acting"
+    )
     parser.add_argument("--user-id", default=None, help="Reconcile orders for a specific user only")
 
 

@@ -20,7 +20,9 @@ STALE = "0x" + "4" * 40
 INVALID = "not-an-evm-wallet"
 
 
-def wallet360(wallet: str, window: int, *, sybil: bool = False, concentration: float = 0.2) -> list[dict[str, Any]]:
+def wallet360(
+    wallet: str, window: int, *, sybil: bool = False, concentration: float = 0.2
+) -> list[dict[str, Any]]:
     return [
         {
             "proxy_wallet": wallet,
@@ -72,11 +74,51 @@ class FakeHeisenberg:
 
     async def leaderboard(self, **_kwargs):
         return [
-            {"wallet": GOOD, "h_score": 82, "roi_15d": 0.20, "pnl_15d": 5000, "win_rate_15d": 0.62, "total_trades_15d": 100, "trajectory": "rising"},
-            {"wallet": WHALE, "h_score": 88, "roi_15d": 0.25, "pnl_15d": 9000, "win_rate_15d": 0.66, "total_trades_15d": 120, "trajectory": "stable"},
-            {"wallet": SYBIL, "h_score": 95, "roi_15d": 0.9, "pnl_15d": 100000, "win_rate_15d": 0.9, "total_trades_15d": 1000, "trajectory": "rising"},
-            {"wallet": STALE, "h_score": 80, "roi_15d": 0.2, "pnl_15d": 4000, "win_rate_15d": 0.6, "total_trades_15d": 90, "trajectory": "stable"},
-            {"wallet": INVALID, "h_score": 99, "roi_15d": 0.9, "pnl_15d": 999999, "win_rate_15d": 0.9, "total_trades_15d": 9999, "trajectory": "rising"},
+            {
+                "wallet": GOOD,
+                "h_score": 82,
+                "roi_15d": 0.20,
+                "pnl_15d": 5000,
+                "win_rate_15d": 0.62,
+                "total_trades_15d": 100,
+                "trajectory": "rising",
+            },
+            {
+                "wallet": WHALE,
+                "h_score": 88,
+                "roi_15d": 0.25,
+                "pnl_15d": 9000,
+                "win_rate_15d": 0.66,
+                "total_trades_15d": 120,
+                "trajectory": "stable",
+            },
+            {
+                "wallet": SYBIL,
+                "h_score": 95,
+                "roi_15d": 0.9,
+                "pnl_15d": 100000,
+                "win_rate_15d": 0.9,
+                "total_trades_15d": 1000,
+                "trajectory": "rising",
+            },
+            {
+                "wallet": STALE,
+                "h_score": 80,
+                "roi_15d": 0.2,
+                "pnl_15d": 4000,
+                "win_rate_15d": 0.6,
+                "total_trades_15d": 90,
+                "trajectory": "stable",
+            },
+            {
+                "wallet": INVALID,
+                "h_score": 99,
+                "roi_15d": 0.9,
+                "pnl_15d": 999999,
+                "win_rate_15d": 0.9,
+                "total_trades_15d": 9999,
+                "trajectory": "rising",
+            },
         ]
 
     async def wallet_360(self, wallet: str, window_days: int, **_kwargs):
@@ -85,20 +127,60 @@ class FakeHeisenberg:
         return wallet360(wallet, window_days, sybil=wallet == SYBIL)
 
     async def wallet_stats_all_time(self, wallet: str, **_kwargs):
-        return [{"proxy_wallet": wallet, "total_trades": 1000, "avg_trade_size": "100", "roi_pct": "10", "total_pnl": "5000"}]
+        return [
+            {
+                "proxy_wallet": wallet,
+                "total_trades": 1000,
+                "avg_trade_size": "100",
+                "roi_pct": "10",
+                "total_pnl": "5000",
+            }
+        ]
 
     async def trades(self, *, proxy_wallet: str, **_kwargs):
         return recent_trades(proxy_wallet, stale=proxy_wallet == STALE)
 
     async def markets(self, *, condition_id: str, **_kwargs):
         end = NOW + (timedelta(days=3) if condition_id == "short" else timedelta(days=90))
-        return [{"condition_id": condition_id, "closed": False, "start_date": (NOW - timedelta(days=1)).isoformat(), "end_date": end.isoformat(), "volume_total": "100000", "side_a_token_id": "yes", "side_b_token_id": "no"}]
+        return [
+            {
+                "condition_id": condition_id,
+                "closed": False,
+                "start_date": (NOW - timedelta(days=1)).isoformat(),
+                "end_date": end.isoformat(),
+                "volume_total": "100000",
+                "side_a_token_id": "yes",
+                "side_b_token_id": "no",
+            }
+        ]
 
     async def market_360(self, *, condition_id: str, **_kwargs):
-        return [{"condition_id": condition_id, "liquidity_percentile": "85", "current_volume_24h": "100000", "top1_wallet_pct": "15", "top10_wallet_pct": "45", "market_active": True, "market_closed": False, "volume_trend": "Normal", "whale_control_flag": False, "trade_concentration_flag": False}]
+        return [
+            {
+                "condition_id": condition_id,
+                "liquidity_percentile": "85",
+                "current_volume_24h": "100000",
+                "top1_wallet_pct": "15",
+                "top10_wallet_pct": "45",
+                "market_active": True,
+                "market_closed": False,
+                "volume_trend": "Normal",
+                "whale_control_flag": False,
+                "trade_concentration_flag": False,
+            }
+        ]
 
     async def pnl(self, *, wallet: str, **_kwargs):
-        return [{"proxy_wallet": wallet, "pnl": "500", "trades": 30, "wins": 20, "losses": 10, "win_rate": "0.666"}]
+        return [
+            {
+                "proxy_wallet": wallet,
+                "pnl": "500",
+                "trades": 30,
+                "wins": 20,
+                "losses": 10,
+                "win_rate": "0.666",
+            }
+        ]
 
 
 @pytest.mark.asyncio
@@ -148,6 +230,7 @@ async def test_partial_wallet360_failure_never_silently_promotes_candidate() -> 
 
     rejected = {item.wallet: item.reasons for item in result.rejected}
     assert "insufficient_wallet360_evidence" in rejected[GOOD]
+
 
 class PriceJumpHeisenberg(FakeHeisenberg):
     async def price_jumps(self, *, token_id: str, **_kwargs):
@@ -259,6 +342,7 @@ async def test_toxic_market_majority_fails_closed() -> None:
 
     rejected = {item.wallet: item.reasons for item in result.rejected}
     assert "toxic_or_inactive_market_mix" in rejected[GOOD]
+
 
 STRONG = "0x" + "b" * 40
 WEAK = "0x" + "a" * 40
@@ -381,7 +465,6 @@ async def test_cached_market_failure_is_attributed_to_every_affected_candidate()
     for wallet in (CACHE_A, CACHE_B):
         assert "market_liquidity_below_threshold" in rejected[wallet].reasons
         assert "market360:RuntimeError" in rejected[wallet].metrics["source_errors"]
-
 
 
 class StaleWallet360Heisenberg(FakeHeisenberg):

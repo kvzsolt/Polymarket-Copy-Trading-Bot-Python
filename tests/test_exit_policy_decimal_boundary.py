@@ -7,6 +7,7 @@ configured percentage could flip the decision, so a stop-loss placed exactly at
 the threshold was not guaranteed to fire (and a value fractionally inside the
 threshold could spuriously fire). These tests pin the Decimal-exact boundary.
 """
+
 from __future__ import annotations
 
 from decimal import Decimal
@@ -18,20 +19,17 @@ from services.risk.exit_policy import evaluate_exit
 # Determinism: a PnL sitting exactly on the threshold must fire.
 # ---------------------------------------------------------------------------
 
+
 def test_stop_loss_fires_exactly_at_threshold():
     # PnL == -10% exactly; stop_loss at 10% must trigger deterministically.
-    decision = evaluate_exit(
-        Decimal("100"), Decimal("90"), stop_loss_pct=0.10
-    )
+    decision = evaluate_exit(Decimal("100"), Decimal("90"), stop_loss_pct=0.10)
     assert decision.should_exit is True
     assert decision.reason == "stop_loss"
 
 
 def test_take_profit_fires_exactly_at_threshold():
     # PnL == +10% exactly; take_profit at 10% must trigger deterministically.
-    decision = evaluate_exit(
-        Decimal("100"), Decimal("110"), take_profit_pct=0.10
-    )
+    decision = evaluate_exit(Decimal("100"), Decimal("110"), take_profit_pct=0.10)
     assert decision.should_exit is True
     assert decision.reason == "take_profit"
 
@@ -55,6 +53,7 @@ def test_trailing_stop_fires_exactly_at_threshold():
 # the Decimal-exact comparison correctly evaluates it as not-yet-triggered.
 # ---------------------------------------------------------------------------
 
+
 def test_stop_loss_does_not_spuriously_fire_just_inside_threshold():
     entry = Decimal("0.59")
     current = Decimal("0.56")
@@ -76,9 +75,7 @@ def test_stop_loss_does_not_spuriously_fire_just_inside_threshold():
 
 def test_stop_loss_fires_just_past_threshold():
     # One tick more loss than the threshold must still fire.
-    decision = evaluate_exit(
-        Decimal("100"), Decimal("89.99"), stop_loss_pct=0.10
-    )
+    decision = evaluate_exit(Decimal("100"), Decimal("89.99"), stop_loss_pct=0.10)
     assert decision.should_exit is True
     assert decision.reason == "stop_loss"
 

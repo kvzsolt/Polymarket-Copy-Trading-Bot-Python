@@ -1,4 +1,5 @@
 """bot stale-locks — list orders held in submission lock past TTL."""
+
 from __future__ import annotations
 
 import argparse
@@ -164,9 +165,7 @@ async def _run_list_async(args: argparse.Namespace) -> int:
             command_timeout_seconds=15.0,
         )
         try:
-            rows = await _list_stale_locks(
-                pool, ttl_seconds=int(ttl), user_id=user_id
-            )
+            rows = await _list_stale_locks(pool, ttl_seconds=int(ttl), user_id=user_id)
         finally:
             await shutdown_pool()
     except Exception as exc:

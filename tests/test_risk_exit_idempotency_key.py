@@ -87,8 +87,12 @@ def test_signal_id_differs_by_scope():
     pm = MagicMock()
     pm.get_position.return_value = _tracked(entry_time=1_700_000_000.0)
 
-    key_a = _risk_exit_signal_id(_pos(condition_id="cond-a"), reason="risk_exit", position_manager=pm)
-    key_b = _risk_exit_signal_id(_pos(condition_id="cond-b"), reason="risk_exit", position_manager=pm)
+    key_a = _risk_exit_signal_id(
+        _pos(condition_id="cond-a"), reason="risk_exit", position_manager=pm
+    )
+    key_b = _risk_exit_signal_id(
+        _pos(condition_id="cond-b"), reason="risk_exit", position_manager=pm
+    )
 
     assert key_a != key_b
 

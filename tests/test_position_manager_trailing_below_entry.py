@@ -61,7 +61,7 @@ def test_trailing_stop_still_fires_above_entry():
     # Guard against over-correction: the normal in-profit retrace still fires.
     pm = _make_trailing_pm()
     cid = _add(pm, entry=0.50)
-    pm.evaluate_risk_action(cid, 0.90)          # arm, peak 0.90
+    pm.evaluate_risk_action(cid, 0.90)  # arm, peak 0.90
     action = pm.evaluate_risk_action(cid, 0.74)  # <= 0.90*0.85=0.765, still > entry
     assert action is not None
     assert action["reason"] == "trailing_stop"

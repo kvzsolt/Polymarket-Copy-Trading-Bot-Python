@@ -23,6 +23,7 @@ Each feature degrades gracefully to ``None`` when the underlying data is
 insufficient (e.g. no closed positions for win-rate). The classifier treats
 ``None`` as "unknown" and falls back conservatively.
 """
+
 from __future__ import annotations
 
 import statistics
@@ -114,12 +115,8 @@ def compute_features(history: LoadedHistory) -> dict[str, float | None]:
                 near_resolution_entries += 1
 
     median_notional = _median(notionals)
-    avg_entry_price = (
-        float(sum(entry_prices) / len(entry_prices)) if entry_prices else None
-    )
-    low_price_entry_ratio = (
-        float(low_price_entries / len(entry_prices)) if entry_prices else None
-    )
+    avg_entry_price = float(sum(entry_prices) / len(entry_prices)) if entry_prices else None
+    low_price_entry_ratio = float(low_price_entries / len(entry_prices)) if entry_prices else None
     near_certainty_entry_ratio = (
         float(near_certainty_entries / len(entry_prices)) if entry_prices else None
     )
@@ -135,9 +132,7 @@ def compute_features(history: LoadedHistory) -> dict[str, float | None]:
         if entry_ts and exit_ts and exit_ts > entry_ts:
             hold_times_minutes.append((exit_ts - entry_ts) / 60_000.0)
     avg_hold_time_minutes = (
-        float(sum(hold_times_minutes) / len(hold_times_minutes))
-        if hold_times_minutes
-        else None
+        float(sum(hold_times_minutes) / len(hold_times_minutes)) if hold_times_minutes else None
     )
 
     # Grouped signals: trades whose timestamp is within 5s of another trade.
@@ -150,18 +145,14 @@ def compute_features(history: LoadedHistory) -> dict[str, float | None]:
             grouped += 1
         elif i < len(timestamps) - 1 and timestamps[i + 1] - ts <= 5_000:
             grouped += 1
-    grouped_signal_ratio = (
-        float(grouped / len(timestamps)) if timestamps else None
-    )
+    grouped_signal_ratio = float(grouped / len(timestamps)) if timestamps else None
 
     # Crypto-fast signal ratio: trades within 60s of another (tight clusters).
     fast = 0
     for i, ts in enumerate(timestamps):
         if i > 0 and ts - timestamps[i - 1] <= 60_000:
             fast += 1
-    crypto_fast_signal_ratio = (
-        float(fast / len(timestamps)) if timestamps else None
-    )
+    crypto_fast_signal_ratio = float(fast / len(timestamps)) if timestamps else None
 
     # Maker/taker fill ratio from trade rows (``maker`` boolean or side).
     maker_count = sum(1 for r in trade_rows if _is_maker(r))
@@ -184,13 +175,12 @@ def compute_features(history: LoadedHistory) -> dict[str, float | None]:
             pnl_values.append(float(pnl))
     win_rate_7d = None
     closed_7d = [
-        c for c in closed
+        c
+        for c in closed
         if (_safe_timestamp(c.get("closedAt") or c.get("timestamp")) or 0) >= cutoff_7d
     ]
     if closed_7d:
-        wins_7d = sum(
-            1 for c in closed_7d if _to_decimal(c.get("pnl") or c.get("realizedPnl")) > 0
-        )
+        wins_7d = sum(1 for c in closed_7d if _to_decimal(c.get("pnl") or c.get("realizedPnl")) > 0)
         win_rate_7d = float(wins_7d / len(closed_7d))
     roi_7d = None
     if closed_7d:
@@ -205,13 +195,12 @@ def compute_features(history: LoadedHistory) -> dict[str, float | None]:
             roi_7d = total_pnl_7d / total_cost_7d
     pnl_30d = None
     closed_30d = [
-        c for c in closed
+        c
+        for c in closed
         if (_safe_timestamp(c.get("closedAt") or c.get("timestamp")) or 0) >= cutoff_30d
     ]
     if closed_30d:
-        pnl_30d = sum(
-            float(_to_decimal(c.get("pnl") or c.get("realizedPnl"))) for c in closed_30d
-        )
+        pnl_30d = sum(float(_to_decimal(c.get("pnl") or c.get("realizedPnl"))) for c in closed_30d)
 
     # Max drawdown over 30d closed-position pnl series (cumulative).
     max_drawdown_30d = _max_drawdown(pnl_values)
@@ -236,9 +225,7 @@ def compute_features(history: LoadedHistory) -> dict[str, float | None]:
             exit_prices.append(float(exit_price))
             if exit_price >= Decimal("0.95"):
                 near_max_exits += 1
-    near_max_exit_ratio = (
-        float(near_max_exits / len(exit_prices)) if exit_prices else None
-    )
+    near_max_exit_ratio = float(near_max_exits / len(exit_prices)) if exit_prices else None
 
     return {
         "trade_count_7d": float(trade_count_7d),

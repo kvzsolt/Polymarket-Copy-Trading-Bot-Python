@@ -3,6 +3,7 @@
 Covers OrderConfirmationConfig.resolve_initial_delay and
 ReconciliationService._should_skip_for_delay / _is_past_ambiguous_timeout.
 """
+
 from __future__ import annotations
 
 import time
@@ -58,9 +59,9 @@ def test_resolve_default_delay_with_no_overrides():
 
 def test_resolve_delayed_status_adds_extra():
     cfg = _cfg()
-    assert cfg.resolve_initial_delay(
-        token_id="t1", condition_id="c1", venue_status="delayed"
-    ) == 4.0
+    assert (
+        cfg.resolve_initial_delay(token_id="t1", condition_id="c1", venue_status="delayed") == 4.0
+    )
 
 
 def test_token_override_beats_condition_and_default():
@@ -126,18 +127,24 @@ def test_datetime_created_at_and_processed_at_are_supported():
         time.time() - 20,
         tz=timezone.utc,
     )
-    assert svc._is_past_ambiguous_timeout(
-        datetime_record,
-        order_confirmation_cfg=cfg,
-    ) is True
+    assert (
+        svc._is_past_ambiguous_timeout(
+            datetime_record,
+            order_confirmation_cfg=cfg,
+        )
+        is True
+    )
 
     processed_record = _record(age_seconds=0)
     processed_record.pop("created_at")
     processed_record["processed_at"] = time.time() - 20
-    assert svc._is_past_ambiguous_timeout(
-        processed_record,
-        order_confirmation_cfg=cfg,
-    ) is True
+    assert (
+        svc._is_past_ambiguous_timeout(
+            processed_record,
+            order_confirmation_cfg=cfg,
+        )
+        is True
+    )
 
 
 @pytest.mark.asyncio
@@ -183,9 +190,7 @@ async def test_unresolved_reconcile_persists_ambiguous_timeout_once():
     reconciled = await svc.reconcile_trade_record(
         record,
         "BUY",
-        confirm_fill=AsyncMock(
-            return_value={"status": "poll_unavailable", "size_matched": "0"}
-        ),
+        confirm_fill=AsyncMock(return_value={"status": "poll_unavailable", "size_matched": "0"}),
     )
 
     assert reconciled is False

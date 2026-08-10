@@ -131,9 +131,7 @@ def load_runtime_users(leader_wallets: list[str], config: AppConfig) -> list[Run
         Path.home().resolve(strict=False),
         Path.cwd().resolve(strict=False),
     )
-    if not any(
-        resolved == root or _is_descendant(resolved, root) for root in safe_roots
-    ):
+    if not any(resolved == root or _is_descendant(resolved, root) for root in safe_roots):
         raise ValueError(
             f"MULTI_USER_CONFIG_FILE must point under $HOME or the working "
             f"directory; resolved path was {resolved}"
@@ -141,9 +139,7 @@ def load_runtime_users(leader_wallets: list[str], config: AppConfig) -> list[Run
     # ``json.loads`` cannot parse JSONC (comments/trailing commas); only
     # accept .json. Operators wanting comments must strip them upstream.
     if resolved.suffix.lower() != ".json":
-        raise ValueError(
-            f"MULTI_USER_CONFIG_FILE must be a .json file; got {resolved.suffix!r}"
-        )
+        raise ValueError(f"MULTI_USER_CONFIG_FILE must be a .json file; got {resolved.suffix!r}")
 
     payload = json.loads(resolved.read_text(encoding="utf-8"))
     users = [_runtime_user_from_payload(p, config) for p in payload.get("users", [])]

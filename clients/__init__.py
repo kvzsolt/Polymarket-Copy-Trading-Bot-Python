@@ -20,18 +20,22 @@ __all__ = [
 def __getattr__(name: str) -> Any:
     if name == "AsyncHttpClient":
         from clients.network.http_client import AsyncHttpClient
+
         return AsyncHttpClient
 
     if name == "HttpRetryPolicy":
         from clients.network.http_client import HttpRetryPolicy
+
         return HttpRetryPolicy
 
     if name == "MarketWebSocket":
         from clients.market_ws import MarketWebSocket
+
         return MarketWebSocket
 
     if name == "UserWebSocket":
         from clients.user_ws import UserWebSocket
+
         return UserWebSocket
 
     raise AttributeError(f"module 'clients' has no attribute {name!r}")

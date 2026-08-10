@@ -108,7 +108,7 @@ class TestCopyDecisionService:
             live_price=0.20,
             base_notional_usdc=1.00,
             max_notional_usdc=10.0,
-            market_min_size=8.0,         # ignored for taker orders
+            market_min_size=8.0,  # ignored for taker orders
         )
         assert decision.allow is True
         assert decision.target_size_tokens == pytest.approx(5.0)
@@ -191,7 +191,7 @@ class TestCopyDecisionService:
                 trade=trade,
                 sell_tokens=1.0,
                 live_price=0.40,
-                market_min_size=5.0,    # ignored for taker
+                market_min_size=5.0,  # ignored for taker
                 max_sell_tokens=10.0,
             )
 
@@ -217,8 +217,8 @@ class TestCopyDecisionService:
                 trade=trade,
                 sell_tokens=1.0,
                 live_price=0.40,
-                market_min_size=5.0,    # ignored for taker
-                max_sell_tokens=2.0,    # held < taker min (3)
+                market_min_size=5.0,  # ignored for taker
+                max_sell_tokens=2.0,  # held < taker min (3)
             )
 
         assert decision.allow is False
@@ -271,7 +271,7 @@ class TestCopyDecisionService:
             trade=trade,
             sell_tokens=2.0,
             live_price=0.40,
-            market_min_size=5.0,    # ignored for taker orders
+            market_min_size=5.0,  # ignored for taker orders
             max_sell_tokens=10.0,
         )
         # live_price=0.40 => taker_min = ceil(1/0.40) = 2.5 tokens
@@ -339,7 +339,10 @@ class TestCopyDecisionServicePartialHeadroom:
             market_min_size=5.0,
         )
         assert decision.allow is False
-        assert decision.skip_code in ("buy_cap_blocks_upsize_to_venue_min", "risk_cap_too_low_for_min_order")
+        assert decision.skip_code in (
+            "buy_cap_blocks_upsize_to_venue_min",
+            "risk_cap_too_low_for_min_order",
+        )
 
     def test_buy_not_capped_when_headroom_covers_full_order(self):
         """When cap headroom > desired order size, full order goes through unchanged."""
@@ -395,7 +398,10 @@ class TestPhase3MetadataSizing:
             market_min_size=5.0,
         )
         assert decision.allow is False
-        assert decision.skip_code in ("buy_cap_blocks_upsize_to_venue_min", "risk_cap_too_low_for_min_order")
+        assert decision.skip_code in (
+            "buy_cap_blocks_upsize_to_venue_min",
+            "risk_cap_too_low_for_min_order",
+        )
 
     def test_sell_skips_when_held_below_venue_min(self):
         """SELL below taker min, held position too small → skip."""

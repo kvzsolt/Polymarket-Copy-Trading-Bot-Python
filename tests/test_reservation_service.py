@@ -1,4 +1,5 @@
 """ReservationService end-to-end against async PG repos (PG-A6 port)."""
+
 from __future__ import annotations
 
 import contextlib
@@ -100,11 +101,7 @@ def create_mock_intent(
             condition_id="cond1",
             token_id="1" * 70,
             side=side,
-            reason=(
-                IntentReason.COPY_BUY
-                if side == IntentSide.BUY
-                else IntentReason.COPY_SELL
-            ),
+            reason=(IntentReason.COPY_BUY if side == IntentSide.BUY else IntentReason.COPY_SELL),
         ),
         size=size,
         price=price,
@@ -244,9 +241,7 @@ async def test_legacy_format_reservation_blocks_new_key_intent():
     # key-format change cannot double-reserve during deployment.
     async with _pg_pool() as pool:
         svc = _build_service(pool, MockClock(1000))
-        await _insert_legacy_reservation(
-            pool, create_mock_intent(IntentSide.BUY), expires_at=1060
-        )
+        await _insert_legacy_reservation(pool, create_mock_intent(IntentSide.BUY), expires_at=1060)
         with pytest.raises(ReservationConflict):
             await svc.reserve_for_intent(_new_key_buy_intent("0xdifferenttx"))
 
@@ -259,9 +254,7 @@ async def test_expired_legacy_reservation_allows_new_key_intent():
     async with _pg_pool() as pool:
         clock = MockClock(1000)
         svc = _build_service(pool, clock)
-        await _insert_legacy_reservation(
-            pool, create_mock_intent(IntentSide.BUY), expires_at=1060
-        )
+        await _insert_legacy_reservation(pool, create_mock_intent(IntentSide.BUY), expires_at=1060)
         clock.advance(61)  # now past the legacy reservation's expiry
         res = await svc.reserve_for_intent(_new_key_buy_intent("0xtx"))
         assert res.status == "active"

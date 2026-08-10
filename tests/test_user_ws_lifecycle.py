@@ -6,6 +6,7 @@ Pins:
   - FAILED emits status="failed" lifecycle log
   - UserWebSocket never touches positions/reservations
 """
+
 from __future__ import annotations
 
 from unittest.mock import patch
@@ -41,17 +42,22 @@ def _fill_event(trade_status: str, *, order_id: str = "ord-1", token: str = "0xt
     }
 
 
-@pytest.mark.parametrize("trade_status,canonical", [
-    ("MATCHED", "matched"),
-    ("MINED", "mined"),
-    ("CONFIRMED", "confirmed"),
-    ("RETRYING", "retrying"),
-    ("FAILED", "failed"),
-])
+@pytest.mark.parametrize(
+    "trade_status,canonical",
+    [
+        ("MATCHED", "matched"),
+        ("MINED", "mined"),
+        ("CONFIRMED", "confirmed"),
+        ("RETRYING", "retrying"),
+        ("FAILED", "failed"),
+    ],
+)
 def test_wss_event_emits_canonical_lifecycle_status(trade_status, canonical):
     ws = _ws()
-    with patch("clients.user_ws._log_lc_fallback", create=True), \
-         patch("utils.logger.log_order_lifecycle") as lc:
+    with (
+        patch("clients.user_ws._log_lc_fallback", create=True),
+        patch("utils.logger.log_order_lifecycle") as lc,
+    ):
         ws._handle_fill(_fill_event(trade_status, order_id=f"ord-{canonical}"))
     assert lc.call_count == 1
     kwargs = lc.call_args.kwargs

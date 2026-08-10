@@ -52,9 +52,7 @@ class CopyReactionEngine:
             )
 
         source_outcome = trade.outcome_label.strip()
-        target_outcome = (
-            self._opposite(source_outcome) if policy.counter_trade else source_outcome
-        )
+        target_outcome = self._opposite(source_outcome) if policy.counter_trade else source_outcome
         if not self._side_allowed(policy.copy_side, target_outcome):
             return ReactionDecision(
                 ReactionAction.SKIP,

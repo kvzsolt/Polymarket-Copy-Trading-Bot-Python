@@ -308,9 +308,7 @@ class InMemoryTaskBudgetRepository:
                     and existing_fill.notional == amount
                 ):
                     return False
-                raise TaskBudgetInvariantError(
-                    "fill identity conflicts with task budget ledger"
-                )
+                raise TaskBudgetInvariantError("fill identity conflicts with task budget ledger")
             reservation = self._reservations.get(str(reservation_id))
             if reservation is None:
                 raise TaskBudgetInvariantError("task budget reservation does not exist")
@@ -320,13 +318,10 @@ class InMemoryTaskBudgetRepository:
                 raise TaskBudgetInvariantError("task budget reservation already committed")
             if reservation.status is not TaskBudgetReservationStatus.RESERVED:
                 raise TaskBudgetInvariantError(
-                    f"cannot commit task budget reservation in "
-                    f"{reservation.status.value} state"
+                    f"cannot commit task budget reservation in {reservation.status.value} state"
                 )
             if amount > reservation.request.amount:
-                raise TaskBudgetInvariantError(
-                    "filled notional exceeds task budget reservation"
-                )
+                raise TaskBudgetInvariantError("filled notional exceeds task budget reservation")
             fill = TaskBudgetFill(
                 fill_id=str(fill_id),
                 reservation_id=str(reservation_id),
@@ -348,10 +343,7 @@ class InMemoryTaskBudgetRepository:
 
         async with self._lock:
             existing = self._reservations.get(str(reservation_id))
-            if (
-                existing is None
-                or existing.status is not TaskBudgetReservationStatus.RESERVED
-            ):
+            if existing is None or existing.status is not TaskBudgetReservationStatus.RESERVED:
                 return False
             self._reservations[reservation_id] = TaskBudgetReservation(
                 request=existing.request,
@@ -382,8 +374,7 @@ class InMemoryTaskBudgetRepository:
         active = tuple(
             item
             for item in self._reservations.values()
-            if item.status is TaskBudgetReservationStatus.RESERVED
-            and item.request.expires_at > now
+            if item.status is TaskBudgetReservationStatus.RESERVED and item.request.expires_at > now
         )
         fills = tuple(self._fills.values())
         same_task_reservations = tuple(
@@ -422,11 +413,7 @@ class InMemoryTaskBudgetRepository:
                 _ZERO,
             )
             + sum(
-                (
-                    item.notional
-                    for item in same_task_fills
-                    if item.key.market_id == key.market_id
-                ),
+                (item.notional for item in same_task_fills if item.key.market_id == key.market_id),
                 _ZERO,
             ),
             task_has_entry=any(

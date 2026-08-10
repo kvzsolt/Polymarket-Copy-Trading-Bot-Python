@@ -1,4 +1,5 @@
 """bot orders — list and reconcile orders."""
+
 from __future__ import annotations
 
 import argparse
@@ -16,8 +17,12 @@ def register_orders_command(subparsers: argparse._SubParsersAction) -> None:
     pending_parser = orders_sub.add_parser("pending", help="List orders with non-terminal status")
     pending_parser.add_argument("--user-id", default=None, help="Filter by user ID")
 
-    reconcile_parser = orders_sub.add_parser("reconcile", help="Trigger reconciliation for unconfirmed orders")
-    reconcile_parser.add_argument("--dry-run", action="store_true", help="Show what would be reconciled without acting")
+    reconcile_parser = orders_sub.add_parser(
+        "reconcile", help="Trigger reconciliation for unconfirmed orders"
+    )
+    reconcile_parser.add_argument(
+        "--dry-run", action="store_true", help="Show what would be reconciled without acting"
+    )
 
 
 def _load_config_or_fail():

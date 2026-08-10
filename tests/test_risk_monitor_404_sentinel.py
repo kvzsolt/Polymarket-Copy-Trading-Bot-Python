@@ -14,6 +14,7 @@ token is retired. ``utils.createClobClient.get_price`` surfaces this via the
 Both behaviours together kill the boot-time loop where a retired token
 floods ``venue_circuit_breaker_opened`` events.
 """
+
 from __future__ import annotations
 
 import asyncio

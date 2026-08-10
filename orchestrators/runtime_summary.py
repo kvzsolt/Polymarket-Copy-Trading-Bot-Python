@@ -59,7 +59,9 @@ def _render_value(section: str, key: str, value: Any) -> str:
         return _format_number(value)
     if isinstance(value, (list, tuple)):
         rendered = [
-            shorten_addr(str(item), 8, 4) if key in {"wallets", "active_leaders", "copied_wallets"} else str(item)
+            shorten_addr(str(item), 8, 4)
+            if key in {"wallets", "active_leaders", "copied_wallets"}
+            else str(item)
             for item in value
         ]
         if len(rendered) > 6:
@@ -128,15 +130,16 @@ def print_startup_health_check(report: StartupHealthReport) -> None:
         )
     if report.position_sync.pruned_token_ids:
         lines.append(
-            "🏷️ pruned symbols: "
-            f"{_sample(report.position_sync.pruned_token_ids, shorten=True)}"
+            f"🏷️ pruned symbols: {_sample(report.position_sync.pruned_token_ids, shorten=True)}"
         )
 
     console.print(
         Panel(
             "\n".join(lines),
             title=f"🏥 [bold]STARTUP HEALTH CHECK[/bold] [{report.status}]",
-            border_style="green" if report.status == "ok" else ("yellow" if report.status == "warning" else "red"),
+            border_style="green"
+            if report.status == "ok"
+            else ("yellow" if report.status == "warning" else "red"),
             padding=(1, 2),
         )
     )
@@ -184,11 +187,7 @@ def _leader_aggregate_gain(snapshots: list) -> tuple[Decimal, Decimal, Decimal]:
     realized = Decimal("0")
     for s in snapshots:
         size = s.size if isinstance(s.size, Decimal) else Decimal(str(s.size or 0))
-        avg = (
-            s.avg_price
-            if isinstance(s.avg_price, Decimal)
-            else Decimal(str(s.avg_price or 0))
-        )
+        avg = s.avg_price if isinstance(s.avg_price, Decimal) else Decimal(str(s.avg_price or 0))
         cv = (
             s.current_value
             if isinstance(s.current_value, Decimal)
@@ -221,7 +220,13 @@ def print_startup_summary(
     if positions:
         position_lines: list[str] = []
         for position in positions[:8]:
-            market = str(position.get("title") or position.get("market") or position.get("conditionId") or position.get("condition_id") or "?")
+            market = str(
+                position.get("title")
+                or position.get("market")
+                or position.get("conditionId")
+                or position.get("condition_id")
+                or "?"
+            )
             symbol = _position_symbol(position)
             side = str(position.get("outcome") or position.get("side") or "?")
             size = float(position.get("size") or position.get("size_tokens") or 0.0)
@@ -253,9 +258,7 @@ def print_startup_summary(
     console.print()
 
     copied_wallets_set = {
-        w.lower()
-        for w in (config.copy_trading.wallets or [])
-        if isinstance(w, str) and w.strip()
+        w.lower() for w in (config.copy_trading.wallets or []) if isinstance(w, str) and w.strip()
     }
     active_leaders_set = {
         leader.lower()
@@ -505,10 +508,7 @@ def print_startup_summary(
         )
 
     sanitized_engine_config = {
-        name: {
-            key: _render_value(name, key, value)
-            for key, value in data.items()
-        }
+        name: {key: _render_value(name, key, value) for key, value in data.items()}
         for name, _title, data in engine_sections
     }
     sanitized_positions = [

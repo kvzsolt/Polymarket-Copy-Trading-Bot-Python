@@ -1,4 +1,5 @@
 """bot positions — list open positions from the Postgres positions table."""
+
 from __future__ import annotations
 
 import argparse
@@ -12,7 +13,9 @@ from config.app_config import load_config, EnvValidationError
 def register_positions_command(subparsers: argparse._SubParsersAction) -> None:
     parser = subparsers.add_parser("positions", help="List open positions")
     parser.add_argument("--user-id", default=None, help="Filter by user ID")
-    parser.add_argument("--json", action="store_true", dest="json_output", help="Output as JSON (default)")
+    parser.add_argument(
+        "--json", action="store_true", dest="json_output", help="Output as JSON (default)"
+    )
 
 
 async def _run_positions_async(args: argparse.Namespace) -> int:

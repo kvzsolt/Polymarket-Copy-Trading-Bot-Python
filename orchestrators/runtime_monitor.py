@@ -30,7 +30,9 @@ async def run_leader_monitor(
     research_capture_service: Any | None = None,
 ) -> None:
     if not contexts:
-        logger.warning("no_leaders_monitored", extra={"leader_id": leader_wallet, "reason": "no_followers"})
+        logger.warning(
+            "no_leaders_monitored", extra={"leader_id": leader_wallet, "reason": "no_followers"}
+        )
         metrics.inc("no_leaders_monitored_total")
         return
 

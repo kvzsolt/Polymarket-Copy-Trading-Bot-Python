@@ -1,4 +1,5 @@
 """Position domain types — a single open position held by the user."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

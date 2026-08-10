@@ -44,10 +44,12 @@ from services.market_data_service import MarketDataBundle, MarketDataSource
 # Autouse fixture: reset the process-wide circuit breaker
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture(autouse=True)
 def _reset_circuit():
     """Reset the circuit breaker around every test."""
     import services.executionService as _es
+
     _es._CLOB_CIRCUIT.reset()
     yield
     _es._CLOB_CIRCUIT.reset()
@@ -219,7 +221,9 @@ class TestDuplicateSignalSuppression:
         async with _pg_pool() as pool:
             repo = OrdersRepo(pool)
             clob = _SimpleClob()
-            svc = ExecutionService(clob, _FeeSvc(), repo, config=_make_exec_config(), market_data_service=_make_mds())
+            svc = ExecutionService(
+                clob, _FeeSvc(), repo, config=_make_exec_config(), market_data_service=_make_mds()
+            )
             req = _make_req(signal_id="sig-dup")
 
             result1 = await svc.execute(req)
@@ -235,7 +239,9 @@ class TestDuplicateSignalSuppression:
         async with _pg_pool() as pool:
             repo = OrdersRepo(pool)
             clob = _SimpleClob()
-            svc = ExecutionService(clob, _FeeSvc(), repo, config=_make_exec_config(), market_data_service=_make_mds())
+            svc = ExecutionService(
+                clob, _FeeSvc(), repo, config=_make_exec_config(), market_data_service=_make_mds()
+            )
 
             req1 = _make_req(signal_id="sig-A")
             req2 = _make_req(signal_id="sig-B")
@@ -251,7 +257,9 @@ class TestDuplicateSignalSuppression:
         async with _pg_pool() as pool:
             repo = OrdersRepo(pool)
             clob = _SimpleClob()
-            svc = ExecutionService(clob, _FeeSvc(), repo, config=_make_exec_config(), market_data_service=_make_mds())
+            svc = ExecutionService(
+                clob, _FeeSvc(), repo, config=_make_exec_config(), market_data_service=_make_mds()
+            )
 
             req = _make_req(signal_id="same-key")
             await svc.execute(req)
@@ -322,7 +330,9 @@ class TestStaleLockExpiry:
         async with _pg_pool() as pool:
             repo = OrdersRepo(pool)
             clob = _SimpleClob()
-            svc = ExecutionService(clob, _FeeSvc(), repo, config=_make_exec_config(), market_data_service=_make_mds())
+            svc = ExecutionService(
+                clob, _FeeSvc(), repo, config=_make_exec_config(), market_data_service=_make_mds()
+            )
             req = _make_req(signal_id="sig-stale")
 
             # Pin the effective-idempotency key so we can seed the stale row
@@ -384,7 +394,9 @@ class TestAmbiguousPostHandling:
                     "error": "timeout after POST",
                 }
             )
-            svc = ExecutionService(clob, _FeeSvc(), repo, config=_make_exec_config(), market_data_service=_make_mds())
+            svc = ExecutionService(
+                clob, _FeeSvc(), repo, config=_make_exec_config(), market_data_service=_make_mds()
+            )
             req = _make_req(signal_id="sig-ambig")
             result = await svc.execute(req)
             assert result.status == "submitted_unconfirmed"
@@ -397,7 +409,9 @@ class TestAmbiguousPostHandling:
             repo = OrdersRepo(pool)
             clob = _SimpleClob()
             clob.post_signed_order = AsyncMock(side_effect=ConnectionError("connection lost"))
-            svc = ExecutionService(clob, _FeeSvc(), repo, config=_make_exec_config(), market_data_service=_make_mds())
+            svc = ExecutionService(
+                clob, _FeeSvc(), repo, config=_make_exec_config(), market_data_service=_make_mds()
+            )
             req = _make_req(signal_id="sig-exc")
             result = await svc.execute(req)
             assert result.status == "submitted_unconfirmed"
@@ -415,7 +429,9 @@ class TestAmbiguousPostHandling:
             repo = OrdersRepo(pool)
             clob = _SimpleClob()
             clob.create_market_order = AsyncMock(side_effect=ValueError("bad params"))
-            svc = ExecutionService(clob, _FeeSvc(), repo, config=_make_exec_config(), market_data_service=_make_mds())
+            svc = ExecutionService(
+                clob, _FeeSvc(), repo, config=_make_exec_config(), market_data_service=_make_mds()
+            )
             req = _make_req(signal_id="sig-create-fail")
             result = await svc.execute(req)
             assert result.status == "submitted_unconfirmed"
@@ -440,7 +456,11 @@ class TestConcurrentSubmissionBlocking:
                         return_value={"success": True, "orderID": "ord-race", "status": "submitted"}
                     )
                     self.client = SimpleNamespace(
-                        get_order=lambda _oid: {"status": "filled", "size_matched": "5", "avg_price": "0.50"}
+                        get_order=lambda _oid: {
+                            "status": "filled",
+                            "size_matched": "5",
+                            "avg_price": "0.50",
+                        }
                     )
                     self.started = asyncio.Event()
                     self.proceed = asyncio.Event()
@@ -451,7 +471,9 @@ class TestConcurrentSubmissionBlocking:
                     return {"signed": True}
 
             clob = _BlockingClob()
-            svc = ExecutionService(clob, _FeeSvc(), repo, config=_make_exec_config(), market_data_service=_make_mds())
+            svc = ExecutionService(
+                clob, _FeeSvc(), repo, config=_make_exec_config(), market_data_service=_make_mds()
+            )
             req = _make_req(signal_id="sig-race")
 
             # Launch first task that will block during create_market_order
@@ -686,7 +708,9 @@ class TestBlankSignalIdFallback:
             repo = OrdersRepo(pool)
             clob = _SimpleClob()
             svc = ExecutionService(
-                clob, _FeeSvc(), repo,
+                clob,
+                _FeeSvc(),
+                repo,
                 config=_make_exec_config(),
                 market_data_service=_make_mds(),
             )
@@ -709,7 +733,9 @@ class TestBlankSignalIdFallback:
             repo = OrdersRepo(pool)
             clob = _SimpleClob()
             svc = ExecutionService(
-                clob, _FeeSvc(), repo,
+                clob,
+                _FeeSvc(),
+                repo,
                 config=_make_exec_config(),
                 market_data_service=_make_mds(),
             )
@@ -730,7 +756,9 @@ class TestBlankSignalIdFallback:
             repo = OrdersRepo(pool)
             clob = _SimpleClob()
             svc = ExecutionService(
-                clob, _FeeSvc(), repo,
+                clob,
+                _FeeSvc(),
+                repo,
                 config=_make_exec_config(),
                 market_data_service=_make_mds(),
             )
@@ -750,7 +778,9 @@ class TestBlankSignalIdFallback:
             repo = OrdersRepo(pool)
             clob = _SimpleClob()
             svc = ExecutionService(
-                clob, _FeeSvc(), repo,
+                clob,
+                _FeeSvc(),
+                repo,
                 config=_make_exec_config(),
                 market_data_service=_make_mds(),
             )
@@ -797,7 +827,9 @@ class TestAtomicLockFailClosed:
         clob = _SimpleClob()
         repo = _NoCASRepo()
         svc = ExecutionService(
-            clob, _FeeSvc(), repo,
+            clob,
+            _FeeSvc(),
+            repo,
             config=_make_exec_config(),
             market_data_service=_make_mds(),
         )
@@ -810,7 +842,11 @@ class TestAtomicLockFailClosed:
         assert "atomic" in (result.error or "")
         # Critical invariant: no signed order ever reached the venue.
         assert clob.post_signed_order.await_count == 0
-        assert clob.create_market_order.await_count == 0 if hasattr(clob.create_market_order, "await_count") else True
+        assert (
+            clob.create_market_order.await_count == 0
+            if hasattr(clob.create_market_order, "await_count")
+            else True
+        )
 
 
 class TestAtomicLockConcurrencyStress:
@@ -834,7 +870,9 @@ class TestAtomicLockConcurrencyStress:
             repo = OrdersRepo(pool)
             clob = _SimpleClob()
             svc = ExecutionService(
-                clob, _FeeSvc(), repo,
+                clob,
+                _FeeSvc(),
+                repo,
                 config=_make_exec_config(),
                 market_data_service=_make_mds(),
             )
@@ -862,8 +900,7 @@ class TestAtomicLockConcurrencyStress:
             NON_SUBMITTING = {"duplicate_ignored", "inflight_lock"}
             submitting = [r for r in results if r.status not in NON_SUBMITTING]
             assert len(submitting) == 1, (
-                "exactly one task may submit; got statuses "
-                f"{sorted(r.status for r in submitting)}"
+                f"exactly one task may submit; got statuses {sorted(r.status for r in submitting)}"
             )
             assert submitting[0].order_id == "ord-1"
             assert len([r for r in results if r.status in NON_SUBMITTING]) == N - 1
@@ -884,7 +921,9 @@ class TestAtomicLockConcurrencyStress:
             repo = OrdersRepo(pool)
             clob = _SimpleClob()
             svc = ExecutionService(
-                clob, _FeeSvc(), repo,
+                clob,
+                _FeeSvc(),
+                repo,
                 config=_make_exec_config(),
                 market_data_service=_make_mds(),
             )

@@ -5,6 +5,7 @@ each ``_run_doctor`` call spins a fresh container, applies the schema,
 and injects the container DSN through the typed database setting so the doctor's
 async DB probes hit a real Postgres instance instead of a stub file.
 """
+
 from __future__ import annotations
 
 from unittest.mock import patch
@@ -135,14 +136,17 @@ async def _run_doctor(
 
         async def _fake_rpc(_url):
             from types import SimpleNamespace
+
             return SimpleNamespace(status="ok", details="stub")
 
         async def _fake_geoblock():
             from types import SimpleNamespace
+
             return SimpleNamespace(allowed=True, reason="stub")
 
         async def _fake_wallet_sig(_wallet, **_kw):
             from config.env import SignatureType
+
             return (SignatureType.EOA, "EOA", "0x" + "a" * 40)
 
         patches = [
@@ -154,7 +158,9 @@ async def _run_doctor(
         ]
         if tmp_log is not None:
             patches.append(patch.object(doctor_mod, "_resolve_log_dir", return_value=tmp_log))
-            patches.append(patch.object(doctor_mod, "_resolve_jsonl_path", return_value=tmp_log / "app.jsonl"))
+            patches.append(
+                patch.object(doctor_mod, "_resolve_jsonl_path", return_value=tmp_log / "app.jsonl")
+            )
 
         from contextlib import ExitStack
 
@@ -180,9 +186,7 @@ async def test_doctor_paper_returns_structured_list(tmp_path):
 @pytest.mark.asyncio
 @pytest.mark.asyncio
 async def test_doctor_live_blocked_when_trading_mode_is_paper(tmp_path):
-    out = await _run_doctor(
-        "live", {"TRADING_MODE": "paper"}, tmp_log=tmp_path, tmp_path=tmp_path
-    )
+    out = await _run_doctor("live", {"TRADING_MODE": "paper"}, tmp_log=tmp_path, tmp_path=tmp_path)
     rec = _checks_by_name(out)["paper_trade_only_false"]
     assert rec["status"] == "blocked"
     assert out["status"] == "blocked"
@@ -190,9 +194,7 @@ async def test_doctor_live_blocked_when_trading_mode_is_paper(tmp_path):
 
 @pytest.mark.asyncio
 async def test_doctor_live_blocked_when_kill_switch_on(tmp_path):
-    out = await _run_doctor(
-        "live", {"KILL_SWITCH": "true"}, tmp_log=tmp_path, tmp_path=tmp_path
-    )
+    out = await _run_doctor("live", {"KILL_SWITCH": "true"}, tmp_log=tmp_path, tmp_path=tmp_path)
     rec = _checks_by_name(out)["kill_switch_off"]
     assert rec["status"] == "blocked"
     assert out["status"] == "blocked"
@@ -235,7 +237,9 @@ async def test_doctor_live_returns_structured_checks_list(tmp_path):
 async def test_doctor_live_passes_when_all_subsystems_wired(tmp_path):
     out = await _run_doctor("live", tmp_log=tmp_path, tmp_path=tmp_path)
     # status may be ok or warning (e.g. metrics disabled); should NOT be blocked
-    assert out["status"] in {"ok", "warning"}, [c for c in out["checks"] if c["status"] == "blocked"]
+    assert out["status"] in {"ok", "warning"}, [
+        c for c in out["checks"] if c["status"] == "blocked"
+    ]
 
 
 @pytest.mark.asyncio

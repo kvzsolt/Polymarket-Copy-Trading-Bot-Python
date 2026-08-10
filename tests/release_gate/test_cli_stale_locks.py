@@ -10,6 +10,7 @@ sweep — each test owns its own pool via the shared ``_pg_pool()``
 async context manager (mirrors the pattern in
 ``tests/test_market_structure_service.py``).
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -148,9 +149,7 @@ async def test_user_filter() -> None:
 async def test_resolve_dry_run_classifies_without_mutation() -> None:
     async with _pg_pool() as pool:
         await _seed_resolve_candidates(pool)
-        result = await _resolve_stale_locks(
-            pool, ttl_seconds=120, user_id=None, apply=False
-        )
+        result = await _resolve_stale_locks(pool, ttl_seconds=120, user_id=None, apply=False)
         async with pool.acquire() as conn:
             status = await conn.fetchval(
                 "SELECT status FROM orders WHERE idempotency_key = 'k-safe'"
@@ -171,9 +170,7 @@ async def test_resolve_dry_run_classifies_without_mutation() -> None:
 async def test_resolve_apply_expires_only_safe_no_order_lock() -> None:
     async with _pg_pool() as pool:
         await _seed_resolve_candidates(pool)
-        result = await _resolve_stale_locks(
-            pool, ttl_seconds=120, user_id=None, apply=True
-        )
+        result = await _resolve_stale_locks(pool, ttl_seconds=120, user_id=None, apply=True)
         async with pool.acquire() as conn:
             rows = await conn.fetch(
                 """

@@ -7,6 +7,7 @@ paths used by the wiring code so a wrong-path regression (e.g. importing
 ``PendingTxConfig`` from ``orchestrators/`` instead of ``services/``) is
 caught at test time, not at runtime.
 """
+
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -34,9 +35,7 @@ def test_pending_tx_config_fields_match_onchain_detection_config() -> None:
     from config.app_config import OnchainDetectionConfig
     from services.onchain_detection.trade_detection_models import DetectionConfidence
 
-    oc = OnchainDetectionConfig(
-        pending_tx_detection_confidence_required="mined_authoritative"
-    )
+    oc = OnchainDetectionConfig(pending_tx_detection_confidence_required="mined_authoritative")
     ptx = _build_pending_tx_config(oc)
     assert ptx.max_signal_age_ms == oc.pending_tx_max_signal_age_ms
     assert ptx.hashes_only == oc.pending_tx_hashes_only
@@ -112,9 +111,7 @@ def test_missing_wss_warning_reflects_typed_detection_config() -> None:
     from app import _onchain_missing_wss_warning_reason
     from config.app_config import OnchainDetectionConfig
 
-    default_cfg = SimpleNamespace(
-        detection=SimpleNamespace(onchain=OnchainDetectionConfig())
-    )
+    default_cfg = SimpleNamespace(detection=SimpleNamespace(onchain=OnchainDetectionConfig()))
     assert _onchain_missing_wss_warning_reason(default_cfg) is None
 
     pending_cfg = SimpleNamespace(

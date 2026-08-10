@@ -129,8 +129,14 @@ class CopySizingPolicy:
             raise ValueError("adaptive_basis must be trade_size or performance")
         if self.mode == "fixed" and self.fixed_amount < self.buy_min_amount:
             raise ValueError("fixed_amount must be >= buy_min_amount in fixed mode")
-        if self.mode == "proportional" and self.percentage <= 0 and not self.proportional_balance_cap_enabled:
-            raise ValueError("proportional mode needs a positive percentage or balance-derived sizing")
+        if (
+            self.mode == "proportional"
+            and self.percentage <= 0
+            and not self.proportional_balance_cap_enabled
+        ):
+            raise ValueError(
+                "proportional mode needs a positive percentage or balance-derived sizing"
+            )
 
     @property
     def copyable_balance_fraction(self) -> Decimal:

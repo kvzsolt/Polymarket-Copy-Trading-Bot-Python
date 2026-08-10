@@ -1,4 +1,5 @@
 """Tests for ``orchestrators/onchain_detection_runtime.py`` (PR2)."""
+
 from __future__ import annotations
 
 import asyncio
@@ -206,8 +207,7 @@ async def test_same_tx_multiple_logs_each_dispatched() -> None:
         await rt._on_mined_log(_build_log(maker=_WATCHED, log_index=1))
         await asyncio.sleep(0.05)
         assert len(dispatched) == 2, (
-            "one dispatch per (tx_hash, log_index) — distinct fills must "
-            "not be collapsed"
+            "one dispatch per (tx_hash, log_index) — distinct fills must not be collapsed"
         )
         log_indices = {sig.log_index for sig in dispatched}
         assert log_indices == {0, 1}
@@ -301,8 +301,7 @@ async def test_mined_then_pending_same_tx_dispatches_once() -> None:
         await rt._enqueue(_make_pending_signal(tx_hash=tx))
         await asyncio.sleep(0.05)
         assert len(dispatched) == 1, (
-            "pending for already-dispatched tx dropped — "
-            "_enable_pending guard plus _claim_or_drop"
+            "pending for already-dispatched tx dropped — _enable_pending guard plus _claim_or_drop"
         )
     finally:
         await rt.stop()
@@ -417,9 +416,7 @@ async def test_mined_for_one_leader_does_not_suppress_pending_for_another() -> N
         assert await rt._dedupe.record_pending(tx, leader_b) is True
         await rt._enqueue(_make_pending_signal(tx_hash=tx, leader=leader_b))
         # Mined for leaderA arrives — should supersede only leaderA's pending.
-        await rt._on_mined_log(
-            _build_log(maker=leader_a, log_index=0, tx_hash=tx)
-        )
+        await rt._on_mined_log(_build_log(maker=leader_a, log_index=0, tx_hash=tx))
         await asyncio.sleep(0.05)
         # leaderB's pending should still dispatch (not suppressed by leaderA's mined).
         leaders_dispatched = {sig.leader_wallet for sig in dispatched}

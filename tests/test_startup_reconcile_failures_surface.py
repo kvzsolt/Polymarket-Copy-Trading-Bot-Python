@@ -13,6 +13,7 @@ This test pins:
   * A failing reconcile call populates the list AND returns a dict that
     does not include the failed user.
 """
+
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -46,14 +47,18 @@ async def test_failures_out_populated_on_exception():
         return 0
 
     failures: list[str] = []
-    with patch(
-        "orchestrators.trade_pipeline.reconcile_submitted_unconfirmed",
-        side_effect=fake_trade,
-    ), patch(
-        "orchestrators.runtime_bootstrap.reconcile_unconfirmed_risk_orders",
-        side_effect=fake_risk,
-    ), patch(
-        "orchestrators.runtime_bootstrap.rehydrate_position_manager",
+    with (
+        patch(
+            "orchestrators.trade_pipeline.reconcile_submitted_unconfirmed",
+            side_effect=fake_trade,
+        ),
+        patch(
+            "orchestrators.runtime_bootstrap.reconcile_unconfirmed_risk_orders",
+            side_effect=fake_risk,
+        ),
+        patch(
+            "orchestrators.runtime_bootstrap.rehydrate_position_manager",
+        ),
     ):
         result = await startup_reconcile_unconfirmed(contexts, failures_out=failures)
 
@@ -75,14 +80,18 @@ async def test_backward_compat_no_failures_out_kwarg():
     async def fake_risk(ctx):
         return 1
 
-    with patch(
-        "orchestrators.trade_pipeline.reconcile_submitted_unconfirmed",
-        side_effect=fake_trade,
-    ), patch(
-        "orchestrators.runtime_bootstrap.reconcile_unconfirmed_risk_orders",
-        side_effect=fake_risk,
-    ), patch(
-        "orchestrators.runtime_bootstrap.rehydrate_position_manager",
+    with (
+        patch(
+            "orchestrators.trade_pipeline.reconcile_submitted_unconfirmed",
+            side_effect=fake_trade,
+        ),
+        patch(
+            "orchestrators.runtime_bootstrap.reconcile_unconfirmed_risk_orders",
+            side_effect=fake_risk,
+        ),
+        patch(
+            "orchestrators.runtime_bootstrap.rehydrate_position_manager",
+        ),
     ):
         result = await startup_reconcile_unconfirmed(contexts)
 

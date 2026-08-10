@@ -119,12 +119,16 @@ class MarketWebSocket:
             return
         self._asset_ids.extend(new_ids)
         if self._ws is not None:
-            await self._ws.send(orjson.dumps({
-                "assets_ids": new_ids,
-                "operation": "subscribe",
-                "level": 2,
-                "custom_feature_enabled": True,
-            }).decode())
+            await self._ws.send(
+                orjson.dumps(
+                    {
+                        "assets_ids": new_ids,
+                        "operation": "subscribe",
+                        "level": 2,
+                        "custom_feature_enabled": True,
+                    }
+                ).decode()
+            )
             logger.info("MarketWS: dynamically subscribed to %d asset(s)", len(new_ids))
 
     async def unsubscribe(self, asset_ids: list[str]) -> None:
@@ -134,10 +138,14 @@ class MarketWebSocket:
         remove_set = set(remove_ids)
         self._asset_ids = [a for a in self._asset_ids if a not in remove_set]
         if self._ws is not None:
-            await self._ws.send(orjson.dumps({
-                "assets_ids": remove_ids,
-                "operation": "unsubscribe",
-            }).decode())
+            await self._ws.send(
+                orjson.dumps(
+                    {
+                        "assets_ids": remove_ids,
+                        "operation": "unsubscribe",
+                    }
+                ).decode()
+            )
             logger.info("MarketWS: dynamically unsubscribed from %d asset(s)", len(remove_ids))
         for asset_id in remove_ids:
             self._mark_asset_stale(asset_id, "unsubscribed")
@@ -299,7 +307,9 @@ class MarketWebSocket:
         async for raw_msg in ws:
             if not self._running:
                 break
-            msg = raw_msg.decode("utf-8", errors="replace") if isinstance(raw_msg, bytes) else raw_msg
+            msg = (
+                raw_msg.decode("utf-8", errors="replace") if isinstance(raw_msg, bytes) else raw_msg
+            )
             # Any inbound frame proves the pipe is alive; treat it as a pong
             # both for the in-loop missed-pong detector AND for the cache
             # liveness anchor (P1-d), so data frames — not only literal PONG
@@ -377,7 +387,9 @@ class MarketWebSocket:
 
         condition_id = str(event.get("market") or "").strip() or None
         prior_book_source = self._get_book_source(asset_id)
-        replaced = self._replace_book_snapshot(asset_id, bids, asks, event, condition_id=condition_id)
+        replaced = self._replace_book_snapshot(
+            asset_id, bids, asks, event, condition_id=condition_id
+        )
         if replaced and prior_book_source == "rest_bootstrap":
             logger.info(
                 "market_data_rest_bootstrap_wss_override | token_id=%s event_type=book",
@@ -473,8 +485,12 @@ class MarketWebSocket:
         asset_id = _asset_id(event)
         if not asset_id:
             return
-        best_bid = _to_decimal(event.get("best_bid") or event.get("bid") or event.get("best_bid_price"))
-        best_ask = _to_decimal(event.get("best_ask") or event.get("ask") or event.get("best_ask_price"))
+        best_bid = _to_decimal(
+            event.get("best_bid") or event.get("bid") or event.get("best_bid_price")
+        )
+        best_ask = _to_decimal(
+            event.get("best_ask") or event.get("ask") or event.get("best_ask_price")
+        )
         if best_bid is None and best_ask is None:
             return
         self._on_price_update(asset_id, best_bid, best_ask)
@@ -496,7 +512,9 @@ class MarketWebSocket:
         asset_id = _asset_id(event)
         if not asset_id:
             return
-        price = _to_decimal(event.get("price") or event.get("last_trade_price") or event.get("last_price"))
+        price = _to_decimal(
+            event.get("price") or event.get("last_trade_price") or event.get("last_price")
+        )
         if price is None:
             return
         self._call_cache_optional("on_last_trade_price", asset_id, price, event)
@@ -580,7 +598,9 @@ class MarketWebSocket:
         event_with_meta = dict(raw_event)
         if condition_id:
             event_with_meta["condition_id"] = condition_id
-        if self._call_cache_optional("replace_book_snapshot", asset_id, bids, asks, event_with_meta):
+        if self._call_cache_optional(
+            "replace_book_snapshot", asset_id, bids, asks, event_with_meta
+        ):
             return True
         if self._call_cache_optional("on_book_snapshot", asset_id, bids, asks, event_with_meta):
             return True
@@ -602,7 +622,9 @@ class MarketWebSocket:
         if not self._call_cache_optional("apply_book_delta", asset_id, side, price, size):
             logger.debug("MarketWS: cache lacks apply_book_delta for asset %s", asset_id)
 
-    def _on_price_update(self, asset_id: str, best_bid: Decimal | None, best_ask: Decimal | None) -> None:
+    def _on_price_update(
+        self, asset_id: str, best_bid: Decimal | None, best_ask: Decimal | None
+    ) -> None:
         self._call_cache_optional("on_price_update", asset_id, best_bid, best_ask)
 
     def _on_tick_size_change(self, asset_id: str, tick: Decimal) -> None:

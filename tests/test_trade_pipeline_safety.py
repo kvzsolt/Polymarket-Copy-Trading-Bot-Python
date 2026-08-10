@@ -89,9 +89,7 @@ def _config(**overrides):
 from storage.postgres.orders_repo import OrderSubmissionRecord, OrdersRepo  # noqa: E402
 from storage.postgres.positions_repo import PositionsRepo  # noqa: E402
 
-FAKE_TOKEN_ID = (
-    "71321045679252212594626385532706912750332728571942532223535764789812338637396"
-)
+FAKE_TOKEN_ID = "71321045679252212594626385532706912750332728571942532223535764789812338637396"
 
 
 @contextlib.asynccontextmanager
@@ -690,9 +688,7 @@ async def test_partial_progress_reconcile_applies_only_incremental_buy_delta(tmp
                 fill_ts=1_700_000_000,
             )
         )
-        await ctx.positions_repo.rebuild_user_positions_from_fills(
-            "user1", ctx.fills_repo
-        )
+        await ctx.positions_repo.rebuild_user_positions_from_fills("user1", ctx.fills_repo)
         await ctx.orders_repo.mark_processed_trade(
             trade_key=trade_key,
             user_id="user1",
@@ -766,9 +762,7 @@ async def test_final_reconcile_with_no_new_delta_marks_buy_fully_reconciled(tmp_
                 fill_ts=1_700_000_000,
             )
         )
-        await ctx.positions_repo.rebuild_user_positions_from_fills(
-            "user1", ctx.fills_repo
-        )
+        await ctx.positions_repo.rebuild_user_positions_from_fills("user1", ctx.fills_repo)
         await ctx.orders_repo.mark_processed_trade(
             trade_key=trade_key,
             user_id="user1",
@@ -852,9 +846,7 @@ async def test_startup_reconciled_risk_sell_blocks_reentry_on_same_scope(tmp_pat
                 fill_ts=1_700_000_000,
             )
         )
-        await ctx.positions_repo.rebuild_user_positions_from_fills(
-            "user1", ctx.fills_repo
-        )
+        await ctx.positions_repo.rebuild_user_positions_from_fills("user1", ctx.fills_repo)
         await ctx.orders_repo.save_submission(
             OrderSubmissionRecord(
                 idempotency_key="idem-restart-sell",
@@ -888,10 +880,7 @@ async def test_startup_reconciled_risk_sell_blocks_reentry_on_same_scope(tmp_pat
 
         reconciled = await startup_reconcile_unconfirmed([ctx])
         assert reconciled == {"user1": 1}
-        assert (
-            await ctx.positions_repo.get_position("user1", sell_signal["conditionId"])
-            is None
-        )
+        assert await ctx.positions_repo.get_position("user1", sell_signal["conditionId"]) is None
         assert (
             await ctx.risk_blocks_repo.get_active_risk_block(
                 user_id="user1",
@@ -927,9 +916,7 @@ async def test_max_position_pct_caps_cash_only_even_when_balance_policy_disabled
             pool,
             tmp_path,
             execution_service=exec_svc,
-            config=_config(
-                ENABLE_BALANCE_TIERED_POLICY="false", MAX_POSITION_PCT="0.20"
-            ),
+            config=_config(ENABLE_BALANCE_TIERED_POLICY="false", MAX_POSITION_PCT="0.20"),
         )
         await ctx.positions_repo.upsert_position(
             SimpleNamespace(
@@ -1008,9 +995,7 @@ async def test_max_position_pct_caps_additional_buy_on_same_market(tmp_path):
             pool,
             tmp_path,
             execution_service=exec_svc,
-            config=_config(
-                ENABLE_BALANCE_TIERED_POLICY="false", MAX_POSITION_PCT="0.20"
-            ),
+            config=_config(ENABLE_BALANCE_TIERED_POLICY="false", MAX_POSITION_PCT="0.20"),
         )
         await ctx.positions_repo.upsert_position(
             SimpleNamespace(
@@ -1060,9 +1045,7 @@ async def test_max_position_pct_uses_startup_snapshot_before_submit(tmp_path):
             pool,
             tmp_path,
             execution_service=exec_svc,
-            config=_config(
-                ENABLE_BALANCE_TIERED_POLICY="false", MAX_POSITION_PCT="0.20"
-            ),
+            config=_config(ENABLE_BALANCE_TIERED_POLICY="false", MAX_POSITION_PCT="0.20"),
         )
         decision_service = _RecordingDecisionService()
         ctx.copy_decision_service = decision_service
@@ -1098,9 +1081,7 @@ async def test_max_position_pct_refreshes_snapshot_after_24_hours(tmp_path):
             pool,
             tmp_path,
             execution_service=exec_svc,
-            config=_config(
-                ENABLE_BALANCE_TIERED_POLICY="false", MAX_POSITION_PCT="0.20"
-            ),
+            config=_config(ENABLE_BALANCE_TIERED_POLICY="false", MAX_POSITION_PCT="0.20"),
         )
         decision_service = _RecordingDecisionService()
         ctx.copy_decision_service = decision_service
@@ -1272,9 +1253,7 @@ async def test_sell_reduces_position(tmp_path):
         )
 
         signal = _signal(side="SELL", price=0.60, size=10.0)
-        signal["_leader_sell_fraction"] = (
-            0.5  # sell 50% of our 20-token position = 10 tokens
-        )
+        signal["_leader_sell_fraction"] = 0.5  # sell 50% of our 20-token position = 10 tokens
         with patch(
             "orchestrators.trade_pipeline._fetch_live_position_size",
             new_callable=AsyncMock,
@@ -1509,9 +1488,7 @@ async def test_sell_clamps_to_live_holdings_before_submit(tmp_path):
         with patch(
             "orchestrators.trade_pipeline.fetch_data",
             new_callable=AsyncMock,
-            return_value=[
-                {"asset": FAKE_TOKEN_ID, "size": "27.367906", "currentValue": 10.33}
-            ],
+            return_value=[{"asset": FAKE_TOKEN_ID, "size": "27.367906", "currentValue": 10.33}],
         ):
             results = await execute_trades(ctx, "leader1", [signal], time.time())
 
@@ -1557,9 +1534,7 @@ async def test_sell_insufficient_balance_syncs_local_position_from_live_holdings
         with patch(
             "orchestrators.trade_pipeline.fetch_data",
             new_callable=AsyncMock,
-            return_value=[
-                {"asset": FAKE_TOKEN_ID, "size": 4.518, "currentValue": 4.51}
-            ],
+            return_value=[{"asset": FAKE_TOKEN_ID, "size": 4.518, "currentValue": 4.51}],
         ):
             results = await execute_trades(ctx, "leader1", [signal], time.time())
 
@@ -1573,9 +1548,7 @@ async def test_sell_insufficient_balance_syncs_local_position_from_live_holdings
         assert "action=shrunk" in reason
         assert "live_size=4.518" in reason
 
-        pos = await ctx.positions_repo.get_position(
-            "user1", "cond1", token_id=FAKE_TOKEN_ID
-        )
+        pos = await ctx.positions_repo.get_position("user1", "cond1", token_id=FAKE_TOKEN_ID)
         assert pos is not None
         assert pos.size_tokens == Decimal("4.518")
 
@@ -1622,10 +1595,7 @@ async def test_sell_insufficient_balance_deletes_local_position_when_live_holdin
         assert results[0].status == "skipped"
         assert results[0].reason == "SELL size is zero"
         assert (
-            await ctx.positions_repo.get_position(
-                "user1", "cond1", token_id=FAKE_TOKEN_ID
-            )
-            is None
+            await ctx.positions_repo.get_position("user1", "cond1", token_id=FAKE_TOKEN_ID) is None
         )
 
 
@@ -1646,9 +1616,7 @@ async def test_sell_realized_pnl_falls_back_to_updated_position_or_signal_price(
         pnl_tracker = MagicMock()
         ctx.pnl_tracker = pnl_tracker
         ctx.positions_repo.get_position = AsyncMock(
-            return_value=SimpleNamespace(
-                size_tokens=Decimal("20"), avg_entry_price=None
-            )
+            return_value=SimpleNamespace(size_tokens=Decimal("20"), avg_entry_price=None)
         )
         # PR #108 fix: atomic append_fill + apply replaces the two-call
         # sequence in `execute_trades`; the mock returns ``(fill_id,
@@ -1658,9 +1626,7 @@ async def test_sell_realized_pnl_falls_back_to_updated_position_or_signal_price(
         )
 
         signal = _signal(side="SELL", price=0.60, size=10.0)
-        signal["_leader_sell_fraction"] = (
-            0.5  # sell 50% of 20-token position = 10 tokens
-        )
+        signal["_leader_sell_fraction"] = 0.5  # sell 50% of 20-token position = 10 tokens
         with patch(
             "orchestrators.trade_pipeline._fetch_live_position_size",
             new_callable=AsyncMock,
@@ -1697,9 +1663,7 @@ async def test_sell_realized_pnl_falls_back_to_signal_price_when_position_prices
         pnl_tracker = MagicMock()
         ctx.pnl_tracker = pnl_tracker
         ctx.positions_repo.get_position = AsyncMock(
-            return_value=SimpleNamespace(
-                size_tokens=Decimal("20"), avg_entry_price=None
-            )
+            return_value=SimpleNamespace(size_tokens=Decimal("20"), avg_entry_price=None)
         )
         # PR #108 fix: atomic append_fill + apply mock returns (fill_id,
         # updated_position) — None updated_position triggers the signal-
@@ -1707,9 +1671,7 @@ async def test_sell_realized_pnl_falls_back_to_signal_price_when_position_prices
         ctx.fills_repo.append_fill_and_apply = AsyncMock(return_value=(1, None))
 
         signal = _signal(side="SELL", price=0.60, size=10.0)
-        signal["_leader_sell_fraction"] = (
-            0.5  # sell 50% of 20-token position = 10 tokens
-        )
+        signal["_leader_sell_fraction"] = 0.5  # sell 50% of 20-token position = 10 tokens
         with patch(
             "orchestrators.trade_pipeline._fetch_live_position_size",
             new_callable=AsyncMock,
@@ -1884,12 +1846,8 @@ async def test_immediate_fill_buys_record_daily_spend_once_each(tmp_path):
     async with _pg_pool() as pool:
         exec_svc = AsyncMock()
         exec_svc.execute.side_effect = [
-            _exec_result(
-                accepted=True, filled=Decimal("10"), status="filled", order_id="ord-a"
-            ),
-            _exec_result(
-                accepted=True, filled=Decimal("10"), status="filled", order_id="ord-b"
-            ),
+            _exec_result(accepted=True, filled=Decimal("10"), status="filled", order_id="ord-a"),
+            _exec_result(accepted=True, filled=Decimal("10"), status="filled", order_id="ord-b"),
         ]
         ctx = _make_context(pool, tmp_path)
         ctx.execution_coordinator = _PassThroughCoordinator(exec_svc)

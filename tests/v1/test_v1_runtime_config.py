@@ -33,21 +33,15 @@ def test_v1_runtime_rejects_unknown_or_unbounded_values() -> None:
     with pytest.raises(ValidationError):
         V1RuntimeConfig.model_validate({"copy_tasks": {"surprise": True}})
     with pytest.raises(ValidationError):
-        V1RuntimeConfig.model_validate(
-            {"copy_tasks": {"workers": {"queue_size": 0}}}
-        )
+        V1RuntimeConfig.model_validate({"copy_tasks": {"workers": {"queue_size": 0}}})
     with pytest.raises(ValidationError):
-        V1RuntimeConfig.model_validate(
-            {"copy_tasks": {"shared_price_cache": {"max_entries": 0}}}
-        )
+        V1RuntimeConfig.model_validate({"copy_tasks": {"shared_price_cache": {"max_entries": 0}}})
 
 
 def test_packaged_copy_trading_yaml_copy_tasks_is_paper_safe() -> None:
     """The packaged copy_trading.yml carries the v1 engine settings now."""
     payload = yaml.safe_load(
-        (Path(__file__).parents[2] / "config/copy_trading.yml").read_text(
-            encoding="utf-8"
-        )
+        (Path(__file__).parents[2] / "config/copy_trading.yml").read_text(encoding="utf-8")
     )
     config = V1RuntimeConfig.model_validate({"copy_tasks": payload["copy_tasks"]})
 

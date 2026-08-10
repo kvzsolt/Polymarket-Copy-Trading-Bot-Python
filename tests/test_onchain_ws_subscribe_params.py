@@ -10,6 +10,7 @@ return JSON-RPC ``params`` as a list (``["logs", filter]`` /
 dict directly results in a malformed request that Alchemy silently
 ignores — the subscription never starts in production.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -34,9 +35,7 @@ class _FakeWebSocket:
 
     def __init__(self, sub_id: str = "sub-id-1") -> None:
         self.sent_payloads: list[str] = []
-        self._ack = json.dumps(
-            {"id": 1, "jsonrpc": "2.0", "result": sub_id}
-        )
+        self._ack = json.dumps({"id": 1, "jsonrpc": "2.0", "result": sub_id})
         self._recv_calls = 0
 
     async def send(self, payload: str) -> None:

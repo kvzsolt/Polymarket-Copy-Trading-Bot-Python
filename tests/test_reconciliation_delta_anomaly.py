@@ -6,6 +6,7 @@ Pins the production-path delta accounting for ``reconcile_trade_record``:
   - venue cumulative 8, local previous 8  -> apply 0 (terminal recorded, no new fill row)
   - venue cumulative 5, local previous 8  -> apply 0 + anomaly logged + metric incremented
 """
+
 from __future__ import annotations
 
 import logging
@@ -116,7 +117,9 @@ def _record() -> dict[str, Any]:
     }
 
 
-def _make_service(previous_matched: str = "0") -> tuple[ReconciliationService, _OrdersRepo, _FillsRepo, _PositionsRepo, _AuditLogger]:
+def _make_service(
+    previous_matched: str = "0",
+) -> tuple[ReconciliationService, _OrdersRepo, _FillsRepo, _PositionsRepo, _AuditLogger]:
     orders = _OrdersRepo(previous_matched=previous_matched)
     fills = _FillsRepo()
     positions = _PositionsRepo()
@@ -133,6 +136,7 @@ def _make_service(previous_matched: str = "0") -> tuple[ReconciliationService, _
 async def _confirm_factory(size_matched: str, status: str = "matched"):
     async def _cf(order_id: str) -> dict[str, Any]:
         return {"status": status, "size_matched": size_matched, "avg_price": "0.50"}
+
     return _cf
 
 
@@ -197,8 +201,9 @@ async def test_negative_delta_clamps_to_zero_logs_and_audits(caplog) -> None:
     svc, orders, fills, positions, audit = _make_service(previous_matched="8")
     confirm_fill = await _confirm_factory("5", status="confirmed")
 
-    with patch("services.metrics.metrics.inc_sync") as inc_sync, caplog.at_level(
-        logging.WARNING, logger="TradePipeline"
+    with (
+        patch("services.metrics.metrics.inc_sync") as inc_sync,
+        caplog.at_level(logging.WARNING, logger="TradePipeline"),
     ):
         applied = await svc.reconcile_trade_record(
             _record(),
@@ -213,16 +218,19 @@ async def test_negative_delta_clamps_to_zero_logs_and_audits(caplog) -> None:
     assert positions.applied == []
 
     # Anomaly metric was incremented.
-    metric_calls = [c for c in inc_sync.call_args_list if "reconciliation_negative_delta" in str(c.args)]
-    assert metric_calls, f"expected reconciliation_negative_delta_total inc_sync, got {inc_sync.call_args_list}"
+    metric_calls = [
+        c for c in inc_sync.call_args_list if "reconciliation_negative_delta" in str(c.args)
+    ]
+    assert metric_calls, (
+        f"expected reconciliation_negative_delta_total inc_sync, got {inc_sync.call_args_list}"
+    )
 
     # Audit event recorded.
     assert any(name == "reconciliation_negative_delta_anomaly" for name, _ in audit.events)
 
     # Structured warning emitted.
     assert any(
-        "reconciliation_negative_delta_anomaly" in record.getMessage()
-        for record in caplog.records
+        "reconciliation_negative_delta_anomaly" in record.getMessage() for record in caplog.records
     )
 
 
@@ -256,6 +264,8 @@ async def test_risk_path_flags_negative_delta_anomaly() -> None:
             confirm_fill=confirm_fill,
         )
 
-    metric_calls = [c for c in inc_sync.call_args_list if "reconciliation_negative_delta" in str(c.args)]
+    metric_calls = [
+        c for c in inc_sync.call_args_list if "reconciliation_negative_delta" in str(c.args)
+    ]
     assert metric_calls
     assert any(name == "reconciliation_negative_delta_anomaly" for name, _ in audit.events)

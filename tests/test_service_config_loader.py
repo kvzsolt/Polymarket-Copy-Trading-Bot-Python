@@ -73,9 +73,7 @@ def test_environment_override_beats_canonical(tmp_path: Path) -> None:
         },
     )
 
-    config = load_config(
-        _overrides(), config_dir=config_dir, environment="live"
-    )
+    config = load_config(_overrides(), config_dir=config_dir, environment="live")
 
     assert config.sizing.percentage == 2.0
 
@@ -149,15 +147,12 @@ def test_secrets_populate_secret_fields_and_blank_values_are_ignored(
     config_dir = _tree(tmp_path, {"sizing.yml": {"percentage": 4.0}})
     secrets = tmp_path / "secrets.env"
     secrets.write_text(
-        "PMCOPY__DISCOVERY__API__TOKEN=top-secret-value\n"
-        "PMCOPY__POLYMARKET__FALLBACK_RPC_URL=\n",
+        "PMCOPY__DISCOVERY__API__TOKEN=top-secret-value\nPMCOPY__POLYMARKET__FALLBACK_RPC_URL=\n",
         encoding="utf-8",
     )
     secrets.chmod(0o600)
 
-    config = load_config(
-        _overrides(), config_dir=config_dir, secrets_path=secrets
-    )
+    config = load_config(_overrides(), config_dir=config_dir, secrets_path=secrets)
 
     assert config.discovery.api.token.get_secret_value() == "top-secret-value"
     assert "top-secret-value" not in repr(config)
@@ -186,9 +181,7 @@ def test_legacy_secret_aliases_keep_working_at_the_loader_boundary(
     assert config.detection.onchain.onchain_ws_url == "wss://legacy.invalid"
 
 
-def test_process_env_is_highest_precedence(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_process_env_is_highest_precedence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     config_dir = _tree(
         tmp_path,
         {
@@ -226,9 +219,7 @@ def test_legacy_process_env_aliases_keep_working(
 def test_unknown_keys_in_canonical_service_file_fail_closed(
     tmp_path: Path,
 ) -> None:
-    config_dir = _tree(
-        tmp_path, {"execution.yml": {"tradeing_mode": "live"}}
-    )
+    config_dir = _tree(tmp_path, {"execution.yml": {"tradeing_mode": "live"}})
 
     with pytest.raises(EnvValidationError, match="tradeing_mode"):
         load_config(_overrides(), config_dir=config_dir)
@@ -259,9 +250,7 @@ def test_yaml_round_trip_is_lossless_without_secrets(tmp_path: Path) -> None:
     payload = dump_config_payload(config)
     dumped = yaml.safe_dump(payload)
     reloaded_dir = _tree(tmp_path / "reloaded", {})
-    reloaded = load_config(
-        yaml.safe_load(dumped) | _overrides(), config_dir=reloaded_dir
-    )
+    reloaded = load_config(yaml.safe_load(dumped) | _overrides(), config_dir=reloaded_dir)
 
     assert reloaded == config
 
@@ -347,9 +336,7 @@ def test_legacy_runtime_local_shim_is_translated_and_below_environment(
     assert config.app.metrics_port == 9102
 
 
-def test_shim_loses_to_environment_files(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_shim_loses_to_environment_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     config_dir = _tree(
         tmp_path,
         {"environments/live/sizing.yml": {"percentage": 2.0}},
@@ -361,9 +348,7 @@ def test_shim_loses_to_environment_files(
     )
     monkeypatch.setenv("PMCOPY_DEPLOYMENT_ROOT", str(deployment))
 
-    config = load_config(
-        _overrides(), config_dir=config_dir, environment="live"
-    )
+    config = load_config(_overrides(), config_dir=config_dir, environment="live")
 
     assert config.sizing.percentage == 2.0
 

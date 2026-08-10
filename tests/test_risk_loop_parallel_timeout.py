@@ -10,6 +10,7 @@ Post-fix: contexts run via ``asyncio.gather`` and each call is wrapped
 in ``asyncio.wait_for`` so a stalled context returns asyncio.TimeoutError
 and the loop continues for everyone else.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -73,14 +74,16 @@ async def test_one_stalled_context_does_not_block_the_others():
     # Wrap the whole loop in a wait_for so we get exactly one cycle then
     # cancellation. The internal post-cycle asyncio.sleep stays real so
     # wait_for inside the loop still works correctly.
-    with patch(
-        "services.risk.risk_monitor.run_risk_check_for_context",
-        side_effect=check,
-    ), patch(
-        "services.risk.risk_monitor._refresh_context_price_cache",
-        side_effect=refresh,
-    ), patch(
-        "services.risk.risk_monitor._exit_monitor_enabled", return_value=True
+    with (
+        patch(
+            "services.risk.risk_monitor.run_risk_check_for_context",
+            side_effect=check,
+        ),
+        patch(
+            "services.risk.risk_monitor._refresh_context_price_cache",
+            side_effect=refresh,
+        ),
+        patch("services.risk.risk_monitor._exit_monitor_enabled", return_value=True),
     ):
         # Outer wait_for is 5x the per-context timeout — gives one full
         # cycle plus a sleep tick to complete before we cancel.
@@ -131,21 +134,18 @@ async def test_pre_reconcile_runs_outside_protective_exit_timeout():
         execution=SimpleNamespace(),
     )
 
-    with patch(
-        "services.risk.risk_monitor._pre_reconcile_for_context",
-        side_effect=slow_pre_reconcile,
-    ) as prerec, patch(
-        "services.risk.risk_monitor.run_risk_check_for_context", side_effect=check
-    ), patch(
-        "services.risk.risk_monitor._refresh_context_price_cache", side_effect=refresh
-    ), patch(
-        "services.risk.risk_monitor._exit_monitor_enabled", return_value=True
+    with (
+        patch(
+            "services.risk.risk_monitor._pre_reconcile_for_context",
+            side_effect=slow_pre_reconcile,
+        ) as prerec,
+        patch("services.risk.risk_monitor.run_risk_check_for_context", side_effect=check),
+        patch("services.risk.risk_monitor._refresh_context_price_cache", side_effect=refresh),
+        patch("services.risk.risk_monitor._exit_monitor_enabled", return_value=True),
     ):
         with pytest.raises((asyncio.TimeoutError, asyncio.CancelledError)):
             await asyncio.wait_for(
-                risk_monitor_loop_for_contexts(
-                    [ctx], readiness, config=config, interval=0.05
-                ),
+                risk_monitor_loop_for_contexts([ctx], readiness, config=config, interval=0.05),
                 timeout=2.0,
             )
 
@@ -191,21 +191,18 @@ async def test_pre_reconcile_timeout_enters_backoff_without_stalling_risk_checks
         execution=SimpleNamespace(),
     )
 
-    with patch(
-        "services.risk.risk_monitor._pre_reconcile_for_context",
-        side_effect=stuck_pre_reconcile,
-    ) as prerec, patch(
-        "services.risk.risk_monitor.run_risk_check_for_context", side_effect=check
-    ), patch(
-        "services.risk.risk_monitor._refresh_context_price_cache", side_effect=refresh
-    ), patch(
-        "services.risk.risk_monitor._exit_monitor_enabled", return_value=True
+    with (
+        patch(
+            "services.risk.risk_monitor._pre_reconcile_for_context",
+            side_effect=stuck_pre_reconcile,
+        ) as prerec,
+        patch("services.risk.risk_monitor.run_risk_check_for_context", side_effect=check),
+        patch("services.risk.risk_monitor._refresh_context_price_cache", side_effect=refresh),
+        patch("services.risk.risk_monitor._exit_monitor_enabled", return_value=True),
     ):
         with pytest.raises((asyncio.TimeoutError, asyncio.CancelledError)):
             await asyncio.wait_for(
-                risk_monitor_loop_for_contexts(
-                    [ctx], readiness, config=config, interval=0.01
-                ),
+                risk_monitor_loop_for_contexts([ctx], readiness, config=config, interval=0.01),
                 timeout=0.18,
             )
 

@@ -38,81 +38,50 @@ def _ctx(config=None):
 class TestCooldownHelpers:
     def test_arm_then_active_within_ttl_and_expired_after(self):
         ctx = _ctx()
-        _arm_risk_exit_reject_cooldown(
-            ctx, condition_id=_COND, token_id=_TOKEN, now=1000.0
-        )
+        _arm_risk_exit_reject_cooldown(ctx, condition_id=_COND, token_id=_TOKEN, now=1000.0)
         assert (
-            _risk_exit_cooldown_active(
-                ctx, condition_id=_COND, token_id=_TOKEN, now=1030.0
-            )
-            is True
+            _risk_exit_cooldown_active(ctx, condition_id=_COND, token_id=_TOKEN, now=1030.0) is True
         )
         # Default TTL is 60s — expired one tick after.
         assert (
-            _risk_exit_cooldown_active(
-                ctx, condition_id=_COND, token_id=_TOKEN, now=1060.1
-            )
+            _risk_exit_cooldown_active(ctx, condition_id=_COND, token_id=_TOKEN, now=1060.1)
             is False
         )
 
     def test_scope_keyed_not_global(self):
         ctx = _ctx()
-        _arm_risk_exit_reject_cooldown(
-            ctx, condition_id=_COND, token_id=_TOKEN, now=1000.0
-        )
+        _arm_risk_exit_reject_cooldown(ctx, condition_id=_COND, token_id=_TOKEN, now=1000.0)
         assert (
-            _risk_exit_cooldown_active(
-                ctx, condition_id="other-cond", token_id=_TOKEN, now=1001.0
-            )
+            _risk_exit_cooldown_active(ctx, condition_id="other-cond", token_id=_TOKEN, now=1001.0)
             is False
         )
         assert (
-            _risk_exit_cooldown_active(
-                ctx, condition_id=_COND, token_id="other-token", now=1001.0
-            )
+            _risk_exit_cooldown_active(ctx, condition_id=_COND, token_id="other-token", now=1001.0)
             is False
         )
 
     def test_typed_zero_disables(self):
-        ctx = _ctx(
-            SimpleNamespace(risk=SimpleNamespace(risk_exit_reject_cooldown_seconds=0))
-        )
-        _arm_risk_exit_reject_cooldown(
-            ctx, condition_id=_COND, token_id=_TOKEN, now=1000.0
-        )
+        ctx = _ctx(SimpleNamespace(risk=SimpleNamespace(risk_exit_reject_cooldown_seconds=0)))
+        _arm_risk_exit_reject_cooldown(ctx, condition_id=_COND, token_id=_TOKEN, now=1000.0)
         assert (
-            _risk_exit_cooldown_active(
-                ctx, condition_id=_COND, token_id=_TOKEN, now=1000.1
-            )
+            _risk_exit_cooldown_active(ctx, condition_id=_COND, token_id=_TOKEN, now=1000.1)
             is False
         )
 
     def test_typed_short_ttl_expiry(self):
-        ctx = _ctx(
-            SimpleNamespace(
-                risk=SimpleNamespace(risk_exit_reject_cooldown_seconds=0.05)
-            )
-        )
-        _arm_risk_exit_reject_cooldown(
-            ctx, condition_id=_COND, token_id=_TOKEN, now=1000.0
-        )
+        ctx = _ctx(SimpleNamespace(risk=SimpleNamespace(risk_exit_reject_cooldown_seconds=0.05)))
+        _arm_risk_exit_reject_cooldown(ctx, condition_id=_COND, token_id=_TOKEN, now=1000.0)
         assert (
-            _risk_exit_cooldown_active(
-                ctx, condition_id=_COND, token_id=_TOKEN, now=1000.04
-            )
+            _risk_exit_cooldown_active(ctx, condition_id=_COND, token_id=_TOKEN, now=1000.04)
             is True
         )
         assert (
-            _risk_exit_cooldown_active(
-                ctx, condition_id=_COND, token_id=_TOKEN, now=1000.06
-            )
+            _risk_exit_cooldown_active(ctx, condition_id=_COND, token_id=_TOKEN, now=1000.06)
             is False
         )
 
     def test_typed_config_is_used(self):
-        cfg = SimpleNamespace(
-            risk=SimpleNamespace(risk_exit_reject_cooldown_seconds=5.0)
-        )
+        cfg = SimpleNamespace(risk=SimpleNamespace(risk_exit_reject_cooldown_seconds=5.0))
         assert _risk_exit_reject_cooldown_seconds(_ctx(config=cfg)) == 5.0
 
     def test_default_is_60(self):
@@ -262,9 +231,7 @@ async def test_opaque_error_still_arms_cooldown():
     cooldown — status is the signal, not the error text."""
     async with _pg_pool() as pool:
         await _seed_position(pool)
-        exec_svc = _CountingExecutionService(
-            status="rejected", error="VenueInvalidOrderError"
-        )
+        exec_svc = _CountingExecutionService(status="rejected", error="VenueInvalidOrderError")
         context = _make_context(pool, execution_service=exec_svc)
         await rehydrate_position_manager(context)
 
@@ -317,9 +284,7 @@ async def test_typed_zero_disables_suppression():
         await _seed_position(pool)
         exec_svc = _CountingExecutionService(status="rejected")
         context = _make_context(pool, execution_service=exec_svc)
-        context.config = SimpleNamespace(
-            risk=SimpleNamespace(risk_exit_reject_cooldown_seconds=0)
-        )
+        context.config = SimpleNamespace(risk=SimpleNamespace(risk_exit_reject_cooldown_seconds=0))
         await rehydrate_position_manager(context)
 
         await run_risk_check_for_context(context)

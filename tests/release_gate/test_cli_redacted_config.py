@@ -4,6 +4,7 @@ Confirms that even with a populated PRIVATE_KEY in the environment, the
 default ``bot config print`` invocation never echoes it back. Defends the
 operator-facing safety contract that secrets cannot leak through ops tooling.
 """
+
 from __future__ import annotations
 
 import json

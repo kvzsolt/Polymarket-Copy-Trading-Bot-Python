@@ -354,9 +354,7 @@ async def test_failed_risk_sell_does_not_create_risk_block():
             condition_id="cond-1",
             token_id=FAKE_TOKEN_ID,
         )
-        assert quarantine is None, (
-            "risk block must NOT be written when the protective SELL fails"
-        )
+        assert quarantine is None, "risk block must NOT be written when the protective SELL fails"
 
         # Position should still be open (SELL didn't fill).
         assert await positions_repo.get_position("u1", "cond-1") is not None
@@ -468,11 +466,14 @@ async def test_partial_risk_sell_updates_position_but_does_not_create_risk_block
 
         await run_risk_check_for_context(context)
 
-        assert await risk_blocks_repo.get_active_risk_block(
-            user_id="u1",
-            condition_id="cond-1",
-            token_id=FAKE_TOKEN_ID,
-        ) is None
+        assert (
+            await risk_blocks_repo.get_active_risk_block(
+                user_id="u1",
+                condition_id="cond-1",
+                token_id=FAKE_TOKEN_ID,
+            )
+            is None
+        )
         remaining = await positions_repo.get_position("u1", "cond-1", token_id=FAKE_TOKEN_ID)
         assert remaining is not None
         assert remaining.size_tokens == Decimal("5")
@@ -597,9 +598,19 @@ async def test_startup_reconcile_closes_unconfirmed_risk_sell_and_persists_block
             accounting_service=object(),
             position_manager=PositionManager(),
             execution_service=_ReconcilingExecutionService(),
-            extra={"slippage_tolerance_bps": 50, "clob_gateway": _FakeClobGateway(responses={
-                "venue-risk-1": {"status": "filled", "size_matched": "10", "avg_price": "0.30", "orderID": "venue-risk-1"},
-            })},
+            extra={
+                "slippage_tolerance_bps": 50,
+                "clob_gateway": _FakeClobGateway(
+                    responses={
+                        "venue-risk-1": {
+                            "status": "filled",
+                            "size_matched": "10",
+                            "avg_price": "0.30",
+                            "orderID": "venue-risk-1",
+                        },
+                    }
+                ),
+            },
         )
 
         result = await startup_reconcile_unconfirmed([context])
@@ -670,7 +681,10 @@ async def test_startup_reconcile_partial_unconfirmed_risk_sell_keeps_position_op
                         "trigger_fraction": 1.0,
                     },
                 },
-                response_payload={"status": "submitted_unconfirmed", "orderID": "venue-risk-partial-1"},
+                response_payload={
+                    "status": "submitted_unconfirmed",
+                    "orderID": "venue-risk-partial-1",
+                },
             )
         )
 
@@ -687,9 +701,19 @@ async def test_startup_reconcile_partial_unconfirmed_risk_sell_keeps_position_op
             accounting_service=object(),
             position_manager=PositionManager(),
             execution_service=_ReconcilingPartialExecutionService(),
-            extra={"slippage_tolerance_bps": 50, "clob_gateway": _FakeClobGateway(responses={
-                "venue-risk-partial-1": {"status": "cancelled", "size_matched": "4", "avg_price": "0.30", "orderID": "venue-risk-partial-1"},
-            })},
+            extra={
+                "slippage_tolerance_bps": 50,
+                "clob_gateway": _FakeClobGateway(
+                    responses={
+                        "venue-risk-partial-1": {
+                            "status": "cancelled",
+                            "size_matched": "4",
+                            "avg_price": "0.30",
+                            "orderID": "venue-risk-partial-1",
+                        },
+                    }
+                ),
+            },
         )
 
         result = await startup_reconcile_unconfirmed([context])
@@ -701,11 +725,14 @@ async def test_startup_reconcile_partial_unconfirmed_risk_sell_keeps_position_op
         order_row = await orders_repo.get_by_order_id("venue-risk-partial-1")
         assert order_row is not None
         assert order_row["status"] == "filled_reconciled"
-        assert await risk_blocks_repo.get_active_risk_block(
-            user_id="u1",
-            condition_id="cond-1",
-            token_id=FAKE_TOKEN_ID,
-        ) is None
+        assert (
+            await risk_blocks_repo.get_active_risk_block(
+                user_id="u1",
+                condition_id="cond-1",
+                token_id=FAKE_TOKEN_ID,
+            )
+            is None
+        )
 
 
 @pytest.mark.asyncio
@@ -791,9 +818,19 @@ async def test_startup_reconcile_risk_sell_applies_only_incremental_matched_delt
             accounting_service=object(),
             position_manager=PositionManager(),
             execution_service=_ReconcilingRiskProgressExecutionService(),
-            extra={"slippage_tolerance_bps": 50, "clob_gateway": _FakeClobGateway(responses={
-                "venue-risk-progress-1": {"status": "partially_filled", "size_matched": "5", "avg_price": "0.30", "orderID": "venue-risk-progress-1"},
-            })},
+            extra={
+                "slippage_tolerance_bps": 50,
+                "clob_gateway": _FakeClobGateway(
+                    responses={
+                        "venue-risk-progress-1": {
+                            "status": "partially_filled",
+                            "size_matched": "5",
+                            "avg_price": "0.30",
+                            "orderID": "venue-risk-progress-1",
+                        },
+                    }
+                ),
+            },
         )
 
         result = await startup_reconcile_unconfirmed([context])
@@ -807,11 +844,14 @@ async def test_startup_reconcile_risk_sell_applies_only_incremental_matched_delt
         assert order_row["status"] == "submitted_unconfirmed"
         assert order_row["response"].get("matched_previous") == "2"
         assert order_row["response"].get("matched_delta") == "3"
-        assert await risk_blocks_repo.get_active_risk_block(
-            user_id="u1",
-            condition_id="cond-1",
-            token_id=FAKE_TOKEN_ID,
-        ) is None
+        assert (
+            await risk_blocks_repo.get_active_risk_block(
+                user_id="u1",
+                condition_id="cond-1",
+                token_id=FAKE_TOKEN_ID,
+            )
+            is None
+        )
 
 
 @pytest.mark.asyncio
@@ -863,9 +903,19 @@ async def test_risk_monitor_reconciles_unconfirmed_sell_before_evaluating_positi
             accounting_service=object(),
             position_manager=PositionManager(),
             execution_service=_ReconcilingExecutionService(),
-            extra={"slippage_tolerance_bps": 50, "clob_gateway": _FakeClobGateway(responses={
-                "venue-sell-1": {"status": "filled", "size_matched": "10", "avg_price": "0.30", "orderID": "venue-sell-1"},
-            })},
+            extra={
+                "slippage_tolerance_bps": 50,
+                "clob_gateway": _FakeClobGateway(
+                    responses={
+                        "venue-sell-1": {
+                            "status": "filled",
+                            "size_matched": "10",
+                            "avg_price": "0.30",
+                            "orderID": "venue-sell-1",
+                        },
+                    }
+                ),
+            },
         )
 
         await run_risk_check_for_context(context)
@@ -877,11 +927,14 @@ async def test_risk_monitor_reconciles_unconfirmed_sell_before_evaluating_positi
         processed = await orders_repo.get_processed_trade("sell-restart-1")
         assert processed is not None
         assert processed["status"] == "filled_reconciled"
-        assert await risk_blocks_repo.get_active_risk_block(
-            user_id="u1",
-            condition_id="cond-1",
-            token_id=FAKE_TOKEN_ID,
-        ) is None
+        assert (
+            await risk_blocks_repo.get_active_risk_block(
+                user_id="u1",
+                condition_id="cond-1",
+                token_id=FAKE_TOKEN_ID,
+            )
+            is None
+        )
 
 
 @pytest.mark.asyncio

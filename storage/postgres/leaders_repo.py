@@ -152,6 +152,7 @@ class LeadersRepo(AbstractLeaderRepository):
             tier_changed_at=record.tier_changed_at,
         )
 
+
 def _roster_record(row: asyncpg.Record) -> LeaderRosterRecord:
     return LeaderRosterRecord(
         wallet=str(row["wallet"]),
@@ -159,22 +160,16 @@ def _roster_record(row: asyncpg.Record) -> LeaderRosterRecord:
         score=float(row["score"] or 0.0),
         base_score=float(row["base_score"] or 0.0),
         longitudinal_score=(
-            float(row["longitudinal_score"])
-            if row["longitudinal_score"] is not None
-            else None
+            float(row["longitudinal_score"]) if row["longitudinal_score"] is not None else None
         ),
         cycles_in_tier=int(row["cycles_in_tier"] or 0),
         promote_streak=int(row["promote_streak"] or 0),
         demote_streak=int(row["demote_streak"] or 0),
         tier_changed_at=float(row["tier_changed_at"]),
         first_promoted_at=(
-            float(row["first_promoted_at"])
-            if row["first_promoted_at"] is not None
-            else None
+            float(row["first_promoted_at"]) if row["first_promoted_at"] is not None else None
         ),
-        last_seen_at=(
-            float(row["last_seen_at"]) if row["last_seen_at"] is not None else None
-        ),
+        last_seen_at=(float(row["last_seen_at"]) if row["last_seen_at"] is not None else None),
         config_hash=str(row["config_hash"] or ""),
     )
 

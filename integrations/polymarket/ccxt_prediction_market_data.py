@@ -93,14 +93,10 @@ class CcxtPredictionMarketData:
     def _method(self, capability: str, snake_name: str) -> Any:
         has = getattr(self._exchange, "has", {}) or {}
         if has.get(capability) is False:
-            raise CcxtPredictionCapabilityError(
-                f"CCXT Polymarket does not support {capability}"
-            )
+            raise CcxtPredictionCapabilityError(f"CCXT Polymarket does not support {capability}")
         method = getattr(self._exchange, snake_name, None)
         if not callable(method):
-            raise CcxtPredictionCapabilityError(
-                f"CCXT Polymarket does not expose {capability}"
-            )
+            raise CcxtPredictionCapabilityError(f"CCXT Polymarket does not expose {capability}")
         return method
 
     async def _call(self, capability: str, snake_name: str, *args: Any) -> Any:
@@ -163,7 +159,9 @@ class CcxtPredictionMarketData:
         value = await self._call("fetchEvent", "fetch_event", str(event_id), dict(params or {}))
         return dict(value or {})
 
-    async def fetch_ticker(self, token_id: str, *, params: dict[str, Any] | None = None) -> dict[str, Any]:
+    async def fetch_ticker(
+        self, token_id: str, *, params: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         value = await self._call("fetchTicker", "fetch_ticker", str(token_id), dict(params or {}))
         return dict(value or {})
 
@@ -322,9 +320,7 @@ class CcxtPredictionMarketData:
         try:
             return int(value)
         except (TypeError, ValueError) as exc:
-            raise CcxtPredictionMarketDataError(
-                f"invalid fetchTime result: {value!r}"
-            ) from exc
+            raise CcxtPredictionMarketDataError(f"invalid fetchTime result: {value!r}") from exc
 
     async def fetch_my_trades(
         self,
@@ -403,9 +399,7 @@ class CcxtPredictionMarketData:
         if not callable(method):
             method = getattr(self._exchange, "loadOutcome", None)
         if not callable(method):
-            raise CcxtPredictionCapabilityError(
-                "CCXT Polymarket does not expose loadOutcome"
-            )
+            raise CcxtPredictionCapabilityError("CCXT Polymarket does not expose loadOutcome")
         try:
             async with asyncio.timeout(self._timeout_seconds):
                 value = await _await_call(method, str(token_or_handle))

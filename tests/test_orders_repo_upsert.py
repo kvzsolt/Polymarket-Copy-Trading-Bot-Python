@@ -188,8 +188,7 @@ async def test_order_repo_upsert_replaces_failed_submission():
 
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT order_id, status, attempt_count FROM orders "
-                "WHERE idempotency_key = $1",
+                "SELECT order_id, status, attempt_count FROM orders WHERE idempotency_key = $1",
                 key,
             )
 
@@ -211,7 +210,12 @@ async def test_persist_execution_atomically_scopes_position_by_token_id():
                    size_tokens, avg_entry_price)
                 VALUES ($1, $2, $3, $4, $5, $6)
                 """,
-                "u1", "cond-1", "token-a", "leader-a", "10", "0.40",
+                "u1",
+                "cond-1",
+                "token-a",
+                "leader-a",
+                "10",
+                "0.40",
             )
             await conn.execute(
                 """
@@ -220,7 +224,12 @@ async def test_persist_execution_atomically_scopes_position_by_token_id():
                    size_tokens, avg_entry_price)
                 VALUES ($1, $2, $3, $4, $5, $6)
                 """,
-                "u1", "cond-1", "token-b", "leader-b", "4", "0.60",
+                "u1",
+                "cond-1",
+                "token-b",
+                "leader-b",
+                "4",
+                "0.60",
             )
 
         persisted = await repo.persist_execution_atomically(
@@ -248,7 +257,8 @@ async def test_persist_execution_atomically_scopes_position_by_token_id():
                 "SELECT token_id, size_tokens, avg_entry_price FROM positions "
                 "WHERE user_id = $1 AND condition_id = $2 "
                 "ORDER BY token_id",
-                "u1", "cond-1",
+                "u1",
+                "cond-1",
             )
 
     assert len(rows) == 2

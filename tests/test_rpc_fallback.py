@@ -153,7 +153,11 @@ class TestFailoverHTTPProviderMakeRequest:
 
     def test_primary_failover_code_uses_fallback(self) -> None:
         provider = _FailoverHTTPProvider("https://primary.example", "https://fallback.example")
-        primary_err = {"jsonrpc": "2.0", "id": 1, "error": {"code": -32603, "message": "Internal error"}}
+        primary_err = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "error": {"code": -32603, "message": "Internal error"},
+        }
         fallback_ok = {"jsonrpc": "2.0", "id": 1, "result": "0x2"}
 
         provider._primary = MagicMock()
@@ -271,6 +275,7 @@ class TestGetMyBalanceFallback:
         mock_config.network.chain_id = 137
 
         from utils.getMyBalance import configure_from_appconfig
+
         configure_from_appconfig(mock_config)
 
         # After configuration, the module-level state should reflect the

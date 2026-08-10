@@ -101,8 +101,7 @@ async def _discovery_refresh_loop(
     registry: LeaderRegistry,
     configured_leaders: list[str],
     refresh_interval: int,
-    on_new_leaders: Callable[[list[str]], Awaitable[Iterable[str] | None]]
-    | None = None,
+    on_new_leaders: Callable[[list[str]], Awaitable[Iterable[str] | None]] | None = None,
     already_monitored: set[str] | None = None,
 ) -> None:
     await _discovery_refresh_loop_impl(
@@ -145,11 +144,7 @@ def _to_decimal_balance(value: object) -> Decimal:
 def _flatten_contexts(
     contexts_by_leader: dict[str, list["TradingContext"]],
 ) -> list["TradingContext"]:
-    return [
-        context
-        for contexts in contexts_by_leader.values()
-        for context in contexts
-    ]
+    return [context for contexts in contexts_by_leader.values() for context in contexts]
 
 
 def _refresh_onchain_watched_wallets(
@@ -169,9 +164,7 @@ def _refresh_onchain_watched_wallets(
     update = getattr(onchain_runtime, "update_watched_wallets", None)
     if not callable(update):
         return False
-    watched = {
-        str(wallet).strip().lower() for wallet in wallets if str(wallet).strip()
-    }
+    watched = {str(wallet).strip().lower() for wallet in wallets if str(wallet).strip()}
     try:
         update(watched)
     except Exception as exc:
@@ -270,7 +263,8 @@ async def _reap_reservations_once(contexts: list["TradingContext"]) -> None:
             metrics.inc("reservation_reaper_failed_total")
             logger.error(
                 "reservation_reaper_failed user=%s: %r",
-                getattr(ctx, "user_id", "?"), exc,
+                getattr(ctx, "user_id", "?"),
+                exc,
             )
 
 
@@ -290,11 +284,9 @@ def _wallets_blocked_by_reconcile_failures(
         return []
     failed = set(failed_user_ids)
     return [
-        wallet for wallet in started_wallets
-        if any(
-            ctx.user_id in failed
-            for ctx in contexts_by_leader.get(wallet, [])
-        )
+        wallet
+        for wallet in started_wallets
+        if any(ctx.user_id in failed for ctx in contexts_by_leader.get(wallet, []))
     ]
 
 
@@ -410,10 +402,7 @@ def _get_clob_wrapper_from_user_state(user_state: UserRuntimeState) -> Any | Non
 
 def _empty_user_ws_api_creds() -> dict[str, str]:
     """Return the unauthenticated user-stream credential shape."""
-    return {
-        field: ""
-        for field in ("api_key", "api_secret", "api_passphrase")
-    }
+    return {field: "" for field in ("api_key", "api_secret", "api_passphrase")}
 
 
 def _normalise_user_ws_api_creds(raw_creds: Any) -> dict[str, str]:
@@ -502,9 +491,7 @@ async def _start_market_data_runtimes(
     the trade pipeline can subscribe new signal tokens dynamically.
     """
     market_data_runtimes: dict[str, MarketDataRuntime] = {}
-    context_tokens = extract_token_ids_from_contexts(
-        _flatten_contexts(contexts_by_leader)
-    )
+    context_tokens = extract_token_ids_from_contexts(_flatten_contexts(contexts_by_leader))
 
     for runtime_user in runtime_users:
         user_state = user_states.get(runtime_user.user_id)
@@ -621,11 +608,7 @@ def _build_reconcile_wake_closure(context):
                         context.user_id,
                         reconciled,
                         reservation_reaped,
-                        (
-                            event.get("order_id")
-                            or event.get("orderID")
-                            or event.get("id")
-                        )
+                        (event.get("order_id") or event.get("orderID") or event.get("id"))
                         if isinstance(event, dict)
                         else None,
                     )
@@ -730,9 +713,7 @@ async def _start_user_data_runtimes(
         if market_data_runtimes is not None:
             market_runtime = market_data_runtimes.get(runtime_user.user_id)
             if market_runtime is not None:
-                market_token_subscribe = _build_market_token_subscribe_closure(
-                    market_runtime
-                )
+                market_token_subscribe = _build_market_token_subscribe_closure(market_runtime)
 
         runtime = UserDataRuntime(
             market_store=market_store,
@@ -761,9 +742,7 @@ async def _subscribe_context_tokens(
     New trade-signal tokens should also be subscribed from the trade pipeline
     when they appear. This helper only handles context-visible tokens.
     """
-    token_ids = extract_token_ids_from_contexts(
-        _flatten_contexts(contexts_by_leader)
-    )
+    token_ids = extract_token_ids_from_contexts(_flatten_contexts(contexts_by_leader))
 
     if not token_ids:
         return
@@ -948,13 +927,12 @@ async def _run_application(client_registry: list[Any]) -> int:
         if doctor_result.get("status") == "blocked":
             print_error("Live mode doctor check failed. Refusing to start.")
             blocked = [
-                c for c in doctor_result.get("checks", [])
+                c
+                for c in doctor_result.get("checks", [])
                 if isinstance(c, dict) and c.get("status") == "blocked"
             ]
             for check in blocked:
-                print_error(
-                    f"  ❌ {check.get('name')}: {check.get('detail', '')}"
-                )
+                print_error(f"  ❌ {check.get('name')}: {check.get('detail', '')}")
                 fix = check.get("fix")
                 if fix:
                     print_error(f"     fix: {fix}")
@@ -964,7 +942,8 @@ async def _run_application(client_registry: list[Any]) -> int:
             return 1
         if doctor_result.get("status") == "warning":
             warnings = [
-                c for c in doctor_result.get("checks", [])
+                c
+                for c in doctor_result.get("checks", [])
                 if isinstance(c, dict) and c.get("status") == "warning"
             ]
             for check in warnings:
@@ -1013,17 +992,14 @@ async def _run_application(client_registry: list[Any]) -> int:
     if invalid:
         for wallet in invalid:
             print_error(
-                f'Invalid leader wallet "{wallet}" — must be 42-char hex '
-                "(0x + 40 hex digits)."
+                f'Invalid leader wallet "{wallet}" — must be 42-char hex (0x + 40 hex digits).'
             )
         return 1
 
     registry_state = await application.registry.refresh(configured)
     active_leaders = registry_state.active_monitored
 
-    invalid_active = [
-        wallet for wallet in active_leaders if not is_valid_eth_address(wallet)
-    ]
+    invalid_active = [wallet for wallet in active_leaders if not is_valid_eth_address(wallet)]
     if invalid_active:
         logger.error(
             "startup_blocked_no_active_leaders",
@@ -1032,9 +1008,7 @@ async def _run_application(client_registry: list[Any]) -> int:
                 "reason": "invalid_active_leaders",
                 "invalid_wallets": invalid_active,
                 "discovery_enabled": application.config.discovery.scheduler.enabled,
-                "max_active_leaders": (
-                    application.config.discovery.scheduler.max_active_leaders
-                ),
+                "max_active_leaders": (application.config.discovery.scheduler.max_active_leaders),
             },
         )
         print_error("No active leaders available. Auto-selected leaders were invalid.")
@@ -1063,12 +1037,8 @@ async def _run_application(client_registry: list[Any]) -> int:
                 "startup_roster_wait_skipped",
                 extra={
                     "reason": "roster cannot supply startup wallets",
-                    "discovery_enabled": (
-                        application.config.discovery.scheduler.enabled
-                    ),
-                    "start_from_roster": (
-                        application.config.discovery.scheduler.start_from_roster
-                    ),
+                    "discovery_enabled": (application.config.discovery.scheduler.enabled),
+                    "start_from_roster": (application.config.discovery.scheduler.start_from_roster),
                     "discovery_has_token": application.config.discovery.api.has_token,
                 },
             )
@@ -1080,9 +1050,7 @@ async def _run_application(client_registry: list[Any]) -> int:
                 "mode": registry_state.mode,
                 "reason": "manual_and_roster_empty",
                 "discovery_enabled": application.config.discovery.scheduler.enabled,
-                "max_active_leaders": (
-                    application.config.discovery.scheduler.max_active_leaders
-                ),
+                "max_active_leaders": (application.config.discovery.scheduler.max_active_leaders),
             },
         )
         print_error(
@@ -1191,10 +1159,7 @@ async def _run_application(client_registry: list[Any]) -> int:
         *(get_my_balance(wallet) for wallet in active_leaders)
     )
     user_balances_raw = await asyncio.gather(
-        *(
-            get_my_balance(runtime_user.wallet.funder_address)
-            for runtime_user in runtime_users
-        )
+        *(get_my_balance(runtime_user.wallet.funder_address) for runtime_user in runtime_users)
     )
 
     # INF-01 (CLAUDE.md no-float-money): keep balances as ``Decimal`` for
@@ -1288,11 +1253,7 @@ async def _run_application(client_registry: list[Any]) -> int:
             )
             seeded_user_ids.add(context.user_id)
 
-    monitored_leaders = [
-        leader
-        for leader, contexts in contexts_by_leader.items()
-        if contexts
-    ]
+    monitored_leaders = [leader for leader, contexts in contexts_by_leader.items() if contexts]
     application.readiness.update(monitored_leader_count=len(monitored_leaders))
 
     if not monitored_leaders:
@@ -1348,9 +1309,7 @@ async def _run_application(client_registry: list[Any]) -> int:
                 len(monitored_leaders),
                 _before,
             )
-            application.readiness.update(
-                monitored_leader_count=len(monitored_leaders)
-            )
+            application.readiness.update(monitored_leader_count=len(monitored_leaders))
     else:
         application.readiness.update(reconciler_ok=True)
 
@@ -1386,7 +1345,8 @@ async def _run_application(client_registry: list[Any]) -> int:
         except Exception as exc:
             logger.warning(
                 "manual_sync_initial_failed | user=%s error=%r",
-                runtime_user.user_id, exc,
+                runtime_user.user_id,
+                exc,
             )
 
     # PR7 — proactive position drift sweep. Must complete before monitors
@@ -1533,12 +1493,10 @@ async def _run_application(client_registry: list[Any]) -> int:
     startup_health_healthy = all(report.healthy for report in all_health_reports)
     startup_health_status = "healthy" if startup_health_healthy else "unhealthy"
     startup_pruned_positions = sum(
-        report.position_sync.pruned_positions
-        for report in all_health_reports
+        report.position_sync.pruned_positions for report in all_health_reports
     )
     startup_purged_failed_orders = sum(
-        report.order_cleanup.purged_failed
-        for report in all_health_reports
+        report.order_cleanup.purged_failed for report in all_health_reports
     )
 
     for runtime_user in runtime_users[1:]:
@@ -1590,11 +1548,7 @@ async def _run_application(client_registry: list[Any]) -> int:
         )
 
         monitored_leader_count = len(
-            [
-                wallet
-                for wallet, contexts in contexts_by_leader.items()
-                if contexts
-            ]
+            [wallet for wallet, contexts in contexts_by_leader.items() if contexts]
         )
 
         await _subscribe_context_tokens(
@@ -1622,7 +1576,9 @@ async def _run_application(client_registry: list[Any]) -> int:
         # double-fill exposure the startup path already gates against —
         # the dynamic-discovery path must match.
         blocked_wallets = _wallets_blocked_by_reconcile_failures(
-            started_wallets, contexts_by_leader, dynamic_recon_failures,
+            started_wallets,
+            contexts_by_leader,
+            dynamic_recon_failures,
         )
         if blocked_wallets:
             logger.error(
@@ -1633,10 +1589,7 @@ async def _run_application(client_registry: list[Any]) -> int:
                 dynamic_recon_failures,
             )
             blocked_set = set(blocked_wallets)
-            started_wallets = [
-                wallet for wallet in started_wallets
-                if wallet not in blocked_set
-            ]
+            started_wallets = [wallet for wallet in started_wallets if wallet not in blocked_set]
 
         for wallet in started_wallets:
             monitor_tasks.append(
@@ -1665,11 +1618,7 @@ async def _run_application(client_registry: list[Any]) -> int:
 
         application.readiness.update(
             monitored_leader_count=len(
-                [
-                    wallet
-                    for wallet, contexts in contexts_by_leader.items()
-                    if contexts
-                ]
+                [wallet for wallet, contexts in contexts_by_leader.items() if contexts]
             )
         )
         return started_wallets
@@ -1681,9 +1630,7 @@ async def _run_application(client_registry: list[Any]) -> int:
     supervised: list[_Supervised] = []
 
     if application.config.discovery.scheduler.enabled and not configured:
-        dynamic_monitoring_enabled = bool(
-            application.config.discovery.scheduler.start_from_roster
-        )
+        dynamic_monitoring_enabled = bool(application.config.discovery.scheduler.start_from_roster)
         if not dynamic_monitoring_enabled:
             logger.info(
                 "discovery_roster_hot_add_disabled",
@@ -1700,9 +1647,7 @@ async def _run_application(client_registry: list[Any]) -> int:
                     registry,
                     configured,
                     refresh_interval,
-                    on_new_leaders=(
-                        _on_new_leaders if dynamic_monitoring_enabled else None
-                    ),
+                    on_new_leaders=(_on_new_leaders if dynamic_monitoring_enabled else None),
                     already_monitored=monitored_set,
                 ),
             )
@@ -1750,9 +1695,7 @@ async def _run_application(client_registry: list[Any]) -> int:
                 await _reap_reservations_once(_flatten_contexts(contexts_by_leader))
                 await asyncio.sleep(_reaper_interval)
 
-        supervised.append(
-            _Supervised(name="reservation-reaper", factory=_reservation_reaper_loop)
-        )
+        supervised.append(_Supervised(name="reservation-reaper", factory=_reservation_reaper_loop))
 
     for spec in supervised:
         spec.spawn()
@@ -1773,7 +1716,9 @@ async def _run_application(client_registry: list[Any]) -> int:
             oc_cfg.enable_onchain_mined_detection,
             oc_cfg.enable_onchain_pending_detection,
         )
-    if ws_url and (oc_cfg.enable_onchain_mined_detection or oc_cfg.enable_onchain_pending_detection):
+    if ws_url and (
+        oc_cfg.enable_onchain_mined_detection or oc_cfg.enable_onchain_pending_detection
+    ):
         try:
             import time as _time_mod
 
@@ -1816,16 +1761,14 @@ async def _run_application(client_registry: list[Any]) -> int:
                 raw = signal.as_raw_signal_dict()
                 now_ts = _time_mod.time()
                 tasks = [
-                    _execute_trade_pipeline(ctx, leader_lower, [raw], now_ts)
-                    for ctx in contexts
+                    _execute_trade_pipeline(ctx, leader_lower, [raw], now_ts) for ctx in contexts
                 ]
                 results = await asyncio.gather(*tasks, return_exceptions=True)
                 for idx, result in enumerate(results):
                     if isinstance(result, Exception):
                         ctx = contexts[idx]
                         logger.warning(
-                            "onchain_signal_pipeline_error | leader=%s user=%s "
-                            "tx=%s error=%s",
+                            "onchain_signal_pipeline_error | leader=%s user=%s tx=%s error=%s",
                             leader_lower,
                             ctx.user_id,
                             signal.tx_hash,
@@ -1878,9 +1821,7 @@ async def _run_application(client_registry: list[Any]) -> int:
             # crash in risk / discovery is observed here rather than dying
             # silently while the process stays "up".
             active = [task for task in monitor_tasks if not task.done()]
-            active += [
-                spec.task for spec in supervised if spec.task and not spec.task.done()
-            ]
+            active += [spec.task for spec in supervised if spec.task and not spec.task.done()]
 
             if not active:
                 await asyncio.sleep(refresh_interval)

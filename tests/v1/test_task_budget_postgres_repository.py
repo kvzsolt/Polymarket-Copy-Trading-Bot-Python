@@ -158,9 +158,7 @@ async def test_reserve_holds_transaction_scoped_identity_and_budget_locks() -> N
     assert connection.transaction_entries == connection.transaction_exits == 1
     advisory_calls = [item for item in connection.calls if "pg_advisory_xact_lock" in item[1]]
     assert len(advisory_calls) == 3
-    assert any(
-        "INSERT INTO copy_task_budget_reservations" in item[1] for item in connection.calls
-    )
+    assert any("INSERT INTO copy_task_budget_reservations" in item[1] for item in connection.calls)
     insert = next(
         item for item in connection.calls if "INSERT INTO copy_task_budget_reservations" in item[1]
     )
@@ -317,11 +315,7 @@ async def test_postgres_reservation_locks_and_persists_sports_market_type() -> N
     )
 
     assert decision.allowed is True
-    executed_sql = "\n".join(
-        sql for method, sql, _args in connection.calls if method == "execute"
-    )
-    fetched_sql = "\n".join(
-        sql for method, sql, _args in connection.calls if method == "fetchrow"
-    )
+    executed_sql = "\n".join(sql for method, sql, _args in connection.calls if method == "execute")
+    fetched_sql = "\n".join(sql for method, sql, _args in connection.calls if method == "fetchrow")
     assert "sports:task-a:moneyline" in str(connection.calls)
     assert "sports_market_type" in executed_sql + fetched_sql

@@ -211,7 +211,9 @@ def default_follow(user_id: str, leader_id: str, config: AppConfig) -> UserFollo
     )
 
 
-def ensure_runtime_follows(runtime_users: list[RuntimeUser], leaders: list[str], config: AppConfig) -> None:
+def ensure_runtime_follows(
+    runtime_users: list[RuntimeUser], leaders: list[str], config: AppConfig
+) -> None:
     for runtime_user in runtime_users:
         for leader in leaders:
             if leader not in runtime_user.follows:
@@ -262,6 +264,7 @@ def build_user_state(
     # Same pattern for the balance-lookup module (RPC_URL + collateral
     # contract addresses) so utils/getMyBalance.py drops its ENV reads.
     from utils.getMyBalance import configure_from_appconfig as _configure_balance_module
+
     _configure_balance_module(config)
 
     order_repo = OrdersRepo(pool)
@@ -283,6 +286,7 @@ def build_user_state(
     # SDK gateway exactly as before.
     if clob_gateway is None:
         from integrations.polymarket.clob_v2_gateway import ClobV2Gateway
+
         clob_gateway = ClobV2Gateway(client, config)
 
     # Freshness-aware market data layer (issue #hardening PR-1).
@@ -307,30 +311,18 @@ def build_user_state(
             allow_rest_bootstrap_for_execution=bool(
                 getattr(md_cfg, "enable_rest_bootstrap", False)
             ),
-            rest_bootstrap_max_age_ms=int(
-                getattr(md_cfg, "rest_bootstrap_max_age_ms", 500)
-            ),
-            rest_snapshot_max_age_ms=int(
-                getattr(md_cfg, "rest_snapshot_max_age_ms", 500)
-            ),
+            rest_bootstrap_max_age_ms=int(getattr(md_cfg, "rest_bootstrap_max_age_ms", 500)),
+            rest_snapshot_max_age_ms=int(getattr(md_cfg, "rest_snapshot_max_age_ms", 500)),
             rest_snapshot_request_timeout_ms=int(
                 getattr(md_cfg, "rest_snapshot_request_timeout_ms", 750)
             ),
             rest_snapshot_total_budget_ms=int(
                 getattr(md_cfg, "rest_snapshot_total_budget_ms", 1000)
             ),
-            rest_snapshot_max_spread_bps=int(
-                getattr(md_cfg, "rest_snapshot_max_spread_bps", 300)
-            ),
-            max_quote_age_seconds=float(
-                getattr(md_cfg, "executable_quote_max_age_seconds", 2.0)
-            ),
-            max_book_age_seconds=float(
-                getattr(md_cfg, "executable_book_max_age_seconds", 2.0)
-            ),
-            max_tick_age_seconds=float(
-                getattr(md_cfg, "executable_tick_max_age_seconds", 300.0)
-            ),
+            rest_snapshot_max_spread_bps=int(getattr(md_cfg, "rest_snapshot_max_spread_bps", 300)),
+            max_quote_age_seconds=float(getattr(md_cfg, "executable_quote_max_age_seconds", 2.0)),
+            max_book_age_seconds=float(getattr(md_cfg, "executable_book_max_age_seconds", 2.0)),
+            max_tick_age_seconds=float(getattr(md_cfg, "executable_tick_max_age_seconds", 300.0)),
             wss_connection_max_silence_seconds=float(
                 getattr(md_cfg, "wss_connection_max_silence_seconds", 20.0)
             ),
@@ -546,12 +538,8 @@ def _build_execution_coordinator(
     # Reservations are a typed-config gate (RESERVATIONS_ENABLED), not a
     # hard-coded mode. Configless contexts (partial test state) keep the
     # historical disabled behavior so existing fixtures stay green.
-    reservations_enabled = (
-        config.execution.reservations_enabled if config is not None else False
-    )
-    _reservation_ttl = (
-        config.execution.reservation_ttl_seconds if config is not None else 120
-    )
+    reservations_enabled = config.execution.reservations_enabled if config is not None else False
+    _reservation_ttl = config.execution.reservation_ttl_seconds if config is not None else 120
     reservation_service = ReservationService(
         reservations_repo=reservations_repo,
         positions_repo=positions_repo,
@@ -599,9 +587,8 @@ def _bind_reservation_runtime(context: TradingContext, coord: object | None) -> 
     if reservation_service is None:
         return
 
-    reservations_repo = (
-        getattr(coord, "reservations_repo", None)
-        or getattr(reservation_service, "reservations_repo", None)
+    reservations_repo = getattr(coord, "reservations_repo", None) or getattr(
+        reservation_service, "reservations_repo", None
     )
     context.extra["reservation_service"] = reservation_service
     if reservations_repo is not None:
@@ -629,21 +616,23 @@ def _bind_reservation_runtime(context: TradingContext, coord: object | None) -> 
         if side not in {"BUY", "SELL"}:
             return None
 
-        condition_id = (
-            request.get("condition_id")
-            or _reservation_attr(reservation, "condition_id")
-        )
+        condition_id = request.get("condition_id") or _reservation_attr(reservation, "condition_id")
         token_id = (
             request.get("token_id")
             or request.get("asset")
             or _reservation_attr(reservation, "token_id")
         )
         user_id = (
-            (order_row or {}).get("user_id") if isinstance(order_row, dict) else None
-        ) or request.get("user_id") or _reservation_attr(reservation, "user_id") or context.user_id
+            ((order_row or {}).get("user_id") if isinstance(order_row, dict) else None)
+            or request.get("user_id")
+            or _reservation_attr(reservation, "user_id")
+            or context.user_id
+        )
         leader_id = (
-            (order_row or {}).get("leader_id") if isinstance(order_row, dict) else None
-        ) or request.get("leader_id") or _reservation_attr(reservation, "leader_wallet")
+            ((order_row or {}).get("leader_id") if isinstance(order_row, dict) else None)
+            or request.get("leader_id")
+            or _reservation_attr(reservation, "leader_wallet")
+        )
         trade_key = (
             request.get("signal_id")
             or ((order_row or {}).get("idempotency_key") if isinstance(order_row, dict) else None)
@@ -776,9 +765,7 @@ def _bind_reservation_runtime(context: TradingContext, coord: object | None) -> 
 
         linked_order = getattr(active, "order_id", None) or getattr(active, "venue_order_id", None)
         order_row = await _lookup_order_by_reservation(reservation_id)
-        candidate_order_id = str(
-            linked_order or (order_row or {}).get("order_id") or ""
-        ).strip()
+        candidate_order_id = str(linked_order or (order_row or {}).get("order_id") or "").strip()
         if candidate_order_id:
             if order_row is None:
                 order_row = await _lookup_order_by_order_id(candidate_order_id)
@@ -877,15 +864,16 @@ async def build_trading_context(
             # Surface the wiring failure loudly so ops can fix it.
             logger.error(
                 "runtime_bootstrap.coordinator_wiring_failed user_id=%s error=%r",
-                getattr(context, "user_id", "?"), exc,
+                getattr(context, "user_id", "?"),
+                exc,
             )
             raise RuntimeError(
                 "runtime_bootstrap: failed to attach position_coordinator to "
                 f"execution_coordinator for user {getattr(context, 'user_id', '?')}"
             ) from exc
-        assert (
-            getattr(coord, "position_coordinator", None) is context.position_coordinator
-        ), "runtime_bootstrap: position_coordinator attach silently dropped"
+        assert getattr(coord, "position_coordinator", None) is context.position_coordinator, (
+            "runtime_bootstrap: position_coordinator attach silently dropped"
+        )
         context.execution_coordinator = coord
         _bind_reservation_runtime(context, coord)
     # Phase 4 — seed IntentRegistry from durable reservation rows on restart.
@@ -896,6 +884,7 @@ async def build_trading_context(
     if _reservations_repo is not None:
         try:
             from services.execution.intent_recovery import recover_intents_from_db
+
             _recovered = await recover_intents_from_db(
                 registry=context.position_coordinator.intent_registry,
                 reservations_repo=_reservations_repo,
@@ -903,12 +892,14 @@ async def build_trading_context(
             if _recovered:
                 logger.info(
                     "runtime_bootstrap.intent_recovery user_id=%s recovered=%d",
-                    context.user_id, _recovered,
+                    context.user_id,
+                    _recovered,
                 )
         except Exception as _exc:
             logger.warning(
                 "runtime_bootstrap.intent_recovery_failed user_id=%s error=%r",
-                context.user_id, _exc,
+                context.user_id,
+                _exc,
             )
     # PR7 — bind position drift service so the coordinator can check
     # ``is_scope_paused`` before submission.
@@ -962,7 +953,8 @@ async def startup_drift_check(
         except Exception as exc:
             logger.warning(
                 "startup_drift_check_failed | user=%s error=%r",
-                runtime_user.user_id, exc,
+                runtime_user.user_id,
+                exc,
             )
             per_user[runtime_user.user_id] = False
             all_clean = False
@@ -972,7 +964,8 @@ async def startup_drift_check(
             all_clean = False
             logger.warning(
                 "startup_drift_check_unresolved | user=%s paused_scopes=%d",
-                runtime_user.user_id, len(report.paused_scopes),
+                runtime_user.user_id,
+                len(report.paused_scopes),
             )
 
     readiness.update(drift_ok=all_clean)
@@ -1018,13 +1011,12 @@ async def hydrate_resolved_market_state(
             continue
 
         try:
-            positions = list(
-                await positions_repo.list_open_positions(runtime_user.user_id) or []
-            )
+            positions = list(await positions_repo.list_open_positions(runtime_user.user_id) or [])
         except Exception as exc:
             logger.warning(
                 "hydrate_resolved_market_state_list_failed | user=%s error=%r",
-                runtime_user.user_id, exc,
+                runtime_user.user_id,
+                exc,
             )
             continue
 
@@ -1060,7 +1052,8 @@ async def hydrate_resolved_market_state(
                 else:
                     logger.debug(
                         "hydrate_resolved_get_market_failed | cond=%s error=%r",
-                        cond, exc,
+                        cond,
+                        exc,
                     )
                 continue
             if not isinstance(market, dict):
@@ -1085,7 +1078,8 @@ async def hydrate_resolved_market_state(
         if resolved_count:
             logger.info(
                 "hydrate_resolved_market_state | user=%s resolved=%d",
-                runtime_user.user_id, resolved_count,
+                runtime_user.user_id,
+                resolved_count,
             )
         summary[runtime_user.user_id] = resolved_count
 
@@ -1137,10 +1131,7 @@ async def build_context_maps(
             continue
         try:
             open_positions = (
-                await user_state.positions_repo.list_open_positions(
-                    runtime_user.user_id
-                )
-                or []
+                await user_state.positions_repo.list_open_positions(runtime_user.user_id) or []
             )
         except Exception:
             logger.warning(
@@ -1168,8 +1159,7 @@ async def build_context_maps(
         )
         risk_contexts_by_user[runtime_user.user_id] = context
         logger.info(
-            "risk_only_context_built | user=%s open_positions=%d "
-            "(no active-leader follow)",
+            "risk_only_context_built | user=%s open_positions=%d (no active-leader follow)",
             runtime_user.user_id,
             len(open_positions),
         )

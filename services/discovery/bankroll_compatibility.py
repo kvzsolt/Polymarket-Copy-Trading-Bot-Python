@@ -69,13 +69,19 @@ class BankrollCompatibilityPolicy:
         if not _ZERO <= self.reserve_fraction < _ONE:
             raise ValueError("reserve_fraction must be between zero inclusive and one exclusive")
         if not _ZERO < self.max_position_fraction <= _ONE:
-            raise ValueError("max_position_fraction must be between zero exclusive and one inclusive")
+            raise ValueError(
+                "max_position_fraction must be between zero exclusive and one inclusive"
+            )
         if not _ZERO < self.target_trade_fraction <= _ONE:
-            raise ValueError("target_trade_fraction must be between zero exclusive and one inclusive")
+            raise ValueError(
+                "target_trade_fraction must be between zero exclusive and one inclusive"
+            )
         if self.min_order_usdc <= _ZERO:
             raise ValueError("min_order_usdc must be positive")
         if not _ZERO < self.min_practical_copy_ratio <= _ONE:
-            raise ValueError("min_practical_copy_ratio must be between zero exclusive and one inclusive")
+            raise ValueError(
+                "min_practical_copy_ratio must be between zero exclusive and one inclusive"
+            )
         if not _ZERO < self.max_copy_ratio <= _ONE:
             raise ValueError("max_copy_ratio must be between zero exclusive and one inclusive")
         if self.min_practical_copy_ratio > self.max_copy_ratio:
@@ -85,8 +91,9 @@ class BankrollCompatibilityPolicy:
         if not _ZERO <= self.min_fit_score <= _ONE:
             raise ValueError("min_fit_score must be between zero and one")
         if not _ZERO < self.visible_capacity_utilization <= _ONE:
-            raise ValueError("visible_capacity_utilization must be between zero exclusive and one inclusive")
-
+            raise ValueError(
+                "visible_capacity_utilization must be between zero exclusive and one inclusive"
+            )
 
 
 def evaluate_bankroll_compatibility(
@@ -167,9 +174,7 @@ def evaluate_bankroll_compatibility(
         policy.max_copy_ratio,
     )
     normalized_avg_position = (
-        Decimal(str(avg_position_size))
-        if avg_position_size is not None
-        else None
+        Decimal(str(avg_position_size)) if avg_position_size is not None else None
     )
     if normalized_avg_position is not None and normalized_avg_position > 0:
         position_scale_ratio = _clamp(
@@ -189,7 +194,10 @@ def evaluate_bankroll_compatibility(
         if scaled_notional < policy.min_order_usdc or scaled_notional > max_position_budget:
             continue
         capacity = visible_capacity_usdc.get(trade.condition_id)
-        if capacity is not None and scaled_notional > capacity * policy.visible_capacity_utilization:
+        if (
+            capacity is not None
+            and scaled_notional > capacity * policy.visible_capacity_utilization
+        ):
             capacity_rejections += 1
             continue
         copyable.append(scaled_notional)

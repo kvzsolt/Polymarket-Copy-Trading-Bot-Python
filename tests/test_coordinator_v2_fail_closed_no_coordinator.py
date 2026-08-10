@@ -13,6 +13,7 @@ below: live-mode raises ``RuntimeError``; paper / test mode keeps the
 no-lock fallback so unit tests can construct a coordinator without
 wiring a PositionActionCoordinator.
 """
+
 from __future__ import annotations
 
 from types import SimpleNamespace

@@ -9,6 +9,7 @@ holds if:
 * reconciliation invalidates every snapshot for the affected token;
 * a price_change event with ``size=0`` deletes the affected book level.
 """
+
 from __future__ import annotations
 
 from decimal import Decimal

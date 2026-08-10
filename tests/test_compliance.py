@@ -46,7 +46,9 @@ async def test_geoblock_http_error_fails_closed():
 
 @pytest.mark.asyncio
 async def test_geoblock_timeout_fails_closed():
-    with patch("services.compliance.fetch_data", new=AsyncMock(side_effect=RuntimeError("network down"))):
+    with patch(
+        "services.compliance.fetch_data", new=AsyncMock(side_effect=RuntimeError("network down"))
+    ):
         decision = await check_geoblock()
     assert decision.allowed is False
     assert decision.reason == "geoblock_failed_closed"

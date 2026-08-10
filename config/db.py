@@ -38,6 +38,7 @@ def _safe_dsn_host(dsn: str) -> str:
     """Extract host:port for logging without leaking credentials."""
     try:
         from urllib.parse import urlparse
+
         parsed = urlparse(dsn)
         host = parsed.hostname or ""
         port = parsed.port or ""

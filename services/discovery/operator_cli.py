@@ -131,8 +131,7 @@ def resolve_api_key(environ: Mapping[str, str] | None = None) -> str:
         if value:
             return value
     raise DiscoveryCliError(
-        "Heisenberg API key is required in PMCOPY_HEISENBERG_API_KEY "
-        "or HEISENBERG_API_KEY"
+        "Heisenberg API key is required in PMCOPY_HEISENBERG_API_KEY or HEISENBERG_API_KEY"
     )
 
 

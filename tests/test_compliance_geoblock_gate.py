@@ -16,15 +16,23 @@ T0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
 def _allowed(at=T0, ttl_min=15):
     return ComplianceDecision(
-        allowed=True, reason="ok", source="polymarket",
-        checked_at=at, expires_at=at + timedelta(minutes=ttl_min), raw={},
+        allowed=True,
+        reason="ok",
+        source="polymarket",
+        checked_at=at,
+        expires_at=at + timedelta(minutes=ttl_min),
+        raw={},
     )
 
 
 def _blocked(at=T0):
     return ComplianceDecision(
-        allowed=False, reason="region_blocked_by_polymarket", source="polymarket",
-        checked_at=at, expires_at=None, raw={},
+        allowed=False,
+        reason="region_blocked_by_polymarket",
+        source="polymarket",
+        checked_at=at,
+        expires_at=None,
+        raw={},
     )
 
 

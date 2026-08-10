@@ -8,6 +8,7 @@ The position-action coordinator must:
 * release idle scope locks once their queue drains so the registry does not
   grow without bound.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -49,9 +50,7 @@ async def test_same_scope_actions_are_serialized() -> None:
     # invariant so a future refactor that replaces asyncio.Lock with a
     # non-locking primitive (or simply forgets to acquire) is caught
     # even when execution happens to interleave correctly.
-    assert coord.is_locked(_scope()) is True, (
-        "scope must report locked while task1 holds it"
-    )
+    assert coord.is_locked(_scope()) is True, "scope must report locked while task1 holds it"
     assert order == ["a-enter"]
     leave_a.set()
     await asyncio.gather(task1, task2)

@@ -95,15 +95,13 @@ def nested_test_overrides(flat: Mapping[str, Any]) -> dict[str, Any]:
 
 def load_test_config(flat: Mapping[str, Any] | None = None, **nested: Any):
     overrides = nested_test_overrides(flat or {})
-    overrides.setdefault("database", {})["dsn"] = overrides.get(
-        "database", {}
-    ).get("dsn", "postgresql://test:test@localhost/test")
+    overrides.setdefault("database", {})["dsn"] = overrides.get("database", {}).get(
+        "dsn", "postgresql://test:test@localhost/test"
+    )
     # Required in paper mode (where it is the wallet identity). Defaulted here
     # — like database.dsn above — so fixtures exercising unrelated behaviour
     # need not restate it. Fixtures that pass one keep theirs.
-    overrides.setdefault("wallet", {}).setdefault(
-        "funder_address", "0x" + "1" * 40
-    )
+    overrides.setdefault("wallet", {}).setdefault("funder_address", "0x" + "1" * 40)
     for key, value in nested.items():
         overrides[key] = value
     return load_config(overrides)

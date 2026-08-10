@@ -186,7 +186,9 @@ def _make_context(pool, *, leaders_repo=None, execution_service=None, config=Non
     return ctx
 
 
-def _signal(*, side="BUY", tx_hash="0xabc", asset=FAKE_TOKEN_ID, condition_id="cond1", price=0.50, size=10.0):
+def _signal(
+    *, side="BUY", tx_hash="0xabc", asset=FAKE_TOKEN_ID, condition_id="cond1", price=0.50, size=10.0
+):
     return {
         "side": side,
         "transactionHash": tx_hash,
@@ -200,6 +202,7 @@ def _signal(*, side="BUY", tx_hash="0xabc", asset=FAKE_TOKEN_ID, condition_id="c
 
 
 # --- _resolve_leader_tier unit tests ---
+
 
 class TestResolveLeaderTier:
     @pytest.mark.asyncio
@@ -255,11 +258,14 @@ class TestResolveLeaderTier:
 
 # --- execute_trades tier-gating integration tests ---
 
+
 @pytest.mark.asyncio
 async def test_watchlist_tier_skips_trade(tmp_path):
     async with _pg_pool() as pool:
         repo = _FakeLeadersRepo({"0xleader": "watchlist"})
-        ctx = _make_context(pool, leaders_repo=repo, execution_service=MagicMock(), tmp_path=tmp_path)
+        ctx = _make_context(
+            pool, leaders_repo=repo, execution_service=MagicMock(), tmp_path=tmp_path
+        )
         results = await execute_trades(ctx, "0xleader", [_signal()], time.time())
         assert len(results) == 1
         assert results[0].status == "skipped"
@@ -270,7 +276,9 @@ async def test_watchlist_tier_skips_trade(tmp_path):
 async def test_paper_follow_tier_records_paper(tmp_path):
     async with _pg_pool() as pool:
         repo = _FakeLeadersRepo({"0xleader": "paper_follow"})
-        ctx = _make_context(pool, leaders_repo=repo, execution_service=MagicMock(), tmp_path=tmp_path)
+        ctx = _make_context(
+            pool, leaders_repo=repo, execution_service=MagicMock(), tmp_path=tmp_path
+        )
         results = await execute_trades(ctx, "0xleader", [_signal()], time.time())
         assert len(results) == 1
         assert results[0].status == "paper"
@@ -282,7 +290,9 @@ async def test_paper_follow_marks_processed(tmp_path):
     """Paper trades should be idempotent (marked processed)."""
     async with _pg_pool() as pool:
         repo = _FakeLeadersRepo({"0xleader": "paper_follow"})
-        ctx = _make_context(pool, leaders_repo=repo, execution_service=MagicMock(), tmp_path=tmp_path)
+        ctx = _make_context(
+            pool, leaders_repo=repo, execution_service=MagicMock(), tmp_path=tmp_path
+        )
         sig = _signal(tx_hash="0xpaper1")
         await execute_trades(ctx, "0xleader", [sig], time.time())
         results = await execute_trades(ctx, "0xleader", [sig], time.time())
@@ -308,7 +318,9 @@ async def test_no_repo_skips_as_watchlist(tmp_path):
 async def test_multiple_signals_tier_applied_to_all(tmp_path):
     async with _pg_pool() as pool:
         repo = _FakeLeadersRepo({"0xleader": "watchlist"})
-        ctx = _make_context(pool, leaders_repo=repo, execution_service=MagicMock(), tmp_path=tmp_path)
+        ctx = _make_context(
+            pool, leaders_repo=repo, execution_service=MagicMock(), tmp_path=tmp_path
+        )
         signals = [
             _signal(tx_hash="0x1", asset=FAKE_TOKEN_ID),
             _signal(tx_hash="0x2", asset=FAKE_TOKEN_ID),
@@ -326,11 +338,17 @@ async def test_watchlist_gate_can_be_disabled(tmp_path):
     async with _pg_pool() as pool:
         repo = _FakeLeadersRepo({"0xleader": "watchlist"})
         exec_svc = AsyncMock()
-        exec_svc.execute = AsyncMock(return_value=ExecutionResult(
-            accepted=True, order_id="ord123", status="filled",
-            requested_amount=Decimal("5"), filled_amount=Decimal("5"),
-            avg_price=Decimal("0.50"), fees_paid=Decimal("0.01"),
-        ))
+        exec_svc.execute = AsyncMock(
+            return_value=ExecutionResult(
+                accepted=True,
+                order_id="ord123",
+                status="filled",
+                requested_amount=Decimal("5"),
+                filled_amount=Decimal("5"),
+                avg_price=Decimal("0.50"),
+                fees_paid=Decimal("0.01"),
+            )
+        )
         ctx = _make_context(
             pool,
             leaders_repo=repo,
@@ -350,6 +368,7 @@ async def test_watchlist_gate_can_be_disabled(tmp_path):
 
 
 # --- immutable paper trading-mode override tests ---
+
 
 @pytest.mark.asyncio
 async def test_paper_trade_only_overrides_live_follow(tmp_path):
@@ -398,11 +417,17 @@ async def test_live_trading_enabled_allows_live(tmp_path):
     async with _pg_pool() as pool:
         repo = _FakeLeadersRepo({"0xleader": "live_follow"})
         exec_svc = AsyncMock()
-        exec_svc.execute = AsyncMock(return_value=ExecutionResult(
-            accepted=True, order_id="ord456", status="filled",
-            requested_amount=Decimal("5"), filled_amount=Decimal("5"),
-            avg_price=Decimal("0.50"), fees_paid=Decimal("0.01"),
-        ))
+        exec_svc.execute = AsyncMock(
+            return_value=ExecutionResult(
+                accepted=True,
+                order_id="ord456",
+                status="filled",
+                requested_amount=Decimal("5"),
+                filled_amount=Decimal("5"),
+                avg_price=Decimal("0.50"),
+                fees_paid=Decimal("0.01"),
+            )
+        )
         ctx = _make_context(
             pool,
             leaders_repo=repo,
@@ -439,5 +464,7 @@ async def test_watchlist_gate_requires_injected_config(tmp_path):
             extra={"slippage_tolerance_bps": 200},
         )
 
-        with pytest.raises(RuntimeError, match="TradingContext.config is required for live tier gating"):
+        with pytest.raises(
+            RuntimeError, match="TradingContext.config is required for live tier gating"
+        ):
             await execute_trades(ctx, "0xleader", [_signal()], time.time())

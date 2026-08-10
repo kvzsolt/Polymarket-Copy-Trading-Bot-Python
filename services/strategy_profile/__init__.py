@@ -1,4 +1,5 @@
 """Read-only strategy profiling for a followed Polymarket trader."""
+
 from __future__ import annotations
 
 from services.strategy_profile.leader_history_loader import (

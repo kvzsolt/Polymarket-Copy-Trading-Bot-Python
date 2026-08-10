@@ -16,6 +16,7 @@ Centralises BUY and SELL effective-size computation so that:
 * Every sizing decision emits a structured :class:`SizingDecision` so
   callers can trace why an order was accepted, upsized, or rejected.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -140,15 +141,23 @@ def size_buy_order(
     d_market_min = _taker_min_tokens(d_live_price, d_lot_size)
 
     if d_live_price <= 0:
-        return SizingDecision(False, Decimal("0"), Decimal("0"), d_market_min, "invalid_price", False, Decimal("0"))
+        return SizingDecision(
+            False, Decimal("0"), Decimal("0"), d_market_min, "invalid_price", False, Decimal("0")
+        )
     if d_base_notional <= 0:
-        return SizingDecision(False, Decimal("0"), Decimal("0"), d_market_min, "zero_notional", False, Decimal("0"))
+        return SizingDecision(
+            False, Decimal("0"), Decimal("0"), d_market_min, "zero_notional", False, Decimal("0")
+        )
     if d_max_notional <= 0:
-        return SizingDecision(False, Decimal("0"), Decimal("0"), d_market_min, "zero_cap", False, Decimal("0"))
+        return SizingDecision(
+            False, Decimal("0"), Decimal("0"), d_market_min, "zero_cap", False, Decimal("0")
+        )
 
     d_worst_price = d_live_price * (Decimal("1") + d_slippage)
     if d_tick_size > 0:
-        d_worst_price = (d_worst_price / d_tick_size).to_integral_value(rounding=ROUND_CEILING) * d_tick_size
+        d_worst_price = (d_worst_price / d_tick_size).to_integral_value(
+            rounding=ROUND_CEILING
+        ) * d_tick_size
 
     def _quant_lot(value: Decimal, rounding) -> Decimal:
         """Quantize *value* to the lot grid via ``(value / lot) * lot``."""
@@ -170,11 +179,18 @@ def size_buy_order(
 
     # Below venue minimum — try to upsize
     if d_market_min > 0 and d_desired_size < d_market_min:
-        can_afford_upsize = minimum_executable_notional > 0 and d_max_notional >= minimum_executable_notional
+        can_afford_upsize = (
+            minimum_executable_notional > 0 and d_max_notional >= minimum_executable_notional
+        )
         if not can_afford_upsize:
             return SizingDecision(
-                False, Decimal("0"), Decimal("0"), d_market_min,
-                "buy_cap_blocks_upsize_to_venue_min", False, Decimal("0"),
+                False,
+                Decimal("0"),
+                Decimal("0"),
+                d_market_min,
+                "buy_cap_blocks_upsize_to_venue_min",
+                False,
+                Decimal("0"),
             )
         d_desired_size = required_min_tokens
         upsized = True
@@ -189,15 +205,22 @@ def size_buy_order(
         d_floored = _quant_lot(d_max_notional / d_worst_price, ROUND_FLOOR)
         if d_market_min > 0 and d_floored < d_market_min:
             return SizingDecision(
-                False, Decimal("0"), Decimal("0"), d_market_min,
-                "risk_cap_too_low_for_min_order", False, Decimal("0"),
+                False,
+                Decimal("0"),
+                Decimal("0"),
+                d_market_min,
+                "risk_cap_too_low_for_min_order",
+                False,
+                Decimal("0"),
             )
         d_desired_size = d_floored
         d_worst_notional = d_desired_size * d_worst_price
 
     reason = "upsized" if upsized else "ok"
     d_worst_notional = d_desired_size * d_worst_price
-    return SizingDecision(True, d_desired_size, d_worst_price, d_market_min, reason, upsized, d_worst_notional)
+    return SizingDecision(
+        True, d_desired_size, d_worst_price, d_market_min, reason, upsized, d_worst_notional
+    )
 
 
 def size_sell_order(
@@ -250,7 +273,9 @@ def size_sell_order(
     d_sell_in = _to_decimal(sell_tokens)
 
     if d_sell_in <= 0:
-        return SizingDecision(False, Decimal("0"), d_live_price, d_market_min, "sell_size_zero", False, Decimal("0"))
+        return SizingDecision(
+            False, Decimal("0"), d_live_price, d_market_min, "sell_size_zero", False, Decimal("0")
+        )
 
     d_sell = d_sell_in
     d_held = _to_decimal(held_size)
@@ -263,8 +288,13 @@ def size_sell_order(
     if d_market_min > 0 and d_sell < d_market_min:
         if d_held < d_market_min:
             return SizingDecision(
-                False, Decimal("0"), d_live_price, d_market_min,
-                "sell_held_below_venue_min", False, Decimal("0"),
+                False,
+                Decimal("0"),
+                d_live_price,
+                d_market_min,
+                "sell_held_below_venue_min",
+                False,
+                Decimal("0"),
             )
         d_sell = d_market_min
         upsized = True
@@ -280,10 +310,17 @@ def size_sell_order(
     # If FLOOR pushed us below venue min, skip — never submit a sub-min order.
     if d_market_min > 0 and d_sell < d_market_min:
         return SizingDecision(
-            False, Decimal("0"), d_live_price, d_market_min,
-            "sell_held_below_venue_min_after_rounding", False, Decimal("0"),
+            False,
+            Decimal("0"),
+            d_live_price,
+            d_market_min,
+            "sell_held_below_venue_min_after_rounding",
+            False,
+            Decimal("0"),
         )
 
     reason = "upsized" if upsized else "ok"
     d_sell_notional = d_sell * d_live_price
-    return SizingDecision(True, d_sell, d_live_price, d_market_min, reason, upsized, d_sell_notional)
+    return SizingDecision(
+        True, d_sell, d_live_price, d_market_min, reason, upsized, d_sell_notional
+    )

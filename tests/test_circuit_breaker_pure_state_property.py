@@ -10,6 +10,7 @@ Post-fix: ``.state`` is a pure read. The OPEN → HALF_OPEN transition
 moves to a private ``_advance_state()`` called only by
 ``allow_request()`` — a single explicit decision point.
 """
+
 from __future__ import annotations
 
 from unittest.mock import patch

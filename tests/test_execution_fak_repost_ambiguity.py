@@ -37,9 +37,31 @@ def _make_bundle(*, bid="0.49", ask="0.51", min_order_size="0") -> MarketDataBun
     a = Decimal(ask) if ask else None
     return MarketDataBundle(
         token_id="0xabc",
-        quote=QuoteSnapshot(token_id="0xabc", best_bid=b, best_ask=a, last_trade_price=None, source="wss", monotonic_ts=now),
-        book=BookSnapshot(token_id="0xabc", bids={b: Decimal("100")} if b else {}, asks={a: Decimal("100")} if a else {}, best_bid=b, best_ask=a, source="wss", monotonic_ts=now),
-        tick=TickSnapshot(token_id="0xabc", tick_size=Decimal("0.01"), min_order_size=Decimal(min_order_size), neg_risk=False, source="wss", monotonic_ts=now),
+        quote=QuoteSnapshot(
+            token_id="0xabc",
+            best_bid=b,
+            best_ask=a,
+            last_trade_price=None,
+            source="wss",
+            monotonic_ts=now,
+        ),
+        book=BookSnapshot(
+            token_id="0xabc",
+            bids={b: Decimal("100")} if b else {},
+            asks={a: Decimal("100")} if a else {},
+            best_bid=b,
+            best_ask=a,
+            source="wss",
+            monotonic_ts=now,
+        ),
+        tick=TickSnapshot(
+            token_id="0xabc",
+            tick_size=Decimal("0.01"),
+            min_order_size=Decimal(min_order_size),
+            neg_risk=False,
+            source="wss",
+            monotonic_ts=now,
+        ),
         source=MarketDataSource.WSS,
     )
 
@@ -47,7 +69,9 @@ def _make_bundle(*, bid="0.49", ask="0.51", min_order_size="0") -> MarketDataBun
 def _mock_mds(*, bid="0.49", ask="0.51", min_order_size="0") -> AsyncMock:
     mds = AsyncMock()
     mds._policy = MarketDataPolicy(rest_snapshot_max_spread_bps=300)
-    mds.require_fresh_data = AsyncMock(return_value=_make_bundle(bid=bid, ask=ask, min_order_size=min_order_size))
+    mds.require_fresh_data = AsyncMock(
+        return_value=_make_bundle(bid=bid, ask=ask, min_order_size=min_order_size)
+    )
     return mds
 
 
@@ -97,15 +121,23 @@ def _order_repo() -> MagicMock:
 
 def _req(*, side="BUY", amount="10", order_type="FAK", price_limit="0.55") -> ExecutionRequest:
     return ExecutionRequest(
-        user_id="u1", leader_id="l1", token_id="0xabc", side=side,
-        amount=Decimal(amount), max_slippage_bps=200, reason="copy_trade",
-        order_type=order_type, price_limit=Decimal(price_limit), signal_id="sig-1",
+        user_id="u1",
+        leader_id="l1",
+        token_id="0xabc",
+        side=side,
+        amount=Decimal(amount),
+        max_slippage_bps=200,
+        reason="copy_trade",
+        order_type=order_type,
+        price_limit=Decimal(price_limit),
+        signal_id="sig-1",
     )
 
 
 @pytest.fixture(autouse=True)
 def _reset_circuit():
     import services.executionService as _es
+
     _es._CLOB_CIRCUIT.reset()
     yield
     _es._CLOB_CIRCUIT.reset()
@@ -118,9 +150,12 @@ def _build_svc(*, gateway, mds=None) -> ExecutionService:
         get_order=lambda _oid: {"status": "filled", "size_matched": "0", "avg_price": None},
     )
     return ExecutionService(
-        clob, AsyncMock(get_fee_bps=AsyncMock(return_value=Decimal("0"))),
-        _order_repo(), config=_make_config(),
-        clob_gateway=gateway, market_data_service=mds or _mock_mds(),
+        clob,
+        AsyncMock(get_fee_bps=AsyncMock(return_value=Decimal("0"))),
+        _order_repo(),
+        config=_make_config(),
+        clob_gateway=gateway,
+        market_data_service=mds or _mock_mds(),
     )
 
 
@@ -137,7 +172,9 @@ async def test_c5_repost_leg_persists_ambiguity_when_post_raises():
             # First attempt: partial fill (3 of 10 USDC), success -> enters
             # the repost loop to fill the remaining 7.
             return VenueSubmitResult(
-                success=True, order_id="ord-1", status="matched",
+                success=True,
+                order_id="ord-1",
+                status="matched",
                 raw={"size_matched": "3", "avg_price": "0.51"},
             )
         # Repost leg: raise after the wire (simulate timeout/connection drop).
@@ -158,12 +195,13 @@ async def test_c5_repost_leg_persists_ambiguity_when_post_raises():
     repost_ambiguity = [
         c.args[0] if c.args else c.kwargs.get("record")
         for c in saved
-        if c.args and "submitted_unconfirmed" in str(getattr(c.args[0], "status", ""))
+        if c.args
+        and "submitted_unconfirmed" in str(getattr(c.args[0], "status", ""))
         and ":fak:" in str(getattr(c.args[0], "idempotency_key", ""))
     ]
     assert repost_ambiguity, (
         "repost leg must persist submitted_unconfirmed on POST exception, "
-        f"got records: {[(getattr(c.args[0],'idempotency_key'), getattr(c.args[0],'status')) for c in saved if c.args]}"
+        f"got records: {[(getattr(c.args[0], 'idempotency_key'), getattr(c.args[0], 'status')) for c in saved if c.args]}"
     )
 
 
@@ -176,7 +214,9 @@ async def test_c5b_unknown_avg_fill_price_not_substituted_with_worst_price():
     # First attempt fills fully but with NO avg_price in the raw response.
     gw.submit_marketable_order = AsyncMock(
         return_value=VenueSubmitResult(
-            success=True, order_id="ord-1", status="matched",
+            success=True,
+            order_id="ord-1",
+            status="matched",
             raw={"size_matched": "10"},  # filled 10 shares, no avg_price
         )
     )

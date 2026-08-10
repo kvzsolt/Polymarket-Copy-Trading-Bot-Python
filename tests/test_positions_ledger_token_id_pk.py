@@ -11,6 +11,7 @@ PG-A6: ported to async PG. AccountingService writes via the singleton
 asyncpg pool; tests patch ``storage.postgres.connection.get_pool`` to
 return a per-test testcontainer pool.
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -76,8 +77,10 @@ async def test_yes_and_no_outcomes_persist_independently(monkeypatch):
     from services.accountingService import AccountingService, PositionLot
 
     async with _pg_pool() as pool:
+
         async def _get_pool():
             return pool
+
         monkeypatch.setattr(acct_mod, "get_pool", _get_pool)
 
         svc = AccountingService()
@@ -106,7 +109,8 @@ async def test_yes_and_no_outcomes_persist_independently(monkeypatch):
             rows = await conn.fetch(
                 "SELECT token_id, size_tokens, avg_entry_price FROM positions_ledger "
                 "WHERE user_id = $1 AND condition_id = $2 ORDER BY token_id",
-                "u1", "cond_x",
+                "u1",
+                "cond_x",
             )
         assert len(rows) == 2, f"expected 2 rows (YES + NO), got {len(rows)}: {rows}"
         token_ids = sorted(r["token_id"] for r in rows)
@@ -120,8 +124,10 @@ async def test_close_position_requires_token_id(monkeypatch):
     from services.accountingService import AccountingService, PositionLot
 
     async with _pg_pool() as pool:
+
         async def _get_pool():
             return pool
+
         monkeypatch.setattr(acct_mod, "get_pool", _get_pool)
 
         svc = AccountingService()
@@ -141,6 +147,7 @@ async def test_close_position_requires_token_id(monkeypatch):
         async with pool.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT token_id FROM positions_ledger WHERE user_id = $1 AND condition_id = $2",
-                "u2", "cond_y",
+                "u2",
+                "cond_y",
             )
         assert [r["token_id"] for r in rows] == ["token_no"], f"only token_no should remain: {rows}"

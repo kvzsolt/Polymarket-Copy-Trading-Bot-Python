@@ -93,9 +93,7 @@ class HeisenbergDiscoveryService:
         self._repository = repository
         self._config = config
         self._get_funds = get_funds
-        self._config_hash = discovery_config_hash(
-            getattr(config, "discovery", config)
-        )
+        self._config_hash = discovery_config_hash(getattr(config, "discovery", config))
         self.last_cycle_degraded: bool = False
 
     @property
@@ -126,16 +124,12 @@ class HeisenbergDiscoveryService:
                     error="bankroll_unavailable",
                 )
                 return []
-            result: DiscoveryResult = await self._service.discover(
-                Decimal(str(funds))
-            )
+            result: DiscoveryResult = await self._service.discover(Decimal(str(funds)))
             accepted = [_ranked_to_candidate(item) for item in result.ranked]
             rejected = [_rejected_to_candidate(item) for item in result.rejected]
             candidates = accepted + rejected
             accepted.sort(key=lambda c: (-c.score, c.wallet))
-            await self._repository.persist_cycle(
-                cycle_id, candidates, self._config_hash
-            )
+            await self._repository.persist_cycle(cycle_id, candidates, self._config_hash)
             await self._repository.complete_cycle(
                 cycle_id,
                 status="completed",

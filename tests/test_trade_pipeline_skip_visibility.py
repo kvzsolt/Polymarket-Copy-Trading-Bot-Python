@@ -10,6 +10,7 @@ The pipeline requires a Postgres-backed repo set, so each test uses the same
 testcontainers harness as ``test_trade_pipeline_market_data_authority`` and
 skips when Docker is unavailable.
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -88,6 +89,7 @@ def _lower_decision_gates(monkeypatch):
 def _mock_balance(monkeypatch):
     async def _fake_balance(_addr):
         return 10000.0
+
     monkeypatch.setattr("orchestrators.trade_pipeline.get_my_balance", _fake_balance)
 
 
@@ -247,7 +249,8 @@ async def test_market_data_stale_prints_panel(tmp_path):
         # rest_snapshot is the production default; its pre-loop snapshot gate
         # is where the market_data_stale panel fires.
         ctx = _make_context(
-            pool, tmp_path,
+            pool,
+            tmp_path,
             exec_svc=exec_svc,
             mds=_FakeMDS(_make_bundle(), raise_stale=True),
             runtime=runtime,
@@ -269,15 +272,14 @@ async def test_sell_never_held_prints_panel(tmp_path):
         runtime = AsyncMock()
         runtime.ensure_token_ready_or_bootstrapped = AsyncMock(return_value=True)
         ctx = _make_context(
-            pool, tmp_path,
+            pool,
+            tmp_path,
             exec_svc=exec_svc,
             mds=_FakeMDS(_make_bundle()),
             runtime=runtime,
         )
         with patch("orchestrators.trade_pipeline.print_skip_reason") as p:
-            results = await execute_trades(
-                ctx, "leader1", [_signal(side="SELL")], time.time()
-            )
+            results = await execute_trades(ctx, "leader1", [_signal(side="SELL")], time.time())
         assert results[0].status == "skipped"
         assert results[0].reason == "never_held"
         exec_svc.execute.assert_not_awaited()
@@ -302,7 +304,8 @@ async def test_not_accepted_reservation_conflict_prints_panel(tmp_path):
         runtime = AsyncMock()
         runtime.ensure_token_ready_or_bootstrapped = AsyncMock(return_value=True)
         ctx = _make_context(
-            pool, tmp_path,
+            pool,
+            tmp_path,
             exec_svc=exec_svc,
             mds=_FakeMDS(_make_bundle()),
             runtime=runtime,
@@ -331,7 +334,8 @@ async def test_fak_accepted_no_fill_prints_transient_panel(tmp_path):
         runtime = AsyncMock()
         runtime.ensure_token_ready_or_bootstrapped = AsyncMock(return_value=True)
         ctx = _make_context(
-            pool, tmp_path,
+            pool,
+            tmp_path,
             exec_svc=exec_svc,
             mds=_FakeMDS(_make_bundle()),
             runtime=runtime,
@@ -344,9 +348,7 @@ async def test_fak_accepted_no_fill_prints_transient_panel(tmp_path):
         assert results[0].status == "submitted_unconfirmed"
         p.assert_called()
         header = " ".join(str(c.args[0]) for c in p.call_args_list).lower()
-        detail = " ".join(
-            str(c.args[1]) for c in p.call_args_list if len(c.args) > 1
-        ).lower()
+        detail = " ".join(str(c.args[1]) for c in p.call_args_list if len(c.args) > 1).lower()
         # Panel still surfaces fill status...
         assert "fill" in detail or "fill" in header
         # ...but with accurate, non-misleading framing (sym 2): the old

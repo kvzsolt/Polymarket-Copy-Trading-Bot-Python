@@ -6,9 +6,7 @@ from services.execution.reconciliation_service import ReconciliationService, Ord
 
 
 class MockOrder(OrderRecord):
-    def __init__(
-        self, order_id, venue_order_id, reservation_id, status, market_id=None
-    ):
+    def __init__(self, order_id, venue_order_id, reservation_id, status, market_id=None):
         self.id = order_id
         self.venue_order_id = venue_order_id
         self.reservation_id = reservation_id
@@ -169,11 +167,7 @@ async def test_release_reservation_falls_back_to_order_request_metadata():
 @pytest.mark.asyncio
 async def test_release_reservation_falls_back_to_active_order_reservation_link():
     reservations_repo = MockReservationsRepo(
-        by_order_id={
-            "venue-order-2": type(
-                "ReservationRow", (), {"id": "reservation-from-link"}
-            )()
-        }
+        by_order_id={"venue-order-2": type("ReservationRow", (), {"id": "reservation-from-link"})()}
     )
     reservation_service = MockReservationService(reservations_repo=reservations_repo)
     svc = ReconciliationService(
@@ -201,9 +195,7 @@ async def test_release_reservation_falls_back_to_active_order_reservation_link()
 async def test_release_reservation_fallback_splits_merged_order_ids():
     reservations_repo = MockReservationsRepo(
         by_order_id={
-            "venue-order-b": type(
-                "ReservationRow", (), {"id": "reservation-from-merged-link"}
-            )()
+            "venue-order-b": type("ReservationRow", (), {"id": "reservation-from-merged-link"})()
         }
     )
     reservation_service = MockReservationService(reservations_repo=reservations_repo)
@@ -252,9 +244,7 @@ async def test_venue_fill_resolves_unconfirmed_order():
     order = MockOrder("o1", "v1", "r1", "submitted_unconfirmed")
     # Issue #97: fills must carry order_id matching order.venue_order_id; the
     # legacy lenient behavior (apply fills missing order_id) was the bug.
-    gateway = MockClobGateway(
-        order_status="matched", fills=[{"size": "10", "order_id": "v1"}]
-    )
+    gateway = MockClobGateway(order_status="matched", fills=[{"size": "10", "order_id": "v1"}])
     svc = make_service(order, gateway)
 
     res = await svc.reconcile_order("o1")
@@ -396,9 +386,7 @@ async def test_filled_terminal_transitions_and_releases_once():
     """Filled terminal order transitions to FILLED exactly once, releases
     reservation, and writes a fill/position."""
     order = MockOrder("oFx", "vFx", "rFx", "submitted_unconfirmed")
-    gateway = MockClobGateway(
-        order_status="matched", fills=[{"size": "55", "order_id": "vFx"}]
-    )
+    gateway = MockClobGateway(order_status="matched", fills=[{"size": "55", "order_id": "vFx"}])
     svc = make_service(order, gateway)
 
     res = await svc.reconcile_order("oFx")
@@ -447,9 +435,7 @@ async def test_reconciler_releases_reservation_on_terminal_state():
     """Reconciler releases reservations after terminal state (any of
     cancelled / expired / rejected)."""
     for venue_status in ("cancelled", "expired", "rejected"):
-        order = MockOrder(
-            "oTerm", f"vTerm_{venue_status}", "rTerm", "submitted_unconfirmed"
-        )
+        order = MockOrder("oTerm", f"vTerm_{venue_status}", "rTerm", "submitted_unconfirmed")
         gateway = MockClobGateway(order_status=venue_status, fills=None)
         mock_reservation = MockReservationService()
         svc = ReconciliationService(
@@ -500,9 +486,7 @@ async def test_fills_from_unrelated_orders_are_skipped():
     assert res.status == OrderLifecycleStatus.FILLED
     # Exactly one upsert from the single matching fill.
     assert len(svc.positions_repo.upserted) == 1
-    assert svc.positions_repo.upserted[0] == {
-        "fill": {"size": "7", "order_id": "v-target"}
-    }
+    assert svc.positions_repo.upserted[0] == {"fill": {"size": "7", "order_id": "v-target"}}
 
 
 @pytest.mark.asyncio
@@ -864,9 +848,7 @@ async def test_concurrent_poll_failures_count_as_one():
         await asyncio.sleep(0)
         raise VenueUnavailableError("down")
 
-    await asyncio.gather(
-        *(svc._poll_source("order", f"o{i}", _failing_op) for i in range(5))
-    )
+    await asyncio.gather(*(svc._poll_source("order", f"o{i}", _failing_op) for i in range(5)))
     assert svc._venue_poll_backoffs["order"]["failures"] == 1
     assert svc._venue_poll_backoffs["order"]["base_delay"] == 5.0
 

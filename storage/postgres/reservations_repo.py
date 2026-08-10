@@ -68,9 +68,7 @@ class ReservationsRepo:
     def __init__(self, pool: asyncpg.Pool):
         self._pool = pool
 
-    async def get_active_by_intent_key(
-        self, intent_key: str
-    ) -> Reservation | None:
+    async def get_active_by_intent_key(self, intent_key: str) -> Reservation | None:
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
@@ -417,17 +415,13 @@ class ReservationsRepo:
 
     async def get_by_id(self, res_id: str) -> Reservation | None:
         async with self._pool.acquire() as conn:
-            row = await conn.fetchrow(
-                "SELECT * FROM order_reservations WHERE id = $1", res_id
-            )
+            row = await conn.fetchrow("SELECT * FROM order_reservations WHERE id = $1", res_id)
         return self._row_to_reservation(row) if row else None
 
     # Backward-compat alias used by older tests/helpers.
     async def _get_by_id(self, res_id: str) -> asyncpg.Record | None:
         async with self._pool.acquire() as conn:
-            return await conn.fetchrow(
-                "SELECT * FROM order_reservations WHERE id = $1", res_id
-            )
+            return await conn.fetchrow("SELECT * FROM order_reservations WHERE id = $1", res_id)
 
     async def list_expired_active(
         self, now_ts: int, user_id: str | None = None
@@ -446,9 +440,7 @@ class ReservationsRepo:
 
     async def list_active(self) -> list[Reservation]:
         async with self._pool.acquire() as conn:
-            rows = await conn.fetch(
-                "SELECT * FROM order_reservations WHERE status = 'active'"
-            )
+            rows = await conn.fetch("SELECT * FROM order_reservations WHERE status = 'active'")
         return [self._row_to_reservation(r) for r in rows]
 
     async def list_active_for_scope(
@@ -499,9 +491,7 @@ class ReservationsRepo:
         return self._sum_decimal_rows(rows, "reserved_usdc")
 
     @staticmethod
-    def _sum_decimal_rows(
-        rows: Iterable[asyncpg.Record], field: str
-    ) -> Decimal:
+    def _sum_decimal_rows(rows: Iterable[asyncpg.Record], field: str) -> Decimal:
         total = Decimal("0")
         for row in rows:
             total += Decimal(str(row[field] or "0"))
@@ -548,9 +538,7 @@ class ReservationsRepo:
                     reservation_id,
                 )
 
-    async def mark_released(
-        self, reservation_id: str, reason: str, released_at: int
-    ) -> None:
+    async def mark_released(self, reservation_id: str, reason: str, released_at: int) -> None:
         async with self._pool.acquire() as conn:
             async with conn.transaction():
                 # Take the same per-scope advisory lock the capacity

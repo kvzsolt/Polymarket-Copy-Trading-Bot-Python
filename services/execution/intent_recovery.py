@@ -6,6 +6,7 @@ The durable source of in-flight reservation ownership is
 reserved amount accounting match the database instead of relying on fake order
 columns that the submission ``OrdersRepo`` does not own.
 """
+
 from __future__ import annotations
 
 import logging

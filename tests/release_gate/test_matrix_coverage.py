@@ -5,6 +5,7 @@ matrix executable: it imports every gate-test module so an accidental rename,
 move, or deletion breaks the gate immediately rather than silently shrinking
 coverage.
 """
+
 from __future__ import annotations
 
 import importlib
@@ -49,9 +50,7 @@ def test_matrix_module_has_at_least_one_test() -> None:
     for name in REQUIRED_MODULES:
         mod = importlib.import_module(name)
         funcs = [
-            attr
-            for attr in dir(mod)
-            if attr.startswith("test_") and callable(getattr(mod, attr))
+            attr for attr in dir(mod) if attr.startswith("test_") and callable(getattr(mod, attr))
         ]
         if not funcs:
             empty.append(name)

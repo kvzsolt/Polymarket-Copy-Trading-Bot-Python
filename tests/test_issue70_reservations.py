@@ -9,6 +9,7 @@ Tests cover:
 - Balance/held-size checks account for reservations
 - Reservations are recoverable after restart
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -173,7 +174,9 @@ async def test_two_buys_cannot_exceed_free_quote(tmp_path):
         assert res1.reserved_usdc == Decimal("75.0")
 
         intent2 = _make_intent(
-            IntentSide.BUY, size=Decimal("100"), price=Decimal("0.5"),
+            IntentSide.BUY,
+            size=Decimal("100"),
+            price=Decimal("0.5"),
             reason=IntentReason.RISK_EXIT,
         )
         with pytest.raises(InsufficientFreeQuote):
@@ -189,7 +192,9 @@ async def test_second_buy_fits_in_remaining_quote(tmp_path):
         assert res1.reserved_usdc == Decimal("25.0")
 
         intent2 = _make_intent(
-            IntentSide.BUY, size=Decimal("140"), price=Decimal("0.5"),
+            IntentSide.BUY,
+            size=Decimal("140"),
+            price=Decimal("0.5"),
             reason=IntentReason.RISK_EXIT,
         )
         res2 = await svc.reserve_for_intent(intent2)
@@ -204,7 +209,9 @@ async def test_second_buy_just_exceeds_remaining(tmp_path):
         await svc.reserve_for_intent(intent1)
 
         intent2 = _make_intent(
-            IntentSide.BUY, size=Decimal("151"), price=Decimal("0.5"),
+            IntentSide.BUY,
+            size=Decimal("151"),
+            price=Decimal("0.5"),
             reason=IntentReason.RISK_EXIT,
         )
         with pytest.raises(InsufficientFreeQuote):
@@ -233,7 +240,8 @@ async def test_two_sells_cannot_exceed_held_shares(tmp_path):
         await svc.reserve_for_intent(intent1)
 
         intent2 = _make_intent(
-            IntentSide.SELL, size=Decimal("10"),
+            IntentSide.SELL,
+            size=Decimal("10"),
             reason=IntentReason.NEG_RISK_ARB,
         )
         with pytest.raises(InsufficientFreeShares):
@@ -257,7 +265,8 @@ async def test_second_sell_fits_in_remaining_shares(tmp_path):
         await svc.reserve_for_intent(intent1)
 
         intent2 = _make_intent(
-            IntentSide.SELL, size=Decimal("20"),
+            IntentSide.SELL,
+            size=Decimal("20"),
             reason=IntentReason.NEG_RISK_ARB,
         )
         await svc.reserve_for_intent(intent2)
@@ -462,9 +471,7 @@ async def test_ambiguous_post_keeps_reservation_pending():
 async def test_unknown_status_keeps_reservation_pending():
     res_svc = _MockResSvc()
     reconciler = _MockReconciler()
-    gw = _MockGateway(
-        result=VenueSubmitResult(order_id="v1", status="unknown_weird_status")
-    )
+    gw = _MockGateway(result=VenueSubmitResult(order_id="v1", status="unknown_weird_status"))
     coord = ExecutionCoordinator(
         reservation_service=res_svc,
         orders_repo=_MockOrdersRepo(),
@@ -560,17 +567,14 @@ async def test_expired_reservation_new_reserve_acquires_after_expiry(tmp_path):
         assert len(reconciled_ids) == 1
 
 
-
-
 @pytest.mark.asyncio
 async def test_reconciliation_failure_keeps_reservation_active(tmp_path):
     async with _pg_pool() as pool:
+
         async def bad_callback(res_id: str) -> None:
             raise RuntimeError("Reconciler crashed")
 
-        svc, res_repo, pos_repo, clk = _svc(
-            pool, ttl=60, reconciler_callback=bad_callback
-        )
+        svc, res_repo, pos_repo, clk = _svc(pool, ttl=60, reconciler_callback=bad_callback)
         intent = _make_intent(IntentSide.BUY, size=Decimal("10"), price=Decimal("0.5"))
         res = await svc.reserve_for_intent(intent)
         await res_repo.link_order(res.id, order_id="order-123")
@@ -593,12 +597,11 @@ async def test_reconciliation_failure_keeps_reservation_active(tmp_path):
 @pytest.mark.asyncio
 async def test_expired_reservation_callback_failure_blocks_new_reserve(tmp_path):
     async with _pg_pool() as pool:
+
         async def bad_callback(res_id: str) -> None:
             raise RuntimeError("Reconciler crashed")
 
-        svc, res_repo, pos_repo, clk = _svc(
-            pool, ttl=60, reconciler_callback=bad_callback
-        )
+        svc, res_repo, pos_repo, clk = _svc(pool, ttl=60, reconciler_callback=bad_callback)
         intent = _make_intent(IntentSide.BUY, size=Decimal("10"), price=Decimal("0.5"))
         res = await svc.reserve_for_intent(intent)
 
@@ -649,13 +652,9 @@ async def test_scope_totals_tracks_buy_and_sell(tmp_path):
 async def test_duplicate_unresolved_blocks_second_intent():
     reg = IntentRegistry()
     scope = PositionScope(user_id="u1", condition_id="c1", token_id="t1")
-    await reg.begin_intent(
-        scope, RegistryIntentSide.BUY, Reservation(quote_usdc=Decimal("10"))
-    )
+    await reg.begin_intent(scope, RegistryIntentSide.BUY, Reservation(quote_usdc=Decimal("10")))
     with pytest.raises(DuplicateIntentError):
-        await reg.begin_intent(
-            scope, RegistryIntentSide.BUY, Reservation(quote_usdc=Decimal("5"))
-        )
+        await reg.begin_intent(scope, RegistryIntentSide.BUY, Reservation(quote_usdc=Decimal("5")))
 
 
 @pytest.mark.asyncio
@@ -668,9 +667,7 @@ async def test_release_then_re_open():
     await reg.release_on_cancel_or_fail(r1.intent_id, IntentState.CANCELLED)
     assert reg.reserved_for(scope).is_zero()
 
-    await reg.begin_intent(
-        scope, RegistryIntentSide.BUY, Reservation(quote_usdc=Decimal("5"))
-    )
+    await reg.begin_intent(scope, RegistryIntentSide.BUY, Reservation(quote_usdc=Decimal("5")))
     assert reg.reserved_for(scope).quote_usdc == Decimal("5")
 
 
@@ -682,9 +679,7 @@ async def test_reconciler_finalize_releases_reservation():
         scope, RegistryIntentSide.SELL, Reservation(token_shares=Decimal("20"))
     )
     await reg.transition(r.intent_id, IntentState.SUBMITTED)
-    final = await reg.finalize_intent(
-        r.intent_id, IntentState.DONE, by_reconciler=True
-    )
+    final = await reg.finalize_intent(r.intent_id, IntentState.DONE, by_reconciler=True)
     assert final.state is IntentState.DONE
     assert reg.reserved_for(scope).is_zero()
     assert reg.open_intent_for(scope) is None
@@ -703,9 +698,7 @@ async def test_position_coordinator_full_lifecycle():
         await coord.transition(rec.intent_id, IntentState.SUBMITTED)
         await coord.transition(rec.intent_id, IntentState.ACK_LIVE)
 
-    final = await coord.finalize_intent(
-        rec.intent_id, IntentState.DONE, by_reconciler=True
-    )
+    final = await coord.finalize_intent(rec.intent_id, IntentState.DONE, by_reconciler=True)
     assert final.state is IntentState.DONE
     assert coord.reserved_for(scope).is_zero()
 
@@ -720,22 +713,35 @@ async def test_different_tokens_same_condition_independent_reservations(tmp_path
     async with _pg_pool() as pool:
         svc, res_repo, pos_repo, clk = _svc(pool)
         await pos_repo.apply_fill(
-            user_id="u1", leader_id="0xleader",
-            condition_id="cond1", token_id=_FAKE_TOKEN,
-            side="BUY", fill_size=Decimal("50"), fill_price=Decimal("0.5"),
+            user_id="u1",
+            leader_id="0xleader",
+            condition_id="cond1",
+            token_id=_FAKE_TOKEN,
+            side="BUY",
+            fill_size=Decimal("50"),
+            fill_price=Decimal("0.5"),
         )
         await pos_repo.apply_fill(
-            user_id="u1", leader_id="0xleader",
-            condition_id="cond1", token_id=_ALT_TOKEN,
-            side="BUY", fill_size=Decimal("50"), fill_price=Decimal("0.5"),
+            user_id="u1",
+            leader_id="0xleader",
+            condition_id="cond1",
+            token_id=_ALT_TOKEN,
+            side="BUY",
+            fill_size=Decimal("50"),
+            fill_price=Decimal("0.5"),
         )
 
-        intent_a = _make_intent(IntentSide.BUY, size=Decimal("50"), price=Decimal("0.5"), token_id=_FAKE_TOKEN)
+        intent_a = _make_intent(
+            IntentSide.BUY, size=Decimal("50"), price=Decimal("0.5"), token_id=_FAKE_TOKEN
+        )
         await svc.reserve_for_intent(intent_a)
 
         intent_b = _make_intent(
-            IntentSide.BUY, size=Decimal("50"), price=Decimal("0.5"),
-            token_id=_ALT_TOKEN, reason=IntentReason.RISK_EXIT,
+            IntentSide.BUY,
+            size=Decimal("50"),
+            price=Decimal("0.5"),
+            token_id=_ALT_TOKEN,
+            reason=IntentReason.RISK_EXIT,
         )
         await svc.reserve_for_intent(intent_b)
 
@@ -750,19 +756,22 @@ async def test_quote_reservations_are_account_wide_across_tokens(tmp_path):
     async with _pg_pool() as pool:
         svc, *_ = _svc(pool, balance=100.0)
         intent_a = _make_intent(
-            IntentSide.BUY, size=Decimal("150"), price=Decimal("0.5"),
+            IntentSide.BUY,
+            size=Decimal("150"),
+            price=Decimal("0.5"),
             token_id=_FAKE_TOKEN,
         )
         await svc.reserve_for_intent(intent_a)
 
         intent_b = _make_intent(
-            IntentSide.BUY, size=Decimal("60"), price=Decimal("0.5"),
-            token_id=_ALT_TOKEN, reason=IntentReason.RISK_EXIT,
+            IntentSide.BUY,
+            size=Decimal("60"),
+            price=Decimal("0.5"),
+            token_id=_ALT_TOKEN,
+            reason=IntentReason.RISK_EXIT,
         )
         with pytest.raises(InsufficientFreeQuote):
             await svc.reserve_for_intent(intent_b)
-
-
 
 
 @pytest.mark.asyncio
@@ -770,11 +779,15 @@ async def test_concurrent_buy_reservations_serialize_capacity(tmp_path):
     async with _pg_pool() as pool:
         svc, *_ = _svc(pool, balance=100.0)
         intent_a = _make_intent(
-            IntentSide.BUY, size=Decimal("80"), price=Decimal("1"),
+            IntentSide.BUY,
+            size=Decimal("80"),
+            price=Decimal("1"),
             reason=IntentReason.COPY_BUY,
         )
         intent_b = _make_intent(
-            IntentSide.BUY, size=Decimal("80"), price=Decimal("1"),
+            IntentSide.BUY,
+            size=Decimal("80"),
+            price=Decimal("1"),
             reason=IntentReason.RISK_EXIT,
         )
 
@@ -799,12 +812,15 @@ async def test_decimal_reserved_totals_are_exact(tmp_path):
         )
         await svc.reserve_for_intent(
             _make_intent(
-                IntentSide.BUY, size=Decimal("1"), price=Decimal("0.2"),
+                IntentSide.BUY,
+                size=Decimal("1"),
+                price=Decimal("0.2"),
                 reason=IntentReason.RISK_EXIT,
             )
         )
 
         assert await res_repo.sum_active_quote_for_user("u1") == Decimal("0.3")
+
 
 # ---------------------------------------------------------------------------
 # Test: Reservation amounts are recovered from DB after restart
@@ -847,14 +863,18 @@ async def test_reservations_recoverable_after_restart(tmp_path):
         )
 
         intent2 = _make_intent(
-            IntentSide.BUY, size=Decimal("190"), price=Decimal("0.5"),
+            IntentSide.BUY,
+            size=Decimal("190"),
+            price=Decimal("0.5"),
             reason=IntentReason.RISK_EXIT,
         )
         with pytest.raises(InsufficientFreeQuote):
             await svc2.reserve_for_intent(intent2)
 
         intent3 = _make_intent(
-            IntentSide.BUY, size=Decimal("180"), price=Decimal("0.5"),
+            IntentSide.BUY,
+            size=Decimal("180"),
+            price=Decimal("0.5"),
             reason=IntentReason.NEG_RISK_ARB,
         )
         res3 = await svc2.reserve_for_intent(intent3)
@@ -873,15 +893,22 @@ async def test_sell_reservations_recoverable_after_restart(tmp_path):
             return 100.0 if addr == "0xfunder" else None
 
         await pos_repo.apply_fill(
-            user_id="u1", leader_id="0xleader",
-            condition_id="cond1", token_id=_FAKE_TOKEN,
-            side="BUY", fill_size=Decimal("30"), fill_price=Decimal("0.5"),
+            user_id="u1",
+            leader_id="0xleader",
+            condition_id="cond1",
+            token_id=_FAKE_TOKEN,
+            side="BUY",
+            fill_size=Decimal("30"),
+            fill_price=Decimal("0.5"),
         )
 
         svc1 = ReservationService(
-            reservations_repo=res_repo, positions_repo=pos_repo,
-            get_balance_func=bal, funder_address="0xfunder",
-            clock=clk, ttl_seconds=60,
+            reservations_repo=res_repo,
+            positions_repo=pos_repo,
+            get_balance_func=bal,
+            funder_address="0xfunder",
+            clock=clk,
+            ttl_seconds=60,
         )
         intent1 = _make_intent(IntentSide.SELL, size=Decimal("15"))
         await svc1.reserve_for_intent(intent1)
@@ -890,13 +917,14 @@ async def test_sell_reservations_recoverable_after_restart(tmp_path):
         assert reserved_size == Decimal("15")
 
         svc2 = ReservationService(
-            reservations_repo=res_repo, positions_repo=pos_repo,
-            get_balance_func=bal, funder_address="0xfunder",
-            clock=clk, ttl_seconds=60,
+            reservations_repo=res_repo,
+            positions_repo=pos_repo,
+            get_balance_func=bal,
+            funder_address="0xfunder",
+            clock=clk,
+            ttl_seconds=60,
         )
-        intent2 = _make_intent(
-            IntentSide.SELL, size=Decimal("20"), reason=IntentReason.RISK_EXIT
-        )
+        intent2 = _make_intent(IntentSide.SELL, size=Decimal("20"), reason=IntentReason.RISK_EXIT)
         with pytest.raises(InsufficientFreeShares):
             await svc2.reserve_for_intent(intent2)
 
@@ -920,7 +948,9 @@ async def test_release_restores_buy_capacity(tmp_path):
         assert res.reserved_usdc == Decimal("50.0")
 
         intent2 = _make_intent(
-            IntentSide.BUY, size=Decimal("110"), price=Decimal("0.5"),
+            IntentSide.BUY,
+            size=Decimal("110"),
+            price=Decimal("0.5"),
             reason=IntentReason.RISK_EXIT,
         )
         with pytest.raises(InsufficientFreeQuote):
@@ -938,17 +968,19 @@ async def test_release_restores_sell_capacity(tmp_path):
     async with _pg_pool() as pool:
         svc, res_repo, pos_repo, clk = _svc(pool)
         await pos_repo.apply_fill(
-            user_id="u1", leader_id="0xleader",
-            condition_id="cond1", token_id=_FAKE_TOKEN,
-            side="BUY", fill_size=Decimal("30"), fill_price=Decimal("0.5"),
+            user_id="u1",
+            leader_id="0xleader",
+            condition_id="cond1",
+            token_id=_FAKE_TOKEN,
+            side="BUY",
+            fill_size=Decimal("30"),
+            fill_price=Decimal("0.5"),
         )
 
         intent1 = _make_intent(IntentSide.SELL, size=Decimal("25"))
         res1 = await svc.reserve_for_intent(intent1)
 
-        intent2 = _make_intent(
-            IntentSide.SELL, size=Decimal("10"), reason=IntentReason.RISK_EXIT
-        )
+        intent2 = _make_intent(IntentSide.SELL, size=Decimal("10"), reason=IntentReason.RISK_EXIT)
         with pytest.raises(InsufficientFreeShares):
             await svc.reserve_for_intent(intent2)
 

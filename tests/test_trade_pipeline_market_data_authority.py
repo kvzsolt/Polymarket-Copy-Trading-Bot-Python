@@ -5,6 +5,7 @@ Covers:
   - signal is skipped when market data stays stale past the timeout
   - decision-service receives min_order_size / tick_size from the MDS bundle
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -85,6 +86,7 @@ def _lower_decision_gates(monkeypatch):
 def _mock_balance(monkeypatch):
     async def _fake_balance(_addr):
         return 10000.0
+
     monkeypatch.setattr("orchestrators.trade_pipeline.get_my_balance", _fake_balance)
 
 
@@ -257,6 +259,7 @@ def _make_context(
         extra={"slippage_tolerance_bps": 200},
     )
     ctx.market_data_runtime = runtime
+
     # PR6.1 — live mode requires a coordinator. Inject a pass-through so the
     # mocked ExecutionService keeps getting called.
     class _PassThrough:
@@ -374,6 +377,7 @@ async def test_trade_pipeline_sizing_uses_bundle_tick_and_min_order_size(tmp_pat
 # ---------------------------------------------------------------------------
 # PR10.3: ensure_token_ready_or_bootstrapped integration
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_pipeline_calls_ensure_token_ready_for_each_signal(tmp_path):

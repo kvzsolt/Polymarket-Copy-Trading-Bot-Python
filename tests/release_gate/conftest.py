@@ -4,6 +4,7 @@ Every test under ``tests/release_gate/`` is tagged with the ``release_gate``
 marker automatically so the CI ``release-gate`` job picks them up via
 ``pytest -m release_gate`` without each test file needing its own decorator.
 """
+
 from __future__ import annotations
 
 import pytest

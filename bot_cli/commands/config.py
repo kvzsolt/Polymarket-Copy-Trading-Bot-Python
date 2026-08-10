@@ -1,4 +1,5 @@
 """bot config — print, validate, and explain configuration."""
+
 from __future__ import annotations
 
 import argparse
@@ -8,20 +9,22 @@ from config.app_config import load_config, AppConfig, EnvValidationError
 
 
 # Keys that should be redacted when printing config
-_SECRET_KEYS = frozenset({
-    "PRIVATE_KEY",
-    "private_key",
-    "CLOB_API_KEY",
-    "CLOB_SECRET",
-    "CLOB_PASSPHRASE",
-    "DATABASE_URL",
-    "api_key",
-    "api_secret",
-    "api_passphrase",
-    "api_token",
-    "token",
-    "dsn",
-})
+_SECRET_KEYS = frozenset(
+    {
+        "PRIVATE_KEY",
+        "private_key",
+        "CLOB_API_KEY",
+        "CLOB_SECRET",
+        "CLOB_PASSPHRASE",
+        "DATABASE_URL",
+        "api_key",
+        "api_secret",
+        "api_passphrase",
+        "api_token",
+        "token",
+        "dsn",
+    }
+)
 
 _REDACTED = "***REDACTED***"
 
@@ -165,10 +168,7 @@ def _run_config_explain(args: argparse.Namespace) -> int:
     explanation = _CONFIG_EXPLANATIONS.get(key)
     if explanation is None:
         # Try matching case-insensitively on partial key
-        matches = [
-            (k, v) for k, v in _CONFIG_EXPLANATIONS.items()
-            if key in k.upper()
-        ]
+        matches = [(k, v) for k, v in _CONFIG_EXPLANATIONS.items() if key in k.upper()]
         if matches:
             output = {
                 "key": args.key,

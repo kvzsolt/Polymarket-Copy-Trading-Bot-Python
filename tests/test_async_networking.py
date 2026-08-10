@@ -93,6 +93,7 @@ async def test_slow_web3_call_does_not_block_event_loop():
 
     # Keep test in-process (no real threads) while still validating adapter uses to_thread.
     import clients.network.web3_adapter as web3_adapter_module
+
     original_to_thread = web3_adapter_module.asyncio.to_thread
     web3_adapter_module.asyncio.to_thread = fake_to_thread
 
@@ -121,7 +122,9 @@ def test_silent_http_failure_suppresses_retry_warning_logs():
     logger = Mock()
     client = AsyncHttpClient(
         _FailingSession(RuntimeError("boom")),
-        retry_policy=HttpRetryPolicy(attempts=2, base_delay=0.0, max_delay=0.0, timeout_seconds=0.1),
+        retry_policy=HttpRetryPolicy(
+            attempts=2, base_delay=0.0, max_delay=0.0, timeout_seconds=0.1
+        ),
         logger=logger,
     )
 
@@ -136,7 +139,9 @@ def test_non_silent_http_failure_logs_retry_warning():
     logger = Mock()
     client = AsyncHttpClient(
         _FailingSession(RuntimeError("boom")),
-        retry_policy=HttpRetryPolicy(attempts=1, base_delay=0.0, max_delay=0.0, timeout_seconds=0.1),
+        retry_policy=HttpRetryPolicy(
+            attempts=1, base_delay=0.0, max_delay=0.0, timeout_seconds=0.1
+        ),
         logger=logger,
     )
 

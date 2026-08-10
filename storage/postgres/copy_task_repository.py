@@ -135,9 +135,7 @@ class CopyTaskCodec:
                     task.sizing.copyable_balance_percent,
                     "f",
                 ),
-                "proportional_balance_cap_enabled": (
-                    task.sizing.proportional_balance_cap_enabled
-                ),
+                "proportional_balance_cap_enabled": (task.sizing.proportional_balance_cap_enabled),
                 "require_leader_balance": task.sizing.require_leader_balance,
                 "strict_fixed_amount": task.sizing.strict_fixed_amount,
                 "strict_exact_mirror": task.sizing.strict_exact_mirror,
@@ -224,9 +222,7 @@ class CopyTaskCodec:
                 min_price=self._decimal(price, "min_price"),
                 max_price=self._decimal(price, "max_price"),
                 offset_mode=PriceOffsetMode(self._text(price, "offset_mode")),
-                offset_direction=PriceOffsetDirection(
-                    self._text(price, "offset_direction")
-                ),
+                offset_direction=PriceOffsetDirection(self._text(price, "offset_direction")),
                 offset=self._decimal(price, "offset"),
                 max_slippage_percent=self._decimal(
                     price,
@@ -491,8 +487,7 @@ class PostgresCopyTaskRepository:
         if current is None:
             raise CopyTaskNotFound(task.task_id)
         raise CopyTaskConflict(
-            f"copy task version conflict: expected {expected_version}, "
-            f"found {current.version}"
+            f"copy task version conflict: expected {expected_version}, found {current.version}"
         )
 
     async def list_active(self) -> tuple[CopyTask, ...]:

@@ -90,6 +90,7 @@ def _lower_decision_gates_for_tests(monkeypatch):
 def _mock_balance(monkeypatch):
     async def _fake_balance(_addr):
         return 10000.0
+
     monkeypatch.setattr("orchestrators.trade_pipeline.get_my_balance", _fake_balance)
 
 
@@ -244,8 +245,7 @@ async def test_execute_trades_acquires_scope_lock(tmp_path):
         await execute_trades(ctx, "leader1", [_buy_signal()], time.time())
 
         assert any(
-            s.condition_id == "cond1" and s.token_id == FAKE_TOKEN_ID
-            for s in acquired_scopes
+            s.condition_id == "cond1" and s.token_id == FAKE_TOKEN_ID for s in acquired_scopes
         ), "execute_trades must acquire the scoped-position lock"
 
 
@@ -276,6 +276,7 @@ async def test_risk_monitor_acquires_scope_lock(tmp_path):
         # Force the risk-action gate to return an exit decision.
         def _force_exit(_cid, _token, _price):
             return {"reason": "stop_loss", "size_fraction": 1.0}
+
         ctx.position_manager.evaluate_risk_action = _force_exit
 
         acquired = []
@@ -287,12 +288,15 @@ async def test_risk_monitor_acquires_scope_lock(tmp_path):
 
         ctx.position_coordinator.get_lock = _spy  # type: ignore[assignment]
 
-        with patch("services.risk.risk_monitor._get_context_cached_price", new_callable=AsyncMock, return_value=Decimal("0.60")):
+        with patch(
+            "services.risk.risk_monitor._get_context_cached_price",
+            new_callable=AsyncMock,
+            return_value=Decimal("0.60"),
+        ):
             await run_risk_check_for_context(ctx)
 
         assert any(
-            s.condition_id == "cond-risk" and s.token_id == FAKE_TOKEN_ID
-            for s in acquired
+            s.condition_id == "cond-risk" and s.token_id == FAKE_TOKEN_ID for s in acquired
         ), "risk monitor must acquire the scoped-position lock"
 
 
@@ -323,10 +327,13 @@ async def test_same_scope_buy_and_risk_sell_serialize(tmp_path):
 
         def _force_exit(_cid, _token, _price):
             return {"reason": "stop_loss", "size_fraction": 1.0}
+
         ctx.position_manager.evaluate_risk_action = _force_exit
 
         scope = PositionScope(
-            user_id="user1", condition_id="cond-race", token_id=FAKE_TOKEN_ID,
+            user_id="user1",
+            condition_id="cond-race",
+            token_id=FAKE_TOKEN_ID,
         )
 
         scope_lock = await ctx.position_coordinator.get_lock(scope)
@@ -381,6 +388,7 @@ async def test_different_scopes_stay_concurrent(tmp_path):
 
         def _force_exit(_cid, _token, _price):
             return {"reason": "stop_loss", "size_fraction": 1.0}
+
         ctx.position_manager.evaluate_risk_action = _force_exit
 
         # Pre-acquire scope A (different condition + token than B).

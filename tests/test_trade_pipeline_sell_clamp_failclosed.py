@@ -156,9 +156,7 @@ def test_derive_sell_tokens_policy_unit():
         )
         is None
     )
-    assert _derive_sell_tokens(sig, pos, {}, missing_policy="full_close") == Decimal(
-        "10"
-    )
+    assert _derive_sell_tokens(sig, pos, {}, missing_policy="full_close") == Decimal("10")
 
 
 @pytest.mark.asyncio
@@ -227,9 +225,7 @@ async def test_sell_full_close_policy_preserves_legacy_dump(tmp_path):
         cfg = _config()
         cfg = dataclasses.replace(
             cfg,
-            execution=dataclasses.replace(
-                cfg.execution, sell_fraction_missing_policy="full_close"
-            ),
+            execution=dataclasses.replace(cfg.execution, sell_fraction_missing_policy="full_close"),
         )
         ctx = _make_context(pool, tmp_path, execution_service=exec_svc, config=cfg)
 

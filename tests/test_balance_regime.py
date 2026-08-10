@@ -1,4 +1,5 @@
 """Phase 4 — balance regime gate tests."""
+
 from __future__ import annotations
 
 import asyncio
@@ -190,9 +191,7 @@ class TestBalanceDecisionFields:
     def test_decision_exposes_diagnostic_fields(self) -> None:
         regime = BalanceRegime(max_position_size_usdc=100, max_daily_spend_usdc=500)
         regime.record_buy(Decimal("75"))
-        decision: BalanceDecision = regime.check_buy(
-            notional_usdc="40", free_cash_usdc="200"
-        )
+        decision: BalanceDecision = regime.check_buy(notional_usdc="40", free_cash_usdc="200")
         assert decision.daily_spent_usdc == Decimal("75")
         assert decision.daily_remaining_usdc == Decimal("425")
         assert decision.headroom_usdc == Decimal("160")
@@ -299,9 +298,7 @@ def _run(coro):
 class TestReserveCommitRelease:
     def test_reserve_allows_first_buy_and_records(self) -> None:
         regime = BalanceRegime(max_daily_spend_usdc=100)
-        decision = _run(
-            regime.reserve(order_id="o1", notional_usdc="60", free_cash_usdc="1000")
-        )
+        decision = _run(regime.reserve(order_id="o1", notional_usdc="60", free_cash_usdc="1000"))
         assert decision.allow is True
         assert regime.daily_spent_usdc == Decimal("60")
         assert regime.reserved_total_usdc() == Decimal("60")
@@ -309,9 +306,7 @@ class TestReserveCommitRelease:
     def test_reserve_blocks_when_cap_exceeded(self) -> None:
         regime = BalanceRegime(max_daily_spend_usdc=100)
         _run(regime.reserve(order_id="o1", notional_usdc="70", free_cash_usdc="1000"))
-        d = _run(
-            regime.reserve(order_id="o2", notional_usdc="40", free_cash_usdc="1000")
-        )
+        d = _run(regime.reserve(order_id="o2", notional_usdc="40", free_cash_usdc="1000"))
         assert d.allow is False
         assert d.skip_code == "balance_regime_daily_spend_exceeded"
         # Failed reservation does NOT record.

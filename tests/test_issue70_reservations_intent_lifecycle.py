@@ -10,6 +10,7 @@ Validates:
 - Startup recovery restores in-flight intents from DB.
 - Operator-visible reservation audit logs.
 """
+
 import contextlib
 import time
 from datetime import datetime, timezone
@@ -45,6 +46,7 @@ async def _pg_pool():
             await pool.close()
     finally:
         ctr.stop()
+
 
 from domain.order_lifecycle import (  # noqa: E402
     IntentReason,
@@ -392,19 +394,31 @@ class TestStartupRecovery:
 
         registry = IntentRegistry()
         mock_a = Reservation(
-            id="res-a", user_id="0xUSER", intent_key="intent-a",
-            condition_id="0xCOND", token_id="TKN-A", side=IntentSide.BUY,
-            reason=IntentReason.COPY_BUY, reserved_usdc=Decimal("50"),
-            reserved_size=Decimal("0"), status="active",
+            id="res-a",
+            user_id="0xUSER",
+            intent_key="intent-a",
+            condition_id="0xCOND",
+            token_id="TKN-A",
+            side=IntentSide.BUY,
+            reason=IntentReason.COPY_BUY,
+            reserved_usdc=Decimal("50"),
+            reserved_size=Decimal("0"),
+            status="active",
             created_at=datetime.fromtimestamp(1000, tz=timezone.utc),
             expires_at=datetime.fromtimestamp(2000, tz=timezone.utc),
             order_id="order-a",
         )
         mock_b = Reservation(
-            id="res-b", user_id="0xUSER", intent_key="intent-b",
-            condition_id="0xCOND", token_id="TKN-A", side=IntentSide.BUY,
-            reason=IntentReason.COPY_BUY, reserved_usdc=Decimal("75"),
-            reserved_size=Decimal("0"), status="active",
+            id="res-b",
+            user_id="0xUSER",
+            intent_key="intent-b",
+            condition_id="0xCOND",
+            token_id="TKN-A",
+            side=IntentSide.BUY,
+            reason=IntentReason.COPY_BUY,
+            reserved_usdc=Decimal("75"),
+            reserved_size=Decimal("0"),
+            status="active",
             created_at=datetime.fromtimestamp(1000, tz=timezone.utc),
             expires_at=datetime.fromtimestamp(2000, tz=timezone.utc),
             order_id="order-b",

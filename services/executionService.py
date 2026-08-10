@@ -91,18 +91,22 @@ def _normalize_side(side: str) -> str:
     return value
 
 
-_FORCED_EXIT_SOURCES = frozenset({
-    "risk_exit",
-    "protective_exit",
-})
+_FORCED_EXIT_SOURCES = frozenset(
+    {
+        "risk_exit",
+        "protective_exit",
+    }
+)
 
-_FORCED_EXIT_REASONS = frozenset({
-    "risk_exit",
-    "protective_exit",
-    "advanced_risk_exit",
-    "stop_loss",
-    "trailing_stop",
-})
+_FORCED_EXIT_REASONS = frozenset(
+    {
+        "risk_exit",
+        "protective_exit",
+        "advanced_risk_exit",
+        "stop_loss",
+        "trailing_stop",
+    }
+)
 
 
 def _is_forced_sell_exit_request(req: ExecutionRequest, side: str) -> bool:
@@ -385,6 +389,7 @@ class ExecutionService:
         # itself is fail-closed in #73, not #66).
         if clob_gateway is None:
             from integrations.polymarket.clob_v2_gateway import ClobV2Gateway
+
             self.clob_gateway = ClobV2Gateway(clob_client, config)
         else:
             self.clob_gateway = clob_gateway
@@ -439,15 +444,9 @@ class ExecutionService:
         )
         record = OrderSubmissionRecord(
             idempotency_key=idempotency_key,
-            user_id=str(
-                sanitized_request.get("user_id")
-                or sanitized_request.get("userId")
-                or ""
-            ),
+            user_id=str(sanitized_request.get("user_id") or sanitized_request.get("userId") or ""),
             leader_id=str(
-                sanitized_request.get("leader_id")
-                or sanitized_request.get("leaderWallet")
-                or ""
+                sanitized_request.get("leader_id") or sanitized_request.get("leaderWallet") or ""
             )
             or None,
             order_id=_response_order_id(sanitized_response),
@@ -546,9 +545,9 @@ class ExecutionService:
 
         ec = self._config.execution
         metadata = req.recovery_metadata if isinstance(req.recovery_metadata, dict) else {}
-        requested_order_type = str(
-            req.order_type or metadata.get("order_type") or ""
-        ).strip().upper() or None
+        requested_order_type = (
+            str(req.order_type or metadata.get("order_type") or "").strip().upper() or None
+        )
         instant_fak = requested_order_type == "FAK" and req.price_limit is not None
 
         # --- Single fresh-data fetch — fail closed if market data not ready ---
@@ -584,6 +583,7 @@ class ExecutionService:
 
         try:
             from services.market_data_service import MarketDataNotReady
+
             market_data_policy = None
             if instant_fak or forced_sell_exit:
                 base_policy = getattr(self._market_data_service, "_policy", None)
@@ -756,9 +756,7 @@ class ExecutionService:
                     filled_amount=Decimal("0"),
                     avg_price=None,
                     fees_paid=Decimal("0"),
-                    error=(
-                        f"no orderbook data for required side — bid={best_bid} ask={best_ask}"
-                    ),
+                    error=(f"no orderbook data for required side — bid={best_bid} ask={best_ask}"),
                 )
             if side == "SELL" and best_bid is None:
                 logger.info(
@@ -780,9 +778,7 @@ class ExecutionService:
                     filled_amount=Decimal("0"),
                     avg_price=None,
                     fees_paid=Decimal("0"),
-                    error=(
-                        f"no orderbook data for required side — bid={best_bid} ask={best_ask}"
-                    ),
+                    error=(f"no orderbook data for required side — bid={best_bid} ask={best_ask}"),
                 )
             # The required side is present but the other side is missing.
             # This is a one-sided book — log a warning but allow execution.
@@ -933,10 +929,7 @@ class ExecutionService:
                     filled_amount=Decimal("0"),
                     avg_price=None,
                     fees_paid=Decimal("0"),
-                    error=(
-                        f"no executable top-level liquidity for {side} "
-                        f"at {quote_price}"
-                    ),
+                    error=(f"no executable top-level liquidity for {side} at {quote_price}"),
                 )
             effective_order_amount = min(req.amount, top_level_amount)
             logger.info(
@@ -970,8 +963,7 @@ class ExecutionService:
                 avg_price=None,
                 fees_paid=Decimal("0"),
                 error=(
-                    f"effective size {min_check_amount} is below venue minimum "
-                    f"{min_order_size}"
+                    f"effective size {min_check_amount} is below venue minimum {min_order_size}"
                 ),
             )
 
@@ -1021,9 +1013,7 @@ class ExecutionService:
             # one winner; see the concurrent-post-expiry stress test). Record it
             # for observability only.
             existing_status = str(
-                existing.get("status")
-                or existing.get("response", {}).get("status")
-                or "blocking"
+                existing.get("status") or existing.get("response", {}).get("status") or "blocking"
             ).lower()
             logger.warning(
                 "expiring stale %s submission lock | idempotency_key=%s | ttl=%ss",
@@ -1176,9 +1166,7 @@ class ExecutionService:
             await self._save_submission(
                 idempotency_key=idem_key,
                 request=request_doc,
-                response=_build_pending_response(
-                    pending_since=pending_since, config=self._config
-                ),
+                response=_build_pending_response(pending_since=pending_since, config=self._config),
             )
 
             gateway_request = MarketableOrderRequest(
@@ -1219,9 +1207,7 @@ class ExecutionService:
                             error=str(exc),
                         )
                 try:
-                    submit_result = await self.clob_gateway.submit_marketable_order(
-                        gateway_request
-                    )
+                    submit_result = await self.clob_gateway.submit_marketable_order(gateway_request)
                     response = _submit_result_to_response(submit_result)
                     if submit_result.success:
                         self.circuit_breaker.record_success()
@@ -1252,9 +1238,7 @@ class ExecutionService:
                             response.get("error"),
                         )
                         break
-                    last_error = (
-                        submit_result.error or "unknown order submission error"
-                    )
+                    last_error = submit_result.error or "unknown order submission error"
                     if submit_result.non_retryable:
                         terminal_status = submit_result.status or "rejected"
                         response = {
@@ -1420,10 +1404,7 @@ class ExecutionService:
                         fees_paid=Decimal("0"),
                         error=last_error,
                     )
-                if not (
-                    requested_order_type == "FAK"
-                    and _is_fak_repostable_no_fill(response)
-                ):
+                if not (requested_order_type == "FAK" and _is_fak_repostable_no_fill(response)):
                     self._emit_post_lifecycle(
                         req=req,
                         side=side,
@@ -1514,12 +1495,9 @@ class ExecutionService:
                                 side,
                             )
                             break
-                        if (
-                            side == "BUY"
-                            and (
-                                (min_share_price > 0 and next_quote_price < min_share_price)
-                                or (max_share_price > 0 and next_quote_price > max_share_price)
-                            )
+                        if side == "BUY" and (
+                            (min_share_price > 0 and next_quote_price < min_share_price)
+                            or (max_share_price > 0 and next_quote_price > max_share_price)
                         ):
                             logger.info(
                                 "copy_fak_repost_price_gate | token=%s attempt=%d price=%s",
@@ -1564,9 +1542,7 @@ class ExecutionService:
                             neg_risk=next_bundle.tick.neg_risk,
                             order_type="FAK",
                         )
-                        next_submit = await self.clob_gateway.submit_marketable_order(
-                            next_request
-                        )
+                        next_submit = await self.clob_gateway.submit_marketable_order(next_request)
                         next_response = _submit_result_to_response(next_submit)
                         next_idem = f"{idem_key}:fak:{fak_attempt}"
                         next_doc = dict(request_doc)
@@ -1625,9 +1601,7 @@ class ExecutionService:
                         matched_size += next_matched
                         total_fill_cost += next_matched * next_avg
                         avg_fill_price = (
-                            total_fill_cost / matched_size
-                            if matched_size > 0
-                            else avg_fill_price
+                            total_fill_cost / matched_size if matched_size > 0 else avg_fill_price
                         )
                         continue
                     last_no_fill_error = next_response.get("error") or last_no_fill_error

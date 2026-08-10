@@ -37,6 +37,7 @@ def _make_config() -> SimpleNamespace:
 # ReadinessTracker
 # ---------------------------------------------------------------------------
 
+
 class TestReadinessTracker:
     def test_default_keys_initialised(self) -> None:
         tracker = ReadinessTracker()
@@ -54,6 +55,7 @@ class TestReadinessTracker:
 # ---------------------------------------------------------------------------
 # ExecutionService — circuit breaker is injectable
 # ---------------------------------------------------------------------------
+
 
 class TestExecutionCircuitBreakerDI:
     def test_default_uses_module_breaker(self) -> None:
@@ -81,9 +83,11 @@ class TestExecutionCircuitBreakerDI:
 # Orchestrator DI Seams
 # ---------------------------------------------------------------------------
 
+
 class TestOrchestratorDISeams:
     def test_leader_registry_accepts_readiness_tracker(self) -> None:
         from orchestrators.leader_registry import LeaderRegistry
+
         sig = inspect.signature(LeaderRegistry.__init__)
         assert "readiness_tracker" in sig.parameters
         assert "config" in sig.parameters
@@ -103,12 +107,13 @@ class TestOrchestratorDISeams:
             accounting_service=MagicMock(),
             position_manager=MagicMock(),
             execution_service=MagicMock(),
-            readiness=tracker
+            readiness=tracker,
         )
         assert ctx.readiness is tracker
 
     def test_trade_monitor_accepts_readiness_tracker(self) -> None:
         from services.tradeMonitor import trade_monitor
+
         sig = inspect.signature(trade_monitor)
         assert "readiness_tracker" in sig.parameters
         assert "config" in sig.parameters

@@ -21,6 +21,4 @@ def load_replay_fixture(name: str) -> dict:
 
 def list_replay_fixtures() -> list[str]:
     """List available replay fixture names (without .json extension)."""
-    return sorted(
-        [p.stem for p in FIXTURES_DIR.glob("*.json")]
-    )
+    return sorted([p.stem for p in FIXTURES_DIR.glob("*.json")])

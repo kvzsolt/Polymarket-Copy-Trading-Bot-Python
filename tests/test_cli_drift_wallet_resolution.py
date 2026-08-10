@@ -84,9 +84,7 @@ class _Harness:
         self._patches = [
             patch.object(drift_mod, "load_config", return_value=_config(paper=paper)),
             patch.object(drift_mod, "load_runtime_users", return_value=users),
-            patch.object(
-                drift_mod, "_list_persisted_positions", AsyncMock(return_value=[])
-            ),
+            patch.object(drift_mod, "_list_persisted_positions", AsyncMock(return_value=[])),
             patch(
                 "integrations.polymarket.sdk_client.create_polymarket_client",
                 self.create_client,
@@ -96,9 +94,7 @@ class _Harness:
                 AsyncMock(return_value=MagicMock()),
             ),
             patch("storage.postgres.connection.shutdown_pool", AsyncMock()),
-            patch(
-                "orchestrators.runtime_bootstrap.fetch_live_positions", self.fetch_live
-            ),
+            patch("orchestrators.runtime_bootstrap.fetch_live_positions", self.fetch_live),
         ]
 
     def __enter__(self) -> "_Harness":
@@ -114,9 +110,7 @@ class _Harness:
 
 
 async def _run(capsys, *, user_id: str | None = None) -> tuple[int, dict]:
-    rc = await drift_mod._run_check_async(
-        SimpleNamespace(user_id=user_id, epsilon="0.000001")
-    )
+    rc = await drift_mod._run_check_async(SimpleNamespace(user_id=user_id, epsilon="0.000001"))
     return rc, json.loads(capsys.readouterr().out)
 
 

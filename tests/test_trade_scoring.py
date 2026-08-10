@@ -1,4 +1,5 @@
 """Tests for TradeScoringService — near-resolution gate and scoring logic."""
+
 from __future__ import annotations
 
 import time

@@ -102,14 +102,10 @@ class TestOrdersRepo:
     async def test_acquire_then_is_locked(self) -> None:
         async with _pg_pool() as pool:
             repo = OrdersRepo(pool)
-            assert await repo.try_acquire_submission_lock(
-                "k1", "u1", "l1", {"a": 1}
-            ) is True
+            assert await repo.try_acquire_submission_lock("k1", "u1", "l1", {"a": 1}) is True
             assert await repo.is_submission_locked("k1") is True
             # Re-acquiring must fail deterministically.
-            assert await repo.try_acquire_submission_lock(
-                "k1", "u1", "l1", {"a": 1}
-            ) is False
+            assert await repo.try_acquire_submission_lock("k1", "u1", "l1", {"a": 1}) is False
 
     @pytest.mark.asyncio
     async def test_save_submission_readback(self) -> None:

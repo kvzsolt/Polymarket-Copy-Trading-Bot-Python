@@ -16,6 +16,7 @@ Tick sizes (0.001 / 0.01 / 0.05 / 0.1), prices (0.01 / 0.50 / 0.95 / 0.999),
 sizes (1 / 1.5 / 10 / 100) and a small set of near-1.0 / near-zero edges
 cover the same fragile zones the audit was worried about.
 """
+
 from __future__ import annotations
 
 from decimal import Decimal

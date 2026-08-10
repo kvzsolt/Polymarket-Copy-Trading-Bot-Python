@@ -38,9 +38,7 @@ def _decimal(value: object, *, name: str, minimum: Decimal | None = None) -> Dec
 def _normalize_words(values: Iterable[str]) -> tuple[str, ...]:
     """Normalize configured words for deterministic matching."""
 
-    return tuple(
-        sorted({str(value).strip().casefold() for value in values if str(value).strip()})
-    )
+    return tuple(sorted({str(value).strip().casefold() for value in values if str(value).strip()}))
 
 
 class CopyTaskStatus(StrEnum):
@@ -170,11 +168,15 @@ class TaskSizingPolicy:
             raise ValueError("buy_max_amount must be zero/disabled or >= buy_min_amount")
         if self.mode is TaskSizingMode.FIXED and self.fixed_amount <= 0:
             raise ValueError("fixed sizing requires a positive fixed_amount")
-        if self.mode in {
-            TaskSizingMode.PROPORTIONAL,
-            TaskSizingMode.ADAPTIVE,
-            TaskSizingMode.TIERED,
-        } and self.percentage <= 0:
+        if (
+            self.mode
+            in {
+                TaskSizingMode.PROPORTIONAL,
+                TaskSizingMode.ADAPTIVE,
+                TaskSizingMode.TIERED,
+            }
+            and self.percentage <= 0
+        ):
             raise ValueError("percentage-based sizing requires a positive percentage")
 
 

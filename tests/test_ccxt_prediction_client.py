@@ -104,6 +104,7 @@ async def test_old_ccxt_is_rejected_before_client_creation() -> None:
             ccxt_version="4.5.69",
         )
 
+
 @pytest.mark.asyncio
 async def test_authenticated_bootstrap_failure_closes_exchange() -> None:
     created: list[FakeExchange] = []
@@ -124,4 +125,3 @@ async def test_authenticated_bootstrap_failure_closes_exchange() -> None:
         )
 
     created[0].close.assert_awaited_once()
-

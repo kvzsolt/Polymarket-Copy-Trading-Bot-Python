@@ -6,6 +6,7 @@ contract: the default SDK backend must not import CCXT eagerly, and a broken
 or incomplete environment must fail with an actionable error instead of an
 opaque ImportError.
 """
+
 from __future__ import annotations
 
 import asyncio

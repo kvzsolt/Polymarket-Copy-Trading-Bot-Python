@@ -249,10 +249,7 @@ class OrdersRepo(AbstractOrderRepository):
     def _stale_lock_row_to_dict(row: asyncpg.Record) -> dict[str, Any]:
         status = str(row["status"] or "").lower()
         order_id = row["order_id"]
-        direct_expire = (
-            not order_id
-            and status in _DIRECT_EXPIRABLE_STALE_LOCK_STATUSES
-        )
+        direct_expire = not order_id and status in _DIRECT_EXPIRABLE_STALE_LOCK_STATUSES
         return {
             "idempotency_key": row["idempotency_key"],
             "user_id": row["user_id"],
@@ -268,9 +265,7 @@ class OrdersRepo(AbstractOrderRepository):
             else None,
             "age_seconds": int(row["age_seconds"] or 0),
             "classification": (
-                "safe_to_expire"
-                if direct_expire
-                else "deferred_reconciliation_required"
+                "safe_to_expire" if direct_expire else "deferred_reconciliation_required"
             ),
             "action": "expire" if direct_expire else "defer",
         }
@@ -356,27 +351,21 @@ class OrdersRepo(AbstractOrderRepository):
                 if row is None:
                     return None
                 lock_row = self._stale_lock_row_to_dict(row)
-                if (
-                    lock_row["classification"] != "safe_to_expire"
-                    or lock_row["age_seconds"] <= int(ttl_seconds)
+                if lock_row["classification"] != "safe_to_expire" or lock_row["age_seconds"] <= int(
+                    ttl_seconds
                 ):
                     return None
 
                 pending_since = lock_row["pending_since_ts"]
                 pending_expires_at = (
-                    pending_since + int(ttl_seconds)
-                    if pending_since is not None
-                    else None
+                    pending_since + int(ttl_seconds) if pending_since is not None else None
                 )
                 response = _parse_jsonb(row["response_json"])
                 response.update(
                     {
                         "success": False,
                         "status": "expired",
-                        "error": (
-                            "stale submission lock expired after "
-                            f"{int(ttl_seconds)}s"
-                        ),
+                        "error": (f"stale submission lock expired after {int(ttl_seconds)}s"),
                         "expired_at": time.time(),
                         "pending_ttl_seconds": int(ttl_seconds),
                         "cleanup_reason": reason,
@@ -432,12 +421,9 @@ class OrdersRepo(AbstractOrderRepository):
             ttl_seconds=ttl_seconds,
             user_id=user_id,
         )
-        safe_rows = [
-            row for row in stale_rows if row["classification"] == "safe_to_expire"
-        ]
+        safe_rows = [row for row in stale_rows if row["classification"] == "safe_to_expire"]
         deferred_rows = [
-            row for row in stale_rows
-            if row["classification"] == "deferred_reconciliation_required"
+            row for row in stale_rows if row["classification"] == "deferred_reconciliation_required"
         ]
         expired_rows: list[dict[str, Any]] = []
         if apply:
@@ -500,9 +486,7 @@ class OrdersRepo(AbstractOrderRepository):
         # ``committed`` kept for API parity with the SQLite version (caller-driven
         # commit); asyncpg execute auto-commits when no transaction is open.
 
-    async def get_by_idempotency_key(
-        self, key: str
-    ) -> dict[str, Any] | None:
+    async def get_by_idempotency_key(self, key: str) -> dict[str, Any] | None:
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
@@ -661,9 +645,7 @@ class OrdersRepo(AbstractOrderRepository):
             return False
         return not any(status.startswith(p) for p in _LEGACY_RETRY_PREFIXES)
 
-    async def get_processed_trade(
-        self, trade_key: str
-    ) -> dict[str, Any] | None:
+    async def get_processed_trade(self, trade_key: str) -> dict[str, Any] | None:
         if not trade_key:
             return None
         async with self._pool.acquire() as conn:
@@ -801,9 +783,7 @@ class OrdersRepo(AbstractOrderRepository):
         if not trade_key:
             return
         async with self._pool.acquire() as conn:
-            await conn.execute(
-                "DELETE FROM processed_trades WHERE trade_key = $1", trade_key
-            )
+            await conn.execute("DELETE FROM processed_trades WHERE trade_key = $1", trade_key)
 
     async def update_submission_status(
         self,
@@ -877,19 +857,14 @@ class OrdersRepo(AbstractOrderRepository):
         if side is not None:
             # jsonb ->> returns text; pin a parameterised case-insensitive
             # comparison so SQL stays static and the side value is bound.
-            query += (
-                f" AND UPPER(COALESCE(request_json->>'side', '')) = ${len(params) + 1}"
-            )
+            query += f" AND UPPER(COALESCE(request_json->>'side', '')) = ${len(params) + 1}"
             params.append(str(side).upper())
         query += " ORDER BY updated_at ASC"
 
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(query, *params)
 
-        return [
-            record for row in rows
-            if (record := self._row_to_order_record(row)) is not None
-        ]
+        return [record for row in rows if (record := self._row_to_order_record(row)) is not None]
 
     async def get_unconfirmed_buys(
         self,
@@ -1093,10 +1068,7 @@ class OrdersRepo(AbstractOrderRepository):
                             new_price = Decimal(str(fill_price))
                             new_size = cur_size + new_fill
                             if new_size > 0:
-                                avg = (
-                                    (cur_size * cur_avg)
-                                    + (new_fill * new_price)
-                                ) / new_size
+                                avg = ((cur_size * cur_avg) + (new_fill * new_price)) / new_size
                             else:
                                 avg = new_price
                             await conn.execute(
@@ -1225,9 +1197,7 @@ class OrdersRepo(AbstractOrderRepository):
             # Duplicate fill — the transaction context manager rolled back.
             return False
 
-    async def purge_old_processed_trades(
-        self, max_age_seconds: float = 30 * 86400
-    ) -> int:
+    async def purge_old_processed_trades(self, max_age_seconds: float = 30 * 86400) -> int:
         cutoff = time.time() - max_age_seconds
         async with self._pool.acquire() as conn:
             status = await conn.execute(

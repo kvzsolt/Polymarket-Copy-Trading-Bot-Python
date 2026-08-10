@@ -86,7 +86,9 @@ async def test_late_trade_newer_than_cursor_is_processed_once():
         last_processed_ts=float(now - 300),
     )
 
-    with patch("services.tradeMonitor.fetch_data", new_callable=AsyncMock, return_value=[late_trade]):
+    with patch(
+        "services.tradeMonitor.fetch_data", new_callable=AsyncMock, return_value=[late_trade]
+    ):
         await fetch_trade_data("0xleader", on_trade, state, _MOCK_READINESS, _MOCK_CONFIG)
         await fetch_trade_data("0xleader", on_trade, state, _MOCK_READINESS, _MOCK_CONFIG)
 
@@ -107,7 +109,9 @@ async def test_init_preserves_existing_cursor_on_restart():
         }
     ]
     state = LeaderMonitorState(
-        last_cursor=TradeCursor(timestamp=1_700_000_100, tx_hash="0xpersisted", trade_id="persisted"),
+        last_cursor=TradeCursor(
+            timestamp=1_700_000_100, tx_hash="0xpersisted", trade_id="persisted"
+        ),
         last_processed_ts=1_700_000_100.0,
     )
 
@@ -149,8 +153,12 @@ async def test_new_trade_schedules_research_capture_without_blocking_execution()
         scheduled.append(task)
         return task
 
-    with patch("services.tradeMonitor.fetch_data", new_callable=AsyncMock, return_value=[late_trade]), \
-         patch("services.tradeMonitor.asyncio.create_task", side_effect=_capture_task):
+    with (
+        patch(
+            "services.tradeMonitor.fetch_data", new_callable=AsyncMock, return_value=[late_trade]
+        ),
+        patch("services.tradeMonitor.asyncio.create_task", side_effect=_capture_task),
+    ):
         await fetch_trade_data(
             "0xleader",
             on_trade,
@@ -186,7 +194,9 @@ async def test_cursor_comparison_normalizes_hash_and_trade_id_on_restart():
     }
     on_trade = AsyncMock()
 
-    with patch("services.tradeMonitor.fetch_data", new_callable=AsyncMock, return_value=[duplicate_trade]):
+    with patch(
+        "services.tradeMonitor.fetch_data", new_callable=AsyncMock, return_value=[duplicate_trade]
+    ):
         await fetch_trade_data("0xleader", on_trade, state, _MOCK_READINESS, _MOCK_CONFIG)
 
     on_trade.assert_not_awaited()
@@ -261,15 +271,17 @@ async def test_detected_trade_logs_emit_before_trade_callback():
     async def on_trade(_trades: list[dict]):
         events.append("callback")
 
-    with patch("services.tradeMonitor.fetch_data", new_callable=AsyncMock, return_value=[trade]), \
-         patch(
-             "services.tradeMonitor.print_new_trade_detected",
-             side_effect=lambda _trade: events.append("console"),
-         ) as print_detected, \
-         patch(
-             "services.tradeMonitor.log_trade_detected",
-             side_effect=lambda *_args, **_kwargs: events.append("structured"),
-         ) as log_detected:
+    with (
+        patch("services.tradeMonitor.fetch_data", new_callable=AsyncMock, return_value=[trade]),
+        patch(
+            "services.tradeMonitor.print_new_trade_detected",
+            side_effect=lambda _trade: events.append("console"),
+        ) as print_detected,
+        patch(
+            "services.tradeMonitor.log_trade_detected",
+            side_effect=lambda *_args, **_kwargs: events.append("structured"),
+        ) as log_detected,
+    ):
         await fetch_trade_data("0xleader", on_trade, state, _MOCK_READINESS, _MOCK_CONFIG)
 
     print_detected.assert_called_once()
@@ -279,20 +291,31 @@ async def test_detected_trade_logs_emit_before_trade_callback():
 
 def test_monitor_loop_healthy_requires_recent_poll_and_ready_dependencies():
     from services.healthServer import ReadinessTracker
+
     tracker = ReadinessTracker()
     tracker.update(db_ok=True, api_ok=True, last_trade_poll_ts=100)
     with patch("services.tradeMonitor.time.time", return_value=120):
-        assert _monitor_loop_healthy(fetch_ok=True, fetch_interval_s=5, readiness_tracker=tracker) is True
+        assert (
+            _monitor_loop_healthy(fetch_ok=True, fetch_interval_s=5, readiness_tracker=tracker)
+            is True
+        )
 
 
 def test_monitor_loop_healthy_rejects_stale_or_failed_poll():
     from services.healthServer import ReadinessTracker
+
     tracker = ReadinessTracker()
     tracker.update(db_ok=True, api_ok=True, last_trade_poll_ts=100)
     with patch("services.tradeMonitor.time.time", return_value=140):
-        assert _monitor_loop_healthy(fetch_ok=True, fetch_interval_s=5, readiness_tracker=tracker) is False
+        assert (
+            _monitor_loop_healthy(fetch_ok=True, fetch_interval_s=5, readiness_tracker=tracker)
+            is False
+        )
     with patch("services.tradeMonitor.time.time", return_value=110):
-        assert _monitor_loop_healthy(fetch_ok=False, fetch_interval_s=5, readiness_tracker=tracker) is False
+        assert (
+            _monitor_loop_healthy(fetch_ok=False, fetch_interval_s=5, readiness_tracker=tracker)
+            is False
+        )
 
 
 @pytest.mark.asyncio
@@ -305,12 +328,22 @@ async def test_trade_monitor_emits_heartbeat_when_monitor_is_healthy():
     )
     cursor_store.set_cursor = AsyncMock()
 
-    with patch("services.tradeMonitor.LeaderCursorStore.create", new_callable=AsyncMock, return_value=cursor_store), \
-         patch("services.tradeMonitor.init", new_callable=AsyncMock), \
-         patch("services.tradeMonitor.fetch_trade_data", new_callable=AsyncMock, return_value=(True, 17)), \
-         patch("services.tradeMonitor._monitor_loop_healthy", return_value=True), \
-         patch("services.tradeMonitor.monitor_heartbeat_tick") as heartbeat_tick, \
-         patch("services.tradeMonitor.asyncio.sleep", side_effect=asyncio.CancelledError):
+    with (
+        patch(
+            "services.tradeMonitor.LeaderCursorStore.create",
+            new_callable=AsyncMock,
+            return_value=cursor_store,
+        ),
+        patch("services.tradeMonitor.init", new_callable=AsyncMock),
+        patch(
+            "services.tradeMonitor.fetch_trade_data",
+            new_callable=AsyncMock,
+            return_value=(True, 17),
+        ),
+        patch("services.tradeMonitor._monitor_loop_healthy", return_value=True),
+        patch("services.tradeMonitor.monitor_heartbeat_tick") as heartbeat_tick,
+        patch("services.tradeMonitor.asyncio.sleep", side_effect=asyncio.CancelledError),
+    ):
         with pytest.raises(asyncio.CancelledError):
             await trade_monitor(
                 {"leaderWallet": leader_wallet, "FETCH_INTERVAL": 1, "MONITORED_LEADER_COUNT": 3},
@@ -338,14 +371,29 @@ async def test_trade_monitor_skips_heartbeat_when_monitor_is_unhealthy():
     )
     cursor_store.set_cursor = AsyncMock()
 
-    with patch("services.tradeMonitor.LeaderCursorStore.create", new_callable=AsyncMock, return_value=cursor_store), \
-         patch("services.tradeMonitor.init", new_callable=AsyncMock), \
-         patch("services.tradeMonitor.fetch_trade_data", new_callable=AsyncMock, return_value=(False, 0)), \
-         patch("services.tradeMonitor._monitor_loop_healthy", return_value=False), \
-         patch("services.tradeMonitor.monitor_heartbeat_tick") as heartbeat_tick, \
-         patch("services.tradeMonitor.asyncio.sleep", side_effect=asyncio.CancelledError):
+    with (
+        patch(
+            "services.tradeMonitor.LeaderCursorStore.create",
+            new_callable=AsyncMock,
+            return_value=cursor_store,
+        ),
+        patch("services.tradeMonitor.init", new_callable=AsyncMock),
+        patch(
+            "services.tradeMonitor.fetch_trade_data",
+            new_callable=AsyncMock,
+            return_value=(False, 0),
+        ),
+        patch("services.tradeMonitor._monitor_loop_healthy", return_value=False),
+        patch("services.tradeMonitor.monitor_heartbeat_tick") as heartbeat_tick,
+        patch("services.tradeMonitor.asyncio.sleep", side_effect=asyncio.CancelledError),
+    ):
         with pytest.raises(asyncio.CancelledError):
-            await trade_monitor({"leaderWallet": leader_wallet, "FETCH_INTERVAL": 1}, on_trade, readiness_tracker=MagicMock(), config=MagicMock())
+            await trade_monitor(
+                {"leaderWallet": leader_wallet, "FETCH_INTERVAL": 1},
+                on_trade,
+                readiness_tracker=MagicMock(),
+                config=MagicMock(),
+            )
 
     heartbeat_tick.assert_not_called()
 
@@ -427,11 +475,17 @@ async def test_trade_monitor_survives_set_cursor_failure_and_keeps_looping():
         if len(sleeps) >= 2:
             raise asyncio.CancelledError
 
-    with patch("services.tradeMonitor.LeaderCursorStore.create", new_callable=AsyncMock, return_value=cursor_store), \
-         patch("services.tradeMonitor.init", new_callable=AsyncMock), \
-         patch("services.tradeMonitor.fetch_trade_data", side_effect=_fake_fetch), \
-         patch("services.tradeMonitor._monitor_loop_healthy", return_value=False), \
-         patch("services.tradeMonitor.asyncio.sleep", side_effect=_fake_sleep):
+    with (
+        patch(
+            "services.tradeMonitor.LeaderCursorStore.create",
+            new_callable=AsyncMock,
+            return_value=cursor_store,
+        ),
+        patch("services.tradeMonitor.init", new_callable=AsyncMock),
+        patch("services.tradeMonitor.fetch_trade_data", side_effect=_fake_fetch),
+        patch("services.tradeMonitor._monitor_loop_healthy", return_value=False),
+        patch("services.tradeMonitor.asyncio.sleep", side_effect=_fake_sleep),
+    ):
         with pytest.raises(asyncio.CancelledError):
             await trade_monitor(
                 {"leaderWallet": leader_wallet, "FETCH_INTERVAL": 1},
@@ -459,8 +513,10 @@ async def test_guarded_leader_fetch_singleflights_same_wallet_and_kind():
     wallet = "0xabc"
     url = f"https://data-api.polymarket.com/activity?user={wallet}&limit=50&offset=0"
 
-    with patch("services.tradeMonitor._fetch_spacing_config", None), \
-         patch("services.tradeMonitor.fetch_data", side_effect=_fake_fetch):
+    with (
+        patch("services.tradeMonitor._fetch_spacing_config", None),
+        patch("services.tradeMonitor.fetch_data", side_effect=_fake_fetch),
+    ):
         first, second = await asyncio.gather(
             _guarded_leader_fetch("activity", wallet, url),
             _guarded_leader_fetch("activity", wallet, url),
@@ -479,11 +535,21 @@ async def test_guarded_leader_fetch_keeps_different_wallets_parallel():
         await asyncio.sleep(0.01)
         return [{"ok": True, "url": url}]
 
-    with patch("services.tradeMonitor._fetch_spacing_config", None), \
-         patch("services.tradeMonitor.fetch_data", side_effect=_fake_fetch):
+    with (
+        patch("services.tradeMonitor._fetch_spacing_config", None),
+        patch("services.tradeMonitor.fetch_data", side_effect=_fake_fetch),
+    ):
         first, second = await asyncio.gather(
-            _guarded_leader_fetch("activity", "0xaaa", "https://data-api.polymarket.com/activity?user=0xaaa&limit=50&offset=0"),
-            _guarded_leader_fetch("activity", "0xbbb", "https://data-api.polymarket.com/activity?user=0xbbb&limit=50&offset=0"),
+            _guarded_leader_fetch(
+                "activity",
+                "0xaaa",
+                "https://data-api.polymarket.com/activity?user=0xaaa&limit=50&offset=0",
+            ),
+            _guarded_leader_fetch(
+                "activity",
+                "0xbbb",
+                "https://data-api.polymarket.com/activity?user=0xbbb&limit=50&offset=0",
+            ),
         )
 
     assert len(calls) == 2

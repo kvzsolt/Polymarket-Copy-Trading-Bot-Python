@@ -104,7 +104,9 @@ class TradeScoringService:
             size = float(trade.get("size", 0) or 0)
             leader_notional = size * ref_price
         liquidity_target = float(self._liquidity_target)
-        liquidity_score = 1.0 if liquidity_target <= 0 else _clamp(leader_notional / liquidity_target)
+        liquidity_score = (
+            1.0 if liquidity_target <= 0 else _clamp(leader_notional / liquidity_target)
+        )
 
         drift_penalty = _clamp(price_drift_pct / max(max_drift_pct / 100.0, 1e-9))
         edge_penalty = _clamp(edge_decay_pct / max(max_edge_decay / 100.0, 1e-9))

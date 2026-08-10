@@ -8,6 +8,7 @@ Covers:
   - status counts stale/dirty tokens
   - extract_token_ids_from_live_positions deduplicates
 """
+
 from __future__ import annotations
 
 from decimal import Decimal
@@ -61,11 +62,13 @@ def _make_gateway(
             best_ask=Decimal("0.55"),
         )
     gw.get_orderbook = AsyncMock(return_value=book)
-    gw.get_market_info = AsyncMock(return_value={
-        "tick_size": None if missing_tick else tick_size,
-        "min_order_size": min_order_size,
-        "neg_risk": False,
-    })
+    gw.get_market_info = AsyncMock(
+        return_value={
+            "tick_size": None if missing_tick else tick_size,
+            "min_order_size": min_order_size,
+            "neg_risk": False,
+        }
+    )
     return gw
 
 
@@ -85,6 +88,7 @@ def _make_runtime(
 # ---------------------------------------------------------------------------
 # Start with no tokens
 # ---------------------------------------------------------------------------
+
 
 class _FakeMarketWebSocket:
     """Stand-in for MarketWebSocket that never touches the network."""
@@ -127,9 +131,7 @@ class TestStartNoTokens:
         await rt.stop()
 
     @pytest.mark.asyncio
-    async def test_start_empty_tokens_still_opens_wss_connection(
-        self, monkeypatch
-    ) -> None:
+    async def test_start_empty_tokens_still_opens_wss_connection(self, monkeypatch) -> None:
         """Regression: empty initial token set must NOT skip WSS startup.
 
         Trade detection is HTTP-polled, so the runtime routinely starts with
@@ -162,6 +164,7 @@ class TestStartNoTokens:
         await rt.start([])
         # let the fake connect() callback run
         import asyncio as _asyncio
+
         await _asyncio.sleep(0)
 
         result = await rt.ensure_token_ready_or_bootstrapped(TOKEN_A)
@@ -252,6 +255,7 @@ class TestWssConnectionState:
 # Bootstrap
 # ---------------------------------------------------------------------------
 
+
 class TestBootstrap:
     @pytest.mark.asyncio
     async def test_bootstrap_calls_gateway_for_each_token(self) -> None:
@@ -334,6 +338,7 @@ class TestBootstrap:
 # Subscribe / unsubscribe
 # ---------------------------------------------------------------------------
 
+
 class TestSubscribeTokens:
     @pytest.mark.asyncio
     async def test_subscribe_adds_tokens_to_set(self) -> None:
@@ -373,6 +378,7 @@ class TestSubscribeTokens:
 # Stop
 # ---------------------------------------------------------------------------
 
+
 class TestStop:
     @pytest.mark.asyncio
     async def test_stop_marks_all_stale(self) -> None:
@@ -404,6 +410,7 @@ class TestStop:
 # ---------------------------------------------------------------------------
 # Status
 # ---------------------------------------------------------------------------
+
 
 class TestStatus:
     @pytest.mark.asyncio
@@ -438,6 +445,7 @@ class TestStatus:
 # ---------------------------------------------------------------------------
 # extract_token_ids_from_live_positions
 # ---------------------------------------------------------------------------
+
 
 class TestReadinessFromWss:
     """``market_data_ready`` must reflect executable WSS state per token."""
@@ -580,6 +588,7 @@ class TestExtractTokenIds:
 # ensure_token_ready_or_bootstrapped
 # ---------------------------------------------------------------------------
 
+
 def _make_runtime_with_config(
     store: MarketStateStore | None = None,
     gateway=None,
@@ -611,6 +620,7 @@ def _make_runtime_with_config(
 
 def _make_good_book(token_id: str = TOKEN_A):
     from integrations.polymarket.models import OrderBook, OrderBookLevel
+
     return OrderBook(
         token_id=token_id,
         tick_size=Decimal("0.01"),
@@ -626,11 +636,13 @@ def _make_good_book(token_id: str = TOKEN_A):
 def _make_bootstrap_gateway(token_id: str = TOKEN_A) -> AsyncMock:
     gw = AsyncMock()
     gw.get_orderbook = AsyncMock(return_value=_make_good_book(token_id))
-    gw.get_market_info = AsyncMock(return_value={
-        "tick_size": "0.01",
-        "min_order_size": "5",
-        "neg_risk": False,
-    })
+    gw.get_market_info = AsyncMock(
+        return_value={
+            "tick_size": "0.01",
+            "min_order_size": "5",
+            "neg_risk": False,
+        }
+    )
     return gw
 
 
@@ -645,7 +657,13 @@ class TestEnsureTokenReadyOrBootstrapped:
             {"source": "wss"},
         )
         store.set_quote(TOKEN_A, best_bid=Decimal("0.49"), best_ask=Decimal("0.51"), source="wss")
-        store.set_tick(TOKEN_A, tick_size=Decimal("0.01"), min_order_size=Decimal("5"), neg_risk=False, source="wss")
+        store.set_tick(
+            TOKEN_A,
+            tick_size=Decimal("0.01"),
+            min_order_size=Decimal("5"),
+            neg_risk=False,
+            source="wss",
+        )
         gw = _make_bootstrap_gateway()
         rt = _make_runtime_with_config(store=store, gateway=gw)
 

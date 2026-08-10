@@ -109,8 +109,7 @@ class CopyTaskService:
         current = await self._require(task.task_id)
         if current.version != expected_version:
             raise CopyTaskConflict(
-                f"copy task version conflict: expected {expected_version}, "
-                f"found {current.version}"
+                f"copy task version conflict: expected {expected_version}, found {current.version}"
             )
         updated = replace(task, version=expected_version + 1)
         await self._repository.save(updated, expected_version=expected_version)
@@ -173,8 +172,7 @@ class CopyTaskService:
         current = await self._require(task_id)
         if current.version != expected_version:
             raise CopyTaskConflict(
-                f"copy task version conflict: expected {expected_version}, "
-                f"found {current.version}"
+                f"copy task version conflict: expected {expected_version}, found {current.version}"
             )
         updated = replace(current, status=status, version=current.version + 1)
         await self._repository.save(updated, expected_version=expected_version)

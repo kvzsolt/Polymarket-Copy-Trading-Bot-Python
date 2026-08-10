@@ -8,6 +8,7 @@ which is for GTC-limit/maker orders). Tests:
 * SELL sizing is bounded by held shares (the bot never invents shares);
 * zero / negative price input is rejected.
 """
+
 from __future__ import annotations
 
 from decimal import Decimal

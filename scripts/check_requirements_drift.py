@@ -77,8 +77,10 @@ def main() -> int:
 
     missing = find_missing(pyproject, requirements)
     if missing:
-        print("requirements.txt drift — runtime deps in pyproject.toml but not "
-              "requirements.txt (Docker / documented installs would break):")
+        print(
+            "requirements.txt drift — runtime deps in pyproject.toml but not "
+            "requirements.txt (Docker / documented installs would break):"
+        )
         for dep in missing:
             print(f"  - {dep}")
         print("Add the missing dependency(ies) to requirements.txt.")

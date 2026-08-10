@@ -10,6 +10,7 @@ Asserts:
 * same condition / different token == distinct keys (no condition-only
   collapse — see CLAUDE.md).
 """
+
 from __future__ import annotations
 
 import pytest

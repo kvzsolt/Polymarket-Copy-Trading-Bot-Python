@@ -5,6 +5,7 @@ default. The venue-backend selector is wired at the same boundary so a single
 composition root decides which ``ClobGateway`` the runtime uses, and so the
 optional CCXT transport has an owner that can close it at shutdown.
 """
+
 from __future__ import annotations
 
 import asyncio

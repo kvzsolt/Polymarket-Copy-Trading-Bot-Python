@@ -77,7 +77,6 @@ _CORE_DDL = [
     CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_order_id
     ON orders(order_id) WHERE order_id IS NOT NULL
     """,
-
     # ----- fills ----------------------------------------------------------
     """
     CREATE TABLE IF NOT EXISTS fills (
@@ -142,7 +141,6 @@ _CORE_DDL = [
     # both fresh and redeployed databases. ``idx_fills_dedup`` remains the
     # canonical conflict target referenced by orders_repo.mark_fill.
     """DROP INDEX IF EXISTS idx_fills_unique""",
-
     # ----- positions (canonical 3-col PK) ---------------------------------
     """
     CREATE TABLE IF NOT EXISTS positions (
@@ -160,7 +158,6 @@ _CORE_DDL = [
     CREATE INDEX IF NOT EXISTS idx_positions_user_condition
     ON positions(user_id, condition_id)
     """,
-
     # ----- processed_trades ----------------------------------------------
     """
     CREATE TABLE IF NOT EXISTS processed_trades (
@@ -177,7 +174,6 @@ _CORE_DDL = [
         processed_at  double precision NOT NULL
     )
     """,
-
     # ----- leader_cursors -------------------------------------------------
     """
     CREATE TABLE IF NOT EXISTS leader_cursors (
@@ -188,8 +184,6 @@ _CORE_DDL = [
         updated_at       double precision NOT NULL
     )
     """,
-
-
     # ----- market_structure_events ---------------------------------------
     """
     CREATE TABLE IF NOT EXISTS market_structure_events (
@@ -221,7 +215,6 @@ _CORE_DDL = [
         PRIMARY KEY (user_id, event_id)
     )
     """,
-
     # ----- risk_blocks ----------------------------------------------------
     """
     CREATE TABLE IF NOT EXISTS risk_blocks (
@@ -243,7 +236,6 @@ _CORE_DDL = [
     CREATE INDEX IF NOT EXISTS idx_risk_blocks_cleared
     ON risk_blocks(cleared_at)
     """,
-
     # ----- risk_triggers --------------------------------------------------
     """
     CREATE TABLE IF NOT EXISTS risk_triggers (
@@ -263,7 +255,6 @@ _CORE_DDL = [
     CREATE INDEX IF NOT EXISTS idx_risk_triggers_position
     ON risk_triggers(user_id, condition_id, token_id)
     """,
-
     # ----- order_reservations --------------------------------------------
     """
     CREATE TABLE IF NOT EXISTS order_reservations (
@@ -297,7 +288,6 @@ _CORE_DDL = [
     CREATE INDEX IF NOT EXISTS idx_order_reservations_user_token
     ON order_reservations(user_id, token_id)
     """,
-
     # ----- legacy / supporting tables -------------------------------------
     # Still actively read/written by accountingService, dayEquity, etc.
     """
@@ -399,8 +389,6 @@ _CORE_DDL = [
     )
     """,
 ]
-
-
 
 
 # ---------------------------------------------------------------------------

@@ -14,6 +14,7 @@ asserts below use ``pytest.raises`` so any future regression that allows
 configless construction will surface as a test failure rather than a
 silent green.
 """
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock

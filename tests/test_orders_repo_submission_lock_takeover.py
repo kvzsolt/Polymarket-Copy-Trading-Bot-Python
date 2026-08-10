@@ -57,9 +57,7 @@ def test_acquire_uses_stale_takeover_conflict_clause():
     repo = OrdersRepo(_FakePool(conn))
 
     ok = asyncio.run(
-        repo.try_acquire_submission_lock(
-            "k1", "0xUser", None, {"a": 1}, stale_takeover_seconds=300
-        )
+        repo.try_acquire_submission_lock("k1", "0xUser", None, {"a": 1}, stale_takeover_seconds=300)
     )
     assert ok is True
 

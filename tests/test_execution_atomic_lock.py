@@ -4,6 +4,7 @@ Repo-level invariants live on the canonical async PG ``OrdersRepo``. The
 ExecutionService integration test runs against the same async repo so
 the lock contract is exercised end-to-end on the production code path.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -135,9 +136,31 @@ def _make_mds(token_id: str = "t1") -> AsyncMock:
     bid, ask = Decimal("0.49"), Decimal("0.51")
     bundle = MarketDataBundle(
         token_id=token_id,
-        quote=QuoteSnapshot(token_id=token_id, best_bid=bid, best_ask=ask, last_trade_price=None, source="wss", monotonic_ts=now),
-        book=BookSnapshot(token_id=token_id, bids={bid: Decimal("100")}, asks={ask: Decimal("100")}, best_bid=bid, best_ask=ask, source="wss", monotonic_ts=now),
-        tick=TickSnapshot(token_id=token_id, tick_size=Decimal("0.01"), min_order_size=Decimal("1"), neg_risk=False, source="wss", monotonic_ts=now),
+        quote=QuoteSnapshot(
+            token_id=token_id,
+            best_bid=bid,
+            best_ask=ask,
+            last_trade_price=None,
+            source="wss",
+            monotonic_ts=now,
+        ),
+        book=BookSnapshot(
+            token_id=token_id,
+            bids={bid: Decimal("100")},
+            asks={ask: Decimal("100")},
+            best_bid=bid,
+            best_ask=ask,
+            source="wss",
+            monotonic_ts=now,
+        ),
+        tick=TickSnapshot(
+            token_id=token_id,
+            tick_size=Decimal("0.01"),
+            min_order_size=Decimal("1"),
+            neg_risk=False,
+            source="wss",
+            monotonic_ts=now,
+        ),
         source=MarketDataSource.WSS,
     )
     mds = AsyncMock()
@@ -171,7 +194,9 @@ async def test_atomic_lock_blocks_duplicate_concurrent_submission():
         repo = PgOrdersRepo(pool)
         clob = _ConcurrentClob()
         svc = ExecutionService(
-            clob, _FeeSvc(), repo,
+            clob,
+            _FeeSvc(),
+            repo,
             config=_make_exec_config(),
             market_data_service=_make_mds(),
         )

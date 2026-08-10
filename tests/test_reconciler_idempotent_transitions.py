@@ -6,6 +6,7 @@ Pin:
   - Two reconcile_trade_record calls with the same 'confirmed' venue response
     apply the fill delta exactly once and release the reservation exactly once.
 """
+
 from __future__ import annotations
 
 from decimal import Decimal
@@ -116,7 +117,9 @@ class _ReservationService:
         self.releases.append((reservation_id, reason))
 
 
-def _record(*, reservation_id: str | None = None, status: str = "submitted_unconfirmed") -> dict[str, Any]:
+def _record(
+    *, reservation_id: str | None = None, status: str = "submitted_unconfirmed"
+) -> dict[str, Any]:
     rec: dict[str, Any] = {
         "trade_key": TRADE_KEY,
         "user_id": USER_ID,
@@ -144,6 +147,7 @@ def _make_service(*, previous_matched: str = "0", reservation: _ReservationServi
 async def _confirm_fixed(size_matched: str, status: str):
     async def _cf(order_id: str):
         return {"status": status, "size_matched": size_matched, "avg_price": "0.50"}
+
     return _cf
 
 

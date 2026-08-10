@@ -141,9 +141,7 @@ class DetectionConfig:
     leader_positions_min_fetch_spacing_ms: int = 250
     leader_activity_min_fetch_spacing_ms: int = 250
     trade_queue_max_batches: int = 64
-    onchain: "OnchainDetectionConfig" = field(
-        default_factory=lambda: OnchainDetectionConfig()
-    )
+    onchain: "OnchainDetectionConfig" = field(default_factory=lambda: OnchainDetectionConfig())
 
 
 @dataclass(frozen=True)
@@ -519,9 +517,7 @@ class ReconciliationConfig:
     # Cadence (seconds) of the reconciliation loop (was
     # ``polling.reconcile_interval_seconds``).
     reconcile_interval_seconds: int = 300
-    order_confirmation: OrderConfirmationConfig = field(
-        default_factory=OrderConfirmationConfig
-    )
+    order_confirmation: OrderConfirmationConfig = field(default_factory=OrderConfirmationConfig)
     position_drift: PositionDriftConfig = field(default_factory=PositionDriftConfig)
 
 
@@ -535,9 +531,7 @@ class _FrozenSettingsModel(BaseModel):
 
 
 class DiscoveryApiConfig(_FrozenSettingsModel):
-    base_url: str = (
-        "https://narrative.agent.heisenberg.so/api/v2/semantic/retrieve/parameterized"
-    )
+    base_url: str = "https://narrative.agent.heisenberg.so/api/v2/semantic/retrieve/parameterized"
     token: SecretStr = SecretStr("")
     timeout_seconds: float = Field(20.0, gt=0)
     max_retries: int = Field(6, ge=1, le=10)
@@ -623,8 +617,7 @@ class SocialConfig(_FrozenSettingsModel):
     @model_validator(mode="after")
     def _keyword_wire_format(self) -> "SocialConfig":
         if any(
-            not keyword
-            or any(character.isspace() or character in "{}," for character in keyword)
+            not keyword or any(character.isspace() or character in "{}," for character in keyword)
             for keyword in self.keywords
         ):
             raise ValueError(
@@ -931,21 +924,15 @@ class AppConfig:
     polymarket: PolymarketConfig = field(default_factory=PolymarketConfig)
     execution: ExecutionConfig = field(default_factory=ExecutionConfig)
     detection: DetectionConfig = field(default_factory=DetectionConfig)
-    discovery: DiscoveryConfig = field(
-        default_factory=lambda: DiscoveryConfig.model_validate({})
-    )
+    discovery: DiscoveryConfig = field(default_factory=lambda: DiscoveryConfig.model_validate({}))
     copy_trading: CopyTradingConfig = field(
         default_factory=lambda: CopyTradingConfig.model_validate({})
     )
     sizing: SizingConfig = field(default_factory=SizingConfig)
     risk: RiskConfig = field(default_factory=RiskConfig)
-    protective_exits: ProtectiveExitsConfig = field(
-        default_factory=ProtectiveExitsConfig
-    )
+    protective_exits: ProtectiveExitsConfig = field(default_factory=ProtectiveExitsConfig)
     market_data: MarketDataConfig = field(default_factory=MarketDataConfig)
-    reconciliation: ReconciliationConfig = field(
-        default_factory=ReconciliationConfig
-    )
+    reconciliation: ReconciliationConfig = field(default_factory=ReconciliationConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     # Global safety: when True the bot runs in paper-only / dry-run mode.
     # Derived from ``execution.trading_mode``; never set directly.
@@ -985,9 +972,7 @@ def _validate_semantics(cfg: AppConfig, errors: list[str]) -> None:
         errors.append("database.dsn must use postgresql:// or postgres://.")
 
     if cfg.execution.sell_fraction_missing_policy not in ("skip", "full_close"):
-        errors.append(
-            "execution.sell_fraction_missing_policy must be 'skip' or 'full_close'."
-        )
+        errors.append("execution.sell_fraction_missing_policy must be 'skip' or 'full_close'.")
 
     # Wallet essentials
     private_key = secret_value(cfg.wallet.private_key)
@@ -1014,18 +999,14 @@ def _validate_semantics(cfg: AppConfig, errors: list[str]) -> None:
             f"(expected 42-char Ethereum address)."
         )
     if cfg.wallet.chain_id not in (137, 80002):
-        errors.append(
-            f'Unsupported CHAIN_ID "{cfg.wallet.chain_id}". Use 137 or 80002.'
-        )
+        errors.append(f'Unsupported CHAIN_ID "{cfg.wallet.chain_id}". Use 137 or 80002.')
     if not cfg.wallet.polygon_rpc_url:
         errors.append("RPC_URL is required.")
     if not cfg.polymarket.rpc_url:
         errors.append("polymarket.rpc_url is required.")
     for wallet in cfg.copy_trading.wallets:
         if not _ETH_ADDR_RE.match(wallet):
-            errors.append(
-                f'Invalid leader wallet "{wallet}" (expected 42-char Ethereum address).'
-            )
+            errors.append(f'Invalid leader wallet "{wallet}" (expected 42-char Ethereum address).')
 
     # Sizing invariants
     s = cfg.sizing
@@ -1129,14 +1110,10 @@ def _validate_semantics(cfg: AppConfig, errors: list[str]) -> None:
 
     # On-chain detection
     oc = cfg.detection.onchain
-    confidence_required = (
-        str(oc.pending_tx_detection_confidence_required or "").strip().lower()
-    )
+    confidence_required = str(oc.pending_tx_detection_confidence_required or "").strip().lower()
     if confidence_required not in _ONCHAIN_DETECTION_CONFIDENCE_VALUES:
         allowed = ", ".join(sorted(_ONCHAIN_DETECTION_CONFIDENCE_VALUES))
-        errors.append(
-            f"PENDING_TX_DETECTION_CONFIDENCE_REQUIRED must be one of: {allowed}."
-        )
+        errors.append(f"PENDING_TX_DETECTION_CONFIDENCE_REQUIRED must be one of: {allowed}.")
     # Discovery is field-constrained by its Pydantic models. Keep only
     # invariants that span nested sections here.
     d = cfg.discovery
@@ -1150,9 +1127,7 @@ def _validate_semantics(cfg: AppConfig, errors: list[str]) -> None:
     # Market data
     md = cfg.market_data
     if md.primary_source not in ("rest_snapshot", "wss"):
-        errors.append(
-            'MARKET_DATA_PRIMARY_SOURCE must be one of: "rest_snapshot", "wss".'
-        )
+        errors.append('MARKET_DATA_PRIMARY_SOURCE must be one of: "rest_snapshot", "wss".')
     if md.rest_snapshot_max_age_ms <= 0:
         errors.append("MARKET_DATA_REST_SNAPSHOT_MAX_AGE_MS must be > 0.")
     if md.rest_snapshot_request_timeout_ms <= 0:
@@ -1410,9 +1385,7 @@ def _assign_path(target: dict[str, Any], path: tuple[str, ...], value: Any) -> N
         cursor[leaf] = value
 
 
-def _translate_legacy_payload(
-    payload: Mapping[str, Any], *, source: str
-) -> dict[str, Any]:
+def _translate_legacy_payload(payload: Mapping[str, Any], *, source: str) -> dict[str, Any]:
     """Map legacy pre-split section/key names onto the service-owned layout.
 
     Only key NAMES are ever logged; values never are. Retired keys are
@@ -1431,9 +1404,7 @@ def _translate_legacy_payload(
                             "derived at runtime from the wallet key and must "
                             "not be configured."
                         )
-            logger.warning(
-                "config_legacy_key_dropped | source=%s key=clob", source
-            )
+            logger.warning("config_legacy_key_dropped | source=%s key=clob", source)
             continue
         if not isinstance(content, Mapping):
             _assign_path(output, (section,), content)
@@ -1461,12 +1432,10 @@ def _resolve_environment(explicit: str | None) -> str:
 
     The environment is never inferred from credential presence.
     """
-    name = (explicit or os.getenv("PMCOPY_ENVIRONMENT") or _DEFAULT_ENVIRONMENT)
+    name = explicit or os.getenv("PMCOPY_ENVIRONMENT") or _DEFAULT_ENVIRONMENT
     name = str(name).strip().lower()
     if not _ENVIRONMENT_NAME_RE.match(name):
-        raise EnvValidationError(
-            f"Invalid configuration environment name: {name!r}"
-        )
+        raise EnvValidationError(f"Invalid configuration environment name: {name!r}")
     return name
 
 
@@ -1502,7 +1471,6 @@ def _read_leader_overrides(directory: Path) -> list[dict[str, Any]]:
     return entries
 
 
-
 def _read_yaml(path: Path, *, required: bool) -> dict[str, Any]:
     if not path.exists():
         if required:
@@ -1511,9 +1479,7 @@ def _read_yaml(path: Path, *, required: bool) -> dict[str, Any]:
     try:
         payload = yaml.safe_load(path.read_text(encoding="utf-8"))
     except (OSError, yaml.YAMLError) as exc:
-        raise EnvValidationError(
-            f"Unable to read YAML configuration {path}: {exc}"
-        ) from exc
+        raise EnvValidationError(f"Unable to read YAML configuration {path}: {exc}") from exc
     if payload is None:
         return {}
     if not isinstance(payload, dict):
@@ -1557,9 +1523,7 @@ def _read_secrets_contents(path: Path) -> str | None:
     try:
         info = os.fstat(fd)
         if not stat.S_ISREG(info.st_mode):
-            raise EnvValidationError(
-                f"Secrets path must be a regular non-symlink file: {path}"
-            )
+            raise EnvValidationError(f"Secrets path must be a regular non-symlink file: {path}")
         if os.name != "nt" and stat.S_IMODE(info.st_mode) != 0o600:
             raise EnvValidationError(
                 f"Secrets file must have permissions 0600 exactly (chmod 600): {path}"
@@ -1587,9 +1551,7 @@ def _read_secret_overrides(contents: str) -> dict[str, Any]:
         if key.startswith("export "):
             key = key[7:].strip()
         if key in seen:
-            raise EnvValidationError(
-                f"Duplicate key in secrets file at line {line_number}: {key}"
-            )
+            raise EnvValidationError(f"Duplicate key in secrets file at line {line_number}: {key}")
         seen.add(key)
 
     # Parse the same immutable snapshot used for duplicate detection. Reading
@@ -1606,9 +1568,7 @@ def _read_secret_overrides(contents: str) -> dict[str, Any]:
                 "secrets.env application keys must use PMCOPY__SECTION__FIELD; "
                 f"unsupported key: {key}"
             )
-        path_parts = tuple(
-            part.strip().lower() for part in key[len("PMCOPY__") :].split("__")
-        )
+        path_parts = tuple(part.strip().lower() for part in key[len("PMCOPY__") :].split("__"))
         if len(path_parts) < 2 or any(not part for part in path_parts):
             raise EnvValidationError(f"Malformed nested secrets key: {key}")
         # dotenv is merged manually, outside BaseSettings' env source, so
@@ -1653,9 +1613,7 @@ def _read_process_env_overrides() -> dict[str, Any]:
         value = os.environ[key]
         if value is None or not str(value).strip():
             continue
-        path_parts = tuple(
-            part.strip().lower() for part in key[len("PMCOPY__") :].split("__")
-        )
+        path_parts = tuple(part.strip().lower() for part in key[len("PMCOPY__") :].split("__"))
         if len(path_parts) < 2 or any(not part for part in path_parts):
             raise EnvValidationError(f"Malformed nested environment key: {key}")
         cursor = output
@@ -1665,9 +1623,7 @@ def _read_process_env_overrides() -> dict[str, Any]:
                 child = {}
                 cursor[part] = child
             if not isinstance(child, dict):
-                raise EnvValidationError(
-                    f"Conflicting nested environment key: {key}"
-                )
+                raise EnvValidationError(f"Conflicting nested environment key: {key}")
             cursor = child
         cursor[path_parts[-1]] = value
     return output
@@ -1705,9 +1661,7 @@ def load_config(
     """
     config_root = Path(config_dir) if config_dir else _CONFIG_ROOT
     deployment_root = _resolve_deployment_root()
-    secrets_file = (
-        Path(secrets_path) if secrets_path else deployment_root / _SECRETS_ENV
-    )
+    secrets_file = Path(secrets_path) if secrets_path else deployment_root / _SECRETS_ENV
     environment_name = _resolve_environment(environment)
 
     payload = _read_service_files(config_root)
@@ -1747,9 +1701,7 @@ def load_config(
 
     leader_entries = _read_leader_overrides(config_root / "leaders")
     if leader_entries:
-        payload = _deep_merge(
-            payload, {"copy_trading": {"leaders": leader_entries}}
-        )
+        payload = _deep_merge(payload, {"copy_trading": {"leaders": leader_entries}})
 
     if overrides:
         flat_keys = [key for key in overrides if str(key).upper() == str(key)]
@@ -1758,9 +1710,7 @@ def load_config(
                 "Flat environment overrides are no longer supported; use nested "
                 "settings or PMCOPY__SECTION__FIELD names."
             )
-        payload = _deep_merge(
-            payload, _translate_legacy_payload(overrides, source="overrides")
-        )
+        payload = _deep_merge(payload, _translate_legacy_payload(overrides, source="overrides"))
 
     secrets_contents = _read_secrets_contents(secrets_file)
     if secrets_contents is not None:
@@ -1791,8 +1741,7 @@ def load_config(
     # compatibility fields because legacy service boundaries still consume
     # them, but their values are sourced from the canonical polymarket section.
     validated["wallet"]["polygon_rpc_url"] = (
-        validated["wallet"].get("polygon_rpc_url")
-        or validated["polymarket"]["rpc_url"]
+        validated["wallet"].get("polygon_rpc_url") or validated["polymarket"]["rpc_url"]
     )
     validated["wallet"]["fallback_rpc_url"] = validated["wallet"].get(
         "fallback_rpc_url"

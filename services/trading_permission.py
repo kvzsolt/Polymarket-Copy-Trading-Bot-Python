@@ -20,7 +20,9 @@ class TradingPermissionService:
         try:
             state = await self._repo.get()
         except Exception as exc:
-            raise TradingPausedError("trading control unavailable; live submission blocked") from exc
+            raise TradingPausedError(
+                "trading control unavailable; live submission blocked"
+            ) from exc
         if not state.enabled:
             raise TradingPausedError(
                 f"live trading paused (generation={state.generation}, reason={state.reason})"

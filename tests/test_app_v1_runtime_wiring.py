@@ -28,9 +28,7 @@ def test_run_application_starts_the_v1_copy_task_runtime() -> None:
     assert "start_v1_copy_task_runtime" in source
     assert "config.copy_trading.copy_tasks" in source
     # Canonical startup order: restoration precedes subscriptions/detection.
-    assert source.index("start_v1_copy_task_runtime") < source.index(
-        "_start_market_data_runtimes("
-    )
+    assert source.index("start_v1_copy_task_runtime") < source.index("_start_market_data_runtimes(")
 
 
 def test_startup_migrations_include_v1_schema() -> None:

@@ -1,6 +1,5 @@
 """Data model package."""
 
-
 from .userHistory import (
     get_user_activity_model,
     get_user_position_model,

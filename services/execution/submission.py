@@ -1,4 +1,5 @@
 """Submission sanitization and pending-order tracking helpers."""
+
 from __future__ import annotations
 
 import time
@@ -20,22 +21,14 @@ if TYPE_CHECKING:
 
 
 def truncate_text(value: Any, *, max_chars: int) -> str:
-    text = (
-        str(value)
-        .replace("\x00", " ")
-        .replace("\r", " ")
-        .replace("\n", " ")
-        .replace("\t", " ")
-    )
+    text = str(value).replace("\x00", " ").replace("\r", " ").replace("\n", " ").replace("\t", " ")
     if len(text) <= max_chars:
         return text
     keep = max(0, max_chars - len(_TRUNCATED_SUFFIX))
     return text[:keep] + _TRUNCATED_SUFFIX
 
 
-def sanitize_submission_value(
-    value: Any, *, max_chars: int = _MAX_PERSISTED_FIELD_CHARS
-) -> Any:
+def sanitize_submission_value(value: Any, *, max_chars: int = _MAX_PERSISTED_FIELD_CHARS) -> Any:
     if value is None:
         return None
     if isinstance(value, (bool, int, float)):
@@ -133,15 +126,11 @@ def sanitize_submission_response(response: dict[str, Any] | Any) -> dict[str, An
         if key in {"pending_since", "pending_expires_at", "expired_at"}:
             ts_value = coerce_timestamp(raw_value)
             sanitized[key] = (
-                ts_value
-                if ts_value is not None
-                else sanitize_submission_value(raw_value)
+                ts_value if ts_value is not None else sanitize_submission_value(raw_value)
             )
             continue
         if key == "error":
-            error_value = sanitize_submission_value(
-                raw_value, max_chars=_MAX_PERSISTED_ERROR_CHARS
-            )
+            error_value = sanitize_submission_value(raw_value, max_chars=_MAX_PERSISTED_ERROR_CHARS)
             if error_value:
                 sanitized[key] = error_value
             continue
@@ -165,9 +154,7 @@ def pending_submission_ttl_seconds(config: "AppConfig | None" = None) -> float:
 
 
 def pending_since(existing: dict[str, Any]) -> float | None:
-    response = (
-        existing.get("response") if isinstance(existing.get("response"), dict) else {}
-    )
+    response = existing.get("response") if isinstance(existing.get("response"), dict) else {}
     for candidate in (
         existing.get("pending_since"),
         response.get("pending_since"),
@@ -181,9 +168,7 @@ def pending_since(existing: dict[str, Any]) -> float | None:
 
 
 def pending_expires_at(existing: dict[str, Any]) -> float | None:
-    response = (
-        existing.get("response") if isinstance(existing.get("response"), dict) else {}
-    )
+    response = existing.get("response") if isinstance(existing.get("response"), dict) else {}
     for candidate in (
         existing.get("pending_expires_at"),
         response.get("pending_expires_at"),
@@ -220,9 +205,7 @@ def is_pending_submission_expired(
 ) -> bool:
     if not existing:
         return False
-    status = str(
-        existing.get("status") or existing.get("response", {}).get("status") or ""
-    ).lower()
+    status = str(existing.get("status") or existing.get("response", {}).get("status") or "").lower()
     if existing.get("order_id"):
         return False
     if status not in _RETRY_BLOCKING_STATUSES:
@@ -257,9 +240,7 @@ def is_retry_blocking_existing(
 ) -> bool:
     if not existing:
         return False
-    status = str(
-        existing.get("status") or existing.get("response", {}).get("status") or ""
-    ).lower()
+    status = str(existing.get("status") or existing.get("response", {}).get("status") or "").lower()
     if existing.get("order_id"):
         return True
     if is_pending_submission_expired(

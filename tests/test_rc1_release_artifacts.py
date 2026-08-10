@@ -1,4 +1,5 @@
 """PR 9: RC1 release artifacts (docs + validation script)."""
+
 from __future__ import annotations
 
 import os
@@ -97,7 +98,7 @@ def test_rc1_check_script_runs_forbid_scans(repo_root: Path) -> None:
 def test_rc1_live_doctor_detects_file_backed_wallet_config(repo_root: Path) -> None:
     text = (repo_root / "scripts/rc1_check.sh").read_text(encoding="utf-8")
     assert "python -m bot_cli.main doctor --live" in text
-    assert '${PMCOPY__WALLET__PRIVATE_KEY-}' not in text
+    assert "${PMCOPY__WALLET__PRIVATE_KEY-}" not in text
 
 
 def test_documented_config_templates_exist(repo_root: Path) -> None:
@@ -112,9 +113,7 @@ def test_documented_config_templates_exist(repo_root: Path) -> None:
         for match in re.finditer(
             r"config/[\w./-]*example[\w./-]*\.ya?ml", source.read_text(encoding="utf-8")
         ):
-            referenced.setdefault(match.group(0), []).append(
-                str(source.relative_to(repo_root))
-            )
+            referenced.setdefault(match.group(0), []).append(str(source.relative_to(repo_root)))
 
     assert referenced, "expected the docs to reference a config template"
     missing = {
@@ -133,27 +132,19 @@ def test_example_environment_template_is_paper_safe_and_secret_free(
     payload = yaml.safe_load(path.read_text(encoding="utf-8"))
 
     assert payload["trading_mode"] == "paper"
-    assert not re.search(
-        r"0x[0-9a-fA-F]{64}", path.read_text(encoding="utf-8")
-    ), "secrets belong in mode-0600 secrets.env, never in committed YAML"
+    assert not re.search(r"0x[0-9a-fA-F]{64}", path.read_text(encoding="utf-8")), (
+        "secrets belong in mode-0600 secrets.env, never in committed YAML"
+    )
 
 
 def test_packaged_service_files_are_paper_safe_and_secret_free(
     repo_root: Path,
 ) -> None:
     """Canonical service files ship paper-mode, kill-switches off, no keys."""
-    execution = yaml.safe_load(
-        (repo_root / "config" / "execution.yml").read_text(encoding="utf-8")
-    )
-    app_cfg = yaml.safe_load(
-        (repo_root / "config" / "app.yml").read_text(encoding="utf-8")
-    )
-    risk = yaml.safe_load(
-        (repo_root / "config" / "risk.yml").read_text(encoding="utf-8")
-    )
-    wallet = yaml.safe_load(
-        (repo_root / "config" / "wallet.yml").read_text(encoding="utf-8")
-    )
+    execution = yaml.safe_load((repo_root / "config" / "execution.yml").read_text(encoding="utf-8"))
+    app_cfg = yaml.safe_load((repo_root / "config" / "app.yml").read_text(encoding="utf-8"))
+    risk = yaml.safe_load((repo_root / "config" / "risk.yml").read_text(encoding="utf-8"))
+    wallet = yaml.safe_load((repo_root / "config" / "wallet.yml").read_text(encoding="utf-8"))
 
     assert execution["trading_mode"] == "paper"
     assert execution["venue_backend"] == "sdk"

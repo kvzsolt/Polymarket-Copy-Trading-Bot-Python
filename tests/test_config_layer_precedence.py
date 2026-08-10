@@ -34,9 +34,7 @@ def _overrides() -> dict:
 def _deployment(tmp_path: Path, local_payload: str) -> Path:
     deployment = tmp_path / "deployment"
     (deployment / "config").mkdir(parents=True)
-    (deployment / "config" / "runtime.local.yml").write_text(
-        local_payload, encoding="utf-8"
-    )
+    (deployment / "config" / "runtime.local.yml").write_text(local_payload, encoding="utf-8")
     return deployment
 
 

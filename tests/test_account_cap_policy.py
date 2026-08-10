@@ -189,9 +189,11 @@ class TestHeadroomForBuy:
         assert not h.allow
         assert h.reason == "no_buy_headroom"
 
+
 # ---------------------------------------------------------------------------
 # Execution safety: worst-price min-size validation
 # ---------------------------------------------------------------------------
+
 
 class TestWorstPriceMinSize:
     """Verify the core insight: BUY min-size must use worst_price, not quote_price."""
@@ -202,6 +204,7 @@ class TestWorstPriceMinSize:
         slippage = Decimal("0.02")
         # worst = 0.6018 → ceil to tick 0.01 = 0.61
         import math
+
         worst_ceil = Decimal(str(math.ceil(float(quote * (Decimal("1") + slippage)) * 100) / 100))
         min_tokens = Decimal("5")
         min_exec = min_tokens * worst_ceil
@@ -211,6 +214,7 @@ class TestWorstPriceMinSize:
     def test_required_eq_cap_at_049(self):
         """At price 0.49, 2% slippage → worst 0.50, 5 tokens → 2.50 USDC == 2.5 cap."""
         import math
+
         quote = Decimal("0.49")
         slippage = Decimal("0.02")
         worst_ceil = Decimal(str(math.ceil(float(quote * (Decimal("1") + slippage)) * 100) / 100))
@@ -224,6 +228,7 @@ class TestWorstPriceMinSize:
 # Idempotency: signal_id inclusion
 # ---------------------------------------------------------------------------
 
+
 class TestIdempotencyKey:
     """Post-sizing idempotency keys. The pre-sizing ``_idempotency_key``
     helper was deleted in the legacy-kill slice (#77, commit 5868dc2);
@@ -234,14 +239,26 @@ class TestIdempotencyKey:
         from services.executionService import _effective_idempotency_key
 
         k1 = _effective_idempotency_key(
-            user="u1", condition_id="c1", token_id="t1", side="BUY",
-            effective_size=Decimal("2.5"), effective_price=Decimal("0.50"),
-            tick_size=Decimal("0.01"), intent_id="signal_aaa", policy_version="",
+            user="u1",
+            condition_id="c1",
+            token_id="t1",
+            side="BUY",
+            effective_size=Decimal("2.5"),
+            effective_price=Decimal("0.50"),
+            tick_size=Decimal("0.01"),
+            intent_id="signal_aaa",
+            policy_version="",
         )
         k2 = _effective_idempotency_key(
-            user="u1", condition_id="c1", token_id="t1", side="BUY",
-            effective_size=Decimal("2.5"), effective_price=Decimal("0.50"),
-            tick_size=Decimal("0.01"), intent_id="signal_bbb", policy_version="",
+            user="u1",
+            condition_id="c1",
+            token_id="t1",
+            side="BUY",
+            effective_size=Decimal("2.5"),
+            effective_price=Decimal("0.50"),
+            tick_size=Decimal("0.01"),
+            intent_id="signal_bbb",
+            policy_version="",
         )
         assert k1 != k2
 
@@ -249,9 +266,15 @@ class TestIdempotencyKey:
         from services.executionService import _effective_idempotency_key
 
         kwargs = dict(
-            user="u1", condition_id="c1", token_id="t1", side="BUY",
-            effective_size=Decimal("2.5"), effective_price=Decimal("0.50"),
-            tick_size=Decimal("0.01"), intent_id="signal_aaa", policy_version="",
+            user="u1",
+            condition_id="c1",
+            token_id="t1",
+            side="BUY",
+            effective_size=Decimal("2.5"),
+            effective_price=Decimal("0.50"),
+            tick_size=Decimal("0.01"),
+            intent_id="signal_aaa",
+            policy_version="",
         )
         assert _effective_idempotency_key(**kwargs) == _effective_idempotency_key(**kwargs)
 
@@ -259,6 +282,7 @@ class TestIdempotencyKey:
 # ---------------------------------------------------------------------------
 # Fill parsing safety
 # ---------------------------------------------------------------------------
+
 
 class TestFillParsingSafety:
     """Verify that phantom fills can't be created from BUY notional fallback."""
@@ -268,9 +292,7 @@ class TestFillParsingSafety:
         # Simulates the logic from executionService post-response parsing
         fill_info = {"status": "live"}  # live = resting, NOT filled
         raw_fill = (
-            fill_info.get("size_matched")
-            or fill_info.get("filled_size")
-            or fill_info.get("size")
+            fill_info.get("size_matched") or fill_info.get("filled_size") or fill_info.get("size")
         )
         fill_status = str(fill_info.get("status", "")).lower()
 
@@ -311,38 +333,54 @@ class TestFillParsingSafety:
 # Retry blocking: failed submissions should not block retries
 # ---------------------------------------------------------------------------
 
+
 class TestRetryBlocking:
     def test_failed_submission_does_not_block(self):
         from services.executionService import _is_retry_blocking_existing
+
         existing = {"status": "failed", "order_id": None, "response": {"status": "failed"}}
         assert not _is_retry_blocking_existing(existing)
 
     def test_filled_blocks(self):
         from services.executionService import _is_retry_blocking_existing
+
         existing = {"status": "filled", "order_id": "ord_123"}
         assert _is_retry_blocking_existing(existing)
 
     def test_none_does_not_block(self):
         from services.executionService import _is_retry_blocking_existing
+
         assert not _is_retry_blocking_existing(None)
 
     def test_fresh_pending_blocks(self):
         from services.executionService import _is_retry_blocking_existing
-        existing = {"status": "pending", "order_id": None, "response": {"status": "pending", "pending_since": 100}}
+
+        existing = {
+            "status": "pending",
+            "order_id": None,
+            "response": {"status": "pending", "pending_since": 100},
+        }
         assert _is_retry_blocking_existing(existing, now_ts=150, pending_ttl_seconds=120)
 
     def test_stale_pending_does_not_block(self):
         from services.executionService import _is_retry_blocking_existing
-        existing = {"status": "pending", "order_id": None, "response": {"status": "pending", "pending_since": 100}}
+
+        existing = {
+            "status": "pending",
+            "order_id": None,
+            "response": {"status": "pending", "pending_since": 100},
+        }
         assert not _is_retry_blocking_existing(existing, now_ts=250, pending_ttl_seconds=120)
 
     def test_pending_without_timestamp_does_not_block(self):
         from services.executionService import _is_retry_blocking_existing
+
         existing = {"status": "pending", "order_id": None, "response": {"status": "pending"}}
         assert not _is_retry_blocking_existing(existing, now_ts=250, pending_ttl_seconds=120)
 
     def test_pending_with_future_expiry_blocks(self):
         from services.executionService import _is_retry_blocking_existing
+
         existing = {
             "status": "pending",
             "order_id": None,
@@ -352,6 +390,7 @@ class TestRetryBlocking:
 
     def test_pending_with_expired_expiry_does_not_block(self):
         from services.executionService import _is_retry_blocking_existing
+
         existing = {
             "status": "pending",
             "order_id": None,
@@ -361,6 +400,7 @@ class TestRetryBlocking:
 
     def test_fresh_submitted_unconfirmed_without_order_id_blocks(self):
         from services.executionService import _is_retry_blocking_existing
+
         existing = {
             "status": "submitted_unconfirmed",
             "order_id": None,
@@ -370,6 +410,7 @@ class TestRetryBlocking:
 
     def test_stale_submitted_unconfirmed_without_order_id_does_not_block(self):
         from services.executionService import _is_retry_blocking_existing
+
         existing = {
             "status": "submitted_unconfirmed",
             "order_id": None,
@@ -382,9 +423,11 @@ class TestRetryBlocking:
 # Day-start equity persistence
 # ---------------------------------------------------------------------------
 
+
 class TestDayEquity:
     def test_first_call_records_equity(self, tmp_path, monkeypatch):
         from utils import dayEquity
+
         state_file = tmp_path / "day_equity.json"
         monkeypatch.setattr(dayEquity, "_STATE_FILE", state_file)
 
@@ -394,6 +437,7 @@ class TestDayEquity:
 
     def test_second_call_same_day_returns_stored(self, tmp_path, monkeypatch):
         from utils import dayEquity
+
         state_file = tmp_path / "day_equity.json"
         monkeypatch.setattr(dayEquity, "_STATE_FILE", state_file)
 
@@ -403,6 +447,7 @@ class TestDayEquity:
 
     def test_daily_loss_computation(self, tmp_path, monkeypatch):
         from utils import dayEquity
+
         state_file = tmp_path / "day_equity.json"
         monkeypatch.setattr(dayEquity, "_STATE_FILE", state_file)
 
@@ -412,6 +457,7 @@ class TestDayEquity:
 
     def test_no_loss_when_up(self, tmp_path, monkeypatch):
         from utils import dayEquity
+
         state_file = tmp_path / "day_equity.json"
         monkeypatch.setattr(dayEquity, "_STATE_FILE", state_file)
 

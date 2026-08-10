@@ -4,6 +4,7 @@
 entry in pyproject.toml has no matching distribution in requirements.txt — the
 exact gap that broke the Docker / documented install path for ``asyncpg``.
 """
+
 from __future__ import annotations
 
 import pathlib

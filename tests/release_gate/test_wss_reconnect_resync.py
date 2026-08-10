@@ -6,6 +6,7 @@ The reconnect loop must:
   consistent snapshot before WSS deltas resume;
 * apply a ``price_change`` event with size ``0`` as a level deletion (spec).
 """
+
 from __future__ import annotations
 
 from decimal import Decimal

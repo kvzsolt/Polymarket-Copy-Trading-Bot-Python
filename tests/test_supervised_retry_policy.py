@@ -4,6 +4,7 @@
 when a risk / discovery loop crashes: restart up to
 ``max_restarts`` within a rolling window, then fail-closed.
 """
+
 from __future__ import annotations
 
 import asyncio

@@ -27,8 +27,7 @@ class MemoryLeadersRepo:
             (
                 row
                 for row in self.records.values()
-                if row.tier == "active"
-                and (config_hash is None or row.config_hash == config_hash)
+                if row.tier == "active" and (config_hash is None or row.config_hash == config_hash)
             ),
             key=lambda row: -row.score,
         )
@@ -74,10 +73,7 @@ def test_pure_hysteresis_respects_gap_dwell_and_cycles() -> None:
     assert apply_hysteresis("watchlist", 0.70, 0, 2, config) == "watchlist"
     assert apply_hysteresis("watchlist", 0.70, 0, 3, config) == "active"
     assert apply_hysteresis("active", 0.40, 1, 3, config) == "active"
-    assert (
-        apply_hysteresis("active", 0.40, config.min_dwell_seconds, 3, config)
-        == "watchlist"
-    )
+    assert apply_hysteresis("active", 0.40, config.min_dwell_seconds, 3, config) == "watchlist"
 
 
 @pytest.mark.asyncio
@@ -107,9 +103,7 @@ async def test_registry_requires_consecutive_cycles_and_prevents_churn() -> None
         await registry.reconcile_candidates([_candidate(0.10)])
     assert repository.records[WALLET].tier == "active"
 
-    repository.records[WALLET] = replace(
-        repository.records[WALLET], tier_changed_at=0
-    )
+    repository.records[WALLET] = replace(repository.records[WALLET], tier_changed_at=0)
     await registry.reconcile_candidates([_candidate(0.10)])
     assert repository.records[WALLET].tier == "watchlist"
 
@@ -177,9 +171,7 @@ async def test_cached_rescore_does_not_advance_demotion_tenure() -> None:
     assert repository.records[WALLET].demote_streak == 3
 
     # Fresh cycles remain able to demote a leader that has gone bad.
-    repository.records[WALLET] = replace(
-        repository.records[WALLET], demote_streak=0
-    )
+    repository.records[WALLET] = replace(repository.records[WALLET], demote_streak=0)
     for _ in range(3):
         await registry.reconcile_candidates([_candidate(0.10)])
     assert repository.records[WALLET].tier == "watchlist"
@@ -258,9 +250,7 @@ async def _seed_active_leader(
     *,
     config_hash: str = "hash",
 ) -> None:
-    service = DiscoveryService(
-        [_candidate_for(wallet, 0.90)], config_hash=config_hash
-    )
+    service = DiscoveryService([_candidate_for(wallet, 0.90)], config_hash=config_hash)
     await _discovery_registry(service, repository).refresh([])
     assert repository.records[wallet].tier == "active"
 
@@ -316,9 +306,7 @@ async def test_degraded_cycle_keeps_the_old_config_hash_on_frozen_rows() -> None
 
     # The config changes, and the first cycle under the new hash is degraded
     # and never observes WALLET.
-    service = DiscoveryService(
-        [_candidate_for(OTHER, 0.95)], degraded=True, config_hash=NEW_HASH
-    )
+    service = DiscoveryService([_candidate_for(OTHER, 0.95)], degraded=True, config_hash=NEW_HASH)
     registry = _discovery_registry(service, repository)
 
     state = await registry.refresh([])

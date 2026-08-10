@@ -6,6 +6,7 @@ authoritative, and even then a single settlement transaction can emit multiple
 fill logs, so the final dedupe key is ``(tx_hash, log_index)`` — never
 ``tx_hash`` alone.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

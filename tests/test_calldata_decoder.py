@@ -1,4 +1,5 @@
 """Tests for ``services/onchain_detection/calldata_decoder.py`` (PR2)."""
+
 from __future__ import annotations
 
 import pytest
@@ -13,12 +14,10 @@ from services.onchain_detection.calldata_decoder import (
 )
 
 _ORDER_TUPLE = (
-    "(uint256,address,address,uint256,uint256,uint256,"
-    "uint8,uint8,uint256,bytes32,bytes32,bytes)"
+    "(uint256,address,address,uint256,uint256,uint256,uint8,uint8,uint256,bytes32,bytes32,bytes)"
 )
 _MATCH_ORDERS_TYPE = (
-    f"(bytes32,{_ORDER_TUPLE},{_ORDER_TUPLE}[],"
-    "uint256,uint256[],uint256,uint256[])"
+    f"(bytes32,{_ORDER_TUPLE},{_ORDER_TUPLE}[],uint256,uint256[],uint256,uint256[])"
 )
 _WATCHED_TAKER = "0x" + "11" * 20
 _WATCHED_MAKER_A = "0x" + "22" * 20
@@ -26,7 +25,13 @@ _WATCHED_MAKER_B = "0x" + "33" * 20
 _UNWATCHED = "0x" + "44" * 20
 
 
-def _mk_order(maker: str, side: int = 0, token_id: int = 456, maker_amount: int = 1000, taker_amount: int = 2000) -> tuple:
+def _mk_order(
+    maker: str,
+    side: int = 0,
+    token_id: int = 456,
+    maker_amount: int = 1000,
+    taker_amount: int = 2000,
+) -> tuple:
     return (
         123,
         maker,

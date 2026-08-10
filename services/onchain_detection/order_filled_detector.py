@@ -32,6 +32,7 @@ The watched wallet appears in the ``maker`` indexed topic for maker-emitted
 fills and in the ``taker`` indexed topic for the taker-emitted fill, so both
 topics are checked.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -147,9 +148,7 @@ def decode_order_filled_log(log: dict) -> DecodedOrderFilledLog | None:
     if len(data) < _ORDER_FILLED_DATA_BYTES:
         return None
 
-    tx_hash = str(
-        log.get("transactionHash") or log.get("transaction_hash") or ""
-    ).lower()
+    tx_hash = str(log.get("transactionHash") or log.get("transaction_hash") or "").lower()
     log_index_raw = log.get("logIndex", log.get("log_index", 0))
     try:
         log_index = int(log_index_raw, 16) if isinstance(log_index_raw, str) else int(log_index_raw)
@@ -157,9 +156,7 @@ def decode_order_filled_log(log: dict) -> DecodedOrderFilledLog | None:
         log_index = 0
     block_raw = log.get("blockNumber", log.get("block_number"))
     try:
-        block_number = (
-            int(block_raw, 16) if isinstance(block_raw, str) else int(block_raw)
-        )
+        block_number = int(block_raw, 16) if isinstance(block_raw, str) else int(block_raw)
     except (TypeError, ValueError):
         block_number = None
 
@@ -181,7 +178,9 @@ def decode_order_filled_log(log: dict) -> DecodedOrderFilledLog | None:
     )
 
 
-def _amounts_to_size_usdc(maker_side: int, maker_filled: int, taker_filled: int) -> tuple[Decimal, Decimal, Decimal]:
+def _amounts_to_size_usdc(
+    maker_side: int, maker_filled: int, taker_filled: int
+) -> tuple[Decimal, Decimal, Decimal]:
     """Return ``(size_tokens, price, usdc_size)`` from a mined fill.
 
     CTF outcome tokens are 6-decimal (matching USDC.e). ``size_tokens`` is the

@@ -25,22 +25,24 @@ DEFAULT_MAX_BYTES = 5 * 1024 * 1024
 DEFAULT_BACKUP_COUNT = 3
 MONITOR_HEARTBEAT_INTERVAL = 30
 
-_THEME = Theme({
-    "info": "cyan",
-    "warning": "yellow",
-    "error": "bold red",
-    "success": "bold green",
-    "muted": "dim white",
-    "header": "bold magenta",
-    "money": "bold green",
-    "address": "cyan",
-    "label": "bold white",
-    "trade.buy": "bold green",
-    "trade.sell": "bold red",
-    "trade.detected": "bold yellow",
-    "trade.executed": "bold green",
-    "heartbeat": "dim cyan",
-})
+_THEME = Theme(
+    {
+        "info": "cyan",
+        "warning": "yellow",
+        "error": "bold red",
+        "success": "bold green",
+        "muted": "dim white",
+        "header": "bold magenta",
+        "money": "bold green",
+        "address": "cyan",
+        "label": "bold white",
+        "trade.buy": "bold green",
+        "trade.sell": "bold red",
+        "trade.detected": "bold yellow",
+        "trade.executed": "bold green",
+        "heartbeat": "dim cyan",
+    }
+)
 
 console = Console(theme=_THEME, stderr=False)
 
@@ -74,9 +76,7 @@ def _default_log_dir() -> Path:
     return _project_root() / DEFAULT_LOG_SUBDIR
 
 
-_STANDARD_RECORD_ATTRS = frozenset(
-    vars(logging.LogRecord("", 0, "", 0, "", (), None))
-)
+_STANDARD_RECORD_ATTRS = frozenset(vars(logging.LogRecord("", 0, "", 0, "", (), None)))
 
 
 class JsonFormatter(logging.Formatter):
@@ -177,35 +177,42 @@ class RichConsoleHandler(logging.Handler):
     """Console handler with Rich-styled rendering for structured log types."""
 
     # Log types that should only go to JSONL file, not console
-    _JSONL_ONLY_TYPES = frozenset({
-        "http_request_complete",    # high-frequency HTTP polling — JSONL only
-        "monitor_heartbeat",
-        "trade_detected",
-        "trade_skip",
-        "trade_decision",
-        "trade_quality_decision",   # analytics granularity — JSONL only
-        "trade_quality_execution",  # analytics granularity — JSONL only
-        "tier_gate_watchlist",
-        "tier_gate_paper",
-        "trade_batch_summary",
-        "sizing_audit",
-        "sizing_final",
-        "trade_copy_failed",
-        "book_quality_gate_no_book",
-        "book_quality_gate_wide_spread",
-        "book_quality_gate_thin_book",
-        "startup_health_check",
-        "startup_summary",
-    })
+    _JSONL_ONLY_TYPES = frozenset(
+        {
+            "http_request_complete",  # high-frequency HTTP polling — JSONL only
+            "monitor_heartbeat",
+            "trade_detected",
+            "trade_skip",
+            "trade_decision",
+            "trade_quality_decision",  # analytics granularity — JSONL only
+            "trade_quality_execution",  # analytics granularity — JSONL only
+            "tier_gate_watchlist",
+            "tier_gate_paper",
+            "trade_batch_summary",
+            "sizing_audit",
+            "sizing_final",
+            "trade_copy_failed",
+            "book_quality_gate_no_book",
+            "book_quality_gate_wide_spread",
+            "book_quality_gate_thin_book",
+            "startup_health_check",
+            "startup_summary",
+        }
+    )
 
-    _JSONL_ONLY_MESSAGES = frozenset({
-        "orderbook_capture_failed",
-    })
+    _JSONL_ONLY_MESSAGES = frozenset(
+        {
+            "orderbook_capture_failed",
+        }
+    )
 
     def emit(self, record: LogRecord) -> None:
         try:
             log_type = getattr(record, "type", None)
-            if log_type in self._JSONL_ONLY_TYPES or record.getMessage() in self._JSONL_ONLY_MESSAGES:
+            if (
+                log_type in self._JSONL_ONLY_TYPES
+                or record.getMessage() in self._JSONL_ONLY_MESSAGES
+            ):
                 return
 
             # Rich rendering for structured trade types
@@ -359,12 +366,14 @@ class RichConsoleHandler(logging.Handler):
         )
 
         console.print()
-        console.print(Panel(
-            "\n".join(lines),
-            title=f"❌ [bold red]ORDER REJECTED[/bold red]  [muted][{ts}][/muted]",
-            border_style="red",
-            padding=(1, 2),
-        ))
+        console.print(
+            Panel(
+                "\n".join(lines),
+                title=f"❌ [bold red]ORDER REJECTED[/bold red]  [muted][{ts}][/muted]",
+                border_style="red",
+                padding=(1, 2),
+            )
+        )
 
     def _render_api_response(self, record: LogRecord, ts: str) -> None:
         method = getattr(record, "httpMethod", "?")
@@ -392,12 +401,14 @@ class RichConsoleHandler(logging.Handler):
             lines.append(f"  [dim]error:[/dim] {error}")
 
         console.print()
-        console.print(Panel(
-            "\n".join(lines),
-            title=f"{icon} [bold {border}]API {status_label} {method}[/bold {border}]  [muted][{ts}][/muted]",
-            border_style=border,
-            padding=(1, 2),
-        ))
+        console.print(
+            Panel(
+                "\n".join(lines),
+                title=f"{icon} [bold {border}]API {status_label} {method}[/bold {border}]  [muted][{ts}][/muted]",
+                border_style=border,
+                padding=(1, 2),
+            )
+        )
 
     def _render_clob_client_init(self, record: LogRecord, ts: str) -> None:
         host = getattr(record, "host", None)
@@ -413,12 +424,14 @@ class RichConsoleHandler(logging.Handler):
             Funder=funder if funder != "N/A" else None,
         )
         console.print()
-        console.print(Panel(
-            "\n".join(lines),
-            title=f"🔐 [bold cyan]CLOB CLIENT READY[/bold cyan]  [muted][{ts}][/muted]",
-            border_style="cyan",
-            padding=(1, 2),
-        ))
+        console.print(
+            Panel(
+                "\n".join(lines),
+                title=f"🔐 [bold cyan]CLOB CLIENT READY[/bold cyan]  [muted][{ts}][/muted]",
+                border_style="cyan",
+                padding=(1, 2),
+            )
+        )
 
     def _render_decision(self, record: LogRecord, ts: str) -> None:
         allow = getattr(record, "allow", False)
@@ -470,12 +483,14 @@ class RichConsoleHandler(logging.Handler):
             OrderID=order_id if order_id != "N/A" else None,
         )
         console.print()
-        console.print(Panel(
-            "\n".join(lines),
-            title=f"🎯 [bold green]TRADE EXECUTED — {side}[/bold green]  [muted][{ts}][/muted]",
-            border_style="green",
-            padding=(1, 2),
-        ))
+        console.print(
+            Panel(
+                "\n".join(lines),
+                title=f"🎯 [bold green]TRADE EXECUTED — {side}[/bold green]  [muted][{ts}][/muted]",
+                border_style="green",
+                padding=(1, 2),
+            )
+        )
 
     def _render_submitted(self, record: LogRecord, ts: str) -> None:
         side = getattr(record, "side", "?")
@@ -504,19 +519,23 @@ class RichConsoleHandler(logging.Handler):
         )
         console.print()
         if is_unconfirmed:
-            console.print(Panel(
-                "\n".join(lines),
-                title=f"⏳ [bold yellow]ORDER UNCONFIRMED — {side}[/bold yellow]  [muted][{ts}][/muted]",
-                border_style="yellow",
-                padding=(1, 2),
-            ))
+            console.print(
+                Panel(
+                    "\n".join(lines),
+                    title=f"⏳ [bold yellow]ORDER UNCONFIRMED — {side}[/bold yellow]  [muted][{ts}][/muted]",
+                    border_style="yellow",
+                    padding=(1, 2),
+                )
+            )
         else:
-            console.print(Panel(
-                "\n".join(lines),
-                title=f"📤 [bold cyan]ORDER SUBMITTED — {side}[/bold cyan]  [muted][{ts}][/muted]",
-                border_style="cyan",
-                padding=(1, 2),
-            ))
+            console.print(
+                Panel(
+                    "\n".join(lines),
+                    title=f"📤 [bold cyan]ORDER SUBMITTED — {side}[/bold cyan]  [muted][{ts}][/muted]",
+                    border_style="cyan",
+                    padding=(1, 2),
+                )
+            )
 
     def _render_order_lifecycle(self, record: LogRecord, ts: str) -> None:
         status = (getattr(record, "status", "") or "").lower()
@@ -561,12 +580,14 @@ class RichConsoleHandler(logging.Handler):
             Tx=tx if tx != "N/A" else None,
         )
         console.print()
-        console.print(Panel(
-            "\n".join(lines),
-            title=f"{icon} [bold {border}]{title_text} — {side}[/bold {border}]  [muted][{ts}][/muted]",
-            border_style=border,
-            padding=(1, 2),
-        ))
+        console.print(
+            Panel(
+                "\n".join(lines),
+                title=f"{icon} [bold {border}]{title_text} — {side}[/bold {border}]  [muted][{ts}][/muted]",
+                border_style=border,
+                padding=(1, 2),
+            )
+        )
 
     def _render_position_drift(self, record: LogRecord, ts: str) -> None:
         status = (getattr(record, "status", "") or "").lower()
@@ -607,12 +628,14 @@ class RichConsoleHandler(logging.Handler):
             Reason=reason or None,
         )
         console.print()
-        console.print(Panel(
-            "\n".join(lines),
-            title=f"{icon} [bold {border}]{title}[/bold {border}]  [muted][{ts}][/muted]",
-            border_style=border,
-            padding=(1, 2),
-        ))
+        console.print(
+            Panel(
+                "\n".join(lines),
+                title=f"{icon} [bold {border}]{title}[/bold {border}]  [muted][{ts}][/muted]",
+                border_style=border,
+                padding=(1, 2),
+            )
+        )
 
     def _render_risk_exit(self, record: LogRecord, ts: str) -> None:
         cond = shorten_addr(getattr(record, "conditionId", None), 8, 6)
@@ -628,12 +651,14 @@ class RichConsoleHandler(logging.Handler):
             Condition=cond if cond != "N/A" else None,
         )
         console.print()
-        console.print(Panel(
-            "\n".join(lines),
-            title=f"🛡️ [bold red]RISK EXIT — SELL[/bold red]  [muted][{ts}][/muted]",
-            border_style="red",
-            padding=(1, 2),
-        ))
+        console.print(
+            Panel(
+                "\n".join(lines),
+                title=f"🛡️ [bold red]RISK EXIT — SELL[/bold red]  [muted][{ts}][/muted]",
+                border_style="red",
+                padding=(1, 2),
+            )
+        )
 
 
 def _remove_managed_handlers(logger: logging.Logger) -> None:
@@ -797,6 +822,7 @@ def get_wallet_type(clob_client: Any) -> tuple[str, int | None]:
         return ("EOA", signature_type)
     return (f"UNKNOWN({signature_type})", signature_type)
 
+
 def print_startup_banner() -> None:
     console.print()
     console.print(
@@ -846,7 +872,9 @@ def print_clob_client_status(clob_client) -> None:
     console.print()
 
 
-def print_service_start(*, monitor: bool = True, executor: bool = True, trader_count: int = 1) -> None:
+def print_service_start(
+    *, monitor: bool = True, executor: bool = True, trader_count: int = 1
+) -> None:
     if monitor:
         console.print("ℹ️ Starting trade monitor...")
     if executor:
@@ -886,16 +914,20 @@ def print_positions(
         table.add_column("Value", justify="right")
         for p in positions:
             size = p.get("size") if p.get("size") is not None else p.get("size_tokens", 0)
-            avg_price = p.get("avgPrice") if p.get("avgPrice") is not None else p.get("avg_entry_price", 0)
-            value = p.get("currentValue") if p.get("currentValue") is not None else p.get("value", 0)
+            avg_price = (
+                p.get("avgPrice") if p.get("avgPrice") is not None else p.get("avg_entry_price", 0)
+            )
+            value = (
+                p.get("currentValue") if p.get("currentValue") is not None else p.get("value", 0)
+            )
             market = p.get("title") or p.get("market") or p.get("condition_id") or "?"
             side = p.get("outcome") or p.get("side") or "?"
             table.add_row(
                 str(market)[:40],
                 str(side),
-                f'{float(size or 0):.2f}',
-                f'{float(avg_price or 0):.4f}',
-                f'${float(value or 0):.2f}',
+                f"{float(size or 0):.2f}",
+                f"{float(avg_price or 0):.4f}",
+                f"${float(value or 0):.2f}",
             )
         console.print(table)
     else:
@@ -907,7 +939,9 @@ def print_traders_copying(traders: list[dict] | None = None) -> None:
     console.print(Rule("TRADERS YOU'RE COPYING", style="blue"))
     if traders:
         for t in traders:
-            console.print(f"   📋 {shorten_addr(t.get('address'))}: {t.get('positions', 0)} positions {t.get('leader_balance'):.2f} USDC")
+            console.print(
+                f"   📋 {shorten_addr(t.get('address'))}: {t.get('positions', 0)} positions {t.get('leader_balance'):.2f} USDC"
+            )
     else:
         console.print("   No traders configured")
     console.print()
@@ -1052,7 +1086,7 @@ def print_new_trade_detected(trade: dict) -> None:
         f"[bold]Amount:[/bold]  [money]${usdc:.2f}[/money]",
         f"[bold]Price:[/bold]   {price:.4f}",
     ]
-    agg_count = int(trade.get('_aggregatedCount') or 1)
+    agg_count = int(trade.get("_aggregatedCount") or 1)
     if agg_count > 1:
         lines.append(f"[bold]Merged fills:[/bold]  {agg_count}")
     if event_slug:
@@ -1062,12 +1096,14 @@ def print_new_trade_detected(trade: dict) -> None:
         url = tx_link(tx_hash)
         lines.append(f"[bold]TX:[/bold]     [link={url}]{url}[/link]")
 
-    console.print(Panel(
-        "\n".join(lines),
-        title="📋 [bold yellow]NEW TRADE DETECTED[/bold yellow]",
-        border_style="yellow",
-        padding=(1, 2),
-    ))
+    console.print(
+        Panel(
+            "\n".join(lines),
+            title="📋 [bold yellow]NEW TRADE DETECTED[/bold yellow]",
+            border_style="yellow",
+            padding=(1, 2),
+        )
+    )
     console.print()
 
 
@@ -1122,12 +1158,14 @@ def print_trade_result(
             LeaderTX=shorten_addr(leader_tx, 8, 6) if leader_tx else None,
             CopyTX=shorten_addr(copy_tx, 8, 6) if copy_tx else None,
         )
-        console.print(Panel(
-            "\n".join(lines),
-            title="✅ [bold green]COPY EXECUTED[/bold green]",
-            border_style="green",
-            padding=(0, 2),
-        ))
+        console.print(
+            Panel(
+                "\n".join(lines),
+                title="✅ [bold green]COPY EXECUTED[/bold green]",
+                border_style="green",
+                padding=(0, 2),
+            )
+        )
     else:
         lines = _build_panel_lines(
             Side=f"[{side_style}]{side.upper()}[/{side_style}]",
@@ -1138,12 +1176,14 @@ def print_trade_result(
             LeaderTX=shorten_addr(leader_tx, 8, 6) if leader_tx else None,
             CopyTX=shorten_addr(copy_tx, 8, 6) if copy_tx else None,
         )
-        console.print(Panel(
-            "\n".join(lines),
-            title="⚠️ [bold yellow]COPY NOT EXECUTED[/bold yellow]",
-            border_style="yellow",
-            padding=(0, 2),
-        ))
+        console.print(
+            Panel(
+                "\n".join(lines),
+                title="⚠️ [bold yellow]COPY NOT EXECUTED[/bold yellow]",
+                border_style="yellow",
+                padding=(0, 2),
+            )
+        )
 
 
 def print_skip_reason(reason: str, detail: str = "") -> None:
@@ -1151,12 +1191,14 @@ def print_skip_reason(reason: str, detail: str = "") -> None:
         Reason=reason,
         Detail=detail or None,
     )
-    console.print(Panel(
-        "\n".join(lines),
-        title="⚠️ [bold yellow]COPY NOT EXECUTED[/bold yellow]",
-        border_style="yellow",
-        padding=(0, 2),
-    ))
+    console.print(
+        Panel(
+            "\n".join(lines),
+            title="⚠️ [bold yellow]COPY NOT EXECUTED[/bold yellow]",
+            border_style="yellow",
+            padding=(0, 2),
+        )
+    )
 
 
 def print_error(msg: str) -> None:
@@ -1197,7 +1239,9 @@ def print_manual_trade_detected(trade: dict) -> None:
     ts = time.strftime("%I:%M:%S %p")
     console.print()
     console.print(Rule(style=border))
-    console.print(f"  {icon} [bold {border}]MANUAL TRADE DETECTED[/bold {border}] | {side}  [muted][{ts}][/muted]")
+    console.print(
+        f"  {icon} [bold {border}]MANUAL TRADE DETECTED[/bold {border}] | {side}  [muted][{ts}][/muted]"
+    )
     console.print(Rule(style=border))
     console.print()
 
@@ -1207,12 +1251,14 @@ def print_manual_trade_detected(trade: dict) -> None:
     ]
     if outcome:
         lines.append(f"[bold]Outcome:[/bold]     {_escape_markup(str(outcome))}")
-    lines.extend([
-        f"[bold]Side:[/bold]        {side}",
-        f"[bold]Size:[/bold]        {size:.4f} tokens",
-        f"[bold]Price:[/bold]       {price:.4f}",
-        f"[bold]Value:[/bold]       [money]{format_usdc(usdc)}[/money]",
-    ])
+    lines.extend(
+        [
+            f"[bold]Side:[/bold]        {side}",
+            f"[bold]Size:[/bold]        {size:.4f} tokens",
+            f"[bold]Price:[/bold]       {price:.4f}",
+            f"[bold]Value:[/bold]       [money]{format_usdc(usdc)}[/money]",
+        ]
+    )
     if event_slug:
         url = event_link(event_slug)
         lines.append(f"[bold]Event:[/bold]       [link={url}]{url}[/link]")
@@ -1220,19 +1266,27 @@ def print_manual_trade_detected(trade: dict) -> None:
         url = tx_link(tx_hash)
         lines.append(f"[bold]TX:[/bold]          [link={url}]{url}[/link]")
 
-    console.print(Panel(
-        "\n".join(lines),
-        title=f"{icon} [bold {border}]MANUAL TRADE DETECTED[/bold {border}]",
-        border_style=border,
-        padding=(1, 2),
-    ))
+    console.print(
+        Panel(
+            "\n".join(lines),
+            title=f"{icon} [bold {border}]MANUAL TRADE DETECTED[/bold {border}]",
+            border_style=border,
+            padding=(1, 2),
+        )
+    )
     console.print()
 
     # Structured grep-able line for JSONL sink — mirrors trade_pipeline patterns.
     _file_logger = logging.getLogger("ManualSync")
     _file_logger.info(
         "manual_trade_detected | side=%s size=%.4f price=%.4f usdc=%.2f market=%s outcome=%s tx=%s",
-        side, size, price, usdc, market, outcome or "-", tx_hash or "-",
+        side,
+        size,
+        price,
+        usdc,
+        market,
+        outcome or "-",
+        tx_hash or "-",
     )
 
 
@@ -1252,12 +1306,14 @@ def print_manual_sync_discrepancy(
         f"[bold]Database:[/bold]    [error]{tracked_size:.4f}[/error] shares (tracked sum)",
         f"[bold]Resolution:[/bold]  [bold cyan]{action}[/bold cyan]",
     ]
-    console.print(Panel(
-        "\n".join(lines),
-        title="⚖️ [bold yellow]SYNC DISCREPANCY[/bold yellow]",
-        border_style="yellow",
-        padding=(0, 2),
-    ))
+    console.print(
+        Panel(
+            "\n".join(lines),
+            title="⚖️ [bold yellow]SYNC DISCREPANCY[/bold yellow]",
+            border_style="yellow",
+            padding=(0, 2),
+        )
+    )
     console.print()
 
 
@@ -1404,12 +1460,14 @@ def print_api_error(
     )
 
     console.print()
-    console.print(Panel(
-        "\n".join(lines),
-        title="❌ [bold red]ORDER REJECTED[/bold red]",
-        border_style="red",
-        padding=(1, 2),
-    ))
+    console.print(
+        Panel(
+            "\n".join(lines),
+            title="❌ [bold red]ORDER REJECTED[/bold red]",
+            border_style="red",
+            padding=(1, 2),
+        )
+    )
 
 
 def print_api_response(
@@ -1433,12 +1491,14 @@ def print_api_response(
         Condition=shorten_addr(condition_id, 8, 6) if condition_id else None,
     )
 
-    console.print(Panel(
-        "\n".join(lines),
-        title=f"📡 [bold yellow]{side.upper()} API RESPONSE[/bold yellow]",
-        border_style="yellow",
-        padding=(1, 2),
-    ))
+    console.print(
+        Panel(
+            "\n".join(lines),
+            title=f"📡 [bold yellow]{side.upper()} API RESPONSE[/bold yellow]",
+            border_style="yellow",
+            padding=(1, 2),
+        )
+    )
     console.print()
 
 
@@ -1463,12 +1523,14 @@ def print_order_skip(
     )
 
     console.print()
-    console.print(Panel(
-        "\n".join(lines),
-        title="⚠️ [bold yellow]COPY NOT EXECUTED[/bold yellow]",
-        border_style="yellow",
-        padding=(1, 2),
-    ))
+    console.print(
+        Panel(
+            "\n".join(lines),
+            title="⚠️ [bold yellow]COPY NOT EXECUTED[/bold yellow]",
+            border_style="yellow",
+            padding=(1, 2),
+        )
+    )
     console.print()
 
 
@@ -1493,12 +1555,14 @@ def print_clob_error(
         Condition=shorten_addr(condition_id, 8, 6) if condition_id else None,
     )
 
-    console.print(Panel(
-        "\n".join(lines),
-        title="❌ [bold red]CLOB ERROR[/bold red]",
-        border_style="red",
-        padding=(0, 2),
-    ))
+    console.print(
+        Panel(
+            "\n".join(lines),
+            title="❌ [bold red]CLOB ERROR[/bold red]",
+            border_style="red",
+            padding=(0, 2),
+        )
+    )
 
 
 def _log_trade(
@@ -1518,6 +1582,7 @@ def _log_trade(
 ) -> None:
     def _f(v, fmt=".4f"):
         return format(float(v), fmt) if v is not None else "0"
+
     parts = [
         f"{label} {side.upper()}",
         f"cond={condition_id}",
@@ -1604,10 +1669,18 @@ def log_trade_execution(
     meta: dict[str, Any] | None = None,
 ) -> None:
     _log_trade(
-        logger, label="EXECUTED", trade_type="trade_execution",
-        side=side, condition_id=condition_id, event_slug=event_slug,
-        asset=asset, size=size, price=price, usdc_value=usdc_value,
-        tx_hash=tx_hash, meta=meta,
+        logger,
+        label="EXECUTED",
+        trade_type="trade_execution",
+        side=side,
+        condition_id=condition_id,
+        event_slug=event_slug,
+        asset=asset,
+        size=size,
+        price=price,
+        usdc_value=usdc_value,
+        tx_hash=tx_hash,
+        meta=meta,
     )
 
 
@@ -1625,10 +1698,18 @@ def log_trade_detected(
     meta: dict[str, Any] | None = None,
 ) -> None:
     _log_trade(
-        logger, label="DETECTED", trade_type="trade_detected",
-        side=side, condition_id=condition_id, event_slug=event_slug,
-        asset=asset, size=size, price=price, usdc_value=usdc_value,
-        tx_hash=tx_hash, meta=meta,
+        logger,
+        label="DETECTED",
+        trade_type="trade_detected",
+        side=side,
+        condition_id=condition_id,
+        event_slug=event_slug,
+        asset=asset,
+        size=size,
+        price=price,
+        usdc_value=usdc_value,
+        tx_hash=tx_hash,
+        meta=meta,
     )
 
 
@@ -1671,7 +1752,6 @@ def log_trade_batch_summary(
     )
 
 
-
 def log_trade_submitted(
     logger: logging.Logger,
     *,
@@ -1685,9 +1765,16 @@ def log_trade_submitted(
     meta: dict[str, Any] | None = None,
 ) -> None:
     _log_trade(
-        logger, label="SUBMIT", trade_type="trade_submitted",
-        side=side, condition_id=condition_id, event_slug=event_slug,
-        asset=asset, size=size, price=price, usdc_value=usdc_value,
+        logger,
+        label="SUBMIT",
+        trade_type="trade_submitted",
+        side=side,
+        condition_id=condition_id,
+        event_slug=event_slug,
+        asset=asset,
+        size=size,
+        price=price,
+        usdc_value=usdc_value,
         meta=meta,
     )
 
@@ -1745,6 +1832,7 @@ def log_order_lifecycle(
 
     def _f(v, fmt=".4f"):
         return format(float(v), fmt) if v is not None else "0"
+
     msg = (
         f"LIFECYCLE {canonical} | side={(side or '').upper()} | "
         f"cond={condition_id} | asset={asset} | order_id={order_id} | "
@@ -1965,8 +2053,15 @@ def log_api_response(
 
     # Restore rich data_summary for safe fields (v5 behavior)
     _SAFE_DATA_FIELDS = (
-        "success", "orderID", "order_id", "status", "error", "price", "size",
-        "min_order_size", "transactionHash",
+        "success",
+        "orderID",
+        "order_id",
+        "status",
+        "error",
+        "price",
+        "size",
+        "min_order_size",
+        "transactionHash",
     )
     if isinstance(data, dict):
         summary = {k: data[k] for k in _SAFE_DATA_FIELDS if k in data}

@@ -147,9 +147,7 @@ class PnLTracker:
             logger.error("Failed to write P&L record: %r", e)
 
     def metrics(self) -> dict:
-        sells = [
-            r for r in self._records if r.side == "SELL" and r.realized_pnl is not None
-        ]
+        sells = [r for r in self._records if r.side == "SELL" and r.realized_pnl is not None]
         wins = [r for r in sells if (r.realized_pnl or _ZERO) > _ZERO]
         losses = [r for r in sells if (r.realized_pnl or _ZERO) <= _ZERO]
         total_pnl = sum((r.realized_pnl or _ZERO for r in sells), start=_ZERO)

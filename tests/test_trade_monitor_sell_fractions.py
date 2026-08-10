@@ -38,9 +38,7 @@ def _position(size: float = 5.0):
 @pytest.mark.asyncio
 async def test_annotation_retries_then_succeeds():
     trades = [_sell_trade()]
-    fetch = AsyncMock(
-        side_effect=[RuntimeError("503"), RuntimeError("503"), [_position(5.0)]]
-    )
+    fetch = AsyncMock(side_effect=[RuntimeError("503"), RuntimeError("503"), [_position(5.0)]])
     with (
         patch("services.tradeMonitor._guarded_leader_fetch", fetch),
         patch("services.tradeMonitor.asyncio.sleep", new_callable=AsyncMock),

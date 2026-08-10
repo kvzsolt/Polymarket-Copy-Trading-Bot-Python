@@ -5,6 +5,7 @@ async. The full runtime path is exercised in
 ``tests/test_restart_rehydration_risk.py``; this gate pins the contract so
 later refactors cannot silently remove the pre-loop reconcile step.
 """
+
 from __future__ import annotations
 
 import inspect
@@ -32,6 +33,7 @@ async def test_startup_reconcile_empty_input_returns_empty_dict() -> None:
 # ---------------------------------------------------------------------------
 # PR 4 — startup ordering pin
 # ---------------------------------------------------------------------------
+
 
 def _line_of_first_call(tree, qualname_part: str) -> int | None:
     """Return the source line of the first Call whose func name contains the substring."""

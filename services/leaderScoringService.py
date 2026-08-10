@@ -44,9 +44,7 @@ class LeaderScoringService:
         scoring = config.discovery.scoring
         self._runtime_config = scoring
         self._roster_score = _clamp(
-            scoring.runtime_default_roster_score
-            if roster_score is None
-            else float(roster_score)
+            scoring.runtime_default_roster_score if roster_score is None else float(roster_score)
         )
 
     def score_leader(
@@ -115,8 +113,7 @@ class LeaderScoringService:
         pnl_target = float(self._runtime_config.runtime_pnl_target_usdc)
         pnl_score = _clamp(0.5 + pnl / (2.0 * pnl_target))
         activity_score = _clamp(
-            recent_trade_count
-            / max(int(self._runtime_config.runtime_activity_target), 1)
+            recent_trade_count / max(int(self._runtime_config.runtime_activity_target), 1)
         )
         return wr_score, pnl_score, activity_score
 

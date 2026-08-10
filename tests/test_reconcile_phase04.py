@@ -8,6 +8,7 @@ Validates that the periodic reconciler now:
 * flags terminal venue cancellations as ``unexpected_cancellation`` when our
   local row was still believed open
 """
+
 from __future__ import annotations
 
 import time
@@ -29,12 +30,14 @@ class TestPartialFillDetection:
     @pytest.mark.asyncio
     async def test_partial_fill_recorded(self):
         now = time.time()
-        venue_orders = [{
-            "id": "o-partial",
-            "timestamp": now,
-            "status": "live",
-            "size_matched": "12",
-        }]
+        venue_orders = [
+            {
+                "id": "o-partial",
+                "timestamp": now,
+                "status": "live",
+                "size_matched": "12",
+            }
+        ]
         repo = MagicMock()
         repo.get_by_order_id.return_value = {
             "order_id": "o-partial",
@@ -51,19 +54,19 @@ class TestPartialFillDetection:
 
         assert result.partial_fills_observed == 1
         assert result.partial_fill_deltas == (("o-partial", "7"),)
-        repo.upsert_matched_total.assert_called_once_with(
-            order_id="o-partial", matched="12"
-        )
+        repo.upsert_matched_total.assert_called_once_with(order_id="o-partial", matched="12")
 
     @pytest.mark.asyncio
     async def test_no_partial_fill_when_unchanged(self):
         now = time.time()
-        venue_orders = [{
-            "id": "o-noop",
-            "timestamp": now,
-            "status": "live",
-            "size_matched": "5",
-        }]
+        venue_orders = [
+            {
+                "id": "o-noop",
+                "timestamp": now,
+                "status": "live",
+                "size_matched": "5",
+            }
+        ]
         repo = MagicMock()
         repo.get_by_order_id.return_value = {
             "order_id": "o-noop",
@@ -85,12 +88,14 @@ class TestPartialFillDetection:
     async def test_filled_field_supported(self):
         """Some venue schemas use ``filled`` instead of ``size_matched``."""
         now = time.time()
-        venue_orders = [{
-            "id": "o-alt",
-            "timestamp": now,
-            "status": "live",
-            "filled": "8",
-        }]
+        venue_orders = [
+            {
+                "id": "o-alt",
+                "timestamp": now,
+                "status": "live",
+                "filled": "8",
+            }
+        ]
         repo = MagicMock()
         repo.get_by_order_id.return_value = {
             "order_id": "o-alt",
@@ -112,12 +117,14 @@ class TestUnexpectedFillDetection:
     @pytest.mark.asyncio
     async def test_unexpected_fill_with_no_local_record(self):
         now = time.time()
-        venue_orders = [{
-            "id": "o-orphan",
-            "timestamp": now,
-            "status": "matched",
-            "size_matched": "10",
-        }]
+        venue_orders = [
+            {
+                "id": "o-orphan",
+                "timestamp": now,
+                "status": "matched",
+                "size_matched": "10",
+            }
+        ]
         repo = MagicMock()
         repo.get_by_order_id.return_value = None
 
@@ -134,12 +141,14 @@ class TestUnexpectedFillDetection:
     @pytest.mark.asyncio
     async def test_terminal_but_zero_matched_is_not_a_fill(self):
         now = time.time()
-        venue_orders = [{
-            "id": "o-zero",
-            "timestamp": now,
-            "status": "matched",
-            "size_matched": "0",
-        }]
+        venue_orders = [
+            {
+                "id": "o-zero",
+                "timestamp": now,
+                "status": "matched",
+                "size_matched": "0",
+            }
+        ]
         repo = MagicMock()
         repo.get_by_order_id.return_value = None
 
@@ -157,12 +166,14 @@ class TestUnexpectedCancellationDetection:
     @pytest.mark.asyncio
     async def test_unexpected_cancellation_with_local_open(self):
         now = time.time()
-        venue_orders = [{
-            "id": "o-cancel",
-            "timestamp": now,
-            "status": "cancelled",
-            "size_matched": "0",
-        }]
+        venue_orders = [
+            {
+                "id": "o-cancel",
+                "timestamp": now,
+                "status": "cancelled",
+                "size_matched": "0",
+            }
+        ]
         repo = MagicMock()
         repo.get_by_order_id.return_value = {
             "order_id": "o-cancel",
@@ -182,12 +193,14 @@ class TestUnexpectedCancellationDetection:
     @pytest.mark.asyncio
     async def test_locally_cancelled_not_flagged(self):
         now = time.time()
-        venue_orders = [{
-            "id": "o-known-cancel",
-            "timestamp": now,
-            "status": "canceled",
-            "size_matched": "0",
-        }]
+        venue_orders = [
+            {
+                "id": "o-known-cancel",
+                "timestamp": now,
+                "status": "canceled",
+                "size_matched": "0",
+            }
+        ]
         repo = MagicMock()
         repo.get_by_order_id.return_value = {
             "order_id": "o-known-cancel",
@@ -213,19 +226,21 @@ class TestTerminalFillWithLocalRecord:
     @pytest.mark.asyncio
     async def test_local_record_with_terminal_venue_status_is_complete_fill(self):
         now = time.time()
-        venue_orders = [{
-            "id": "o-done",
-            "timestamp": now,
-            "status": "matched",            # terminal-filled status
-            "size_matched": "10",
-            "original_size": "10",
-        }]
+        venue_orders = [
+            {
+                "id": "o-done",
+                "timestamp": now,
+                "status": "matched",  # terminal-filled status
+                "size_matched": "10",
+                "original_size": "10",
+            }
+        ]
         repo = MagicMock()
         repo.get_unconfirmed_order_submissions.return_value = []
         repo.get_by_order_id.return_value = {
             "order_id": "o-done",
             "status": "submitted_unconfirmed",
-            "matched_total": "4",           # we'd only seen 4 so far
+            "matched_total": "4",  # we'd only seen 4 so far
         }
 
         svc = ReconciliationService(
@@ -242,13 +257,15 @@ class TestTerminalFillWithLocalRecord:
     @pytest.mark.asyncio
     async def test_cumulative_reaching_original_size_is_complete_even_if_live(self):
         now = time.time()
-        venue_orders = [{
-            "id": "o-full-live",
-            "timestamp": now,
-            "status": "live",              # non-terminal status …
-            "size_matched": "10",
-            "original_size": "10",         # … but cumulative == original
-        }]
+        venue_orders = [
+            {
+                "id": "o-full-live",
+                "timestamp": now,
+                "status": "live",  # non-terminal status …
+                "size_matched": "10",
+                "original_size": "10",  # … but cumulative == original
+            }
+        ]
         repo = MagicMock()
         repo.get_unconfirmed_order_submissions.return_value = []
         repo.get_by_order_id.return_value = {
@@ -277,12 +294,14 @@ class TestCancelAfterPartial:
     @pytest.mark.asyncio
     async def test_cancel_after_partial_refunds_unfilled_remainder(self):
         now = time.time()
-        venue_orders = [{
-            "id": "o-cap",
-            "timestamp": now,
-            "status": "cancelled",
-            "size_matched": "4",           # == local matched_total → no new delta
-        }]
+        venue_orders = [
+            {
+                "id": "o-cap",
+                "timestamp": now,
+                "status": "cancelled",
+                "size_matched": "4",  # == local matched_total → no new delta
+            }
+        ]
         repo = MagicMock()
         repo.get_unconfirmed_order_submissions.return_value = []
         repo.get_by_order_id.return_value = {
@@ -319,12 +338,14 @@ class TestCancelAfterPartial:
         including the genuinely-spent filled portion — silently over-
         crediting the daily cap. Must refund only the unfilled remainder."""
         now = time.time()
-        venue_orders = [{
-            "id": "o-no-partial-method",
-            "timestamp": now,
-            "status": "cancelled",
-            "size_matched": "4",
-        }]
+        venue_orders = [
+            {
+                "id": "o-no-partial-method",
+                "timestamp": now,
+                "status": "cancelled",
+                "size_matched": "4",
+            }
+        ]
         repo = MagicMock()
         repo.get_unconfirmed_order_submissions.return_value = []
         repo.get_by_order_id.return_value = {
@@ -365,12 +386,14 @@ class TestCancelAfterPartial:
         risks under-counting actual spend on the daily cap. Skip the refund
         and rely on manual reconciliation; cap stays conservative."""
         now = time.time()
-        venue_orders = [{
-            "id": "o-no-price",
-            "timestamp": now,
-            "status": "cancelled",
-            "size_matched": "4",
-        }]
+        venue_orders = [
+            {
+                "id": "o-no-price",
+                "timestamp": now,
+                "status": "cancelled",
+                "size_matched": "4",
+            }
+        ]
         repo = MagicMock()
         repo.get_unconfirmed_order_submissions.return_value = []
         repo.get_by_order_id.return_value = {
@@ -398,12 +421,14 @@ class TestCancelAfterPartial:
     @pytest.mark.asyncio
     async def test_cancel_after_partial_sell_is_ignored(self):
         now = time.time()
-        venue_orders = [{
-            "id": "o-sell",
-            "timestamp": now,
-            "status": "cancelled",
-            "size_matched": "4",
-        }]
+        venue_orders = [
+            {
+                "id": "o-sell",
+                "timestamp": now,
+                "status": "cancelled",
+                "size_matched": "4",
+            }
+        ]
         repo = MagicMock()
         repo.get_unconfirmed_order_submissions.return_value = []
         repo.get_by_order_id.return_value = {
@@ -432,12 +457,14 @@ class TestPersistFailureIsSwallowed:
     @pytest.mark.asyncio
     async def test_persist_failure_does_not_break_loop(self):
         now = time.time()
-        venue_orders = [{
-            "id": "o-bad-persist",
-            "timestamp": now,
-            "status": "live",
-            "size_matched": "9",
-        }]
+        venue_orders = [
+            {
+                "id": "o-bad-persist",
+                "timestamp": now,
+                "status": "live",
+                "size_matched": "9",
+            }
+        ]
         repo = MagicMock()
         repo.get_by_order_id.return_value = {
             "order_id": "o-bad-persist",

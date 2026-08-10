@@ -123,9 +123,7 @@ def _raise_read_error(exc: BaseException, *, not_found: str) -> NoReturn:
         status = _status_code(exc)
         if status == HTTPStatus.NOT_FOUND:
             error_type = (
-                VenueOrderbookNotFoundError
-                if not_found == "orderbook"
-                else VenueOrderNotFoundError
+                VenueOrderbookNotFoundError if not_found == "orderbook" else VenueOrderNotFoundError
             )
             raise error_type(f"{not_found}_not_found") from exc
         if status in (HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN):
@@ -168,18 +166,22 @@ def _submission_from_response(
 
     insufficient = response.code == "not_enough_balance"
     cancelled = response.code in {"unmatched", "fok_not_filled", "fak_not_filled"}
-    return VenueSubmitResult(
-        success=False,
-        status="cancelled" if cancelled else "rejected",
-        raw=_raw_model(response),
-        error=f"{response.code}: {response.message}",
-        non_retryable=True,
-    ) if not insufficient else VenueSubmitResult(
-        success=False,
-        status="rejected",
-        raw=_raw_model(response),
-        error=f"insufficient_balance: {response.message}",
-        non_retryable=True,
+    return (
+        VenueSubmitResult(
+            success=False,
+            status="cancelled" if cancelled else "rejected",
+            raw=_raw_model(response),
+            error=f"{response.code}: {response.message}",
+            non_retryable=True,
+        )
+        if not insufficient
+        else VenueSubmitResult(
+            success=False,
+            status="rejected",
+            raw=_raw_model(response),
+            error=f"insufficient_balance: {response.message}",
+            non_retryable=True,
+        )
     )
 
 
@@ -286,9 +288,7 @@ class PolymarketGateway:
                 raise VenueInvalidOrderError("inverted order book")
             midpoint = (best_bid + best_ask) / Decimal("2")
             if midpoint > 0:
-                spread_bps = int(
-                    ((best_ask - best_bid) / midpoint) * BASIS_POINTS_PER_UNIT
-                )
+                spread_bps = int(((best_ask - best_bid) / midpoint) * BASIS_POINTS_PER_UNIT)
 
         return OrderBook(
             token_id=str(raw.token_id),
@@ -557,9 +557,7 @@ class PolymarketGateway:
                         if order_id and leg_order_id != order_id:
                             continue
                         bucket_index = getattr(raw, "bucket_index", None)
-                        transaction_hash = str(
-                            getattr(raw, "transaction_hash", "") or ""
-                        )
+                        transaction_hash = str(getattr(raw, "transaction_hash", "") or "")
                         dedup_key = (
                             str(raw.id),
                             leg_order_id,

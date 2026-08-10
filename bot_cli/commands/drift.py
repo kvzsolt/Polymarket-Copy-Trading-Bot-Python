@@ -1,4 +1,5 @@
 """bot drift — detect off-bot/manual position drift between persisted and live state."""
+
 from __future__ import annotations
 
 import argparse
@@ -19,15 +20,11 @@ if TYPE_CHECKING:
 
 
 def register_drift_command(subparsers: argparse._SubParsersAction) -> None:
-    parser = subparsers.add_parser(
-        "drift", help="Detect off-bot/manual position drift"
-    )
+    parser = subparsers.add_parser("drift", help="Detect off-bot/manual position drift")
     sub = parser.add_subparsers(dest="drift_subcommand", required=True)
 
     check_parser = sub.add_parser("check", help="Compare persisted vs live holdings")
-    check_parser.add_argument(
-        "--user-id", default=None, help="Filter to a single user_id"
-    )
+    check_parser.add_argument("--user-id", default=None, help="Filter to a single user_id")
     check_parser.add_argument(
         "--epsilon",
         type=str,
@@ -44,9 +41,7 @@ def _load_config_or_fail():
         return None
 
 
-async def _list_persisted_positions(
-    pool: "asyncpg.Pool", *, user_id: str | None
-) -> list[dict]:
+async def _list_persisted_positions(pool: "asyncpg.Pool", *, user_id: str | None) -> list[dict]:
     """List persisted positions for the optional user filter.
 
     Takes the asyncpg pool so callers (CLI entry + tests) own pool
@@ -86,14 +81,9 @@ async def _list_persisted_positions(
 def _live_size_index(live_positions: list[dict]) -> dict[tuple[str, str], Decimal]:
     index: dict[tuple[str, str], Decimal] = {}
     for position in live_positions:
-        condition_id = str(
-            position.get("conditionId") or position.get("condition_id") or ""
-        )
+        condition_id = str(position.get("conditionId") or position.get("condition_id") or "")
         token_id = str(
-            position.get("tokenID")
-            or position.get("token_id")
-            or position.get("asset")
-            or ""
+            position.get("tokenID") or position.get("token_id") or position.get("asset") or ""
         )
         if not condition_id or not token_id:
             continue
@@ -106,9 +96,7 @@ def _live_size_index(live_positions: list[dict]) -> dict[tuple[str, str], Decima
     return index
 
 
-def _classify_drift(
-    persisted_size: Decimal, live_size: Decimal, epsilon: Decimal
-) -> str | None:
+def _classify_drift(persisted_size: Decimal, live_size: Decimal, epsilon: Decimal) -> str | None:
     delta = persisted_size - live_size
     if abs(delta) <= epsilon:
         return None
@@ -225,9 +213,7 @@ async def _run_check_async(args: argparse.Namespace) -> int:
                 continue
             checked_users.append(runtime_user.user_id)
 
-            persisted = await _list_persisted_positions(
-                pool, user_id=runtime_user.user_id
-            )
+            persisted = await _list_persisted_positions(pool, user_id=runtime_user.user_id)
             try:
                 live = await fetch_live_positions(wallet_addr)
             except Exception:

@@ -4,6 +4,7 @@ The post-VenueRateLimitError retry slept ``min(0.15 * attempt, 0.30)`` with no
 jitter, so concurrent runtimes retried a shared venue outage in lockstep. Jitter
 of up to 0.1s now spreads them; the base backoff is unchanged.
 """
+
 from __future__ import annotations
 
 import random

@@ -76,9 +76,7 @@ async def test_v1_runner_runs_after_the_core_transaction_commits(
     async def _record_v1(_passed_conn: object) -> None:
         conn.journal.append("v1_migrations")
 
-    monkeypatch.setattr(
-        migrations_module, "apply_v1_migrations", AsyncMock(side_effect=_record_v1)
-    )
+    monkeypatch.setattr(migrations_module, "apply_v1_migrations", AsyncMock(side_effect=_record_v1))
 
     await migrations_module.apply_migrations(conn)  # type: ignore[arg-type]
 
@@ -114,8 +112,7 @@ async def test_startup_apply_migrations_creates_v1_tables_from_empty_schema() ->
             tables = {
                 row["table_name"]
                 for row in await conn.fetch(
-                    "SELECT table_name FROM information_schema.tables "
-                    "WHERE table_schema = 'public'"
+                    "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'"
                 )
             }
         finally:

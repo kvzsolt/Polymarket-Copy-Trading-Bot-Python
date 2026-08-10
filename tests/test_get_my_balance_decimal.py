@@ -10,6 +10,7 @@ Test verifies:
   * Large raw values (above 2^53) round-trip without precision loss
   * ``get_my_balance`` async wrapper preserves the Decimal
 """
+
 from __future__ import annotations
 
 from decimal import Decimal

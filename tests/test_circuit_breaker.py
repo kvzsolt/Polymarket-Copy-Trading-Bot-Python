@@ -8,11 +8,13 @@ from services.circuitBreaker import CircuitBreaker, CircuitOpen, CircuitState
 
 # ── helpers ───────────────────────────────────────────────────────────────
 
+
 def _make(threshold: int = 3, cooldown: float = 1.0) -> CircuitBreaker:
     return CircuitBreaker("test", failure_threshold=threshold, cooldown_seconds=cooldown)
 
 
 # ── basic state transitions ──────────────────────────────────────────────
+
 
 class TestBasicTransitions:
     def test_starts_closed(self):
@@ -81,7 +83,9 @@ class TestHalfOpen:
         assert cb.allow_request() is False
 
     def test_half_open_limits_probes(self):
-        cb = CircuitBreaker("test", failure_threshold=2, cooldown_seconds=0.1, half_open_max_probes=1)
+        cb = CircuitBreaker(
+            "test", failure_threshold=2, cooldown_seconds=0.1, half_open_max_probes=1
+        )
         cb.record_failure()
         cb.record_failure()
         cb._last_failure_time = time.monotonic() - 1.0

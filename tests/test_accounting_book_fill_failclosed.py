@@ -4,6 +4,7 @@ non-decimal money fields. Pre-fix the call silently inserted ``"None"`` or
 corrupting downstream PnL replay that re-parses size/price/usdc_value as
 Decimal.
 """
+
 from __future__ import annotations
 
 

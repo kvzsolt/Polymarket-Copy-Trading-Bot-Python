@@ -1,4 +1,5 @@
 """Tests for ``services/strategy_profile/leader_history_loader.py`` (PR3)."""
+
 from __future__ import annotations
 
 import asyncio
@@ -19,9 +20,7 @@ async def test_loader_fetches_all_pages(monkeypatch: pytest.MonkeyPatch) -> None
 
     # Patch the activity client's fetch_activity_page to return 2 rows then 1.
     activity_pages = [_mk_activity_rows(2), _mk_activity_rows(1)]
-    fetch_activity = AsyncMock(side_effect=[
-        _ActivityPage(rows=page) for page in activity_pages
-    ])
+    fetch_activity = AsyncMock(side_effect=[_ActivityPage(rows=page) for page in activity_pages])
     monkeypatch.setattr(loader._activity_client, "fetch_activity_page", fetch_activity)
 
     # Patch _fetch_json_list for /trades and /closed-positions.
@@ -90,12 +89,15 @@ async def test_fetch_json_list_swallows_aiohttp_error(monkeypatch: pytest.Monkey
 
 
 @pytest.mark.asyncio
-async def test_loader_trades_endpoint_empty_response_returns_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_loader_trades_endpoint_empty_response_returns_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """When /trades and /closed-positions return empty payloads, the loader
     returns empty lists for those sections (no crash)."""
     loader = LeaderHistoryLoader(page_limit=2, max_offset=2, lookback_days=30)
     monkeypatch.setattr(
-        loader._activity_client, "fetch_activity_page",
+        loader._activity_client,
+        "fetch_activity_page",
         AsyncMock(return_value=_ActivityPage(rows=[])),
     )
     monkeypatch.setattr(loader, "_fetch_json_list", AsyncMock(return_value=[]))

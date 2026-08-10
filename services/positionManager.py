@@ -98,6 +98,7 @@ def _parse_staged_tp_levels(raw: str) -> list[float]:
 @dataclass
 class PositionExitState:
     """Per-position state tracking for advanced exits."""
+
     # Trailing stop
     trailing_active: bool = False
     trailing_high_price: Decimal = field(default_factory=lambda: Decimal("0"))
@@ -122,7 +123,7 @@ class PositionExitState:
 class TrackedPosition:
     condition_id: str
     asset: str
-    side: str                 # BUY
+    side: str  # BUY
     entry_price: Decimal
     size_tokens: Decimal
     usdc_cost: Decimal
@@ -177,10 +178,7 @@ class PositionManager:
         if condition_id in self._positions:
             return condition_id
 
-        matches = [
-            key for key, pos in self._positions.items()
-            if pos.condition_id == condition_id
-        ]
+        matches = [key for key, pos in self._positions.items() if pos.condition_id == condition_id]
         if len(matches) == 1:
             return matches[0]
         return None
@@ -208,10 +206,16 @@ class PositionManager:
 
             # Profit lock
             self._profit_lock_mode = (
-                "advanced" if _as_bool(getattr(fc, "enable_profit_lock", False), False) else "disabled"
+                "advanced"
+                if _as_bool(getattr(fc, "enable_profit_lock", False), False)
+                else "disabled"
             )
-            self._profit_lock_trigger = _as_float(getattr(pe, "profit_lock_trigger_pct", 70.0), 70.0) / 100.0
-            self._profit_lock_sell_fraction = _as_float(getattr(pe, "profit_lock_sell_fraction", 0.5), 0.5)
+            self._profit_lock_trigger = (
+                _as_float(getattr(pe, "profit_lock_trigger_pct", 70.0), 70.0) / 100.0
+            )
+            self._profit_lock_sell_fraction = _as_float(
+                getattr(pe, "profit_lock_sell_fraction", 0.5), 0.5
+            )
 
             # Near-max exit
             self._enable_near_max = _as_bool(getattr(fc, "enable_near_max_exit", False), False)
@@ -234,12 +238,9 @@ class PositionManager:
             # Trailing stop
             self._enable_trailing = _as_bool(getattr(fc, "enable_trailing_stop", False), False)
             trailing_activation_raw = getattr(pe, "trailing_activation_pct", 20.0)
-            self._trailing_activation_auto = (
-                trailing_activation_raw is None
-                or (
-                    isinstance(trailing_activation_raw, str)
-                    and trailing_activation_raw.strip().lower() in ("", "auto")
-                )
+            self._trailing_activation_auto = trailing_activation_raw is None or (
+                isinstance(trailing_activation_raw, str)
+                and trailing_activation_raw.strip().lower() in ("", "auto")
             )
             self._trailing_activation_pct = (
                 0.0
@@ -252,11 +253,17 @@ class PositionManager:
             self._enable_staged_tp = _as_bool(getattr(fc, "enable_staged_tp", False), False)
             staged_levels_raw = getattr(pe, "staged_tp_levels", "")
             staged_fractions_raw = getattr(pe, "staged_tp_fractions", "")
-            self._staged_levels = _parse_staged_tp_levels(staged_levels_raw) if staged_levels_raw else [0.30, 0.50]
-            self._staged_fractions = _parse_csv_floats(staged_fractions_raw) if staged_fractions_raw else [0.25, 0.35]
+            self._staged_levels = (
+                _parse_staged_tp_levels(staged_levels_raw) if staged_levels_raw else [0.30, 0.50]
+            )
+            self._staged_fractions = (
+                _parse_csv_floats(staged_fractions_raw) if staged_fractions_raw else [0.25, 0.35]
+            )
 
             # Leader divergence
-            self._enable_leader_divergence = _as_bool(getattr(fc, "enable_leader_divergence_exit", False), False)
+            self._enable_leader_divergence = _as_bool(
+                getattr(fc, "enable_leader_divergence_exit", False), False
+            )
             self._enabled = self._risk_master_enabled
 
         else:
@@ -353,9 +360,8 @@ class PositionManager:
             total_tokens = existing.size_tokens + d_size
             if total_tokens > 0:
                 existing.entry_price = (
-                    (existing.entry_price * existing.size_tokens + d_entry * d_size)
-                    / total_tokens
-                )
+                    existing.entry_price * existing.size_tokens + d_entry * d_size
+                ) / total_tokens
             existing.size_tokens = total_tokens
             existing.usdc_cost = existing.usdc_cost + d_cost
             existing.peak_price = max(existing.peak_price, d_entry)
@@ -578,13 +584,18 @@ class PositionManager:
                         f"✂️ NEAR-MAX warn trim: {condition_id[:12]}… "
                         f"price={float(cp):.4f} >= {self._near_max_warn}"
                     )
-                    return {"reason": "near_max_partial_trim", "size_fraction": self._near_max_warn_ratio}
+                    return {
+                        "reason": "near_max_partial_trim",
+                        "size_fraction": self._near_max_warn_ratio,
+                    }
 
         # ── Priority 2: PROFIT LOCK ──
         # Advanced mode: partial sell at trigger then trail remainder.
         # (The historical "legacy" armed-then-retrace strategy was removed in
         # issue #77; the trailing-stop priority below covers exit-on-retrace.)
-        if self._profit_lock_mode == "advanced" and pct_change >= _to_dec(self._profit_lock_trigger):
+        if self._profit_lock_mode == "advanced" and pct_change >= _to_dec(
+            self._profit_lock_trigger
+        ):
             if not es.profit_lock_sold:
                 es.profit_lock_triggered = True
                 es.profit_lock_sold = True
@@ -593,8 +604,8 @@ class PositionManager:
                 es.trailing_high_price = cp
                 logger.info(
                     f"🔒 PROFIT LOCK: {condition_id[:12]}… "
-                    f"profit={float(pct_change)*100:.1f}% >= {self._profit_lock_trigger*100:.0f}% "
-                    f"selling {self._profit_lock_sell_fraction*100:.0f}% + trailing remainder"
+                    f"profit={float(pct_change) * 100:.1f}% >= {self._profit_lock_trigger * 100:.0f}% "
+                    f"selling {self._profit_lock_sell_fraction * 100:.0f}% + trailing remainder"
                 )
                 return {"reason": "profit_lock", "size_fraction": self._profit_lock_sell_fraction}
 
@@ -610,11 +621,11 @@ class PositionManager:
                         es.trailing_active = True
                         es.trailing_high_price = cp
                     logger.info(
-                        f"📊 STAGED TP level {i+1}: {condition_id[:12]}… "
-                        f"profit={float(pct_change)*100:.1f}% >= {level*100:.0f}% "
-                        f"selling {fraction*100:.0f}%"
+                        f"📊 STAGED TP level {i + 1}: {condition_id[:12]}… "
+                        f"profit={float(pct_change) * 100:.1f}% >= {level * 100:.0f}% "
+                        f"selling {fraction * 100:.0f}%"
                     )
-                    return {"reason": f"staged_tp_level_{i+1}", "size_fraction": fraction}
+                    return {"reason": f"staged_tp_level_{i + 1}", "size_fraction": fraction}
 
         # ── Priority 4: TRAILING STOP ──
         if self._enable_trailing:
@@ -623,10 +634,12 @@ class PositionManager:
             if not es.trailing_active and pct_change >= activation_threshold:
                 es.trailing_active = True
                 es.trailing_high_price = cp
-                activation_mode = "dynamic" if getattr(self, "_trailing_activation_auto", False) else "fixed"
+                activation_mode = (
+                    "dynamic" if getattr(self, "_trailing_activation_auto", False) else "fixed"
+                )
                 logger.info(
                     f"📈 TRAILING STOP activated: {condition_id[:12]}… "
-                    f"profit={float(pct_change)*100:.1f}% >= {float(activation_threshold) * 100:.1f}% "
+                    f"profit={float(pct_change) * 100:.1f}% >= {float(activation_threshold) * 100:.1f}% "
                     f"({activation_mode}) peak={float(cp):.4f}"
                 )
 
@@ -672,7 +685,9 @@ class PositionManager:
             return None
         return str(action.get("reason"))
 
-    def get_position(self, condition_id: str, asset: str | None = None) -> Optional[TrackedPosition]:
+    def get_position(
+        self, condition_id: str, asset: str | None = None
+    ) -> Optional[TrackedPosition]:
         resolved_key = self._resolve_lookup_key(condition_id, asset)
         if resolved_key is None:
             return None

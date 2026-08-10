@@ -14,6 +14,7 @@ Pre-fix the Dockerfile had:
 This test pins the contract by parsing the Dockerfile + .dockerignore
 at the source level so any regression is caught before merge.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -48,12 +49,8 @@ def test_dockerfile_does_not_enable_live_trading(dockerfile_text: str) -> None:
         stripped = line.strip()
         if not stripped.startswith("ENV "):
             continue
-        assert not (
-            "PMCOPY__EXECUTION__TRADING_MODE" in stripped
-            and "live" in stripped.lower()
-        ), (
-            "Dockerfile must not bake execution.trading_mode=live: "
-            f"{stripped!r}"
+        assert not ("PMCOPY__EXECUTION__TRADING_MODE" in stripped and "live" in stripped.lower()), (
+            f"Dockerfile must not bake execution.trading_mode=live: {stripped!r}"
         )
 
 
@@ -61,9 +58,7 @@ def test_non_root_user_directive(dockerfile_text: str) -> None:
     assert "USER botuser" in dockerfile_text, (
         "Dockerfile must drop privileges to non-root before ENTRYPOINT"
     )
-    assert "groupadd -r botuser" in dockerfile_text, (
-        "non-root botuser must be created in the image"
-    )
+    assert "groupadd -r botuser" in dockerfile_text, "non-root botuser must be created in the image"
 
 
 def test_healthcheck_port_matches_metrics_port(dockerfile_text: str) -> None:
@@ -88,17 +83,17 @@ def test_docker_smoke_uses_hermetic_health_contract(
     run must override that probe with the local DB/API health payload while
     still waiting for Docker's health state (not merely ``State.Running``).
     """
-    smoke_run = ci_workflow_text.split(
-        "- name: docker run (paper mode)", maxsplit=1
-    )[1].split("- name: container readiness probe", maxsplit=1)[0]
-    readiness_probe = ci_workflow_text.split(
+    smoke_run = ci_workflow_text.split("- name: docker run (paper mode)", maxsplit=1)[1].split(
         "- name: container readiness probe", maxsplit=1
-    )[1].split("- name: cleanup", maxsplit=1)[0]
+    )[0]
+    readiness_probe = ci_workflow_text.split("- name: container readiness probe", maxsplit=1)[
+        1
+    ].split("- name: cleanup", maxsplit=1)[0]
 
     assert "--health-cmd=" in smoke_run
     assert "http://localhost:9102/health" in smoke_run
     assert "/health/ready" not in smoke_run
-    assert "payload.get(\\\"ok\\\")" in smoke_run
+    assert 'payload.get(\\"ok\\")' in smoke_run
     assert ".State.Health.Status" in readiness_probe
     assert ".State.Running" not in readiness_probe
 
@@ -119,6 +114,5 @@ def test_console_entrypoint_modules_are_in_the_installed_wheel() -> None:
 def test_dockerignore_excludes_secrets(dockerignore_text: str) -> None:
     for sensitive in ("secrets.env", ".env", "config/runtime.local.yml", ".git/"):
         assert sensitive in dockerignore_text, (
-            f".dockerignore must exclude {sensitive!r} so it never bakes into "
-            f"image layer history"
+            f".dockerignore must exclude {sensitive!r} so it never bakes into image layer history"
         )

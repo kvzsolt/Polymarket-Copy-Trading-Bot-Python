@@ -241,9 +241,7 @@ def _submission_exception(exc: BaseException) -> VenueSubmitResult:
             error="order_not_fillable",
             non_retryable=True,
         )
-    if name in _NETWORK_ERRORS or (
-        status is None and name in {"TimeoutError", "ConnectionError"}
-    ):
+    if name in _NETWORK_ERRORS or (status is None and name in {"TimeoutError", "ConnectionError"}):
         return VenueSubmitResult(
             success=False,
             error=f"ambiguous_{name.lower()}",
@@ -451,12 +449,12 @@ class CcxtPredictionGateway:
                     if minimum is not None
                     else _first(info, "min_order_size", "minOrderSize")
                 )
-                minimum = minimum if minimum is not None else _nested(source, "limits", "amount", "min")
+                minimum = (
+                    minimum if minimum is not None else _nested(source, "limits", "amount", "min")
+                )
             if neg_risk is None:
                 neg_risk = _first(source, "neg_risk", "negRisk")
-                neg_risk = (
-                    neg_risk if neg_risk is not None else _first(info, "neg_risk", "negRisk")
-                )
+                neg_risk = neg_risk if neg_risk is not None else _first(info, "neg_risk", "negRisk")
 
         if tick is None or minimum is None or not isinstance(neg_risk, bool):
             return None
@@ -553,7 +551,9 @@ class CcxtPredictionGateway:
             if midpoint > 0:
                 spread_bps = int(((best_ask - best_bid) / midpoint) * BASIS_POINTS_PER_UNIT)
 
-        timestamp = _datetime(raw.get("datetime"), raw.get("timestamp")) or datetime.now(timezone.utc)
+        timestamp = _datetime(raw.get("datetime"), raw.get("timestamp")) or datetime.now(
+            timezone.utc
+        )
         return OrderBook(
             token_id=str(_first(raw, "outcomeId", "token_id", "asset_id") or token_id),
             tick_size=metadata.tick_size,
@@ -607,16 +607,22 @@ class CcxtPredictionGateway:
     def _submission_from_order(value: Any) -> VenueSubmitResult:
         raw = _maybe_dict(value)
         info = raw.get("info") if isinstance(raw.get("info"), dict) else {}
-        order_id = str(_first(raw, "id", "orderID", "order_id") or _first(info, "orderID", "id") or "") or None
+        order_id = (
+            str(_first(raw, "id", "orderID", "order_id") or _first(info, "orderID", "id") or "")
+            or None
+        )
         status = _normalize_status(_first(raw, "status") or _first(info, "status"))
         success_marker = _first(raw, "success")
         if success_marker is None:
             success_marker = _first(info, "success")
-        error = str(
-            _first(raw, "error", "errorMsg", "message")
-            or _first(info, "error", "errorMsg", "message")
-            or ""
-        ).strip() or None
+        error = (
+            str(
+                _first(raw, "error", "errorMsg", "message")
+                or _first(info, "error", "errorMsg", "message")
+                or ""
+            ).strip()
+            or None
+        )
 
         if success_marker is False or status in {"canceled", "rejected"}:
             return VenueSubmitResult(
@@ -735,7 +741,9 @@ class CcxtPredictionGateway:
     def _order_state(value: Any) -> VenueOrderState:
         raw = _maybe_dict(value)
         info = raw.get("info") if isinstance(raw.get("info"), dict) else {}
-        order_id = str(_first(raw, "id", "orderID", "order_id") or _first(info, "id", "orderID") or "")
+        order_id = str(
+            _first(raw, "id", "orderID", "order_id") or _first(info, "id", "orderID") or ""
+        )
         if not order_id:
             raise VenueInvalidOrderError("CCXT order response omitted id")
         filled = _decimal(
@@ -751,7 +759,9 @@ class CcxtPredictionGateway:
             order_id=order_id,
             status=_normalize_status(_first(raw, "status") or _first(info, "status")) or "unknown",
             side=str(_first(raw, "side") or _first(info, "side") or "").upper(),
-            price=_decimal(_first(raw, "price") or _first(info, "price"), field="price", default=Decimal("0")),
+            price=_decimal(
+                _first(raw, "price") or _first(info, "price"), field="price", default=Decimal("0")
+            ),
             size=_decimal(
                 _first(raw, "amount", "original_size") or _first(info, "original_size"),
                 field="size",
@@ -802,7 +812,9 @@ class CcxtPredictionGateway:
                 continue
             if market:
                 raw_info = state.raw.get("info") if isinstance(state.raw.get("info"), dict) else {}
-                raw_market = _first(state.raw, "market") or _first(raw_info, "market", "condition_id")
+                raw_market = _first(state.raw, "market") or _first(
+                    raw_info, "market", "condition_id"
+                )
                 if raw_market is not None and str(raw_market) != market:
                     continue
             result.append(state)
@@ -824,7 +836,9 @@ class CcxtPredictionGateway:
     @staticmethod
     def _trade_legs(value: dict[str, Any]) -> Iterable[dict[str, Any]]:
         info = value.get("info") if isinstance(value.get("info"), dict) else value
-        role = str(_first(info, "trader_side", "traderSide") or value.get("takerOrMaker") or "TAKER").upper()
+        role = str(
+            _first(info, "trader_side", "traderSide") or value.get("takerOrMaker") or "TAKER"
+        ).upper()
         makers = _first(info, "maker_orders", "makerOrders")
         if role == "MAKER" and isinstance(makers, list) and makers:
             for maker in makers:
@@ -889,9 +903,9 @@ class CcxtPredictionGateway:
                 _first(value, "timestamp") or _first(info, "match_time", "matched_at", "timestamp")
             )
             timestamp = int((timestamp_ms or 0) / 1000)
-            transaction_hash = str(
-                _first(info, "transaction_hash", "transactionHash") or ""
-            ) or None
+            transaction_hash = (
+                str(_first(info, "transaction_hash", "transactionHash") or "") or None
+            )
             status = str(_first(info, "status") or _first(value, "status") or "") or None
             fee = self._fee(value)
             for leg in self._trade_legs(value):
@@ -965,8 +979,10 @@ class CcxtPredictionGateway:
             if signature_type is not None:
                 signature_type = int(signature_type)
             wrapper = self._client if isinstance(self._client, CcxtPredictionClient) else None
-            authenticated = bool(wrapper.authenticated) if wrapper is not None else bool(
-                getattr(self._exchange, "privateKey", None)
+            authenticated = (
+                bool(wrapper.authenticated)
+                if wrapper is not None
+                else bool(getattr(self._exchange, "privateKey", None))
             )
             required = {
                 "createOrder": True,
@@ -997,9 +1013,8 @@ class CcxtPredictionGateway:
                 if wrapper is not None
                 else getattr(self._exchange, "walletAddress", None)
             )
-            identity_ok = (
-                not authenticated
-                or (signature_type == 3 and bool(str(wallet or "").strip()))
+            identity_ok = not authenticated or (
+                signature_type == 3 and bool(str(wallet or "").strip())
             )
             compatible = (
                 bool(has.get("prediction"))

@@ -163,4 +163,3 @@ class Reservation:
     expires_at: datetime
     order_id: str | None = None
     venue_order_id: str | None = None
-

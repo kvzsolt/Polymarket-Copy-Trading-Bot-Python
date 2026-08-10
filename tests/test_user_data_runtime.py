@@ -11,6 +11,7 @@ Covers:
   - status(): returns snapshot copy, not live reference
   - _update_readiness: swallows readiness errors gracefully
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -50,6 +51,7 @@ def _make_runtime(
 # _api_creds_valid (static, pure)
 # ---------------------------------------------------------------------------
 
+
 class TestApiCredsValid:
     def test_accepts_full_credentials(self) -> None:
         assert UserDataRuntime._api_creds_valid(VALID_CREDS) is True
@@ -85,6 +87,7 @@ class TestApiCredsValid:
 # ---------------------------------------------------------------------------
 # start() — invalid credentials
 # ---------------------------------------------------------------------------
+
 
 class TestStartInvalidCreds:
     @pytest.mark.asyncio
@@ -124,6 +127,7 @@ class TestStartInvalidCreds:
 # ---------------------------------------------------------------------------
 # start() — valid credentials
 # ---------------------------------------------------------------------------
+
 
 class TestStartValidCreds:
     @pytest.mark.asyncio
@@ -192,6 +196,7 @@ class TestStartValidCreds:
 # _on_authenticated
 # ---------------------------------------------------------------------------
 
+
 class TestOnAuthenticated:
     @pytest.mark.asyncio
     async def test_on_authenticated_sets_status_authenticated(self) -> None:
@@ -226,6 +231,7 @@ class TestOnAuthenticated:
 # _on_disconnected
 # ---------------------------------------------------------------------------
 
+
 class TestOnDisconnected:
     @pytest.mark.asyncio
     async def test_on_disconnected_clears_authenticated(self) -> None:
@@ -255,6 +261,7 @@ class TestOnDisconnected:
 # _on_fill and _on_order_update (future PR stubs — must not raise)
 # ---------------------------------------------------------------------------
 
+
 class TestEventCallbacks:
     @pytest.mark.asyncio
     async def test_on_fill_does_not_raise(self) -> None:
@@ -280,6 +287,7 @@ class TestEventCallbacks:
 # ---------------------------------------------------------------------------
 # _run_ws exception path
 # ---------------------------------------------------------------------------
+
 
 class TestRunWsException:
     @pytest.mark.asyncio
@@ -336,6 +344,7 @@ class TestRunWsException:
 # ---------------------------------------------------------------------------
 # stop()
 # ---------------------------------------------------------------------------
+
 
 class TestStop:
     @pytest.mark.asyncio
@@ -414,6 +423,7 @@ class TestStop:
 # status()
 # ---------------------------------------------------------------------------
 
+
 class TestStatus:
     def test_status_returns_copy(self) -> None:
         rt = _make_runtime()
@@ -448,6 +458,7 @@ class TestStatus:
 # _update_readiness — error resilience
 # ---------------------------------------------------------------------------
 
+
 class TestUpdateReadiness:
     def test_update_readiness_swallows_exception(self) -> None:
         rt = _make_runtime()
@@ -463,6 +474,7 @@ class TestUpdateReadiness:
         snap = readiness.snapshot()
         assert snap["wss_user_ok"] is True
         assert snap["wss_user_connecting"] is False
+
 
 # ---------------------------------------------------------------------------
 # Wake-reconciler (PR 4)

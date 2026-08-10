@@ -50,18 +50,10 @@ def test_manual_leader_uses_configured_prior_and_floor() -> None:
 def test_config_hash_tracks_decisions_not_transport_tuning() -> None:
     baseline = DiscoveryConfig()
     transport_tuned = baseline.model_copy(
-        update={
-            "api": baseline.api.model_copy(
-                update={"requests_per_second": 2.0}
-            )
-        }
+        update={"api": baseline.api.model_copy(update={"requests_per_second": 2.0})}
     )
     scoring_tuned = baseline.model_copy(
-        update={
-            "scoring": baseline.scoring.model_copy(
-                update={"runtime_score_floor": 0.2}
-            )
-        }
+        update={"scoring": baseline.scoring.model_copy(update={"runtime_score_floor": 0.2})}
     )
 
     assert discovery_config_hash(transport_tuned) == discovery_config_hash(baseline)

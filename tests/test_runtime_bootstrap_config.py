@@ -178,8 +178,12 @@ async def test_startup_reconcile_unconfirmed_dedupes_user_contexts_and_rehydrate
     ctx3 = SimpleNamespace(user_id="user-2", execution_service=None)
 
     with (
-        patch("orchestrators.trade_pipeline.reconcile_submitted_unconfirmed", side_effect=[2, 99]) as reconcile,
-        patch("orchestrators.runtime_bootstrap.reconcile_unconfirmed_risk_orders", return_value=0) as reconcile_risk,
+        patch(
+            "orchestrators.trade_pipeline.reconcile_submitted_unconfirmed", side_effect=[2, 99]
+        ) as reconcile,
+        patch(
+            "orchestrators.runtime_bootstrap.reconcile_unconfirmed_risk_orders", return_value=0
+        ) as reconcile_risk,
         patch("orchestrators.runtime_bootstrap.rehydrate_position_manager") as rehydrate,
     ):
         result = await startup_reconcile_unconfirmed([ctx1, ctx2, ctx3])
@@ -195,8 +199,12 @@ async def test_startup_reconcile_unconfirmed_rehydrates_on_risk_only_convergence
     ctx = SimpleNamespace(user_id="user-1", execution_service=object())
 
     with (
-        patch("orchestrators.trade_pipeline.reconcile_submitted_unconfirmed", return_value=0) as reconcile,
-        patch("orchestrators.runtime_bootstrap.reconcile_unconfirmed_risk_orders", return_value=3) as reconcile_risk,
+        patch(
+            "orchestrators.trade_pipeline.reconcile_submitted_unconfirmed", return_value=0
+        ) as reconcile,
+        patch(
+            "orchestrators.runtime_bootstrap.reconcile_unconfirmed_risk_orders", return_value=3
+        ) as reconcile_risk,
         patch("orchestrators.runtime_bootstrap.rehydrate_position_manager") as rehydrate,
     ):
         result = await startup_reconcile_unconfirmed([ctx])
@@ -219,8 +227,12 @@ async def test_startup_reconcile_unconfirmed_sweeps_expired_reservations():
     )
 
     with (
-        patch("orchestrators.trade_pipeline.reconcile_submitted_unconfirmed", return_value=0) as reconcile,
-        patch("orchestrators.runtime_bootstrap.reconcile_unconfirmed_risk_orders", return_value=0) as reconcile_risk,
+        patch(
+            "orchestrators.trade_pipeline.reconcile_submitted_unconfirmed", return_value=0
+        ) as reconcile,
+        patch(
+            "orchestrators.runtime_bootstrap.reconcile_unconfirmed_risk_orders", return_value=0
+        ) as reconcile_risk,
         patch("orchestrators.runtime_bootstrap.rehydrate_position_manager") as rehydrate,
     ):
         result = await startup_reconcile_unconfirmed([ctx])
@@ -303,7 +315,9 @@ async def test_expired_reservation_callback_reconciles_order_row_linked_only_by_
             assert order_id == "order-1"
             return self.order_row
 
-        async def update_submission_status(self, *, order_id: str, status: str, response_patch=None):
+        async def update_submission_status(
+            self, *, order_id: str, status: str, response_patch=None
+        ):
             self.updated.append((order_id, status, response_patch))
             self.order_row["status"] = status
 
@@ -379,7 +393,10 @@ async def test_expired_reservation_callback_reconciles_order_row_linked_only_by_
         reservations_repo=reservation_service.reservations_repo,
     )
 
-    with patch("orchestrators.runtime_bootstrap.rehydrate_position_manager", new=AsyncMock(return_value=None)):
+    with patch(
+        "orchestrators.runtime_bootstrap.rehydrate_position_manager",
+        new=AsyncMock(return_value=None),
+    ):
         runtime_bootstrap._bind_reservation_runtime(ctx, coord)
         released = await reservation_service.reconciler_callback("res-1")
 
@@ -394,7 +411,9 @@ def test_build_trading_context_uses_typed_sizing_execution_values():
     follow = default_follow("user-1", "leader-1", cfg)
     risk_blocks_repo = object()
     user_state = SimpleNamespace(
-        user=SimpleNamespace(user_id="user-1", wallet=SimpleNamespace(funder_address=_VALID_FUNDER)),
+        user=SimpleNamespace(
+            user_id="user-1", wallet=SimpleNamespace(funder_address=_VALID_FUNDER)
+        ),
         client=object(),
         positions_repo=object(),
         fills_repo=object(),
@@ -409,7 +428,10 @@ def test_build_trading_context_uses_typed_sizing_execution_values():
         risk_triggers_repo=None,
     )
 
-    with patch("orchestrators.runtime_bootstrap.rehydrate_position_manager", new=AsyncMock(return_value=None)):
+    with patch(
+        "orchestrators.runtime_bootstrap.rehydrate_position_manager",
+        new=AsyncMock(return_value=None),
+    ):
         ctx = asyncio.run(
             build_trading_context(
                 user_state,
@@ -433,7 +455,9 @@ def test_build_trading_context_constructs_copy_decision_service_only_with_inject
     cfg = _config()
     follow = default_follow("user-1", "leader-1", cfg)
     user_state = SimpleNamespace(
-        user=SimpleNamespace(user_id="user-1", wallet=SimpleNamespace(funder_address=_VALID_FUNDER)),
+        user=SimpleNamespace(
+            user_id="user-1", wallet=SimpleNamespace(funder_address=_VALID_FUNDER)
+        ),
         client=object(),
         positions_repo=object(),
         fills_repo=object(),
@@ -450,7 +474,10 @@ def test_build_trading_context_constructs_copy_decision_service_only_with_inject
 
     with (
         patch("domain.trading_context.CopyDecisionService") as copy_decision_cls,
-        patch("orchestrators.runtime_bootstrap.rehydrate_position_manager", new=AsyncMock(return_value=None)),
+        patch(
+            "orchestrators.runtime_bootstrap.rehydrate_position_manager",
+            new=AsyncMock(return_value=None),
+        ),
     ):
         asyncio.run(build_trading_context(user_state, follow, cfg, readiness=object()))
 
@@ -484,10 +511,7 @@ def test_build_user_state_injects_typed_config_into_runtime_services():
     assert state.execution_service is execution_service_instance
     assert state.execution_coordinator is not None
     reservation_service = state.execution_coordinator.reservation_service
-    assert (
-        state.position_drift_service._reservations_repo
-        is reservation_service.reservations_repo
-    )
+    assert state.position_drift_service._reservations_repo is reservation_service.reservations_repo
 
 
 def test_copy_notional_prefers_typed_config_over_env():

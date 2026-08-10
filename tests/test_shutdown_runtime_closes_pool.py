@@ -4,6 +4,7 @@
 shutdown path, but ``_shutdown_runtime`` never called it — leaking the pool on
 exit. The call must run, be idempotent, and be warning-only on failure.
 """
+
 from __future__ import annotations
 
 import pytest

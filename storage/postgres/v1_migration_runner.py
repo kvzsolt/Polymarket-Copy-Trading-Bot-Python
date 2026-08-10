@@ -15,9 +15,7 @@ import asyncpg
 
 _V1_MIGRATION_ID = "20260808_01_copy_tasks_and_reentry_locks"
 _V1_MIGRATION_PATH = (
-    Path(__file__).resolve().parent
-    / "migrations"
-    / "20260808_01_copy_tasks_and_reentry_locks.sql"
+    Path(__file__).resolve().parent / "migrations" / "20260808_01_copy_tasks_and_reentry_locks.sql"
 )
 
 

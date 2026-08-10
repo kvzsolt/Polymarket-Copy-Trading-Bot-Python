@@ -37,9 +37,7 @@ def _context(quote, *, max_spread_bps=2000):
     runtime = SimpleNamespace(market_store=store)
     return SimpleNamespace(
         market_data_runtime=runtime,
-        config=SimpleNamespace(
-            risk=SimpleNamespace(risk_mark_max_spread_bps=max_spread_bps)
-        ),
+        config=SimpleNamespace(risk=SimpleNamespace(risk_mark_max_spread_bps=max_spread_bps)),
         extra={},
     )
 

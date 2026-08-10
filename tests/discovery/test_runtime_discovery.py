@@ -29,9 +29,7 @@ async def test_startup_wait_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(runtime_discovery.asyncio, "sleep", _sleep)
     registry = SimpleNamespace(refresh=AsyncMock())
     config = SimpleNamespace(
-        discovery=SimpleNamespace(
-            scheduler=SimpleNamespace(startup_wait_timeout_seconds=5)
-        )
+        discovery=SimpleNamespace(scheduler=SimpleNamespace(startup_wait_timeout_seconds=5))
     )
 
     active = await runtime_discovery.wait_for_active_leaders(
@@ -54,9 +52,9 @@ def test_health_server_starts_before_discovery_promotion_wait() -> None:
 
 
 def test_discovery_loop_has_no_discarded_repository_argument() -> None:
-    assert "leaders_repo" not in inspect.signature(
-        runtime_discovery.discovery_refresh_loop
-    ).parameters
+    assert (
+        "leaders_repo" not in inspect.signature(runtime_discovery.discovery_refresh_loop).parameters
+    )
     assert "leaders_repo" not in inspect.signature(app._discovery_refresh_loop).parameters
 
 

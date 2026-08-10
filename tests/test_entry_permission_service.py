@@ -9,6 +9,7 @@ Covers:
 - cooldown expiry is handled by the repo layer (contract test)
 - is_blocked() helper
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -27,6 +28,7 @@ from services.entryPermissionService import (
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_block(
     *,
@@ -53,11 +55,11 @@ def _make_block(
 
 def _make_repo(block: dict | None) -> MagicMock:
     from unittest.mock import AsyncMock
+
     repo = MagicMock()
     repo.get_active_risk_block = AsyncMock(return_value=block)
     repo.clear_risk_block = AsyncMock(return_value=True)
     return repo
-
 
 
 def _check_entry(svc: EntryPermissionService, **kwargs):
@@ -68,11 +70,13 @@ def _check_entry(svc: EntryPermissionService, **kwargs):
 # Test cases
 # ---------------------------------------------------------------------------
 
+
 class TestEntryPermissionServiceAllowed(unittest.TestCase):
     def test_no_block_returns_allowed(self):
         repo = _make_repo(block=None)
         svc = EntryPermissionService(risk_blocks_repo=repo)
-        decision = _check_entry(svc, 
+        decision = _check_entry(
+            svc,
             user_id="user1",
             condition_id="cond-1",
             token_id="tok-1",
@@ -89,12 +93,13 @@ class TestEntryPermissionServiceDenied(unittest.TestCase):
         block = _make_block(reason="stop_loss", leader_anchor="leader-A", metadata={})
         repo = _make_repo(block=block)
         svc = EntryPermissionService(risk_blocks_repo=repo)
-        decision = _check_entry(svc, 
+        decision = _check_entry(
+            svc,
             user_id="user1",
             condition_id="cond-1",
             token_id="tok-1",
-            leader_id="leader-A",          # same leader → no leader_changed
-            leader_notional_usdc=50.0,     # no metadata → fresh_leader_buy can't fire
+            leader_id="leader-A",  # same leader → no leader_changed
+            leader_notional_usdc=50.0,  # no metadata → fresh_leader_buy can't fire
         )
         self.assertFalse(decision.allowed)
         self.assertEqual(decision.reason, REASON_DENIED)
@@ -107,7 +112,8 @@ class TestEntryPermissionServiceDenied(unittest.TestCase):
         block = _make_block()
         repo = _make_repo(block=block)
         svc = EntryPermissionService(risk_blocks_repo=repo)
-        decision = _check_entry(svc, 
+        decision = _check_entry(
+            svc,
             user_id="user1",
             condition_id="cond-1",
             token_id="tok-1",
@@ -122,7 +128,8 @@ class TestLeaderChangedClearRule(unittest.TestCase):
         repo = _make_repo(block=block)
         svc = EntryPermissionService(risk_blocks_repo=repo)
 
-        decision = _check_entry(svc, 
+        decision = _check_entry(
+            svc,
             user_id="user1",
             condition_id="cond-1",
             token_id="tok-1",
@@ -143,7 +150,8 @@ class TestLeaderChangedClearRule(unittest.TestCase):
         repo = _make_repo(block=block)
         svc = EntryPermissionService(risk_blocks_repo=repo)
 
-        decision = _check_entry(svc, 
+        decision = _check_entry(
+            svc,
             user_id="user1",
             condition_id="cond-1",
             token_id="tok-1",
@@ -158,7 +166,8 @@ class TestLeaderChangedClearRule(unittest.TestCase):
         repo = _make_repo(block=block)
         svc = EntryPermissionService(risk_blocks_repo=repo)
 
-        decision = _check_entry(svc, 
+        decision = _check_entry(
+            svc,
             user_id="user1",
             condition_id="cond-1",
             token_id="tok-1",
@@ -184,7 +193,8 @@ class TestFreshLeaderBuyClearRule(unittest.TestCase):
         repo = _make_repo(block=block)
         svc = EntryPermissionService(risk_blocks_repo=repo)
 
-        decision = _check_entry(svc, 
+        decision = _check_entry(
+            svc,
             user_id="user1",
             condition_id="cond-1",
             token_id="tok-1",
@@ -201,7 +211,8 @@ class TestFreshLeaderBuyClearRule(unittest.TestCase):
         repo = _make_repo(block=block)
         svc = EntryPermissionService(risk_blocks_repo=repo)
 
-        decision = _check_entry(svc, 
+        decision = _check_entry(
+            svc,
             user_id="user1",
             condition_id="cond-1",
             token_id="tok-1",
@@ -216,7 +227,8 @@ class TestFreshLeaderBuyClearRule(unittest.TestCase):
         repo = _make_repo(block=block)
         svc = EntryPermissionService(risk_blocks_repo=repo)
 
-        decision = _check_entry(svc, 
+        decision = _check_entry(
+            svc,
             user_id="user1",
             condition_id="cond-1",
             token_id="tok-1",
@@ -230,7 +242,8 @@ class TestFreshLeaderBuyClearRule(unittest.TestCase):
         repo = _make_repo(block=block)
         svc = EntryPermissionService(risk_blocks_repo=repo)
 
-        decision = _check_entry(svc, 
+        decision = _check_entry(
+            svc,
             user_id="user1",
             condition_id="cond-1",
             token_id="tok-1",
@@ -250,7 +263,8 @@ class TestLeaderChangedTakesPriorityOverFreshBuy(unittest.TestCase):
         repo = _make_repo(block=block)
         svc = EntryPermissionService(risk_blocks_repo=repo)
 
-        decision = _check_entry(svc, 
+        decision = _check_entry(
+            svc,
             user_id="user1",
             condition_id="cond-1",
             token_id="tok-1",
@@ -270,7 +284,8 @@ class TestCooldownExpiry(unittest.TestCase):
         repo = _make_repo(block=None)  # repo filters expired block → returns None
         svc = EntryPermissionService(risk_blocks_repo=repo)
 
-        decision = _check_entry(svc, 
+        decision = _check_entry(
+            svc,
             user_id="user1",
             condition_id="cond-1",
             token_id="tok-1",
@@ -283,12 +298,16 @@ class TestIsBlockedHelper(unittest.TestCase):
     def test_returns_true_when_block_exists(self):
         repo = _make_repo(block=_make_block())
         svc = EntryPermissionService(risk_blocks_repo=repo)
-        self.assertTrue(asyncio.run(svc.is_blocked(user_id="user1", condition_id="cond-1", token_id="tok-1")))
+        self.assertTrue(
+            asyncio.run(svc.is_blocked(user_id="user1", condition_id="cond-1", token_id="tok-1"))
+        )
 
     def test_returns_false_when_no_block(self):
         repo = _make_repo(block=None)
         svc = EntryPermissionService(risk_blocks_repo=repo)
-        self.assertFalse(asyncio.run(svc.is_blocked(user_id="user1", condition_id="cond-1", token_id="tok-1")))
+        self.assertFalse(
+            asyncio.run(svc.is_blocked(user_id="user1", condition_id="cond-1", token_id="tok-1"))
+        )
 
 
 if __name__ == "__main__":

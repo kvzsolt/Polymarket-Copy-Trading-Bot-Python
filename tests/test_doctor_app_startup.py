@@ -1,4 +1,5 @@
 """PR 8: app.py startup honours structured doctor result."""
+
 from __future__ import annotations
 
 import ast
@@ -25,7 +26,7 @@ def test_app_runs_live_doctor_only_when_not_paper_mode():
     # Look for the live doctor call inside a `mode == "live"` branch.
     assert 'run_doctor_checks("live", config=startup_config)' in src
     # And there should be a paper guard preceding it.
-    assert 'paper_trade_only' in src or 'mode == "live"' in src
+    assert "paper_trade_only" in src or 'mode == "live"' in src
 
 
 def test_app_refuses_to_start_when_doctor_returns_blocked():
@@ -61,7 +62,7 @@ def test_paper_mode_skips_live_doctor():
     src_lines = _app_source().splitlines()
     parts: list[str] = []
     for line in live_call_lines:
-        parts.extend(src_lines[max(0, line - 6):line])
+        parts.extend(src_lines[max(0, line - 6) : line])
     nearby = "\n".join(parts)
     assert "live" in nearby
 

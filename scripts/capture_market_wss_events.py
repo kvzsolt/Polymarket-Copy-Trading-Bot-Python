@@ -12,6 +12,7 @@ Usage:
         --target-event book \
         --target-event price_change
 """
+
 from __future__ import annotations
 
 from dotenv import load_dotenv
@@ -55,7 +56,10 @@ async def capture(
     deadline = time.monotonic() + duration_seconds
     event_count = 0
 
-    print(f"Connecting to {MARKET_WS_URL} | tokens={len(tokens)} duration={duration_seconds}s", file=sys.stderr)
+    print(
+        f"Connecting to {MARKET_WS_URL} | tokens={len(tokens)} duration={duration_seconds}s",
+        file=sys.stderr,
+    )
 
     async with websockets.connect(
         MARKET_WS_URL,

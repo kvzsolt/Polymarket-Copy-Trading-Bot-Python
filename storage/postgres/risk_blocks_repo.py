@@ -190,9 +190,7 @@ class RiskBlocksRepo:
                 )
         return _affected(status) > 0
 
-    async def list_active_risk_blocks(
-        self, user_id: str | None = None
-    ) -> list[dict[str, Any]]:
+    async def list_active_risk_blocks(self, user_id: str | None = None) -> list[dict[str, Any]]:
         now = time.time()
         async with self._pool.acquire() as conn:
             if user_id is None:

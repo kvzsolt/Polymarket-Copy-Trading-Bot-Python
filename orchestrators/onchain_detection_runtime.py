@@ -34,6 +34,7 @@ Safety invariants:
     no on-chain signals are produced and the existing REST-polling leader
     path continues unchanged.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -176,9 +177,7 @@ class OnchainDetectionRuntime:
         # favour of this mined one. Per-leader keying (not tx-wide) ensures a
         # mined fill for leaderA does NOT suppress a pending for leaderB in
         # the same tx (Greptile P1 re-review: "Pending matches are dropped").
-        await self._dedupe.supersede_pending(
-            decoded.tx_hash, signal.leader_wallet
-        )
+        await self._dedupe.supersede_pending(decoded.tx_hash, signal.leader_wallet)
         await self._enqueue(signal)
 
     async def _on_pending_tx(self, tx: dict[str, Any]) -> None:
@@ -196,9 +195,7 @@ class OnchainDetectionRuntime:
             # this leader in this tx was already recorded, drop the duplicate
             # (do not double-dispatch). Per-leader keying allows distinct
             # watched-wallet matches in the same tx to each be recorded.
-            is_new = await self._dedupe.record_pending(
-                signal.tx_hash, signal.leader_wallet
-            )
+            is_new = await self._dedupe.record_pending(signal.tx_hash, signal.leader_wallet)
             if not is_new:
                 logger.debug(
                     "onchain_pending_dup_dropped | tx=%s leader=%s",
@@ -280,9 +277,7 @@ class OnchainDetectionRuntime:
                     # (no double dispatch). Per-leader keying ensures a
                     # mined for leaderA does not suppress a pending for
                     # leaderB in the same tx.
-                    if not await self._dedupe.pending_known(
-                        signal.tx_hash, signal.leader_wallet
-                    ):
+                    if not await self._dedupe.pending_known(signal.tx_hash, signal.leader_wallet):
                         continue
                 # Per-fill idempotency gate (Greptile P1 #2 re-review):
                 # mined signals are keyed by ``(tx_hash, log_index)`` so a

@@ -43,9 +43,12 @@ class TestSpreadGateNearMax:
         2000 bps cap, so the bps gate passes. Without an absolute distance
         check this wide-near-1.0 book is accepted."""
         ctx = _ctx(max_spread_bps=2000, max_abs_distance=0.0)
-        assert _risk_mark_passes_sanity(
-            ctx, token_id="t1", best_bid=Decimal("0.95"), best_ask=Decimal("0.97")
-        ) is True
+        assert (
+            _risk_mark_passes_sanity(
+                ctx, token_id="t1", best_bid=Decimal("0.95"), best_ask=Decimal("0.97")
+            )
+            is True
+        )
 
     def test_abs_distance_gate_rejects_wide_spread_near_1_0(self):
         """With an absolute distance cap of 0.02, a 0.02-wide book near 1.0
@@ -53,21 +56,30 @@ class TestSpreadGateNearMax:
         absolute gap is exactly at the limit."""
         ctx = _ctx(max_spread_bps=2000, max_abs_distance=0.02)
         # gap = 0.97 - 0.95 = 0.02 == cap -> reject (>= cap fails closed)
-        assert _risk_mark_passes_sanity(
-            ctx, token_id="t1", best_bid=Decimal("0.95"), best_ask=Decimal("0.97")
-        ) is False
+        assert (
+            _risk_mark_passes_sanity(
+                ctx, token_id="t1", best_bid=Decimal("0.95"), best_ask=Decimal("0.97")
+            )
+            is False
+        )
 
     def test_abs_distance_gate_accepts_tight_book_near_1_0(self):
         ctx = _ctx(max_spread_bps=2000, max_abs_distance=0.02)
-        assert _risk_mark_passes_sanity(
-            ctx, token_id="t1", best_bid=Decimal("0.95"), best_ask=Decimal("0.955")
-        ) is True
+        assert (
+            _risk_mark_passes_sanity(
+                ctx, token_id="t1", best_bid=Decimal("0.95"), best_ask=Decimal("0.955")
+            )
+            is True
+        )
 
     def test_crossed_book_still_rejected(self):
         ctx = _ctx(max_spread_bps=2000, max_abs_distance=0.05)
-        assert _risk_mark_passes_sanity(
-            ctx, token_id="t1", best_bid=Decimal("0.97"), best_ask=Decimal("0.95")
-        ) is False
+        assert (
+            _risk_mark_passes_sanity(
+                ctx, token_id="t1", best_bid=Decimal("0.97"), best_ask=Decimal("0.95")
+            )
+            is False
+        )
 
 
 class TestRestMarkPathAppliesSanityGate:
@@ -87,7 +99,10 @@ class TestRestMarkPathAppliesSanityGate:
         client.get_price = AsyncMock(return_value={"price": "0.95", "size": "10"})
 
         await _fetch_and_store_price(
-            client, "t1", cache, asyncio.Semaphore(1),
+            client,
+            "t1",
+            cache,
+            asyncio.Semaphore(1),
         )
 
         entry = cache.get_fresh("t1", stale_after=100.0)

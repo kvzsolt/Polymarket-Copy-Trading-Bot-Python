@@ -1,4 +1,5 @@
 """Tests for ``services/onchain_detection/pending_tx_detector.py`` (PR2)."""
+
 from __future__ import annotations
 
 from decimal import Decimal
@@ -23,12 +24,10 @@ from services.onchain_detection.trade_detection_models import (
 )
 
 _ORDER_TUPLE = (
-    "(uint256,address,address,uint256,uint256,uint256,"
-    "uint8,uint8,uint256,bytes32,bytes32,bytes)"
+    "(uint256,address,address,uint256,uint256,uint256,uint8,uint8,uint256,bytes32,bytes32,bytes)"
 )
 _MATCH_ORDERS_TYPE = (
-    f"(bytes32,{_ORDER_TUPLE},{_ORDER_TUPLE}[],"
-    "uint256,uint256[],uint256,uint256[])"
+    f"(bytes32,{_ORDER_TUPLE},{_ORDER_TUPLE}[],uint256,uint256[],uint256,uint256[])"
 )
 _WATCHED = "0x" + "ab" * 20
 _WATCHED_MAKER = "0x" + "cd" * 20
@@ -37,7 +36,13 @@ _TX = "0x" + "12" * 32
 _COND = b"\x02" * 32
 
 
-def _mk_order(maker: str, side: int = MAKER_SIDE_BUY, token_id: int = 456, maker_amount: int = 2_000_000, taker_amount: int = 1_000_000) -> tuple:
+def _mk_order(
+    maker: str,
+    side: int = MAKER_SIDE_BUY,
+    token_id: int = 456,
+    maker_amount: int = 2_000_000,
+    taker_amount: int = 1_000_000,
+) -> tuple:
     return (
         123,
         maker,
@@ -67,7 +72,9 @@ def _encode(
     return MATCH_ORDERS_SELECTOR + encode([_MATCH_ORDERS_TYPE], payload)
 
 
-def _tx(input_bytes: bytes, to: str = POLYMARKET_CTF_EXCHANGE_V2_ADDRESS, tx_hash: str = _TX) -> dict:
+def _tx(
+    input_bytes: bytes, to: str = POLYMARKET_CTF_EXCHANGE_V2_ADDRESS, tx_hash: str = _TX
+) -> dict:
     return {
         "hash": tx_hash,
         "to": to,
@@ -132,7 +139,13 @@ def test_build_signals_watched_taker() -> None:
 
 def test_build_signals_watched_maker() -> None:
     taker = _mk_order(_UNWATCHED, side=MAKER_SIDE_BUY)
-    maker = _mk_order(_WATCHED_MAKER, side=MAKER_SIDE_SELL, token_id=321, maker_amount=1_000_000, taker_amount=2_000_000)
+    maker = _mk_order(
+        _WATCHED_MAKER,
+        side=MAKER_SIDE_SELL,
+        token_id=321,
+        maker_amount=1_000_000,
+        taker_amount=2_000_000,
+    )
     calldata = _encode(taker, [maker])
     tx = _tx(calldata)
     signals = build_signals_from_pending_tx(tx, {_WATCHED_MAKER}, recv_ts_ms=1000)

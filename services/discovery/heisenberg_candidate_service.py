@@ -164,13 +164,17 @@ class HeisenbergDiscoveryPolicy:
                 raise ValueError(f"{name} must not be negative")
 
         if self.required_wallet360_windows > len(windows):
-            raise ValueError("required_wallet360_windows must not exceed configured wallet360_windows")
+            raise ValueError(
+                "required_wallet360_windows must not exceed configured wallet360_windows"
+            )
         if self.min_recent_trades > self.max_recent_trades:
             raise ValueError("min_recent_trades must not exceed max_recent_trades")
         if self.min_short_trade_count > self.max_recent_trades:
             raise ValueError("min_short_trade_count must not exceed max_recent_trades")
         if self.leaderboard_min_trades_15d > self.leaderboard_max_trades_15d:
-            raise ValueError("leaderboard_min_trades_15d must not exceed leaderboard_max_trades_15d")
+            raise ValueError(
+                "leaderboard_min_trades_15d must not exceed leaderboard_max_trades_15d"
+            )
 
         decimal_fields = (
             "price_jump_min_change_pct",
@@ -218,10 +222,11 @@ class HeisenbergDiscoveryPolicy:
         if self.price_jump_min_change_pct < _ZERO:
             raise ValueError("price_jump_min_change_pct must not be negative")
         if self.leaderboard_min_win_rate_15d > self.leaderboard_max_win_rate_15d:
-            raise ValueError("leaderboard_min_win_rate_15d must not exceed leaderboard_max_win_rate_15d")
+            raise ValueError(
+                "leaderboard_min_win_rate_15d must not exceed leaderboard_max_win_rate_15d"
+            )
         if not isinstance(self.bankroll, BankrollCompatibilityPolicy):
             raise ValueError("bankroll must be a BankrollCompatibilityPolicy")
-
 
 
 @dataclass(slots=True)
@@ -257,9 +262,7 @@ class HeisenbergCandidateService:
         self._capacity_probe = capacity_probe
         self._now = now or (lambda: datetime.now(timezone.utc))
         self._semaphore = asyncio.Semaphore(self._policy.candidate_concurrency)
-        self._market_tasks: dict[
-            str, asyncio.Task[tuple[MarketSnapshot | None, str | None]]
-        ] = {}
+        self._market_tasks: dict[str, asyncio.Task[tuple[MarketSnapshot | None, str | None]]] = {}
         self._quality_tasks: dict[
             str, asyncio.Task[tuple[Market360Snapshot | None, str | None]]
         ] = {}
@@ -453,9 +456,14 @@ class HeisenbergCandidateService:
             if len(condition_ids) >= self._policy.max_recent_markets_per_wallet:
                 break
         market_pairs = await asyncio.gather(
-            *(self._market_and_quality(condition_id, source_errors) for condition_id in condition_ids)
+            *(
+                self._market_and_quality(condition_id, source_errors)
+                for condition_id in condition_ids
+            )
         )
-        markets = {condition: market for condition, market, _quality in market_pairs if market is not None}
+        markets = {
+            condition: market for condition, market, _quality in market_pairs if market is not None
+        }
         market_quality = {
             condition: quality
             for condition, _market, quality in market_pairs
@@ -572,7 +580,9 @@ class HeisenbergCandidateService:
         try:
             rows = await self._client.trades(
                 proxy_wallet=wallet,
-                start_time=int((now - timedelta(hours=self._policy.recent_trade_lookback_hours)).timestamp()),
+                start_time=int(
+                    (now - timedelta(hours=self._policy.recent_trade_lookback_hours)).timestamp()
+                ),
                 end_time=int(now.timestamp()),
                 limit=self._policy.max_recent_trades,
             )
@@ -651,9 +661,7 @@ class HeisenbergCandidateService:
         # label into every affected candidate's evidence instead of mutating the
         # first caller's list from inside the shared task.
         if condition_id not in self._market_tasks:
-            self._market_tasks[condition_id] = asyncio.create_task(
-                self._load_market(condition_id)
-            )
+            self._market_tasks[condition_id] = asyncio.create_task(self._load_market(condition_id))
         if condition_id not in self._quality_tasks:
             self._quality_tasks[condition_id] = asyncio.create_task(
                 self._load_quality(condition_id)
@@ -838,9 +846,7 @@ class HeisenbergCandidateService:
         )
         evidence = DiscoveryEvidence(
             wallet360_windows=tuple(sorted(context.wallet360)),
-            fresh_wallet360_windows=tuple(
-                sorted(item.window_days for item in fresh_snapshots)
-            ),
+            fresh_wallet360_windows=tuple(sorted(item.window_days for item in fresh_snapshots)),
             latest_wallet360_at=latest_snapshot_at,
             last_trade_at=last_trade,
             recent_trade_count=len(trades),
@@ -858,9 +864,7 @@ class HeisenbergCandidateService:
             source_errors=tuple(context.source_errors),
         )
         metrics: dict[str, Any] = {
-            "fresh_wallet360_windows": tuple(
-                sorted(item.window_days for item in fresh_snapshots)
-            ),
+            "fresh_wallet360_windows": tuple(sorted(item.window_days for item in fresh_snapshots)),
             "short_trade_share": str(short_share),
             "median_liquidity_percentile": (
                 str(median_liquidity) if median_liquidity is not None else None
@@ -906,7 +910,9 @@ class HeisenbergCandidateService:
             row_trades = _safe_decimal(row.get("trades")) or _ZERO
             row_win_rate = _safe_decimal(row.get("win_rate"))
             if row_win_rate is not None and row_trades > 0:
-                row_win_rate = row_win_rate / Decimal("100") if abs(row_win_rate) > _ONE else row_win_rate
+                row_win_rate = (
+                    row_win_rate / Decimal("100") if abs(row_win_rate) > _ONE else row_win_rate
+                )
                 weighted_win_numerator += _clamp(row_win_rate) * row_trades
                 weighted_win_denominator += row_trades
         if wins + losses > 0:
@@ -947,9 +953,7 @@ class HeisenbergCandidateService:
         trade_confidence = _clamp(Decimal(snapshot.total_trades or 0) / Decimal("1000"))
         roi = snapshot.roi_fraction
         roi_sanity = (
-            _clamp((roi + Decimal("0.10")) / Decimal("0.30"))
-            if roi is not None
-            else Decimal("0.5")
+            _clamp((roi + Decimal("0.10")) / Decimal("0.30")) if roi is not None else Decimal("0.5")
         )
         return _clamp(trade_confidence * Decimal("0.75") + roi_sanity * Decimal("0.25"))
 
@@ -967,11 +971,7 @@ class HeisenbergCandidateService:
 
         short_window = context.wallet360.get(3) or context.wallet360.get(7)
         long_window = context.wallet360.get(15) or context.wallet360.get(7)
-        roi = (
-            short_window.roi
-            if short_window and short_window.roi is not None
-            else entry.roi_15d
-        )
+        roi = short_window.roi if short_window and short_window.roi is not None else entry.roi_15d
         win_rate = (
             short_window.win_rate
             if short_window and short_window.win_rate is not None
@@ -982,19 +982,14 @@ class HeisenbergCandidateService:
         win_score = _clamp(((win_rate or Decimal("0.5")) - Decimal("0.45")) / Decimal("0.30"))
         pf_score = _clamp(((profit_factor or Decimal("1")) - Decimal("0.8")) / Decimal("1.2"))
         base_performance = (
-            roi_score * Decimal("0.4")
-            + win_score * Decimal("0.3")
-            + pf_score * Decimal("0.3")
+            roi_score * Decimal("0.4") + win_score * Decimal("0.3") + pf_score * Decimal("0.3")
         )
         realized_pnl_corroboration = self._realized_pnl_corroboration(context.pnl_rows)
-        performance = (
-            base_performance * Decimal("0.80")
-            + realized_pnl_corroboration * Decimal("0.20")
+        performance = base_performance * Decimal("0.80") + realized_pnl_corroboration * Decimal(
+            "0.20"
         )
 
-        liquidity = _clamp(
-            (evidence.median_liquidity_percentile or Decimal("0")) / Decimal("100")
-        )
+        liquidity = _clamp((evidence.median_liquidity_percentile or Decimal("0")) / Decimal("100"))
         trajectory_map = {
             "rising": Decimal("1"),
             "improving": Decimal("1"),
@@ -1048,8 +1043,7 @@ class HeisenbergCandidateService:
                 penalty += _clamp(long_window.max_drawdown) * Decimal("0.08")
             if long_window.market_concentration_ratio is not None:
                 penalty += _clamp(
-                    (long_window.market_concentration_ratio - Decimal("0.30"))
-                    / Decimal("0.70")
+                    (long_window.market_concentration_ratio - Decimal("0.30")) / Decimal("0.70")
                 ) * Decimal("0.06")
             if long_window.position_size_volatility_flag:
                 penalty += Decimal("0.04")

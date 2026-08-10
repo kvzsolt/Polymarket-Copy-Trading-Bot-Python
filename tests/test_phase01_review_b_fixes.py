@@ -250,7 +250,8 @@ def test_runtime_bootstrap_raises_when_coordinator_wiring_blocked():
         except Exception as exc:
             rb.logger.error(
                 "runtime_bootstrap.coordinator_wiring_failed user_id=%s error=%r",
-                getattr(context, "user_id", "?"), exc,
+                getattr(context, "user_id", "?"),
+                exc,
             )
             raise RuntimeError(
                 "runtime_bootstrap: failed to attach position_coordinator to "

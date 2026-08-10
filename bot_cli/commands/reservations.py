@@ -1,4 +1,5 @@
 """bot reservations — list active order reservations and totals."""
+
 from __future__ import annotations
 
 import argparse
@@ -16,14 +17,10 @@ if TYPE_CHECKING:
 
 
 def register_reservations_command(subparsers: argparse._SubParsersAction) -> None:
-    parser = subparsers.add_parser(
-        "reservations", help="List active order reservations"
-    )
+    parser = subparsers.add_parser("reservations", help="List active order reservations")
     res_sub = parser.add_subparsers(dest="reservations_subcommand", required=True)
 
-    list_parser = res_sub.add_parser(
-        "list", help="List active reservations and per-user totals"
-    )
+    list_parser = res_sub.add_parser("list", help="List active reservations and per-user totals")
     list_parser.add_argument("--user-id", default=None, help="Filter by user ID")
     list_parser.add_argument(
         "--include-expired",
@@ -128,10 +125,7 @@ async def _list_expired_reservation_candidates(
     async with pool.acquire() as conn:
         rows = await conn.fetch(query, *params)
 
-    return [
-        _classify_expired_reservation(_row_to_dict(row), now_ts=now_ts)
-        for row in rows
-    ]
+    return [_classify_expired_reservation(_row_to_dict(row), now_ts=now_ts) for row in rows]
 
 
 async def _resolve_expired_reservations(
@@ -140,12 +134,9 @@ async def _resolve_expired_reservations(
     from storage.postgres.reservations_repo import ReservationsRepo
 
     candidates = await _list_expired_reservation_candidates(pool, user_id=user_id)
-    safe_rows = [
-        row for row in candidates if row["classification"] == "safe_to_release"
-    ]
+    safe_rows = [row for row in candidates if row["classification"] == "safe_to_release"]
     deferred_rows = [
-        row for row in candidates
-        if row["classification"] == "deferred_reconciliation_required"
+        row for row in candidates if row["classification"] == "deferred_reconciliation_required"
     ]
     released_rows: list[dict] = []
     if apply:

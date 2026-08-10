@@ -43,8 +43,9 @@ def _scorer_config() -> SimpleNamespace:
 
 class _AutoMockModule(types.ModuleType):
     """Module stub that returns MagicMock for any attribute."""
+
     def __getattr__(self, name):
-        if name.startswith('__') and name.endswith('__'):
+        if name.startswith("__") and name.endswith("__"):
             raise AttributeError(name)
         mock = MagicMock()
         setattr(self, name, mock)
@@ -70,12 +71,20 @@ class _MockFinder(importlib.abc.MetaPathFinder):
     for real libraries.
     """
 
-    _ALLOWED = frozenset((
-        # External / heavy deps we don't want to require in unit tests.
-        "py_clob_client_v2", "py_order_utils", "web3",
-        "dotenv", "aiohttp", "motor", "colorama",
-        "eth_account", "hexbytes",
-    ))
+    _ALLOWED = frozenset(
+        (
+            # External / heavy deps we don't want to require in unit tests.
+            "py_clob_client_v2",
+            "py_order_utils",
+            "web3",
+            "dotenv",
+            "aiohttp",
+            "motor",
+            "colorama",
+            "eth_account",
+            "hexbytes",
+        )
+    )
 
     def find_spec(self, fullname, path, target=None):
         top = fullname.split(".")[0]
@@ -86,6 +95,7 @@ class _MockFinder(importlib.abc.MetaPathFinder):
 
 # Install BEFORE any project imports (module-scoped, with teardown below)
 _MOCK_FINDER = _MockFinder()
+
 
 def setUpModule():  # noqa: N802 (unittest-style name)
     sys.meta_path.insert(0, _MOCK_FINDER)
@@ -119,21 +129,21 @@ class TestPositionExitSystem(unittest.TestCase):
         would otherwise set.
         """
         defaults = {
-            'ENABLE_RISK_MGMT': True,
-            'ENABLE_PROFIT_LOCK': True,
-            'PROFIT_LOCK_TRIGGER_PCT': 70,
-            'PROFIT_LOCK_SELL_FRACTION': 0.50,
-            'ENABLE_NEAR_MAX_EXIT': True,
-            'NEAR_MAX_PRICE_EXIT': 0.95,
-            'NEAR_MAX_PRICE_WARN': 0.92,
-            'NEAR_MAX_PRICE_WARN_TRIM_RATIO': 0.50,
-            'ENABLE_TRAILING_STOP': True,
-            'TRAILING_ACTIVATION_PCT': 20,
-            'TRAILING_DISTANCE': 0.05,
-            'ENABLE_STAGED_TP': True,
-            'STAGED_TP_LEVELS': '0.30,0.50',
-            'STAGED_TP_FRACTIONS': '0.25,0.35',
-            'ENABLE_LEADER_DIVERGENCE_EXIT': True,
+            "ENABLE_RISK_MGMT": True,
+            "ENABLE_PROFIT_LOCK": True,
+            "PROFIT_LOCK_TRIGGER_PCT": 70,
+            "PROFIT_LOCK_SELL_FRACTION": 0.50,
+            "ENABLE_NEAR_MAX_EXIT": True,
+            "NEAR_MAX_PRICE_EXIT": 0.95,
+            "NEAR_MAX_PRICE_WARN": 0.92,
+            "NEAR_MAX_PRICE_WARN_TRIM_RATIO": 0.50,
+            "ENABLE_TRAILING_STOP": True,
+            "TRAILING_ACTIVATION_PCT": 20,
+            "TRAILING_DISTANCE": 0.05,
+            "ENABLE_STAGED_TP": True,
+            "STAGED_TP_LEVELS": "0.30,0.50",
+            "STAGED_TP_FRACTIONS": "0.25,0.35",
+            "ENABLE_LEADER_DIVERGENCE_EXIT": True,
         }
         defaults.update(env_overrides)
 
@@ -142,16 +152,20 @@ class TestPositionExitSystem(unittest.TestCase):
         def _csv_floats(s):
             if not s:
                 return []
-            parts = [p.strip() for p in str(s).split(',') if p.strip()]
+            parts = [p.strip() for p in str(s).split(",") if p.strip()]
             return [float(p) for p in parts]
 
         def _staged_level_ratios(s):
             if not s:
                 return []
             ratios = []
-            for part in [p.strip() for p in str(s).split(',') if p.strip()]:
+            for part in [p.strip() for p in str(s).split(",") if p.strip()]:
                 raw = float(part)
-                ratios.append(raw / 100.0 if "." not in part and "e" not in part.lower() and raw > 1.0 else raw)
+                ratios.append(
+                    raw / 100.0
+                    if "." not in part and "e" not in part.lower() and raw > 1.0
+                    else raw
+                )
             return ratios
 
         def _pct_ratio(value):
@@ -169,31 +183,31 @@ class TestPositionExitSystem(unittest.TestCase):
         pm = pm_mod.PositionManager()  # bare defaults branch
 
         # Override all private attrs to match the requested flags.
-        pm._risk_master_enabled = bool(defaults['ENABLE_RISK_MGMT'])
-        pm._enabled = bool(defaults['ENABLE_RISK_MGMT'])
+        pm._risk_master_enabled = bool(defaults["ENABLE_RISK_MGMT"])
+        pm._enabled = bool(defaults["ENABLE_RISK_MGMT"])
 
-        enable_profit_lock = bool(defaults['ENABLE_PROFIT_LOCK'])
-        pm._profit_lock_mode = 'advanced' if enable_profit_lock else 'disabled'
-        pm._profit_lock_trigger = float(defaults['PROFIT_LOCK_TRIGGER_PCT']) / 100.0
-        pm._profit_lock_sell_fraction = float(defaults['PROFIT_LOCK_SELL_FRACTION'])
+        enable_profit_lock = bool(defaults["ENABLE_PROFIT_LOCK"])
+        pm._profit_lock_mode = "advanced" if enable_profit_lock else "disabled"
+        pm._profit_lock_trigger = float(defaults["PROFIT_LOCK_TRIGGER_PCT"]) / 100.0
+        pm._profit_lock_sell_fraction = float(defaults["PROFIT_LOCK_SELL_FRACTION"])
 
-        pm._enable_near_max = bool(defaults['ENABLE_NEAR_MAX_EXIT'])
-        pm._near_max_exit = float(defaults['NEAR_MAX_PRICE_EXIT'])
-        pm._near_max_warn = float(defaults['NEAR_MAX_PRICE_WARN'])
-        pm._near_max_warn_ratio = float(defaults['NEAR_MAX_PRICE_WARN_TRIM_RATIO'])
+        pm._enable_near_max = bool(defaults["ENABLE_NEAR_MAX_EXIT"])
+        pm._near_max_exit = float(defaults["NEAR_MAX_PRICE_EXIT"])
+        pm._near_max_warn = float(defaults["NEAR_MAX_PRICE_WARN"])
+        pm._near_max_warn_ratio = float(defaults["NEAR_MAX_PRICE_WARN_TRIM_RATIO"])
 
-        pm._enable_trailing = bool(defaults['ENABLE_TRAILING_STOP'])
+        pm._enable_trailing = bool(defaults["ENABLE_TRAILING_STOP"])
         pm._trailing_activation_auto, pm._trailing_activation_pct = _trailing_activation(
-            defaults['TRAILING_ACTIVATION_PCT']
+            defaults["TRAILING_ACTIVATION_PCT"]
         )
-        pm._trailing_distance = _pct_ratio(defaults['TRAILING_DISTANCE'])
+        pm._trailing_distance = _pct_ratio(defaults["TRAILING_DISTANCE"])
 
-        pm._enable_staged_tp = bool(defaults['ENABLE_STAGED_TP'])
-        raw_fractions = _csv_floats(defaults['STAGED_TP_FRACTIONS'])
-        pm._staged_levels = _staged_level_ratios(defaults['STAGED_TP_LEVELS']) or [0.30, 0.50]
+        pm._enable_staged_tp = bool(defaults["ENABLE_STAGED_TP"])
+        raw_fractions = _csv_floats(defaults["STAGED_TP_FRACTIONS"])
+        pm._staged_levels = _staged_level_ratios(defaults["STAGED_TP_LEVELS"]) or [0.30, 0.50]
         pm._staged_fractions = raw_fractions or [0.25, 0.35]
 
-        pm._enable_leader_divergence = bool(defaults['ENABLE_LEADER_DIVERGENCE_EXIT'])
+        pm._enable_leader_divergence = bool(defaults["ENABLE_LEADER_DIVERGENCE_EXIT"])
 
         return pm
 
@@ -235,7 +249,8 @@ class TestPositionExitSystem(unittest.TestCase):
             a1 = pm.evaluate_risk_action(cid, 0.99)
         assert a1["reason"] == "near_max_full_exit"
         info1 = [
-            r for r in cap1.records
+            r
+            for r in cap1.records
             if r.levelno == logging.INFO and "NEAR-MAX full exit" in r.getMessage()
         ]
         assert len(info1) == 1
@@ -258,13 +273,14 @@ class TestPositionExitSystem(unittest.TestCase):
         pm = self._make_pm()
         cid = self._add_position(pm, entry_price=0.50)
 
-        pm.evaluate_risk_action(cid, 0.99)          # first cross → INFO + flag set
-        pm.evaluate_risk_action(cid, 0.80)          # below threshold → flag cleared
+        pm.evaluate_risk_action(cid, 0.99)  # first cross → INFO + flag set
+        pm.evaluate_risk_action(cid, 0.80)  # below threshold → flag cleared
         with self.assertLogs(pm_mod.logger, level="INFO") as cap:
             again = pm.evaluate_risk_action(cid, 0.99)  # re-cross → INFO again
         assert again["reason"] == "near_max_full_exit"
         info = [
-            r for r in cap.records
+            r
+            for r in cap.records
             if r.levelno == logging.INFO and "NEAR-MAX full exit" in r.getMessage()
         ]
         assert len(info) == 1
@@ -352,16 +368,18 @@ class TestPositionExitSystem(unittest.TestCase):
         from tests.config_helpers import load_test_config
         from services.positionManager import PositionManager
 
-        cfg = load_test_config({
-            "PRIVATE_KEY": "0x" + "a" * 64,
-            "FUNDER_ADDRESS": "0x" + "b" * 40,
-            "RPC_URL": "https://polygon-rpc.example.com",
-            "CHAIN_ID": "137",
-            "USER_ADDRESS": "0x" + "c" * 40,
-            "ENABLE_RISK_MGMT": "true",
-            "ENABLE_STAGED_TP": "true",
-            "ENABLE_NEAR_MAX_EXIT": "false",
-        })
+        cfg = load_test_config(
+            {
+                "PRIVATE_KEY": "0x" + "a" * 64,
+                "FUNDER_ADDRESS": "0x" + "b" * 40,
+                "RPC_URL": "https://polygon-rpc.example.com",
+                "CHAIN_ID": "137",
+                "USER_ADDRESS": "0x" + "c" * 40,
+                "ENABLE_RISK_MGMT": "true",
+                "ENABLE_STAGED_TP": "true",
+                "ENABLE_NEAR_MAX_EXIT": "false",
+            }
+        )
         pm = PositionManager(config=cfg)
         cid = self._add_position(pm, entry_price=0.50)
 
@@ -375,18 +393,20 @@ class TestPositionExitSystem(unittest.TestCase):
         from tests.config_helpers import load_test_config
         from services.positionManager import PositionManager
 
-        cfg = load_test_config({
-            "PRIVATE_KEY": "0x" + "a" * 64,
-            "FUNDER_ADDRESS": "0x" + "b" * 40,
-            "RPC_URL": "https://polygon-rpc.example.com",
-            "CHAIN_ID": "137",
-            "USER_ADDRESS": "0x" + "c" * 40,
-            "ENABLE_RISK_MGMT": "true",
-            "ENABLE_STAGED_TP": "true",
-            "STAGED_TP_LEVELS": "130",
-            "STAGED_TP_FRACTIONS": "0.25",
-            "ENABLE_NEAR_MAX_EXIT": "false",
-        })
+        cfg = load_test_config(
+            {
+                "PRIVATE_KEY": "0x" + "a" * 64,
+                "FUNDER_ADDRESS": "0x" + "b" * 40,
+                "RPC_URL": "https://polygon-rpc.example.com",
+                "CHAIN_ID": "137",
+                "USER_ADDRESS": "0x" + "c" * 40,
+                "ENABLE_RISK_MGMT": "true",
+                "ENABLE_STAGED_TP": "true",
+                "STAGED_TP_LEVELS": "130",
+                "STAGED_TP_FRACTIONS": "0.25",
+                "ENABLE_NEAR_MAX_EXIT": "false",
+            }
+        )
         pm = PositionManager(config=cfg)
         cid = self._add_position(pm, entry_price=0.40)
 
@@ -401,18 +421,20 @@ class TestPositionExitSystem(unittest.TestCase):
         from tests.config_helpers import load_test_config
         from services.positionManager import PositionManager
 
-        cfg = load_test_config({
-            "PRIVATE_KEY": "0x" + "a" * 64,
-            "FUNDER_ADDRESS": "0x" + "b" * 40,
-            "RPC_URL": "https://polygon-rpc.example.com",
-            "CHAIN_ID": "137",
-            "USER_ADDRESS": "0x" + "c" * 40,
-            "ENABLE_RISK_MGMT": "true",
-            "ENABLE_STAGED_TP": "true",
-            "STAGED_TP_LEVELS": "1.30",
-            "STAGED_TP_FRACTIONS": "0.25",
-            "ENABLE_NEAR_MAX_EXIT": "false",
-        })
+        cfg = load_test_config(
+            {
+                "PRIVATE_KEY": "0x" + "a" * 64,
+                "FUNDER_ADDRESS": "0x" + "b" * 40,
+                "RPC_URL": "https://polygon-rpc.example.com",
+                "CHAIN_ID": "137",
+                "USER_ADDRESS": "0x" + "c" * 40,
+                "ENABLE_RISK_MGMT": "true",
+                "ENABLE_STAGED_TP": "true",
+                "STAGED_TP_LEVELS": "1.30",
+                "STAGED_TP_FRACTIONS": "0.25",
+                "ENABLE_NEAR_MAX_EXIT": "false",
+            }
+        )
         pm = PositionManager(config=cfg)
         cid = self._add_position(pm, entry_price=0.40)
 
@@ -427,18 +449,20 @@ class TestPositionExitSystem(unittest.TestCase):
         from tests.config_helpers import load_test_config
         from services.positionManager import PositionManager
 
-        cfg = load_test_config({
-            "PRIVATE_KEY": "0x" + "a" * 64,
-            "FUNDER_ADDRESS": "0x" + "b" * 40,
-            "RPC_URL": "https://polygon-rpc.example.com",
-            "CHAIN_ID": "137",
-            "USER_ADDRESS": "0x" + "c" * 40,
-            "ENABLE_RISK_MGMT": "true",
-            "ENABLE_STAGED_TP": "true",
-            "STAGED_TP_LEVELS": "30,50",
-            "STAGED_TP_FRACTIONS": "0.25,0.35",
-            "ENABLE_NEAR_MAX_EXIT": "false",
-        })
+        cfg = load_test_config(
+            {
+                "PRIVATE_KEY": "0x" + "a" * 64,
+                "FUNDER_ADDRESS": "0x" + "b" * 40,
+                "RPC_URL": "https://polygon-rpc.example.com",
+                "CHAIN_ID": "137",
+                "USER_ADDRESS": "0x" + "c" * 40,
+                "ENABLE_RISK_MGMT": "true",
+                "ENABLE_STAGED_TP": "true",
+                "STAGED_TP_LEVELS": "30,50",
+                "STAGED_TP_FRACTIONS": "0.25,0.35",
+                "ENABLE_NEAR_MAX_EXIT": "false",
+            }
+        )
         pm = PositionManager(config=cfg)
         cid = self._add_position(pm, entry_price=0.50)
 
@@ -554,7 +578,9 @@ class TestPositionExitSystem(unittest.TestCase):
         assert action["reason"] == "near_max_full_exit"
 
     def test_trailing_disabled(self):
-        pm = self._make_pm(ENABLE_TRAILING_STOP=False, ENABLE_PROFIT_LOCK=False, ENABLE_STAGED_TP=False)
+        pm = self._make_pm(
+            ENABLE_TRAILING_STOP=False, ENABLE_PROFIT_LOCK=False, ENABLE_STAGED_TP=False
+        )
         cid = self._add_position(pm, entry_price=0.50)
         pm.evaluate_risk_action(cid, 0.70)
         action = pm.evaluate_risk_action(cid, 0.60)
@@ -563,7 +589,9 @@ class TestPositionExitSystem(unittest.TestCase):
     # ── Leader Divergence ──
 
     def test_leader_divergence(self):
-        pm = self._make_pm(ENABLE_PROFIT_LOCK=False, ENABLE_STAGED_TP=False, ENABLE_TRAILING_STOP=False)
+        pm = self._make_pm(
+            ENABLE_PROFIT_LOCK=False, ENABLE_STAGED_TP=False, ENABLE_TRAILING_STOP=False
+        )
         cid = self._add_position(pm, entry_price=0.50)
         pm.signal_leader_divergence(cid)
         action = pm.evaluate_risk_action(cid, 0.55)
@@ -572,7 +600,9 @@ class TestPositionExitSystem(unittest.TestCase):
         assert action["size_fraction"] == pytest.approx(0.50)
 
     def test_leader_divergence_fires_once(self):
-        pm = self._make_pm(ENABLE_PROFIT_LOCK=False, ENABLE_STAGED_TP=False, ENABLE_TRAILING_STOP=False)
+        pm = self._make_pm(
+            ENABLE_PROFIT_LOCK=False, ENABLE_STAGED_TP=False, ENABLE_TRAILING_STOP=False
+        )
         cid = self._add_position(pm, entry_price=0.50)
         pm.signal_leader_divergence(cid)
         action1 = pm.evaluate_risk_action(cid, 0.55)
@@ -596,22 +626,22 @@ class TestPositionExitSystem(unittest.TestCase):
 
 
 class TestLeaderScoringIntegration(unittest.TestCase):
-
     def _mock_env(self):
         return {
-            'LEADER_SCORE_BALANCE_TARGET_USDC': 500.0,
-            'LEADER_SCORE_PNL_BONUS_CAP': 0.1,
-            'LEADER_SCORE_ACTIVITY_TARGET': 8,
-            'LEADER_SCORE_WEIGHT_BALANCE': 0.35,
-            'LEADER_SCORE_WEIGHT_ANALYTICS': 0.45,
-            'LEADER_SCORE_WEIGHT_ACTIVITY': 0.20,
-            'LEADER_SCORE_FLOOR': 0.10,
-            'TRUST_SIZE_MULTIPLIER_MIN': 0.50,
-            'TRUST_SIZE_MULTIPLIER_MAX': 1.25,
+            "LEADER_SCORE_BALANCE_TARGET_USDC": 500.0,
+            "LEADER_SCORE_PNL_BONUS_CAP": 0.1,
+            "LEADER_SCORE_ACTIVITY_TARGET": 8,
+            "LEADER_SCORE_WEIGHT_BALANCE": 0.35,
+            "LEADER_SCORE_WEIGHT_ANALYTICS": 0.45,
+            "LEADER_SCORE_WEIGHT_ACTIVITY": 0.20,
+            "LEADER_SCORE_FLOOR": 0.10,
+            "TRUST_SIZE_MULTIPLIER_MIN": 0.50,
+            "TRUST_SIZE_MULTIPLIER_MAX": 1.25,
         }
 
     def test_scoring_without_discovery(self):
         import services.leaderScoringService as ls_mod
+
         scorer = ls_mod.LeaderScoringService(config=_scorer_config())
         result = scorer.score_leader(
             "0x1234567890abcdef1234567890abcdef12345678",
@@ -623,6 +653,7 @@ class TestLeaderScoringIntegration(unittest.TestCase):
 
     def test_trust_multiplier(self):
         import services.leaderScoringService as ls_mod
+
         scorer = ls_mod.LeaderScoringService(config=_scorer_config())
         assert scorer.trust_multiplier(0.0) == pytest.approx(0.50)
         assert scorer.trust_multiplier(1.0) == pytest.approx(1.25)
@@ -635,16 +666,23 @@ class TestLeaderScoringIntegration(unittest.TestCase):
 
 
 class TestFeatureFlags(unittest.TestCase):
-
     def _make_pm(self, **overrides):
         defaults = {
-            'ENABLE_RISK_MGMT': True,
-            'ENABLE_PROFIT_LOCK': False, 'PROFIT_LOCK_TRIGGER_PCT': 70, 'PROFIT_LOCK_SELL_FRACTION': 0.50,
-            'ENABLE_NEAR_MAX_EXIT': False, 'NEAR_MAX_PRICE_EXIT': 0.95, 'NEAR_MAX_PRICE_WARN': 0.92,
-            'NEAR_MAX_PRICE_WARN_TRIM_RATIO': 0.50,
-            'ENABLE_TRAILING_STOP': False, 'TRAILING_ACTIVATION_PCT': 20, 'TRAILING_DISTANCE': 0.05,
-            'ENABLE_STAGED_TP': False, 'STAGED_TP_LEVELS': '0.30,0.50', 'STAGED_TP_FRACTIONS': '0.25,0.35',
-            'ENABLE_LEADER_DIVERGENCE_EXIT': False,
+            "ENABLE_RISK_MGMT": True,
+            "ENABLE_PROFIT_LOCK": False,
+            "PROFIT_LOCK_TRIGGER_PCT": 70,
+            "PROFIT_LOCK_SELL_FRACTION": 0.50,
+            "ENABLE_NEAR_MAX_EXIT": False,
+            "NEAR_MAX_PRICE_EXIT": 0.95,
+            "NEAR_MAX_PRICE_WARN": 0.92,
+            "NEAR_MAX_PRICE_WARN_TRIM_RATIO": 0.50,
+            "ENABLE_TRAILING_STOP": False,
+            "TRAILING_ACTIVATION_PCT": 20,
+            "TRAILING_DISTANCE": 0.05,
+            "ENABLE_STAGED_TP": False,
+            "STAGED_TP_LEVELS": "0.30,0.50",
+            "STAGED_TP_FRACTIONS": "0.25,0.35",
+            "ENABLE_LEADER_DIVERGENCE_EXIT": False,
         }
         defaults.update(overrides)
 
@@ -653,16 +691,20 @@ class TestFeatureFlags(unittest.TestCase):
         def _csv_floats(s):
             if not s:
                 return []
-            parts = [p.strip() for p in str(s).split(',') if p.strip()]
+            parts = [p.strip() for p in str(s).split(",") if p.strip()]
             return [float(p) for p in parts]
 
         def _staged_level_ratios(s):
             if not s:
                 return []
             ratios = []
-            for part in [p.strip() for p in str(s).split(',') if p.strip()]:
+            for part in [p.strip() for p in str(s).split(",") if p.strip()]:
                 raw = float(part)
-                ratios.append(raw / 100.0 if "." not in part and "e" not in part.lower() and raw > 1.0 else raw)
+                ratios.append(
+                    raw / 100.0
+                    if "." not in part and "e" not in part.lower() and raw > 1.0
+                    else raw
+                )
             return ratios
 
         def _pct_ratio(value):
@@ -678,25 +720,25 @@ class TestFeatureFlags(unittest.TestCase):
             return False, float(value) / 100.0
 
         pm = pm_mod.PositionManager()
-        pm._risk_master_enabled = bool(defaults['ENABLE_RISK_MGMT'])
-        pm._enabled = bool(defaults['ENABLE_RISK_MGMT'])
-        pm._profit_lock_mode = 'advanced' if defaults['ENABLE_PROFIT_LOCK'] else 'disabled'
-        pm._profit_lock_trigger = float(defaults['PROFIT_LOCK_TRIGGER_PCT']) / 100.0
-        pm._profit_lock_sell_fraction = float(defaults['PROFIT_LOCK_SELL_FRACTION'])
-        pm._enable_near_max = bool(defaults['ENABLE_NEAR_MAX_EXIT'])
-        pm._near_max_exit = float(defaults['NEAR_MAX_PRICE_EXIT'])
-        pm._near_max_warn = float(defaults['NEAR_MAX_PRICE_WARN'])
-        pm._near_max_warn_ratio = float(defaults['NEAR_MAX_PRICE_WARN_TRIM_RATIO'])
-        pm._enable_trailing = bool(defaults['ENABLE_TRAILING_STOP'])
+        pm._risk_master_enabled = bool(defaults["ENABLE_RISK_MGMT"])
+        pm._enabled = bool(defaults["ENABLE_RISK_MGMT"])
+        pm._profit_lock_mode = "advanced" if defaults["ENABLE_PROFIT_LOCK"] else "disabled"
+        pm._profit_lock_trigger = float(defaults["PROFIT_LOCK_TRIGGER_PCT"]) / 100.0
+        pm._profit_lock_sell_fraction = float(defaults["PROFIT_LOCK_SELL_FRACTION"])
+        pm._enable_near_max = bool(defaults["ENABLE_NEAR_MAX_EXIT"])
+        pm._near_max_exit = float(defaults["NEAR_MAX_PRICE_EXIT"])
+        pm._near_max_warn = float(defaults["NEAR_MAX_PRICE_WARN"])
+        pm._near_max_warn_ratio = float(defaults["NEAR_MAX_PRICE_WARN_TRIM_RATIO"])
+        pm._enable_trailing = bool(defaults["ENABLE_TRAILING_STOP"])
         pm._trailing_activation_auto, pm._trailing_activation_pct = _trailing_activation(
-            defaults['TRAILING_ACTIVATION_PCT']
+            defaults["TRAILING_ACTIVATION_PCT"]
         )
-        pm._trailing_distance = _pct_ratio(defaults['TRAILING_DISTANCE'])
-        pm._enable_staged_tp = bool(defaults['ENABLE_STAGED_TP'])
-        raw_fractions = _csv_floats(defaults['STAGED_TP_FRACTIONS'])
-        pm._staged_levels = _staged_level_ratios(defaults['STAGED_TP_LEVELS']) or [0.30, 0.50]
+        pm._trailing_distance = _pct_ratio(defaults["TRAILING_DISTANCE"])
+        pm._enable_staged_tp = bool(defaults["ENABLE_STAGED_TP"])
+        raw_fractions = _csv_floats(defaults["STAGED_TP_FRACTIONS"])
+        pm._staged_levels = _staged_level_ratios(defaults["STAGED_TP_LEVELS"]) or [0.30, 0.50]
         pm._staged_fractions = raw_fractions or [0.25, 0.35]
-        pm._enable_leader_divergence = bool(defaults['ENABLE_LEADER_DIVERGENCE_EXIT'])
+        pm._enable_leader_divergence = bool(defaults["ENABLE_LEADER_DIVERGENCE_EXIT"])
         return pm
 
     def test_all_optional_exits_disabled_means_no_action(self):

@@ -5,6 +5,7 @@ this module focuses on the depth-only behavior: aggregated side liquidity
 within a percentage band of the mid must be at least ``MIN_BOOK_DEPTH_USDC``
 for the order to be sent.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -194,6 +195,7 @@ def _req(side: str = "BUY", amount: str = "5"):
 @pytest.fixture(autouse=True)
 def _reset_circuit():
     import services.executionService as _es
+
     _es._CLOB_CIRCUIT.reset()
     yield
     _es._CLOB_CIRCUIT.reset()

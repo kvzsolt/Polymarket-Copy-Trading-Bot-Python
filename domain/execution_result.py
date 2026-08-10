@@ -1,4 +1,5 @@
 """Execution result types — outcome of executing an OrderIntent through the coordinator."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

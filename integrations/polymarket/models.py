@@ -4,6 +4,7 @@ Canonical dataclasses that decouple the rest of the codebase from the
 unified Polymarket SDK's own types.  All gateway methods return these types;
 callers should never depend on raw SDK shapes directly.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field

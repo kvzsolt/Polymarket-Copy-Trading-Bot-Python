@@ -6,7 +6,6 @@ from dataclasses import dataclass, field
 from math import inf
 
 
-
 def _metric_key(name: str, labels: dict[str, str] | None = None) -> str:
     if not labels:
         return name
@@ -122,15 +121,9 @@ class MetricsRegistry:
             lines.append(f"# TYPE {name} histogram")
             for boundary, count in zip(state.boundaries, state.counts):
                 le = "+Inf" if boundary == inf else str(boundary)
-                lines.append(
-                    f"{_metric_key(name + '_bucket', {**labels, 'le': le})} {count}"
-                )
-            lines.append(
-                f"{_metric_key(name + '_sum', labels)} {state.total}"
-            )
-            lines.append(
-                f"{_metric_key(name + '_count', labels)} {state.count}"
-            )
+                lines.append(f"{_metric_key(name + '_bucket', {**labels, 'le': le})} {count}")
+            lines.append(f"{_metric_key(name + '_sum', labels)} {state.total}")
+            lines.append(f"{_metric_key(name + '_count', labels)} {state.count}")
         return "\n".join(lines) + "\n"
 
 

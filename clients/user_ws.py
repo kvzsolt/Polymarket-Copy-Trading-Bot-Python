@@ -237,7 +237,9 @@ class UserWebSocket:
             if not self._running:
                 break
 
-            msg = raw_msg.decode("utf-8", errors="replace") if isinstance(raw_msg, bytes) else raw_msg
+            msg = (
+                raw_msg.decode("utf-8", errors="replace") if isinstance(raw_msg, bytes) else raw_msg
+            )
             # Any inbound frame proves the pipe is alive; treat as a pong
             # for the missed-pong detector.
             self._last_pong_monotonic = time.monotonic()
@@ -485,10 +487,7 @@ def _token_id_from_event(event: dict[str, Any]) -> str | None:
     # cache eviction at the call sites would silently miss (wrong key) —
     # stale book/quote data could survive own-fill events. Drop it.
     raw = (
-        event.get("asset_id")
-        or event.get("asset")
-        or event.get("token_id")
-        or event.get("tokenId")
+        event.get("asset_id") or event.get("asset") or event.get("token_id") or event.get("tokenId")
     )
     if raw is None:
         return None

@@ -196,8 +196,7 @@ async def create_polymarket_client(
         resolved_wallet = str(secure_client.wallet)
         if str(secure_client.wallet_type) != "DEPOSIT_WALLET":
             raise RuntimeError(
-                "authenticated wallet must resolve to DEPOSIT_WALLET "
-                "(POLY_1271/signature type 3)"
+                "authenticated wallet must resolve to DEPOSIT_WALLET (POLY_1271/signature type 3)"
             )
         if configured_wallet and configured_wallet.lower() != resolved_wallet.lower():
             raise ValueError(

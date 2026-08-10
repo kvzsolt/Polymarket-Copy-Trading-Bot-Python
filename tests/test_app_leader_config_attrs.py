@@ -40,6 +40,5 @@ def test_app_copy_trading_attribute_accesses_exist_on_config() -> None:
         and node.attr not in allowed
     ]
     assert not bad, (
-        "app.py accesses attributes that do not exist on CopyTradingConfig "
-        f"(line, attr): {bad}"
+        f"app.py accesses attributes that do not exist on CopyTradingConfig (line, attr): {bad}"
     )

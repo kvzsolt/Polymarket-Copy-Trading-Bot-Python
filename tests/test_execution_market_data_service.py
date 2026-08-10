@@ -9,6 +9,7 @@ Tests:
   - ExecutionService does not call get_price
   - quote/book/tick all come from MarketDataBundle
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -125,9 +126,7 @@ def _make_svc(
     if exec_config is None:
         exec_config = make_exec_config()
     if submit_result is None:
-        submit_result = VenueSubmitResult(
-            success=True, order_id="ord-test", status="submitted"
-        )
+        submit_result = VenueSubmitResult(success=True, order_id="ord-test", status="submitted")
     repo = OrdersRepo(pool)
     gateway = make_clob_gateway(submit_result=submit_result)
     svc = ExecutionService(
@@ -159,6 +158,7 @@ def _request(**overrides) -> ExecutionRequest:
 @pytest.fixture(autouse=True)
 def _reset_circuit():
     import services.executionService as _es
+
     _es._CLOB_CIRCUIT.reset()
     yield
     _es._CLOB_CIRCUIT.reset()
@@ -167,6 +167,7 @@ def _reset_circuit():
 # ---------------------------------------------------------------------------
 # Dirty market state blocks execution
 # ---------------------------------------------------------------------------
+
 
 class TestDirtyMarketBlocks:
     @pytest.mark.asyncio
@@ -187,6 +188,7 @@ class TestDirtyMarketBlocks:
 # ---------------------------------------------------------------------------
 # Stale market state blocks execution
 # ---------------------------------------------------------------------------
+
 
 class TestStaleMarketBlocks:
     @pytest.mark.asyncio
@@ -209,6 +211,7 @@ class TestStaleMarketBlocks:
 # Resolved market blocks execution
 # ---------------------------------------------------------------------------
 
+
 class TestResolvedMarketBlocks:
     @pytest.mark.asyncio
     async def test_resolved_market_returns_not_ready(self) -> None:
@@ -229,15 +232,14 @@ class TestResolvedMarketBlocks:
 # Missing tick blocks execution
 # ---------------------------------------------------------------------------
 
+
 class TestMissingTickBlocks:
     @pytest.mark.asyncio
     async def test_missing_tick_raises_stale_error(self) -> None:
         async with _pg_pool() as pool:
             mds = AsyncMock()
             mds.require_fresh_data = AsyncMock(
-                side_effect=StaleDataError(
-                    f"market data not executable for {TOKEN}; tick missing"
-                )
+                side_effect=StaleDataError(f"market data not executable for {TOKEN}; tick missing")
             )
             svc, _ = _make_svc(mds, pool=pool)
             result = await svc.execute(_request())
@@ -249,6 +251,7 @@ class TestMissingTickBlocks:
 # ---------------------------------------------------------------------------
 # Missing min_order_size blocks execution
 # ---------------------------------------------------------------------------
+
 
 class TestMissingMinOrderSizeBlocks:
     @pytest.mark.asyncio
@@ -289,6 +292,7 @@ class TestMissingMinOrderSizeBlocks:
 # ExecutionService does not call get_price
 # ---------------------------------------------------------------------------
 
+
 class TestNoGetPriceCall:
     def test_get_price_not_in_execute_source(self) -> None:
         """execute() must not call raw get_price."""
@@ -305,7 +309,9 @@ class TestNoGetPriceCall:
             repo = OrdersRepo(pool)
             gateway = make_clob_gateway()
             svc = ExecutionService(
-                clob_client, _FeeSvc(), repo,
+                clob_client,
+                _FeeSvc(),
+                repo,
                 config=make_exec_config(),
                 clob_gateway=gateway,
                 market_data_service=mds,
@@ -317,6 +323,7 @@ class TestNoGetPriceCall:
 # ---------------------------------------------------------------------------
 # quote/book/tick all come from MarketDataBundle
 # ---------------------------------------------------------------------------
+
 
 class TestBundleDataFlows:
     @pytest.mark.asyncio
@@ -357,9 +364,7 @@ class TestBundleDataFlows:
             """tick_size in the gateway request matches bundle.tick.tick_size."""
             tick_size = Decimal("0.001")
             mds = AsyncMock()
-            mds.require_fresh_data = AsyncMock(
-                return_value=_make_bundle(tick_size=tick_size)
-            )
+            mds.require_fresh_data = AsyncMock(return_value=_make_bundle(tick_size=tick_size))
             svc, gateway = _make_svc(mds, pool=pool)
             await svc.execute(_request())
 
@@ -371,9 +376,7 @@ class TestBundleDataFlows:
         async with _pg_pool() as pool:
             """neg_risk in gateway request matches bundle.tick.neg_risk."""
             mds = AsyncMock()
-            mds.require_fresh_data = AsyncMock(
-                return_value=_make_bundle(neg_risk=True)
-            )
+            mds.require_fresh_data = AsyncMock(return_value=_make_bundle(neg_risk=True))
             svc, gateway = _make_svc(mds, pool=pool)
             await svc.execute(_request())
 
@@ -396,6 +399,7 @@ class TestBundleDataFlows:
 # MDS not wired → fail closed
 # ---------------------------------------------------------------------------
 
+
 class TestMdsNotWiredFailsClosed:
     @pytest.mark.asyncio
     async def test_no_mds_returns_rejected(self) -> None:
@@ -403,7 +407,9 @@ class TestMdsNotWiredFailsClosed:
             repo = OrdersRepo(pool)
             gateway = make_clob_gateway()
             svc = ExecutionService(
-                object(), _FeeSvc(), repo,
+                object(),
+                _FeeSvc(),
+                repo,
                 config=make_exec_config(),
                 clob_gateway=gateway,
                 market_data_service=None,
@@ -420,15 +426,14 @@ class TestMdsNotWiredFailsClosed:
 # Missing quote blocks execution
 # ---------------------------------------------------------------------------
 
+
 class TestMissingQuoteBlocks:
     @pytest.mark.asyncio
     async def test_missing_quote_returns_stale_status(self) -> None:
         async with _pg_pool() as pool:
             mds = AsyncMock()
             mds.require_fresh_data = AsyncMock(
-                side_effect=StaleDataError(
-                    f"market data not executable for {TOKEN}; quote missing"
-                )
+                side_effect=StaleDataError(f"market data not executable for {TOKEN}; quote missing")
             )
             svc, gateway = _make_svc(mds, pool=pool)
             result = await svc.execute(_request())
@@ -443,15 +448,14 @@ class TestMissingQuoteBlocks:
 # Missing book blocks execution
 # ---------------------------------------------------------------------------
 
+
 class TestMissingBookBlocks:
     @pytest.mark.asyncio
     async def test_missing_book_returns_stale_status(self) -> None:
         async with _pg_pool() as pool:
             mds = AsyncMock()
             mds.require_fresh_data = AsyncMock(
-                side_effect=StaleDataError(
-                    f"market data not executable for {TOKEN}; book missing"
-                )
+                side_effect=StaleDataError(f"market data not executable for {TOKEN}; book missing")
             )
             svc, gateway = _make_svc(mds, pool=pool)
             result = await svc.execute(_request())
@@ -465,6 +469,7 @@ class TestMissingBookBlocks:
 # ---------------------------------------------------------------------------
 # Spread gate uses MarketDataBundle quote/book values
 # ---------------------------------------------------------------------------
+
 
 class TestSpreadGateUsesBundle:
     @pytest.mark.asyncio
@@ -483,9 +488,7 @@ class TestSpreadGateUsesBundle:
                     tick_size=Decimal("0.01"),
                 )
             )
-            svc, gateway = _make_svc(
-                mds, pool=pool, exec_config=exec_config
-            )
+            svc, gateway = _make_svc(mds, pool=pool, exec_config=exec_config)
             result = await svc.execute(_request())
 
             assert result.accepted is False

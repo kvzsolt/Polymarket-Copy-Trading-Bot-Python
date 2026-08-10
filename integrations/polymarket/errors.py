@@ -6,6 +6,7 @@ Errors are split into two hierarchies:
 
 All gateway methods raise these instead of returning error dicts.
 """
+
 from __future__ import annotations
 
 

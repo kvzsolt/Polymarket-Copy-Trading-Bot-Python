@@ -1,4 +1,5 @@
 """Phase 9 — book quality gate: reject executions when bid/ask spread is too wide."""
+
 from __future__ import annotations
 
 import asyncio
@@ -149,6 +150,7 @@ def _req(amount: str = "10", side: str = "BUY", **overrides):
 def _reset_circuit():
     """Reset circuit breaker so it doesn't interfere."""
     import services.executionService as _es
+
     _es._CLOB_CIRCUIT.reset()
     yield
     _es._CLOB_CIRCUIT.reset()
@@ -475,7 +477,9 @@ class TestBookQualityGate:
         svc._config.execution.execution_require_fresh_book = True
         req = _req()
         asyncio.new_event_loop().run_until_complete(svc.execute(req))
-        svc._market_data_service.require_fresh_data.assert_awaited_once_with("0xabc", side="BUY", condition_id=None)
+        svc._market_data_service.require_fresh_data.assert_awaited_once_with(
+            "0xabc", side="BUY", condition_id=None
+        )
 
     def test_sell_side_also_gated(self):
         """Spread gate applies to SELL orders too."""
@@ -530,6 +534,7 @@ class TestSpreadMetrics:
 
     def test_spread_metrics_include_absolute_relative_and_ticks(self):
         from services.executionService import _calculate_book_spread_metrics
+
         metrics = _calculate_book_spread_metrics(
             best_bid=Decimal("0.50"),
             best_ask=Decimal("0.51"),

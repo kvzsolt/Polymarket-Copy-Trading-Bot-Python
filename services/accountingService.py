@@ -31,17 +31,13 @@ def _required_decimal_str(doc: dict[str, Any], key: str) -> str:
     try:
         parsed = Decimal(str(value))
     except (InvalidOperation, ValueError) as exc:
-        raise ValueError(
-            f"book_fill field {key!r} is not a valid decimal: {value!r}"
-        ) from exc
+        raise ValueError(f"book_fill field {key!r} is not a valid decimal: {value!r}") from exc
     # Review fix (cubic P2 on PR #110): ``Decimal("NaN")`` and
     # ``Decimal("Infinity")`` parse without raising, so an upstream
     # ``float('inf')`` or string literal would slip past the try/except
     # above and land in the ledger. Reject non-finite values explicitly.
     if not parsed.is_finite():
-        raise ValueError(
-            f"book_fill field {key!r} must be a finite decimal: {value!r}"
-        )
+        raise ValueError(f"book_fill field {key!r} must be a finite decimal: {value!r}")
     return str(parsed)
 
 
@@ -156,13 +152,16 @@ class AccountingService:
             if token_id is None:
                 await conn.execute(
                     "DELETE FROM positions_ledger WHERE user_id = $1 AND condition_id = $2",
-                    user_id, condition_id,
+                    user_id,
+                    condition_id,
                 )
             else:
                 await conn.execute(
                     "DELETE FROM positions_ledger "
                     "WHERE user_id = $1 AND condition_id = $2 AND token_id = $3",
-                    user_id, condition_id, token_id,
+                    user_id,
+                    condition_id,
+                    token_id,
                 )
 
     async def snapshot_daily_equity(

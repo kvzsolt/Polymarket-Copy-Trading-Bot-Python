@@ -8,6 +8,7 @@ Validates:
 - Worst-price notional is consistent.
 - Idempotency key changes when effective size, price, tick, token, or condition changes.
 """
+
 from decimal import Decimal
 
 from services.order_sizing import size_buy_order, size_sell_order
@@ -30,7 +31,7 @@ class TestBuySizing:
             live_price=0.50,
             base_notional_usdc=0.50,
             max_notional_usdc=2.0,
-            market_min_size=5.0,          # ignored for taker orders
+            market_min_size=5.0,  # ignored for taker orders
             tick_size=0.01,
             slippage_ratio=0.02,
         )
@@ -58,7 +59,7 @@ class TestBuySizing:
         """Normal BUY above taker min is accepted without upsize."""
         result = size_buy_order(
             live_price=0.50,
-            base_notional_usdc=10.0,     # 20 tokens
+            base_notional_usdc=10.0,  # 20 tokens
             max_notional_usdc=50.0,
             market_min_size=5.0,
             tick_size=0.01,
@@ -119,8 +120,8 @@ class TestBuySizing:
         """BUY larger than cap is clamped down."""
         result = size_buy_order(
             live_price=0.50,
-            base_notional_usdc=100.0,     # wants 200 tokens
-            max_notional_usdc=5.0,        # cap at $5
+            base_notional_usdc=100.0,  # wants 200 tokens
+            max_notional_usdc=5.0,  # cap at $5
             market_min_size=5.0,
             tick_size=0.01,
             slippage_ratio=0.02,
@@ -129,6 +130,7 @@ class TestBuySizing:
         assert result.accept is True
         worst = result.effective_price
         from decimal import ROUND_FLOOR
+
         max_size = (Decimal("5") / worst).quantize(Decimal("0.0001"), rounding=ROUND_FLOOR)
         assert result.effective_size <= max_size + Decimal("0.01")  # small rounding tolerance
 
@@ -140,13 +142,16 @@ class TestBuySizing:
         result = size_buy_order(
             live_price=10.0,
             base_notional_usdc=100.0,
-            max_notional_usdc=0.5,         # $0.5 cap
-            market_min_size=5.0,             # ignored
+            max_notional_usdc=0.5,  # $0.5 cap
+            market_min_size=5.0,  # ignored
             tick_size=0.01,
             slippage_ratio=0.02,
         )
         assert result.accept is False
-        assert result.reason in ("buy_cap_blocks_upsize_to_venue_min", "risk_cap_too_low_for_min_order")
+        assert result.reason in (
+            "buy_cap_blocks_upsize_to_venue_min",
+            "risk_cap_too_low_for_min_order",
+        )
 
     def test_buy_no_venue_min_skips_upsize(self):
         """When live price is high enough that taker min is tiny, no upsize applies."""
@@ -318,8 +323,12 @@ class TestEffectiveIdempotency:
             side="BUY",
             tick_size=Decimal("0.01"),
         )
-        key_a = compute_effective_key(effective_size=Decimal("5"), effective_price=Decimal("0.50"), **base_kwargs)
-        key_b = compute_effective_key(effective_size=Decimal("10"), effective_price=Decimal("0.50"), **base_kwargs)
+        key_a = compute_effective_key(
+            effective_size=Decimal("5"), effective_price=Decimal("0.50"), **base_kwargs
+        )
+        key_b = compute_effective_key(
+            effective_size=Decimal("10"), effective_price=Decimal("0.50"), **base_kwargs
+        )
         assert key_a != key_b
 
     def test_key_changes_with_effective_price(self):
@@ -331,8 +340,12 @@ class TestEffectiveIdempotency:
             side="BUY",
             tick_size=Decimal("0.01"),
         )
-        key_a = compute_effective_key(effective_size=Decimal("5"), effective_price=Decimal("0.50"), **base_kwargs)
-        key_b = compute_effective_key(effective_size=Decimal("5"), effective_price=Decimal("0.51"), **base_kwargs)
+        key_a = compute_effective_key(
+            effective_size=Decimal("5"), effective_price=Decimal("0.50"), **base_kwargs
+        )
+        key_b = compute_effective_key(
+            effective_size=Decimal("5"), effective_price=Decimal("0.51"), **base_kwargs
+        )
         assert key_a != key_b
 
     def test_key_changes_with_tick_size(self):
@@ -484,13 +497,21 @@ class TestEffectiveIdempotency:
     def test_side_normalised_to_uppercase(self):
         """Side is normalised to uppercase in the key."""
         key_lower = compute_effective_key(
-            user="u", condition_id="c", token_id="t", side="buy",
-            effective_size=Decimal("5"), effective_price=Decimal("0.50"),
+            user="u",
+            condition_id="c",
+            token_id="t",
+            side="buy",
+            effective_size=Decimal("5"),
+            effective_price=Decimal("0.50"),
             tick_size=Decimal("0.01"),
         )
         key_upper = compute_effective_key(
-            user="u", condition_id="c", token_id="t", side="BUY",
-            effective_size=Decimal("5"), effective_price=Decimal("0.50"),
+            user="u",
+            condition_id="c",
+            token_id="t",
+            side="BUY",
+            effective_size=Decimal("5"),
+            effective_price=Decimal("0.50"),
             tick_size=Decimal("0.01"),
         )
         assert key_lower == key_upper
@@ -567,13 +588,19 @@ class TestSizingIdempotencyRoundTrip:
         assert original.accept is True
         assert upsized.accept is True
         key_orig = compute_effective_key(
-            user="u", condition_id="c", token_id="t", side="BUY",
+            user="u",
+            condition_id="c",
+            token_id="t",
+            side="BUY",
             effective_size=original.effective_size,
             effective_price=original.effective_price,
             tick_size=Decimal("0.01"),
         )
         key_up = compute_effective_key(
-            user="u", condition_id="c", token_id="t", side="BUY",
+            user="u",
+            condition_id="c",
+            token_id="t",
+            side="BUY",
             effective_size=upsized.effective_size,
             effective_price=upsized.effective_price,
             tick_size=Decimal("0.01"),
@@ -671,56 +698,92 @@ class TestExecutionEffectiveIdempotency:
 
     def test_effective_key_includes_condition_id(self):
         from services.executionService import _effective_idempotency_key
+
         key_a = _effective_idempotency_key(
-            user="u1", condition_id="0xAAA", token_id="t1",
-            side="BUY", effective_size=Decimal("5"), effective_price=Decimal("0.51"),
+            user="u1",
+            condition_id="0xAAA",
+            token_id="t1",
+            side="BUY",
+            effective_size=Decimal("5"),
+            effective_price=Decimal("0.51"),
             tick_size=Decimal("0.01"),
         )
         key_b = _effective_idempotency_key(
-            user="u1", condition_id="0xBBB", token_id="t1",
-            side="BUY", effective_size=Decimal("5"), effective_price=Decimal("0.51"),
+            user="u1",
+            condition_id="0xBBB",
+            token_id="t1",
+            side="BUY",
+            effective_size=Decimal("5"),
+            effective_price=Decimal("0.51"),
             tick_size=Decimal("0.01"),
         )
         assert key_a != key_b
 
     def test_effective_key_includes_tick_size(self):
         from services.executionService import _effective_idempotency_key
+
         key_a = _effective_idempotency_key(
-            user="u1", condition_id="c1", token_id="t1",
-            side="BUY", effective_size=Decimal("5"), effective_price=Decimal("0.51"),
+            user="u1",
+            condition_id="c1",
+            token_id="t1",
+            side="BUY",
+            effective_size=Decimal("5"),
+            effective_price=Decimal("0.51"),
             tick_size=Decimal("0.01"),
         )
         key_b = _effective_idempotency_key(
-            user="u1", condition_id="c1", token_id="t1",
-            side="BUY", effective_size=Decimal("5"), effective_price=Decimal("0.51"),
+            user="u1",
+            condition_id="c1",
+            token_id="t1",
+            side="BUY",
+            effective_size=Decimal("5"),
+            effective_price=Decimal("0.51"),
             tick_size=Decimal("0.10"),
         )
         assert key_a != key_b
 
     def test_effective_key_includes_worst_price(self):
         from services.executionService import _effective_idempotency_key
+
         key_a = _effective_idempotency_key(
-            user="u1", condition_id="c1", token_id="t1",
-            side="BUY", effective_size=Decimal("5"), effective_price=Decimal("0.50"),
+            user="u1",
+            condition_id="c1",
+            token_id="t1",
+            side="BUY",
+            effective_size=Decimal("5"),
+            effective_price=Decimal("0.50"),
             tick_size=Decimal("0.01"),
         )
         key_b = _effective_idempotency_key(
-            user="u1", condition_id="c1", token_id="t1",
-            side="BUY", effective_size=Decimal("5"), effective_price=Decimal("0.51"),
+            user="u1",
+            condition_id="c1",
+            token_id="t1",
+            side="BUY",
+            effective_size=Decimal("5"),
+            effective_price=Decimal("0.51"),
             tick_size=Decimal("0.01"),
         )
         assert key_a != key_b
 
     def test_effective_key_stable_for_same_inputs(self):
         from services.executionService import _effective_idempotency_key
+
         key_a = _effective_idempotency_key(
-            user="u1", condition_id="c1", token_id="t1",
-            side="BUY", effective_size=Decimal("5"), effective_price=Decimal("0.51"),
+            user="u1",
+            condition_id="c1",
+            token_id="t1",
+            side="BUY",
+            effective_size=Decimal("5"),
+            effective_price=Decimal("0.51"),
             tick_size=Decimal("0.01"),
         )
         key_b = _effective_idempotency_key(
-            user="u1", condition_id="c1", token_id="t1",
-            side="BUY", effective_size=Decimal("5"), effective_price=Decimal("0.51"),
+            user="u1",
+            condition_id="c1",
+            token_id="t1",
+            side="BUY",
+            effective_size=Decimal("5"),
+            effective_price=Decimal("0.51"),
             tick_size=Decimal("0.01"),
         )
         assert key_a == key_b
@@ -736,27 +799,46 @@ class TestExecutionEffectiveIdempotency:
         from services.executionService import _effective_idempotency_key
 
         key_low_price = _effective_idempotency_key(
-            user="u1", condition_id="0xcond", token_id="t1", side="BUY",
-            effective_size=Decimal("5"), effective_price=Decimal("0.51"),
-            tick_size=Decimal("0.01"), intent_id="sig1",
+            user="u1",
+            condition_id="0xcond",
+            token_id="t1",
+            side="BUY",
+            effective_size=Decimal("5"),
+            effective_price=Decimal("0.51"),
+            tick_size=Decimal("0.01"),
+            intent_id="sig1",
         )
         key_high_price = _effective_idempotency_key(
-            user="u1", condition_id="0xcond", token_id="t1", side="BUY",
-            effective_size=Decimal("5"), effective_price=Decimal("0.60"),
-            tick_size=Decimal("0.01"), intent_id="sig1",
+            user="u1",
+            condition_id="0xcond",
+            token_id="t1",
+            side="BUY",
+            effective_size=Decimal("5"),
+            effective_price=Decimal("0.60"),
+            tick_size=Decimal("0.01"),
+            intent_id="sig1",
         )
         assert key_low_price != key_high_price
 
     def test_none_condition_id_treated_as_empty(self):
         from services.executionService import _effective_idempotency_key
+
         key_none = _effective_idempotency_key(
-            user="u1", condition_id=None, token_id="t1",
-            side="BUY", effective_size=Decimal("5"), effective_price=Decimal("0.51"),
+            user="u1",
+            condition_id=None,
+            token_id="t1",
+            side="BUY",
+            effective_size=Decimal("5"),
+            effective_price=Decimal("0.51"),
             tick_size=Decimal("0.01"),
         )
         key_empty = _effective_idempotency_key(
-            user="u1", condition_id="", token_id="t1",
-            side="BUY", effective_size=Decimal("5"), effective_price=Decimal("0.51"),
+            user="u1",
+            condition_id="",
+            token_id="t1",
+            side="BUY",
+            effective_size=Decimal("5"),
+            effective_price=Decimal("0.51"),
             tick_size=Decimal("0.01"),
         )
         assert key_none == key_empty

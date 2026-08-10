@@ -47,6 +47,7 @@ def __getattr__(name: str):
     if module_path is None:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
     import importlib
+
     mod = importlib.import_module(module_path)
     value = getattr(mod, name)
     with _LAZY_IMPORT_LOCK:

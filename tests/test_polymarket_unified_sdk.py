@@ -311,17 +311,19 @@ async def test_list_open_orders_consumes_sdk_paginator() -> None:
     created_at = datetime.now(tz=timezone.utc)
 
     async def pages():
-        yield SimpleNamespace(items=(
-            SimpleNamespace(
-                id="order-open",
-                status="LIVE",
-                side="BUY",
-                price=Decimal("0.42"),
-                original_size=Decimal("10"),
-                size_matched=Decimal("2"),
-                created_at=created_at,
-            ),
-        ))
+        yield SimpleNamespace(
+            items=(
+                SimpleNamespace(
+                    id="order-open",
+                    status="LIVE",
+                    side="BUY",
+                    price=Decimal("0.42"),
+                    original_size=Decimal("10"),
+                    size_matched=Decimal("2"),
+                    created_at=created_at,
+                ),
+            )
+        )
 
     secure = SimpleNamespace(list_open_orders=MagicMock(return_value=pages()))
     subject, _, _ = gateway(secure=secure)
@@ -501,7 +503,9 @@ async def test_gateway_compatibility_reports_deposit_wallet_signature_type() -> 
 
 
 @pytest.mark.asyncio
-async def test_factory_builds_public_only_without_private_key(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_factory_builds_public_only_without_private_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     public = SimpleNamespace(close=AsyncMock())
     public_factory = MagicMock(return_value=public)
     secure_create = AsyncMock()

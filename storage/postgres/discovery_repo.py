@@ -497,12 +497,8 @@ def _candidate_metrics(candidate: Candidate) -> dict[str, float | int]:
         "roi": _number(row.get("roi_15d", row.get("roi_pct_15d", 0.0))),
         "win_rate": _number(row.get("win_rate_15d", row.get("win_rate_pct_15d", 0.0))),
         "rank": int(_number(row.get("leaderboard_rank", row.get("rank", 0)))),
-        "drawdown_pct": _number(
-            window.get("max_drawdown_pct", window.get("max_drawdown", 0.0))
-        ),
-        "trade_count": int(
-            _number(row.get("total_trades_15d", row.get("trade_count_15d", 0)))
-        ),
+        "drawdown_pct": _number(window.get("max_drawdown_pct", window.get("max_drawdown", 0.0))),
+        "trade_count": int(_number(row.get("total_trades_15d", row.get("trade_count_15d", 0)))),
     }
 
 

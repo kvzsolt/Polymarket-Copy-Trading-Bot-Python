@@ -12,6 +12,7 @@ These tests pin the extended transitions and the safety invariants:
     TRADE_CONFIRMED (never directly to a non-terminal state),
   * AUTO_RELEASED_AMBIGUOUS and TRADE_CONFIRMED are terminal.
 """
+
 from __future__ import annotations
 
 import pytest

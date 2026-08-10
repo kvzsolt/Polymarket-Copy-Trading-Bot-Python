@@ -187,8 +187,7 @@ def test_wss_book_event_overrides_rest_snapshot_and_logs(caplog) -> None:
     assert store.book_source_of(TOKEN) == "wss"
     assert store.quote_source_of(TOKEN) == "wss"
     assert any(
-        "market_data_rest_snapshot_wss_override" in rec.getMessage()
-        for rec in caplog.records
+        "market_data_rest_snapshot_wss_override" in rec.getMessage() for rec in caplog.records
     )
 
 
@@ -202,8 +201,7 @@ def test_wss_book_delta_after_rest_snapshot_promotes_and_logs(caplog) -> None:
     assert store.book_source_of(TOKEN) == "wss"
     assert store.quote_source_of(TOKEN) == "wss"
     assert any(
-        "market_data_rest_snapshot_wss_override" in rec.getMessage()
-        for rec in caplog.records
+        "market_data_rest_snapshot_wss_override" in rec.getMessage() for rec in caplog.records
     )
 
 

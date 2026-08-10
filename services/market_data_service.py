@@ -198,9 +198,7 @@ class MarketDataService:
                 skip_code="market_data_stale",
             )
 
-        logger.warning(
-            "market_data_rest_degraded_enabled | token_id=%s", token_id
-        )
+        logger.warning("market_data_rest_degraded_enabled | token_id=%s", token_id)
 
         await self._rest_resync(token_id)
 
@@ -365,9 +363,7 @@ class MarketDataService:
                     f"REST snapshot invalid spread for {token_id}",
                     skip_code="market_data_stale",
                 )
-            spread_bps = int(
-                ((best_ask - best_bid) / best_ask) * BASIS_POINTS_PER_UNIT
-            )
+            spread_bps = int(((best_ask - best_bid) / best_ask) * BASIS_POINTS_PER_UNIT)
             if max_spread_bps > 0 and spread_bps > max_spread_bps:
                 # FAIL CLOSED. Pre-fix this gate logged "allowed" and
                 # let the order proceed — orders could land in 1000bps
@@ -572,9 +568,7 @@ class MarketDataService:
         book_source = self._coerce_source(book.source)
         tick_source = self._coerce_source(tick.source)
 
-        wss_fresh = (
-            quote_source == MarketDataSource.WSS and book_source == MarketDataSource.WSS
-        )
+        wss_fresh = quote_source == MarketDataSource.WSS and book_source == MarketDataSource.WSS
         rest_bootstrap_ok = False
         rest_snapshot_ok = False
 
@@ -584,8 +578,6 @@ class MarketDataService:
                 and quote_source == MarketDataSource.REST_BOOTSTRAP
                 and book_source == MarketDataSource.REST_BOOTSTRAP
             ):
-
-
                 quote_age_ms = (time.monotonic() - quote.monotonic_ts) * 1000
                 book_age_ms = (time.monotonic() - book.monotonic_ts) * 1000
                 within_cap = (
@@ -613,8 +605,6 @@ class MarketDataService:
                 and quote_source == MarketDataSource.REST_SNAPSHOT
                 and book_source == MarketDataSource.REST_SNAPSHOT
             ):
-
-
                 quote_age_ms = (time.monotonic() - quote.monotonic_ts) * 1000.0
                 book_age_ms = (time.monotonic() - book.monotonic_ts) * 1000.0
                 if (
@@ -747,11 +737,15 @@ class MarketDataService:
             except TypeError:
                 return not bool(is_stale())
 
-        for name in ("last_update_monotonic", "updated_monotonic", "created_monotonic", "monotonic_ts"):
+        for name in (
+            "last_update_monotonic",
+            "updated_monotonic",
+            "created_monotonic",
+            "monotonic_ts",
+        ):
             value = getattr(snapshot, name, None)
             if value is not None:
                 try:
-
                     return (time.monotonic() - float(value)) <= max_age_seconds
                 except (TypeError, ValueError):
                     return False
@@ -818,9 +812,7 @@ class MarketDataService:
             )
 
         if not self._replace_book_snapshot(token_id, bids, asks):
-            self._cache.set_book(
-                token_id, bids=bids, asks=asks, source="rest_snapshot"
-            )
+            self._cache.set_book(token_id, bids=bids, asks=asks, source="rest_snapshot")
 
         best_bid = max(bids)
         best_ask = min(asks)
@@ -887,7 +879,6 @@ class MarketDataService:
     def _mark_fresh(self, token_id: str, source: MarketDataSource) -> None:
         method = getattr(self._cache, "mark_fresh", None)
         if callable(method):
-
             method(token_id, source.value, time.monotonic())
 
 

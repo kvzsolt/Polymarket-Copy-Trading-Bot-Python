@@ -10,6 +10,7 @@ grace window its FAK budget is released even without terminal confirmation
 
 These are fast unit tests against a fake repo — no Postgres/Docker required.
 """
+
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -51,9 +52,7 @@ def _res(*, rid: str = "r1", expires_ts: float, side: IntentSide = IntentSide.BU
         condition_id="cond",
         token_id="tok",
         side=side,
-        reason=(
-            IntentReason.COPY_BUY if side == IntentSide.BUY else IntentReason.COPY_SELL
-        ),
+        reason=(IntentReason.COPY_BUY if side == IntentSide.BUY else IntentReason.COPY_SELL),
         reserved_usdc=Decimal("5"),
         reserved_size=Decimal("0"),
         status="active",

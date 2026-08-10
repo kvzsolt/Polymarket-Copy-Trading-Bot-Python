@@ -72,8 +72,7 @@ async def test_v1_migration_is_idempotent_across_two_runs() -> None:
             tables = {
                 row["table_name"]
                 for row in await conn.fetch(
-                    "SELECT table_name FROM information_schema.tables "
-                    "WHERE table_schema = 'public'"
+                    "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'"
                 )
             }
             assert "copy_tasks" in tables

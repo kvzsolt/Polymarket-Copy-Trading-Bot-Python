@@ -21,7 +21,6 @@ _http_client: AsyncHttpClient | None = None
 # silent atexit failure.
 
 
-
 def _get_session() -> aiohttp.ClientSession:
     """Shared aiohttp session for the process."""
     global _session
@@ -34,18 +33,15 @@ def _get_session() -> aiohttp.ClientSession:
     return _session
 
 
-
 def _get_http_client() -> AsyncHttpClient:
     global _http_client
     session = _get_session()
-    if (
-        _http_client is None
-        or _http_client.session.closed
-        or _http_client.session is not session
-    ):
+    if _http_client is None or _http_client.session.closed or _http_client.session is not session:
         _http_client = AsyncHttpClient(
             session,
-            retry_policy=HttpRetryPolicy(attempts=4, base_delay=0.25, max_delay=2.5, timeout_seconds=10.0),
+            retry_policy=HttpRetryPolicy(
+                attempts=4, base_delay=0.25, max_delay=2.5, timeout_seconds=10.0
+            ),
             logger=logger,
         )
     return _http_client

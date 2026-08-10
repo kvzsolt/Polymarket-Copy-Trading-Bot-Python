@@ -272,10 +272,7 @@ class CopySizingEngine:
                 weight = self._portfolio_weight(request)
                 multiplier = self._combined_multiplier(mode, request, leader_trade)
                 market_target = (
-                    copy_budget
-                    * weight
-                    * self.policy.portfolio_weight_multiplier
-                    * multiplier
+                    copy_budget * weight * self.policy.portfolio_weight_multiplier * multiplier
                 )
                 requested = max(_ZERO, market_target - market_exposure)
             else:  # pragma: no cover - policy already validates
@@ -301,9 +298,7 @@ class CopySizingEngine:
                 flags=tuple(flags),
             )
 
-        strict_mode = (
-            mode == "fixed" and self.policy.strict_fixed_amount
-        ) or (
+        strict_mode = (mode == "fixed" and self.policy.strict_fixed_amount) or (
             mode == "exact_mirror" and self.policy.strict_exact_mirror
         )
         buy_max = self.policy.buy_max_amount if self.policy.buy_max_amount > 0 else None
@@ -396,9 +391,10 @@ class CopySizingEngine:
         else:
             threshold = max(Decimal("0.00000001"), self.policy.adaptive_threshold_usdc)
             signal = min(_ONE, leader_trade / threshold)
-        return self.policy.adaptive_min_percent + (
-            self.policy.adaptive_max_percent - self.policy.adaptive_min_percent
-        ) * signal
+        return (
+            self.policy.adaptive_min_percent
+            + (self.policy.adaptive_max_percent - self.policy.adaptive_min_percent) * signal
+        )
 
     def _combined_multiplier(
         self,
@@ -439,18 +435,16 @@ class CopySizingEngine:
             )
             weight = market / total
         else:
-            raise ValueError("portfolio_weighted mode requires leader market weight or portfolio notionals")
+            raise ValueError(
+                "portfolio_weighted mode requires leader market weight or portfolio notionals"
+            )
         if not _ZERO <= weight <= _ONE:
             raise ValueError("leader market weight must be in [0, 1]")
         return weight
 
     def _reject(self, request: CopySizingRequest, mode: str, reason: str) -> CopySizingDecision:
         follower = _audit_decimal(request.follower_pusd_balance)
-        budget = (
-            follower * self.policy.copyable_balance_fraction
-            if follower > 0
-            else _ZERO
-        )
+        budget = follower * self.policy.copyable_balance_fraction if follower > 0 else _ZERO
         return self._decision(
             request=request,
             mode=mode,
@@ -460,7 +454,9 @@ class CopySizingEngine:
             final=_ZERO,
             copy_budget=budget,
             available_budget=_ZERO,
-            configured_pct=self.policy.percentage if mode in {"proportional", "adaptive", "tiered"} else None,
+            configured_pct=self.policy.percentage
+            if mode in {"proportional", "adaptive", "tiered"}
+            else None,
             effective_pct=None,
             balance_ratio_pct=None,
             balance_adjusted_pct=None,
@@ -519,7 +515,9 @@ class CopySizingEngine:
                 "leader_trade_notional": str(leader_trade),
                 "leader_pusd_balance": str(leader_balance) if leader_balance is not None else None,
                 "follower_pusd_balance": str(follower),
-                "copyable_balance_percent": str(copy_budget / follower * _HUNDRED) if follower > 0 else None,
+                "copyable_balance_percent": str(copy_budget / follower * _HUNDRED)
+                if follower > 0
+                else None,
             },
         )
 

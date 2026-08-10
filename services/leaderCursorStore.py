@@ -65,7 +65,5 @@ class LeaderCursorStore:
     async def get_cursor(self, leader_wallet: str) -> TradeCursor:
         return await self._repo.get_cursor(leader_wallet)
 
-    async def set_cursor(
-        self, leader_wallet: str, cursor: TradeCursor
-    ) -> None:
+    async def set_cursor(self, leader_wallet: str, cursor: TradeCursor) -> None:
         await self._repo.set_cursor(leader_wallet, cursor)

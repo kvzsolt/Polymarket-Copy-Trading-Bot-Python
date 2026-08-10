@@ -1,4 +1,5 @@
 """PR7: ExecutionCoordinator honours PositionDriftService scope pauses."""
+
 from __future__ import annotations
 
 from decimal import Decimal
@@ -33,9 +34,7 @@ def _intent(side: str = "BUY") -> ExecutionIntent:
 def _make_coord(*, scope_paused: bool, exec_status: str = "submitted_unconfirmed"):
     reservation_service = MagicMock()
     reservation_service.reservations_repo = MagicMock()
-    reservation_service.reserve_for_intent = AsyncMock(
-        return_value=MagicMock(id="res-1")
-    )
+    reservation_service.reserve_for_intent = AsyncMock(return_value=MagicMock(id="res-1"))
     reservation_service.release_terminal = MagicMock()
     execution_service = MagicMock()
     execution_service.execute = AsyncMock(

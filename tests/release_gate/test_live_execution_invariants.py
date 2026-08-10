@@ -17,6 +17,7 @@ Invariants asserted here:
 4. an unknown SDK exception keeps the duplicate-lock active (#100) — the
    reservation does not silently free
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -49,7 +50,9 @@ async def test_concurrent_identical_intents_durable_state():
         repo = OrdersRepo(pool)
         clob = _SimpleClob()
         svc = ExecutionService(
-            clob, _FeeSvc(), repo,
+            clob,
+            _FeeSvc(),
+            repo,
             config=_make_exec_config(),
             market_data_service=_make_mds(),
         )
@@ -75,7 +78,9 @@ async def test_replay_after_persist_collapses_to_duplicate():
         repo = OrdersRepo(pool)
         clob = _SimpleClob()
         svc = ExecutionService(
-            clob, _FeeSvc(), repo,
+            clob,
+            _FeeSvc(),
+            repo,
             config=_make_exec_config(),
             market_data_service=_make_mds(),
         )
@@ -101,7 +106,9 @@ async def test_unknown_sdk_exception_keeps_duplicate_lock():
         # (ambiguous) → submitted_unconfirmed → persisted row keeps the lock.
         clob.create_market_order = AsyncMock(side_effect=RuntimeError("upstream closed"))
         svc = ExecutionService(
-            clob, _FeeSvc(), repo,
+            clob,
+            _FeeSvc(),
+            repo,
             config=_make_exec_config(),
             market_data_service=_make_mds(),
         )

@@ -4,6 +4,7 @@ Drives ``ExecutionService`` through the canonical mock CLOB gateway and
 asserts the BUY submission lands on the gateway with the expected request
 shape.
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -99,6 +100,7 @@ def _mock_mds(token_id: str = "0xtok"):
 @pytest.fixture(autouse=True)
 def _reset_circuit():
     import services.executionService as _es
+
     _es._CLOB_CIRCUIT.reset()
     yield
     _es._CLOB_CIRCUIT.reset()
@@ -117,7 +119,9 @@ async def test_dry_run_buy_routes_through_gateway(
             )
         )
         svc = ExecutionService(
-            stub_clob_client, _FeeSvc(), repo,
+            stub_clob_client,
+            _FeeSvc(),
+            repo,
             config=exec_config,
             clob_gateway=gateway,
             market_data_service=_mock_mds(),

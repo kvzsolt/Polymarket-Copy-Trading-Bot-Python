@@ -40,9 +40,7 @@ _OBSOLETE_PORT_METHODS = frozenset(
 
 def _public_methods(obj: type) -> set[str]:
     return {
-        name
-        for name, _ in inspect.getmembers(obj, inspect.isfunction)
-        if not name.startswith("_")
+        name for name, _ in inspect.getmembers(obj, inspect.isfunction) if not name.startswith("_")
     }
 
 

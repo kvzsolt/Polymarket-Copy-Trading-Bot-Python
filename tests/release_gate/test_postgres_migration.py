@@ -77,6 +77,7 @@ _REMOVED_DISCOVERY_TABLES = {
 def _pg_container():
     try:
         from testcontainers.postgres import PostgresContainer
+
         ctr = PostgresContainer("postgres:16-alpine")
         ctr.start()
     except Exception as exc:
@@ -100,14 +101,11 @@ async def test_migration_creates_every_expected_table(_pg_container) -> None:
     try:
         await apply_migrations(conn)
         rows = await conn.fetch(
-            "SELECT table_name FROM information_schema.tables "
-            "WHERE table_schema = 'public'"
+            "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'"
         )
         present = {r["table_name"] for r in rows}
         missing = _EXPECTED_TABLES - present
-        assert not missing, (
-            f"PG migration missing expected tables: {sorted(missing)}"
-        )
+        assert not missing, f"PG migration missing expected tables: {sorted(missing)}"
         assert present.isdisjoint(_REMOVED_DISCOVERY_TABLES)
     finally:
         await conn.close()
@@ -171,15 +169,11 @@ async def test_discovery_reset_preserves_existing_trading_rows(_pg_container) ->
         await conn.execute("INSERT INTO discovery_traders VALUES ('legacy')")
 
         await apply_migrations(conn)
-        assert await conn.fetchval(
-            "SELECT size_tokens FROM positions WHERE user_id = 'user'"
-        ) == "5"
-        assert await conn.fetchval(
-            "SELECT to_regclass('public.discovery_traders')"
-        ) is None
-        assert await conn.fetchval(
-            "SELECT to_regclass('public.leader_roster')"
-        ) == "leader_roster"
+        assert (
+            await conn.fetchval("SELECT size_tokens FROM positions WHERE user_id = 'user'") == "5"
+        )
+        assert await conn.fetchval("SELECT to_regclass('public.discovery_traders')") is None
+        assert await conn.fetchval("SELECT to_regclass('public.leader_roster')") == "leader_roster"
 
         await apply_migrations(conn)
         assert await conn.fetchval("SELECT count(*) FROM positions") == 1

@@ -78,7 +78,10 @@ class CopyTaskAdmissionEngine:
                 return TaskAdmissionDecision(False, "category_filtered")
             if market_filter.tokens and context.token_symbol not in market_filter.tokens:
                 return TaskAdmissionDecision(False, "token_filtered")
-            if market_filter.timeframes and context.market_timeframe not in market_filter.timeframes:
+            if (
+                market_filter.timeframes
+                and context.market_timeframe not in market_filter.timeframes
+            ):
                 return TaskAdmissionDecision(False, "timeframe_filtered")
             if (
                 market_filter.min_liquidity_usdc > 0

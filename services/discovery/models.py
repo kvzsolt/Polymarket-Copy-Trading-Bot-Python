@@ -82,11 +82,7 @@ def discovery_config_hash(config: Any) -> str:
     changing operational plumbing must not invalidate an otherwise identical
     roster.
     """
-    payload = (
-        config.model_dump(mode="json")
-        if hasattr(config, "model_dump")
-        else config
-    )
+    payload = config.model_dump(mode="json") if hasattr(config, "model_dump") else config
     decision_sections = (
         "shortlist",
         "wallet360",
@@ -99,13 +95,8 @@ def discovery_config_hash(config: Any) -> str:
         "heisenberg",
     )
     if isinstance(payload, dict):
-        payload = {
-            section: payload.get(section)
-            for section in decision_sections
-        }
-    return hashlib.sha256(
-        orjson.dumps(payload, option=orjson.OPT_SORT_KEYS)
-    ).hexdigest()
+        payload = {section: payload.get(section) for section in decision_sections}
+    return hashlib.sha256(orjson.dumps(payload, option=orjson.OPT_SORT_KEYS)).hexdigest()
 
 
 __all__ = ["Candidate", "DiscoveryRepository", "RosterEntry", "discovery_config_hash"]

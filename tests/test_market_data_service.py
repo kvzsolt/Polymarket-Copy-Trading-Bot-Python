@@ -9,6 +9,7 @@ Tests the service against a real MarketStateStore or controlled mocks to verify:
   - valid fresh state returns correct MarketDataBundle
   - bundle quote/book/tick match cache contents
 """
+
 from __future__ import annotations
 
 import time
@@ -364,6 +365,7 @@ class TestValidStateReturnsBundle:
 
         assert bundle.source == MarketDataSource.REST_SNAPSHOT
 
+
 class TestComponentSourceGating:
     """Per-component source split: tick-only WSS must not promote book to WSS."""
 
@@ -434,6 +436,7 @@ class TestComponentSourceGating:
 # ---------------------------------------------------------------------------
 # REST bootstrap policy
 # ---------------------------------------------------------------------------
+
 
 def _make_rest_bootstrap_cache(token_id: str = TOKEN, *, stale: bool = False) -> MarketStateStore:
     """Return a cache with rest_bootstrap-sourced quote + book (fresh unless stale=True)."""
@@ -711,22 +714,15 @@ import asyncio  # noqa: E402  (kept local to the PR10.4 section)
 from types import SimpleNamespace  # noqa: E402
 
 
-
 def _rest_policy(**overrides) -> MarketDataPolicy:
     return MarketDataPolicy(
         primary_source="rest_snapshot",
         require_wss_fresh=False,
         allow_rest_snapshot_for_execution=True,
         rest_snapshot_max_age_ms=overrides.pop("rest_snapshot_max_age_ms", 500),
-        rest_snapshot_request_timeout_ms=overrides.pop(
-            "rest_snapshot_request_timeout_ms", 750
-        ),
-        rest_snapshot_total_budget_ms=overrides.pop(
-            "rest_snapshot_total_budget_ms", 1000
-        ),
-        rest_snapshot_max_spread_bps=overrides.pop(
-            "rest_snapshot_max_spread_bps", 300
-        ),
+        rest_snapshot_request_timeout_ms=overrides.pop("rest_snapshot_request_timeout_ms", 750),
+        rest_snapshot_total_budget_ms=overrides.pop("rest_snapshot_total_budget_ms", 1000),
+        rest_snapshot_max_spread_bps=overrides.pop("rest_snapshot_max_spread_bps", 300),
     )
 
 
@@ -779,15 +775,19 @@ class TestRequireExecutionSnapshot:
 
         store = MarketStateStore()
         gw = MagicMock()
-        gw.get_orderbook = AsyncMock(return_value=OrderBook(
-            token_id=TOKEN,
-            bids=[OrderBookLevel(price=Decimal("0.495"), size=Decimal("100"))],
-            asks=[OrderBookLevel(price=Decimal("0.505"), size=Decimal("100"))],
-            tick_size=Decimal("0.001"),
-            min_order_size=Decimal("5"),
-            neg_risk=False,
-        ))
-        gw.get_market_info = AsyncMock(side_effect=AssertionError("metadata fetch should not be needed"))
+        gw.get_orderbook = AsyncMock(
+            return_value=OrderBook(
+                token_id=TOKEN,
+                bids=[OrderBookLevel(price=Decimal("0.495"), size=Decimal("100"))],
+                asks=[OrderBookLevel(price=Decimal("0.505"), size=Decimal("100"))],
+                tick_size=Decimal("0.001"),
+                min_order_size=Decimal("5"),
+                neg_risk=False,
+            )
+        )
+        gw.get_market_info = AsyncMock(
+            side_effect=AssertionError("metadata fetch should not be needed")
+        )
         svc = MarketDataService(store, gw, policy=_rest_policy())
 
         bundle = await svc.require_execution_snapshot(TOKEN, side="BUY")
@@ -883,9 +883,7 @@ class TestRequireExecutionSnapshot:
                 {Decimal("0.90"): Decimal("100")},
             )
         )
-        svc = MarketDataService(
-            store, gw, policy=_rest_policy(rest_snapshot_max_spread_bps=300)
-        )
+        svc = MarketDataService(store, gw, policy=_rest_policy(rest_snapshot_max_spread_bps=300))
 
         with pytest.raises(StaleDataError) as exc:
             await svc.require_execution_snapshot(TOKEN, side="BUY")
@@ -900,9 +898,7 @@ class TestRequireExecutionSnapshot:
                 {Decimal("0.95"): Decimal("100")},
             )
         )
-        svc = MarketDataService(
-            store, gw, policy=_rest_policy(rest_snapshot_max_spread_bps=0)
-        )
+        svc = MarketDataService(store, gw, policy=_rest_policy(rest_snapshot_max_spread_bps=0))
 
         bundle = await svc.require_execution_snapshot(TOKEN, side="SELL")
 
@@ -1051,9 +1047,7 @@ class TestBundleFromCacheRestSnapshot:
             {Decimal("0.88"): Decimal("50")},
             {"source": "wss"},
         )
-        cache.set_quote(
-            TOKEN, best_bid=Decimal("0.85"), best_ask=Decimal("0.88"), source="wss"
-        )
+        cache.set_quote(TOKEN, best_bid=Decimal("0.85"), best_ask=Decimal("0.88"), source="wss")
         policy = self._rest_snap_policy()
         svc = _make_service(cache, policy=policy)
 

@@ -8,6 +8,7 @@ Covers two small non-architectural fixes:
 * H3/#11 — ``reconciliation_loop`` sleeps interruptibly: a shutdown request
   wakes it immediately instead of blocking for the full interval (up to 300s).
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -34,8 +35,13 @@ class TestClosedOrderProbeCap:
         # probe candidate. With the cap at 5 only 5 venue calls may fire.
         now = time.time()
         in_flight = [
-            {"order_id": f"o-{i}", "status": "submitted_unconfirmed",
-             "matched_total": "0", "side": "BUY", "request": {"amount": "10"}}
+            {
+                "order_id": f"o-{i}",
+                "status": "submitted_unconfirmed",
+                "matched_total": "0",
+                "side": "BUY",
+                "request": {"amount": "10"},
+            }
             for i in range(25)
         ]
         repo = MagicMock()

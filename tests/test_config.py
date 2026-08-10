@@ -127,8 +127,7 @@ def test_non_finite_numbers_are_rejected_in_every_section(
 ) -> None:
     def _fill(node: dict) -> dict:
         return {
-            key: _fill(value) if isinstance(value, dict) else literal
-            for key, value in node.items()
+            key: _fill(value) if isinstance(value, dict) else literal for key, value in node.items()
         }
 
     overrides = _overrides()
@@ -189,9 +188,7 @@ def test_packaged_yaml_pending_detection_matches_typed_default() -> None:
     """The YAML layer must not silently re-enable a fail-closed code default."""
     packaged = yaml.safe_load((ROOT / "config" / "detection.yml").read_text())
 
-    assert (
-        packaged["onchain"]["enable_onchain_pending_detection"] is False
-    )
+    assert packaged["onchain"]["enable_onchain_pending_detection"] is False
 
 
 @pytest.mark.parametrize(
@@ -276,8 +273,7 @@ def test_process_env_beats_mode_0600_secrets_and_yaml(
 ) -> None:
     secrets = tmp_path / "secrets.env"
     secrets.write_text(
-        "PMCOPY__SIZING__PERCENTAGE=6\n"
-        "PMCOPY__DISCOVERY__API__TOKEN=top-secret-value\n",
+        "PMCOPY__SIZING__PERCENTAGE=6\nPMCOPY__DISCOVERY__API__TOKEN=top-secret-value\n",
         encoding="utf-8",
     )
     secrets.chmod(0o600)
@@ -382,8 +378,7 @@ def test_secrets_reject_duplicate_and_non_nested_application_keys(
 ) -> None:
     duplicate = tmp_path / "duplicate.env"
     duplicate.write_text(
-        "PMCOPY__DISCOVERY__API__TOKEN=one\n"
-        "PMCOPY__DISCOVERY__API__TOKEN=two\n",
+        "PMCOPY__DISCOVERY__API__TOKEN=one\nPMCOPY__DISCOVERY__API__TOKEN=two\n",
         encoding="utf-8",
     )
     duplicate.chmod(0o600)
@@ -402,9 +397,7 @@ def test_unknown_yaml_key_fails_closed(tmp_path: Path) -> None:
     config_dir.mkdir()
     payload = yaml.safe_load((ROOT / "config/execution.yml").read_text())
     payload["tradeing_mode"] = "live"
-    (config_dir / "execution.yml").write_text(
-        yaml.safe_dump(payload), encoding="utf-8"
-    )
+    (config_dir / "execution.yml").write_text(yaml.safe_dump(payload), encoding="utf-8")
 
     with pytest.raises(EnvValidationError, match="tradeing_mode"):
         load_config(
@@ -471,9 +464,7 @@ def test_flat_legacy_override_is_rejected() -> None:
 
 def test_scoring_and_longitudinal_weights_are_validated() -> None:
     with pytest.raises(ValidationError, match="weights must sum to 1.0"):
-        DiscoveryConfig.model_validate(
-            {"scoring": {"weights": {"falcon_quality": 0.99}}}
-        )
+        DiscoveryConfig.model_validate({"scoring": {"weights": {"falcon_quality": 0.99}}})
 
 
 def test_trading_mode_is_single_immutable_selector(

@@ -42,17 +42,14 @@ def _candidate_row(rank: int, candidate: RankedTrader) -> dict[str, Any]:
         "recent_trade_count": evidence.recent_trade_count,
         "today_trade_count": evidence.today_trade_count,
         "short_trade_share": _decimal_text(evidence.short_trade_share),
-        "median_liquidity_percentile": _decimal_text(
-            evidence.median_liquidity_percentile
-        ),
+        "median_liquidity_percentile": _decimal_text(evidence.median_liquidity_percentile),
         "toxic_market_share": _decimal_text(evidence.toxic_market_share),
         "missing_field_ratio": _decimal_text(evidence.missing_field_ratio),
         "official_leaderboard_rank": evidence.official_leaderboard_rank,
         "recent_price_jump_count": evidence.recent_price_jump_count,
         "recent_realized_pnl": candidate.metrics.get("recent_realized_pnl"),
         "components": {
-            key: _decimal_text(value)
-            for key, value in sorted(candidate.components.items())
+            key: _decimal_text(value) for key, value in sorted(candidate.components.items())
         },
     }
 

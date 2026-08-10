@@ -201,6 +201,7 @@ async def test_limit_missing_condition_never_submits() -> None:
     assert result.success is False
     assert result.non_retryable is True
 
+
 @pytest.mark.asyncio
 async def test_unclassified_exception_after_post_is_ambiguous_not_retryable_outage() -> None:
     exchange = Exchange()
@@ -211,4 +212,3 @@ async def test_unclassified_exception_after_post_is_ambiguous_not_retryable_outa
     assert result.success is False
     assert result.ambiguous_post_failure is True
     assert result.non_retryable is False
-

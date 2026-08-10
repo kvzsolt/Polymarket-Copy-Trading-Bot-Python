@@ -1,4 +1,5 @@
 """Tests for ``services/onchain_detection/order_filled_detector.py`` (PR2)."""
+
 from __future__ import annotations
 
 from decimal import Decimal
@@ -156,10 +157,17 @@ def test_decode_log_handles_decimal_log_index() -> None:
 
 
 def test_build_signal_watched_maker_buy() -> None:
-    log = _build_log(maker=_WATCHED, maker_side=MAKER_SIDE_BUY, maker_amount_filled=2_000_000, taker_amount_filled=1_000_000)
+    log = _build_log(
+        maker=_WATCHED,
+        maker_side=MAKER_SIDE_BUY,
+        maker_amount_filled=2_000_000,
+        taker_amount_filled=1_000_000,
+    )
     decoded = decode_order_filled_log(log)
     assert decoded is not None
-    signal = build_signal_from_log(decoded, {_WATCHED}, event_ts=1700000000000, condition_id="cond-x")
+    signal = build_signal_from_log(
+        decoded, {_WATCHED}, event_ts=1700000000000, condition_id="cond-x"
+    )
     assert signal is not None
     assert signal.leader_wallet == _WATCHED
     assert signal.watched_role == "maker"

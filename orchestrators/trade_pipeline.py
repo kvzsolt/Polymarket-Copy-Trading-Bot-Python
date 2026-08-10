@@ -69,9 +69,7 @@ def _positive_int(raw: Any, default: int) -> int:
 def _analysis_semaphore(context: TradingContext) -> asyncio.Semaphore:
     semaphore = context.extra.get("_trade_analysis_semaphore")
     if semaphore is None:
-        config_val = (
-            context.config.execution.trade_analysis_concurrency if context.config else 6
-        )
+        config_val = context.config.execution.trade_analysis_concurrency if context.config else 6
         semaphore = asyncio.Semaphore(_positive_int(config_val, 6))
         context.extra["_trade_analysis_semaphore"] = semaphore
     return semaphore
@@ -80,9 +78,7 @@ def _analysis_semaphore(context: TradingContext) -> asyncio.Semaphore:
 def _reconcile_semaphore(context: TradingContext) -> asyncio.Semaphore:
     semaphore = context.extra.get("_reconcile_unconfirmed_semaphore")
     if semaphore is None:
-        config_val = (
-            context.config.execution.reconcile_concurrency if context.config else 4
-        )
+        config_val = context.config.execution.reconcile_concurrency if context.config else 4
         semaphore = asyncio.Semaphore(_positive_int(config_val, 4))
         context.extra["_reconcile_unconfirmed_semaphore"] = semaphore
     return semaphore
@@ -127,10 +123,7 @@ def get_reconciliation_service(context: TradingContext) -> ReconciliationService
             ),
         )
         context.extra["_reconciliation_service"] = svc
-    elif (
-        getattr(svc, "reservation_service", None) is None
-        and reservation_service is not None
-    ):
+    elif getattr(svc, "reservation_service", None) is None and reservation_service is not None:
         svc.reservation_service = reservation_service
     return svc
 
@@ -259,10 +252,7 @@ def _matched_amount_from_response(response: dict[str, Any] | None) -> Decimal:
     if not isinstance(response, dict):
         return Decimal("0")
     return _decimal_or_zero(
-        response.get("size_matched")
-        or response.get("filled_size")
-        or response.get("size")
-        or 0
+        response.get("size_matched") or response.get("filled_size") or response.get("size") or 0
     )
 
 
@@ -272,9 +262,7 @@ _MDS_DEFAULT_TIMEOUT_S = 2.0
 
 def _market_data_subscribe_timeout(context: TradingContext) -> float:
     market_data = getattr(getattr(context, "config", None), "market_data", None)
-    value = float(
-        getattr(market_data, "subscribe_timeout_seconds", _MDS_DEFAULT_TIMEOUT_S)
-    )
+    value = float(getattr(market_data, "subscribe_timeout_seconds", _MDS_DEFAULT_TIMEOUT_S))
     return max(0.2, value)
 
 
@@ -522,9 +510,7 @@ async def _prefetch_market_data_rest_snapshot(
             spread_bps: int | None = None
             if best_bid is not None and best_ask is not None and best_ask > 0:
                 try:
-                    spread_bps = int(
-                        ((best_ask - best_bid) / best_ask) * BASIS_POINTS_PER_UNIT
-                    )
+                    spread_bps = int(((best_ask - best_bid) / best_ask) * BASIS_POINTS_PER_UNIT)
                 except Exception:
                     spread_bps = None
             bid_count = len(getattr(book, "bids", {}) or {}) if book is not None else 0
@@ -672,9 +658,9 @@ async def _prefetch_market_data_wss(
                 stale_codes[(token_id, side)] = "market_data_stale"
         else:
             bundles_by_token[token_id] = bundle
-            bundle_source = getattr(
-                getattr(bundle, "source", None), "value", None
-            ) or str(getattr(bundle, "source", ""))
+            bundle_source = getattr(getattr(bundle, "source", None), "value", None) or str(
+                getattr(bundle, "source", "")
+            )
             if bundle_source == "rest_degraded":
                 logger.warning(
                     "market_data_rest_degraded_used | token_id=%s source=%s",
@@ -713,10 +699,7 @@ async def _fetch_live_position_size(
             if not isinstance(position, dict):
                 continue
             live_token_id = str(
-                position.get("asset")
-                or position.get("tokenID")
-                or position.get("token_id")
-                or ""
+                position.get("asset") or position.get("tokenID") or position.get("token_id") or ""
             ).strip()
             if live_token_id != token_id:
                 continue
@@ -945,9 +928,7 @@ def seed_position_pct_cap_snapshot(
     context.extra[_POSITION_PCT_CAP_BALANCE_AT_KEY] = (
         float(timestamp) if timestamp is not None else time.time()
     )
-    context.extra[_POSITION_PCT_CAP_BALANCE_WALLET_KEY] = _funder_wallet_address(
-        context
-    )
+    context.extra[_POSITION_PCT_CAP_BALANCE_WALLET_KEY] = _funder_wallet_address(context)
 
 
 def _position_pct_cap_snapshot_is_fresh(
@@ -956,9 +937,7 @@ def _position_pct_cap_snapshot_is_fresh(
     now: float | None = None,
 ) -> bool:
     wallet = _funder_wallet_address(context)
-    cached_wallet = str(
-        context.extra.get(_POSITION_PCT_CAP_BALANCE_WALLET_KEY) or ""
-    ).strip()
+    cached_wallet = str(context.extra.get(_POSITION_PCT_CAP_BALANCE_WALLET_KEY) or "").strip()
     try:
         cached_at = float(context.extra.get(_POSITION_PCT_CAP_BALANCE_AT_KEY))
     except (TypeError, ValueError):
@@ -970,9 +949,7 @@ def _position_pct_cap_snapshot_is_fresh(
     wallet_matches = not cached_wallet or cached_wallet.lower() == wallet.lower()
     age_seconds = max(0.0, (time.time() if now is None else now) - cached_at)
     return (
-        cached_balance >= 0
-        and wallet_matches
-        and age_seconds < _POSITION_PCT_CAP_REFRESH_SECONDS
+        cached_balance >= 0 and wallet_matches and age_seconds < _POSITION_PCT_CAP_REFRESH_SECONDS
     )
 
 
@@ -1008,9 +985,7 @@ _RETRYABLE_FAILED_STATUS = "retryable_failed"
 _LEGACY_RETRY_PREFIX = "retry_pending_"
 
 
-def _retry_attempt_from_status(
-    status: str | None, retry_attempt: int | None = None
-) -> int:
+def _retry_attempt_from_status(status: str | None, retry_attempt: int | None = None) -> int:
     """Return the retry attempt number.
 
     Prefers the explicit ``retry_attempt`` column value when available.
@@ -1036,9 +1011,7 @@ def _account_cap_policy_enabled(context: TradingContext) -> bool:
 
 def _funder_wallet_address(context: TradingContext) -> str:
     config = getattr(context, "config", None)
-    configured = str(
-        getattr(getattr(config, "wallet", None), "funder_address", "") or ""
-    ).strip()
+    configured = str(getattr(getattr(config, "wallet", None), "funder_address", "") or "").strip()
     return configured or str(getattr(context, "wallet_address", "") or "").strip()
 
 
@@ -1303,9 +1276,7 @@ async def _resolve_buy_risk_cap(
     equity_usdc = snapshot.equity_usdc
     free_cash_usdc = snapshot.free_cash_usdc
 
-    day_start_equity = Decimal(
-        str(_trade_config(context).risk.day_start_equity_usdc or 0)
-    )
+    day_start_equity = Decimal(str(_trade_config(context).risk.day_start_equity_usdc or 0))
     if day_start_equity <= 0:
         day_start_equity = get_day_start_equity(equity_usdc)
     daily_loss_usdc = max(Decimal("0"), day_start_equity - equity_usdc)
@@ -1388,9 +1359,7 @@ def normalize_signals(
             continue
 
         condition_id = str(raw.get("conditionId") or raw.get("condition_id") or "")
-        token_id = str(
-            raw.get("tokenID") or raw.get("token_id") or raw.get("asset") or ""
-        )
+        token_id = str(raw.get("tokenID") or raw.get("token_id") or raw.get("asset") or "")
         tx_hash = str(
             raw.get("transactionHash")
             or raw.get("txHash")
@@ -1408,9 +1377,7 @@ def normalize_signals(
             )
             continue
         if not is_valid_clob_token_id(token_id):
-            logger.warning(
-                "normalize_signals: skipping signal with invalid token_id=%r", token_id
-            )
+            logger.warning("normalize_signals: skipping signal with invalid token_id=%r", token_id)
             continue
 
         size = _to_decimal(raw.get("size") or 0)
@@ -1559,9 +1526,7 @@ async def reconcile_submitted_unconfirmed(
                 )
                 _scope = PositionKey(
                     user_id=record.get("user_id") or f"__legacy_user__{_legacy_salt}",
-                    condition_id=(
-                        record.get("condition_id") or f"__legacy_cond__{_legacy_salt}"
-                    ),
+                    condition_id=(record.get("condition_id") or f"__legacy_cond__{_legacy_salt}"),
                     token_id=(
                         record.get("asset")
                         or record.get("token_id")
@@ -1596,9 +1561,7 @@ async def reconcile_submitted_unconfirmed(
         batch_reconciled = 0
         for result in results:
             if isinstance(result, Exception):
-                logger.warning(
-                    "reconcile_batch_error | side=%s error=%s", side, repr(result)
-                )
+                logger.warning("reconcile_batch_error | side=%s error=%s", side, repr(result))
                 continue
             if result:
                 batch_reconciled += 1
@@ -1641,11 +1604,7 @@ def _decision_live_price(signal: Any, bundle: Any) -> float:
     if quote is None:
         return fallback
     side = str(getattr(signal, "side", "") or "").upper()
-    fresh = (
-        getattr(quote, "best_ask", None)
-        if side == "BUY"
-        else getattr(quote, "best_bid", None)
-    )
+    fresh = getattr(quote, "best_ask", None) if side == "BUY" else getattr(quote, "best_bid", None)
     try:
         fresh_f = float(fresh) if fresh is not None else 0.0
     except (TypeError, ValueError):
@@ -1675,10 +1634,7 @@ async def execute_trades(
     results: list[TradePipelineResult] = []
 
     leader_tier_resolved = await _resolve_leader_tier(context, leader_id)
-    if (
-        _trade_config(context).execution.paper_trade_only
-        and leader_tier_resolved == "live_follow"
-    ):
+    if _trade_config(context).execution.paper_trade_only and leader_tier_resolved == "live_follow":
         logger.info(
             "paper_trade_only_override_all",
             extra={
@@ -1731,9 +1687,7 @@ async def execute_trades(
                 for sig, _raw in normalized:
                     if sig.token_id == token_id:
                         side = str(getattr(sig, "side", "") or "").upper()
-                        market_data_stale_codes.setdefault(
-                            (token_id, side), "market_data_stale"
-                        )
+                        market_data_stale_codes.setdefault((token_id, side), "market_data_stale")
     else:
         context.extra["_md_bundles_by_pair"] = {}
 
@@ -1821,15 +1775,11 @@ async def execute_trades(
         if normalized:
             # SHP-09: read from the canonical ``context.extra`` extension
             # point — matches the write at the top of this module.
-            _bundle_for_pair = context.extra.get("_md_bundles_by_pair", {}).get(
-                _stale_pair_key
-            )
+            _bundle_for_pair = context.extra.get("_md_bundles_by_pair", {}).get(_stale_pair_key)
         if _stale_pair_key in market_data_stale_codes or (
             _bundle_for_pair is None and signal.token_id in market_data_stale_tokens
         ):
-            skip_code = market_data_stale_codes.get(
-                _stale_pair_key, "market_data_stale"
-            )
+            skip_code = market_data_stale_codes.get(_stale_pair_key, "market_data_stale")
             print_skip_reason(
                 "Market data stale",
                 f"{signal.side} {signal.title or shorten_addr(signal.token_id, 8, 6)} "
@@ -1878,9 +1828,7 @@ async def execute_trades(
         # Unrelated positions remain fully concurrent.
         _scope = PositionKey.from_signal_event(signal, context.user_id)
         async with context.position_coordinator.acquire(_scope):
-            logger.debug(
-                "trade_pipeline.signal_scope_acquired", extra=_scope.log_fields()
-            )
+            logger.debug("trade_pipeline.signal_scope_acquired", extra=_scope.log_fields())
             # ------------------------------------------------------------------
             # Entry-permission gate — single authoritative BUY re-entry check
             # ------------------------------------------------------------------
@@ -1900,9 +1848,7 @@ async def execute_trades(
                         "BUY blocked fail-closed — entry-permission service is "
                         "not wired; cannot evaluate re-entry safety",
                     )
-                    metrics.inc(
-                        "trades_skipped_total", labels={**labels, "reason": skip_reason}
-                    )
+                    metrics.inc("trades_skipped_total", labels={**labels, "reason": skip_reason})
                     await context.orders_repo.mark_processed_trade(
                         trade_key=trade_key,
                         user_id=context.user_id,
@@ -1942,17 +1888,10 @@ async def execute_trades(
 
                 if _decision is not None and not _decision.allowed:
                     skip_reason = "market_risk_quarantined"
-                    _quarantine_detail = (
-                        f"entry denied by policy [{_decision.reason}]"
-                        + (
-                            f": {_decision.deny_detail}"
-                            if _decision.deny_detail
-                            else ""
-                        )
+                    _quarantine_detail = f"entry denied by policy [{_decision.reason}]" + (
+                        f": {_decision.deny_detail}" if _decision.deny_detail else ""
                     )
-                    print_skip_reason(
-                        "Market quarantined by risk monitor", _quarantine_detail
-                    )
+                    print_skip_reason("Market quarantined by risk monitor", _quarantine_detail)
                     log_trade_skip(
                         logger,
                         side=signal.side,
@@ -1970,9 +1909,7 @@ async def execute_trades(
                             "policy_reason": _decision.reason,
                         },
                     )
-                    metrics.inc(
-                        "trades_skipped_total", labels={**labels, "reason": skip_reason}
-                    )
+                    metrics.inc("trades_skipped_total", labels={**labels, "reason": skip_reason})
                     metrics.inc(
                         "entry_denied_total",
                         labels={**labels, "policy_reason": _decision.reason},
@@ -2032,9 +1969,7 @@ async def execute_trades(
                         labels={**labels, "reason": "tier_watchlist"},
                     )
                     results.append(
-                        TradePipelineResult(
-                            trade_key, "skipped", "tier_watchlist", None
-                        )
+                        TradePipelineResult(trade_key, "skipped", "tier_watchlist", None)
                     )
                     continue
             if leader_tier == "paper_follow":
@@ -2064,9 +1999,7 @@ async def execute_trades(
                     condition_id=signal.condition_id,
                     status="paper_follow",
                 )
-                results.append(
-                    TradePipelineResult(trade_key, "paper", "tier_paper_follow", None)
-                )
+                results.append(TradePipelineResult(trade_key, "paper", "tier_paper_follow", None))
                 continue
 
             # --- Decision gate: score the leader and this specific trade ---
@@ -2083,10 +2016,7 @@ async def execute_trades(
                 sizing_result = context.copy_notional(signal.usdc_size)
                 target_notional = sizing_result.final_notional_usdc
                 configured_buy_max = Decimal(
-                    str(
-                        getattr(context, "buy_max_amount", target_notional)
-                        or target_notional
-                    )
+                    str(getattr(context, "buy_max_amount", target_notional) or target_notional)
                 )
                 # BUY_MAX_AMOUNT is the hard ceiling for decision-layer upsizing.
                 # Keep base_notional_usdc as the strategy target below, but let
@@ -2129,14 +2059,10 @@ async def execute_trades(
                         condition_id=signal.condition_id,
                         status=f"skipped_{reason}",
                     )
-                    results.append(
-                        TradePipelineResult(trade_key, "skipped", reason, None)
-                    )
+                    results.append(TradePipelineResult(trade_key, "skipped", reason, None))
                     continue
 
-                position_pct_cap = await _resolve_position_pct_cap(
-                    context, signal, snapshot
-                )
+                position_pct_cap = await _resolve_position_pct_cap(context, signal, snapshot)
                 if not position_pct_cap.allow:
                     reason = (
                         f"position cap [{position_pct_cap.policy_name}] blocked BUY: "
@@ -2190,9 +2116,7 @@ async def execute_trades(
 
                 buy_risk_cap = None
                 if _account_cap_policy_enabled(context):
-                    buy_risk_cap = await _resolve_buy_risk_cap(
-                        context, leader_id, signal, snapshot
-                    )
+                    buy_risk_cap = await _resolve_buy_risk_cap(context, leader_id, signal, snapshot)
                     if not buy_risk_cap.allow:
                         reason = (
                             f"account-cap policy [{buy_risk_cap.policy_name}] headroom: "
@@ -2248,8 +2172,7 @@ async def execute_trades(
 
                 # --- Sizing audit: unified log showing both sizing sources ---
                 policy_binding = (
-                    buy_risk_cap is not None
-                    and buy_risk_cap.cap_notional_usdc < target_notional
+                    buy_risk_cap is not None and buy_risk_cap.cap_notional_usdc < target_notional
                 )
                 logger.info(
                     "sizing_audit | cond=%s leader=%s "
@@ -2307,9 +2230,9 @@ async def execute_trades(
                 }
                 if _bundle_for_pair is not None:
                     _bsrc = getattr(_bundle_for_pair, "source", None)
-                    _decision_meta["market_data_source"] = getattr(
-                        _bsrc, "value", None
-                    ) or str(_bsrc or "")
+                    _decision_meta["market_data_source"] = getattr(_bsrc, "value", None) or str(
+                        _bsrc or ""
+                    )
                     _q = getattr(_bundle_for_pair, "quote", None)
                     _b = getattr(_bundle_for_pair, "book", None)
                     if _q is not None:
@@ -2367,9 +2290,7 @@ async def execute_trades(
                         condition_id=signal.condition_id,
                         status=f"skipped_{decision.skip_code}",
                     )
-                    results.append(
-                        TradePipelineResult(trade_key, "skipped", decision.reason, None)
-                    )
+                    results.append(TradePipelineResult(trade_key, "skipped", decision.reason, None))
                     continue
 
                 # Use decision-gated notional (may be adjusted by scoring)
@@ -2449,9 +2370,7 @@ async def execute_trades(
                             condition_id=signal.condition_id,
                             status=f"skipped_{skip_code}",
                         )
-                        results.append(
-                            TradePipelineResult(trade_key, "skipped", skip_code, None)
-                        )
+                        results.append(TradePipelineResult(trade_key, "skipped", skip_code, None))
                         continue
 
                 # --- Phase 4 balance regime gate ---
@@ -2497,12 +2416,8 @@ async def execute_trades(
                                 "user_id": context.user_id,
                                 "leader_id": leader_id,
                                 "requested_usdc": str(regime_decision.requested_usdc),
-                                "daily_spent_usdc": str(
-                                    regime_decision.daily_spent_usdc
-                                ),
-                                "daily_remaining_usdc": str(
-                                    regime_decision.daily_remaining_usdc
-                                ),
+                                "daily_spent_usdc": str(regime_decision.daily_spent_usdc),
+                                "daily_remaining_usdc": str(regime_decision.daily_remaining_usdc),
                                 "headroom_usdc": str(regime_decision.headroom_usdc),
                             },
                         )
@@ -2521,9 +2436,7 @@ async def execute_trades(
                             status=f"skipped_{regime_decision.reason}",
                         )
                         results.append(
-                            TradePipelineResult(
-                                trade_key, "skipped", regime_decision.reason, None
-                            )
+                            TradePipelineResult(trade_key, "skipped", regime_decision.reason, None)
                         )
                         continue
 
@@ -2535,9 +2448,7 @@ async def execute_trades(
                         signal.condition_id[:12],
                         float(target_notional),
                         float(gated_notional),
-                        decision.trust_multiplier
-                        if hasattr(decision, "trust_multiplier")
-                        else 0,
+                        decision.trust_multiplier if hasattr(decision, "trust_multiplier") else 0,
                         extra={
                             "type": "sizing_final",
                             "condition_id": signal.condition_id,
@@ -2553,9 +2464,7 @@ async def execute_trades(
                     token_id=signal.token_id,
                     side="BUY",
                     amount=gated_notional,
-                    max_slippage_bps=int(
-                        float(context.extra.get("slippage_tolerance_bps", 200))
-                    ),
+                    max_slippage_bps=int(float(context.extra.get("slippage_tolerance_bps", 200))),
                     reason="copy_trade",
                     signal_id=signal.tx_hash,
                     condition_id=signal.condition_id,
@@ -2573,14 +2482,10 @@ async def execute_trades(
                 )
                 if pos is None:
                     # No exact (condition_id, token_id) match — check if we hold the *other* outcome token.
-                    candidates = (
-                        await context.positions_repo.list_positions_for_condition(
-                            context.user_id, signal.condition_id
-                        )
+                    candidates = await context.positions_repo.list_positions_for_condition(
+                        context.user_id, signal.condition_id
                     )
-                    wrong_token_held = any(
-                        p.token_id != signal.token_id for p in candidates
-                    )
+                    wrong_token_held = any(p.token_id != signal.token_id for p in candidates)
                     if wrong_token_held:
                         skip_detail = f"wrong token held — leader sells {shorten_addr(signal.token_id, 8, 6)} but we hold a different outcome"
                         skip_code = "wrong_token_held"
@@ -2597,9 +2502,7 @@ async def execute_trades(
                             "leader_id": leader_id,
                         },
                     )
-                    metrics.inc(
-                        "trades_skipped_total", labels={**labels, "reason": skip_code}
-                    )
+                    metrics.inc("trades_skipped_total", labels={**labels, "reason": skip_code})
                     log_trade_skip(
                         logger,
                         side=signal.side,
@@ -2623,9 +2526,7 @@ async def execute_trades(
                         condition_id=signal.condition_id,
                         status=f"skipped_{skip_code}",
                     )
-                    results.append(
-                        TradePipelineResult(trade_key, "skipped", skip_code, None)
-                    )
+                    results.append(TradePipelineResult(trade_key, "skipped", skip_code, None))
                     continue
 
                 if pos.size_tokens <= Decimal("0"):
@@ -2640,9 +2541,7 @@ async def execute_trades(
                             "leader_id": leader_id,
                         },
                     )
-                    metrics.inc(
-                        "trades_skipped_total", labels={**labels, "reason": skip_code}
-                    )
+                    metrics.inc("trades_skipped_total", labels={**labels, "reason": skip_code})
                     log_trade_skip(
                         logger,
                         side=signal.side,
@@ -2666,15 +2565,11 @@ async def execute_trades(
                         condition_id=signal.condition_id,
                         status=f"skipped_{skip_code}",
                     )
-                    results.append(
-                        TradePipelineResult(trade_key, "skipped", skip_code, None)
-                    )
+                    results.append(TradePipelineResult(trade_key, "skipped", skip_code, None))
                     continue
 
                 # Capture entry price before apply_fill mutates or closes/deletes the position.
-                sell_entry_price = _to_optional_float(
-                    getattr(pos, "avg_entry_price", None)
-                )
+                sell_entry_price = _to_optional_float(getattr(pos, "avg_entry_price", None))
 
                 sell_missing_policy = (
                     context.config.execution.sell_fraction_missing_policy
@@ -2705,9 +2600,7 @@ async def execute_trades(
                         event_slug=signal.event_slug,
                         meta={"user_id": context.user_id, "leader_id": leader_id},
                     )
-                    metrics.inc(
-                        "trades_skipped_total", labels={**labels, "reason": skip_code}
-                    )
+                    metrics.inc("trades_skipped_total", labels={**labels, "reason": skip_code})
                     await context.orders_repo.mark_processed_trade(
                         trade_key=trade_key,
                         user_id=context.user_id,
@@ -2718,9 +2611,7 @@ async def execute_trades(
                         condition_id=signal.condition_id,
                         status=_RETRYABLE_FAILED_STATUS,
                     )
-                    results.append(
-                        TradePipelineResult(trade_key, "skipped", skip_code, None)
-                    )
+                    results.append(TradePipelineResult(trade_key, "skipped", skip_code, None))
                     continue
                 max_sell_tokens = pos.size_tokens
 
@@ -2732,9 +2623,7 @@ async def execute_trades(
                     venue_sell_cap = live_sellable_tokens.quantize(
                         Decimal("0.01"), rounding=ROUND_DOWN
                     )
-                    if venue_sell_cap <= Decimal(
-                        "0"
-                    ) and live_sellable_tokens > Decimal("0"):
+                    if venue_sell_cap <= Decimal("0") and live_sellable_tokens > Decimal("0"):
                         venue_sell_cap = live_sellable_tokens
                     if venue_sell_cap < max_sell_tokens:
                         logger.info(
@@ -2753,9 +2642,7 @@ async def execute_trades(
                                 "clamped_sell_tokens": float(venue_sell_cap),
                             },
                         )
-                        if venue_sell_cap <= Decimal(
-                            "0"
-                        ) and live_sellable_tokens <= Decimal("0"):
+                        if venue_sell_cap <= Decimal("0") and live_sellable_tokens <= Decimal("0"):
                             await context.positions_repo.delete_position(
                                 context.user_id,
                                 signal.condition_id,
@@ -2801,9 +2688,7 @@ async def execute_trades(
                         event_slug=signal.event_slug,
                         meta={"user_id": context.user_id, "leader_id": leader_id},
                     )
-                    metrics.inc(
-                        "trades_skipped_total", labels={**labels, "reason": skip_code}
-                    )
+                    metrics.inc("trades_skipped_total", labels={**labels, "reason": skip_code})
                     # Transient/unknown — persist a RETRYABLE status (not a
                     # terminal one). A missing live-holdings read is not a final
                     # decision; the atomic claim above already inserted an
@@ -2822,14 +2707,10 @@ async def execute_trades(
                         condition_id=signal.condition_id,
                         status=_RETRYABLE_FAILED_STATUS,
                     )
-                    results.append(
-                        TradePipelineResult(trade_key, "skipped", skip_code, None)
-                    )
+                    results.append(TradePipelineResult(trade_key, "skipped", skip_code, None))
                     continue
 
-                leader_sell_fraction = _extract_leader_sell_fraction(raw) or Decimal(
-                    "1"
-                )
+                leader_sell_fraction = _extract_leader_sell_fraction(raw) or Decimal("1")
                 sell_tokens = _resolve_leader_sell_tokens(
                     requested_sell_tokens=requested_sell_tokens,
                     max_sell_tokens=max_sell_tokens,
@@ -2869,9 +2750,7 @@ async def execute_trades(
                         condition_id=signal.condition_id,
                         status="skipped_sell_size_zero",
                     )
-                    results.append(
-                        TradePipelineResult(trade_key, "skipped", reason, None)
-                    )
+                    results.append(TradePipelineResult(trade_key, "skipped", reason, None))
                     continue
 
                 if requested_sell_tokens + Decimal("1e-12") < sell_tokens:
@@ -2908,9 +2787,7 @@ async def execute_trades(
                     token_id=signal.token_id,
                     side="SELL",
                     amount=sell_tokens,
-                    max_slippage_bps=int(
-                        float(context.extra.get("slippage_tolerance_bps", 200))
-                    ),
+                    max_slippage_bps=int(float(context.extra.get("slippage_tolerance_bps", 200))),
                     reason="leader_sell",
                     signal_id=signal.tx_hash,
                     condition_id=signal.condition_id,
@@ -2978,9 +2855,7 @@ async def execute_trades(
                     try:
                         _filled_amt = Decimal(str(exec_result.filled_amount or 0))
                         if _filled_amt > 0:
-                            _fill_px = Decimal(
-                                str(exec_result.avg_price or signal.price or 0)
-                            )
+                            _fill_px = Decimal(str(exec_result.avg_price or signal.price or 0))
                             await regime.commit(
                                 order_id=trade_key,
                                 actual_filled_usdc=_filled_amt * _fill_px,
@@ -2994,10 +2869,7 @@ async def execute_trades(
                     except Exception:  # pragma: no cover — defensive
                         pass
 
-            if (
-                exec_result.accepted
-                and _decimal_or_zero(exec_result.filled_amount) <= 0
-            ):
+            if exec_result.accepted and _decimal_or_zero(exec_result.filled_amount) <= 0:
                 # Execution is settlement-deferred by design: a FAK that the
                 # venue accepts returns filled_amount=0 / submitted_unconfirmed
                 # and the reconciler owns final accounting. This is NOT a "price
@@ -3100,9 +2972,7 @@ async def execute_trades(
                 )
                 is_terminal = exec_result.status == "rejected"
                 max_non_terminal_attempts = _max_non_terminal_failure_attempts(context)
-                prev_trade = (
-                    await context.orders_repo.get_processed_trade(trade_key) or {}
-                )
+                prev_trade = await context.orders_repo.get_processed_trade(trade_key) or {}
                 prev_retry_attempt = _retry_attempt_from_status(
                     prev_trade.get("status"), prev_trade.get("retry_attempt")
                 )
@@ -3132,10 +3002,7 @@ async def execute_trades(
                 )
                 fail_reason = exec_result.error or exec_result.status
                 live_synced_size: Decimal | None = None
-                if (
-                    signal.side == "SELL"
-                    and "insufficient_balance" in str(fail_reason).lower()
-                ):
+                if signal.side == "SELL" and "insufficient_balance" in str(fail_reason).lower():
                     # CLAUDE.md non-negotiable: SELL drift reconciliation must
                     # release the stranded SELL reservation in addition to
                     # syncing the local position. Pre-fix this branch called

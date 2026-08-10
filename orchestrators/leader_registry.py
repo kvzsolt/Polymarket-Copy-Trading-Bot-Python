@@ -31,10 +31,7 @@ def apply_hysteresis(
         ):
             return "watchlist"
         return "active"
-    if (
-        score >= config.promote_score
-        and consecutive_cycles >= config.min_tenure_cycles
-    ):
+    if score >= config.promote_score and consecutive_cycles >= config.min_tenure_cycles:
         return "active"
     return "watchlist"
 
@@ -99,15 +96,8 @@ class LeaderRegistry:
             getattr(discovery.api, "has_token", False)
         )
         should_run = (
-            (
-                force_discovery
-                or (
-                    discovery.scheduler.enabled
-                    and not configured_clean
-                )
-            )
-            and credential_configured
-        )
+            force_discovery or (discovery.scheduler.enabled and not configured_clean)
+        ) and credential_configured
         if should_run:
             self.logger.info("discovery_refresh_started")
             metrics.inc("discovery_refresh_started_total")
@@ -165,9 +155,7 @@ class LeaderRegistry:
                 score=candidate.score,
                 recent_trades=len(candidate.recent_trades),
                 active=candidate.wallet in auto_active,
-                follow_tier=(
-                    "active" if candidate.wallet in auto_active else "watchlist"
-                ),
+                follow_tier=("active" if candidate.wallet in auto_active else "watchlist"),
             )
             for candidate in candidates
         ]
@@ -218,9 +206,7 @@ class LeaderRegistry:
                     score=candidate.score,
                     recent_trades=len(candidate.recent_trades),
                     active=candidate.wallet in active,
-                    follow_tier=(
-                        "active" if candidate.wallet in active else "watchlist"
-                    ),
+                    follow_tier=("active" if candidate.wallet in active else "watchlist"),
                 )
                 for candidate in candidates
             ],
@@ -255,9 +241,7 @@ class LeaderRegistry:
         now = time.time()
         config = self.config.discovery.hysteresis
         config_hash = str(self.discovery_service.config_hash)
-        existing = {
-            record.wallet: record for record in await self.leaders_repo.list_roster()
-        }
+        existing = {record.wallet: record for record in await self.leaders_repo.list_roster()}
         current = {candidate.wallet: candidate for candidate in candidates}
         updates: dict[str, LeaderRosterRecord] = {}
 
@@ -301,9 +285,7 @@ class LeaderRegistry:
                 record,
                 tier=next_tier,
                 score=score,
-                base_score=(
-                    candidate.base_score if candidate is not None else 0.0
-                ),
+                base_score=(candidate.base_score if candidate is not None else 0.0),
                 longitudinal_score=(
                     candidate.longitudinal_score
                     if candidate is not None
@@ -325,9 +307,7 @@ class LeaderRegistry:
             if changed:
                 self._log_tier_change(wallet, "active", next_tier, score)
 
-        active_count = sum(
-            record.tier == "active" for record in updates.values()
-        )
+        active_count = sum(record.tier == "active" for record in updates.values())
         watchlist_wallets = sorted(
             set(existing) | set(current),
             key=lambda wallet: (
@@ -343,11 +323,7 @@ class LeaderRegistry:
             score = candidate.score if candidate is not None else 0.0
             previous_promote_streak = previous.promote_streak if previous else 0
             promote_streak = (
-                (
-                    previous_promote_streak + 1
-                    if score >= config.promote_score
-                    else 0
-                )
+                (previous_promote_streak + 1 if score >= config.promote_score else 0)
                 if advance_tenure
                 else previous_promote_streak
             )
@@ -394,9 +370,7 @@ class LeaderRegistry:
                 ),
                 promote_streak=0 if newly_promoted else promote_streak,
                 demote_streak=0,
-                tier_changed_at=(
-                    now if changed or previous is None else previous.tier_changed_at
-                ),
+                tier_changed_at=(now if changed or previous is None else previous.tier_changed_at),
                 first_promoted_at=(
                     now
                     if newly_promoted and (previous is None or previous.first_promoted_at is None)
@@ -404,7 +378,11 @@ class LeaderRegistry:
                     if previous
                     else None
                 ),
-                last_seen_at=now if candidate is not None else previous.last_seen_at if previous else None,
+                last_seen_at=now
+                if candidate is not None
+                else previous.last_seen_at
+                if previous
+                else None,
                 config_hash=config_hash,
             )
             updates[wallet] = record

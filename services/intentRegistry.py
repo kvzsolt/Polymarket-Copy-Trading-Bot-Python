@@ -220,9 +220,7 @@ class IntentRegistry:
         agg = self._reserved.get(_scope_key(scope))
         if agg is None:
             return Reservation()
-        return Reservation(
-            quote_usdc=agg.quote_usdc, token_shares=agg.token_shares
-        )
+        return Reservation(quote_usdc=agg.quote_usdc, token_shares=agg.token_shares)
 
     def open_intent_count(self) -> int:
         return len(self._scope_open)
@@ -251,17 +249,14 @@ class IntentRegistry:
                 existing = self._intents.get(existing_id)
                 if existing is not None and not existing.is_resolved():
                     raise DuplicateIntentError(
-                        f"Unresolved intent {existing_id} already open on "
-                        f"scope {key}"
+                        f"Unresolved intent {existing_id} already open on scope {key}"
                     )
                 # Drop dangling pointer to a resolved intent.
                 self._scope_open.pop(key, None)
 
             new_id = intent_id or uuid.uuid4().hex
             if new_id in self._intents:
-                raise DuplicateIntentError(
-                    f"Intent id {new_id} already exists in registry"
-                )
+                raise DuplicateIntentError(f"Intent id {new_id} already exists in registry")
 
             record = IntentRecord(
                 intent_id=new_id,
@@ -321,8 +316,7 @@ class IntentRegistry:
                 raise UnknownIntentError(intent_id)
             if record.is_resolved():
                 raise IllegalTransitionError(
-                    f"Intent {intent_id} already in terminal "
-                    f"state {record.state.value}"
+                    f"Intent {intent_id} already in terminal state {record.state.value}"
                 )
             allowed_next = SUBMITTER_FORWARD_DAG.get(record.state, frozenset())
             if new_state not in allowed_next:
@@ -352,13 +346,11 @@ class IntentRegistry:
         """
         if terminal_state not in TERMINAL_STATES:
             raise IllegalTransitionError(
-                f"finalize_intent requires terminal state, got "
-                f"{terminal_state.value}"
+                f"finalize_intent requires terminal state, got {terminal_state.value}"
             )
         if not by_reconciler:
             raise IllegalTransitionError(
-                "Only the reconciler may finalize an intent "
-                "(set by_reconciler=True)"
+                "Only the reconciler may finalize an intent (set by_reconciler=True)"
             )
 
         async with self._lock:
@@ -376,17 +368,13 @@ class IntentRegistry:
         but will see a resolved record.
         """
         if terminal_state not in (IntentState.CANCELLED, IntentState.ERROR):
-            raise IllegalTransitionError(
-                "release_on_cancel_or_fail only accepts CANCELLED/ERROR"
-            )
+            raise IllegalTransitionError("release_on_cancel_or_fail only accepts CANCELLED/ERROR")
         async with self._lock:
             return self._release_locked(intent_id, terminal_state)
 
     # --- internal -----------------------------------------------------------
 
-    def _release_locked(
-        self, intent_id: str, terminal_state: IntentState
-    ) -> IntentRecord:
+    def _release_locked(self, intent_id: str, terminal_state: IntentState) -> IntentRecord:
         record = self._intents.get(intent_id)
         if record is None:
             raise UnknownIntentError(intent_id)
@@ -409,7 +397,9 @@ class IntentRegistry:
                 logger.error(
                     "intent.reservation_negative_residual id=%s "
                     "new_quote=%s new_shares=%s (reservation leak?)",
-                    intent_id, new_quote, new_shares,
+                    intent_id,
+                    new_quote,
+                    new_shares,
                     extra=record.scope.log_fields(),
                 )
             if new_quote == Decimal(0) and new_shares == Decimal(0):
@@ -436,11 +426,7 @@ class IntentRegistry:
 
     def _maybe_prune_resolved(self) -> None:
         """Remove oldest resolved intents when the registry exceeds _max_resolved."""
-        resolved = [
-            (iid, rec)
-            for iid, rec in self._intents.items()
-            if rec.is_resolved()
-        ]
+        resolved = [(iid, rec) for iid, rec in self._intents.items() if rec.is_resolved()]
         if len(resolved) <= self._max_resolved:
             return
         # Sort by updated_at ascending (oldest first) and remove excess

@@ -9,6 +9,7 @@ Pins the layered-defense dup guard:
   - submitted_unconfirmed leaves reservation active and links it to the order.
   - reservation_id flows through ExecutionRequest.recovery_metadata.
 """
+
 from __future__ import annotations
 
 from decimal import Decimal
@@ -58,7 +59,9 @@ def _intent(
     )
 
 
-def _make_exec_result(*, status: str, accepted: bool = True, order_id: str | None = "ord-1") -> MagicMock:
+def _make_exec_result(
+    *, status: str, accepted: bool = True, order_id: str | None = "ord-1"
+) -> MagicMock:
     r = MagicMock()
     r.status = status
     r.accepted = accepted
@@ -163,7 +166,9 @@ async def test_duplicate_ignored_releases_just_created_reservation():
     reservation = _make_reservation("res-dup")
     coord, reservation_service, execution_service = _make_coordinator(
         reserve_return=reservation,
-        execute_return=_make_exec_result(status="duplicate_ignored", accepted=True, order_id="ord-existing"),
+        execute_return=_make_exec_result(
+            status="duplicate_ignored", accepted=True, order_id="ord-existing"
+        ),
     )
 
     result = await coord.submit_copy_trade(_intent())
@@ -193,10 +198,18 @@ async def test_inflight_lock_releases_just_created_reservation():
     )
 
 
-@pytest.mark.parametrize("terminal_status", [
-    "rejected", "failed", "book_no_liquidity", "book_spread_wide",
-    "stale_market_data", "market_not_ready", "circuit_open",
-])
+@pytest.mark.parametrize(
+    "terminal_status",
+    [
+        "rejected",
+        "failed",
+        "book_no_liquidity",
+        "book_spread_wide",
+        "stale_market_data",
+        "market_not_ready",
+        "circuit_open",
+    ],
+)
 @pytest.mark.asyncio
 async def test_terminal_failure_releases_reservation(terminal_status):
     reservation = _make_reservation(f"res-{terminal_status}")

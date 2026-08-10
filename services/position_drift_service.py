@@ -13,6 +13,7 @@ only:
   - emits structured ``position_drift`` logs for every record;
   - records ``paused_scopes`` for runtime gating.
 """
+
 from __future__ import annotations
 
 import time
@@ -59,12 +60,7 @@ def _venue_size_for(positions: list[dict[str, Any]], token_id: str) -> Decimal:
         for key in ("asset", "asset_id", "assetId", "token_id", "tokenId", "clobTokenId"):
             value = row.get(key)
             if value and str(value) == token_id:
-                size = (
-                    row.get("size")
-                    or row.get("size_tokens")
-                    or row.get("position")
-                    or 0
-                )
+                size = row.get("size") or row.get("size_tokens") or row.get("position") or 0
                 return _decimal_or_zero(size)
     return Decimal("0")
 
@@ -81,12 +77,7 @@ def _all_venue_tokens(positions: list[dict[str, Any]]) -> set[tuple[str, str]]:
                 break
         if not token_id:
             continue
-        cond = str(
-            row.get("conditionId")
-            or row.get("condition_id")
-            or row.get("eventId")
-            or ""
-        )
+        cond = str(row.get("conditionId") or row.get("condition_id") or row.get("eventId") or "")
         seen.add((token_id, cond))
     return seen
 
@@ -132,7 +123,9 @@ class PositionDriftService:
         except Exception as exc:
             _log.warning(
                 "drift_scan_fetch_failed | user=%s wallet=%s error=%r",
-                user_id, wallet, exc,
+                user_id,
+                wallet,
+                exc,
             )
             # Treat fetch failure as unresolved — fail closed.
             record = PositionDriftRecord(
@@ -206,9 +199,7 @@ class PositionDriftService:
     def paused_scopes(self, user_id: str) -> set[str]:
         return set(self._paused_scopes.get(user_id, set()))
 
-    def is_scope_paused(
-        self, *, user_id: str, condition_id: str, token_id: str
-    ) -> bool:
+    def is_scope_paused(self, *, user_id: str, condition_id: str, token_id: str) -> bool:
         scope_key = f"{user_id}|{condition_id}|{token_id}"
         return scope_key in self._paused_scopes.get(user_id, set())
 
@@ -222,7 +213,10 @@ class PositionDriftService:
         self._latest.pop(scope_key, None)
         _log.info(
             "drift_scope_resolved | user=%s cond=%s token=%s reason=%s",
-            user_id, condition_id, token_id, reason,
+            user_id,
+            condition_id,
+            token_id,
+            reason,
         )
 
     def latest_record(self, scope_key: str) -> PositionDriftRecord | None:
@@ -249,9 +243,7 @@ class PositionDriftService:
         any_active = bool(reservations)
 
         # Clean — sizes match within epsilon and no orphaned reservation.
-        if abs(drift) <= epsilon and (
-            local_size > 0 or venue_size > 0 or not any_active
-        ):
+        if abs(drift) <= epsilon and (local_size > 0 or venue_size > 0 or not any_active):
             return self._record(
                 user_id=user_id,
                 condition_id=condition_id,
@@ -269,8 +261,12 @@ class PositionDriftService:
         if local_size > epsilon and venue_size <= epsilon:
             if any_active:
                 return self._record_and_pause(
-                    user_id=user_id, condition_id=condition_id, token_id=token_id,
-                    local_size=local_size, venue_size=venue_size, drift_size=drift,
+                    user_id=user_id,
+                    condition_id=condition_id,
+                    token_id=token_id,
+                    local_size=local_size,
+                    venue_size=venue_size,
+                    drift_size=drift,
                     status=PositionDriftStatus.UNRESOLVED,
                     action=PositionDriftAction.PAUSE_SCOPE,
                     reason="local position exists but venue reports zero with active reservation",
@@ -280,7 +276,9 @@ class PositionDriftService:
                 # Safe to prune: bot believes it holds shares the venue does
                 # not actually report and no order is in flight.
                 try:
-                    await self._positions_repo.delete_position(user_id, condition_id, token_id=token_id)
+                    await self._positions_repo.delete_position(
+                        user_id, condition_id, token_id=token_id
+                    )
                 except Exception:
                     _log.debug("drift_prune_delete_failed", exc_info=True)
                 return self._record(
@@ -296,8 +294,12 @@ class PositionDriftService:
                     reservation_ids=reservation_ids,
                 )
             return self._record_and_pause(
-                user_id=user_id, condition_id=condition_id, token_id=token_id,
-                local_size=local_size, venue_size=venue_size, drift_size=drift,
+                user_id=user_id,
+                condition_id=condition_id,
+                token_id=token_id,
+                local_size=local_size,
+                venue_size=venue_size,
+                drift_size=drift,
                 status=PositionDriftStatus.LOCAL_MISSING_VENUE_POSITION,
                 action=PositionDriftAction.PAUSE_SCOPE,
                 reason="local position exists but venue reports zero; auto-prune disabled",
@@ -308,16 +310,24 @@ class PositionDriftService:
         if venue_size > epsilon and local_size <= epsilon:
             if self._config.allow_external_position_tracking:
                 return self._record(
-                    user_id=user_id, condition_id=condition_id, token_id=token_id,
-                    local_size=local_size, venue_size=venue_size, drift_size=drift,
+                    user_id=user_id,
+                    condition_id=condition_id,
+                    token_id=token_id,
+                    local_size=local_size,
+                    venue_size=venue_size,
+                    drift_size=drift,
                     status=PositionDriftStatus.VENUE_MISSING_LOCAL_POSITION,
                     action=PositionDriftAction.UPDATE_LOCAL_READONLY,
                     reason="venue position observed; tracked read-only",
                     reservation_ids=reservation_ids,
                 )
             return self._record_and_pause(
-                user_id=user_id, condition_id=condition_id, token_id=token_id,
-                local_size=local_size, venue_size=venue_size, drift_size=drift,
+                user_id=user_id,
+                condition_id=condition_id,
+                token_id=token_id,
+                local_size=local_size,
+                venue_size=venue_size,
+                drift_size=drift,
                 status=PositionDriftStatus.VENUE_MISSING_LOCAL_POSITION,
                 action=PositionDriftAction.PAUSE_SCOPE,
                 reason="venue holds position but local has none; external tracking disabled",
@@ -328,16 +338,24 @@ class PositionDriftService:
         if drift > epsilon:  # venue > local
             if self._config.allow_external_position_tracking:
                 return self._record(
-                    user_id=user_id, condition_id=condition_id, token_id=token_id,
-                    local_size=local_size, venue_size=venue_size, drift_size=drift,
+                    user_id=user_id,
+                    condition_id=condition_id,
+                    token_id=token_id,
+                    local_size=local_size,
+                    venue_size=venue_size,
+                    drift_size=drift,
                     status=PositionDriftStatus.SIZE_MISMATCH_POSITIVE,
                     action=PositionDriftAction.UPDATE_LOCAL_READONLY,
                     reason="venue size exceeds local; tracked read-only",
                     reservation_ids=reservation_ids,
                 )
             return self._record_and_pause(
-                user_id=user_id, condition_id=condition_id, token_id=token_id,
-                local_size=local_size, venue_size=venue_size, drift_size=drift,
+                user_id=user_id,
+                condition_id=condition_id,
+                token_id=token_id,
+                local_size=local_size,
+                venue_size=venue_size,
+                drift_size=drift,
                 status=PositionDriftStatus.SIZE_MISMATCH_POSITIVE,
                 action=PositionDriftAction.PAUSE_SCOPE,
                 reason="venue size exceeds local; external tracking disabled",
@@ -346,8 +364,12 @@ class PositionDriftService:
 
         if drift < -epsilon:  # local > venue (negative drift)
             return self._record_and_pause(
-                user_id=user_id, condition_id=condition_id, token_id=token_id,
-                local_size=local_size, venue_size=venue_size, drift_size=drift,
+                user_id=user_id,
+                condition_id=condition_id,
+                token_id=token_id,
+                local_size=local_size,
+                venue_size=venue_size,
+                drift_size=drift,
                 status=PositionDriftStatus.SIZE_MISMATCH_NEGATIVE,
                 action=PositionDriftAction.REQUIRE_OPERATOR_REVIEW,
                 reason="local size exceeds venue; possible off-bot SELL",
@@ -356,8 +378,12 @@ class PositionDriftService:
 
         # Fallback (shouldn't reach here, but pin a safe default).
         return self._record(
-            user_id=user_id, condition_id=condition_id, token_id=token_id,
-            local_size=local_size, venue_size=venue_size, drift_size=drift,
+            user_id=user_id,
+            condition_id=condition_id,
+            token_id=token_id,
+            local_size=local_size,
+            venue_size=venue_size,
+            drift_size=drift,
             status=PositionDriftStatus.CLEAN,
             action=PositionDriftAction.NO_ACTION,
             reason="no drift detected",
@@ -460,9 +486,7 @@ class PositionDriftService:
             return False
         return True
 
-    def clear_prune_record(
-        self, *, user_id: str, condition_id: str, token_id: str
-    ) -> None:
+    def clear_prune_record(self, *, user_id: str, condition_id: str, token_id: str) -> None:
         """Manual override to drop the holdoff for a scope. Used by tests
         and by operators who legitimately reopened a position via an
         off-bot trade.

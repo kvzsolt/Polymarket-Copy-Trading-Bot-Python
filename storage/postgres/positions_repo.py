@@ -110,9 +110,7 @@ class PositionsRepo(AbstractPositionRepository):
         token_id: str | None = None,
     ) -> PositionRecord | None:
         async with self._pool.acquire() as conn:
-            return await self._get_position_in_conn(
-                conn, user_id, condition_id, token_id=token_id
-            )
+            return await self._get_position_in_conn(conn, user_id, condition_id, token_id=token_id)
 
     # DL-02: queries are static literal strings — no f-string suffix
     # splice. ``for_update`` selects between four pre-built variants so
@@ -128,9 +126,7 @@ class PositionsRepo(AbstractPositionRepository):
         FROM positions
         WHERE user_id = $1 AND condition_id = $2 AND token_id = $3
     """
-    _SELECT_POSITION_WITH_TOKEN_FOR_UPDATE = (
-        _SELECT_POSITION_WITH_TOKEN + " FOR UPDATE"
-    )
+    _SELECT_POSITION_WITH_TOKEN_FOR_UPDATE = _SELECT_POSITION_WITH_TOKEN + " FOR UPDATE"
     _SELECT_POSITION_WITHOUT_TOKEN = """
         SELECT user_id, condition_id, token_id, leader_id,
                size_tokens, avg_entry_price
@@ -210,9 +206,7 @@ class PositionsRepo(AbstractPositionRepository):
                 await self._upsert_position_in_conn(conn, record)
 
     @staticmethod
-    async def _upsert_position_in_conn(
-        conn: asyncpg.Connection, record: PositionRecord
-    ) -> None:
+    async def _upsert_position_in_conn(conn: asyncpg.Connection, record: PositionRecord) -> None:
         await conn.execute(
             """
             INSERT INTO positions (
@@ -243,9 +237,7 @@ class PositionsRepo(AbstractPositionRepository):
     ) -> None:
         async with self._pool.acquire() as conn:
             async with conn.transaction():
-                await self._delete_position_in_conn(
-                    conn, user_id, condition_id, token_id=token_id
-                )
+                await self._delete_position_in_conn(conn, user_id, condition_id, token_id=token_id)
 
     @staticmethod
     async def _delete_position_in_conn(
@@ -355,8 +347,7 @@ class PositionsRepo(AbstractPositionRepository):
                 avg = fill_price
             elif new_size > 0:
                 avg = (
-                    (current.size_tokens * current.avg_entry_price)
-                    + (fill_size * fill_price)
+                    (current.size_tokens * current.avg_entry_price) + (fill_size * fill_price)
                 ) / new_size
             else:
                 avg = current.avg_entry_price
@@ -388,9 +379,7 @@ class PositionsRepo(AbstractPositionRepository):
             effective_fill = min(fill_size, current.size_tokens)
             new_size = current.size_tokens - effective_fill
             if new_size <= Decimal("1e-12"):
-                await self._delete_position_in_conn(
-                    conn, user_id, condition_id, token_id=token_id
-                )
+                await self._delete_position_in_conn(conn, user_id, condition_id, token_id=token_id)
                 return None
             updated = PositionRecord(
                 user_id=current.user_id,
@@ -447,9 +436,8 @@ class PositionsRepo(AbstractPositionRepository):
                     for_update=True,
                 )
                 current_size = current.size_tokens if current is not None else Decimal("0")
-                if (
-                    expected_size is not None
-                    and abs(current_size - expected_size) > Decimal("1e-9")
+                if expected_size is not None and abs(current_size - expected_size) > Decimal(
+                    "1e-9"
                 ):
                     logger.warning(
                         "set_position_size_skipped_concurrent_change user=%s "
@@ -502,9 +490,7 @@ class PositionsRepo(AbstractPositionRepository):
         bad_fill_count = 0
         async with self._pool.acquire() as conn:
             async with conn.transaction():
-                await conn.execute(
-                    "DELETE FROM positions WHERE user_id = $1", user_id
-                )
+                await conn.execute("DELETE FROM positions WHERE user_id = $1", user_id)
                 for fill in fills:
                     try:
                         await self._apply_fill_in_conn(

@@ -11,6 +11,7 @@ against this exact race.
 This test pins the atomic ``reserve()`` API: two concurrent reserves
 totalling more than the daily cap must NOT both succeed.
 """
+
 from __future__ import annotations
 
 import asyncio

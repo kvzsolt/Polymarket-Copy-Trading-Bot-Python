@@ -28,6 +28,7 @@ Verified against the official Polymarket/ctf-exchange-v2 source:
 ``src/exchange/CTFExchange.sol`` (``matchOrders``) and
 ``src/exchange/libraries/Structs.sol`` (``Order``) via Firecrawl.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -48,12 +49,10 @@ from services.onchain_detection.trade_detection_models import (
 # (``0x3c2b4399``), so the pending-tx decoder would reject every real
 # matchOrders payload before ABI decoding (Greptile P1 re-review).
 _ORDER_TUPLE = (
-    "(uint256,address,address,uint256,uint256,uint256,"
-    "uint8,uint8,uint256,bytes32,bytes32,bytes)"
+    "(uint256,address,address,uint256,uint256,uint256,uint8,uint8,uint256,bytes32,bytes32,bytes)"
 )
 _MATCH_ORDERS_TYPE = (
-    f"(bytes32,{_ORDER_TUPLE},{_ORDER_TUPLE}[],"
-    "uint256,uint256[],uint256,uint256[])"
+    f"(bytes32,{_ORDER_TUPLE},{_ORDER_TUPLE}[],uint256,uint256[],uint256,uint256[])"
 )
 MATCH_ORDERS_SELECTOR: bytes = function_signature_to_4byte_selector(
     "matchOrders(bytes32,"

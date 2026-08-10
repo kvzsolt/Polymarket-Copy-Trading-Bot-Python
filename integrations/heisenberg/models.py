@@ -148,10 +148,14 @@ class Wallet360Snapshot:
         return cls(
             wallet=_wallet(_first(row, "proxy_wallet", "wallet", "wallet_address")),
             window_days=_integer(_first(row, "calculation_window_days", "window_days")) or 0,
-            snapshot_at=_datetime(_first(row, "date_range_end", "date", "snapshot_time", "updated_at")),
+            snapshot_at=_datetime(
+                _first(row, "date_range_end", "date", "snapshot_time", "updated_at")
+            ),
             last_active=_datetime(_first(row, "last_active", "last_trade_at")),
             avg_position_size=_decimal(row.get("avg_position_size")),
-            market_concentration_ratio=_fraction_from_percent(row.get("market_concentration_ratio")),
+            market_concentration_ratio=_fraction_from_percent(
+                row.get("market_concentration_ratio")
+            ),
             max_drawdown=_fraction_from_percent(row.get("max_drawdown")),
             max_position_pct=_fraction_from_percent(row.get("max_position_pct")),
             profit_factor=_decimal(row.get("profit_factor")),
@@ -164,7 +168,9 @@ class Wallet360Snapshot:
             sybil_risk_score=_decimal(row.get("sybil_risk_score")),
             timing_anomaly_flag=bool(_bool(row.get("timing_anomaly_flag")) or False),
             suspicious_win_rate_flag=bool(_bool(row.get("suspicious_win_rate_flag")) or False),
-            position_size_volatility_flag=bool(_bool(row.get("position_size_volatility_flag")) or False),
+            position_size_volatility_flag=bool(
+                _bool(row.get("position_size_volatility_flag")) or False
+            ),
             total_trades=_integer(row.get("total_trades")),
             win_rate=_fraction_from_percent(row.get("win_rate")),
             total_pnl=_decimal(row.get("total_pnl")),
@@ -271,8 +277,10 @@ class MarketSnapshot:
             start_date=_datetime(_first(row, "start_date", "startDate", "created_at")),
             end_date=_datetime(_first(row, "end_date", "endDate", "close_date")),
             volume_total=_decimal(_first(row, "volume_total", "volume")),
-            yes_token_id=str(_first(row, "side_a_token_id", "yes_token_id", "yesTokenId") or "") or None,
-            no_token_id=str(_first(row, "side_b_token_id", "no_token_id", "noTokenId") or "") or None,
+            yes_token_id=str(_first(row, "side_a_token_id", "yes_token_id", "yesTokenId") or "")
+            or None,
+            no_token_id=str(_first(row, "side_b_token_id", "no_token_id", "noTokenId") or "")
+            or None,
             side_a_outcome=str(_first(row, "side_a_outcome", "yes_outcome") or "") or None,
             side_b_outcome=str(_first(row, "side_b_outcome", "no_outcome") or "") or None,
             winning_outcome=str(row.get("winning_outcome") or "") or None,
@@ -355,7 +363,8 @@ def parse_leaderboard_entry(row: Mapping[str, Any]) -> LeaderboardEntry:
         win_rate_15d=_fraction_from_percent(_first(row, "win_rate_15d", "win_rate")),
         trades_15d=_integer(_first(row, "total_trades_15d", "trades_15d", "trades")),
         sharpe_15d=_decimal(_first(row, "sharpe_15d", "sharpe_ratio", "sharpe")),
-        trajectory=str(_first(row, "trajectory", "performance_trend", "flow") or "").strip().lower() or None,
+        trajectory=str(_first(row, "trajectory", "performance_trend", "flow") or "").strip().lower()
+        or None,
         sybil_flag=bool(_bool(_first(row, "sybil_flag", "sybil_risk_flag")) or False),
         raw=dict(row),
     )

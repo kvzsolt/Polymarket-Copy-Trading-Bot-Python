@@ -45,9 +45,7 @@ def test_typed_config_ccxt_shadow(monkeypatch) -> None:
 
 
 def test_typed_config_allow_experimental_live_gate() -> None:
-    backend, allow_live = resolve_backend_settings(
-        _config(venue_backend="ccxt", allow_live=True)
-    )
+    backend, allow_live = resolve_backend_settings(_config(venue_backend="ccxt", allow_live=True))
 
     assert backend is VenueBackend.CCXT
     assert allow_live is True
@@ -67,9 +65,7 @@ def test_typed_config_takes_precedence_over_env(monkeypatch) -> None:
     monkeypatch.setenv("PMCOPY_VENUE_BACKEND", "ccxt")
     monkeypatch.setenv("PMCOPY_ALLOW_EXPERIMENTAL_CCXT_LIVE", "true")
 
-    backend, allow_live = resolve_backend_settings(
-        _config(venue_backend="sdk", allow_live=False)
-    )
+    backend, allow_live = resolve_backend_settings(_config(venue_backend="sdk", allow_live=False))
 
     assert backend is VenueBackend.SDK
     assert allow_live is False

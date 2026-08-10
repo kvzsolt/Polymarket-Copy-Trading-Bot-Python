@@ -14,6 +14,7 @@
 Live mode requires every blocker to be clear. Paper mode only runs the
 subset of checks that apply outside live submission.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -64,14 +65,10 @@ class _DoctorContext:
 
     def skipped(self, name: str, detail: str = "") -> None:
         # Skipped checks do not affect overall status.
-        self.checks.append(
-            {"name": name, "status": "skipped", "detail": detail, "fix": ""}
-        )
+        self.checks.append({"name": name, "status": "skipped", "detail": detail, "fix": ""})
 
     def _append(self, name: str, status: str, detail: str, fix: str) -> None:
-        self.checks.append(
-            {"name": name, "status": status, "detail": detail, "fix": fix}
-        )
+        self.checks.append({"name": name, "status": status, "detail": detail, "fix": fix})
         if _STATUS_ORDER.get(status, 0) > _STATUS_ORDER.get(self.overall, 0):
             self.overall = status
 
@@ -107,9 +104,7 @@ def _wallet_signature_detail(
     configured_signature_type: Any,
 ) -> str:
     """Render preflight diagnostics without treating the config hint as authority."""
-    shortened_signer = (
-        (detected_signer or "")[:10] + "…" if detected_signer else "unknown"
-    )
+    shortened_signer = (detected_signer or "")[:10] + "…" if detected_signer else "unknown"
     shortened_funder = funder_address[:10] + "…" if funder_address else "unknown"
     detail = (
         f"walletType={detected_wallet_type} "
@@ -118,13 +113,10 @@ def _wallet_signature_detail(
         f"funder={shortened_funder} "
         "sdk_wallet_type_authoritative=true"
     )
-    if (
-        configured_signature_type is not None
-        and int(configured_signature_type) != int(detected_signature_type)
+    if configured_signature_type is not None and int(configured_signature_type) != int(
+        detected_signature_type
     ):
-        detail += (
-            f" configured_hint={int(configured_signature_type)} (diagnostic-only)"
-        )
+        detail += f" configured_hint={int(configured_signature_type)} (diagnostic-only)"
     return detail
 
 
@@ -432,9 +424,7 @@ async def run_doctor_checks(
         ttl = config.execution.pending_submission_ttl_seconds
         from storage.postgres.orders_repo import OrdersRepo
 
-        stale_rows = await OrdersRepo(pool).list_stale_submission_locks(
-            ttl_seconds=int(ttl)
-        )
+        stale_rows = await OrdersRepo(pool).list_stale_submission_locks(ttl_seconds=int(ttl))
         count = len(stale_rows)
         if count:
             ctx.warning(
@@ -664,9 +654,7 @@ async def run_doctor_checks(
 
     # ----- metrics port -----------------------------------------------
     if config.app.enable_metrics_server:
-        ok, detail = _try_port_bind(
-            config.app.metrics_bind_host, int(config.app.metrics_port)
-        )
+        ok, detail = _try_port_bind(config.app.metrics_bind_host, int(config.app.metrics_port))
         if ok:
             ctx.ok("metrics_port_bindable", detail)
         else:
@@ -739,9 +727,7 @@ def _render_console_summary(result: dict[str, Any]) -> str:
     lines.append(f"DOCTOR  {mode}  status={overall}")
     for check in result.get("checks", []):
         icon = _ICON.get(check["status"], "?")
-        lines.append(
-            f"{icon} {check['name']:<32} {check.get('detail', '')}"
-        )
+        lines.append(f"{icon} {check['name']:<32} {check.get('detail', '')}")
         fix = check.get("fix")
         if fix:
             lines.append(f"   fix: {fix}")

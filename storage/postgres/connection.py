@@ -167,9 +167,7 @@ async def init_pool(
         return _pool
 
 
-def _install_default_acquire_timeout(
-    pool: asyncpg.Pool, default_timeout: float
-) -> None:
+def _install_default_acquire_timeout(pool: asyncpg.Pool, default_timeout: float) -> None:
     """Re-home ``pool`` to :class:`_BoundedAcquirePool` and record the default
     acquire timeout (P2-b).
 

@@ -13,7 +13,9 @@ from services.copy_tasks.price_cache import MarketPriceCache, PriceQuote
 _NOW = datetime(2026, 8, 9, 12, 0, tzinfo=UTC)
 
 
-def _quote(token_id: str, *, bid: str = "0.40", ask: str = "0.42", source: str = "wss") -> PriceQuote:
+def _quote(
+    token_id: str, *, bid: str = "0.40", ask: str = "0.42", source: str = "wss"
+) -> PriceQuote:
     return PriceQuote(
         token_id=token_id,
         best_bid=Decimal(bid),

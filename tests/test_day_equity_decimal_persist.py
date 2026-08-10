@@ -11,6 +11,7 @@ Test pins:
   * High-precision Decimal round-trips losslessly through the JSON file.
   * On second-call same-day, the value read back equals the original Decimal exactly.
 """
+
 from __future__ import annotations
 
 from decimal import Decimal

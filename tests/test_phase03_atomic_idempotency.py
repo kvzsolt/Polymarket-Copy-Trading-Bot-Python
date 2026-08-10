@@ -8,6 +8,7 @@ PG-A5: ported from the sqlite ``OrderRepository`` wrapper to the
 canonical async ``storage.postgres.orders_repo.OrdersRepo``. Threading
 concurrency replaced with ``asyncio.gather`` since PG repos are async.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -88,9 +89,7 @@ class TestAtomicClaim:
         async with _pg_pool() as pool:
             repo = OrdersRepo(pool)
             assert await repo.try_claim_processed_trade(**_claim_kwargs("k-3")) is True
-            await repo.mark_processed_trade(
-                **_claim_kwargs("k-3"), status="processed"
-            )
+            await repo.mark_processed_trade(**_claim_kwargs("k-3"), status="processed")
             assert await repo.try_claim_processed_trade(**_claim_kwargs("k-3")) is False
 
     @pytest.mark.asyncio
@@ -115,16 +114,12 @@ class TestAtomicClaim:
             # Pin the row's processed_at into the past beyond the TTL.
             async with pool.acquire() as conn:
                 await conn.execute(
-                    "UPDATE processed_trades SET processed_at = $1 "
-                    "WHERE trade_key = $2",
+                    "UPDATE processed_trades SET processed_at = $1 WHERE trade_key = $2",
                     time.time() - 3600.0,
                     "k-5",
                 )
             assert (
-                await repo.try_claim_processed_trade(
-                    **kwargs, stale_claim_ttl_seconds=60.0
-                )
-                is True
+                await repo.try_claim_processed_trade(**kwargs, stale_claim_ttl_seconds=60.0) is True
             )
 
     @pytest.mark.asyncio
@@ -269,20 +264,15 @@ class TestTerminalStateGuard:
             assert await repo.try_claim_processed_trade(**kwargs) is True
 
             # Land a terminal status.
-            await repo.mark_processed_trade(
-                **kwargs, status=terminal_status, order_id="ord-1"
-            )
+            await repo.mark_processed_trade(**kwargs, status=terminal_status, order_id="ord-1")
 
             # A late retryable_failed write must NOT overwrite the terminal row.
-            await repo.mark_processed_trade(
-                **kwargs, status="retryable_failed", retry_attempt=7
-            )
+            await repo.mark_processed_trade(**kwargs, status="retryable_failed", retry_attempt=7)
 
             rec = await repo.get_processed_trade(f"term-{terminal_status}")
             assert rec is not None
             assert rec["status"] == terminal_status, (
-                f"terminal status {terminal_status!r} was clobbered by a late "
-                f"retryable_failed"
+                f"terminal status {terminal_status!r} was clobbered by a late retryable_failed"
             )
 
             # The guarded row must also reject reclaim attempts via try_claim.

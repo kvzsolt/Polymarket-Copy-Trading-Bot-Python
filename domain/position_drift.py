@@ -7,6 +7,7 @@ truth. Any unexplained drift pauses the scope until an operator resolves it.
 
 Position identity is ``(user_id, condition_id, token_id)`` everywhere.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field

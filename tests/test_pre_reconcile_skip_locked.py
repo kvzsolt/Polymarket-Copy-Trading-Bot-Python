@@ -204,9 +204,7 @@ async def test_risk_loop_pre_reconcile_passes_skip_locked():
     trade_rec = AsyncMock(return_value=0)
     risk_rec = AsyncMock(return_value=0)
     with (
-        patch(
-            "orchestrators.trade_pipeline.reconcile_submitted_unconfirmed", trade_rec
-        ),
+        patch("orchestrators.trade_pipeline.reconcile_submitted_unconfirmed", trade_rec),
         patch("services.risk.risk_monitor.reconcile_unconfirmed_risk_orders", risk_rec),
     ):
         await _pre_reconcile_for_context(context)

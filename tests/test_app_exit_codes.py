@@ -5,6 +5,7 @@ which ``__main__`` discarded — so a fail-closed startup exited 0 and misled
 Docker / systemd / process supervisors. ``main()`` now returns ``int`` and
 ``__main__`` exits with it.
 """
+
 from __future__ import annotations
 
 import pytest

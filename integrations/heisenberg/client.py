@@ -73,11 +73,7 @@ def _pnl_boundary(value: Any) -> str | None:
 
 
 def _normalize_params(params: Mapping[str, Any] | None) -> dict[str, str]:
-    return {
-        str(key): _param(value)
-        for key, value in (params or {}).items()
-        if value is not None
-    }
+    return {str(key): _param(value) for key, value in (params or {}).items() if value is not None}
 
 
 def _error_text(response: Any) -> str:
@@ -223,9 +219,7 @@ class HeisenbergClient:
                 raise HeisenbergUnavailableError(f"Heisenberg server error ({status})")
             raise HeisenbergBadRequestError(f"Heisenberg request rejected ({status})")
 
-        raise HeisenbergUnavailableError(
-            f"Heisenberg request failed ({last_status or 'unknown'})"
-        )
+        raise HeisenbergUnavailableError(f"Heisenberg request failed ({last_status or 'unknown'})")
 
     async def _backoff(self, attempt: int) -> None:
         delay = self._backoff_base_seconds * (2**attempt)
@@ -234,7 +228,9 @@ class HeisenbergClient:
         await self._sleep(delay)
 
     @staticmethod
-    def _parse_page(response: Any, *, requested_limit: int, requested_offset: int) -> HeisenbergPage:
+    def _parse_page(
+        response: Any, *, requested_limit: int, requested_offset: int
+    ) -> HeisenbergPage:
         try:
             payload = response.json()
         except BaseException as exc:
@@ -347,9 +343,7 @@ class HeisenbergClient:
         limit: int = 100,
     ) -> list[dict[str, Any]]:
         if leaderboard_period not in {"1d", "3d", "7d", "30d"}:
-            raise HeisenbergConfigurationError(
-                "leaderboard_period must be 1d, 3d, 7d or 30d"
-            )
+            raise HeisenbergConfigurationError("leaderboard_period must be 1d, 3d, 7d or 30d")
         return await self.fetch_all(
             579,
             params={

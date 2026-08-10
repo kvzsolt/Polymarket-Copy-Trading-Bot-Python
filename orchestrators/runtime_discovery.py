@@ -51,19 +51,14 @@ async def discovery_refresh_loop(
     configured_leaders: list[str],
     refresh_interval: int | None = None,
     *,
-    on_new_leaders: Callable[[list[str]], Awaitable[Iterable[str] | None]]
-    | None = None,
+    on_new_leaders: Callable[[list[str]], Awaitable[Iterable[str] | None]] | None = None,
     already_monitored: set[str] | None = None,
 ) -> None:
     """Run non-overlapping rediscovery and cached-rescore schedules."""
     scheduler = registry.config.discovery.scheduler
     rediscover_seconds = max(
         1,
-        int(
-            refresh_interval
-            if refresh_interval is not None
-            else scheduler.rediscover_seconds
-        ),
+        int(refresh_interval if refresh_interval is not None else scheduler.rediscover_seconds),
     )
     rescore_seconds = max(1, int(scheduler.rescore_seconds))
     # Keep the caller-owned set as the durable in-process monitor registry.
@@ -79,9 +74,7 @@ async def discovery_refresh_loop(
     next_rescore = loop.time() + rescore_seconds
 
     while True:
-        await asyncio.sleep(
-            max(0.05, min(next_discovery, next_rescore) - loop.time())
-        )
+        await asyncio.sleep(max(0.05, min(next_discovery, next_rescore) - loop.time()))
         try:
             now = loop.time()
             if now >= next_discovery:
@@ -119,9 +112,7 @@ async def _start_new_monitors(
 ) -> None:
     if callback is None:
         return
-    new_wallets = [
-        wallet for wallet in active_wallets if wallet.lower() not in monitored
-    ]
+    new_wallets = [wallet for wallet in active_wallets if wallet.lower() not in monitored]
     if not new_wallets:
         return
     started = _normalized_wallet_set(await callback(new_wallets))
@@ -141,11 +132,7 @@ def _normalized_wallet_set(
         return set()
     if isinstance(wallets, str):
         wallets = (wallets,)
-    return {
-        str(wallet).strip().lower()
-        for wallet in wallets
-        if str(wallet).strip()
-    }
+    return {str(wallet).strip().lower() for wallet in wallets if str(wallet).strip()}
 
 
 __all__ = ["discovery_refresh_loop", "wait_for_active_leaders"]

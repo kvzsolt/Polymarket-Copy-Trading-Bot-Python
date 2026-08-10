@@ -49,9 +49,7 @@ class FillsRepo(AbstractFillRepository):
     def __init__(self, pool: asyncpg.Pool):
         self._pool = pool
 
-    async def append_fill(
-        self, record: FillRecord, *, raw_payload: dict | None = None
-    ) -> int:
+    async def append_fill(self, record: FillRecord, *, raw_payload: dict | None = None) -> int:
         payload = raw_payload or {
             "user_id": record.user_id,
             "leader_id": record.leader_id,
@@ -187,9 +185,7 @@ class FillsRepo(AbstractFillRepository):
             )
         return [dict(row) for row in rows]
 
-    async def list_fills_for_user_condition(
-        self, user_id: str, condition_id: str
-    ) -> list[dict]:
+    async def list_fills_for_user_condition(self, user_id: str, condition_id: str) -> list[dict]:
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 """

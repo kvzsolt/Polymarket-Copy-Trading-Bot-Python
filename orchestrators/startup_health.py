@@ -85,10 +85,7 @@ class StartupHealthReport:
             "status": self.status,
             "timestamp": self.timestamp,
             "wallet": self.wallet,
-            "checks": {
-                name: asdict(item)
-                for name, item in self.checks.items()
-            },
+            "checks": {name: asdict(item) for name, item in self.checks.items()},
             "positionSync": asdict(self.position_sync),
             "orderStatusCounts": dict(self.order_status_counts),
             "orderSummary": dict(self.order_summary),
@@ -137,7 +134,9 @@ async def _check_rpc(rpc_url: str) -> StartupHealthCheckItem:
 
 
 async def _check_polymarket_api() -> StartupHealthCheckItem:
-    url = "https://data-api.polymarket.com/positions?user=0x0000000000000000000000000000000000000000"
+    url = (
+        "https://data-api.polymarket.com/positions?user=0x0000000000000000000000000000000000000000"
+    )
     try:
         async with ClientSession() as session:
             async with session.get(url, timeout=5) as response:
@@ -206,7 +205,9 @@ def _live_position_keys(live_positions: list[dict[str, Any]]) -> set[tuple[str, 
     keys: set[tuple[str, str]] = set()
     for position in live_positions:
         condition_id = str(position.get("conditionId") or position.get("condition_id") or "")
-        token_id = str(position.get("tokenID") or position.get("token_id") or position.get("asset") or "")
+        token_id = str(
+            position.get("tokenID") or position.get("token_id") or position.get("asset") or ""
+        )
         keys.update(_position_key_variants(condition_id, token_id))
     return keys
 
@@ -450,9 +451,7 @@ def _orders_check(
     if order_cleanup.purged_failed > 0 or order_cleanup.normalized_total > 0:
         return StartupHealthCheckItem(
             status="warning",
-            message=(
-                f"{message} | startup_purged_failed={order_cleanup.purged_failed}"
-            ),
+            message=(f"{message} | startup_purged_failed={order_cleanup.purged_failed}"),
             details=details,
         )
     if summary["failed"] > 0:

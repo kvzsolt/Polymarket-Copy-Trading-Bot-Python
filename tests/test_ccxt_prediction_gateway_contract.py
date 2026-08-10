@@ -309,6 +309,7 @@ async def test_compatibility_probe_reports_prediction_and_patch() -> None:
     assert report["signature_type"] == 3
     assert report["arbitrary_tick_patch"] == "pmcopy-arbitrary-tick-v1"
 
+
 @pytest.mark.asyncio
 async def test_market_buy_minimum_is_checked_in_shares_not_usdc_cost() -> None:
     exchange = FakeExchange()
@@ -335,6 +336,7 @@ async def test_market_buy_minimum_is_checked_in_shares_not_usdc_cost() -> None:
                 condition_id="condition",
             )
         )
+
 
 @pytest.mark.asyncio
 async def test_execution_metadata_refreshes_before_each_signed_order() -> None:
@@ -366,7 +368,9 @@ async def test_execution_metadata_refreshes_before_each_signed_order() -> None:
 
 
 @pytest.mark.asyncio
-async def test_compatibility_fails_when_full_gateway_contract_or_type3_identity_is_missing() -> None:
+async def test_compatibility_fails_when_full_gateway_contract_or_type3_identity_is_missing() -> (
+    None
+):
     exchange = FakeExchange()
     exchange.has["fetchOrder"] = False
     report = await CcxtPredictionGateway(exchange).check_compatibility()
@@ -378,4 +382,3 @@ async def test_compatibility_fails_when_full_gateway_contract_or_type3_identity_
     report = await CcxtPredictionGateway(exchange).check_compatibility()
     assert report["sdk_available"] is False
     assert report["error"] is not None
-

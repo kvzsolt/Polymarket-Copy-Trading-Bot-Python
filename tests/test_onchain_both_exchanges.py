@@ -4,6 +4,7 @@ Asserts that the on-chain detection subscription surfaces and the
 ``ONCHAIN_EXCHANGE_ADDRESSES`` constant cover BOTH the CTF Exchange V2 and
 the Neg Risk CTF Exchange V2, so detection never silently misses one venue.
 """
+
 from __future__ import annotations
 
 from config.addresses import (
@@ -20,8 +21,13 @@ from services.onchain_detection.pending_tx_detector import (
 
 
 def test_config_addresses_has_both_exchanges() -> None:
-    assert POLYMARKET_CTF_EXCHANGE_V2_ADDRESS.lower() == "0xe111180000d2663c0091e4f400237545b87b996b"
-    assert POLYMARKET_NEG_RISK_EXCHANGE_V2_ADDRESS.lower() == "0xe2222d279d744050d28e00520010520000310f59"
+    assert (
+        POLYMARKET_CTF_EXCHANGE_V2_ADDRESS.lower() == "0xe111180000d2663c0091e4f400237545b87b996b"
+    )
+    assert (
+        POLYMARKET_NEG_RISK_EXCHANGE_V2_ADDRESS.lower()
+        == "0xe2222d279d744050d28e00520010520000310f59"
+    )
 
 
 def test_onchain_constant_covers_both() -> None:

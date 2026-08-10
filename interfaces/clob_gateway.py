@@ -11,6 +11,7 @@ each call site declared its own duplicate ``ClobGateway`` Protocol (see
 ``services/execution/reconciliation_service.py`` prior to issue #66). Those
 duplicates are removed.
 """
+
 from __future__ import annotations
 
 from typing import Any, Protocol, runtime_checkable
@@ -49,9 +50,7 @@ class ClobGateway(Protocol):
         self, request: MarketableOrderRequest
     ) -> VenueSubmitResult: ...
 
-    async def submit_limit_order(
-        self, request: LimitOrderRequest
-    ) -> VenueSubmitResult: ...
+    async def submit_limit_order(self, request: LimitOrderRequest) -> VenueSubmitResult: ...
 
     async def get_order(self, order_id: str) -> VenueOrderState: ...
 

@@ -14,6 +14,7 @@ matches (e.g. taker = walletA, maker = walletB), and each match is a distinct
 leader fill that must be copied independently (Greptile P1 re-review:
 "Pending matches are dropped").
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -63,9 +64,7 @@ class MinedFillDeduplicator:
             self._pending_seen.add(key)
             return True
 
-    async def supersede_pending(
-        self, tx_hash: str, leader_wallet: str
-    ) -> bool:
+    async def supersede_pending(self, tx_hash: str, leader_wallet: str) -> bool:
         """Mark a pending signal superseded by a mined fill for the same leader.
 
         Returns True if a pending signal existed for this
@@ -85,9 +84,7 @@ class MinedFillDeduplicator:
                 return True
             return False
 
-    async def pending_known(
-        self, tx_hash: str, leader_wallet: str
-    ) -> bool:
+    async def pending_known(self, tx_hash: str, leader_wallet: str) -> bool:
         """Check whether a pending signal for this leader is already recorded."""
         if not tx_hash or not leader_wallet:
             return False

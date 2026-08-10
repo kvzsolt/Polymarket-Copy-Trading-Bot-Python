@@ -96,7 +96,15 @@ class FakeRepo:
         error: str | None = None,
     ) -> None:
         self.completed.append(
-            (cycle_id, dict(status=status, candidate_count=candidate_count, kept_count=kept_count, error=error))
+            (
+                cycle_id,
+                dict(
+                    status=status,
+                    candidate_count=candidate_count,
+                    kept_count=kept_count,
+                    error=error,
+                ),
+            )
         )
 
     async def score_history(self, wallet: str, *, since_ts: float):

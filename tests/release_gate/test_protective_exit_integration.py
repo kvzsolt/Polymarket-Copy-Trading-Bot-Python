@@ -16,6 +16,7 @@ canonical ``storage.postgres.risk_blocks_repo.RiskBlocksRepo``; the
 behavioural lifecycle tests use the established ``_pg_pool`` async ctx
 mgr.
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -90,9 +91,7 @@ async def _pg_pool():
 
 async def _is_blocked(repo: RiskBlocksRepo, *, condition: str, token: str) -> bool:
     return (
-        await repo.get_active_risk_block(
-            user_id="u", condition_id=condition, token_id=token
-        )
+        await repo.get_active_risk_block(user_id="u", condition_id=condition, token_id=token)
         is not None
     )
 

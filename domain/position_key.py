@@ -60,9 +60,7 @@ class PositionKey:
             normalized_outcome = str(self.outcome).strip()
             object.__setattr__(self, "outcome", normalized_outcome or None)
         if not self.user_id or not self.condition_id or not self.token_id:
-            raise ValueError(
-                "PositionKey requires non-empty user_id, condition_id, token_id"
-            )
+            raise ValueError("PositionKey requires non-empty user_id, condition_id, token_id")
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, PositionKey):
@@ -93,9 +91,11 @@ class PositionKey:
     def from_signal_event(cls, event: Any, user_id: str) -> "PositionKey":
         """Build from a copy-trade signal event (dict or attr-bag)."""
         if isinstance(event, dict):
+
             def _get(key: str, default: Any = None) -> Any:
                 return event.get(key, default)
         else:
+
             def _get(key: str, default: Any = None) -> Any:
                 return getattr(event, key, default)
 
@@ -103,11 +103,7 @@ class PositionKey:
             user_id=user_id,
             condition_id=_get("condition_id") or _get("conditionId") or "",
             token_id=(
-                _get("asset")
-                or _get("token_id")
-                or _get("tokenId")
-                or _get("asset_id")
-                or ""
+                _get("asset") or _get("token_id") or _get("tokenId") or _get("asset_id") or ""
             ),
             outcome=_get("outcome"),
         )
@@ -121,17 +117,8 @@ class PositionKey:
         """
         return cls(
             user_id=user_id,
-            condition_id=(
-                event.get("market")
-                or event.get("condition_id")
-                or ""
-            ),
-            token_id=(
-                event.get("asset_id")
-                or event.get("asset")
-                or event.get("token_id")
-                or ""
-            ),
+            condition_id=(event.get("market") or event.get("condition_id") or ""),
+            token_id=(event.get("asset_id") or event.get("asset") or event.get("token_id") or ""),
             outcome=event.get("outcome"),
         )
 
@@ -149,9 +136,11 @@ class PositionKey:
     def from_execution_request(cls, req: Any) -> "PositionKey":
         """Build from an execution-layer request (dict or attr-bag)."""
         if isinstance(req, dict):
+
             def _get(key: str, default: Any = None) -> Any:
                 return req.get(key, default)
         else:
+
             def _get(key: str, default: Any = None) -> Any:
                 return getattr(req, key, default)
 

@@ -130,18 +130,24 @@ async def test_commit_moves_reservation_to_fill_ledger_once() -> None:
     item = request("one", amount="10")
 
     await service.reserve(item, policy)
-    assert await service.commit(
-        reservation_id="one",
-        fill_id="fill-a",
-        filled_notional=Decimal("8"),
-        occurred_at=item.reserved_at,
-    ) is True
-    assert await service.commit(
-        reservation_id="one",
-        fill_id="fill-a",
-        filled_notional=Decimal("8"),
-        occurred_at=item.reserved_at,
-    ) is False
+    assert (
+        await service.commit(
+            reservation_id="one",
+            fill_id="fill-a",
+            filled_notional=Decimal("8"),
+            occurred_at=item.reserved_at,
+        )
+        is True
+    )
+    assert (
+        await service.commit(
+            reservation_id="one",
+            fill_id="fill-a",
+            filled_notional=Decimal("8"),
+            occurred_at=item.reserved_at,
+        )
+        is False
+    )
 
     result = await service.reserve(request("two", amount="3"), policy)
     assert result.allowed is False

@@ -8,6 +8,7 @@ Pins:
     restart).
   * Risk triggers recorded for full close + rejection.
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -35,8 +36,18 @@ FAKE_TOKEN_ID = "713210456792522125946263855327069127503327285719425322235357647
 TOKEN_B = "61321045679252212594626385532706912750332728571942532223535764789812338637396"
 
 _FILL_RESPONSES = {
-    "venue-risk-no-fill-1": {"status": "cancelled", "size_matched": "0", "avg_price": None, "orderID": "venue-risk-no-fill-1"},
-    "venue-risk-dup-1": {"status": "filled", "size_matched": "10", "avg_price": "0.30", "orderID": "venue-risk-dup-1"},
+    "venue-risk-no-fill-1": {
+        "status": "cancelled",
+        "size_matched": "0",
+        "avg_price": None,
+        "orderID": "venue-risk-no-fill-1",
+    },
+    "venue-risk-dup-1": {
+        "status": "filled",
+        "size_matched": "10",
+        "avg_price": "0.30",
+        "orderID": "venue-risk-dup-1",
+    },
 }
 
 
@@ -240,10 +251,14 @@ async def test_risk_block_is_token_scoped_not_condition_scoped():
 
         risk_blocks_repo = context.risk_blocks_repo
         block_a = await risk_blocks_repo.get_active_risk_block(
-            user_id="u1", condition_id="cond-1", token_id=FAKE_TOKEN_ID,
+            user_id="u1",
+            condition_id="cond-1",
+            token_id=FAKE_TOKEN_ID,
         )
         block_b = await risk_blocks_repo.get_active_risk_block(
-            user_id="u1", condition_id="cond-1", token_id=TOKEN_B,
+            user_id="u1",
+            condition_id="cond-1",
+            token_id=TOKEN_B,
         )
 
         assert block_a is not None, "block should exist for token A (full close)"
@@ -290,7 +305,10 @@ async def test_reconciliation_rejected_risk_sell_no_block():
                         "trigger_size_tokens": 10.0,
                     },
                 },
-                response_payload={"status": "submitted_unconfirmed", "orderID": "venue-risk-no-fill-1"},
+                response_payload={
+                    "status": "submitted_unconfirmed",
+                    "orderID": "venue-risk-no-fill-1",
+                },
             )
         )
 
@@ -302,9 +320,14 @@ async def test_reconciliation_rejected_risk_sell_no_block():
         result = await startup_reconcile_unconfirmed([context])
 
         assert result == {"u1": 1}
-        assert await context.risk_blocks_repo.get_active_risk_block(
-            user_id="u1", condition_id="cond-1", token_id=FAKE_TOKEN_ID,
-        ) is None
+        assert (
+            await context.risk_blocks_repo.get_active_risk_block(
+                user_id="u1",
+                condition_id="cond-1",
+                token_id=FAKE_TOKEN_ID,
+            )
+            is None
+        )
 
         pos = await positions_repo.get_position("u1", "cond-1", token_id=FAKE_TOKEN_ID)
         assert pos is not None, "position should remain when SELL was cancelled/rejected"
@@ -359,7 +382,9 @@ async def test_restart_full_close_then_risk_recheck_no_duplicate_block():
         await startup_reconcile_unconfirmed([context])
 
         block = await context.risk_blocks_repo.get_active_risk_block(
-            user_id="u1", condition_id="cond-1", token_id=FAKE_TOKEN_ID,
+            user_id="u1",
+            condition_id="cond-1",
+            token_id=FAKE_TOKEN_ID,
         )
         assert block is not None, "block should exist after reconciliation full close"
 
@@ -404,7 +429,9 @@ async def test_risk_trigger_recorded_on_full_close():
         await run_risk_check_for_context(context)
 
         triggers = await risk_triggers_repo.list_triggers_for_position(
-            user_id="u1", condition_id="cond-1", token_id=FAKE_TOKEN_ID,
+            user_id="u1",
+            condition_id="cond-1",
+            token_id=FAKE_TOKEN_ID,
         )
         assert len(triggers) >= 1, "at least one trigger should be recorded on full close"
         trigger = triggers[0]
@@ -449,7 +476,9 @@ async def test_risk_trigger_recorded_on_rejection():
         await run_risk_check_for_context(context)
 
         triggers = await risk_triggers_repo.list_triggers_for_position(
-            user_id="u1", condition_id="cond-1", token_id=FAKE_TOKEN_ID,
+            user_id="u1",
+            condition_id="cond-1",
+            token_id=FAKE_TOKEN_ID,
         )
         assert len(triggers) >= 1, "at least one trigger should be recorded on rejection"
         trigger = triggers[0]

@@ -1,8 +1,10 @@
 """bot run — start the main trading loop."""
+
 from __future__ import annotations
 
 import argparse
 import asyncio
+
 
 def register_run_command(subparsers: argparse._SubParsersAction) -> None:
     subparsers.add_parser(

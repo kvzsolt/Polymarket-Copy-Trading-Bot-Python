@@ -56,15 +56,11 @@ class ReconciliationResult:
     error: str = ""
 
     @classmethod
-    def resolved(
-        cls, order_id: str, status: OrderLifecycleStatus
-    ) -> "ReconciliationResult":
+    def resolved(cls, order_id: str, status: OrderLifecycleStatus) -> "ReconciliationResult":
         return cls(order_id=order_id, is_resolved=True, status=status)
 
     @classmethod
-    def pending(
-        cls, order_id: str, status: OrderLifecycleStatus
-    ) -> "ReconciliationResult":
+    def pending(cls, order_id: str, status: OrderLifecycleStatus) -> "ReconciliationResult":
         return cls(order_id=order_id, is_resolved=False, status=status)
 
     @classmethod
@@ -591,9 +587,7 @@ class ReconciliationService:
         record = await self._hydrate_order_record(order_id)
         cfg = self.order_confirmation_cfg
         response_value = record.get("response")
-        response: dict[str, Any] = (
-            response_value if isinstance(response_value, dict) else {}
-        )
+        response: dict[str, Any] = response_value if isinstance(response_value, dict) else {}
         last_status = _normalize_venue_status(response.get("status"))
         if self._should_skip_for_delay(
             record,
@@ -623,9 +617,7 @@ class ReconciliationService:
             return legacy
 
         request_value = record.get("request")
-        request: dict[str, Any] = (
-            request_value if isinstance(request_value, dict) else {}
-        )
+        request: dict[str, Any] = request_value if isinstance(request_value, dict) else {}
         market_id = (
             str(
                 request.get("market")
@@ -783,8 +775,7 @@ class ReconciliationService:
         confirmed = [
             fill
             for fill in related_fills
-            if _normalize_trade_status(self._fill_value(fill, "status", ""))
-            == "confirmed"
+            if _normalize_trade_status(self._fill_value(fill, "status", "")) == "confirmed"
         ]
         if pending_statuses:
             pending = next(
@@ -805,8 +796,7 @@ class ReconciliationService:
         if (
             related_fills
             and all(
-                _normalize_trade_status(self._fill_value(fill, "status", ""))
-                == "failed"
+                _normalize_trade_status(self._fill_value(fill, "status", "")) == "failed"
                 for fill in related_fills
             )
             and not is_open
@@ -972,9 +962,7 @@ class ReconciliationService:
                             if isinstance(recovery, dict):
                                 reservation_id = recovery.get("reservation_id")
                                 if reservation_id:
-                                    reservation_source = (
-                                        "orders.request.recovery_metadata"
-                                    )
+                                    reservation_source = "orders.request.recovery_metadata"
                     if not reservation_id:
                         reservation_id = order_row.get("reservation_id")
                         if reservation_id:
@@ -1004,9 +992,7 @@ class ReconciliationService:
                     "order_id": record.get("order_id"),
                 },
             )
-            await self.reservation_service.release_terminal(
-                str(reservation_id), reason=reason
-            )
+            await self.reservation_service.release_terminal(str(reservation_id), reason=reason)
         except Exception as exc:
             _log.warning(
                 "reconciliation_reservation_release_failed | reservation_id=%s reason=%s error=%r",
@@ -1015,9 +1001,7 @@ class ReconciliationService:
                 exc,
             )
 
-    async def _lookup_active_reservation_id_for_order(
-        self, order_id: Any
-    ) -> str | None:
+    async def _lookup_active_reservation_id_for_order(self, order_id: Any) -> str | None:
         repo = getattr(self.reservation_service, "reservations_repo", None)
         lookup = getattr(repo, "get_active_by_order_id", None)
         if not callable(lookup):
@@ -1066,9 +1050,7 @@ class ReconciliationService:
                 price=float(price) if price is not None else None,
                 usdc_value=float(usdc_value) if usdc_value is not None else None,
                 venue_status=venue_status,
-                signal_id=signal_id
-                or record.get("trade_key")
-                or record.get("signal_id"),
+                signal_id=signal_id or record.get("trade_key") or record.get("signal_id"),
                 meta=meta,
             )
         except Exception:
@@ -1097,9 +1079,7 @@ class ReconciliationService:
             return False
 
         token_id = str(record.get("asset") or record.get("token_id") or "")
-        condition_id = str(
-            record.get("condition_id") or record.get("conditionId") or ""
-        )
+        condition_id = str(record.get("condition_id") or record.get("conditionId") or "")
         delay = order_confirmation_cfg.resolve_initial_delay(
             token_id=token_id,
             condition_id=condition_id,
@@ -1123,9 +1103,7 @@ class ReconciliationService:
         created_at = _record_created_at(record)
         if created_at is None:
             return False
-        return (time.time() - created_at) >= float(
-            order_confirmation_cfg.max_wait_seconds
-        )
+        return (time.time() - created_at) >= float(order_confirmation_cfg.max_wait_seconds)
 
     def _is_past_auto_release_grace(
         self,
@@ -1277,9 +1255,7 @@ class ReconciliationService:
                     result["details"]["list_open_orders"] = "venue_unavailable"
                 else:
                     result["errors"] += 1
-                    result["details"]["list_open_orders_error"] = redact_error_detail(
-                        exc
-                    )
+                    result["details"]["list_open_orders_error"] = redact_error_detail(exc)
         else:
             result["inconclusive"] += 1
             result["details"]["list_open_orders"] = "not_supported"
@@ -1310,9 +1286,7 @@ class ReconciliationService:
                     result["details"][f"trade:{trade_id}"] = "venue_unavailable"
                 else:
                     result["errors"] += 1
-                    result["details"][f"trade:{trade_id}:error"] = redact_error_detail(
-                        exc
-                    )
+                    result["details"][f"trade:{trade_id}:error"] = redact_error_detail(exc)
 
         # Probe 4: exact account fills for the order.
         try:
@@ -1326,11 +1300,7 @@ class ReconciliationService:
             related = [
                 f
                 for f in fills or []
-                if str(
-                    f.get("order_id")
-                    if isinstance(f, dict)
-                    else getattr(f, "order_id", "")
-                )
+                if str(f.get("order_id") if isinstance(f, dict) else getattr(f, "order_id", ""))
                 in {order_id, venue_order_id}
             ]
             if related:
@@ -1354,9 +1324,7 @@ class ReconciliationService:
 
         # Probe 5: local position delta.
         try:
-            pos = await self.positions_repo.get_position(
-                user_id, condition_id, token_id=token_id
-            )
+            pos = await self.positions_repo.get_position(user_id, condition_id, token_id=token_id)
             local_size = Decimal(str(getattr(pos, "size_tokens", 0) or 0))
             if local_size >= expected_size > 0:
                 # Position already absorbed at least the expected size — order
@@ -1377,9 +1345,7 @@ class ReconciliationService:
         self._auto_release_abort_counts.pop(order_id, None)
         self._ambiguous_stalled_last_audit.pop(order_id, None)
 
-    def _maybe_emit_ambiguous_stalled(
-        self, order_id: str, record: dict[str, Any]
-    ) -> None:
+    def _maybe_emit_ambiguous_stalled(self, order_id: str, record: dict[str, Any]) -> None:
         """Surface a stuck ambiguous order at most once per hour.
 
         The per-attempt abort logs are throttled; this is the operator-facing
@@ -1467,14 +1433,10 @@ class ReconciliationService:
         venue_order_id = str(record.get("venue_order_id") or order_id)
         market_id = str(request.get("market") or request.get("market_id") or "") or None
         user_id = str(record.get("user_id") or request.get("user_id") or "")
-        condition_id = str(
-            record.get("condition_id") or request.get("condition_id") or ""
-        )
+        condition_id = str(record.get("condition_id") or request.get("condition_id") or "")
         token_id = str(record.get("asset") or request.get("token_id") or "")
         try:
-            expected_size = Decimal(
-                str(request.get("amount") or request.get("size") or "0")
-            )
+            expected_size = Decimal(str(request.get("amount") or request.get("size") or "0"))
         except Exception:
             expected_size = Decimal("0")
         trade_ids, _ = self._submission_sequences(record)
@@ -1500,9 +1462,7 @@ class ReconciliationService:
             return False
 
         max_errors = int(order_confirmation_cfg.auto_release_max_probe_errors)
-        require_clean = bool(
-            order_confirmation_cfg.auto_release_require_all_probes_clean
-        )
+        require_clean = bool(order_confirmation_cfg.auto_release_require_all_probes_clean)
         if probe["errors"] > max_errors:
             self._log_throttled_auto_release_abort(
                 order_id=order_id,
@@ -1749,11 +1709,7 @@ class ReconciliationService:
         request = row.get("request") or {}
         if not isinstance(request, dict):
             return Decimal("0")
-        raw = (
-            request.get("amount")
-            if request.get("amount") is not None
-            else request.get("size")
-        )
+        raw = request.get("amount") if request.get("amount") is not None else request.get("size")
         try:
             return Decimal(str(raw or 0))
         except Exception:
@@ -1793,9 +1749,7 @@ class ReconciliationService:
             venue_order = await self.clob_gateway.get_order(order.venue_order_id)
             venue_fills = await self.clob_gateway.get_fills(market=order.market_id)
         except Exception as exc:
-            self._audit(
-                "reconciliation_unreachable", {"order_id": order.id, "error": str(exc)}
-            )
+            self._audit("reconciliation_unreachable", {"order_id": order.id, "error": str(exc)})
             return ReconciliationResult.unresolved(
                 order.id, OrderLifecycleStatus.UNKNOWN_UNCONFIRMED, str(exc)
             )
@@ -1837,9 +1791,7 @@ class ReconciliationService:
                         reason="venue_fill_confirmed",
                     )
                 self._audit("reconciliation_resolved_filled", {"order_id": order.id})
-                return ReconciliationResult.resolved(
-                    order.id, OrderLifecycleStatus.FILLED
-                )
+                return ReconciliationResult.resolved(order.id, OrderLifecycleStatus.FILLED)
             # venue_fills was non-empty but none matched this order — treat
             # as inconclusive (fills belong to a different order in the same
             # market, or lack order_id and cannot be safely attributed).
@@ -1970,9 +1922,7 @@ class ReconciliationService:
             if timed_out:
                 return False
 
-        previous_matched = await self._previous_matched_for_order(
-            self.orders_repo, order_id
-        )
+        previous_matched = await self._previous_matched_for_order(self.orders_repo, order_id)
         delta_matched = current_matched - previous_matched
 
         if current_matched < previous_matched:
@@ -2127,9 +2077,7 @@ class ReconciliationService:
                             "matched_total": str(current_matched),
                         },
                     )
-                    await self._release_reservation_if_present(
-                        record, reason="confirmed"
-                    )
+                    await self._release_reservation_if_present(record, reason="confirmed")
                     await self._record_funder_activity(
                         record=record,
                         side=side,
@@ -2428,9 +2376,7 @@ class ReconciliationService:
         # zero — re-applying the entire cumulative venue size as a
         # fresh delta and double-counting every risk SELL fill that was
         # in-flight across the restart.
-        previous_matched = await self._previous_matched_for_order(
-            self.orders_repo, order_id
-        )
+        previous_matched = await self._previous_matched_for_order(self.orders_repo, order_id)
         delta_matched = current_matched - previous_matched
         if current_matched < previous_matched:
             self._record_negative_delta_anomaly(
@@ -2487,9 +2433,7 @@ class ReconciliationService:
                 try:
                     recovery_metadata = request.get("recovery_metadata")
                     trigger_meta = (
-                        dict(recovery_metadata)
-                        if isinstance(recovery_metadata, dict)
-                        else {}
+                        dict(recovery_metadata) if isinstance(recovery_metadata, dict) else {}
                     )
                     trigger_meta["venue_status"] = venue_status
                     await self.risk_triggers_repo.record_trigger(
@@ -2503,9 +2447,7 @@ class ReconciliationService:
                         metadata=trigger_meta,
                     )
                 except Exception:
-                    _log.debug(
-                        "risk_trigger_record_error order_id=%s", order_id, exc_info=True
-                    )
+                    _log.debug("risk_trigger_record_error order_id=%s", order_id, exc_info=True)
             await self._release_reservation_if_present(record, reason=venue_status)
             mapped = _VENUE_TO_LIFECYCLE.get(venue_status, ("failed", "failed"))
             self._emit_lifecycle(
@@ -2561,9 +2503,7 @@ class ReconciliationService:
         existing_pos = None
         if get_position is not None:
             try:
-                existing_pos = await get_position(
-                    user_id, condition_id, token_id=token_id
-                )
+                existing_pos = await get_position(user_id, condition_id, token_id=token_id)
             except Exception:
                 existing_pos = None
         try:
@@ -2623,9 +2563,7 @@ class ReconciliationService:
             updated_pos = None
             if get_position is not None:
                 try:
-                    updated_pos = await get_position(
-                        user_id, condition_id, token_id=token_id
-                    )
+                    updated_pos = await get_position(user_id, condition_id, token_id=token_id)
                 except Exception:
                     updated_pos = None
             if logger is not None:
@@ -2638,9 +2576,7 @@ class ReconciliationService:
 
         # Persist a re-entry block only after a confirmed full close.
         recovery_metadata = request.get("recovery_metadata")
-        block_metadata = (
-            dict(recovery_metadata) if isinstance(recovery_metadata, dict) else {}
-        )
+        block_metadata = dict(recovery_metadata) if isinstance(recovery_metadata, dict) else {}
         block_metadata["fill_price"] = float(avg_price)
         block_metadata["fill_size_tokens"] = float(delta_matched)
         block_metadata["fill_order_id"] = order_id
@@ -2680,9 +2616,7 @@ class ReconciliationService:
                     metadata=block_metadata,
                 )
             except Exception:
-                _log.debug(
-                    "risk_trigger_record_error order_id=%s", order_id, exc_info=True
-                )
+                _log.debug("risk_trigger_record_error order_id=%s", order_id, exc_info=True)
 
         if (
             not reapplied_duplicate
@@ -2704,9 +2638,7 @@ class ReconciliationService:
                 leader_wallet=leader_id,
             )
 
-        submission_status = (
-            "filled_reconciled" if is_final_fill else "submitted_unconfirmed"
-        )
+        submission_status = "filled_reconciled" if is_final_fill else "submitted_unconfirmed"
         await self.orders_repo.update_submission_status(
             order_id=order_id,
             status=submission_status,
@@ -2798,12 +2730,8 @@ class ReconciliationService:
         if live_size is None:
             return result
 
-        existing = await self.positions_repo.get_position(
-            user_id, condition_id, token_id=token_id
-        )
-        local_size = (
-            getattr(existing, "size_tokens", Decimal("0")) if existing else Decimal("0")
-        )
+        existing = await self.positions_repo.get_position(user_id, condition_id, token_id=token_id)
+        local_size = getattr(existing, "size_tokens", Decimal("0")) if existing else Decimal("0")
 
         if local_size <= Decimal("1e-12") and live_size <= Decimal("1e-12"):
             result["action"] = "no_drift"
@@ -2814,30 +2742,22 @@ class ReconciliationService:
             return result
 
         avg_entry_price = (
-            getattr(existing, "avg_entry_price", Decimal("0"))
-            if existing
-            else Decimal("0")
+            getattr(existing, "avg_entry_price", Decimal("0")) if existing else Decimal("0")
         )
 
         if live_size <= Decimal("1e-12"):
-            await self.positions_repo.delete_position(
-                user_id, condition_id, token_id=token_id
-            )
+            await self.positions_repo.delete_position(user_id, condition_id, token_id=token_id)
             result["action"] = "deleted"
             result["reconciled"] = True
 
             if reservation_service is not None:
                 try:
-                    reservations_repo = getattr(
-                        reservation_service, "reservations_repo", None
-                    )
+                    reservations_repo = getattr(reservation_service, "reservations_repo", None)
                     if reservations_repo is not None:
-                        active_reservations = (
-                            await reservations_repo.list_active_for_scope(
-                                user_id=user_id,
-                                condition_id=condition_id,
-                                token_id=token_id,
-                            )
+                        active_reservations = await reservations_repo.list_active_for_scope(
+                            user_id=user_id,
+                            condition_id=condition_id,
+                            token_id=token_id,
                         )
                         for res in active_reservations:
                             if res.side.value == "SELL":
@@ -2864,22 +2784,15 @@ class ReconciliationService:
 
             if reservation_service is not None:
                 try:
-                    reservations_repo = getattr(
-                        reservation_service, "reservations_repo", None
-                    )
+                    reservations_repo = getattr(reservation_service, "reservations_repo", None)
                     if reservations_repo is not None:
-                        active_reservations = (
-                            await reservations_repo.list_active_for_scope(
-                                user_id=user_id,
-                                condition_id=condition_id,
-                                token_id=token_id,
-                            )
+                        active_reservations = await reservations_repo.list_active_for_scope(
+                            user_id=user_id,
+                            condition_id=condition_id,
+                            token_id=token_id,
                         )
                         for res in active_reservations:
-                            if (
-                                res.side.value == "SELL"
-                                and res.reserved_size > live_size
-                            ):
+                            if res.side.value == "SELL" and res.reserved_size > live_size:
                                 await reservation_service.release_terminal(
                                     res.id, reason="manual_position_drift_shrunk"
                                 )

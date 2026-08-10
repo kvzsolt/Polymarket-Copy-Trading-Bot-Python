@@ -14,6 +14,7 @@ This test pins on PG:
     ``UniqueViolationError`` (so a duplicate cannot land silently)
   * Multiple rows with NULL order_id coexist (partial-unique semantics)
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -103,8 +104,7 @@ async def test_query_plan_uses_order_id_index():
                 )
     detail = " ".join(str(row[0]) for row in plan_rows).lower()
     assert "idx_orders_order_id" in detail, (
-        f"WHERE order_id = $1 must use the unique index; plan was:\n"
-        f"{[r[0] for r in plan_rows]}"
+        f"WHERE order_id = $1 must use the unique index; plan was:\n{[r[0] for r in plan_rows]}"
     )
 
 
@@ -148,7 +148,5 @@ async def test_null_order_ids_allowed_to_repeat():
                 None,
                 "{}",
             )
-            count = await conn.fetchval(
-                "SELECT COUNT(*) FROM orders WHERE order_id IS NULL"
-            )
+            count = await conn.fetchval("SELECT COUNT(*) FROM orders WHERE order_id IS NULL")
     assert count == 2

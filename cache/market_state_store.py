@@ -48,6 +48,7 @@ def _env_int(name: str, default: int) -> int:
     except (TypeError, ValueError):
         return default
 
+
 _logger = logging.getLogger("MarketStateStore")
 
 
@@ -181,9 +182,7 @@ class MarketStateStore:
             # PR #105 review: validate explicit overrides. max_tokens=0
             # evicts every insert; negative values crash the eviction loop.
             if not isinstance(max_tokens, int) or max_tokens <= 0:
-                raise ValueError(
-                    f"max_tokens must be a positive int, got {max_tokens!r}"
-                )
+                raise ValueError(f"max_tokens must be a positive int, got {max_tokens!r}")
             self._max_tokens = max_tokens
         else:
             self._max_tokens = _env_int("MARKET_STATE_MAX_TOKENS", 5000)
@@ -218,7 +217,8 @@ class MarketStateStore:
                 evicted_id, _ = self._states.popitem(last=False)
                 _logger.debug(
                     "market_state_store_evicted | token_id=%s reason=max_tokens cap=%d",
-                    evicted_id, self._max_tokens,
+                    evicted_id,
+                    self._max_tokens,
                 )
         else:
             # Touch on access: move to MRU end so eviction targets truly cold
@@ -328,11 +328,7 @@ class MarketStateStore:
 
             state.recompute_top_of_book()
 
-            now = (
-                fetched_at_monotonic
-                if fetched_at_monotonic is not None
-                else time.monotonic()
-            )
+            now = fetched_at_monotonic if fetched_at_monotonic is not None else time.monotonic()
             state.last_book_monotonic = now
             state.last_quote_monotonic = now
             state.last_update_monotonic = now
@@ -559,11 +555,7 @@ class MarketStateStore:
             state.min_order_size = Decimal(str(min_order_size))
             state.neg_risk = bool(neg_risk)
 
-            now = (
-                fetched_at_monotonic
-                if fetched_at_monotonic is not None
-                else time.monotonic()
-            )
+            now = fetched_at_monotonic if fetched_at_monotonic is not None else time.monotonic()
             state.last_tick_monotonic = now
             state.last_update_monotonic = now
             state.source = source
@@ -596,11 +588,7 @@ class MarketStateStore:
             if best_ask is not None:
                 state.best_ask = Decimal(str(best_ask))
 
-            now = (
-                fetched_at_monotonic
-                if fetched_at_monotonic is not None
-                else time.monotonic()
-            )
+            now = fetched_at_monotonic if fetched_at_monotonic is not None else time.monotonic()
             state.last_quote_monotonic = now
             state.last_update_monotonic = now
             state.source = source

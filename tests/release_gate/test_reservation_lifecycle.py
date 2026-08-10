@@ -8,6 +8,7 @@ Asserts:
 * an active reservation can be released and the row leaves the active set
   (so reconciliation / cancel paths free capacity).
 """
+
 from __future__ import annotations
 
 import contextlib

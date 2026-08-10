@@ -13,6 +13,7 @@ backoff, structured logging, ``redact_error_detail`` on errors) but is
 intentionally separate because the Alchemy JSON-RPC framing differs from the
 Polymarket market/user WebSocket protocol.
 """
+
 from __future__ import annotations
 
 import asyncio

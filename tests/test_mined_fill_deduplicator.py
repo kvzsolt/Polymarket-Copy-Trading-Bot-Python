@@ -1,4 +1,5 @@
 """Tests for ``services/onchain_detection/mined_fill_deduplicator.py`` (PR2 / Phase 9)."""
+
 from __future__ import annotations
 
 import asyncio

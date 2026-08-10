@@ -10,6 +10,7 @@ The fixtures here are deliberately minimal: they expose just enough surface
 for ``ExecutionService``, ``ReconciliationService``, ``ReservationService``,
 and the WSS clients to function under a paper-trade harness.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -144,18 +145,14 @@ def make_clob_gateway(
     """Build a ``MagicMock(spec=ClobGateway)`` preset with the same awaitable
     surface used in ``tests/test_issue66_gateway_isolation.py``."""
     if submit_result is None:
-        submit_result = VenueSubmitResult(
-            success=True, order_id="ord-mock", status="submitted"
-        )
+        submit_result = VenueSubmitResult(success=True, order_id="ord-mock", status="submitted")
     gateway = MagicMock(spec=ClobGateway)
     if isinstance(submit_result, Exception):
         gateway.submit_marketable_order = AsyncMock(side_effect=submit_result)
     else:
         gateway.submit_marketable_order = AsyncMock(return_value=submit_result)
     gateway.submit_limit_order = AsyncMock(
-        return_value=VenueSubmitResult(
-            success=True, order_id="ord-limit", status="submitted"
-        )
+        return_value=VenueSubmitResult(success=True, order_id="ord-limit", status="submitted")
     )
     gateway.get_order = AsyncMock(
         return_value=VenueOrderState(
@@ -173,9 +170,7 @@ def make_clob_gateway(
     gateway.cancel_order = AsyncMock(
         return_value=VenueCancelResult(success=True, order_id="ord-mock")
     )
-    gateway.check_compatibility = AsyncMock(
-        return_value={"sdk_available": True}
-    )
+    gateway.check_compatibility = AsyncMock(return_value={"sdk_available": True})
     return gateway
 
 

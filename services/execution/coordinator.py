@@ -116,17 +116,36 @@ _SOURCE_TO_REASON: dict[str, IntentReason] = {
 }
 
 
-_NON_TERMINAL_SUBMIT_STATUSES = frozenset({
-    "submitted_unconfirmed", "submitted_delayed", "delayed",
-    "live", "order_live", "matched", "matched_pending_confirmation",
-    "mined", "trade_mined", "retrying", "trade_retrying",
-})
+_NON_TERMINAL_SUBMIT_STATUSES = frozenset(
+    {
+        "submitted_unconfirmed",
+        "submitted_delayed",
+        "delayed",
+        "live",
+        "order_live",
+        "matched",
+        "matched_pending_confirmation",
+        "mined",
+        "trade_mined",
+        "retrying",
+        "trade_retrying",
+    }
+)
 
-_TERMINAL_FAILURE_SUBMIT_STATUSES = frozenset({
-    "rejected", "failed", "cancelled", "canceled", "expired",
-    "book_no_liquidity", "book_spread_wide",
-    "stale_market_data", "market_not_ready", "circuit_open",
-})
+_TERMINAL_FAILURE_SUBMIT_STATUSES = frozenset(
+    {
+        "rejected",
+        "failed",
+        "cancelled",
+        "canceled",
+        "expired",
+        "book_no_liquidity",
+        "book_spread_wide",
+        "stale_market_data",
+        "market_not_ready",
+        "circuit_open",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -263,7 +282,9 @@ class ExecutionCoordinator:
         reservation = await self.reservation_service.reserve_for_intent(intent)
         logger.info(
             "coordinator.reservation_acquired reservation_id=%s key=%s side=%s",
-            reservation.id, intent.key.stable_key(), intent.key.side.value,
+            reservation.id,
+            intent.key.stable_key(),
+            intent.key.side.value,
         )
 
         # C2: track release state so a stray exception cannot leak the
@@ -292,7 +313,10 @@ class ExecutionCoordinator:
             except Exception as exc:
                 await _release(f"create_failed:{exc}")
                 self._log_audit(
-                    "execution_create_failed", intent, "none", reservation.id,
+                    "execution_create_failed",
+                    intent,
+                    "none",
+                    reservation.id,
                     error=str(exc),
                 )
                 raise
@@ -320,7 +344,9 @@ class ExecutionCoordinator:
                     to_status=OrderLifecycleStatus.RETRYABLE_FAILED,
                     metadata={"error": str(exc)},
                 )
-                self._log_audit("execution_retryable_failed", intent, order.id, reservation.id, str(exc))
+                self._log_audit(
+                    "execution_retryable_failed", intent, order.id, reservation.id, str(exc)
+                )
                 return ExecutionResult.retryable_failed(order_id=order.id, error=str(exc))
             except TerminalVenueError as exc:
                 await self._transition_order(
@@ -330,7 +356,9 @@ class ExecutionCoordinator:
                     metadata={"error": str(exc)},
                 )
                 await _release("terminal_failed")
-                self._log_audit("execution_terminal_failed", intent, order.id, reservation.id, str(exc))
+                self._log_audit(
+                    "execution_terminal_failed", intent, order.id, reservation.id, str(exc)
+                )
                 if (
                     intent.key.side.value == "SELL"
                     and self.reconciliation_service is not None
@@ -347,7 +375,9 @@ class ExecutionCoordinator:
                     metadata={"error": str(exc)},
                 )
                 await _release("terminal_failed")
-                self._log_audit("execution_terminal_failed", intent, order.id, reservation.id, str(exc))
+                self._log_audit(
+                    "execution_terminal_failed", intent, order.id, reservation.id, str(exc)
+                )
                 raise  # Reraise unknown errors, but ensure reservation is released
 
             await self._link_reservation_order(
@@ -369,7 +399,13 @@ class ExecutionCoordinator:
                     to_status=OrderLifecycleStatus.FILLED,
                     venue_order_id=venue_result.order_id,
                 )
-                self._log_audit("execution_filled", intent, order.id, reservation.id, venue_order_id=venue_result.order_id)
+                self._log_audit(
+                    "execution_filled",
+                    intent,
+                    order.id,
+                    reservation.id,
+                    venue_order_id=venue_result.order_id,
+                )
                 return ExecutionResult.filled(order_id=order.id)
 
             # Preserve UNKNOWN_UNCONFIRMED distinctly from ordinary submitted/live
@@ -395,7 +431,8 @@ class ExecutionCoordinator:
                 await _release(str(unresolved_status.value))
                 logger.info(
                     "coordinator.reservation_released reservation_id=%s reason=%s",
-                    reservation.id, unresolved_status.value,
+                    reservation.id,
+                    unresolved_status.value,
                 )
             else:
                 # C4: reconciler may be unset in test/partial wiring contexts.
@@ -405,16 +442,24 @@ class ExecutionCoordinator:
                     logger.warning(
                         "coordinator.reconciler_missing order_id=%s status=%s — "
                         "reservation will remain pending without reconciliation",
-                        order.id, unresolved_status.value,
+                        order.id,
+                        unresolved_status.value,
                     )
                 keep_reservation = True
                 logger.info(
                     "coordinator.reservation_pending reservation_id=%s "
                     "status=%s — awaiting reconciliation",
-                    reservation.id, unresolved_status.value,
+                    reservation.id,
+                    unresolved_status.value,
                 )
 
-            self._log_audit(f"execution_{unresolved_status.value}", intent, order.id, reservation.id, venue_order_id=venue_result.order_id)
+            self._log_audit(
+                f"execution_{unresolved_status.value}",
+                intent,
+                order.id,
+                reservation.id,
+                venue_order_id=venue_result.order_id,
+            )
 
             return ExecutionResult.unconfirmed(
                 order_id=order.id,
@@ -431,7 +476,8 @@ class ExecutionCoordinator:
                 except Exception:
                     logger.warning(
                         "coordinator.cleanup_release_failed reservation_id=%s",
-                        reservation.id, exc_info=True,
+                        reservation.id,
+                        exc_info=True,
                     )
             raise
 
@@ -451,7 +497,14 @@ class ExecutionCoordinator:
             if isawaitable(result):
                 await result
 
-    async def _transition_order(self, order_id: str, from_status: OrderLifecycleStatus, to_status: OrderLifecycleStatus, venue_order_id: str | None = None, metadata: Dict[str, Any] | None = None) -> None:
+    async def _transition_order(
+        self,
+        order_id: str,
+        from_status: OrderLifecycleStatus,
+        to_status: OrderLifecycleStatus,
+        venue_order_id: str | None = None,
+        metadata: Dict[str, Any] | None = None,
+    ) -> None:
         assert_transition_allowed(from_status, to_status)
         await self.orders_repo.transition(
             order_id,
@@ -460,8 +513,16 @@ class ExecutionCoordinator:
             venue_order_id=venue_order_id,
             metadata=metadata,
         )
-        
-    def _log_audit(self, event_name: str, intent: OrderIntent, order_id: str, reservation_id: str, error: str = "", venue_order_id: str = ""):
+
+    def _log_audit(
+        self,
+        event_name: str,
+        intent: OrderIntent,
+        order_id: str,
+        reservation_id: str,
+        error: str = "",
+        venue_order_id: str = "",
+    ):
         if self.audit_logger is None:
             return
         payload = {
@@ -602,8 +663,11 @@ class ExecutionCoordinator:
         reservation_id = reservation.id
         logger.info(
             "coordinator.production_reserved id=%s side=%s source=%s scope=%s/%s",
-            reservation_id, intent.side, source_override,
-            intent.condition_id, intent.token_id,
+            reservation_id,
+            intent.side,
+            source_override,
+            intent.condition_id,
+            intent.token_id,
         )
 
         # ---- Build ExecutionRequest, thread reservation_id ------------
@@ -711,7 +775,9 @@ class ExecutionCoordinator:
                 except Exception as exc:
                     logger.debug(
                         "coordinator_link_reservation_failed | reservation_id=%s order_id=%s error=%r",
-                        reservation_id, order_id, exc,
+                        reservation_id,
+                        order_id,
+                        exc,
                     )
             return ExecutionCoordinatorResult(
                 accepted=True,
@@ -732,7 +798,9 @@ class ExecutionCoordinator:
                 except Exception as exc:
                     logger.debug(
                         "coordinator_link_reservation_failed | reservation_id=%s order_id=%s error=%r",
-                        reservation_id, order_id, exc,
+                        reservation_id,
+                        order_id,
+                        exc,
                     )
             # Enqueue reconciliation immediately so an ambiguous forced-exit
             # ack (e.g. a fully-killed FAK that returned submitted_unconfirmed)
@@ -746,7 +814,9 @@ class ExecutionCoordinator:
                 except Exception as exc:
                     logger.debug(
                         "coordinator_reconcile_enqueue_failed | reservation_id=%s order_id=%s error=%r",
-                        reservation_id, order_id, exc,
+                        reservation_id,
+                        order_id,
+                        exc,
                     )
             return ExecutionCoordinatorResult(
                 accepted=True,
@@ -804,7 +874,9 @@ class ExecutionCoordinator:
         except Exception as exc:
             logger.warning(
                 "coordinator_release_failed reservation_id=%s reason=%s error=%r",
-                reservation_id, reason, exc,
+                reservation_id,
+                reason,
+                exc,
             )
 
     def _safe_audit(self, event: str, payload: dict[str, Any]) -> None:

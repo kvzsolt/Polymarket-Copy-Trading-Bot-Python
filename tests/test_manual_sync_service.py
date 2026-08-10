@@ -1,4 +1,5 @@
 """Behavioural tests for ManualSyncService — TS manualSyncService.ts port."""
+
 from __future__ import annotations
 
 import asyncio
@@ -115,15 +116,31 @@ async def test_manual_trade_not_in_db_is_inserted_logged_and_cache_evicted():
     activity_model.insert_many = insert_many
 
     with (
-        patch("services.manual_sync_service.fetch_data", AsyncMock(side_effect=[
-            [_trade(tx="0xnew", asset="0xtoken1")],  # activity API
-            [],                                       # positions API
-        ])),
-        patch("services.manual_sync_service.find_activity_by_tx_hash", AsyncMock(return_value=False)),
-        patch("services.manual_sync_service.get_user_activity_model", MagicMock(return_value=activity_model)),
-        patch("services.manual_sync_service.get_user_position_model", MagicMock(return_value=MagicMock(
-            delete_many=AsyncMock(), insert_many=AsyncMock(),
-        ))),
+        patch(
+            "services.manual_sync_service.fetch_data",
+            AsyncMock(
+                side_effect=[
+                    [_trade(tx="0xnew", asset="0xtoken1")],  # activity API
+                    [],  # positions API
+                ]
+            ),
+        ),
+        patch(
+            "services.manual_sync_service.find_activity_by_tx_hash", AsyncMock(return_value=False)
+        ),
+        patch(
+            "services.manual_sync_service.get_user_activity_model",
+            MagicMock(return_value=activity_model),
+        ),
+        patch(
+            "services.manual_sync_service.get_user_position_model",
+            MagicMock(
+                return_value=MagicMock(
+                    delete_many=AsyncMock(),
+                    insert_many=AsyncMock(),
+                )
+            ),
+        ),
         patch("services.manual_sync_service.print_manual_trade_detected") as mock_print,
     ):
         await svc.sync_now(reason="test")
@@ -143,15 +160,31 @@ async def test_trade_already_in_user_activities_is_skipped_silently():
     activity_model = MagicMock(insert_many=insert_many)
 
     with (
-        patch("services.manual_sync_service.fetch_data", AsyncMock(side_effect=[
-            [_trade(tx="0xdup")],
-            [],
-        ])),
-        patch("services.manual_sync_service.find_activity_by_tx_hash", AsyncMock(return_value=True)),
-        patch("services.manual_sync_service.get_user_activity_model", MagicMock(return_value=activity_model)),
-        patch("services.manual_sync_service.get_user_position_model", MagicMock(return_value=MagicMock(
-            delete_many=AsyncMock(), insert_many=AsyncMock(),
-        ))),
+        patch(
+            "services.manual_sync_service.fetch_data",
+            AsyncMock(
+                side_effect=[
+                    [_trade(tx="0xdup")],
+                    [],
+                ]
+            ),
+        ),
+        patch(
+            "services.manual_sync_service.find_activity_by_tx_hash", AsyncMock(return_value=True)
+        ),
+        patch(
+            "services.manual_sync_service.get_user_activity_model",
+            MagicMock(return_value=activity_model),
+        ),
+        patch(
+            "services.manual_sync_service.get_user_position_model",
+            MagicMock(
+                return_value=MagicMock(
+                    delete_many=AsyncMock(),
+                    insert_many=AsyncMock(),
+                )
+            ),
+        ),
         patch("services.manual_sync_service.print_manual_trade_detected") as mock_print,
     ):
         await svc.sync_now(reason="test")
@@ -170,10 +203,18 @@ async def test_on_wss_authenticated_stops_rest_fallback_and_triggers_sync():
 
     with (
         patch("services.manual_sync_service.fetch_data", AsyncMock(return_value=[])),
-        patch("services.manual_sync_service.find_activity_by_tx_hash", AsyncMock(return_value=False)),
-        patch("services.manual_sync_service.get_user_position_model", MagicMock(return_value=MagicMock(
-            delete_many=AsyncMock(), insert_many=AsyncMock(),
-        ))),
+        patch(
+            "services.manual_sync_service.find_activity_by_tx_hash", AsyncMock(return_value=False)
+        ),
+        patch(
+            "services.manual_sync_service.get_user_position_model",
+            MagicMock(
+                return_value=MagicMock(
+                    delete_many=AsyncMock(),
+                    insert_many=AsyncMock(),
+                )
+            ),
+        ),
     ):
         await svc.on_wss_authenticated()
         await asyncio.sleep(0.05)  # let debounce task finish
@@ -241,13 +282,24 @@ async def test_position_discrepancy_emits_log_and_upsert():
     positions_repo.list_open_positions = AsyncMock(return_value=[])
 
     with (
-        patch("services.manual_sync_service.fetch_data", AsyncMock(side_effect=[
-            [],  # activity
-            [_live_position(size=12.5, avg=0.4)],  # positions
-        ])),
-        patch("services.manual_sync_service.get_user_position_model", MagicMock(return_value=MagicMock(
-            delete_many=AsyncMock(), insert_many=AsyncMock(),
-        ))),
+        patch(
+            "services.manual_sync_service.fetch_data",
+            AsyncMock(
+                side_effect=[
+                    [],  # activity
+                    [_live_position(size=12.5, avg=0.4)],  # positions
+                ]
+            ),
+        ),
+        patch(
+            "services.manual_sync_service.get_user_position_model",
+            MagicMock(
+                return_value=MagicMock(
+                    delete_many=AsyncMock(),
+                    insert_many=AsyncMock(),
+                )
+            ),
+        ),
         patch("services.manual_sync_service.print_manual_sync_discrepancy") as mock_log,
     ):
         await svc.sync_now(reason="test")
@@ -268,13 +320,24 @@ async def test_position_sync_reaps_expired_reservations_after_venue_fill():
     positions_repo.list_open_positions = AsyncMock(return_value=[])
 
     with (
-        patch("services.manual_sync_service.fetch_data", AsyncMock(side_effect=[
-            [],
-            [_live_position(size=12.5, avg=0.4)],
-        ])),
-        patch("services.manual_sync_service.get_user_position_model", MagicMock(return_value=MagicMock(
-            delete_many=AsyncMock(), insert_many=AsyncMock(),
-        ))),
+        patch(
+            "services.manual_sync_service.fetch_data",
+            AsyncMock(
+                side_effect=[
+                    [],
+                    [_live_position(size=12.5, avg=0.4)],
+                ]
+            ),
+        ),
+        patch(
+            "services.manual_sync_service.get_user_position_model",
+            MagicMock(
+                return_value=MagicMock(
+                    delete_many=AsyncMock(),
+                    insert_many=AsyncMock(),
+                )
+            ),
+        ),
         patch("services.manual_sync_service.print_manual_sync_discrepancy"),
     ):
         await svc.sync_now(reason="test")
@@ -293,24 +356,34 @@ async def test_deletion_skipped_when_api_response_is_empty():
     reservations not released, etc.).  Deletion is deferred to the next sync.
     """
     svc, positions_repo, market_store = _make_service()
-    positions_repo.list_open_positions = AsyncMock(return_value=[
-        PositionRecord(
-            user_id=FUNDER,
-            condition_id="0xcond-stale",
-            token_id="0xasset-stale",
-            leader_id="0xleader",
-            size_tokens=Decimal("7.5"),
-            avg_entry_price=Decimal("0.42"),
-        )
-    ])
+    positions_repo.list_open_positions = AsyncMock(
+        return_value=[
+            PositionRecord(
+                user_id=FUNDER,
+                condition_id="0xcond-stale",
+                token_id="0xasset-stale",
+                leader_id="0xleader",
+                size_tokens=Decimal("7.5"),
+                avg_entry_price=Decimal("0.42"),
+            )
+        ]
+    )
     user_pos_model = MagicMock(delete_many=AsyncMock(), insert_many=AsyncMock())
 
     with (
-        patch("services.manual_sync_service.fetch_data", AsyncMock(side_effect=[
-            [],  # activity
-            [],  # positions — empty → deletion guard fires
-        ])),
-        patch("services.manual_sync_service.get_user_position_model", MagicMock(return_value=user_pos_model)),
+        patch(
+            "services.manual_sync_service.fetch_data",
+            AsyncMock(
+                side_effect=[
+                    [],  # activity
+                    [],  # positions — empty → deletion guard fires
+                ]
+            ),
+        ),
+        patch(
+            "services.manual_sync_service.get_user_position_model",
+            MagicMock(return_value=user_pos_model),
+        ),
     ):
         await svc.sync_now(reason="manual_sell_to_zero")
 
@@ -328,33 +401,43 @@ async def test_deletion_skipped_when_api_response_smaller_than_local():
     deletion pass is skipped and logged.  The next sync will retry.
     """
     svc, positions_repo, market_store = _make_service()
-    positions_repo.list_open_positions = AsyncMock(return_value=[
-        PositionRecord(
-            user_id=FUNDER,
-            condition_id="0xcond1",
-            token_id="0xasset1",
-            leader_id=None,
-            size_tokens=Decimal("10.0"),
-            avg_entry_price=Decimal("0.5"),
-        ),
-        PositionRecord(
-            user_id=FUNDER,
-            condition_id="0xcond2",
-            token_id="0xasset2",
-            leader_id=None,
-            size_tokens=Decimal("5.0"),
-            avg_entry_price=Decimal("0.3"),
-        ),
-    ])
+    positions_repo.list_open_positions = AsyncMock(
+        return_value=[
+            PositionRecord(
+                user_id=FUNDER,
+                condition_id="0xcond1",
+                token_id="0xasset1",
+                leader_id=None,
+                size_tokens=Decimal("10.0"),
+                avg_entry_price=Decimal("0.5"),
+            ),
+            PositionRecord(
+                user_id=FUNDER,
+                condition_id="0xcond2",
+                token_id="0xasset2",
+                leader_id=None,
+                size_tokens=Decimal("5.0"),
+                avg_entry_price=Decimal("0.3"),
+            ),
+        ]
+    )
     user_pos_model = MagicMock(delete_many=AsyncMock(), insert_many=AsyncMock())
 
     # API only returns 1 position — 1 < 2 local → sparse-response guard fires.
     with (
-        patch("services.manual_sync_service.fetch_data", AsyncMock(side_effect=[
-            [],
-            [_live_position(asset="0xasset1", cond="0xcond1", size=10.0)],
-        ])),
-        patch("services.manual_sync_service.get_user_position_model", MagicMock(return_value=user_pos_model)),
+        patch(
+            "services.manual_sync_service.fetch_data",
+            AsyncMock(
+                side_effect=[
+                    [],
+                    [_live_position(asset="0xasset1", cond="0xcond1", size=10.0)],
+                ]
+            ),
+        ),
+        patch(
+            "services.manual_sync_service.get_user_position_model",
+            MagicMock(return_value=user_pos_model),
+        ),
     ):
         await svc.sync_now(reason="test")
 
@@ -372,26 +455,36 @@ async def test_deletion_proceeds_when_api_count_matches_and_token_absent():
     is genuinely closed and should be removed from local state.
     """
     svc, positions_repo, market_store = _make_service()
-    positions_repo.list_open_positions = AsyncMock(return_value=[
-        PositionRecord(
-            user_id=FUNDER,
-            condition_id="0xcond-closed",
-            token_id="0xasset-closed",
-            leader_id=None,
-            size_tokens=Decimal("7.5"),
-            avg_entry_price=Decimal("0.42"),
-        )
-    ])
+    positions_repo.list_open_positions = AsyncMock(
+        return_value=[
+            PositionRecord(
+                user_id=FUNDER,
+                condition_id="0xcond-closed",
+                token_id="0xasset-closed",
+                leader_id=None,
+                size_tokens=Decimal("7.5"),
+                avg_entry_price=Decimal("0.42"),
+            )
+        ]
+    )
     user_pos_model = MagicMock(delete_many=AsyncMock(), insert_many=AsyncMock())
 
     # API returns 1 position (different token) — count 1 == local count 1.
     # The old token is absent from the snapshot → deletion should proceed.
     with (
-        patch("services.manual_sync_service.fetch_data", AsyncMock(side_effect=[
-            [],
-            [_live_position(asset="0xasset-new", cond="0xcond-new", size=5.0)],
-        ])),
-        patch("services.manual_sync_service.get_user_position_model", MagicMock(return_value=user_pos_model)),
+        patch(
+            "services.manual_sync_service.fetch_data",
+            AsyncMock(
+                side_effect=[
+                    [],
+                    [_live_position(asset="0xasset-new", cond="0xcond-new", size=5.0)],
+                ]
+            ),
+        ),
+        patch(
+            "services.manual_sync_service.get_user_position_model",
+            MagicMock(return_value=user_pos_model),
+        ),
     ):
         await svc.sync_now(reason="manual_switch")
 
@@ -407,25 +500,38 @@ async def test_deletion_proceeds_when_api_count_matches_and_token_absent():
 async def test_zero_value_position_deletes_existing_local_position():
     """Data API stale zero-value rows are treated as absent for local state."""
     svc, positions_repo, _ = _make_service()
-    positions_repo.list_open_positions = AsyncMock(return_value=[
-        PositionRecord(
-            user_id=FUNDER,
-            condition_id="0xcond1",
-            token_id="0xasset1",
-            leader_id=None,
-            size_tokens=Decimal("12.1851"),
-            avg_entry_price=Decimal("0.34"),
-        )
-    ])
+    positions_repo.list_open_positions = AsyncMock(
+        return_value=[
+            PositionRecord(
+                user_id=FUNDER,
+                condition_id="0xcond1",
+                token_id="0xasset1",
+                leader_id=None,
+                size_tokens=Decimal("12.1851"),
+                avg_entry_price=Decimal("0.34"),
+            )
+        ]
+    )
 
     with (
-        patch("services.manual_sync_service.fetch_data", AsyncMock(side_effect=[
-            [],
-            [_live_position(size=12.1851, avg=0.34, current_value=0.0)],
-        ])),
-        patch("services.manual_sync_service.get_user_position_model", MagicMock(return_value=MagicMock(
-            delete_many=AsyncMock(), insert_many=AsyncMock(),
-        ))),
+        patch(
+            "services.manual_sync_service.fetch_data",
+            AsyncMock(
+                side_effect=[
+                    [],
+                    [_live_position(size=12.1851, avg=0.34, current_value=0.0)],
+                ]
+            ),
+        ),
+        patch(
+            "services.manual_sync_service.get_user_position_model",
+            MagicMock(
+                return_value=MagicMock(
+                    delete_many=AsyncMock(),
+                    insert_many=AsyncMock(),
+                )
+            ),
+        ),
     ):
         await svc.sync_now(reason="startup")
 
@@ -449,11 +555,19 @@ async def test_zero_value_position_is_not_seeded_from_stale_data_api():
     user_pos_model = MagicMock(delete_many=AsyncMock(), insert_many=AsyncMock())
 
     with (
-        patch("services.manual_sync_service.fetch_data", AsyncMock(side_effect=[
-            [],
-            [_live_position(size=12.1851, avg=0.34, current_value=0.0)],
-        ])),
-        patch("services.manual_sync_service.get_user_position_model", MagicMock(return_value=user_pos_model)),
+        patch(
+            "services.manual_sync_service.fetch_data",
+            AsyncMock(
+                side_effect=[
+                    [],
+                    [_live_position(size=12.1851, avg=0.34, current_value=0.0)],
+                ]
+            ),
+        ),
+        patch(
+            "services.manual_sync_service.get_user_position_model",
+            MagicMock(return_value=user_pos_model),
+        ),
         patch("services.manual_sync_service.print_manual_sync_discrepancy") as mock_log,
     ):
         await svc.sync_now(reason="startup")
@@ -468,25 +582,38 @@ async def test_zero_value_position_is_not_seeded_from_stale_data_api():
 async def test_position_already_matching_does_not_log_discrepancy():
     """Venue size == local size → no discrepancy log, but upsert still refreshes."""
     svc, positions_repo, _ = _make_service()
-    positions_repo.list_open_positions = AsyncMock(return_value=[
-        PositionRecord(
-            user_id=FUNDER,
-            condition_id="0xcond1",
-            token_id="0xasset1",
-            leader_id=None,
-            size_tokens=Decimal("10.0"),
-            avg_entry_price=Decimal("0.5"),
-        )
-    ])
+    positions_repo.list_open_positions = AsyncMock(
+        return_value=[
+            PositionRecord(
+                user_id=FUNDER,
+                condition_id="0xcond1",
+                token_id="0xasset1",
+                leader_id=None,
+                size_tokens=Decimal("10.0"),
+                avg_entry_price=Decimal("0.5"),
+            )
+        ]
+    )
 
     with (
-        patch("services.manual_sync_service.fetch_data", AsyncMock(side_effect=[
-            [],
-            [_live_position(size=10.0)],
-        ])),
-        patch("services.manual_sync_service.get_user_position_model", MagicMock(return_value=MagicMock(
-            delete_many=AsyncMock(), insert_many=AsyncMock(),
-        ))),
+        patch(
+            "services.manual_sync_service.fetch_data",
+            AsyncMock(
+                side_effect=[
+                    [],
+                    [_live_position(size=10.0)],
+                ]
+            ),
+        ),
+        patch(
+            "services.manual_sync_service.get_user_position_model",
+            MagicMock(
+                return_value=MagicMock(
+                    delete_many=AsyncMock(),
+                    insert_many=AsyncMock(),
+                )
+            ),
+        ),
         patch("services.manual_sync_service.print_manual_sync_discrepancy") as mock_log,
     ):
         await svc.sync_now(reason="test")
@@ -523,15 +650,31 @@ async def test_initial_sync_inserts_silently_no_panel():
     activity_model = MagicMock(insert_many=insert_many)
 
     with (
-        patch("services.manual_sync_service.fetch_data", AsyncMock(side_effect=[
-            [_trade(tx="0xhist1"), _trade(tx="0xhist2", side="SELL")],
-            [],
-        ])),
-        patch("services.manual_sync_service.find_activity_by_tx_hash", AsyncMock(return_value=False)),
-        patch("services.manual_sync_service.get_user_activity_model", MagicMock(return_value=activity_model)),
-        patch("services.manual_sync_service.get_user_position_model", MagicMock(return_value=MagicMock(
-            delete_many=AsyncMock(), insert_many=AsyncMock(),
-        ))),
+        patch(
+            "services.manual_sync_service.fetch_data",
+            AsyncMock(
+                side_effect=[
+                    [_trade(tx="0xhist1"), _trade(tx="0xhist2", side="SELL")],
+                    [],
+                ]
+            ),
+        ),
+        patch(
+            "services.manual_sync_service.find_activity_by_tx_hash", AsyncMock(return_value=False)
+        ),
+        patch(
+            "services.manual_sync_service.get_user_activity_model",
+            MagicMock(return_value=activity_model),
+        ),
+        patch(
+            "services.manual_sync_service.get_user_position_model",
+            MagicMock(
+                return_value=MagicMock(
+                    delete_many=AsyncMock(),
+                    insert_many=AsyncMock(),
+                )
+            ),
+        ),
         patch("services.manual_sync_service.print_manual_trade_detected") as mock_print,
     ):
         await svc.initial_sync()
@@ -561,10 +704,19 @@ async def test_fetch_returns_non_list_does_not_crash():
     """activity/positions API returning {} or None must not raise."""
     svc, _, _ = _make_service()
     with (
-        patch("services.manual_sync_service.fetch_data", AsyncMock(side_effect=[None, {"error": "bad"}])),
-        patch("services.manual_sync_service.get_user_position_model", MagicMock(return_value=MagicMock(
-            delete_many=AsyncMock(), insert_many=AsyncMock(),
-        ))),
+        patch(
+            "services.manual_sync_service.fetch_data",
+            AsyncMock(side_effect=[None, {"error": "bad"}]),
+        ),
+        patch(
+            "services.manual_sync_service.get_user_position_model",
+            MagicMock(
+                return_value=MagicMock(
+                    delete_many=AsyncMock(),
+                    insert_many=AsyncMock(),
+                )
+            ),
+        ),
     ):
         await svc.sync_now(reason="test")  # must not raise
 
@@ -582,13 +734,24 @@ async def test_manual_sync_skips_upsert_when_drift_recently_pruned():
     svc._position_drift_service = drift_mock
 
     with (
-        patch("services.manual_sync_service.fetch_data", AsyncMock(side_effect=[
-            [],
-            [_live_position(size=10.0)],
-        ])),
-        patch("services.manual_sync_service.get_user_position_model", MagicMock(return_value=MagicMock(
-            delete_many=AsyncMock(), insert_many=AsyncMock(),
-        ))),
+        patch(
+            "services.manual_sync_service.fetch_data",
+            AsyncMock(
+                side_effect=[
+                    [],
+                    [_live_position(size=10.0)],
+                ]
+            ),
+        ),
+        patch(
+            "services.manual_sync_service.get_user_position_model",
+            MagicMock(
+                return_value=MagicMock(
+                    delete_many=AsyncMock(),
+                    insert_many=AsyncMock(),
+                )
+            ),
+        ),
         patch("services.manual_sync_service.print_manual_sync_discrepancy") as mock_disc,
     ):
         await svc.sync_now(reason="test")
@@ -613,13 +776,24 @@ async def test_manual_sync_upserts_when_drift_not_recent():
     svc._position_drift_service = drift_mock
 
     with (
-        patch("services.manual_sync_service.fetch_data", AsyncMock(side_effect=[
-            [],
-            [_live_position(size=10.0)],
-        ])),
-        patch("services.manual_sync_service.get_user_position_model", MagicMock(return_value=MagicMock(
-            delete_many=AsyncMock(), insert_many=AsyncMock(),
-        ))),
+        patch(
+            "services.manual_sync_service.fetch_data",
+            AsyncMock(
+                side_effect=[
+                    [],
+                    [_live_position(size=10.0)],
+                ]
+            ),
+        ),
+        patch(
+            "services.manual_sync_service.get_user_position_model",
+            MagicMock(
+                return_value=MagicMock(
+                    delete_many=AsyncMock(),
+                    insert_many=AsyncMock(),
+                )
+            ),
+        ),
     ):
         await svc.sync_now(reason="test")
 
@@ -635,28 +809,41 @@ async def test_manual_sync_handshake_only_blocks_new_upserts_not_size_updates():
     """
     svc, positions_repo, _ = _make_service()
     # Local already holds the position → existing is not None.
-    positions_repo.list_open_positions = AsyncMock(return_value=[
-        PositionRecord(
-            user_id=FUNDER,
-            condition_id="0xcond1",
-            token_id="0xasset1",
-            leader_id=None,
-            size_tokens=Decimal("5.0"),
-            avg_entry_price=Decimal("0.5"),
-        )
-    ])
+    positions_repo.list_open_positions = AsyncMock(
+        return_value=[
+            PositionRecord(
+                user_id=FUNDER,
+                condition_id="0xcond1",
+                token_id="0xasset1",
+                leader_id=None,
+                size_tokens=Decimal("5.0"),
+                avg_entry_price=Decimal("0.5"),
+            )
+        ]
+    )
     drift_mock = MagicMock()
     drift_mock.was_recently_pruned = MagicMock(return_value=True)
     svc._position_drift_service = drift_mock
 
     with (
-        patch("services.manual_sync_service.fetch_data", AsyncMock(side_effect=[
-            [],
-            [_live_position(size=10.0)],
-        ])),
-        patch("services.manual_sync_service.get_user_position_model", MagicMock(return_value=MagicMock(
-            delete_many=AsyncMock(), insert_many=AsyncMock(),
-        ))),
+        patch(
+            "services.manual_sync_service.fetch_data",
+            AsyncMock(
+                side_effect=[
+                    [],
+                    [_live_position(size=10.0)],
+                ]
+            ),
+        ),
+        patch(
+            "services.manual_sync_service.get_user_position_model",
+            MagicMock(
+                return_value=MagicMock(
+                    delete_many=AsyncMock(),
+                    insert_many=AsyncMock(),
+                )
+            ),
+        ),
     ):
         await svc.sync_now(reason="test")
 
@@ -680,15 +867,31 @@ async def test_own_copy_fill_recorded_as_bot_not_manual():
     activity_model = MagicMock(insert_many=insert_many)
 
     with (
-        patch("services.manual_sync_service.fetch_data", AsyncMock(side_effect=[
-            [_trade(tx="0xsettle", asset="0xtokenOwn", side="BUY")],  # activity
-            [],                                                        # positions
-        ])),
-        patch("services.manual_sync_service.find_activity_by_tx_hash", AsyncMock(return_value=False)),
-        patch("services.manual_sync_service.get_user_activity_model", MagicMock(return_value=activity_model)),
-        patch("services.manual_sync_service.get_user_position_model", MagicMock(return_value=MagicMock(
-            delete_many=AsyncMock(), insert_many=AsyncMock(),
-        ))),
+        patch(
+            "services.manual_sync_service.fetch_data",
+            AsyncMock(
+                side_effect=[
+                    [_trade(tx="0xsettle", asset="0xtokenOwn", side="BUY")],  # activity
+                    [],  # positions
+                ]
+            ),
+        ),
+        patch(
+            "services.manual_sync_service.find_activity_by_tx_hash", AsyncMock(return_value=False)
+        ),
+        patch(
+            "services.manual_sync_service.get_user_activity_model",
+            MagicMock(return_value=activity_model),
+        ),
+        patch(
+            "services.manual_sync_service.get_user_position_model",
+            MagicMock(
+                return_value=MagicMock(
+                    delete_many=AsyncMock(),
+                    insert_many=AsyncMock(),
+                )
+            ),
+        ),
         patch("services.manual_sync_service.print_manual_trade_detected") as mock_print,
     ):
         await svc.sync_now(reason="wss_fill")
@@ -720,15 +923,31 @@ async def test_genuine_manual_trade_still_detected_when_orders_repo_present():
     activity_model = MagicMock(insert_many=insert_many)
 
     with (
-        patch("services.manual_sync_service.fetch_data", AsyncMock(side_effect=[
-            [_trade(tx="0xmanual", asset="0xtokenM", side="SELL")],
-            [],
-        ])),
-        patch("services.manual_sync_service.find_activity_by_tx_hash", AsyncMock(return_value=False)),
-        patch("services.manual_sync_service.get_user_activity_model", MagicMock(return_value=activity_model)),
-        patch("services.manual_sync_service.get_user_position_model", MagicMock(return_value=MagicMock(
-            delete_many=AsyncMock(), insert_many=AsyncMock(),
-        ))),
+        patch(
+            "services.manual_sync_service.fetch_data",
+            AsyncMock(
+                side_effect=[
+                    [_trade(tx="0xmanual", asset="0xtokenM", side="SELL")],
+                    [],
+                ]
+            ),
+        ),
+        patch(
+            "services.manual_sync_service.find_activity_by_tx_hash", AsyncMock(return_value=False)
+        ),
+        patch(
+            "services.manual_sync_service.get_user_activity_model",
+            MagicMock(return_value=activity_model),
+        ),
+        patch(
+            "services.manual_sync_service.get_user_position_model",
+            MagicMock(
+                return_value=MagicMock(
+                    delete_many=AsyncMock(),
+                    insert_many=AsyncMock(),
+                )
+            ),
+        ),
         patch("services.manual_sync_service.print_manual_trade_detected") as mock_print,
     ):
         await svc.sync_now(reason="wss_fill")
@@ -752,15 +971,31 @@ async def test_own_trade_probe_failure_falls_back_to_manual():
     activity_model = MagicMock(insert_many=insert_many)
 
     with (
-        patch("services.manual_sync_service.fetch_data", AsyncMock(side_effect=[
-            [_trade(tx="0xprobefail", asset="0xtokenF")],
-            [],
-        ])),
-        patch("services.manual_sync_service.find_activity_by_tx_hash", AsyncMock(return_value=False)),
-        patch("services.manual_sync_service.get_user_activity_model", MagicMock(return_value=activity_model)),
-        patch("services.manual_sync_service.get_user_position_model", MagicMock(return_value=MagicMock(
-            delete_many=AsyncMock(), insert_many=AsyncMock(),
-        ))),
+        patch(
+            "services.manual_sync_service.fetch_data",
+            AsyncMock(
+                side_effect=[
+                    [_trade(tx="0xprobefail", asset="0xtokenF")],
+                    [],
+                ]
+            ),
+        ),
+        patch(
+            "services.manual_sync_service.find_activity_by_tx_hash", AsyncMock(return_value=False)
+        ),
+        patch(
+            "services.manual_sync_service.get_user_activity_model",
+            MagicMock(return_value=activity_model),
+        ),
+        patch(
+            "services.manual_sync_service.get_user_position_model",
+            MagicMock(
+                return_value=MagicMock(
+                    delete_many=AsyncMock(),
+                    insert_many=AsyncMock(),
+                )
+            ),
+        ),
         patch("services.manual_sync_service.print_manual_trade_detected") as mock_print,
     ):
         await svc.sync_now(reason="wss_fill")
@@ -779,15 +1014,31 @@ async def test_orders_repo_unwired_preserves_legacy_manual_detection():
     activity_model = MagicMock(insert_many=insert_many)
 
     with (
-        patch("services.manual_sync_service.fetch_data", AsyncMock(side_effect=[
-            [_trade(tx="0xlegacy", asset="0xtokenL")],
-            [],
-        ])),
-        patch("services.manual_sync_service.find_activity_by_tx_hash", AsyncMock(return_value=False)),
-        patch("services.manual_sync_service.get_user_activity_model", MagicMock(return_value=activity_model)),
-        patch("services.manual_sync_service.get_user_position_model", MagicMock(return_value=MagicMock(
-            delete_many=AsyncMock(), insert_many=AsyncMock(),
-        ))),
+        patch(
+            "services.manual_sync_service.fetch_data",
+            AsyncMock(
+                side_effect=[
+                    [_trade(tx="0xlegacy", asset="0xtokenL")],
+                    [],
+                ]
+            ),
+        ),
+        patch(
+            "services.manual_sync_service.find_activity_by_tx_hash", AsyncMock(return_value=False)
+        ),
+        patch(
+            "services.manual_sync_service.get_user_activity_model",
+            MagicMock(return_value=activity_model),
+        ),
+        patch(
+            "services.manual_sync_service.get_user_position_model",
+            MagicMock(
+                return_value=MagicMock(
+                    delete_many=AsyncMock(),
+                    insert_many=AsyncMock(),
+                )
+            ),
+        ),
         patch("services.manual_sync_service.print_manual_trade_detected") as mock_print,
     ):
         await svc.sync_now(reason="wss_fill")
@@ -806,13 +1057,24 @@ async def test_position_seed_held_off_while_bot_order_in_flight():
     positions_repo.list_open_positions = AsyncMock(return_value=[])
 
     with (
-        patch("services.manual_sync_service.fetch_data", AsyncMock(side_effect=[
-            [],                                       # activity
-            [_live_position(asset="0xasset1", size=2.55, avg=0.40)],  # positions
-        ])),
-        patch("services.manual_sync_service.get_user_position_model", MagicMock(return_value=MagicMock(
-            delete_many=AsyncMock(), insert_many=AsyncMock(),
-        ))),
+        patch(
+            "services.manual_sync_service.fetch_data",
+            AsyncMock(
+                side_effect=[
+                    [],  # activity
+                    [_live_position(asset="0xasset1", size=2.55, avg=0.40)],  # positions
+                ]
+            ),
+        ),
+        patch(
+            "services.manual_sync_service.get_user_position_model",
+            MagicMock(
+                return_value=MagicMock(
+                    delete_many=AsyncMock(),
+                    insert_many=AsyncMock(),
+                )
+            ),
+        ),
         patch("services.manual_sync_service.print_manual_sync_discrepancy") as mock_disc,
     ):
         await svc.sync_now(reason="wss_fill")
@@ -836,13 +1098,24 @@ async def test_position_seed_proceeds_when_no_recent_bot_order():
     positions_repo.list_open_positions = AsyncMock(return_value=[])
 
     with (
-        patch("services.manual_sync_service.fetch_data", AsyncMock(side_effect=[
-            [],
-            [_live_position(asset="0xasset1", size=2.55, avg=0.40)],
-        ])),
-        patch("services.manual_sync_service.get_user_position_model", MagicMock(return_value=MagicMock(
-            delete_many=AsyncMock(), insert_many=AsyncMock(),
-        ))),
+        patch(
+            "services.manual_sync_service.fetch_data",
+            AsyncMock(
+                side_effect=[
+                    [],
+                    [_live_position(asset="0xasset1", size=2.55, avg=0.40)],
+                ]
+            ),
+        ),
+        patch(
+            "services.manual_sync_service.get_user_position_model",
+            MagicMock(
+                return_value=MagicMock(
+                    delete_many=AsyncMock(),
+                    insert_many=AsyncMock(),
+                )
+            ),
+        ),
         patch("services.manual_sync_service.print_manual_sync_discrepancy"),
     ):
         await svc.sync_now(reason="wss_fill")

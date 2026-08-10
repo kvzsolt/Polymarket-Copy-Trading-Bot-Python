@@ -85,7 +85,9 @@ class MockOrdersRepo:
     async def create_from_intent(self, intent, reservation_id, status):
         return MockOrder("ord1")
 
-    async def transition(self, order_id, from_status, to_status, venue_order_id=None, metadata=None):
+    async def transition(
+        self, order_id, from_status, to_status, venue_order_id=None, metadata=None
+    ):
         self.transitions.append((from_status, to_status))
 
 
@@ -128,11 +130,17 @@ async def test_reconcile_drift_deletes_position_when_live_is_zero():
     )
 
     from storage.postgres.positions_repo import PositionRecord
-    await pos_repo.upsert_position(PositionRecord(
-        user_id="u1", condition_id="c1", token_id="t1",
-        leader_id="leader1", size_tokens=Decimal("50"),
-        avg_entry_price=Decimal("0.45"),
-    ))
+
+    await pos_repo.upsert_position(
+        PositionRecord(
+            user_id="u1",
+            condition_id="c1",
+            token_id="t1",
+            leader_id="leader1",
+            size_tokens=Decimal("50"),
+            avg_entry_price=Decimal("0.45"),
+        )
+    )
 
     fetcher = AsyncMock(return_value=Decimal("0"))
     result = await svc.reconcile_position_drift(
@@ -161,11 +169,17 @@ async def test_reconcile_drift_shrinks_position_when_live_is_smaller():
     )
 
     from storage.postgres.positions_repo import PositionRecord
-    await pos_repo.upsert_position(PositionRecord(
-        user_id="u1", condition_id="c1", token_id="t1",
-        leader_id="leader1", size_tokens=Decimal("100"),
-        avg_entry_price=Decimal("0.50"),
-    ))
+
+    await pos_repo.upsert_position(
+        PositionRecord(
+            user_id="u1",
+            condition_id="c1",
+            token_id="t1",
+            leader_id="leader1",
+            size_tokens=Decimal("100"),
+            avg_entry_price=Decimal("0.50"),
+        )
+    )
 
     fetcher = AsyncMock(return_value=Decimal("25"))
     result = await svc.reconcile_position_drift(
@@ -195,11 +209,17 @@ async def test_reconcile_drift_no_drift_when_sizes_match():
     )
 
     from storage.postgres.positions_repo import PositionRecord
-    await pos_repo.upsert_position(PositionRecord(
-        user_id="u1", condition_id="c1", token_id="t1",
-        leader_id="leader1", size_tokens=Decimal("50"),
-        avg_entry_price=Decimal("0.50"),
-    ))
+
+    await pos_repo.upsert_position(
+        PositionRecord(
+            user_id="u1",
+            condition_id="c1",
+            token_id="t1",
+            leader_id="leader1",
+            size_tokens=Decimal("50"),
+            avg_entry_price=Decimal("0.50"),
+        )
+    )
 
     fetcher = AsyncMock(return_value=Decimal("50"))
     result = await svc.reconcile_position_drift(
@@ -267,11 +287,17 @@ async def test_coordinator_sell_insufficient_balance_triggers_drift_reconciliati
     )
 
     from storage.postgres.positions_repo import PositionRecord
-    await pos_repo.upsert_position(PositionRecord(
-        user_id="u1", condition_id="c1", token_id="t1",
-        leader_id="0xleader", size_tokens=Decimal("50"),
-        avg_entry_price=Decimal("0.50"),
-    ))
+
+    await pos_repo.upsert_position(
+        PositionRecord(
+            user_id="u1",
+            condition_id="c1",
+            token_id="t1",
+            leader_id="0xleader",
+            size_tokens=Decimal("50"),
+            avg_entry_price=Decimal("0.50"),
+        )
+    )
 
     async def mock_live_fetcher(user_id, token_id):
         return Decimal("0")
@@ -481,11 +507,17 @@ async def test_reconcile_drift_subsequent_sell_uses_updated_size():
     )
 
     from storage.postgres.positions_repo import PositionRecord
-    await pos_repo.upsert_position(PositionRecord(
-        user_id="u1", condition_id="c1", token_id="t1",
-        leader_id="leader1", size_tokens=Decimal("100"),
-        avg_entry_price=Decimal("0.50"),
-    ))
+
+    await pos_repo.upsert_position(
+        PositionRecord(
+            user_id="u1",
+            condition_id="c1",
+            token_id="t1",
+            leader_id="leader1",
+            size_tokens=Decimal("100"),
+            avg_entry_price=Decimal("0.50"),
+        )
+    )
 
     fetcher = AsyncMock(return_value=Decimal("30"))
     result = await svc.reconcile_position_drift(
@@ -520,11 +552,17 @@ async def test_reconcile_drift_works_without_audit_logger():
     )
 
     from storage.postgres.positions_repo import PositionRecord
-    await pos_repo.upsert_position(PositionRecord(
-        user_id="u1", condition_id="c1", token_id="t1",
-        leader_id="leader1", size_tokens=Decimal("50"),
-        avg_entry_price=Decimal("0.50"),
-    ))
+
+    await pos_repo.upsert_position(
+        PositionRecord(
+            user_id="u1",
+            condition_id="c1",
+            token_id="t1",
+            leader_id="leader1",
+            size_tokens=Decimal("50"),
+            avg_entry_price=Decimal("0.50"),
+        )
+    )
 
     fetcher = AsyncMock(return_value=Decimal("0"))
     result = await svc.reconcile_position_drift(
@@ -557,14 +595,17 @@ async def test_coordinator_sell_allowance_only_triggers_drift():
     )
 
     from storage.postgres.positions_repo import PositionRecord
-    await pos_repo.upsert_position(PositionRecord(
-        user_id="u1",
-        condition_id="c1",
-        token_id="t1",
-        leader_id="leader1",
-        size_tokens=Decimal("100"),
-        avg_entry_price=Decimal("0.50"),
-    ))
+
+    await pos_repo.upsert_position(
+        PositionRecord(
+            user_id="u1",
+            condition_id="c1",
+            token_id="t1",
+            leader_id="leader1",
+            size_tokens=Decimal("100"),
+            avg_entry_price=Decimal("0.50"),
+        )
+    )
 
     async def mock_live_fetcher(user_id, token_id):
         return Decimal("0")
@@ -671,18 +712,18 @@ async def test_insufficient_balance_terminal_error_not_retryable():
 async def test_reconcile_drift_delete_path_cleans_reservations():
     """When drift results in deletion (live_size=0), active SELL reservations are released."""
     from domain.order_lifecycle import IntentSide, IntentReason
-    
+
     pos_repo = MockPositionsRepo()
     audit = MockAuditLogger()
-    
+
     class MockReservationsRepo:
         def __init__(self):
             self.released = []
-        
+
         async def list_active_for_scope(self, user_id, condition_id, token_id):
             from domain.order_lifecycle import Reservation
             from datetime import datetime, timezone
-            
+
             return [
                 Reservation(
                     id="res1",
@@ -713,19 +754,19 @@ async def test_reconcile_drift_delete_path_cleans_reservations():
                     expires_at=datetime.now(timezone.utc),
                 ),
             ]
-        
+
         async def mark_released(self, reservation_id, reason, released_at):
             self.released.append((reservation_id, reason))
-    
+
     class MockReservationServiceWithRepo:
         def __init__(self):
             self.reservations_repo = MockReservationsRepo()
             self.release_calls = []
-        
+
         async def release_terminal(self, reservation_id, reason):
             self.release_calls.append((reservation_id, reason))
             await self.reservations_repo.mark_released(reservation_id, reason, 0)
-    
+
     res_svc = MockReservationServiceWithRepo()
     svc = ReconciliationService(
         orders_repo=MagicMock(),
@@ -735,11 +776,17 @@ async def test_reconcile_drift_delete_path_cleans_reservations():
     )
 
     from storage.postgres.positions_repo import PositionRecord
-    await pos_repo.upsert_position(PositionRecord(
-        user_id="u1", condition_id="c1", token_id="t1",
-        leader_id="leader1", size_tokens=Decimal("100"),
-        avg_entry_price=Decimal("0.50"),
-    ))
+
+    await pos_repo.upsert_position(
+        PositionRecord(
+            user_id="u1",
+            condition_id="c1",
+            token_id="t1",
+            leader_id="leader1",
+            size_tokens=Decimal("100"),
+            avg_entry_price=Decimal("0.50"),
+        )
+    )
 
     fetcher = AsyncMock(return_value=Decimal("0"))
     result = await svc.reconcile_position_drift(
@@ -765,18 +812,18 @@ async def test_reconcile_drift_delete_path_cleans_reservations():
 async def test_reconcile_drift_shrink_path_coversized_reservations():
     """When drift results in shrink, SELL reservations larger than new position are released."""
     from domain.order_lifecycle import IntentSide, IntentReason
-    
+
     pos_repo = MockPositionsRepo()
     audit = MockAuditLogger()
-    
+
     class MockReservationsRepo:
         def __init__(self):
             self.released = []
-        
+
         async def list_active_for_scope(self, user_id, condition_id, token_id):
             from domain.order_lifecycle import Reservation
             from datetime import datetime, timezone
-            
+
             return [
                 Reservation(
                     id="res1",
@@ -807,19 +854,19 @@ async def test_reconcile_drift_shrink_path_coversized_reservations():
                     expires_at=datetime.now(timezone.utc),
                 ),
             ]
-        
+
         async def mark_released(self, reservation_id, reason, released_at):
             self.released.append((reservation_id, reason))
-    
+
     class MockReservationServiceWithRepo:
         def __init__(self):
             self.reservations_repo = MockReservationsRepo()
             self.release_calls = []
-        
+
         async def release_terminal(self, reservation_id, reason):
             self.release_calls.append((reservation_id, reason))
             await self.reservations_repo.mark_released(reservation_id, reason, 0)
-    
+
     res_svc = MockReservationServiceWithRepo()
     svc = ReconciliationService(
         orders_repo=MagicMock(),
@@ -829,11 +876,17 @@ async def test_reconcile_drift_shrink_path_coversized_reservations():
     )
 
     from storage.postgres.positions_repo import PositionRecord
-    await pos_repo.upsert_position(PositionRecord(
-        user_id="u1", condition_id="c1", token_id="t1",
-        leader_id="leader1", size_tokens=Decimal("100"),
-        avg_entry_price=Decimal("0.50"),
-    ))
+
+    await pos_repo.upsert_position(
+        PositionRecord(
+            user_id="u1",
+            condition_id="c1",
+            token_id="t1",
+            leader_id="leader1",
+            size_tokens=Decimal("100"),
+            avg_entry_price=Decimal("0.50"),
+        )
+    )
 
     fetcher = AsyncMock(return_value=Decimal("30"))
     result = await svc.reconcile_position_drift(
@@ -847,11 +900,11 @@ async def test_reconcile_drift_shrink_path_coversized_reservations():
 
     assert result["reconciled"] is True
     assert result["action"] == "shrunk"
-    
+
     pos = await pos_repo.get_position("u1", "c1", token_id="t1")
     assert pos is not None
     assert pos.size_tokens == Decimal("30")
-    
+
     # Only the oversized reservation (res1 with 50 > 30) should be released
     assert len(res_svc.reservations_repo.released) == 1
     assert "res1" in [r[0] for r in res_svc.reservations_repo.released]

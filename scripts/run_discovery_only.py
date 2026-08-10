@@ -38,9 +38,7 @@ async def _amain(argv: list[str] | None = None) -> int:
         if not args.list_only:
             candidates = await application.discovery_service.run()
             await application.registry.reconcile_candidates(candidates)
-        snapshots = await application.discovery_repo.list_snapshots(
-            limit=max(1, args.limit)
-        )
+        snapshots = await application.discovery_repo.list_snapshots(limit=max(1, args.limit))
         roster = await application.leaders_repo.list_roster()
         active = await application.leaders_repo.list_active(
             config_hash=application.discovery_service.config_hash

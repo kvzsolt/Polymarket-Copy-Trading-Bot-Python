@@ -10,6 +10,7 @@ Post-fix: ``ON CONFLICT DO NOTHING`` (PG) / ``INSERT OR IGNORE``
 (legacy SQLite) with rowcount check. First call returns lastrowid;
 second call on the same fill returns 0.
 """
+
 from __future__ import annotations
 
 import contextlib

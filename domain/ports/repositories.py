@@ -153,6 +153,7 @@ class AbstractLeaderRepository(ABC):
     @abstractmethod
     async def get_tier(self, wallet: str) -> LeaderTierRecord: ...
 
+
 class AbstractCursorRepository(ABC):
     """Per-leader trade-ingestion cursor."""
 

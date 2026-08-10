@@ -56,9 +56,7 @@ def get_day_start_equity(current_equity: float | Decimal) -> Decimal:
 
     # New day or first run — snapshot current equity as Decimal.
     equity_dec = (
-        current_equity
-        if isinstance(current_equity, Decimal)
-        else Decimal(str(current_equity))
+        current_equity if isinstance(current_equity, Decimal) else Decimal(str(current_equity))
     )
     state = {
         "date": today,

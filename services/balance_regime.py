@@ -217,9 +217,7 @@ class BalanceRegime:
         self._ledger.record(amt)
         if order_id:
             with self._reservations_guard:
-                self._reservations[order_id] = (
-                    self._reservations.get(order_id, Decimal("0")) + amt
-                )
+                self._reservations[order_id] = self._reservations.get(order_id, Decimal("0")) + amt
 
     def record_cancel(
         self,
@@ -299,9 +297,7 @@ class BalanceRegime:
         requested = _to_decimal(notional_usdc)
         free_cash = _to_decimal(free_cash_usdc)
         spent = self._ledger.total()
-        daily_remaining = (
-            (self._max_daily - spent) if self._max_daily > 0 else Decimal("0")
-        )
+        daily_remaining = (self._max_daily - spent) if self._max_daily > 0 else Decimal("0")
         headroom_after = free_cash - requested
 
         if requested <= 0:

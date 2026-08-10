@@ -1,4 +1,5 @@
 """PR 5: order lifecycle logging — structured payload, dedup, panel selection."""
+
 from __future__ import annotations
 
 import logging
@@ -70,13 +71,19 @@ def test_dedup_suppresses_repeat_status(captured_logger, caplog):
 def test_force_bypasses_dedup(captured_logger, caplog):
     log_order_lifecycle(
         captured_logger,
-        status="live", side="BUY",
-        condition_id="cond1", asset="0xtok", order_id="ord1",
+        status="live",
+        side="BUY",
+        condition_id="cond1",
+        asset="0xtok",
+        order_id="ord1",
     )
     log_order_lifecycle(
         captured_logger,
-        status="live", side="BUY",
-        condition_id="cond1", asset="0xtok", order_id="ord1",
+        status="live",
+        side="BUY",
+        condition_id="cond1",
+        asset="0xtok",
+        order_id="ord1",
         force=True,
     )
     matching = [r for r in caplog.records if getattr(r, "type", None) == "order_lifecycle"]
@@ -86,13 +93,19 @@ def test_force_bypasses_dedup(captured_logger, caplog):
 def test_status_change_emits_again(captured_logger, caplog):
     log_order_lifecycle(
         captured_logger,
-        status="live", side="BUY",
-        condition_id="cond1", asset="0xtok", order_id="ord1",
+        status="live",
+        side="BUY",
+        condition_id="cond1",
+        asset="0xtok",
+        order_id="ord1",
     )
     log_order_lifecycle(
         captured_logger,
-        status="confirmed", side="BUY",
-        condition_id="cond1", asset="0xtok", order_id="ord1",
+        status="confirmed",
+        side="BUY",
+        condition_id="cond1",
+        asset="0xtok",
+        order_id="ord1",
     )
     matching = [r for r in caplog.records if getattr(r, "type", None) == "order_lifecycle"]
     assert len(matching) == 2

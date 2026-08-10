@@ -102,16 +102,8 @@ class PostgresTaskBudgetRepository:
             async with connection.transaction():
                 lock_names = [
                     f"reservation:{request.reservation_id}",
-                    (
-                        "task:"
-                        f"{request.key.follower_account}:"
-                        f"{request.key.task_id}"
-                    ),
-                    (
-                        "market:"
-                        f"{request.key.follower_account}:"
-                        f"{request.key.market_id}"
-                    ),
+                    (f"task:{request.key.follower_account}:{request.key.task_id}"),
+                    (f"market:{request.key.follower_account}:{request.key.market_id}"),
                 ]
                 if policy.one_entry_per_sports_type and request.key.sports_market_type:
                     lock_names.append(
@@ -169,9 +161,7 @@ class PostgresTaskBudgetRepository:
                     request.expires_at,
                 )
                 if inserted_row is None:
-                    raise TaskBudgetInvariantError(
-                        "task budget reservation insert returned no row"
-                    )
+                    raise TaskBudgetInvariantError("task budget reservation insert returned no row")
                 return TaskBudgetReservationDecision(
                     allowed=True,
                     reason="task_budget_reserved",
@@ -243,9 +233,7 @@ class PostgresTaskBudgetRepository:
                         "fill identity conflicts with task budget ledger"
                     )
                 if reservation_row is None:
-                    raise TaskBudgetInvariantError(
-                        "task budget reservation does not exist"
-                    )
+                    raise TaskBudgetInvariantError("task budget reservation does not exist")
 
                 reservation = self._reservation(reservation_row)
                 if reservation.status is TaskBudgetReservationStatus.COMMITTED:
@@ -254,13 +242,10 @@ class PostgresTaskBudgetRepository:
                         and reservation.committed_notional == amount
                     ):
                         return False
-                    raise TaskBudgetInvariantError(
-                        "task budget reservation already committed"
-                    )
+                    raise TaskBudgetInvariantError("task budget reservation already committed")
                 if reservation.status is not TaskBudgetReservationStatus.RESERVED:
                     raise TaskBudgetInvariantError(
-                        "cannot commit task budget reservation in "
-                        f"{reservation.status.value} state"
+                        f"cannot commit task budget reservation in {reservation.status.value} state"
                     )
                 if amount > reservation.request.amount:
                     raise TaskBudgetInvariantError(
@@ -494,11 +479,7 @@ class PostgresTaskBudgetRepository:
         if fill_id is not None and not isinstance(fill_id, str):
             raise ValueError("task budget fill_id must be text or null")
         committed_raw = row.get("committed_notional")
-        committed = (
-            None
-            if committed_raw is None
-            else self._decimal(row, "committed_notional")
-        )
+        committed = None if committed_raw is None else self._decimal(row, "committed_notional")
         return TaskBudgetReservation(
             request=TaskBudgetReservationRequest(
                 reservation_id=self._text(row, "reservation_id"),

@@ -27,9 +27,7 @@ def _runtime_user(user_id="0xUser"):
 
 def _user_state(open_positions):
     return SimpleNamespace(
-        positions_repo=SimpleNamespace(
-            list_open_positions=AsyncMock(return_value=open_positions)
-        )
+        positions_repo=SimpleNamespace(list_open_positions=AsyncMock(return_value=open_positions))
     )
 
 
@@ -79,7 +77,9 @@ async def test_user_already_in_risk_contexts_not_rebuilt(monkeypatch):
 
     ru = _runtime_user()
     list_open = AsyncMock(return_value=[_pos()])
-    states = {"0xUser": SimpleNamespace(positions_repo=SimpleNamespace(list_open_positions=list_open))}
+    states = {
+        "0xUser": SimpleNamespace(positions_repo=SimpleNamespace(list_open_positions=list_open))
+    }
 
     _, risk_by_user = await rb.build_context_maps([ru], states, ["0xLeader"], SimpleNamespace())
 

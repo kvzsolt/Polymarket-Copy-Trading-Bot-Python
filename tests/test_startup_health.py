@@ -4,6 +4,7 @@ Behavioural tests run against a per-test asyncpg testcontainer pool.
 Pure-config tests (log payload shape, print_startup_summary) keep their
 in-memory shape assertions without DB access.
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -110,13 +111,9 @@ async def test_reconcile_persisted_positions_to_live_prunes_stale_rows():
         assert sync.persisted_after == 1
         assert sync.pruned_positions == 1
         assert (
-            await repo.get_position("u1", "cond-live", token_id="11111111111111111111")
-            is not None
+            await repo.get_position("u1", "cond-live", token_id="11111111111111111111") is not None
         )
-        assert (
-            await repo.get_position("u1", "cond-stale", token_id="22222222222222222222")
-            is None
-        )
+        assert await repo.get_position("u1", "cond-stale", token_id="22222222222222222222") is None
 
 
 @pytest.mark.asyncio
@@ -157,8 +154,7 @@ async def test_normalize_startup_order_statuses_preserves_order_id_rows():
         assert cleanup.purged_failed == 1  # only the normalized (no-order_id) pending row
         async with pool.acquire() as conn:
             rows = await conn.fetch(
-                "SELECT status, COUNT(*) AS count FROM orders "
-                "WHERE user_id = $1 GROUP BY status",
+                "SELECT status, COUNT(*) AS count FROM orders WHERE user_id = $1 GROUP BY status",
                 "u1",
             )
         counts = {str(row["status"]): int(row["count"]) for row in rows}
@@ -270,9 +266,10 @@ def test_print_startup_summary_emits_health_payload_with_reconciliation_state(
         ),
     )
 
-    with patch("orchestrators.runtime_summary.console.print"), patch(
-        "orchestrators.runtime_summary.logger.info"
-    ) as log_info:
+    with (
+        patch("orchestrators.runtime_summary.console.print"),
+        patch("orchestrators.runtime_summary.logger.info") as log_info,
+    ):
         print_startup_summary(
             wallet=env["FUNDER_ADDRESS"],
             available_cash=12.34,
@@ -444,12 +441,11 @@ def _rec(condition_id: str, token_id: str) -> PositionRecord:
 @pytest.mark.asyncio
 async def test_reconcile_skips_prune_when_live_snapshot_fetch_failed():
     """live_positions=None (fetch failed) → fail closed: no prune, no deletes."""
-    repo = _FakePositionsRepo([_rec("cond-a", "11111111111111111111"),
-                               _rec("cond-b", "22222222222222222222")])
-
-    sync = await reconcile_persisted_positions_to_live(
-        repo, user_id="u1", live_positions=None
+    repo = _FakePositionsRepo(
+        [_rec("cond-a", "11111111111111111111"), _rec("cond-b", "22222222222222222222")]
     )
+
+    sync = await reconcile_persisted_positions_to_live(repo, user_id="u1", live_positions=None)
 
     assert sync.fetch_failed is True
     assert sync.pruned_positions == 0
@@ -463,9 +459,7 @@ async def test_reconcile_still_prunes_on_genuinely_empty_snapshot():
     """live_positions=[] (genuinely empty, fetch OK) → prune proceeds as before."""
     repo = _FakePositionsRepo([_rec("cond-a", "11111111111111111111")])
 
-    sync = await reconcile_persisted_positions_to_live(
-        repo, user_id="u1", live_positions=[]
-    )
+    sync = await reconcile_persisted_positions_to_live(repo, user_id="u1", live_positions=[])
 
     assert sync.fetch_failed is False
     assert sync.pruned_positions == 1
