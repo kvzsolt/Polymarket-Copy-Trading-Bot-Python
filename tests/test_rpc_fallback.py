@@ -281,61 +281,6 @@ class TestGetMyBalanceFallback:
 
 
 # ---------------------------------------------------------------------------
-# Integration with collateral_readiness signature
-# ---------------------------------------------------------------------------
-
-
-class TestCollateralReadinessSignature:
-    def test_check_collateral_accepts_fallback_param(self) -> None:
-        from services.collateral_readiness import check_collateral_readiness
-        import inspect
-
-        sig = inspect.signature(check_collateral_readiness)
-        params = list(sig.parameters.keys())
-        assert "fallback_rpc_url" in params
-        assert sig.parameters["fallback_rpc_url"].default == ""
-
-    def test_check_collateral_runnable_with_empty_fallback(self) -> None:
-        """Should not crash when fallback_rpc_url is empty (default)."""
-        import asyncio
-        from services.collateral_readiness import check_collateral_readiness
-
-        async def _run() -> None:
-            # We can't assert the result without a real RPC, but we can
-            # assert it doesn't crash on parameter validation.
-            result = await check_collateral_readiness(
-                wallet_address="0xAb5801a7C398e26C8b5C60b0e3F2A5F5c0B2B4a",
-                rpc_url="https://primary.example",
-                fallback_rpc_url="",
-                pusd_address="0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB",
-                ctf_exchange_address="0xE111180000d2663C0091e4f400237545B87B996B",
-            )
-            # With a fake RPC it will fail, but not on signature/type errors.
-            assert result is not None
-
-        # Run it and expect a network-level failure, NOT a TypeError.
-        with pytest.raises(Exception) as exc_info:
-            asyncio.run(_run())
-        assert "TypeError" not in str(exc_info.value)
-
-
-# ---------------------------------------------------------------------------
-# Integration with wallet_signature_detector
-# ---------------------------------------------------------------------------
-
-
-class TestWalletSignatureDetectorFallback:
-    def test_fetch_contract_code_hex_accepts_fallback(self) -> None:
-        from services.wallet_signature_detector import _fetch_contract_code_hex
-        import inspect
-
-        sig = inspect.signature(_fetch_contract_code_hex)
-        params = list(sig.parameters.keys())
-        assert "fallback_rpc_url" in params
-        assert sig.parameters["fallback_rpc_url"].default == ""
-
-
-# ---------------------------------------------------------------------------
 # Integration-style: verify the module imports cleanly
 # ---------------------------------------------------------------------------
 

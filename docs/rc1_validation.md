@@ -86,7 +86,7 @@ python -m bot_cli.main doctor --live
 **Expected:** structured doctor result with `status=ok`. The doctor
 blocks on: zero pUSD balance, zero CTF exchange allowance, zero Neg
 Risk exchange allowance (since PR1, the Neg Risk exchange V2 is part
-of the readiness contract; see `services/collateral_readiness.py`),
+of the readiness contract),
 RPC unavailability, WSS unreachable when the WSS mode is the active
 source, or an unresolved reconciliation wedge. The doctor's non-zero
 exit code is non-gradient — it returns blocked, period.
