@@ -67,3 +67,19 @@ exclude = ["tests*", "legacy*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+
+[tool.ruff]
+# Stabilization-phase config: formatting plus correctness-focused linting only.
+# Style-opinion rule families are intentionally not enabled to avoid mass churn.
+line-length = 100
+target-version = "py312"
+extend-exclude = [".venv", "polymarket_copy_trading_bot.egg-info"]
+
+[tool.ruff.lint]
+# E/W: pycodestyle errors/warnings, F: pyflakes, B: bugbear correctness,
+# ASYNC: flake8-async (this is an asyncio-heavy codebase), PLE: pylint errors.
+select = ["E", "F", "W", "B", "ASYNC", "PLE"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests intentionally use asserts, fixtures, and long literal lines.
+"tests/**" = ["E501"]
