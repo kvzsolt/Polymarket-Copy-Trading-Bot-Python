@@ -1,0 +1,4 @@
+# Live environment override (selected with PMCOPY_ENVIRONMENT=live).
+# Migrated from the operator's untracked config/runtime.local.yml.
+# trading_mode remains the single authoritative live/paper selector.
+trading_mode: live

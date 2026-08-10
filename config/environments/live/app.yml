@@ -1,0 +1,5 @@
+# Live metrics endpoint, migrated from the operator's untracked
+# config/runtime.local.yml (network.enable_metrics_server et al.).
+enable_metrics_server: true
+metrics_bind_host: 127.0.0.1
+metrics_port: 9102

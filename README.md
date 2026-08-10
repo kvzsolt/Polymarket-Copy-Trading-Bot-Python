@@ -129,6 +129,14 @@ or marker walk-up), so launch `pmcopy` from this deployment directory. An
 existing `config/runtime.local.yml` from an older deployment is still read
 through a deprecated compatibility shim (legacy section names are translated);
 migrate its values to `config/environments/<name>/<service>.yml`.
+
+**Migrating an existing live deployment:** the previous `runtime.local.yml`
+live values are now tracked in `config/environments/live/` (`trading_mode:
+live`, the leader roster, the metrics endpoint). Export
+`PMCOPY_ENVIRONMENT=live` before starting the bot, verify with
+`pmcopy doctor --live`, then delete the old `config/runtime.local.yml` —
+until it is deleted the deprecated shim keeps honouring it (environment
+files take precedence).
 Keep `execution.trading_mode: paper` through validation. Live startup requires
 `execution.trading_mode: live` **and** a separate database-backed resume command.
 The private key is the only Polymarket auth secret. The unified SDK uses it for
