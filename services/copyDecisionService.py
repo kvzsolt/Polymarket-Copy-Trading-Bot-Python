@@ -90,7 +90,7 @@ class CopyDecisionService:
         self.trade_scorer = trade_scorer or TradeScoringService(config=config)
 
         self._decision_gate_enabled = config.execution.enable_copy_decision_gate
-        self._min_decision_score = config.leader.copy_decision_min_score
+        self._min_decision_score = config.copy_trading.copy_decision_min_score
         # Round-trip through ``Decimal(str(...))`` so a Decimal-typed config
         # value never enters a float division (the previous ``/ 100.0`` cast
         # silently demoted Decimal back to float and burned precision).

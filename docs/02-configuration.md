@@ -7,18 +7,24 @@ Precedence, highest first:
 
 1. Process variables named `PMCOPY__SECTION__FIELD`
 2. Mode-`0600` `secrets.env`
-3. `config/trader_discovery.yaml`
-4. Optional ignored `config/runtime.local.yml`
-5. Checked-in `config/runtime.yml`
+3. Programmatic overrides (tests/composition roots)
+4. Per-leader overrides `config/leaders/<wallet>.yml`
+5. Environment overrides `config/environments/<PMCOPY_ENVIRONMENT>/<service>.yml`
+   (the environment is selected explicitly; default `paper`, never inferred
+   from credential presence)
+6. Deprecated legacy shim: an operator's untracked `config/runtime.local.yml`
+   (legacy section names translated at the loader boundary; planned removal)
+7. Canonical checked-in `config/<service>.yml` (one file per owning service)
+8. Typed model defaults
 
-The checked-in runtime and discovery YAML files ship with the package. The
-optional `config/runtime.local.yml` and `secrets.env` are resolved from the
-process working directory, allowing a non-editable installation to use the
-operator files beside its deployment without writing into `site-packages`.
-
-Use `config/runtime.local.example.yml` as the local template. Public wallet
-addresses, manual leaders, limits, and the paper/live selector belong there.
-Credentials and private RPC URLs belong in `secrets.env`:
+Legacy `PMCOPY__NETWORK__*` / `PMCOPY__LEADER__*` / `PMCOPY__POLLING__*` /
+`PMCOPY__ONCHAIN_DETECTION__*` names keep working through the same
+translation table. `secrets.env` is resolved from the deployment root
+(`PMCOPY_DEPLOYMENT_ROOT` or marker walk-up). See
+`config/environments/example/execution.yml` for an environment template.
+Public wallet addresses, manual leaders, limits, and the paper/live selector
+belong in environment files. Credentials and private RPC URLs belong in
+`secrets.env`:
 
 ```dotenv
 POSTGRES_PASSWORD=change-me

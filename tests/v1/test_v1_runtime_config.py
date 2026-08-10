@@ -42,70 +42,16 @@ def test_v1_runtime_rejects_unknown_or_unbounded_values() -> None:
         )
 
 
-def test_runtime_v1_yaml_matches_typed_defaults() -> None:
+def test_packaged_copy_trading_yaml_copy_tasks_is_paper_safe() -> None:
+    """The packaged copy_trading.yml carries the v1 engine settings now."""
     payload = yaml.safe_load(
-        (Path(__file__).parents[2] / "config/runtime_v1.yml").read_text(
+        (Path(__file__).parents[2] / "config/copy_trading.yml").read_text(
             encoding="utf-8"
         )
     )
-    config = V1RuntimeConfig.model_validate(payload)
+    config = V1RuntimeConfig.model_validate({"copy_tasks": payload["copy_tasks"]})
 
     assert config.copy_tasks.enabled is False
     assert config.copy_tasks.workers.global_concurrency == 4
     assert config.copy_tasks.task_budget.reservation_ttl_seconds == 120
-    assert config.copy_tasks.reentry_lock.unlock_on_market_resolution is True
-
-# ---------------------------------------------------------------------------
-# Production loader (Phase B slice 2): the packaged YAML is the startup source
-# of truth and must be paper-safe (copy tasks disabled) by default.
-# ---------------------------------------------------------------------------
-
-from config.env import EnvValidationError  # noqa: E402
-from config.v1_runtime import load_v1_runtime_config  # noqa: E402
-
-
-def test_load_v1_runtime_config_reads_packaged_yaml() -> None:
-    config = load_v1_runtime_config()
-
-    assert config.copy_tasks.workers.queue_size == 64
-    assert config.copy_tasks.workers.global_concurrency == 4
-    assert config.copy_tasks.task_budget.reservation_ttl_seconds == 120
-
-
-def test_packaged_v1_runtime_yaml_is_paper_safe_disabled_by_default() -> None:
-    """The v1 engine must be an explicit operator opt-in, never a default."""
-    config = load_v1_runtime_config()
-
-    assert config.copy_tasks.enabled is False
-
-
-def test_load_v1_runtime_config_missing_file_fails_closed(tmp_path: Path) -> None:
-    with pytest.raises(EnvValidationError, match="missing"):
-        load_v1_runtime_config(tmp_path / "does-not-exist.yml")
-
-
-def test_load_v1_runtime_config_rejects_unknown_keys(tmp_path: Path) -> None:
-    bad = tmp_path / "runtime_v1.yml"
-    bad.write_text("copy_tasks:\n  surprise: true\n", encoding="utf-8")
-
-    with pytest.raises(EnvValidationError, match="surprise"):
-        load_v1_runtime_config(bad)
-
-
-def test_load_v1_runtime_config_rejects_non_mapping_root(tmp_path: Path) -> None:
-    bad = tmp_path / "runtime_v1.yml"
-    bad.write_text("- just\n- a\n- list\n", encoding="utf-8")
-
-    with pytest.raises(EnvValidationError, match="mapping"):
-        load_v1_runtime_config(bad)
-
-
-def test_load_v1_runtime_config_empty_file_yields_paper_safe_defaults(
-    tmp_path: Path,
-) -> None:
-    empty = tmp_path / "runtime_v1.yml"
-    empty.write_text("", encoding="utf-8")
-
-    config = load_v1_runtime_config(empty)
-
-    assert config.copy_tasks.enabled is False
+    assert config.copy_tasks.reentry_lock.enabled is True

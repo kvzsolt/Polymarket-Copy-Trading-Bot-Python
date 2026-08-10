@@ -13,10 +13,8 @@ import inspect
 
 def test_v1_wiring_imports_resolve() -> None:
     """The lazy imports used by app.main()'s v1 wiring must resolve."""
-    from config.v1_runtime import load_v1_runtime_config
     from orchestrators.v1_runtime_bootstrap import start_v1_copy_task_runtime
 
-    assert callable(load_v1_runtime_config)
     assert callable(start_v1_copy_task_runtime)
 
 
@@ -28,7 +26,7 @@ def test_run_application_starts_the_v1_copy_task_runtime() -> None:
     source = inspect.getsource(app._run_application)
 
     assert "start_v1_copy_task_runtime" in source
-    assert "load_v1_runtime_config" in source
+    assert "config.copy_trading.copy_tasks" in source
     # Canonical startup order: restoration precedes subscriptions/detection.
     assert source.index("start_v1_copy_task_runtime") < source.index(
         "_start_market_data_runtimes("

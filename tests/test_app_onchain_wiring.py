@@ -112,29 +112,37 @@ def test_missing_wss_warning_reflects_typed_detection_config() -> None:
     from app import _onchain_missing_wss_warning_reason
     from config.app_config import OnchainDetectionConfig
 
-    default_cfg = SimpleNamespace(onchain_detection=OnchainDetectionConfig())
+    default_cfg = SimpleNamespace(
+        detection=SimpleNamespace(onchain=OnchainDetectionConfig())
+    )
     assert _onchain_missing_wss_warning_reason(default_cfg) is None
 
     pending_cfg = SimpleNamespace(
-        onchain_detection=OnchainDetectionConfig(
-            enable_onchain_pending_detection=True,
-            enable_onchain_mined_detection=True,
+        detection=SimpleNamespace(
+            onchain=OnchainDetectionConfig(
+                enable_onchain_pending_detection=True,
+                enable_onchain_mined_detection=True,
+            )
         ),
     )
     assert _onchain_missing_wss_warning_reason(pending_cfg) == "pending_enabled"
 
     mined_cfg = SimpleNamespace(
-        onchain_detection=OnchainDetectionConfig(
-            enable_onchain_pending_detection=False,
-            enable_onchain_mined_detection=True,
+        detection=SimpleNamespace(
+            onchain=OnchainDetectionConfig(
+                enable_onchain_pending_detection=False,
+                enable_onchain_mined_detection=True,
+            )
         ),
     )
     assert _onchain_missing_wss_warning_reason(mined_cfg) == "mined_enabled"
 
     with_ws_cfg = SimpleNamespace(
-        onchain_detection=OnchainDetectionConfig(
-            enable_onchain_pending_detection=True,
-            onchain_ws_url="wss://example.invalid",
+        detection=SimpleNamespace(
+            onchain=OnchainDetectionConfig(
+                enable_onchain_pending_detection=True,
+                onchain_ws_url="wss://example.invalid",
+            )
         ),
     )
     assert _onchain_missing_wss_warning_reason(with_ws_cfg) is None

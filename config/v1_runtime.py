@@ -1,20 +1,13 @@
 """Strict additive runtime configuration for copy-task v1.
 
-These pydantic models are intentionally separate from the branch's frozen
-dataclass AppConfig so v1 settings can be layered in without forcing unknown
-keys through the existing config schema. The composition root merges them at
-startup.
+These pydantic models are composed into ``AppConfig`` as
+``copy_trading.copy_tasks`` (config file ``config/copy_trading.yml``); the
+composition root consumes ``config.copy_trading.copy_tasks`` at startup.
 """
 
 from __future__ import annotations
 
-import os
-from pathlib import Path
-
-import yaml
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
-
-from config.env import EnvValidationError
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class _FrozenModel(BaseModel):
@@ -69,7 +62,7 @@ class CopyTasksRuntimeConfig(_FrozenModel):
 
     ``enabled`` defaults to False so the composition root stays paper-safe:
     the v1 engine (workers, durable budgets, reentry locks) is an explicit
-    operator opt-in via ``config/runtime_v1.yml``. The nested safety features
+    operator opt-in via ``config/copy_trading.yml`` (``copy_tasks.enabled``). The nested safety features
     default to enabled so opting in cannot silently shed a protection.
     """
 
@@ -87,54 +80,6 @@ class V1RuntimeConfig(_FrozenModel):
     copy_tasks: CopyTasksRuntimeConfig = CopyTasksRuntimeConfig()
 
 
-_V1_RUNTIME_YAML = Path(__file__).resolve().parent / "runtime_v1.yml"
-
-
-def load_v1_runtime_config(
-    path: str | os.PathLike[str] | None = None,
-) -> V1RuntimeConfig:
-    """Load the strict v1 runtime configuration from the packaged YAML.
-
-    Args:
-        path: Optional explicit YAML path (tests/composition roots). Defaults
-            to the packaged ``config/runtime_v1.yml``.
-
-    Returns:
-        The immutable validated configuration. An empty file yields the
-        paper-safe typed defaults (copy tasks disabled).
-
-    Raises:
-        EnvValidationError: If the file is missing, unreadable, has a
-            non-mapping root, or contains unknown/out-of-bounds keys.
-    """
-
-    file = Path(path) if path is not None else _V1_RUNTIME_YAML
-    if not file.exists():
-        raise EnvValidationError(f"Required configuration file is missing: {file}")
-    try:
-        payload = yaml.safe_load(file.read_text(encoding="utf-8"))
-    except (OSError, yaml.YAMLError) as exc:
-        raise EnvValidationError(
-            f"Unable to read YAML configuration {file}: {exc}"
-        ) from exc
-    if payload is None:
-        payload = {}
-    if not isinstance(payload, dict):
-        raise EnvValidationError(f"Configuration root must be a mapping: {file}")
-    try:
-        return V1RuntimeConfig.model_validate(payload)
-    except ValidationError as exc:
-        # Render locations/messages only; never echo raw input values.
-        messages = [
-            ".".join(str(part) for part in error.get("loc", ()))
-            + f": {error.get('msg', 'invalid value')}"
-            for error in exc.errors(include_url=False, include_input=False)
-        ]
-        raise EnvValidationError(
-            "Invalid v1 runtime configuration:\n- " + "\n- ".join(messages)
-        ) from exc
-
-
 __all__ = [
     "CopyTasksRuntimeConfig",
     "LeaderWorkerRuntimeConfig",
@@ -143,5 +88,4 @@ __all__ = [
     "SharedPriceCacheRuntimeConfig",
     "TaskBudgetRuntimeConfig",
     "V1RuntimeConfig",
-    "load_v1_runtime_config",
 ]

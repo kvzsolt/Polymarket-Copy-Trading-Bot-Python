@@ -13,7 +13,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from config.v1_runtime import V1RuntimeConfig
+from config.v1_runtime import CopyTasksRuntimeConfig
 from orchestrators.v1_runtime_bootstrap import (
     CopyTaskV1RuntimeHandle,
     start_v1_copy_task_runtime,
@@ -30,7 +30,7 @@ def _overrides() -> dict:
             "funder_address": _ADDRESS,
             "polygon_rpc_url": "https://rpc.invalid",
         },
-        "network": {"rpc_url": "https://rpc.invalid"},
+        "polymarket": {"rpc_url": "https://rpc.invalid"},
     }
 
 
@@ -102,8 +102,8 @@ def _app_config():
     return load_config(_overrides())
 
 
-def _v1_config(*, enabled: bool) -> V1RuntimeConfig:
-    return V1RuntimeConfig.model_validate({"copy_tasks": {"enabled": enabled}})
+def _copy_tasks_config(*, enabled: bool) -> CopyTasksRuntimeConfig:
+    return CopyTasksRuntimeConfig.model_validate({"enabled": enabled})
 
 
 @pytest.mark.asyncio
@@ -113,7 +113,7 @@ async def test_disabled_config_builds_nothing_and_never_touches_the_pool() -> No
     handle = await start_v1_copy_task_runtime(
         pool=pool,
         config=_app_config(),
-        v1_config=_v1_config(enabled=False),
+        copy_tasks_config=_copy_tasks_config(enabled=False),
     )
 
     assert handle is None
@@ -128,7 +128,7 @@ async def test_enabled_config_restores_durable_state_and_starts_workers() -> Non
     handle = await start_v1_copy_task_runtime(
         pool=pool,
         config=_app_config(),
-        v1_config=_v1_config(enabled=True),
+        copy_tasks_config=_copy_tasks_config(enabled=True),
         clock=lambda: fixed_now,
     )
 
@@ -154,7 +154,7 @@ async def test_close_is_idempotent() -> None:
     handle = await start_v1_copy_task_runtime(
         pool=pool,
         config=_app_config(),
-        v1_config=_v1_config(enabled=True),
+        copy_tasks_config=_copy_tasks_config(enabled=True),
         clock=lambda: datetime(2026, 8, 11, tzinfo=timezone.utc),
     )
     assert handle is not None

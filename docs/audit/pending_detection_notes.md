@@ -90,4 +90,4 @@ is extracted directly from the `matchOrders` calldata first arg.
 
 ## Config
 `OnchainDetectionConfig` is typed in `config/app_config.py` and documented in
-`config/runtime.yml`; local overrides belong in `config/runtime.local.yml`.
+`config/detection.yml`; overrides belong in `config/environments/<env>/detection.yml`.

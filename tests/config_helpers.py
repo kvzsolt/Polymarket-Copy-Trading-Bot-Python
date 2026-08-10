@@ -8,19 +8,18 @@ from typing import Any
 
 import yaml
 
-from config.app_config import load_config
+from config.app_config import SERVICE_CONFIG_FILES, load_config
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def _leaf_paths() -> dict[str, list[tuple[str, ...]]]:
     payload: dict[str, Any] = {}
-    for path in (
-        ROOT / "config/runtime.yml",
-        ROOT / "config/trader_discovery.yaml",
-    ):
-        source = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-        payload.update(source)
+    for service in SERVICE_CONFIG_FILES:
+        path = ROOT / "config" / f"{service}.yml"
+        if not path.exists():
+            continue
+        payload[service] = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     output: dict[str, list[tuple[str, ...]]] = {}
 
     def walk(value: Any, path: tuple[str, ...]) -> None:
@@ -38,18 +37,17 @@ def _leaf_paths() -> dict[str, list[tuple[str, ...]]]:
 _PATHS = _leaf_paths()
 _ALIASES: dict[str, tuple[tuple[str, ...], ...]] = {
     "DATABASE_URL": (("database", "dsn"),),
-    # runtime.yml's wallet section ships no funder_address key, so the
-    # leaf-path scan cannot discover this one; without an explicit alias the
-    # value fixtures already pass would be silently dropped.
+    # wallet.yml ships no funder_address key, so the leaf-path scan cannot
+    # discover this one; without an explicit alias the value fixtures already
+    # pass would be silently dropped.
     "FUNDER_ADDRESS": (("wallet", "funder_address"),),
-    "RPC_URL": (("wallet", "polygon_rpc_url"), ("network", "rpc_url")),
-    "CHAIN_ID": (("wallet", "chain_id"), ("network", "chain_id")),
-    "LEADER_WALLETS": (("leader", "wallets"),),
-    "USER_ADDRESS": (("leader", "wallets"),),
+    "RPC_URL": (("wallet", "polygon_rpc_url"), ("polymarket", "rpc_url")),
+    "CHAIN_ID": (("wallet", "chain_id"), ("polymarket", "chain_id")),
+    "LEADER_WALLETS": (("copy_trading", "wallets"),),
+    "USER_ADDRESS": (("copy_trading", "wallets"),),
     "TRADING_MODE": (("execution", "trading_mode"),),
-    "MAX_RETRIES": (("execution", "max_retries"),),
-    "METRICS_PORT": (("network", "metrics_port"),),
-    "METRICS_BIND_HOST": (("network", "metrics_bind_host"),),
+    "METRICS_PORT": (("app", "metrics_port"),),
+    "METRICS_BIND_HOST": (("app", "metrics_bind_host"),),
 }
 
 

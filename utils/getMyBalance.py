@@ -33,15 +33,15 @@ def configure_from_appconfig(config: Any) -> None:
     path runs entirely off typed AppConfig.
     """
     global _RPC_URL, _COLLATERAL_CONTRACT_ADDRESS, _PUSD_CONTRACT_ADDRESS, _USDC_CONTRACT_ADDRESS
-    _RPC_URL = str(getattr(config.network, "rpc_url", "") or "")
+    _RPC_URL = str(getattr(config.polymarket, "rpc_url", "") or "")
     _COLLATERAL_CONTRACT_ADDRESS = str(
-        getattr(config.network, "collateral_contract_address", "") or ""
+        getattr(config.polymarket, "collateral_contract_address", "") or ""
     )
     _PUSD_CONTRACT_ADDRESS = str(
-        getattr(config.network, "pusd_contract_address", "") or ""
+        getattr(config.polymarket, "pusd_contract_address", "") or ""
     )
     _USDC_CONTRACT_ADDRESS = str(
-        getattr(config.network, "usdc_contract_address", "") or ""
+        getattr(config.polymarket, "usdc_contract_address", "") or ""
     )
 
 USDC_ABI = [{

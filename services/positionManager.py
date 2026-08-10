@@ -191,15 +191,18 @@ class PositionManager:
 
         if config is not None:
             rc = config.risk
-            fc = config.features
+            # Exit-lifecycle thresholds and feature switches are owned by the
+            # protective_exits service section (formerly risk.* + features.*).
+            pe = config.protective_exits
+            fc = pe
 
             self._risk_master_enabled = _as_bool(getattr(rc, "enable_risk_mgmt", True), True)
 
             # Stop-loss
             self._enable_stop_loss = _as_bool(getattr(fc, "enable_stop_loss", False), False)
-            self._stop_loss_threshold = _as_float(getattr(rc, "stop_loss_threshold", 0.15), 0.15)
+            self._stop_loss_threshold = _as_float(getattr(pe, "stop_loss_threshold", 0.15), 0.15)
             self._stop_loss_grace_period_seconds = _as_float(
-                getattr(rc, "stop_loss_grace_period_seconds", 180.0),
+                getattr(pe, "stop_loss_grace_period_seconds", 180.0),
                 180.0,
             )
 
@@ -207,16 +210,16 @@ class PositionManager:
             self._profit_lock_mode = (
                 "advanced" if _as_bool(getattr(fc, "enable_profit_lock", False), False) else "disabled"
             )
-            self._profit_lock_trigger = _as_float(getattr(rc, "profit_lock_trigger_pct", 70.0), 70.0) / 100.0
-            self._profit_lock_sell_fraction = _as_float(getattr(rc, "profit_lock_sell_fraction", 0.5), 0.5)
+            self._profit_lock_trigger = _as_float(getattr(pe, "profit_lock_trigger_pct", 70.0), 70.0) / 100.0
+            self._profit_lock_sell_fraction = _as_float(getattr(pe, "profit_lock_sell_fraction", 0.5), 0.5)
 
             # Near-max exit
             self._enable_near_max = _as_bool(getattr(fc, "enable_near_max_exit", False), False)
-            self._near_max_exit = _as_float(getattr(rc, "near_max_price_exit", 0.95), 0.95)
-            self._near_max_warn = _as_float(getattr(rc, "near_max_price_warn", 0.92), 0.92)
+            self._near_max_exit = _as_float(getattr(pe, "near_max_price_exit", 0.95), 0.95)
+            self._near_max_warn = _as_float(getattr(pe, "near_max_price_warn", 0.92), 0.92)
             self._near_max_warn_ratio = max(
                 0.0,
-                min(1.0, _as_float(getattr(rc, "near_max_price_warn_trim_ratio", 0.5), 0.5)),
+                min(1.0, _as_float(getattr(pe, "near_max_price_warn_trim_ratio", 0.5), 0.5)),
             )
             # Phase 2.8 — min-hold grace for the near-max partial trim. A
             # fresh BUY at the ask with the risk mark at the best bid satisfies
@@ -225,12 +228,12 @@ class PositionManager:
             # threshold is NOT grace-protected (it caps a position that has
             # already reached near-resolution). 0 disables the grace.
             self._near_max_grace_period_seconds = _as_float(
-                getattr(rc, "near_max_grace_period_seconds", 0.0), 0.0
+                getattr(pe, "near_max_grace_period_seconds", 0.0), 0.0
             )
 
             # Trailing stop
             self._enable_trailing = _as_bool(getattr(fc, "enable_trailing_stop", False), False)
-            trailing_activation_raw = getattr(rc, "trailing_activation_pct", 20.0)
+            trailing_activation_raw = getattr(pe, "trailing_activation_pct", 20.0)
             self._trailing_activation_auto = (
                 trailing_activation_raw is None
                 or (
@@ -243,12 +246,12 @@ class PositionManager:
                 if self._trailing_activation_auto
                 else _as_float(trailing_activation_raw, 20.0) / 100.0
             )
-            self._trailing_distance = _as_pct_ratio(getattr(rc, "trailing_distance", 0.05), 0.05)
+            self._trailing_distance = _as_pct_ratio(getattr(pe, "trailing_distance", 0.05), 0.05)
 
             # Staged TP
             self._enable_staged_tp = _as_bool(getattr(fc, "enable_staged_tp", False), False)
-            staged_levels_raw = getattr(rc, "staged_tp_levels", "")
-            staged_fractions_raw = getattr(rc, "staged_tp_fractions", "")
+            staged_levels_raw = getattr(pe, "staged_tp_levels", "")
+            staged_fractions_raw = getattr(pe, "staged_tp_fractions", "")
             self._staged_levels = _parse_staged_tp_levels(staged_levels_raw) if staged_levels_raw else [0.30, 0.50]
             self._staged_fractions = _parse_csv_floats(staged_fractions_raw) if staged_fractions_raw else [0.25, 0.35]
 

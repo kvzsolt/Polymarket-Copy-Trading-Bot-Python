@@ -105,23 +105,30 @@ pip install -r requirements.txt
 ```
 
 ### 2. Configure
-Copy the configuration templates to set up your environment:
+Configuration is service-owned: one canonical `config/<service>.yml` per
+service (`app`, `database`, `wallet`, `polymarket`, `execution`, `detection`,
+`discovery`, `copy_trading`, `sizing`, `risk`, `protective_exits`,
+`market_data`, `reconciliation`, `logging`). Environment-specific overrides
+live in `config/environments/<name>/<service>.yml` and are selected
+explicitly with `PMCOPY_ENVIRONMENT=<name>` (default: `paper`; see
+`config/environments/example/execution.yml` for a template). Per-leader
+overrides live in `config/leaders/<wallet>.yml`.
 
 ```bash
-cp config/runtime.local.example.yml config/runtime.local.yml
 cp secrets.env.example secrets.env
 chmod 600 secrets.env
 ```
-Put public/local overrides in `config/runtime.local.yml`. Open `secrets.env`
-and add only sensitive nested settings:
+Open `secrets.env` and add only sensitive nested settings:
 ```env
 POSTGRES_PASSWORD=choose-a-unique-database-password
 PMCOPY__WALLET__PRIVATE_KEY=0xYourHexPrivateKey
 PMCOPY__DATABASE__DSN=postgresql://bot:password@localhost/polymarket_copytrading_python
 ```
-The local YAML and secrets paths are resolved from the process working
-directory, so launch `pmcopy` from this deployment directory. Packaged
-`runtime.yml` and `trader_discovery.yaml` remain the canonical defaults.
+The secrets path is resolved from the deployment root (`PMCOPY_DEPLOYMENT_ROOT`
+or marker walk-up), so launch `pmcopy` from this deployment directory. An
+existing `config/runtime.local.yml` from an older deployment is still read
+through a deprecated compatibility shim (legacy section names are translated);
+migrate its values to `config/environments/<name>/<service>.yml`.
 Keep `execution.trading_mode: paper` through validation. Live startup requires
 `execution.trading_mode: live` **and** a separate database-backed resume command.
 The private key is the only Polymarket auth secret. The unified SDK uses it for

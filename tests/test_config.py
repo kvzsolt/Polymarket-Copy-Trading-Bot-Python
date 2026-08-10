@@ -51,7 +51,7 @@ def test_checked_in_yaml_keeps_pending_onchain_detection_opt_in() -> None:
     """
     config = load_config(_overrides())
 
-    assert config.onchain_detection.enable_onchain_pending_detection is False
+    assert config.detection.onchain.enable_onchain_pending_detection is False
 
 
 def test_funder_address_is_required_in_paper_mode() -> None:
@@ -108,7 +108,7 @@ def test_funder_address_still_rejects_malformed_values() -> None:
     [
         # Frozen-dataclass section: inherits the shell's allow_inf_nan.
         ("sizing", {"percentage": None}, "sizing.percentage"),
-        ("polling", {"fetch_interval": None}, "polling.fetch_interval"),
+        ("detection", {"fetch_interval": None}, "detection.fetch_interval"),
         ("risk", {"max_market_exposure_usdc": None}, "risk.max_market_exposure_usdc"),
         # Pydantic BaseModel section: carries its own model_config, so it only
         # rejects because _FrozenSettingsModel sets allow_inf_nan=False.
@@ -162,13 +162,15 @@ def test_non_finite_numbers_are_rejected_from_yaml_literals(
     tmp_path: Path,
 ) -> None:
     """``.nan``/``.inf`` are valid YAML floats, not strings."""
-    local = tmp_path / "runtime.local.yml"
-    local.write_text(f"sizing:\n  percentage: {raw}\n", encoding="utf-8")
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    sizing = config_dir / "sizing.yml"
+    sizing.write_text(f"percentage: {raw}\n", encoding="utf-8")
 
-    assert isinstance(yaml.safe_load(local.read_text())["sizing"]["percentage"], float)
+    assert isinstance(yaml.safe_load(sizing.read_text())["percentage"], float)
 
     with pytest.raises(EnvValidationError, match="Input should be a finite number"):
-        load_config(_overrides(), local_path=local)
+        load_config(_overrides(), config_dir=config_dir)
 
 
 def test_finite_numeric_values_still_load() -> None:
@@ -185,10 +187,10 @@ def test_finite_numeric_values_still_load() -> None:
 
 def test_packaged_yaml_pending_detection_matches_typed_default() -> None:
     """The YAML layer must not silently re-enable a fail-closed code default."""
-    packaged = yaml.safe_load((ROOT / "config" / "runtime.yml").read_text())
+    packaged = yaml.safe_load((ROOT / "config" / "detection.yml").read_text())
 
     assert (
-        packaged["onchain_detection"]["enable_onchain_pending_detection"] is False
+        packaged["onchain"]["enable_onchain_pending_detection"] is False
     )
 
 
@@ -213,11 +215,13 @@ def test_all_wallet_signature_hints_are_accepted(
     assert config.wallet.signature_type == expected
 
 
-def test_runtime_local_overrides_runtime_yaml(tmp_path: Path) -> None:
-    runtime = tmp_path / "runtime.yml"
-    runtime.write_text((ROOT / "config/runtime.yml").read_text(), encoding="utf-8")
-    local = tmp_path / "runtime.local.yml"
-    local.write_text(
+def test_legacy_local_shim_overrides_canonical_service_files(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    deployment = tmp_path / "deployment"
+    (deployment / "config").mkdir(parents=True)
+    (deployment / "config" / "runtime.local.yml").write_text(
         yaml.safe_dump(
             {
                 "wallet": {
@@ -231,12 +235,10 @@ def test_runtime_local_overrides_runtime_yaml(tmp_path: Path) -> None:
         ),
         encoding="utf-8",
     )
-    config = load_config(
-        runtime_path=runtime,
-        local_path=local,
-        discovery_path=ROOT / "config/trader_discovery.yaml",
-        secrets_path=tmp_path / "missing.env",
-    )
+    monkeypatch.setenv("PMCOPY_DEPLOYMENT_ROOT", str(deployment))
+
+    config = load_config()
+
     assert config.sizing.percentage == 7.5
     assert config.wallet.polygon_rpc_url == "https://local-rpc.invalid"
 
@@ -295,7 +297,7 @@ def test_wallet_private_key_is_secret_and_clob_credentials_are_removed() -> None
 
     assert isinstance(config.wallet.private_key, SecretStr)
     assert secret_value(config.wallet.private_key) == private_key
-    assert not hasattr(config.clob, "api_key")
+    assert not hasattr(config, "clob")
     assert private_key not in repr(config)
 
 
@@ -322,7 +324,7 @@ def test_empty_secret_entries_do_not_erase_yaml_values(tmp_path: Path) -> None:
     config = load_config(overrides, secrets_path=secrets)
 
     assert config.wallet.polygon_rpc_url == "https://rpc.invalid"
-    assert config.network.rpc_url == "https://rpc.invalid"
+    assert config.polymarket.rpc_url == "https://rpc.invalid"
     assert config.discovery.api.token.get_secret_value() == "yaml-token"
 
 
@@ -396,16 +398,18 @@ def test_secrets_reject_duplicate_and_non_nested_application_keys(
 
 
 def test_unknown_yaml_key_fails_closed(tmp_path: Path) -> None:
-    runtime = tmp_path / "runtime.yml"
-    payload = yaml.safe_load((ROOT / "config/runtime.yml").read_text())
-    payload["execution"]["tradeing_mode"] = "live"
-    runtime.write_text(yaml.safe_dump(payload), encoding="utf-8")
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    payload = yaml.safe_load((ROOT / "config/execution.yml").read_text())
+    payload["tradeing_mode"] = "live"
+    (config_dir / "execution.yml").write_text(
+        yaml.safe_dump(payload), encoding="utf-8"
+    )
 
     with pytest.raises(EnvValidationError, match="tradeing_mode"):
         load_config(
             _overrides(),
-            runtime_path=runtime,
-            discovery_path=ROOT / "config/trader_discovery.yaml",
+            config_dir=config_dir,
             secrets_path=tmp_path / "missing.env",
         )
 
@@ -424,13 +428,14 @@ def test_nested_process_json_decodes_wallet_tuple(
     wallet = "0x" + "2" * 40
     monkeypatch.setenv("PMCOPY__LEADER__WALLETS", f'["{wallet}"]')
     config = load_config(_overrides())
-    assert config.leader.wallets == (wallet,)
+    # Legacy env alias routes to the copy_trading owner at the loader boundary.
+    assert config.copy_trading.wallets == (wallet,)
 
 
-def test_runtime_network_rpc_url_is_required() -> None:
+def test_runtime_polymarket_rpc_url_is_required() -> None:
     overrides = _overrides()
     overrides["network"]["rpc_url"] = ""
-    with pytest.raises(EnvValidationError, match="network.rpc_url is required"):
+    with pytest.raises(EnvValidationError, match="polymarket.rpc_url is required"):
         load_config(overrides)
 
 

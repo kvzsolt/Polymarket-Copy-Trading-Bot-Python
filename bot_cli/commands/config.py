@@ -178,7 +178,7 @@ def _run_config_explain(args: argparse.Namespace) -> int:
             output = {
                 "key": args.key,
                 "explanation": None,
-                "hint": "No explanation found. Check config/runtime.yml and config/trader_discovery.yaml.",
+                "hint": "No explanation found. Check the config/<service>.yml files.",
             }
     else:
         output = {"key": args.key, "explanation": explanation}

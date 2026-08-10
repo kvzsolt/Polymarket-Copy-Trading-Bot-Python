@@ -1,0 +1,7 @@
+# Service-owned configuration (logging). Layered under
+# config/environments/<PMCOPY_ENVIRONMENT>/logging.yml, secrets.env, and PMCOPY__* env.
+level: INFO
+log_dir: log
+app_log_jsonl_file: log/PolymarketCopyTradingBot.jsonl
+log_max_bytes: 5242880
+log_backup_count: 3

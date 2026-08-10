@@ -35,7 +35,7 @@ async def run_leader_monitor(
         return
 
     trade_queue: asyncio.Queue[list[dict]] = asyncio.Queue(
-        maxsize=max(1, int(config.polling.trade_queue_max_batches))
+        maxsize=max(1, int(config.detection.trade_queue_max_batches))
     )
 
     async def worker() -> None:

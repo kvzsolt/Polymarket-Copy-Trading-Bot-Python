@@ -1,0 +1,4 @@
+# Example environment override: expose the Prometheus metrics endpoint.
+enable_metrics_server: false
+metrics_bind_host: 127.0.0.1
+metrics_port: 9102

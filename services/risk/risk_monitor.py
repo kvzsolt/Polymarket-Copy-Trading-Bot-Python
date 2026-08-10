@@ -2132,7 +2132,7 @@ async def risk_monitor_loop_for_contexts(
         return
 
     enabled = _exit_monitor_enabled(config)
-    poll_interval = float(interval or config.polling.risk_check_interval)
+    poll_interval = float(interval or config.risk.risk_check_interval)
 
     if not enabled:
         logger.info("Global risk management disabled — monitor will not run")

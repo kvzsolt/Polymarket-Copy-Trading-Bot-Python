@@ -179,7 +179,7 @@ class UserRuntimeState:
 
 
 def configured_leaders(config: AppConfig) -> list[str]:
-    leaders = [str(wallet).strip() for wallet in config.leader.wallets if str(wallet).strip()]
+    leaders = [str(wallet).strip() for wallet in config.copy_trading.wallets if str(wallet).strip()]
     if not leaders:
         if config.discovery.scheduler.start_from_roster:
             logger.info(
@@ -346,7 +346,7 @@ def build_user_state(
         market_data_service=market_data_svc,
         # P1-j: trade-path geoblock enforcement with expiry revalidation. Opt-in
         # via ENFORCE_GEOBLOCK (default on); fail-closed; BUY entries only.
-        geoblock_gate=GeoblockGate(config.network.enforce_geoblock),
+        geoblock_gate=GeoblockGate(config.polymarket.enforce_geoblock),
         trading_permission=TradingPermissionService(
             TradingControlRepo(pool),
             live_mode=not config.execution.paper_trade_only,
@@ -511,7 +511,7 @@ def _build_position_drift_service(
         positions_repo=positions_repo,
         reservations_repo=reservations_repo,
         live_positions_fetcher=_fetcher,
-        config=config.position_drift,
+        config=config.reconciliation.position_drift,
     )
 
 
@@ -940,7 +940,7 @@ async def startup_drift_check(
     all_clean = True
     per_user: dict[str, bool] = {}
 
-    if not config.position_drift.check_on_startup:
+    if not config.reconciliation.position_drift.check_on_startup:
         readiness.update(drift_ok=True)
         return per_user
 

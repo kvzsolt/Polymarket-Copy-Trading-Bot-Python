@@ -1,0 +1,6 @@
+# Service-owned configuration (database). Layered under
+# config/environments/<PMCOPY_ENVIRONMENT>/database.yml, secrets.env, and PMCOPY__* env.
+dsn: ''
+pool_min_size: 2
+pool_max_size: 20
+command_timeout_seconds: 30.0

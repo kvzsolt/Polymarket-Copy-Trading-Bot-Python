@@ -55,10 +55,10 @@ class TradeScoringService:
 
             config = load_config()
         self._config = config
-        self._max_age_seconds = config.leader.copy_max_signal_age_seconds
-        self._max_drift_pct = config.leader.copy_max_price_drift_pct
-        self._max_edge_decay = config.leader.copy_max_edge_decay_pct
-        self._liquidity_target = config.leader.copy_liquidity_target_usdc
+        self._max_age_seconds = config.copy_trading.copy_max_signal_age_seconds
+        self._max_drift_pct = config.copy_trading.copy_max_price_drift_pct
+        self._max_edge_decay = config.copy_trading.copy_max_edge_decay_pct
+        self._liquidity_target = config.copy_trading.copy_liquidity_target_usdc
         self._near_res_enabled = config.execution.enable_near_resolution_gate
         self._near_res_price = config.execution.near_resolution_gate_price
         self._near_res_max_age = config.execution.near_resolution_max_age_seconds

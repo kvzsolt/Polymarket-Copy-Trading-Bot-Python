@@ -1,0 +1,8 @@
+# Application-wide operational settings.
+# kill_switch is the C1 global master stop: true = observe only, submit nothing.
+kill_switch: false
+retention_max_age_seconds: 2592000.0
+enable_metrics_server: false
+metrics_port: 9102
+metrics_bind_host: 127.0.0.1
+multi_user_config_file: ''

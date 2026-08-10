@@ -1,0 +1,35 @@
+# Execution service settings. trading_mode is the single authoritative
+# live/paper selector; venue_backend stays 'sdk' by default and CCXT-primary
+# live additionally requires allow_experimental_ccxt_live (never weaken).
+# kill_switch here refuses BUY entries but still allows protective exits;
+# the global master stop is app.yml kill_switch.
+kill_switch: false
+venue_backend: sdk
+allow_experimental_ccxt_live: false
+sell_fraction_missing_policy: skip
+slippage_tolerance: 2.0
+min_share_price: 0.03
+max_share_price: 0.95
+non_terminal_failure_max_attempts: 3
+trading_mode: paper
+enable_copy_decision_gate: false
+enable_near_resolution_gate: false
+near_resolution_gate_price: 0.95
+near_resolution_max_age_seconds: 15.0
+pending_submission_ttl_seconds: 120
+reservation_ttl_seconds: 120
+reservations_enabled: false
+book_spread_mode: absolute_bps
+max_book_spread_bps: 2500
+max_book_spread_ticks: 0
+circuit_failure_threshold: 15
+max_position_size_usdc: 0.0
+max_daily_spend_usdc: 0.0
+min_balance_headroom_usdc: 0.0
+min_book_depth_usdc: 0.0
+book_depth_band_pct: 5.0
+execution_submit_concurrency: 2
+trade_analysis_concurrency: 6
+reconcile_concurrency: 4
+copy_fak_max_attempts: 8
+exit_fak_max_attempts: 8

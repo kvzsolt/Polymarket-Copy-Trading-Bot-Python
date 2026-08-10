@@ -118,7 +118,11 @@ def get_reconciliation_service(context: TradingContext) -> ReconciliationService
             # when no explicit funder is set.
             funder_address=getattr(context, "wallet_address", None),
             order_confirmation_cfg=(
-                getattr(getattr(context, "config", None), "order_confirmation", None)
+                getattr(
+                    getattr(getattr(context, "config", None), "reconciliation", None),
+                    "order_confirmation",
+                    None,
+                )
                 if getattr(context, "config", None) is not None
                 else None
             ),
@@ -2008,8 +2012,8 @@ async def execute_trades(
 
             if leader_tier == "watchlist":
                 config = _trade_config(context)
-                if config.features.enable_tier_gate_watchlist:
-                    if config.features.enable_tier_gate_watchlist_log:
+                if config.copy_trading.enable_tier_gate_watchlist:
+                    if config.copy_trading.enable_tier_gate_watchlist_log:
                         logger.info(
                             "tier_gate_watchlist",
                             extra={

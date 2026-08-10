@@ -168,7 +168,7 @@ async def _run_check_async(args: argparse.Namespace) -> int:
     except Exception:
         epsilon = Decimal("0.000001")
 
-    runtime_users = load_runtime_users(config.leader.wallets or [], config)
+    runtime_users = load_runtime_users(config.copy_trading.wallets or [], config)
 
     # Bind before filtering: binding rewrites an empty/"default" user_id to the
     # resolved wallet, so --user-id must be matched against the bound identity.

@@ -314,7 +314,7 @@ async def run_doctor_checks(
             ctx.blocked(
                 "paper_trade_only_false",
                 "live mode requested but config resolves to PAPER",
-                "set execution.trading_mode: live in config/runtime.local.yml and restart",
+                "set trading_mode: live in config/environments/live/execution.yml (PMCOPY_ENVIRONMENT=live) and restart",
             )
         else:
             ctx.ok("paper_trade_only_false", "live trading enabled (paper_trade_only=false)")
@@ -322,7 +322,7 @@ async def run_doctor_checks(
             ctx.blocked(
                 "dry_run_false",
                 "dry_run=true (config resolves to paper)",
-                "set execution.trading_mode: live in config/runtime.local.yml and restart",
+                "set trading_mode: live in config/environments/live/execution.yml (PMCOPY_ENVIRONMENT=live) and restart",
             )
         else:
             ctx.ok("dry_run_false", "dry_run=false")
@@ -332,26 +332,26 @@ async def run_doctor_checks(
     # (refuses BUY entries, allows protective SELL exits), and the legacy
     # risk.kill_switch (kept for backward compatibility). Any one engaged
     # blocks a live restart.
-    global_kill = bool(getattr(config, "global_config", None) and config.global_config.kill_switch)
+    global_kill = bool(getattr(config, "app", None) and config.app.kill_switch)
     exec_kill = bool(getattr(config.execution, "kill_switch", False))
     risk_kill = bool(config.risk.kill_switch)
     if global_kill:
         ctx.blocked(
             "kill_switch_off",
             "global.kill_switch=true (master: observe only, submits nothing)",
-            "set global.kill_switch: false in config/runtime.local.yml",
+            "set kill_switch: false in config/app.yml",
         )
     elif exec_kill:
         ctx.blocked(
             "kill_switch_off",
             "execution.kill_switch=true (refuses BUY entries)",
-            "set execution.kill_switch: false in config/runtime.local.yml",
+            "set kill_switch: false in config/execution.yml",
         )
     elif risk_kill:
         ctx.blocked(
             "kill_switch_off",
             "risk.kill_switch=true (legacy)",
-            "set risk.kill_switch: false in config/runtime.local.yml",
+            "set kill_switch: false in config/risk.yml",
         )
     else:
         ctx.ok("kill_switch_off", "global/execution/risk kill_switch=false")
@@ -466,7 +466,7 @@ async def run_doctor_checks(
     # ----- RPC ----------------------------------------------------------
     from orchestrators.startup_health import _check_rpc
 
-    rpc = await _check_rpc(config.network.rpc_url)
+    rpc = await _check_rpc(config.polymarket.rpc_url)
     if getattr(rpc, "status", "") == "error":
         ctx.blocked(
             "network_rpc",
@@ -490,7 +490,7 @@ async def run_doctor_checks(
         )
 
     # ----- geoblock -----------------------------------------------------
-    if config.network.enforce_geoblock:
+    if config.polymarket.enforce_geoblock:
         from services.compliance import check_geoblock
 
         decision = await check_geoblock()
@@ -550,7 +550,7 @@ async def run_doctor_checks(
 
     # ----- drift wiring -------------------------------------------------
     if live:
-        if config.position_drift.check_on_startup:
+        if config.reconciliation.position_drift.check_on_startup:
             try:
                 from orchestrators.runtime_bootstrap import startup_drift_check  # noqa: F401
 
@@ -624,7 +624,7 @@ async def run_doctor_checks(
         ctx.blocked(
             "log_directory_writable",
             f"log directory not writable: {exc}",
-            "set logging.log_dir in config/runtime.local.yml",
+            "set log_dir in config/logging.yml",
         )
     try:
         jsonl = _resolve_jsonl_path(config)
@@ -636,7 +636,7 @@ async def run_doctor_checks(
         ctx.blocked(
             "jsonl_log_writable",
             f"jsonl path not writable: {exc}",
-            "set logging.app_log_jsonl_file in config/runtime.local.yml",
+            "set app_log_jsonl_file in config/logging.yml",
         )
 
     # ----- log type registration --------------------------------------
@@ -663,9 +663,9 @@ async def run_doctor_checks(
         ctx.warning("logger_inspection", f"could not introspect: {exc}", "")
 
     # ----- metrics port -----------------------------------------------
-    if config.network.enable_metrics_server:
+    if config.app.enable_metrics_server:
         ok, detail = _try_port_bind(
-            config.network.metrics_bind_host, int(config.network.metrics_port)
+            config.app.metrics_bind_host, int(config.app.metrics_port)
         )
         if ok:
             ctx.ok("metrics_port_bindable", detail)
@@ -683,13 +683,13 @@ async def run_doctor_checks(
         )
 
     # ----- leaders -----------------------------------------------------
-    if config.leader.wallets:
+    if config.copy_trading.wallets:
         ctx.ok("leaders", "leader wallets configured")
     elif not config.discovery.scheduler.start_from_roster:
         ctx.blocked(
             "leaders",
             "no manual leader wallets and roster startup is disabled",
-            "configure leader.wallets in runtime.local.yml or enable discovery.scheduler.start_from_roster",
+            "configure wallets in config/copy_trading.yml (or environments/live) or enable discovery.scheduler.start_from_roster",
         )
     else:
         try:

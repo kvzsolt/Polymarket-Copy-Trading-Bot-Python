@@ -109,7 +109,7 @@ async def purge_stale_records(max_age_seconds: float | None = None) -> int:
         # Fail-closed default mirrors the previous
         # ``ENV.get("RETENTION_MAX_AGE_SECONDS", 30*86400)`` read. Callers
         # that need a different retention pass it explicitly (e.g. app.py
-        # reads ``application.config.polling.retention_max_age_seconds``).
+        # reads ``application.config.app.retention_max_age_seconds``).
         age = float(30 * 86400)
     repo = await _repo()
     n = await repo.purge_old_processed_trades(age)

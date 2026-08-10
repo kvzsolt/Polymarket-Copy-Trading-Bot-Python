@@ -2,14 +2,14 @@
 
 Live execution has two independent, fail-closed gates:
 
-1. `execution.trading_mode: live` in `config/runtime.local.yml`, read once.
+1. `trading_mode: live` in `config/environments/live/execution.yml`, selected with `PMCOPY_ENVIRONMENT=live`, read once.
 2. The PostgreSQL `trading_control` row, checked immediately before each venue
    submission.
 
 There is no `--live` CLI override and configuration is not hot-reloaded.
 
 ```bash
-cp config/runtime.local.example.yml config/runtime.local.yml
+mkdir -p config/environments/live && cp config/environments/example/execution.yml config/environments/live/execution.yml
 cp secrets.env.example secrets.env
 chmod 600 secrets.env
 ```

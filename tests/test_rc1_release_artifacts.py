@@ -125,24 +125,48 @@ def test_documented_config_templates_exist(repo_root: Path) -> None:
     assert not missing, f"documented config templates do not exist: {missing}"
 
 
-def test_runtime_local_example_is_paper_safe_and_secret_free(repo_root: Path) -> None:
-    """The copied-verbatim template must never arm live trading or hold keys."""
-    path = repo_root / "config" / "runtime.local.example.yml"
+def test_example_environment_template_is_paper_safe_and_secret_free(
+    repo_root: Path,
+) -> None:
+    """The copied-verbatim environment template must never arm live trading."""
+    path = repo_root / "config" / "environments" / "example" / "execution.yml"
     payload = yaml.safe_load(path.read_text(encoding="utf-8"))
 
-    assert payload["execution"]["trading_mode"] == "paper"
-    assert payload["risk"]["kill_switch"] is False
-    # A funder address is required even in paper mode; the template must ship
-    # a syntactically valid placeholder so `pmcopy config validate` explains
-    # the next step instead of failing on the template itself.
-    assert re.fullmatch(r"0x[0-9a-fA-F]{40}", payload["wallet"]["funder_address"])
-
-    # Naming the secret's env var in a comment is fine; carrying its value is
-    # not. Assert on key material rather than on prose.
-    assert "private_key" not in payload.get("wallet", {})
+    assert payload["trading_mode"] == "paper"
     assert not re.search(
         r"0x[0-9a-fA-F]{64}", path.read_text(encoding="utf-8")
     ), "secrets belong in mode-0600 secrets.env, never in committed YAML"
+
+
+def test_packaged_service_files_are_paper_safe_and_secret_free(
+    repo_root: Path,
+) -> None:
+    """Canonical service files ship paper-mode, kill-switches off, no keys."""
+    execution = yaml.safe_load(
+        (repo_root / "config" / "execution.yml").read_text(encoding="utf-8")
+    )
+    app_cfg = yaml.safe_load(
+        (repo_root / "config" / "app.yml").read_text(encoding="utf-8")
+    )
+    risk = yaml.safe_load(
+        (repo_root / "config" / "risk.yml").read_text(encoding="utf-8")
+    )
+    wallet = yaml.safe_load(
+        (repo_root / "config" / "wallet.yml").read_text(encoding="utf-8")
+    )
+
+    assert execution["trading_mode"] == "paper"
+    assert execution["venue_backend"] == "sdk"
+    assert execution["allow_experimental_ccxt_live"] is False
+    assert app_cfg["kill_switch"] is False
+    assert risk["kill_switch"] is False
+    assert wallet.get("private_key", "") == ""
+    for path in sorted((repo_root / "config").glob("*.yml")):
+        if path.name == "runtime.local.yml":  # operator-local, git-ignored
+            continue
+        assert not re.search(r"0x[0-9a-fA-F]{64}", path.read_text(encoding="utf-8")), (
+            f"secret-shaped value in {path.name}"
+        )
 
 
 def test_bot_cli_module_executes_its_entrypoint(repo_root: Path) -> None:

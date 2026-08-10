@@ -1,0 +1,3 @@
+# Example environment override: explicit leader roster for this environment.
+# Per-leader tunable overrides belong in config/leaders/<wallet>.yml.
+wallets: []

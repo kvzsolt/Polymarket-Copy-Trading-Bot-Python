@@ -1,0 +1,4 @@
+# Wallet identity. private_key comes from secrets.env
+# (PMCOPY__WALLET__PRIVATE_KEY); never put a real key in YAML.
+private_key: ''
+chain_id: 137

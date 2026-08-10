@@ -1,0 +1,20 @@
+# Protective-exit feature switches and lifecycle thresholds
+# (formerly features.enable_* + risk.* exit keys).
+near_max_price_warn: 0.95
+near_max_price_warn_trim_ratio: 0.6
+near_max_price_exit: 0.99
+near_max_grace_period_seconds: 30.0
+profit_lock_trigger_pct: 70.0
+profit_lock_sell_fraction: 0.5
+trailing_activation_pct: null
+trailing_distance: 0.05
+staged_tp_levels: 0.30,0.50
+staged_tp_fractions: 0.25,0.35
+stop_loss_threshold: 0.15
+stop_loss_grace_period_seconds: 180.0
+enable_profit_lock: false
+enable_near_max_exit: true
+enable_trailing_stop: false
+enable_staged_tp: false
+enable_leader_divergence_exit: false
+enable_stop_loss: false

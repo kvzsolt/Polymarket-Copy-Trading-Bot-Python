@@ -6,7 +6,7 @@
 2. Run `pmcopy doctor --paper`, the unit suite, and Docker-backed integration
    tests while the runtime remains in paper mode.
 3. Stop the bot, set `execution.trading_mode: live` in
-   `config/runtime.local.yml`, restart, and run `pmcopy doctor --live`;
+   `config/environments/live/execution.yml` (with `PMCOPY_ENVIRONMENT=live`), restart, and run `pmcopy doctor --live`;
    startup configuration is immutable.
 4. Confirm reconciliation, wallet identity, database, RPC, market data, and
    user-stream readiness while the database control remains paused.

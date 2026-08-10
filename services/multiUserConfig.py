@@ -62,8 +62,8 @@ def _runtime_user_from_payload(payload: dict, config: AppConfig) -> RuntimeUser:
         chain_id=int(payload.get("chain_id", config.wallet.chain_id)),
         signature_type=SignatureType.DEPOSIT_WALLET,
         funder_address=funder_address,
-        polygon_rpc_url=config.network.rpc_url,
-        fallback_rpc_url=config.network.fallback_rpc_url,
+        polygon_rpc_url=config.polymarket.rpc_url,
+        fallback_rpc_url=config.polymarket.fallback_rpc_url,
     )
     follows: dict[str, UserFollowConfig] = {}
     for item in payload.get("follows", []):
@@ -88,7 +88,7 @@ def load_runtime_users(leader_wallets: list[str], config: AppConfig) -> list[Run
     Fallback behavior keeps the existing single-user flow but sources defaults
     from the strongly typed AppConfig instead of the legacy ENV snapshot.
     """
-    config_file = (config.files.multi_user_config_file or "").strip()
+    config_file = (config.app.multi_user_config_file or "").strip()
     if not config_file:
         # Pre-fix: signature_type=None left a hole that crashed
         # downstream callers doing ``int(wallet.signature_type)``.

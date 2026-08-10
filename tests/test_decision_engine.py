@@ -25,7 +25,7 @@ def _test_config() -> SimpleNamespace:
             near_resolution_gate_price=0.95,
             near_resolution_max_age_seconds=300,
         ),
-        leader=SimpleNamespace(
+        copy_trading=SimpleNamespace(
             copy_decision_min_score=0.0,
             copy_max_signal_age_seconds=120.0,
             copy_max_price_drift_pct=6.0,

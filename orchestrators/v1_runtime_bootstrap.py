@@ -17,7 +17,7 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 
 from config.app_config import AppConfig
-from config.v1_runtime import V1RuntimeConfig
+from config.v1_runtime import CopyTasksRuntimeConfig
 from orchestrators.v1_runtime import CopyTaskV1RuntimeBuilder, CopyTaskV1RuntimeBundle
 from services.copy_sizing_v5.policy import copy_sizing_policy_from_config
 from services.copy_tasks.budget import TaskBudgetReservationService
@@ -88,7 +88,7 @@ async def start_v1_copy_task_runtime(
     *,
     pool: object,
     config: AppConfig,
-    v1_config: V1RuntimeConfig,
+    copy_tasks_config: CopyTasksRuntimeConfig,
     clock: Clock | None = None,
 ) -> CopyTaskV1RuntimeHandle | None:
     """Construct, restore, and start the v1 copy-task runtime when enabled.
@@ -96,7 +96,8 @@ async def start_v1_copy_task_runtime(
     Args:
         pool: The shared asyncpg-compatible pool (already migrated).
         config: The immutable application configuration (sizing base policy).
-        v1_config: The validated v1 runtime configuration.
+        copy_tasks_config: The validated copy-task engine configuration
+            (``config.copy_trading.copy_tasks``).
         clock: Injectable UTC clock for the startup budget sweep (tests).
 
     Returns:
@@ -105,7 +106,7 @@ async def start_v1_copy_task_runtime(
         touched.
     """
 
-    tasks_config = v1_config.copy_tasks
+    tasks_config = copy_tasks_config
     if not tasks_config.enabled:
         logger.info("v1_copy_task_runtime | status=disabled")
         return None

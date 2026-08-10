@@ -482,7 +482,7 @@ class ExecutionService:
         # protective SELL exits — closing a position is risk-reducing and must
         # not be stranded by a hot-stop (mirrors geoblock semantics).
         forced_sell_exit = _is_forced_sell_exit_request(req, side)
-        global_cfg = getattr(self._config, "global_config", None)
+        global_cfg = getattr(self._config, "app", None)
         global_kill = bool(getattr(global_cfg, "kill_switch", False))
         exec_kill = bool(getattr(self._config.execution, "kill_switch", False))
         if global_kill or (exec_kill and not forced_sell_exit):

@@ -40,11 +40,11 @@ def _make_exec_config(*, global_kill: bool = False, exec_kill: bool = False) -> 
         near_resolution_max_age_seconds=15, meta_cache_ttl_good=300, meta_cache_ttl_thin=30,
         kill_switch=exec_kill,
     )
-    from config.app_config import GlobalConfig
+    from config.app_config import AppServiceConfig
     return SimpleNamespace(
         execution=ec,
         raw={"EXECUTION_SUBMIT_CONCURRENCY": 2},
-        global_config=GlobalConfig(kill_switch=global_kill),
+        app=AppServiceConfig(kill_switch=global_kill),
     )
 
 

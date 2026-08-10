@@ -1,0 +1,17 @@
+# Market-data WSS health monitoring and REST snapshot/bootstrap policy.
+primary_source: rest_snapshot
+rest_snapshot_max_age_ms: 500
+rest_snapshot_request_timeout_ms: 750
+rest_snapshot_total_budget_ms: 1000
+rest_snapshot_max_spread_bps: 2000
+enable_rest_bootstrap: true
+rest_bootstrap_max_age_ms: 500
+rest_bootstrap_request_timeout_ms: 750
+rest_bootstrap_total_budget_ms: 1000
+rest_bootstrap_max_spread_bps: 300
+rest_bootstrap_require_wss_connected: true
+executable_quote_max_age_seconds: 2.0
+executable_book_max_age_seconds: 2.0
+executable_tick_max_age_seconds: 300.0
+wss_connection_max_silence_seconds: 20.0
+subscribe_timeout_seconds: 2.0

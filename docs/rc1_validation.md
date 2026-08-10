@@ -121,7 +121,7 @@ explicit operator review because their absence breaks the RC1 release:
 - The Neg Risk exchange V2 readiness gate is fail-closed: operators must
   approve pUSD for BOTH the CTF and the Neg Risk exchanges before live
   trading, even if the leader wallet only ever trades on one of them.
-  See `config/runtime.local.example.yml` for the documented operator step.
+  See `config/environments/example/execution.yml` for the documented operator step.
 
 ## 5. Caveats
 

@@ -1,0 +1,27 @@
+# Reconciliation cadence, order-confirmation delay/ambiguous-timeout
+# policy, and position-drift policy.
+stale_threshold_seconds: 3600.0
+auto_cancel_stale: false
+max_closed_probes: 10
+reconcile_interval_seconds: 300
+order_confirmation:
+  initial_delay_seconds: 2.0
+  poll_interval_seconds: 3.0
+  max_wait_seconds: 90.0
+  delayed_extra_seconds: 2.0
+  token_delay_overrides: {}
+  condition_delay_overrides: {}
+  auto_release_ambiguous: true
+  auto_release_grace_seconds: 300.0
+  auto_release_require_all_probes_clean: true
+  auto_release_max_probe_errors: 0
+  auto_release_retry_backoff_seconds: 30.0
+  auto_release_retry_backoff_max_seconds: 900.0
+position_drift:
+  check_on_startup: true
+  fail_closed: true
+  allow_auto_prune_zero: true
+  allow_external_position_tracking: false
+  pause_scope_on_unresolved: true
+  max_size_epsilon: '0.000001'
+  prune_holdoff_seconds: 60.0

@@ -49,9 +49,9 @@ def _leader_fetch_spacing_seconds(kind: str) -> float:
     global _fetch_spacing_config
     if _fetch_spacing_config is not None:
         ms = (
-            _fetch_spacing_config.polling.leader_positions_min_fetch_spacing_ms
+            _fetch_spacing_config.detection.leader_positions_min_fetch_spacing_ms
             if kind == "positions"
-            else _fetch_spacing_config.polling.leader_activity_min_fetch_spacing_ms
+            else _fetch_spacing_config.detection.leader_activity_min_fetch_spacing_ms
         )
         return max(0.0, ms / 1000.0)
 
@@ -607,7 +607,7 @@ async def fetch_trade_data(
                 max_seen_ts = ts
 
         trade_list = _aggregate_trades(
-            trade_candidates, window_s=config.polling.aggregate_signal_window_seconds
+            trade_candidates, window_s=config.detection.aggregate_signal_window_seconds
         )
         if trade_candidates and research_capture_service is not None:
             _spawn_research_capture(research_capture_service, list(trade_candidates))
@@ -656,7 +656,7 @@ async def trade_monitor(
     global _fetch_spacing_config
     _fetch_spacing_config = config
     fetch_interval = float(
-        bot_params.get("FETCH_INTERVAL", config.polling.fetch_interval)
+        bot_params.get("FETCH_INTERVAL", config.detection.fetch_interval)
     )
     state = LeaderMonitorState()
     cursor_store = await LeaderCursorStore.create()

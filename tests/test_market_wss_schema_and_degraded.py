@@ -289,23 +289,23 @@ class TestMarketDataConfig:
     def test_market_data_config_defaults(self) -> None:
         from config.app_config import MarketDataConfig
         cfg = MarketDataConfig()
-        assert cfg.allow_rest_when_wss_down is False
-        assert cfg.wss_down_after_seconds == 15.0
-        assert cfg.rest_degraded_max_age_seconds == 2.0
-        assert cfg.rest_degraded_max_spread_bps == 500
-        assert cfg.rest_degraded_log_every_seconds == 30.0
-
-    def test_market_data_config_allow_rest_default_false(self) -> None:
-        from config.app_config import MarketDataConfig
-        cfg = MarketDataConfig()
-        assert cfg.allow_rest_when_wss_down is False
+        assert cfg.primary_source == "rest_snapshot"
+        assert cfg.rest_snapshot_max_age_ms == 500
+        # Phase B config split: the WSS-down/REST-degraded knobs were never
+        # read by the runtime (it hardcodes its own constants), so the fields
+        # were dropped from the typed model rather than shipped as fiction.
+        assert not hasattr(cfg, "allow_rest_when_wss_down")
+        assert not hasattr(cfg, "wss_down_after_seconds")
+        assert not hasattr(cfg, "rest_degraded_max_age_seconds")
+        assert not hasattr(cfg, "rest_degraded_max_spread_bps")
+        assert not hasattr(cfg, "rest_degraded_log_every_seconds")
 
     def test_market_data_config_is_frozen(self) -> None:
         import dataclasses
         from config.app_config import MarketDataConfig
         cfg = MarketDataConfig()
         with pytest.raises((dataclasses.FrozenInstanceError, TypeError)):
-            cfg.allow_rest_when_wss_down = True  # type: ignore[misc]
+            cfg.primary_source = "wss"  # type: ignore[misc]
 
     def test_app_config_has_market_data_field(self) -> None:
         from config.app_config import AppConfig
@@ -325,14 +325,12 @@ class TestMarketDataConfig:
             "RPC_URL": "https://polygon-rpc.example.com",
             "CHAIN_ID": "137",
             "USER_ADDRESS": _VALID_ADDR,
-            "MARKET_DATA_ALLOW_REST_WHEN_WSS_DOWN": "true",
-            "MARKET_DATA_WSS_DOWN_AFTER_SECONDS": "30",
-            "MARKET_DATA_REST_DEGRADED_MAX_SPREAD_BPS": "200",
+            "MARKET_DATA_REST_SNAPSHOT_MAX_SPREAD_BPS": "200",
         }
         cfg = load_test_config(env)
-        assert cfg.market_data.allow_rest_when_wss_down is True
-        assert cfg.market_data.wss_down_after_seconds == 30.0
-        assert cfg.market_data.rest_degraded_max_spread_bps == 200
+        assert cfg.market_data.rest_snapshot_max_spread_bps == 200
+        # Retired knobs no longer exist on the typed model.
+        assert not hasattr(cfg.market_data, "allow_rest_when_wss_down")
 
 
 # ---------------------------------------------------------------------------

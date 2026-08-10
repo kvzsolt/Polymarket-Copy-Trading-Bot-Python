@@ -34,7 +34,7 @@ _LEADER = "0x" + "e" * 40
 def _config(*, paper: bool) -> SimpleNamespace:
     return SimpleNamespace(
         execution=SimpleNamespace(paper_trade_only=paper),
-        leader=SimpleNamespace(wallets=[_LEADER]),
+        copy_trading=SimpleNamespace(wallets=[_LEADER]),
         database=SimpleNamespace(dsn="postgresql://test:test@localhost/test"),
     )
 

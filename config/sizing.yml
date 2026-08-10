@@ -1,0 +1,24 @@
+# Copy sizing (shared engine + V5 pUSD-balance-aware envelope, folded
+# from copy_sizing_v5.yaml).
+mode: proportional
+percentage: 4.0
+fixed_amount: 3.0
+trade_multiplier: 1.0
+tiered_trade_multipliers: ''
+adaptive_basis: trade_size
+adaptive_min_percent: 0.0
+adaptive_max_percent: 0.0
+adaptive_threshold_usdc: 500.0
+buy_min_amount: 5.0
+buy_max_amount: 8.0
+position_threshold: 0
+max_position_pct: 0.1
+enable_trust_size_multipliers: false
+trust_size_multiplier_min: 0.5
+trust_size_multiplier_max: 1.25
+copyable_balance_percent: 75.0
+proportional_balance_cap_enabled: true
+require_leader_balance_for_proportional: true
+portfolio_weight_multiplier: 1.0
+strict_fixed_amount: true
+strict_exact_mirror: true

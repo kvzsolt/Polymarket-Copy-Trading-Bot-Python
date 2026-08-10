@@ -1,0 +1,11 @@
+# Polymarket venue/network endpoints and contracts.
+# Keyless public Polygon RPC default; operators with a private provider
+# override PMCOPY__POLYMARKET__RPC_URL in secrets.env. Never commit a
+# private provider URL/key here.
+rpc_url: https://polygon-rpc.com
+chain_id: 137
+usdc_contract_address: '0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB'
+enforce_geoblock: true
+fallback_rpc_url: ''
+collateral_contract_address: ''
+pusd_contract_address: '0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB'

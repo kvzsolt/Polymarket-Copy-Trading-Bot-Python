@@ -38,8 +38,8 @@ def signature_type_from_wallet_type(wallet_type: object) -> SignatureType | None
 
 @dataclass(frozen=True)
 class WalletConfig:
-    private_key: SecretStr
-    chain_id: int
+    private_key: SecretStr = SecretStr("")
+    chain_id: int = 137
     # The unified SDK derives the default Deposit Wallet from ``private_key``
     # and exposes the resolved address after authenticated startup.  This
     # optional value is retained only for paper-mode identity and as a live

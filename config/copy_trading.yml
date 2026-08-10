@@ -1,0 +1,27 @@
+# Copy-trading roster, copy gates, and the v1 copy-task engine.
+# wallets: [] means discovery-driven; per-leader overrides live in
+# config/leaders/<wallet>.yml (overrides only - they never join the roster).
+# copy_tasks.enabled: false is the paper-safe default for the v1 engine.
+wallets: []
+copy_decision_min_score: 0.15
+copy_max_price_drift_pct: 15.0
+copy_max_edge_decay_pct: 90.0
+copy_max_signal_age_seconds: 100.0
+copy_liquidity_target_usdc: 50.0
+enable_tier_gate_watchlist: false
+enable_tier_gate_watchlist_log: false
+copy_tasks:
+  enabled: false
+  workers:
+    enabled: true
+    queue_size: 64
+    global_concurrency: 4
+    max_leader_workers: 64
+  shared_price_cache:
+    enabled: true
+    max_entries: 5000
+  task_budget:
+    enabled: true
+    reservation_ttl_seconds: 120
+  reentry_lock:
+    enabled: true

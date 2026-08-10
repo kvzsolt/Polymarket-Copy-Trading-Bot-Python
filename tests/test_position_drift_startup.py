@@ -28,7 +28,9 @@ def _drift_config(**overrides) -> PositionDriftConfig:
 
 
 def _app_config(*, drift: PositionDriftConfig | None = None) -> SimpleNamespace:
-    return SimpleNamespace(position_drift=drift or _drift_config())
+    return SimpleNamespace(
+        reconciliation=SimpleNamespace(position_drift=drift or _drift_config())
+    )
 
 
 def _runtime_user(user_id: str = "u1", funder: str = "0xfunder") -> SimpleNamespace:

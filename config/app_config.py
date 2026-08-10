@@ -1,13 +1,22 @@
-"""Immutable application configuration loaded from layered YAML settings.
+"""Immutable application configuration loaded from service-owned YAML files.
 
-Source precedence, from lowest to highest: packaged ``config/runtime.yml`` ->
-optional deployment-CWD ``config/runtime.local.yml`` -> packaged
-``config/trader_discovery.yaml`` -> deployment-CWD mode-0600 ``secrets.env``
--> process variables named ``PMCOPY__SECTION__FIELD``.
+Source precedence, from lowest to highest: typed model defaults ->
+``config/<service>.yml`` (canonical, one file per owning service) ->
+deployment ``config/runtime.local.yml`` (single legacy deprecation shim,
+translated) -> ``config/environments/<PMCOPY_ENVIRONMENT>/<service>.yml``
+(explicitly selected environment, default ``paper``) -> ``config/leaders/
+<wallet>.yml`` (per-leader overrides) -> nested test/composition ``overrides``
+-> deployment mode-0600 ``secrets.env`` -> process variables named
+``PMCOPY__SECTION__FIELD``.
 
-The public object remains a graph of frozen dataclasses so the trading runtime
-gets an immutable, typed contract. Pydantic Settings owns loading, coercion,
-nested environment overrides, and error aggregation.
+The environment is selected explicitly (``PMCOPY_ENVIRONMENT``); it is never
+inferred from credential presence. Legacy pre-split key names (``network.*``,
+``leader.*``, ``polling.*``, ...) keep working through a translation table
+applied at the loader boundary only — for the shim, ``secrets.env``, process
+environment, and programmatic overrides.
+
+The public object remains a graph of frozen dataclasses/models so the trading
+runtime gets an immutable, typed contract with strict unknown-key rejection.
 """
 
 from __future__ import annotations
@@ -38,31 +47,27 @@ from pydantic import (
     ValidationError,
     model_validator,
 )
-from pydantic_settings import (
-    BaseSettings,
-    PydanticBaseSettingsSource,
-    SettingsConfigDict,
-)
-
 from config.env import EnvValidationError, SignatureType, WalletConfig, secret_value
+from config.v1_runtime import CopyTasksRuntimeConfig
 
 __all__ = [
     "AppConfig",
-    "ClobConfig",
+    "AppServiceConfig",
+    "CopyTradingConfig",
     "DatabaseConfig",
+    "DetectionConfig",
     "DiscoveryConfig",
     "EnvValidationError",
     "ExecutionConfig",
-    "FeatureFlagConfig",
-    "GlobalConfig",
-    "LeaderConfig",
+    "LeaderCopySettings",
+    "LeaderOverrideConfig",
     "LoggingConfig",
     "MarketDataConfig",
-    "NetworkConfig",
     "OnchainDetectionConfig",
     "OrderConfirmationConfig",
+    "PolymarketConfig",
     "PositionDriftConfig",
-    "PollingConfig",
+    "ProtectiveExitsConfig",
     "ReconciliationConfig",
     "RiskConfig",
     "SignatureType",
@@ -72,6 +77,8 @@ __all__ = [
     "POLYMARKET_CTF_EXCHANGE_V2_ADDRESS",
     "POLYMARKET_NEG_RISK_EXCHANGE_V2_ADDRESS",
     "POLYMARKET_PUSD_ADDRESS",
+    "SERVICE_CONFIG_FILES",
+    "dump_config_payload",
     "load_config",
 ]
 
@@ -106,105 +113,100 @@ class DatabaseConfig:
 
 
 @dataclass(frozen=True)
-class GlobalConfig:
-    """C1 — global master kill switch.
+class AppServiceConfig:
+    """Application-wide operational settings (service owner: app).
 
-    When ``kill_switch`` is True the bot observes but submits nothing; this
-    supersedes every per-engine switch. Enforced at act-time in
-    ``ExecutionService.execute`` so flipping it is a live hot-stop, not a
-    construction-time no-op.
+    ``kill_switch`` is the C1 global master switch: when True the bot
+    observes but submits nothing; this supersedes every per-engine switch.
+    Enforced at act-time in ``ExecutionService.execute`` so flipping it is a
+    live hot-stop, not a construction-time no-op.
     """
 
     kill_switch: bool = False
-
-
-@dataclass(frozen=True)
-class ClobConfig:
-    http_url: str
-
-
-@dataclass(frozen=True)
-class PollingConfig:
-    fetch_interval: float
-    aggregate_signal_window_seconds: float
-    risk_check_interval: float
-    discovery_refresh_interval_seconds: int
-    leader_positions_min_fetch_spacing_ms: int
-    leader_activity_min_fetch_spacing_ms: int
-    reconcile_interval_seconds: int
     # Maximum age (seconds) for retained processed-trade rows before the
-    # background purge sweeper deletes them. Previously a raw
-    # ``ENV.get("RETENTION_MAX_AGE_SECONDS", 30*86400)`` read from app.py
-    # and utils/idempotency.py; promoted here so the purge path is typed.
+    # background purge sweeper deletes them.
     retention_max_age_seconds: float = 30.0 * 86400.0
+    enable_metrics_server: bool = False
+    metrics_port: int = 9102
+    metrics_bind_host: str = "127.0.0.1"
+    multi_user_config_file: str = ""
+
+
+@dataclass(frozen=True)
+class DetectionConfig:
+    """Leader-signal detection cadence and on-chain detection policy."""
+
+    fetch_interval: float = 0.50
+    aggregate_signal_window_seconds: float = 4.0
+    leader_positions_min_fetch_spacing_ms: int = 250
+    leader_activity_min_fetch_spacing_ms: int = 250
     trade_queue_max_batches: int = 64
+    onchain: "OnchainDetectionConfig" = field(
+        default_factory=lambda: OnchainDetectionConfig()
+    )
 
 
 @dataclass(frozen=True)
 class SizingConfig:
-    mode: str
-    percentage: float
-    fixed_amount: float
-    trade_multiplier: float
-    tiered_trade_multipliers: str
-    adaptive_basis: str
-    adaptive_min_percent: float
-    adaptive_max_percent: float
-    adaptive_threshold_usdc: float
-    buy_min_amount: float
-    buy_max_amount: float
-    position_threshold: int
-    max_position_pct: float
-    enable_trust_size_multipliers: bool
-    trust_size_multiplier_min: float
-    trust_size_multiplier_max: float
+    mode: str = "proportional"
+    percentage: float = 4.0
+    fixed_amount: float = 3.0
+    trade_multiplier: float = 1.0
+    tiered_trade_multipliers: str = ""
+    adaptive_basis: str = "trade_size"
+    adaptive_min_percent: float = 0.0
+    adaptive_max_percent: float = 0.0
+    adaptive_threshold_usdc: float = 500.0
+    buy_min_amount: float = 5.0
+    buy_max_amount: float = 8.0
+    position_threshold: int = 0
+    max_position_pct: float = 0.10
+    enable_trust_size_multipliers: bool = False
+    trust_size_multiplier_min: float = 0.5
+    trust_size_multiplier_max: float = 1.25
+    # V5 pUSD-balance-aware envelope (folded from copy_sizing_v5.yaml; the
+    # live consumer is the v1 task sizing path via
+    # ``services.copy_sizing_v5.policy.copy_sizing_policy_from_config``).
+    copyable_balance_percent: float = 75.0
+    proportional_balance_cap_enabled: bool = True
+    require_leader_balance_for_proportional: bool = True
+    portfolio_weight_multiplier: float = 1.0
+    strict_fixed_amount: bool = True
+    strict_exact_mirror: bool = True
 
 
 @dataclass(frozen=True)
 class RiskConfig:
-    enable_risk_mgmt: bool
-    max_market_exposure_usdc: float
-    max_category_exposure_usdc: float
-    max_leader_exposure_usdc: float
-    max_open_positions: int
-    max_daily_drawdown_pct: float
-    kill_switch: bool
-    enable_balance_tiered_policy: bool
-    balance_policy_reserve_pct: float
-    balance_policy_reserve_floor: float
-    balance_policy_hard_cap_pct: float
-    balance_policy_hard_cap_ceiling: float
-    balance_policy_max_open_positions: int
-    balance_policy_allow_partial_exits: bool
-    balance_policy_allow_pyramiding: bool
-    balance_policy_max_adds_per_position: int
-    balance_policy_base_min_score: float
-    balance_policy_min_notional_usdc: float
-    balance_policy_dynamic_threshold_raise: bool
-    day_start_equity_usdc: float
-    near_max_price_warn: float
-    near_max_price_warn_trim_ratio: float
-    near_max_price_exit: float
-    profit_lock_trigger_pct: float
-    profit_lock_sell_fraction: float
-    trailing_activation_pct: float | None
-    trailing_distance: float
-    staged_tp_levels: str
-    staged_tp_fractions: str
-    stop_loss_threshold: float
-    stop_loss_grace_period_seconds: float
+    """Account/exposure risk limits. Exit-lifecycle knobs live in
+    :class:`ProtectiveExitsConfig` (service owner: protective_exits)."""
+
+    enable_risk_mgmt: bool = True
+    max_market_exposure_usdc: float = 300.0
+    max_category_exposure_usdc: float = 600.0
+    max_leader_exposure_usdc: float = 500.0
+    max_open_positions: int = 40
+    max_daily_drawdown_pct: float = 20.0
+    kill_switch: bool = False
+    enable_balance_tiered_policy: bool = False
+    balance_policy_reserve_pct: float = 0.12
+    balance_policy_reserve_floor: float = 7.0
+    balance_policy_hard_cap_pct: float = 0.15
+    balance_policy_hard_cap_ceiling: float = 8.0
+    balance_policy_max_open_positions: int = 12
+    balance_policy_allow_partial_exits: bool = False
+    balance_policy_allow_pyramiding: bool = False
+    balance_policy_max_adds_per_position: int = 1
+    balance_policy_base_min_score: float = 0.22
+    balance_policy_min_notional_usdc: float = 0.00001
+    balance_policy_dynamic_threshold_raise: bool = False
+    day_start_equity_usdc: float = 0.0
     # PR #105 review: bound the in-memory risk price cache via typed config
     # so the production sizing/risk path no longer relies on a raw env read.
     # ``services.risk.risk_monitor.RiskPriceCache`` still honours its env fallback
     # as a legacy adapter (issue #73 allows raw env in legacy/test paths only).
-    risk_price_cache_max_size: int
-    # Explicit trailing-activation mode so 'auto' is never smuggled through a
-    # float. "disabled" whenever ENABLE_TRAILING_STOP is off (the activation
-    # input is then never fatal-parsed); "auto" scales activation from max
-    # payout (``trailing_activation_pct`` is None); "fixed" uses the numeric
-    # ``trailing_activation_pct``. Defaulted so existing direct constructors
-    # and fixtures keep working.
-    trailing_activation_mode: Literal["disabled", "fixed", "auto"] = "disabled"
+    risk_price_cache_max_size: int = 5000
+    # Cadence (seconds) of the risk-monitor loop (was polling.risk_check_interval).
+    risk_check_interval: float = 6.0
     # Cooldown (seconds) before re-dispatching a risk exit for a scope whose
     # previous protective SELL ended terminal (rejected/cancelled). Stops the
     # 1 Hz resubmission storm against phantom positions (2026-07-04 incident).
@@ -222,59 +224,77 @@ class RiskConfig:
     # mid), exactly where near-max triggers live. This absolute price-point
     # gap rejects wide books near 1.0 that the bps gate misses. 0 disables.
     risk_mark_max_abs_distance: float = 0.0
+
+
+@dataclass(frozen=True)
+class ProtectiveExitsConfig:
+    """Protective-exit feature switches and lifecycle thresholds.
+
+    Combines the former ``features.enable_*`` exit flags with the former
+    ``risk.*`` exit-lifecycle thresholds under one owning service.
+    """
+
+    enable_profit_lock: bool = False
+    enable_near_max_exit: bool = False
+    enable_trailing_stop: bool = False
+    enable_staged_tp: bool = False
+    enable_leader_divergence_exit: bool = False
+    enable_stop_loss: bool = False
+    near_max_price_warn: float = 0.95
+    near_max_price_warn_trim_ratio: float = 0.6
+    near_max_price_exit: float = 0.99
     # Phase 2.8 — min-hold grace (seconds) for the near-max partial trim. 0
     # disables (legacy instant-trim behavior). A fresh BUY at the ask with
     # the risk mark at the best bid satisfies the trim condition at the
     # instant of the fill; the grace prevents selling back across the spread.
     near_max_grace_period_seconds: float = 0.0
+    profit_lock_trigger_pct: float = 70.0
+    profit_lock_sell_fraction: float = 0.5
+    trailing_activation_pct: float | None = None
+    trailing_distance: float = 0.05
+    staged_tp_levels: str = "0.30,0.50"
+    staged_tp_fractions: str = "0.25,0.35"
+    stop_loss_threshold: float = 0.15
+    stop_loss_grace_period_seconds: float = 180.0
 
 
 @dataclass(frozen=True)
 class ExecutionConfig:
-    slippage_tolerance: float
-    min_share_price: float
-    max_share_price: float
-    max_retries: int
-    non_terminal_failure_max_attempts: int
-    trading_mode: Literal["paper", "live"]
-    enable_copy_decision_gate: bool
-    enable_near_resolution_gate: bool
-    near_resolution_gate_price: float
-    near_resolution_max_age_seconds: float
-    pending_submission_ttl_seconds: int
+    slippage_tolerance: float = 2.0
+    min_share_price: float = 0.03
+    max_share_price: float = 0.95
+    non_terminal_failure_max_attempts: int = 3
+    trading_mode: Literal["paper", "live"] = "paper"
+    enable_copy_decision_gate: bool = False
+    enable_near_resolution_gate: bool = False
+    near_resolution_gate_price: float = 0.95
+    near_resolution_max_age_seconds: float = 15.0
+    pending_submission_ttl_seconds: int = 120
     # TTL for pre-submit balance/share reservations. Bounds the window in
     # which a pending order blocks the next same-scope copy before it is
     # expired (and reconciled). Mirrors ``pending_submission_ttl_seconds``.
-    reservation_ttl_seconds: int
+    reservation_ttl_seconds: int = 120
     # Master switch for pre-submit BUY-quote / SELL-share reservations. When
     # False the ReservationService no-ops (returns placeholder reservations)
     # and double-spend protection falls back to the idempotency submission
     # lock + position coordinator. Defaults False on this hardening branch
     # because the reservation blocker was over-firing on legitimate same-scope
     # copies; flip to True once that is retuned. See docs/02-configuration.md.
-    reservations_enabled: bool
-    retry_backoff_base: float
-    transaction_fee_bps: float
-    gas_cost_usdc: float
-    risk_buffer_pct: float
-    book_spread_mode: str
-    max_book_spread_bps: int
-    max_book_spread_ticks: int
-    execution_require_fresh_book: bool
-    circuit_failure_threshold: int
-    circuit_cooldown_seconds: float
-    meta_cache_ttl_good: float
-    meta_cache_ttl_thin: float
+    reservations_enabled: bool = False
+    book_spread_mode: str = "absolute_bps"
+    max_book_spread_bps: int = 2500
+    max_book_spread_ticks: int = 0
+    circuit_failure_threshold: int = 15
     # Phase 4 — balance regime
-    max_position_size_usdc: float
-    max_daily_spend_usdc: float
-    min_balance_headroom_usdc: float
+    max_position_size_usdc: float = 0.0
+    max_daily_spend_usdc: float = 0.0
+    min_balance_headroom_usdc: float = 0.0
     # Phase 4 — book depth gate
-    min_book_depth_usdc: float
-    book_depth_band_pct: float
+    min_book_depth_usdc: float = 0.0
+    book_depth_band_pct: float = 5.0
     # Submission concurrency: typed cap so production paths do not depend on
     # raw env reads inside ExecutionService.
-    execution_submit_concurrency: int
+    execution_submit_concurrency: int = 2
     # Per-batch concurrency for trade analysis and unconfirmed-order
     # reconciliation. Typed so the orchestrator no longer reads ``config.raw``
     # (closes the partial-config-migration drift the audit flagged). Defaulted
@@ -313,63 +333,111 @@ class ExecutionConfig:
         return self.trading_mode == "paper"
 
 
+class LeaderOverrideConfig(BaseModel):
+    """Per-leader override values from one ``config/leaders/<wallet>.yml``.
+
+    Leader files hold per-leader tunables only; they never join the roster —
+    the roster stays explicit in ``copy_trading.wallets`` (or discovery).
+    ``None`` means "inherit the layered copy_trading value".
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
+
+    wallet: str = ""
+    enabled: bool = True
+    copy_decision_min_score: float | None = None
+    copy_max_price_drift_pct: float | None = None
+    copy_max_edge_decay_pct: float | None = None
+    copy_max_signal_age_seconds: float | None = None
+    copy_liquidity_target_usdc: float | None = None
+
+
 @dataclass(frozen=True)
-class LeaderConfig:
-    wallets: tuple[str, ...]
+class LeaderCopySettings:
+    """Effective copy tunables for one leader after override resolution."""
+
     copy_decision_min_score: float
-    tiny_leader_high_confidence_score: float
     copy_max_price_drift_pct: float
     copy_max_edge_decay_pct: float
     copy_max_signal_age_seconds: float
     copy_liquidity_target_usdc: float
-    min_leader_trade_notional_usdc: float
+
+
+class CopyTradingConfig(BaseModel):
+    """Copy-trading roster, gates, and the v1 copy-task engine settings."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
+
+    wallets: tuple[str, ...] = ()
+    copy_decision_min_score: float = 0.15
+    copy_max_price_drift_pct: float = 15.0
+    copy_max_edge_decay_pct: float = 90.0
+    copy_max_signal_age_seconds: float = 100.0
+    copy_liquidity_target_usdc: float = 50.0
+    # Tier-gate observation flags (formerly features.enable_tier_gate_*).
+    enable_tier_gate_watchlist: bool = False
+    enable_tier_gate_watchlist_log: bool = False
+    # v1 copy-task engine (formerly config/runtime_v1.yml). Paper-safe:
+    # ``copy_tasks.enabled`` defaults to False.
+    copy_tasks: CopyTasksRuntimeConfig = CopyTasksRuntimeConfig()
+    # Per-leader overrides sourced from ``config/leaders/<wallet>.yml``.
+    leaders: tuple[LeaderOverrideConfig, ...] = ()
+
+    def leader_override(self, wallet: str) -> LeaderOverrideConfig | None:
+        """Return the override entry for ``wallet`` (case-insensitive)."""
+
+        normalized = str(wallet).strip().lower()
+        for entry in self.leaders:
+            if entry.wallet.strip().lower() == normalized:
+                return entry
+        return None
+
+    def resolved_for_leader(self, wallet: str) -> LeaderCopySettings:
+        """Resolve effective copy tunables for one leader.
+
+        Per-leader file values take precedence over the layered
+        ``copy_trading`` values; unset override fields inherit.
+        """
+
+        override = self.leader_override(wallet)
+
+        def _pick(name: str) -> float:
+            value = getattr(override, name, None) if override else None
+            return float(getattr(self, name) if value is None else value)
+
+        return LeaderCopySettings(
+            copy_decision_min_score=_pick("copy_decision_min_score"),
+            copy_max_price_drift_pct=_pick("copy_max_price_drift_pct"),
+            copy_max_edge_decay_pct=_pick("copy_max_edge_decay_pct"),
+            copy_max_signal_age_seconds=_pick("copy_max_signal_age_seconds"),
+            copy_liquidity_target_usdc=_pick("copy_liquidity_target_usdc"),
+        )
 
 
 @dataclass(frozen=True)
 class LoggingConfig:
-    level: str
-    log_dir: str
-    app_log_jsonl_file: str
-    log_max_bytes: int
-    log_backup_count: int
-    pnl_log_file: str
+    level: str = "INFO"
+    log_dir: str = "log"
+    app_log_jsonl_file: str = "log/PolymarketCopyTradingBot.jsonl"
+    log_max_bytes: int = 5242880
+    log_backup_count: int = 3
 
 
 @dataclass(frozen=True)
-class NetworkConfig:
-    rpc_url: str
-    chain_id: int
-    usdc_contract_address: str
-    enforce_geoblock: bool
-    enable_metrics_server: bool
-    metrics_port: int
-    metrics_bind_host: str
+class PolymarketConfig:
+    """Polymarket venue/network endpoints and contract addresses."""
+
+    rpc_url: str = ""
+    chain_id: int = 137
+    usdc_contract_address: str = ""
+    enforce_geoblock: bool = True
     # Optional fallback RPC when primary returns internal errors (-32603).
     fallback_rpc_url: str = ""
-    # Polymarket-side collateral / exchange contract addresses. These used
-    # to be read straight out of ``ENV`` by ``utils/createClobClient.py``
-    # and ``utils/getMyBalance.py``; promoted to typed config so the
-    # balance-check + CLOB-client paths can drop their raw env reads.
-    # CLOB v2 defaults to pUSD collateral; ``usdc_contract_address`` is kept
-    # as a legacy field name for callers that still expect that attribute.
+    # Polymarket-side collateral contract addresses. CLOB v2 defaults to pUSD
+    # collateral; ``usdc_contract_address`` is kept as a legacy field name
+    # for callers that still expect that attribute.
     collateral_contract_address: str = ""
     pusd_contract_address: str = ""
-    ctf_exchange_v2_address: str = ""
-    # Neg Risk CTF Exchange V2 — the separate settlement contract for
-    # negative-risk markets. Verified against docs.polymarket.com/resources/
-    # contracts. Both exchanges must be covered by on-chain detection and
-    # collateral-allowance checks.
-    neg_risk_ctf_exchange_v2_address: str = ""
-
-
-@dataclass(frozen=True)
-class ReconciliationConfig:
-    stale_threshold_seconds: float
-    auto_cancel_stale: bool
-    # Per-tick cap on how many already-closed orders the reconciler is
-    # allowed to re-probe. Fail-closed default mirrors the previous
-    # ``ENV.get("RECONCILE_MAX_CLOSED_PROBES", 10)`` read.
-    max_closed_probes: int = 10
 
 
 @dataclass(frozen=True)
@@ -379,12 +447,12 @@ class PositionDriftConfig:
     Proactive cross-check between local position state and venue truth.
     """
 
-    check_on_startup: bool
-    fail_closed: bool
-    allow_auto_prune_zero: bool
-    allow_external_position_tracking: bool
-    pause_scope_on_unresolved: bool
-    max_size_epsilon: Decimal
+    check_on_startup: bool = True
+    fail_closed: bool = True
+    allow_auto_prune_zero: bool = True
+    allow_external_position_tracking: bool = False
+    pause_scope_on_unresolved: bool = True
+    max_size_epsilon: Decimal = Decimal("0.000001")
     prune_holdoff_seconds: float = 60.0
 
 
@@ -402,16 +470,16 @@ class OrderConfirmationConfig:
     reservation active.
     """
 
-    initial_delay_seconds: float
-    poll_interval_seconds: float
-    max_wait_seconds: float
-    delayed_extra_seconds: float
-    token_delay_overrides: dict[str, float]
-    condition_delay_overrides: dict[str, float]
-    auto_release_ambiguous: bool
-    auto_release_grace_seconds: float
-    auto_release_require_all_probes_clean: bool
-    auto_release_max_probe_errors: int
+    initial_delay_seconds: float = 2.0
+    poll_interval_seconds: float = 3.0
+    max_wait_seconds: float = 90.0
+    delayed_extra_seconds: float = 2.0
+    token_delay_overrides: dict[str, float] = field(default_factory=dict)
+    condition_delay_overrides: dict[str, float] = field(default_factory=dict)
+    auto_release_ambiguous: bool = True
+    auto_release_grace_seconds: float = 300.0
+    auto_release_require_all_probes_clean: bool = True
+    auto_release_max_probe_errors: int = 0
     # Per-order pacing for repeated auto-release attempts: the first failed
     # attempt reschedules after ``auto_release_retry_backoff_seconds`` and the
     # interval doubles per failed attempt up to the ``_max`` cap. Keeps a stuck
@@ -434,6 +502,27 @@ class OrderConfirmationConfig:
         if str(venue_status or "").lower() == "delayed":
             delay += self.delayed_extra_seconds
         return delay
+
+
+@dataclass(frozen=True)
+class ReconciliationConfig:
+    """Reconciliation cadence plus the confirmation-delay and drift policies
+    it owns (formerly the top-level ``order_confirmation``/``position_drift``
+    sections)."""
+
+    stale_threshold_seconds: float = 3600.0
+    auto_cancel_stale: bool = False
+    # Per-tick cap on how many already-closed orders the reconciler is
+    # allowed to re-probe. Fail-closed default mirrors the previous
+    # ``ENV.get("RECONCILE_MAX_CLOSED_PROBES", 10)`` read.
+    max_closed_probes: int = 10
+    # Cadence (seconds) of the reconciliation loop (was
+    # ``polling.reconcile_interval_seconds``).
+    reconcile_interval_seconds: int = 300
+    order_confirmation: OrderConfirmationConfig = field(
+        default_factory=OrderConfirmationConfig
+    )
+    position_drift: PositionDriftConfig = field(default_factory=PositionDriftConfig)
 
 
 class _FrozenSettingsModel(BaseModel):
@@ -773,18 +862,6 @@ class DiscoveryConfig(_FrozenSettingsModel):
 
 
 @dataclass(frozen=True)
-class FeatureFlagConfig:
-    enable_profit_lock: bool
-    enable_near_max_exit: bool
-    enable_trailing_stop: bool
-    enable_staged_tp: bool
-    enable_leader_divergence_exit: bool
-    enable_stop_loss: bool
-    enable_tier_gate_watchlist: bool
-    enable_tier_gate_watchlist_log: bool
-
-
-@dataclass(frozen=True)
 class MarketDataConfig:
     """Market data WSS health monitoring and REST fallback policy.
 
@@ -795,16 +872,10 @@ class MarketDataConfig:
     """
 
     primary_source: str = "rest_snapshot"
-    rest_snapshot_enable: bool = True
     rest_snapshot_max_age_ms: int = 500
     rest_snapshot_request_timeout_ms: int = 750
     rest_snapshot_total_budget_ms: int = 1000
     rest_snapshot_max_spread_bps: int = 300
-    allow_rest_when_wss_down: bool = False
-    wss_down_after_seconds: float = 15.0
-    rest_degraded_max_age_seconds: float = 2.0
-    rest_degraded_max_spread_bps: int = 500
-    rest_degraded_log_every_seconds: float = 30.0
     enable_rest_bootstrap: bool = True
     rest_bootstrap_max_age_ms: int = 500
     rest_bootstrap_request_timeout_ms: int = 750
@@ -845,43 +916,40 @@ class OnchainDetectionConfig:
 
 
 @dataclass(frozen=True)
-class RuntimeFilesConfig:
-    multi_user_config_file: str = ""
-
-
-@dataclass(frozen=True)
 class AppConfig:
-    """Root configuration object. Immutable after construction."""
+    """Root configuration object: a composition of per-service typed models.
 
-    database: DatabaseConfig
-    wallet: WalletConfig
-    clob: ClobConfig
-    polling: PollingConfig
-    sizing: SizingConfig
-    risk: RiskConfig
-    execution: ExecutionConfig
-    leader: LeaderConfig
-    logging: LoggingConfig
-    network: NetworkConfig
-    reconciliation: ReconciliationConfig
-    order_confirmation: OrderConfirmationConfig
-    position_drift: PositionDriftConfig
-    discovery: DiscoveryConfig
-    features: FeatureFlagConfig
-    market_data: MarketDataConfig = field(default_factory=MarketDataConfig)
-    onchain_detection: OnchainDetectionConfig = field(
-        default_factory=OnchainDetectionConfig
+    Immutable after construction. Each field is owned by exactly one service
+    and sourced from ``config/<field>.yml`` plus the layered overrides.
+    """
+
+    app: AppServiceConfig = field(default_factory=AppServiceConfig)
+    database: DatabaseConfig = field(default_factory=DatabaseConfig)
+    wallet: WalletConfig = field(
+        default_factory=lambda: WalletConfig(private_key=SecretStr(""), chain_id=137)
     )
-    files: RuntimeFilesConfig = field(default_factory=RuntimeFilesConfig)
+    polymarket: PolymarketConfig = field(default_factory=PolymarketConfig)
+    execution: ExecutionConfig = field(default_factory=ExecutionConfig)
+    detection: DetectionConfig = field(default_factory=DetectionConfig)
+    discovery: DiscoveryConfig = field(
+        default_factory=lambda: DiscoveryConfig.model_validate({})
+    )
+    copy_trading: CopyTradingConfig = field(
+        default_factory=lambda: CopyTradingConfig.model_validate({})
+    )
+    sizing: SizingConfig = field(default_factory=SizingConfig)
+    risk: RiskConfig = field(default_factory=RiskConfig)
+    protective_exits: ProtectiveExitsConfig = field(
+        default_factory=ProtectiveExitsConfig
+    )
+    market_data: MarketDataConfig = field(default_factory=MarketDataConfig)
+    reconciliation: ReconciliationConfig = field(
+        default_factory=ReconciliationConfig
+    )
+    logging: LoggingConfig = field(default_factory=LoggingConfig)
     # Global safety: when True the bot runs in paper-only / dry-run mode.
+    # Derived from ``execution.trading_mode``; never set directly.
     dry_run: bool = False
-    # C1 — global master kill switch. When True the bot observes but submits
-    # nothing (supersedes all per-engine switches). Enforced at act-time in
-    # ExecutionService.execute immediately before any venue POST so flipping
-    # it is a live hot-stop, not a construction-time no-op. Sourced from the
-    # YAML ``global:`` section (renamed to ``global_config`` because ``global``
-    # is a Python reserved word).
-    global_config: GlobalConfig = field(default_factory=GlobalConfig)
 
 
 # Factory & validation.
@@ -951,9 +1019,9 @@ def _validate_semantics(cfg: AppConfig, errors: list[str]) -> None:
         )
     if not cfg.wallet.polygon_rpc_url:
         errors.append("RPC_URL is required.")
-    if not cfg.network.rpc_url:
-        errors.append("network.rpc_url is required.")
-    for wallet in cfg.leader.wallets:
+    if not cfg.polymarket.rpc_url:
+        errors.append("polymarket.rpc_url is required.")
+    for wallet in cfg.copy_trading.wallets:
         if not _ETH_ADDR_RE.match(wallet):
             errors.append(
                 f'Invalid leader wallet "{wallet}" (expected 42-char Ethereum address).'
@@ -1000,12 +1068,6 @@ def _validate_semantics(cfg: AppConfig, errors: list[str]) -> None:
         errors.append("MAX_SHARE_PRICE must be <= 1.0 for binary markets.")
     if e.max_share_price > 0 and e.max_share_price < e.min_share_price:
         errors.append("MAX_SHARE_PRICE must be >= MIN_SHARE_PRICE when enabled.")
-    if e.transaction_fee_bps < 0:
-        errors.append("TRANSACTION_FEE_BPS must be non-negative.")
-    if e.gas_cost_usdc < 0:
-        errors.append("GAS_COST_USDC must be non-negative.")
-    if e.risk_buffer_pct < 0:
-        errors.append("RISK_BUFFER_PCT must be non-negative.")
     if e.pending_submission_ttl_seconds <= 0:
         errors.append("PENDING_SUBMISSION_TTL_SECONDS must be > 0.")
     if e.reservation_ttl_seconds <= 0:
@@ -1022,18 +1084,21 @@ def _validate_semantics(cfg: AppConfig, errors: list[str]) -> None:
     if not (0 < e.book_depth_band_pct <= 100):
         errors.append("BOOK_DEPTH_BAND_PCT must be in (0, 100].")
 
+    # Protective exits (exit-lifecycle thresholds)
+    pe = cfg.protective_exits
+    if not (0 <= pe.near_max_price_warn <= 1):
+        errors.append("NEAR_MAX_PRICE_WARN must be in [0, 1].")
+    if not (0 <= pe.near_max_price_exit <= 1):
+        errors.append("NEAR_MAX_PRICE_EXIT must be in [0, 1].")
+    if not (0 <= pe.near_max_price_warn_trim_ratio <= 1):
+        errors.append("NEAR_MAX_PRICE_WARN_TRIM_RATIO must be in [0, 1].")
+    if pe.near_max_price_warn > pe.near_max_price_exit:
+        errors.append("NEAR_MAX_PRICE_WARN must be <= NEAR_MAX_PRICE_EXIT.")
+    if pe.profit_lock_trigger_pct <= 0:
+        errors.append("PROFIT_LOCK_TRIGGER_PCT must be > 0.")
+
     # Risk
     r = cfg.risk
-    if not (0 <= r.near_max_price_warn <= 1):
-        errors.append("NEAR_MAX_PRICE_WARN must be in [0, 1].")
-    if not (0 <= r.near_max_price_exit <= 1):
-        errors.append("NEAR_MAX_PRICE_EXIT must be in [0, 1].")
-    if not (0 <= r.near_max_price_warn_trim_ratio <= 1):
-        errors.append("NEAR_MAX_PRICE_WARN_TRIM_RATIO must be in [0, 1].")
-    if r.near_max_price_warn > r.near_max_price_exit:
-        errors.append("NEAR_MAX_PRICE_WARN must be <= NEAR_MAX_PRICE_EXIT.")
-    if r.profit_lock_trigger_pct <= 0:
-        errors.append("PROFIT_LOCK_TRIGGER_PCT must be > 0.")
     if r.max_market_exposure_usdc <= 0:
         errors.append("MAX_MARKET_EXPOSURE_USDC must be > 0.")
     if r.max_category_exposure_usdc <= 0:
@@ -1049,12 +1114,10 @@ def _validate_semantics(cfg: AppConfig, errors: list[str]) -> None:
     if r.risk_pre_reconcile_backoff_seconds < r.risk_pre_reconcile_timeout_seconds:
         errors.append("risk.risk_pre_reconcile_backoff_seconds must be >= timeout.")
 
-    # Leader
-    le = cfg.leader
+    # Copy trading
+    le = cfg.copy_trading
     if not (0 <= le.copy_decision_min_score <= 1):
         errors.append("COPY_DECISION_MIN_SCORE must be in [0, 1].")
-    if not (0 <= le.tiny_leader_high_confidence_score <= 1):
-        errors.append("TINY_LEADER_HIGH_CONFIDENCE_SCORE must be in [0, 1].")
     if le.copy_max_price_drift_pct < 0:
         errors.append("COPY_MAX_PRICE_DRIFT_PCT must be non-negative.")
     if le.copy_max_edge_decay_pct < 0:
@@ -1065,7 +1128,7 @@ def _validate_semantics(cfg: AppConfig, errors: list[str]) -> None:
         errors.append("COPY_LIQUIDITY_TARGET_USDC must be > 0.")
 
     # On-chain detection
-    oc = cfg.onchain_detection
+    oc = cfg.detection.onchain
     confidence_required = (
         str(oc.pending_tx_detection_confidence_required or "").strip().lower()
     )
@@ -1098,12 +1161,6 @@ def _validate_semantics(cfg: AppConfig, errors: list[str]) -> None:
         errors.append("MARKET_DATA_REST_SNAPSHOT_TOTAL_BUDGET_MS must be > 0.")
     if md.rest_snapshot_max_spread_bps < 0:
         errors.append("MARKET_DATA_REST_SNAPSHOT_MAX_SPREAD_BPS must be non-negative.")
-    if md.wss_down_after_seconds <= 0:
-        errors.append("MARKET_DATA_WSS_DOWN_AFTER_SECONDS must be > 0.")
-    if md.rest_degraded_max_age_seconds <= 0:
-        errors.append("MARKET_DATA_REST_DEGRADED_MAX_AGE_SECONDS must be > 0.")
-    if md.rest_degraded_max_spread_bps < 0:
-        errors.append("MARKET_DATA_REST_DEGRADED_MAX_SPREAD_BPS must be non-negative.")
     if md.rest_bootstrap_max_age_ms <= 0:
         errors.append("MARKET_DATA_REST_BOOTSTRAP_MAX_AGE_MS must be > 0.")
     if md.rest_bootstrap_request_timeout_ms <= 0:
@@ -1122,111 +1179,95 @@ def _validate_semantics(cfg: AppConfig, errors: list[str]) -> None:
         errors.append("MARKET_DATA_WSS_CONNECTION_MAX_SILENCE_SECONDS must be > 0.")
 
 
-# Layered YAML settings loader.
+# Service-owned layered configuration loader.
 #
 # ---------------------------------------------------------------------------
 
 _CONFIG_ROOT = Path(__file__).resolve().parent
-_RUNTIME_YAML = _CONFIG_ROOT / "runtime.yml"
-_TRADER_DISCOVERY_YAML = _CONFIG_ROOT / "trader_discovery.yaml"
 # Deployment-local layers are resolved relative to a deployment root, not the
 # process CWD (Phase 3.11). The root is, in priority order: the
 # ``PMCOPY_DEPLOYMENT_ROOT`` env var, or the nearest ancestor directory (walked
-# up from CWD) that contains a ``config/runtime.yml`` marker or a
-# ``secrets.env`` file. Falls back to CWD when no marker is found so existing
-# behavior is preserved.
+# up from CWD) that contains a service-config marker (``config/app.yml``, the
+# legacy ``config/runtime.yml``) or a ``secrets.env`` file. Falls back to CWD.
 _RUNTIME_LOCAL_YAML = "config/runtime.local.yml"
 _SECRETS_ENV = "secrets.env"
+_DEFAULT_ENVIRONMENT = "paper"
+_ENVIRONMENT_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
+
+#: One YAML file per owning service, all optional, all strict.
+SERVICE_CONFIG_FILES: tuple[str, ...] = (
+    "app",
+    "database",
+    "wallet",
+    "polymarket",
+    "execution",
+    "detection",
+    "discovery",
+    "copy_trading",
+    "sizing",
+    "risk",
+    "protective_exits",
+    "market_data",
+    "reconciliation",
+    "logging",
+)
 
 
-def _resolve_deployment_root(runtime_file: Path | None = None) -> Path:
-    """Find the deployment root so local config/secrets are not CWD-relative.
-
-    Phase 3.11 — running ``pmcopy`` from a foreign directory previously
-    silently dropped ``secrets.env`` and ``config/runtime.local.yml`` because
-    they resolved against the process CWD. The root is, in priority order:
-    the ``PMCOPY_DEPLOYMENT_ROOT`` env var; the deployment root implied by an
-    explicit ``runtime.yml`` location (``<root>/config/runtime.yml`` ->
-    ``<root>`` — only when the caller passed a deployment-specific
-    ``runtime_path``, not the packaged default); the nearest ancestor of CWD
-    containing a ``config/runtime.yml`` marker or a ``secrets.env`` file;
-    finally CWD.
-    """
+def _resolve_deployment_root() -> Path:
+    """Find the deployment root so local secrets/shim are not CWD-relative."""
     explicit = os.getenv("PMCOPY_DEPLOYMENT_ROOT")
     if explicit:
         root = Path(explicit).expanduser().resolve()
         if root.is_dir():
             return root
-    # An explicit deployment runtime.yml lives in
-    # <deployment_root>/config/runtime.yml, so its grandparent is the
-    # deployment root. The packaged default is not passed here (it is a
-    # package resource, not a deployment marker), so CWD walk-up applies.
-    if runtime_file is not None:
-        runtime_parent = runtime_file.resolve().parent
-        if runtime_parent.name == "config" and (runtime_parent / "runtime.yml").exists():
-            return runtime_parent.parent
     cwd = Path.cwd()
     for candidate in [cwd, *cwd.parents]:
-        if (candidate / "config" / "runtime.yml").exists() or (
-            candidate / "secrets.env"
-        ).exists():
+        if (
+            (candidate / "config" / "app.yml").exists()
+            or (candidate / "config" / "runtime.yml").exists()
+            or (candidate / "secrets.env").exists()
+        ):
             return candidate
     return cwd
 
 
-class _LayeredSettings(BaseSettings):
-    """Pydantic validation shell around the immutable runtime dataclasses."""
+class _LayeredModel(BaseModel):
+    """Strict validation shell around the immutable runtime sections.
 
-    model_config = SettingsConfigDict(
-        env_prefix="PMCOPY__",
-        env_nested_delimiter="__",
-        env_file_encoding="utf-8",
-        env_ignore_empty=True,
-        extra="forbid",
-        frozen=True,
-        # Rejects NaN/+Inf/-Inf for every float/Decimal reachable from this
-        # shell, including the frozen dataclass sections, which carry no
-        # config of their own. YAML (``.nan``/``.inf``) and env strings
-        # ("nan"/"inf") both coerce to non-finite floats before this gate.
-        # A non-finite threshold silently disables the comparison that
-        # depends on it, so this must fail closed at load time.
-        allow_inf_nan=False,
-    )
+    ``allow_inf_nan=False`` rejects NaN/+Inf/-Inf for every float/Decimal
+    reachable from this shell, including the frozen dataclass sections, which
+    carry no config of their own. YAML (``.nan``/``.inf``) and env strings
+    ("nan"/"inf") both coerce to non-finite floats before this gate. A
+    non-finite threshold silently disables the comparison that depends on it,
+    so this must fail closed at load time.
+    """
 
-    database: DatabaseConfig
-    wallet: WalletConfig
-    clob: ClobConfig
-    polling: PollingConfig
-    sizing: SizingConfig
-    risk: RiskConfig
-    execution: ExecutionConfig
-    leader: LeaderConfig
-    logging: LoggingConfig
-    network: NetworkConfig
-    reconciliation: ReconciliationConfig
-    order_confirmation: OrderConfirmationConfig
-    position_drift: PositionDriftConfig
-    discovery: DiscoveryConfig
-    features: FeatureFlagConfig
-    market_data: MarketDataConfig
-    onchain_detection: OnchainDetectionConfig
-    files: RuntimeFilesConfig
-    global_config: GlobalConfig = GlobalConfig()
+    model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
+
+    app: AppServiceConfig = AppServiceConfig()
+    database: DatabaseConfig = DatabaseConfig()
+    wallet: WalletConfig = WalletConfig(private_key=SecretStr(""), chain_id=137)
+    polymarket: PolymarketConfig = PolymarketConfig()
+    execution: ExecutionConfig = ExecutionConfig()
+    detection: DetectionConfig = DetectionConfig()
+    discovery: DiscoveryConfig = DiscoveryConfig.model_validate({})
+    copy_trading: CopyTradingConfig = CopyTradingConfig.model_validate({})
+    sizing: SizingConfig = SizingConfig()
+    risk: RiskConfig = RiskConfig()
+    protective_exits: ProtectiveExitsConfig = ProtectiveExitsConfig()
+    market_data: MarketDataConfig = MarketDataConfig()
+    reconciliation: ReconciliationConfig = ReconciliationConfig()
+    logging: LoggingConfig = LoggingConfig()
 
     @model_validator(mode="before")
     @classmethod
     def _decode_nested_structures(cls, values: Any) -> Any:
         if not isinstance(values, dict):
             return values
-        # The YAML section is named ``global`` (per the per-engine kill-switch
-        # restructure) but ``global`` is a Python reserved word, so the typed
-        # field is ``global_config``. Rename here so both YAML keys work.
-        if "global" in values and "global_config" not in values:
-            values["global_config"] = values.pop("global")
         structured_paths = (
-            ("leader", "wallets"),
-            ("order_confirmation", "token_delay_overrides"),
-            ("order_confirmation", "condition_delay_overrides"),
+            ("copy_trading", "wallets"),
+            ("reconciliation", "order_confirmation", "token_delay_overrides"),
+            ("reconciliation", "order_confirmation", "condition_delay_overrides"),
             ("discovery", "shortlist", "sort_modes"),
             ("discovery", "wallet360", "windows"),
             ("discovery", "social", "keywords"),
@@ -1260,24 +1301,206 @@ class _LayeredSettings(BaseSettings):
                 ) from exc
         return values
 
-    @classmethod
-    def settings_customise_sources(
-        cls,
-        settings_cls: type[BaseSettings],
-        init_settings: PydanticBaseSettingsSource,
-        env_settings: PydanticBaseSettingsSource,
-        dotenv_settings: PydanticBaseSettingsSource,
-        file_secret_settings: PydanticBaseSettingsSource,
-    ) -> tuple[PydanticBaseSettingsSource, ...]:
-        # Sources earlier in the tuple have higher priority. secrets.env is
-        # parsed into the init graph by ``load_config`` so unrelated Compose
-        # keys can be allowlisted without weakening extra-field validation.
-        del dotenv_settings
-        return (
-            env_settings,
-            init_settings,
-            file_secret_settings,
+
+# Legacy pre-split key translation, applied at the loader boundary only (the
+# runtime.local.yml shim, secrets.env, process env, and programmatic
+# overrides). ``None`` routes mean the key was retired and is dropped with a
+# warning. Canonical service files never pass through this table and stay
+# strict.
+_LEGACY_SECTION_ROUTES: dict[str, tuple[str, ...]] = {
+    "network": ("polymarket",),
+    "onchain_detection": ("detection", "onchain"),
+    "leader": ("copy_trading",),
+    "polling": ("detection",),
+    "features": ("protective_exits",),
+    "order_confirmation": ("reconciliation", "order_confirmation"),
+    "position_drift": ("reconciliation", "position_drift"),
+    "global": ("app",),
+    "files": ("app",),
+}
+_LEGACY_KEY_ROUTES: dict[tuple[str, str], tuple[str, ...] | None] = {
+    ("network", "enable_metrics_server"): ("app", "enable_metrics_server"),
+    ("network", "metrics_port"): ("app", "metrics_port"),
+    ("network", "metrics_bind_host"): ("app", "metrics_bind_host"),
+    ("network", "ctf_exchange_v2_address"): None,
+    ("network", "neg_risk_ctf_exchange_v2_address"): None,
+    ("polling", "risk_check_interval"): ("risk", "risk_check_interval"),
+    ("polling", "reconcile_interval_seconds"): (
+        "reconciliation",
+        "reconcile_interval_seconds",
+    ),
+    ("polling", "retention_max_age_seconds"): ("app", "retention_max_age_seconds"),
+    ("polling", "discovery_refresh_interval_seconds"): None,
+    ("features", "enable_tier_gate_watchlist"): (
+        "copy_trading",
+        "enable_tier_gate_watchlist",
+    ),
+    ("features", "enable_tier_gate_watchlist_log"): (
+        "copy_trading",
+        "enable_tier_gate_watchlist_log",
+    ),
+    ("risk", "near_max_price_warn"): ("protective_exits", "near_max_price_warn"),
+    ("risk", "near_max_price_warn_trim_ratio"): (
+        "protective_exits",
+        "near_max_price_warn_trim_ratio",
+    ),
+    ("risk", "near_max_price_exit"): ("protective_exits", "near_max_price_exit"),
+    ("risk", "near_max_grace_period_seconds"): (
+        "protective_exits",
+        "near_max_grace_period_seconds",
+    ),
+    ("risk", "profit_lock_trigger_pct"): (
+        "protective_exits",
+        "profit_lock_trigger_pct",
+    ),
+    ("risk", "profit_lock_sell_fraction"): (
+        "protective_exits",
+        "profit_lock_sell_fraction",
+    ),
+    ("risk", "trailing_activation_pct"): (
+        "protective_exits",
+        "trailing_activation_pct",
+    ),
+    ("risk", "trailing_distance"): ("protective_exits", "trailing_distance"),
+    ("risk", "staged_tp_levels"): ("protective_exits", "staged_tp_levels"),
+    ("risk", "staged_tp_fractions"): ("protective_exits", "staged_tp_fractions"),
+    ("risk", "stop_loss_threshold"): ("protective_exits", "stop_loss_threshold"),
+    ("risk", "stop_loss_grace_period_seconds"): (
+        "protective_exits",
+        "stop_loss_grace_period_seconds",
+    ),
+    ("risk", "trailing_activation_mode"): None,
+    ("leader", "tiny_leader_high_confidence_score"): None,
+    ("leader", "min_leader_trade_notional_usdc"): None,
+    ("logging", "pnl_log_file"): None,
+    ("execution", "max_retries"): None,
+    ("execution", "retry_backoff_base"): None,
+    ("execution", "transaction_fee_bps"): None,
+    ("execution", "gas_cost_usdc"): None,
+    ("execution", "risk_buffer_pct"): None,
+    ("execution", "execution_require_fresh_book"): None,
+    ("execution", "circuit_cooldown_seconds"): None,
+    ("execution", "meta_cache_ttl_good"): None,
+    ("execution", "meta_cache_ttl_thin"): None,
+    ("market_data", "rest_snapshot_enable"): None,
+    ("market_data", "allow_rest_when_wss_down"): None,
+    ("market_data", "wss_down_after_seconds"): None,
+    ("market_data", "rest_degraded_max_age_seconds"): None,
+    ("market_data", "rest_degraded_max_spread_bps"): None,
+    ("market_data", "rest_degraded_log_every_seconds"): None,
+}
+_OBSOLETE_CLOB_CREDENTIAL_KEYS = ("api_key", "api_secret", "api_passphrase")
+_ROUTE_KEEP = object()
+
+
+def _assign_path(target: dict[str, Any], path: tuple[str, ...], value: Any) -> None:
+    """Deep-set ``value`` at ``path`` inside ``target``, merging mappings."""
+    cursor = target
+    for part in path[:-1]:
+        child = cursor.get(part)
+        if not isinstance(child, dict):
+            child = {}
+            cursor[part] = child
+        cursor = child
+    leaf = path[-1]
+    current = cursor.get(leaf)
+    if isinstance(current, dict) and isinstance(value, Mapping):
+        cursor[leaf] = _deep_merge(current, value)
+    else:
+        cursor[leaf] = value
+
+
+def _translate_legacy_payload(
+    payload: Mapping[str, Any], *, source: str
+) -> dict[str, Any]:
+    """Map legacy pre-split section/key names onto the service-owned layout.
+
+    Only key NAMES are ever logged; values never are. Retired keys are
+    dropped with a warning instead of failing so an operator's un-migrated
+    ``runtime.local.yml``/``secrets.env`` cannot brick startup.
+    """
+    output: dict[str, Any] = {}
+    for raw_section, content in payload.items():
+        section = str(raw_section)
+        if section == "clob":
+            if isinstance(content, Mapping):
+                for key in content:
+                    if str(key) in _OBSOLETE_CLOB_CREDENTIAL_KEYS:
+                        raise EnvValidationError(
+                            f"clob.{key} is obsolete. CLOB credentials are "
+                            "derived at runtime from the wallet key and must "
+                            "not be configured."
+                        )
+            logger.warning(
+                "config_legacy_key_dropped | source=%s key=clob", source
+            )
+            continue
+        if not isinstance(content, Mapping):
+            _assign_path(output, (section,), content)
+            continue
+        for raw_key, value in content.items():
+            key = str(raw_key)
+            route = _LEGACY_KEY_ROUTES.get((section, key), _ROUTE_KEEP)
+            if route is None:
+                logger.warning(
+                    "config_legacy_key_dropped | source=%s key=%s.%s",
+                    source,
+                    section,
+                    key,
+                )
+                continue
+            if route is _ROUTE_KEEP:
+                prefix = _LEGACY_SECTION_ROUTES.get(section, (section,))
+                route = (*prefix, key)
+            _assign_path(output, route, value)
+    return output
+
+
+def _resolve_environment(explicit: str | None) -> str:
+    """Return the explicitly selected environment name (default ``paper``).
+
+    The environment is never inferred from credential presence.
+    """
+    name = (explicit or os.getenv("PMCOPY_ENVIRONMENT") or _DEFAULT_ENVIRONMENT)
+    name = str(name).strip().lower()
+    if not _ENVIRONMENT_NAME_RE.match(name):
+        raise EnvValidationError(
+            f"Invalid configuration environment name: {name!r}"
         )
+    return name
+
+
+def _read_service_files(directory: Path) -> dict[str, Any]:
+    """Read every present ``<service>.yml`` under ``directory``."""
+    payload: dict[str, Any] = {}
+    for service in SERVICE_CONFIG_FILES:
+        data = _read_yaml(directory / f"{service}.yml", required=False)
+        if data:
+            payload[service] = data
+    return payload
+
+
+def _read_leader_overrides(directory: Path) -> list[dict[str, Any]]:
+    """Read per-leader override files ``config/leaders/<wallet>.yml``."""
+    if not directory.is_dir():
+        return []
+    entries: list[dict[str, Any]] = []
+    for file in sorted(directory.glob("*.yml")):
+        wallet = file.stem
+        if not _ETH_ADDR_RE.match(wallet):
+            raise EnvValidationError(
+                f"Leader override filename must be a 0x wallet address: {file}"
+            )
+        data = _read_yaml(file, required=False)
+        declared = str(data.get("wallet") or "").strip()
+        if declared and declared.lower() != wallet.lower():
+            raise EnvValidationError(
+                f"Leader override wallet field does not match filename: {file}"
+            )
+        data["wallet"] = wallet
+        entries.append(data)
+    return entries
+
 
 
 def _read_yaml(path: Path, *, required: bool) -> dict[str, Any]:
@@ -1416,60 +1639,118 @@ def _validation_messages(exc: ValidationError) -> list[str]:
     return messages
 
 
+def _read_process_env_overrides() -> dict[str, Any]:
+    """Collect nested ``PMCOPY__SECTION__FIELD`` process-environment values.
+
+    Blank values are ignored (parity with the historical
+    ``env_ignore_empty`` behavior) so an exported empty variable never
+    erases a lower-layer value.
+    """
+    output: dict[str, Any] = {}
+    for key in sorted(os.environ):
+        if not key.startswith("PMCOPY__"):
+            continue
+        value = os.environ[key]
+        if value is None or not str(value).strip():
+            continue
+        path_parts = tuple(
+            part.strip().lower() for part in key[len("PMCOPY__") :].split("__")
+        )
+        if len(path_parts) < 2 or any(not part for part in path_parts):
+            raise EnvValidationError(f"Malformed nested environment key: {key}")
+        cursor = output
+        for part in path_parts[:-1]:
+            child = cursor.get(part)
+            if child is None:
+                child = {}
+                cursor[part] = child
+            if not isinstance(child, dict):
+                raise EnvValidationError(
+                    f"Conflicting nested environment key: {key}"
+                )
+            cursor = child
+        cursor[path_parts[-1]] = value
+    return output
+
+
 def load_config(
     overrides: Mapping[str, Any] | None = None,
     *,
-    runtime_path: str | os.PathLike[str] | None = None,
-    local_path: str | os.PathLike[str] | None = None,
-    discovery_path: str | os.PathLike[str] | None = None,
+    config_dir: str | os.PathLike[str] | None = None,
+    environment: str | None = None,
     secrets_path: str | os.PathLike[str] | None = None,
 ) -> AppConfig:
-    """Load the immutable config from YAML, dotenv secrets, and nested env.
+    """Load the immutable config from service-owned YAML, secrets, and env.
 
-    ``overrides`` is a nested mapping intended for tests/composition roots. Flat
-    legacy variables are rejected; operational overrides use names such as
-    ``PMCOPY__EXECUTION__TRADING_MODE=live``.
+    Layer precedence, lowest to highest: typed defaults ->
+    ``<config_dir>/<service>.yml`` -> legacy ``runtime.local.yml`` shim
+    (translated, deprecated) -> ``<config_dir>/environments/<environment>/
+    <service>.yml`` -> ``<config_dir>/leaders/<wallet>.yml`` -> ``overrides``
+    -> ``secrets.env`` -> process ``PMCOPY__*`` variables.
+
+    Args:
+        overrides: Nested mapping for tests/composition roots. Flat legacy
+            UPPERCASE variables are rejected; legacy nested section names are
+            translated at this boundary.
+        config_dir: Directory holding the canonical service files. Defaults
+            to the packaged ``config/`` directory.
+        environment: Explicit environment name; beats ``PMCOPY_ENVIRONMENT``.
+            Defaults to ``paper``. Never inferred from credential presence.
+        secrets_path: Explicit ``secrets.env`` location. Defaults to
+            ``<deployment_root>/secrets.env``.
+
+    Raises:
+        EnvValidationError: On unknown keys, malformed values, an unknown
+            non-default environment, or failed semantic validation.
     """
-    runtime_file = Path(runtime_path) if runtime_path else _RUNTIME_YAML
-    deployment_root = _resolve_deployment_root(
-        runtime_file if runtime_path else None
-    )
-    local_file = (
-        Path(local_path) if local_path else deployment_root / _RUNTIME_LOCAL_YAML
-    )
-    discovery_file = Path(discovery_path) if discovery_path else _TRADER_DISCOVERY_YAML
+    config_root = Path(config_dir) if config_dir else _CONFIG_ROOT
+    deployment_root = _resolve_deployment_root()
     secrets_file = (
         Path(secrets_path) if secrets_path else deployment_root / _SECRETS_ENV
     )
+    environment_name = _resolve_environment(environment)
 
-    # Phase 3.11 — log which config layers were found so a foreign-CWD run
-    # that silently drops secrets/local config is diagnosable. Precedence
-    # (lowest -> highest): runtime.yml -> trader_discovery.yaml ->
-    # runtime.local.yml -> secrets.env -> PMCOPY__* env. The packaged
-    # discovery file now merges BEFORE the deployment-local file so
-    # ``discovery.*`` keys can be overridden from ``runtime.local.yml``
-    # (previously the packaged file merged last and silently won).
-    layers: list[tuple[str, Path, bool]] = [
-        ("runtime", runtime_file, True),
-        ("discovery", discovery_file, True),
-        ("runtime.local", local_file, False),
-        ("secrets", secrets_file, False),
-    ]
-    found_layers: list[str] = []
-    for name, path, required in layers:
-        exists = path.exists()
-        if exists:
-            found_layers.append(f"{name}={path}")
-        elif required:
-            logger.warning("config_layer_missing | name=%s path=%s (required)", name, path)
-    if found_layers:
-        logger.info("config_layers_loaded | %s", " ".join(found_layers))
-    else:
-        logger.warning("config_layers_loaded | none found beyond packaged runtime.yml")
+    payload = _read_service_files(config_root)
 
-    payload = _read_yaml(runtime_file, required=True)
-    payload = _deep_merge(payload, _read_yaml(discovery_file, required=True))
-    payload = _deep_merge(payload, _read_yaml(local_file, required=False))
+    # Single legacy deprecation shim: an operator's untracked
+    # config/runtime.local.yml keeps working (translated) so an un-migrated
+    # live deployment does not silently revert to paper/no-leaders. Tracked
+    # environment files take precedence over it. Planned for removal.
+    shim_file = deployment_root / _RUNTIME_LOCAL_YAML
+    if shim_file.exists():
+        logger.warning(
+            "config_legacy_local_shim | path=%s — config/runtime.local.yml is "
+            "deprecated; migrate these overrides to "
+            "config/environments/<environment>/<service>.yml",
+            shim_file,
+        )
+        payload = _deep_merge(
+            payload,
+            _translate_legacy_payload(
+                _read_yaml(shim_file, required=False), source="runtime.local.yml"
+            ),
+        )
+
+    environments_dir = config_root / "environments" / environment_name
+    if environments_dir.is_dir():
+        payload = _deep_merge(payload, _read_service_files(environments_dir))
+        logger.info(
+            "config_environment_loaded | environment=%s dir=%s",
+            environment_name,
+            environments_dir,
+        )
+    elif environment_name != _DEFAULT_ENVIRONMENT:
+        raise EnvValidationError(
+            f"Unknown configuration environment {environment_name!r}: "
+            f"{environments_dir} does not exist."
+        )
+
+    leader_entries = _read_leader_overrides(config_root / "leaders")
+    if leader_entries:
+        payload = _deep_merge(
+            payload, {"copy_trading": {"leaders": leader_entries}}
+        )
+
     if overrides:
         flat_keys = [key for key in overrides if str(key).upper() == str(key)]
         if flat_keys:
@@ -1477,14 +1758,28 @@ def load_config(
                 "Flat environment overrides are no longer supported; use nested "
                 "settings or PMCOPY__SECTION__FIELD names."
             )
-        payload = _deep_merge(payload, overrides)
+        payload = _deep_merge(
+            payload, _translate_legacy_payload(overrides, source="overrides")
+        )
 
     secrets_contents = _read_secrets_contents(secrets_file)
     if secrets_contents is not None:
-        payload = _deep_merge(payload, _read_secret_overrides(secrets_contents))
+        payload = _deep_merge(
+            payload,
+            _translate_legacy_payload(
+                _read_secret_overrides(secrets_contents), source="secrets.env"
+            ),
+        )
+
+    env_overrides = _read_process_env_overrides()
+    if env_overrides:
+        payload = _deep_merge(
+            payload,
+            _translate_legacy_payload(env_overrides, source="process-env"),
+        )
 
     try:
-        settings = _LayeredSettings(**payload)
+        settings = _LayeredModel(**payload)
     except ValidationError as exc:
         messages = _validation_messages(exc)
         raise EnvValidationError(
@@ -1494,13 +1789,14 @@ def load_config(
     validated = settings.model_dump()
     # One RPC setting is enough for operators.  ``WalletConfig`` keeps these
     # compatibility fields because legacy service boundaries still consume
-    # them, but their values are sourced from the canonical network section.
+    # them, but their values are sourced from the canonical polymarket section.
     validated["wallet"]["polygon_rpc_url"] = (
-        validated["wallet"].get("polygon_rpc_url") or validated["network"]["rpc_url"]
+        validated["wallet"].get("polygon_rpc_url")
+        or validated["polymarket"]["rpc_url"]
     )
     validated["wallet"]["fallback_rpc_url"] = validated["wallet"].get(
         "fallback_rpc_url"
-    ) or validated["network"].get("fallback_rpc_url", "")
+    ) or validated["polymarket"].get("fallback_rpc_url", "")
     validated["dry_run"] = settings.execution.paper_trade_only
     try:
         cfg = TypeAdapter(AppConfig).validate_python(validated)
@@ -1517,3 +1813,17 @@ def load_config(
             "Invalid application configuration:\n- " + "\n- ".join(semantic_errors)
         )
     return cfg
+
+
+def dump_config_payload(cfg: AppConfig) -> dict[str, Any]:
+    """Serialize a config to YAML-safe primitives, one key per section.
+
+    ``Decimal`` values become strings, enums become their values, and
+    ``SecretStr`` fields are masked by Pydantic (empty secrets stay empty),
+    so the payload never leaks a secret and survives a
+    ``yaml.safe_dump``/``safe_load`` round trip. The derived ``dry_run``
+    flag is omitted (it is recomputed from ``execution.trading_mode``).
+    """
+    payload = TypeAdapter(AppConfig).dump_python(cfg, mode="json")
+    payload.pop("dry_run", None)
+    return payload

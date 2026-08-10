@@ -1,0 +1,5 @@
+# Example environment override (copy to config/environments/<name>/ and select
+# it with PMCOPY_ENVIRONMENT=<name>; the default environment is "paper").
+# Keep trading_mode: paper until `pmcopy doctor --live` validation passes;
+# a live deployment sets trading_mode: live in config/environments/live/.
+trading_mode: paper

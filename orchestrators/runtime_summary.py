@@ -254,7 +254,7 @@ def print_startup_summary(
 
     copied_wallets_set = {
         w.lower()
-        for w in (config.leader.wallets or [])
+        for w in (config.copy_trading.wallets or [])
         if isinstance(w, str) and w.strip()
     }
     active_leaders_set = {
@@ -270,8 +270,8 @@ def print_startup_summary(
         ]
     else:
         leader_lines = [
-            f"👥 copied wallets: {len(config.leader.wallets)}",
-            f"🪪 wallets: {_render_value('leader', 'copied_wallets', config.leader.wallets) if config.leader.wallets else 'none'}",
+            f"👥 copied wallets: {len(config.copy_trading.wallets)}",
+            f"🪪 wallets: {_render_value('copy_trading', 'copied_wallets', config.copy_trading.wallets) if config.copy_trading.wallets else 'none'}",
             f"📡 active leaders: {len(active_leaders)}",
             f"🛰️ monitored: {_render_value('leader', 'active_leaders', active_leaders) if active_leaders else 'none'}",
         ]
@@ -297,19 +297,18 @@ def print_startup_summary(
             "polymarket_connectivity_and_signing",
             "POLYMARKET CONNECTIVITY & SIGNING",
             {
-                "chain_id": config.network.chain_id,
-                "clob_http_url": config.clob.http_url,
-                "rpc_url": config.network.rpc_url,
-                "usdc_contract_address": config.network.usdc_contract_address,
+                "chain_id": config.polymarket.chain_id,
+                "rpc_url": config.polymarket.rpc_url,
+                "usdc_contract_address": config.polymarket.usdc_contract_address,
             },
         ),
         (
             "leader_discovery_and_polling",
             "LEADER DISCOVERY & POLLING",
             {
-                "fetch_interval": config.polling.fetch_interval,
-                "aggregate_signal_window_seconds": config.polling.aggregate_signal_window_seconds,
-                "configured_wallets": config.leader.wallets,
+                "fetch_interval": config.detection.fetch_interval,
+                "aggregate_signal_window_seconds": config.detection.aggregate_signal_window_seconds,
+                "configured_wallets": config.copy_trading.wallets,
                 "discovery_enabled": config.discovery.scheduler.enabled,
                 "discovery_interval_seconds": config.discovery.scheduler.rediscover_seconds,
                 "rescore_interval_seconds": config.discovery.scheduler.rescore_seconds,
@@ -337,7 +336,6 @@ def print_startup_summary(
             "polymarket_base_execution_rules",
             "POLYMARKET BASE EXECUTION RULES",
             {
-                "require_fresh_book": config.execution.execution_require_fresh_book,
                 "min_order_size": "venue_metadata",
                 "sizing_source": "venue_metadata",
             },
@@ -349,8 +347,8 @@ def print_startup_summary(
                 "trade_analysis_concurrency": config.execution.trade_analysis_concurrency,
                 "reconcile_concurrency": config.execution.reconcile_concurrency,
                 "execution_submit_concurrency": config.execution.execution_submit_concurrency,
-                "leader_activity_min_fetch_spacing_ms": config.polling.leader_activity_min_fetch_spacing_ms,
-                "leader_positions_min_fetch_spacing_ms": config.polling.leader_positions_min_fetch_spacing_ms,
+                "leader_activity_min_fetch_spacing_ms": config.detection.leader_activity_min_fetch_spacing_ms,
+                "leader_positions_min_fetch_spacing_ms": config.detection.leader_positions_min_fetch_spacing_ms,
             },
         ),
         (
@@ -358,19 +356,17 @@ def print_startup_summary(
             "COPY DECISION ENGINE",
             {
                 "enable_copy_decision_gate": config.execution.enable_copy_decision_gate,
-                "copy_decision_min_score": config.leader.copy_decision_min_score,
-                "copy_max_price_drift_pct": config.leader.copy_max_price_drift_pct,
-                "copy_max_edge_decay_pct": config.leader.copy_max_edge_decay_pct,
-                "copy_max_signal_age_seconds": config.leader.copy_max_signal_age_seconds,
-                "copy_liquidity_target_usdc": config.leader.copy_liquidity_target_usdc,
-                "tiny_leader_high_confidence_score": config.leader.tiny_leader_high_confidence_score,
+                "copy_decision_min_score": config.copy_trading.copy_decision_min_score,
+                "copy_max_price_drift_pct": config.copy_trading.copy_max_price_drift_pct,
+                "copy_max_edge_decay_pct": config.copy_trading.copy_max_edge_decay_pct,
+                "copy_max_signal_age_seconds": config.copy_trading.copy_max_signal_age_seconds,
+                "copy_liquidity_target_usdc": config.copy_trading.copy_liquidity_target_usdc,
             },
         ),
         (
             "leader_scoring_engine",
             "LEADER SCORING ENGINE",
             {
-                "min_leader_trade_notional_usdc": config.leader.min_leader_trade_notional_usdc,
                 "runtime_weights": config.discovery.scoring.runtime_weights.model_dump(),
                 "runtime_pnl_target_usdc": config.discovery.scoring.runtime_pnl_target_usdc,
                 "runtime_activity_target": config.discovery.scoring.runtime_activity_target,
@@ -390,7 +386,7 @@ def print_startup_summary(
             {
                 "enable_risk_mgmt": config.risk.enable_risk_mgmt,
                 "kill_switch": config.risk.kill_switch,
-                "risk_check_interval": config.polling.risk_check_interval,
+                "risk_check_interval": config.risk.risk_check_interval,
                 "max_open_positions": config.risk.max_open_positions,
                 "max_market_exposure_usdc": config.risk.max_market_exposure_usdc,
                 "max_category_exposure_usdc": config.risk.max_category_exposure_usdc,
@@ -402,27 +398,27 @@ def print_startup_summary(
             "risk_management_sub_engines",
             "RISK MANAGEMENT SUB-ENGINES",
             {
-                "enable_stop_loss": config.features.enable_stop_loss,
-                "stop_loss_threshold": config.risk.stop_loss_threshold,
-                "stop_loss_grace_period_seconds": config.risk.stop_loss_grace_period_seconds,
-                "enable_profit_lock": config.features.enable_profit_lock,
-                "profit_lock_trigger_pct": config.risk.profit_lock_trigger_pct,
-                "profit_lock_sell_fraction": config.risk.profit_lock_sell_fraction,
-                "enable_near_max_exit": config.features.enable_near_max_exit,
-                "near_max_price_warn": config.risk.near_max_price_warn,
-                "near_max_price_warn_trim_ratio": config.risk.near_max_price_warn_trim_ratio,
-                "near_max_price_exit": config.risk.near_max_price_exit,
-                "enable_trailing_stop": config.features.enable_trailing_stop,
+                "enable_stop_loss": config.protective_exits.enable_stop_loss,
+                "stop_loss_threshold": config.protective_exits.stop_loss_threshold,
+                "stop_loss_grace_period_seconds": config.protective_exits.stop_loss_grace_period_seconds,
+                "enable_profit_lock": config.protective_exits.enable_profit_lock,
+                "profit_lock_trigger_pct": config.protective_exits.profit_lock_trigger_pct,
+                "profit_lock_sell_fraction": config.protective_exits.profit_lock_sell_fraction,
+                "enable_near_max_exit": config.protective_exits.enable_near_max_exit,
+                "near_max_price_warn": config.protective_exits.near_max_price_warn,
+                "near_max_price_warn_trim_ratio": config.protective_exits.near_max_price_warn_trim_ratio,
+                "near_max_price_exit": config.protective_exits.near_max_price_exit,
+                "enable_trailing_stop": config.protective_exits.enable_trailing_stop,
                 "trailing_activation_pct": (
                     "auto"
-                    if config.risk.trailing_activation_pct is None
-                    else config.risk.trailing_activation_pct
+                    if config.protective_exits.trailing_activation_pct is None
+                    else config.protective_exits.trailing_activation_pct
                 ),
-                "trailing_distance": config.risk.trailing_distance,
-                "enable_staged_tp": config.features.enable_staged_tp,
-                "staged_tp_levels": config.risk.staged_tp_levels,
-                "staged_tp_fractions": config.risk.staged_tp_fractions,
-                "enable_leader_divergence_exit": config.features.enable_leader_divergence_exit,
+                "trailing_distance": config.protective_exits.trailing_distance,
+                "enable_staged_tp": config.protective_exits.enable_staged_tp,
+                "staged_tp_levels": config.protective_exits.staged_tp_levels,
+                "staged_tp_fractions": config.protective_exits.staged_tp_fractions,
+                "enable_leader_divergence_exit": config.protective_exits.enable_leader_divergence_exit,
             },
         ),
         (
@@ -448,8 +444,8 @@ def print_startup_summary(
             "discovery_and_tiering_engines",
             "DISCOVERY & TIERING ENGINES",
             {
-                "enable_tier_gate_watchlist": config.features.enable_tier_gate_watchlist,
-                "enable_tier_gate_watchlist_log": config.features.enable_tier_gate_watchlist_log,
+                "enable_tier_gate_watchlist": config.copy_trading.enable_tier_gate_watchlist,
+                "enable_tier_gate_watchlist_log": config.copy_trading.enable_tier_gate_watchlist_log,
                 "enabled": config.discovery.scheduler.enabled,
                 "candidate_pool_size": config.discovery.shortlist.candidate_pool_size,
                 "promote_score": config.discovery.hysteresis.promote_score,
@@ -465,7 +461,7 @@ def print_startup_summary(
             "PAPER/LIVE SAFETY & GEOGRAPHIC CONTROLS",
             {
                 "paper_trade_only": config.execution.paper_trade_only,
-                "enforce_geoblock": config.network.enforce_geoblock,
+                "enforce_geoblock": config.polymarket.enforce_geoblock,
             },
         ),
         (
@@ -473,19 +469,18 @@ def print_startup_summary(
             "STORAGE & PERSISTENCE",
             {
                 "postgres_dsn_host": _safe_dsn_host(config.database.dsn),
-                "pnl_log_file": config.logging.pnl_log_file,
             },
         ),
         (
             "metrics_and_reconciliation_engines",
             "METRICS & RECONCILIATION ENGINES",
             {
-                "enable_metrics_server": config.network.enable_metrics_server,
-                "metrics_port": config.network.metrics_port,
-                "metrics_bind_host": config.network.metrics_bind_host,
+                "enable_metrics_server": config.app.enable_metrics_server,
+                "metrics_port": config.app.metrics_port,
+                "metrics_bind_host": config.app.metrics_bind_host,
                 "reconcile_stale_seconds": config.reconciliation.stale_threshold_seconds,
                 "reconcile_auto_cancel": config.reconciliation.auto_cancel_stale,
-                "reconcile_interval_seconds": config.polling.reconcile_interval_seconds,
+                "reconcile_interval_seconds": config.reconciliation.reconcile_interval_seconds,
             },
         ),
     ]

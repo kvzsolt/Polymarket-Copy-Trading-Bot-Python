@@ -913,9 +913,9 @@ async def reconciliation_loop(
     if interval_seconds is not None:
         interval = float(interval_seconds)
     elif config is not None and hasattr(config, 'polling'):
-        interval = float(config.polling.reconcile_interval_seconds)
+        interval = float(config.reconciliation.reconcile_interval_seconds)
     else:
-        # Fail-closed default; production always passes config.polling.
+        # Fail-closed default; production always passes config.reconciliation.
         interval = 300.0
     logger.info("Reconciliation loop started (interval=%.0fs)", interval)
 

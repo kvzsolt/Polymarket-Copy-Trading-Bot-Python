@@ -1,0 +1,16 @@
+# Leader-signal detection cadence and on-chain detection.
+# onchain.enable_onchain_pending_detection stays false by default:
+# pending/mempool signals are provisional and must be an explicit opt-in.
+fetch_interval: 0.5
+aggregate_signal_window_seconds: 4
+leader_positions_min_fetch_spacing_ms: 250
+leader_activity_min_fetch_spacing_ms: 250
+trade_queue_max_batches: 64
+onchain:
+  enable_onchain_pending_detection: false
+  enable_onchain_mined_detection: true
+  onchain_ws_url: ''
+  pending_tx_ws_url: ''
+  pending_tx_hashes_only: false
+  pending_tx_max_signal_age_ms: 500
+  pending_tx_detection_confidence_required: pending_probable

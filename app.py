@@ -204,7 +204,7 @@ def _should_wait_for_discovery_roster(config: object) -> bool:
 
 
 def _onchain_missing_wss_warning_reason(config: object) -> str | None:
-    oc_cfg = getattr(config, "onchain_detection", None)
+    oc_cfg = getattr(getattr(config, "detection", None), "onchain", None)
     if oc_cfg is None:
         return None
     if getattr(oc_cfg, "onchain_ws_url", "") or getattr(oc_cfg, "pending_tx_ws_url", ""):
@@ -990,19 +990,19 @@ async def _run_application(client_registry: list[Any]) -> int:
     # roster can require multiple longitudinal cycles; operators must still be
     # able to inspect a fail-closed readiness payload during that warm-up.
     _slowest_loop_interval = max(
-        float(application.config.polling.fetch_interval),
-        float(application.config.polling.risk_check_interval),
+        float(application.config.detection.fetch_interval),
+        float(application.config.risk.risk_check_interval),
     )
     application.readiness.configure_heartbeat_budget(
         staleness_seconds=_slowest_loop_interval * 3.0,
     )
     metrics_runner: _HealthServerResource | None = None
-    if application.config.network.enable_metrics_server:
+    if application.config.app.enable_metrics_server:
         metrics_runner = _HealthServerResource(
             await start_health_server(
-                application.config.network.metrics_port,
+                application.config.app.metrics_port,
                 tracker=application.readiness,
-                host=application.config.network.metrics_bind_host,
+                host=application.config.app.metrics_bind_host,
             )
         )
         client_registry.append(metrics_runner)
@@ -1113,7 +1113,7 @@ async def _run_application(client_registry: list[Any]) -> int:
     from storage.postgres.connection import get_pool
     from storage.postgres.orders_repo import OrdersRepo as _PgOrdersRepo
 
-    _max_age = float(application.config.polling.retention_max_age_seconds)
+    _max_age = float(application.config.app.retention_max_age_seconds)
     # Acquire the pool first so it's available to the per-user wiring below
     # even when the (non-critical) purge step fails. Previously `_pool` was
     # scoped inside the try/except, so a degraded purge would NameError on
@@ -1432,20 +1432,15 @@ async def _run_application(client_registry: list[Any]) -> int:
     # task/budget/lock state runs here — after startup reconciliation and
     # drift checks, before any market-data subscription or detection source —
     # matching the canonical startup order. Disabled config (the shipped
-    # default) constructs nothing.
-    from config.v1_runtime import load_v1_runtime_config
+    # default, ``copy_trading.copy_tasks.enabled: false``) constructs nothing.
     from orchestrators.v1_runtime_bootstrap import start_v1_copy_task_runtime
 
     logger.info("startup_stage | stage=v1_copy_task_restoration_started")
-    try:
-        v1_runtime = await start_v1_copy_task_runtime(
-            pool=_pool,
-            config=application.config,
-            v1_config=load_v1_runtime_config(),
-        )
-    except EnvValidationError as exc:
-        print_error(str(exc))
-        return 1
+    v1_runtime = await start_v1_copy_task_runtime(
+        pool=_pool,
+        config=application.config,
+        copy_tasks_config=application.config.copy_trading.copy_tasks,
+    )
     if v1_runtime is not None:
         # The handle exposes ``close()`` so the shared client registry drains
         # the leader workers at shutdown alongside the venue transports.
@@ -1577,7 +1572,7 @@ async def _run_application(client_registry: list[Any]) -> int:
 
     monitor_tasks: list[asyncio.Task] = []
     monitored_set: set[str] = set(monitored_leaders)
-    fetch_interval = application.config.polling.fetch_interval
+    fetch_interval = application.config.detection.fetch_interval
     # Bound before ``_on_new_leaders`` closes over it: the discovery loop is
     # spawned before the on-chain runtime is constructed below, so the name
     # must already exist for the closure to read at call time.
@@ -1741,7 +1736,7 @@ async def _run_application(client_registry: list[Any]) -> int:
     # See docs/concurrency-audit-response.md (C8-adjacent gap).
     if not application.config.risk.enable_risk_mgmt:
         _reaper_interval = max(
-            30.0, float(application.config.polling.reconcile_interval_seconds)
+            30.0, float(application.config.reconciliation.reconcile_interval_seconds)
         )
 
         async def _reservation_reaper_loop() -> None:
@@ -1767,7 +1762,7 @@ async def _run_application(client_registry: list[Any]) -> int:
     # always safe (authoritative); the pending-tx subscription is gated by
     # ``ENABLE_ONCHAIN_PENDING_DETECTION``. Without this wiring the config
     # flags were inert (Greptile P1 "On-chain config unused").
-    oc_cfg = application.config.onchain_detection
+    oc_cfg = application.config.detection.onchain
     ws_url = oc_cfg.onchain_ws_url or oc_cfg.pending_tx_ws_url
     missing_wss_reason = _onchain_missing_wss_warning_reason(application.config)
     if not ws_url and missing_wss_reason:

@@ -8,7 +8,6 @@ from typing import Any
 
 from services.copy_sizing_v5.addon import CopySizingV5Addon
 from services.copy_sizing_v5.balance_provider import CachedPusdBalanceProvider
-from services.copy_sizing_v5.config_loader import load_copy_sizing_v5_mapping
 from services.copy_sizing_v5.domain import CopySizingDecision, CopySizingRequest
 from services.copy_sizing_v5.engine import CopySizingEngine
 from services.copy_sizing_v5.policy import CopySizingPolicy, copy_sizing_policy_from_config
@@ -48,13 +47,13 @@ def build_copy_sizing_v5_runtime(
     config: Any,
     *,
     balances: CachedPusdBalanceProvider | None = None,
-    config_path: str | None = "config/copy_sizing_v5.yaml",
     overrides: dict[str, Any] | None = None,
 ) -> CopySizingV5Runtime:
+    """Build the V5 sizing runtime from ``config.sizing`` (the V5 envelope
+    fields were folded into ``config/sizing.yml``; the standalone
+    ``copy_sizing_v5.yaml`` file is gone)."""
     source = getattr(config, "sizing", config)
-    file_overrides = load_copy_sizing_v5_mapping(config_path) if config_path else {}
-    file_overrides.update(overrides or {})
-    policy = copy_sizing_policy_from_config(source, file_overrides)
+    policy = copy_sizing_policy_from_config(source, dict(overrides or {}))
     engine = CopySizingEngine(policy)
     return CopySizingV5Runtime(
         policy=policy,
