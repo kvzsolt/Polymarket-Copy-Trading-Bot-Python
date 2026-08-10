@@ -64,14 +64,21 @@ from utils.logger import (
 )
 
 
+def _close_and_clear_handlers(logger: logging.Logger) -> None:
+    """Close file/stream handlers before dropping them so no descriptors leak."""
+    for handler in logger.handlers:
+        handler.close()
+    logger.handlers.clear()
+
+
 @pytest.fixture(autouse=True)
 def _clean_loggers():
     _CONFIGURED_LOGGERS.clear()
     root = logging.getLogger(APP_NAME)
-    root.handlers.clear()
+    _close_and_clear_handlers(root)
     yield
     _CONFIGURED_LOGGERS.clear()
-    root.handlers.clear()
+    _close_and_clear_handlers(root)
     # Restore default APP_NAME logger config so cross-file test ordering
     # doesn't end with subsequent tests inheriting a handler-less /
     # WARNING-level logger. Without this, e.g.

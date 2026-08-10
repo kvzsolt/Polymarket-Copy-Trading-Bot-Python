@@ -8,6 +8,8 @@ Docker / systemd / process supervisors. ``main()`` now returns ``int`` and
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 import app
@@ -44,6 +46,6 @@ def test_startup_reuses_one_config_snapshot_for_doctor_and_bootstrap():
 
 def test_dunder_main_exits_with_main_result():
     # __main__ must propagate main()'s return code, not swallow it.
-    src = (app.__file__ and open(app.__file__, encoding="utf-8").read()) or ""
+    src = Path(app.__file__).read_text(encoding="utf-8") if app.__file__ else ""
     assert "sys.exit(exit_code)" in src
     assert "loop.run_until_complete(main_task) or 0" in src

@@ -164,7 +164,7 @@ class TestBookQualityGate:
         svc = _make_execution_service("0.40", "0.48")  # 20% spread
         svc._config.execution.max_book_spread_bps = 500
         req = _req()
-        result = asyncio.new_event_loop().run_until_complete(svc.execute(req))
+        result = asyncio.run(svc.execute(req))
         assert result.accepted is False
         assert result.status == "book_spread_wide"
         assert "spread too wide" in result.error
@@ -174,7 +174,7 @@ class TestBookQualityGate:
         svc = _make_execution_service("0.50", "0.51")  # 2% spread
         svc._config.execution.max_book_spread_bps = 500
         req = _req()
-        result = asyncio.new_event_loop().run_until_complete(svc.execute(req))
+        result = asyncio.run(svc.execute(req))
         assert result.error is None or "spread" not in result.error
 
     def test_no_bid_rejected_for_sell(self):
@@ -182,7 +182,7 @@ class TestBookQualityGate:
         svc = _make_execution_service(None, "0.51")
         svc._config.execution.max_book_spread_bps = 500
         req = _req(side="SELL", amount="5")
-        result = asyncio.new_event_loop().run_until_complete(svc.execute(req))
+        result = asyncio.run(svc.execute(req))
         assert result.accepted is False
         assert result.status == "book_no_liquidity"
 
@@ -191,7 +191,7 @@ class TestBookQualityGate:
         svc = _make_execution_service("0.50", None)
         svc._config.execution.max_book_spread_bps = 500
         req = _req()
-        result = asyncio.new_event_loop().run_until_complete(svc.execute(req))
+        result = asyncio.run(svc.execute(req))
         assert result.accepted is False
         assert result.status == "book_no_liquidity"
 
@@ -200,7 +200,7 @@ class TestBookQualityGate:
         svc = _make_execution_service(None, "0.51")
         svc._config.execution.max_book_spread_bps = 500
         req = _req()
-        result = asyncio.new_event_loop().run_until_complete(svc.execute(req))
+        result = asyncio.run(svc.execute(req))
         assert result.error is None or "spread" not in result.error
         assert result.status != "book_no_liquidity"
 
@@ -209,7 +209,7 @@ class TestBookQualityGate:
         svc = _make_execution_service("0.50", None)
         svc._config.execution.max_book_spread_bps = 500
         req = _req(side="SELL", amount="5")
-        result = asyncio.new_event_loop().run_until_complete(svc.execute(req))
+        result = asyncio.run(svc.execute(req))
         assert result.error is None or "spread" not in result.error
         assert result.status != "book_no_liquidity"
 
@@ -218,7 +218,7 @@ class TestBookQualityGate:
         svc = _make_execution_service("0", "0.51")
         svc._config.execution.max_book_spread_bps = 500
         req = _req()
-        result = asyncio.new_event_loop().run_until_complete(svc.execute(req))
+        result = asyncio.run(svc.execute(req))
         assert result.error is None or "spread" not in result.error
 
     def test_gate_disabled_when_zero(self):
@@ -226,7 +226,7 @@ class TestBookQualityGate:
         svc = _make_execution_service("0.10", "0.90")  # 800% spread
         svc._config.execution.max_book_spread_bps = 0
         req = _req()
-        result = asyncio.new_event_loop().run_until_complete(svc.execute(req))
+        result = asyncio.run(svc.execute(req))
         assert result.error is None or "spread" not in result.error
 
     def test_stop_loss_sell_bypasses_spread_gate_and_uses_fak(self):
@@ -241,7 +241,7 @@ class TestBookQualityGate:
             recovery_metadata={"source": "risk_exit"},
         )
 
-        result = asyncio.new_event_loop().run_until_complete(svc.execute(req))
+        result = asyncio.run(svc.execute(req))
 
         assert result.accepted is True
         assert result.status == "submitted_unconfirmed"
@@ -271,7 +271,7 @@ class TestBookQualityGate:
             recovery_metadata={"order_type": "FAK", "price_limit": "0.95"},
         )
 
-        result = asyncio.new_event_loop().run_until_complete(svc.execute(req))
+        result = asyncio.run(svc.execute(req))
 
         assert result.accepted is True
         assert result.status == "filled"
@@ -318,7 +318,7 @@ class TestBookQualityGate:
             recovery_metadata={"order_type": "FAK", "price_limit": "0.25"},
         )
 
-        result = asyncio.new_event_loop().run_until_complete(svc.execute(req))
+        result = asyncio.run(svc.execute(req))
 
         assert result.accepted is True
         assert result.status == "filled"
@@ -357,7 +357,7 @@ class TestBookQualityGate:
             recovery_metadata={"order_type": "FAK", "price_limit": "0.25"},
         )
 
-        result = asyncio.new_event_loop().run_until_complete(svc.execute(req))
+        result = asyncio.run(svc.execute(req))
 
         assert result.accepted is True
         assert result.status == "filled"
@@ -385,7 +385,7 @@ class TestBookQualityGate:
             recovery_metadata={"order_type": "FAK", "price_limit": "0.85"},
         )
 
-        result = asyncio.new_event_loop().run_until_complete(svc.execute(req))
+        result = asyncio.run(svc.execute(req))
 
         assert result.accepted is True
         assert result.status == "submitted_unconfirmed"
@@ -431,7 +431,7 @@ class TestBookQualityGate:
             recovery_metadata={"order_type": "FAK", "price_limit": "0.25"},
         )
 
-        result = asyncio.new_event_loop().run_until_complete(svc.execute(req))
+        result = asyncio.run(svc.execute(req))
 
         assert result.accepted is False
         assert result.status == "cancelled"
@@ -447,7 +447,7 @@ class TestBookQualityGate:
         svc._config.execution.max_book_spread_bps = 100
         svc._config.execution.book_spread_mode = "relative_bps"
         req = _req()
-        result = asyncio.new_event_loop().run_until_complete(svc.execute(req))
+        result = asyncio.run(svc.execute(req))
         assert result.accepted is False
         assert result.status == "book_spread_wide"
         assert "spread too wide" in result.error
@@ -458,7 +458,7 @@ class TestBookQualityGate:
         svc._config.execution.max_book_spread_bps = 100
         svc._config.execution.book_spread_mode = "absolute_bps"
         req = _req()
-        result = asyncio.new_event_loop().run_until_complete(svc.execute(req))
+        result = asyncio.run(svc.execute(req))
         assert result.error is None or "spread" not in result.error
 
     def test_low_price_one_cent_spread_rejects_in_relative_mode(self):
@@ -467,7 +467,7 @@ class TestBookQualityGate:
         svc._config.execution.max_book_spread_bps = 1000
         svc._config.execution.book_spread_mode = "relative_bps"
         req = _req()
-        result = asyncio.new_event_loop().run_until_complete(svc.execute(req))
+        result = asyncio.run(svc.execute(req))
         assert result.accepted is False
         assert result.status == "book_spread_wide"
 
@@ -476,7 +476,7 @@ class TestBookQualityGate:
         svc._config.execution.max_book_spread_bps = 500
         svc._config.execution.execution_require_fresh_book = True
         req = _req()
-        asyncio.new_event_loop().run_until_complete(svc.execute(req))
+        asyncio.run(svc.execute(req))
         svc._market_data_service.require_fresh_data.assert_awaited_once_with(
             "0xabc", side="BUY", condition_id=None
         )
@@ -486,7 +486,7 @@ class TestBookQualityGate:
         svc = _make_execution_service("0.40", "0.48")  # 20% spread
         svc._config.execution.max_book_spread_bps = 500
         req = _req(side="SELL", amount="5")
-        result = asyncio.new_event_loop().run_until_complete(svc.execute(req))
+        result = asyncio.run(svc.execute(req))
         assert result.accepted is False
         assert result.status == "book_spread_wide"
         assert "spread too wide" in result.error
@@ -497,7 +497,7 @@ class TestBookQualityGate:
         svc._config.execution.max_book_spread_bps = 500
         svc._config.execution.book_spread_mode = "relative_bps"
         req = _req()
-        result = asyncio.new_event_loop().run_until_complete(svc.execute(req))
+        result = asyncio.run(svc.execute(req))
         assert "2000 bps" in result.error
         assert "500 bps max" in result.error
 
@@ -506,7 +506,7 @@ class TestBookQualityGate:
         svc = _make_execution_service("0.01", "0.99")
         svc._config.execution.max_book_spread_bps = 500
         req = _req()
-        result = asyncio.new_event_loop().run_until_complete(svc.execute(req))
+        result = asyncio.run(svc.execute(req))
         assert result.accepted is False
         assert result.status == "book_no_liquidity"
 
@@ -515,7 +515,7 @@ class TestBookQualityGate:
         svc = _make_execution_service("0.02", "0.98")
         svc._config.execution.max_book_spread_bps = 500
         req = _req()
-        result = asyncio.new_event_loop().run_until_complete(svc.execute(req))
+        result = asyncio.run(svc.execute(req))
         assert result.accepted is False
         assert result.status == "book_no_liquidity"
 
@@ -524,7 +524,7 @@ class TestBookQualityGate:
         svc = _make_execution_service("0.04", "0.96")
         svc._config.execution.max_book_spread_bps = 500
         req = _req()
-        result = asyncio.new_event_loop().run_until_complete(svc.execute(req))
+        result = asyncio.run(svc.execute(req))
         assert result.accepted is False
         assert result.status == "book_spread_wide"
 

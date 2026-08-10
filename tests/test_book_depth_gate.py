@@ -208,7 +208,7 @@ class TestBookDepthGate:
             asks={Decimal("0.51"): Decimal("1")},
             min_depth=0.0,
         )
-        result = asyncio.new_event_loop().run_until_complete(svc.execute(_req()))
+        result = asyncio.run(svc.execute(_req()))
         assert result.status != "book_thin_depth"
 
     def test_thin_depth_rejected_for_buy(self):
@@ -218,7 +218,7 @@ class TestBookDepthGate:
             asks={Decimal("0.51"): Decimal("1")},
             min_depth=50.0,
         )
-        result = asyncio.new_event_loop().run_until_complete(svc.execute(_req("BUY")))
+        result = asyncio.run(svc.execute(_req("BUY")))
         assert result.accepted is False
         assert result.status == "book_thin_depth"
         assert "depth too thin" in result.error
@@ -229,7 +229,7 @@ class TestBookDepthGate:
             asks={Decimal("0.51"): Decimal("1000")},
             min_depth=50.0,
         )
-        result = asyncio.new_event_loop().run_until_complete(svc.execute(_req("SELL", "1")))
+        result = asyncio.run(svc.execute(_req("SELL", "1")))
         assert result.accepted is False
         assert result.status == "book_thin_depth"
 
@@ -239,7 +239,7 @@ class TestBookDepthGate:
             asks={Decimal("0.51"): Decimal("1000")},
             min_depth=50.0,
         )
-        result = asyncio.new_event_loop().run_until_complete(svc.execute(_req("BUY")))
+        result = asyncio.run(svc.execute(_req("BUY")))
         assert result.status != "book_thin_depth"
 
     def test_outside_band_levels_ignored(self):
@@ -249,6 +249,6 @@ class TestBookDepthGate:
             asks={Decimal("0.65"): Decimal("10_000")},
             min_depth=100.0,
         )
-        result = asyncio.new_event_loop().run_until_complete(svc.execute(_req("BUY")))
+        result = asyncio.run(svc.execute(_req("BUY")))
         assert result.accepted is False
         assert result.status == "book_thin_depth"
