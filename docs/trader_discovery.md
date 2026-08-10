@@ -75,7 +75,7 @@ using `scoring.runtime_weights` from the same YAML file.
 ## Configuration
 
 Every discovery setting and policy threshold is in
-`config/trader_discovery.yaml` under `discovery.heisenberg`. The API key is
+`config/discovery.yml` under `discovery.heisenberg`. The API key is
 supplied via env and never committed:
 
 ```dotenv

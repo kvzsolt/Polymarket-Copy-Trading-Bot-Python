@@ -29,7 +29,7 @@ The bot operates through specialized engines, each handling a distinct domain of
 
 ### 🔍 Auto Trader Discovery Engine (NEW)
 **What it is:** One automated funnel (`services/discovery/`) that shortlists wallets with H-Score, audits Wallet 360 across 1/3/7/15-day windows, validates recent trades and market quality, and builds a decay-weighted longitudinal rank.
-**Why it's good:** Every threshold and coefficient lives in `config/trader_discovery.yaml`. A PostgreSQL roster applies consecutive-cycle hysteresis before promotion or demotion, and the same persisted rank feeds runtime trade decisions and bounded position sizing.
+**Why it's good:** Every threshold and coefficient lives in `config/discovery.yml`. A PostgreSQL roster applies consecutive-cycle hysteresis before promotion or demotion, and the same persisted rank feeds runtime trade decisions and bounded position sizing.
 
 ### 🧠 Copy Decision Engine
 **What it is:** The brains behind signal translation (`CopyDecisionService`). It doesn't just buy when a leader buys. It perfectly reconstructs leader portfolios in real-time, calculates exact percentage sell-offs, and mimics partial exits or complex position scaling.

@@ -55,7 +55,7 @@ silently ignored.
 
 Discovery thresholds, component weights, normalization ranges, decay,
 shrinkage, scheduler cadence, backfill limits, hysteresis, and rank-driven
-sizing multipliers all live in `config/trader_discovery.yaml`.
+sizing multipliers all live in `config/discovery.yml`.
 
 Useful checks:
 
