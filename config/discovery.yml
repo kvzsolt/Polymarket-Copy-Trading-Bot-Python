@@ -148,7 +148,7 @@ hysteresis:
   min_tenure_cycles: 3
   min_dwell_seconds: 10800
 scheduler:
-  enabled: true
+  enabled: false
   rediscover_seconds: 1800
   rescore_seconds: 900
   evaluation_concurrency: 2
@@ -157,7 +157,7 @@ scheduler:
   start_from_roster: true
   startup_wait_timeout_seconds: 3900
 heisenberg:
-  enabled: true
+  enabled: false
   api_key: ''
   candidate_limit: 50
   candidate_concurrency: 6
