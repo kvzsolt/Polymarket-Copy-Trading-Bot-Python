@@ -33,9 +33,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from eth_abi import decode as abi_decode
+from eth_abi.abi import decode as abi_decode
 from eth_abi.exceptions import DecodingError
-from eth_utils import function_signature_to_4byte_selector
+from eth_utils.abi import function_signature_to_4byte_selector
 
 from services.onchain_detection.trade_detection_models import (
     MAKER_SIDE_BUY,

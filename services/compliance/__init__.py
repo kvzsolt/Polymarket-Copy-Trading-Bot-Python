@@ -126,9 +126,10 @@ class GeoblockGate:
             return None
         now = utcnow()
         if self._decision is None or self._next_check_at is None or now >= self._next_check_at:
-            self._decision = await self._check()
-            if self._decision.allowed and self._decision.expires_at is not None:
-                self._next_check_at = self._decision.expires_at
+            decision = await self._check()
+            self._decision = decision
+            if decision.allowed and decision.expires_at is not None:
+                self._next_check_at = decision.expires_at
             else:
                 self._next_check_at = now + timedelta(seconds=self._block_recheck_seconds)
         return self._decision

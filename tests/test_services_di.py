@@ -64,6 +64,7 @@ class TestExecutionCircuitBreakerDI:
             fee_service=object(),
             order_repo=object(),
             config=_make_config(),
+            clob_gateway=object(),
         )
         assert svc.circuit_breaker is _CLOB_CIRCUIT
 
@@ -75,6 +76,7 @@ class TestExecutionCircuitBreakerDI:
             order_repo=object(),
             circuit_breaker=custom,
             config=_make_config(),
+            clob_gateway=object(),
         )
         assert svc.circuit_breaker is custom
 

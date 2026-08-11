@@ -19,6 +19,7 @@ from services.copy_tasks.budget import (
 )
 from services.copy_tasks.entry_price import CopyTaskEntryPriceService
 from services.copy_tasks.lifecycle import CopyTaskFillLifecycleService
+from services.copy_tasks.lots import RiskLotRepository, RiskLotService
 from services.copy_tasks.monitoring import CopyMonitoringModePolicy
 from services.copy_tasks.price_cache import MarketPriceCache
 from services.copy_tasks.reaction import CopyReactionEngine
@@ -42,6 +43,7 @@ class CopyTaskV1RuntimeBundle(Generic[EventT]):
         tasks: Copy-task lifecycle application service.
         coordinator: Lock-first task orchestration seam.
         lifecycle: Entry-fill budget commit and protective-exit lock coordinator.
+        risk_lots: Restart-safe per-fill protective-risk lot service.
         price_cache: Shared bounded market-price cache (None when disabled).
         workers: Bounded serial-per-leader worker supervisor (None when disabled).
     """
@@ -50,6 +52,7 @@ class CopyTaskV1RuntimeBundle(Generic[EventT]):
     tasks: CopyTaskService
     coordinator: CopyTaskRuntimeCoordinator
     lifecycle: CopyTaskFillLifecycleService
+    risk_lots: RiskLotService
     price_cache: MarketPriceCache | None
     workers: LeaderWorkerSupervisor[EventT] | None
 
@@ -68,12 +71,14 @@ class CopyTaskV1RuntimeBuilder(Generic[EventT]):
         task_repository: CopyTaskRepository,
         task_budget_repository: TaskBudgetRepository,
         reentry_lock_repository: MarketReentryLockRepository,
+        risk_lot_repository: RiskLotRepository,
         sizing: SizingPort,
         leader_handler: LeaderHandler[EventT],
     ) -> None:
         self._task_repository = task_repository
         self._task_budget_repository = task_budget_repository
         self._reentry_lock_repository = reentry_lock_repository
+        self._risk_lot_repository = risk_lot_repository
         self._sizing = sizing
         self._leader_handler = leader_handler
 
@@ -95,7 +100,14 @@ class CopyTaskV1RuntimeBuilder(Generic[EventT]):
         tasks = CopyTaskService(self._task_repository)
         locks = MarketReentryLockService(self._reentry_lock_repository)
         budgets = TaskBudgetReservationService(self._task_budget_repository)
+        risk_lots = RiskLotService(self._risk_lot_repository)
         active_budgets = budgets if config.enabled and config.task_budget.enabled else None
+        lifecycle = CopyTaskFillLifecycleService(
+            task_budgets=budgets,
+            reentry_locks=locks,
+            risk_lots=risk_lots,
+            enabled=config.enabled,
+        )
         coordinator = CopyTaskRuntimeCoordinator(
             locks=locks,
             monitoring=CopyMonitoringModePolicy(),
@@ -104,14 +116,10 @@ class CopyTaskV1RuntimeBuilder(Generic[EventT]):
             entry_prices=CopyTaskEntryPriceService(),
             sizing=self._sizing,
             task_budgets=active_budgets,
+            task_budget_lifecycle=lifecycle if active_budgets is not None else None,
             task_budget_ttl_seconds=config.task_budget.reservation_ttl_seconds,
             enabled=config.enabled,
             reentry_lock_enabled=config.reentry_lock.enabled,
-        )
-        lifecycle = CopyTaskFillLifecycleService(
-            task_budgets=budgets,
-            reentry_locks=locks,
-            enabled=config.enabled,
         )
         price_cache = (
             MarketPriceCache(max_entries=config.shared_price_cache.max_entries)
@@ -133,6 +141,7 @@ class CopyTaskV1RuntimeBuilder(Generic[EventT]):
             tasks=tasks,
             coordinator=coordinator,
             lifecycle=lifecycle,
+            risk_lots=risk_lots,
             price_cache=price_cache,
             workers=workers,
         )

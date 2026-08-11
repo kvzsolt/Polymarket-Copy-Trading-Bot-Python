@@ -29,10 +29,12 @@ def _reset_trade_monitor_fetch_guards():
     trade_monitor_module._LEADER_FETCH_LOCKS.clear()
     trade_monitor_module._LEADER_FETCH_LAST_TS.clear()
     trade_monitor_module._LEADER_FETCH_INFLIGHT.clear()
+    trade_monitor_module._fetch_spacing_config = None
     yield
     trade_monitor_module._LEADER_FETCH_LOCKS.clear()
     trade_monitor_module._LEADER_FETCH_LAST_TS.clear()
     trade_monitor_module._LEADER_FETCH_INFLIGHT.clear()
+    trade_monitor_module._fetch_spacing_config = None
 
 
 @pytest.mark.asyncio
@@ -554,3 +556,55 @@ async def test_guarded_leader_fetch_keeps_different_wallets_parallel():
 
     assert len(calls) == 2
     assert first[0]["url"] != second[0]["url"]
+
+
+@pytest.mark.asyncio
+async def test_v1_mode_preserves_individual_trade_identities_without_aggregation():
+    """Deliver each REST fill separately so on-chain aliases deduplicate exactly."""
+
+    now = int(time.time())
+    trades = [
+        {
+            "id": "trade-a",
+            "transactionHash": "0xtx-a",
+            "timestamp": now,
+            "type": "TRADE",
+            "side": "BUY",
+            "asset": "token-1",
+            "conditionId": "cond-1",
+            "size": 5,
+            "price": 0.4,
+            "usdcSize": 2,
+        },
+        {
+            "id": "trade-b",
+            "transactionHash": "0xtx-b",
+            "timestamp": now + 1,
+            "type": "TRADE",
+            "side": "BUY",
+            "asset": "token-1",
+            "conditionId": "cond-1",
+            "size": 6,
+            "price": 0.4,
+            "usdcSize": 2.4,
+        },
+    ]
+    state = LeaderMonitorState(
+        last_cursor=TradeCursor(timestamp=now - 1, tx_hash="", trade_id=None),
+        last_processed_ts=float(now - 1),
+    )
+    on_trade = AsyncMock()
+
+    with patch("services.tradeMonitor.fetch_data", new_callable=AsyncMock, return_value=trades):
+        await fetch_trade_data(
+            "0xleader",
+            on_trade,
+            state,
+            _MOCK_READINESS,
+            _MOCK_CONFIG,
+            aggregate_signals=False,
+        )
+
+    delivered = on_trade.await_args.args[0]
+    assert [trade["transactionHash"] for trade in delivered] == ["0xtx-a", "0xtx-b"]
+    assert all("_txHashes" not in trade for trade in delivered)

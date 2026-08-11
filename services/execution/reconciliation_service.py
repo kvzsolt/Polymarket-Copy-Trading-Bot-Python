@@ -328,6 +328,7 @@ class ReconciliationService:
         risk_triggers_repo: Any | None = None,
         funder_address: str | None = None,
         order_confirmation_cfg: Any | None = None,
+        task_budget_settlement: Any | None = None,
     ):
         self.orders_repo = orders_repo
         self.fills_repo = fills_repo
@@ -339,6 +340,7 @@ class ReconciliationService:
         self.risk_blocks_repo = risk_blocks_repo
         self.risk_triggers_repo = risk_triggers_repo
         self.order_confirmation_cfg = order_confirmation_cfg
+        self.task_budget_settlement = task_budget_settlement
         # Funder wallet for the user_activities write-back. When set, every
         # terminal "filled_reconciled" emission also writes a bot=true row
         # into user_activities so the manual-sync detector has a single
@@ -948,7 +950,7 @@ class ReconciliationService:
             getter = getattr(self.orders_repo, "get_by_order_id", None)
             if order_id and callable(getter):
                 try:
-                    order_row = await getter(order_id)
+                    order_row = await cast(Callable[[str], Awaitable[Any]], getter)(order_id)
                 except Exception:
                     order_row = None
                 if isinstance(order_row, dict):
@@ -1008,7 +1010,7 @@ class ReconciliationService:
             return None
         for candidate in _order_id_candidates(order_id):
             try:
-                reservation = await lookup(candidate)
+                reservation = await cast(Callable[[str], Awaitable[Any]], lookup)(candidate)
             except Exception:
                 continue
             reservation_id = getattr(reservation, "id", None)
@@ -1224,12 +1226,12 @@ class ReconciliationService:
         if callable(list_orders):
             try:
                 try:
-                    orders = await list_orders(
+                    orders = await cast(Callable[..., Awaitable[Any]], list_orders)(
                         order_id=venue_order_id or order_id,
                         market=market_id,
                     )
                 except TypeError:
-                    orders = await list_orders()
+                    orders = await cast(Callable[..., Awaitable[Any]], list_orders)()
                 ids = {
                     str(
                         o.get("order_id") or o.get("id")
@@ -1745,9 +1747,16 @@ class ReconciliationService:
                 "no_venue_order_id",
             )
 
+        gateway = self.clob_gateway
+        if gateway is None:
+            return ReconciliationResult.unresolved(
+                order.id,
+                OrderLifecycleStatus.RECONCILIATION_REQUIRED,
+                "clob_gateway_unavailable",
+            )
         try:
-            venue_order = await self.clob_gateway.get_order(order.venue_order_id)
-            venue_fills = await self.clob_gateway.get_fills(market=order.market_id)
+            venue_order = await gateway.get_order(order.venue_order_id)
+            venue_fills = await gateway.get_fills(market=order.market_id)
         except Exception as exc:
             self._audit("reconciliation_unreachable", {"order_id": order.id, "error": str(exc)})
             return ReconciliationResult.unresolved(
@@ -2005,6 +2014,21 @@ class ReconciliationService:
                             pass
                     except Exception:  # pragma: no cover — defensive
                         pass
+            if self.task_budget_settlement is not None:
+                try:
+                    await self.task_budget_settlement.record_terminal_no_fill(
+                        record=record,
+                        side=side,
+                        order_id=order_id,
+                    )
+                except Exception as exc:
+                    if logger is not None:
+                        logger.warning(
+                            "reconcile_task_budget_no_fill_failed | order_id=%s error=%r",
+                            order_id,
+                            exc,
+                        )
+                    return False
             await self.orders_repo.delete_processed_trade(record["trade_key"])
             self._audit(
                 "reconciliation_no_fill_unlock",
@@ -2032,6 +2056,22 @@ class ReconciliationService:
 
         if delta_matched <= 0:
             if is_final_fill:
+                if self.task_budget_settlement is not None and current_matched > 0:
+                    try:
+                        await self.task_budget_settlement.settle_existing_fill(
+                            record=record,
+                            side=side,
+                            order_id=order_id,
+                            cumulative_matched=current_matched,
+                        )
+                    except Exception as exc:
+                        if logger is not None:
+                            logger.warning(
+                                "reconcile_task_budget_terminal_failed | order_id=%s error=%r",
+                                order_id,
+                                exc,
+                            )
+                        return False
                 # Detect "already settled": either the in-memory record
                 # already shows the terminal state, or the orders_repo row
                 # was updated by a previous pass.
@@ -2167,7 +2207,26 @@ class ReconciliationService:
                     order_id,
                     current_matched,
                 )
-        elif side == "SELL" and pnl_tracker is not None:
+        if self.task_budget_settlement is not None:
+            try:
+                await self.task_budget_settlement.record_fill(
+                    record=record,
+                    side=side,
+                    order_id=order_id,
+                    cumulative_matched=current_matched,
+                    delta_matched=delta_matched,
+                    average_price=avg_price,
+                    terminal=is_final_fill,
+                )
+            except Exception as exc:
+                if logger is not None:
+                    logger.warning(
+                        "reconcile_task_budget_fill_failed | order_id=%s error=%r",
+                        order_id,
+                        exc,
+                    )
+                return False
+        if fill_id != 0 and side == "SELL" and pnl_tracker is not None:
             realized_source = "entry_price"
             if entry_price is None:
                 if logger is not None:

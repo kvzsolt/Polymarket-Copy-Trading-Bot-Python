@@ -50,6 +50,7 @@ logger = get_logger("PositionsRepo")
 # the DB-side hash CPU cost and the asyncpg str→bytea type-mismatch
 # surface — Python ``int`` maps natively to PG ``bigint``.
 _ADVISORY_LOCK_SQL = "SELECT pg_advisory_xact_lock($1)"
+PostgresConnection = asyncpg.Connection | asyncpg.pool.PoolConnectionProxy
 
 
 def _lock_key(key: str) -> int:
@@ -138,7 +139,7 @@ class PositionsRepo(AbstractPositionRepository):
 
     @staticmethod
     async def _get_position_in_conn(
-        conn: asyncpg.Connection,
+        conn: PostgresConnection,
         user_id: str,
         condition_id: str,
         *,
@@ -206,7 +207,7 @@ class PositionsRepo(AbstractPositionRepository):
                 await self._upsert_position_in_conn(conn, record)
 
     @staticmethod
-    async def _upsert_position_in_conn(conn: asyncpg.Connection, record: PositionRecord) -> None:
+    async def _upsert_position_in_conn(conn: PostgresConnection, record: PositionRecord) -> None:
         await conn.execute(
             """
             INSERT INTO positions (
@@ -241,7 +242,7 @@ class PositionsRepo(AbstractPositionRepository):
 
     @staticmethod
     async def _delete_position_in_conn(
-        conn: asyncpg.Connection,
+        conn: PostgresConnection,
         user_id: str,
         condition_id: str,
         *,

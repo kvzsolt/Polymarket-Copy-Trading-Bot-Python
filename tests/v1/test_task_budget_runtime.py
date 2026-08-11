@@ -132,7 +132,9 @@ async def test_runtime_reserves_final_sized_amount_before_downstream() -> None:
 
 
 @pytest.mark.asyncio
-async def test_downstream_exception_releases_task_budget_reservation() -> None:
+async def test_downstream_exception_retains_task_budget_until_reconciliation() -> None:
+    """An exception after downstream entry cannot prove the venue was untouched."""
+
     budgets = TaskBudgetReservationService(InMemoryTaskBudgetRepository())
     task = CopyTask(
         task_id="task-a",
@@ -173,4 +175,5 @@ async def test_downstream_exception_releases_task_budget_reservation() -> None:
         reservation_id="intent-b",
         downstream=lambda _envelope: "ok",
     )
-    assert admitted.allowed is True
+    assert admitted.allowed is False
+    assert admitted.reason == "task_max_total_spend_exceeded"

@@ -38,12 +38,20 @@ import json
 import logging
 import time
 from dataclasses import dataclass
-from decimal import Decimal
+from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import asyncpg
 
 from domain.ports.repositories import AbstractOrderRepository
+from services.execution.ambiguous_recovery import (
+    AmbiguousRecoveryProgress,
+    AmbiguousSubmission,
+    AuthoritativeRecoveryScan,
+    RecoveryMatchSource,
+    SubmissionSide,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -133,6 +141,9 @@ COALESCE(
 # almost certainly lost its holder. Kept well above realistic submit durations
 # so a slow-but-alive submitter is never stolen from.
 _DEFAULT_STALE_LOCK_TAKEOVER_SECONDS = 300
+_MAX_AMBIGUOUS_RECOVERY_BATCH_SIZE = 1_000
+_MAX_AMBIGUOUS_EVIDENCE_HISTORY = 100
+_MAX_AMBIGUOUS_REQUIRED_SCANS = 100
 
 
 @dataclass
@@ -171,6 +182,51 @@ def _parse_jsonb(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return value
     return json.loads(value)
+
+
+def _optional_decimal(value: Any) -> Decimal | None:
+    """Parse an optional finite positive decimal without using binary floats."""
+
+    if value is None or str(value).strip() == "":
+        return None
+    try:
+        parsed = Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+    if not parsed.is_finite() or parsed <= 0:
+        return None
+    return parsed
+
+
+def _utc_datetime(value: Any) -> datetime | None:
+    """Coerce persisted epoch/ISO/datetime values to an aware UTC instant."""
+
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+    try:
+        return datetime.fromtimestamp(float(value), tz=timezone.utc)
+    except (TypeError, ValueError, OverflowError):
+        pass
+    try:
+        parsed = datetime.fromisoformat(str(value).strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _bounded_positive(value: int, *, field: str, maximum: int) -> int:
+    """Validate caller-supplied persistence bounds before issuing SQL."""
+
+    parsed = int(value)
+    if not 1 <= parsed <= maximum:
+        raise ValueError(f"{field} must be between 1 and {maximum}")
+    return parsed
 
 
 class OrdersRepo(AbstractOrderRepository):
@@ -541,6 +597,353 @@ class OrdersRepo(AbstractOrderRepository):
             )
         return self._row_to_order_record(row)
 
+    async def list_no_id_ambiguous_submissions(
+        self,
+        *,
+        limit: int,
+    ) -> list[AmbiguousSubmission]:
+        """Return a bounded oldest-first batch of unresolved lost-POST rows.
+
+        Only ``submitted_unconfirmed`` rows without a venue identity qualify.
+        No age predicate is applied here: the constructor-injected recovery
+        clock owns the grace-period decision, which keeps that behavior fully
+        deterministic in tests.  ``LIMIT`` still bounds the database and
+        in-memory work for every recovery cycle.
+        """
+
+        bounded_limit = _bounded_positive(
+            limit,
+            field="limit",
+            maximum=_MAX_AMBIGUOUS_RECOVERY_BATCH_SIZE,
+        )
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT idempotency_key, user_id, leader_id, order_id, status,
+                       request_json, response_json, attempt_count, last_error,
+                       created_at, updated_at,
+                       COALESCE(matched_total, '0') AS matched_total
+                FROM orders
+                WHERE status = 'submitted_unconfirmed'
+                  AND order_id IS NULL
+                ORDER BY created_at ASC, idempotency_key ASC
+                LIMIT $1
+                """,
+                bounded_limit,
+            )
+
+        submissions: list[AmbiguousSubmission] = []
+        for row in rows:
+            request = _parse_jsonb(row["request_json"])
+            response = _parse_jsonb(row["response_json"])
+            submitted_at = (
+                _utc_datetime(response.get("pending_since"))
+                or _utc_datetime(row["created_at"])
+                or _utc_datetime(row["updated_at"])
+            )
+            if submitted_at is None:
+                # Fail closed: an undated lost-POST row cannot satisfy a grace
+                # period and must stay duplicate-blocking for operator review.
+                logger.error(
+                    "ambiguous recovery skipped undated order row key=%s",
+                    row["idempotency_key"],
+                )
+                continue
+            raw_side = str(request.get("side") or "").strip().upper()
+            side = (
+                SubmissionSide(raw_side)
+                if raw_side in {SubmissionSide.BUY.value, SubmissionSide.SELL.value}
+                else SubmissionSide.UNKNOWN
+            )
+            submissions.append(
+                AmbiguousSubmission(
+                    idempotency_key=str(row["idempotency_key"]),
+                    user_id=str(row["user_id"]),
+                    leader_id=(str(row["leader_id"]) if row["leader_id"] is not None else None),
+                    token_id=(
+                        str(request["token_id"]) if request.get("token_id") is not None else None
+                    ),
+                    condition_id=(
+                        str(request["condition_id"])
+                        if request.get("condition_id") is not None
+                        else None
+                    ),
+                    side=side,
+                    amount=_optional_decimal(request.get("amount")),
+                    price_limit=_optional_decimal(request.get("price_limit")),
+                    submitted_at=submitted_at,
+                )
+            )
+        return submissions
+
+    async def record_ambiguous_scan_evidence(
+        self,
+        *,
+        idempotency_key: str,
+        scan: AuthoritativeRecoveryScan,
+        observed_at: datetime,
+        required_scan_count: int,
+        evidence_history_limit: int,
+    ) -> AmbiguousRecoveryProgress | None:
+        """Atomically append a bounded evidence summary to an ambiguous row.
+
+        Only consecutive scans that exhaust both private collections and find
+        both account checks consistent with absence advance the proof.  Any
+        incomplete or contradictory scan resets the counter to zero.  The
+        counter saturates at the configured requirement and the retained scan
+        tail is bounded independently, preventing response JSON growth.
+        """
+
+        required = _bounded_positive(
+            required_scan_count,
+            field="required_scan_count",
+            maximum=_MAX_AMBIGUOUS_REQUIRED_SCANS,
+        )
+        history_limit = _bounded_positive(
+            evidence_history_limit,
+            field="evidence_history_limit",
+            maximum=_MAX_AMBIGUOUS_EVIDENCE_HISTORY,
+        )
+        if observed_at.tzinfo is None:
+            raise ValueError("observed_at must be timezone-aware")
+
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    """
+                    SELECT response_json
+                    FROM orders
+                    WHERE idempotency_key = $1
+                      AND status = 'submitted_unconfirmed'
+                      AND order_id IS NULL
+                    FOR UPDATE
+                    """,
+                    idempotency_key,
+                )
+                if row is None:
+                    return None
+
+                response = _parse_jsonb(row["response_json"])
+                existing_recovery = response.get("ambiguous_recovery")
+                recovery = dict(existing_recovery) if isinstance(existing_recovery, dict) else {}
+                existing_scans = recovery.get("scans")
+                scans = (
+                    [dict(item) for item in existing_scans if isinstance(item, dict)]
+                    if isinstance(existing_scans, list)
+                    else []
+                )
+                try:
+                    previous_consecutive = max(
+                        0,
+                        int(recovery.get("consecutive_complete_absence_scans", 0)),
+                    )
+                except (TypeError, ValueError):
+                    previous_consecutive = 0
+
+                qualifies = scan.qualifies_as_complete_absence
+                consecutive = min(previous_consecutive + 1, required) if qualifies else 0
+                evidence = {
+                    "observed_at": observed_at.astimezone(timezone.utc).isoformat(),
+                    "private_orders_complete": bool(scan.private_orders_complete),
+                    "private_fills_complete": bool(scan.private_fills_complete),
+                    "position_check": scan.position_check.value,
+                    "balance_check": scan.balance_check.value,
+                    "qualifies_as_complete_absence": qualifies,
+                }
+                if scan.match is not None:
+                    evidence["match_source"] = scan.match.source.value
+                    evidence["venue_order_id"] = scan.match.venue_order_id
+                scans.append(evidence)
+                scans = scans[-history_limit:]
+                recovery.update(
+                    {
+                        "version": 1,
+                        "consecutive_complete_absence_scans": consecutive,
+                        "scans": scans,
+                    }
+                )
+                response["ambiguous_recovery"] = recovery
+                response["status"] = "submitted_unconfirmed"
+                status = await conn.execute(
+                    """
+                    UPDATE orders
+                    SET response_json = $2::jsonb,
+                        updated_at = now()
+                    WHERE idempotency_key = $1
+                      AND status = 'submitted_unconfirmed'
+                      AND order_id IS NULL
+                    """,
+                    idempotency_key,
+                    _json_str(response) or "{}",
+                )
+                if _affected(status) != 1:
+                    return None
+
+        return AmbiguousRecoveryProgress(
+            consecutive_complete_absence_scans=consecutive,
+            retained_evidence_entries=len(scans),
+        )
+
+    async def attach_recovered_venue_order_id(
+        self,
+        *,
+        idempotency_key: str,
+        venue_order_id: str,
+        source: RecoveryMatchSource,
+        recovered_at: datetime,
+    ) -> bool:
+        """Atomically attach an authoritative identity without changing state.
+
+        The row remains ``submitted_unconfirmed`` so normal order-id-based
+        reconciliation, rather than this recovery service, determines fills
+        and terminal status.  A concurrent resolution causes a no-op.
+        """
+
+        order_id = str(venue_order_id).strip()
+        if not order_id:
+            raise ValueError("venue_order_id is required")
+        if not isinstance(source, RecoveryMatchSource):
+            raise TypeError("source must be a RecoveryMatchSource")
+        if recovered_at.tzinfo is None:
+            raise ValueError("recovered_at must be timezone-aware")
+
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    """
+                    SELECT response_json
+                    FROM orders
+                    WHERE idempotency_key = $1
+                      AND status = 'submitted_unconfirmed'
+                      AND order_id IS NULL
+                    FOR UPDATE
+                    """,
+                    idempotency_key,
+                )
+                if row is None:
+                    return False
+                response = _parse_jsonb(row["response_json"])
+                existing_recovery = response.get("ambiguous_recovery")
+                recovery = dict(existing_recovery) if isinstance(existing_recovery, dict) else {}
+                recovery.update(
+                    {
+                        "version": 1,
+                        "resolution": "recovered_order_id",
+                        "match_source": source.value,
+                        "recovered_at": recovered_at.astimezone(timezone.utc).isoformat(),
+                    }
+                )
+                response.update(
+                    {
+                        "status": "submitted_unconfirmed",
+                        "order_id": order_id,
+                        "orderID": order_id,
+                        "ambiguous_recovery": recovery,
+                    }
+                )
+                returned = await conn.fetchval(
+                    """
+                    UPDATE orders
+                    SET order_id = $2,
+                        response_json = $3::jsonb,
+                        updated_at = now()
+                    WHERE idempotency_key = $1
+                      AND status = 'submitted_unconfirmed'
+                      AND order_id IS NULL
+                    RETURNING idempotency_key
+                    """,
+                    idempotency_key,
+                    order_id,
+                    _json_str(response) or "{}",
+                )
+        return returned is not None
+
+    async def mark_ambiguous_submission_confirmed_absent(
+        self,
+        *,
+        idempotency_key: str,
+        required_scan_count: int,
+        confirmed_at: datetime,
+    ) -> bool:
+        """Resolve a no-ID ambiguity only after its persisted absence proof.
+
+        The threshold and latest qualifying evidence are checked while holding
+        the row lock, so a concurrent scan, recovered venue identity, or status
+        transition cannot race an unsafe ``confirmed_absent`` update.
+        """
+
+        required = _bounded_positive(
+            required_scan_count,
+            field="required_scan_count",
+            maximum=_MAX_AMBIGUOUS_REQUIRED_SCANS,
+        )
+        if confirmed_at.tzinfo is None:
+            raise ValueError("confirmed_at must be timezone-aware")
+
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    """
+                    SELECT response_json
+                    FROM orders
+                    WHERE idempotency_key = $1
+                      AND status = 'submitted_unconfirmed'
+                      AND order_id IS NULL
+                    FOR UPDATE
+                    """,
+                    idempotency_key,
+                )
+                if row is None:
+                    return False
+                response = _parse_jsonb(row["response_json"])
+                existing_recovery = response.get("ambiguous_recovery")
+                if not isinstance(existing_recovery, dict):
+                    return False
+                recovery = dict(existing_recovery)
+                try:
+                    consecutive = int(recovery.get("consecutive_complete_absence_scans", 0))
+                except (TypeError, ValueError):
+                    return False
+                scans = recovery.get("scans")
+                latest = scans[-1] if isinstance(scans, list) and scans else None
+                if (
+                    consecutive < required
+                    or not isinstance(latest, dict)
+                    or latest.get("qualifies_as_complete_absence") is not True
+                ):
+                    return False
+
+                recovery.update(
+                    {
+                        "version": 1,
+                        "resolution": "confirmed_absent",
+                        "confirmed_at": confirmed_at.astimezone(timezone.utc).isoformat(),
+                        "required_scan_count": required,
+                    }
+                )
+                response.update(
+                    {
+                        "success": False,
+                        "status": "confirmed_absent",
+                        "ambiguous_recovery": recovery,
+                    }
+                )
+                returned = await conn.fetchval(
+                    """
+                    UPDATE orders
+                    SET status = 'confirmed_absent',
+                        response_json = $2::jsonb,
+                        updated_at = now()
+                    WHERE idempotency_key = $1
+                      AND status = 'submitted_unconfirmed'
+                      AND order_id IS NULL
+                    RETURNING idempotency_key
+                    """,
+                    idempotency_key,
+                    _json_str(response) or "{}",
+                )
+        return returned is not None
+
     async def save_submission(self, record: OrderSubmissionRecord) -> None:
         request_json = _json_str(record.request_payload) or "{}"
         response_json = _json_str(record.response_payload)
@@ -844,7 +1247,13 @@ class OrdersRepo(AbstractOrderRepository):
         *,
         user_id: str | None = None,
         side: str | None = None,
+        limit: int = 200,
     ) -> list[dict[str, Any]]:
+        bounded_limit = _bounded_positive(
+            limit,
+            field="limit",
+            maximum=1000,
+        )
         query = """
             SELECT idempotency_key, user_id, leader_id, order_id, status,
                    request_json, response_json, attempt_count, last_error,
@@ -863,7 +1272,8 @@ class OrdersRepo(AbstractOrderRepository):
             # comparison so SQL stays static and the side value is bound.
             query += f" AND UPPER(COALESCE(request_json->>'side', '')) = ${len(params) + 1}"
             params.append(str(side).upper())
-        query += " ORDER BY updated_at ASC"
+        params.append(bounded_limit)
+        query += f" ORDER BY updated_at ASC LIMIT ${len(params)}"
 
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(query, *params)

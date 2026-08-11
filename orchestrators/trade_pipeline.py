@@ -16,6 +16,9 @@ from domain.units import BASIS_POINTS_PER_UNIT, UNIX_MILLISECONDS_THRESHOLD
 from domain.trading_context import TradingContext
 from services.entryPermissionService import EntryDecision, EntryPermissionService
 from services.execution.reconciliation_service import ReconciliationService
+from services.execution.pending_order_reconciliation import (
+    PendingOrderReconciliationQueryService,
+)
 from services.executionService import ExecutionRequest
 from services.metrics import COPY_LATENCY_BUCKETS, METRIC_COPY_LATENCY, metrics
 from domain.position_key import PositionKey
@@ -92,6 +95,7 @@ def get_reconciliation_service(context: TradingContext) -> ReconciliationService
     consistent across trade and risk paths.
     """
     svc = context.extra.get("_reconciliation_service")
+    task_budget_settlement = context.extra.get("task_budget_settlement")
     reservation_service = context.extra.get("reservation_service")
     if reservation_service is None:
         coordinator = getattr(context, "execution_coordinator", None)
@@ -121,10 +125,13 @@ def get_reconciliation_service(context: TradingContext) -> ReconciliationService
                 if getattr(context, "config", None) is not None
                 else None
             ),
+            task_budget_settlement=task_budget_settlement,
         )
         context.extra["_reconciliation_service"] = svc
     elif getattr(svc, "reservation_service", None) is None and reservation_service is not None:
         svc.reservation_service = reservation_service
+    if task_budget_settlement is not None:
+        svc.task_budget_settlement = task_budget_settlement
     return svc
 
 
@@ -189,7 +196,10 @@ async def _submit_copy_through_coordinator(
                 fees_paid=Decimal("0"),
                 error="ExecutionCoordinator not wired in live mode",
             )
-        submitter = context.execution_service.execute
+        execution_service = context.execution_service
+        if execution_service is None:
+            raise RuntimeError("TradingContext.execution_service is required")
+        submitter = execution_service.execute
         return await submitter(exec_req)
 
     from services.execution.coordinator import ExecutionIntent
@@ -939,7 +949,10 @@ def _position_pct_cap_snapshot_is_fresh(
     wallet = _funder_wallet_address(context)
     cached_wallet = str(context.extra.get(_POSITION_PCT_CAP_BALANCE_WALLET_KEY) or "").strip()
     try:
-        cached_at = float(context.extra.get(_POSITION_PCT_CAP_BALANCE_AT_KEY))
+        cached_at_raw = context.extra.get(_POSITION_PCT_CAP_BALANCE_AT_KEY)
+        if cached_at_raw is None:
+            return False
+        cached_at = float(cached_at_raw)
     except (TypeError, ValueError):
         return False
     cached_balance = _to_decimal(
@@ -1478,6 +1491,37 @@ async def reconcile_submitted_unconfirmed(
         max_age_seconds=max_age_seconds,
         user_id=reconcile_user_id,
     )
+    extra = getattr(context, "extra", {})
+    pending_query = extra.get("_pending_order_query_service")
+    if pending_query is None and hasattr(
+        type(context.orders_repo),
+        "get_unconfirmed_order_submissions",
+    ):
+        pending_query = PendingOrderReconciliationQueryService(
+            context.orders_repo,
+            max_batch_size=200,
+        )
+        extra["_pending_order_query_service"] = pending_query
+    if pending_query is not None:
+        try:
+            order_records = await pending_query.list_records(
+                user_id=reconcile_user_id,
+                limit=200,
+            )
+        except Exception as exc:
+            logger.warning(
+                "reconcile_orders_table_query_failed | error_type=%s",
+                type(exc).__name__,
+            )
+        else:
+            known_order_ids = {
+                str(record.get("order_id") or "") for record in [*buy_pending, *sell_pending]
+            }
+            for side, record in order_records:
+                order_id = str(record.get("order_id") or "")
+                if order_id and order_id not in known_order_ids:
+                    (buy_pending if side == "BUY" else sell_pending).append(record)
+                    known_order_ids.add(order_id)
     if not buy_pending and not sell_pending:
         return 0
 
@@ -1620,6 +1664,12 @@ async def execute_trades(
 ) -> list[TradePipelineResult]:
     if context.execution_service is None:
         raise RuntimeError("TradingContext.execution_service is required")
+    leader_scorer = context.leader_scorer
+    if leader_scorer is None:
+        raise RuntimeError("TradingContext.leader_scorer is required")
+    copy_decision_svc = context.copy_decision_service
+    if copy_decision_svc is None:
+        raise RuntimeError("TradingContext.copy_decision_service is required")
 
     # Reconcile any BUYs from previous cycles whose fill confirmation was delayed.
     # This must happen before SELL processing so that positions are visible.
@@ -1650,7 +1700,7 @@ async def execute_trades(
         if context.pnl_tracker is not None and hasattr(context.pnl_tracker, "metrics")
         else {}
     )
-    leader_score = context.leader_scorer.score_leader(
+    leader_score = leader_scorer.score_leader(
         leader_id,
         analytics={
             "net_pnl": float(pnl_metrics.get("net_pnl", 0.0) or 0.0),
@@ -2003,8 +2053,6 @@ async def execute_trades(
                 continue
 
             # --- Decision gate: score the leader and this specific trade ---
-            copy_decision_svc = context.copy_decision_service
-
             # Fetch live price for decision scoring from the FRESH quote
             # (best_ask for BUY / best_bid for SELL), not the stale leader
             # signal price — see _decision_live_price (P1-c).
@@ -2448,7 +2496,7 @@ async def execute_trades(
                         signal.condition_id[:12],
                         float(target_notional),
                         float(gated_notional),
-                        decision.trust_multiplier if hasattr(decision, "trust_multiplier") else 0,
+                        decision.details.get("trust_multiplier", 0),
                         extra={
                             "type": "sizing_final",
                             "condition_id": signal.condition_id,

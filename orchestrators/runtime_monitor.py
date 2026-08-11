@@ -1,8 +1,12 @@
+"""Leader-monitor orchestration with one exclusive copy execution path."""
+
 from __future__ import annotations
 
 import asyncio
 import json
 import time
+from collections.abc import Awaitable, Callable, Iterable
+from dataclasses import dataclass
 from hashlib import blake2b
 from typing import Any, TYPE_CHECKING
 
@@ -18,6 +22,69 @@ if TYPE_CHECKING:
 
 logger = get_logger("RuntimeMonitor")
 
+LegacyExecutor = Callable[
+    [TradingContext, str, list[dict[str, Any]], float],
+    Awaitable[object],
+]
+V1BatchSink = Callable[[str, list[dict[str, Any]]], Awaitable[int]]
+MonotonicClock = Callable[[], float]
+
+
+@dataclass(frozen=True, slots=True)
+class LeaderDispatchFailure:
+    """One follower-specific legacy pipeline failure."""
+
+    context: TradingContext
+    error: Exception
+
+
+class LeaderBatchDispatcher:
+    """Select exactly one active copy pipeline for each leader batch."""
+
+    def __init__(
+        self,
+        *,
+        leader: str,
+        contexts: Iterable[TradingContext],
+        legacy_executor: LegacyExecutor,
+        v1_sink: V1BatchSink | None = None,
+        clock: MonotonicClock = time.time,
+    ) -> None:
+        self._leader = str(leader)
+        self._contexts = tuple(contexts)
+        self._legacy_executor = legacy_executor
+        self._v1_sink = v1_sink
+        self._clock = clock
+
+    async def dispatch(
+        self,
+        trades: list[dict[str, Any]],
+    ) -> tuple[LeaderDispatchFailure, ...]:
+        """Send a batch to v1 or legacy, never both.
+
+        Returns:
+            Follower-specific failures from the legacy fan-out. The v1 sink
+            owns its own bounded worker error isolation and either accepts the
+            batch or raises to the surrounding monitor worker.
+        """
+
+        if self._v1_sink is not None:
+            await self._v1_sink(self._leader, trades)
+            return ()
+        now_ts = self._clock()
+        results = await asyncio.gather(
+            *(
+                self._legacy_executor(context, self._leader, trades, now_ts)
+                for context in self._contexts
+            ),
+            return_exceptions=True,
+        )
+        return tuple(
+            LeaderDispatchFailure(context=context, error=result)
+            for context, result in zip(self._contexts, results, strict=True)
+            if isinstance(result, Exception)
+        )
+
 
 async def run_leader_monitor(
     leader_wallet: str,
@@ -28,8 +95,23 @@ async def run_leader_monitor(
     fetch_interval: float,
     monitored_leader_count: int = 1,
     research_capture_service: Any | None = None,
+    v1_sink: V1BatchSink | None = None,
 ) -> None:
-    if not contexts:
+    """Poll one leader and route each batch to v1 or legacy execution.
+
+    Args:
+        leader_wallet: Source wallet monitored by the polling adapter.
+        contexts: Legacy per-follower contexts; optional for the v1 path.
+        readiness_tracker: Shared process readiness authority.
+        config: Immutable application configuration.
+        fetch_interval: Poll cadence in seconds.
+        monitored_leader_count: Aggregate monitored leader count.
+        research_capture_service: Optional read-only research capture service.
+        v1_sink: Atomic v1 batch admission callback. When supplied, legacy
+            execution is never invoked.
+    """
+
+    if not contexts and v1_sink is None:
         logger.warning(
             "no_leaders_monitored", extra={"leader_id": leader_wallet, "reason": "no_followers"}
         )
@@ -39,30 +121,48 @@ async def run_leader_monitor(
     trade_queue: asyncio.Queue[list[dict]] = asyncio.Queue(
         maxsize=max(1, int(config.detection.trade_queue_max_batches))
     )
+    dispatcher = LeaderBatchDispatcher(
+        leader=leader_wallet,
+        contexts=contexts,
+        legacy_executor=execute_trade_pipeline,
+        v1_sink=v1_sink,
+    )
+
+    if v1_sink is not None:
+
+        async def on_v1_trade(trades: list[dict]) -> None:
+            await dispatcher.dispatch(trades)
+
+        await trade_monitor(
+            {
+                "leaderWallet": leader_wallet,
+                "FETCH_INTERVAL": fetch_interval,
+                "MONITORED_LEADER_COUNT": monitored_leader_count,
+            },
+            on_v1_trade,
+            readiness_tracker=readiness_tracker,
+            config=config,
+            research_capture_service=research_capture_service,
+            aggregate_signals=False,
+        )
+        return
 
     async def worker() -> None:
         while True:
             trades = await trade_queue.get()
             try:
-                now_ts = time.time()
-                tasks = [
-                    execute_trade_pipeline(context, leader_wallet, trades, now_ts)
-                    for context in contexts
-                ]
-                results = await asyncio.gather(*tasks, return_exceptions=True)
-                for idx, result in enumerate(results):
-                    if isinstance(result, Exception):
-                        context = contexts[idx]
-                        logger.error(
-                            "trade_pipeline_exception",
-                            extra={
-                                "leader_id": leader_wallet,
-                                "user": context.user_id,
-                                "error": safe_error_detail(result),
-                                "error_type": type(result).__name__,
-                            },
-                        )
-                        metrics.inc("trade_pipeline_crashes_total")
+                failures = await dispatcher.dispatch(trades)
+                for failure in failures:
+                    logger.error(
+                        "trade_pipeline_exception",
+                        extra={
+                            "leader_id": leader_wallet,
+                            "user": failure.context.user_id,
+                            "error": safe_error_detail(failure.error),
+                            "error_type": type(failure.error).__name__,
+                        },
+                    )
+                    metrics.inc("trade_pipeline_crashes_total")
             finally:
                 trade_queue.task_done()
                 metrics.set_gauge(

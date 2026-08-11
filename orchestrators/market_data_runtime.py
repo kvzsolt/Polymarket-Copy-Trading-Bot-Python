@@ -20,7 +20,7 @@ import time
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from domain.units import BASIS_POINTS_PER_UNIT
-from typing import Any
+from typing import Any, Protocol
 
 from cache.market_state_store import MarketStateStore
 from clients.market_ws import DEFAULT_MARKET_WS_URL, MarketWebSocket
@@ -30,6 +30,27 @@ from services.healthServer import ReadinessTracker
 from utils.logger import get_logger
 
 logger = get_logger("MarketDataRuntime")
+
+
+class MarketQuoteSink(Protocol):
+    """Receive safe two-sided quote projections without owning market state."""
+
+    def record(
+        self,
+        *,
+        token_id: str,
+        best_bid: Decimal,
+        best_ask: Decimal,
+        source: str,
+    ) -> None:
+        """Record one authoritative quote without blocking the WSS callback."""
+
+        ...
+
+    def discard(self, token_id: str) -> None:
+        """Discard a token after authoritative market resolution."""
+
+        ...
 
 
 @dataclass
@@ -57,6 +78,7 @@ class MarketDataRuntime:
     readiness: ReadinessTracker
     config: Any
     ws_url: str = DEFAULT_MARKET_WS_URL
+    quote_sink: MarketQuoteSink | None = None
 
     _ws_client: MarketWebSocket | None = field(default=None, init=False)
     _ws_task: asyncio.Task | None = field(default=None, init=False)
@@ -692,11 +714,39 @@ class MarketDataRuntime:
         readiness gate from the store snapshot.
         """
         self._last_wss_message_at = time.monotonic()
+        self._project_shared_quote(token_id, event_type)
         try:
             self._update_readiness_from_store()
         except Exception as exc:
             logger.debug(
                 "market_data_state_change_recompute_failed | token=%s event=%s error=%r",
+                token_id,
+                event_type,
+                exc,
+            )
+
+    def _project_shared_quote(self, token_id: str, event_type: str) -> None:
+        """Project one safe quote without letting observers affect readiness."""
+
+        sink = self.quote_sink
+        if sink is None:
+            return
+        try:
+            if event_type == "market_resolved":
+                sink.discard(token_id)
+                return
+            quote = self.market_store.get_quote(token_id)
+            if quote is None or quote.best_bid is None or quote.best_ask is None:
+                return
+            sink.record(
+                token_id=token_id,
+                best_bid=quote.best_bid,
+                best_ask=quote.best_ask,
+                source=quote.source,
+            )
+        except Exception as exc:
+            logger.debug(
+                "market_data_quote_projection_failed | token=%s event=%s error=%r",
                 token_id,
                 event_type,
                 exc,

@@ -2,8 +2,7 @@
 # wallets: [] means discovery-driven; per-leader overrides live in
 # config/leaders/<wallet>.yml (overrides only - they never join the roster).
 # copy_tasks.enabled: false is the paper-safe default for the v1 engine.
-wallets:
-- '0x751a2b86cab503496efd325c8344e10159349ea1'
+wallets: []
 copy_decision_min_score: 0.15
 copy_max_price_drift_pct: 15.0
 copy_max_edge_decay_pct: 90.0

@@ -45,7 +45,9 @@ and stops its REST fallback automatically.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import time
+from collections.abc import Sized
 from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any
 
@@ -429,14 +431,14 @@ class ManualSyncService:
         if not callable(probe):
             return False
         try:
-            return bool(
-                await probe(
-                    user_id=self._user_id,
-                    asset=token_id,
-                    side=side,
-                    max_age_seconds=max_age_seconds,
-                )
+            probe_result = probe(
+                user_id=self._user_id,
+                asset=token_id,
+                side=side,
+                max_age_seconds=max_age_seconds,
             )
+            result = await probe_result if inspect.isawaitable(probe_result) else probe_result
+            return bool(result)
         except Exception as exc:
             logger.warning(
                 "manual_sync_own_trade_probe_failed | token=%s side=%s error=%s",
@@ -471,13 +473,13 @@ class ManualSyncService:
                 max_age_seconds=self._own_fill_seed_holdoff,
             )
         try:
-            return bool(
-                await probe(
-                    user_id=self._user_id,
-                    asset=token_id,
-                    side=side,
-                )
+            probe_result = probe(
+                user_id=self._user_id,
+                asset=token_id,
+                side=side,
             )
+            result = await probe_result if inspect.isawaitable(probe_result) else probe_result
+            return bool(result)
         except Exception as exc:
             logger.warning(
                 "manual_sync_pending_trade_probe_failed | token=%s side=%s error=%s",
@@ -759,7 +761,10 @@ class ManualSyncService:
         if not callable(release_expired):
             return
         try:
-            released_ids = await release_expired()
+            release_result = release_expired()
+            released_ids = (
+                await release_result if inspect.isawaitable(release_result) else release_result
+            )
         except Exception as exc:
             logger.warning(
                 "manual_sync_reservation_reap_failed | changed_scopes=%d error=%s",
@@ -767,10 +772,7 @@ class ManualSyncService:
                 redact_error_detail(exc),
             )
             return
-        try:
-            count = len(released_ids or [])
-        except TypeError:
-            count = 0
+        count = len(released_ids) if isinstance(released_ids, Sized) else 0
         if count:
             logger.info(
                 "manual_sync_reaped_expired_reservations | count=%d changed_scopes=%d user=%s",

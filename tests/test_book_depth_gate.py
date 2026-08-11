@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from cache.market_state_store import BookSnapshot, QuoteSnapshot, TickSnapshot
+from integrations.polymarket.models import VenueSubmitResult
 from services.execution.book_spread import calculate_book_depth_metrics
 from services.market_data_service import MarketDataBundle, MarketDataSource
 
@@ -129,8 +130,14 @@ def _make_execution_service(bids: dict, asks: dict, *, min_depth: float = 0.0):
     mds.require_fresh_data = AsyncMock(return_value=_make_bundle_with_book(bids, asks))
 
     clob = AsyncMock()
-    clob.post_signed_order = AsyncMock(
-        return_value={"success": True, "orderID": "ord-x", "status": "submitted"}
+    gateway = SimpleNamespace(
+        submit_marketable_order=AsyncMock(
+            return_value=VenueSubmitResult(
+                success=True,
+                order_id="ord-x",
+                status="submitted",
+            )
+        )
     )
 
     order_repo = MagicMock()
@@ -174,6 +181,7 @@ def _make_execution_service(bids: dict, asks: dict, *, min_depth: float = 0.0):
         AsyncMock(get_fee_bps=AsyncMock(return_value=Decimal("0"))),
         order_repo,
         config=mock_cfg,
+        clob_gateway=gateway,
         market_data_service=mds,
     )
 

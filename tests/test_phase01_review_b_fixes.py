@@ -146,6 +146,65 @@ async def test_reconcile_submitted_unconfirmed_scopes_queries_to_context_user():
     )
 
 
+@pytest.mark.asyncio
+async def test_reconcile_includes_orders_table_only_v1_submissions(monkeypatch):
+    """Reconcile v1 orders even when processed_trades has no matching row."""
+
+    from orchestrators import trade_pipeline as tp
+
+    class OrdersWithV1Rows:
+        """Expose both legacy scans and the bounded v1 orders scan."""
+
+        async def get_unconfirmed_buys(self, **_kwargs):
+            """Return no legacy processed-trade BUY rows."""
+
+            return []
+
+        async def get_unconfirmed_sells(self, **_kwargs):
+            """Return no legacy processed-trade SELL rows."""
+
+            return []
+
+        async def get_unconfirmed_order_submissions(self, **kwargs):
+            """Return one v1 order persisted without processed_trades."""
+
+            assert kwargs == {"user_id": "user-a", "limit": 200}
+            return [
+                {
+                    "idempotency_key": "copy-task:abc",
+                    "user_id": "user-a",
+                    "leader_id": "leader-a",
+                    "order_id": "order-a",
+                    "status": "submitted_unconfirmed",
+                    "request": {
+                        "side": "BUY",
+                        "signal_id": "copy-task:abc",
+                        "token_id": "token-a",
+                        "condition_id": "condition-a",
+                    },
+                }
+            ]
+
+    reconciled: list[tuple[str, str]] = []
+
+    async def _fake_reconcile_one(_ctx, record, side):
+        reconciled.append((record["order_id"], side))
+        return True
+
+    monkeypatch.setattr(tp, "_reconcile_one", _fake_reconcile_one)
+    ctx = SimpleNamespace(
+        user_id="user-a",
+        execution_service=MagicMock(),
+        orders_repo=OrdersWithV1Rows(),
+        position_coordinator=PositionActionCoordinator(),
+        extra={},
+        config=None,
+    )
+
+    assert await tp.reconcile_submitted_unconfirmed(ctx) == 1
+    assert reconciled == [("order-a", "BUY")]
+
+
 # ---------------------------------------------------------------------------
 # C3 — fail-closed lock bypass in live mode
 # ---------------------------------------------------------------------------

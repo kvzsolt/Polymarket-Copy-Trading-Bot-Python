@@ -1,38 +1,36 @@
-"""Deprecated import bridge to the unified Polymarket SDK client factory.
+"""Legacy-named exact-decimal market-data helpers.
 
-Production code should import from ``integrations.polymarket.sdk_client``.
-This module contains no venue protocol implementation and can be removed after
-external callers have moved to the snake_case module path.
+No client is constructed here. Runtime venue ownership belongs exclusively to
+the CCXT composition under :mod:`integrations.polymarket`.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
 from typing import Any
 
-from polymarket import AsyncSecureClient as ClobClient
-
-from integrations.polymarket.sdk_client import (
-    MarketMeta,
-    PolymarketClient,
-    create_polymarket_client,
-)
 from integrations.polymarket.models import PRICE_TOKEN_NOT_FOUND
 from services.market_data_quality import (
     is_thin_or_empty_book as _is_thin_or_empty_book,
     top_of_book_from_levels as _top_of_book_from_levels,
 )
 
-ClobClientWrapper = PolymarketClient
-create_clob_client = create_polymarket_client
+
+@dataclass(frozen=True, slots=True)
+class MarketMeta:
+    """Execution metadata snapshot used by older deterministic test seams."""
+
+    token_id: str
+    tick_size: Decimal
+    min_order_size: Decimal
+    neg_risk: bool
+    best_bid: Decimal | None
+    best_ask: Decimal | None
 
 
 def configure_from_appconfig(_config: Any) -> None:
-    """No-op retained while legacy composition code is removed.
-
-    The unified SDK owns its environment and transport configuration; there is
-    no process-wide client monkey patch to mutate.
-    """
+    """Keep historical callers side-effect free during configuration load."""
 
 
 def quantize_to_tick(
@@ -50,12 +48,9 @@ def quantize_to_tick(
 
 
 __all__ = [
-    "ClobClient",
-    "ClobClientWrapper",
     "MarketMeta",
     "PRICE_TOKEN_NOT_FOUND",
     "configure_from_appconfig",
-    "create_clob_client",
     "quantize_to_tick",
     "_is_thin_or_empty_book",
     "_top_of_book_from_levels",

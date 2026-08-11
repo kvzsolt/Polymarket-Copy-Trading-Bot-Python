@@ -26,7 +26,12 @@ def _decimal(value: object) -> Decimal | None:
 def top_of_book_from_levels(levels: object, *, side: str) -> Decimal | None:
     if side not in {"bid", "ask"}:
         raise ValueError(f"Unsupported book side: {side}")
-    values = levels.keys() if isinstance(levels, dict) else (levels or [])
+    if isinstance(levels, dict):
+        values = levels.keys()
+    elif isinstance(levels, (list, tuple)):
+        values = levels
+    else:
+        return None
     prices: list[Decimal] = []
     for level in values:
         candidate = level if isinstance(levels, dict) else getattr(level, "price", None)

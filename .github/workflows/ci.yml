@@ -161,15 +161,17 @@ jobs:
         run: |
           pip install mypy
           # Scoped, BLOCKING type-check of the order-signing + HTTP-transport
-          # spine (P2-a). These files are mypy-clean and must stay clean: a new
-          # type error here can mis-sign an order (condition_id / neg-risk
-          # routing) or mishandle a venue error. ``--follow-imports=silent``
+          # spine. These files must stay mypy-clean: a new type error here can
+          # mis-sign an order (condition_id / neg-risk routing) or mishandle a
+          # venue error. ``--follow-imports=silent``
           # restricts reporting to exactly these files; their transitive type
           # debt stays under the soft-fail step below. Expand this allowlist as
           # more money-path modules are cleaned. No ``|| true`` — this gates.
           mypy --install-types --non-interactive --explicit-package-bases \
             --ignore-missing-imports --follow-imports=silent \
-            integrations/polymarket/clob_v2_gateway.py clients/network/http_client.py
+            integrations/polymarket/ccxt_prediction_client.py \
+            integrations/polymarket/ccxt_prediction_gateway.py \
+            clients/network/http_client.py
       - name: mypy (type — soft fail until type debt cleared)
         continue-on-error: true
         run: |
@@ -214,7 +216,6 @@ jobs:
           docker run -d --name pmct-smoke --network pmct-smoke-net \
             -e PMCOPY__EXECUTION__TRADING_MODE=paper \
             -e PMCOPY__DATABASE__DSN=postgresql://bot:paper-smoke-only@pmct-postgres:5432/polymarket_copytrading_python \
-            -e PMCOPY__WALLET__PRIVATE_KEY=0x0000000000000000000000000000000000000000000000000000000000000001 \
             -e PMCOPY__WALLET__FUNDER_ADDRESS=0x0000000000000000000000000000000000000001 \
             -e PMCOPY__WALLET__POLYGON_RPC_URL=https://polygon-bor-rpc.publicnode.com \
             -e PMCOPY__NETWORK__RPC_URL=https://polygon-bor-rpc.publicnode.com \

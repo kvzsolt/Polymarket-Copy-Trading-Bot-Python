@@ -26,7 +26,7 @@ from storage.postgres.copy_task_repository import PostgresCopyTaskRepository
 from storage.postgres.market_reentry_lock_repository import (
     PostgresMarketReentryLockRepository,
 )
-from storage.postgres.migrations import apply_v1_migrations
+from storage.postgres.migrations import apply_migrations, apply_v1_migrations
 from storage.postgres.task_budget_repository import PostgresTaskBudgetRepository
 
 
@@ -39,7 +39,7 @@ async def _pg_pool():
     """
     try:
         import asyncpg
-        from testcontainers.postgres import PostgresContainer
+        from testcontainers.community.postgres import PostgresContainer
     except Exception as exc:  # pragma: no cover - environment-dependent
         pytest.skip(f"testcontainers/asyncpg unavailable: {exc!r}")
     try:
@@ -53,7 +53,7 @@ async def _pg_pool():
         )
         pool = await asyncpg.create_pool(dsn, min_size=1, max_size=3)
         async with pool.acquire() as conn:
-            await apply_v1_migrations(conn)
+            await apply_migrations(conn)
         try:
             yield pool
         finally:
@@ -66,8 +66,8 @@ async def _pg_pool():
 async def test_v1_migration_is_idempotent_across_two_runs() -> None:
     async with _pg_pool() as pool:
         async with pool.acquire() as conn:
-            await apply_v1_migrations(conn)
-            await apply_v1_migrations(conn)
+            await apply_migrations(conn)
+            await apply_migrations(conn)
 
             tables = {
                 row["table_name"]
@@ -79,6 +79,19 @@ async def test_v1_migration_is_idempotent_across_two_runs() -> None:
             assert "market_reentry_locks" in tables
             assert "copy_task_budget_reservations" in tables
             assert "copy_task_fill_ledger" in tables
+            assert "copy_task_risk_lots" in tables
+            assert "copy_task_protective_exit_fill_ledger" in tables
+
+            migration_ids = {
+                row["migration_id"]
+                for row in await conn.fetch("SELECT migration_id FROM app_schema_migrations")
+            }
+            assert migration_ids == {
+                "20260808_01_copy_tasks_and_reentry_locks",
+                "20260811_02_copy_task_execution_lifecycle",
+                "20260811_03_control_plane",
+                "trader_discovery_single_generation_20260713",
+            }
 
 
 @pytest.mark.asyncio

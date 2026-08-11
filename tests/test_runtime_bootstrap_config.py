@@ -444,6 +444,7 @@ def test_build_trading_context_uses_typed_sizing_execution_values():
     assert ctx.buy_min_amount == 3.0
     assert ctx.buy_max_amount == 42.0
     assert ctx.extra["slippage_tolerance_bps"] == 150
+    assert ctx.extra["leader_wallet"] == "leader-1"
     assert ctx.entry_permission_service is not None
     assert ctx.entry_permission_service._repo is risk_blocks_repo
     assert ctx.config is cfg
@@ -497,16 +498,19 @@ def test_build_user_state_injects_typed_config_into_runtime_services():
     ):
         position_manager_instance = position_manager_cls.return_value
         execution_service_instance = execution_service_cls.return_value
+        clob_gateway = object()
         state = runtime_bootstrap.build_user_state(
             runtime_user,
             client=object(),
             pool=MagicMock(),
             config=cfg,
+            clob_gateway=clob_gateway,
         )
 
     position_manager_cls.assert_called_once_with(config=cfg)
     execution_service_cls.assert_called_once()
     assert execution_service_cls.call_args.kwargs["config"] is cfg
+    assert execution_service_cls.call_args.kwargs["clob_gateway"] is clob_gateway
     assert state.position_manager is position_manager_instance
     assert state.execution_service is execution_service_instance
     assert state.execution_coordinator is not None

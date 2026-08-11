@@ -36,7 +36,10 @@ def _decimal(value: Any, *, field: str) -> Decimal:
 
 def _decimal_places(step: Decimal) -> int:
     normalized = step.normalize()
-    return max(0, -normalized.as_tuple().exponent)
+    exponent = normalized.as_tuple().exponent
+    if not isinstance(exponent, int):
+        raise CcxtPrecisionError("step must be a finite decimal")
+    return max(0, -exponent)
 
 
 def _truncate(value: Decimal, quantum: Decimal) -> Decimal:

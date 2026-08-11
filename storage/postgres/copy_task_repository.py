@@ -53,6 +53,8 @@ class DatabasePool(Protocol):
     ) -> Sequence[Mapping[str, object]]:
         """Return a sequence of database rows."""
 
+        ...
+
 
 class CopyTaskCodec:
     """Translate immutable domain tasks to and from JSON-safe records."""

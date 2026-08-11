@@ -1,9 +1,8 @@
 """Lifecycle-safe client factory for ``ccxt.prediction.polymarket``.
 
-The official ``polymarket-client`` remains the production default.  CCXT is
-loaded lazily so the normal SDK path and paper startup do not initialize an
-authenticated transport accidentally. The dependency itself is mandatory at
-installation time; backend selection remains optional and explicitly gated.
+CCXT is the sole Polymarket venue adapter on this branch. Paper startup creates
+only a public transport; authenticated construction still requires both the
+explicit live gate enforced by composition and a verified Deposit Wallet.
 """
 
 from __future__ import annotations
@@ -81,14 +80,36 @@ class CcxtPredictionClient:
     ccxt_version: str | None = None
     _closed: bool = False
 
+    @property
+    def api_creds(self) -> dict[str, str]:
+        """Return normalized in-memory L2 credentials for the user stream.
+
+        Returns:
+            A fixed-key mapping. Public-only clients return empty values.
+        """
+
+        if not self.authenticated:
+            return {
+                "api_key": "",
+                "api_secret": "",
+                "api_passphrase": "",
+            }
+        return {
+            "api_key": str(getattr(self.exchange, "apiKey", "") or ""),
+            "api_secret": str(getattr(self.exchange, "secret", "") or ""),
+            "api_passphrase": str(getattr(self.exchange, "password", "") or ""),
+        }
+
     async def close(self) -> None:
+        """Close all CCXT transports and release instance-owned caches once."""
+
         if self._closed:
             return
         self._closed = True
         close = getattr(self.exchange, "close", None)
         if close is None:
             return
-        result = close()
+        result = close(True)
         if hasattr(result, "__await__"):
             await result
 
@@ -111,10 +132,9 @@ async def create_ccxt_prediction_client(
 ) -> CcxtPredictionClient:
     """Create a public or live-capable CCXT Polymarket prediction client.
 
-    A type-3 Deposit Wallet cannot be guessed from an EOA.  The CCXT path
-    therefore requires an explicit, already verified funder address whenever
-    ``authenticated=True``.  The official SDK remains responsible for wallet
-    derivation in the default production path.
+    A type-3 Deposit Wallet cannot be guessed from an EOA. The client therefore
+    requires an explicit, already verified funder address whenever
+    ``authenticated=True``.
     """
 
     resolved_key = _secret(private_key)
@@ -177,7 +197,7 @@ async def create_ccxt_prediction_client(
     except BaseException:
         close = getattr(exchange, "close", None)
         if callable(close):
-            close_result = close()
+            close_result = close(True)
             if inspect.isawaitable(close_result):
                 await close_result
         raise

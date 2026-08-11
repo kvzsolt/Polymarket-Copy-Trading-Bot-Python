@@ -2,6 +2,13 @@
 
 import re as _re
 import threading as _threading
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .createClobClient import MarketMeta
+    from .fetchData import close_session, fetch_data
+    from .getMyBalance import get_my_balance
+    from .idempotency import build_trade_key, has_processed, mark_processed
 
 # Polymarket CLOB token IDs are CTF (Conditional Token Framework) uint256
 # values represented as decimal digit strings, typically 70-80 characters.
@@ -28,9 +35,7 @@ def is_valid_clob_token_id(token_id: str | None) -> bool:
 # ---------------------------------------------------------------------------
 _LAZY_IMPORTS: dict[str, str] = {
     # symbol_name: module_path
-    "ClobClientWrapper": "utils.createClobClient",
     "MarketMeta": "utils.createClobClient",
-    "create_clob_client": "utils.createClobClient",
     "fetch_data": "utils.fetchData",
     "close_session": "utils.fetchData",
     "get_my_balance": "utils.getMyBalance",
@@ -105,10 +110,8 @@ from .logger import (  # noqa: E402 - kept after lazy-export definitions intenti
 __all__ = [
     # validation
     "is_valid_clob_token_id",
-    # createClobClient
-    "ClobClientWrapper",
+    # exact-decimal market metadata
     "MarketMeta",
-    "create_clob_client",
     # fetchData
     "fetch_data",
     "close_session",

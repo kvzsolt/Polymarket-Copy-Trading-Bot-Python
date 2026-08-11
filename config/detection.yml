@@ -7,7 +7,7 @@ leader_positions_min_fetch_spacing_ms: 250
 leader_activity_min_fetch_spacing_ms: 250
 trade_queue_max_batches: 64
 onchain:
-  enable_onchain_pending_detection: true
+  enable_onchain_pending_detection: false
   enable_onchain_mined_detection: false
   onchain_ws_url: ''
   pending_tx_ws_url: ''

@@ -96,11 +96,17 @@ class MarketReentryLockRepository(Protocol):
     async def create_if_absent(self, lock: MarketReentryLock) -> bool:
         """Persist ``lock`` and return whether it was newly created."""
 
+        ...
+
     async def delete(self, key: MarketReentryKey) -> bool:
         """Delete one lock and return whether a row existed."""
 
+        ...
+
     async def delete_market(self, market_id: str) -> int:
         """Delete every active lock for a resolved market."""
+
+        ...
 
 
 class InMemoryMarketReentryLockRepository:

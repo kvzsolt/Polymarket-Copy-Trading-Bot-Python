@@ -459,7 +459,11 @@ class ReservationService:
         terminal. Returns True on success. Loud by design — a force-release is a
         last-resort that should be visible in operator logs."""
         try:
-            await self.reservations_repo.mark_released(res.id, "expired_terminal_forced", now)
+            await self.reservations_repo.mark_released(
+                res.id,
+                "expired_terminal_forced",
+                int(now),
+            )
         except Exception as exc:
             logger.warning("reservation.force_release_failed id=%s error=%r", res.id, exc)
             return False

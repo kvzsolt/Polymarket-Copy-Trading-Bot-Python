@@ -110,39 +110,20 @@ def _classify_drift(persisted_size: Decimal, live_size: Decimal, epsilon: Decima
 async def _resolve_live_deposit_wallets(
     runtime_users: list[RuntimeUser], config: AppConfig
 ) -> None:
-    """Bind each live user's SDK-resolved Deposit Wallet, in place.
+    """Bind each live user's explicitly configured Deposit Wallet.
 
-    A live one-secret config legitimately omits ``wallet.funder_address`` and
-    lets the authenticated SDK derive the wallet from ``private_key``. Without
-    this pass every such user has an empty wallet, gets skipped by the holdings
-    loop, and the check reports ``checked_users: 0`` on a wallet that may well
-    be drifting. Mirrors the startup binding in ``app.py``.
-
-    Paper never authenticates, so no secure client exists to resolve an address
-    and the configured funder (which AppConfig requires in paper) stands
-    unchanged — hence the early return. Only client construction and wallet
-    reads happen here; no order or trading calls are made.
-
-    Binding is unconditional. Past the paper guard a ``wallet_address`` of None
-    means the SDK built no secure client for a *live* user, so binding rejects
-    it and the check fails loudly; skipping it instead would leave that user's
-    funder empty and report the same clean ``checked_users: 0``.
+    CCXT signature type 3 requires the verified funder address up front and
+    never derives or guesses it from the EOA private key. Missing identity is
+    therefore a configuration failure rather than a client lookup.
     """
     if config.execution.paper_trade_only:
         return
 
-    from integrations.polymarket.sdk_client import create_polymarket_client
-
     for runtime_user in runtime_users:
-        client = await create_polymarket_client(
-            wallet_config=runtime_user.wallet,
-            config=config,
-            authenticated=True,
-        )
-        try:
-            bind_resolved_deposit_wallet(runtime_user, client.wallet_address)
-        finally:
-            await client.close()
+        funder = str(runtime_user.wallet.funder_address or "").strip()
+        if not funder:
+            raise ValueError("live CCXT runtime requires a verified funder_address")
+        bind_resolved_deposit_wallet(runtime_user, funder)
 
 
 async def _run_check_async(args: argparse.Namespace) -> int:
@@ -156,7 +137,7 @@ async def _run_check_async(args: argparse.Namespace) -> int:
     except Exception:
         epsilon = Decimal("0.000001")
 
-    runtime_users = load_runtime_users(config.copy_trading.wallets or [], config)
+    runtime_users = load_runtime_users(list(config.copy_trading.wallets or ()), config)
 
     # Bind before filtering: binding rewrites an empty/"default" user_id to the
     # resolved wallet, so --user-id must be matched against the bound identity.
@@ -219,7 +200,7 @@ async def _run_check_async(args: argparse.Namespace) -> int:
             except Exception:
                 live = []
 
-            live_index = _live_size_index(live)
+            live_index = _live_size_index(live or [])
             seen_keys: set[tuple[str, str]] = set()
 
             for record in persisted:

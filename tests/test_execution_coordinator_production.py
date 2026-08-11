@@ -42,6 +42,7 @@ def _intent(
     size: Decimal = Decimal("5"),
     price: Decimal = Decimal("0.5"),
 ) -> ExecutionIntent:
+    notional = size if side == "BUY" else size * price
     return ExecutionIntent(
         user_id="user-1",
         condition_id="cond-1",
@@ -49,7 +50,7 @@ def _intent(
         side=side,
         size=size,
         price=price,
-        notional_usdc=size * price,
+        notional_usdc=notional,
         idempotency_key="sig-1",
         source=source,
         signal_id="sig-1",
@@ -258,6 +259,43 @@ async def test_reservation_id_flows_through_recovery_metadata():
     assert exec_request.recovery_metadata is not None
     assert exec_request.recovery_metadata["reservation_id"] == "res-meta"
     assert exec_request.recovery_metadata["source"] == "copy_trade"
+
+
+@pytest.mark.asyncio
+async def test_buy_reserves_and_submits_exact_collateral_amount() -> None:
+    """Keep BUY amount in pUSD while reservation math remains exact."""
+
+    reservation = _make_reservation("res-buy-units")
+    coord, reservation_service, execution_service = _make_coordinator(
+        reserve_return=reservation,
+        execute_return=_make_exec_result(status="submitted_unconfirmed"),
+    )
+
+    await coord.submit_copy_trade(_intent(side="BUY", size=Decimal("10"), price=Decimal("0.4")))
+
+    reserved_intent = reservation_service.reserve_for_intent.await_args.args[0]
+    assert reserved_intent.size == Decimal("25")
+    assert reserved_intent.size * reserved_intent.price == Decimal("10")
+    request = execution_service.execute.await_args.args[0]
+    assert request.amount == Decimal("10")
+
+
+@pytest.mark.asyncio
+async def test_sell_reserves_and_submits_exact_share_amount() -> None:
+    """Keep SELL amount in outcome shares through both lifecycle layers."""
+
+    reservation = _make_reservation("res-sell-units")
+    coord, reservation_service, execution_service = _make_coordinator(
+        reserve_return=reservation,
+        execute_return=_make_exec_result(status="submitted_unconfirmed"),
+    )
+
+    await coord.submit_copy_trade(_intent(side="SELL", size=Decimal("7"), price=Decimal("0.4")))
+
+    reserved_intent = reservation_service.reserve_for_intent.await_args.args[0]
+    assert reserved_intent.size == Decimal("7")
+    request = execution_service.execute.await_args.args[0]
+    assert request.amount == Decimal("7")
 
 
 @pytest.mark.asyncio

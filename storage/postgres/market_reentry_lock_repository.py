@@ -114,7 +114,7 @@ class PostgresMarketReentryLockRepository:
             key.leader_wallet.casefold(),
             key.market_id,
         )
-        return int(count or 0) > 0
+        return self._non_negative_count(count) > 0
 
     async def delete_market(self, market_id: str) -> int:
         """Release all locks after authoritative market resolution."""
@@ -130,7 +130,13 @@ class PostgresMarketReentryLockRepository:
             """,
             str(market_id),
         )
-        return int(count or 0)
+        return self._non_negative_count(count)
+
+    @staticmethod
+    def _non_negative_count(value: object) -> int:
+        if isinstance(value, bool) or not isinstance(value, int):
+            return 0
+        return max(0, value)
 
     @staticmethod
     def _text(row: Mapping[str, object], name: str) -> str:

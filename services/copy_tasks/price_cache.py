@@ -12,6 +12,16 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
+from typing import Protocol
+
+
+class Clock(Protocol):
+    """Provide quote observation time without coupling to system time."""
+
+    def now(self) -> datetime:
+        """Return one timezone-aware instant."""
+
+        ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,4 +104,44 @@ class MarketPriceCache:
         return len(self._quotes)
 
 
-__all__ = ["MarketPriceCache", "PriceQuote"]
+class MarketPriceCacheSink:
+    """Adapt market-runtime quote projections to the shared v1 cache."""
+
+    def __init__(self, *, cache: MarketPriceCache, clock: Clock) -> None:
+        """Store the cache and deterministic clock collaborators.
+
+        Args:
+            cache: Bounded shared quote cache.
+            clock: Time source used to stamp accepted projections.
+        """
+
+        self._cache = cache
+        self._clock = clock
+
+    def record(
+        self,
+        *,
+        token_id: str,
+        best_bid: Decimal,
+        best_ask: Decimal,
+        source: str,
+    ) -> None:
+        """Record one immutable two-sided market quote."""
+
+        self._cache.put(
+            PriceQuote(
+                token_id=token_id,
+                best_bid=best_bid,
+                best_ask=best_ask,
+                observed_at=self._clock.now(),
+                source=source,
+            )
+        )
+
+    def discard(self, token_id: str) -> None:
+        """Evict one resolved token from the shared cache."""
+
+        self._cache.discard(token_id)
+
+
+__all__ = ["MarketPriceCache", "MarketPriceCacheSink", "PriceQuote"]

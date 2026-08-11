@@ -7,6 +7,7 @@ import pytest
 from config.v1_runtime import CopyTasksRuntimeConfig
 from orchestrators.v1_runtime import CopyTaskV1RuntimeBuilder
 from services.copy_tasks.budget import InMemoryTaskBudgetRepository
+from services.copy_tasks.lots import InMemoryRiskLotRepository
 from services.copy_tasks.reentry_lock import InMemoryMarketReentryLockRepository
 from services.copy_tasks.service import InMemoryCopyTaskRepository
 
@@ -28,6 +29,7 @@ async def test_builder_creates_one_shared_cache_and_bounded_worker_supervisor() 
         task_repository=InMemoryCopyTaskRepository(),
         task_budget_repository=InMemoryTaskBudgetRepository(),
         reentry_lock_repository=InMemoryMarketReentryLockRepository(),
+        risk_lot_repository=InMemoryRiskLotRepository(),
         sizing=Sizing(),
         leader_handler=handler,
     )
@@ -50,6 +52,7 @@ async def test_builder_creates_one_shared_cache_and_bounded_worker_supervisor() 
     assert bundle.price_cache is not None
     assert bundle.coordinator is not None
     assert bundle.lifecycle is not None
+    assert bundle.risk_lots is not None
     await bundle.workers.start()
     await bundle.workers.submit("0xleader", object())
     await bundle.workers.close()
@@ -61,6 +64,7 @@ async def test_disabled_builder_creates_no_worker_or_price_cache() -> None:
         task_repository=InMemoryCopyTaskRepository(),
         task_budget_repository=InMemoryTaskBudgetRepository(),
         reentry_lock_repository=InMemoryMarketReentryLockRepository(),
+        risk_lot_repository=InMemoryRiskLotRepository(),
         sizing=Sizing(),
         leader_handler=handler,
     )
@@ -87,6 +91,7 @@ async def test_disabled_workers_yields_no_supervisor() -> None:
         task_repository=InMemoryCopyTaskRepository(),
         task_budget_repository=InMemoryTaskBudgetRepository(),
         reentry_lock_repository=InMemoryMarketReentryLockRepository(),
+        risk_lot_repository=InMemoryRiskLotRepository(),
         sizing=Sizing(),
         leader_handler=handler,
     )

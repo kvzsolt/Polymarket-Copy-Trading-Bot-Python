@@ -9,10 +9,12 @@ import pytest
 
 from services.copy_tasks.budget import (
     InMemoryTaskBudgetRepository,
+    TaskBudgetExecutionState,
     TaskBudgetInvariantError,
     TaskBudgetKey,
     TaskBudgetReservationRequest,
     TaskBudgetReservationService,
+    TaskBudgetReservationStatus,
 )
 from services.copy_tasks.domain import TaskSpendPolicy
 
@@ -86,6 +88,22 @@ async def test_total_daily_and_market_caps_include_pending_reservations() -> Non
 
 
 @pytest.mark.asyncio
+async def test_snapshot_exposes_current_task_spend_without_mutation() -> None:
+    """Read admission state without creating a synthetic reservation."""
+
+    service = TaskBudgetReservationService(InMemoryTaskBudgetRepository())
+    item = request("one", amount="7")
+    await service.reserve(item, TaskSpendPolicy(max_total=Decimal("20")))
+
+    snapshot = await service.snapshot(item.key, item.reserved_at)
+
+    assert snapshot.task_total == Decimal("7")
+    assert snapshot.task_daily == Decimal("7")
+    assert snapshot.task_market == Decimal("7")
+    assert snapshot.task_has_entry is True
+
+
+@pytest.mark.asyncio
 async def test_task_one_entry_blocks_second_reservation_for_market() -> None:
     service = TaskBudgetReservationService(InMemoryTaskBudgetRepository())
     policy = TaskSpendPolicy(one_entry_per_market=True)
@@ -152,6 +170,28 @@ async def test_commit_moves_reservation_to_fill_ledger_once() -> None:
     result = await service.reserve(request("two", amount="3"), policy)
     assert result.allowed is False
     assert result.reason == "task_max_total_spend_exceeded"
+
+
+@pytest.mark.asyncio
+async def test_settle_marks_existing_partial_fill_terminal_without_new_spend() -> None:
+    """Commit retained partial evidence without appending a zero-value fill."""
+
+    repository = InMemoryTaskBudgetRepository()
+    service = TaskBudgetReservationService(repository)
+    item = request("one", amount="10")
+    await service.reserve(item, TaskSpendPolicy(max_total=Decimal("10")))
+    await service.record_fill(
+        reservation_id="one",
+        fill_id="order-a:5",
+        filled_notional=Decimal("2"),
+        occurred_at=item.reserved_at,
+        terminal=False,
+    )
+
+    assert await service.settle("one", terminal_fill_id="order-a:5") is True
+    assert await service.settle("one", terminal_fill_id="order-a:5") is False
+    replay = await service.reserve(item, TaskSpendPolicy(max_total=Decimal("10")))
+    assert replay.reason == "task_budget_already_committed"
 
 
 @pytest.mark.asyncio
@@ -298,4 +338,98 @@ async def test_commit_rejects_conflicting_fill_identity() -> None:
             fill_id="fill-x",
             filled_notional=Decimal("9"),
             occurred_at=item.reserved_at,
+        )
+
+
+@pytest.mark.asyncio
+async def test_retained_submission_cannot_be_reentered_or_swept_by_time() -> None:
+    """Keep accepted or ambiguous POST budget reserved until reconciliation."""
+
+    service = TaskBudgetReservationService(InMemoryTaskBudgetRepository())
+    policy = TaskSpendPolicy(max_total=Decimal("10"))
+    item = request("one", amount="10")
+
+    await service.reserve(item, policy)
+    assert await service.retain("one") is True
+
+    replay = await service.reserve(item, policy)
+    swept = await service.sweep_expired(item.expires_at + timedelta(hours=1))
+
+    assert replay.allowed is False
+    assert replay.reason == "task_budget_submission_retained"
+    assert replay.reservation is not None
+    assert replay.reservation.execution_state is TaskBudgetExecutionState.RETAINED
+    assert swept == 0
+
+
+@pytest.mark.asyncio
+async def test_partial_fills_accumulate_without_releasing_unfilled_reservation() -> None:
+    """Apply multiple authoritative fills and retain the unfilled cap."""
+
+    service = TaskBudgetReservationService(InMemoryTaskBudgetRepository())
+    policy = TaskSpendPolicy(max_total=Decimal("10"))
+    item = request("one", amount="10")
+    await service.reserve(item, policy)
+
+    first = await service.record_fill(
+        reservation_id="one",
+        fill_id="fill-a",
+        filled_notional=Decimal("3"),
+        occurred_at=item.reserved_at,
+        terminal=False,
+    )
+    duplicate = await service.record_fill(
+        reservation_id="one",
+        fill_id="fill-a",
+        filled_notional=Decimal("3"),
+        occurred_at=item.reserved_at,
+        terminal=False,
+    )
+    final = await service.record_fill(
+        reservation_id="one",
+        fill_id="fill-b",
+        filled_notional=Decimal("4"),
+        occurred_at=item.reserved_at + timedelta(seconds=1),
+        terminal=True,
+    )
+
+    assert first.created is True
+    assert first.cumulative_notional == Decimal("3")
+    assert first.remaining_notional == Decimal("7")
+    assert first.status is TaskBudgetReservationStatus.RESERVED
+    assert duplicate.created is False
+    assert duplicate.cumulative_notional == Decimal("3")
+    assert final.created is True
+    assert final.cumulative_notional == Decimal("7")
+    assert final.remaining_notional == Decimal("3")
+    assert final.status is TaskBudgetReservationStatus.COMMITTED
+
+    # Once terminal, the task consumes actual fills (7), not the original
+    # ten-unit cap and not cap + fills. Three units remain available.
+    next_reservation = await service.reserve(request("two", amount="3"), policy)
+    assert next_reservation.allowed is True
+
+
+@pytest.mark.asyncio
+async def test_multiple_fills_cannot_exceed_reserved_notional() -> None:
+    """Fail closed when cumulative fills contradict the reservation cap."""
+
+    service = TaskBudgetReservationService(InMemoryTaskBudgetRepository())
+    item = request("one", amount="5")
+    await service.reserve(item, TaskSpendPolicy(max_total=Decimal("100")))
+    await service.record_fill(
+        reservation_id="one",
+        fill_id="fill-a",
+        filled_notional=Decimal("3"),
+        occurred_at=item.reserved_at,
+        terminal=False,
+    )
+
+    with pytest.raises(TaskBudgetInvariantError, match="exceeds"):
+        await service.record_fill(
+            reservation_id="one",
+            fill_id="fill-b",
+            filled_notional=Decimal("3"),
+            occurred_at=item.reserved_at + timedelta(seconds=1),
+            terminal=True,
         )

@@ -28,6 +28,7 @@ from decimal import Decimal
 
 from services.onchain_detection.calldata_decoder import (
     MatchOrdersCall,
+    WatchedMatch,
     decode_match_orders,
     find_watched_wallets,
 )
@@ -83,7 +84,7 @@ def _tx_to_exchange(tx: dict) -> str:
     return ""
 
 
-def _amounts_for_pending(match: object, call: MatchOrdersCall) -> tuple[int, int]:
+def _amounts_for_pending(match: WatchedMatch, call: MatchOrdersCall) -> tuple[int, int]:
     """Return ``(maker_filled, taker_filled)`` raw amounts for a pending match.
 
     ``matchOrders`` fill arguments are expressed in maker-amount units. Compute

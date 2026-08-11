@@ -20,6 +20,9 @@ if TYPE_CHECKING:
     from config.app_config import AppConfig
 
 
+_EXPIRABLE_PRE_POST_STATUSES = frozenset({"pending", "pending_lock", "submitting"})
+
+
 def truncate_text(value: Any, *, max_chars: int) -> str:
     text = str(value).replace("\x00", " ").replace("\r", " ").replace("\n", " ").replace("\t", " ")
     if len(text) <= max_chars:
@@ -154,7 +157,8 @@ def pending_submission_ttl_seconds(config: "AppConfig | None" = None) -> float:
 
 
 def pending_since(existing: dict[str, Any]) -> float | None:
-    response = existing.get("response") if isinstance(existing.get("response"), dict) else {}
+    response_value = existing.get("response")
+    response = response_value if isinstance(response_value, dict) else {}
     for candidate in (
         existing.get("pending_since"),
         response.get("pending_since"),
@@ -168,7 +172,8 @@ def pending_since(existing: dict[str, Any]) -> float | None:
 
 
 def pending_expires_at(existing: dict[str, Any]) -> float | None:
-    response = existing.get("response") if isinstance(existing.get("response"), dict) else {}
+    response_value = existing.get("response")
+    response = response_value if isinstance(response_value, dict) else {}
     for candidate in (
         existing.get("pending_expires_at"),
         response.get("pending_expires_at"),
@@ -208,7 +213,11 @@ def is_pending_submission_expired(
     status = str(existing.get("status") or existing.get("response", {}).get("status") or "").lower()
     if existing.get("order_id"):
         return False
-    if status not in _RETRY_BLOCKING_STATUSES:
+    # Wall-clock takeover is safe only while the row represents a lock whose
+    # holder never attempted a venue POST. ``submitted_unconfirmed`` means the
+    # request may already be live or filled and therefore remains blocking
+    # until reconciliation or an explicit confirmed-absence transition.
+    if status not in _EXPIRABLE_PRE_POST_STATUSES:
         return False
 
     now_value = time.time() if now_ts is None else float(now_ts)

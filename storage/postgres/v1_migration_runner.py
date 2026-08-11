@@ -1,74 +1,132 @@
-"""Idempotent runner for the additive v1 copy-task PostgreSQL migration.
+"""Ordered idempotent runner for additive copy-task PostgreSQL migrations.
 
-The runner reads the packaged SQL file and applies every statement
-transactionally. The migration uses ``CREATE TABLE IF NOT EXISTS`` and
-``ADD COLUMN IF NOT EXISTS`` so running it twice is a no-op. A schema-migrations
-row records the migration id so callers can also skip the file read when the
-migration has already been applied.
+Migration identity comes from immutable, lexically ordered SQL filenames.
+The runner serializes concurrent startup attempts with one transaction-scoped
+advisory lock and records each successfully applied file.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 
 import asyncpg
 
-_V1_MIGRATION_ID = "20260808_01_copy_tasks_and_reentry_locks"
-_V1_MIGRATION_PATH = (
-    Path(__file__).resolve().parent / "migrations" / "20260808_01_copy_tasks_and_reentry_locks.sql"
-)
+MigrationConnection = asyncpg.Connection | asyncpg.pool.PoolConnectionProxy
 
 
-def _split_statements(sql: str) -> list[str]:
-    """Split one SQL script into executable statements.
+@dataclass(frozen=True, slots=True)
+class V1Migration:
+    """One immutable SQL migration descriptor."""
 
-    The migration file contains only ``CREATE TABLE/INDEX`` and one
-    ``ALTER TABLE ... ADD COLUMN IF NOT EXISTS`` per statement, each terminated
-    by a semicolon. Comments and blank lines are stripped before splitting so
-    asyncpg receives one statement at a time.
-    """
-
-    cleaned_lines: list[str] = []
-    for raw_line in sql.splitlines():
-        stripped = raw_line.strip()
-        if not stripped or stripped.startswith("--"):
-            continue
-        cleaned_lines.append(raw_line)
-    joined = "\n".join(cleaned_lines)
-    return [stmt.strip() for stmt in joined.split(";") if stmt.strip()]
+    migration_id: str
+    path: Path
 
 
-async def apply_v1_migrations(conn: asyncpg.Connection) -> None:
-    """Apply the v1 copy-task migration idempotently inside one transaction.
+class V1MigrationCatalog:
+    """Discover packaged v1 migrations in deterministic filename order."""
+
+    def __init__(self, migration_directory: Path | None = None) -> None:
+        self._migration_directory = migration_directory or (
+            Path(__file__).resolve().parent / "migrations"
+        )
+
+    def migrations(self) -> tuple[V1Migration, ...]:
+        """Return all packaged SQL files as immutable descriptors."""
+
+        return tuple(
+            V1Migration(migration_id=path.stem, path=path)
+            for path in sorted(self._migration_directory.glob("*.sql"))
+        )
+
+
+class SqlStatementSplitter:
+    """Split the repository's simple semicolon-terminated migration SQL."""
+
+    def split(self, sql: str) -> tuple[str, ...]:
+        """Return executable SQL statements with comments and blanks removed.
+
+        Args:
+            sql: Migration contents. These files intentionally contain no
+                procedures, dollar-quoted blocks, or semicolons in literals.
+
+        Returns:
+            Non-empty SQL statements in source order.
+        """
+
+        cleaned_lines: list[str] = []
+        for raw_line in sql.splitlines():
+            stripped = raw_line.strip()
+            if not stripped or stripped.startswith("--"):
+                continue
+            cleaned_lines.append(raw_line)
+        joined = "\n".join(cleaned_lines)
+        return tuple(statement.strip() for statement in joined.split(";") if statement.strip())
+
+
+class PostgresV1MigrationRunner:
+    """Apply every missing copy-task migration transactionally and once."""
+
+    def __init__(
+        self,
+        *,
+        catalog: V1MigrationCatalog | None = None,
+        splitter: SqlStatementSplitter | None = None,
+    ) -> None:
+        self._catalog = catalog or V1MigrationCatalog()
+        self._splitter = splitter or SqlStatementSplitter()
+
+    async def apply(self, connection: MigrationConnection) -> None:
+        """Apply all missing migrations on an owned asyncpg connection.
+
+        Args:
+            connection: Open asyncpg connection retained by the caller.
+        """
+
+        await connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS app_schema_migrations (
+                migration_id text PRIMARY KEY,
+                applied_at   timestamptz NOT NULL DEFAULT now()
+            )
+            """
+        )
+        async with connection.transaction():
+            await connection.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+                "pmcopy:v1-migrations",
+            )
+            for migration in self._catalog.migrations():
+                already_applied = await connection.fetchval(
+                    "SELECT 1 FROM app_schema_migrations WHERE migration_id = $1",
+                    migration.migration_id,
+                )
+                if already_applied:
+                    continue
+                sql = migration.path.read_text(encoding="utf-8")
+                for statement in self._splitter.split(sql):
+                    await connection.execute(statement)
+                await connection.execute(
+                    "INSERT INTO app_schema_migrations (migration_id) VALUES ($1)",
+                    migration.migration_id,
+                )
+
+
+async def apply_v1_migrations(conn: MigrationConnection) -> None:
+    """Apply every packaged v1 migration through the canonical runner.
 
     Args:
-        conn: An asyncpg connection. The caller retains ownership; this
-            function opens and commits one transaction.
+        conn: Open asyncpg connection retained by the caller.
     """
 
-    await conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS app_schema_migrations (
-            migration_id text PRIMARY KEY,
-            applied_at   timestamptz NOT NULL DEFAULT now()
-        )
-        """
-    )
-    already_applied = await conn.fetchval(
-        "SELECT 1 FROM app_schema_migrations WHERE migration_id = $1",
-        _V1_MIGRATION_ID,
-    )
-    if already_applied:
-        return
-    sql = _V1_MIGRATION_PATH.read_text(encoding="utf-8")
-    statements = _split_statements(sql)
-    async with conn.transaction():
-        for statement in statements:
-            await conn.execute(statement)
-        await conn.execute(
-            "INSERT INTO app_schema_migrations (migration_id) VALUES ($1)",
-            _V1_MIGRATION_ID,
-        )
+    await PostgresV1MigrationRunner().apply(conn)
 
 
-__all__ = ["apply_v1_migrations"]
+__all__ = [
+    "MigrationConnection",
+    "PostgresV1MigrationRunner",
+    "SqlStatementSplitter",
+    "V1Migration",
+    "V1MigrationCatalog",
+    "apply_v1_migrations",
+]

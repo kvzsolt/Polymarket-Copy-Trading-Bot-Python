@@ -7,20 +7,24 @@ risk, reservation, and execution services remain downstream collaborators.
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 from dataclasses import dataclass
 from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Awaitable, Callable, Protocol
 
+from domain.detection import DetectionFinality
+from services.copy_sizing_v5.domain import CopySizingDecision, CopySizingRequest
 from services.copy_tasks.admission import CopyTaskAdmissionEngine
 from services.copy_tasks.budget import (
     TaskBudgetKey,
     TaskBudgetReservationRequest,
     TaskBudgetReservationService,
 )
-from services.copy_tasks.domain import CopyTask, SourceTrade, TaskAdmissionContext
+from services.copy_tasks.domain import CopyTask, MonitoringMode, SourceTrade, TaskAdmissionContext
 from services.copy_tasks.entry_price import TaskEntryPriceDecision
+from services.copy_tasks.lifecycle import TaskExecutionOutcome
 from services.copy_tasks.monitoring import MonitoringDecision
 from services.copy_tasks.reaction import CopyReactionEngine, ReactionAction, ReactionDecision
 from services.copy_tasks.reentry_lock import MarketReentryKey, MarketReentryLockService
@@ -29,8 +33,15 @@ from services.copy_tasks.reentry_lock import MarketReentryKey, MarketReentryLock
 class MonitoringPort(Protocol):
     """Small source-finality interface required by task orchestration."""
 
-    def evaluate(self, *, mode: object, finality: object) -> MonitoringDecision:
+    def evaluate(
+        self,
+        *,
+        mode: MonitoringMode,
+        finality: DetectionFinality,
+    ) -> MonitoringDecision:
         """Return whether one source event is actionable for the task."""
+
+        ...
 
 
 class EntryPricePort(Protocol):
@@ -47,12 +58,30 @@ class EntryPricePort(Protocol):
     ) -> TaskEntryPriceDecision:
         """Return one explicit FAK cap/floor decision."""
 
+        ...
+
 
 class SizingPort(Protocol):
     """Small sizing interface required by task orchestration."""
 
-    def size(self, task: CopyTask, request: object) -> object:
+    def size(self, task: CopyTask, request: CopySizingRequest) -> CopySizingDecision:
         """Return a task-specific sizing decision for a BUY request."""
+
+        ...
+
+
+class TaskBudgetLifecyclePort(Protocol):
+    """Small typed outcome port required after downstream execution."""
+
+    async def apply_execution_outcome(
+        self,
+        *,
+        reservation_id: str,
+        outcome: TaskExecutionOutcome,
+    ) -> object:
+        """Settle or retain task budget from explicit execution evidence."""
+
+        ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,6 +138,7 @@ class CopyTaskRuntimeCoordinator:
         entry_prices: EntryPricePort,
         sizing: SizingPort,
         task_budgets: TaskBudgetReservationService | None = None,
+        task_budget_lifecycle: TaskBudgetLifecyclePort | None = None,
         task_budget_ttl_seconds: int = 120,
         enabled: bool = True,
         reentry_lock_enabled: bool = True,
@@ -120,6 +150,7 @@ class CopyTaskRuntimeCoordinator:
         self._entry_prices = entry_prices
         self._sizing = sizing
         self._task_budgets = task_budgets
+        self._task_budget_lifecycle = task_budget_lifecycle
         self._enabled = bool(enabled)
         self._reentry_lock_enabled = bool(reentry_lock_enabled)
         if task_budget_ttl_seconds < 1:
@@ -132,7 +163,7 @@ class CopyTaskRuntimeCoordinator:
         task: CopyTask,
         source_trade: SourceTrade,
         admission_context: TaskAdmissionContext,
-        sizing_request: object | None,
+        sizing_request: CopySizingRequest | None,
         downstream: DownstreamHandler,
         reservation_id: str | None = None,
         execution_reference_price: Decimal | None = None,
@@ -287,8 +318,21 @@ class CopyTaskRuntimeCoordinator:
                 result = await result
         except BaseException:
             if task_budget_reservation_id is not None and self._task_budgets is not None:
-                await self._task_budgets.release(task_budget_reservation_id)
+                await asyncio.shield(self._task_budgets.retain(task_budget_reservation_id))
             raise
+        if task_budget_reservation_id is not None and self._task_budgets is not None:
+            if isinstance(result, TaskExecutionOutcome):
+                if self._task_budget_lifecycle is None:
+                    await self._task_budgets.retain(task_budget_reservation_id)
+                    raise RuntimeError(
+                        "task budget lifecycle is required for typed execution outcomes"
+                    )
+                await self._task_budget_lifecycle.apply_execution_outcome(
+                    reservation_id=task_budget_reservation_id,
+                    outcome=result,
+                )
+            else:
+                await self._task_budgets.retain(task_budget_reservation_id)
         return RuntimeDecision(
             True,
             "admitted",

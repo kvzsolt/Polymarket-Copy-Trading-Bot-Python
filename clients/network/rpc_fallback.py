@@ -28,6 +28,7 @@ from typing import Any
 
 from web3 import Web3
 from web3.providers.base import JSONBaseProvider
+from web3.types import RPCResponse
 
 logger = logging.getLogger("rpc_fallback")
 
@@ -82,9 +83,9 @@ class _FailoverHTTPProvider(JSONBaseProvider):
         else:
             logger.debug("RPC fallback not configured (single provider)")
 
-    def make_request(self, method: str, params: Any) -> dict[str, Any]:
+    def make_request(self, method: str, params: Any) -> RPCResponse:
         primary_exc: Exception | None = None
-        primary_error_response: dict[str, Any] | None = None
+        primary_error_response: RPCResponse | None = None
 
         # Try primary first.
         try:
@@ -137,7 +138,7 @@ def _mask_url(url: str) -> str:
     return url
 
 
-def _is_failover_response(raw: dict[str, Any]) -> bool:
+def _is_failover_response(raw: RPCResponse) -> bool:
     """Return True if a JSON-RPC response object justifies failover."""
     error = raw.get("error")
     if not isinstance(error, dict):
@@ -180,10 +181,14 @@ class FallbackWeb3Provider:
 
     @property
     def primary_url(self) -> str:
+        """Return the configured primary RPC URL."""
+
         return self._primary_url
 
     @property
     def fallback_url(self) -> str | None:
+        """Return the distinct configured fallback URL, if any."""
+
         # Same-as-primary is treated as no fallback; mirror the logic in
         # _FailoverHTTPProvider.__init__ so callers see a consistent view.
         if not self._fallback_url:
@@ -194,4 +199,6 @@ class FallbackWeb3Provider:
 
     @property
     def request_timeout_seconds(self) -> float:
+        """Return the per-request timeout bound."""
+
         return self._request_timeout_seconds

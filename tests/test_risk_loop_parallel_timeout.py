@@ -26,19 +26,15 @@ def _ctx(user_id: str):
 
 
 def test_pre_reconcile_default_timeout_exceeds_venue_get_timeout():
-    from integrations.polymarket.clob_v2_gateway import _GET_ORDER_HTTP_TIMEOUT_SECONDS
+    from integrations.polymarket.ccxt_prediction_gateway import _READ_TIMEOUT_SECONDS
     from services.risk.risk_monitor import _risk_pre_reconcile_timeout_seconds
 
     timeout = _risk_pre_reconcile_timeout_seconds(0.05)
 
-    # Worst case for ONE healthy-but-slow venue GET: the first attempt burns
-    # the full aiohttp total timeout (10s), then _async_signed_get retries
-    # once after 0.15s and that retry may burn another full 10s before the
-    # result lands. 12.0s ("timeout plus retry delay") undercounted the retry
-    # as 0.15s instead of a second full request — the outer guard cancelled
-    # every in-flight reconcile whenever the venue was slow, live-spamming
-    # "Risk pre-reconcile TIMEOUT ... after 12.0s".
-    assert timeout > 2 * _GET_ORDER_HTTP_TIMEOUT_SECONDS + 0.15
+    # The risk-loop guard must be wider than the gateway's own read timeout so
+    # the gateway, rather than the outer orchestration task, owns error
+    # classification and reconciliation can report a stable venue failure.
+    assert timeout > _READ_TIMEOUT_SECONDS
     assert _risk_pre_reconcile_timeout_seconds(30.0) == 30.0
 
 

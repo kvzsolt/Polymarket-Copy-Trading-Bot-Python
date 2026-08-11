@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import random
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
@@ -145,7 +146,9 @@ class HeisenbergClient:
         if self._owns_http:
             close = getattr(self._http, "aclose", None)
             if callable(close):
-                await close()
+                close_result = close()
+                if inspect.isawaitable(close_result):
+                    await close_result
 
     async def __aenter__(self) -> "HeisenbergClient":
         return self

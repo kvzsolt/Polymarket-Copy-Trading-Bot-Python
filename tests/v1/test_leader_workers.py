@@ -121,3 +121,90 @@ async def test_invalid_worker_limits_are_rejected() -> None:
 
     with pytest.raises(ValueError, match="positive"):
         LeaderWorkerSupervisor(handler=handler, queue_size=0)
+
+
+@pytest.mark.asyncio
+async def test_handler_exception_does_not_kill_leader_consumer() -> None:
+    """Continue FIFO processing after one event-specific handler failure."""
+
+    processed: list[int] = []
+    second_processed = asyncio.Event()
+
+    async def handler(_leader: str, value: int) -> None:
+        if value == 1:
+            raise RuntimeError("deterministic event failure")
+        processed.append(value)
+        second_processed.set()
+
+    supervisor = LeaderWorkerSupervisor(handler=handler, queue_size=2)
+    await supervisor.start()
+    await supervisor.submit("a", 1)
+    await supervisor.submit("a", 2)
+
+    await asyncio.wait_for(second_processed.wait(), timeout=0.5)
+    await asyncio.wait_for(supervisor.close(), timeout=0.5)
+
+    assert processed == [2]
+
+
+@pytest.mark.asyncio
+async def test_batch_admission_is_all_or_none_when_leader_queue_is_full() -> None:
+    """Reject a whole source batch before accepting any partial prefix."""
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+    processed: list[int] = []
+
+    async def handler(_leader: str, value: int) -> None:
+        started.set()
+        await release.wait()
+        processed.append(value)
+
+    supervisor = LeaderWorkerSupervisor(
+        handler=handler,
+        queue_size=2,
+        max_concurrent_leaders=1,
+    )
+    await supervisor.start()
+    await supervisor.submit("a", 1)
+    await asyncio.wait_for(started.wait(), timeout=0.5)
+
+    with pytest.raises(WorkerQueueFull):
+        await supervisor.submit_batch("a", [2, 3, 4])
+
+    release.set()
+    await supervisor.close()
+    assert processed == [1]
+
+
+@pytest.mark.asyncio
+async def test_runtime_counts_report_workers_and_queued_events() -> None:
+    """Expose bounded runtime counts without leaking leader identifiers."""
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def handler(_leader: str, _value: int) -> None:
+        started.set()
+        await release.wait()
+
+    supervisor = LeaderWorkerSupervisor(
+        handler=handler,
+        queue_size=2,
+        max_concurrent_leaders=1,
+    )
+    assert supervisor.worker_count == 0
+    assert supervisor.queue_depth == 0
+
+    await supervisor.start()
+    await supervisor.submit("a", 1)
+    await asyncio.wait_for(started.wait(), timeout=0.5)
+    await supervisor.submit("a", 2)
+
+    assert supervisor.worker_count == 1
+    assert supervisor.queue_depth == 1
+
+    release.set()
+    await supervisor.close()
+    assert supervisor.worker_count == 0
+    assert supervisor.queue_depth == 0

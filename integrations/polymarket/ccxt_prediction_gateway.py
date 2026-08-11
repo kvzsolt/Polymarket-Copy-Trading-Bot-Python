@@ -39,6 +39,7 @@ from integrations.polymarket.models import (
     MarketableOrderRequest,
     OrderBook,
     OrderBookLevel,
+    PRICE_TOKEN_NOT_FOUND,
     VenueCancelResult,
     VenueFill,
     VenueOrderState,
@@ -112,6 +113,20 @@ def _maybe_dict(value: Any) -> dict[str, Any]:
         raw = to_dict()
         return raw if isinstance(raw, dict) else {}
     return {}
+
+
+def _nested_dict(mapping: dict[str, Any], key: str) -> dict[str, Any]:
+    """Return one raw nested dictionary with a precise adapter-local type."""
+
+    value = mapping.get(key)
+    return _maybe_dict(value) if isinstance(value, dict) else {}
+
+
+def _nested_dict_or_self(mapping: dict[str, Any], key: str) -> dict[str, Any]:
+    """Return a present nested dictionary or the original mapping."""
+
+    value = mapping.get(key)
+    return _maybe_dict(value) if isinstance(value, dict) else mapping
 
 
 def _first(mapping: dict[str, Any], *keys: str) -> Any:
@@ -464,7 +479,7 @@ class CcxtPredictionGateway:
         for source in sources:
             if not source:
                 continue
-            info = source.get("info") if isinstance(source.get("info"), dict) else {}
+            info = _nested_dict(source, "info")
             if tick is None:
                 tick = _first(source, "tick_size", "tickSize")
                 tick = tick if tick is not None else _first(info, "tick_size", "tickSize")
@@ -603,6 +618,29 @@ class CcxtPredictionGateway:
             timestamp=timestamp,
         )
 
+    async def get_price(self, token_id: str, side: str) -> dict[str, str] | object:
+        """Return the executable top-of-book price for legacy risk readers.
+
+        Args:
+            token_id: Raw Polymarket outcome token identity.
+            side: ``BUY`` selects the best ask; ``SELL`` selects the best bid.
+
+        Returns:
+            A string-precise price mapping, zero for an empty side, or the
+            existing terminal-market sentinel when the venue has no book.
+
+        Raises:
+            VenueInvalidOrderError: If ``side`` is neither BUY nor SELL.
+        """
+
+        normalized_side = _normalize_side(side)
+        try:
+            book = await self.get_orderbook(token_id)
+        except VenueOrderbookNotFoundError:
+            return PRICE_TOKEN_NOT_FOUND
+        price = book.best_ask if normalized_side == "BUY" else book.best_bid
+        return {"price": format(price if price is not None else Decimal("0"), "f")}
+
     async def get_market_info(self, token_id: str) -> dict[str, Any]:
         book = await self.get_orderbook(token_id)
         return {
@@ -642,12 +680,12 @@ class CcxtPredictionGateway:
     @staticmethod
     def _submission_from_order(value: Any) -> VenueSubmitResult:
         raw = _maybe_dict(value)
-        info = raw.get("info") if isinstance(raw.get("info"), dict) else {}
+        info = _nested_dict(raw, "info")
         order_id = (
             str(_first(raw, "id", "orderID", "order_id") or _first(info, "orderID", "id") or "")
             or None
         )
-        status = _normalize_status(_first(raw, "status") or _first(info, "status"))
+        status = CcxtPredictionGateway._submission_status(raw=raw, info=info)
         success_marker = _first(raw, "success")
         if success_marker is None:
             success_marker = _first(info, "success")
@@ -684,6 +722,15 @@ class CcxtPredictionGateway:
             raw=raw,
         )
 
+    @staticmethod
+    def _submission_status(*, raw: dict[str, Any], info: dict[str, Any]) -> str | None:
+        """Return the raw CLOB lifecycle state when the POST preserved it."""
+
+        venue_status = str(_first(info, "status") or "").strip().lower()
+        if venue_status:
+            return "canceled" if venue_status == "cancelled" else venue_status
+        return _normalize_status(_first(raw, "status"))
+
     async def submit_limit_order(self, request: LimitOrderRequest) -> VenueSubmitResult:
         if not request.condition_id:
             return VenueSubmitResult(
@@ -717,8 +764,8 @@ class CcxtPredictionGateway:
                 request.token_id,
                 "limit",
                 side.lower(),
-                float(size),
-                float(quantized),
+                size,
+                quantized,
                 params,
             )
         except BaseException as exc:
@@ -757,7 +804,7 @@ class CcxtPredictionGateway:
         # SELL size is shares. Passing cost together with an explicit price avoids
         # CCXT's cached-outcome-price fallback.
         if side == "BUY":
-            params["cost"] = float(size)
+            params["cost"] = size
 
         try:
             value = await _await_call(
@@ -765,8 +812,8 @@ class CcxtPredictionGateway:
                 request.token_id,
                 "market",
                 side.lower(),
-                float(size),
-                float(quantized),
+                size,
+                quantized,
                 params,
             )
         except BaseException as exc:
@@ -776,7 +823,7 @@ class CcxtPredictionGateway:
     @staticmethod
     def _order_state(value: Any) -> VenueOrderState:
         raw = _maybe_dict(value)
-        info = raw.get("info") if isinstance(raw.get("info"), dict) else {}
+        info = _nested_dict(raw, "info")
         order_id = str(
             _first(raw, "id", "orderID", "order_id") or _first(info, "id", "orderID") or ""
         )
@@ -847,8 +894,9 @@ class CcxtPredictionGateway:
             if order_id and state.order_id != order_id:
                 continue
             if market:
-                raw_info = state.raw.get("info") if isinstance(state.raw.get("info"), dict) else {}
-                raw_market = _first(state.raw, "market") or _first(
+                state_raw = _maybe_dict(state.raw)
+                raw_info = _nested_dict(state_raw, "info")
+                raw_market = _first(state_raw, "market") or _first(
                     raw_info, "market", "condition_id"
                 )
                 if raw_market is not None and str(raw_market) != market:
@@ -863,7 +911,7 @@ class CcxtPredictionGateway:
             raw = _first(fee, "cost", "amount")
             if raw is not None:
                 return _decimal(raw, field="fee", default=Decimal("0"))
-        info = value.get("info") if isinstance(value.get("info"), dict) else value
+        info = _nested_dict_or_self(value, "info")
         raw = _first(info, "fee", "fee_amount", "feeAmount")
         if raw is not None and not isinstance(raw, dict):
             return _decimal(raw, field="fee", default=Decimal("0"))
@@ -871,7 +919,7 @@ class CcxtPredictionGateway:
 
     @staticmethod
     def _trade_legs(value: dict[str, Any]) -> Iterable[dict[str, Any]]:
-        info = value.get("info") if isinstance(value.get("info"), dict) else value
+        info = _nested_dict_or_self(value, "info")
         role = str(
             _first(info, "trader_side", "traderSide") or value.get("takerOrMaker") or "TAKER"
         ).upper()
@@ -925,7 +973,7 @@ class CcxtPredictionGateway:
         seen: set[tuple[str, str, int | None, str, str]] = set()
         for raw_value in values or ():
             value = _maybe_dict(raw_value)
-            info = value.get("info") if isinstance(value.get("info"), dict) else value
+            info = _nested_dict_or_self(value, "info")
             fill_id = str(
                 _first(value, "id")
                 or _first(info, "id", "transaction_hash", "transactionHash")
@@ -1091,7 +1139,7 @@ class CcxtPredictionGateway:
             return
         close = getattr(self._exchange, "close", None)
         if close is not None:
-            await _await_call(close)
+            await _await_call(close, True)
 
 
 __all__ = ["CcxtPredictionGateway", "ExecutionMetadata"]

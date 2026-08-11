@@ -10,17 +10,26 @@ import pytest
 
 from bot_cli.commands.trading import register_trading_command
 from services.executionService import ExecutionRequest, ExecutionService
-from services.trading_permission import TradingPausedError, TradingPermissionService
+from services.trading_permission import (
+    SubmissionPurpose,
+    TradingPausedError,
+    TradingPermissionService,
+)
 from storage.postgres.trading_control_repo import TradingControlState
 from tests.conftest import make_exec_config
 
 
-def state(enabled: bool) -> TradingControlState:
+NOW = datetime(2026, 8, 12, 15, 0, tzinfo=timezone.utc)
+
+
+def state(enabled: bool, *, reason: str = "operator_test") -> TradingControlState:
+    """Return deterministic canonical trading-control state."""
+
     return TradingControlState(
         enabled=enabled,
         generation=3,
-        reason="operator_test",
-        updated_at=datetime.now(timezone.utc),
+        reason=reason,
+        updated_at=NOW,
         updated_by="pytest",
     )
 
@@ -47,6 +56,28 @@ async def test_paper_mode_does_not_query_live_control() -> None:
     service = TradingPermissionService(repo, live_mode=False)
     assert await service.require_submission_allowed() is None
     repo.get.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_entry_pause_allows_protective_exit_but_full_stop_blocks_it() -> None:
+    """The canonical durable reason distinguishes pause from full stop."""
+
+    paused_repo = SimpleNamespace(get=AsyncMock(return_value=state(False, reason="operator_pause")))
+    stopped_repo = SimpleNamespace(
+        get=AsyncMock(return_value=state(False, reason="runtime.full_stop"))
+    )
+
+    allowed = await TradingPermissionService(
+        paused_repo,
+        live_mode=True,
+    ).require_submission_allowed(purpose=SubmissionPurpose.PROTECTIVE_EXIT)
+    with pytest.raises(TradingPausedError, match="full_stop"):
+        await TradingPermissionService(
+            stopped_repo,
+            live_mode=True,
+        ).require_submission_allowed(purpose=SubmissionPurpose.PROTECTIVE_EXIT)
+
+    assert allowed is not None and allowed.reason == "operator_pause"
 
 
 @pytest.mark.asyncio
@@ -78,8 +109,46 @@ async def test_execution_stops_before_market_or_gateway_when_paused() -> None:
     )
     assert result.accepted is False
     assert result.status == "trading_paused"
+    permission.require_submission_allowed.assert_awaited_once_with(
+        purpose=SubmissionPurpose.STANDARD
+    )
     market_data.require_fresh_data.assert_not_awaited()
     gateway.submit_marketable_order.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_execution_identifies_protective_sell_at_permission_boundary() -> None:
+    """Risk-reducing SELL semantics reach every shared live-control check."""
+
+    permission = SimpleNamespace(
+        require_submission_allowed=AsyncMock(side_effect=TradingPausedError("test stop"))
+    )
+    service = ExecutionService(
+        MagicMock(),
+        config=make_exec_config(),
+        clob_gateway=SimpleNamespace(submit_marketable_order=AsyncMock()),
+        market_data_service=SimpleNamespace(require_fresh_data=AsyncMock()),
+        trading_permission=permission,
+    )
+
+    result = await service.execute(
+        ExecutionRequest(
+            user_id="user",
+            leader_id="leader",
+            token_id="token",
+            side="SELL",
+            amount=Decimal("1"),
+            max_slippage_bps=100,
+            reason="stop_loss",
+            signal_id="signal",
+            condition_id="condition",
+        )
+    )
+
+    assert result.status == "trading_paused"
+    permission.require_submission_allowed.assert_awaited_once_with(
+        purpose=SubmissionPurpose.PROTECTIVE_EXIT
+    )
 
 
 def test_trading_cli_requires_explicit_live_confirmation() -> None:

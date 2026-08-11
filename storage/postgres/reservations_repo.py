@@ -51,6 +51,7 @@ from domain.order_lifecycle import IntentReason, IntentSide, OrderIntent, Reserv
 # (Python ``int`` maps natively to PG ``bigint``). Same shape used in
 # positions_repo so collisions stay symmetric across both repos.
 _ADVISORY_LOCK_SQL = "SELECT pg_advisory_xact_lock($1)"
+PostgresConnection = asyncpg.Connection | asyncpg.pool.PoolConnectionProxy
 
 
 def _lock_key(key: str) -> int:
@@ -377,7 +378,7 @@ class ReservationsRepo:
 
     @staticmethod
     async def _insert_reservation(
-        conn: asyncpg.Connection,
+        conn: PostgresConnection,
         res_id: str,
         intent: OrderIntent,
         reserved_usdc: Decimal,

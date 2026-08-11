@@ -38,7 +38,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal
 
-from eth_utils import keccak
+from eth_utils.crypto import keccak
 
 from config.addresses import (
     POLYMARKET_CTF_EXCHANGE_V2_ADDRESS,
@@ -156,7 +156,13 @@ def decode_order_filled_log(log: dict) -> DecodedOrderFilledLog | None:
         log_index = 0
     block_raw = log.get("blockNumber", log.get("block_number"))
     try:
-        block_number = int(block_raw, 16) if isinstance(block_raw, str) else int(block_raw)
+        block_number = (
+            int(block_raw, 16)
+            if isinstance(block_raw, str)
+            else int(block_raw)
+            if isinstance(block_raw, int)
+            else None
+        )
     except (TypeError, ValueError):
         block_number = None
 

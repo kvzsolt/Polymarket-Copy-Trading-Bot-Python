@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -10,11 +10,18 @@ import pytest
 from services.copy_tasks.admission import CopyTaskAdmissionEngine
 from services.copy_tasks.budget import (
     InMemoryTaskBudgetRepository,
+    TaskBudgetKey,
+    TaskBudgetReservationRequest,
     TaskBudgetReservationService,
 )
 from services.copy_tasks.domain import CopyTask, SourceTrade, TaskAdmissionContext
 from services.copy_tasks.domain import TaskSpendPolicy
 from services.copy_tasks.entry_price import CopyTaskEntryPriceService
+from services.copy_tasks.lifecycle import (
+    CopyTaskFillLifecycleService,
+    TaskExecutionDisposition,
+    TaskExecutionOutcome,
+)
 from services.copy_tasks.monitoring import CopyMonitoringModePolicy
 from services.copy_tasks.reaction import CopyReactionEngine
 from services.copy_tasks.reentry_lock import (
@@ -223,7 +230,7 @@ async def test_buy_with_task_budget_reserves_before_downstream() -> None:
         name="leader",
         leader_wallet=_LEADER,
         follower_account="deposit",
-        spend=TaskSpendPolicy(max_total=Decimal("100")),
+        spend=TaskSpendPolicy(max_total=Decimal("10")),
     )
 
     async def downstream(_envelope: object) -> str:
@@ -252,7 +259,9 @@ async def test_buy_with_task_budget_reserves_before_downstream() -> None:
 
 
 @pytest.mark.asyncio
-async def test_downstream_exception_releases_task_budget_reservation() -> None:
+async def test_downstream_exception_retains_task_budget_reservation() -> None:
+    """Treat an untyped downstream exception as potentially post-POST."""
+
     budget_repo = InMemoryTaskBudgetRepository()
     budget_service = TaskBudgetReservationService(budget_repo)
     task = CopyTask(
@@ -260,7 +269,7 @@ async def test_downstream_exception_releases_task_budget_reservation() -> None:
         name="leader",
         leader_wallet=_LEADER,
         follower_account="deposit",
-        spend=TaskSpendPolicy(max_total=Decimal("100")),
+        spend=TaskSpendPolicy(max_total=Decimal("10")),
     )
 
     class DownstreamError(RuntimeError):
@@ -277,6 +286,10 @@ async def test_downstream_exception_releases_task_budget_reservation() -> None:
         entry_prices=CopyTaskEntryPriceService(),
         sizing=_SizingStub(final_notional="10"),
         task_budgets=budget_service,
+        task_budget_lifecycle=CopyTaskFillLifecycleService(
+            task_budgets=budget_service,
+            reentry_locks=MarketReentryLockService(InMemoryMarketReentryLockRepository()),
+        ),
     )
     with pytest.raises(DownstreamError):
         await coordinator.process(
@@ -287,8 +300,8 @@ async def test_downstream_exception_releases_task_budget_reservation() -> None:
             downstream=downstream,
             reservation_id="res-err",
         )
-    # After downstream failure the reservation must be released, so a new
-    # reservation for the same market must be allowed again.
+    # Unknown failures may occur after the venue received the POST. The same
+    # reservation and a competing reservation both remain blocked.
     from datetime import timedelta
 
     from services.copy_tasks.budget import TaskBudgetKey, TaskBudgetReservationRequest
@@ -307,7 +320,116 @@ async def test_downstream_exception_releases_task_budget_reservation() -> None:
         ),
         task.spend,
     )
-    assert second.allowed is True
+    assert second.allowed is False
+    assert second.reason == "task_max_total_spend_exceeded"
+
+
+@pytest.mark.asyncio
+async def test_typed_ambiguous_outcome_retains_budget_and_blocks_replay() -> None:
+    """Apply explicit ambiguous evidence before returning from coordination."""
+
+    budget_service = TaskBudgetReservationService(InMemoryTaskBudgetRepository())
+    locks = MarketReentryLockService(InMemoryMarketReentryLockRepository())
+    lifecycle = CopyTaskFillLifecycleService(
+        task_budgets=budget_service,
+        reentry_locks=locks,
+    )
+    task = CopyTask(
+        task_id="task-1",
+        name="leader",
+        leader_wallet=_LEADER,
+        follower_account="deposit",
+        spend=TaskSpendPolicy(max_total=Decimal("100")),
+    )
+    coordinator = CopyTaskRuntimeCoordinator(
+        locks=locks,
+        monitoring=CopyMonitoringModePolicy(),
+        admission=CopyTaskAdmissionEngine(),
+        reactions=CopyReactionEngine(),
+        entry_prices=CopyTaskEntryPriceService(),
+        sizing=_SizingStub(final_notional="10"),
+        task_budgets=budget_service,
+        task_budget_lifecycle=lifecycle,
+    )
+
+    decision = await coordinator.process(
+        task=task,
+        source_trade=_source_trade(),
+        admission_context=_admission_context(),
+        sizing_request=object(),
+        downstream=lambda _envelope: TaskExecutionOutcome(
+            disposition=TaskExecutionDisposition.SUBMITTED_UNCONFIRMED
+        ),
+        reservation_id="res-ambiguous",
+    )
+    replay = await budget_service.reserve(
+        TaskBudgetReservationRequest(
+            reservation_id="res-ambiguous",
+            key=TaskBudgetKey(
+                follower_account="deposit",
+                task_id="task-1",
+                market_id="market",
+            ),
+            amount=Decimal("10"),
+            reserved_at=_NOW,
+            expires_at=_NOW + timedelta(seconds=120),
+        ),
+        task.spend,
+    )
+
+    assert decision.allowed is True
+    assert replay.allowed is False
+    assert replay.reason == "task_budget_submission_retained"
+
+
+@pytest.mark.asyncio
+async def test_typed_pre_post_rejection_releases_budget() -> None:
+    """Release the cap only when downstream explicitly proves no POST occurred."""
+
+    budget_service = TaskBudgetReservationService(InMemoryTaskBudgetRepository())
+    locks = MarketReentryLockService(InMemoryMarketReentryLockRepository())
+    task = CopyTask(
+        task_id="task-1",
+        name="leader",
+        leader_wallet=_LEADER,
+        follower_account="deposit",
+        spend=TaskSpendPolicy(max_total=Decimal("10")),
+    )
+    coordinator = CopyTaskRuntimeCoordinator(
+        locks=locks,
+        monitoring=CopyMonitoringModePolicy(),
+        admission=CopyTaskAdmissionEngine(),
+        reactions=CopyReactionEngine(),
+        entry_prices=CopyTaskEntryPriceService(),
+        sizing=_SizingStub(final_notional="10"),
+        task_budgets=budget_service,
+        task_budget_lifecycle=CopyTaskFillLifecycleService(
+            task_budgets=budget_service,
+            reentry_locks=locks,
+        ),
+    )
+    await coordinator.process(
+        task=task,
+        source_trade=_source_trade(),
+        admission_context=_admission_context(),
+        sizing_request=object(),
+        downstream=lambda _envelope: TaskExecutionOutcome(
+            disposition=TaskExecutionDisposition.PRE_POST_REJECTED
+        ),
+        reservation_id="res-rejected",
+    )
+
+    replacement = await budget_service.reserve(
+        TaskBudgetReservationRequest(
+            reservation_id="res-replacement",
+            key=TaskBudgetKey("deposit", "task-1", "market"),
+            amount=Decimal("10"),
+            reserved_at=_NOW,
+            expires_at=_NOW + timedelta(seconds=120),
+        ),
+        task.spend,
+    )
+    assert replacement.allowed is True
 
 
 @pytest.mark.asyncio

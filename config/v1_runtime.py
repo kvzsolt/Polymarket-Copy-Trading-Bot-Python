@@ -20,26 +20,26 @@ class LeaderWorkerRuntimeConfig(_FrozenModel):
     """Bounded serial-per-leader worker settings."""
 
     enabled: bool = True
-    queue_size: int = Field(64, ge=1, le=100_000)
-    global_concurrency: int = Field(4, ge=1, le=1_000)
-    max_leader_workers: int = Field(64, ge=1, le=10_000)
-    shutdown_timeout_seconds: float = Field(30.0, gt=0, le=600)
+    queue_size: int = Field(default=64, ge=1, le=100_000)
+    global_concurrency: int = Field(default=4, ge=1, le=1_000)
+    max_leader_workers: int = Field(default=64, ge=1, le=10_000)
+    shutdown_timeout_seconds: float = Field(default=30.0, gt=0, le=600)
 
 
 class SharedPriceCacheRuntimeConfig(_FrozenModel):
     """One shared bounded quote cache for every leader worker."""
 
     enabled: bool = True
-    max_entries: int = Field(5_000, ge=1, le=1_000_000)
-    max_age_seconds: float = Field(2.0, ge=0, le=300)
+    max_entries: int = Field(default=5_000, ge=1, le=1_000_000)
+    max_age_seconds: float = Field(default=2.0, ge=0, le=300)
 
 
 class TaskBudgetRuntimeConfig(_FrozenModel):
     """Task-level cap and one-entry reservation settings."""
 
     enabled: bool = True
-    reservation_ttl_seconds: int = Field(120, ge=1, le=86_400)
-    sweep_interval_seconds: float = Field(30.0, gt=0, le=3_600)
+    reservation_ttl_seconds: int = Field(default=120, ge=1, le=86_400)
+    sweep_interval_seconds: float = Field(default=30.0, gt=0, le=3_600)
 
 
 class ReentryLockRuntimeConfig(_FrozenModel):
@@ -67,11 +67,15 @@ class CopyTasksRuntimeConfig(_FrozenModel):
     """
 
     enabled: bool = False
-    workers: LeaderWorkerRuntimeConfig = LeaderWorkerRuntimeConfig()
-    shared_price_cache: SharedPriceCacheRuntimeConfig = SharedPriceCacheRuntimeConfig()
-    task_budget: TaskBudgetRuntimeConfig = TaskBudgetRuntimeConfig()
-    reentry_lock: ReentryLockRuntimeConfig = ReentryLockRuntimeConfig()
-    protective_exits: ProtectiveExitRuntimeConfig = ProtectiveExitRuntimeConfig()
+    workers: LeaderWorkerRuntimeConfig = Field(default_factory=LeaderWorkerRuntimeConfig)
+    shared_price_cache: SharedPriceCacheRuntimeConfig = Field(
+        default_factory=SharedPriceCacheRuntimeConfig
+    )
+    task_budget: TaskBudgetRuntimeConfig = Field(default_factory=TaskBudgetRuntimeConfig)
+    reentry_lock: ReentryLockRuntimeConfig = Field(default_factory=ReentryLockRuntimeConfig)
+    protective_exits: ProtectiveExitRuntimeConfig = Field(
+        default_factory=ProtectiveExitRuntimeConfig
+    )
 
 
 class V1RuntimeConfig(_FrozenModel):

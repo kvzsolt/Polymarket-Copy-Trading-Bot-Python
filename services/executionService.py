@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import random
 import time
-from dataclasses import asdict, is_dataclass, replace
+from dataclasses import asdict, replace
 from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
 from hashlib import sha256
 from typing import Any, TYPE_CHECKING
@@ -28,7 +28,11 @@ from integrations.polymarket.errors import (
 from integrations.polymarket.models import MarketableOrderRequest
 from services.circuitBreaker import CircuitBreaker
 from services.idempotency import compute_effective_key as _compute_effective_key
-from services.trading_permission import TradingPausedError, TradingPermissionService
+from services.trading_permission import (
+    SubmissionPurpose,
+    TradingPausedError,
+    TradingPermissionService,
+)
 from utils.logger import get_logger, log_api_error, log_api_response, redact_error_detail
 from services.market_data_quality import is_thin_or_empty_book as _is_thin_or_empty_book
 
@@ -140,7 +144,8 @@ def _submit_result_to_response(submit_result) -> dict[str, Any]:
     else:
         default_status = submit_result.status or "failed"
     raw = submit_result.raw if isinstance(submit_result.raw, dict) else {}
-    raw_data = raw.get("data") if isinstance(raw.get("data"), dict) else {}
+    raw_data_value = raw.get("data")
+    raw_data = raw_data_value if isinstance(raw_data_value, dict) else {}
 
     def _pick_raw(*keys: str) -> Any:
         for key in keys:
@@ -355,6 +360,8 @@ def _effective_idempotency_key(
 
 
 class ExecutionService:
+    """Submit copy and protective orders through one venue-neutral gateway."""
+
     def __init__(
         self,
         clob_client,
@@ -380,19 +387,13 @@ class ExecutionService:
         self._geoblock_gate = geoblock_gate
         self._trading_permission = trading_permission
 
-        # Single CLOB venue boundary. ``runtime_bootstrap`` is expected to pass
-        # a pre-constructed gateway so reconciliation, the execution
-        # coordinator, and ExecutionService all share one instance. When no
-        # gateway is supplied we build a default one over the legacy
-        # ``clob_client`` wrapper to preserve backward-compatibility for
-        # callers that have not yet been updated (the configless construction
-        # itself is fail-closed in #73, not #66).
+        # Single CLOB venue boundary. ``runtime_bootstrap`` must pass the same
+        # CCXT-backed gateway to execution, reconciliation, and market data.
+        # Constructing an adapter here would create a second venue authority
+        # and could bypass lifecycle ownership at shutdown.
         if clob_gateway is None:
-            from integrations.polymarket.clob_v2_gateway import ClobV2Gateway
-
-            self.clob_gateway = ClobV2Gateway(clob_client, config)
-        else:
-            self.clob_gateway = clob_gateway
+            raise TypeError("ExecutionService requires an injected clob_gateway")
+        self.clob_gateway = clob_gateway
 
         # Always default to the shared module-level breaker so multi-user
         # runtimes get one venue-wide backoff window during a CLOB outage.
@@ -427,6 +428,27 @@ class ExecutionService:
             submit_concurrency = 2
         self._submit_semaphore = asyncio.Semaphore(submit_concurrency)
 
+    @staticmethod
+    def _apply_marketable_price_protection(
+        *,
+        calculated_price: Decimal,
+        caller_limit: Decimal,
+        tick_size: Decimal,
+        side: str,
+    ) -> Decimal:
+        """Clamp and quantize a FAK limit without weakening its cap or floor."""
+
+        constrained = (
+            min(calculated_price, caller_limit)
+            if side == "BUY"
+            else max(calculated_price, caller_limit)
+        )
+        if tick_size <= 0:
+            return constrained
+        rounding = ROUND_FLOOR if side == "BUY" else ROUND_CEILING
+        units = (constrained / tick_size).to_integral_value(rounding=rounding)
+        return units * tick_size
+
     async def _save_submission(
         self,
         *,
@@ -457,9 +479,14 @@ class ExecutionService:
             if sanitized_response.get("error")
             else None,
         )
-        await self.order_repo.save_submission(record)
+        order_repo = self.order_repo
+        if order_repo is None:
+            raise RuntimeError("ExecutionService requires an injected order repository")
+        await order_repo.save_submission(record)
 
     async def execute(self, req: ExecutionRequest) -> ExecutionResult:
+        """Validate, reserve, submit, and classify one execution request."""
+
         side = _normalize_side(req.side)
         if req.amount <= 0:
             return ExecutionResult(
@@ -481,6 +508,9 @@ class ExecutionService:
         # protective SELL exits — closing a position is risk-reducing and must
         # not be stranded by a hot-stop (mirrors geoblock semantics).
         forced_sell_exit = _is_forced_sell_exit_request(req, side)
+        submission_purpose = (
+            SubmissionPurpose.PROTECTIVE_EXIT if forced_sell_exit else SubmissionPurpose.STANDARD
+        )
         global_cfg = getattr(self._config, "app", None)
         global_kill = bool(getattr(global_cfg, "kill_switch", False))
         exec_kill = bool(getattr(self._config.execution, "kill_switch", False))
@@ -498,7 +528,9 @@ class ExecutionService:
 
         if self._trading_permission is not None:
             try:
-                await self._trading_permission.require_submission_allowed()
+                await self._trading_permission.require_submission_allowed(
+                    purpose=submission_purpose
+                )
             except TradingPausedError as exc:
                 return ExecutionResult(
                     accepted=False,
@@ -582,12 +614,12 @@ class ExecutionService:
                 )
 
         try:
-            from services.market_data_service import MarketDataNotReady
+            from services.market_data_service import MarketDataNotReady, MarketDataPolicy
 
             market_data_policy = None
             if instant_fak or forced_sell_exit:
                 base_policy = getattr(self._market_data_service, "_policy", None)
-                if base_policy is not None and is_dataclass(base_policy):
+                if isinstance(base_policy, MarketDataPolicy):
                     market_data_policy = replace(
                         base_policy,
                         rest_snapshot_max_spread_bps=1_000_000,
@@ -898,24 +930,13 @@ class ExecutionService:
         else:
             worst_price = quote_price * (Decimal("1") - slippage)
         worst_price = _quantize_price(worst_price, tick_size, side)
-        # H2 — honor the caller's explicit price_limit (the leader/signal
-        # price) as a hard cap on the fill. Previously the price_limit was
-        # validated for positivity then ignored; the gateway got the
-        # quote-derived worst_price instead, so the leader price never capped
-        # the fill. Cap worst_price at price_limit for BUY (never pay more
-        # than the signal) and floor it at price_limit for SELL (never sell
-        # below the signal).
         if instant_fak and req.price_limit is not None:
-            try:
-                caller_cap = Decimal(str(req.price_limit))
-                if caller_cap > 0:
-                    if side == "BUY":
-                        worst_price = min(worst_price, caller_cap)
-                    else:
-                        worst_price = max(worst_price, caller_cap)
-                    worst_price = _quantize_price(worst_price, tick_size, side)
-            except Exception:
-                logger.debug("price_limit_cap_apply_failed", exc_info=True)
+            worst_price = self._apply_marketable_price_protection(
+                calculated_price=worst_price,
+                caller_limit=caller_price_limit,
+                tick_size=tick_size,
+                side=side,
+            )
 
         effective_order_amount = req.amount
         if instant_fak:
@@ -995,7 +1016,19 @@ class ExecutionService:
             policy_version=getattr(self._config, "policy_version", "") or "",
         )
 
-        existing = await self.order_repo.get_by_idempotency_key(idem_key)
+        order_repo = self.order_repo
+        if order_repo is None:
+            return ExecutionResult(
+                accepted=False,
+                order_id=None,
+                status="order_repository_unavailable",
+                requested_amount=req.amount,
+                filled_amount=Decimal("0"),
+                avg_price=None,
+                fees_paid=Decimal("0"),
+                error="order repository not wired — refusing execution",
+            )
+        existing = await order_repo.get_by_idempotency_key(idem_key)
         pending_lock_expired = bool(
             existing
             and not existing.get("order_id")
@@ -1021,7 +1054,7 @@ class ExecutionService:
                 idem_key,
                 int(_pending_submission_ttl_seconds(self._config)),
             )
-        existing = await self.order_repo.get_by_idempotency_key(idem_key)
+        existing = await order_repo.get_by_idempotency_key(idem_key)
 
         if _is_retry_blocking_existing(existing, config=self._config):
             existing_order_id = existing.get("order_id")
@@ -1061,7 +1094,7 @@ class ExecutionService:
         # Atomically acquire submission lock BEFORE any retry loop to prevent the
         # race where two concurrent execute() calls both pass the "existing?" check
         # and both submit distinct signed orders.
-        has_atomic_lock = hasattr(self.order_repo, "try_acquire_submission_lock")
+        has_atomic_lock = hasattr(order_repo, "try_acquire_submission_lock")
         if has_atomic_lock:
             # If THIS call confirmed the prior pending lock is expired (above),
             # authorise try_acquire to take the dead lock over at the same
@@ -1078,7 +1111,7 @@ class ExecutionService:
                 _acquire_kwargs["stale_takeover_seconds"] = int(
                     _pending_submission_ttl_seconds(self._config)
                 )
-            lock_acquired = await self.order_repo.try_acquire_submission_lock(
+            lock_acquired = await order_repo.try_acquire_submission_lock(
                 idem_key, req.user_id, req.leader_id, request_doc, **_acquire_kwargs
             )
         else:
@@ -1108,7 +1141,7 @@ class ExecutionService:
             )
 
         if not lock_acquired:
-            existing_now = await self.order_repo.get_by_idempotency_key(idem_key)
+            existing_now = await order_repo.get_by_idempotency_key(idem_key)
             if existing_now and existing_now.get("order_id"):
                 return ExecutionResult(
                     accepted=True,
@@ -1135,7 +1168,7 @@ class ExecutionService:
             # (it shapes the error string); it never gates this fail-closed
             # return. Proven by tests/test_execution_idempotency_extended.py::
             # TestAtomicLockConcurrencyStress and the release-gate twin.
-            _lock_held = has_atomic_lock and await self.order_repo.is_submission_locked(idem_key)
+            _lock_held = has_atomic_lock and await order_repo.is_submission_locked(idem_key)
             return ExecutionResult(
                 accepted=False,
                 order_id=None,
@@ -1183,7 +1216,9 @@ class ExecutionService:
             for attempt in range(1, 4):
                 if self._trading_permission is not None:
                     try:
-                        await self._trading_permission.require_submission_allowed()
+                        await self._trading_permission.require_submission_allowed(
+                            purpose=submission_purpose
+                        )
                     except TradingPausedError as exc:
                         response = {
                             "success": False,
@@ -1468,7 +1503,9 @@ class ExecutionService:
                         break
                     if self._trading_permission is not None:
                         try:
-                            await self._trading_permission.require_submission_allowed()
+                            await self._trading_permission.require_submission_allowed(
+                                purpose=submission_purpose
+                            )
                         except TradingPausedError as exc:
                             last_no_fill_error = str(exc)
                             logger.warning(
@@ -1532,6 +1569,13 @@ class ExecutionService:
                             next_tick_size,
                             side,
                         )
+                        if instant_fak:
+                            next_worst_price = self._apply_marketable_price_protection(
+                                calculated_price=next_worst_price,
+                                caller_limit=caller_price_limit,
+                                tick_size=next_tick_size,
+                                side=side,
+                            )
                         next_request = MarketableOrderRequest(
                             token_id=req.token_id,
                             side=side,

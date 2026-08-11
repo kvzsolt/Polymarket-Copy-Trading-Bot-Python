@@ -97,7 +97,7 @@ class TradingContext:
                     config=self.config,
                     leader_scorer=self.leader_scorer,
                 )
-        if self.copy_decision_service is not None:
+        if self.copy_decision_service is not None and self.leader_scorer is not None:
             self.copy_decision_service.leader_scorer = self.leader_scorer
         if self.entry_permission_service is None and self.risk_blocks_repo is not None:
             self.entry_permission_service = EntryPermissionService(self.risk_blocks_repo)

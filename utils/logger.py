@@ -661,6 +661,24 @@ class RichConsoleHandler(logging.Handler):
         )
 
 
+class _ManagedHandlerMixin:
+    """Mark handlers owned by this module for idempotent reconfiguration."""
+
+    _pm_bot_managed = True
+
+
+class _ManagedRichConsoleHandler(_ManagedHandlerMixin, RichConsoleHandler):
+    """Rich console handler owned by this logging configuration."""
+
+
+class _ManagedRotatingFileHandler(_ManagedHandlerMixin, RotatingFileHandler):
+    """Rotating JSONL handler owned by this logging configuration."""
+
+
+class _ManagedStreamHandler(_ManagedHandlerMixin, logging.StreamHandler):
+    """Fallback stderr handler owned by this logging configuration."""
+
+
 def _remove_managed_handlers(logger: logging.Logger) -> None:
     keep: list[Handler] = []
     for h in logger.handlers:
@@ -699,25 +717,23 @@ def configure_logging(
     logger.propagate = False
     _remove_managed_handlers(logger)
 
-    ch = RichConsoleHandler()
+    ch = _ManagedRichConsoleHandler()
     ch.setLevel(resolved_level)
     ch.setFormatter(logging.Formatter("%(message)s"))
-    ch._pm_bot_managed = True
     logger.addHandler(ch)
 
     try:
         log_dir_path.mkdir(parents=True, exist_ok=True)
-        file_handler: logging.Handler = RotatingFileHandler(
+        file_handler: logging.Handler = _ManagedRotatingFileHandler(
             filename=str(jsonl_path),
             maxBytes=max(1, int(max_bytes)),
             backupCount=max(0, int(backup_count)),
             encoding="utf-8",
         )
     except Exception:
-        file_handler = logging.StreamHandler(sys.stderr)
+        file_handler = _ManagedStreamHandler(sys.stderr)
     file_handler.setLevel(logging.DEBUG)
     file_handler.setFormatter(JsonFormatter())
-    file_handler._pm_bot_managed = True
     logger.addHandler(file_handler)
 
     _CONFIGURED_LOGGERS[name] = logger

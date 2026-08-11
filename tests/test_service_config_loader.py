@@ -76,6 +76,18 @@ def test_environment_override_beats_canonical(tmp_path: Path) -> None:
     config = load_config(_overrides(), config_dir=config_dir, environment="live")
 
     assert config.sizing.percentage == 2.0
+    assert config.environment == "live"
+
+
+def test_selected_environment_is_runtime_metadata_not_service_yaml(tmp_path: Path) -> None:
+    """The control plane can identify its layer without persisting a fake section."""
+
+    config_dir = _tree(tmp_path, {})
+
+    config = load_config(_overrides(), config_dir=config_dir, environment="paper")
+
+    assert config.environment == "paper"
+    assert "environment" not in dump_config_payload(config)
 
 
 def test_live_execution_file_affects_only_execution(tmp_path: Path) -> None:

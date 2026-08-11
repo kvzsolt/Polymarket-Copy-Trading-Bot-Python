@@ -133,7 +133,10 @@ def _order_age_seconds(order: dict[str, Any], now: float) -> float:
         if ts is not None:
             try:
                 timestamp = getattr(ts, "timestamp", None)
-                ts_f = float(timestamp()) if callable(timestamp) else float(ts)
+                timestamp_value = timestamp() if callable(timestamp) else ts
+                if not isinstance(timestamp_value, (str, int, float)):
+                    continue
+                ts_f = float(timestamp_value)
                 # If it looks like milliseconds, convert
                 if ts_f > 1e12:
                     ts_f /= 1000.0
@@ -800,7 +803,7 @@ class ReconciliationService:
             result = getter()
             if inspect.isawaitable(result):
                 result = await result
-            rows = result or []
+            rows = result if isinstance(result, (list, tuple)) else []
         except Exception as exc:
             logger.error("reconcile_local_in_flight_lookup_failed | err=%s", exc)
             return []
@@ -867,7 +870,7 @@ class ReconciliationService:
         """Fetch all open orders from the CLOB."""
         orders_client = self._orders_client()
         list_open_orders = getattr(orders_client, "list_open_orders", None)
-        if self._declares_method(orders_client, "list_open_orders"):
+        if self._declares_method(orders_client, "list_open_orders") and callable(list_open_orders):
             raw = await _maybe_await(list_open_orders())
         else:
             loop = asyncio.get_running_loop()
@@ -905,7 +908,7 @@ class ReconciliationService:
         """Cancel a single order on the CLOB."""
         orders_client = self._orders_client()
         cancel_order = getattr(orders_client, "cancel_order", None)
-        if self._declares_method(orders_client, "cancel_order"):
+        if self._declares_method(orders_client, "cancel_order") and callable(cancel_order):
             result = await _maybe_await(cancel_order(order_id))
             if result is not None and getattr(result, "success", True) is False:
                 raise RuntimeError(getattr(result, "error", None) or "order cancellation failed")

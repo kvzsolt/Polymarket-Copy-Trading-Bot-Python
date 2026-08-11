@@ -148,7 +148,6 @@ parsimonious==0.10.0
     # via eth-abi
 pluggy==1.6.0
     # via pytest
-polymarket-client==0.1.0b18
     # via polymarket-copy-trading-bot (pyproject.toml)
 propcache==0.5.2
     # via

@@ -39,3 +39,24 @@ def test_v1_migration_contains_atomic_task_budget_ledger() -> None:
     assert "CREATE TABLE IF NOT EXISTS copy_task_fill_ledger" in migration
     assert "reservation_id TEXT NOT NULL UNIQUE" in migration
     assert "idx_task_budget_reservations_account_market" in migration
+
+
+def test_followup_migration_adds_multi_fill_budget_and_durable_risk_lots() -> None:
+    """Keep the deployed first migration immutable and extend with a new id."""
+
+    migration = (
+        Path(__file__).resolve().parents[2]
+        / "storage"
+        / "postgres"
+        / "migrations"
+        / "20260811_02_copy_task_execution_lifecycle.sql"
+    ).read_text(encoding="utf-8")
+
+    assert "ADD COLUMN IF NOT EXISTS execution_state" in migration
+    assert "ADD COLUMN IF NOT EXISTS settled_notional" in migration
+    assert "DROP CONSTRAINT IF EXISTS copy_task_fill_ledger_reservation_id_key" in migration
+    assert "CREATE TABLE IF NOT EXISTS copy_task_risk_lots" in migration
+    assert "policy_snapshot JSONB NOT NULL" in migration
+    assert "peak_price NUMERIC(38, 18)" in migration
+    assert "remaining_shares NUMERIC(38, 18)" in migration
+    assert "CREATE TABLE IF NOT EXISTS copy_task_protective_exit_fill_ledger" in migration

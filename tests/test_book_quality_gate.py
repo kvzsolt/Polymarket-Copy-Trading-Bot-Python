@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from cache.market_state_store import BookSnapshot, QuoteSnapshot, TickSnapshot
+from integrations.polymarket.models import VenueSubmitResult
 from services.market_data_service import MarketDataBundle, MarketDataPolicy, MarketDataSource
 from utils.createClobClient import _top_of_book_from_levels
 
@@ -65,17 +66,15 @@ def _make_execution_service(bid: str | None, ask: str | None, quote_price: str =
     from services.executionService import ExecutionService
 
     clob = AsyncMock()
-    clob.get_price = AsyncMock(return_value={"price": quote_price})
-    clob.create_market_order = AsyncMock(return_value={"signed": True})
-    clob.post_signed_order = AsyncMock(
-        return_value={"success": True, "orderID": "ord-book", "status": "submitted"}
-    )
-    clob.client = SimpleNamespace(
-        get_order=lambda _order_id: {
-            "status": "filled",
-            "size_matched": "10",
-            "avg_price": quote_price,
-        }
+    gateway = SimpleNamespace(
+        submit_marketable_order=AsyncMock(
+            return_value=VenueSubmitResult(
+                success=True,
+                order_id="ord-book",
+                status="submitted",
+            )
+        ),
+        get_execution_metadata=AsyncMock(),
     )
 
     order_repo = MagicMock()
@@ -121,6 +120,7 @@ def _make_execution_service(bid: str | None, ask: str | None, quote_price: str =
         AsyncMock(get_fee_bps=AsyncMock(return_value=Decimal("0"))),
         order_repo,
         config=mock_cfg,
+        clob_gateway=gateway,
         market_data_service=_mock_mds(bid, ask),
     )
 
@@ -245,9 +245,9 @@ class TestBookQualityGate:
 
         assert result.accepted is True
         assert result.status == "submitted_unconfirmed"
-        svc.clob_client.create_market_order.assert_awaited_once()
-        assert svc.clob_client.create_market_order.await_args.kwargs["order_type"] == "FAK"
-        assert svc.clob_client.post_signed_order.await_args.kwargs["order_type"] == "FAK"
+        svc.clob_gateway.submit_marketable_order.assert_awaited_once()
+        submitted = svc.clob_gateway.submit_marketable_order.await_args.args[0]
+        assert submitted.order_type == "FAK"
 
     def test_copy_trade_fak_uses_fresh_snapshot_without_spread_gate(self):
         """Copy FAKs read current top-of-book but do not reject on wide spread."""
@@ -255,14 +255,13 @@ class TestBookQualityGate:
         svc.clob_gateway.get_execution_metadata = AsyncMock(
             side_effect=AssertionError("metadata-only path should not run")
         )
-        svc.clob_client.post_signed_order = AsyncMock(
-            return_value={
-                "success": True,
-                "orderID": "ord-fak",
-                "status": "matched",
-                "size_matched": "4",
-                "avg_price": "0.25",
-            }
+        svc.clob_gateway.submit_marketable_order = AsyncMock(
+            return_value=VenueSubmitResult(
+                success=True,
+                order_id="ord-fak",
+                status="matched",
+                raw={"size_matched": "4", "avg_price": "0.25"},
+            )
         )
         req = _req(
             amount="1",
@@ -281,11 +280,12 @@ class TestBookQualityGate:
         assert snapshot_kwargs["side"] == "BUY"
         assert snapshot_kwargs["policy"].rest_snapshot_max_spread_bps == 1_000_000
         assert snapshot_kwargs["policy"].require_book_depth is False
-        svc.clob_client.create_market_order.assert_awaited_once()
-        assert svc.clob_client.create_market_order.await_args.kwargs["order_type"] == "FAK"
+        svc.clob_gateway.submit_marketable_order.assert_awaited_once()
+        submitted = svc.clob_gateway.submit_marketable_order.await_args.args[0]
+        assert submitted.order_type == "FAK"
         # H2: the caller price_limit (0.95) caps the fill; the slippage-derived
         # worst_price (0.92) is below the cap so it stands.
-        assert svc.clob_client.create_market_order.await_args.kwargs["max_price"] == Decimal("0.92")
+        assert submitted.price_limit == Decimal("0.92")
 
     def test_copy_trade_fak_reposts_remaining_partial_fill(self):
         """Partial FAK fills refresh the book before bounded FAK reposts."""
@@ -293,22 +293,20 @@ class TestBookQualityGate:
         svc.clob_gateway.get_execution_metadata = AsyncMock(
             side_effect=AssertionError("metadata-only path should not run")
         )
-        svc.clob_client.post_signed_order = AsyncMock(
+        svc.clob_gateway.submit_marketable_order = AsyncMock(
             side_effect=[
-                {
-                    "success": True,
-                    "orderID": "ord-fak-1",
-                    "status": "matched",
-                    "size_matched": "4",
-                    "avg_price": "0.25",
-                },
-                {
-                    "success": True,
-                    "orderID": "ord-fak-2",
-                    "status": "matched",
-                    "size_matched": "4",
-                    "avg_price": "0.25",
-                },
+                VenueSubmitResult(
+                    success=True,
+                    order_id="ord-fak-1",
+                    status="matched",
+                    raw={"size_matched": "4", "avg_price": "0.25"},
+                ),
+                VenueSubmitResult(
+                    success=True,
+                    order_id="ord-fak-2",
+                    status="matched",
+                    raw={"size_matched": "4", "avg_price": "0.25"},
+                ),
             ]
         )
         req = _req(
@@ -324,30 +322,29 @@ class TestBookQualityGate:
         assert result.status == "filled"
         assert result.filled_amount == Decimal("8")
         assert result.order_id == "ord-fak-1,ord-fak-2"
-        assert svc.clob_client.create_market_order.await_count == 2
-        for call in svc.clob_client.post_signed_order.await_args_list:
-            assert call.kwargs["order_type"] == "FAK"
+        assert svc.clob_gateway.submit_marketable_order.await_count == 2
+        for call in svc.clob_gateway.submit_marketable_order.await_args_list:
+            assert call.args[0].order_type == "FAK"
         assert svc._market_data_service.require_fresh_data.await_count == 2
 
     def test_copy_trade_fak_zero_fill_retries_then_fills(self):
         """A zero-fill FAK should refresh the book and repost within bounds."""
         svc = _make_execution_service("0.10", "0.90")
-        svc.clob_client.post_signed_order = AsyncMock(
+        svc.clob_gateway.submit_marketable_order = AsyncMock(
             side_effect=[
-                {
-                    "success": False,
-                    "orderID": "ord-fak-0",
-                    "status": "cancelled",
-                    "error": "fak_no_match",
-                    "non_retryable": True,
-                },
-                {
-                    "success": True,
-                    "orderID": "ord-fak-1",
-                    "status": "matched",
-                    "size_matched": "4",
-                    "avg_price": "0.25",
-                },
+                VenueSubmitResult(
+                    success=False,
+                    order_id="ord-fak-0",
+                    status="cancelled",
+                    error="fak_no_match",
+                    non_retryable=True,
+                ),
+                VenueSubmitResult(
+                    success=True,
+                    order_id="ord-fak-1",
+                    status="matched",
+                    raw={"size_matched": "4", "avg_price": "0.25"},
+                ),
             ]
         )
         req = _req(
@@ -363,20 +360,19 @@ class TestBookQualityGate:
         assert result.status == "filled"
         assert result.filled_amount == Decimal("4")
         assert result.order_id == "ord-fak-1"
-        assert svc.clob_client.create_market_order.await_count == 2
-        assert svc.clob_client.post_signed_order.await_count == 2
+        assert svc.clob_gateway.submit_marketable_order.await_count == 2
         assert svc._market_data_service.require_fresh_data.await_count == 2
         assert svc.circuit_breaker.allow_request() is True
 
     def test_copy_trade_fak_delayed_ack_is_not_reposted(self):
         """Delayed FAK acks are reconciliation-owned, not zero-fill cancels."""
         svc = _make_execution_service("0.10", "0.90")
-        svc.clob_client.post_signed_order = AsyncMock(
-            return_value={
-                "success": True,
-                "orderID": "ord-fak-delayed",
-                "status": "delayed",
-            }
+        svc.clob_gateway.submit_marketable_order = AsyncMock(
+            return_value=VenueSubmitResult(
+                success=True,
+                order_id="ord-fak-delayed",
+                status="delayed",
+            )
         )
         req = _req(
             amount="5",
@@ -392,36 +388,35 @@ class TestBookQualityGate:
         assert result.order_id == "ord-fak-delayed"
         assert result.filled_amount == Decimal("0")
         assert result.error is None
-        assert svc.clob_client.create_market_order.await_count == 1
-        assert svc.clob_client.post_signed_order.await_count == 1
+        assert svc.clob_gateway.submit_marketable_order.await_count == 1
         assert svc._market_data_service.require_fresh_data.await_count == 1
 
     def test_copy_trade_fak_no_match_retries_bounded_without_tripping_circuit(self):
         """Repeated FAK no-match cancellations should exhaust bounded retries."""
         svc = _make_execution_service("0.10", "0.90")
-        svc.clob_client.post_signed_order = AsyncMock(
+        svc.clob_gateway.submit_marketable_order = AsyncMock(
             side_effect=[
-                {
-                    "success": False,
-                    "orderID": "ord-fak-0",
-                    "status": "cancelled",
-                    "error": "fak_no_match",
-                    "non_retryable": True,
-                },
-                {
-                    "success": False,
-                    "orderID": "ord-fak-1",
-                    "status": "cancelled",
-                    "error": "fak_no_match",
-                    "non_retryable": True,
-                },
-                {
-                    "success": False,
-                    "orderID": "ord-fak-2",
-                    "status": "cancelled",
-                    "error": "fak_no_match",
-                    "non_retryable": True,
-                },
+                VenueSubmitResult(
+                    success=False,
+                    order_id="ord-fak-0",
+                    status="cancelled",
+                    error="fak_no_match",
+                    non_retryable=True,
+                ),
+                VenueSubmitResult(
+                    success=False,
+                    order_id="ord-fak-1",
+                    status="cancelled",
+                    error="fak_no_match",
+                    non_retryable=True,
+                ),
+                VenueSubmitResult(
+                    success=False,
+                    order_id="ord-fak-2",
+                    status="cancelled",
+                    error="fak_no_match",
+                    non_retryable=True,
+                ),
             ]
         )
         req = _req(
@@ -436,8 +431,7 @@ class TestBookQualityGate:
         assert result.accepted is False
         assert result.status == "cancelled"
         assert result.error == "fak_no_match"
-        assert svc.clob_client.post_signed_order.await_count == 3
-        assert svc.clob_client.create_market_order.await_count == 3
+        assert svc.clob_gateway.submit_marketable_order.await_count == 3
         assert svc._market_data_service.require_fresh_data.await_count == 3
         assert svc.circuit_breaker.allow_request() is True
 

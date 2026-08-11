@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import time
 from collections import OrderedDict
+from collections.abc import Sized
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
@@ -156,7 +158,7 @@ def _risk_exit_signal_id(
 def _stable_hash(value: str) -> str:
     import hashlib
 
-    return hashlib.sha1(value.encode("utf-8")).hexdigest()[:16]
+    return hashlib.sha1(value.encode("utf-8"), usedforsecurity=False).hexdigest()[:16]
 
 
 async def _fetch_live_risk_position_size(
@@ -547,7 +549,9 @@ def _market_wss_live_for_token(
         age = age_fn()
     except Exception:
         return False
-    return age is not None and float(age) <= max_silence_seconds
+    return (
+        isinstance(age, (int, float)) and not isinstance(age, bool) and age <= max_silence_seconds
+    )
 
 
 def _risk_wss_connection_max_silence(context: TradingContext) -> float:
@@ -1064,13 +1068,16 @@ async def _active_sell_reserved_size(
         return Decimal("0")
 
     try:
-        reservations = await list_active(user_id, condition_id, token_id)
+        lookup_result = list_active(user_id, condition_id, token_id)
+        reservations = await lookup_result if inspect.isawaitable(lookup_result) else lookup_result
     except Exception:
         logger.debug("risk_active_reservation_lookup_failed", exc_info=True)
         return Decimal("0")
 
+    if not isinstance(reservations, (list, tuple)):
+        return Decimal("0")
     total = Decimal("0")
-    for reservation in reservations or []:
+    for reservation in reservations:
         side = str(getattr(reservation, "side", "") or "").upper()
         status = str(getattr(reservation, "status", "") or "").lower()
         if side != "SELL" or status != "active":
@@ -1079,10 +1086,12 @@ async def _active_sell_reserved_size(
             release = getattr(reservation_service, "release_terminal", None)
             if callable(release):
                 try:
-                    await release(
+                    release_result = release(
                         reservation.id,
                         reason="expired_orphan_before_risk_exit",
                     )
+                    if inspect.isawaitable(release_result):
+                        await release_result
                     logger.info(
                         "risk_released_expired_orphan_reservation | "
                         "reservation_id=%s cond=%s token=%s",
@@ -1160,14 +1169,12 @@ async def _reap_expired_reservations_for_context(context: TradingContext) -> int
     if not callable(release_expired):
         return 0
     try:
-        released = await release_expired()
+        release_result = release_expired()
+        released = await release_result if inspect.isawaitable(release_result) else release_result
     except Exception:
         logger.debug("risk_reservation_reaper_failed", exc_info=True)
         return 0
-    try:
-        count = len(released or [])
-    except TypeError:
-        count = 0
+    count = len(released) if isinstance(released, Sized) else 0
     if count:
         logger.info(
             "risk_reaped_expired_reservations | count=%d user=%s",
@@ -1592,7 +1599,7 @@ async def run_risk_check_for_context(
                 # risk block until after the protective SELL actually fills.  Writing
                 # the block before execution creates a durable re-entry ban even when
                 # the SELL fails, which is the core issue #27 lifecycle bug.
-                _block_metadata = {
+                _block_metadata: dict[str, object] = {
                     "leader_notional_at_trigger": trigger_notional,
                     "copied_position_notional_at_trigger": trigger_notional,
                     "trigger_price": float(current_price),

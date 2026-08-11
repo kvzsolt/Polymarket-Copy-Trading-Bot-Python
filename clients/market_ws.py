@@ -225,7 +225,11 @@ class MarketWebSocket:
         try:
             logger.info("MarketWS: REST bootstrap for %d asset(s)", len(self._asset_ids))
             self._call_cache_optional("invalidate_all")
-            await self._rest_bootstrap(self._asset_ids)
+            rest_bootstrap = self._rest_bootstrap
+            if rest_bootstrap is None:
+                self._mark_all_dirty("rest_bootstrap_unavailable")
+                return
+            await rest_bootstrap(self._asset_ids)
         except Exception as exc:
             logger.warning("MarketWS: REST bootstrap failed: %s", exc)
             self._mark_all_dirty("rest_bootstrap_failed")

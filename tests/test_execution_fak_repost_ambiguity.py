@@ -230,3 +230,83 @@ async def test_c5b_unknown_avg_fill_price_not_substituted_with_worst_price():
     assert result.avg_price is None or result.avg_price == Decimal("0"), (
         f"unknown avg fill must stay unknown, got {result.avg_price}"
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("side", "price_limit", "initial_bundle", "repost_bundle"),
+    [
+        ("BUY", "0.55", _make_bundle(ask="0.51"), _make_bundle(ask="0.60")),
+        ("SELL", "0.45", _make_bundle(bid="0.49"), _make_bundle(bid="0.40")),
+    ],
+)
+async def test_fak_repost_preserves_original_price_protection(
+    side: str,
+    price_limit: str,
+    initial_bundle: MarketDataBundle,
+    repost_bundle: MarketDataBundle,
+) -> None:
+    """Never let a later quote weaken the source-derived cap or floor."""
+
+    mds = _mock_mds()
+    mds.require_fresh_data.side_effect = [initial_bundle, repost_bundle]
+    gateway = MagicMock(spec=ClobGateway)
+    gateway.submit_marketable_order = AsyncMock(
+        side_effect=[
+            VenueSubmitResult(
+                success=True,
+                order_id="ord-1",
+                status="matched",
+                raw={"size_matched": "3", "avg_price": "0.49"},
+            ),
+            VenueSubmitResult(
+                success=False,
+                status="canceled",
+                error="order_not_fillable",
+                non_retryable=True,
+            ),
+        ]
+    )
+    gateway.get_order = AsyncMock(return_value=None)
+    service = _build_svc(gateway=gateway, mds=mds)
+
+    await service.execute(_req(side=side, amount="10", price_limit=price_limit))
+
+    repost = gateway.submit_marketable_order.await_args_list[1].args[0]
+    assert repost.price_limit == Decimal(price_limit)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("side", "quote", "price_limit", "expected"),
+    [
+        ("BUY", _make_bundle(ask="0.60"), "0.555", "0.55"),
+        ("SELL", _make_bundle(bid="0.40"), "0.455", "0.46"),
+    ],
+)
+async def test_initial_fak_price_limit_rounds_toward_protection(
+    side: str,
+    quote: MarketDataBundle,
+    price_limit: str,
+    expected: str,
+) -> None:
+    """Quantization must not cross a non-tick-aligned cap or floor."""
+
+    mds = _mock_mds()
+    mds.require_fresh_data.return_value = quote
+    gateway = MagicMock(spec=ClobGateway)
+    gateway.submit_marketable_order = AsyncMock(
+        return_value=VenueSubmitResult(
+            success=False,
+            status="canceled",
+            error="order_not_fillable",
+            non_retryable=True,
+        )
+    )
+    gateway.get_order = AsyncMock(return_value=None)
+    service = _build_svc(gateway=gateway, mds=mds)
+
+    await service.execute(_req(side=side, amount="10", price_limit=price_limit))
+
+    submitted = gateway.submit_marketable_order.await_args.args[0]
+    assert submitted.price_limit == Decimal(expected)

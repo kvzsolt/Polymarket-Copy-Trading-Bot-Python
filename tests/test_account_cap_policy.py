@@ -408,7 +408,9 @@ class TestRetryBlocking:
         }
         assert _is_retry_blocking_existing(existing, now_ts=150, pending_ttl_seconds=120)
 
-    def test_stale_submitted_unconfirmed_without_order_id_does_not_block(self):
+    def test_stale_submitted_unconfirmed_without_order_id_still_blocks(self):
+        """Ambiguous venue delivery remains blocked until reconciliation."""
+
         from services.executionService import _is_retry_blocking_existing
 
         existing = {
@@ -416,7 +418,7 @@ class TestRetryBlocking:
             "order_id": None,
             "response": {"status": "submitted_unconfirmed", "pending_since": 100},
         }
-        assert not _is_retry_blocking_existing(existing, now_ts=250, pending_ttl_seconds=120)
+        assert _is_retry_blocking_existing(existing, now_ts=250, pending_ttl_seconds=120)
 
 
 # ---------------------------------------------------------------------------

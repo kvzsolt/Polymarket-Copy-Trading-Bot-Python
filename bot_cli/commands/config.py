@@ -71,7 +71,10 @@ def _config_to_dict(cfg: AppConfig, *, redacted: bool = True) -> dict:
             return str(obj)
         return obj
 
-    return _convert(cfg)
+    converted = _convert(cfg)
+    if not isinstance(converted, dict):
+        raise TypeError("application configuration must serialize to an object")
+    return converted
 
 
 # ── Config key explanations ──────────────────────────────────────────────────

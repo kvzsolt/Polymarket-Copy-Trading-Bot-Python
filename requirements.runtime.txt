@@ -138,7 +138,6 @@ orjson==3.11.9
     #   ccxt
 parsimonious==0.10.0
     # via eth-abi
-polymarket-client==0.1.0b18
     # via polymarket-copy-trading-bot (pyproject.toml)
 propcache==0.5.2
     # via

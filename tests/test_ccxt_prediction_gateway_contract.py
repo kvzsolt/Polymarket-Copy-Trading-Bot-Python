@@ -130,6 +130,24 @@ async def test_orderbook_maps_arbitrary_tick_and_quality_fields() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("side", "expected"),
+    (("BUY", "0.42"), ("SELL", "0.40")),
+)
+async def test_gateway_price_compatibility_uses_executable_book_side(
+    side: str,
+    expected: str,
+) -> None:
+    """Price risk reads from the same authoritative CCXT gateway book."""
+
+    gateway = CcxtPredictionGateway(FakeExchange())
+
+    price = await gateway.get_price(TOKEN, side)
+
+    assert price == {"price": expected}
+
+
+@pytest.mark.asyncio
 async def test_missing_execution_metadata_fails_closed() -> None:
     exchange = FakeExchange()
     exchange.outcome_value = {}
@@ -162,6 +180,59 @@ async def test_limit_order_carries_exact_metadata_and_quantized_price() -> None:
     assert params["tickSize"] == "0.0025"
     assert params["negRisk"] is True
     assert params["orderType"] == "GTC"
+
+
+@pytest.mark.asyncio
+async def test_order_submission_preserves_decimal_values_at_ccxt_boundary() -> None:
+    """Keep exact money values out of binary floating-point conversion."""
+
+    exchange = FakeExchange()
+    gateway = CcxtPredictionGateway(exchange)
+
+    await gateway.submit_marketable_order(
+        MarketableOrderRequest(
+            token_id=TOKEN,
+            side="BUY",
+            size=Decimal("5.12"),
+            price_limit=Decimal("0.411"),
+            condition_id="condition",
+            order_type="FAK",
+        )
+    )
+
+    _, _, _, amount, price, params = exchange.created[0]
+    assert amount == Decimal("5.12")
+    assert price == Decimal("0.4100")
+    assert params["cost"] == Decimal("5.12")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("raw_status", ["matched", "live", "delayed"])
+async def test_submission_prefers_raw_clob_status_over_unified_status(
+    raw_status: str,
+) -> None:
+    """Preserve the CLOB lifecycle vocabulary used by reservation logic."""
+
+    exchange = FakeExchange()
+    exchange.create_response = {
+        "id": "order-1",
+        "status": "closed" if raw_status == "matched" else "open",
+        "info": {"success": True, "orderID": "order-1", "status": raw_status},
+    }
+    gateway = CcxtPredictionGateway(exchange)
+
+    result = await gateway.submit_marketable_order(
+        MarketableOrderRequest(
+            token_id=TOKEN,
+            side="BUY",
+            size=Decimal("5.12"),
+            price_limit=Decimal("0.411"),
+            condition_id="condition",
+            order_type="FAK",
+        )
+    )
+
+    assert result.status == raw_status
 
 
 @pytest.mark.asyncio

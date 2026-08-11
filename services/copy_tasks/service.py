@@ -36,6 +36,8 @@ class CopyTaskRepository(Protocol):
     async def list_active(self) -> tuple[CopyTask, ...]:
         """Return active and paused tasks, excluding deleted rows."""
 
+        ...
+
 
 class InMemoryCopyTaskRepository:
     """Deterministic repository for unit tests and paper composition."""

@@ -2,8 +2,37 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 # Eagerly import lightweight modules
 from services.risk.exit_policy import ExitDecision, evaluate_exit
+
+if TYPE_CHECKING:
+    from services.risk.risk_engine import (
+        AccountCapPolicy,
+        PortfolioSnapshot,
+        ProposedTrade,
+        RiskDecision,
+        RiskEngine,
+        RiskHeadroom,
+        RiskPolicy,
+        active_policy,
+        get_active_policy,
+        get_policy,
+        headroom_for_buy,
+        init_risk_engine,
+        policy_from_config,
+        policy_name_for_equity,
+    )
+    from services.risk.risk_monitor import (
+        CachedRiskPrice,
+        RiskPriceCache,
+        VenueCircuitBreaker,
+        reconcile_unconfirmed_risk_orders,
+        rehydrate_position_manager,
+        risk_monitor_loop_for_contexts,
+        run_risk_check_for_context,
+    )
 
 
 # Lazy imports for modules that depend on Web3 or venue clients.

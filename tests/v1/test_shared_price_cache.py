@@ -7,10 +7,23 @@ from decimal import Decimal
 
 import pytest
 
-from services.copy_tasks.price_cache import MarketPriceCache, PriceQuote
+from services.copy_tasks.price_cache import (
+    MarketPriceCache,
+    MarketPriceCacheSink,
+    PriceQuote,
+)
 
 
 _NOW = datetime(2026, 8, 9, 12, 0, tzinfo=UTC)
+
+
+class FixedClock:
+    """Return one deterministic quote observation time."""
+
+    def now(self) -> datetime:
+        """Return the fixed UTC instant."""
+
+        return _NOW
 
 
 def _quote(
@@ -103,3 +116,22 @@ def test_get_rejects_naive_now() -> None:
     cache = MarketPriceCache(max_entries=10)
     with pytest.raises(ValueError, match="timezone-aware"):
         cache.get("t1", now=datetime(2026, 8, 9, 12, 0), max_age=timedelta(seconds=1))
+
+
+def test_sink_projects_market_runtime_quotes_into_shared_cache() -> None:
+    """The injected sink adapts WSS quote fields to immutable cache records."""
+
+    cache = MarketPriceCache(max_entries=10)
+    sink = MarketPriceCacheSink(cache=cache, clock=FixedClock())
+
+    sink.record(
+        token_id="t1",
+        best_bid=Decimal("0.40"),
+        best_ask=Decimal("0.42"),
+        source="wss",
+    )
+    quote = cache.get("t1", now=_NOW, max_age=timedelta(seconds=1))
+    sink.discard("t1")
+
+    assert quote == _quote("t1")
+    assert len(cache) == 0

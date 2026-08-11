@@ -26,9 +26,7 @@ SQLite idioms swapped to Postgres equivalents:
 
 from __future__ import annotations
 
-import asyncpg
-
-from storage.postgres.v1_migration_runner import apply_v1_migrations
+from storage.postgres.v1_migration_runner import MigrationConnection, apply_v1_migrations
 
 
 # ---------------------------------------------------------------------------
@@ -44,15 +42,15 @@ _CORE_DDL = [
     CREATE TABLE IF NOT EXISTS trading_control (
         singleton_id smallint PRIMARY KEY CHECK (singleton_id = 1),
         enabled      boolean NOT NULL DEFAULT false,
-        generation   bigint NOT NULL DEFAULT 0,
+        generation   bigint NOT NULL DEFAULT 1,
         reason       text NOT NULL DEFAULT 'initially_paused',
         updated_at   timestamptz NOT NULL DEFAULT now(),
         updated_by   text NOT NULL DEFAULT 'migration'
     )
     """,
     """
-    INSERT INTO trading_control(singleton_id, enabled, reason, updated_by)
-    VALUES (1, false, 'initially_paused', 'migration')
+    INSERT INTO trading_control(singleton_id, enabled, generation, reason, updated_by)
+    VALUES (1, false, 1, 'initially_paused', 'migration')
     ON CONFLICT (singleton_id) DO NOTHING
     """,
     # ----- orders ---------------------------------------------------------
@@ -552,7 +550,7 @@ _DISCOVERY_DDL = [
 ]
 
 
-async def apply_migrations(conn: asyncpg.Connection) -> None:
+async def apply_migrations(conn: MigrationConnection) -> None:
     """Apply core schema and the one-time legacy-discovery reset atomically."""
     async with conn.transaction():
         for statement in _CORE_DDL:

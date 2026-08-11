@@ -457,7 +457,7 @@ async def _persist_cursor(cursor_store: Any, leader_wallet: str, cursor: TradeCu
 
 
 def _monitor_loop_healthy(
-    *, fetch_ok: bool, fetch_interval_s: int, readiness_tracker: ReadinessTracker
+    *, fetch_ok: bool, fetch_interval_s: float, readiness_tracker: ReadinessTracker
 ) -> bool:
     if not fetch_ok:
         return False
@@ -525,6 +525,7 @@ async def fetch_trade_data(
     readiness_tracker: ReadinessTracker,
     config: AppConfig,
     research_capture_service: Any | None = None,
+    aggregate_signals: bool = True,
 ):
     """Fetch new trades and call *on_trade_callback(trade)* immediately for each."""
     checked_activities = 0
@@ -582,8 +583,13 @@ async def fetch_trade_data(
             if ts > max_seen_ts:
                 max_seen_ts = ts
 
-        trade_list = _aggregate_trades(
-            trade_candidates, window_s=config.detection.aggregate_signal_window_seconds
+        trade_list = (
+            _aggregate_trades(
+                trade_candidates,
+                window_s=config.detection.aggregate_signal_window_seconds,
+            )
+            if aggregate_signals
+            else list(trade_candidates)
         )
         if trade_candidates and research_capture_service is not None:
             _spawn_research_capture(research_capture_service, list(trade_candidates))
@@ -623,6 +629,7 @@ async def trade_monitor(
     readiness_tracker: ReadinessTracker,
     config: AppConfig,
     research_capture_service: Any | None = None,
+    aggregate_signals: bool = True,
 ):
     """Main monitor loop. Calls *on_trade_callback(trades_list)* immediately on detection."""
     global _fetch_spacing_config
@@ -646,6 +653,7 @@ async def trade_monitor(
             readiness_tracker=readiness_tracker,
             config=config,
             research_capture_service=research_capture_service,
+            aggregate_signals=aggregate_signals,
         )
         if (
             state.last_cursor.timestamp != previous_cursor.timestamp

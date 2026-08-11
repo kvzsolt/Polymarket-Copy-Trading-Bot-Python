@@ -172,15 +172,16 @@ class MarketDataService:
             if callable(get_debug):
                 try:
                     d = get_debug(token_id)
-                    debug = (
-                        f"; quote_source={d.get('quote_source')}"
-                        f" book_source={d.get('book_source')}"
-                        f" has_book={d.get('has_book')}"
-                        f" bid_count={d.get('bid_count')}"
-                        f" ask_count={d.get('ask_count')}"
-                        f" active={d.get('active')}"
-                        f" resolved={d.get('resolved')}"
-                    )
+                    if isinstance(d, dict):
+                        debug = (
+                            f"; quote_source={d.get('quote_source')}"
+                            f" book_source={d.get('book_source')}"
+                            f" has_book={d.get('has_book')}"
+                            f" bid_count={d.get('bid_count')}"
+                            f" ask_count={d.get('ask_count')}"
+                            f" active={d.get('active')}"
+                            f" resolved={d.get('resolved')}"
+                        )
                 except Exception:
                     pass
             raise StaleDataError(
@@ -709,7 +710,7 @@ class MarketDataService:
             age = fn()
         except Exception:
             return False
-        if age is None:
+        if isinstance(age, bool) or not isinstance(age, (int, float)):
             return False
         return age <= max_silence_seconds
 

@@ -1,10 +1,15 @@
+"""Compose, run, supervise, and close the Polymarket copy-trading runtime."""
+
 from __future__ import annotations
 
 import asyncio
+import inspect
 import signal
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Awaitable, Callable, Coroutine, Iterable, Sized
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
+from importlib import metadata
+from pathlib import Path
 
 from typing import TYPE_CHECKING, Any
 
@@ -12,8 +17,31 @@ if TYPE_CHECKING:
     from orchestrators.runtime_bootstrap import TradingContext
 
 from bootstrap import build_app
-from config.app_config import EnvValidationError, load_config
+from config.app_config import AppConfigSemanticValidator, EnvValidationError, load_config
 from config.env import is_valid_eth_address
+from integrations.control_plane import SystemMonotonicClock
+from orchestrators.control_plane_bootstrap import (
+    AiohttpControlPlaneServerFactory,
+    ControlPlaneDatabasePool,
+    ControlPlaneRuntime,
+    ControlPlaneRuntimeFactory,
+)
+from orchestrators.control_plane_runtime import (
+    InactiveWorkerStateReader,
+    WorkerStateReader,
+)
+from orchestrators.control_plane_discovery import (
+    DiscoveryRunQueue,
+    LeaderRegistryDiscoveryRunner,
+)
+from orchestrators.control_plane_portfolio import (
+    PortfolioAccountBinding,
+    PortfolioRuntimeFactory,
+)
+from orchestrators.control_plane_tasks import (
+    LeaderMonitoringState,
+    RuntimeTaskActivationGuard,
+)
 from orchestrators.leader_registry import LeaderRegistry
 from orchestrators.market_data_runtime import (
     MarketDataRuntime,
@@ -39,9 +67,15 @@ from orchestrators.runtime_discovery import (
 from orchestrators.runtime_monitor import run_leader_monitor
 from orchestrators.runtime_summary import print_startup_summary
 from orchestrators.startup_health import perform_startup_health_check
+from orchestrators.telemetry_bootstrap import TelemetryRuntime
 from orchestrators.user_data_runtime import UserDataRuntime
 from services.healthServer import start_health_server
-from services.metrics import metrics
+from services.metrics import MetricsRegistry, metrics
+from services.control_plane.runtime import OpenOrderControlGateway
+from services.control_plane.commands import DiscoveryCommandPort
+from services.control_plane.queries import CachedPortfolioQueryPort
+from services.control_plane.tasks import TaskActivationGuard
+from services.telemetry import SystemClock
 from services.multiUserConfig import (
     RuntimeUser,
     UserFollowConfig,
@@ -49,7 +83,6 @@ from services.multiUserConfig import (
     load_runtime_users,
 )
 from storage.postgres.leaders_repo import LeadersRepo
-from integrations.polymarket.sdk_client import create_polymarket_client
 from utils.getMyBalance import get_my_balance
 from utils.logger import (
     configure_logging,
@@ -59,25 +92,7 @@ from utils.logger import (
 )
 
 logger = get_logger("Main")
-
-
-def _log_shadow_mismatch(mismatch: Any) -> None:
-    """Phase 4.15 — log shadow-comparison mismatches instead of dropping them.
-
-    The hybrid gateway's shadow comparison is observational only; mismatches
-    were previously log-only inside the gateway. This sink gives the
-    composition root a single place to surface (or future-wire) mismatches
-    for monitoring without blocking execution.
-    """
-    try:
-        logger.warning(
-            "shadow_venue_mismatch | method=%s token=%s detail=%s",
-            getattr(mismatch, "method", "unknown"),
-            str(getattr(mismatch, "token_id", ""))[:16],
-            redact_error_detail(getattr(mismatch, "detail", mismatch)),
-        )
-    except Exception:
-        logger.debug("shadow_mismatch_sink_failed", exc_info=True)
+_CONFIG_ROOT = Path(__file__).resolve().parent / "config"
 
 
 async def _wait_for_active_leaders(
@@ -482,6 +497,7 @@ async def _start_market_data_runtimes(
     contexts_by_leader: dict[str, list["TradingContext"]],
     readiness,
     config,
+    quote_sink=None,
 ) -> dict[str, MarketDataRuntime]:
     """Start WSS-backed market data runtimes, keyed by user_id.
 
@@ -530,6 +546,7 @@ async def _start_market_data_runtimes(
             gateway=clob_gateway,
             readiness=readiness,
             config=config,
+            quote_sink=quote_sink,
         )
 
         await market_runtime.start(initial_tokens)
@@ -597,11 +614,13 @@ def _build_reconcile_wake_closure(context):
                     None,
                 )
                 if callable(release_expired):
-                    released_ids = await release_expired()
-                    try:
-                        reservation_reaped = len(released_ids or [])
-                    except TypeError:
-                        reservation_reaped = 0
+                    release_result = release_expired()
+                    released_ids = (
+                        await release_result
+                        if inspect.isawaitable(release_result)
+                        else release_result
+                    )
+                    reservation_reaped = len(released_ids) if isinstance(released_ids, Sized) else 0
                 if reconciled or reservation_reaped:
                     logger.info(
                         "user_wss_wake_reconcile_complete | user=%s reconciled=%d reservations_reaped=%d order_id=%s",
@@ -765,13 +784,112 @@ class _HealthServerResource:
     closed: bool = False
 
     async def close(self) -> None:
+        """Close the health server once."""
+
         if self.closed:
             return
         self.closed = True
         await self.runner.cleanup()
 
     async def cleanup(self) -> None:
+        """Provide the aiohttp-compatible cleanup alias."""
+
         await self.close()
+
+
+async def _start_telemetry_runtime(
+    *,
+    application: object,
+    client_registry: list[Any],
+    metrics_registry: MetricsRegistry = metrics,
+) -> TelemetryRuntime:
+    """Start and register the process-wide bounded telemetry owner.
+
+    Args:
+        application: Composed application exposing the readiness tracker.
+        client_registry: Outer lifecycle registry closed from ``main``.
+        metrics_registry: Existing process-wide metrics truth source.
+
+    Returns:
+        The started telemetry runtime used by later control-plane composition.
+    """
+
+    readiness = getattr(application, "readiness", None)
+    if readiness is None:
+        raise TypeError("application readiness tracker is required")
+    runtime = TelemetryRuntime(
+        readiness=readiness,
+        metrics=metrics_registry,
+    )
+    await runtime.start()
+    client_registry.append(runtime)
+    return runtime
+
+
+async def _start_control_plane_runtime(
+    *,
+    application: object,
+    pool: ControlPlaneDatabasePool,
+    telemetry: TelemetryRuntime,
+    worker_state: WorkerStateReader,
+    runtime_gateways: tuple[OpenOrderControlGateway, ...],
+    task_activation_guard: TaskActivationGuard | None,
+    discovery_command_port: DiscoveryCommandPort | None,
+    client_registry: list[Any],
+    factory: ControlPlaneRuntimeFactory,
+    portfolio_cache: CachedPortfolioQueryPort | None = None,
+) -> ControlPlaneRuntime | None:
+    """Build, register, and start the optional privileged adapter safely.
+
+    Args:
+        application: Composed application exposing config and readiness.
+        pool: Existing shared PostgreSQL pool.
+        telemetry: Existing process-wide telemetry runtime.
+        worker_state: Local bounded copy-worker statistics source.
+        runtime_gateways: One canonical live gateway per follower account.
+        task_activation_guard: Optional fail-closed task resume policy.
+        discovery_command_port: Optional started manual-discovery queue.
+        client_registry: Outer lifecycle registry closed from ``main``.
+        factory: Injected application-service and transport composition root.
+        portfolio_cache: Optional local-only follower portfolio cache.
+
+    Returns:
+        The owned runtime when enabled, otherwise ``None``.
+
+    Notes:
+        Transport startup failure is isolated from trading. The runtime stays
+        registered so outer shutdown can close any partially started adapter,
+        while its optional readiness check remains false.
+    """
+
+    config = getattr(application, "config", None)
+    readiness = getattr(application, "readiness", None)
+    if config is None or readiness is None:
+        raise TypeError("application config and readiness are required")
+    runtime = factory.build(
+        config=config,
+        pool=pool,
+        readiness=readiness,
+        telemetry_query=telemetry.query,
+        telemetry_hub=telemetry.hub,
+        telemetry_service=telemetry.service,
+        worker_state=worker_state,
+        runtime_gateways=runtime_gateways,
+        task_activation_guard=task_activation_guard,
+        discovery_command_port=discovery_command_port,
+        portfolio_cache=portfolio_cache,
+    )
+    if runtime is None:
+        return None
+    client_registry.append(runtime)
+    try:
+        await runtime.start()
+    except Exception as exc:
+        logger.error(
+            "control_plane_start_failed",
+            extra={"error": redact_error_detail(exc)},
+        )
+    return runtime
 
 
 @dataclass
@@ -787,7 +905,7 @@ class _Supervised:
     """
 
     name: str
-    factory: Callable[[], Awaitable[None]]
+    factory: Callable[[], Coroutine[object, object, None]]
     max_restarts: int = 5
     recovery_seconds: float = 60.0
     task: asyncio.Task | None = None
@@ -903,6 +1021,8 @@ async def _shutdown_runtime(
 
 async def _run_application(client_registry: list[Any]) -> int:
     configure_logging(level="INFO")
+    monotonic_clock = SystemMonotonicClock()
+    process_started_monotonic = monotonic_clock.monotonic()
 
     try:
         startup_config = load_config()
@@ -954,6 +1074,10 @@ async def _run_application(client_registry: list[Any]) -> int:
                     check.get("fix"),
                 )
     application = await build_app(config=startup_config)
+    telemetry_runtime = await _start_telemetry_runtime(
+        application=application,
+        client_registry=client_registry,
+    )
     if application.heisenberg_client is not None:
         client_registry.append(application.heisenberg_client)
 
@@ -1107,32 +1231,19 @@ async def _run_application(client_registry: list[Any]) -> int:
     user_states: dict[str, UserRuntimeState] = {}
 
     for runtime_user in runtime_users:
-        client = await create_polymarket_client(
-            wallet_config=runtime_user.wallet,
-            config=application.config,
-            authenticated=not application.config.execution.paper_trade_only,
-        )
-        if client.wallet_address is not None:
-            bind_resolved_deposit_wallet(runtime_user, client.wallet_address)
-        # Register ownership immediately. If any later startup stage fails,
-        # main() still closes the SDK transports from its outer finally.
-        client_registry.append(client)
-        # Resolve the venue backend at the single composition root. This is
-        # the official SDK gateway unless an operator explicitly opts into the
-        # experimental hybrid backend; the bundle owns only the optional CCXT
-        # transport, so register that separately for shutdown.
+        # Construct exactly one CCXT transport and one venue-neutral gateway
+        # per runtime user. Paper mode creates a public-only transport even if
+        # deployment secrets are present; live mode remains separately gated.
         venue_backend = await build_user_venue_backend(
             runtime_user,
-            client,
             application.config,
-            mismatch_sink=_log_shadow_mismatch,
         )
-        if venue_backend.ccxt_client is not None:
-            client_registry.append(venue_backend.ccxt_client)
-            # Phase 4.15 — register the bundle's dedicated close so the shadow
-            # comparison queue is drained and the optional CCXT transport is
-            # closed at shutdown, not just the SDK client.
-            client_registry.append(venue_backend)
+        client = venue_backend.client
+        if client.authenticated and client.wallet_address is not None:
+            bind_resolved_deposit_wallet(runtime_user, client.wallet_address)
+        # Register the bundle immediately so every partial-startup failure
+        # closes the transport exactly once from the outer finally block.
+        client_registry.append(venue_backend)
         user_states[runtime_user.user_id] = build_user_state(
             runtime_user,
             client,
@@ -1263,6 +1374,32 @@ async def _run_application(client_registry: list[Any]) -> int:
         )
         metrics.inc("no_leaders_monitored_total")
 
+    # Prepare the task lifecycle before startup reconciliation so orders-table
+    # evidence can settle retained task budgets. Workers remain stopped until
+    # account state and drift have converged and no detection source exists yet.
+    from orchestrators.v1_runtime_bootstrap import (
+        RuntimeFollowerBalanceReader,
+        start_v1_copy_task_runtime,
+    )
+
+    logger.info("startup_stage | stage=v1_copy_task_restoration_started")
+    initial_v1_contexts = tuple(
+        context for leader_contexts in contexts_by_leader.values() for context in leader_contexts
+    )
+    v1_runtime = await start_v1_copy_task_runtime(
+        pool=_pool,
+        config=application.config,
+        copy_tasks_config=application.config.copy_trading.copy_tasks,
+        contexts=initial_v1_contexts,
+        start_workers=False,
+    )
+    if v1_runtime is not None:
+        client_registry.append(v1_runtime)
+    logger.info(
+        "startup_stage | stage=v1_copy_task_restoration_completed enabled=%s",
+        v1_runtime is not None,
+    )
+
     # CLAUDE.md non-negotiable: startup reconciliation MUST run before risk /
     # trade loops AND before the user WSS attaches its on_reconcile_signal
     # callback. Pre-fix the WSS runtime started first and could fire
@@ -1388,26 +1525,83 @@ async def _run_application(client_registry: list[Any]) -> int:
             extra={"error": redact_error_detail(exc)},
         )
 
-    # v1 copy-task runtime (Phase B slice 2). Restoration of durable
-    # task/budget/lock state runs here — after startup reconciliation and
-    # drift checks, before any market-data subscription or detection source —
-    # matching the canonical startup order. Disabled config (the shipped
-    # default, ``copy_trading.copy_tasks.enabled: false``) constructs nothing.
-    from orchestrators.v1_runtime_bootstrap import start_v1_copy_task_runtime
-
-    logger.info("startup_stage | stage=v1_copy_task_restoration_started")
-    v1_runtime = await start_v1_copy_task_runtime(
-        pool=_pool,
-        config=application.config,
-        copy_tasks_config=application.config.copy_trading.copy_tasks,
-    )
     if v1_runtime is not None:
-        # The handle exposes ``close()`` so the shared client registry drains
-        # the leader workers at shutdown alongside the venue transports.
-        client_registry.append(v1_runtime)
-    logger.info(
-        "startup_stage | stage=v1_copy_task_restoration_completed enabled=%s",
-        v1_runtime is not None,
+        await v1_runtime.start()
+
+    task_monitoring_state = LeaderMonitoringState(())
+    task_activation_guard = (
+        RuntimeTaskActivationGuard(
+            bindings=v1_runtime,
+            monitoring=task_monitoring_state,
+        )
+        if v1_runtime is not None
+        else None
+    )
+    discovery_command_queue = None
+    portfolio_runtime = None
+    if application.config.control_plane.enabled:
+        discovery_command_queue = DiscoveryRunQueue(
+            runner=LeaderRegistryDiscoveryRunner(
+                registry=registry,
+                configured_leaders=tuple(configured),
+            ),
+            telemetry=telemetry_runtime.service,
+        )
+        await discovery_command_queue.start()
+        client_registry.append(discovery_command_queue)
+
+        portfolio_bindings = []
+        for context in risk_contexts_by_user.values():
+            reservations = context.extra.get("reservations_repo")
+            if reservations is None:
+                continue
+            portfolio_bindings.append(
+                PortfolioAccountBinding(
+                    follower_account=context.user_id,
+                    wallet=context.wallet_address,
+                    positions=context.positions_repo,
+                    reservations=reservations,
+                )
+            )
+        portfolio_runtime = PortfolioRuntimeFactory(
+            clock=SystemClock(),
+            balance=RuntimeFollowerBalanceReader(get_my_balance),
+        ).build(
+            bindings=tuple(portfolio_bindings),
+            refresh_interval_seconds=(
+                application.config.control_plane.portfolio_refresh_interval_seconds
+            ),
+            stale_after_seconds=(application.config.control_plane.portfolio_stale_after_seconds),
+        )
+        if portfolio_runtime is not None:
+            await portfolio_runtime.refresh.start()
+            client_registry.append(portfolio_runtime.refresh)
+
+    try:
+        backend_version = metadata.version("polymarket-copy-trading-bot")
+    except metadata.PackageNotFoundError:
+        backend_version = "0.1.0"
+    await _start_control_plane_runtime(
+        application=application,
+        pool=_pool,
+        telemetry=telemetry_runtime,
+        worker_state=v1_runtime if v1_runtime is not None else InactiveWorkerStateReader(),
+        runtime_gateways=tuple(
+            state.clob_gateway for state in user_states.values() if state.clob_gateway is not None
+        ),
+        task_activation_guard=task_activation_guard,
+        discovery_command_port=discovery_command_queue,
+        portfolio_cache=(portfolio_runtime.cache if portfolio_runtime is not None else None),
+        client_registry=client_registry,
+        factory=ControlPlaneRuntimeFactory(
+            server_factory=AiohttpControlPlaneServerFactory(),
+            config_root=_CONFIG_ROOT,
+            version=backend_version,
+            clock=SystemClock(),
+            monotonic_clock=monotonic_clock,
+            semantic_validator=AppConfigSemanticValidator(),
+            started_monotonic=process_started_monotonic,
+        ),
     )
 
     # Start market-data WSS only after portfolio/database convergence. Starting
@@ -1435,6 +1629,7 @@ async def _run_application(client_registry: list[Any]) -> int:
         contexts_by_leader=contexts_by_leader,
         readiness=application.readiness,
         config=application.config,
+        quote_sink=v1_runtime.quote_sink if v1_runtime is not None else None,
     )
     logger.info(
         "startup_stage | stage=market_data_runtimes_started users=%d",
@@ -1529,6 +1724,7 @@ async def _run_application(client_registry: list[Any]) -> int:
     )
 
     monitor_tasks: list[asyncio.Task] = []
+    monitor_wallet_by_task: dict[asyncio.Task, str] = {}
     monitored_set: set[str] = set(monitored_leaders)
     fetch_interval = application.config.detection.fetch_interval
     # Bound before ``_on_new_leaders`` closes over it: the discovery loop is
@@ -1591,21 +1787,29 @@ async def _run_application(client_registry: list[Any]) -> int:
             blocked_set = set(blocked_wallets)
             started_wallets = [wallet for wallet in started_wallets if wallet not in blocked_set]
 
+        unblocked_contexts = [
+            context for wallet in started_wallets for context in contexts_by_leader.get(wallet, ())
+        ]
+        if v1_runtime is not None and unblocked_contexts:
+            v1_runtime.add_contexts(unblocked_contexts)
+
         for wallet in started_wallets:
-            monitor_tasks.append(
-                asyncio.create_task(
-                    run_leader_monitor(
-                        wallet,
-                        contexts_by_leader[wallet],
-                        readiness_tracker=application.readiness,
-                        config=application.config,
-                        fetch_interval=fetch_interval,
-                        monitored_leader_count=monitored_leader_count,
-                        research_capture_service=research_capture_service,
-                    )
+            monitor_task = asyncio.create_task(
+                run_leader_monitor(
+                    wallet,
+                    contexts_by_leader[wallet],
+                    readiness_tracker=application.readiness,
+                    config=application.config,
+                    fetch_interval=fetch_interval,
+                    monitored_leader_count=monitored_leader_count,
+                    research_capture_service=research_capture_service,
+                    v1_sink=v1_runtime.submit_raw_batch if v1_runtime is not None else None,
                 )
             )
+            monitor_tasks.append(monitor_task)
+            monitor_wallet_by_task[monitor_task] = wallet
             logger.info("dynamic_leader_monitor_started", extra={"leader": wallet})
+        task_monitoring_state.add(started_wallets)
 
         # Give the promoted leaders the mined/pending fast path too. Uses the
         # wallets whose monitors actually started, so a leader blocked by a
@@ -1745,6 +1949,10 @@ async def _run_application(client_registry: list[Any]) -> int:
                 # mixed-case. A direct ``.get(signal.leader_wallet)`` would
                 # miss the match and silently drop the signal (Greptile P1
                 # "Leader lookup mismatches").
+                if v1_runtime is not None:
+                    await v1_runtime.submit_onchain(signal)
+                    return
+
                 leader_lower = signal.leader_wallet.lower()
                 contexts: list = []
                 for ck, cv in contexts_by_leader.items():
@@ -1799,8 +2007,8 @@ async def _run_application(client_registry: list[Any]) -> int:
             )
             onchain_runtime = None
 
-    monitor_tasks.extend(
-        asyncio.create_task(
+    for wallet in monitored_leaders:
+        monitor_task = asyncio.create_task(
             run_leader_monitor(
                 wallet,
                 contexts_by_leader[wallet],
@@ -1809,10 +2017,12 @@ async def _run_application(client_registry: list[Any]) -> int:
                 fetch_interval=fetch_interval,
                 monitored_leader_count=len(monitored_leaders),
                 research_capture_service=research_capture_service,
+                v1_sink=v1_runtime.submit_raw_batch if v1_runtime is not None else None,
             )
         )
-        for wallet in monitored_leaders
-    )
+        monitor_tasks.append(monitor_task)
+        monitor_wallet_by_task[monitor_task] = wallet
+    task_monitoring_state.add(monitored_leaders)
 
     loop = asyncio.get_running_loop()
     try:
@@ -1863,6 +2073,9 @@ async def _run_application(client_registry: list[Any]) -> int:
                             "monitor_task_crashed",
                             extra={"error": redact_error_detail(exc)},
                         )
+                    crashed_wallet = monitor_wallet_by_task.pop(task, None)
+                    if crashed_wallet is not None:
+                        task_monitoring_state.remove((crashed_wallet,))
                     metrics.inc("leader_monitor_crashed_total")
                     application.readiness.update(
                         monitored_leader_count=_live_monitor_count(monitor_tasks)
@@ -1926,7 +2139,9 @@ async def _close_polymarket_clients(clients: list[Any]) -> None:
         if not callable(close):
             continue
         try:
-            await close()
+            close_result = close()
+            if inspect.isawaitable(close_result):
+                await close_result
         except Exception as exc:
             logger.warning(
                 "polymarket_client_shutdown_failed",

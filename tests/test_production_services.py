@@ -13,6 +13,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from cache.market_state_store import BookSnapshot, QuoteSnapshot, TickSnapshot
+from integrations.polymarket.models import VenueSubmitResult
 from services.market_data_service import MarketDataBundle, MarketDataSource
 from config.env import EnvValidationError, SignatureType, WalletConfig, validate_wallet_config
 from services.executionService import (
@@ -164,6 +165,29 @@ class _FeeSvc:
         return self.fee_bps
 
 
+class _ExecutionGateway:
+    """Deterministic CCXT-gateway test double for execution service tests."""
+
+    def __init__(
+        self,
+        *,
+        order_id: str = "order-test",
+        error: Exception | None = None,
+    ) -> None:
+        """Configure one successful or exceptional submission result."""
+
+        if error is not None:
+            self.submit_marketable_order = AsyncMock(side_effect=error)
+        else:
+            self.submit_marketable_order = AsyncMock(
+                return_value=VenueSubmitResult(
+                    success=True,
+                    order_id=order_id,
+                    status="submitted",
+                )
+            )
+
+
 def _make_mds(
     token_id: str = "t1",
     *,
@@ -211,7 +235,12 @@ class TestExecutionService:
     async def test_rejects_non_positive_amount(self):
         clob = SimpleNamespace(get_price=AsyncMock(return_value={"price": "0.5"}))
         svc = ExecutionService(
-            clob, _FeeSvc(), _Repo(), config=_make_exec_config(), market_data_service=_make_mds()
+            clob,
+            _FeeSvc(),
+            _Repo(),
+            config=_make_exec_config(),
+            clob_gateway=_ExecutionGateway(),
+            market_data_service=_make_mds(),
         )
         req = ExecutionRequest(
             user_id="u1",
@@ -235,6 +264,7 @@ class TestExecutionService:
             _FeeSvc(),
             _Repo(),
             config=_make_exec_config(min_share_price=0.4),
+            clob_gateway=_ExecutionGateway(),
             market_data_service=_make_mds(best_bid=Decimal("0.34"), best_ask=Decimal("0.36")),
         )
         req = ExecutionRequest(
@@ -262,6 +292,7 @@ class TestExecutionService:
             _FeeSvc(),
             _Repo(),
             config=_make_exec_config(min_share_price=0, max_share_price=0.7),
+            clob_gateway=_ExecutionGateway(),
             market_data_service=_make_mds(best_bid=Decimal("0.78"), best_ask=Decimal("0.80")),
         )
         req = ExecutionRequest(
@@ -303,6 +334,7 @@ class TestExecutionService:
             _FeeSvc(),
             repo,
             config=_make_exec_config(min_share_price=0),
+            clob_gateway=_ExecutionGateway(order_id="o1"),
             market_data_service=_make_mds(),
         )
         req = ExecutionRequest(
@@ -331,6 +363,7 @@ class TestExecutionService:
             _FeeSvc(),
             _Repo(),
             config=_make_exec_config(min_share_price=0, enable_executable_order_guard=True),
+            clob_gateway=_ExecutionGateway(),
             market_data_service=_make_mds(),
         )
         req = ExecutionRequest(
@@ -367,11 +400,13 @@ class TestExecutionService:
             ),
         )
         repo = _Repo()
+        gateway = _ExecutionGateway(order_id="o-small")
         svc = ExecutionService(
             clob,
             _FeeSvc(),
             repo,
             config=_make_exec_config(min_share_price=0, enable_executable_order_guard=False),
+            clob_gateway=gateway,
             market_data_service=_make_mds(min_order_size=Decimal("0.05")),
         )
         req = ExecutionRequest(
@@ -389,7 +424,7 @@ class TestExecutionService:
 
         assert res.accepted is True
         assert res.order_id == "o-small"
-        clob.create_market_order.assert_awaited_once()
+        gateway.submit_marketable_order.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_persists_sanitized_submission_payload(self):
@@ -400,6 +435,7 @@ class TestExecutionService:
             fee_service=SimpleNamespace(),
             order_repo=repo,
             config=_make_exec_config(),
+            clob_gateway=_ExecutionGateway(),
         )
         idem_key = "persist-sanitized"
         await svc._save_submission(
@@ -437,7 +473,11 @@ class TestExecutionService:
         """
         clob = SimpleNamespace()
         svc = ExecutionService(
-            clob, _FeeSvc(), _Repo(), config=_make_exec_config(min_share_price=0)
+            clob,
+            _FeeSvc(),
+            _Repo(),
+            config=_make_exec_config(min_share_price=0),
+            clob_gateway=_ExecutionGateway(),
         )
         assert not hasattr(svc, "_confirm_fill"), (
             "_confirm_fill should live in ReconciliationService, not ExecutionService"
@@ -505,6 +545,7 @@ class TestExecutionService:
             _FeeSvc(),
             repo,
             config=_make_exec_config(min_share_price=0),
+            clob_gateway=_ExecutionGateway(),
             market_data_service=_make_mds(),
         )
         req = ExecutionRequest(
@@ -541,11 +582,13 @@ class TestExecutionService:
             ),
         )
         repo = _Repo()
+        gateway = _ExecutionGateway(order_id="o2")
         svc = ExecutionService(
             clob,
             _FeeSvc(),
             repo,
             config=_make_exec_config(min_share_price=0, pending_ttl=120),
+            clob_gateway=gateway,
             market_data_service=_make_mds(),
         )
         req = ExecutionRequest(
@@ -572,10 +615,10 @@ class TestExecutionService:
 
         assert res.accepted is True
         assert res.status != "duplicate_ignored"
-        assert clob.create_market_order.await_count == 1
+        gateway.submit_marketable_order.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_stale_submitted_unconfirmed_without_order_id_expires_and_retries(self):
+    async def test_stale_submitted_unconfirmed_remains_reconciliation_owned(self):
         clob = SimpleNamespace(
             get_price=AsyncMock(return_value={"price": "0.5"}),
             create_market_order=AsyncMock(return_value={"signed": True}),
@@ -591,11 +634,13 @@ class TestExecutionService:
             ),
         )
         repo = _Repo()
+        gateway = _ExecutionGateway(order_id="o2")
         svc = ExecutionService(
             clob,
             _FeeSvc(),
             repo,
             config=_make_exec_config(min_share_price=0, pending_ttl=120),
+            clob_gateway=gateway,
             market_data_service=_make_mds(),
         )
         req = ExecutionRequest(
@@ -621,8 +666,8 @@ class TestExecutionService:
             res = await svc.execute(req)
 
         assert res.accepted is True
-        assert res.status != "duplicate_ignored"
-        assert clob.create_market_order.await_count == 1
+        assert res.status == "duplicate_ignored"
+        gateway.submit_marketable_order.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_pending_submission_captures_timestamps_and_ttl(self):
@@ -641,11 +686,13 @@ class TestExecutionService:
             ),
         )
         repo = _Repo()
+        gateway = _ExecutionGateway(order_id="o3")
         svc = ExecutionService(
             clob,
             _FeeSvc(),
             repo,
             config=_make_exec_config(min_share_price=0, pending_ttl=120),
+            clob_gateway=gateway,
             market_data_service=_make_mds(),
         )
         req = ExecutionRequest(
@@ -699,11 +746,13 @@ class TestExecutionService:
             post_signed_order=AsyncMock(side_effect=RuntimeError("timeout after submit")),
         )
         repo = _Repo()
+        gateway = _ExecutionGateway(error=RuntimeError("timeout after submit"))
         svc = ExecutionService(
             clob,
             _FeeSvc(),
             repo,
             config=_make_exec_config(min_share_price=0),
+            clob_gateway=gateway,
             market_data_service=_make_mds(),
         )
         req = ExecutionRequest(
@@ -721,7 +770,7 @@ class TestExecutionService:
 
         assert res.accepted is True
         assert res.status == "submitted_unconfirmed"
-        assert clob.create_market_order.await_count == 1
+        gateway.submit_marketable_order.assert_awaited_once()
 
 
 class TestRiskEngine:

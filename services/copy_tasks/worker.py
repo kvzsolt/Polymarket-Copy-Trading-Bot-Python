@@ -9,11 +9,14 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-from collections.abc import Awaitable, Callable
+import logging
+from collections.abc import Awaitable, Callable, Iterable
 from typing import Generic, TypeVar
 
 T = TypeVar("T")
 LeaderHandler = Callable[[str, T], Awaitable[None]]
+
+logger = logging.getLogger(__name__)
 
 
 class WorkerQueueFull(RuntimeError):
@@ -61,6 +64,23 @@ class _LeaderWorker(Generic[T]):
         except asyncio.QueueFull as exc:
             raise WorkerQueueFull(f"leader queue is full: {self.leader}") from exc
 
+    def submit_batch_nowait(self, events: tuple[T, ...]) -> None:
+        """Queue a whole batch or reject it before accepting any prefix."""
+
+        if self._closed:
+            raise RuntimeError(f"leader worker {self.leader} is closed")
+        available = self._queue.maxsize - self._queue.qsize()
+        if len(events) > available:
+            raise WorkerQueueFull(f"leader queue is full: {self.leader}")
+        for event in events:
+            self._queue.put_nowait(event)
+
+    @property
+    def queue_depth(self) -> int:
+        """Return the current bounded FIFO depth."""
+
+        return self._queue.qsize()
+
     async def close(self) -> None:
         """Drain accepted work, then stop the consumer idempotently."""
 
@@ -84,6 +104,21 @@ class _LeaderWorker(Generic[T]):
                     if not inspect.isawaitable(result):  # pragma: no cover - typing guard
                         raise TypeError("leader handler must return an awaitable")
                     await result
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                # One malformed event must not terminate the sole FIFO
+                # consumer and strand every later event for this leader.
+                # Avoid the exception message because provider payloads may
+                # contain sensitive response details.
+                logger.error(
+                    "leader_worker_handler_failed",
+                    extra={
+                        "leader_id": self.leader,
+                        "error_type": type(exc).__name__,
+                    },
+                    exc_info=True,
+                )
             finally:
                 self._queue.task_done()
 
@@ -109,6 +144,18 @@ class LeaderWorkerSupervisor(Generic[T]):
         self._started = False
         self._closed = False
         self._mutation_lock = asyncio.Lock()
+
+    @property
+    def worker_count(self) -> int:
+        """Return the number of currently allocated leader workers."""
+
+        return len(self._workers)
+
+    @property
+    def queue_depth(self) -> int:
+        """Return the aggregate queued-event count without leader labels."""
+
+        return sum(worker.queue_depth for worker in self._workers.values())
 
     async def start(self) -> None:
         """Mark the supervisor ready to accept events."""
@@ -140,22 +187,55 @@ class LeaderWorkerSupervisor(Generic[T]):
         normalized = str(leader).strip().lower()
         if not normalized:
             raise ValueError("leader identity is required")
-        worker = self._workers.get(normalized)
-        if worker is None:
-            async with self._mutation_lock:
-                worker = self._workers.get(normalized)
-                if worker is None:
-                    if len(self._workers) >= self._max_leaders:
-                        raise LeaderLimitReached("maximum leader worker count reached")
-                    worker = _LeaderWorker(
-                        leader=normalized,
-                        handler=self._handler,
-                        queue_size=self._queue_size,
-                        global_semaphore=self._global_semaphore,
-                    )
-                    self._workers[normalized] = worker
-                    worker.start()
+        worker = await self._worker_for(normalized)
         worker.submit_nowait(event)
+
+    async def submit_batch(self, leader: str, events: Iterable[T]) -> None:
+        """Atomically admit a bounded batch to one leader's FIFO queue.
+
+        Args:
+            leader: Leader identity shared by every event in the batch.
+            events: Finite event sequence. The batch is materialized once so
+                capacity is checked before the first item is queued.
+
+        Raises:
+            RuntimeError: If the supervisor is not started or is closed.
+            ValueError: If the leader identity is empty.
+            WorkerQueueFull: If the complete batch cannot fit.
+            LeaderLimitReached: If the leader limit is already reached.
+        """
+
+        if not self._started:
+            raise RuntimeError("leader worker supervisor is not started")
+        if self._closed:
+            raise RuntimeError("leader worker supervisor is closed")
+        normalized = str(leader).strip().lower()
+        if not normalized:
+            raise ValueError("leader identity is required")
+        batch = tuple(events)
+        if not batch:
+            return
+        worker = await self._worker_for(normalized)
+        worker.submit_batch_nowait(batch)
+
+    async def _worker_for(self, normalized_leader: str) -> _LeaderWorker[T]:
+        worker = self._workers.get(normalized_leader)
+        if worker is not None:
+            return worker
+        async with self._mutation_lock:
+            worker = self._workers.get(normalized_leader)
+            if worker is None:
+                if len(self._workers) >= self._max_leaders:
+                    raise LeaderLimitReached("maximum leader worker count reached")
+                worker = _LeaderWorker(
+                    leader=normalized_leader,
+                    handler=self._handler,
+                    queue_size=self._queue_size,
+                    global_semaphore=self._global_semaphore,
+                )
+                self._workers[normalized_leader] = worker
+                worker.start()
+        return worker
 
     async def close(self) -> None:
         """Drain and close every worker exactly once."""

@@ -6,7 +6,7 @@ from dataclasses import asdict, dataclass, field
 from decimal import Decimal  # noqa: F401 — used in stringified type hints
 from typing import TYPE_CHECKING, Any
 
-from aiohttp import ClientSession
+from aiohttp import ClientSession, ClientTimeout
 
 if TYPE_CHECKING:
     from interfaces.clob_gateway import ClobGateway
@@ -104,7 +104,7 @@ async def _check_rpc(rpc_url: str) -> StartupHealthCheckItem:
                     "params": [],
                     "id": 1,
                 },
-                timeout=5,
+                timeout=ClientTimeout(total=5),
             ) as response:
                 if response.status != 200:
                     return StartupHealthCheckItem(
@@ -139,7 +139,7 @@ async def _check_polymarket_api() -> StartupHealthCheckItem:
     )
     try:
         async with ClientSession() as session:
-            async with session.get(url, timeout=5) as response:
+            async with session.get(url, timeout=ClientTimeout(total=5)) as response:
                 if response.status != 200:
                     return StartupHealthCheckItem(
                         status="error",

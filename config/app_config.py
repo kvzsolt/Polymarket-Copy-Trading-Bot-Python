@@ -22,6 +22,7 @@ runtime gets an immutable, typed contract with strict unknown-key rejection.
 from __future__ import annotations
 
 import errno
+import ipaddress
 import logging
 import os
 import re
@@ -30,6 +31,7 @@ import sys as _sys
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from decimal import Decimal
+from enum import Enum, auto
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -52,8 +54,11 @@ from config.v1_runtime import CopyTasksRuntimeConfig
 
 __all__ = [
     "AppConfig",
+    "AppConfigSemanticValidator",
     "AppServiceConfig",
     "CopyTradingConfig",
+    "ControlPlaneAuthConfig",
+    "ControlPlaneConfig",
     "DatabaseConfig",
     "DetectionConfig",
     "DiscoveryConfig",
@@ -130,6 +135,39 @@ class AppServiceConfig:
     metrics_port: int = 9102
     metrics_bind_host: str = "127.0.0.1"
     multi_user_config_file: str = ""
+
+
+@dataclass(frozen=True)
+class ControlPlaneAuthConfig:
+    """Secret bearer credential loaded only from deployment secret layers."""
+
+    token: SecretStr = field(default_factory=lambda: SecretStr(""))
+
+
+@dataclass(frozen=True)
+class ControlPlaneConfig:
+    """Safe network policy for the optional operator control-plane adapter.
+
+    The nested bearer credential is a :class:`SecretStr` accepted from
+    ``secrets.env`` or process environment only in production. Frontend
+    settings adapters omit the entire ``auth`` object.
+    """
+
+    enabled: bool = False
+    host: str = "127.0.0.1"
+    port: int = 9103
+    require_authentication: bool = True
+    request_max_bytes: int = 262_144
+    websocket_queue_capacity: int = 128
+    telemetry_snapshot_limit: int = 100
+    command_rate_limit: int = 30
+    command_rate_window_seconds: float = 60.0
+    rate_limit_max_keys: int = 1024
+    shutdown_timeout_seconds: float = 5.0
+    portfolio_refresh_interval_seconds: float = 10.0
+    portfolio_stale_after_seconds: float = 30.0
+    cors_allowed_origins: tuple[str, ...] = ()
+    auth: ControlPlaneAuthConfig = field(default_factory=ControlPlaneAuthConfig)
 
 
 @dataclass(frozen=True)
@@ -320,10 +358,9 @@ class ExecutionConfig:
     # global master (AppConfig.global_kill_switch) supersedes this and blocks
     # every submission including protective exits.
     kill_switch: bool = False
-    # Optional CCXT/hybrid venue backend selection. Typed so the selector no
-    # longer relies on a raw single-underscore env read that bypasses layered
-    # validation. "sdk" is the production default.
-    venue_backend: str = "sdk"
+    # CCXT is the sole venue backend. The retained literal is frontend-safe
+    # capability metadata rather than a runtime selector.
+    venue_backend: Literal["ccxt"] = "ccxt"
     allow_experimental_ccxt_live: bool = False
 
     @property
@@ -934,6 +971,10 @@ class AppConfig:
     market_data: MarketDataConfig = field(default_factory=MarketDataConfig)
     reconciliation: ReconciliationConfig = field(default_factory=ReconciliationConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
+    control_plane: ControlPlaneConfig = field(default_factory=ControlPlaneConfig)
+    # Derived loader metadata used by the operator API to select the exact
+    # environment override directory. It is not a service-owned YAML section.
+    environment: str = "paper"
     # Global safety: when True the bot runs in paper-only / dry-run mode.
     # Derived from ``execution.trading_mode``; never set directly.
     dry_run: bool = False
@@ -949,7 +990,23 @@ sys = SimpleNamespace(version_info=_sys.version_info)
 
 
 def _runtime_python_supported() -> bool:
+    """Return whether the current interpreter matches repository support."""
+
     return sys.version_info.major == 3 and 11 <= sys.version_info.minor < 13
+
+
+def _is_loopback_bind_host(host: str) -> bool:
+    """Return whether a configured control-plane bind is strictly local."""
+
+    normalized = str(host or "").strip().casefold()
+    if normalized == "localhost":
+        return True
+    if normalized.startswith("[") and normalized.endswith("]"):
+        normalized = normalized[1:-1]
+    try:
+        return ipaddress.ip_address(normalized).is_loopback
+    except ValueError:
+        return False
 
 
 def _validate_semantics(cfg: AppConfig, errors: list[str]) -> None:
@@ -1153,6 +1210,55 @@ def _validate_semantics(cfg: AppConfig, errors: list[str]) -> None:
     if md.wss_connection_max_silence_seconds <= 0:
         errors.append("MARKET_DATA_WSS_CONNECTION_MAX_SILENCE_SECONDS must be > 0.")
 
+    control = cfg.control_plane
+    control_token = secret_value(control.auth.token)
+    if control.enabled and control.require_authentication and not control_token:
+        errors.append("control_plane auth token is required when authenticated control is enabled.")
+    if len(control_token) > 1024:
+        errors.append("control_plane auth token must contain at most 1024 characters.")
+    if (
+        control.enabled
+        and not control.require_authentication
+        and not _is_loopback_bind_host(control.host)
+    ):
+        errors.append("control_plane non-loopback binds require authentication.")
+    if control.portfolio_refresh_interval_seconds <= 0:
+        errors.append("control_plane portfolio refresh interval must be positive.")
+    if control.portfolio_stale_after_seconds <= 0:
+        errors.append("control_plane portfolio stale interval must be positive.")
+
+
+class AppConfigSemanticValidator:
+    """Validate cross-section application invariants without performing I/O."""
+
+    def errors_for(self, config: AppConfig) -> tuple[str, ...]:
+        """Return deterministic safe validation messages for ``config``.
+
+        Args:
+            config: Fully typed candidate application configuration.
+
+        Returns:
+            A tuple of safe messages. Secret values are never interpolated.
+        """
+
+        errors: list[str] = []
+        _validate_semantics(config, errors)
+        return tuple(errors)
+
+    def validate(self, config: AppConfig) -> None:
+        """Raise when a typed candidate violates application invariants.
+
+        Args:
+            config: Fully typed candidate application configuration.
+
+        Raises:
+            EnvValidationError: If any cross-section invariant fails.
+        """
+
+        errors = self.errors_for(config)
+        if errors:
+            raise EnvValidationError("Invalid application configuration:\n- " + "\n- ".join(errors))
+
 
 # Service-owned layered configuration loader.
 #
@@ -1185,6 +1291,7 @@ SERVICE_CONFIG_FILES: tuple[str, ...] = (
     "market_data",
     "reconciliation",
     "logging",
+    "control_plane",
 )
 
 
@@ -1233,6 +1340,7 @@ class _LayeredModel(BaseModel):
     market_data: MarketDataConfig = MarketDataConfig()
     reconciliation: ReconciliationConfig = ReconciliationConfig()
     logging: LoggingConfig = LoggingConfig()
+    control_plane: ControlPlaneConfig = ControlPlaneConfig()
 
     @model_validator(mode="before")
     @classmethod
@@ -1365,7 +1473,15 @@ _LEGACY_KEY_ROUTES: dict[tuple[str, str], tuple[str, ...] | None] = {
     ("market_data", "rest_degraded_log_every_seconds"): None,
 }
 _OBSOLETE_CLOB_CREDENTIAL_KEYS = ("api_key", "api_secret", "api_passphrase")
-_ROUTE_KEEP = object()
+
+
+class _RouteSentinel(Enum):
+    """Identify a legacy key that retains its section-relative route."""
+
+    KEEP = auto()
+
+
+_ROUTE_KEEP = _RouteSentinel.KEEP
 
 
 def _assign_path(target: dict[str, Any], path: tuple[str, ...], value: Any) -> None:
@@ -1769,6 +1885,7 @@ def load_config(
         "fallback_rpc_url"
     ) or validated["polymarket"].get("fallback_rpc_url", "")
     validated["dry_run"] = settings.execution.paper_trade_only
+    validated["environment"] = environment_name
     try:
         cfg = TypeAdapter(AppConfig).validate_python(validated)
     except ValidationError as exc:
@@ -1777,8 +1894,7 @@ def load_config(
             "Invalid application configuration:\n- " + "\n- ".join(messages)
         ) from exc
 
-    semantic_errors: list[str] = []
-    _validate_semantics(cfg, semantic_errors)
+    semantic_errors = AppConfigSemanticValidator().errors_for(cfg)
     if semantic_errors:
         raise EnvValidationError(
             "Invalid application configuration:\n- " + "\n- ".join(semantic_errors)
@@ -1797,4 +1913,5 @@ def dump_config_payload(cfg: AppConfig) -> dict[str, Any]:
     """
     payload = TypeAdapter(AppConfig).dump_python(cfg, mode="json")
     payload.pop("dry_run", None)
+    payload.pop("environment", None)
     return payload

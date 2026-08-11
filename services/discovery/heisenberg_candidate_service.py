@@ -8,6 +8,7 @@ Market360 quality and a follower-specific bankroll-fit calculation.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -510,20 +511,28 @@ class HeisenbergCandidateService:
         if not callable(method):
             return {}
         try:
-            rows = await method(
+            result = method(
                 wallet_address="ALL",
                 leaderboard_period="7d",
                 limit=self._policy.candidate_limit,
             )
+            rows = await result if inspect.isawaitable(result) else result
         except (KeyboardInterrupt, SystemExit, asyncio.CancelledError):
             raise
         except BaseException:
             return {}
+        if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes)):
+            return {}
         ranks: dict[str, int] = {}
         for row in rows:
+            if not isinstance(row, Mapping):
+                continue
             wallet = str(row.get("address") or row.get("wallet") or "").strip().lower()
+            rank_value = row.get("rank")
+            if isinstance(rank_value, bool) or not isinstance(rank_value, (str, int)):
+                continue
             try:
-                rank = int(row.get("rank"))
+                rank = int(rank_value)
             except (TypeError, ValueError):
                 continue
             if wallet and rank > 0:
@@ -554,14 +563,19 @@ class HeisenbergCandidateService:
 
         async def load(token_id: str) -> int:
             try:
-                rows = await method(
+                result = method(
                     token_id=token_id,
                     resolution="15m",
                     min_change_pct=self._policy.price_jump_min_change_pct,
                     lookback_hours=self._policy.price_jump_lookback_hours,
                     limit=100,
                 )
-                return len(rows)
+                rows = await result if inspect.isawaitable(result) else result
+                return (
+                    len(rows)
+                    if isinstance(rows, Sequence) and not isinstance(rows, (str, bytes))
+                    else 0
+                )
             except (KeyboardInterrupt, SystemExit, asyncio.CancelledError):
                 raise
             except BaseException as exc:

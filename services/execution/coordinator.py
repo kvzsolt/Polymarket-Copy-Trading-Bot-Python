@@ -59,7 +59,7 @@ class ExecutionIntent:
     condition_id: str
     token_id: str
     side: str  # "BUY" | "SELL"
-    size: Decimal
+    size: Decimal  # BUY collateral pUSD; SELL outcome shares
     price: Decimal
     notional_usdc: Decimal
     idempotency_key: str | None = None
@@ -279,6 +279,9 @@ class ExecutionCoordinator:
             return await self._execute_intent_locked(intent)
 
     async def _execute_intent_locked(self, intent: OrderIntent) -> ExecutionResult:
+        clob_gateway = self.clob_gateway
+        if clob_gateway is None:
+            raise RuntimeError("ExecutionCoordinator requires an injected CLOB gateway")
         reservation = await self.reservation_service.reserve_for_intent(intent)
         logger.info(
             "coordinator.reservation_acquired reservation_id=%s key=%s side=%s",
@@ -330,7 +333,7 @@ class ExecutionCoordinator:
             )
 
             try:
-                venue_result = await self.clob_gateway.submit_order(intent)
+                venue_result = await clob_gateway.submit_order(intent)
             except RetryableVenueError as exc:
                 # Issue #98: RetryableVenueError before a live venue_order_id
                 # exists means there is no durable retry owner for the
@@ -546,13 +549,17 @@ class ExecutionCoordinator:
 
     async def _reconcile_drift_from_intent(self, intent: OrderIntent) -> None:
         try:
+            live_position_fetcher = self.live_position_fetcher
+            reconciliation_service = self.reconciliation_service
+            if live_position_fetcher is None or reconciliation_service is None:
+                return
             user_id = intent.key.user_id
             token_id = intent.key.token_id
 
             async def _fetcher() -> Decimal | None:
-                return await self.live_position_fetcher(user_id, token_id)
+                return await live_position_fetcher(user_id, token_id)
 
-            await self.reconciliation_service.reconcile_position_drift(
+            await reconciliation_service.reconcile_position_drift(
                 user_id=user_id,
                 condition_id=intent.key.condition_id,
                 token_id=token_id,
@@ -689,7 +696,11 @@ class ExecutionCoordinator:
             leader_id=intent.leader_wallet or "",
             token_id=intent.token_id,
             side=intent.side.upper(),
-            amount=Decimal(str(intent.size)),
+            amount=(
+                Decimal(str(intent.notional_usdc))
+                if intent.side.upper() == "BUY"
+                else Decimal(str(intent.size))
+            ),
             max_slippage_bps=int(intent.max_slippage_bps),
             reason=intent.reason or source_override,
             signal_id=intent.signal_id,
@@ -859,10 +870,21 @@ class ExecutionCoordinator:
             reason=reason,
             source_event_id=intent.signal_id,
         )
+        price = Decimal(str(intent.price))
+        amount = Decimal(str(intent.size))
+        if side is IntentSide.BUY:
+            notional = Decimal(str(intent.notional_usdc))
+            if price <= 0 or notional <= 0:
+                raise ValueError("BUY execution intent requires positive price and pUSD notional")
+            # ReservationService owns a share-shaped OrderIntent and reserves
+            # ``size * price`` quote. Convert the public BUY collateral amount
+            # once at this internal boundary so the reserved and submitted
+            # pUSD values remain identical.
+            amount = notional / price
         return OrderIntent(
             key=key,
-            size=Decimal(str(intent.size)),
-            price=Decimal(str(intent.price)),
+            size=amount,
+            price=price,
             max_slippage_bps=int(intent.max_slippage_bps),
             created_at=datetime.fromtimestamp(self.clock.utcnow_timestamp(), tz=timezone.utc),
             source_signal_id=intent.signal_id,

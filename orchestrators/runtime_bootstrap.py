@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 from dataclasses import dataclass
 from decimal import Decimal
+from collections.abc import Sized
 from typing import TYPE_CHECKING, Any
 
 from domain.trading_context import TradingContext
@@ -52,11 +54,9 @@ async def _release_expired_reservations_for_context(context: TradingContext) -> 
         return 0
     if not callable(release_expired):
         return 0
-    released_ids = await release_expired()
-    try:
-        return len(released_ids or [])
-    except TypeError:
-        return 0
+    release_result = release_expired()
+    released_ids = await release_result if inspect.isawaitable(release_result) else release_result
+    return len(released_ids) if isinstance(released_ids, Sized) else 0
 
 
 async def startup_reconcile_unconfirmed(
@@ -276,18 +276,10 @@ def build_user_state(
     risk_engine = RiskEngine()
     accounting_service = AccountingService()
     position_manager = PositionManager(config=config)
-    # Single CLOB venue boundary — same instance used by ExecutionService and,
-    # when issue #71 lands, the reconciler / execution coordinator. SDK-shaped
-    # types stay behind the gateway. See issue #66.
-    #
-    # ``clob_gateway`` is injected by ``build_user_venue_backend`` when the
-    # optional hybrid venue backend is selected. Left None — the default and
-    # the only path any existing caller takes — this constructs the official
-    # SDK gateway exactly as before.
+    # Single CLOB venue boundary — the same injected CCXT-backed gateway is
+    # shared by ExecutionService, reconciliation, and market data.
     if clob_gateway is None:
-        from integrations.polymarket.clob_v2_gateway import ClobV2Gateway
-
-        clob_gateway = ClobV2Gateway(client, config)
+        raise TypeError("build_user_state requires an injected clob_gateway")
 
     # Freshness-aware market data layer (issue #hardening PR-1).
     # The store is fed by WSS deltas; the MDS falls back to REST via the
@@ -410,33 +402,38 @@ def build_user_state(
 
 async def build_user_venue_backend(
     runtime_user: RuntimeUser,
-    client: object,
     config: AppConfig,
-    **selector_kwargs,
+    **factory_kwargs: object,
 ) -> "RuntimeGatewayBundle":
-    """Resolve which venue backend this user's runtime executes against.
+    """Build the sole CCXT gateway/client bundle for one runtime user.
 
-    This is the single composition point for the optional hybrid Polymarket
-    backend. The official SDK gateway is always constructed and is always the
-    production default; ``sdk-shadow-ccxt`` wraps it with a read-only shadow
-    and ``ccxt`` replaces it only when explicitly selected (and, in live mode,
-    only behind the separate experimental gate).
+    Args:
+        runtime_user: Follower runtime identity and wallet settings.
+        config: Validated application configuration.
+        **factory_kwargs: Test-only CCXT exchange factory/version overrides.
 
-    The returned bundle owns *only* the optional CCXT transport. The runtime
-    keeps ownership of the SDK client it passed in, so
-    ``close_optional_backend()`` never closes the primary.
+    Returns:
+        Owned CCXT runtime bundle.
     """
-    from integrations.polymarket.clob_v2_gateway import ClobV2Gateway
-    from integrations.polymarket.runtime_gateway import (
-        build_runtime_polymarket_gateway,
-    )
 
-    sdk_gateway = ClobV2Gateway(client, config)
-    return await build_runtime_polymarket_gateway(
-        sdk_gateway=sdk_gateway,
+    from integrations.polymarket.runtime_gateway import CcxtRuntimeGatewayFactory
+
+    exchange_factory = factory_kwargs.pop("exchange_factory", None)
+    if exchange_factory is not None and not callable(exchange_factory):
+        raise TypeError("exchange_factory must be callable")
+    ccxt_version = factory_kwargs.pop("ccxt_version", None)
+    if ccxt_version is not None and not isinstance(ccxt_version, str):
+        raise TypeError("ccxt_version must be a string")
+    if factory_kwargs:
+        names = ", ".join(sorted(factory_kwargs))
+        raise TypeError(f"unsupported CCXT factory arguments: {names}")
+    factory = CcxtRuntimeGatewayFactory(
+        exchange_factory=exchange_factory,
+        ccxt_version=ccxt_version,
+    )
+    return await factory.build(
         config=config,
         wallet_config=getattr(runtime_user, "wallet", None),
-        **selector_kwargs,
     )
 
 
@@ -661,7 +658,8 @@ def _bind_reservation_runtime(context: TradingContext, coord: object | None) -> 
         if not callable(order_lookup):
             return None
         try:
-            order_row = await order_lookup(reservation_id)
+            lookup_result = order_lookup(reservation_id)
+            order_row = await lookup_result if inspect.isawaitable(lookup_result) else lookup_result
         except Exception:
             return None
         return order_row if isinstance(order_row, dict) else None
@@ -673,7 +671,8 @@ def _bind_reservation_runtime(context: TradingContext, coord: object | None) -> 
         if not callable(order_lookup):
             return None
         try:
-            order_row = await order_lookup(order_id)
+            lookup_result = order_lookup(order_id)
+            order_row = await lookup_result if inspect.isawaitable(lookup_result) else lookup_result
         except Exception:
             return None
         return order_row if isinstance(order_row, dict) else None
@@ -849,6 +848,7 @@ async def build_trading_context(
         extra={
             "slippage_tolerance_bps": int(config.execution.slippage_tolerance * 100),
             "clob_gateway": user_state.clob_gateway,
+            "leader_wallet": follow.leader_id,
         },
     )
     if user_state.risk_triggers_repo is not None:

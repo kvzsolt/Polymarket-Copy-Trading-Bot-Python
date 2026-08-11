@@ -14,6 +14,8 @@ from decimal import Decimal, InvalidOperation
 from typing import Protocol
 
 from services.copy_tasks.budget import (
+    TaskBudgetExecutionState,
+    TaskBudgetFillApplication,
     TaskBudgetInvariantError,
     TaskBudgetKey,
     TaskBudgetPolicyEvaluator,
@@ -32,8 +34,12 @@ class TransactionContext(Protocol):
     async def __aenter__(self) -> object:
         """Enter one database transaction."""
 
+        ...
+
     async def __aexit__(self, *args: object) -> object:
         """Exit one database transaction."""
+
+        ...
 
 
 class DatabaseConnection(Protocol):
@@ -42,6 +48,8 @@ class DatabaseConnection(Protocol):
     def transaction(self) -> TransactionContext:
         """Return a transaction context manager."""
 
+        ...
+
     async def fetchrow(
         self,
         query: str,
@@ -49,11 +57,17 @@ class DatabaseConnection(Protocol):
     ) -> Mapping[str, object] | None:
         """Return one row."""
 
+        ...
+
     async def fetchval(self, query: str, *args: object) -> object | None:
         """Return one scalar value."""
 
+        ...
+
     async def execute(self, query: str, *args: object) -> str:
         """Execute one statement."""
+
+        ...
 
 
 class AcquireContext(Protocol):
@@ -62,8 +76,12 @@ class AcquireContext(Protocol):
     async def __aenter__(self) -> DatabaseConnection:
         """Return one acquired connection."""
 
+        ...
+
     async def __aexit__(self, *args: object) -> object:
         """Release one acquired connection."""
+
+        ...
 
 
 class DatabasePool(Protocol):
@@ -71,6 +89,8 @@ class DatabasePool(Protocol):
 
     def acquire(self) -> AcquireContext:
         """Acquire one connection."""
+
+        ...
 
 
 class PostgresTaskBudgetRepository:
@@ -84,6 +104,18 @@ class PostgresTaskBudgetRepository:
     ) -> None:
         self._pool = pool
         self._evaluator = evaluator or TaskBudgetPolicyEvaluator()
+
+    async def snapshot(
+        self,
+        key: TaskBudgetKey,
+        now: datetime,
+    ) -> TaskBudgetSnapshot:
+        """Read one admission snapshot without acquiring mutation locks."""
+
+        if now.tzinfo is None:
+            raise ValueError("task budget snapshot time must be timezone-aware")
+        async with self._pool.acquire() as connection:
+            return await self._load_snapshot(connection, key=key, now=now)
 
     async def reserve(
         self,
@@ -149,7 +181,8 @@ class PostgresTaskBudgetRepository:
                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'reserved', NOW())
                     RETURNING reservation_id, follower_account, task_id, market_id,
                               sports_market_type, amount, reserved_at, expires_at,
-                              status, fill_id, committed_notional
+                              status, execution_state, settled_notional, fill_id,
+                              committed_notional
                     """,
                     request.reservation_id,
                     request.key.follower_account,
@@ -178,7 +211,27 @@ class PostgresTaskBudgetRepository:
         filled_notional: Decimal,
         occurred_at: datetime,
     ) -> bool:
-        """Commit authoritative fill evidence exactly once."""
+        """Commit one terminal fill for backward-compatible callers."""
+
+        application = await self.record_fill(
+            reservation_id=reservation_id,
+            fill_id=fill_id,
+            filled_notional=filled_notional,
+            occurred_at=occurred_at,
+            terminal=True,
+        )
+        return application.created
+
+    async def record_fill(
+        self,
+        *,
+        reservation_id: str,
+        fill_id: str,
+        filled_notional: Decimal,
+        occurred_at: datetime,
+        terminal: bool,
+    ) -> TaskBudgetFillApplication:
+        """Append an authoritative fill and retain or settle the budget cap."""
 
         reservation_identity = self._required_text(
             reservation_id,
@@ -228,7 +281,29 @@ class PostgresTaskBudgetRepository:
                         existing_reservation_id == reservation_identity
                         and existing_amount == amount
                     ):
-                        return False
+                        if reservation_row is None:
+                            raise TaskBudgetInvariantError("task budget reservation does not exist")
+                        reservation = self._reservation(reservation_row)
+                        if terminal and reservation.status is TaskBudgetReservationStatus.RESERVED:
+                            await self._settle_reservation(
+                                connection,
+                                reservation_id=reservation_identity,
+                                terminal_fill_id=fill_identity,
+                                cumulative=reservation.settled_notional,
+                            )
+                            reservation = TaskBudgetReservation(
+                                request=reservation.request,
+                                status=TaskBudgetReservationStatus.COMMITTED,
+                                execution_state=TaskBudgetExecutionState.RETAINED,
+                                settled_notional=reservation.settled_notional,
+                                fill_id=fill_identity,
+                                committed_notional=reservation.settled_notional,
+                            )
+                        return self._fill_application(
+                            reservation=reservation,
+                            cumulative=reservation.settled_notional,
+                            created=False,
+                        )
                     raise TaskBudgetInvariantError(
                         "fill identity conflicts with task budget ledger"
                     )
@@ -237,17 +312,13 @@ class PostgresTaskBudgetRepository:
 
                 reservation = self._reservation(reservation_row)
                 if reservation.status is TaskBudgetReservationStatus.COMMITTED:
-                    if (
-                        reservation.fill_id == fill_identity
-                        and reservation.committed_notional == amount
-                    ):
-                        return False
                     raise TaskBudgetInvariantError("task budget reservation already committed")
                 if reservation.status is not TaskBudgetReservationStatus.RESERVED:
                     raise TaskBudgetInvariantError(
                         f"cannot commit task budget reservation in {reservation.status.value} state"
                     )
-                if amount > reservation.request.amount:
+                cumulative = reservation.settled_notional + amount
+                if cumulative > reservation.request.amount:
                     raise TaskBudgetInvariantError(
                         "filled notional exceeds task budget reservation"
                     )
@@ -269,20 +340,169 @@ class PostgresTaskBudgetRepository:
                     amount,
                     occurred_at,
                 )
-                await connection.execute(
-                    """
-                    UPDATE copy_task_budget_reservations
-                       SET status = 'committed',
-                           fill_id = $2,
-                           committed_notional = $3,
-                           updated_at = NOW()
-                     WHERE reservation_id = $1
-                    """,
+                if terminal:
+                    await self._settle_reservation(
+                        connection,
+                        reservation_id=reservation_identity,
+                        terminal_fill_id=fill_identity,
+                        cumulative=cumulative,
+                    )
+                    status = TaskBudgetReservationStatus.COMMITTED
+                else:
+                    await connection.execute(
+                        """
+                        UPDATE copy_task_budget_reservations
+                           SET execution_state = 'retained',
+                               settled_notional = $2,
+                               updated_at = NOW()
+                         WHERE reservation_id = $1
+                           AND status = 'reserved'
+                        """,
+                        reservation_identity,
+                        cumulative,
+                    )
+                    status = TaskBudgetReservationStatus.RESERVED
+                updated = TaskBudgetReservation(
+                    request=reservation.request,
+                    status=status,
+                    execution_state=TaskBudgetExecutionState.RETAINED,
+                    settled_notional=cumulative,
+                    fill_id=fill_identity if terminal else None,
+                    committed_notional=cumulative if terminal else None,
+                )
+                return self._fill_application(
+                    reservation=updated,
+                    cumulative=cumulative,
+                    created=True,
+                )
+
+    async def settle(
+        self,
+        reservation_id: str,
+        *,
+        terminal_fill_id: str,
+    ) -> bool:
+        """Mark an existing retained partial fill terminal idempotently."""
+
+        reservation_identity = self._required_text(
+            reservation_id,
+            name="reservation_id",
+        )
+        fill_identity = self._required_text(
+            terminal_fill_id,
+            name="terminal_fill_id",
+        )
+        async with self._pool.acquire() as connection:
+            async with connection.transaction():
+                await self._acquire_locks(
+                    connection,
+                    (
+                        f"reservation:{reservation_identity}",
+                        f"fill:{fill_identity}",
+                    ),
+                )
+                reservation_row = await connection.fetchrow(
+                    self._reservation_select_sql(),
                     reservation_identity,
+                )
+                if reservation_row is None:
+                    raise TaskBudgetInvariantError("task budget reservation does not exist")
+                reservation = self._reservation(reservation_row)
+                if reservation.status is TaskBudgetReservationStatus.COMMITTED:
+                    if reservation.fill_id != fill_identity:
+                        raise TaskBudgetInvariantError("terminal fill identity conflicts")
+                    return False
+                if reservation.status is not TaskBudgetReservationStatus.RESERVED:
+                    raise TaskBudgetInvariantError(
+                        f"cannot settle task budget reservation in {reservation.status.value} state"
+                    )
+                fill = await connection.fetchrow(
+                    """
+                    SELECT fill_id, reservation_id
+                      FROM copy_task_fill_ledger
+                     WHERE fill_id = $1
+                       AND reservation_id = $2
+                     FOR UPDATE
+                    """,
                     fill_identity,
-                    amount,
+                    reservation_identity,
+                )
+                if fill is None:
+                    raise TaskBudgetInvariantError("terminal task budget fill does not exist")
+                await self._settle_reservation(
+                    connection,
+                    reservation_id=reservation_identity,
+                    terminal_fill_id=fill_identity,
+                    cumulative=reservation.settled_notional,
                 )
                 return True
+
+    async def retain(self, reservation_id: str) -> bool:
+        """Persist a non-expiring blocking state after any POST attempt."""
+
+        identity = self._required_text(reservation_id, name="reservation_id")
+        async with self._pool.acquire() as connection:
+            count = await connection.fetchval(
+                """
+                WITH retained AS (
+                    UPDATE copy_task_budget_reservations
+                       SET execution_state = 'retained', updated_at = NOW()
+                     WHERE reservation_id = $1
+                       AND status = 'reserved'
+                       AND execution_state = 'pre_post'
+                    RETURNING 1
+                )
+                SELECT COUNT(*) FROM retained
+                """,
+                identity,
+            )
+        return self._non_negative_count(count) > 0
+
+    async def _settle_reservation(
+        self,
+        connection: DatabaseConnection,
+        *,
+        reservation_id: str,
+        terminal_fill_id: str,
+        cumulative: Decimal,
+    ) -> None:
+        """Persist terminal cumulative fill evidence for one reservation."""
+
+        await connection.execute(
+            """
+            UPDATE copy_task_budget_reservations
+               SET status = 'committed',
+                   execution_state = 'retained',
+                   settled_notional = $3,
+                   fill_id = $2,
+                   committed_notional = $3,
+                   updated_at = NOW()
+             WHERE reservation_id = $1
+               AND status = 'reserved'
+            """,
+            reservation_id,
+            terminal_fill_id,
+            cumulative,
+        )
+
+    @staticmethod
+    def _fill_application(
+        *,
+        reservation: TaskBudgetReservation,
+        cumulative: Decimal,
+        created: bool,
+    ) -> TaskBudgetFillApplication:
+        """Build one immutable fill application response."""
+
+        return TaskBudgetFillApplication(
+            created=created,
+            cumulative_notional=cumulative,
+            remaining_notional=max(
+                Decimal("0"),
+                reservation.request.amount - cumulative,
+            ),
+            status=reservation.status,
+        )
 
     async def release(self, reservation_id: str) -> bool:
         """Release one pending reservation without touching committed spend."""
@@ -302,7 +522,7 @@ class PostgresTaskBudgetRepository:
                 """,
                 identity,
             )
-        return int(count or 0) > 0
+        return self._non_negative_count(count) > 0
 
     async def sweep_expired(self, now: datetime) -> int:
         """Expire pending task reservations whose TTL has elapsed."""
@@ -316,6 +536,7 @@ class PostgresTaskBudgetRepository:
                     UPDATE copy_task_budget_reservations
                        SET status = 'expired', updated_at = NOW()
                      WHERE status = 'reserved'
+                       AND execution_state = 'pre_post'
                        AND expires_at <= $1
                     RETURNING 1
                 )
@@ -323,7 +544,7 @@ class PostgresTaskBudgetRepository:
                 """,
                 now,
             )
-        return int(count or 0)
+        return self._non_negative_count(count)
 
     async def _load_snapshot(
         self,
@@ -339,11 +560,14 @@ class PostgresTaskBudgetRepository:
                        amount, reserved_at
                   FROM copy_task_budget_reservations
                  WHERE status = 'reserved'
-                   AND expires_at > $4
+                   AND (execution_state = 'retained' OR expires_at > $4)
             ), committed_fills AS (
-                SELECT follower_account, task_id, market_id, sports_market_type,
-                       notional, occurred_at
-                  FROM copy_task_fill_ledger
+                SELECT fills.follower_account, fills.task_id, fills.market_id,
+                       fills.sports_market_type, fills.notional, fills.occurred_at
+                  FROM copy_task_fill_ledger AS fills
+                  JOIN copy_task_budget_reservations AS reservations
+                    ON reservations.reservation_id = fills.reservation_id
+                 WHERE reservations.status <> 'reserved'
             )
             SELECT
                 COALESCE((
@@ -455,6 +679,14 @@ class PostgresTaskBudgetRepository:
                 snapshot=snapshot,
             )
         if reservation.status is TaskBudgetReservationStatus.RESERVED:
+            if reservation.execution_state is TaskBudgetExecutionState.RETAINED:
+                return TaskBudgetReservationDecision(
+                    allowed=False,
+                    reason="task_budget_submission_retained",
+                    created=False,
+                    reservation=reservation,
+                    snapshot=snapshot,
+                )
             return TaskBudgetReservationDecision(
                 allowed=True,
                 reason="task_budget_already_reserved",
@@ -497,6 +729,18 @@ class PostgresTaskBudgetRepository:
                 expires_at=self._datetime(row, "expires_at"),
             ),
             status=TaskBudgetReservationStatus(self._text(row, "status")),
+            execution_state=TaskBudgetExecutionState(
+                self._optional_text_with_default(
+                    row,
+                    "execution_state",
+                    default=TaskBudgetExecutionState.PRE_POST.value,
+                )
+            ),
+            settled_notional=self._decimal_with_default(
+                row,
+                "settled_notional",
+                default=Decimal("0"),
+            ),
             fill_id=fill_id,
             committed_notional=committed,
         )
@@ -506,11 +750,17 @@ class PostgresTaskBudgetRepository:
         return """
             SELECT reservation_id, follower_account, task_id, market_id,
                    sports_market_type, amount, reserved_at, expires_at, status, fill_id,
-                   committed_notional
+                   committed_notional, execution_state, settled_notional
               FROM copy_task_budget_reservations
              WHERE reservation_id = $1
              FOR UPDATE
         """
+
+    @staticmethod
+    def _non_negative_count(value: object) -> int:
+        if isinstance(value, bool) or not isinstance(value, int):
+            return 0
+        return max(0, value)
 
     @staticmethod
     def _required_text(value: object, *, name: str) -> str:
@@ -538,6 +788,22 @@ class PostgresTaskBudgetRepository:
         return value.strip().casefold()
 
     @staticmethod
+    def _optional_text_with_default(
+        row: Mapping[str, object],
+        name: str,
+        *,
+        default: str,
+    ) -> str:
+        """Return normalized text while accepting pre-migration fake rows."""
+
+        value = row.get(name, default)
+        if value is None:
+            value = default
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"task budget {name} must be non-empty text")
+        return value.strip().casefold()
+
+    @staticmethod
     def _decimal(row: Mapping[str, object], name: str) -> Decimal:
         value = row.get(name)
         try:
@@ -547,6 +813,20 @@ class PostgresTaskBudgetRepository:
         if not result.is_finite() or result < 0:
             raise ValueError(f"task budget {name} must be finite and non-negative")
         return result
+
+    @classmethod
+    def _decimal_with_default(
+        cls,
+        row: Mapping[str, object],
+        name: str,
+        *,
+        default: Decimal,
+    ) -> Decimal:
+        """Return a decimal while accepting pre-migration fake rows."""
+
+        if name not in row or row.get(name) is None:
+            return default
+        return cls._decimal(row, name)
 
     @staticmethod
     def _positive_decimal(value: object, *, name: str) -> Decimal:

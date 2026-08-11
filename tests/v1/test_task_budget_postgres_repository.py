@@ -132,6 +132,8 @@ def reservation_row(*, status: str = "reserved") -> dict[str, object]:
         "reserved_at": item.reserved_at,
         "expires_at": item.expires_at,
         "status": status,
+        "execution_state": "pre_post",
+        "settled_notional": Decimal("0"),
         "fill_id": None,
         "committed_notional": None,
     }
@@ -182,6 +184,22 @@ async def test_reserve_rejects_from_atomic_snapshot_without_insert() -> None:
     assert not any(
         "INSERT INTO copy_task_budget_reservations" in item[1] for item in connection.calls
     )
+
+
+@pytest.mark.asyncio
+async def test_snapshot_reads_current_budget_state_without_transaction_lock() -> None:
+    """Expose the existing aggregate query to runtime admission readers."""
+
+    connection = FakeConnection()
+    connection.fetchrow_results = [snapshot_row(task_total=Decimal("5.25"))]
+    repository = PostgresTaskBudgetRepository(FakePool(connection))
+    item = request()
+
+    snapshot = await repository.snapshot(item.key, item.reserved_at)
+
+    assert snapshot.task_total == Decimal("5.25")
+    assert connection.transaction_entries == 0
+    assert len(connection.calls) == 1
 
 
 @pytest.mark.asyncio
@@ -291,6 +309,8 @@ async def test_postgres_reservation_locks_and_persists_sports_market_type() -> N
             "reserved_at": datetime(2026, 8, 8, tzinfo=UTC),
             "expires_at": datetime(2026, 8, 8, 0, 2, tzinfo=UTC),
             "status": "reserved",
+            "execution_state": "pre_post",
+            "settled_notional": Decimal("0"),
             "fill_id": None,
             "committed_notional": None,
         },
@@ -319,3 +339,75 @@ async def test_postgres_reservation_locks_and_persists_sports_market_type() -> N
     fetched_sql = "\n".join(sql for method, sql, _args in connection.calls if method == "fetchrow")
     assert "sports:task-a:moneyline" in str(connection.calls)
     assert "sports_market_type" in executed_sql + fetched_sql
+
+
+@pytest.mark.asyncio
+async def test_retained_postgres_reservation_blocks_replay_and_time_sweep() -> None:
+    """Persist the non-expiring POST-attempted state in PostgreSQL."""
+
+    connection = FakeConnection()
+    connection.fetchval_results = [1, 0]
+    connection.fetchrow_results = [
+        reservation_row() | {"execution_state": "retained"},
+        snapshot_row(task_total=Decimal("7.50"), task_has_entry=True),
+    ]
+    repository = PostgresTaskBudgetRepository(FakePool(connection))
+
+    assert await repository.retain("intent-a") is True
+    replay = await repository.reserve(
+        request(),
+        TaskSpendPolicy(max_total=Decimal("100")),
+    )
+    assert replay.allowed is False
+    assert replay.reason == "task_budget_submission_retained"
+    assert await repository.sweep_expired(request().expires_at + timedelta(hours=1)) == 0
+
+    sql = "\n".join(item[1] for item in connection.calls)
+    assert "execution_state = 'retained'" in sql
+    assert "execution_state = 'pre_post'" in sql
+
+
+@pytest.mark.asyncio
+async def test_postgres_partial_then_terminal_fill_accumulates_settled_notional() -> None:
+    """Store multiple fills per reservation while retaining the unused cap."""
+
+    connection = FakeConnection()
+    connection.fetchrow_results = [
+        None,
+        reservation_row(),
+        None,
+        reservation_row() | {"execution_state": "retained", "settled_notional": Decimal("3")},
+    ]
+    repository = PostgresTaskBudgetRepository(FakePool(connection))
+    item = request()
+
+    partial = await repository.record_fill(
+        reservation_id="intent-a",
+        fill_id="fill-a",
+        filled_notional=Decimal("3"),
+        occurred_at=item.reserved_at,
+        terminal=False,
+    )
+    terminal = await repository.record_fill(
+        reservation_id="intent-a",
+        fill_id="fill-b",
+        filled_notional=Decimal("2"),
+        occurred_at=item.reserved_at + timedelta(seconds=1),
+        terminal=True,
+    )
+
+    assert partial.cumulative_notional == Decimal("3")
+    assert partial.remaining_notional == Decimal("4.50")
+    assert terminal.cumulative_notional == Decimal("5")
+    assert terminal.remaining_notional == Decimal("2.50")
+    fill_inserts = [
+        item for item in connection.calls if "INSERT INTO copy_task_fill_ledger" in item[1]
+    ]
+    assert len(fill_inserts) == 2
+    updates = "\n".join(
+        item[1]
+        for item in connection.calls
+        if item[0] == "execute" and "UPDATE copy_task_budget_reservations" in item[1]
+    )
+    assert "settled_notional" in updates
+    assert "status = 'committed'" in updates

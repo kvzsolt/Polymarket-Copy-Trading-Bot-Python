@@ -76,13 +76,40 @@ def _make_runtime(
     store: MarketStateStore | None = None,
     gateway=None,
     readiness: ReadinessTracker | None = None,
+    quote_sink=None,
 ) -> MarketDataRuntime:
     return MarketDataRuntime(
         market_store=store or MarketStateStore(),
         gateway=gateway or _make_gateway(),
         readiness=readiness or ReadinessTracker(),
         config=SimpleNamespace(),
+        quote_sink=quote_sink,
     )
+
+
+class RecordingQuoteSink:
+    """Capture authoritative two-sided quote projections."""
+
+    def __init__(self) -> None:
+        self.quotes: list[tuple[str, Decimal, Decimal, str]] = []
+        self.discarded: list[str] = []
+
+    def record(
+        self,
+        *,
+        token_id: str,
+        best_bid: Decimal,
+        best_ask: Decimal,
+        source: str,
+    ) -> None:
+        """Record one normalized quote."""
+
+        self.quotes.append((token_id, best_bid, best_ask, source))
+
+    def discard(self, token_id: str) -> None:
+        """Record one resolved-token eviction."""
+
+        self.discarded.append(token_id)
 
 
 # ---------------------------------------------------------------------------
@@ -477,6 +504,26 @@ class TestReadinessFromWss:
         await rt._on_market_state_change(TOKEN_A, "book")
 
         assert readiness.snapshot().get("market_data_ready") is True
+
+    @pytest.mark.asyncio
+    async def test_wss_state_change_updates_shared_copy_task_quote_sink(self) -> None:
+        """The v1 shared cache receives the same authoritative WSS quote."""
+
+        store = MarketStateStore()
+        sink = RecordingQuoteSink()
+        runtime = _make_runtime(store=store, quote_sink=sink)
+        store.set_book(
+            TOKEN_A,
+            bids={Decimal("0.49"): Decimal("100")},
+            asks={Decimal("0.51"): Decimal("100")},
+            source="wss",
+        )
+
+        await runtime._on_market_state_change(TOKEN_A, "book")
+        await runtime._on_market_state_change(TOKEN_A, "market_resolved")
+
+        assert sink.quotes == [(TOKEN_A, Decimal("0.49"), Decimal("0.51"), "wss")]
+        assert sink.discarded == [TOKEN_A]
 
     @pytest.mark.asyncio
     async def test_market_data_ready_false_when_dirty(self) -> None:

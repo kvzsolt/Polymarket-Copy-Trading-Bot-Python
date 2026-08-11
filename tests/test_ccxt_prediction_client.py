@@ -18,6 +18,9 @@ class FakeExchange:
         self.options = settings["options"]
         self.privateKey = settings.get("privateKey")
         self.walletAddress = settings.get("walletAddress")
+        self.apiKey = "derived-key"
+        self.secret = "derived-secret"
+        self.password = "derived-passphrase"
         self.close = AsyncMock()
         self.load_api_credentials = AsyncMock(return_value={"apiKey": "derived"})
 
@@ -84,6 +87,25 @@ async def test_authenticated_client_is_type3_and_patched() -> None:
 
 
 @pytest.mark.asyncio
+async def test_authenticated_client_exposes_normalized_user_stream_credentials() -> None:
+    """Expose derived L2 credentials only through the runtime auth seam."""
+
+    client = await create_ccxt_prediction_client(
+        private_key="0x" + "a" * 64,
+        wallet_address="0x" + "b" * 40,
+        authenticated=True,
+        exchange_factory=FakeExchange,
+        ccxt_version="4.5.70",
+    )
+
+    assert client.api_creds == {
+        "api_key": "derived-key",
+        "api_secret": "derived-secret",
+        "api_passphrase": "derived-passphrase",
+    }
+
+
+@pytest.mark.asyncio
 async def test_client_closes_once() -> None:
     client = await create_ccxt_prediction_client(
         authenticated=False,
@@ -92,7 +114,7 @@ async def test_client_closes_once() -> None:
     )
     await client.close()
     await client.close()
-    client.exchange.close.assert_awaited_once()
+    client.exchange.close.assert_awaited_once_with(True)
 
 
 @pytest.mark.asyncio

@@ -1,0 +1,17 @@
+# Secure operator control-plane transport. Runtime composition is intentionally
+# opt-in; bearer credential material must be injected from the secret store and
+# must never be written to this file.
+enabled: false
+host: 127.0.0.1
+port: 9103
+require_authentication: true
+request_max_bytes: 262144
+websocket_queue_capacity: 128
+telemetry_snapshot_limit: 100
+command_rate_limit: 30
+command_rate_window_seconds: 60.0
+rate_limit_max_keys: 1024
+shutdown_timeout_seconds: 5.0
+portfolio_refresh_interval_seconds: 10.0
+portfolio_stale_after_seconds: 30.0
+cors_allowed_origins: []

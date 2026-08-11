@@ -87,12 +87,15 @@ def _check_wss_endpoint(host: str, port: int = 443, timeout: float = 3.0) -> tup
         return False, f"{host}:{port} unreachable: {exc}"
 
 
-def _check_gateway_sdk() -> tuple[bool, str]:
+def _check_gateway_ccxt() -> tuple[bool, str]:
+    """Return whether the installed CCXT prediction adapter is importable."""
+
     try:
-        from polymarket import AsyncPublicClient, AsyncSecureClient  # noqa: F401
+        import ccxt
+        from ccxt.prediction import polymarket as prediction_factory  # noqa: F401
     except Exception as exc:
-        return False, f"clob_sdk_import_failed: {exc}"
-    return True, "polymarket-client unified SDK importable"
+        return False, f"ccxt_prediction_import_failed: {type(exc).__name__}"
+    return True, f"ccxt.prediction.polymarket importable (ccxt {ccxt.__version__})"
 
 
 def _wallet_signature_detail(
@@ -111,7 +114,7 @@ def _wallet_signature_detail(
         f"signature_type={int(detected_signature_type)} "
         f"signer={shortened_signer} "
         f"funder={shortened_funder} "
-        "sdk_wallet_type_authoritative=true"
+        "ccxt_explicit_funder_authoritative=true"
     )
     if configured_signature_type is not None and int(configured_signature_type) != int(
         detected_signature_type
@@ -362,12 +365,13 @@ async def run_doctor_checks(
             ctx.ok("wallet_private_key", "wallet.private_key present")
         funder = config.wallet.funder_address or ""
         if not funder:
-            ctx.ok(
+            ctx.blocked(
                 "wallet_funder_resolution",
-                "auto-derived Deposit Wallet (POLY_1271/signature type 3)",
+                "verified Deposit Wallet funder_address is missing",
+                "set PMCOPY__WALLET__FUNDER_ADDRESS in secrets.env",
             )
         elif re.match(r"^0x[0-9a-fA-F]{40}$", funder):
-            ctx.ok("wallet_funder_valid", f"optional consistency check: {funder}")
+            ctx.ok("wallet_funder_valid", f"configured Deposit Wallet: {funder}")
         else:
             ctx.blocked(
                 "wallet_funder_valid",
@@ -376,7 +380,7 @@ async def run_doctor_checks(
             )
         ctx.ok(
             "wallet_signature_type",
-            "DEPOSIT_WALLET / POLY_1271 / signature_type=3 enforced by unified SDK",
+            "DEPOSIT_WALLET / POLY_1271 / signature_type=3 enforced by CCXT composition",
         )
 
     # ----- database -----------------------------------------------------
@@ -497,11 +501,11 @@ async def run_doctor_checks(
     else:
         ctx.skipped("geoblock_check", "not enforced")
 
-    # ----- gateway SDK --------------------------------------------------
+    # ----- CCXT prediction gateway --------------------------------------
     if live:
-        ok, detail = _check_gateway_sdk()
+        ok, detail = _check_gateway_ccxt()
         (ctx.ok if ok else ctx.blocked)(
-            "gateway_sdk", detail, "" if ok else "install polymarket-client"
+            "gateway_ccxt", detail, "" if ok else "install the pinned CCXT runtime dependency"
         )
 
     # ----- subsystem wiring (dry import) --------------------------------
