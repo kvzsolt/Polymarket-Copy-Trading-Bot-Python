@@ -408,6 +408,33 @@ class CcxtPredictionGateway:
             _raise_read_error(exc, not_found="orderbook")
         return _maybe_dict(value)
 
+    async def _fetch_raw_clob_book(self, token_id: str) -> dict[str, Any] | None:
+        """Fetch the raw CLOB book, which carries the execution metadata.
+
+        CCXT's unified ``fetch_order_book`` drops the raw response's
+        ``tick_size``, ``min_order_size``, and ``neg_risk`` fields during
+        parsing, so metadata reads use the generated implicit endpoint for the
+        same CLOB route. Returns ``None`` when the implicit endpoint is absent
+        (degraded installs and unified-only test doubles) so callers can fall
+        back to the parsed book plus the outcome cache.
+        """
+        method = self._resolve_method("clobPublicGetBook", "clob_public_get_book")
+        if method is None:
+            return None
+        try:
+            async with asyncio.timeout(_READ_TIMEOUT_SECONDS):
+                value = await _await_call(method, {"token_id": str(token_id)})
+        except BaseException as exc:
+            _raise_read_error(exc, not_found="orderbook")
+        return _maybe_dict(value)
+
+    async def _fetch_metadata_book(self, token_id: str) -> dict[str, Any]:
+        """Return the freshest book usable as an execution-metadata source."""
+        raw = await self._fetch_raw_clob_book(token_id)
+        if raw is not None:
+            return raw
+        return await self._fetch_raw_order_book(token_id)
+
     async def _load_outcome(self, token_id: str) -> dict[str, Any]:
         method = getattr(self._exchange, "load_outcome", None)
         outcome: Any = None
@@ -442,6 +469,12 @@ class CcxtPredictionGateway:
                 tick = _first(source, "tick_size", "tickSize")
                 tick = tick if tick is not None else _first(info, "tick_size", "tickSize")
                 tick = tick if tick is not None else _nested(source, "precision", "price")
+                # Gamma-market spellings carried in a CCXT outcome's raw info.
+                tick = (
+                    tick
+                    if tick is not None
+                    else _first(info, "orderPriceMinTickSize", "minimumTickSize")
+                )
             if minimum is None:
                 minimum = _first(source, "min_order_size", "minOrderSize")
                 minimum = (
@@ -452,6 +485,8 @@ class CcxtPredictionGateway:
                 minimum = (
                     minimum if minimum is not None else _nested(source, "limits", "amount", "min")
                 )
+                # Gamma-market spelling carried in a CCXT outcome's raw info.
+                minimum = minimum if minimum is not None else _first(info, "orderMinSize")
             if neg_risk is None:
                 neg_risk = _first(source, "neg_risk", "negRisk")
                 neg_risk = neg_risk if neg_risk is not None else _first(info, "neg_risk", "negRisk")
@@ -500,8 +535,9 @@ class CcxtPredictionGateway:
 
         if refresh:
             # A fresh order-book snapshot is the execution authority. This is
-            # intentionally done immediately before every signed order.
-            book = await self._fetch_raw_order_book(token)
+            # intentionally done immediately before every signed order, using
+            # the raw CLOB book because the parsed book drops the metadata.
+            book = await self._fetch_metadata_book(token)
             return await self._execution_metadata(token, book)
 
         outcome = await self._load_outcome(token)
@@ -510,7 +546,7 @@ class CcxtPredictionGateway:
             # The CCXT outcome cache does not consistently include
             # min_order_size. Fall back to a fresh book and cache only after all
             # three execution-critical fields validate.
-            book = await self._fetch_raw_order_book(token)
+            book = await self._fetch_metadata_book(token)
             metadata = self._metadata_from_sources(token, book, outcome)
         if metadata is None:
             raise VenueInvalidOrderError(

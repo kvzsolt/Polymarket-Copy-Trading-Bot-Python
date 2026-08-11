@@ -26,10 +26,13 @@ def error_type(name: str, status: int | None = None):
 
 class Exchange:
     def __init__(self) -> None:
+        # Realistic CCXT outcome shape: precision.price is the tick, negRisk is
+        # top-level, and info is the raw gamma market with orderMinSize.
         self.outcome_value = {
+            "outcomeId": TOKEN,
             "precision": {"price": "0.01"},
-            "limits": {"amount": {"min": "5"}},
             "negRisk": False,
+            "info": {"orderMinSize": "5"},
         }
         self.create_error: BaseException | None = None
         self.read_error: BaseException | None = None
@@ -41,14 +44,11 @@ class Exchange:
     async def fetch_order_book(self, _token):
         if self.read_error:
             raise self.read_error
+        # Realistic parsed-book shape: no execution metadata, no "info" key.
         return {
+            "outcomeId": TOKEN,
             "bids": [],
             "asks": [],
-            "info": {
-                "tick_size": "0.01",
-                "min_order_size": "5",
-                "neg_risk": False,
-            },
         }
 
     async def create_order(self, *_args):

@@ -29,22 +29,33 @@ class FakeExchange:
         self._pmcopy_precision_patch = "pmcopy-arbitrary-tick-v1"
         self.created: list[tuple] = []
         self.fetch_order_book_calls = 0
+        # Real CCXT parsed books carry only levels and identity fields: the raw
+        # CLOB response's tick_size/min_order_size/neg_risk are dropped by
+        # parse_order_book + safe_prediction_order_book and there is no "info".
         self.book = {
+            "outcome": "market-slug:YES",
             "outcomeId": TOKEN,
+            "market": "0xcondition",
             "timestamp": 1_750_000_000_000,
+            "datetime": None,
+            "nonce": None,
             "bids": [["0.40", "20"]],
             "asks": [["0.42", "10"]],
-            "info": {
-                "tick_size": "0.0025",
-                "min_order_size": "5",
-                "neg_risk": True,
-            },
         }
+        # Real CCXT outcome objects carry precision.price (the tick), negRisk,
+        # and info = the raw gamma market, where min size is spelled
+        # orderMinSize and the tick orderPriceMinTickSize/minimumTickSize.
         self.outcome_value = {
+            "outcome": "market-slug:YES",
             "outcomeId": TOKEN,
-            "precision": {"price": "0.0025"},
-            "limits": {"amount": {"min": "5"}},
+            "market": "0xcondition",
+            "precision": {"amount": "0.0025", "price": "0.0025"},
             "negRisk": True,
+            "info": {
+                "orderMinSize": "5",
+                "orderPriceMinTickSize": "0.0025",
+                "negRisk": True,
+            },
         }
         self.create_response = {
             "id": "order-1",
@@ -121,7 +132,6 @@ async def test_orderbook_maps_arbitrary_tick_and_quality_fields() -> None:
 @pytest.mark.asyncio
 async def test_missing_execution_metadata_fails_closed() -> None:
     exchange = FakeExchange()
-    exchange.book["info"] = {}
     exchange.outcome_value = {}
     gateway = CcxtPredictionGateway(exchange)
 
@@ -340,15 +350,15 @@ async def test_market_buy_minimum_is_checked_in_shares_not_usdc_cost() -> None:
 @pytest.mark.asyncio
 async def test_execution_metadata_refreshes_before_each_signed_order() -> None:
     exchange = FakeExchange()
-    exchange.book["info"]["tick_size"] = "0.01"
     exchange.outcome_value["precision"]["price"] = "0.01"
+    exchange.outcome_value["info"]["orderPriceMinTickSize"] = "0.01"
     gateway = CcxtPredictionGateway(exchange)
 
     # Seed the adapter with the old rule, then simulate Polymarket's runtime
     # tick-size transition before the next order is signed.
     await gateway.get_orderbook(TOKEN)
-    exchange.book["info"]["tick_size"] = "0.0025"
     exchange.outcome_value["precision"]["price"] = "0.0025"
+    exchange.outcome_value["info"]["orderPriceMinTickSize"] = "0.0025"
 
     await gateway.submit_limit_order(
         LimitOrderRequest(
@@ -364,6 +374,131 @@ async def test_execution_metadata_refreshes_before_each_signed_order() -> None:
     assert exchange.fetch_order_book_calls >= 2
     assert Decimal(str(price)) == Decimal("0.4125")
     assert params["tickSize"] == "0.0025"
+
+
+class RawClobBookFakeExchange(FakeExchange):
+    """Fake exposing CCXT's generated implicit raw CLOB book endpoint.
+
+    The raw response mirrors the live venue shape verified against
+    ``GET https://clob.polymarket.com/book?token_id=...``: top-level
+    ``tick_size``, ``min_order_size``, ``neg_risk``, ``hash``, and dict levels.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.clob_book_calls = 0
+        # The outcome cache deliberately disagrees with the raw book so the
+        # tests can prove the fresh CLOB book is the execution authority.
+        self.outcome_value = {
+            "outcome": "market-slug:YES",
+            "outcomeId": TOKEN,
+            "market": "0xcondition",
+            "precision": {"amount": "0.01", "price": "0.01"},
+            "negRisk": False,
+            "info": {
+                "orderMinSize": "5",
+                "orderPriceMinTickSize": "0.01",
+                "negRisk": False,
+            },
+        }
+        self.raw_clob_book = {
+            "market": "0xcondition",
+            "asset_id": TOKEN,
+            "timestamp": "1777541385018",
+            "hash": "bfb61f58dab4055d956eb5e758dbc9101c9a4e6c",
+            "bids": [{"price": "0.40", "size": "20"}],
+            "asks": [{"price": "0.42", "size": "10"}],
+            "min_order_size": "5",
+            "tick_size": "0.01",
+            "neg_risk": False,
+            "last_trade_price": "0.41",
+        }
+
+    async def clobPublicGetBook(self, params):  # noqa: N802 - CCXT generated name
+        assert params == {"token_id": TOKEN}
+        self.clob_book_calls += 1
+        return self.raw_clob_book
+
+
+@pytest.mark.asyncio
+async def test_metadata_resolves_from_realistic_gamma_outcome_when_parsed_book_has_no_info() -> (
+    None
+):
+    exchange = FakeExchange()
+    exchange.outcome_value = {
+        "outcomeId": TOKEN,
+        "precision": {"price": "0.005"},
+        "negRisk": False,
+        "info": {"orderMinSize": "5"},
+    }
+    gateway = CcxtPredictionGateway(exchange)
+
+    book = await gateway.get_orderbook(TOKEN)
+
+    assert book.tick_size == Decimal("0.005")
+    assert book.min_order_size == Decimal("5")
+    assert book.neg_risk is False
+
+
+@pytest.mark.asyncio
+async def test_refresh_sources_metadata_from_raw_clob_book_and_picks_up_tick_change() -> None:
+    exchange = RawClobBookFakeExchange()
+    gateway = CcxtPredictionGateway(exchange)
+
+    first = await gateway.submit_limit_order(
+        LimitOrderRequest(
+            token_id=TOKEN,
+            side="BUY",
+            price=Decimal("0.415"),
+            size=Decimal("5"),
+            condition_id="condition",
+        )
+    )
+    assert first.success is True
+    _, _, _, _, price, params = exchange.created[-1]
+    assert params["tickSize"] == "0.01"
+    assert Decimal(str(price)) == Decimal("0.41")
+
+    # The venue changes the tick rule while the market is live. The stale
+    # cached metadata and the stale outcome cache both still say 0.01; only
+    # the fresh raw CLOB book carries the new rule and it must win.
+    exchange.raw_clob_book["tick_size"] = "0.005"
+    second = await gateway.submit_limit_order(
+        LimitOrderRequest(
+            token_id=TOKEN,
+            side="BUY",
+            price=Decimal("0.412"),
+            size=Decimal("5"),
+            condition_id="condition",
+        )
+    )
+    assert second.success is True
+    _, _, _, _, price, params = exchange.created[-1]
+    assert params["tickSize"] == "0.005"
+    assert Decimal(str(price)) == Decimal("0.41")
+    assert exchange.clob_book_calls >= 2
+    # Metadata must come from the raw CLOB book, not the metadata-free parsed book.
+    assert exchange.fetch_order_book_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_refresh_fails_closed_when_raw_book_and_outcome_omit_a_field() -> None:
+    exchange = RawClobBookFakeExchange()
+    del exchange.raw_clob_book["neg_risk"]
+    exchange.outcome_value = {}
+    gateway = CcxtPredictionGateway(exchange)
+
+    with pytest.raises(VenueInvalidOrderError, match="omitted"):
+        await gateway.submit_limit_order(
+            LimitOrderRequest(
+                token_id=TOKEN,
+                side="BUY",
+                price=Decimal("0.41"),
+                size=Decimal("5"),
+                condition_id="condition",
+            )
+        )
+    assert exchange.created == []
 
 
 @pytest.mark.asyncio
