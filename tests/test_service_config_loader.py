@@ -381,3 +381,66 @@ def test_dropped_legacy_keys_are_ignored_only_in_legacy_layers(
     config = load_config(_overrides(), config_dir=config_dir)
 
     assert not hasattr(config.execution, "max_retries")
+
+
+def test_environment_selector_in_secrets_env_is_honored(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """secrets.env may carry PMCOPY_ENVIRONMENT, the documented selector."""
+    monkeypatch.delenv("PMCOPY_ENVIRONMENT", raising=False)
+    config_dir = _tree(
+        tmp_path,
+        {
+            "sizing.yml": {"percentage": 4.0},
+            "environments/live/sizing.yml": {"percentage": 2.0},
+        },
+    )
+    secrets = tmp_path / "secrets.env"
+    secrets.write_text("PMCOPY_ENVIRONMENT=live\n", encoding="utf-8")
+    secrets.chmod(0o600)
+
+    config = load_config(_overrides(), config_dir=config_dir, secrets_path=secrets)
+
+    assert config.sizing.percentage == 2.0
+
+
+def test_explicit_environment_beats_secrets_env_selector(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("PMCOPY_ENVIRONMENT", raising=False)
+    config_dir = _tree(
+        tmp_path,
+        {
+            "sizing.yml": {"percentage": 4.0},
+            "environments/live/sizing.yml": {"percentage": 2.0},
+        },
+    )
+    secrets = tmp_path / "secrets.env"
+    secrets.write_text("PMCOPY_ENVIRONMENT=live\n", encoding="utf-8")
+    secrets.chmod(0o600)
+
+    config = load_config(
+        _overrides(), config_dir=config_dir, environment="paper", secrets_path=secrets
+    )
+
+    assert config.sizing.percentage == 4.0
+
+
+def test_process_env_environment_beats_secrets_env_selector(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PMCOPY_ENVIRONMENT", "paper")
+    config_dir = _tree(
+        tmp_path,
+        {
+            "sizing.yml": {"percentage": 4.0},
+            "environments/live/sizing.yml": {"percentage": 2.0},
+        },
+    )
+    secrets = tmp_path / "secrets.env"
+    secrets.write_text("PMCOPY_ENVIRONMENT=live\n", encoding="utf-8")
+    secrets.chmod(0o600)
+
+    config = load_config(_overrides(), config_dir=config_dir, secrets_path=secrets)
+
+    assert config.sizing.percentage == 4.0

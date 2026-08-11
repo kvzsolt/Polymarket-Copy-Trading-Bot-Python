@@ -1427,12 +1427,29 @@ def _translate_legacy_payload(payload: Mapping[str, Any], *, source: str) -> dic
     return output
 
 
-def _resolve_environment(explicit: str | None) -> str:
+def _secrets_environment_selector(contents: str | None) -> str | None:
+    """Extract ``PMCOPY_ENVIRONMENT`` from the secrets file, if present.
+
+    ``secrets.env`` is the documented carrier for the environment selector in
+    compose deployments; explicit arguments and the process environment still
+    take precedence in :func:`_resolve_environment`.
+    """
+    if contents is None:
+        return None
+    value = dotenv_values(stream=StringIO(contents)).get("PMCOPY_ENVIRONMENT")
+    if value is None or not str(value).strip():
+        return None
+    return str(value)
+
+
+def _resolve_environment(explicit: str | None, secrets_value: str | None = None) -> str:
     """Return the explicitly selected environment name (default ``paper``).
 
-    The environment is never inferred from credential presence.
+    Precedence: explicit argument -> process ``PMCOPY_ENVIRONMENT`` ->
+    ``PMCOPY_ENVIRONMENT`` in ``secrets.env`` -> default. The environment is
+    never inferred from credential presence.
     """
-    name = explicit or os.getenv("PMCOPY_ENVIRONMENT") or _DEFAULT_ENVIRONMENT
+    name = explicit or os.getenv("PMCOPY_ENVIRONMENT") or secrets_value or _DEFAULT_ENVIRONMENT
     name = str(name).strip().lower()
     if not _ENVIRONMENT_NAME_RE.match(name):
         raise EnvValidationError(f"Invalid configuration environment name: {name!r}")
@@ -1561,7 +1578,10 @@ def _read_secret_overrides(contents: str) -> dict[str, Any]:
     output: dict[str, Any] = {}
     for raw_key, value in values.items():
         key = str(raw_key)
-        if key == "POSTGRES_PASSWORD":
+        if key in ("POSTGRES_PASSWORD", "PMCOPY_ENVIRONMENT"):
+            # Compose consumes POSTGRES_PASSWORD directly; PMCOPY_ENVIRONMENT
+            # is the documented environment selector, consumed before this
+            # layer by _resolve_environment.
             continue
         if not key.startswith("PMCOPY__"):
             raise EnvValidationError(
@@ -1662,7 +1682,10 @@ def load_config(
     config_root = Path(config_dir) if config_dir else _CONFIG_ROOT
     deployment_root = _resolve_deployment_root()
     secrets_file = Path(secrets_path) if secrets_path else deployment_root / _SECRETS_ENV
-    environment_name = _resolve_environment(environment)
+    secrets_contents = _read_secrets_contents(secrets_file)
+    environment_name = _resolve_environment(
+        environment, _secrets_environment_selector(secrets_contents)
+    )
 
     payload = _read_service_files(config_root)
 
@@ -1712,7 +1735,6 @@ def load_config(
             )
         payload = _deep_merge(payload, _translate_legacy_payload(overrides, source="overrides"))
 
-    secrets_contents = _read_secrets_contents(secrets_file)
     if secrets_contents is not None:
         payload = _deep_merge(
             payload,
