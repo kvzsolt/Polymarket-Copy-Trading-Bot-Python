@@ -1,6 +1,6 @@
-"""Live discovery adapter bridging HeisenbergCandidateService to LeaderRegistry.
+"""Live discovery adapter bridging FalconCandidateService to LeaderRegistry.
 
-The new ``HeisenbergCandidateService.discover(funds)`` returns a
+The new ``FalconCandidateService.discover(funds)`` returns a
 ``DiscoveryResult`` of ``RankedTrader``/``RejectedTrader``. The live
 ``LeaderRegistry`` and the persisted roster, however, consume the older
 ``Candidate`` row shape and the ``DiscoveryRepository`` cycle protocol
@@ -26,7 +26,7 @@ from services.discovery.discovery_models import (
 )
 from services.discovery.models import Candidate, discovery_config_hash
 
-__all__ = ["HeisenbergDiscoveryService"]
+__all__ = ["FalconDiscoveryService"]
 
 
 def _ranked_to_candidate(item: RankedTrader) -> Candidate:
@@ -69,8 +69,8 @@ def _rejected_to_candidate(item: RejectedTrader) -> Candidate:
     )
 
 
-class HeisenbergDiscoveryService:
-    """LeaderRegistry-compatible discovery service backed by Heisenberg.
+class FalconDiscoveryService:
+    """LeaderRegistry-compatible discovery service backed by Falcon.
 
     Contract satisfied for ``orchestrators.leader_registry.LeaderRegistry``:
 
@@ -97,10 +97,11 @@ class HeisenbergDiscoveryService:
 
     @property
     def config_hash(self) -> str:
+        """Return the decision-config revision used to scope roster rows."""
         return self._config_hash
 
     async def run(self) -> list[Candidate]:
-        """Run one Heisenberg-backed discovery cycle and persist it.
+        """Run one Falcon-backed discovery cycle and persist it.
 
         Reads the operator bankroll via the injected read-only
         ``get_funds`` callable (the first runtime user's live USDC

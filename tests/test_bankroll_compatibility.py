@@ -1,3 +1,5 @@
+"""Tests for exact-decimal follower bankroll compatibility policy."""
+
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -5,7 +7,7 @@ from decimal import Decimal
 
 import pytest
 
-from integrations.heisenberg.models import Market360Snapshot, TradeSnapshot
+from integrations.falcon.models import Market360Snapshot, TradeSnapshot
 from services.discovery.bankroll_compatibility import (
     BankrollCompatibilityPolicy,
     evaluate_bankroll_compatibility,

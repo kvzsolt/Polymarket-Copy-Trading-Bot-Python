@@ -577,8 +577,8 @@ class _FrozenSettingsModel(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
 
 
-class DiscoveryApiConfig(_FrozenSettingsModel):
-    """Validate discovery-provider connection settings."""
+class FalconApiConfig(_FrozenSettingsModel):
+    """Validate the private Falcon analytics transport settings."""
 
     base_url: str = "https://narrative.agent.heisenberg.so/api/v2/semantic/retrieve/parameterized"
     token: SecretStr = SecretStr("")
@@ -852,7 +852,7 @@ class DiscoverySchedulerConfig(_FrozenSettingsModel):
     startup_wait_timeout_seconds: int = Field(3900, ge=1)
 
 
-class HeisenbergBankrollConfig(_FrozenSettingsModel):
+class FalconBankrollConfig(_FrozenSettingsModel):
     """Bankroll-compatibility thresholds (mirrors BankrollCompatibilityPolicy).
 
     Semantic validation is enforced by the dataclass ``__post_init__`` when
@@ -872,19 +872,15 @@ class HeisenbergBankrollConfig(_FrozenSettingsModel):
     visible_capacity_utilization: Decimal = Decimal("1")
 
 
-class HeisenbergDiscoveryConfig(_FrozenSettingsModel):
-    """Heisenberg analytics/discovery provider settings.
+class FalconDiscoveryConfig(_FrozenSettingsModel):
+    """Validate Falcon discovery policy and enablement settings.
 
-    The api_key is loaded from env (``PMCOPY__DISCOVERY__HEISENBERG__API_KEY``)
-    and never committed. When ``enabled`` is false or the key is empty the
-    discovery adapter fails closed (no candidates) rather than silently
-    substituting a weaker source. Threshold fields mirror
-    ``HeisenbergDiscoveryPolicy``; semantic validation is enforced by the
-    dataclass ``__post_init__`` at policy construction.
+    The bearer token belongs solely to ``DiscoveryConfig.api``. When this
+    policy is disabled or that token is empty, composition fails closed
+    rather than substituting a weaker discovery source.
     """
 
-    enabled: bool = True
-    api_key: SecretStr = SecretStr("")
+    enabled: bool = False
     candidate_limit: int = Field(50, ge=1)
     candidate_concurrency: int = Field(6, ge=1)
     wallet360_windows: tuple[int, ...] = (1, 3, 7, 15)
@@ -911,13 +907,13 @@ class HeisenbergDiscoveryConfig(_FrozenSettingsModel):
     leaderboard_min_trades_15d: int = Field(25, ge=0)
     leaderboard_max_trades_15d: int = Field(100_000, ge=1)
     leaderboard_min_pnl_15d: Decimal = Decimal("0")
-    bankroll: HeisenbergBankrollConfig = HeisenbergBankrollConfig.model_validate({})
+    bankroll: FalconBankrollConfig = FalconBankrollConfig.model_validate({})
 
 
 class DiscoveryConfig(_FrozenSettingsModel):
     """Validate the complete discovery service configuration."""
 
-    api: DiscoveryApiConfig = DiscoveryApiConfig.model_validate({})
+    api: FalconApiConfig = FalconApiConfig.model_validate({})
     shortlist: ShortlistConfig = ShortlistConfig.model_validate({})
     wallet360: Wallet360Config = Wallet360Config.model_validate({})
     recency: RecencyConfig = RecencyConfig.model_validate({})
@@ -927,7 +923,7 @@ class DiscoveryConfig(_FrozenSettingsModel):
     longitudinal: LongitudinalConfig = LongitudinalConfig.model_validate({})
     hysteresis: HysteresisConfig = HysteresisConfig.model_validate({})
     scheduler: DiscoverySchedulerConfig = DiscoverySchedulerConfig.model_validate({})
-    heisenberg: HeisenbergDiscoveryConfig = HeisenbergDiscoveryConfig.model_validate({})
+    falcon: FalconDiscoveryConfig = FalconDiscoveryConfig.model_validate({})
 
 
 @dataclass(frozen=True)

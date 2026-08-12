@@ -60,6 +60,7 @@ def build_ranking_report(
     funds: Decimal,
     top: int = 10,
 ) -> dict[str, Any]:
+    """Build a deterministic, precision-preserving operator report."""
     if top < 1:
         raise ValueError("top must be positive")
     ranked = [
@@ -84,6 +85,7 @@ def build_ranking_report(
 
 
 def render_ranking_report(report: dict[str, Any], *, as_json: bool) -> str:
+    """Render a ranking report as stable JSON or human-readable text."""
     if as_json:
         return json.dumps(report, indent=2, sort_keys=True, ensure_ascii=False)
     lines = [

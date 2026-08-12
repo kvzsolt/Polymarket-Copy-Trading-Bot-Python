@@ -1,4 +1,4 @@
-"""Bankroll-aware auto-trader discovery using Heisenberg intelligence.
+"""Bankroll-aware auto-trader discovery using Falcon intelligence.
 
 The H-Score is used as a shortlist signal, not as a trading decision.  Every
 wallet is re-evaluated with fresh trades, Wallet360 windows, market duration,
@@ -16,14 +16,13 @@ from decimal import Decimal
 from statistics import median
 from typing import Any, Callable, Mapping, Protocol, Sequence
 
-from integrations.heisenberg.models import (
+from integrations.falcon.models import (
     LeaderboardEntry,
     Market360Snapshot,
     MarketSnapshot,
     TradeSnapshot,
     Wallet360Snapshot,
     WalletAllTimeSnapshot,
-    parse_leaderboard_entry,
     select_latest_market360,
     select_latest_wallet360,
 )
@@ -88,7 +87,7 @@ def _is_evm_address(value: str) -> bool:
 
 
 @dataclass(frozen=True, slots=True)
-class HeisenbergDiscoveryPolicy:
+class FalconDiscoveryPolicy:
     """Evaluate provider evidence using bankroll-compatible safety policy."""
 
     candidate_limit: int = 50
@@ -251,21 +250,21 @@ class _CandidateContext:
     official_leaderboard_rank: int | None
 
 
-class HeisenbergCandidateService:
+class FalconCandidateService:
     """Discover and rank wallets for a specific follower bankroll."""
 
-    SOURCE = "heisenberg"
+    SOURCE = "falcon"
 
     def __init__(
         self,
         client: Any,
         *,
-        policy: HeisenbergDiscoveryPolicy | None = None,
+        policy: FalconDiscoveryPolicy | None = None,
         capacity_probe: CapacityProbe | None = None,
         now: Callable[[], datetime] | None = None,
     ) -> None:
         self._client = client
-        self._policy = policy or HeisenbergDiscoveryPolicy()
+        self._policy = policy or FalconDiscoveryPolicy()
         self._capacity_probe = capacity_probe
         self._now = now or (lambda: datetime.now(timezone.utc))
         self._semaphore = asyncio.Semaphore(self._policy.candidate_concurrency)
@@ -294,7 +293,7 @@ class HeisenbergCandidateService:
         rejected: list[RejectedTrader] = []
         seen: set[str] = set()
         for row in raw:
-            entry = parse_leaderboard_entry(row)
+            entry = LeaderboardEntry.from_mapping(row)
             if not entry.wallet or entry.wallet in seen:
                 continue
             seen.add(entry.wallet)
@@ -440,6 +439,7 @@ class HeisenbergCandidateService:
         source_errors: list[str] = []
 
         async def wallet_window(window: int) -> tuple[int, Wallet360Snapshot | None]:
+            """Fetch one Wallet360 window without failing sibling evidence."""
             try:
                 rows = await self._client.wallet_360(entry.wallet, window)
                 return window, select_latest_wallet360(rows, expected_window_days=window)
@@ -569,6 +569,7 @@ class HeisenbergCandidateService:
             return 0
 
         async def load(token_id: str) -> int:
+            """Return the bounded price-jump count for one outcome token."""
             try:
                 result = method(
                     token_id=token_id,
@@ -1092,6 +1093,6 @@ class HeisenbergCandidateService:
 
 __all__ = [
     "CapacityProbe",
-    "HeisenbergCandidateService",
-    "HeisenbergDiscoveryPolicy",
+    "FalconCandidateService",
+    "FalconDiscoveryPolicy",
 ]

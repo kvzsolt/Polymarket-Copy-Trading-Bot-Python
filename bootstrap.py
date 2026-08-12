@@ -7,14 +7,14 @@ from dataclasses import dataclass
 from typing import Any
 
 from config.app_config import AppConfig, load_config
-from integrations.heisenberg.client import HeisenbergClient
+from integrations.falcon.client import FalconClient
 from orchestrators.leader_registry import LeaderRegistry
 from orchestrators.discovery_funds import build_discovery_funds_callable
-from services.discovery.heisenberg_candidate_service import (
-    HeisenbergCandidateService,
+from services.discovery.falcon_candidate_service import (
+    FalconCandidateService,
 )
-from services.discovery.heisenberg_discovery_service import (
-    HeisenbergDiscoveryService,
+from services.discovery.falcon_discovery_service import (
+    FalconDiscoveryService,
 )
 from services.discovery.policy_config import discovery_policy_from_config
 from services.healthServer import ReadinessTracker
@@ -30,17 +30,20 @@ __all__ = ["Application", "build_app"]
 
 @dataclass(slots=True)
 class Application:
+    """Own the composed runtime services and closeable Falcon client."""
+
     config: AppConfig
     readiness: ReadinessTracker
     leaders_repo: LeadersRepo
     discovery_repo: DiscoveryRepo
-    discovery_service: HeisenbergDiscoveryService
+    discovery_service: FalconDiscoveryService
     registry: LeaderRegistry
-    heisenberg_client: HeisenbergClient | None
+    falcon_client: FalconClient | None
 
     async def aclose(self) -> None:
-        if self.heisenberg_client is not None:
-            await self.heisenberg_client.close()
+        """Close application-owned external clients idempotently."""
+        if self.falcon_client is not None:
+            await self.falcon_client.close()
 
 
 async def build_app(
@@ -48,6 +51,18 @@ async def build_app(
     *,
     config: AppConfig | None = None,
 ) -> Application:
+    """Build one application object graph from validated configuration.
+
+    Args:
+        overrides: Optional configuration overlay used primarily by tests.
+        config: An already validated configuration instance.
+
+    Returns:
+        A fully composed application with database-backed discovery services.
+
+    Raises:
+        ValueError: If both ``overrides`` and ``config`` are supplied.
+    """
     if config is not None and overrides is not None:
         raise ValueError("provide either config or overrides, not both")
     if config is None:
@@ -66,23 +81,25 @@ async def build_app(
     leaders_repo = LeadersRepo(pool)
     discovery_repo = DiscoveryRepo(pool)
 
-    heisenberg_cfg = config.discovery.heisenberg
-    token = heisenberg_cfg.api_key.get_secret_value() if heisenberg_cfg.enabled else ""
-    heisenberg_client: HeisenbergClient | None = None
-    discovery_service: HeisenbergDiscoveryService
-    if heisenberg_cfg.enabled and token:
-        heisenberg_client = HeisenbergClient(
+    falcon_cfg = config.discovery.falcon
+    token = config.discovery.api.token.get_secret_value() if falcon_cfg.enabled else ""
+    falcon_client: FalconClient | None = None
+    discovery_service: FalconDiscoveryService
+    if falcon_cfg.enabled and token:
+        falcon_client = FalconClient(
             api_key=token,
             base_url=config.discovery.api.base_url,
             timeout_seconds=config.discovery.api.timeout_seconds,
+            max_attempts=config.discovery.api.max_retries,
+            max_backoff_seconds=config.discovery.api.retry_max_delay_seconds,
         )
         policy = discovery_policy_from_config(config)
-        candidate_service = HeisenbergCandidateService(
-            heisenberg_client,
+        candidate_service = FalconCandidateService(
+            falcon_client,
             policy=policy,
         )
     else:
-        # Fail closed: a disabled/missing Heisenberg key yields a discovery
+        # Fail closed: a disabled/missing Falcon key yields a discovery
         # service that returns no candidates rather than silently substituting
         # a weaker source. The funds callable is read-only and harmless when
         # uncalled.
@@ -93,7 +110,7 @@ async def build_app(
         funder_address,
         get_balance=get_my_balance,
     )
-    discovery_service = HeisenbergDiscoveryService(
+    discovery_service = FalconDiscoveryService(
         service=candidate_service,  # type: ignore[arg-type]
         repository=discovery_repo,
         config=config,
@@ -114,5 +131,5 @@ async def build_app(
         discovery_repo=discovery_repo,
         discovery_service=discovery_service,
         registry=registry,
-        heisenberg_client=heisenberg_client,
+        falcon_client=falcon_client,
     )

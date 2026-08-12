@@ -1,3 +1,5 @@
+"""Render sanitized application runtime configuration summaries."""
+
 from __future__ import annotations
 
 from dataclasses import asdict
@@ -111,6 +113,7 @@ def _sample(values: Iterable[str], *, limit: int = 6, shorten: bool = False) -> 
 
 
 def print_startup_health_check(report: StartupHealthReport) -> None:
+    """Render a sanitized startup-health panel for the operator."""
     lines = []
     for name, item in report.checks.items():
         icon = _status_icon(item.status)
@@ -215,6 +218,7 @@ def print_startup_summary(
     config,
     health_report: StartupHealthReport,
 ) -> None:
+    """Render the sanitized startup portfolio and configuration summary."""
     print_startup_health_check(health_report)
 
     if positions:
@@ -322,14 +326,7 @@ def print_startup_summary(
                 "discovery_interval_seconds": config.discovery.scheduler.rediscover_seconds,
                 "rescore_interval_seconds": config.discovery.scheduler.rescore_seconds,
                 "max_active_leaders": config.discovery.scheduler.max_active_leaders,
-                # Phase 3.13 — report both discovery credentials. The
-                # heisenberg api_key is the actual Bearer header; the legacy
-                # api.token is the boolean gate. Both should be mirrored in
-                # secrets.env.
                 "falcon_token_configured": config.discovery.api.has_token,
-                "heisenberg_api_key_configured": bool(
-                    config.discovery.heisenberg.api_key.get_secret_value()
-                ),
                 "promote_score": config.discovery.hysteresis.promote_score,
                 "demote_score": config.discovery.hysteresis.demote_score,
             },

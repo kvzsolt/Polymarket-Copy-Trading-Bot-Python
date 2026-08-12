@@ -1,3 +1,5 @@
+"""Deterministic tests for discovery roster hysteresis and degradation."""
+
 from __future__ import annotations
 
 from dataclasses import replace
@@ -44,7 +46,7 @@ class Service:
 class RescoreService(Service):
     """Stands in for the discovery service's cached rescore.
 
-    ``HeisenbergDiscoveryService.rescore`` re-ranks the last accepted roster
+    ``FalconDiscoveryService.rescore`` re-ranks the last accepted roster
     from stored snapshots without any external call, so it observes nothing
     new about a wallet.
     """
@@ -212,7 +214,7 @@ NEW_HASH = "hash-after-config-change"
 
 
 class DiscoveryService:
-    """Stands in for ``HeisenbergDiscoveryService``: a run() plus its degraded flag."""
+    """Stands in for ``FalconDiscoveryService``: a run() plus its degraded flag."""
 
     def __init__(
         self,

@@ -17,8 +17,8 @@ from bootstrap import Application, build_app
 from config.app_config import AppConfig
 from domain.ports.repositories import AbstractLeaderRepository
 from orchestrators.leader_registry import LeaderRegistry
-from services.discovery.heisenberg_discovery_service import (
-    HeisenbergDiscoveryService,
+from services.discovery.falcon_discovery_service import (
+    FalconDiscoveryService,
 )
 from services.healthServer import ReadinessTracker
 from storage.postgres.discovery_repo import DiscoveryRepo
@@ -115,7 +115,7 @@ class TestBuildApp:
         async with _pg_container() as dsn:
             app = await build_app(_valid_env(dsn))
             assert isinstance(app.registry, LeaderRegistry)
-            assert isinstance(app.discovery_service, HeisenbergDiscoveryService)
+            assert isinstance(app.discovery_service, FalconDiscoveryService)
             assert app.registry.leaders_repo is app.leaders_repo
             assert app.registry.config is app.config
             assert app.registry.readiness is app.readiness

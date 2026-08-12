@@ -427,6 +427,7 @@ def _normalise_user_ws_api_creds(raw_creds: Any) -> dict[str, str]:
         return _empty_user_ws_api_creds()
 
     def read(*names: str) -> str:
+        """Return the first populated credential attribute without logging it."""
         if isinstance(raw_creds, dict):
             for name in names:
                 value = raw_creds.get(name)
@@ -1079,8 +1080,8 @@ async def _run_application(client_registry: list[Any]) -> int:
         application=application,
         client_registry=client_registry,
     )
-    if application.heisenberg_client is not None:
-        client_registry.append(application.heisenberg_client)
+    if application.falcon_client is not None:
+        client_registry.append(application.falcon_client)
 
     application.readiness.update(
         wss_market_ok=False,

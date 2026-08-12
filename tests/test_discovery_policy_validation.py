@@ -1,10 +1,12 @@
+"""Validation tests for fail-closed Falcon discovery policy settings."""
+
 from __future__ import annotations
 
 from decimal import Decimal
 
 import pytest
 
-from services.discovery.heisenberg_candidate_service import HeisenbergDiscoveryPolicy
+from services.discovery.falcon_candidate_service import FalconDiscoveryPolicy
 
 
 @pytest.mark.parametrize(
@@ -49,4 +51,4 @@ def test_discovery_policy_rejects_invalid_or_inconsistent_thresholds(
     message: str,
 ) -> None:
     with pytest.raises(ValueError, match=message):
-        HeisenbergDiscoveryPolicy(**kwargs)
+        FalconDiscoveryPolicy(**kwargs)

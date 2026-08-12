@@ -1,15 +1,17 @@
+"""Tests for exact-decimal Falcon provider row normalization."""
+
 from __future__ import annotations
 
 import base64
 import json
 from decimal import Decimal
 
-from integrations.heisenberg.models import (
+from integrations.falcon.models import (
+    LeaderboardEntry,
     Market360Snapshot,
     MarketSnapshot,
     TradeSnapshot,
     Wallet360Snapshot,
-    parse_leaderboard_entry,
     select_latest_wallet360,
 )
 
@@ -49,11 +51,12 @@ def test_wallet360_selects_latest_snapshot_and_decodes_categories() -> None:
     assert snapshot.performance_by_category[0]["category"] == "Sports"
 
 
-def test_leaderboard_parser_accepts_common_field_aliases() -> None:
-    entry = parse_leaderboard_entry(
+def test_leaderboard_parser_accepts_current_score_and_metric_aliases() -> None:
+    """Paid Falcon rows use ``h_score`` while metrics vary by endpoint."""
+    entry = LeaderboardEntry.from_mapping(
         {
             "wallet": "0xABC",
-            "hscore": "78.5",
+            "h_score": "78.5",
             "roi": "0.22",
             "pnl": "1200",
             "win_rate": "0.64",

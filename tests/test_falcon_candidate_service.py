@@ -1,3 +1,5 @@
+"""Deterministic tests for Falcon candidate evidence and ranking."""
+
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
@@ -6,10 +8,10 @@ from typing import Any
 
 import pytest
 
-from integrations.heisenberg.errors import HeisenbergUnavailableError
-from services.discovery.heisenberg_candidate_service import (
-    HeisenbergCandidateService,
-    HeisenbergDiscoveryPolicy,
+from integrations.falcon.errors import FalconUnavailableError
+from services.discovery.falcon_candidate_service import (
+    FalconCandidateService,
+    FalconDiscoveryPolicy,
 )
 
 NOW = datetime(2026, 7, 30, 12, 0, tzinfo=timezone.utc)
@@ -68,7 +70,7 @@ def recent_trades(wallet: str, *, short: bool = True, stale: bool = False) -> li
     ]
 
 
-class FakeHeisenberg:
+class FakeFalcon:
     def __init__(self) -> None:
         self.unavailable_wallet: str | None = None
 
@@ -123,7 +125,7 @@ class FakeHeisenberg:
 
     async def wallet_360(self, wallet: str, window_days: int, **_kwargs):
         if wallet == self.unavailable_wallet:
-            raise HeisenbergUnavailableError("vendor unavailable")
+            raise FalconUnavailableError("vendor unavailable")
         return wallet360(wallet, window_days, sybil=wallet == SYBIL)
 
     async def wallet_stats_all_time(self, wallet: str, **_kwargs):
@@ -185,9 +187,9 @@ class FakeHeisenberg:
 
 @pytest.mark.asyncio
 async def test_discovery_rejects_sybil_and_stale_wallets_and_returns_evidence() -> None:
-    service = HeisenbergCandidateService(
-        FakeHeisenberg(),
-        policy=HeisenbergDiscoveryPolicy(candidate_limit=10),
+    service = FalconCandidateService(
+        FakeFalcon(),
+        policy=FalconDiscoveryPolicy(candidate_limit=10),
         now=lambda: NOW,
     )
 
@@ -208,7 +210,7 @@ async def test_discovery_rejects_sybil_and_stale_wallets_and_returns_evidence() 
 
 @pytest.mark.asyncio
 async def test_best_wallet_changes_with_available_funds() -> None:
-    service = HeisenbergCandidateService(FakeHeisenberg(), now=lambda: NOW)
+    service = FalconCandidateService(FakeFalcon(), now=lambda: NOW)
 
     small = await service.discover(Decimal("50"))
     large = await service.discover(Decimal("5000"))
@@ -222,9 +224,9 @@ async def test_best_wallet_changes_with_available_funds() -> None:
 
 @pytest.mark.asyncio
 async def test_partial_wallet360_failure_never_silently_promotes_candidate() -> None:
-    client = FakeHeisenberg()
+    client = FakeFalcon()
     client.unavailable_wallet = GOOD
-    service = HeisenbergCandidateService(client, now=lambda: NOW)
+    service = FalconCandidateService(client, now=lambda: NOW)
 
     result = await service.discover(Decimal("500"))
 
@@ -232,16 +234,16 @@ async def test_partial_wallet360_failure_never_silently_promotes_candidate() -> 
     assert "insufficient_wallet360_evidence" in rejected[GOOD]
 
 
-class PriceJumpHeisenberg(FakeHeisenberg):
+class PriceJumpFalcon(FakeFalcon):
     async def price_jumps(self, *, token_id: str, **_kwargs):
         return [{"token_id": token_id, "change_pct": "15"}] * 5
 
 
 @pytest.mark.asyncio
 async def test_excessive_recent_price_jumps_are_a_fail_closed_market_risk() -> None:
-    service = HeisenbergCandidateService(
-        PriceJumpHeisenberg(),
-        policy=HeisenbergDiscoveryPolicy(max_recent_price_jumps=2),
+    service = FalconCandidateService(
+        PriceJumpFalcon(),
+        policy=FalconDiscoveryPolicy(max_recent_price_jumps=2),
         now=lambda: NOW,
     )
 
@@ -251,7 +253,7 @@ async def test_excessive_recent_price_jumps_are_a_fail_closed_market_risk() -> N
     assert any("excessive_recent_price_jumps" in reasons for reasons in rejected.values())
 
 
-class MixedQualityHeisenberg(FakeHeisenberg):
+class MixedQualityFalcon(FakeFalcon):
     def __init__(self, toxic_conditions: set[str]) -> None:
         super().__init__()
         self.toxic_conditions = toxic_conditions
@@ -317,9 +319,9 @@ class MixedQualityHeisenberg(FakeHeisenberg):
 
 @pytest.mark.asyncio
 async def test_one_toxic_market_does_not_discard_otherwise_copyable_wallet() -> None:
-    service = HeisenbergCandidateService(
-        MixedQualityHeisenberg({"condition-0"}),
-        policy=HeisenbergDiscoveryPolicy(max_toxic_market_share=Decimal("0.25")),
+    service = FalconCandidateService(
+        MixedQualityFalcon({"condition-0"}),
+        policy=FalconDiscoveryPolicy(max_toxic_market_share=Decimal("0.25")),
         now=lambda: NOW,
     )
 
@@ -332,9 +334,9 @@ async def test_one_toxic_market_does_not_discard_otherwise_copyable_wallet() -> 
 
 @pytest.mark.asyncio
 async def test_toxic_market_majority_fails_closed() -> None:
-    service = HeisenbergCandidateService(
-        MixedQualityHeisenberg({"condition-0", "condition-1"}),
-        policy=HeisenbergDiscoveryPolicy(max_toxic_market_share=Decimal("0.25")),
+    service = FalconCandidateService(
+        MixedQualityFalcon({"condition-0", "condition-1"}),
+        policy=FalconDiscoveryPolicy(max_toxic_market_share=Decimal("0.25")),
         now=lambda: NOW,
     )
 
@@ -348,7 +350,7 @@ STRONG = "0x" + "b" * 40
 WEAK = "0x" + "a" * 40
 
 
-class CorroborationHeisenberg(FakeHeisenberg):
+class CorroborationFalcon(FakeFalcon):
     async def leaderboard(self, **_kwargs):
         common = {
             "h_score": 82,
@@ -406,7 +408,7 @@ class CorroborationHeisenberg(FakeHeisenberg):
 
 @pytest.mark.asyncio
 async def test_official_rank_and_realized_pnl_corroborate_but_do_not_replace_h_score() -> None:
-    service = HeisenbergCandidateService(CorroborationHeisenberg(), now=lambda: NOW)
+    service = FalconCandidateService(CorroborationFalcon(), now=lambda: NOW)
 
     result = await service.discover(Decimal("500"))
 
@@ -421,7 +423,7 @@ CACHE_A = "0x" + "5" * 40
 CACHE_B = "0x" + "6" * 40
 
 
-class SharedMarketFailureHeisenberg(FakeHeisenberg):
+class SharedMarketFailureFalcon(FakeFalcon):
     async def leaderboard(self, **_kwargs):
         common = {
             "h_score": 80,
@@ -453,8 +455,8 @@ class SharedMarketFailureHeisenberg(FakeHeisenberg):
 
 @pytest.mark.asyncio
 async def test_cached_market_failure_is_attributed_to_every_affected_candidate() -> None:
-    service = HeisenbergCandidateService(
-        SharedMarketFailureHeisenberg(),
+    service = FalconCandidateService(
+        SharedMarketFailureFalcon(),
         now=lambda: NOW,
     )
 
@@ -467,7 +469,7 @@ async def test_cached_market_failure_is_attributed_to_every_affected_candidate()
         assert "market360:RuntimeError" in rejected[wallet].metrics["source_errors"]
 
 
-class StaleWallet360Heisenberg(FakeHeisenberg):
+class StaleWallet360Falcon(FakeFalcon):
     async def leaderboard(self, **_kwargs):
         return [
             {
@@ -489,9 +491,9 @@ class StaleWallet360Heisenberg(FakeHeisenberg):
 
 @pytest.mark.asyncio
 async def test_stale_wallet360_snapshots_fail_closed_even_when_trades_are_fresh() -> None:
-    service = HeisenbergCandidateService(
-        StaleWallet360Heisenberg(),
-        policy=HeisenbergDiscoveryPolicy(max_wallet360_snapshot_age_hours=72),
+    service = FalconCandidateService(
+        StaleWallet360Falcon(),
+        policy=FalconDiscoveryPolicy(max_wallet360_snapshot_age_hours=72),
         now=lambda: NOW,
     )
 

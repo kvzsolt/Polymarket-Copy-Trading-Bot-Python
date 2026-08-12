@@ -79,6 +79,7 @@ Thumbs.db
 .codex
 .ruff_cache
 .aider*
+.firecrawl/
 
 # Useless plans and markdown trash
 bot_audit_export_and_fix_plan.md

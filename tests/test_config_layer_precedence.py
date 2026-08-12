@@ -46,13 +46,13 @@ def test_discovery_local_override_takes_precedence_over_packaged_yaml(
     override the packaged ``config/discovery.yml``."""
     deployment = _deployment(
         tmp_path,
-        yaml.safe_dump({"discovery": {"heisenberg": {"candidate_limit": 7}}}),
+        yaml.safe_dump({"discovery": {"falcon": {"candidate_limit": 7}}}),
     )
     monkeypatch.setenv("PMCOPY_DEPLOYMENT_ROOT", str(deployment))
 
     config = load_config(_overrides())
 
-    assert config.discovery.heisenberg.candidate_limit == 7
+    assert config.discovery.falcon.candidate_limit == 7
 
 
 def test_null_local_override_does_not_erase_packaged_value(

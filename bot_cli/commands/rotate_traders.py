@@ -1,3 +1,5 @@
+"""CLI adapter for safe Falcon roster rotation and rescore commands."""
+
 from __future__ import annotations
 
 import argparse
@@ -7,6 +9,7 @@ import asyncio
 def register_rotate_traders_command(
     subparsers: argparse._SubParsersAction,
 ) -> None:
+    """Register the read-only/controlled discovery rotation subcommand."""
     parser = subparsers.add_parser(
         "rotate-traders",
         help="Run discovery and show the hysteresis-qualified roster",
@@ -14,7 +17,7 @@ def register_rotate_traders_command(
     parser.add_argument(
         "--rescore-only",
         action="store_true",
-        help="Use cached snapshots without calling Heisenberg",
+        help="Use cached snapshots without calling Falcon",
     )
 
 
@@ -42,6 +45,7 @@ async def _run_rotate_traders_async(args: argparse.Namespace) -> int:
 
 
 def run_rotate_traders(args: argparse.Namespace) -> int:
+    """Run the async rotation command in an isolated event loop."""
     from utils.event_loop import new_event_loop
 
     with asyncio.Runner(loop_factory=new_event_loop) as runner:

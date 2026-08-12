@@ -10,6 +10,8 @@ from typing import Any
 
 @dataclass(frozen=True, slots=True)
 class BankrollFit:
+    """Describe whether a leader can be copied by a follower bankroll."""
+
     funds_usdc: Decimal
     usable_bankroll_usdc: Decimal
     target_trade_budget_usdc: Decimal
@@ -29,6 +31,7 @@ class BankrollFit:
 
     @classmethod
     def empty(cls, funds: Decimal = Decimal("0"), reason: str = "not_evaluated") -> "BankrollFit":
+        """Return a fail-closed bankroll-fit result with one stable reason."""
         return cls(
             funds_usdc=funds,
             usable_bankroll_usdc=Decimal("0"),
@@ -51,6 +54,8 @@ class BankrollFit:
 
 @dataclass(frozen=True, slots=True)
 class DiscoveryEvidence:
+    """Summarize safe, sanitized evidence used to evaluate one wallet."""
+
     wallet360_windows: tuple[int, ...] = ()
     fresh_wallet360_windows: tuple[int, ...] = ()
     latest_wallet360_at: datetime | None = None
@@ -72,6 +77,8 @@ class DiscoveryEvidence:
 
 @dataclass(frozen=True, slots=True)
 class RankedTrader:
+    """Represent one accepted and bankroll-compatible leader candidate."""
+
     wallet: str
     score: Decimal
     source: str
@@ -83,6 +90,7 @@ class RankedTrader:
 
     @classmethod
     def minimal(cls, *, wallet: str, score: Decimal, source: str) -> "RankedTrader":
+        """Build a minimal accepted candidate for adapters and tests."""
         return cls(
             wallet=wallet.lower(),
             score=score,
@@ -95,6 +103,8 @@ class RankedTrader:
 
 @dataclass(frozen=True, slots=True)
 class RejectedTrader:
+    """Represent one rejected wallet with stable machine-readable reasons."""
+
     wallet: str
     reasons: tuple[str, ...]
     source: str
@@ -104,6 +114,8 @@ class RejectedTrader:
 
 @dataclass(frozen=True, slots=True)
 class DiscoveryResult:
+    """Contain one immutable Falcon discovery-cycle outcome."""
+
     ranked: tuple[RankedTrader, ...]
     rejected: tuple[RejectedTrader, ...]
     source: str
@@ -112,6 +124,7 @@ class DiscoveryResult:
 
     @property
     def best(self) -> RankedTrader | None:
+        """Return the highest-ranked accepted trader, if any."""
         return self.ranked[0] if self.ranked else None
 
 

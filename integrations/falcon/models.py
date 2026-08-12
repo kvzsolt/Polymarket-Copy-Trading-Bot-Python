@@ -1,4 +1,4 @@
-"""Exact, tolerant parsers for Heisenberg prediction-intelligence rows."""
+"""Exact, tolerant parsers for Falcon prediction-intelligence rows."""
 
 from __future__ import annotations
 
@@ -102,6 +102,8 @@ def _wallet(value: Any) -> str:
 
 @dataclass(frozen=True, slots=True)
 class LeaderboardEntry:
+    """Represent one normalized Falcon leaderboard row."""
+
     wallet: str
     h_score: Decimal
     roi_15d: Decimal | None
@@ -113,9 +115,38 @@ class LeaderboardEntry:
     sybil_flag: bool
     raw: dict[str, Any]
 
+    @classmethod
+    def from_mapping(cls, row: Mapping[str, Any]) -> "LeaderboardEntry":
+        """Build an entry from the current tolerant Falcon wire schema.
+
+        Args:
+            row: Provider result row from ``data.results``.
+
+        Returns:
+            A normalized immutable leaderboard entry.
+        """
+        h_score = _decimal(_first(row, "h_score", "score")) or Decimal("0")
+        return cls(
+            wallet=_wallet(_first(row, "proxy_wallet", "wallet", "wallet_address", "address")),
+            h_score=h_score,
+            roi_15d=_decimal(_first(row, "roi_15d", "roi", "return_15d")),
+            pnl_15d=_decimal(_first(row, "pnl_15d", "pnl", "realized_pnl_15d")),
+            win_rate_15d=_fraction_from_percent(_first(row, "win_rate_15d", "win_rate")),
+            trades_15d=_integer(_first(row, "total_trades_15d", "trades_15d", "trades")),
+            sharpe_15d=_decimal(_first(row, "sharpe_15d", "sharpe_ratio", "sharpe")),
+            trajectory=str(_first(row, "trajectory", "performance_trend", "flow") or "")
+            .strip()
+            .lower()
+            or None,
+            sybil_flag=bool(_bool(_first(row, "sybil_flag", "sybil_risk_flag")) or False),
+            raw=dict(row),
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class Wallet360Snapshot:
+    """Represent normalized multi-window wallet analytics evidence."""
+
     wallet: str
     window_days: int
     snapshot_at: datetime | None
@@ -144,6 +175,7 @@ class Wallet360Snapshot:
 
     @classmethod
     def from_mapping(cls, row: Mapping[str, Any]) -> "Wallet360Snapshot":
+        """Build a Wallet360 snapshot from a provider result row."""
         raw = dict(row)
         return cls(
             wallet=_wallet(_first(row, "proxy_wallet", "wallet", "wallet_address")),
@@ -183,6 +215,8 @@ class Wallet360Snapshot:
 
 @dataclass(frozen=True, slots=True)
 class WalletAllTimeSnapshot:
+    """Represent normalized all-time wallet performance evidence."""
+
     wallet: str
     total_trades: int | None
     avg_trade_size: Decimal | None
@@ -195,6 +229,7 @@ class WalletAllTimeSnapshot:
 
     @classmethod
     def from_mapping(cls, row: Mapping[str, Any]) -> "WalletAllTimeSnapshot":
+        """Build an all-time wallet snapshot from a provider result row."""
         roi_pct = _decimal(row.get("roi_pct"))
         return cls(
             wallet=_wallet(_first(row, "proxy_wallet", "wallet", "wallet_address")),
@@ -211,6 +246,8 @@ class WalletAllTimeSnapshot:
 
 @dataclass(frozen=True, slots=True)
 class TradeSnapshot:
+    """Represent one immutable provider trade used for discovery evidence."""
+
     trade_id: str
     wallet: str
     condition_id: str
@@ -225,10 +262,12 @@ class TradeSnapshot:
 
     @property
     def notional(self) -> Decimal:
+        """Return the exact trade notional as price times shares."""
         return self.price * self.size
 
     @classmethod
     def from_mapping(cls, row: Mapping[str, Any]) -> "TradeSnapshot":
+        """Build a trade snapshot and reject missing required money fields."""
         timestamp = _datetime(_first(row, "timestamp", "created_at", "match_time"))
         price = _decimal(row.get("price"))
         size = _decimal(_first(row, "size", "amount"))
@@ -251,6 +290,8 @@ class TradeSnapshot:
 
 @dataclass(frozen=True, slots=True)
 class MarketSnapshot:
+    """Represent normalized market identity and lifecycle metadata."""
+
     condition_id: str
     slug: str | None
     event_slug: str | None
@@ -268,6 +309,7 @@ class MarketSnapshot:
 
     @classmethod
     def from_mapping(cls, row: Mapping[str, Any]) -> "MarketSnapshot":
+        """Build a market snapshot from a provider result row."""
         return cls(
             condition_id=str(_first(row, "condition_id", "conditionId", "id") or ""),
             slug=str(row.get("slug") or "") or None,
@@ -288,12 +330,14 @@ class MarketSnapshot:
         )
 
     def is_short_horizon(self, at: datetime, max_days: int) -> bool:
+        """Return whether the open market resolves within ``max_days``."""
         if self.closed or self.end_date is None:
             return False
         horizon = self.end_date - at
         return horizon.total_seconds() >= 0 and horizon <= timedelta(days=max_days)
 
     def token_for_outcome(self, outcome: str | None) -> str | None:
+        """Return the raw outcome token matching a normalized outcome label."""
         normalized = str(outcome or "").strip().lower()
         if self.side_a_outcome and normalized == self.side_a_outcome.strip().lower():
             return self.yes_token_id
@@ -308,6 +352,8 @@ class MarketSnapshot:
 
 @dataclass(frozen=True, slots=True)
 class Market360Snapshot:
+    """Represent normalized market liquidity and concentration evidence."""
+
     condition_id: str
     snapshot_at: datetime | None
     liquidity_percentile: Decimal | None
@@ -330,6 +376,7 @@ class Market360Snapshot:
 
     @classmethod
     def from_mapping(cls, row: Mapping[str, Any]) -> "Market360Snapshot":
+        """Build a Market360 snapshot from a provider result row."""
         return cls(
             condition_id=str(_first(row, "condition_id", "conditionId") or ""),
             snapshot_at=_datetime(_first(row, "snapshot_time", "updated_at", "created_at")),
@@ -353,28 +400,12 @@ class Market360Snapshot:
         )
 
 
-def parse_leaderboard_entry(row: Mapping[str, Any]) -> LeaderboardEntry:
-    h_score = _decimal(_first(row, "h_score", "hscore", "score")) or Decimal("0")
-    return LeaderboardEntry(
-        wallet=_wallet(_first(row, "proxy_wallet", "wallet", "wallet_address", "address")),
-        h_score=h_score,
-        roi_15d=_decimal(_first(row, "roi_15d", "roi", "return_15d")),
-        pnl_15d=_decimal(_first(row, "pnl_15d", "pnl", "realized_pnl_15d")),
-        win_rate_15d=_fraction_from_percent(_first(row, "win_rate_15d", "win_rate")),
-        trades_15d=_integer(_first(row, "total_trades_15d", "trades_15d", "trades")),
-        sharpe_15d=_decimal(_first(row, "sharpe_15d", "sharpe_ratio", "sharpe")),
-        trajectory=str(_first(row, "trajectory", "performance_trend", "flow") or "").strip().lower()
-        or None,
-        sybil_flag=bool(_bool(_first(row, "sybil_flag", "sybil_risk_flag")) or False),
-        raw=dict(row),
-    )
-
-
 def select_latest_wallet360(
     rows: Iterable[Mapping[str, Any]],
     *,
     expected_window_days: int | None = None,
 ) -> Wallet360Snapshot | None:
+    """Return the newest Wallet360 snapshot for the requested window."""
     snapshots = [Wallet360Snapshot.from_mapping(row) for row in rows]
     if expected_window_days is not None:
         snapshots = [item for item in snapshots if item.window_days == expected_window_days]
@@ -385,6 +416,7 @@ def select_latest_wallet360(
 
 
 def select_latest_market360(rows: Iterable[Mapping[str, Any]]) -> Market360Snapshot | None:
+    """Return the newest Market360 snapshot from provider rows."""
     snapshots = [Market360Snapshot.from_mapping(row) for row in rows]
     if not snapshots:
         return None
@@ -399,7 +431,6 @@ __all__ = [
     "TradeSnapshot",
     "Wallet360Snapshot",
     "WalletAllTimeSnapshot",
-    "parse_leaderboard_entry",
     "select_latest_market360",
     "select_latest_wallet360",
 ]

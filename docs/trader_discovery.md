@@ -1,13 +1,19 @@
 # Trader Discovery
 
 The project has one discovery pipeline and one PostgreSQL roster. The live
-discovery service is the Heisenberg-backed
-`services.discovery.heisenberg_discovery_service.HeisenbergDiscoveryService`,
-which consumes `integrations.heisenberg.client.HeisenbergClient` (the
+discovery service is the Falcon-backed
+`services.discovery.falcon_discovery_service.FalconDiscoveryService`,
+which consumes `integrations.falcon.client.FalconClient` (the
 `narrative.agent.heisenberg.so` parameterized-agent endpoint) and produces
 `services.discovery.models.Candidate` rows persisted by
-`storage.postgres.discovery_repo.DiscoveryRepo`. There is no legacy funnel,
-falcon client, scoring, longitudinal, or backfill module anymore.
+`storage.postgres.discovery_repo.DiscoveryRepo`. There is no legacy funnel or
+alternate analytics-provider client.
+
+The paid Falcon transport currently retains the vendor hostname shown above
+and the wire field `h_score`; those are external protocol details documented
+by the [paid API reference](https://prediction.heisenberg.so/docs/api-reference/heisenberg-leaderboard),
+not a second application integration. The runtime exposes only Falcon-named
+packages, services, configuration, telemetry, and roster source values.
 
 Polymarket's public Data API polling and the existing mined/pending on-chain
 detector remain the live leader-signal sources.
@@ -15,7 +21,7 @@ detector remain the live leader-signal sources.
 ## Pipeline
 
 ```text
-Heisenberg leaderboard (agent 584)
+Falcon leaderboard (agent 584)
    ↓ H-Score shortlist, EVM-address + h_score threshold gates
 Wallet360 581 (1/3/7/15-day) + all-time 586
    ↓ sybil, drawdown, concentration, missing-evidence, freshness gates
@@ -53,7 +59,7 @@ bankroll. No order, approval, or mutation is performed by the discovery path.
 - Transient outage/rate-limit raises propagate as a failed cycle
   (`last_cycle_degraded=True`); the roster is not mass-demoted on missing
   evidence.
-- A successful Heisenberg run that produces zero safe wallets returns zero
+- A successful Falcon run that produces zero safe wallets returns zero
   candidates and does not silently substitute weaker candidates.
 - All provider secrets and error bodies are redacted before logging.
 
@@ -66,7 +72,7 @@ monitors. At startup, active rows are accepted only when their decision-config
 hash matches the current gates and formulas. A `rescore` re-ranks the last
 accepted roster from stored snapshots without an API call and does not advance
 hysteresis tenure. Transport rate limits and scheduler cadence do not
-invalidate the roster; the `heisenberg` policy thresholds do.
+invalidate the roster; the `falcon` policy thresholds do.
 
 The execution-time leader score is not a second ranking system: it blends the
 persisted roster score with fresh local win-rate, realized PnL, and activity
@@ -74,13 +80,13 @@ using `scoring.runtime_weights` from the same YAML file.
 
 ## Configuration
 
-Every discovery setting and policy threshold is in
-`config/discovery.yml` under `discovery.heisenberg`. The API key is
-supplied via env and never committed:
+Every discovery setting and policy threshold is in `config/discovery.yml`.
+Falcon policy lives under `discovery.falcon`; its private transport lives under
+`discovery.api`. The API key is supplied via env and never committed:
 
 ```dotenv
-PMCOPY__DISCOVERY__HEISENBERG__API_KEY=...
-PMCOPY__DISCOVERY__HEISENBERG__ENABLED=true
+PMCOPY__DISCOVERY__API__TOKEN=...
+PMCOPY__DISCOVERY__FALCON__ENABLED=true
 PMCOPY__DISCOVERY__SCHEDULER__REDISCOVER_SECONDS=900
 PMCOPY__DISCOVERY__HYSTERESIS__MIN_DWELL_SECONDS=21600
 PMCOPY__DISCOVERY__API__REQUESTS_PER_SECOND=3

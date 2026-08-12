@@ -1,4 +1,4 @@
-"""Operator CLI helpers for bankroll-aware Heisenberg wallet ranking.
+"""Operator CLI helpers for bankroll-aware Falcon wallet ranking.
 
 This module deliberately contains no live-trading capability.  It accepts a
 follower bankroll, builds the discovery evidence graph, and prints a ranked
@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any, Mapping, Sequence, TextIO
 
-from integrations.heisenberg.client import HeisenbergClient
+from integrations.falcon.client import FalconClient
 from integrations.polymarket.ccxt_prediction_client import (
     CcxtPredictionClient,
     CcxtPredictionUnavailable,
@@ -23,9 +23,9 @@ from integrations.polymarket.ccxt_prediction_client import (
 )
 from integrations.polymarket.ccxt_prediction_market_data import CcxtPredictionMarketData
 from services.discovery.ccxt_capacity_probe import CcxtCapacityProbe
-from services.discovery.heisenberg_candidate_service import (
-    HeisenbergCandidateService,
-    HeisenbergDiscoveryPolicy,
+from services.discovery.falcon_candidate_service import (
+    FalconCandidateService,
+    FalconDiscoveryPolicy,
 )
 from services.discovery.ranking_report import build_ranking_report, render_ranking_report
 
@@ -36,11 +36,14 @@ class DiscoveryCliError(RuntimeError):
 
 @dataclass(slots=True)
 class DiscoveryCliResources:
-    service: HeisenbergCandidateService
-    heisenberg_client: HeisenbergClient
+    """Own the read-only analytics and optional market-depth clients."""
+
+    service: FalconCandidateService
+    falcon_client: FalconClient
     ccxt_client: CcxtPredictionClient | None = None
 
     async def close(self) -> None:
+        """Close every owned client and surface the first cleanup failure."""
         failures: list[BaseException] = []
         if self.ccxt_client is not None:
             try:
@@ -48,7 +51,7 @@ class DiscoveryCliResources:
             except BaseException as exc:  # pragma: no cover - defensive close path
                 failures.append(exc)
         try:
-            await self.heisenberg_client.close()
+            await self.falcon_client.close()
         except BaseException as exc:  # pragma: no cover - defensive close path
             failures.append(exc)
         if failures:
@@ -76,11 +79,12 @@ def _positive_int(value: str) -> int:
 
 
 def parse_cli_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    """Parse and validate the read-only discovery ranking arguments."""
     parser = argparse.ArgumentParser(
         prog="rank-copy-wallets",
         description=(
             "Rank Polymarket wallets for a specific follower bankroll using "
-            "Heisenberg H-Score, Wallet360, trades, PnL, market quality and "
+            "Falcon H-Score, Wallet360, trades, PnL, market quality and "
             "optional CCXT visible-depth evidence."
         ),
     )
@@ -116,7 +120,7 @@ def parse_cli_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--timeout-seconds",
         type=float,
         default=10.0,
-        help="Per-request Heisenberg timeout (default: 10).",
+        help="Per-request Falcon timeout (default: 10).",
     )
     args = parser.parse_args(list(argv) if argv is not None else None)
     if args.timeout_seconds <= 0:
@@ -125,14 +129,12 @@ def parse_cli_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 
 def resolve_api_key(environ: Mapping[str, str] | None = None) -> str:
+    """Return the first configured Falcon CLI key without logging it."""
     env = os.environ if environ is None else environ
-    for name in ("PMCOPY_HEISENBERG_API_KEY", "HEISENBERG_API_KEY"):
-        value = str(env.get(name, "") or "").strip()
-        if value:
-            return value
-    raise DiscoveryCliError(
-        "Heisenberg API key is required in PMCOPY_HEISENBERG_API_KEY or HEISENBERG_API_KEY"
-    )
+    value = str(env.get("PMCOPY__DISCOVERY__API__TOKEN", "") or "").strip()
+    if value:
+        return value
+    raise DiscoveryCliError("Falcon API key is required in PMCOPY__DISCOVERY__API__TOKEN")
 
 
 async def discover_and_render(
@@ -142,6 +144,7 @@ async def discover_and_render(
     top: int,
     as_json: bool,
 ):
+    """Run one injected discovery cycle and render its bounded report."""
     normalized_funds = Decimal(str(funds))
     result = await service.discover(normalized_funds)
     report = build_ranking_report(result, funds=normalized_funds, top=top)
@@ -155,6 +158,7 @@ async def rank_with_service(
     top: int,
     as_json: bool,
 ) -> str:
+    """Return a rendered report from an injected discovery service."""
     _result, rendered = await discover_and_render(
         service,
         funds=funds,
@@ -169,11 +173,12 @@ async def build_cli_resources(
     api_key: str,
     ccxt_depth: str,
     timeout_seconds: float,
-    policy: HeisenbergDiscoveryPolicy | None = None,
+    policy: FalconDiscoveryPolicy | None = None,
     stderr: TextIO | None = None,
 ) -> DiscoveryCliResources:
+    """Compose read-only CLI resources behind injected configuration."""
     error_stream = stderr or sys.stderr
-    heisenberg = HeisenbergClient(
+    falcon = FalconClient(
         api_key=api_key,
         timeout_seconds=timeout_seconds,
     )
@@ -189,23 +194,23 @@ async def build_cli_resources(
                     raise DiscoveryCliError(str(exc)) from exc
                 print(
                     "warning: CCXT depth evidence unavailable; continuing with "
-                    "Heisenberg liquidity evidence only",
+                    "Falcon liquidity evidence only",
                     file=error_stream,
                 )
-        service = HeisenbergCandidateService(
-            heisenberg,
-            policy=policy or HeisenbergDiscoveryPolicy(),
+        service = FalconCandidateService(
+            falcon,
+            policy=policy or FalconDiscoveryPolicy(),
             capacity_probe=capacity_probe,
         )
         return DiscoveryCliResources(
             service=service,
-            heisenberg_client=heisenberg,
+            falcon_client=falcon,
             ccxt_client=ccxt_client,
         )
     except BaseException:
         if ccxt_client is not None:
             await ccxt_client.close()
-        await heisenberg.close()
+        await falcon.close()
         raise
 
 
@@ -216,6 +221,7 @@ async def run_cli(
     stdout: TextIO | None = None,
     stderr: TextIO | None = None,
 ) -> int:
+    """Run the operator CLI and return its stable process status code."""
     output = stdout or sys.stdout
     error_stream = stderr or sys.stderr
     args = parse_cli_args(argv)
@@ -247,6 +253,7 @@ async def run_cli(
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    """Execute the async CLI through the synchronous console entry point."""
     try:
         return asyncio.run(run_cli(argv))
     except KeyboardInterrupt:

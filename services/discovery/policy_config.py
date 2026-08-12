@@ -1,4 +1,4 @@
-"""Tolerant config loader for Heisenberg discovery policy.
+"""Tolerant config loader for Falcon discovery policy.
 
 The repository has used both mapping-backed and Pydantic/namespace-backed
 configuration objects.  This module keeps the integration independent of the
@@ -12,7 +12,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Mapping
 
 from services.discovery.bankroll_compatibility import BankrollCompatibilityPolicy
-from services.discovery.heisenberg_candidate_service import HeisenbergDiscoveryPolicy
+from services.discovery.falcon_candidate_service import FalconDiscoveryPolicy
 
 _MISSING = object()
 _ALLOWED_WALLET360_WINDOWS = {1, 3, 7, 15}
@@ -77,24 +77,25 @@ def _load_dataclass_settings(source: Any, default_instance: Any) -> dict[str, An
     return result
 
 
-def discovery_policy_from_config(config: Any) -> HeisenbergDiscoveryPolicy:
+def discovery_policy_from_config(config: Any) -> FalconDiscoveryPolicy:
+    """Build a validated Falcon policy from mapping or object config."""
     discovery = _get(config, "discovery", config)
-    heisenberg = _get(discovery, "heisenberg", discovery)
-    policy_node = _get(heisenberg, "policy", heisenberg)
+    falcon = _get(discovery, "falcon", discovery)
+    policy_node = _get(falcon, "policy", falcon)
 
     default_bankroll = BankrollCompatibilityPolicy()
-    bankroll_node = _get(policy_node, "bankroll", _get(heisenberg, "bankroll", None))
+    bankroll_node = _get(policy_node, "bankroll", _get(falcon, "bankroll", None))
     bankroll_kwargs = _load_dataclass_settings(bankroll_node, default_bankroll)
     bankroll = BankrollCompatibilityPolicy(**bankroll_kwargs)
 
-    default_policy = HeisenbergDiscoveryPolicy()
+    default_policy = FalconDiscoveryPolicy()
     policy_kwargs = _load_dataclass_settings(policy_node, default_policy)
     windows = policy_kwargs.get("wallet360_windows", default_policy.wallet360_windows)
     if not windows or any(window not in _ALLOWED_WALLET360_WINDOWS for window in windows):
         raise ValueError("Wallet360 windows must be selected from 1, 3, 7 and 15")
     policy_kwargs["wallet360_windows"] = tuple(dict.fromkeys(windows))
     policy_kwargs["bankroll"] = bankroll
-    return HeisenbergDiscoveryPolicy(**policy_kwargs)
+    return FalconDiscoveryPolicy(**policy_kwargs)
 
 
 __all__ = ["discovery_policy_from_config"]

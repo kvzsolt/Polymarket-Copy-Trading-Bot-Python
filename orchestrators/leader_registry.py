@@ -1,3 +1,5 @@
+"""Orchestrate Falcon discovery and durable leader-roster hysteresis."""
+
 from __future__ import annotations
 
 import time
@@ -38,6 +40,8 @@ def apply_hysteresis(
 
 @dataclass(frozen=True, slots=True)
 class LeaderCandidate:
+    """Describe one evaluated leader and its roster recommendation."""
+
     leader_id: str
     score: float
     recent_trades: int
@@ -48,6 +52,8 @@ class LeaderCandidate:
 
 @dataclass(slots=True)
 class LeaderRegistryState:
+    """Expose one sanitized registry refresh result."""
+
     configured: list[str] = field(default_factory=list)
     discovered: list[LeaderCandidate] = field(default_factory=list)
     active_monitored: list[str] = field(default_factory=list)
@@ -55,6 +61,8 @@ class LeaderRegistryState:
 
 
 class LeaderRegistry:
+    """Coordinate Falcon discovery with the durable active-leader roster."""
+
     def __init__(
         self,
         discovery_service: Any,
@@ -75,26 +83,11 @@ class LeaderRegistry:
         *,
         force_discovery: bool = False,
     ) -> LeaderRegistryState:
+        """Refresh discovery and return the effective monitored leader set."""
         configured_clean = _configured_wallets(configured or [])
         discovery = self.config.discovery
         candidates: list[Candidate] = []
-        # Phase 3.13 — gate on the credential actually sent as the Bearer
-        # header (``discovery.heisenberg.api_key``), not ONLY the legacy
-        # ``discovery.api.token`` boolean. Previously setting only the
-        # heisenberg key never fired (the gate checked only api.token) while
-        # setting only the legacy token fired with an empty Bearer (zero
-        # candidates). Now EITHER credential triggers the gate; the config
-        # collapse (both keys mirrored in secrets.env) ensures the Bearer is
-        # populated. The heisenberg key is the authoritative credential.
-        heisenberg_cfg = getattr(discovery, "heisenberg", None)
-        heisenberg_key = ""
-        if heisenberg_cfg is not None:
-            api_key = getattr(heisenberg_cfg, "api_key", None)
-            if api_key is not None and hasattr(api_key, "get_secret_value"):
-                heisenberg_key = str(api_key.get_secret_value() or "")
-        credential_configured = bool(heisenberg_key) or bool(
-            getattr(discovery.api, "has_token", False)
-        )
+        credential_configured = bool(discovery.api.has_token)
         should_run = (
             force_discovery or (discovery.scheduler.enabled and not configured_clean)
         ) and credential_configured
@@ -126,10 +119,7 @@ class LeaderRegistry:
                 metrics.inc("discovery_refresh_succeeded_total")
                 metrics.set_gauge("discovery_candidates", float(len(candidates)))
         elif force_discovery and not credential_configured:
-            raise RuntimeError(
-                "Discovery was requested but no discovery credential is set "
-                "(discovery.heisenberg.api_key or discovery.api.token)"
-            )
+            raise RuntimeError("Discovery was requested but discovery.api.token is not set")
 
         auto_active = (
             await self.leaders_repo.list_active(
@@ -177,6 +167,7 @@ class LeaderRegistry:
         self,
         configured: list[str] | None = None,
     ) -> LeaderRegistryState:
+        """Rescore persisted candidates without provider network calls."""
         candidates = await self.discovery_service.rescore()
         if candidates:
             # Cached re-rank of stored snapshots: refresh scores and ranking,
@@ -215,6 +206,7 @@ class LeaderRegistry:
         )
 
     async def reconcile_candidates(self, candidates: list[Candidate]) -> None:
+        """Persist one explicitly supplied candidate evaluation set."""
         await self._reconcile_roster(candidates)
 
     async def _reconcile_roster(

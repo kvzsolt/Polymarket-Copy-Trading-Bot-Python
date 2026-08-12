@@ -5,12 +5,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal
 
-from integrations.heisenberg.models import MarketSnapshot, TradeSnapshot
+from integrations.falcon.models import MarketSnapshot, TradeSnapshot
 from integrations.polymarket.ccxt_prediction_market_data import CcxtPredictionMarketData
 
 
 @dataclass(frozen=True, slots=True)
 class CcxtCapacityProbe:
+    """Read public CCXT order-book depth without venue mutations."""
+
     market_data: CcxtPredictionMarketData
     slippage_bps: int = 150
 
@@ -19,6 +21,7 @@ class CcxtCapacityProbe:
         trade: TradeSnapshot,
         market: MarketSnapshot,
     ) -> Decimal | None:
+        """Return exact visible notional within the configured slippage bound."""
         token_id = market.token_for_outcome(trade.outcome)
         if not token_id:
             return None

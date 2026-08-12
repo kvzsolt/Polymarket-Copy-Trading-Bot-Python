@@ -12,7 +12,7 @@ from decimal import Decimal
 from statistics import median
 from typing import Mapping, Sequence
 
-from integrations.heisenberg.models import Market360Snapshot, TradeSnapshot
+from integrations.falcon.models import Market360Snapshot, TradeSnapshot
 from services.discovery.discovery_models import BankrollFit
 
 _ZERO = Decimal("0")
@@ -31,6 +31,8 @@ def _median(values: Sequence[Decimal]) -> Decimal:
 
 @dataclass(frozen=True, slots=True)
 class BankrollCompatibilityPolicy:
+    """Validate exact-decimal limits for bankroll copyability analysis."""
+
     reserve_fraction: Decimal = Decimal("0.20")
     max_positions: int = 12
     max_position_fraction: Decimal = Decimal("0.10")
@@ -105,6 +107,7 @@ def evaluate_bankroll_compatibility(
     visible_capacity_usdc: Mapping[str, Decimal] | None = None,
     policy: BankrollCompatibilityPolicy | None = None,
 ) -> BankrollFit:
+    """Evaluate whether recent leader trades fit a follower bankroll."""
     policy = policy or BankrollCompatibilityPolicy()
     funds = Decimal(str(funds))
     if funds <= 0:

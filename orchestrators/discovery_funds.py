@@ -1,4 +1,4 @@
-"""Resolve the operator bankroll used by the Heisenberg-backed live discovery.
+"""Resolve the operator bankroll used by the Falcon-backed live discovery.
 
 Discovery is global (one roster for the whole app), but funds are
 per-runtime-user. Per the operator decision, the global discovery uses the
@@ -51,6 +51,7 @@ def build_discovery_funds_callable(
     """
 
     async def get_funds() -> Decimal | None:
+        """Read the configured funder's collateral balance or return ``None``."""
         if not funder_address:
             return None
         return await get_balance(funder_address)

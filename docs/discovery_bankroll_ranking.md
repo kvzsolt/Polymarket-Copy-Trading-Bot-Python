@@ -1,14 +1,14 @@
 # Bankroll-aware wallet ranking (operator guide)
 
 This guide explains how to choose a follower bankroll and produce a ranked
-wallet report using the Heisenberg discovery analytics provider. The ranking
+wallet report using the Falcon discovery analytics provider. The ranking
 tool is **read-only**: it performs no live trading, accepts no private keys,
 and never submits, cancels, approves, redeems, splits, or merges anything.
 
 ## What the ranking does
 
 `scripts/rank_copy_wallets.py` ranks Polymarket copy-trading wallets for a
-specific follower bankroll (USDC). It uses Heisenberg H-Score as a shortlist
+specific follower bankroll (USDC). It uses Falcon H-Score as a shortlist
 signal, then re-evaluates every wallet with:
 
 - Wallet360 across 1/3/7/15-day windows and all-time statistics;
@@ -28,16 +28,16 @@ can actually reproduce.
 
 ## Prerequisites
 
-- A Heisenberg API key in the environment:
+- A Falcon API key in the environment:
 
   ```bash
-  export PMCOPY_HEISENBERG_API_KEY=...   # or HEISENBERG_API_KEY
+  export PMCOPY__DISCOVERY__API__TOKEN=...
   ```
 
 - The Python environment installed (`pip install -e ".[dev]"`), which includes
   the mandatory CCXT runtime dependency.
 - Public order-book visible-depth probing remains operationally optional:
-  `--ccxt-depth auto` can be disabled or will fall back to Heisenberg
+  `--ccxt-depth auto` can be disabled or will fall back to Falcon
   liquidity evidence if the CCXT runtime is unavailable.
 
 ## Choosing a bankroll
@@ -73,7 +73,7 @@ Guidance:
 Human-readable output (default):
 
 ```text
-Discovery source: heisenberg
+Discovery source: falcon
 Funds: 500 USDC
 
 #1 0xabc... — score 0.8200 (H 82)
@@ -90,7 +90,7 @@ and evidence field.
 Fields:
 
 - `score` — bankroll-aware composite score (0..1); higher is better.
-- `h_score` — raw Heisenberg H-Score (0..100).
+- `h_score` — raw Falcon H-Score (0..100).
 - `recommended_copy_ratio` / `recommended_stake_usdc` — the copy ratio and
   per-trade stake the bankroll-fit calculation recommends.
 - `copyable_trade_share` — fraction of the wallet's recent trades that stay
@@ -116,8 +116,8 @@ Fields:
 
 ## Rollback / disabling
 
-The live discovery service uses the same Heisenberg provider. To disable it
-without code changes, set `PMCOPY__DISCOVERY__HEISENBERG__ENABLED=false` (or
+The live discovery service uses the same Falcon provider. To disable it
+without code changes, set `PMCOPY__DISCOVERY__FALCON__ENABLED=false` (or
 unset the API key) and restart; the discovery cycle then fails closed (no
 candidates) rather than substituting a weaker source. This CLI is unaffected by
 that setting because it always requires an explicit `--funds` and its own API

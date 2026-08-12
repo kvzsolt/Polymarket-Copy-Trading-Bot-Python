@@ -1,12 +1,4 @@
-"""Phase 3.13 — collapse the split-brain discovery credential gate.
-
-The audit found ``discovery.api.token`` is only a boolean gate
-(``leader_registry.refresh`` checks ``discovery.api.has_token``) while
-``discovery.heisenberg.api_key`` is the only value actually sent as the Bearer
-header (``bootstrap.py``). Setting only one of them silently does nothing
-(zero candidates or never fires). The gate must check the credential that is
-actually used: ``discovery.heisenberg.api_key``.
-"""
+"""Contracts for the single Falcon discovery credential gate."""
 
 from __future__ import annotations
 
@@ -18,21 +10,19 @@ import pytest
 from orchestrators.leader_registry import LeaderRegistry
 
 
-def _discovery(*, api_has_token: bool, heisenberg_has_key: bool, enabled: bool = True):
+def _discovery(*, api_has_token: bool, enabled: bool = True):
+    """Build a minimal discovery configuration for registry tests."""
     api = SimpleNamespace(has_token=api_has_token)
-    heisenberg = SimpleNamespace(
-        enabled=enabled,
-        api_key=SimpleNamespace(get_secret_value=lambda: "k" if heisenberg_has_key else ""),
-    )
     scheduler = SimpleNamespace(
         enabled=enabled,
         max_active_leaders=2,
         start_from_roster=False,
     )
-    return SimpleNamespace(api=api, heisenberg=heisenberg, scheduler=scheduler)
+    return SimpleNamespace(api=api, scheduler=scheduler)
 
 
-def _registry(discovery) -> LeaderRegistry:
+def _registry(discovery: SimpleNamespace) -> LeaderRegistry:
+    """Build a registry with deterministic fake collaborators."""
     config = SimpleNamespace(discovery=discovery)
     ds = MagicMock()
     ds.run = AsyncMock(return_value=[])
@@ -51,37 +41,25 @@ def _registry(discovery) -> LeaderRegistry:
 
 
 @pytest.mark.asyncio
-async def test_discovery_fires_when_heisenberg_key_present_even_if_api_token_empty():
-    """The gate must fire on the credential actually used (heisenberg.api_key),
-    not the legacy api.token boolean. With only the heisenberg key set,
-    discovery must run. Previously this never fired (the gate checked only
-    api.token)."""
-    reg = _registry(_discovery(api_has_token=False, heisenberg_has_key=True))
-    await reg.refresh(force_discovery=True)
-    reg.discovery_service.run.assert_awaited()
-
-
-@pytest.mark.asyncio
-async def test_discovery_fires_when_only_legacy_api_token_set():
-    """The legacy api.token still triggers the gate (backward compatibility).
-    The split-brain fix is that the heisenberg key ALSO triggers it now; the
-    config collapse (both keys mirrored in secrets.env) ensures the Bearer is
-    populated in production."""
-    reg = _registry(_discovery(api_has_token=True, heisenberg_has_key=False))
+async def test_discovery_fires_when_falcon_api_token_is_set() -> None:
+    """The one token used for auth must also activate the registry gate."""
+    reg = _registry(_discovery(api_has_token=True))
     await reg.refresh(force_discovery=True)
     reg.discovery_service.run.assert_awaited()
 
 
 @pytest.mark.asyncio
 async def test_discovery_does_not_fire_when_neither_credential_set():
-    reg = _registry(_discovery(api_has_token=False, heisenberg_has_key=False))
-    with pytest.raises(RuntimeError, match="credential"):
+    """A forced cycle without the Falcon token must fail closed."""
+    reg = _registry(_discovery(api_has_token=False))
+    with pytest.raises(RuntimeError, match="discovery.api.token"):
         await reg.refresh(force_discovery=True)
     reg.discovery_service.run.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_force_discovery_without_any_credential_raises():
-    reg = _registry(_discovery(api_has_token=False, heisenberg_has_key=False))
-    with pytest.raises(RuntimeError, match="credential"):
+    """Missing auth must remain an explicit operator-facing error."""
+    reg = _registry(_discovery(api_has_token=False))
+    with pytest.raises(RuntimeError, match="discovery.api.token"):
         await reg.refresh(force_discovery=True)

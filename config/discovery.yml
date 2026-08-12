@@ -1,6 +1,6 @@
-# Trader discovery (Heisenberg/Falcon provider, scoring, scheduler).
+# Trader discovery (Falcon analytics, scoring, and scheduler).
 # The shortlist/wallet360/recency/market/social/scoring/longitudinal/
-# hysteresis/heisenberg sections feed discovery_config_hash: changing any
+# hysteresis/falcon sections feed discovery_config_hash: changing any
 # of these values invalidates the persisted candidate roster (one-time
 # rebuild). Values are migrated verbatim from trader_discovery.yaml so
 # the roster hash is stable across the config split.
@@ -156,9 +156,8 @@ scheduler:
   max_active_leaders: 2
   start_from_roster: true
   startup_wait_timeout_seconds: 3900
-heisenberg:
+falcon:
   enabled: false
-  api_key: ''
   candidate_limit: 50
   candidate_concurrency: 6
   wallet360_windows:

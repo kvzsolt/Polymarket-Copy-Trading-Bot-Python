@@ -1,6 +1,6 @@
-"""RED contracts for the Heisenberg-backed live discovery adapter.
+"""RED contracts for the Falcon-backed live discovery adapter.
 
-The adapter bridges the new ``HeisenbergCandidateService.discover(funds)``
+The adapter bridges the new ``FalconCandidateService.discover(funds)``
 interface (returns ``DiscoveryResult``) to the live ``LeaderRegistry``
 contract (``run() -> list[Candidate]``, ``rescore() -> list[Candidate]``,
 ``config_hash``, ``last_cycle_degraded``) and the existing
@@ -20,8 +20,8 @@ from services.discovery.discovery_models import (
     RankedTrader,
     RejectedTrader,
 )
-from services.discovery.heisenberg_discovery_service import (
-    HeisenbergDiscoveryService,
+from services.discovery.falcon_discovery_service import (
+    FalconDiscoveryService,
 )
 from services.discovery.models import Candidate
 
@@ -43,7 +43,7 @@ def _ranked(wallet: str, score: Decimal) -> RankedTrader:
     return RankedTrader(
         wallet=wallet,
         score=score,
-        source="heisenberg",
+        source="falcon",
         h_score=Decimal("80"),
         bankroll_fit=Any,  # type: ignore[arg-type]  # structural only
         evidence=DiscoveryEvidence(recent_trade_count=12),
@@ -133,7 +133,7 @@ async def test_run_reads_funds_discovers_persists_and_returns_candidates() -> No
             RankedTrader(
                 wallet=GOOD,
                 score=Decimal("0.82"),
-                source="heisenberg",
+                source="falcon",
                 h_score=Decimal("82"),
                 bankroll_fit=Any,  # type: ignore[arg-type]
                 evidence=DiscoveryEvidence(recent_trade_count=12),
@@ -142,9 +142,9 @@ async def test_run_reads_funds_discovers_persists_and_returns_candidates() -> No
             ),
         ),
         rejected=(
-            RejectedTrader(wallet=WHALE, reasons=("bankroll_incompatible",), source="heisenberg"),
+            RejectedTrader(wallet=WHALE, reasons=("bankroll_incompatible",), source="falcon"),
         ),
-        source="heisenberg",
+        source="falcon",
     )
     service = FakeService(result)
     repo = FakeRepo()
@@ -154,7 +154,7 @@ async def test_run_reads_funds_discovers_persists_and_returns_candidates() -> No
         funds_seen.append(Decimal("500"))
         return Decimal("500")
 
-    adapter = HeisenbergDiscoveryService(
+    adapter = FalconDiscoveryService(
         service=service,  # type: ignore[arg-type]
         repository=repo,
         config=_config(),
@@ -182,13 +182,13 @@ async def test_run_reads_funds_discovers_persists_and_returns_candidates() -> No
 
 @pytest.mark.asyncio
 async def test_run_fails_closed_when_funds_unavailable() -> None:
-    service = FakeService(DiscoveryResult(ranked=(), rejected=(), source="heisenberg"))
+    service = FakeService(DiscoveryResult(ranked=(), rejected=(), source="falcon"))
     repo = FakeRepo()
 
     async def get_funds() -> Decimal | None:
         return None
 
-    adapter = HeisenbergDiscoveryService(
+    adapter = FalconDiscoveryService(
         service=service,  # type: ignore[arg-type]
         repository=repo,
         config=_config(),
@@ -204,13 +204,13 @@ async def test_run_fails_closed_when_funds_unavailable() -> None:
 
 @pytest.mark.asyncio
 async def test_run_fails_closed_when_funds_zero_or_negative() -> None:
-    service = FakeService(DiscoveryResult(ranked=(), rejected=(), source="heisenberg"))
+    service = FakeService(DiscoveryResult(ranked=(), rejected=(), source="falcon"))
     repo = FakeRepo()
 
     async def get_funds() -> Decimal | None:
         return Decimal("0")
 
-    adapter = HeisenbergDiscoveryService(
+    adapter = FalconDiscoveryService(
         service=service,  # type: ignore[arg-type]
         repository=repo,
         config=_config(),
@@ -225,14 +225,14 @@ async def test_run_fails_closed_when_funds_zero_or_negative() -> None:
 async def test_run_marks_cycle_degraded_on_transport_outage() -> None:
     class TransportDown:
         async def discover(self, funds: Decimal) -> DiscoveryResult:
-            raise RuntimeError("heisenberg unavailable")
+            raise RuntimeError("falcon unavailable")
 
     repo = FakeRepo()
 
     async def get_funds() -> Decimal | None:
         return Decimal("500")
 
-    adapter = HeisenbergDiscoveryService(
+    adapter = FalconDiscoveryService(
         service=TransportDown(),  # type: ignore[arg-type]
         repository=repo,
         config=_config(),
@@ -254,8 +254,8 @@ async def test_rescore_reranks_stored_candidates_without_an_api_call() -> None:
     repo = FakeRepo()
     repo.stored = list(stored)
 
-    adapter = HeisenbergDiscoveryService(
-        service=FakeService(DiscoveryResult(ranked=(), rejected=(), source="heisenberg")),  # type: ignore[arg-type]
+    adapter = FalconDiscoveryService(
+        service=FakeService(DiscoveryResult(ranked=(), rejected=(), source="falcon")),  # type: ignore[arg-type]
         repository=repo,
         config=_config(),
         get_funds=lambda: None,  # type: ignore[arg-type]
@@ -270,8 +270,8 @@ async def test_rescore_reranks_stored_candidates_without_an_api_call() -> None:
 
 
 def test_config_hash_exposed_for_roster_scoping() -> None:
-    adapter = HeisenbergDiscoveryService(
-        service=FakeService(DiscoveryResult(ranked=(), rejected=(), source="heisenberg")),  # type: ignore[arg-type]
+    adapter = FalconDiscoveryService(
+        service=FakeService(DiscoveryResult(ranked=(), rejected=(), source="falcon")),  # type: ignore[arg-type]
         repository=FakeRepo(),
         config=_config(),
         get_funds=lambda: None,  # type: ignore[arg-type]

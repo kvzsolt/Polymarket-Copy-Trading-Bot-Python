@@ -1,23 +1,24 @@
-"""Async, paginated and fail-closed client for the Heisenberg API."""
+"""Async, paginated and fail-closed client for the Falcon API."""
 
 from __future__ import annotations
 
 import asyncio
 import inspect
+import math
 import random
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Any, Awaitable, Callable, Mapping
 
-from integrations.heisenberg.errors import (
-    HeisenbergAuthenticationError,
-    HeisenbergBadRequestError,
-    HeisenbergConfigurationError,
-    HeisenbergPermissionError,
-    HeisenbergProtocolError,
-    HeisenbergRateLimitError,
-    HeisenbergUnavailableError,
+from integrations.falcon.errors import (
+    FalconAuthenticationError,
+    FalconBadRequestError,
+    FalconConfigurationError,
+    FalconPermissionError,
+    FalconProtocolError,
+    FalconRateLimitError,
+    FalconUnavailableError,
 )
 
 _BASE_URL = "https://narrative.agent.heisenberg.so/api/v2/semantic/retrieve/parameterized"
@@ -25,7 +26,7 @@ _RETRYABLE_STATUS = {429, 500, 503}
 
 
 @dataclass(frozen=True, slots=True)
-class HeisenbergPage:
+class FalconPage:
     """Describe one sanitized page returned by the analytics provider."""
 
     results: tuple[dict[str, Any], ...]
@@ -91,8 +92,8 @@ def _error_text(response: Any) -> str:
     return str(getattr(response, "text", "") or "")[:500] or "request failed"
 
 
-class HeisenbergClient:
-    """One reusable transport for all documented Heisenberg agent IDs."""
+class FalconClient:
+    """One reusable transport for all documented Falcon agent IDs."""
 
     def __init__(
         self,
@@ -103,6 +104,7 @@ class HeisenbergClient:
         timeout_seconds: float = 10.0,
         max_attempts: int = 4,
         backoff_base_seconds: float = 0.25,
+        max_backoff_seconds: float = 30.0,
         jitter_seconds: float = 0.10,
         max_pages: int = 100,
         max_rows: int = 20_000,
@@ -111,15 +113,18 @@ class HeisenbergClient:
     ) -> None:
         self._api_key = _secret(api_key)
         if not self._api_key:
-            raise HeisenbergConfigurationError("Heisenberg API key is required")
+            raise FalconConfigurationError("Falcon API key is required")
         if max_attempts < 1:
-            raise HeisenbergConfigurationError("max_attempts must be positive")
+            raise FalconConfigurationError("max_attempts must be positive")
         if max_pages < 1 or max_rows < 1:
-            raise HeisenbergConfigurationError("pagination limits must be positive")
+            raise FalconConfigurationError("pagination limits must be positive")
+        if max_backoff_seconds <= 0:
+            raise FalconConfigurationError("max_backoff_seconds must be positive")
         self._base_url = base_url
         self._timeout_seconds = timeout_seconds
         self._max_attempts = max_attempts
         self._backoff_base_seconds = backoff_base_seconds
+        self._max_backoff_seconds = max_backoff_seconds
         self._jitter_seconds = jitter_seconds
         self._max_pages = max_pages
         self._max_rows = max_rows
@@ -131,7 +136,7 @@ class HeisenbergClient:
             try:
                 import httpx
             except ImportError as exc:  # pragma: no cover - repository ships httpx
-                raise HeisenbergConfigurationError("httpx is required for Heisenberg") from exc
+                raise FalconConfigurationError("httpx is required for Falcon") from exc
             http_client = httpx.AsyncClient(timeout=timeout_seconds)
         self._http = http_client
 
@@ -153,7 +158,7 @@ class HeisenbergClient:
                 if inspect.isawaitable(close_result):
                     await close_result
 
-    async def __aenter__(self) -> "HeisenbergClient":
+    async def __aenter__(self) -> "FalconClient":
         return self
 
     async def __aexit__(self, *_exc: object) -> None:
@@ -166,14 +171,14 @@ class HeisenbergClient:
         params: Mapping[str, Any] | None = None,
         limit: int = 200,
         offset: int = 0,
-    ) -> HeisenbergPage:
+    ) -> FalconPage:
         """Send a validated request through the analytics provider adapter."""
         if self._closed:
-            raise HeisenbergConfigurationError("Heisenberg client is closed")
+            raise FalconConfigurationError("Falcon client is closed")
         if not 1 <= limit <= 200:
-            raise HeisenbergConfigurationError("limit must be between 1 and 200")
+            raise FalconConfigurationError("limit must be between 1 and 200")
         if offset < 0:
-            raise HeisenbergConfigurationError("offset must not be negative")
+            raise FalconConfigurationError("offset must not be negative")
         body = {
             "agent_id": int(agent_id),
             "params": _normalize_params(params),
@@ -197,79 +202,135 @@ class HeisenbergClient:
                     )
             except (KeyboardInterrupt, SystemExit, asyncio.CancelledError):
                 raise
-            except BaseException as exc:
+            except Exception as exc:
                 if attempt + 1 >= self._max_attempts:
-                    raise HeisenbergUnavailableError(
-                        f"Heisenberg transport failed: {type(exc).__name__}"
+                    raise FalconUnavailableError(
+                        f"Falcon transport failed: {type(exc).__name__}"
                     ) from exc
                 await self._backoff(attempt)
                 continue
 
             status = int(getattr(response, "status_code", 0) or 0)
             last_status = status
+            request_id = self._response_request_id(response)
             if 200 <= status < 300:
                 return self._parse_page(response, requested_limit=limit, requested_offset=offset)
             if status == 400 or status == 404:
-                raise HeisenbergBadRequestError(_error_text(response))
+                raise FalconBadRequestError(_error_text(response), request_id=request_id)
             if status == 401:
-                raise HeisenbergAuthenticationError("Heisenberg authentication rejected")
+                raise FalconAuthenticationError(
+                    "Falcon authentication rejected",
+                    request_id=request_id,
+                )
             if status == 403:
-                raise HeisenbergPermissionError("Heisenberg permission denied")
+                raise FalconPermissionError(
+                    "Falcon permission denied",
+                    request_id=request_id,
+                )
             if status in _RETRYABLE_STATUS:
                 if attempt + 1 < self._max_attempts:
-                    await self._backoff(attempt)
+                    await self._backoff(attempt, response=response)
                     continue
                 if status == 429:
-                    raise HeisenbergRateLimitError("Heisenberg rate limit exceeded")
-                raise HeisenbergUnavailableError(f"Heisenberg server unavailable ({status})")
+                    raise FalconRateLimitError(
+                        "Falcon rate limit exceeded",
+                        request_id=request_id,
+                    )
+                raise FalconUnavailableError(
+                    f"Falcon server unavailable ({status})",
+                    request_id=request_id,
+                )
             if status >= 500:
-                raise HeisenbergUnavailableError(f"Heisenberg server error ({status})")
-            raise HeisenbergBadRequestError(f"Heisenberg request rejected ({status})")
+                raise FalconUnavailableError(
+                    f"Falcon server error ({status})",
+                    request_id=request_id,
+                )
+            raise FalconBadRequestError(
+                f"Falcon request rejected ({status})",
+                request_id=request_id,
+            )
 
-        raise HeisenbergUnavailableError(f"Heisenberg request failed ({last_status or 'unknown'})")
+        raise FalconUnavailableError(f"Falcon request failed ({last_status or 'unknown'})")
 
-    async def _backoff(self, attempt: int) -> None:
-        delay = self._backoff_base_seconds * (2**attempt)
+    async def _backoff(self, attempt: int, *, response: Any | None = None) -> None:
+        delay = self._retry_after_seconds(response)
+        if delay is None:
+            delay = min(
+                self._max_backoff_seconds,
+                self._backoff_base_seconds * (2**attempt),
+            )
         if self._jitter_seconds:
-            delay += self._random() * self._jitter_seconds
+            delay = min(
+                self._max_backoff_seconds,
+                delay + self._random() * self._jitter_seconds,
+            )
         await self._sleep(delay)
 
     @staticmethod
-    def _parse_page(
-        response: Any, *, requested_limit: int, requested_offset: int
-    ) -> HeisenbergPage:
+    def _response_header(response: Any, name: str) -> str | None:
+        headers = getattr(response, "headers", None)
+        if not isinstance(headers, Mapping):
+            return None
+        target = name.lower()
+        for key, value in headers.items():
+            if str(key).lower() == target and str(value).strip():
+                return str(value).strip()
+        return None
+
+    def _retry_after_seconds(self, response: Any | None) -> float | None:
+        if response is None:
+            return None
+        raw = self._response_header(response, "retry-after")
+        if raw is None:
+            raw = self._response_header(response, "x-ratelimit-reset")
+        try:
+            delay = float(raw) if raw is not None else None
+        except (TypeError, ValueError):
+            return None
+        if delay is None or not math.isfinite(delay) or delay <= 0:
+            return None
+        return min(delay, self._max_backoff_seconds)
+
+    @classmethod
+    def _response_request_id(cls, response: Any) -> str | None:
+        return cls._response_header(response, "x-request-id")
+
+    @staticmethod
+    def _parse_page(response: Any, *, requested_limit: int, requested_offset: int) -> FalconPage:
         try:
             payload = response.json()
-        except BaseException as exc:
-            raise HeisenbergProtocolError("Heisenberg returned invalid JSON") from exc
+        except Exception as exc:
+            raise FalconProtocolError("Falcon returned invalid JSON") from exc
         if not isinstance(payload, dict):
-            raise HeisenbergProtocolError("Heisenberg response root must be an object")
+            raise FalconProtocolError("Falcon response root must be an object")
         data = payload.get("data")
         if not isinstance(data, dict):
-            raise HeisenbergProtocolError("Heisenberg response omitted data object")
+            raise FalconProtocolError("Falcon response omitted data object")
         results = data.get("results")
         if not isinstance(results, list):
-            raise HeisenbergProtocolError("Heisenberg data.results must be a list")
+            raise FalconProtocolError("Falcon data.results must be a list")
         if any(not isinstance(row, dict) for row in results):
-            raise HeisenbergProtocolError("Heisenberg results must contain objects")
+            raise FalconProtocolError("Falcon results must contain objects")
         pagination = payload.get("pagination")
         if pagination is None:
             pagination = {}
         if not isinstance(pagination, dict):
-            raise HeisenbergProtocolError("Heisenberg pagination must be an object")
+            raise FalconProtocolError("Falcon pagination must be an object")
         try:
             limit = int(pagination.get("limit", requested_limit))
             offset = int(pagination.get("offset", requested_offset))
         except (TypeError, ValueError) as exc:
-            raise HeisenbergProtocolError("Heisenberg pagination is invalid") from exc
+            raise FalconProtocolError("Falcon pagination is invalid") from exc
         has_more_raw = pagination.get("has_more", False)
         if isinstance(has_more_raw, bool):
             has_more = has_more_raw
         else:
             has_more = str(has_more_raw).strip().lower() in {"1", "true", "yes"}
-        request_id = str(payload.get("request_id") or "") or None
+        request_id = (
+            str(payload.get("request_id") or "") or FalconClient._response_request_id(response)
+        ) or None
         timestamp = str(payload.get("timestamp") or "") or None
-        return HeisenbergPage(
+        return FalconPage(
             results=tuple(dict(row) for row in results),
             limit=limit,
             offset=offset,
@@ -292,13 +353,13 @@ class HeisenbergClient:
         page_cap = max_pages or self._max_pages
         row_cap = max_rows or self._max_rows
         if page_cap < 1 or row_cap < 1:
-            raise HeisenbergConfigurationError("pagination limits must be positive")
+            raise FalconConfigurationError("pagination limits must be positive")
         rows: list[dict[str, Any]] = []
         offset = 0
         seen_offsets: set[int] = set()
         for _ in range(page_cap):
             if offset in seen_offsets:
-                raise HeisenbergProtocolError("Heisenberg pagination repeated an offset")
+                raise FalconProtocolError("Falcon pagination repeated an offset")
             seen_offsets.add(offset)
             page = await self.request(
                 agent_id,
@@ -320,9 +381,9 @@ class HeisenbergClient:
                 return rows
             step = page.limit if page.limit > 0 else len(page.results)
             if step <= 0:
-                raise HeisenbergProtocolError("Heisenberg pagination made no progress")
+                raise FalconProtocolError("Falcon pagination made no progress")
             offset = page.offset + step
-        raise HeisenbergProtocolError("Heisenberg pagination exceeded max_pages")
+        raise FalconProtocolError("Falcon pagination exceeded max_pages")
 
     async def leaderboard(self, *, limit: int = 50, **params: Any) -> list[dict[str, Any]]:
         """Return the current provider wallet leaderboard."""
@@ -337,7 +398,7 @@ class HeisenbergClient:
     ) -> list[dict[str, Any]]:
         """Return Wallet360 evidence for a wallet and time window."""
         if window_days not in {1, 3, 7, 15}:
-            raise HeisenbergConfigurationError("Wallet360 window_days must be 1, 3, 7 or 15")
+            raise FalconConfigurationError("Wallet360 window_days must be 1, 3, 7 or 15")
         return await self.fetch_all(
             581,
             params={"proxy_wallet": proxy_wallet, "window_days": window_days},
@@ -354,7 +415,7 @@ class HeisenbergClient:
     ) -> list[dict[str, Any]]:
         """Return the provider PnL leaderboard."""
         if leaderboard_period not in {"1d", "3d", "7d", "30d"}:
-            raise HeisenbergConfigurationError("leaderboard_period must be 1d, 3d, 7d or 30d")
+            raise FalconConfigurationError("leaderboard_period must be 1d, 3d, 7d or 30d")
         return await self.fetch_all(
             579,
             params={
@@ -502,4 +563,4 @@ class HeisenbergClient:
         )
 
 
-__all__ = ["HeisenbergClient", "HeisenbergPage"]
+__all__ = ["FalconClient", "FalconPage"]

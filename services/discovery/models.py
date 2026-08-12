@@ -1,3 +1,5 @@
+"""Persistence-facing models and narrow ports for trader discovery."""
+
 from __future__ import annotations
 
 import hashlib
@@ -10,6 +12,8 @@ import orjson
 
 @dataclass(slots=True)
 class Candidate:
+    """Persist normalized discovery evidence and composite score."""
+
     wallet: str
     hscore: dict[str, Any]
     wallet360: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -26,6 +30,8 @@ class Candidate:
 
 @dataclass(frozen=True, slots=True)
 class RosterEntry:
+    """Describe one durable leader-roster membership state."""
+
     wallet: str
     tier: str
     score: float
@@ -38,17 +44,21 @@ class DiscoveryRepository(Protocol):
     """Structural port for the live discovery service's persistence backend.
 
     Implemented by ``storage.postgres.discovery_repo.DiscoveryRepo`` and
-    consumed by ``services.discovery.heisenberg_discovery_service.HeisenbergDiscoveryService``.
+    consumed by ``services.discovery.falcon_discovery_service.FalconDiscoveryService``.
     """
 
-    async def begin_cycle(self, config_hash: str) -> str: ...
+    async def begin_cycle(self, config_hash: str) -> str:
+        """Create and return a durable discovery-cycle identifier."""
+        ...
 
     async def persist_cycle(
         self,
         cycle_id: str,
         candidates: list[Candidate],
         config_hash: str,
-    ) -> None: ...
+    ) -> None:
+        """Persist the complete evaluated candidate set atomically."""
+        ...
 
     async def complete_cycle(
         self,
@@ -58,21 +68,29 @@ class DiscoveryRepository(Protocol):
         candidate_count: int,
         kept_count: int,
         error: str | None = None,
-    ) -> None: ...
+    ) -> None:
+        """Mark a discovery cycle complete with sanitized outcome detail."""
+        ...
 
-    async def score_history(self, wallet: str, *, since_ts: float) -> list[Mapping[str, Any]]: ...
+    async def score_history(self, wallet: str, *, since_ts: float) -> list[Mapping[str, Any]]:
+        """Return bounded historical score evidence for one wallet."""
+        ...
 
     async def latest_candidates(
         self,
         *,
         config_hash: str | None = None,
-    ) -> list[Candidate]: ...
+    ) -> list[Candidate]:
+        """Return the latest candidates for an optional config revision."""
+        ...
 
     async def persist_rescore(
         self,
         candidates: list[Candidate],
         config_hash: str,
-    ) -> None: ...
+    ) -> None:
+        """Persist a deterministic rescore without starting a new cycle."""
+        ...
 
 
 def discovery_config_hash(config: Any) -> str:
@@ -92,7 +110,7 @@ def discovery_config_hash(config: Any) -> str:
         "scoring",
         "longitudinal",
         "hysteresis",
-        "heisenberg",
+        "falcon",
     )
     if isinstance(payload, dict):
         payload = {section: payload.get(section) for section in decision_sections}
