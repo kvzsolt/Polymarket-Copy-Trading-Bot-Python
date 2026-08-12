@@ -148,6 +148,8 @@ _MAX_AMBIGUOUS_REQUIRED_SCANS = 100
 
 @dataclass
 class OrderSubmissionRecord:
+    """Describe durable evidence for one order submission."""
+
     idempotency_key: str
     user_id: str
     leader_id: str | None
@@ -230,6 +232,8 @@ def _bounded_positive(value: int, *, field: str, maximum: int) -> int:
 
 
 class OrdersRepo(AbstractOrderRepository):
+    """Persist order and idempotency state in PostgreSQL."""
+
     def __init__(self, pool: asyncpg.Pool):
         self._pool = pool
 
@@ -242,6 +246,7 @@ class OrdersRepo(AbstractOrderRepository):
         *,
         stale_takeover_seconds: int = _DEFAULT_STALE_LOCK_TAKEOVER_SECONDS,
     ) -> bool:
+        """Attempt to acquire submission lock."""
         request_json = _json_str(request_payload) or "{}"
         async with self._pool.acquire() as conn:
             # RETURNING yields the key when the INSERT happens. P1-g: the
@@ -294,6 +299,7 @@ class OrdersRepo(AbstractOrderRepository):
         return returned is not None
 
     async def is_submission_locked(self, key: str) -> bool:
+        """Return whether a fresh submission lock blocks this identity."""
         rec = await self.get_by_idempotency_key(key)
         if rec is None:
             return False
@@ -332,6 +338,7 @@ class OrdersRepo(AbstractOrderRepository):
         ttl_seconds: int,
         user_id: str | None = None,
     ) -> list[dict[str, Any]]:
+        """Return stale submission locks."""
         base = f"""
             SELECT idempotency_key, user_id, leader_id, order_id, status,
                    attempt_count, last_error, created_at, updated_at,
@@ -363,6 +370,7 @@ class OrdersRepo(AbstractOrderRepository):
         ttl_seconds: int,
         user_id: str | None = None,
     ) -> int:
+        """Count fresh submission locks."""
         base = f"""
             SELECT COUNT(*) FROM orders
             WHERE status = ANY($1::text[])
@@ -386,6 +394,7 @@ class OrdersRepo(AbstractOrderRepository):
         ttl_seconds: int,
         reason: str = "stale_lock_resolve",
     ) -> dict[str, Any] | None:
+        """Expire stale submission lock."""
         async with self._pool.acquire() as conn:
             async with conn.transaction():
                 row = await conn.fetchrow(
@@ -469,6 +478,7 @@ class OrdersRepo(AbstractOrderRepository):
         user_id: str | None = None,
         apply: bool = False,
     ) -> dict[str, Any]:
+        """Resolve stale submission locks."""
         stale_rows = await self.list_stale_submission_locks(
             ttl_seconds=ttl_seconds,
             user_id=user_id,
@@ -528,6 +538,7 @@ class OrdersRepo(AbstractOrderRepository):
     async def upsert_matched_total(
         self, *, order_id: str, matched: str, committed: bool = True
     ) -> None:
+        """Insert or update matched total."""
         if not order_id:
             return
         async with self._pool.acquire() as conn:
@@ -543,6 +554,7 @@ class OrdersRepo(AbstractOrderRepository):
         # commit); asyncpg execute auto-commits when no transaction is open.
 
     async def get_by_idempotency_key(self, key: str) -> dict[str, Any] | None:
+        """Return by idempotency key."""
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
@@ -559,6 +571,7 @@ class OrdersRepo(AbstractOrderRepository):
         return self._row_to_order_record(row)
 
     async def get_by_order_id(self, order_id: str) -> dict[str, Any] | None:
+        """Return by order id."""
         if not order_id:
             return None
         async with self._pool.acquire() as conn:
@@ -578,6 +591,7 @@ class OrdersRepo(AbstractOrderRepository):
         return self._row_to_order_record(row)
 
     async def get_by_reservation_id(self, reservation_id: str) -> dict[str, Any] | None:
+        """Return by reservation id."""
         if not reservation_id:
             return None
         async with self._pool.acquire() as conn:
@@ -945,6 +959,7 @@ class OrdersRepo(AbstractOrderRepository):
         return returned is not None
 
     async def save_submission(self, record: OrderSubmissionRecord) -> None:
+        """Persist normalized submission evidence idempotently."""
         request_json = _json_str(record.request_payload) or "{}"
         response_json = _json_str(record.response_payload)
         async with self._pool.acquire() as conn:
@@ -1010,6 +1025,7 @@ class OrdersRepo(AbstractOrderRepository):
         user_id: str | None = None,
         leader_id: str | None = None,
     ) -> None:
+        """Mark fill."""
         async with self._pool.acquire() as conn:
             # greptile P1: ON CONFLICT DO NOTHING on the fill identity
             # tuple so a reconciler-triggered second arrival of the same
@@ -1038,6 +1054,7 @@ class OrdersRepo(AbstractOrderRepository):
             )
 
     async def has_processed_trade(self, trade_key: str) -> bool:
+        """Return whether the economic trade identity is already claimed."""
         if not trade_key:
             return False
         async with self._pool.acquire() as conn:
@@ -1053,6 +1070,7 @@ class OrdersRepo(AbstractOrderRepository):
         return not any(status.startswith(p) for p in _LEGACY_RETRY_PREFIXES)
 
     async def get_processed_trade(self, trade_key: str) -> dict[str, Any] | None:
+        """Return processed trade."""
         if not trade_key:
             return None
         async with self._pool.acquire() as conn:
@@ -1101,6 +1119,7 @@ class OrdersRepo(AbstractOrderRepository):
         # tighter or looser window in tests.
         stale_claim_ttl_seconds: float = 30.0,
     ) -> bool:
+        """Attempt to claim processed trade."""
         if not trade_key:
             return False
         now = time.time()
@@ -1153,6 +1172,7 @@ class OrdersRepo(AbstractOrderRepository):
         retry_attempt: int = 0,
         order_id: str | None = None,
     ) -> None:
+        """Mark processed trade."""
         if not trade_key:
             return
         async with self._pool.acquire() as conn:
@@ -1187,6 +1207,7 @@ class OrdersRepo(AbstractOrderRepository):
             )
 
     async def delete_processed_trade(self, trade_key: str) -> None:
+        """Delete processed trade."""
         if not trade_key:
             return
         async with self._pool.acquire() as conn:
@@ -1199,6 +1220,7 @@ class OrdersRepo(AbstractOrderRepository):
         status: str,
         response_patch: dict[str, Any] | None = None,
     ) -> None:
+        """Update submission status."""
         if not order_id:
             return
         response_patch = response_patch or {}
@@ -1249,6 +1271,7 @@ class OrdersRepo(AbstractOrderRepository):
         side: str | None = None,
         limit: int = 200,
     ) -> list[dict[str, Any]]:
+        """Return unconfirmed order submissions."""
         bounded_limit = _bounded_positive(
             limit,
             field="limit",
@@ -1286,6 +1309,7 @@ class OrdersRepo(AbstractOrderRepository):
         *,
         user_id: str | None = None,
     ) -> list[dict]:
+        """Return unconfirmed buys."""
         cutoff = time.time() - max_age_seconds
         query = """
                 SELECT trade_key, user_id, leader_id, tx_hash, asset,
@@ -1310,6 +1334,7 @@ class OrdersRepo(AbstractOrderRepository):
         *,
         user_id: str | None = None,
     ) -> list[dict]:
+        """Return unconfirmed sells."""
         cutoff = time.time() - max_age_seconds
         query = """
                 SELECT trade_key, user_id, leader_id, tx_hash, asset,
@@ -1416,6 +1441,7 @@ class OrdersRepo(AbstractOrderRepository):
         asset: str | None,
         trade_status: str,
     ) -> bool:
+        """Persist execution, fill, position, and reservation effects atomically."""
         try:
             async with self._pool.acquire() as conn:
                 async with conn.transaction():
@@ -1612,6 +1638,7 @@ class OrdersRepo(AbstractOrderRepository):
             return False
 
     async def purge_old_processed_trades(self, max_age_seconds: float = 30 * 86400) -> int:
+        """Purge old processed trades."""
         cutoff = time.time() - max_age_seconds
         async with self._pool.acquire() as conn:
             status = await conn.execute(

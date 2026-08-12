@@ -1,3 +1,5 @@
+"""Coordinate idempotent submission, reservations, and reconciliation."""
+
 from __future__ import annotations
 
 import logging
@@ -150,6 +152,8 @@ _TERMINAL_FAILURE_SUBMIT_STATUSES = frozenset(
 
 @dataclass(frozen=True)
 class VenueSubmitResult:
+    """Describe the immediate result of one venue submission attempt."""
+
     order_id: str
     status: str
     error_msg: str = ""
@@ -157,20 +161,25 @@ class VenueSubmitResult:
 
 @dataclass(frozen=True)
 class ExecutionResult:
+    """Describe the durable result of guarded execution."""
+
     order_id: str
     status: OrderLifecycleStatus
     error: str = ""
 
     @classmethod
     def retryable_failed(cls, order_id: str, error: str) -> ExecutionResult:
+        """Build a retryable failure result for a request not submitted."""
         return cls(order_id=order_id, status=OrderLifecycleStatus.RETRYABLE_FAILED, error=error)
 
     @classmethod
     def filled(cls, order_id: str) -> ExecutionResult:
+        """Build a filled terminal execution result."""
         return cls(order_id=order_id, status=OrderLifecycleStatus.FILLED)
 
     @classmethod
     def unconfirmed(cls, order_id: str, status: OrderLifecycleStatus) -> ExecutionResult:
+        """Build a result that retains an ambiguous venue submission."""
         return cls(order_id=order_id, status=status)
 
 
@@ -181,7 +190,11 @@ class ExecutionResult:
 # intent-shaped adapter satisfied by the execution-coordinator's binding glue;
 # do not confuse the two. See issue #66 for context.
 class OrderSubmitter(Protocol):
-    async def submit_order(self, intent: OrderIntent) -> VenueSubmitResult: ...
+    """Define the OrderSubmitter port used by application services."""
+
+    async def submit_order(self, intent: OrderIntent) -> VenueSubmitResult:
+        """Submit a validated intent and return normalized venue evidence."""
+        ...
 
 
 # Backward-compatible alias for any out-of-tree imports that referenced the
@@ -191,14 +204,24 @@ ClobGateway = OrderSubmitter
 
 
 class Reconciler(Protocol):
-    async def enqueue(self, order_id: str) -> None: ...
+    """Define the Reconciler port used by application services."""
+
+    async def enqueue(self, order_id: str) -> None:
+        """Enqueue an ambiguous order for reconciliation."""
+        ...
 
 
 class AuditLogger(Protocol):
-    def log_event(self, event_name: str, payload: dict[str, Any]) -> None: ...
+    """Define the AuditLogger port used by application services."""
+
+    def log_event(self, event_name: str, payload: dict[str, Any]) -> None:
+        """Persist a sanitized execution audit event."""
+        ...
 
 
 class ExecutionCoordinator:
+    """Coordinate guarded order execution through injected ports."""
+
     def __init__(
         self,
         reservation_service: ReservationService,
@@ -576,12 +599,15 @@ class ExecutionCoordinator:
     # below are the current production compatibility surface.
     # ------------------------------------------------------------------
     async def submit_copy_trade(self, intent: ExecutionIntent) -> ExecutionCoordinatorResult:
+        """Submit a copied entry through the guarded coordinator."""
         return await self._submit_with_reservation(intent, source_override="copy_trade")
 
     async def submit_risk_exit(self, intent: ExecutionIntent) -> ExecutionCoordinatorResult:
+        """Submit a risk exit through the guarded coordinator."""
         return await self._submit_with_reservation(intent, source_override="risk_exit")
 
     async def submit_protective_exit(self, intent: ExecutionIntent) -> ExecutionCoordinatorResult:
+        """Submit a protective exit through the guarded coordinator."""
         return await self._submit_with_reservation(intent, source_override="protective_exit")
 
     # ------------------------------------------------------------------

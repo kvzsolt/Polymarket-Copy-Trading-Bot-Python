@@ -82,6 +82,8 @@ Read these in order:
 3. [`docs/03-paper-trading.md`](docs/03-paper-trading.md) → [`docs/04-live-trading.md`](docs/04-live-trading.md) — paper soak then live cutover.
 4. [`docs/runbooks/00-index.md`](docs/runbooks/00-index.md) — incident runbooks (CLOB outage, WSS outage, circuit breaker open, stale locks, reconciliation drift, manual / off-bot drift).
 5. [`docs/architecture.md`](docs/architecture.md) — canonical architecture overview.
+6. [`docs/frontend-control-plane.md`](docs/frontend-control-plane.md) — authenticated
+   REST/WebSocket contract for a future operator frontend.
 
 ---
 

@@ -123,6 +123,7 @@ _CONFIG_EXPLANATIONS: dict[str, str] = {
 
 
 def register_config_command(subparsers: argparse._SubParsersAction) -> None:
+    """Register the configuration command with the CLI parser."""
     parser = subparsers.add_parser("config", help="Print, validate, and explain configuration")
     config_sub = parser.add_subparsers(dest="config_subcommand", required=True)
 
@@ -193,6 +194,7 @@ def _run_config_explain(args: argparse.Namespace) -> int:
 
 
 def run_config(args: argparse.Namespace) -> int:
+    """Run the validated configuration CLI command."""
     if args.config_subcommand == "print":
         return _run_config_print(args)
     elif args.config_subcommand == "validate":

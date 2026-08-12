@@ -50,6 +50,8 @@ _log = get_logger("ReconciliationService")
 # ---------------------------------------------------------------------------
 @dataclass(frozen=True)
 class ReconciliationResult:
+    """Describe the result of one reconciliation operation."""
+
     order_id: str
     is_resolved: bool
     status: OrderLifecycleStatus
@@ -57,20 +59,25 @@ class ReconciliationResult:
 
     @classmethod
     def resolved(cls, order_id: str, status: OrderLifecycleStatus) -> "ReconciliationResult":
+        """Build a resolved reconciliation result."""
         return cls(order_id=order_id, is_resolved=True, status=status)
 
     @classmethod
     def pending(cls, order_id: str, status: OrderLifecycleStatus) -> "ReconciliationResult":
+        """Build a result requiring further reconciliation evidence."""
         return cls(order_id=order_id, is_resolved=False, status=status)
 
     @classmethod
     def unresolved(
         cls, order_id: str, status: OrderLifecycleStatus, error: str = ""
     ) -> "ReconciliationResult":
+        """Build an unresolved result with a sanitized failure reason."""
         return cls(order_id=order_id, is_resolved=False, status=status, error=error)
 
 
 class OrderRecord(Protocol):
+    """Describe persisted order state required by reconciliation."""
+
     id: str
     venue_order_id: str | None
     reservation_id: str
@@ -79,23 +86,51 @@ class OrderRecord(Protocol):
 
 
 class OrdersRepo(Protocol):
-    async def get(self, order_id: str) -> OrderRecord: ...
-    async def mark_submitted_unconfirmed(self, order_id: str) -> None: ...
-    async def mark_terminal(self, order_id: str, status: str) -> None: ...
-    async def mark_reconciliation_required(self, order_id: str) -> None: ...
-    async def mark_filled_or_partially_filled(self, order_id: str) -> None: ...
+    """Persist order and idempotency state in PostgreSQL."""
+
+    async def get(self, order_id: str) -> OrderRecord:
+        """Return a persisted order by identifier."""
+        ...
+
+    async def mark_submitted_unconfirmed(self, order_id: str) -> None:
+        """Retain the order as submitted but awaiting venue evidence."""
+        ...
+
+    async def mark_terminal(self, order_id: str, status: str) -> None:
+        """Persist an authoritative terminal order state."""
+        ...
+
+    async def mark_reconciliation_required(self, order_id: str) -> None:
+        """Persist that an order requires additional reconciliation."""
+        ...
+
+    async def mark_filled_or_partially_filled(self, order_id: str) -> None:
+        """Persist fill evidence without fabricating terminal state."""
+        ...
 
 
 class FillsRepo(Protocol):
-    async def upsert_venue_fill(self, order: OrderRecord, venue_fill: Any) -> Any: ...
+    """Define the narrow venue-fill persistence port."""
+
+    async def upsert_venue_fill(self, order: OrderRecord, venue_fill: Any) -> Any:
+        """Persist venue fill evidence idempotently."""
+        ...
 
 
 class PositionsRepo(Protocol):
-    def upsert_position(self, fill: Any) -> None: ...
+    """Define the narrow normalized-position persistence port."""
+
+    def upsert_position(self, fill: Any) -> None:
+        """Apply one normalized fill to durable position state."""
+        ...
 
 
 class ReservationService(Protocol):
-    def release_terminal(self, reservation_id: str, reason: str) -> None: ...
+    """Define the terminal reservation-release port."""
+
+    def release_terminal(self, reservation_id: str, reason: str) -> None:
+        """Release a reservation only after terminal evidence."""
+        ...
 
 
 # NOTE: The canonical CLOB venue gateway Protocol lives in
@@ -104,20 +139,30 @@ class ReservationService(Protocol):
 # gateway directly (``get_order`` and ``get_fills`` signatures match).
 # See issue #66 for context.
 class OrderQueryGateway(Protocol):
-    async def get_order(self, venue_order_id: str) -> Any: ...
+    """Define the OrderQueryGateway port used by application services."""
+
+    async def get_order(self, venue_order_id: str) -> Any:
+        """Return one normalized venue order when it exists."""
+        ...
+
     async def list_open_orders(
         self,
         *,
         order_id: str | None = None,
         market: str | None = None,
-    ) -> list[Any]: ...
+    ) -> list[Any]:
+        """Return normalized open orders with pagination deduplication."""
+        ...
+
     async def get_fills(
         self,
         market: str | None = None,
         *,
         trade_id: str | None = None,
         order_id: str | None = None,
-    ) -> list[Any]: ...
+    ) -> list[Any]:
+        """Return normalized fills with exact maker and taker attribution."""
+        ...
 
 
 # Backward-compatible alias for any out-of-tree imports that referenced the
@@ -127,12 +172,18 @@ ClobGateway = OrderQueryGateway
 
 
 class DbTransaction(Protocol):
+    """Define the asynchronous transaction context port."""
+
     async def __aenter__(self) -> None: ...
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None: ...
 
 
 class DbProvider(Protocol):
-    def transaction(self) -> DbTransaction: ...
+    """Define the narrow database transaction provider."""
+
+    def transaction(self) -> DbTransaction:
+        """Provide an atomic database transaction context."""
+        ...
 
 
 # ---------------------------------------------------------------------------
@@ -1737,6 +1788,7 @@ class ReconciliationService:
     # Protocol-based path (kept for unit tests + V2 gateway)
     # ------------------------------------------------------------------
     async def reconcile_order(self, order_id: str) -> ReconciliationResult:
+        """Reconcile one persisted order against authoritative venue evidence."""
         order = await self.orders_repo.get(order_id)
 
         if not order.venue_order_id:

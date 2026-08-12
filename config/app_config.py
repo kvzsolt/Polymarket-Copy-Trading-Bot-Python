@@ -111,6 +111,8 @@ from config.addresses import (  # noqa: E402
 
 @dataclass(frozen=True)
 class DatabaseConfig:
+    """Validate PostgreSQL connection and pool settings."""
+
     dsn: str = ""
     pool_min_size: int = 2
     pool_max_size: int = 20
@@ -184,6 +186,8 @@ class DetectionConfig:
 
 @dataclass(frozen=True)
 class SizingConfig:
+    """Validate copy-trade sizing settings."""
+
     mode: str = "proportional"
     percentage: float = 4.0
     fixed_amount: float = 3.0
@@ -296,6 +300,8 @@ class ProtectiveExitsConfig:
 
 @dataclass(frozen=True)
 class ExecutionConfig:
+    """Validate venue-independent execution settings."""
+
     slippage_tolerance: float = 2.0
     min_share_price: float = 0.03
     max_share_price: float = 0.95
@@ -365,6 +371,7 @@ class ExecutionConfig:
 
     @property
     def paper_trade_only(self) -> bool:
+        """Return whether execution is restricted to paper trading."""
         return self.trading_mode == "paper"
 
 
@@ -451,6 +458,8 @@ class CopyTradingConfig(BaseModel):
 
 @dataclass(frozen=True)
 class LoggingConfig:
+    """Validate structured logging settings."""
+
     level: str = "INFO"
     log_dir: str = "log"
     app_log_jsonl_file: str = "log/PolymarketCopyTradingBot.jsonl"
@@ -529,6 +538,7 @@ class OrderConfirmationConfig:
         condition_id: str | None,
         venue_status: str | None = None,
     ) -> float:
+        """Return the configured startup delay for the active mode."""
         delay = self.initial_delay_seconds
         if token_id and token_id in self.token_delay_overrides:
             delay = self.token_delay_overrides[token_id]
@@ -568,6 +578,8 @@ class _FrozenSettingsModel(BaseModel):
 
 
 class DiscoveryApiConfig(_FrozenSettingsModel):
+    """Validate discovery-provider connection settings."""
+
     base_url: str = "https://narrative.agent.heisenberg.so/api/v2/semantic/retrieve/parameterized"
     token: SecretStr = SecretStr("")
     timeout_seconds: float = Field(20.0, gt=0)
@@ -583,10 +595,13 @@ class DiscoveryApiConfig(_FrozenSettingsModel):
 
     @property
     def has_token(self) -> bool:
+        """Return whether the analytics token is configured."""
         return bool(self.token.get_secret_value())
 
 
 class ShortlistConfig(_FrozenSettingsModel):
+    """Validate discovery shortlist thresholds."""
+
     min_win_rate_15d: float = Field(0.45, ge=0, le=1)
     max_win_rate_15d: float = Field(0.92, ge=0, le=1)
     min_roi_15d: float = 0.0
@@ -610,6 +625,8 @@ class ShortlistConfig(_FrozenSettingsModel):
 
 
 class Wallet360Config(_FrozenSettingsModel):
+    """Validate Wallet360 evidence-window settings."""
+
     windows: tuple[Literal["1", "3", "7", "15"], ...] = ("1", "3", "7", "15")
     max_drawdown_pct: float = Field(35.0, ge=0)
     min_market_diversity: int = Field(3, ge=1)
@@ -627,6 +644,8 @@ class Wallet360Config(_FrozenSettingsModel):
 
 
 class RecencyConfig(_FrozenSettingsModel):
+    """Validate discovery recency thresholds."""
+
     max_hours_since_last_trade: int = Field(48, ge=1)
     min_trades_lookback: int = Field(3, ge=1)
     lookback_hours: int = Field(168, ge=1)
@@ -635,6 +654,8 @@ class RecencyConfig(_FrozenSettingsModel):
 
 
 class MarketQualityConfig(_FrozenSettingsModel):
+    """Validate market-quality thresholds for discovery."""
+
     min_volume_24h: float = Field(5000.0, ge=0)
     min_liquidity_percentile: float = Field(40.0, ge=0, le=100)
     volume_trend: Literal["UP", "DOWN", "ALL"] = "ALL"
@@ -645,6 +666,8 @@ class MarketQualityConfig(_FrozenSettingsModel):
 
 
 class SocialConfig(_FrozenSettingsModel):
+    """Validate optional social-evidence settings."""
+
     enabled: bool = False
     keywords: tuple[str, ...] = ()
     hours_back: int = Field(24, ge=1)
@@ -664,6 +687,8 @@ class SocialConfig(_FrozenSettingsModel):
 
 
 class ScoringWeights(_FrozenSettingsModel):
+    """Define normalized top-level discovery scoring weights."""
+
     falcon_quality: float = Field(0.30, ge=0)
     copyability: float = Field(0.25, ge=0)
     recent_consistency: float = Field(0.15, ge=0)
@@ -680,6 +705,8 @@ class ScoringWeights(_FrozenSettingsModel):
 
 
 class FalconQualityWeights(_FrozenSettingsModel):
+    """Define normalized Falcon evidence weights."""
+
     h_score: float = Field(0.50, ge=0)
     roi: float = Field(0.20, ge=0)
     win_rate: float = Field(0.15, ge=0)
@@ -709,6 +736,8 @@ class RuntimeSignalWeights(_FrozenSettingsModel):
 
 
 class ScoringConfig(_FrozenSettingsModel):
+    """Validate discovery scoring policy settings."""
+
     weights: ScoringWeights = ScoringWeights.model_validate({})
     quality_weights: FalconQualityWeights = FalconQualityWeights.model_validate({})
     runtime_weights: RuntimeSignalWeights = RuntimeSignalWeights.model_validate({})
@@ -740,6 +769,8 @@ class ScoringConfig(_FrozenSettingsModel):
 
 
 class LongitudinalWeights(_FrozenSettingsModel):
+    """Define normalized longitudinal scoring weights."""
+
     sharpe: float = Field(0.30, ge=0)
     roi_slope: float = Field(0.20, ge=0)
     win_rate_stability: float = Field(0.20, ge=0)
@@ -754,6 +785,8 @@ class LongitudinalWeights(_FrozenSettingsModel):
 
 
 class LongitudinalConfig(_FrozenSettingsModel):
+    """Validate longitudinal discovery settings."""
+
     enabled: bool = True
     half_life_days: float = Field(7.0, gt=0)
     prior_score: float = Field(0.50, ge=0, le=1)
@@ -792,6 +825,8 @@ class LongitudinalConfig(_FrozenSettingsModel):
 
 
 class HysteresisConfig(_FrozenSettingsModel):
+    """Validate roster promotion and demotion thresholds."""
+
     promote_score: float = Field(0.62, ge=0, le=1)
     demote_score: float = Field(0.50, ge=0, le=1)
     min_tenure_cycles: int = Field(3, ge=1)
@@ -805,6 +840,8 @@ class HysteresisConfig(_FrozenSettingsModel):
 
 
 class DiscoverySchedulerConfig(_FrozenSettingsModel):
+    """Validate bounded discovery scheduling settings."""
+
     enabled: bool = True
     rediscover_seconds: int = Field(1800, ge=30)
     rescore_seconds: int = Field(900, ge=30)
@@ -878,6 +915,8 @@ class HeisenbergDiscoveryConfig(_FrozenSettingsModel):
 
 
 class DiscoveryConfig(_FrozenSettingsModel):
+    """Validate the complete discovery service configuration."""
+
     api: DiscoveryApiConfig = DiscoveryApiConfig.model_validate({})
     shortlist: ShortlistConfig = ShortlistConfig.model_validate({})
     wallet360: Wallet360Config = Wallet360Config.model_validate({})

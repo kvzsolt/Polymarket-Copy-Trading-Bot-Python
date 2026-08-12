@@ -26,6 +26,8 @@ _RETRYABLE_STATUS = {429, 500, 503}
 
 @dataclass(frozen=True, slots=True)
 class HeisenbergPage:
+    """Describe one sanitized page returned by the analytics provider."""
+
     results: tuple[dict[str, Any], ...]
     limit: int
     offset: int
@@ -140,6 +142,7 @@ class HeisenbergClient:
         )
 
     async def close(self) -> None:
+        """Close the injected provider or venue client."""
         if self._closed:
             return
         self._closed = True
@@ -164,6 +167,7 @@ class HeisenbergClient:
         limit: int = 200,
         offset: int = 0,
     ) -> HeisenbergPage:
+        """Send a validated request through the analytics provider adapter."""
         if self._closed:
             raise HeisenbergConfigurationError("Heisenberg client is closed")
         if not 1 <= limit <= 200:
@@ -284,6 +288,7 @@ class HeisenbergClient:
         max_pages: int | None = None,
         max_rows: int | None = None,
     ) -> list[dict[str, Any]]:
+        """Fetch all bounded provider pages with duplicate elimination."""
         page_cap = max_pages or self._max_pages
         row_cap = max_rows or self._max_rows
         if page_cap < 1 or row_cap < 1:
@@ -320,6 +325,7 @@ class HeisenbergClient:
         raise HeisenbergProtocolError("Heisenberg pagination exceeded max_pages")
 
     async def leaderboard(self, *, limit: int = 50, **params: Any) -> list[dict[str, Any]]:
+        """Return the current provider wallet leaderboard."""
         return await self.fetch_all(584, params=params, page_size=min(limit, 200), max_rows=limit)
 
     async def wallet_360(
@@ -329,6 +335,7 @@ class HeisenbergClient:
         *,
         limit: int = 20,
     ) -> list[dict[str, Any]]:
+        """Return Wallet360 evidence for a wallet and time window."""
         if window_days not in {1, 3, 7, 15}:
             raise HeisenbergConfigurationError("Wallet360 window_days must be 1, 3, 7 or 15")
         return await self.fetch_all(
@@ -345,6 +352,7 @@ class HeisenbergClient:
         leaderboard_period: str = "7d",
         limit: int = 100,
     ) -> list[dict[str, Any]]:
+        """Return the provider PnL leaderboard."""
         if leaderboard_period not in {"1d", "3d", "7d", "30d"}:
             raise HeisenbergConfigurationError("leaderboard_period must be 1d, 3d, 7d or 30d")
         return await self.fetch_all(
@@ -363,6 +371,7 @@ class HeisenbergClient:
         *,
         limit: int = 10,
     ) -> list[dict[str, Any]]:
+        """Return all-time statistics for a wallet."""
         return await self.fetch_all(
             586,
             params={"wallet_address": wallet_address},
@@ -380,6 +389,7 @@ class HeisenbergClient:
         end_time: int | float | str | date | datetime | None = None,
         limit: int = 500,
     ) -> list[dict[str, Any]]:
+        """Return sanitized provider trade evidence."""
         return await self.fetch_all(
             556,
             params={
@@ -405,6 +415,7 @@ class HeisenbergClient:
         closed: bool | None = None,
         limit: int = 200,
     ) -> list[dict[str, Any]]:
+        """Return sanitized provider market evidence."""
         return await self.fetch_all(
             574,
             params={
@@ -431,6 +442,7 @@ class HeisenbergClient:
         max_unique_traders_7d: Any = None,
         limit: int = 200,
     ) -> list[dict[str, Any]]:
+        """Return Market360 evidence for a market."""
         return await self.fetch_all(
             575,
             params={
@@ -454,6 +466,7 @@ class HeisenbergClient:
         end_time: int | float | str | date | datetime | None = None,
         limit: int = 200,
     ) -> list[dict[str, Any]]:
+        """Return sanitized provider PnL evidence."""
         return await self.fetch_all(
             569,
             params={
@@ -475,6 +488,7 @@ class HeisenbergClient:
         lookback_hours: int = 24,
         limit: int = 200,
     ) -> list[dict[str, Any]]:
+        """Return sanitized price-jump evidence."""
         return await self.fetch_all(
             596,
             params={

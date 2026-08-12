@@ -1,3 +1,5 @@
+"""Poll and normalize leader trades while preserving durable cursors."""
+
 from __future__ import annotations
 
 import asyncio
@@ -99,6 +101,8 @@ async def _guarded_leader_fetch(kind: str, leader_wallet: str, url: str):
 # Position save interval (seconds) — avoid saving on every loop
 @dataclass
 class LeaderMonitorState:
+    """Track bounded polling state for one leader monitor."""
+
     recent_activities: list[dict] = field(default_factory=list)
     seen_hashes: set[str] = field(default_factory=set)
     last_processed_ts: float = 0.0
@@ -190,6 +194,7 @@ def _spawn_research_capture(
 
 
 async def init(user_address: str, state: LeaderMonitorState):
+    """Initialize the leader-trade monitor dependencies."""
     if not user_address or len(user_address) != 42:
         logger.error(
             f'Invalid wallet address "{user_address}" — must be 42-char hex (0x + 40 digits)'

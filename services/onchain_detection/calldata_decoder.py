@@ -66,6 +66,8 @@ MATCH_ORDERS_SELECTOR: bytes = function_signature_to_4byte_selector(
 
 @dataclass(frozen=True)
 class DecodedOrder:
+    """Describe an immutable decoded Polymarket order."""
+
     salt: int
     maker: str
     signer: str
@@ -81,6 +83,8 @@ class DecodedOrder:
 
 @dataclass(frozen=True)
 class MatchOrdersCall:
+    """Describe a decoded match-orders calldata payload."""
+
     condition_id: bytes
     taker_order: DecodedOrder
     maker_orders: tuple[DecodedOrder, ...]

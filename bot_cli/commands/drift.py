@@ -20,6 +20,7 @@ if TYPE_CHECKING:
 
 
 def register_drift_command(subparsers: argparse._SubParsersAction) -> None:
+    """Register the reconciliation-drift command with the CLI parser."""
     parser = subparsers.add_parser("drift", help="Detect off-bot/manual position drift")
     sub = parser.add_subparsers(dest="drift_subcommand", required=True)
 
@@ -265,4 +266,5 @@ async def _run_drift_async(args: argparse.Namespace) -> int:
 
 
 def run_drift(args: argparse.Namespace) -> int:
+    """Query and render reconciliation drift for the selected follower."""
     return asyncio.run(_run_drift_async(args))

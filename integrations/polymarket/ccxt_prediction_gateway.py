@@ -73,6 +73,8 @@ OrderSide = Literal["BUY", "SELL"]
 
 @dataclass(frozen=True, slots=True)
 class ExecutionMetadata:
+    """Describe authoritative metadata required to construct an order."""
+
     token_id: str
     tick_size: Decimal
     min_order_size: Decimal
@@ -301,10 +303,12 @@ class CcxtPredictionGateway:
 
     @property
     def client(self) -> CcxtPredictionClient | Any:
+        """Return the wrapped CCXT prediction client."""
         return self._client
 
     @property
     def exchange(self) -> Any:
+        """Return the wrapped CCXT exchange instance."""
         return self._exchange
 
     def _resolve_method(self, *names: str) -> Any:
@@ -571,6 +575,7 @@ class CcxtPredictionGateway:
         return metadata
 
     async def get_orderbook(self, token_id: str) -> OrderBook:
+        """Return a normalized order book for a raw outcome token."""
         raw = await self._fetch_raw_order_book(str(token_id))
         metadata = await self._execution_metadata(str(token_id), raw)
 
@@ -642,6 +647,7 @@ class CcxtPredictionGateway:
         return {"price": format(price if price is not None else Decimal("0"), "f")}
 
     async def get_market_info(self, token_id: str) -> dict[str, Any]:
+        """Return normalized market information for an outcome token."""
         book = await self.get_orderbook(token_id)
         return {
             "token_id": book.token_id,
@@ -653,6 +659,7 @@ class CcxtPredictionGateway:
         }
 
     async def get_execution_metadata(self, token_id: str) -> dict[str, Any]:
+        """Return authoritative tick, minimum-size, and negative-risk metadata."""
         metadata = await self._execution_metadata(str(token_id))
         return {
             "token_id": metadata.token_id,
@@ -732,6 +739,7 @@ class CcxtPredictionGateway:
         return _normalize_status(_first(raw, "status"))
 
     async def submit_limit_order(self, request: LimitOrderRequest) -> VenueSubmitResult:
+        """Submit a validated limit order through CCXT Prediction."""
         if not request.condition_id:
             return VenueSubmitResult(
                 success=False,
@@ -773,6 +781,7 @@ class CcxtPredictionGateway:
         return self._submission_from_order(value)
 
     async def submit_marketable_order(self, request: MarketableOrderRequest) -> VenueSubmitResult:
+        """Submit a price-protected FAK order through CCXT Prediction."""
         if not request.condition_id:
             return VenueSubmitResult(
                 success=False,
@@ -861,6 +870,7 @@ class CcxtPredictionGateway:
         )
 
     async def get_order(self, order_id: str) -> VenueOrderState:
+        """Return one normalized venue order when it exists."""
         try:
             async with asyncio.timeout(_READ_TIMEOUT_SECONDS):
                 value = await _await_call(self._exchange.fetch_order, order_id)
@@ -874,6 +884,7 @@ class CcxtPredictionGateway:
         order_id: str | None = None,
         market: str | None = None,
     ) -> list[VenueOrderState]:
+        """Return normalized open orders with pagination deduplication."""
         params: dict[str, Any] = {}
         if order_id:
             params["id"] = order_id
@@ -954,6 +965,7 @@ class CcxtPredictionGateway:
         trade_id: str | None = None,
         order_id: str | None = None,
     ) -> list[VenueFill]:
+        """Return normalized fills with exact maker and taker attribution."""
         params: dict[str, Any] = {}
         if market:
             params["market"] = market
@@ -1023,6 +1035,7 @@ class CcxtPredictionGateway:
         return result
 
     async def cancel_order(self, order_id: str) -> VenueCancelResult:
+        """Cancel an order idempotently through the venue adapter."""
         try:
             value = await _await_call(self._exchange.cancel_order, order_id)
         except BaseException as exc:
@@ -1055,6 +1068,7 @@ class CcxtPredictionGateway:
         )
 
     async def check_compatibility(self) -> dict[str, Any]:
+        """Validate installed CCXT Prediction capabilities fail closed."""
         try:
             has = getattr(self._exchange, "has", {}) or {}
             options = getattr(self._exchange, "options", {}) or {}
@@ -1134,6 +1148,7 @@ class CcxtPredictionGateway:
             }
 
     async def close(self) -> None:
+        """Close the injected provider or venue client."""
         if isinstance(self._client, CcxtPredictionClient):
             await self._client.close()
             return

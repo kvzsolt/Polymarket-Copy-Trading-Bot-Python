@@ -55,6 +55,8 @@ class MarketQuoteSink(Protocol):
 
 @dataclass
 class MarketDataRuntimeStatus:
+    """Describe the current shared market-data runtime state."""
+
     running: bool = False
     subscribed_token_count: int = 0
     stale_token_count: int = 0
@@ -486,6 +488,7 @@ class MarketDataRuntime:
         self._update_readiness_from_store()
 
     def status(self) -> MarketDataRuntimeStatus:
+        """Return an immutable market-data runtime status snapshot."""
         self._refresh_counts()
         return MarketDataRuntimeStatus(
             running=self._status.running,

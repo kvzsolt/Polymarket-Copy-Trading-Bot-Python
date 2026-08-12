@@ -100,12 +100,14 @@ class MarketWebSocket:
         self._tasks: set[asyncio.Task] = set()
 
     async def connect(self, asset_ids: list[str]) -> None:
+        """Open the market WebSocket connection."""
         self._asset_ids = _dedupe_asset_ids(asset_ids)
         self._running = True
         logger.info("MarketWS: starting for %d asset(s)", len(self._asset_ids))
         await self._reconnect_loop()
 
     async def stop(self) -> None:
+        """Stop the market WebSocket client and release its tasks."""
         self._running = False
         if self._ws is not None:
             with contextlib.suppress(Exception):
@@ -114,6 +116,7 @@ class MarketWebSocket:
         logger.info("MarketWS: stopped")
 
     async def subscribe(self, asset_ids: list[str]) -> None:
+        """Subscribe the connection to the supplied market tokens."""
         new_ids = [a for a in _dedupe_asset_ids(asset_ids) if a not in self._asset_ids]
         if not new_ids:
             return
@@ -132,6 +135,7 @@ class MarketWebSocket:
             logger.info("MarketWS: dynamically subscribed to %d asset(s)", len(new_ids))
 
     async def unsubscribe(self, asset_ids: list[str]) -> None:
+        """Remove the supplied market-token subscriptions."""
         remove_ids = _dedupe_asset_ids(asset_ids)
         if not remove_ids:
             return

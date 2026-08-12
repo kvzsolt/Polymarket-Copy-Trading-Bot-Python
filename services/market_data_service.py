@@ -66,6 +66,8 @@ class MarketDataNotReady(MarketDataError):
 
 
 class MarketDataSource(str, Enum):
+    """Identify the bounded source of a market-data observation."""
+
     WSS = "wss"
     REST_SNAPSHOT = "rest_snapshot"
     REST_DEGRADED = "rest_degraded"
@@ -75,6 +77,8 @@ class MarketDataSource(str, Enum):
 
 @dataclass(frozen=True)
 class MarketDataPolicy:
+    """Define freshness and quality limits for market data."""
+
     max_quote_age_seconds: float = 2.0
     max_book_age_seconds: float = 2.0
     max_tick_age_seconds: float = 300.0
@@ -99,6 +103,8 @@ class MarketDataPolicy:
 
 @dataclass(frozen=True)
 class MarketDataBundle:
+    """Hold one immutable normalized market-data snapshot."""
+
     token_id: str
     quote: QuoteSnapshot
     book: BookSnapshot
@@ -135,6 +141,7 @@ class MarketDataService:
         side: str | None = None,
         condition_id: str | None = None,
     ) -> MarketDataBundle:
+        """Return a fresh complete market-data snapshot or fail closed."""
         active_policy = policy or self._policy
 
         if active_policy.primary_source == "rest_snapshot" and side is not None:
@@ -508,27 +515,33 @@ class MarketDataService:
         return "BUY"
 
     async def require_fresh_quote(self, token_id: str) -> QuoteSnapshot:
+        """Return a fresh quote or fail closed."""
         return (await self.require_fresh_data(token_id)).quote
 
     async def require_fresh_book(self, token_id: str) -> BookSnapshot:
+        """Return a fresh order book or fail closed."""
         return (await self.require_fresh_data(token_id)).book
 
     async def require_fresh_tick(self, token_id: str) -> TickSnapshot:
+        """Return a fresh authoritative tick size or fail closed."""
         return (await self.require_fresh_data(token_id)).tick
 
     async def get_quote_or_none(self, token_id: str) -> QuoteSnapshot | None:
+        """Return a fresh quote when available without fabricating a value."""
         try:
             return await self.require_fresh_quote(token_id)
         except MarketDataError:
             return None
 
     async def get_book_or_none(self, token_id: str) -> BookSnapshot | None:
+        """Return a fresh order book when available."""
         try:
             return await self.require_fresh_book(token_id)
         except MarketDataError:
             return None
 
     async def get_tick_or_none(self, token_id: str) -> TickSnapshot | None:
+        """Return a fresh authoritative tick size when available."""
         try:
             return await self.require_fresh_tick(token_id)
         except MarketDataError:

@@ -1,3 +1,5 @@
+"""Reserve collateral or shares atomically before venue submission."""
+
 import logging
 import time
 import uuid
@@ -16,37 +18,56 @@ logger = logging.getLogger(__name__)
 
 
 class ReservationConflict(Exception):
+    """Signal a conflicting active reservation for the same intent."""
+
     pass
 
 
 class InsufficientFreeQuote(Exception):
+    """Signal insufficient unreserved quote collateral."""
+
     pass
 
 
 class InsufficientFreeShares(Exception):
+    """Signal insufficient unreserved outcome shares."""
+
     pass
 
 
 class Clock(Protocol):
-    def utcnow_timestamp(self) -> int: ...
+    """Define the Clock port used by application services."""
+
+    def utcnow_timestamp(self) -> int:
+        """Return the current UTC POSIX timestamp."""
+        ...
 
 
 class DefaultClock(Clock):
+    """Provide production UTC timestamps to reservation logic."""
+
     def utcnow_timestamp(self) -> int:
+        """Return the current UTC POSIX timestamp."""
         return int(time.time())
 
 
 class ReconcilerCallback(Protocol):
+    """Define the ReconcilerCallback port used by application services."""
+
     async def __call__(self, reservation_id: str) -> bool | None: ...
 
 
 @dataclass
 class ReservationScopeTotals:
+    """Describe exact active reservation totals for one scope."""
+
     reserved_usdc: Decimal
     reserved_size: Decimal
 
 
 class ReservationService:
+    """Reserve and release trading capacity through an injected repository."""
+
     def __init__(
         self,
         reservations_repo: ReservationsRepo,
@@ -88,6 +109,7 @@ class ReservationService:
         self.force_release_grace_seconds = force_release_grace_seconds
 
     async def reserve_for_intent(self, intent: OrderIntent) -> Reservation:
+        """Atomically reserve the capacity required by an execution intent."""
         stable_key = intent.key.stable_key()
         if not self.enabled:
             logger.info(
@@ -370,6 +392,7 @@ class ReservationService:
     async def get_scope_totals(
         self, user_id: str, condition_id: str, token_id: str
     ) -> ReservationScopeTotals:
+        """Return exact active reservation totals for a scope."""
         buy_usdc, _ = await self.reservations_repo.sum_active_for_scope(
             user_id, condition_id, token_id, IntentSide.BUY
         )
@@ -389,6 +412,7 @@ class ReservationService:
         return None
 
     async def release_terminal(self, reservation_id: str, reason: str) -> None:
+        """Release terminal."""
         if self._is_disabled_reservation_id(reservation_id):
             logger.info(
                 "reservation.release.disabled_noop id=%s reason=%s",

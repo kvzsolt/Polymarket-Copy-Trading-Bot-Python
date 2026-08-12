@@ -1,3 +1,5 @@
+"""Provide secret-safe structured and operator-facing logging."""
+
 from __future__ import annotations
 
 import json
@@ -80,7 +82,10 @@ _STANDARD_RECORD_ATTRS = frozenset(vars(logging.LogRecord("", 0, "", 0, "", (), 
 
 
 class JsonFormatter(logging.Formatter):
+    """Render structured log records without exposing secrets."""
+
     def format(self, record: LogRecord) -> str:
+        """Format a record as bounded secret-safe structured JSON."""
         payload: dict[str, Any] = {
             "ts": self.formatTime(record, datefmt="%Y-%m-%d %H:%M:%S"),
             "level": record.levelname,
@@ -207,6 +212,7 @@ class RichConsoleHandler(logging.Handler):
     )
 
     def emit(self, record: LogRecord) -> None:
+        """Emit a record while isolating managed-handler failures."""
         try:
             log_type = getattr(record, "type", None)
             if (
@@ -702,6 +708,7 @@ def configure_logging(
     max_bytes: int = DEFAULT_MAX_BYTES,
     backup_count: int = DEFAULT_BACKUP_COUNT,
 ) -> logging.Logger:
+    """Configure logging."""
     logging.raiseExceptions = False
 
     if isinstance(level, str):
@@ -744,6 +751,7 @@ _CONFIGURED_LOGGERS: dict[str, logging.Logger] = {}
 
 
 def get_logger(name: str | None = None) -> logging.Logger:
+    """Return the configured structured logger for a component."""
     if APP_NAME not in _CONFIGURED_LOGGERS:
         configure_logging()
 
@@ -754,6 +762,7 @@ def get_logger(name: str | None = None) -> logging.Logger:
 
 
 def format_usdc(value: float | int | None) -> str:
+    """Format an exact USDC amount for operator output."""
     try:
         amount = float(value or 0.0)
     except (TypeError, ValueError):
@@ -762,6 +771,7 @@ def format_usdc(value: float | int | None) -> str:
 
 
 def tx_link(tx_hash: str | None, chain: str | None = None) -> str:
+    """Return the configured explorer link for a transaction."""
     if not tx_hash:
         return ""
     chain = (chain or "polygon").lower()
@@ -775,12 +785,14 @@ def tx_link(tx_hash: str | None, chain: str | None = None) -> str:
 
 
 def event_link(event_slug: str | None) -> str:
+    """Return the configured Polymarket event link."""
     if not event_slug:
         return ""
     return f"https://polymarket.com/event/{event_slug}"
 
 
 def shorten_addr(addr: str | None, prefix: int = 6, suffix: int = 4) -> str:
+    """Return a compact display form of a wallet address."""
     if not addr:
         return "N/A"
     if len(addr) <= prefix + suffix + 3:
@@ -840,6 +852,7 @@ def get_wallet_type(clob_client: Any) -> tuple[str, int | None]:
 
 
 def print_startup_banner() -> None:
+    """Render startup banner."""
     console.print()
     console.print(
         Panel(
@@ -859,6 +872,7 @@ def print_status_checks(
     api_ok: bool,
     database_ok: bool,
 ) -> None:
+    """Render status checks."""
     rpc_icon = "✅" if rpc_ok else "❌"
     rpc_text = "RPC endpoint responding" if rpc_ok else "RPC endpoint NOT responding"
     console.print(f"ℹ️ RPC:  {rpc_icon}  {rpc_text}")
@@ -881,6 +895,7 @@ def print_status_checks(
 
 
 def print_clob_client_status(clob_client) -> None:
+    """Render clob client status."""
     console.print("ℹ️ Initializing CLOB client...")
     wallet_type, _ = get_wallet_type(clob_client)
     console.print(f"ℹ️ Wallet type detected: {wallet_type}")
@@ -891,6 +906,7 @@ def print_clob_client_status(clob_client) -> None:
 def print_service_start(
     *, monitor: bool = True, executor: bool = True, trader_count: int = 1
 ) -> None:
+    """Render service start."""
     if monitor:
         console.print("ℹ️ Starting trade monitor...")
     if executor:
@@ -900,6 +916,7 @@ def print_service_start(
 
 
 def print_db_status(traders: dict[str, int] | None = None) -> None:
+    """Render db status."""
     console.print("🟠 [bold]Database Status:[/bold]")
     if traders:
         for addr, count in traders.items():
@@ -916,6 +933,7 @@ def print_positions(
     total_portfolio: float,
     positions: list[dict] | None = None,
 ) -> None:
+    """Render positions."""
     console.print(Rule("YOUR POSITIONS", style="yellow"))
     console.print(f"   Wallet: {shorten_addr(wallet)}")
     console.print(f"   💰 Available Cash:   [money]${available_cash:.2f}[/money]")
@@ -952,6 +970,7 @@ def print_positions(
 
 
 def print_traders_copying(traders: list[dict] | None = None) -> None:
+    """Render traders copying."""
     console.print(Rule("TRADERS YOU'RE COPYING", style="blue"))
     if traders:
         for t in traders:
@@ -965,20 +984,25 @@ def print_traders_copying(traders: list[dict] | None = None) -> None:
 
 
 def print_monitor_start(trader_count: int, interval_s: int) -> None:
+    """Render monitor start."""
     console.print(f"✅ Monitoring {trader_count} trader(s) every {interval_s}s")
     console.print()
 
 
 def print_first_run_init() -> None:
+    """Render first run init."""
     console.print("ℹ️ First run: marking all historical trades as processed...")
 
 
 def print_historical_done() -> None:
+    """Render historical done."""
     console.print("Historical trades processed. Now monitoring for new trades only.")
     console.print()
 
 
 class MonitorHeartbeat:
+    """Track bounded operator heartbeat rendering state."""
+
     def __init__(self, interval: int = MONITOR_HEARTBEAT_INTERVAL):
         self.interval = interval
         self._last_log: float = 0.0
@@ -993,6 +1017,7 @@ class MonitorHeartbeat:
         monitored_leader_count: int | None = None,
         symbol: str = "🟢",
     ) -> None:
+        """Advance heartbeat state and report whether output is due."""
         self._trader_count = trader_count
         now = time.time()
         if now - self._last_log >= self.interval:
@@ -1037,6 +1062,7 @@ def monitor_heartbeat_tick(
     monitored_leader_count: int | None = None,
     symbol: str = "🟢",
 ) -> None:
+    """Advance the shared monitor heartbeat."""
     _heartbeat.tick(
         trader_count=trader_count,
         checked_activities=checked_activities,
@@ -1047,10 +1073,12 @@ def monitor_heartbeat_tick(
 
 
 def reset_heartbeat() -> None:
+    """Reset heartbeat."""
     _heartbeat.reset()
 
 
 def print_new_trade_detected(trade: dict) -> None:
+    """Render new trade detected."""
     addr = shorten_addr(trade.get("proxyWallet") or trade.get("user"))
     side = (trade.get("side") or "?").upper()
     title = trade.get("title") or "N/A"
@@ -1125,6 +1153,7 @@ def print_new_trade_detected(trade: dict) -> None:
 
 
 def print_trade_queued(trade: dict) -> None:
+    """Render trade queued."""
     addr = shorten_addr(trade.get("proxyWallet") or trade.get("user"))
     console.print(f"  ℹ️ New trade detected for {addr}")
 
@@ -1135,6 +1164,7 @@ def print_capital_info(
     leader_balance: float,
     leader_addr: str,
 ) -> None:
+    """Render capital info."""
     console.print("Capital (USDC + Positions):")
     console.print(f"   Your total capital:    [money]{format_usdc(my_balance)}[/money]")
     console.print(
@@ -1143,10 +1173,12 @@ def print_capital_info(
 
 
 def print_executing_strategy(side: str) -> None:
+    """Render executing strategy."""
     console.print(f"ℹ️ Executing {side.upper()} strategy...")
 
 
 def print_balance_update(balance: float) -> None:
+    """Render balance update."""
     console.print(f"ℹ️ Your balance: [money]${balance:.2f}[/money]")
 
 
@@ -1163,6 +1195,7 @@ def print_trade_result(
     submarket: str | None = None,
     outcome: str | None = None,
 ) -> None:
+    """Render trade result."""
     side_style = "trade.buy" if side.upper() == "BUY" else "trade.sell"
     if success:
         lines = _build_panel_lines(
@@ -1204,6 +1237,7 @@ def print_trade_result(
 
 
 def print_skip_reason(reason: str, detail: str = "") -> None:
+    """Render skip reason."""
     lines = _build_panel_lines(
         Reason=reason,
         Detail=detail or None,
@@ -1219,18 +1253,22 @@ def print_skip_reason(reason: str, detail: str = "") -> None:
 
 
 def print_error(msg: str) -> None:
+    """Render error."""
     console.print(f"❌ [error]{msg}[/error]")
 
 
 def print_warning(msg: str) -> None:
+    """Render warning."""
     console.print(f"⚠️ [warning]{msg}[/warning]")
 
 
 def print_info(msg: str) -> None:
+    """Render info."""
     console.print(f"ℹ️ {msg}")
 
 
 def print_success(msg: str) -> None:
+    """Render success."""
     console.print(f"✅ [success]{msg}[/success]")
 
 
@@ -1335,6 +1373,7 @@ def print_manual_sync_discrepancy(
 
 
 def redact_error_detail(error: Any) -> str:
+    """Redact error detail."""
     if error is None:
         return "unknown_error"
 
@@ -1463,6 +1502,7 @@ def print_api_error(
     retry: int = 0,
     max_retries: int = 3,
 ) -> None:
+    """Render api error."""
     error_str = str(error) if error else "Unknown error"
     parsed = _parse_api_error(error_str)
 
@@ -1493,6 +1533,7 @@ def print_api_response(
     response: dict | None = None,
     condition_id: str | None = None,
 ) -> None:
+    """Render api response."""
     if not response or response.get("success", False):
         return
 
@@ -1529,6 +1570,7 @@ def print_order_skip(
     price: float | None = None,
     detail: str = "",
 ) -> None:
+    """Render order skip."""
     lines = _build_panel_lines(
         Side=side.upper(),
         Reason=reason,
@@ -1559,6 +1601,7 @@ def print_clob_error(
     side: str | None = None,
     condition_id: str | None = None,
 ) -> None:
+    """Render clob error."""
     error_str = str(error)
     parsed = _parse_api_error(error_str)
 
@@ -1653,6 +1696,7 @@ def log_api_error(
     # key. Route through ``safe_error_detail`` to get a category-only
     # representation (matches the structured ``error`` field above) so
     # the JSONL line can never carry credentials.
+    """Record api error."""
     redacted_message = redact_error_detail(error)
     redacted_detail = safe_error_detail(error) if error else "Unknown error"
     payload = {
@@ -1685,6 +1729,7 @@ def log_trade_execution(
     event_slug: str | None = None,
     meta: dict[str, Any] | None = None,
 ) -> None:
+    """Record trade execution."""
     _log_trade(
         logger,
         label="EXECUTED",
@@ -1714,6 +1759,7 @@ def log_trade_detected(
     event_slug: str | None = None,
     meta: dict[str, Any] | None = None,
 ) -> None:
+    """Record trade detected."""
     _log_trade(
         logger,
         label="DETECTED",
@@ -1736,6 +1782,7 @@ def log_trade_batch_summary(
     leader_wallet: str,
     trades: list[dict[str, Any]],
 ) -> None:
+    """Record trade batch summary."""
     buy_count = 0
     sell_count = 0
     gross_usdc = 0.0
@@ -1781,6 +1828,7 @@ def log_trade_submitted(
     event_slug: str | None = None,
     meta: dict[str, Any] | None = None,
 ) -> None:
+    """Record trade submitted."""
     _log_trade(
         logger,
         label="SUBMIT",
@@ -1925,6 +1973,7 @@ def log_trade_decision(
     event_slug: str | None = None,
     meta: dict[str, Any] | None = None,
 ) -> None:
+    """Record trade decision."""
     payload: dict[str, Any] = {
         "type": "trade_decision",
         "side": side.upper(),
@@ -1966,6 +2015,7 @@ def log_trade_skip(
     event_slug: str | None = None,
     meta: dict[str, Any] | None = None,
 ) -> None:
+    """Record trade skip."""
     _log_trade(
         logger,
         label=status.upper(),
@@ -1998,6 +2048,7 @@ def log_risk_exit(
     event_slug: str | None = None,
     meta: dict[str, Any] | None = None,
 ) -> None:
+    """Record risk exit."""
     _log_trade(
         logger,
         label="RISK_EXIT",
@@ -2022,6 +2073,7 @@ def log_monitor_heartbeat(
     monitored_leader_count: int | None = None,
     symbol: str = "🟢",
 ) -> None:
+    """Record monitor heartbeat."""
     leader_label = shorten_addr(leader_wallet) if leader_wallet else "multi-leader"
     leader_summary = (
         f"leaders={monitored_leader_count} total | current={leader_label}"

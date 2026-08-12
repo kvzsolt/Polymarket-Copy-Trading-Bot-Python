@@ -913,6 +913,7 @@ class _Supervised:
     started: float = 0.0
 
     def spawn(self) -> asyncio.Task:
+        """Start and track a supervised background task."""
         self.started = asyncio.get_running_loop().time()
         self.task = asyncio.create_task(self.factory(), name=self.name)
         return self.task

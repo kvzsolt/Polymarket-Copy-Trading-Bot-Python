@@ -1,3 +1,5 @@
+"""Expose the shared readiness and Prometheus metrics endpoints."""
+
 from __future__ import annotations
 
 import time
@@ -140,6 +142,7 @@ class ReadinessTracker:
         self._checks: dict[str, ReadinessCheck] = {}
 
     def update(self, **kwargs: Any) -> None:
+        """Update one readiness component without replacing the shared truth."""
         with self._lock:
             self._state.update(kwargs)
 
@@ -263,6 +266,7 @@ class ReadinessTracker:
         return stale
 
     def snapshot(self) -> dict[str, Any]:
+        """Return a point-in-time readiness snapshot."""
         with self._lock:
             snapshot = deepcopy(self._state)
             snapshot["checks"] = {
@@ -276,6 +280,7 @@ class ReadinessTracker:
             return snapshot
 
     def get_all(self) -> dict[str, Any]:
+        """Return all registered readiness component states."""
         return self.snapshot()
 
     def is_ready(self, *, strict: bool = False) -> tuple[bool, list[str]]:
@@ -318,6 +323,7 @@ class ReadinessTracker:
 
 
 async def metrics_handler(_request: web.Request) -> web.Response:
+    """Render the shared Prometheus registry for aiohttp."""
     body = metrics.render_prometheus()
     return web.Response(text=body, content_type="text/plain; version=0.0.4")
 
@@ -334,6 +340,7 @@ async def start_health_server(
     tracker: ReadinessTracker | None = None,
     host: str = "127.0.0.1",
 ) -> web.AppRunner:
+    """Start the injected health server without joining the trading path."""
     if tracker is not None:
         tracker.update(started_ts=int(time.time()))
     app = web.Application()

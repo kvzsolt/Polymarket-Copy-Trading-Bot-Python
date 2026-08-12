@@ -43,11 +43,15 @@ _ONE = Decimal("1")
 
 
 class CapacityProbe(Protocol):
+    """Define the CapacityProbe port used by application services."""
+
     async def visible_capacity_usdc(
         self,
         trade: TradeSnapshot,
         market: MarketSnapshot,
-    ) -> Decimal | None: ...
+    ) -> Decimal | None:
+        """Return executable visible capacity as an exact USDC amount."""
+        ...
 
 
 def _clamp(value: Decimal, low: Decimal = _ZERO, high: Decimal = _ONE) -> Decimal:
@@ -85,6 +89,8 @@ def _is_evm_address(value: str) -> bool:
 
 @dataclass(frozen=True, slots=True)
 class HeisenbergDiscoveryPolicy:
+    """Evaluate provider evidence using bankroll-compatible safety policy."""
+
     candidate_limit: int = 50
     candidate_concurrency: int = 6
     wallet360_windows: tuple[int, ...] = (1, 3, 7, 15)
@@ -269,6 +275,7 @@ class HeisenbergCandidateService:
         ] = {}
 
     async def discover(self, funds: Decimal) -> DiscoveryResult:
+        """Return safe discovery candidates from persisted provider evidence."""
         generated_at = self._normalize_now(self._now())
         self._market_tasks = {}
         self._quality_tasks = {}

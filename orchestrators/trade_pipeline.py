@@ -1,3 +1,5 @@
+"""Normalize leader signals and execute them through the guarded pipeline."""
+
 from __future__ import annotations
 
 import asyncio
@@ -777,6 +779,8 @@ async def _sync_sell_position_from_live_holdings(
 
 @dataclass
 class TradePipelineResult:
+    """Describe one leader-signal pipeline outcome."""
+
     trade_key: str
     status: str
     reason: str | None
@@ -869,6 +873,7 @@ async def _resolve_leader_tier(context: TradingContext, leader_id: str) -> str:
 
 
 def build_trade_key(user_id: str, leader_id: str, trade: dict[str, Any]) -> str:
+    """Build the canonical economic identity for a leader trade."""
     tx_hash = (
         trade.get("transactionHash")
         or trade.get("txHash")
@@ -1365,6 +1370,7 @@ async def _buy_fee_bps_or_none(context: TradingContext, token_id: str) -> int | 
 def normalize_signals(
     raw_signals: list[dict[str, Any]], leader_id: str
 ) -> list[tuple[TradeSignal, dict[str, Any]]]:
+    """Normalize raw leader rows into immutable execution signals."""
     out: list[tuple[TradeSignal, dict[str, Any]]] = []
     for raw in raw_signals:
         side = str(raw.get("side") or "").strip().upper()
@@ -1662,6 +1668,7 @@ async def execute_trades(
     signals: list[dict[str, Any]],
     now_ts: float,
 ) -> list[TradePipelineResult]:
+    """Execute normalized signals through admission, risk, and reservation gates."""
     if context.execution_service is None:
         raise RuntimeError("TradingContext.execution_service is required")
     leader_scorer = context.leader_scorer

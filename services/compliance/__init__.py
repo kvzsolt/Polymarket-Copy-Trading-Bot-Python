@@ -14,6 +14,7 @@ GEOBLOCK_URL = "https://polymarket.com/api/geoblock"
 
 
 def utcnow() -> datetime:
+    """Return the current timezone-aware UTC time."""
     return datetime.now(timezone.utc)
 
 
@@ -117,6 +118,7 @@ class GeoblockGate:
 
     @property
     def enabled(self) -> bool:
+        """Return whether compliance enforcement is enabled."""
         return self._enabled
 
     async def ensure_allowed(self) -> ComplianceDecision | None:

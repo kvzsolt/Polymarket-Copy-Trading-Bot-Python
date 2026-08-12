@@ -11,6 +11,7 @@ from config.app_config import load_config, EnvValidationError
 
 
 def register_orders_command(subparsers: argparse._SubParsersAction) -> None:
+    """Register the order inspection command with the CLI parser."""
     parser = subparsers.add_parser("orders", help="List and reconcile orders")
     orders_sub = parser.add_subparsers(dest="orders_subcommand", required=True)
 
@@ -191,4 +192,5 @@ async def _run_orders_async(args: argparse.Namespace) -> int:
 
 
 def run_orders(args: argparse.Namespace) -> int:
+    """Query and render orders for the selected follower."""
     return asyncio.run(_run_orders_async(args))

@@ -1,3 +1,5 @@
+"""Define immutable dependencies for a follower trading runtime."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -22,6 +24,8 @@ if TYPE_CHECKING:
 
 @dataclass
 class TradingContext:
+    """Hold the injected services for one follower trading runtime."""
+
     user_id: str
     wallet_address: str
     client: Any

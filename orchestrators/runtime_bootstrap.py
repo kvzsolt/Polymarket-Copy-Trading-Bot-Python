@@ -1,3 +1,5 @@
+"""Compose per-user trading dependencies behind venue-neutral ports."""
+
 from __future__ import annotations
 
 import asyncio
@@ -150,6 +152,8 @@ async def startup_reconcile_unconfirmed(
 
 @dataclass
 class UserRuntimeState:
+    """Hold the composed runtime state for one follower account."""
+
     user: RuntimeUser
     client: object
     orders_repo: OrdersRepo
@@ -179,6 +183,7 @@ class UserRuntimeState:
 
 
 def configured_leaders(config: AppConfig) -> list[str]:
+    """Return the configured leader wallet set."""
     leaders = [str(wallet).strip() for wallet in config.copy_trading.wallets if str(wallet).strip()]
     if not leaders:
         if config.discovery.scheduler.start_from_roster:
@@ -201,6 +206,7 @@ def configured_leaders(config: AppConfig) -> list[str]:
 
 
 def default_follow(user_id: str, leader_id: str, config: AppConfig) -> UserFollowConfig:
+    """Build the default follower-to-leader binding."""
     return UserFollowConfig(
         user_id=user_id,
         leader_id=leader_id,
@@ -214,6 +220,7 @@ def default_follow(user_id: str, leader_id: str, config: AppConfig) -> UserFollo
 def ensure_runtime_follows(
     runtime_users: list[RuntimeUser], leaders: list[str], config: AppConfig
 ) -> None:
+    """Return validated runtime follower bindings."""
     for runtime_user in runtime_users:
         for leader in leaders:
             if leader not in runtime_user.follows:
@@ -259,6 +266,7 @@ def build_user_state(
     config: AppConfig,
     clob_gateway: "ClobGateway | None" = None,
 ) -> UserRuntimeState:
+    """Build one follower runtime from injected configuration and ports."""
     init_risk_engine(config)
 
     # Same pattern for the balance-lookup module (RPC_URL + collateral
@@ -800,6 +808,7 @@ async def build_trading_context(
     leaders_repo=None,
     readiness: ReadinessTracker | None = None,
 ) -> TradingContext:
+    """Build the venue-neutral trading context for one follower binding."""
     rank_multiplier = Decimal("1")
     roster_score: float | None = None
     if leaders_repo is not None and hasattr(leaders_repo, "get_roster"):
@@ -1095,6 +1104,7 @@ async def build_context_maps(
     leaders_repo=None,
     readiness: ReadinessTracker | None = None,
 ) -> tuple[dict[str, list[TradingContext]], dict[str, TradingContext]]:
+    """Index trading contexts by account and leader identity."""
     contexts_by_leader: dict[str, list[TradingContext]] = {leader: [] for leader in active_leaders}
     risk_contexts_by_user: dict[str, TradingContext] = {}
 

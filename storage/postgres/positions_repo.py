@@ -61,6 +61,8 @@ def _lock_key(key: str) -> int:
 
 @dataclass
 class PositionRecord:
+    """Describe one durable normalized follower position."""
+
     user_id: str
     condition_id: str
     token_id: str
@@ -81,10 +83,13 @@ def _row_to_record(row: asyncpg.Record) -> PositionRecord:
 
 
 class PositionsRepo(AbstractPositionRepository):
+    """Persist normalized position state in PostgreSQL."""
+
     def __init__(self, pool: asyncpg.Pool):
         self._pool = pool
 
     async def list_open_positions(self, user_id: str) -> list[PositionRecord]:
+        """Return open positions."""
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 """
@@ -110,6 +115,7 @@ class PositionsRepo(AbstractPositionRepository):
         *,
         token_id: str | None = None,
     ) -> PositionRecord | None:
+        """Return position."""
         async with self._pool.acquire() as conn:
             return await self._get_position_in_conn(conn, user_id, condition_id, token_id=token_id)
 
@@ -182,6 +188,7 @@ class PositionsRepo(AbstractPositionRepository):
     async def list_positions_for_condition(
         self, user_id: str, condition_id: str
     ) -> list[PositionRecord]:
+        """Return positions for condition."""
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 """
@@ -202,6 +209,7 @@ class PositionsRepo(AbstractPositionRepository):
         return out
 
     async def upsert_position(self, record: PositionRecord) -> None:
+        """Insert or update position."""
         async with self._pool.acquire() as conn:
             async with conn.transaction():
                 await self._upsert_position_in_conn(conn, record)
@@ -236,6 +244,7 @@ class PositionsRepo(AbstractPositionRepository):
         *,
         token_id: str | None = None,
     ) -> None:
+        """Delete position."""
         async with self._pool.acquire() as conn:
             async with conn.transaction():
                 await self._delete_position_in_conn(conn, user_id, condition_id, token_id=token_id)
@@ -273,6 +282,7 @@ class PositionsRepo(AbstractPositionRepository):
         fill_size: Decimal,
         fill_price: Decimal,
     ) -> PositionRecord | None:
+        """Apply fill."""
         if not is_valid_clob_token_id(token_id):
             raise ValueError(f"apply_fill: refusing invalid token_id={token_id!r}")
 
@@ -485,6 +495,7 @@ class PositionsRepo(AbstractPositionRepository):
         # InvalidOperation from Decimal parsing, invalid token_id) from
         # infrastructure failures (everything else), which propagate so
         # the caller sees the rebuild failed.
+        """Rebuild user positions from fills."""
         from decimal import InvalidOperation
 
         fills = await fills_repo.list_fills_for_user(user_id)

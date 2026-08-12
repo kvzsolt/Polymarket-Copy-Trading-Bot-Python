@@ -62,10 +62,12 @@ class VenueCircuitBreaker:
         return "open"
 
     def record_success(self) -> None:
+        """Record a successful risk-loop iteration."""
         self._consecutive_failures = 0
         self._opened_at = None
 
     def record_failure(self) -> None:
+        """Record a failed risk-loop iteration and its safe reason."""
         self._consecutive_failures += 1
         if self._consecutive_failures >= self._threshold and self._opened_at is None:
             self._opened_at = time.time()
@@ -85,6 +87,7 @@ class VenueCircuitBreaker:
         return True  # open
 
     def reset(self) -> None:
+        """Reset the risk-loop breaker after a successful recovery."""
         self._consecutive_failures = 0
         self._opened_at = None
 
@@ -230,12 +233,16 @@ _RISK_EXIT_REJECT_COOLDOWN_KEY = "risk_exit_reject_cooldown_until"
 
 @dataclass
 class RiskPreReconcileBackoff:
+    """Track bounded backoff state for risk pre-reconciliation."""
+
     consecutive_timeouts: int = 0
     next_attempt_at: float = 0.0
 
 
 @dataclass
 class CachedRiskPrice:
+    """Hold one exact risk price and its freshness metadata."""
+
     price: Decimal
     size: Decimal | None
     fetched_at: float
@@ -245,6 +252,7 @@ class CachedRiskPrice:
 
     @property
     def is_dormant(self) -> bool:
+        """Return whether the cached risk price is dormant."""
         return self.dormant_ttl > 0.0
 
 
@@ -253,6 +261,8 @@ class RiskPriceCache:
     # memory growth on a long-running bot. Oldest-inserted entries are
     # evicted first; active tokens are unaffected because each set() bumps
     # them back to the MRU end.
+    """Store bounded exact prices used by the risk loop."""
+
     def __init__(self, *, max_size: int | None = None) -> None:
         if max_size is None:
             max_size = 5000
@@ -262,6 +272,7 @@ class RiskPriceCache:
     def get_fresh(
         self, token_id: str, *, stale_after: float, now: float | None = None
     ) -> CachedRiskPrice | None:
+        """Return a fresh cached risk price when available."""
         entry = self._entries.get(token_id)
         if entry is None:
             return None
@@ -293,6 +304,7 @@ class RiskPriceCache:
         size: Decimal | None = None,
         fetched_at: float | None = None,
     ) -> None:
+        """Store an exact risk price with bounded cache eviction."""
         self._entries[token_id] = CachedRiskPrice(
             price=price,
             size=size,
@@ -1507,6 +1519,7 @@ async def _pre_reconcile_for_context(context: TradingContext) -> int:
 async def run_risk_check_for_context(
     context: TradingContext, *, pre_reconcile: bool = True
 ) -> None:
+    """Run one follower risk evaluation through injected services."""
     if not context.execution_service:
         return
 

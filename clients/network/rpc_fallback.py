@@ -84,6 +84,7 @@ class _FailoverHTTPProvider(JSONBaseProvider):
             logger.debug("RPC fallback not configured (single provider)")
 
     def make_request(self, method: str, params: Any) -> RPCResponse:
+        """Perform an RPC request through the bounded fallback policy."""
         primary_exc: Exception | None = None
         primary_error_response: RPCResponse | None = None
 

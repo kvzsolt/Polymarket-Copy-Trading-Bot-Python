@@ -39,6 +39,8 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class ReconciliationResult:
+    """Describe the result of one reconciliation operation."""
+
     checked_at: float
     open_orders_on_exchange: int
     locally_unknown_orders: int

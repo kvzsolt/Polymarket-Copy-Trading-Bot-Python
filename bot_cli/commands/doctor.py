@@ -55,16 +55,20 @@ class _DoctorContext:
     def ok(self, name: str, detail: str = "", fix: str = "") -> None:
         # ``fix`` is accepted for symmetry with warning/blocked at call sites;
         # for ok records the fix string is always blank.
+        """Return a successful diagnostic result."""
         self._append(name, _STATUS_OK, detail, "")
 
     def warning(self, name: str, detail: str, fix: str = "") -> None:
+        """Return a warning diagnostic result."""
         self._append(name, _STATUS_WARNING, detail, fix)
 
     def blocked(self, name: str, detail: str, fix: str = "") -> None:
+        """Return a blocked diagnostic result."""
         self._append(name, _STATUS_BLOCKED, detail, fix)
 
     def skipped(self, name: str, detail: str = "") -> None:
         # Skipped checks do not affect overall status.
+        """Return a skipped diagnostic result."""
         self.checks.append({"name": name, "status": "skipped", "detail": detail, "fix": ""})
 
     def _append(self, name: str, status: str, detail: str, fix: str) -> None:
@@ -73,6 +77,7 @@ class _DoctorContext:
             self.overall = status
 
     def to_dict(self) -> dict[str, Any]:
+        """Return a JSON-serializable representation."""
         return {"status": self.overall, "mode": self.mode, "checks": list(self.checks)}
 
 
@@ -271,6 +276,7 @@ async def _auto_trader_db_candidate_count(config) -> int:
 # Main entry
 # ---------------------------------------------------------------------------
 def register_doctor_command(subparsers: argparse._SubParsersAction) -> None:
+    """Register the diagnostic command with the CLI parser."""
     parser = subparsers.add_parser("doctor", help="Run diagnostic checks")
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--live", action="store_true", help="Check readiness for live trading")
@@ -751,4 +757,5 @@ async def _run_doctor_async(args: argparse.Namespace) -> int:
 
 
 def run_doctor(args: argparse.Namespace) -> int:
+    """Run deterministic startup diagnostics and return an exit code."""
     return asyncio.run(_run_doctor_async(args))

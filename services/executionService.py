@@ -1,3 +1,5 @@
+"""Execute validated intents through the venue-neutral CLOB gateway."""
+
 from __future__ import annotations
 
 import asyncio

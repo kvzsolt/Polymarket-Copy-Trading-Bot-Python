@@ -47,6 +47,8 @@ from config.addresses import (
 
 @dataclass(frozen=True)
 class PendingTxConfig:
+    """Validate bounded pending-transaction detection settings."""
+
     max_signal_age_ms: int = 500
     hashes_only: bool = False
     confidence_required: DetectionConfidence = DetectionConfidence.PENDING_PROBABLE

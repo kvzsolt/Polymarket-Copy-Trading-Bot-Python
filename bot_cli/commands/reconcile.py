@@ -10,6 +10,7 @@ from config.app_config import load_config, EnvValidationError
 
 
 def register_reconcile_command(subparsers: argparse._SubParsersAction) -> None:
+    """Register the reconciliation command with the CLI parser."""
     parser = subparsers.add_parser("reconcile", help="Trigger reconciliation of unconfirmed orders")
     parser.add_argument(
         "--dry-run", action="store_true", help="Show what would be reconciled without acting"
@@ -136,4 +137,5 @@ async def _run_reconcile_async(args: argparse.Namespace) -> int:
 
 
 def run_reconcile(args: argparse.Namespace) -> int:
+    """Run the requested reconciliation operation."""
     return asyncio.run(_run_reconcile_async(args))

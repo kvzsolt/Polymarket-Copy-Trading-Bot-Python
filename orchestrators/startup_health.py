@@ -1,3 +1,5 @@
+"""Run fail-closed startup checks before trading begins."""
+
 from __future__ import annotations
 
 import asyncio
@@ -38,6 +40,8 @@ _SUCCESS_ORDER_STATUSES = {
 
 @dataclass(frozen=True)
 class StartupHealthCheckItem:
+    """Describe one sanitized startup health check result."""
+
     status: str
     message: str
     details: dict[str, Any] = field(default_factory=dict)
@@ -45,6 +49,8 @@ class StartupHealthCheckItem:
 
 @dataclass(frozen=True)
 class PositionSyncResult:
+    """Describe startup position synchronization counts."""
+
     persisted_before: int
     persisted_after: int
     live_count: int
@@ -59,6 +65,8 @@ class PositionSyncResult:
 
 @dataclass(frozen=True)
 class OrderStartupCleanupResult:
+    """Describe startup normalization of persisted order states."""
+
     normalized_pending: int
     normalized_delayed: int
     normalized_retry_pending: int
@@ -68,6 +76,8 @@ class OrderStartupCleanupResult:
 
 @dataclass(frozen=True)
 class StartupHealthReport:
+    """Aggregate fail-closed startup health results."""
+
     healthy: bool
     status: str
     timestamp: int
@@ -79,6 +89,7 @@ class StartupHealthReport:
     order_cleanup: OrderStartupCleanupResult
 
     def as_log_payload(self) -> dict[str, Any]:
+        """Return a secret-safe structured logging payload."""
         return {
             "type": "startup_health_check",
             "healthy": self.healthy,
@@ -218,6 +229,7 @@ async def reconcile_persisted_positions_to_live(
     user_id: str,
     live_positions: list[dict[str, Any]] | None,
 ) -> PositionSyncResult:
+    """Reconcile persisted positions against authoritative venue state."""
     persisted = await positions_repo.list_open_positions(user_id)
 
     # Fail closed: a None snapshot means the live-position fetch failed. We must
@@ -261,6 +273,7 @@ async def reconcile_persisted_positions_to_live(
 
 
 async def normalize_startup_order_statuses(pool, *, user_id: str) -> OrderStartupCleanupResult:
+    """Normalize nonterminal persisted orders before trading starts."""
     async with pool.acquire() as conn:
         async with conn.transaction():
             row = await conn.fetchrow(
@@ -562,6 +575,7 @@ async def perform_startup_health_check(
     clob_gateway: ClobGateway | None = None,
     require_live_clob: bool = False,
 ) -> StartupHealthReport:
+    """Run the fail-closed startup health sequence."""
     rpc_check, polymarket_check, clob_check = await asyncio.gather(
         _check_rpc(rpc_url),
         _check_polymarket_api(),

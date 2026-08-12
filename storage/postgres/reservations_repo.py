@@ -66,10 +66,13 @@ def _lock_key(key: str) -> int:
 
 
 class ReservationsRepo:
+    """Persist collateral and share reservations in PostgreSQL."""
+
     def __init__(self, pool: asyncpg.Pool):
         self._pool = pool
 
     async def get_active_by_intent_key(self, intent_key: str) -> Reservation | None:
+        """Return active by intent key."""
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
@@ -111,6 +114,7 @@ class ReservationsRepo:
     async def create_buy_reservation(
         self, intent: OrderIntent, reserved_usdc: Decimal, expires_at: int
     ) -> Reservation:
+        """Create a quote-collateral reservation for a BUY intent."""
         return await self._create_reservation(
             intent,
             reserved_usdc=reserved_usdc,
@@ -121,6 +125,7 @@ class ReservationsRepo:
     async def create_sell_reservation(
         self, intent: OrderIntent, reserved_size: Decimal, expires_at: int
     ) -> Reservation:
+        """Create an outcome-share reservation for a SELL intent."""
         return await self._create_reservation(
             intent,
             reserved_usdc=Decimal("0"),
@@ -135,6 +140,7 @@ class ReservationsRepo:
         expires_at: int,
         available_balance: Decimal,
     ) -> Reservation | None:
+        """Create a BUY reservation after an atomic available-balance check."""
         res_id = str(uuid.uuid4())
         created_at = int(intent.created_at.timestamp())
         async with self._pool.acquire() as conn:
@@ -244,6 +250,7 @@ class ReservationsRepo:
         expires_at: int,
         held_size: Decimal,
     ) -> Reservation | None:
+        """Create a SELL reservation after an atomic available-share check."""
         res_id = str(uuid.uuid4())
         created_at = int(intent.created_at.timestamp())
         async with self._pool.acquire() as conn:
@@ -415,6 +422,7 @@ class ReservationsRepo:
         )
 
     async def get_by_id(self, res_id: str) -> Reservation | None:
+        """Return by id."""
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow("SELECT * FROM order_reservations WHERE id = $1", res_id)
         return self._row_to_reservation(row) if row else None
@@ -427,6 +435,7 @@ class ReservationsRepo:
     async def list_expired_active(
         self, now_ts: int, user_id: str | None = None
     ) -> list[Reservation]:
+        """Return expired active."""
         query = """
             SELECT * FROM order_reservations
             WHERE status = 'active' AND expires_at < $1
@@ -440,6 +449,7 @@ class ReservationsRepo:
         return [self._row_to_reservation(r) for r in rows]
 
     async def list_active(self) -> list[Reservation]:
+        """Return active."""
         async with self._pool.acquire() as conn:
             rows = await conn.fetch("SELECT * FROM order_reservations WHERE status = 'active'")
         return [self._row_to_reservation(r) for r in rows]
@@ -447,6 +457,7 @@ class ReservationsRepo:
     async def list_active_for_scope(
         self, user_id: str, condition_id: str, token_id: str
     ) -> list[Reservation]:
+        """Return active for scope."""
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 """
@@ -463,6 +474,7 @@ class ReservationsRepo:
     async def sum_active_for_scope(
         self, user_id: str, condition_id: str, token_id: str, side: str
     ) -> tuple[Decimal, Decimal]:
+        """Return the total active for scope."""
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 """
@@ -481,6 +493,7 @@ class ReservationsRepo:
         )
 
     async def sum_active_quote_for_user(self, user_id: str) -> Decimal:
+        """Return the total active quote for user."""
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 """
@@ -506,6 +519,7 @@ class ReservationsRepo:
         venue_order_id: str | None = None,
     ) -> None:
         # Static-SQL cartesian — no f-string fragments. See Batch 8.
+        """Link order."""
         if order_id is None and venue_order_id is None:
             return
 
@@ -540,6 +554,7 @@ class ReservationsRepo:
                 )
 
     async def mark_released(self, reservation_id: str, reason: str, released_at: int) -> None:
+        """Mark released."""
         async with self._pool.acquire() as conn:
             async with conn.transaction():
                 # Take the same per-scope advisory lock the capacity
