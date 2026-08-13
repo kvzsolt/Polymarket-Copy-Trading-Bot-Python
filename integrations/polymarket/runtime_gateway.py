@@ -1,89 +1,161 @@
-"""CCXT-only Polymarket runtime composition.
+"""Composition helper for the optional hybrid Polymarket backend.
 
-This module owns construction and lifecycle of the one venue transport used by
-each runtime user.  It preserves the explicit live-mode gate while ensuring a
-paper runtime never receives private key material.
+The existing runtime can keep constructing the official SDK gateway exactly as
+before, then pass it here.  The helper avoids importing CCXT at all for the
+default ``sdk`` mode and returns ownership information for clean shutdown.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import cast
 
+from integrations.polymarket.backend_factory import (
+    VenueBackend,
+    resolve_backend_settings,
+    select_polymarket_gateway,
+)
 from integrations.polymarket.ccxt_prediction_client import (
     CcxtPredictionClient,
     create_ccxt_prediction_client,
 )
 from integrations.polymarket.ccxt_prediction_gateway import CcxtPredictionGateway
+from integrations.polymarket.hybrid_gateway import HybridClobGateway, MismatchSink
+from interfaces.clob_gateway import ClobGateway
 
 
 @dataclass(frozen=True, slots=True)
 class RuntimeGatewayBundle:
-    """Own one CCXT client and its venue-neutral gateway adapter."""
+    """Own the optional CCXT resources selected around an SDK gateway."""
 
-    gateway: CcxtPredictionGateway
-    client: CcxtPredictionClient
+    gateway: ClobGateway
+    backend: VenueBackend
+    ccxt_client: CcxtPredictionClient | None = None
+    ccxt_gateway: CcxtPredictionGateway | None = None
 
-    async def close(self) -> None:
-        """Close the owned CCXT transport idempotently."""
+    async def close_optional_backend(self) -> None:
+        """Close only resources created by this helper.
 
-        await self.client.close()
-
-
-class CcxtRuntimeGatewayFactory:
-    """Build CCXT prediction transports from validated runtime settings."""
-
-    def __init__(
-        self,
-        *,
-        exchange_factory: Callable[[dict[str, Any]], Any] | None = None,
-        ccxt_version: str | None = None,
-    ) -> None:
-        self._exchange_factory = exchange_factory
-        self._ccxt_version = ccxt_version
-
-    async def build(
-        self,
-        *,
-        config: object,
-        wallet_config: object,
-    ) -> RuntimeGatewayBundle:
-        """Return the sole runtime gateway for one follower wallet.
-
-        Args:
-            config: Validated application settings containing execution mode.
-            wallet_config: Validated follower wallet identity and secret.
-
-        Returns:
-            An owned CCXT client/gateway bundle.
-
-        Raises:
-            RuntimeError: If live mode is requested without its explicit gate.
-            ValueError: If the configured trading mode is unsupported.
+        The existing runtime remains the owner of the official SDK gateway.
         """
 
-        execution = getattr(config, "execution", None)
-        mode = str(getattr(execution, "trading_mode", "paper") or "paper").strip().lower()
-        if mode not in {"paper", "live"}:
-            raise ValueError(f"unsupported execution trading mode: {mode!r}")
-        allow_live = bool(getattr(execution, "allow_experimental_ccxt_live", False))
-        if mode == "live" and not allow_live:
-            raise RuntimeError(
-                "CCXT cannot become the live execution primary without the explicit "
-                "allow_experimental_ccxt_live gate"
-            )
+        if self.ccxt_client is not None:
+            await self.ccxt_client.close()
 
-        client = await create_ccxt_prediction_client(
-            wallet_config=wallet_config,
-            config=config,
-            authenticated=mode == "live",
-            exchange_factory=self._exchange_factory,
-            ccxt_version=self._ccxt_version,
+    async def close(self) -> None:
+        """Shutdown alias used by the composition root's client registry.
+
+        Phase 4.15 — drains the hybrid shadow comparison queue (bounded) and
+        closes the optional CCXT transport. The SDK gateway remains owned by
+        the runtime and is closed separately.
+        """
+
+        if isinstance(self.gateway, HybridClobGateway):
+            await self.gateway.drain()
+        await self.close_optional_backend()
+
+
+def _attr(
+    source: object | None,
+    name: str,
+    default: object | None = None,
+) -> object | None:
+    if source is None:
+        return default
+    if isinstance(source, Mapping):
+        values = cast(Mapping[object, object], source)
+        return values.get(name, default)
+    return cast(object | None, getattr(source, name, default))
+
+
+def _trading_mode(config: object | None) -> str:
+    execution = _attr(config, "execution")
+    return str(_attr(execution, "trading_mode", "paper") or "paper").lower()
+
+
+async def build_runtime_polymarket_gateway(
+    *,
+    sdk_gateway: ClobGateway,
+    config: object | None = None,
+    wallet_config: object | None = None,
+    backend: VenueBackend | str | None = None,
+    allow_experimental_ccxt_live: bool | None = None,
+    mismatch_sink: MismatchSink | None = None,
+    exchange_factory: Callable[[dict[str, object]], object] | None = None,
+    ccxt_version: str | None = None,
+) -> RuntimeGatewayBundle:
+    """Build the selected gateway without changing SDK-default startup.
+
+    Args:
+        sdk_gateway: Application-owned official SDK adapter.
+        config: Validated application config or a compatible test object.
+        wallet_config: Verified follower-wallet config for optional CCXT auth.
+        backend: Optional explicit backend override.
+        allow_experimental_ccxt_live: Separate live-primary CCXT gate.
+        mismatch_sink: Optional structured shadow mismatch sink.
+        exchange_factory: Optional deterministic CCXT transport factory.
+        ccxt_version: Optional installed version override for tests.
+
+    Returns:
+        Selected gateway plus only the optional resources built here.
+
+    Raises:
+        RuntimeError: If live CCXT primary lacks its explicit gate.
+
+    """
+
+    configured_backend, configured_live_gate = resolve_backend_settings(config)
+    selected = configured_backend if backend is None else VenueBackend(str(backend).lower())
+    live_gate = (
+        configured_live_gate
+        if allow_experimental_ccxt_live is None
+        else bool(allow_experimental_ccxt_live)
+    )
+    mode = _trading_mode(config)
+
+    if selected is VenueBackend.SDK:
+        return RuntimeGatewayBundle(gateway=sdk_gateway, backend=selected)
+
+    # Reject an unsafe live-primary selection before constructing, authenticating,
+    # or opening any optional CCXT transport. This keeps configuration errors
+    # side-effect free and makes the explicit experimental gate auditable.
+    if selected is VenueBackend.CCXT and mode == "live" and not live_gate:
+        raise RuntimeError(
+            "CCXT cannot become the live execution primary without the explicit "
+            "allow_experimental_ccxt_live gate"
         )
-        return RuntimeGatewayBundle(
-            gateway=CcxtPredictionGateway(client),
-            client=client,
+
+    # Paper startup always gets a public-only CCXT transport, even when a private
+    # key is present. Live shadow needs auth for private order/fill comparisons;
+    # live CCXT primary needs auth to submit.
+    authenticated = mode == "live"
+    ccxt_client = await create_ccxt_prediction_client(
+        wallet_config=wallet_config,
+        config=config,
+        authenticated=authenticated,
+        exchange_factory=exchange_factory,
+        ccxt_version=ccxt_version,
+    )
+    ccxt_gateway = CcxtPredictionGateway(ccxt_client)
+    try:
+        gateway = select_polymarket_gateway(
+            sdk_gateway=sdk_gateway,
+            ccxt_gateway=ccxt_gateway,
+            backend=selected,
+            trading_mode=mode,
+            allow_experimental_ccxt_live=live_gate,
+            mismatch_sink=mismatch_sink,
         )
+    except BaseException:
+        await ccxt_client.close()
+        raise
+    return RuntimeGatewayBundle(
+        gateway=gateway,
+        backend=selected,
+        ccxt_client=ccxt_client,
+        ccxt_gateway=ccxt_gateway,
+    )
 
 
-__all__ = ["CcxtRuntimeGatewayFactory", "RuntimeGatewayBundle"]
+__all__ = ["RuntimeGatewayBundle", "build_runtime_polymarket_gateway"]

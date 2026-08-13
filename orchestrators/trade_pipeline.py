@@ -13,9 +13,11 @@ from decimal import Decimal, ROUND_DOWN
 from typing import Any
 
 from config.app_config import AppConfig
+from application.copy_trade_service import CopyTradeIdentityBuilder
+from domain.execution import ExecutionOrderType
 from domain.models import TradeSignal
 from domain.units import BASIS_POINTS_PER_UNIT, UNIX_MILLISECONDS_THRESHOLD
-from domain.trading_context import TradingContext
+from application.trading_context import TradingContext
 from services.entryPermissionService import EntryDecision, EntryPermissionService
 from services.execution.reconciliation_service import ReconciliationService
 from services.execution.pending_order_reconciliation import (
@@ -45,6 +47,7 @@ from utils.logger import (
 )
 
 logger = get_logger("TradePipeline")
+_COPY_TRADE_IDENTITY = CopyTradeIdentityBuilder()
 
 
 def _observe_copy_latency(
@@ -873,17 +876,9 @@ async def _resolve_leader_tier(context: TradingContext, leader_id: str) -> str:
 
 
 def build_trade_key(user_id: str, leader_id: str, trade: dict[str, Any]) -> str:
-    """Build the canonical economic identity for a leader trade."""
-    tx_hash = (
-        trade.get("transactionHash")
-        or trade.get("txHash")
-        or trade.get("transaction_hash")
-        or trade.get("tx_hash")
-        or ""
-    )
-    side = str(trade.get("side") or "").strip().upper()
-    asset = trade.get("tokenID") or trade.get("token_id") or trade.get("asset") or ""
-    return f"{_normalize(user_id)}|{_normalize(leader_id)}|{_normalize(tx_hash)}|{side}|{_normalize(asset)}"
+    """Delegate canonical economic identity construction."""
+
+    return _COPY_TRADE_IDENTITY.build(user_id, leader_id, trade)
 
 
 def all_tx_hashes_for_trade(trade: dict[str, Any]) -> list[str]:
@@ -2528,7 +2523,7 @@ async def execute_trades(
                         "order_type": "FAK",
                         "price_limit": str(signal.price),
                     },
-                    order_type="FAK",
+                    order_type=ExecutionOrderType.FAK,
                     price_limit=Decimal(str(signal.price)),
                 )
             else:
@@ -2855,7 +2850,7 @@ async def execute_trades(
                         "order_type": "FAK",
                         "price_limit": str(signal.price),
                     },
-                    order_type="FAK",
+                    order_type=ExecutionOrderType.FAK,
                     price_limit=Decimal(str(signal.price)),
                 )
 

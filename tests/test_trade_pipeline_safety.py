@@ -12,7 +12,7 @@ import pytest
 
 import config.app_config as app_config_mod
 from tests.config_helpers import load_test_config
-from domain.trading_context import TradingContext
+from application.trading_context import TradingContext
 from orchestrators.runtime_bootstrap import startup_reconcile_unconfirmed
 from orchestrators.trade_pipeline import (
     build_trade_key,

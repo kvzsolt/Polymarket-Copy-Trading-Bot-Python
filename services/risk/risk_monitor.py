@@ -12,8 +12,8 @@ from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from application.trading_context import TradingContext
     from config.app_config import AppConfig
-    from domain.trading_context import TradingContext
     from services.healthServer import ReadinessTracker
 
 from services.metrics import metrics

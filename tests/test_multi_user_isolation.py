@@ -15,7 +15,7 @@ from decimal import Decimal
 import pytest
 
 from config.app_config import load_config
-from domain.trading_context import TradingContext
+from application.trading_context import TradingContext
 from orchestrators.trade_pipeline import execute_trades
 from services.executionService import ExecutionResult
 from services.positionManager import PositionManager

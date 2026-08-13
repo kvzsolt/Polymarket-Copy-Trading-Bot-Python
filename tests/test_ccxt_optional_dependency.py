@@ -13,7 +13,12 @@ from integrations.polymarket.ccxt_prediction_client import (
     CcxtPredictionUnavailable,
     create_ccxt_prediction_client,
 )
-from integrations.polymarket.runtime_gateway import CcxtRuntimeGatewayFactory
+from integrations.polymarket.backend_factory import VenueBackend
+from integrations.polymarket.runtime_gateway import build_runtime_polymarket_gateway
+
+
+class SdkGateway:
+    """Minimal official-gateway sentinel for backend composition."""
 
 
 @pytest.fixture
@@ -53,7 +58,7 @@ async def test_missing_ccxt_raises_actionable_error(ccxt_absent: None) -> None:
 async def test_runtime_factory_fails_closed_when_ccxt_is_unavailable(
     ccxt_absent: None,
 ) -> None:
-    """Refuse startup because no alternate venue adapter remains."""
+    """Refuse an explicit CCXT selection without affecting the SDK default."""
 
     config = SimpleNamespace(
         execution=SimpleNamespace(
@@ -63,7 +68,23 @@ async def test_runtime_factory_fails_closed_when_ccxt_is_unavailable(
         wallet=SimpleNamespace(private_key="", funder_address=""),
     )
     with pytest.raises(CcxtPredictionUnavailable):
-        await CcxtRuntimeGatewayFactory().build(
+        await build_runtime_polymarket_gateway(
+            sdk_gateway=SdkGateway(),
             config=config,
             wallet_config=config.wallet,
+            backend=VenueBackend.CCXT,
         )
+
+
+@pytest.mark.asyncio
+async def test_sdk_default_does_not_import_missing_ccxt(ccxt_absent: None) -> None:
+    """An unavailable optional adapter cannot break default SDK startup."""
+
+    sdk = SdkGateway()
+    bundle = await build_runtime_polymarket_gateway(
+        sdk_gateway=sdk,
+        config=SimpleNamespace(execution=SimpleNamespace(trading_mode="paper")),
+    )
+
+    assert bundle.gateway is sdk
+    assert bundle.ccxt_client is None

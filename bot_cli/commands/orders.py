@@ -112,7 +112,6 @@ async def _run_orders_reconcile_async(args: argparse.Namespace) -> int:
     dry_run = getattr(args, "dry_run", False)
 
     from storage.postgres.connection import init_pool, shutdown_pool
-    from storage.postgres.orders_repo import OrdersRepo
 
     pool = await init_pool(
         config.database.dsn,
@@ -147,27 +146,12 @@ async def _run_orders_reconcile_async(args: argparse.Namespace) -> int:
         errors: list[str] = []
         if unconfirmed:
             try:
-                from integrations.polymarket.runtime_gateway import CcxtRuntimeGatewayFactory
-                from services.reconciliation import ReconciliationService
+                from orchestration.reconciliation_command import ReconciliationCommandService
 
-                wallet = config.wallet
-                bundle = await CcxtRuntimeGatewayFactory().build(
-                    config=config,
-                    wallet_config=wallet,
-                )
-                try:
-                    orders_repo = OrdersRepo(pool)
-                    svc = ReconciliationService(
-                        clob_client=bundle.gateway,
-                        orders_repo=orders_repo,
-                        config=config,
-                    )
-                    result = await svc.reconcile()
-                    reconciled = result.stale_orders_cancelled
-                    if result.errors:
-                        errors = result.errors
-                finally:
-                    await bundle.close()
+                result = await ReconciliationCommandService(config=config, pool=pool).run()
+                reconciled = result.stale_orders_cancelled
+                if result.errors:
+                    errors = result.errors
             except Exception as exc:
                 errors.append(str(exc))
     finally:

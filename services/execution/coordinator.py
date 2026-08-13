@@ -17,6 +17,7 @@ from domain.order_lifecycle import (
     OrderLifecycleStatus,
     classify_venue_status,
 )
+from domain.execution import ExecutionOrderType
 from integrations.polymarket.errors import (
     RetryableVenueError,
     TerminalVenueError,
@@ -717,6 +718,14 @@ class ExecutionCoordinator:
             except Exception:
                 price_limit = None
 
+        raw_order_type = recovery_metadata.get("order_type")
+        order_type = None
+        if raw_order_type is not None:
+            try:
+                order_type = ExecutionOrderType(str(raw_order_type).upper())
+            except ValueError:
+                order_type = None
+
         exec_request = ExecutionRequest(
             user_id=intent.user_id,
             leader_id=intent.leader_wallet or "",
@@ -732,7 +741,7 @@ class ExecutionCoordinator:
             signal_id=intent.signal_id,
             condition_id=intent.condition_id,
             recovery_metadata=recovery_metadata,
-            order_type=recovery_metadata.get("order_type"),
+            order_type=order_type,
             price_limit=price_limit,
         )
 

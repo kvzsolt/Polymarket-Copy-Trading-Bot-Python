@@ -10,6 +10,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
+from typing import Literal
+
+from domain.execution import ExecutionOrderType
 
 
 class _PriceTokenNotFound:
@@ -147,4 +150,4 @@ class MarketableOrderRequest:
     condition_id: str | None = None
     tick_size: Decimal | None = None
     neg_risk: bool | None = None
-    order_type: str | None = None
+    order_type: ExecutionOrderType | Literal["FOK"] | None = None

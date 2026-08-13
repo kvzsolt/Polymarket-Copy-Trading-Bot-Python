@@ -169,6 +169,7 @@ jobs:
           # more money-path modules are cleaned. No ``|| true`` — this gates.
           mypy --install-types --non-interactive --explicit-package-bases \
             --ignore-missing-imports --follow-imports=silent \
+            integrations/polymarket/clob_v2_gateway.py \
             integrations/polymarket/ccxt_prediction_client.py \
             integrations/polymarket/ccxt_prediction_gateway.py \
             clients/network/http_client.py

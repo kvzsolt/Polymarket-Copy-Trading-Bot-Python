@@ -15,7 +15,7 @@ from unittest.mock import MagicMock
 from services.circuitBreaker import CircuitBreaker
 from services.executionService import ExecutionService, _CLOB_CIRCUIT
 from services.healthServer import ReadinessTracker
-from domain.trading_context import TradingContext
+from application.trading_context import TradingContext
 from types import SimpleNamespace
 
 

@@ -58,3 +58,61 @@ def test_build_trade_key_uses_primary_hash():
     raw = {"transactionHash": "0xprimary", "side": "BUY", "tokenID": "0xasset"}
     key = build_trade_key("u1", "l1", raw)
     assert "0xprimary" in key
+
+
+def test_distinct_fills_in_one_transaction_have_distinct_copy_keys() -> None:
+    """One settlement transaction may contain multiple legitimate fills."""
+
+    first = build_trade_key(
+        "u1",
+        "l1",
+        {
+            "transactionHash": "0xprimary",
+            "side": "BUY",
+            "tokenID": "0xasset",
+            "log_index": 3,
+            "order_hash": "0xorder-a",
+        },
+    )
+    second = build_trade_key(
+        "u1",
+        "l1",
+        {
+            "transactionHash": "0xprimary",
+            "side": "BUY",
+            "tokenID": "0xasset",
+            "logIndex": "0x4",
+            "orderHash": "0xorder-b",
+        },
+    )
+
+    assert first != second
+
+
+def test_same_fill_seen_through_aliases_has_one_copy_key() -> None:
+    """Feed-specific field naming cannot create a duplicate copy intent."""
+
+    snake = build_trade_key(
+        "u1",
+        "l1",
+        {
+            "tx_hash": "0xprimary",
+            "side": "BUY",
+            "token_id": "0xasset",
+            "log_index": 3,
+            "order_hash": "0xorder-a",
+        },
+    )
+    camel = build_trade_key(
+        "u1",
+        "l1",
+        {
+            "transactionHash": "0xprimary",
+            "side": "BUY",
+            "tokenID": "0xasset",
+            "logIndex": "0x3",
+            "orderHash": "0xorder-a",
+        },
+    )
+
+    assert snake == camel

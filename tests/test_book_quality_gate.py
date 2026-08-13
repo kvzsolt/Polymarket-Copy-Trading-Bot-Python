@@ -287,8 +287,8 @@ class TestBookQualityGate:
         # worst_price (0.92) is below the cap so it stands.
         assert submitted.price_limit == Decimal("0.92")
 
-    def test_copy_trade_fak_reposts_remaining_partial_fill(self):
-        """Partial FAK fills refresh the book before bounded FAK reposts."""
+    def test_copy_trade_fak_partial_fill_never_chases_the_remainder(self):
+        """Partial FAK accounting uses only the first order's matched amount."""
         svc = _make_execution_service("0.10", "0.90")
         svc.clob_gateway.get_execution_metadata = AsyncMock(
             side_effect=AssertionError("metadata-only path should not run")
@@ -319,16 +319,15 @@ class TestBookQualityGate:
         result = asyncio.run(svc.execute(req))
 
         assert result.accepted is True
-        assert result.status == "filled"
-        assert result.filled_amount == Decimal("8")
-        assert result.order_id == "ord-fak-1,ord-fak-2"
-        assert svc.clob_gateway.submit_marketable_order.await_count == 2
-        for call in svc.clob_gateway.submit_marketable_order.await_args_list:
-            assert call.args[0].order_type == "FAK"
-        assert svc._market_data_service.require_fresh_data.await_count == 2
+        assert result.status == "partially_filled"
+        assert result.filled_amount == Decimal("4")
+        assert result.order_id == "ord-fak-1"
+        assert svc.clob_gateway.submit_marketable_order.await_count == 1
+        assert svc.clob_gateway.submit_marketable_order.await_args.args[0].order_type == "FAK"
+        assert svc._market_data_service.require_fresh_data.await_count == 1
 
-    def test_copy_trade_fak_zero_fill_retries_then_fills(self):
-        """A zero-fill FAK should refresh the book and repost within bounds."""
+    def test_copy_trade_fak_zero_fill_never_reposts(self):
+        """A zero-fill FAK is terminal for this copy intent."""
         svc = _make_execution_service("0.10", "0.90")
         svc.clob_gateway.submit_marketable_order = AsyncMock(
             side_effect=[
@@ -356,12 +355,12 @@ class TestBookQualityGate:
 
         result = asyncio.run(svc.execute(req))
 
-        assert result.accepted is True
-        assert result.status == "filled"
-        assert result.filled_amount == Decimal("4")
-        assert result.order_id == "ord-fak-1"
-        assert svc.clob_gateway.submit_marketable_order.await_count == 2
-        assert svc._market_data_service.require_fresh_data.await_count == 2
+        assert result.accepted is False
+        assert result.status == "cancelled"
+        assert result.filled_amount == Decimal("0")
+        assert result.error == "fak_no_match"
+        assert svc.clob_gateway.submit_marketable_order.await_count == 1
+        assert svc._market_data_service.require_fresh_data.await_count == 1
         assert svc.circuit_breaker.allow_request() is True
 
     def test_copy_trade_fak_delayed_ack_is_not_reposted(self):
@@ -391,8 +390,8 @@ class TestBookQualityGate:
         assert svc.clob_gateway.submit_marketable_order.await_count == 1
         assert svc._market_data_service.require_fresh_data.await_count == 1
 
-    def test_copy_trade_fak_no_match_retries_bounded_without_tripping_circuit(self):
-        """Repeated FAK no-match cancellations should exhaust bounded retries."""
+    def test_copy_trade_fak_no_match_does_not_trip_circuit_or_retry(self):
+        """A normal no-match cancellation consumes one request only."""
         svc = _make_execution_service("0.10", "0.90")
         svc.clob_gateway.submit_marketable_order = AsyncMock(
             side_effect=[
@@ -431,8 +430,8 @@ class TestBookQualityGate:
         assert result.accepted is False
         assert result.status == "cancelled"
         assert result.error == "fak_no_match"
-        assert svc.clob_gateway.submit_marketable_order.await_count == 3
-        assert svc._market_data_service.require_fresh_data.await_count == 3
+        assert svc.clob_gateway.submit_marketable_order.await_count == 1
+        assert svc._market_data_service.require_fresh_data.await_count == 1
         assert svc.circuit_breaker.allow_request() is True
 
     def test_custom_threshold(self):

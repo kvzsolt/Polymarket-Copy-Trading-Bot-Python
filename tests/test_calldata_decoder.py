@@ -10,6 +10,8 @@ from eth_utils import function_signature_to_4byte_selector
 
 from services.onchain_detection.calldata_decoder import (
     MATCH_ORDERS_SELECTOR,
+    SAFE_EXEC_TRANSACTION_SELECTOR,
+    SourceTransactionCalldataDecoder,
     decode_match_orders,
     find_watched_wallets,
     is_valid_maker_side,
@@ -25,6 +27,22 @@ _WATCHED_TAKER = "0x" + "11" * 20
 _WATCHED_MAKER_A = "0x" + "22" * 20
 _WATCHED_MAKER_B = "0x" + "33" * 20
 _UNWATCHED = "0x" + "44" * 20
+_SAFE = "0x" + "55" * 20
+_EXCHANGE = "0x" + "66" * 20
+_OTHER_TARGET = "0x" + "77" * 20
+
+_SAFE_EXEC_TYPES = (
+    "address",
+    "uint256",
+    "bytes",
+    "uint8",
+    "uint256",
+    "uint256",
+    "uint256",
+    "address",
+    "address",
+    "bytes",
+)
 
 
 def _mk_order(
@@ -76,6 +94,27 @@ def _encode_match_orders(
         )
     ]
     return MATCH_ORDERS_SELECTOR + encode([_MATCH_ORDERS_TYPE], payload)
+
+
+def _encode_safe_exec_transaction(
+    inner_target: str,
+    inner_calldata: bytes,
+    *,
+    operation: int = 0,
+) -> bytes:
+    payload = (
+        inner_target,
+        0,
+        inner_calldata,
+        operation,
+        0,
+        0,
+        0,
+        "0x" + "00" * 20,
+        "0x" + "00" * 20,
+        b"\x99" * 65,
+    )
+    return SAFE_EXEC_TRANSACTION_SELECTOR + encode(_SAFE_EXEC_TYPES, payload)
 
 
 def test_selector_matches_canonical_signature() -> None:
@@ -199,3 +238,67 @@ def test_decoded_order_is_frozen() -> None:
     assert call is not None
     with pytest.raises(dataclasses.FrozenInstanceError):
         call.taker_order.maker = _UNWATCHED  # type: ignore[misc]
+
+
+def test_safe_exec_transaction_selector_is_canonical() -> None:
+    """The supported Safe outer selector remains ``0x6a761202``."""
+
+    assert SAFE_EXEC_TRANSACTION_SELECTOR.hex() == "6a761202"
+
+
+def test_source_decoder_unwraps_safe_call_to_configured_exchange() -> None:
+    """A Safe CALL can expose a configured inner matchOrders payload."""
+
+    inner = _encode_match_orders(_mk_order(_WATCHED_TAKER), [])
+    decoder = SourceTransactionCalldataDecoder(exchange_addresses=frozenset({_EXCHANGE}))
+
+    decoded = decoder.decode(
+        transaction_target=_SAFE,
+        calldata=_encode_safe_exec_transaction(_EXCHANGE, inner),
+    )
+
+    assert decoded is not None
+    assert decoded.exchange_address == _EXCHANGE
+    assert decoded.safe_address == _SAFE
+    assert decoded.match_orders.taker_order.maker == _WATCHED_TAKER
+
+
+def test_source_decoder_preserves_direct_exchange_selector_semantics() -> None:
+    """Direct exchange calls still require the canonical matchOrders selector."""
+
+    decoder = SourceTransactionCalldataDecoder(exchange_addresses=frozenset({_EXCHANGE}))
+    inner = _encode_match_orders(_mk_order(_WATCHED_TAKER), [])
+
+    decoded = decoder.decode(transaction_target=_EXCHANGE, calldata=inner)
+
+    assert decoded is not None
+    assert decoded.exchange_address == _EXCHANGE
+    assert decoded.safe_address is None
+
+
+@pytest.mark.parametrize(
+    ("target", "calldata"),
+    [
+        (_SAFE, b"\x6a\x76\x12\x02\x00"),
+        (_SAFE, _encode_safe_exec_transaction(_OTHER_TARGET, b"\xde\xad\xbe\xef")),
+        (
+            _SAFE,
+            _encode_safe_exec_transaction(
+                _EXCHANGE,
+                _encode_match_orders(_mk_order(_WATCHED_TAKER), []),
+                operation=1,
+            ),
+        ),
+        (_EXCHANGE, b"\xde\xad\xbe\xef" + b"\x00" * 32),
+        (_OTHER_TARGET, _encode_match_orders(_mk_order(_WATCHED_TAKER), [])),
+    ],
+)
+def test_source_decoder_rejects_malformed_or_nonmatching_calls(
+    target: str,
+    calldata: bytes,
+) -> None:
+    """Malformed, delegate-called, and nonconfigured calls remain inert."""
+
+    decoder = SourceTransactionCalldataDecoder(exchange_addresses=frozenset({_EXCHANGE}))
+
+    assert decoder.decode(transaction_target=target, calldata=calldata) is None

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 import asyncpg
 
-from domain.ports.repositories import AbstractLeaderRepository
+from ports.repositories import AbstractLeaderRepository
 
 
 @dataclass(frozen=True, slots=True)

@@ -26,6 +26,27 @@ def test_onchain_wiring_imports_resolve() -> None:
     assert execute_trades is not None
 
 
+def test_confirmed_onchain_runtime_builder_uses_new_polygon_composition() -> None:
+    """Pending-enabled wiring builds the head-driven confirmation runtime."""
+
+    from app import _build_confirmed_onchain_runtime
+    from orchestration.polygon_source_transaction_runtime import (
+        PolygonSourceTransactionRuntime,
+    )
+
+    async def sink(_signal) -> None:
+        return None
+
+    runtime = _build_confirmed_onchain_runtime(
+        watched_wallets={"0x" + "11" * 20},
+        ws_url="wss://polygon.example.invalid/v2/redacted",
+        chain_id=137,
+        signal_sink=sink,
+    )
+
+    assert isinstance(runtime, PolygonSourceTransactionRuntime)
+
+
 def test_pending_tx_config_fields_match_onchain_detection_config() -> None:
     """``PendingTxConfig`` fields must match the ``OnchainDetectionConfig``
     fields that ``app.main()`` maps into them. If a field is renamed on one

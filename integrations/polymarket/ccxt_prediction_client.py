@@ -1,8 +1,9 @@
 """Lifecycle-safe client factory for ``ccxt.prediction.polymarket``.
 
-CCXT is the sole Polymarket venue adapter on this branch. Paper startup creates
-only a public transport; authenticated construction still requires both the
-explicit live gate enforced by composition and a verified Deposit Wallet.
+CCXT is an optional Polymarket venue adapter on this branch. Paper startup
+creates only a public transport; authenticated construction still requires
+both the explicit live gate enforced by composition and a verified Deposit
+Wallet.
 """
 
 from __future__ import annotations

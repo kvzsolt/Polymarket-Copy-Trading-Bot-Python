@@ -2,7 +2,8 @@
 
 External entry point on both the CTF Exchange V2 and the Neg Risk CTF
 Exchange V2 is ``matchOrders(bytes32,Order,Order[],uint256,uint256[],uint256,uint256[])``
-(selector ``0x6d0fcd6e``), where::
+(selector ``0x3c2b4399``). Safe/Gnosis calls may wrap that exact payload in
+``execTransaction`` (selector ``0x6a761202``), where::
 
     struct Order {
         uint256 salt;
@@ -62,6 +63,21 @@ MATCH_ORDERS_SELECTOR: bytes = function_signature_to_4byte_selector(
     "uint8,uint8,uint256,bytes32,bytes32,bytes)[],"
     "uint256,uint256[],uint256,uint256[])"
 )
+SAFE_EXEC_TRANSACTION_SELECTOR: bytes = function_signature_to_4byte_selector(
+    "execTransaction(address,uint256,bytes,uint8,uint256,uint256,uint256,address,address,bytes)"
+)
+_SAFE_EXEC_TRANSACTION_TYPES = (
+    "address",
+    "uint256",
+    "bytes",
+    "uint8",
+    "uint256",
+    "uint256",
+    "uint256",
+    "address",
+    "address",
+    "bytes",
+)
 
 
 @dataclass(frozen=True)
@@ -105,6 +121,98 @@ class WatchedMatch:
     maker_amount: int
     taker_amount: int
     maker_index: int | None = None
+
+
+@dataclass(frozen=True)
+class DecodedSourceCall:
+    """Qualified direct or Safe-wrapped Polymarket settlement call."""
+
+    exchange_address: str
+    safe_address: str | None
+    match_orders: MatchOrdersCall
+
+
+class SourceTransactionCalldataDecoder:
+    """Qualify direct and Safe-wrapped calls to configured CTF exchanges."""
+
+    def __init__(self, exchange_addresses: frozenset[str]) -> None:
+        """Initialize the decoder.
+
+        Args:
+            exchange_addresses: Allowed CTF Exchange V2 contract addresses.
+
+        Raises:
+            ValueError: If no syntactically valid exchange address is supplied.
+        """
+
+        normalized = frozenset(
+            address
+            for raw_address in exchange_addresses
+            if (address := self._normalize_address(raw_address)) is not None
+        )
+        if not normalized:
+            raise ValueError("exchange_addresses must contain a valid EVM address")
+        self._exchange_addresses = normalized
+
+    def decode(
+        self,
+        transaction_target: str,
+        calldata: bytes,
+    ) -> DecodedSourceCall | None:
+        """Return a qualified settlement call or ``None``.
+
+        Args:
+            transaction_target: Outer pending transaction destination.
+            calldata: Outer pending transaction calldata bytes.
+
+        Returns:
+            Decoded direct or Safe-wrapped matchOrders call. Delegate calls,
+            malformed payloads, unconfigured exchanges, and other selectors
+            return ``None``.
+        """
+
+        target = self._normalize_address(transaction_target)
+        if target is None:
+            return None
+        if target in self._exchange_addresses:
+            match_orders = decode_match_orders(calldata)
+            if match_orders is None:
+                return None
+            return DecodedSourceCall(
+                exchange_address=target,
+                safe_address=None,
+                match_orders=match_orders,
+            )
+        if len(calldata) < 4 or calldata[:4] != SAFE_EXEC_TRANSACTION_SELECTOR:
+            return None
+        try:
+            decoded = abi_decode(list(_SAFE_EXEC_TRANSACTION_TYPES), calldata[4:])
+            inner_target = self._normalize_address(str(decoded[0]))
+            inner_calldata = bytes(decoded[2])
+            operation = int(decoded[3])
+        except (DecodingError, IndexError, TypeError, ValueError, OverflowError):
+            return None
+        if operation != 0 or inner_target not in self._exchange_addresses:
+            return None
+        match_orders = decode_match_orders(inner_calldata)
+        if match_orders is None:
+            return None
+        return DecodedSourceCall(
+            exchange_address=inner_target,
+            safe_address=target,
+            match_orders=match_orders,
+        )
+
+    @staticmethod
+    def _normalize_address(value: str) -> str | None:
+        normalized = str(value or "").strip().lower()
+        if len(normalized) != 42 or not normalized.startswith("0x"):
+            return None
+        try:
+            int(normalized[2:], 16)
+        except ValueError:
+            return None
+        return normalized
 
 
 def _to_decoded_order(raw: tuple) -> DecodedOrder:

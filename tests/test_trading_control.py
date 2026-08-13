@@ -38,6 +38,7 @@ def state(enabled: bool, *, reason: str = "operator_test") -> TradingControlStat
 async def test_live_permission_defaults_to_paused_state() -> None:
     repo = SimpleNamespace(get=AsyncMock(return_value=state(False)))
     service = TradingPermissionService(repo, live_mode=True)
+    await service.refresh()
     with pytest.raises(TradingPausedError, match="operator_test"):
         await service.require_submission_allowed()
 
@@ -46,6 +47,8 @@ async def test_live_permission_defaults_to_paused_state() -> None:
 async def test_database_failure_blocks_live_submission() -> None:
     repo = SimpleNamespace(get=AsyncMock(side_effect=RuntimeError("db down")))
     service = TradingPermissionService(repo, live_mode=True)
+    with pytest.raises(TradingPausedError, match="unavailable"):
+        await service.refresh()
     with pytest.raises(TradingPausedError, match="unavailable"):
         await service.require_submission_allowed()
 
@@ -67,17 +70,36 @@ async def test_entry_pause_allows_protective_exit_but_full_stop_blocks_it() -> N
         get=AsyncMock(return_value=state(False, reason="runtime.full_stop"))
     )
 
-    allowed = await TradingPermissionService(
+    paused = TradingPermissionService(
         paused_repo,
         live_mode=True,
-    ).require_submission_allowed(purpose=SubmissionPurpose.PROTECTIVE_EXIT)
+    )
+    stopped = TradingPermissionService(
+        stopped_repo,
+        live_mode=True,
+    )
+    await paused.refresh()
+    await stopped.refresh()
+
+    allowed = await paused.require_submission_allowed(purpose=SubmissionPurpose.PROTECTIVE_EXIT)
     with pytest.raises(TradingPausedError, match="full_stop"):
-        await TradingPermissionService(
-            stopped_repo,
-            live_mode=True,
-        ).require_submission_allowed(purpose=SubmissionPurpose.PROTECTIVE_EXIT)
+        await stopped.require_submission_allowed(purpose=SubmissionPurpose.PROTECTIVE_EXIT)
 
     assert allowed is not None and allowed.reason == "operator_pause"
+
+
+@pytest.mark.asyncio
+async def test_hot_path_uses_cached_control_without_database_io() -> None:
+    """Repeated pre-submit checks never perform new repository reads."""
+
+    repo = SimpleNamespace(get=AsyncMock(return_value=state(True)))
+    service = TradingPermissionService(repo, live_mode=True)
+    await service.refresh()
+
+    await service.require_submission_allowed()
+    await service.require_submission_allowed()
+
+    repo.get.assert_awaited_once_with()
 
 
 @pytest.mark.asyncio

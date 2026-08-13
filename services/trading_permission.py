@@ -49,6 +49,44 @@ class TradingPermissionService:
 
         self._repo = repo
         self._live_mode = live_mode
+        self._state: TradingControlState | None = None
+
+    @property
+    def state(self) -> TradingControlState | None:
+        """Return the currently cached immutable control state."""
+
+        return self._state
+
+    async def refresh(self) -> TradingControlState | None:
+        """Refresh durable control state outside the submission hot path.
+
+        Returns:
+            The cached durable state, or ``None`` in paper mode.
+
+        Raises:
+            TradingPausedError: If live control state cannot be loaded.
+        """
+
+        if not self._live_mode:
+            return None
+        try:
+            state = await self._repo.get()
+        except Exception as exc:
+            self._state = None
+            raise TradingPausedError(
+                "trading control unavailable; live submission blocked"
+            ) from exc
+        self._state = state
+        return state
+
+    def replace(self, state: TradingControlState) -> None:
+        """Replace cached state from a user-feed or reconciliation update.
+
+        Args:
+            state: Newly observed durable control state.
+        """
+
+        self._state = state
 
     async def require_submission_allowed(
         self,
@@ -73,12 +111,9 @@ class TradingPermissionService:
             raise TypeError("submission purpose must be a SubmissionPurpose")
         if not self._live_mode:
             return None
-        try:
-            state = await self._repo.get()
-        except Exception as exc:
-            raise TradingPausedError(
-                "trading control unavailable; live submission blocked"
-            ) from exc
+        state = self._state
+        if state is None:
+            raise TradingPausedError("trading control unavailable; live submission blocked")
         protective_pause_exception = (
             purpose is SubmissionPurpose.PROTECTIVE_EXIT and state.reason != self._FULL_STOP_REASON
         )

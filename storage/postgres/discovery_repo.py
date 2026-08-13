@@ -12,7 +12,7 @@ from typing import Any
 import asyncpg
 import orjson
 
-from domain.ports.repositories import AbstractDiscoveryRepository
+from ports.repositories import AbstractDiscoveryRepository
 from services.discovery.models import Candidate
 
 

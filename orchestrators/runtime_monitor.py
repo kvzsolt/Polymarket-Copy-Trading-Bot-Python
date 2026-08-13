@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from hashlib import blake2b
 from typing import Any, TYPE_CHECKING
 
-from domain.trading_context import TradingContext
+from application.trading_context import TradingContext
 from orchestrators.trade_pipeline import execute_trades as execute_trade_pipeline
 from services.metrics import metrics
 from services.tradeMonitor import trade_monitor

@@ -12,7 +12,7 @@ import pytest
 
 import config.app_config as app_config_mod
 from tests.config_helpers import load_test_config
-from domain.trading_context import TradingContext
+from application.trading_context import TradingContext
 from orchestrators.trade_pipeline import execute_trades, _resolve_leader_tier
 from services.pnlTracker import PnLTracker
 from services.risk.risk_engine import RiskEngine

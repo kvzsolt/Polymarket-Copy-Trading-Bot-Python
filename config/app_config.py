@@ -364,9 +364,9 @@ class ExecutionConfig:
     # global master (AppConfig.global_kill_switch) supersedes this and blocks
     # every submission including protective exits.
     kill_switch: bool = False
-    # CCXT is the sole venue backend. The retained literal is frontend-safe
-    # capability metadata rather than a runtime selector.
-    venue_backend: Literal["ccxt"] = "ccxt"
+    # The official SDK is production-default. CCXT remains optional and its
+    # live-primary selection requires the separate experimental gate below.
+    venue_backend: Literal["sdk", "ccxt", "sdk-shadow-ccxt"] = "sdk"
     allow_experimental_ccxt_live: bool = False
 
     @property

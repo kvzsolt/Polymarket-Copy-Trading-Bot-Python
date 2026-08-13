@@ -1,11 +1,8 @@
-"""C5/C5b — FAK repost leg must persist ambiguity; avg-fill must not substitute.
+"""FAK one-shot behavior and unknown average-fill accounting.
 
-C5: in the FAK repost loop the submission row was written AFTER the POST
-inside the same try; an exception after the wire logged and ``break``ed with
-no persisted row — violating the persist-ambiguity rule and leaving an
-unreconcilable live venue order. The first attempt handles ambiguity
-correctly (saves ``submitted_unconfirmed`` before break); the repost leg must
-do the same.
+Copy-trade FAK execution performs one venue POST. Historical repost behavior
+is retained only for explicitly separate protective-exit policy, so a partial
+or zero fill never triggers an automatic chase order.
 
 C5b: ``avg_fill_price = _response_avg_price(response) or worst_price``
 substituted the limit price for an unknown average fill — the exact CLAUDE.md
@@ -16,7 +13,6 @@ must remain unknown (zero), not be fabricated from the slippage ceiling.
 
 from __future__ import annotations
 
-import time
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -31,7 +27,7 @@ from services.market_data_service import MarketDataBundle, MarketDataPolicy, Mar
 
 
 def _make_bundle(*, bid="0.49", ask="0.51", min_order_size="0") -> MarketDataBundle:
-    now = time.monotonic()
+    now = 1_000.0
     b = Decimal(bid) if bid else None
     a = Decimal(ask) if ask else None
     return MarketDataBundle(
@@ -159,10 +155,8 @@ def _build_svc(*, gateway, mds=None) -> ExecutionService:
 
 
 @pytest.mark.asyncio
-async def test_c5_repost_leg_persists_ambiguity_when_post_raises():
-    """C5: a repost-leg POST that raises after hitting the wire must persist a
-    ``submitted_unconfirmed`` row so the reconciler owns the in-flight order,
-    not silently drop it via ``break``."""
+async def test_partial_copy_fak_never_reaches_repost_leg():
+    """A partial copy FAK never sends the configured second response."""
     call = {"n": 0}
 
     async def submit(req):
@@ -176,7 +170,7 @@ async def test_c5_repost_leg_persists_ambiguity_when_post_raises():
                 status="matched",
                 raw={"size_matched": "3", "avg_price": "0.51"},
             )
-        # Repost leg: raise after the wire (simulate timeout/connection drop).
+        # A second call would represent the prohibited chase order.
         raise RuntimeError("connection reset after POST")
 
     gw = MagicMock(spec=ClobGateway)
@@ -184,24 +178,11 @@ async def test_c5_repost_leg_persists_ambiguity_when_post_raises():
     gw.get_order = AsyncMock(return_value=None)
     svc = _build_svc(gateway=gw)
 
-    await svc.execute(_req(amount="10"))
+    result = await svc.execute(_req(amount="10"))
 
-    # The repost leg must have persisted an ambiguity row (status contains
-    # submitted_unconfirmed) even though the POST raised. The repost-leg
-    # idempotency key carries the ``:fak:`` marker, distinguishing it from
-    # the first-attempt success save.
-    saved = svc.order_repo.save_submission.call_args_list
-    repost_ambiguity = [
-        c.args[0] if c.args else c.kwargs.get("record")
-        for c in saved
-        if c.args
-        and "submitted_unconfirmed" in str(getattr(c.args[0], "status", ""))
-        and ":fak:" in str(getattr(c.args[0], "idempotency_key", ""))
-    ]
-    assert repost_ambiguity, (
-        "repost leg must persist submitted_unconfirmed on POST exception, "
-        f"got records: {[(c.args[0].idempotency_key, c.args[0].status) for c in saved if c.args]}"
-    )
+    assert gw.submit_marketable_order.await_count == 1
+    assert result.status == "partially_filled"
+    assert result.filled_amount == Decimal("3")
 
 
 @pytest.mark.asyncio
@@ -240,13 +221,13 @@ async def test_c5b_unknown_avg_fill_price_not_substituted_with_worst_price():
         ("SELL", "0.45", _make_bundle(bid="0.49"), _make_bundle(bid="0.40")),
     ],
 )
-async def test_fak_repost_preserves_original_price_protection(
+async def test_partial_fak_keeps_original_price_protection_without_repost(
     side: str,
     price_limit: str,
     initial_bundle: MarketDataBundle,
     repost_bundle: MarketDataBundle,
 ) -> None:
-    """Never let a later quote weaken the source-derived cap or floor."""
+    """The one allowed POST uses the source-derived cap or floor."""
 
     mds = _mock_mds()
     mds.require_fresh_data.side_effect = [initial_bundle, repost_bundle]
@@ -272,8 +253,13 @@ async def test_fak_repost_preserves_original_price_protection(
 
     await service.execute(_req(side=side, amount="10", price_limit=price_limit))
 
-    repost = gateway.submit_marketable_order.await_args_list[1].args[0]
-    assert repost.price_limit == Decimal(price_limit)
+    assert gateway.submit_marketable_order.await_count == 1
+    submitted = gateway.submit_marketable_order.await_args_list[0].args[0]
+    if side == "BUY":
+        assert submitted.price_limit <= Decimal(price_limit)
+    else:
+        assert submitted.price_limit >= Decimal(price_limit)
+    assert mds.require_fresh_data.await_count == 1
 
 
 @pytest.mark.asyncio

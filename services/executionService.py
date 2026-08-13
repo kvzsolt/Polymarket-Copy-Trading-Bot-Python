@@ -28,6 +28,7 @@ from integrations.polymarket.errors import (
     VenueUnavailableError,
 )
 from integrations.polymarket.models import MarketableOrderRequest
+from domain.execution import ExecutionOrderType
 from services.circuitBreaker import CircuitBreaker
 from services.idempotency import compute_effective_key as _compute_effective_key
 from services.trading_permission import (
@@ -579,10 +580,11 @@ class ExecutionService:
 
         ec = self._config.execution
         metadata = req.recovery_metadata if isinstance(req.recovery_metadata, dict) else {}
+        raw_order_type = req.order_type or metadata.get("order_type")
         requested_order_type = (
-            str(req.order_type or metadata.get("order_type") or "").strip().upper() or None
+            ExecutionOrderType(str(raw_order_type).strip().upper()) if raw_order_type else None
         )
-        instant_fak = requested_order_type == "FAK" and req.price_limit is not None
+        instant_fak = requested_order_type is ExecutionOrderType.FAK and req.price_limit is not None
 
         # --- Single fresh-data fetch — fail closed if market data not ready ---
         # Copy-trade FAK orders still need a current executable side of book,
@@ -1212,10 +1214,12 @@ class ExecutionService:
                 condition_id=getattr(req, "condition_id", None),
                 tick_size=tick_size,
                 neg_risk=neg_risk,
-                order_type=requested_order_type or ("FAK" if forced_sell_exit else None),
+                order_type=requested_order_type
+                or (ExecutionOrderType.FAK if forced_sell_exit else None),
             )
 
-            for attempt in range(1, 4):
+            submission_attempts = 1 if requested_order_type is ExecutionOrderType.FAK else 3
+            for attempt in range(1, submission_attempts + 1):
                 if self._trading_permission is not None:
                     try:
                         await self._trading_permission.require_submission_allowed(
@@ -1379,10 +1383,11 @@ class ExecutionService:
                     # breaker too (same venue-health signal as above).
                     self.circuit_breaker.record_failure()
                     break
-                # Add jitter so concurrent runtimes retrying the same venue
-                # outage do not re-submit in lockstep bursts. Base backoff is
-                # unchanged; jitter only spreads attempts by up to 0.1s.
-                await asyncio.sleep(min(0.15 * attempt, 0.30) + random.uniform(0, 0.1))
+                if attempt < submission_attempts:
+                    # Add jitter so concurrent runtimes retrying the same venue
+                    # outage do not re-submit in lockstep bursts. Base backoff is
+                    # unchanged; jitter only spreads attempts by up to 0.1s.
+                    await asyncio.sleep(min(0.15 * attempt, 0.30) + random.uniform(0, 0.1))
             else:
                 self.circuit_breaker.record_failure()
                 await self._save_submission(
@@ -1396,11 +1401,11 @@ class ExecutionService:
                     side=req.side,
                     error=last_error,
                     asset=req.token_id,
-                    retry=3,
-                    max_retries=3,
+                    retry=submission_attempts,
+                    max_retries=submission_attempts,
                 )
 
-            if requested_order_type == "FAK" and _is_deferred_order_ack(response):
+            if requested_order_type is ExecutionOrderType.FAK and _is_deferred_order_ack(response):
                 venue_status = str(response.get("status") or "submitted_unconfirmed")
                 self._emit_post_lifecycle(
                     req=req,
@@ -1441,7 +1446,10 @@ class ExecutionService:
                         fees_paid=Decimal("0"),
                         error=last_error,
                     )
-                if not (requested_order_type == "FAK" and _is_fak_repostable_no_fill(response)):
+                if not (
+                    requested_order_type is ExecutionOrderType.FAK
+                    and _is_fak_repostable_no_fill(response)
+                ):
                     self._emit_post_lifecycle(
                         req=req,
                         side=side,
@@ -1470,7 +1478,7 @@ class ExecutionService:
                 )
 
             order_id = _response_order_id(response)
-            immediate_fak_fill = requested_order_type == "FAK"
+            immediate_fak_fill = requested_order_type is ExecutionOrderType.FAK
             if immediate_fak_fill:
                 matched_size = _response_matched_size(response)
                 # C5b — never substitute the slippage ceiling (worst_price)
@@ -1492,10 +1500,7 @@ class ExecutionService:
                         8,
                     )
                 else:
-                    max_fak_attempts = _positive_int(
-                        self._config.execution.copy_fak_max_attempts,
-                        8,
-                    )
+                    max_fak_attempts = 1
                 for fak_attempt in range(2, max_fak_attempts + 1):
                     if side == "BUY":
                         remaining_amount = req.amount - total_fill_cost
@@ -1586,7 +1591,7 @@ class ExecutionService:
                             condition_id=getattr(req, "condition_id", None),
                             tick_size=next_tick_size,
                             neg_risk=next_bundle.tick.neg_risk,
-                            order_type="FAK",
+                            order_type=ExecutionOrderType.FAK,
                         )
                         next_submit = await self.clob_gateway.submit_marketable_order(next_request)
                         next_response = _submit_result_to_response(next_submit)

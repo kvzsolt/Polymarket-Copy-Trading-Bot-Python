@@ -8,6 +8,7 @@ from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 import config.app_config as app_config_mod
+from application.trading_context import TradingContext
 from config.env import SignatureType
 from tests.config_helpers import load_test_config
 import orchestrators.runtime_bootstrap as runtime_bootstrap
@@ -474,7 +475,7 @@ def test_build_trading_context_constructs_copy_decision_service_only_with_inject
     )
 
     with (
-        patch("domain.trading_context.CopyDecisionService") as copy_decision_cls,
+        patch("application.trading_context.CopyDecisionService") as copy_decision_cls,
         patch(
             "orchestrators.runtime_bootstrap.rehydrate_position_manager",
             new=AsyncMock(return_value=None),
@@ -529,8 +530,6 @@ def test_copy_notional_prefers_typed_config_over_env():
         ADAPTIVE_MAX_PERCENT="95",
         ADAPTIVE_THRESHOLD_USDC="777",
     )
-    from domain.trading_context import TradingContext
-
     ctx = TradingContext(
         user_id="user-1",
         wallet_address=_VALID_FUNDER,

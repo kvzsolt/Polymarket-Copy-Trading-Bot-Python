@@ -44,7 +44,7 @@ from typing import Any
 
 import asyncpg
 
-from domain.ports.repositories import AbstractOrderRepository
+from ports.repositories import AbstractOrderRepository
 from services.execution.ambiguous_recovery import (
     AmbiguousRecoveryProgress,
     AmbiguousSubmission,

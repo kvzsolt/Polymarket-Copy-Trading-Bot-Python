@@ -1,8 +1,7 @@
-"""CCXT-only runtime composition regression contracts.
+"""SDK-default and CCXT-optional runtime composition contracts.
 
-The v1 cutover keeps paper mode as the shipped default and constructs exactly
-one CCXT prediction client/gateway per runtime user.  No official SDK client is
-created as a hidden primary or compatibility fallback.
+The runtime keeps paper mode as the shipped default and constructs no CCXT
+transport unless an operator explicitly selects the optional adapter.
 """
 
 from __future__ import annotations
@@ -16,7 +15,7 @@ import tomllib
 import pytest
 import yaml
 
-from integrations.polymarket.ccxt_prediction_gateway import CcxtPredictionGateway
+from integrations.polymarket.clob_v2_gateway import PolymarketGateway
 from orchestrators.runtime_bootstrap import build_user_venue_backend
 from services.executionService import ExecutionService
 
@@ -63,35 +62,35 @@ def _config(*, mode: str, allow_live: bool) -> SimpleNamespace:
     )
 
 
-def test_packaged_execution_config_is_ccxt_paper_safe() -> None:
-    """Ship CCXT as the only backend without arming live trading."""
+def test_packaged_execution_config_is_sdk_paper_safe() -> None:
+    """Ship the official SDK default without arming live trading."""
 
     root = Path(__file__).resolve().parents[1]
     payload = yaml.safe_load((root / "config" / "execution.yml").read_text(encoding="utf-8"))
 
-    assert payload["venue_backend"] == "ccxt"
+    assert payload["venue_backend"] == "sdk"
     assert payload["trading_mode"] == "paper"
     assert payload["allow_experimental_ccxt_live"] is False
 
 
-def test_paper_runtime_builds_public_ccxt_without_sdk_client() -> None:
-    """Create a public-only CCXT gateway when the runtime is in paper mode."""
+def test_paper_runtime_builds_sdk_without_ccxt_transport() -> None:
+    """Do not initialize optional CCXT for the default paper runtime."""
+
+    factory = MagicMock()
 
     bundle = asyncio.run(
         build_user_venue_backend(
             _runtime_user(),
+            object(),
             config=_config(mode="paper", allow_live=False),
-            exchange_factory=_Exchange,
+            exchange_factory=factory,
             ccxt_version="4.5.70",
         )
     )
 
-    assert isinstance(bundle.gateway, CcxtPredictionGateway)
-    assert bundle.client.authenticated is False
-    assert "privateKey" not in bundle.client.exchange.settings
-    assert "walletAddress" not in bundle.client.exchange.settings
-    asyncio.run(bundle.close())
-    bundle.client.exchange.close.assert_awaited_once_with(True)
+    assert isinstance(bundle.gateway, PolymarketGateway)
+    assert bundle.ccxt_client is None
+    factory.assert_not_called()
 
 
 def test_live_runtime_refuses_ccxt_before_transport_without_explicit_gate() -> None:
@@ -103,7 +102,9 @@ def test_live_runtime_refuses_ccxt_before_transport_without_explicit_gate() -> N
         asyncio.run(
             build_user_venue_backend(
                 _runtime_user(),
+                object(),
                 config=_config(mode="live", allow_live=False),
+                backend="ccxt",
                 exchange_factory=factory,
                 ccxt_version="4.5.70",
             )
@@ -112,8 +113,8 @@ def test_live_runtime_refuses_ccxt_before_transport_without_explicit_gate() -> N
     factory.assert_not_called()
 
 
-def test_execution_service_requires_injected_gateway() -> None:
-    """Forbid the execution layer from constructing a hidden SDK adapter."""
+def test_execution_service_requires_a_gateway_or_sdk_compatible_client() -> None:
+    """Reject an unusable legacy client when no gateway is injected."""
 
     with pytest.raises(TypeError, match="clob_gateway"):
         ExecutionService(
@@ -128,8 +129,8 @@ def test_execution_service_requires_injected_gateway() -> None:
         )
 
 
-def test_runtime_and_dependencies_have_no_official_sdk_path() -> None:
-    """Keep the production composition and dependency set CCXT-only."""
+def test_runtime_and_dependencies_retain_the_official_sdk_path() -> None:
+    """Keep the official adapter installed and reachable from composition."""
 
     root = Path(__file__).resolve().parents[1]
     app_source = (root / "app.py").read_text(encoding="utf-8")
@@ -137,39 +138,33 @@ def test_runtime_and_dependencies_have_no_official_sdk_path() -> None:
     package_source = (root / "integrations" / "polymarket" / "__init__.py").read_text(
         encoding="utf-8"
     )
-    cli_source = "\n".join(
-        path.read_text(encoding="utf-8") for path in sorted((root / "bot_cli").rglob("*.py"))
-    )
     utility_source = (root / "utils" / "createClobClient.py").read_text(encoding="utf-8")
     dependencies = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))["project"][
         "dependencies"
     ]
 
-    assert "create_polymarket_client" not in app_source
-    assert "clob_v2_gateway" not in bootstrap_source
-    assert "sdk_client" not in package_source
-    assert "clob_v2_gateway" not in package_source
-    assert "sdk_client" not in cli_source
-    assert "clob_v2_gateway" not in cli_source
-    assert "polymarket-client" not in cli_source
+    assert "create_polymarket_client" in app_source
+    assert "clob_v2_gateway" in bootstrap_source
+    assert "sdk_client" in package_source
+    assert "clob_v2_gateway" in package_source
     assert "from polymarket" not in utility_source
-    assert all(not dependency.startswith("polymarket-client") for dependency in dependencies)
-    for obsolete in (
+    assert "polymarket-client==0.1.0b18" in dependencies
+    for required in (
         "integrations/polymarket/sdk_client.py",
         "integrations/polymarket/clob_v2_gateway.py",
         "integrations/polymarket/hybrid_gateway.py",
         "integrations/polymarket/backend_factory.py",
     ):
-        assert not (root / obsolete).exists(), f"obsolete venue path remains: {obsolete}"
+        assert (root / required).exists(), f"required venue path missing: {required}"
 
 
-def test_blocking_money_path_type_gate_targets_ccxt_files() -> None:
-    """CI must type-check the active adapter instead of a deleted SDK file."""
+def test_blocking_money_path_type_gate_targets_both_adapters() -> None:
+    """CI must type-check both production-capable adapter paths."""
 
     root = Path(__file__).resolve().parents[1]
     workflow = (root / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
 
-    assert "integrations/polymarket/clob_v2_gateway.py" not in workflow
+    assert "integrations/polymarket/clob_v2_gateway.py" in workflow
     assert "integrations/polymarket/ccxt_prediction_gateway.py" in workflow
     assert "integrations/polymarket/ccxt_prediction_client.py" in workflow
     assert "PMCOPY__WALLET__PRIVATE_KEY=" not in workflow

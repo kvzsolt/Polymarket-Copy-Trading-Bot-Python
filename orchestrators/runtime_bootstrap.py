@@ -9,7 +9,7 @@ from decimal import Decimal
 from collections.abc import Sized
 from typing import TYPE_CHECKING, Any
 
-from domain.trading_context import TradingContext
+from application.trading_context import TradingContext
 from interfaces.clob_gateway import ClobGateway
 from cache.market_state_store import MarketStateStore
 from services.accountingService import AccountingService
@@ -40,7 +40,10 @@ from utils.logger import get_logger
 
 if TYPE_CHECKING:
     from config.app_config import AppConfig
+    from integrations.polymarket.backend_factory import VenueBackend
+    from integrations.polymarket.hybrid_gateway import MismatchSink
     from integrations.polymarket.runtime_gateway import RuntimeGatewayBundle
+    from integrations.polymarket.sdk_client import PolymarketClient
 
 logger = get_logger("RuntimeBootstrap")
 
@@ -155,7 +158,7 @@ class UserRuntimeState:
     """Hold the composed runtime state for one follower account."""
 
     user: RuntimeUser
-    client: object
+    client: "PolymarketClient"
     orders_repo: OrdersRepo
     fills_repo: FillsRepo
     positions_repo: PositionsRepo
@@ -180,6 +183,8 @@ class UserRuntimeState:
     position_drift_service: "object | None" = None
     # Manual sync service — funder activity + position seeder (TS port).
     manual_sync_service: "object | None" = None
+    # Cached durable control state; refreshed off the order hot path.
+    trading_permission: TradingPermissionService | None = None
 
 
 def configured_leaders(config: AppConfig) -> list[str]:
@@ -261,7 +266,7 @@ async def fetch_live_positions(wallet: str) -> list[dict] | None:
 
 def build_user_state(
     runtime_user: RuntimeUser,
-    client: object,
+    client: "PolymarketClient",
     pool,
     config: AppConfig,
     clob_gateway: "ClobGateway | None" = None,
@@ -284,10 +289,12 @@ def build_user_state(
     risk_engine = RiskEngine()
     accounting_service = AccountingService()
     position_manager = PositionManager(config=config)
-    # Single CLOB venue boundary — the same injected CCXT-backed gateway is
-    # shared by ExecutionService, reconciliation, and market data.
+    # Single CLOB venue boundary shared by execution, reconciliation, and
+    # market data. The official SDK adapter remains the compatibility default.
     if clob_gateway is None:
-        raise TypeError("build_user_state requires an injected clob_gateway")
+        from integrations.polymarket.clob_v2_gateway import PolymarketGateway
+
+        clob_gateway = PolymarketGateway(client, config)
 
     # Freshness-aware market data layer (issue #hardening PR-1).
     # The store is fed by WSS deltas; the MDS falls back to REST via the
@@ -329,6 +336,10 @@ def build_user_state(
         ),
     )
 
+    trading_permission = TradingPermissionService(
+        TradingControlRepo(pool),
+        live_mode=not config.execution.paper_trade_only,
+    )
     execution_service = ExecutionService(
         clob_client=client,
         fee_service=FeeService(client),
@@ -339,10 +350,7 @@ def build_user_state(
         # P1-j: trade-path geoblock enforcement with expiry revalidation. Opt-in
         # via ENFORCE_GEOBLOCK (default on); fail-closed; BUY entries only.
         geoblock_gate=GeoblockGate(config.polymarket.enforce_geoblock),
-        trading_permission=TradingPermissionService(
-            TradingControlRepo(pool),
-            live_mode=not config.execution.paper_trade_only,
-        ),
+        trading_permission=trading_permission,
     )
 
     # PR6 — production execution funnel. ReservationService + ExecutionCoordinator
@@ -405,43 +413,55 @@ def build_user_state(
         execution_coordinator=execution_coordinator,
         position_drift_service=position_drift_service,
         manual_sync_service=manual_sync_service,
+        trading_permission=trading_permission,
     )
 
 
 async def build_user_venue_backend(
     runtime_user: RuntimeUser,
+    client: "PolymarketClient",
     config: AppConfig,
-    **factory_kwargs: object,
+    *,
+    backend: "VenueBackend | str | None" = None,
+    allow_experimental_ccxt_live: bool | None = None,
+    mismatch_sink: "MismatchSink | None" = None,
+    exchange_factory: object | None = None,
+    ccxt_version: str | None = None,
 ) -> "RuntimeGatewayBundle":
-    """Build the sole CCXT gateway/client bundle for one runtime user.
+    """Build the configured venue adapter around the official SDK gateway.
 
     Args:
         runtime_user: Follower runtime identity and wallet settings.
+        client: Official SDK client owned by the application runtime.
         config: Validated application configuration.
-        **factory_kwargs: Test-only CCXT exchange factory/version overrides.
+        backend: Optional explicit backend override.
+        allow_experimental_ccxt_live: Explicit CCXT-live authorization.
+        mismatch_sink: Optional structured shadow mismatch consumer.
+        exchange_factory: Optional deterministic CCXT factory test seam.
+        ccxt_version: Optional installed-version override for tests.
 
     Returns:
-        Owned CCXT runtime bundle.
+        Selected gateway and any optional CCXT resources it owns.
+
+    Raises:
+        TypeError: If ``exchange_factory`` is not callable.
     """
 
-    from integrations.polymarket.runtime_gateway import CcxtRuntimeGatewayFactory
+    from integrations.polymarket.clob_v2_gateway import PolymarketGateway
+    from integrations.polymarket.runtime_gateway import build_runtime_polymarket_gateway
 
-    exchange_factory = factory_kwargs.pop("exchange_factory", None)
     if exchange_factory is not None and not callable(exchange_factory):
         raise TypeError("exchange_factory must be callable")
-    ccxt_version = factory_kwargs.pop("ccxt_version", None)
-    if ccxt_version is not None and not isinstance(ccxt_version, str):
-        raise TypeError("ccxt_version must be a string")
-    if factory_kwargs:
-        names = ", ".join(sorted(factory_kwargs))
-        raise TypeError(f"unsupported CCXT factory arguments: {names}")
-    factory = CcxtRuntimeGatewayFactory(
-        exchange_factory=exchange_factory,
-        ccxt_version=ccxt_version,
-    )
-    return await factory.build(
+    sdk_gateway = PolymarketGateway(client, config)  # type: ignore[arg-type]
+    return await build_runtime_polymarket_gateway(
+        sdk_gateway=sdk_gateway,
         config=config,
         wallet_config=getattr(runtime_user, "wallet", None),
+        backend=backend,
+        allow_experimental_ccxt_live=allow_experimental_ccxt_live,
+        mismatch_sink=mismatch_sink,
+        exchange_factory=exchange_factory,  # type: ignore[arg-type]
+        ccxt_version=ccxt_version,
     )
 
 

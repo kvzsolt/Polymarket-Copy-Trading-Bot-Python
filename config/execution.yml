@@ -1,10 +1,10 @@
 # Execution service settings. trading_mode is the single authoritative
-# live/paper selector. CCXT is the sole venue backend; live additionally
-# requires allow_experimental_ccxt_live (never weaken).
+# live/paper selector. The official SDK is the default; a CCXT live primary
+# additionally requires allow_experimental_ccxt_live (never weaken).
 # kill_switch here refuses BUY entries but still allows protective exits;
 # the global master stop is app.yml kill_switch.
 kill_switch: false
-venue_backend: 'ccxt'
+venue_backend: sdk
 allow_experimental_ccxt_live: false
 sell_fraction_missing_policy: skip
 slippage_tolerance: 2.0

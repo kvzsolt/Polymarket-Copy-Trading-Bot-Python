@@ -22,7 +22,7 @@ from typing import Any
 
 import asyncpg
 
-from domain.ports.repositories import AbstractFillRepository
+from ports.repositories import AbstractFillRepository
 
 
 @dataclass

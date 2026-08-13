@@ -14,12 +14,18 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from interfaces.source_transactions import SourceTransactionStateStore
+    from orchestration.polygon_source_transaction_runtime import (
+        PolygonSourceTransactionRuntime,
+    )
     from orchestrators.runtime_bootstrap import TradingContext
+    from services.onchain_detection.trade_detection_models import OnchainTradeSignal
 
 from bootstrap import build_app
 from config.app_config import AppConfigSemanticValidator, EnvValidationError, load_config
 from config.env import is_valid_eth_address
 from integrations.control_plane import SystemMonotonicClock
+from integrations.polymarket.sdk_client import create_polymarket_client
 from orchestrators.control_plane_bootstrap import (
     AiohttpControlPlaneServerFactory,
     ControlPlaneDatabasePool,
@@ -254,6 +260,52 @@ def _build_onchain_condition_id_resolver():
     from services.onchain_detection.condition_id_resolver import GammaConditionIdResolver
 
     return GammaConditionIdResolver().resolve
+
+
+def _build_confirmed_onchain_runtime(
+    *,
+    watched_wallets: set[str],
+    ws_url: str,
+    chain_id: int,
+    signal_sink: Callable[["OnchainTradeSignal"], Awaitable[None]],
+    state_store: "SourceTransactionStateStore | None" = None,
+) -> "PolygonSourceTransactionRuntime":
+    """Compose the head-driven Polygon confirmation runtime.
+
+    Args:
+        watched_wallets: Current leader wallet snapshot, including Safe wallets.
+        ws_url: Alchemy Polygon WebSocket endpoint; retained by the adapter.
+        chain_id: Configured Polygon EVM chain identifier.
+        signal_sink: Existing authoritative on-chain signal consumer.
+        state_store: Durable source reservation/idempotency snapshot adapter.
+
+    Returns:
+        Fully composed, not-yet-started source confirmation runtime.
+    """
+
+    from config.addresses import (
+        POLYMARKET_CTF_EXCHANGE_V2_ADDRESS,
+        POLYMARKET_NEG_RISK_EXCHANGE_V2_ADDRESS,
+    )
+    from orchestration.bootstrap import (
+        PolygonSourceRuntimeBootstrap,
+        PolygonSourceRuntimeConfig,
+    )
+
+    config = PolygonSourceRuntimeConfig(
+        chain_id=chain_id,
+        websocket_url=ws_url,
+        exchange_addresses=(
+            POLYMARKET_CTF_EXCHANGE_V2_ADDRESS,
+            POLYMARKET_NEG_RISK_EXCHANGE_V2_ADDRESS,
+        ),
+        watched_wallets=frozenset(watched_wallets),
+    )
+    return PolygonSourceRuntimeBootstrap().build(
+        config,
+        signal_sink,
+        state_store=state_store,
+    )
 
 
 async def _reap_reservations_once(contexts: list["TradingContext"]) -> None:
@@ -1233,19 +1285,21 @@ async def _run_application(client_registry: list[Any]) -> int:
     user_states: dict[str, UserRuntimeState] = {}
 
     for runtime_user in runtime_users:
-        # Construct exactly one CCXT transport and one venue-neutral gateway
-        # per runtime user. Paper mode creates a public-only transport even if
-        # deployment secrets are present; live mode remains separately gated.
+        client = await create_polymarket_client(
+            wallet_config=runtime_user.wallet,
+            config=application.config,
+            authenticated=not application.config.execution.paper_trade_only,
+        )
+        if client.wallet_address is not None:
+            bind_resolved_deposit_wallet(runtime_user, client.wallet_address)
+        client_registry.append(client)
         venue_backend = await build_user_venue_backend(
             runtime_user,
+            client,
             application.config,
         )
-        client = venue_backend.client
-        if client.authenticated and client.wallet_address is not None:
-            bind_resolved_deposit_wallet(runtime_user, client.wallet_address)
-        # Register the bundle immediately so every partial-startup failure
-        # closes the transport exactly once from the outer finally block.
-        client_registry.append(venue_backend)
+        if venue_backend.ccxt_client is not None:
+            client_registry.append(venue_backend)
         user_states[runtime_user.user_id] = build_user_state(
             runtime_user,
             client,
@@ -1415,6 +1469,21 @@ async def _run_application(client_registry: list[Any]) -> int:
     startup_reconciled = await startup_reconcile_unconfirmed(
         list(risk_contexts_by_user.values()),
         failures_out=reconcile_failures,
+    )
+    from orchestration.trading_permission_runtime import TradingPermissionRuntime
+
+    trading_permission_runtime = TradingPermissionRuntime(
+        permissions={
+            user_id: state.trading_permission
+            for user_id, state in user_states.items()
+            if state.trading_permission is not None
+        }
+    )
+    control_failures = await trading_permission_runtime.initialize(
+        blocked_user_ids=set(reconcile_failures)
+    )
+    reconcile_failures.extend(
+        user_id for user_id in control_failures if user_id not in reconcile_failures
     )
     logger.info(
         "startup_stage | stage=startup_reconcile_completed failures=%d",
@@ -1835,6 +1904,19 @@ async def _run_application(client_registry: list[Any]) -> int:
     # awaitable per call so a crashed loop can be respawned.
     supervised: list[_Supervised] = []
 
+    if not application.config.execution.paper_trade_only:
+        control_refresh_interval = float(
+            application.config.reconciliation.reconcile_interval_seconds
+        )
+        supervised.append(
+            _Supervised(
+                name="trading-control-refresh",
+                factory=lambda: trading_permission_runtime.run(
+                    interval_seconds=control_refresh_interval
+                ),
+            )
+        )
+
     if application.config.discovery.scheduler.enabled and not configured:
         dynamic_monitoring_enabled = bool(application.config.discovery.scheduler.start_from_roster)
         if not dynamic_monitoring_enabled:
@@ -1985,15 +2067,29 @@ async def _run_application(client_registry: list[Any]) -> int:
                             redact_error_detail(result),
                         )
 
-            onchain_runtime = OnchainDetectionRuntime(
-                watched_wallets=set(monitored_leaders),
-                ws_url=ws_url,
-                signal_sink=_onchain_signal_sink,
-                enable_pending=oc_cfg.enable_onchain_pending_detection,
-                enable_mined=oc_cfg.enable_onchain_mined_detection,
-                pending_config=_build_pending_tx_config(oc_cfg),
-                condition_id_resolver=_build_onchain_condition_id_resolver(),
-            )
+            if oc_cfg.enable_onchain_pending_detection:
+                from adapters.persistence.source_transaction_state_store import (
+                    PostgresSourceTransactionStateStore,
+                )
+                from storage.postgres.connection import get_pool
+
+                onchain_runtime = _build_confirmed_onchain_runtime(
+                    watched_wallets=set(monitored_leaders),
+                    ws_url=ws_url,
+                    chain_id=application.config.wallet.chain_id,
+                    signal_sink=_onchain_signal_sink,
+                    state_store=PostgresSourceTransactionStateStore(await get_pool()),
+                )
+            else:
+                onchain_runtime = OnchainDetectionRuntime(
+                    watched_wallets=set(monitored_leaders),
+                    ws_url=ws_url,
+                    signal_sink=_onchain_signal_sink,
+                    enable_pending=False,
+                    enable_mined=oc_cfg.enable_onchain_mined_detection,
+                    pending_config=_build_pending_tx_config(oc_cfg),
+                    condition_id_resolver=_build_onchain_condition_id_resolver(),
+                )
             await onchain_runtime.start()
             logger.info(
                 "onchain_detection_started | mined=%s pending=%s watched=%d",

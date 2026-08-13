@@ -38,7 +38,7 @@ from decimal import Decimal
 
 import asyncpg
 
-from domain.ports.repositories import AbstractPositionRepository
+from ports.repositories import AbstractPositionRepository
 from utils import is_valid_clob_token_id
 from utils.logger import get_logger
 

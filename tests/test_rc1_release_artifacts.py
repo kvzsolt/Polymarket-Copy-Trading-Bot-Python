@@ -147,7 +147,7 @@ def test_packaged_service_files_are_paper_safe_and_secret_free(
     wallet = yaml.safe_load((repo_root / "config" / "wallet.yml").read_text(encoding="utf-8"))
 
     assert execution["trading_mode"] == "paper"
-    assert execution["venue_backend"] == "ccxt"
+    assert execution["venue_backend"] == "sdk"
     assert execution["allow_experimental_ccxt_live"] is False
     assert app_cfg["kill_switch"] is False
     assert risk["kill_switch"] is False

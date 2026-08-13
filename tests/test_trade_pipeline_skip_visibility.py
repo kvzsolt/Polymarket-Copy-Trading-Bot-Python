@@ -23,7 +23,7 @@ import pytest
 import config.app_config as app_config_mod
 from cache.market_state_store import BookSnapshot, QuoteSnapshot, TickSnapshot
 from tests.config_helpers import load_test_config
-from domain.trading_context import TradingContext
+from application.trading_context import TradingContext
 from orchestrators.trade_pipeline import execute_trades
 from services.accountingService import AccountingService
 from services.executionService import ExecutionResult

@@ -133,6 +133,18 @@ _CORE_DDL = [
     """
     CREATE INDEX IF NOT EXISTS idx_fills_order ON fills(order_id)
     """,
+    # ----- source transaction confirmation state ------------------------
+    # One complete immutable JSON image keeps source reservations and
+    # follower-scoped consumption claims crash-safe. The application owns
+    # all mutations behind one asyncio lock and replaces this singleton in
+    # one statement, so no check-then-mutate split exists across services.
+    """
+    CREATE TABLE IF NOT EXISTS source_transaction_state (
+        singleton_id smallint PRIMARY KEY CHECK (singleton_id = 1),
+        snapshot_json jsonb NOT NULL,
+        updated_at    timestamptz NOT NULL DEFAULT now()
+    )
+    """,
     # DL-03: ``idx_fills_unique`` was byte-identical to ``idx_fills_dedup``
     # above. The duplicate index doubled the per-INSERT index-maintenance
     # cost and made ``ON CONFLICT ON CONSTRAINT`` ambiguous. Drop it on

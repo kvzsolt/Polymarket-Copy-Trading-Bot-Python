@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
 
+from domain.execution import ExecutionOrderType
+
 
 _MAX_PERSISTED_FIELD_CHARS = 160
 _MAX_PERSISTED_ERROR_CHARS = 512
@@ -72,7 +74,7 @@ class ExecutionRequest:
     signal_id: str | None = None
     condition_id: str | None = None
     recovery_metadata: dict[str, Any] | None = None
-    order_type: str | None = None
+    order_type: ExecutionOrderType | None = None
     price_limit: Decimal | None = None
 
 
