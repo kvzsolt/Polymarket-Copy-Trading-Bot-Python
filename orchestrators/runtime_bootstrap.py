@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 from dataclasses import dataclass
+from urllib.parse import urlencode
 from decimal import Decimal
 from collections.abc import Sized
 from typing import TYPE_CHECKING, Any
@@ -1057,11 +1058,18 @@ async def hydrate_resolved_market_state(
         # the CCXT-only execution boundary). condition_ids are unique so this
         # is bounded by len(positions) — cheap and one-shot at boot.
         for cond, tokens in tokens_by_condition.items():
-            market = await _fetch_gamma_market(cond)
-            if market is None:
-                # A 404 / unreachable condition is treated as terminal: if the
-                # venue no longer indexes the condition, every token under it
-                # is retired. Mark resolved so the risk monitor stops probing.
+            lookup = await _lookup_gamma_market(cond)
+            if lookup.unavailable:
+                # Transient outage or unexpected payload shape: missing
+                # evidence must never mark a position resolved — doing so
+                # would disable price probes, stop-loss, and protective exits
+                # for the lifetime of the process. Leave monitoring intact;
+                # the WSS market_resolved event or the next boot retries.
+                continue
+            if lookup.market is None:
+                # Gamma answered and does not index the condition: every token
+                # under it is retired. Mark resolved so the risk monitor stops
+                # probing them.
                 for token in tokens:
                     try:
                         market_store.mark_resolved(token, cond)
@@ -1069,6 +1077,7 @@ async def hydrate_resolved_market_state(
                     except Exception:
                         logger.debug("mark_resolved_failed", exc_info=True)
                 continue
+            market = lookup.market
             # Terminal signals per Polymarket OpenAPI:
             #   - ``closed: true``  → resolved binary outcome decided.
             #   - ``active: false`` → market suspended / not tradeable.
@@ -1097,32 +1106,64 @@ async def hydrate_resolved_market_state(
     return summary
 
 
-_GAMMA_MARKET_URL = "https://gamma-api.polymarket.com/markets/{}"
+_GAMMA_MARKETS_URL = "https://gamma-api.polymarket.com/markets"
 
 
-async def _fetch_gamma_market(condition_id: str) -> dict[str, Any] | None:
-    """Fetch one Gamma market document by condition_id.
+@dataclass(frozen=True)
+class _GammaLookup:
+    """Result of one Gamma market-metadata lookup.
 
-    Returns ``None`` when the condition is unknown (404) or the request
-    fails; callers treat that as terminal. A successful fetch returns the
-    raw market dict so callers can read ``closed`` / ``active`` / ``archived``.
+    Exactly one of three states:
+    * ``market`` set — an authoritative market document;
+    * ``market`` None — Gamma answered and does not index the condition
+      (authoritative terminal signal);
+    * ``unavailable`` True — the lookup itself failed (transport error or
+      unexpected payload shape). Never evidence of anything.
+    """
+
+    market: dict[str, Any] | None = None
+    unavailable: bool = False
+
+
+async def _lookup_gamma_market(condition_id: str) -> _GammaLookup:
+    """Look up one Gamma market document by its 0x condition id.
+
+    Gamma's ``/markets/{id}`` route accepts only the numeric Gamma market id
+    (a condition id there returns 422), so this uses the ``condition_ids``
+    filter, which resolves condition ids directly.
     """
 
     cond = str(condition_id or "").strip()
     if not cond:
-        return None
+        return _GammaLookup(unavailable=True)
+    query = urlencode((("condition_ids", cond), ("limit", "1")))
     try:
-        payload = await fetch_data(_GAMMA_MARKET_URL.format(cond), silent=True)
+        payload = await fetch_data(f"{_GAMMA_MARKETS_URL}?{query}", silent=True)
     except Exception as exc:
         logger.debug(
-            "hydrate_resolved_get_market_failed | cond=%s error=%r",
+            "hydrate_resolved_gamma_unavailable | cond=%s error=%r",
             cond,
             exc,
         )
-        return None
-    if isinstance(payload, dict):
-        return payload
-    return None
+        return _GammaLookup(unavailable=True)
+    if not isinstance(payload, list):
+        logger.debug(
+            "hydrate_resolved_gamma_unexpected_payload | cond=%s type=%s",
+            cond,
+            type(payload).__name__,
+        )
+        return _GammaLookup(unavailable=True)
+    if not payload:
+        return _GammaLookup(market=None)
+    market = payload[0]
+    if not isinstance(market, dict):
+        logger.debug(
+            "hydrate_resolved_gamma_malformed_row | cond=%s type=%s",
+            cond,
+            type(market).__name__,
+        )
+        return _GammaLookup(unavailable=True)
+    return _GammaLookup(market=market)
 
 
 async def build_context_maps(

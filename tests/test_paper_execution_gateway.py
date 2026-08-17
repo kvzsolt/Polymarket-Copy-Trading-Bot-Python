@@ -181,6 +181,56 @@ async def test_paper_buy_fill_derives_shares_from_spend_and_limit() -> None:
 
 
 @pytest.mark.asyncio
+async def test_paper_marketable_submit_result_carries_fill_evidence() -> None:
+    """ExecutionService reads matched size / average price from the raw map.
+
+    Without them a fully simulated FAK fill is indistinguishable from a
+    zero-fill and the pipeline classifies it as "did not fill".
+    """
+
+    gateway, _market = _paper_gateway()
+
+    result = await gateway.submit_marketable_order(_buy_request(size="10", limit="0.40"))
+
+    assert result.success is True
+    assert isinstance(result.raw, dict)
+    assert Decimal(str(result.raw["size_matched"])) == Decimal("25")
+    assert Decimal(str(result.raw["avg_price"])) == Decimal("0.40")
+    assert Decimal(str(result.raw["original_size"])) == Decimal("25")
+
+
+@pytest.mark.asyncio
+async def test_paper_marketable_sell_submit_result_carries_fill_evidence() -> None:
+    gateway, _market = _paper_gateway()
+
+    result = await gateway.submit_marketable_order(_sell_request(size="7.3", limit="0.60"))
+
+    assert result.success is True
+    assert Decimal(str(result.raw["size_matched"])) == Decimal("7.3")
+    assert Decimal(str(result.raw["avg_price"])) == Decimal("0.60")
+
+
+@pytest.mark.asyncio
+async def test_paper_limit_submit_result_reports_zero_matched() -> None:
+    """A resting limit order has legitimately matched nothing yet."""
+
+    gateway, _market = _paper_gateway()
+
+    result = await gateway.submit_limit_order(
+        LimitOrderRequest(
+            token_id=TOKEN,
+            side="BUY",
+            price=Decimal("0.40"),
+            size=Decimal("10"),
+            condition_id=CONDITION,
+        )
+    )
+
+    assert result.success is True
+    assert Decimal(str(result.raw["size_matched"])) == Decimal("0")
+
+
+@pytest.mark.asyncio
 async def test_paper_sell_fill_sells_the_full_share_size() -> None:
     gateway, _market = _paper_gateway()
 

@@ -75,6 +75,55 @@ async def test_authenticated_client_requires_private_key_and_verified_deposit_wa
 
 
 @pytest.mark.asyncio
+async def test_wallet_config_never_falls_back_to_the_global_wallet() -> None:
+    """A per-user wallet must be the complete identity for that user.
+
+    Falling through to ``config.wallet`` would pair one multi-user entry's
+    private key with a different account's Deposit Wallet funder.
+    """
+
+    config = SimpleNamespace(
+        wallet=SimpleNamespace(
+            funder_address="0x" + "c" * 40,
+            private_key="0x" + "d" * 64,
+        )
+    )
+
+    with pytest.raises(CcxtPredictionConfigurationError, match="Deposit Wallet"):
+        await create_ccxt_prediction_client(
+            wallet_config=SimpleNamespace(funder_address="", private_key="0x" + "a" * 64),
+            config=config,
+            authenticated=True,
+            exchange_factory=FakeExchange,
+            ccxt_version="4.5.73",
+        )
+
+
+@pytest.mark.asyncio
+async def test_config_wallet_is_used_only_without_a_wallet_config() -> None:
+    """The global-config fallback is valid solely on the single-user path."""
+
+    config = SimpleNamespace(
+        wallet=SimpleNamespace(
+            funder_address="0x" + "c" * 40,
+            private_key="0x" + "d" * 64,
+        )
+    )
+
+    client = await create_ccxt_prediction_client(
+        config=config,
+        authenticated=True,
+        exchange_factory=FakeExchange,
+        ccxt_version="4.5.73",
+    )
+
+    assert client.wallet_address == "0x" + "c" * 40
+    created = client.exchange.settings
+    assert created["walletAddress"] == "0x" + "c" * 40
+    assert created["privateKey"] == "0x" + "d" * 64
+
+
+@pytest.mark.asyncio
 async def test_authenticated_client_is_type3_and_patched() -> None:
     wallet = "0x" + "b" * 40
     client = await create_ccxt_prediction_client(

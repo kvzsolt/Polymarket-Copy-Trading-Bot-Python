@@ -99,11 +99,19 @@ class PaperOrderSimulator:
                 raw={"paper": True},
             )
         )
+        # ExecutionService reads matched size and average price from the raw
+        # map; without them a fully simulated FAK fill reads as a zero fill.
         return VenueSubmitResult(
             success=True,
             order_id=order_id,
             status="closed",
-            raw={"paper": True},
+            raw={
+                "paper": True,
+                "status": "matched",
+                "original_size": format(shares, "f"),
+                "size_matched": format(shares, "f"),
+                "avg_price": format(price_limit, "f"),
+            },
         )
 
     async def submit_limit_order(self, request: LimitOrderRequest) -> VenueSubmitResult:
@@ -125,11 +133,18 @@ class PaperOrderSimulator:
             created_at=self._clock(),
             raw={"paper": True},
         )
+        # A resting limit order has legitimately matched nothing yet.
         return VenueSubmitResult(
             success=True,
             order_id=order_id,
             status="open",
-            raw={"paper": True},
+            raw={
+                "paper": True,
+                "status": "live",
+                "original_size": format(size, "f"),
+                "size_matched": "0",
+                "avg_price": "0",
+            },
         )
 
     async def get_order(self, order_id: str) -> VenueOrderState:

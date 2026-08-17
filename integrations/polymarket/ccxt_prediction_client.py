@@ -198,18 +198,29 @@ async def create_ccxt_prediction_client(
     A type-3 Deposit Wallet cannot be guessed from an EOA. The client therefore
     requires an explicit, already verified funder address whenever
     ``authenticated=True``.
+
+    Identity resolution precedence: an explicit ``private_key`` /
+    ``wallet_address`` first, then a supplied ``wallet_config`` (the
+    per-user identity), and only then the global ``config.wallet`` — used
+    solely on the single-user path where no ``wallet_config`` is passed.
+    Supplying a ``wallet_config`` makes it the complete identity for that
+    user: the global wallet is never consulted, so one multi-user entry's
+    private key can never be paired with a different account's Deposit
+    Wallet funder.
     """
 
+    has_wallet_config = wallet_config is not None
+
     resolved_key = _secret(private_key)
-    if not resolved_key:
+    if not resolved_key and has_wallet_config:
         resolved_key = _secret(_attr(wallet_config, "private_key"))
-    if not resolved_key:
+    if not resolved_key and not has_wallet_config:
         resolved_key = _secret(_attr(_attr(config, "wallet"), "private_key"))
 
     resolved_wallet = str(wallet_address or "").strip()
-    if not resolved_wallet:
+    if not resolved_wallet and has_wallet_config:
         resolved_wallet = str(_attr(wallet_config, "funder_address", "") or "").strip()
-    if not resolved_wallet:
+    if not resolved_wallet and not has_wallet_config:
         resolved_wallet = str(_attr(_attr(config, "wallet"), "funder_address", "") or "").strip()
 
     detected_version = ccxt_version

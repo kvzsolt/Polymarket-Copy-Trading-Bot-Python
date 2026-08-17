@@ -13,7 +13,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from integrations.polymarket.ccxt_compat.exceptions import CcxtPredictionUnavailable
+from integrations.polymarket.ccxt_compat.exceptions import (
+    CcxtPredictionConfigurationError,
+    CcxtPredictionUnavailable,
+)
 from integrations.polymarket.ccxt_prediction_client import CcxtPredictionClient
 from integrations.polymarket.ccxt_prediction_gateway import CcxtPredictionGateway
 from integrations.polymarket.paper_execution import PaperExecutionGateway
@@ -160,6 +163,33 @@ async def test_live_runtime_is_authenticated_ccxt_gateway() -> None:
     assert created[0].settings["walletAddress"] == _WALLET
     assert isinstance(runtime.gateway, CcxtPredictionGateway)
     created[0].load_api_credentials.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_live_user_without_own_funder_fails_closed() -> None:
+    """A live multi-user entry may omit funder_address in config parsing.
+
+    The runtime must refuse to pair that entry's private key with the global
+    account's funder: cross-user Deposit Wallet identity is a money-path
+    error, so startup fails closed instead of silently borrowing a wallet.
+    """
+
+    factory, created = _factory_collector()
+    runtime_user = SimpleNamespace(
+        user_id="no-funder",
+        wallet=SimpleNamespace(funder_address="", private_key=_PRIVATE_KEY),
+    )
+
+    with pytest.raises(CcxtPredictionConfigurationError, match="Deposit Wallet"):
+        await build_polymarket_runtime(
+            runtime_user=runtime_user,
+            config=_config("live"),
+            exchange_factory=factory,
+            ccxt_version="4.5.73",
+        )
+
+    # The configuration error fires before any transport is constructed.
+    assert created == []
 
 
 @pytest.mark.asyncio
