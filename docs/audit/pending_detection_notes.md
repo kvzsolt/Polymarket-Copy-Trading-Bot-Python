@@ -13,7 +13,7 @@ source through `orchestrators/detection_source_factory.py`:
 | mode | runtime | what fires the copy | Postgres |
 |---|---|---|---|
 | `polling` | none | data-api REST polling only | required (always) |
-| `on_chain_pending` | gen-1 `OnchainDetectionRuntime(enable_pending=True, enable_mined=False)` | `alchemy_pendingTransactions` sighting decoded from calldata; `PENDING_PROBABLE`, `provisional=True`; dropped when older than `pending_tx_max_signal_age_ms`, below `pending_tx_detection_confidence_required`, or superseded per leader | required |
+| `on_chain_pending` | gen-1 `OnchainDetectionRuntime(enable_pending=True, enable_mined=False)` | `alchemy_pendingTransactions` sighting decoded from calldata; `PENDING_PROBABLE`, `provisional=True`; dropped when older than `pending_tx_max_signal_age_ms` or below `pending_tx_detection_confidence_required`. **No mined correction path** (mined subscription off for dedup): per-leader supersession never fires and a provisional copy of a sighting that never mines is not unwound | required |
 | `on_chain_confirmed` | gen-2 `PolygonSourceTransactionRuntime` | mempool sighting only *reserves*; execution after `eth_getTransactionReceipt` decodes the `OrderFilled` logs (`MINED_AUTHORITATIVE`, `provisional=False`) | required (`PostgresSourceTransactionStateStore`) |
 
 REST polling keeps running in every mode; `CrossSourceTradeClaimPolicy` in
@@ -29,7 +29,12 @@ Mempool visibility was measured, not assumed (read-only probe, 120 s,
 2026-08-17): ~96 % of mined `OrderFilled` transactions had been seen pending
 first, median mempool-to-mined lead 0.67 s. Recommended rollout: first live
 run `on_chain_confirmed`; switch to `on_chain_pending` only after a paper soak
-shows pending sightings decode for the followed leader.
+shows pending sightings decode for the followed leader **and** the operator has
+an explicit unwind procedure for provisional copies whose transaction never
+mines — in this mode nothing supersedes or corrects them (the mined
+subscription is off), and polling never sees an unmined fill either. Also
+gate a 24/7 live run on Alchemy CU cost (~85k CU/min measured for the
+confirmed mode; see `docs/known_limitations.md`).
 
 ## Module layout (shipped)
 ```

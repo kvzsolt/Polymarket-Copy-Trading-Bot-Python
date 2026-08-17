@@ -65,11 +65,12 @@ trade key, so a signal is copied once regardless of which source saw it first.
 |---|---|---|
 | `polling` (default, checked-in base) | data-api REST polling only | — |
 | `on_chain_confirmed` | Alchemy mempool sighting + receipt confirmation (`PolygonSourceTransactionRuntime`); executes only after the fill is mined | `wss://` URL in `detection.onchain.onchain_ws_url` or `pending_tx_ws_url`, `pending_tx_provider: alchemy` |
-| `on_chain_pending` | Provisional copy on the mempool sighting (`OnchainDetectionRuntime`, `alchemy_pendingTransactions` with calldata), guarded by `pending_tx_max_signal_age_ms`, `pending_tx_detection_confidence_required`, and per-leader supersession | as above, plus `pending_tx_hashes_only: false` and `pending_tx_max_signal_age_ms > 0` |
+| `on_chain_pending` | Provisional copy on the mempool sighting (`OnchainDetectionRuntime`, `alchemy_pendingTransactions` with calldata), guarded only by `pending_tx_max_signal_age_ms` and `pending_tx_detection_confidence_required`. **No mined correction path**: the mined subscription is off (dedup), so a provisional copy of a sighting that never mines is not unwound — paper soak + explicit unwind procedure required (`docs/audit/pending_detection_notes.md`) | as above, plus `pending_tx_hashes_only: false` and `pending_tx_max_signal_age_ms > 0` |
 
 An invalid mode, a non-polling mode without a `wss://` endpoint, a non-Alchemy
-provider, or `on_chain_pending` with `pending_tx_hashes_only: true` fails
-startup closed. Select an on-chain mode per environment
+provider, `on_chain_pending` with `pending_tx_hashes_only: true`, or any
+non-polling mode together with `copy_trading.copy_tasks.enabled: true` (the v1
+copy-task route has no on-chain-vs-polling dedup yet) fails startup closed. Select an on-chain mode per environment
 (`config/environments/<env>/detection.yml`) or via the environment variable;
 the base `config/detection.yml` must stay `polling`. Changing the mode
 requires a restart — the control plane does not expose `detection.mode`.
@@ -81,11 +82,12 @@ polling is selected.
 
 The booleans `detection.onchain.enable_onchain_pending_detection` and
 `enable_onchain_mined_detection` are **deprecated**. They are still accepted:
-when no layer sets `detection.mode`, either boolean derives
+when no layer sets `detection.mode` (the checked-in base file deliberately
+does not pin it; the typed default is `polling`), either boolean derives
 `on_chain_confirmed` with a `detection_legacy_flags_deprecated` warning
-(provisional copy is never derived); when `detection.mode` is set — which is
-always the case with the checked-in base file — the booleans are ignored with a
-`detection_legacy_flags_ignored` warning. Replace them with `detection.mode`.
+(provisional copy is never derived); when some layer sets `detection.mode`, the
+booleans are ignored with a `detection_legacy_flags_ignored` warning. Each
+distinct warning is logged once per process. Replace them with `detection.mode`.
 
 Discovery thresholds, component weights, normalization ranges, decay,
 shrinkage, scheduler cadence, backfill limits, hysteresis, and rank-driven

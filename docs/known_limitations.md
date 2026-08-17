@@ -135,9 +135,29 @@ claims the tx-level identity `user|leader|tx|side|asset` before an on-chain
 fill reaches the pipeline, so whichever source sees a fill first wins and the
 loser is logged as `detection_signal_deduped` / counted in
 `detection_signals_deduped_total` (on-chain loser) or
-`duplicate_order_prevented_total` (polling loser). Accepted trade-off: a
-multi-fill transaction with identical tx/side/asset is copied once from the
-on-chain path, exactly as polling's aggregation copies it once.
+`duplicate_order_prevented_total` (polling loser).
+
+Multi-fill transactions (measured on Polygon: ~3.4 % of `(tx, maker, token,
+side)` groups hold ≥2 `OrderFilled` fills, ~5.3 % of all fills): every fill of
+one settlement transaction is a distinct on-chain signal and each is copied at
+its own size — the tx-level claim is held by the on-chain path itself, so a
+sibling fill loses that claim to *us*, not to polling, and is dispatched
+(`cross_source_sibling_fill`); the pipeline's per-fill `…|log:N` claim keeps
+idempotency. Polling's aggregated row for that tx (which sums the sizes) is
+refused, so the follower ends at the leader's full size exactly once. Sibling
+detection uses bounded in-process memory plus the row status
+(`cross_source_claimed`) after a restart; a lost claim whose holder cannot be
+determined (probe error, no row) is skipped with `winner=unknown` and is never
+attributed to polling.
+
+The tx-level claim is released again (`cross_source_claim_released`) when the
+freshly claimed dispatch produced no executed outcome — the pipeline raised, or
+every result was `skipped` — so REST polling really is a fallback for that fill.
+The claim is deliberately **kept** (`cross_source_claim_kept`) when a sibling
+fill was already admitted on it: releasing would let polling's aggregate copy
+the sibling a second time. In that narrow case the failed first fill's size is
+not retried by polling (same as the pre-existing single-channel behaviour for a
+skipped fill).
 
 Consequences and limits:
 
@@ -146,8 +166,17 @@ Consequences and limits:
 - `on_chain_pending` runs the gen-1 `OnchainDetectionRuntime` with the mined
   `OrderFilled` subscription **off**: gen-1 mined signals carry a `log_index`
   that changes the copy identity, so enabling both would copy pending + mined
-  twice. The confirmed path is a strict superset and is the recommended first
-  live mode.
+  twice. Consequently there is **no mined correction path** in that mode: the
+  per-leader supersession check lives in the mined handler and never fires, so
+  a provisional copy of a mempool sighting that is dropped or replaced before
+  mining is not unwound. Run it only after a paper soak and with an explicit
+  operator unwind procedure. The confirmed path is a strict superset and is
+  the recommended first live mode.
+- Alchemy CU cost: with the gen-2 pending subscription carrying full tx bodies
+  and the `logs` subscription filtered by address only, the confirmed mode was
+  measured at ~85k CU/min (≈120M CU/day at 24/7). Follow-up: filter the
+  `logs` subscription on the `OrderFilled` topic and the indexed maker/taker
+  leader addresses before treating 24/7 live operation as cost-settled.
 - The gen-1 pending decoder matches direct `matchOrders` calldata only — no
   Safe `execTransaction` wrapper. That is sufficient for Polymarket proxy-wallet
   leaders (the operator relayer calls the exchange directly with the leader as
