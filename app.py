@@ -24,6 +24,7 @@ if TYPE_CHECKING:
 from bootstrap import build_app
 from config.app_config import AppConfigSemanticValidator, EnvValidationError, load_config
 from config.env import is_valid_eth_address
+from domain.detection import DetectionMode
 from integrations.control_plane import SystemMonotonicClock
 from integrations.polymarket.venue_runtime import build_polymarket_runtime
 from orchestrators.control_plane_bootstrap import (
@@ -215,20 +216,6 @@ def _should_wait_for_discovery_roster(config: object) -> bool:
     )
 
 
-def _onchain_missing_wss_warning_reason(config: object) -> str | None:
-    oc_cfg = getattr(getattr(config, "detection", None), "onchain", None)
-    if oc_cfg is None:
-        return None
-    if getattr(oc_cfg, "onchain_ws_url", "") or getattr(oc_cfg, "pending_tx_ws_url", ""):
-        return None
-    if bool(getattr(oc_cfg, "enable_onchain_pending_detection", False)):
-        return "pending_enabled"
-
-    if bool(getattr(oc_cfg, "enable_onchain_mined_detection", False)):
-        return "mined_enabled"
-    return None
-
-
 def _detection_confidence_from_config(value: object):
     from services.onchain_detection.trade_detection_models import DetectionConfidence
 
@@ -268,7 +255,7 @@ def _build_confirmed_onchain_runtime(
     signal_sink: Callable[["OnchainTradeSignal"], Awaitable[None]],
     state_store: "SourceTransactionStateStore | None" = None,
 ) -> "PolygonSourceTransactionRuntime":
-    """Compose the head-driven Polygon confirmation runtime.
+    """Thin glue: compose the receipt-confirmed runtime via ``ConfirmedSourceBuilder``.
 
     Args:
         watched_wallets: Current leader wallet snapshot, including Safe wallets.
@@ -281,28 +268,81 @@ def _build_confirmed_onchain_runtime(
         Fully composed, not-yet-started source confirmation runtime.
     """
 
+    from orchestrators.detection_source_factory import (
+        DetectionSourceRequest,
+    )
+
+    async def _provide_state_store() -> "SourceTransactionStateStore | None":
+        return state_store
+
+    builder = _confirmed_source_builder(_provide_state_store)
+    runtime = builder.compose(
+        DetectionSourceRequest(
+            mode=DetectionMode.ON_CHAIN_CONFIRMED,
+            watched_wallets=frozenset(watched_wallets),
+            ws_url=ws_url,
+            chain_id=chain_id,
+            signal_sink=signal_sink,
+        ),
+        state_store,
+    )
+    return runtime  # type: ignore[return-value]
+
+
+def _confirmed_source_builder(state_store_provider):
     from config.addresses import (
         POLYMARKET_CTF_EXCHANGE_V2_ADDRESS,
         POLYMARKET_NEG_RISK_EXCHANGE_V2_ADDRESS,
     )
-    from orchestration.bootstrap import (
-        PolygonSourceRuntimeBootstrap,
-        PolygonSourceRuntimeConfig,
-    )
+    from orchestrators.detection_source_factory import ConfirmedSourceBuilder
 
-    config = PolygonSourceRuntimeConfig(
-        chain_id=chain_id,
-        websocket_url=ws_url,
+    return ConfirmedSourceBuilder(
         exchange_addresses=(
             POLYMARKET_CTF_EXCHANGE_V2_ADDRESS,
             POLYMARKET_NEG_RISK_EXCHANGE_V2_ADDRESS,
         ),
-        watched_wallets=frozenset(watched_wallets),
+        state_store_provider=state_store_provider,
     )
-    return PolygonSourceRuntimeBootstrap().build(
-        config,
-        signal_sink,
-        state_store=state_store,
+
+
+async def _default_source_state_store_provider():
+    """Return the Postgres-backed source state store on the shared pool."""
+
+    from adapters.persistence.source_transaction_state_store import (
+        PostgresSourceTransactionStateStore,
+    )
+    from storage.postgres.connection import get_pool
+
+    return PostgresSourceTransactionStateStore(await get_pool())
+
+
+def _build_detection_source_factory(config: object, *, state_store_provider=None):
+    """Thin glue: one ``DetectionSourceFactory`` covering both on-chain modes.
+
+    Args:
+        config: Typed application configuration (``detection`` section read).
+        state_store_provider: Awaitable factory for the confirmed runtime's
+            durable state store; defaults to the shared Postgres pool.
+
+    Returns:
+        ``DetectionSourceFactory`` with the provisional-pending and
+        receipt-confirmed builders registered.
+    """
+
+    from orchestrators.detection_source_factory import (
+        DetectionSourceFactory,
+        ProvisionalPendingSourceBuilder,
+    )
+
+    oc_cfg = getattr(getattr(config, "detection", None), "onchain", None)
+    return DetectionSourceFactory(
+        [
+            ProvisionalPendingSourceBuilder(
+                pending_config=_build_pending_tx_config(oc_cfg),
+                condition_id_resolver=_build_onchain_condition_id_resolver(),
+            ),
+            _confirmed_source_builder(state_store_provider or _default_source_state_store_provider),
+        ]
     )
 
 
@@ -1978,31 +2018,17 @@ async def _run_application(client_registry: list[Any]) -> int:
     for spec in supervised:
         spec.spawn()
 
-    # On-chain detection runtime (PR2): construct + start if the operator
-    # configured a WSS endpoint. The mined ``OrderFilled`` subscription is
-    # always safe (authoritative); the pending-tx subscription is gated by
-    # ``ENABLE_ONCHAIN_PENDING_DETECTION``. Without this wiring the config
-    # flags were inert (Greptile P1 "On-chain config unused").
-    oc_cfg = application.config.detection.onchain
-    ws_url = oc_cfg.onchain_ws_url or oc_cfg.pending_tx_ws_url
-    missing_wss_reason = _onchain_missing_wss_warning_reason(application.config)
-    if not ws_url and missing_wss_reason:
-        logger.warning(
-            "onchain_detection_wss_missing | reason=%s mined=%s pending=%s "
-            "required=ONCHAIN_WS_URL_or_PENDING_TX_WS_URL",
-            missing_wss_reason,
-            oc_cfg.enable_onchain_mined_detection,
-            oc_cfg.enable_onchain_pending_detection,
-        )
-    if ws_url and (
-        oc_cfg.enable_onchain_mined_detection or oc_cfg.enable_onchain_pending_detection
-    ):
+    # On-chain detection runtime: ``detection.mode`` selects exactly one
+    # source (``on_chain_pending`` -> gen-1 provisional mempool runtime,
+    # ``on_chain_confirmed`` -> gen-2 receipt-confirmed runtime). REST
+    # polling below keeps running in every mode as the parallel fallback;
+    # the copy layer dedups the same fill by trade key.
+    detection_mode = application.config.detection.detection_mode
+    if detection_mode is not DetectionMode.POLLING:
         try:
             import time as _time_mod
 
-            from orchestrators.onchain_detection_runtime import (
-                OnchainDetectionRuntime,
-            )
+            from orchestrators.detection_source_factory import DetectionSourceRequest
             from orchestrators.trade_pipeline import (
                 execute_trades as _execute_trade_pipeline,
             )
@@ -2057,40 +2083,28 @@ async def _run_application(client_registry: list[Any]) -> int:
                             redact_error_detail(result),
                         )
 
-            if oc_cfg.enable_onchain_pending_detection:
-                from adapters.persistence.source_transaction_state_store import (
-                    PostgresSourceTransactionStateStore,
-                )
-                from storage.postgres.connection import get_pool
-
-                onchain_runtime = _build_confirmed_onchain_runtime(
-                    watched_wallets=set(monitored_leaders),
-                    ws_url=ws_url,
+            oc_cfg = application.config.detection.onchain
+            onchain_runtime = await _build_detection_source_factory(application.config).build(
+                DetectionSourceRequest(
+                    mode=detection_mode,
+                    watched_wallets=frozenset(monitored_leaders),
+                    ws_url=oc_cfg.onchain_ws_url or oc_cfg.pending_tx_ws_url,
                     chain_id=application.config.wallet.chain_id,
                     signal_sink=_onchain_signal_sink,
-                    state_store=PostgresSourceTransactionStateStore(await get_pool()),
                 )
-            else:
-                onchain_runtime = OnchainDetectionRuntime(
-                    watched_wallets=set(monitored_leaders),
-                    ws_url=ws_url,
-                    signal_sink=_onchain_signal_sink,
-                    enable_pending=False,
-                    enable_mined=oc_cfg.enable_onchain_mined_detection,
-                    pending_config=_build_pending_tx_config(oc_cfg),
-                    condition_id_resolver=_build_onchain_condition_id_resolver(),
-                )
-            await onchain_runtime.start()
-            logger.info(
-                "onchain_detection_started | mined=%s pending=%s watched=%d",
-                oc_cfg.enable_onchain_mined_detection,
-                oc_cfg.enable_onchain_pending_detection,
-                len(monitored_leaders),
             )
+            if onchain_runtime is not None:
+                await onchain_runtime.start()
+                logger.info(
+                    "onchain_detection_started | mode=%s watched=%d",
+                    detection_mode.value,
+                    len(monitored_leaders),
+                )
         except Exception as exc:
             logger.warning(
-                "onchain_detection_start_failed | error=%s — bot continues "
+                "onchain_detection_start_failed | mode=%s error=%s — bot continues "
                 "without on-chain detection (REST-polling leader path unaffected)",
+                detection_mode.value,
                 redact_error_detail(exc),
             )
             onchain_runtime = None

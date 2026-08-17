@@ -12,18 +12,84 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 
 def test_onchain_wiring_imports_resolve() -> None:
-    """The 3 lazy imports in app.main()'s on-chain wiring must resolve."""
+    """The lazy imports in app.main()'s on-chain wiring must resolve."""
     from services.onchain_detection.condition_id_resolver import GammaConditionIdResolver
+    from orchestrators.detection_source_factory import DetectionSourceFactory
     from orchestrators.onchain_detection_runtime import OnchainDetectionRuntime
     from services.onchain_detection.pending_tx_detector import PendingTxConfig
     from orchestrators.trade_pipeline import execute_trades
 
     assert GammaConditionIdResolver is not None
+    assert DetectionSourceFactory is not None
     assert OnchainDetectionRuntime is not None
     assert PendingTxConfig is not None
     assert execute_trades is not None
+
+
+@pytest.mark.asyncio
+async def test_app_composes_factory_from_config() -> None:
+    """``app.main`` builds one factory covering both on-chain modes from config."""
+
+    from app import _build_detection_source_factory
+    from config.app_config import DetectionConfig, OnchainDetectionConfig
+    from domain.detection import DetectionMode
+    from orchestration.polygon_source_transaction_runtime import (
+        PolygonSourceTransactionRuntime,
+    )
+    from orchestrators.detection_source_factory import (
+        DetectionSourceFactory,
+        DetectionSourceRequest,
+    )
+    from orchestrators.onchain_detection_runtime import OnchainDetectionRuntime
+    from services.onchain_detection.trade_detection_models import DetectionConfidence
+
+    config = SimpleNamespace(
+        detection=DetectionConfig(
+            mode="on_chain_pending",
+            onchain=OnchainDetectionConfig(
+                pending_tx_ws_url="wss://polygon.example.invalid/v2/redacted",
+                pending_tx_max_signal_age_ms=321,
+                pending_tx_detection_confidence_required="mined_authoritative",
+            ),
+        ),
+        wallet=SimpleNamespace(chain_id=137),
+    )
+
+    async def _state_store_provider():
+        return None
+
+    async def _sink(_signal) -> None:
+        return None
+
+    factory = _build_detection_source_factory(config, state_store_provider=_state_store_provider)
+
+    assert isinstance(factory, DetectionSourceFactory)
+    assert factory.supported_modes == frozenset(
+        {DetectionMode.ON_CHAIN_PENDING, DetectionMode.ON_CHAIN_CONFIRMED}
+    )
+
+    def _request(mode: DetectionMode) -> DetectionSourceRequest:
+        return DetectionSourceRequest(
+            mode=mode,
+            watched_wallets=frozenset({"0x" + "11" * 20}),
+            ws_url="wss://polygon.example.invalid/v2/redacted",
+            chain_id=137,
+            signal_sink=_sink,
+        )
+
+    assert await factory.build(_request(DetectionMode.POLLING)) is None
+    pending = await factory.build(_request(DetectionMode.ON_CHAIN_PENDING))
+    assert isinstance(pending, OnchainDetectionRuntime)
+    assert pending._enable_pending is True
+    assert pending._enable_mined is False
+    assert pending._pending_config.max_signal_age_ms == 321
+    assert pending._pending_config.confidence_required is DetectionConfidence.MINED_AUTHORITATIVE
+    confirmed = await factory.build(_request(DetectionMode.ON_CHAIN_CONFIRMED))
+    assert isinstance(confirmed, PolygonSourceTransactionRuntime)
 
 
 def test_confirmed_onchain_runtime_builder_uses_new_polygon_composition() -> None:
@@ -126,41 +192,3 @@ def test_onchain_runtime_accepts_the_refresh_the_wiring_performs() -> None:
 
     assert _refresh_onchain_watched_wallets(runtime, {"0xSTARTUP", "0xNew"}) is True
     assert runtime._watched == {"0xstartup", "0xnew"}
-
-
-def test_missing_wss_warning_reflects_typed_detection_config() -> None:
-    from app import _onchain_missing_wss_warning_reason
-    from config.app_config import OnchainDetectionConfig
-
-    default_cfg = SimpleNamespace(detection=SimpleNamespace(onchain=OnchainDetectionConfig()))
-    assert _onchain_missing_wss_warning_reason(default_cfg) is None
-
-    pending_cfg = SimpleNamespace(
-        detection=SimpleNamespace(
-            onchain=OnchainDetectionConfig(
-                enable_onchain_pending_detection=True,
-                enable_onchain_mined_detection=True,
-            )
-        ),
-    )
-    assert _onchain_missing_wss_warning_reason(pending_cfg) == "pending_enabled"
-
-    mined_cfg = SimpleNamespace(
-        detection=SimpleNamespace(
-            onchain=OnchainDetectionConfig(
-                enable_onchain_pending_detection=False,
-                enable_onchain_mined_detection=True,
-            )
-        ),
-    )
-    assert _onchain_missing_wss_warning_reason(mined_cfg) == "mined_enabled"
-
-    with_ws_cfg = SimpleNamespace(
-        detection=SimpleNamespace(
-            onchain=OnchainDetectionConfig(
-                enable_onchain_pending_detection=True,
-                onchain_ws_url="wss://example.invalid",
-            )
-        ),
-    )
-    assert _onchain_missing_wss_warning_reason(with_ws_cfg) is None
