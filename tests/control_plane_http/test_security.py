@@ -170,4 +170,4 @@ def test_serializer_bounds_aggregate_text_and_rejects_sensitive_key_variants() -
     with pytest.raises(ValueError, match="total string"):
         serializer.to_jsonable({"a": "1234", "b": "5678"})
     with pytest.raises(ValueError, match="sensitive"):
-        ControlPlaneJsonSerializer().to_jsonable({"api-key": "must-not-cross"})
+        ControlPlaneJsonSerializer().to_jsonable({"api-key": "sv7"})

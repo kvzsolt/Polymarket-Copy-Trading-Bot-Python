@@ -1,4 +1,4 @@
-"""Release-gate: CLOB V2 gateway compatibility smoke (Issue #75 item 13).
+"""Release-gate: CLOB gateway compatibility smoke (Issue #75 item 13).
 
 Pins the production gateway protocol surface so anything that drops a
 required method, weakens an awaitable signature, or unwraps the gateway in
@@ -39,8 +39,8 @@ def test_gateway_methods_are_coroutines() -> None:
 
 
 @pytest.mark.asyncio
-async def test_mock_gateway_check_compatibility_returns_sdk_flag(
+async def test_mock_gateway_check_compatibility_returns_available_flag(
     mock_clob_gateway,
 ) -> None:
     report = await mock_clob_gateway.check_compatibility()
-    assert "sdk_available" in report
+    assert "available" in report

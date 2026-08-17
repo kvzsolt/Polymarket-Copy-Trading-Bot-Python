@@ -407,9 +407,11 @@ _CORE_DDL = [
 
 _DISCOVERY_RESET_ID = "trader_discovery_single_generation_20260713"
 
-# This reset is deliberately scoped to data produced by the superseded
-# discovery engines. Trading, order, fill, position, reservation, cursor, and
-# control tables are never touched.
+# Scope documentation for the one-time reset below: only tables produced by
+# the superseded discovery engines are dropped. Trading, order, fill,
+# position, reservation, cursor, and control tables are never touched. The
+# drop statements in ``apply_migrations`` enumerate exactly these names as
+# static literals (identifiers cannot be bound as DDL parameters).
 _LEGACY_DISCOVERY_TABLES = (
     "leader_discovery_run_candidates",
     "leader_discovery_runs",
@@ -581,8 +583,22 @@ async def apply_migrations(conn: MigrationConnection) -> None:
             _DISCOVERY_RESET_ID,
         )
         if not already_reset:
-            for table_name in _LEGACY_DISCOVERY_TABLES:
-                await conn.execute(f"DROP TABLE IF EXISTS {table_name} CASCADE")
+            # Static literals: identifiers cannot be bound as DDL parameters,
+            # and interpolated names would be a SQL-injection finding. The
+            # reset stays scoped to the superseded discovery tables only.
+            await conn.execute("DROP TABLE IF EXISTS leader_discovery_run_candidates CASCADE")
+            await conn.execute("DROP TABLE IF EXISTS leader_discovery_runs CASCADE")
+            await conn.execute("DROP TABLE IF EXISTS falcon_discovery_evaluations CASCADE")
+            await conn.execute("DROP TABLE IF EXISTS discovery_context_buckets CASCADE")
+            await conn.execute("DROP TABLE IF EXISTS discovery_episode_events CASCADE")
+            await conn.execute("DROP TABLE IF EXISTS discovery_episodes CASCADE")
+            await conn.execute("DROP TABLE IF EXISTS discovery_orderbook_snapshots CASCADE")
+            await conn.execute("DROP TABLE IF EXISTS discovery_closed_positions CASCADE")
+            await conn.execute("DROP TABLE IF EXISTS discovery_position_snapshots CASCADE")
+            await conn.execute("DROP TABLE IF EXISTS discovery_trades CASCADE")
+            await conn.execute("DROP TABLE IF EXISTS discovery_markets CASCADE")
+            await conn.execute("DROP TABLE IF EXISTS discovery_traders CASCADE")
+            await conn.execute("DROP TABLE IF EXISTS discovered_leaders CASCADE")
             await conn.execute(
                 "INSERT INTO app_schema_migrations (migration_id) VALUES ($1)",
                 _DISCOVERY_RESET_ID,

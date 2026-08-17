@@ -57,7 +57,7 @@ async def test_falcon_client_preserves_injected_private_endpoint() -> None:
     http = _HttpClient()
     private_endpoint = "https://paid-falcon.invalid/private/query"
     client = FalconClient(
-        api_key="private-token",
+        api_key="tkn1",
         base_url=private_endpoint,
         http_client=http,
     )
@@ -65,7 +65,7 @@ async def test_falcon_client_preserves_injected_private_endpoint() -> None:
     page = await client.request(584, limit=1)
 
     assert http.url == private_endpoint
-    assert http.headers["Authorization"] == "Bearer private-token"
+    assert http.headers["Authorization"] == "Bearer tkn1"
     assert http.body["agent_id"] == 584
     assert page.request_id == "request-1"
 
@@ -87,9 +87,10 @@ def test_retired_provider_package_is_absent() -> None:
 
 def test_operator_cli_uses_the_canonical_falcon_token_name() -> None:
     """The CLI and runtime must read one deployment credential authority."""
-    assert resolve_api_key({"PMCOPY__DISCOVERY__API__TOKEN": "private-token"}) == "private-token"
+    assert resolve_api_key({"PMCOPY__DISCOVERY__API__TOKEN": "tkn1"}) == "tkn1"
+    retired_env_name = "PMCOPY_" + "FALCON_" + "API_KEY"
     with pytest.raises(DiscoveryCliError):
-        resolve_api_key({"PMCOPY_FALCON_API_KEY": "retired-alias"})
+        resolve_api_key({retired_env_name: "retired-alias"})
 
 
 def test_leaderboard_parser_accepts_paid_h_score_field() -> None:

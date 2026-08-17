@@ -139,8 +139,8 @@ async def test_read_returns_sha256_revision_and_omits_secrets_recursively(tmp_pa
         "execution",
         {
             "max_retries": 3,
-            "api_key": "top-level-secret",
-            "nested": {"private_key": "nested-secret", "safe": True},
+            "api_key": "sv1",
+            "nested": {"private_key": "sv2", "safe": True},
         },
     )
 
@@ -152,7 +152,8 @@ async def test_read_returns_sha256_revision_and_omits_secrets_recursively(tmp_pa
         "max_retries": 3,
         "nested": {"safe": True},
     }
-    assert "secret" not in repr(document)
+    assert "sv1" not in repr(document)
+    assert "sv2" not in repr(document)
     with pytest.raises(TypeError):
         document.values["max_retries"] = 4  # type: ignore[index]
 
@@ -168,13 +169,13 @@ async def test_repository_omits_well_known_secret_names_even_if_validator_misses
     write_yaml(
         tmp_path,
         "execution",
-        {"max_retries": 3, "api_key": "must-not-leak"},
+        {"max_retries": 3, "api_key": "sv3"},
     )
 
     document = await repository.read(SettingsPath("paper", "execution"))
 
     assert document.values.to_dict() == {"max_retries": 3}
-    assert "must-not-leak" not in repr(document)
+    assert "sv3" not in repr(document)
 
 
 @pytest.mark.asyncio
@@ -246,9 +247,9 @@ async def test_unknown_and_secret_keys_fail_at_boundary_without_write(tmp_path: 
 
     for values, expected in (
         ({"unknown": True}, ControlPlaneReason.SETTINGS_INVALID),
-        ({"api_key": "do-not-store"}, ControlPlaneReason.SETTINGS_SECRET_FORBIDDEN),
+        ({"api_key": "sv4"}, ControlPlaneReason.SETTINGS_SECRET_FORBIDDEN),
         (
-            {"nested": {"private_key": "do-not-store"}},
+            {"nested": {"private_key": "sv5"}},
             ControlPlaneReason.SETTINGS_SECRET_FORBIDDEN,
         ),
     ):

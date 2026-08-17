@@ -1,9 +1,10 @@
 """Canonical Polymarket venue gateway protocol.
 
 `ExecutionService`, the execution coordinator, the reconciler, and the risk
-monitor must depend on this Protocol instead of a concrete SDK adapter.
-Vendor SDK details live behind
-``integrations/polymarket/clob_v2_gateway.py`` and never leak past it.
+monitor must depend on this Protocol instead of a concrete transport adapter.
+Vendor transport details live behind the CCXT adapter in
+``integrations/polymarket/ccxt_prediction_gateway.py`` (and the paper
+simulator gateway) and never leak past this boundary.
 
 This module is the single source of truth for the gateway shape; previously
 each call site declared its own duplicate ``ClobGateway`` Protocol (see
@@ -72,11 +73,13 @@ class ClobGateway(Protocol):
     async def cancel_order(self, order_id: str) -> VenueCancelResult: ...
 
     async def check_compatibility(self) -> dict[str, Any]:
-        """Probe venue/SDK readiness; used by startup health gating.
+        """Probe venue transport readiness; used by startup health gating.
 
         Implementations must not raise from this method — they should always
-        return a dict with at minimum ``sdk_available: bool``. The orchestrator
-        decides whether to fail closed (live mode) or warn (paper mode).
+        return a dict with at minimum ``available: bool`` (plus
+        ``authenticated`` / ``live_execution_ready`` for the CCXT transport).
+        The orchestrator decides whether to fail closed (live mode) or warn
+        (paper mode).
         """
         ...
 

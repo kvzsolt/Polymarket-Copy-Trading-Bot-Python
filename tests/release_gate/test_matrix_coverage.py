@@ -23,7 +23,7 @@ REQUIRED_MODULES = (
     "tests.release_gate.test_startup_recovery",
     "tests.release_gate.test_manual_drift_reconciliation",
     "tests.release_gate.test_typed_config_fail_closed",
-    "tests.release_gate.test_clob_v2_gateway_smoke",
+    "tests.release_gate.test_clob_gateway_smoke",
     "tests.release_gate.test_concurrency_stress",
     "tests.release_gate.test_e2e_dry_run_buy",
     "tests.release_gate.test_e2e_dry_run_sell",

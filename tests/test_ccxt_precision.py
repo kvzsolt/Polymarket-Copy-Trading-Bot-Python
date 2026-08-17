@@ -4,12 +4,12 @@ from decimal import Decimal
 
 import pytest
 
-from integrations.polymarket.ccxt_precision import (
+from integrations.polymarket.ccxt_compat.precision import (
     CcxtPrecisionError,
     install_ccxt_polymarket_precision_patch,
     polymarket_raw_amounts,
-    quantize_price_to_tick,
 )
+from integrations.polymarket.ccxt_compat.tick_size import quantize_price_to_tick
 
 
 @pytest.mark.parametrize("tick", ["0.1", "0.01", "0.005", "0.0025", "0.001", "0.0001"])
@@ -20,10 +20,22 @@ def test_arbitrary_supported_tick_sizes_produce_nonzero_amounts(tick: str) -> No
 
 
 def test_price_quantization_is_side_conservative_and_exact() -> None:
-    assert quantize_price_to_tick("0.551", "0.01", "BUY") == Decimal("0.55")
-    assert quantize_price_to_tick("0.551", "0.01", "SELL") == Decimal("0.56")
-    assert quantize_price_to_tick("0.411", "0.0025", "BUY") == Decimal("0.4100")
-    assert quantize_price_to_tick("0.411", "0.0025", "SELL") == Decimal("0.4125")
+    assert (
+        quantize_price_to_tick(price=Decimal("0.551"), tick_size=Decimal("0.01"), side="BUY")
+        == Decimal("0.55")
+    )
+    assert (
+        quantize_price_to_tick(price=Decimal("0.551"), tick_size=Decimal("0.01"), side="SELL")
+        == Decimal("0.56")
+    )
+    assert (
+        quantize_price_to_tick(price=Decimal("0.411"), tick_size=Decimal("0.0025"), side="BUY")
+        == Decimal("0.4100")
+    )
+    assert (
+        quantize_price_to_tick(price=Decimal("0.411"), tick_size=Decimal("0.0025"), side="SELL")
+        == Decimal("0.4125")
+    )
 
 
 def test_cost_sized_market_buy_preserves_explicit_price_limit() -> None:

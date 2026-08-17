@@ -186,6 +186,7 @@ async def test_authenticated_compatibility_requires_raw_paginated_history_method
 
     report = await CcxtPredictionGateway(exchange).check_compatibility()
 
-    assert report["sdk_available"] is False
+    assert report["available"] is False
+    assert report["live_execution_ready"] is False
     assert report["private_history_paginated"] is False
     assert set(report["missing_private_history_methods"]) == {"orders", "trades"}

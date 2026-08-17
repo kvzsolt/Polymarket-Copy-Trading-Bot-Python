@@ -170,7 +170,9 @@ def make_clob_gateway(
     gateway.cancel_order = AsyncMock(
         return_value=VenueCancelResult(success=True, order_id="ord-mock")
     )
-    gateway.check_compatibility = AsyncMock(return_value={"sdk_available": True})
+    gateway.check_compatibility = AsyncMock(
+        return_value={"available": True, "authenticated": False, "live_execution_ready": False}
+    )
     return gateway
 
 

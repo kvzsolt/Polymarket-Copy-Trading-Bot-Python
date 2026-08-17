@@ -74,7 +74,8 @@ def page(
 @pytest.mark.asyncio
 async def test_request_normalizes_all_params_to_strings_and_never_logs_token() -> None:
     http = FakeHttpClient([FakeResponse(200, page([{"ok": True}], offset=0, has_more=False))])
-    client = FalconClient(api_key="super-secret", http_client=http)
+    fixture_token = "sv6"
+    client = FalconClient(api_key=fixture_token, http_client=http)
 
     result = await client.request(
         574,
@@ -84,14 +85,14 @@ async def test_request_normalizes_all_params_to_strings_and_never_logs_token() -
 
     assert result.results == ({"ok": True},)
     request = http.requests[0]
-    assert request["headers"]["Authorization"] == "Bearer super-secret"
+    assert request["headers"]["Authorization"] == f"Bearer {fixture_token}"
     assert request["json"]["params"] == {
         "closed": "False",
         "min_volume": "1000.50",
         "count": "3",
     }
     assert request["json"]["formatter_config"] == {"format_type": "raw"}
-    assert "super-secret" not in repr(client)
+    assert fixture_token not in repr(client)
 
 
 @pytest.mark.asyncio

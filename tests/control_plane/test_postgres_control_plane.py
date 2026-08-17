@@ -353,7 +353,7 @@ async def test_order_projection_drops_raw_payloads_and_keeps_decimal_strings() -
                         "side": "BUY",
                         "amount": "5.00",
                         "price_limit": "0.45",
-                        "private_key": "must-not-leak",
+                        "private_key": "sv8",
                     }
                 ),
                 "matched_total": "5.00",

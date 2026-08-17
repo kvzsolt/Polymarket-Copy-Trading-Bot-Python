@@ -23,8 +23,14 @@ from http import HTTPStatus
 from typing import Any, Iterable, Literal, NoReturn
 
 from domain.units import BASIS_POINTS_PER_UNIT
+from integrations.polymarket.ccxt_compat.capabilities import build_ccxt_health_payload
+from integrations.polymarket.ccxt_compat.precision import CcxtPrecisionError
+from integrations.polymarket.ccxt_compat.tick_size import (
+    InvalidTickSize,
+    PolymarketTickSizeResolver,
+    quantize_price_to_tick,
+)
 from integrations.polymarket.ccxt_prediction_client import CcxtPredictionClient
-from integrations.polymarket.ccxt_precision import CcxtPrecisionError, quantize_price_to_tick
 from integrations.polymarket.errors import (
     VenueAuthError,
     VenueInsufficientBalanceError,
@@ -296,10 +302,16 @@ async def _await_call(method: Any, *args: Any, **kwargs: Any) -> Any:
 class CcxtPredictionGateway:
     """Application gateway backed by ``ccxt.prediction.polymarket``."""
 
-    def __init__(self, client: CcxtPredictionClient | Any) -> None:
+    def __init__(
+        self,
+        client: CcxtPredictionClient | Any,
+        *,
+        tick_size_resolver: PolymarketTickSizeResolver | None = None,
+    ) -> None:
         self._client = client
         self._exchange = client.exchange if isinstance(client, CcxtPredictionClient) else client
         self._metadata: dict[str, ExecutionMetadata] = {}
+        self._tick_size_resolver = tick_size_resolver
 
     @property
     def client(self) -> CcxtPredictionClient | Any:
@@ -684,6 +696,25 @@ class CcxtPredictionGateway:
         if price <= 0 or price >= 1:
             raise VenueInvalidOrderError("price must be greater than 0 and less than 1")
 
+    async def _resolved_tick_size(
+        self,
+        token_id: str,
+        metadata: ExecutionMetadata,
+    ) -> Decimal:
+        """Return the tick size every signed order must be quantized against.
+
+        The fresh execution-metadata fetch is the authoritative observation; it
+        refreshes the resolver cache (invalidating a stale tick) and the
+        resolver then returns the validated value that reaches the CCXT order
+        parameters. Without a resolver the validated metadata tick is used
+        directly — there is no default path either way.
+        """
+
+        if self._tick_size_resolver is None:
+            return metadata.tick_size
+        await self._tick_size_resolver.note_observed_tick(token_id, metadata.tick_size)
+        return await self._tick_size_resolver.resolve(token_id)
+
     @staticmethod
     def _submission_from_order(value: Any) -> VenueSubmitResult:
         raw = _maybe_dict(value)
@@ -748,6 +779,7 @@ class CcxtPredictionGateway:
             )
         side = _normalize_side(request.side)
         metadata = await self._execution_metadata(request.token_id, refresh=True)
+        tick_size = await self._resolved_tick_size(request.token_id, metadata)
         price = _decimal(request.price, field="price")
         size = _decimal(request.size, field="size")
         self._validate_order(
@@ -756,13 +788,13 @@ class CcxtPredictionGateway:
             metadata=metadata,
         )
         try:
-            quantized = quantize_price_to_tick(price, metadata.tick_size, side)
-        except CcxtPrecisionError as exc:
+            quantized = quantize_price_to_tick(price=price, tick_size=tick_size, side=side)
+        except (CcxtPrecisionError, InvalidTickSize, ValueError) as exc:
             raise VenueInvalidOrderError(str(exc)) from exc
         params = {
             "orderType": "GTC",
             "timeInForce": "GTC",
-            "tickSize": str(metadata.tick_size),
+            "tickSize": format(tick_size, "f"),
             "negRisk": metadata.neg_risk,
             "postOnly": False,
         }
@@ -793,11 +825,16 @@ class CcxtPredictionGateway:
         side = _normalize_side(request.side)
         order_type = _normalize_market_order_type(request.order_type)
         metadata = await self._execution_metadata(request.token_id, refresh=True)
+        tick_size = await self._resolved_tick_size(request.token_id, metadata)
         size = _decimal(request.size, field="size")
         price_limit = _decimal(request.price_limit, field="price_limit")
         try:
-            quantized = quantize_price_to_tick(price_limit, metadata.tick_size, side)
-        except CcxtPrecisionError as exc:
+            quantized = quantize_price_to_tick(
+                price=price_limit,
+                tick_size=tick_size,
+                side=side,
+            )
+        except (CcxtPrecisionError, InvalidTickSize, ValueError) as exc:
             raise VenueInvalidOrderError(str(exc)) from exc
         signed_size = size.quantize(Decimal("0.01"), rounding=ROUND_DOWN)
         share_size = signed_size / quantized if side == "BUY" else signed_size
@@ -806,7 +843,7 @@ class CcxtPredictionGateway:
         params: dict[str, Any] = {
             "orderType": order_type,
             "timeInForce": "IOC" if order_type == "FAK" else "FOK",
-            "tickSize": str(metadata.tick_size),
+            "tickSize": format(tick_size, "f"),
             "negRisk": metadata.neg_risk,
         }
         # Preserve the official SDK gateway contract: BUY size is spend (USDC),
@@ -1068,7 +1105,14 @@ class CcxtPredictionGateway:
         )
 
     async def check_compatibility(self) -> dict[str, Any]:
-        """Validate installed CCXT Prediction capabilities fail closed."""
+        """Validate installed CCXT Prediction capabilities fail closed.
+
+        The payload uses CCXT transport terminology only. ``live_execution_ready``
+        additionally requires authentication, a verified type-3 Deposit Wallet
+        identity, and the paginated private-history endpoints reconciliation
+        depends on.
+        """
+
         try:
             has = getattr(self._exchange, "has", {}) or {}
             options = getattr(self._exchange, "options", {}) or {}
@@ -1114,7 +1158,14 @@ class CcxtPredictionGateway:
             identity_ok = not authenticated or (
                 signature_type == 3 and bool(str(wallet or "").strip())
             )
-            compatible = (
+            capabilities = {
+                "create_order": has.get("createOrder") is True,
+                "cancel_order": has.get("cancelOrder") is True,
+                "fetch_order": has.get("fetchOrder") is True,
+                "fetch_open_orders": has.get("fetchOpenOrders") is True,
+                "fetch_my_trades": has.get("fetchMyTrades") is True,
+            }
+            available = (
                 bool(has.get("prediction"))
                 and chain_id == _EXPECTED_CHAIN_ID
                 and not missing
@@ -1122,30 +1173,41 @@ class CcxtPredictionGateway:
                 and identity_ok
                 and (not authenticated or private_history_paginated)
             )
-            return {
-                "sdk_available": compatible,
-                "sdk": "ccxt.prediction.polymarket",
-                "ccxt_version": wrapper.ccxt_version if wrapper is not None else None,
-                "chain_id": chain_id,
-                "prediction": bool(has.get("prediction")),
-                "authenticated": authenticated,
-                "wallet": wallet,
-                "signature_type": signature_type,
-                "arbitrary_tick_patch": patch,
-                "private_history_paginated": private_history_paginated,
-                "missing_private_history_methods": missing_private_history,
-                "missing_methods": missing,
-                "error": None if compatible else "CCXT prediction compatibility gate failed",
-            }
+            live_execution_ready = (
+                available
+                and authenticated
+                and signature_type == 3
+                and bool(str(wallet or "").strip())
+                and private_history_paginated
+            )
+            return build_ccxt_health_payload(
+                available=available,
+                ccxt_version=wrapper.ccxt_version if wrapper is not None else None,
+                authenticated=authenticated,
+                live_execution_ready=live_execution_ready,
+                capabilities=capabilities,
+                error=None if available else "CCXT prediction compatibility gate failed",
+                details={
+                    "chain_id": chain_id,
+                    "prediction": bool(has.get("prediction")),
+                    "wallet": wallet,
+                    "signature_type": signature_type,
+                    "private_history_paginated": private_history_paginated,
+                    "missing_private_history_methods": missing_private_history,
+                    "missing_methods": missing,
+                },
+            )
         except Exception as exc:  # compatibility probes must never raise
-            # Matches the SDK gateway: a probe failure reports a redacted
-            # category, never a CCXT exception body that may echo the request.
-            return {
-                "sdk_available": False,
-                "sdk": "ccxt.prediction.polymarket",
-                "authenticated": False,
-                "error": redact_error_detail(exc),
-            }
+            # A probe failure reports a redacted category, never a CCXT
+            # exception body that may echo the request.
+            return build_ccxt_health_payload(
+                available=False,
+                ccxt_version=None,
+                authenticated=False,
+                live_execution_ready=False,
+                capabilities={},
+                error=redact_error_detail(exc),
+            )
 
     async def close(self) -> None:
         """Close the injected provider or venue client."""

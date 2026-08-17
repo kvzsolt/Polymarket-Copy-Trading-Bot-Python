@@ -1,9 +1,8 @@
 """Lifecycle-safe client factory for ``ccxt.prediction.polymarket``.
 
-CCXT is an optional Polymarket venue adapter on this branch. Paper startup
-creates only a public transport; authenticated construction still requires
-both the explicit live gate enforced by composition and a verified Deposit
-Wallet.
+CCXT is the mandatory Polymarket venue transport for this runtime. Paper
+startup creates only a public transport; authenticated construction requires
+an explicit live trading mode and a verified Deposit Wallet funder address.
 """
 
 from __future__ import annotations
@@ -11,20 +10,20 @@ from __future__ import annotations
 import importlib
 import inspect
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from typing import Any, Callable
 
-from integrations.polymarket.ccxt_precision import install_ccxt_polymarket_precision_patch
+from integrations.polymarket.ccxt_compat.credentials import extract_user_ws_credentials
+from integrations.polymarket.ccxt_compat.exceptions import (
+    CcxtPredictionConfigurationError,
+    CcxtPredictionUnavailable,
+)
+from integrations.polymarket.ccxt_compat.precision import (
+    install_ccxt_polymarket_precision_patch,
+)
+from integrations.polymarket.ccxt_compat.version_guard import ensure_supported_ccxt_version
 
 _EXPECTED_CHAIN_ID = 137
-_REQUIRED_CCXT_VERSION = (4, 5, 70)
-
-
-class CcxtPredictionUnavailable(RuntimeError):
-    """Raised when the mandatory CCXT prediction dependency is unavailable."""
-
-
-class CcxtPredictionConfigurationError(ValueError):
-    """Raised when a live-capable CCXT client would be ambiguously configured."""
 
 
 def _secret(value: Any) -> str:
@@ -40,16 +39,6 @@ def _attr(source: Any, name: str, default: Any = None) -> Any:
     if isinstance(source, dict):
         return source.get(name, default)
     return getattr(source, name, default)
-
-
-def _version_tuple(value: Any) -> tuple[int, ...]:
-    parts: list[int] = []
-    for part in str(value or "").split("."):
-        digits = "".join(ch for ch in part if ch.isdigit())
-        if not digits:
-            break
-        parts.append(int(digits))
-    return tuple(parts)
 
 
 def _load_default_factory() -> tuple[Callable[[dict[str, Any]], Any], str | None]:
@@ -70,6 +59,40 @@ def _load_default_factory() -> tuple[Callable[[dict[str, Any]], Any], str | None
     return factory, str(getattr(ccxt, "__version__", "") or "") or None
 
 
+def _first(mapping: Any, *keys: str) -> Any:
+    if not isinstance(mapping, dict):
+        return None
+    for key in keys:
+        if key in mapping and mapping[key] is not None:
+            return mapping[key]
+    return None
+
+
+def _tick_from_source(source: Any) -> Decimal | None:
+    """Extract a positive finite tick size from one CCXT metadata mapping."""
+
+    if not isinstance(source, dict):
+        return None
+    info = source.get("info")
+    info = info if isinstance(info, dict) else {}
+    raw = _first(source, "tick_size", "tickSize")
+    raw = raw if raw is not None else _first(info, "tick_size", "tickSize")
+    precision = source.get("precision")
+    if raw is None and isinstance(precision, dict):
+        raw = precision.get("price")
+    if raw is None:
+        raw = _first(info, "orderPriceMinTickSize", "minimumTickSize")
+    if raw is None:
+        return None
+    try:
+        value = Decimal(str(raw))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+    if not value.is_finite() or value <= 0:
+        return None
+    return value
+
+
 @dataclass(slots=True)
 class CcxtPredictionClient:
     """Own one CCXT prediction exchange and close it exactly once."""
@@ -85,8 +108,10 @@ class CcxtPredictionClient:
     def api_creds(self) -> dict[str, str]:
         """Return normalized in-memory L2 credentials for the user stream.
 
-        Returns:
-            A fixed-key mapping. Public-only clients return empty values.
+        Derived credentials are read from the exchange options first (where
+        CCXT caches ``load_api_credentials`` output), then from the typed
+        exchange fields. Public-only clients return empty values. Credential
+        values are never logged.
         """
 
         if not self.authenticated:
@@ -95,11 +120,48 @@ class CcxtPredictionClient:
                 "api_secret": "",
                 "api_passphrase": "",
             }
+        creds = extract_user_ws_credentials(self.exchange)
         return {
-            "api_key": str(getattr(self.exchange, "apiKey", "") or ""),
-            "api_secret": str(getattr(self.exchange, "secret", "") or ""),
-            "api_passphrase": str(getattr(self.exchange, "password", "") or ""),
+            "api_key": creds.api_key,
+            "api_secret": creds.api_secret,
+            "api_passphrase": creds.api_passphrase,
         }
+
+    async def get_tick_size(self, token_id: str) -> Decimal | None:
+        """Return the CCXT-resolved tick size for one outcome token.
+
+        Reads CCXT's cached outcome metadata first, then the raw public CLOB
+        book. Returns ``None`` when neither carries a usable tick so the
+        tick-size resolver can apply its fallback; this method never defaults.
+        """
+
+        token = str(token_id)
+        outcome: Any = None
+        method = getattr(self.exchange, "load_outcome", None)
+        if callable(method):
+            try:
+                result = method(token)
+                outcome = await result if inspect.isawaitable(result) else result
+            except Exception:
+                outcome = None
+        tick = _tick_from_source(outcome)
+        if tick is not None:
+            return tick
+
+        book_method = None
+        for name in ("clobPublicGetBook", "clob_public_get_book"):
+            candidate = getattr(self.exchange, name, None)
+            if callable(candidate):
+                book_method = candidate
+                break
+        if book_method is None:
+            return None
+        try:
+            result = book_method({"token_id": token})
+            book = await result if inspect.isawaitable(result) else result
+        except Exception:
+            return None
+        return _tick_from_source(book)
 
     async def close(self) -> None:
         """Close all CCXT transports and release instance-owned caches once."""
@@ -154,10 +216,7 @@ async def create_ccxt_prediction_client(
     if exchange_factory is None:
         exchange_factory, detected_version = _load_default_factory()
 
-    if detected_version and _version_tuple(detected_version) < _REQUIRED_CCXT_VERSION:
-        raise CcxtPredictionUnavailable(
-            f"CCXT {detected_version} is too old; >= 4.5.70 is required"
-        )
+    ensure_supported_ccxt_version(detected_version)
 
     if authenticated:
         if not resolved_key:

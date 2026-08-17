@@ -541,22 +541,22 @@ async def _check_clob_gateway(
             status="error",
             message=f"CLOB gateway compatibility probe raised: {exc!s}",
         )
-    sdk_ok = bool(report.get("sdk_available"))
+    transport_ok = bool(report.get("available"))
     if not sdk_ok:
         return StartupHealthCheckItem(
             status="error",
-            message=str(report.get("error") or "CLOB SDK not available"),
+            message=str(report.get("error") or "CCXT Polymarket transport is not available"),
             details=report,
         )
     if require_authenticated and not bool(report.get("authenticated")):
         return StartupHealthCheckItem(
             status="error",
-            message="Unified Polymarket SDK is public-only; live authentication is required",
+            message="CCXT Polymarket transport is public-only; live authentication is required",
             details=report,
         )
     return StartupHealthCheckItem(
         status="ok",
-        message="Unified Polymarket gateway ready",
+        message="CCXT Polymarket gateway ready",
         details=report,
     )
 

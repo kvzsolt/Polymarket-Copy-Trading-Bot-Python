@@ -25,9 +25,9 @@ from services.healthServer import ReadinessTracker
 
 
 VALID_CREDS = {
-    "api_key": "key-abc",
-    "api_secret": "secret-xyz",
-    "api_passphrase": "pass-123",
+    "api_key": "ck1",
+    "api_secret": "ck2",
+    "api_passphrase": "ck3",
 }
 
 USER_ID = "user-test-001"

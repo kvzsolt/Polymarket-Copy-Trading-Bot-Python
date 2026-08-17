@@ -5,6 +5,7 @@ from decimal import Decimal
 
 import pytest
 
+from integrations.polymarket.ccxt_compat.tick_size import PolymarketTickSizeResolver
 from integrations.polymarket.ccxt_prediction_gateway import CcxtPredictionGateway
 from integrations.polymarket.errors import VenueInvalidOrderError
 from integrations.polymarket.models import LimitOrderRequest, MarketableOrderRequest
@@ -384,10 +385,60 @@ async def test_cancel_maps_success() -> None:
 @pytest.mark.asyncio
 async def test_compatibility_probe_reports_prediction_and_patch() -> None:
     report = await CcxtPredictionGateway(FakeExchange()).check_compatibility()
-    assert report["sdk_available"] is True
+    assert report["available"] is True
+    assert report["transport"] == "ccxt.prediction.polymarket"
     assert report["prediction"] is True
     assert report["signature_type"] == 3
-    assert report["arbitrary_tick_patch"] == "pmcopy-arbitrary-tick-v1"
+    assert report["precision_patch"] == "pmcopy-arbitrary-tick-v1"
+    assert report["capabilities"]["create_order"] is True
+    assert "sdk_available" not in report
+
+
+@pytest.mark.asyncio
+async def test_resolved_arbitrary_tick_is_passed_to_ccxt() -> None:
+    """The tick-size resolver is the authority reaching the CCXT parameters."""
+
+    exchange = FakeExchange()
+    resolver = PolymarketTickSizeResolver()
+    gateway = CcxtPredictionGateway(exchange, tick_size_resolver=resolver)
+
+    result = await gateway.submit_marketable_order(
+        MarketableOrderRequest(
+            token_id=TOKEN,
+            side="BUY",
+            size=Decimal("5"),
+            price_limit=Decimal("0.411"),
+            condition_id="condition",
+        )
+    )
+
+    assert result.success is True
+    _symbol, _kind, _side, _amount, price, params = exchange.created[-1]
+    assert price == Decimal("0.4100")
+    assert params["tickSize"] == "0.0025"
+    assert await resolver.resolve(TOKEN) == Decimal("0.0025")
+
+
+@pytest.mark.asyncio
+async def test_resolved_arbitrary_tick_is_passed_to_ccxt_for_sells() -> None:
+    exchange = FakeExchange()
+    gateway = CcxtPredictionGateway(exchange, tick_size_resolver=PolymarketTickSizeResolver())
+
+    result = await gateway.submit_marketable_order(
+        MarketableOrderRequest(
+            token_id=TOKEN,
+            side="SELL",
+            size=Decimal("5"),
+            price_limit=Decimal("0.411"),
+            condition_id="condition",
+        )
+    )
+
+    assert result.success is True
+    _symbol, _kind, _side, _amount, price, params = exchange.created[-1]
+    assert price == Decimal("0.4125")
+    assert params["tickSize"] == "0.0025"
+    assert "cost" not in params
 
 
 @pytest.mark.asyncio
@@ -579,11 +630,11 @@ async def test_compatibility_fails_when_full_gateway_contract_or_type3_identity_
     exchange = FakeExchange()
     exchange.has["fetchOrder"] = False
     report = await CcxtPredictionGateway(exchange).check_compatibility()
-    assert report["sdk_available"] is False
+    assert report["available"] is False
     assert "fetchOrder" in report["missing_methods"]
 
     exchange = FakeExchange()
     exchange.options["signatureType"] = 0
     report = await CcxtPredictionGateway(exchange).check_compatibility()
-    assert report["sdk_available"] is False
+    assert report["available"] is False
     assert report["error"] is not None

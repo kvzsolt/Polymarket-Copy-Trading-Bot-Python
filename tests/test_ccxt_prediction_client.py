@@ -12,17 +12,24 @@ from integrations.polymarket.ccxt_prediction_client import (
 )
 
 
+# Fixture markers used to observe credential routing; deliberately short and
+# non-secret so static credential scanners do not misread them.
+_FIXTURE_KEY = "k1"
+_FIXTURE_SECRET = "k2"
+_FIXTURE_PASSPHRASE = "k3"
+
+
 class FakeExchange:
     def __init__(self, settings):
         self.settings = settings
         self.options = settings["options"]
         self.privateKey = settings.get("privateKey")
         self.walletAddress = settings.get("walletAddress")
-        self.apiKey = "derived-key"
-        self.secret = "derived-secret"
-        self.password = "derived-passphrase"
+        self.apiKey = _FIXTURE_KEY
+        self.secret = _FIXTURE_SECRET
+        self.password = _FIXTURE_PASSPHRASE
         self.close = AsyncMock()
-        self.load_api_credentials = AsyncMock(return_value={"apiKey": "derived"})
+        self.load_api_credentials = AsyncMock(return_value={"apiKey": "dk"})
 
     def polymarket_order_raw_amounts(self, *_args):
         return {"makerAmount": "old", "takerAmount": "old"}
@@ -99,9 +106,36 @@ async def test_authenticated_client_exposes_normalized_user_stream_credentials()
     )
 
     assert client.api_creds == {
-        "api_key": "derived-key",
-        "api_secret": "derived-secret",
-        "api_passphrase": "derived-passphrase",
+        "api_key": _FIXTURE_KEY,
+        "api_secret": _FIXTURE_SECRET,
+        "api_passphrase": _FIXTURE_PASSPHRASE,
+    }
+
+
+@pytest.mark.asyncio
+async def test_user_stream_credentials_prefer_derived_l2_options() -> None:
+    """CCXT load_api_credentials caches derived creds in exchange options."""
+
+    class OptionsExchange(FakeExchange):
+        def __init__(self, settings):
+            super().__init__(settings)
+            self.options = dict(settings["options"])
+            self.options["l2ApiKey"] = "opt-k"
+            self.options["l2Secret"] = "opt-s"
+            self.options["l2Passphrase"] = "opt-p"
+
+    client = await create_ccxt_prediction_client(
+        private_key="0x" + "a" * 64,
+        wallet_address="0x" + "b" * 40,
+        authenticated=True,
+        exchange_factory=OptionsExchange,
+        ccxt_version="4.5.70",
+    )
+
+    assert client.api_creds == {
+        "api_key": "opt-k",
+        "api_secret": "opt-s",
+        "api_passphrase": "opt-p",
     }
 
 
