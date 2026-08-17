@@ -34,7 +34,11 @@ def test_app_routes_polling_and_onchain_sources_to_v1_without_legacy_duplication
     source = Path("app.py").read_text(encoding="utf-8")
 
     assert source.count("v1_sink=v1_runtime.submit_raw_batch") >= 2
-    assert "await v1_runtime.submit_onchain(signal)" in source
+    # On-chain signals reach v1 through ``OnchainSignalDispatchAdapter``
+    # (``tests/test_onchain_signal_dispatch.py::test_prefers_v1_runtime_when_present``);
+    # the app must hand it the same v1 runtime instance.
+    assert "OnchainSignalDispatchAdapter(" in source
+    assert "v1_runtime=v1_runtime," in source
     assert "if v1_runtime is not None:" in source
 
 
