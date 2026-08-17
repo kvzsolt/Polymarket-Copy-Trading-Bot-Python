@@ -36,13 +36,10 @@ def ensure_supported_ccxt_version(version: Any) -> None:
     parsed = parse_ccxt_version(version)
     if not parsed:
         raise CcxtPredictionUnavailable(
-            f"CCXT version could not be determined from {version!r}; "
-            ">= 4.5.70, < 5 is required"
+            f"CCXT version could not be determined from {version!r}; >= 4.5.70, < 5 is required"
         )
     if parsed < _MINIMUM_CCXT_VERSION:
-        raise CcxtPredictionUnavailable(
-            f"CCXT {version} is too old; >= 4.5.70, < 5 is required"
-        )
+        raise CcxtPredictionUnavailable(f"CCXT {version} is too old; >= 4.5.70, < 5 is required")
     if parsed[0] >= _MAXIMUM_EXCLUSIVE_MAJOR:
         raise CcxtPredictionUnavailable(
             f"CCXT {version} is unsupported; >= 4.5.70, < 5 is required"

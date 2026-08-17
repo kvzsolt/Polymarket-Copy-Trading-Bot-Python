@@ -85,9 +85,13 @@ def quantize_price_to_tick(
 
 
 class TickSizeResolver(Protocol):
-    """Resolve the authoritative tick size for one outcome token."""
+    """Resolve and cache the authoritative tick size for one outcome token."""
 
     async def resolve(self, token_id: str) -> Decimal: ...
+
+    async def note_observed_tick(self, token_id: str, tick_size: object) -> None: ...
+
+    def invalidate(self, token_id: str) -> None: ...
 
 
 class MarketMetadataClient(Protocol):

@@ -20,22 +20,18 @@ def test_arbitrary_supported_tick_sizes_produce_nonzero_amounts(tick: str) -> No
 
 
 def test_price_quantization_is_side_conservative_and_exact() -> None:
-    assert (
-        quantize_price_to_tick(price=Decimal("0.551"), tick_size=Decimal("0.01"), side="BUY")
-        == Decimal("0.55")
-    )
-    assert (
-        quantize_price_to_tick(price=Decimal("0.551"), tick_size=Decimal("0.01"), side="SELL")
-        == Decimal("0.56")
-    )
-    assert (
-        quantize_price_to_tick(price=Decimal("0.411"), tick_size=Decimal("0.0025"), side="BUY")
-        == Decimal("0.4100")
-    )
-    assert (
-        quantize_price_to_tick(price=Decimal("0.411"), tick_size=Decimal("0.0025"), side="SELL")
-        == Decimal("0.4125")
-    )
+    assert quantize_price_to_tick(
+        price=Decimal("0.551"), tick_size=Decimal("0.01"), side="BUY"
+    ) == Decimal("0.55")
+    assert quantize_price_to_tick(
+        price=Decimal("0.551"), tick_size=Decimal("0.01"), side="SELL"
+    ) == Decimal("0.56")
+    assert quantize_price_to_tick(
+        price=Decimal("0.411"), tick_size=Decimal("0.0025"), side="BUY"
+    ) == Decimal("0.4100")
+    assert quantize_price_to_tick(
+        price=Decimal("0.411"), tick_size=Decimal("0.0025"), side="SELL"
+    ) == Decimal("0.4125")
 
 
 def test_cost_sized_market_buy_preserves_explicit_price_limit() -> None:

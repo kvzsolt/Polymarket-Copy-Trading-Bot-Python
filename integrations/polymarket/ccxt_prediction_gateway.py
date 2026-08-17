@@ -27,7 +27,7 @@ from integrations.polymarket.ccxt_compat.capabilities import build_ccxt_health_p
 from integrations.polymarket.ccxt_compat.precision import CcxtPrecisionError
 from integrations.polymarket.ccxt_compat.tick_size import (
     InvalidTickSize,
-    PolymarketTickSizeResolver,
+    TickSizeResolver,
     quantize_price_to_tick,
 )
 from integrations.polymarket.ccxt_prediction_client import CcxtPredictionClient
@@ -306,7 +306,7 @@ class CcxtPredictionGateway:
         self,
         client: CcxtPredictionClient | Any,
         *,
-        tick_size_resolver: PolymarketTickSizeResolver | None = None,
+        tick_size_resolver: TickSizeResolver | None = None,
     ) -> None:
         self._client = client
         self._exchange = client.exchange if isinstance(client, CcxtPredictionClient) else client

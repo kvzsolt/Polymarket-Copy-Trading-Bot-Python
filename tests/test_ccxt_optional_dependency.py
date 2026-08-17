@@ -13,12 +13,7 @@ from integrations.polymarket.ccxt_prediction_client import (
     CcxtPredictionUnavailable,
     create_ccxt_prediction_client,
 )
-from integrations.polymarket.backend_factory import VenueBackend
-from integrations.polymarket.runtime_gateway import build_runtime_polymarket_gateway
-
-
-class SdkGateway:
-    """Minimal official-gateway sentinel for backend composition."""
+from integrations.polymarket.venue_runtime import build_polymarket_runtime
 
 
 @pytest.fixture
@@ -58,33 +53,39 @@ async def test_missing_ccxt_raises_actionable_error(ccxt_absent: None) -> None:
 async def test_runtime_factory_fails_closed_when_ccxt_is_unavailable(
     ccxt_absent: None,
 ) -> None:
-    """Refuse an explicit CCXT selection without affecting the SDK default."""
+    """CCXT is mandatory: paper and live startup fail closed without it."""
 
+    runtime_user = SimpleNamespace(
+        user_id="operator",
+        wallet=SimpleNamespace(private_key="", funder_address="0x" + "b" * 40),
+    )
     config = SimpleNamespace(
-        execution=SimpleNamespace(
-            trading_mode="paper",
-            allow_experimental_ccxt_live=False,
-        ),
-        wallet=SimpleNamespace(private_key="", funder_address=""),
+        execution=SimpleNamespace(trading_mode="paper"),
+        wallet=SimpleNamespace(private_key="", funder_address="0x" + "b" * 40),
     )
     with pytest.raises(CcxtPredictionUnavailable):
-        await build_runtime_polymarket_gateway(
-            sdk_gateway=SdkGateway(),
-            config=config,
-            wallet_config=config.wallet,
-            backend=VenueBackend.CCXT,
-        )
+        await build_polymarket_runtime(runtime_user=runtime_user, config=config)
 
 
 @pytest.mark.asyncio
-async def test_sdk_default_does_not_import_missing_ccxt(ccxt_absent: None) -> None:
-    """An unavailable optional adapter cannot break default SDK startup."""
+async def test_live_runtime_fails_closed_when_ccxt_is_unavailable(
+    ccxt_absent: None,
+) -> None:
+    """Live startup also fails closed when CCXT is unavailable."""
 
-    sdk = SdkGateway()
-    bundle = await build_runtime_polymarket_gateway(
-        sdk_gateway=sdk,
-        config=SimpleNamespace(execution=SimpleNamespace(trading_mode="paper")),
+    runtime_user = SimpleNamespace(
+        user_id="operator",
+        wallet=SimpleNamespace(
+            private_key="0x" + "a" * 64,
+            funder_address="0x" + "b" * 40,
+        ),
     )
-
-    assert bundle.gateway is sdk
-    assert bundle.ccxt_client is None
+    config = SimpleNamespace(
+        execution=SimpleNamespace(trading_mode="live"),
+        wallet=SimpleNamespace(
+            private_key="0x" + "a" * 64,
+            funder_address="0x" + "b" * 40,
+        ),
+    )
+    with pytest.raises(CcxtPredictionUnavailable):
+        await build_polymarket_runtime(runtime_user=runtime_user, config=config)

@@ -542,7 +542,7 @@ async def _check_clob_gateway(
             message=f"CLOB gateway compatibility probe raised: {exc!s}",
         )
     transport_ok = bool(report.get("available"))
-    if not sdk_ok:
+    if not transport_ok:
         return StartupHealthCheckItem(
             status="error",
             message=str(report.get("error") or "CCXT Polymarket transport is not available"),

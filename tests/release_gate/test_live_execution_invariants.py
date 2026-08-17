@@ -39,8 +39,36 @@ from tests.test_execution_idempotency_extended import (  # type: ignore[import-n
     _reset_circuit,  # noqa: F401 — re-export so the autouse fixture applies
 )
 from services.executionService import ExecutionService  # noqa: E402
-from integrations.polymarket.clob_v2_gateway import PolymarketGateway  # noqa: E402
+from integrations.polymarket.models import VenueSubmitResult  # noqa: E402
 from storage.postgres.orders_repo import OrdersRepo  # noqa: E402
+
+
+class _LegacyBridgeGateway:
+    """Bridge the legacy ``_SimpleClob`` fixture to the ``ClobGateway`` port.
+
+    ExecutionService only calls ``submit_marketable_order`` on the gateway, so
+    this double delegates to the fixture's ``post_signed_order`` /
+    ``create_market_order`` and maps the legacy dict response to
+    ``VenueSubmitResult``. It preserves the historical assertion surface
+    (``clob.post_signed_order.await_count``) without reintroducing the SDK
+    gateway.
+    """
+
+    def __init__(self, clob: _SimpleClob) -> None:
+        self._clob = clob
+
+    async def submit_marketable_order(self, request) -> VenueSubmitResult:
+        side_effect = getattr(self._clob.create_market_order, "side_effect", None)
+        if side_effect is not None and not isinstance(side_effect, AsyncMock):
+            raise side_effect
+        raw = await self._clob.post_signed_order()
+        order_id = raw.get("orderID") or raw.get("order_id")
+        return VenueSubmitResult(
+            success=bool(raw.get("success", False)),
+            order_id=str(order_id) if order_id else None,
+            status=str(raw.get("status") or "submitted"),
+            raw=raw,
+        )
 
 
 @pytest.mark.asyncio
@@ -56,7 +84,7 @@ async def test_concurrent_identical_intents_durable_state():
             _FeeSvc(),
             repo,
             config=config,
-            clob_gateway=PolymarketGateway(clob, config),
+            clob_gateway=_LegacyBridgeGateway(clob),
             market_data_service=_make_mds(),
         )
         req = _make_req(signal_id="sig-live-inv")
@@ -86,7 +114,7 @@ async def test_replay_after_persist_collapses_to_duplicate():
             _FeeSvc(),
             repo,
             config=config,
-            clob_gateway=PolymarketGateway(clob, config),
+            clob_gateway=_LegacyBridgeGateway(clob),
             market_data_service=_make_mds(),
         )
         req = _make_req(signal_id="sig-dup-live")
@@ -100,7 +128,7 @@ async def test_replay_after_persist_collapses_to_duplicate():
 
 
 @pytest.mark.asyncio
-async def test_unknown_sdk_exception_keeps_duplicate_lock():
+async def test_unknown_post_call_exception_keeps_duplicate_lock():
     """Inv-4 (#100): an unknown post-call exception must be ambiguous, not
     terminal. The duplicate-lock must remain active so a follow-up identical
     intent is collapsed instead of producing a second signed order."""
@@ -116,7 +144,7 @@ async def test_unknown_sdk_exception_keeps_duplicate_lock():
             _FeeSvc(),
             repo,
             config=config,
-            clob_gateway=PolymarketGateway(clob, config),
+            clob_gateway=_LegacyBridgeGateway(clob),
             market_data_service=_make_mds(),
         )
         req = _make_req(signal_id="sig-unknown-live")
