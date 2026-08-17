@@ -121,3 +121,38 @@ limitation here, add a corresponding regression test to the unit suite.
   integration drops (kill-switch + doctor).
 - `docs/trader_discovery.md` — discovery data caveats, ranking evidence,
   and roster behavior.
+
+## Leader detection: polling runs alongside the on-chain source
+
+`CLAUDE.md` describes "one selected detection source". The runtime deliberately
+deviates: `detection.mode` selects exactly one **on-chain** source
+(`on_chain_pending` or `on_chain_confirmed`), but REST polling of the
+Polymarket data API keeps running in every mode as a parallel fallback. This
+is intentional — the data API is the only source that survives an Alchemy
+outage — and it is safe because the copy layer dedups the same fill by trade
+key: `CrossSourceTradeClaimPolicy` (`orchestrators/onchain_signal_dispatch.py`)
+claims the tx-level identity `user|leader|tx|side|asset` before an on-chain
+fill reaches the pipeline, so whichever source sees a fill first wins and the
+loser is logged as `detection_signal_deduped` / counted in
+`detection_signals_deduped_total` (on-chain loser) or
+`duplicate_order_prevented_total` (polling loser). Accepted trade-off: a
+multi-fill transaction with identical tx/side/asset is copied once from the
+on-chain path, exactly as polling's aggregation copies it once.
+
+Consequences and limits:
+
+- Per-signal provenance is visible as `detection_signal | source=<polling|
+  on_chain_pending|on_chain_confirmed>` and `detection_signals_total{source}`.
+- `on_chain_pending` runs the gen-1 `OnchainDetectionRuntime` with the mined
+  `OrderFilled` subscription **off**: gen-1 mined signals carry a `log_index`
+  that changes the copy identity, so enabling both would copy pending + mined
+  twice. The confirmed path is a strict superset and is the recommended first
+  live mode.
+- The gen-1 pending decoder matches direct `matchOrders` calldata only — no
+  Safe `execTransaction` wrapper. That is sufficient for Polymarket proxy-wallet
+  leaders (the operator relayer calls the exchange directly with the leader as
+  `Order.maker`); Safe-wrapped leaders are covered by the gen-2 confirmed path.
+- The deprecated `enable_onchain_*` booleans never select provisional copy;
+  only an explicit `detection.mode: on_chain_pending` does.
+- Changing `detection.mode` requires a restart; the control plane excludes it
+  from editable settings.

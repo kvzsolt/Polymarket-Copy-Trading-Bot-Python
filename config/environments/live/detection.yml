@@ -1,0 +1,8 @@
+# Live detection source. Base config/detection.yml stays mode: polling.
+# on_chain_confirmed = mempool-observed, receipt-confirmed. Polling keeps running
+# as parallel fallback; copy layer dedups by trade key (CrossSourceTradeClaimPolicy).
+mode: on_chain_confirmed
+onchain:
+  pending_tx_provider: alchemy
+  pending_tx_max_signal_age_ms: 500
+  pending_tx_detection_confidence_required: pending_probable

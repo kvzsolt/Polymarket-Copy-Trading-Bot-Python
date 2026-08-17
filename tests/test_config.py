@@ -574,3 +574,33 @@ def test_on_chain_pending_with_hashes_only_fails_closed() -> None:
 def test_invalid_detection_mode_rejected() -> None:
     with pytest.raises(EnvValidationError, match="detection.mode must be one of"):
         load_config(_onchain_overrides("mempool"))
+
+
+def test_live_environment_selects_on_chain_confirmed() -> None:
+    """The checked-in live environment opts into the receipt-confirmed source."""
+    from domain.detection import DetectionMode
+
+    packaged = yaml.safe_load(
+        (ROOT / "config" / "environments" / "live" / "detection.yml").read_text()
+    )
+    assert packaged["mode"] == "on_chain_confirmed"
+
+    overrides = _overrides()
+    overrides["wallet"]["private_key"] = "0x" + "a" * 64
+    overrides["detection"] = {
+        "onchain": {"pending_tx_ws_url": "wss://polygon.example.invalid/v2/redacted"}
+    }
+    config = load_config(overrides, environment="live")
+
+    assert config.environment == "live"
+    assert config.execution.trading_mode == "live"
+    assert config.detection.detection_mode is DetectionMode.ON_CHAIN_CONFIRMED
+    assert config.detection.onchain.pending_tx_provider == "alchemy"
+
+
+def test_live_environment_without_ws_url_fails_closed() -> None:
+    """Selecting an on-chain mode in live without a WS endpoint is a startup error."""
+    overrides = _overrides()
+    overrides["wallet"]["private_key"] = "0x" + "a" * 64
+    with pytest.raises(EnvValidationError, match="detection.mode=on_chain_confirmed requires"):
+        load_config(overrides, environment="live")

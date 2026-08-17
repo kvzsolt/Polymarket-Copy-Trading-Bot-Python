@@ -5,6 +5,32 @@ PR2 delivered the on-chain detection module behind
 log subscription is always safe to run (authoritative); the pending-tx
 subscription is provisional and flag-gated.
 
+## Mode semantics (2026-08: `detection.mode` selector)
+
+The booleans above are deprecated. `detection.mode` selects the on-chain
+source through `orchestrators/detection_source_factory.py`:
+
+| mode | runtime | what fires the copy | Postgres |
+|---|---|---|---|
+| `polling` | none | data-api REST polling only | required (always) |
+| `on_chain_pending` | gen-1 `OnchainDetectionRuntime(enable_pending=True, enable_mined=False)` | `alchemy_pendingTransactions` sighting decoded from calldata; `PENDING_PROBABLE`, `provisional=True`; dropped when older than `pending_tx_max_signal_age_ms`, below `pending_tx_detection_confidence_required`, or superseded per leader | required |
+| `on_chain_confirmed` | gen-2 `PolygonSourceTransactionRuntime` | mempool sighting only *reserves*; execution after `eth_getTransactionReceipt` decodes the `OrderFilled` logs (`MINED_AUTHORITATIVE`, `provisional=False`) | required (`PostgresSourceTransactionStateStore`) |
+
+REST polling keeps running in every mode; `CrossSourceTradeClaimPolicy` in
+`orchestrators/onchain_signal_dispatch.py` claims the tx-level trade key so a
+fill is copied once whichever source saw it first. Startup logs
+`detection_mode_selected | mode=... onchain_ws=set|unset polling_fallback=true
+provider=alchemy` (the WS URL, which carries the Alchemy key, is never logged;
+`clients/onchain_ws.py` logs the host only). Every dispatched on-chain signal
+logs `detection_signal | source=... leader=... tx=...` and increments
+`detection_signals_total{source}`.
+
+Mempool visibility was measured, not assumed (read-only probe, 120 s,
+2026-08-17): ~96 % of mined `OrderFilled` transactions had been seen pending
+first, median mempool-to-mined lead 0.67 s. Recommended rollout: first live
+run `on_chain_confirmed`; switch to `on_chain_pending` only after a paper soak
+shows pending sightings decode for the followed leader.
+
 ## Module layout (shipped)
 ```
 services/onchain_detection/
