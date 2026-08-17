@@ -1,4 +1,9 @@
-"""Venue-neutral Polymarket SDK and optional CCXT adapter exports."""
+"""Venue-neutral Polymarket CCXT adapter exports.
+
+CCXT is the only Polymarket venue transport for this runtime. The official
+``polymarket-client`` SDK has been removed; nothing in this package re-exports
+SDK types.
+"""
 
 from integrations.polymarket.ccxt_prediction_client import (
     CcxtPredictionClient,
@@ -7,7 +12,6 @@ from integrations.polymarket.ccxt_prediction_client import (
     create_ccxt_prediction_client,
 )
 from integrations.polymarket.ccxt_prediction_gateway import CcxtPredictionGateway
-from integrations.polymarket.clob_v2_gateway import ClobV2Gateway, PolymarketGateway
 from integrations.polymarket.errors import (
     RetryableVenueError,
     TerminalVenueError,
@@ -27,7 +31,6 @@ from integrations.polymarket.models import (
     VenueOrderState,
     VenueSubmitResult,
 )
-from integrations.polymarket.sdk_client import PolymarketClient, create_polymarket_client
 
 BUY = "BUY"
 SELL = "SELL"
@@ -39,11 +42,7 @@ __all__ = [
     "CcxtPredictionConfigurationError",
     "CcxtPredictionGateway",
     "CcxtPredictionUnavailable",
-    "ClobV2Gateway",
-    "PolymarketClient",
-    "PolymarketGateway",
     "create_ccxt_prediction_client",
-    "create_polymarket_client",
     "LimitOrderRequest",
     "MarketableOrderRequest",
     "OrderBook",

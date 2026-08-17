@@ -61,9 +61,9 @@ The bot operates through specialized engines, each handling a distinct domain of
 
 - **Language:** Python 3.11+ (3.13 unsupported).
 - **Persistence:** PostgreSQL (positions, orders, fills, intents, reservations) — schema-versioned migrations.
-- **Venue:** official unified `polymarket-client` SDK, pinned and isolated behind the typed gateway.
+- **Venue:** `ccxt.prediction.polymarket` is the only Polymarket trading transport, isolated behind the typed `ClobGateway` port; public Polymarket APIs, WebSockets, Polygon RPC/WSS, and contracts remain in use for market data, account data, and leader detection.
 - **Composition root:** `bootstrap.py::build_app` validates config, initializes PostgreSQL, and wires the shared graph; `app.py::main` adds per-user runtimes.
-- **Execution:** `interfaces.clob_gateway.ClobGateway` (port) → `integrations.polymarket.clob_v2_gateway` (adapter) → `services.executionService.ExecutionService` + `services/execution/` subsystem.
+- **Execution:** `interfaces.clob_gateway.ClobGateway` (port) → `integrations.polymarket.ccxt_prediction_gateway` (live adapter) / `integrations.polymarket.paper_execution` (paper simulator) → `services.executionService.ExecutionService` + `services/execution/` subsystem.
 - **Coordination:** canonical `domain.position_key.PositionKey` everywhere; `services.positionActionCoordinator.PositionActionCoordinator` serialises per-position actions at runtime.
 - **Reconciliation:** `ReconciliationService` owns terminal settlement; startup reconciliation runs before risk and trade loops.
 - **Market data:** REST book snapshots are execution authority; market/user WebSockets maintain background state, subscriptions, and lifecycle events. Decisions fail closed on stale metadata.
@@ -141,10 +141,11 @@ until it is deleted the deprecated shim keeps honouring it (environment
 files take precedence).
 Keep `execution.trading_mode: paper` through validation. Live startup requires
 `execution.trading_mode: live` **and** a separate database-backed resume command.
-The private key is the only Polymarket auth secret. The unified SDK uses it for
-L1 credential create-or-derive, keeps the resulting L2 HMAC credentials in
-memory, and derives the Deposit Wallet used with signature type 3. Do not add
-CLOB API credentials or a signature type to `secrets.env`.
+The private key is the only Polymarket auth secret. CCXT's
+`load_api_credentials` uses it for L1 credential create-or-derive, keeps the
+resulting L2 HMAC credentials in `exchange.options`, and signs with the
+configured Deposit Wallet using signature type 3. Do not add CLOB API
+credentials or a signature type to `secrets.env`.
 
 ### 3. Run
 Launch the bot using the Operator CLI.

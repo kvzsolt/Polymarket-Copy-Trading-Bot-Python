@@ -1,0 +1,48 @@
+{
+  "schemaVersion": "mimosa-finding-ledger-batch/v1",
+  "batchId": "posttooluse-ecd422dd323246a34e8aa4e5070980f1",
+  "runId": null,
+  "runStatus": "completed",
+  "coverage": {
+    "status": "complete",
+    "reasons": []
+  },
+  "source": {
+    "component": "zcode-hook",
+    "operationId": "PostToolUse"
+  },
+  "revision": null,
+  "diffHash": null,
+  "rulesVersion": null,
+  "sessionHash": "97f4ead289612612dda9be878595d18e716740e668470b36165c4e15bba09ed5",
+  "reportRef": null,
+  "events": [
+    {
+      "eventId": "hook-b9bdcc14e04d8fd0e4932f6e66614841",
+      "findingId": "mimosa-668700c15d41b913498613bd",
+      "type": "static_fix_verified",
+      "at": "2026-08-17T15:04:49.201Z",
+      "identity": {
+        "projectRelativeFile": "storage/postgres/migrations.py",
+        "ruleId": "security",
+        "codeEvidenceHash": "55865aec5736dc0bacaef1c752e31d9a5f4acd82e5e694a1fd8b35211369ba2b",
+        "confidence": "stable"
+      },
+      "scope": "direct",
+      "line": 585,
+      "endLine": 585,
+      "reasonCode": "static_rescan_passed",
+      "reportedToAgent": false,
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "observed",
+        "producer": "deterministic",
+        "evidenceHash": "55865aec5736dc0bacaef1c752e31d9a5f4acd82e5e694a1fd8b35211369ba2b"
+      },
+      "sequence": 0
+    }
+  ],
+  "observedFindingIds": [],
+  "verifiedFiles": [],
+  "recordedAt": "2026-08-17T15:04:49.642Z"
+}

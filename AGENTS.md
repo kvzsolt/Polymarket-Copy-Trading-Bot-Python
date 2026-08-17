@@ -1,23 +1,38 @@
-<!-- PMCOPY-HYBRID-CCXT-GUIDANCE -->
-# Hybrid CCXT branch instructions
+<!-- PMCOPY-CCXT-ONLY-GUIDANCE -->
+# CCXT-only Polymarket venue instructions
 
 **Before planning, editing, reviewing, or running tests, read the repository-root `CLAUDE.md` in full.** Every delegated agent or subagent must do the same. If a nested `AGENTS.md` exists, read it after the root files and obey the narrower rules for that subtree.
 
 ## Non-negotiable architecture
 
-- The official `polymarket-client` SDK remains the production-default execution backend.
-- CCXT is an optional second adapter behind `interfaces.clob_gateway.ClobGateway`.
+- `ccxt.prediction.polymarket` is the only authenticated trading and order-execution transport. The official `polymarket-client` / `py-clob-client` SDK has been removed; do not reintroduce it.
+- Official Polymarket APIs, WebSockets, Polygon RPC/WSS, and contracts remain in use for market data, account data, and leader detection, but must not become a second private order execution implementation. No direct private order creation or cancellation using `httpx`, `aiohttp`, `requests`, or custom signing code.
 - Do not let CCXT models, dictionaries, exceptions, symbols, or credentials leak into domain, risk, execution, reconciliation, or persistence code.
-- `sdk-shadow-ccxt` is read-only on the shadow side. Never mirror create, cancel, approval, redemption, split, merge, or any other mutation.
 - Raw Polymarket outcome token IDs are the adapter boundary identity. Do not invent crypto-style symbols.
-- Live mode must never be inferred from the presence of a private key. The existing explicit live controls (`execution.trading_mode`) remain authoritative.
-- CCXT may become the live primary only with the separate `allow_experimental_ccxt_live` gate. Never weaken or remove that gate.
+- Live mode must never be inferred from the presence of a private key. The explicit live control (`execution.trading_mode`) remains authoritative.
+- There is no venue backend selector, no hybrid gateway, no shadow mode, and no experimental CCXT live gate. Obsolete `venue_backend` / `allow_experimental_ccxt_live` / `shadow_ccxt` config keys are rejected fail-closed.
+
+## Execution boundary
+
+```text
+Application
+    ↓
+ClobGateway
+    ↓
+CcxtPredictionGateway (live) / PaperExecutionGateway (paper)
+    ↓
+CcxtPredictionClient
+    ↓
+ccxt.prediction.polymarket
+```
+
+Paper mode uses CCXT for live public market reads and the local simulator for order writes. Paper mode must never call CCXT private write methods.
 
 ## Required workflow
 
 For every behavior slice, use this order and preserve the evidence:
 
-1. Characterize the current SDK behavior and relevant failure mode.
+1. Characterize the current CCXT behavior and relevant failure mode.
 2. Add a new focused test file or focused new test that fails for the intended reason.
 3. Run the smallest test command and record the red result.
 4. Implement only enough code to make that slice green.
@@ -41,38 +56,33 @@ A change is incomplete until tests cover, where applicable:
 - pagination duplicate elimination;
 - ambiguous POST failures not being retried blindly;
 - cancel-after-fill and cancel-404 idempotency;
-- shadow mode never invoking a write method;
-- SDK remaining the default in paper and live configuration.
+- paper mode never invoking a CCXT private write method;
+- CCXT being mandatory in paper and live configuration;
+- no `0.01` tick-size fallback existing anywhere.
 
 ## Scope discipline
 
-Do not rewrite the copy-decision, trader-discovery, risk, reconciliation, persistence, WSS detection, or execution-coordination subsystems for this migration. The branch adds an adapter, a safe selector, shadow comparison, regression fixes, and tests. Preserve all existing behavior unless a failing regression test demonstrates a bug.
+Do not rewrite the copy-decision, trader-discovery, risk, reconciliation, persistence, WSS detection, or execution-coordination subsystems. Preserve all existing behavior unless a failing regression test demonstrates a bug.
 
 ## Verifying library behavior
 
-Do not rely on memory for CCXT or SDK semantics. The installed source is the
+Do not rely on memory for CCXT semantics. The installed source is the
 authority: read `.venv/lib/python3.*/site-packages/ccxt/prediction/polymarket.py`
 (and `ccxt/abstract/prediction/polymarket.py` for generated raw endpoints)
-before asserting what a method does. Several defects this branch fixes were
-only confirmed by reading that file — the hard-coded four-value tick table in
-`polymarket_order_raw_amounts`, the single-page `fetch_open_orders`, the
-cached-outcome-price fallback when `create_order` is called without a price,
-and the `negRisk` default of `False`.
+before asserting what a method does.
 
-## Hybrid Polymarket backend work
+## Polymarket execution work
 
 Before touching Polymarket execution, discovery, reconciliation, authentication, or market data:
 
 1. Read the repository-root `CLAUDE.md` completely.
 2. Read every applicable `AGENTS.md` from root to the target directory.
-3. Preserve the official `polymarket-client` SDK as the production default unless a task explicitly changes that decision.
-4. Keep CCXT optional and isolated behind `ClobGateway`.
-5. Keep custom CLOB/WebSocket detection in the latency-sensitive path.
-6. Never allow shadow mode to mutate venue state.
-7. Never retry an ambiguous order submission without reconciliation.
-8. Never infer live mode from available credentials.
-9. Use exact decimal arithmetic for money, shares, prices, tick sizes, and limits.
-10. Write failing tests before changing behavior.
+3. Keep CCXT as the only trading transport behind `ClobGateway`.
+4. Keep custom CLOB/WebSocket detection in the latency-sensitive path.
+5. Never retry an ambiguous order submission without reconciliation.
+6. Never infer live mode from available credentials.
+7. Use exact decimal arithmetic for money, shares, prices, tick sizes, and limits.
+8. Write failing tests before changing behavior.
 
 ## Falcon discovery
 
@@ -96,5 +106,3 @@ For each behavior slice:
 5. run focused GREEN;
 6. run relevant regressions;
 7. do a money-path and secret-leak review before commit.
-
-

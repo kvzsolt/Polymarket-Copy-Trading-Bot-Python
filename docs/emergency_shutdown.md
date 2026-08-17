@@ -11,10 +11,10 @@ pmcopy trading status
 ```
 
 Every live submission re-reads this control immediately before calling the
-unified SDK. If PostgreSQL is unavailable, the permission check also fails
-closed. Already-submitted or ambiguous orders are not cancelled or retried
-automatically; reconciliation owns them until its `ambiguous_timeout` and
-venue evidence permit a terminal decision.
+CCXT venue adapter. If PostgreSQL is unavailable, the permission check also
+fails closed. Already-submitted or ambiguous orders are not cancelled or
+retried automatically; reconciliation owns them until its `ambiguous_timeout`
+and venue evidence permit a terminal decision.
 
 If the CLI cannot reach PostgreSQL, terminate the bot process as the secondary
 containment step:

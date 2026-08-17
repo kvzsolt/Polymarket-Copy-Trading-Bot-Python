@@ -1,0 +1,48 @@
+{
+  "schemaVersion": "mimosa-finding-ledger-batch/v1",
+  "batchId": "pretooluse-568b41ebfc433b4adbfb7a09f1d41760",
+  "runId": null,
+  "runStatus": "completed",
+  "coverage": {
+    "status": "complete",
+    "reasons": []
+  },
+  "source": {
+    "component": "zcode-hook",
+    "operationId": "PreToolUse"
+  },
+  "revision": null,
+  "diffHash": null,
+  "rulesVersion": null,
+  "sessionHash": "97f4ead289612612dda9be878595d18e716740e668470b36165c4e15bba09ed5",
+  "reportRef": null,
+  "events": [
+    {
+      "eventId": "hook-8988ff660cc5bca090c5285589874571",
+      "findingId": "mimosa-668700c15d41b913498613bd",
+      "type": "finding_blocked",
+      "at": "2026-08-17T14:57:54.523Z",
+      "identity": {
+        "projectRelativeFile": "storage/postgres/migrations.py",
+        "ruleId": "security",
+        "codeEvidenceHash": "55865aec5736dc0bacaef1c752e31d9a5f4acd82e5e694a1fd8b35211369ba2b",
+        "confidence": "stable"
+      },
+      "scope": "direct",
+      "line": 586,
+      "endLine": 586,
+      "reasonCode": "deny",
+      "reportedToAgent": true,
+      "evidence": {
+        "kind": "source",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "evidenceHash": "55865aec5736dc0bacaef1c752e31d9a5f4acd82e5e694a1fd8b35211369ba2b"
+      },
+      "sequence": 0
+    }
+  ],
+  "observedFindingIds": [],
+  "verifiedFiles": [],
+  "recordedAt": "2026-08-17T14:57:54.964Z"
+}

@@ -16,9 +16,10 @@ chmod 600 secrets.env
 
 Populate the private key, database DSN, and `POSTGRES_PASSWORD` in
 `secrets.env`. The checked-in config supplies a public Polygon RPC; override
-`PMCOPY__NETWORK__RPC_URL` only for a private provider. The unified SDK uses
-the private key for L1 credential create-or-derive, keeps L2 credentials in
-memory, and derives the Deposit Wallet used with POLY_1271/signature type 3.
+`PMCOPY__NETWORK__RPC_URL` only for a private provider. CCXT's
+`load_api_credentials` uses the private key for L1 credential create-or-derive,
+keeps L2 credentials in `exchange.options`, and signs with the configured
+Deposit Wallet using POLY_1271/signature type 3.
 
 Validate in paper mode:
 

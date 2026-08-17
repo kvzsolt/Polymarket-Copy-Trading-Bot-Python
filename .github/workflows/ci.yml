@@ -169,9 +169,9 @@ jobs:
           # more money-path modules are cleaned. No ``|| true`` — this gates.
           mypy --install-types --non-interactive --explicit-package-bases \
             --ignore-missing-imports --follow-imports=silent \
-            integrations/polymarket/clob_v2_gateway.py \
             integrations/polymarket/ccxt_prediction_client.py \
             integrations/polymarket/ccxt_prediction_gateway.py \
+            integrations/polymarket/venue_runtime.py \
             clients/network/http_client.py
       - name: mypy (type — soft fail until type debt cleared)
         continue-on-error: true

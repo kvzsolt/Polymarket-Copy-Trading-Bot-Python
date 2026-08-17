@@ -35,7 +35,7 @@ wallet drift, or an open circuit breaker before allowing another order.
 pmcopy trading pause --reason "maintenance or incident"
 ```
 
-The control is checked immediately before every live SDK submission and is
+The control is checked immediately before every live CCXT submission and is
 shared by all bot processes using the database. A database outage also blocks
 new live submissions. See `docs/emergency_shutdown.md` for containment and
 recovery.

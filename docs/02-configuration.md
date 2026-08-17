@@ -45,10 +45,11 @@ idempotency, reconciliation, discovery history, and the roster are
 PostgreSQL-backed.
 
 `wallet.funder_address` is required in paper mode: paper never authenticates,
-so the SDK resolves no wallet and this public address is the identity the
-balance and live-position health probes use. In live mode it is optional — the
-SDK derives the Deposit Wallet from `PMCOPY__WALLET__PRIVATE_KEY` — but when
-set it must match that wallet or startup fails closed.
+so the CCXT transport resolves no wallet and this public address is the
+identity the balance and live-position health probes use. In live mode it is
+the verified Deposit Wallet funder address CCXT signs against — it must be
+set and must match the wallet derived from `PMCOPY__WALLET__PRIVATE_KEY` or
+startup fails closed.
 
 Unknown YAML, secret, or nested process keys fail validation instead of being
 silently ignored.

@@ -2,8 +2,8 @@
 
 The execution gateway remains the only mutation boundary.  This facade exposes
 CCXT's prediction-native event, market-data, portfolio and websocket methods for
-shadow comparison, discovery and future OctoBot integration without leaking a
-crypto-style symbol model into the application.
+discovery and future OctoBot integration without leaking a crypto-style symbol
+model into the application.
 """
 
 from __future__ import annotations

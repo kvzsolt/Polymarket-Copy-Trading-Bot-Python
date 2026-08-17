@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "mimosa-hook-status/v1",
+  "recordedAt": "2026-08-17T16:17:33.132Z",
+  "sessionId": "sess_68527d8b-305a-4b18-87b4-314496b5e118",
+  "event": "PostToolUse",
+  "toolName": "Edit",
+  "file": "integrations/polymarket/ccxt_prediction_market_data.py",
+  "outcome": "clear",
+  "coverage": "complete",
+  "findingCount": 0,
+  "durationMs": 5,
+  "hostState": "hook_complete",
+  "reportHint": ".mimosa/reports/"
+}

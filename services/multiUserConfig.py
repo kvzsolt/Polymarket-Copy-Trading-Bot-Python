@@ -150,16 +150,15 @@ def bind_resolved_deposit_wallet(
     runtime_user: RuntimeUser,
     wallet_address: str | None,
 ) -> None:
-    """Bind the SDK-authoritative type-3 wallet before runtime services wire.
+    """Bind the type-3 Deposit Wallet before runtime services wire.
 
-    ``wallet_address`` is the SDK's ``PolymarketClient.wallet_address``, which
-    is None when no secure client was built. Callers pass it through as-is: for
-    a live user that is an unresolved wallet, and rejecting it here is what
-    stops an empty funder from reaching the runtime.
+    ``wallet_address`` is the verified Deposit Wallet funder address. Callers
+    pass it through as-is: for a live user that is an unresolved wallet, and
+    rejecting it here is what stops an empty funder from reaching the runtime.
     """
     resolved = str(wallet_address or "").strip()
     if not resolved:
-        raise ValueError("the unified SDK did not resolve a Deposit Wallet address")
+        raise ValueError("no Deposit Wallet address was provided to bind")
     runtime_user.wallet = replace(
         runtime_user.wallet,
         funder_address=resolved,

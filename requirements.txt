@@ -59,12 +59,10 @@ docker==7.2.0
 eth-abi==5.2.0
     # via
     #   eth-account
-    #   polymarket-client
     #   web3
 eth-account==0.13.7
     # via
     #   polymarket-copy-trading-bot (pyproject.toml)
-    #   polymarket-client
     #   web3
 eth-hash==0.8.0
     # via
@@ -91,7 +89,6 @@ eth-utils==5.3.1
     #   eth-keyfile
     #   eth-keys
     #   eth-rlp
-    #   polymarket-client
     #   rlp
     #   web3
 frozenlist==1.8.0
@@ -113,9 +110,7 @@ hpack==4.2.0
 httpcore==1.0.9
     # via httpx
 httpx==0.28.1
-    # via
-    #   polymarket-copy-trading-bot (pyproject.toml)
-    #   polymarket-client
+    # via polymarket-copy-trading-bot (pyproject.toml)
 hyperframe==6.1.0
     # via h2
 idna==3.18
@@ -131,8 +126,6 @@ markdown-it-py==4.2.0
     # via rich
 mdurl==0.1.2
     # via markdown-it-py
-msgpack==1.2.1
-    # via polymarket-client
 multidict==6.7.1
     # via
     #   aiohttp
@@ -148,8 +141,6 @@ parsimonious==0.10.0
     # via eth-abi
 pluggy==1.6.0
     # via pytest
-polymarket-client==0.1.0b18
-    # via polymarket-copy-trading-bot (pyproject.toml)
 propcache==0.5.2
     # via
     #   aiohttp
@@ -168,7 +159,6 @@ pydantic==2.13.4
     #   polymarket-copy-trading-bot (pyproject.toml)
     #   eth-account
     #   eth-utils
-    #   polymarket-client
     #   pydantic-settings
     #   web3
 pydantic-core==2.46.4
@@ -254,7 +244,6 @@ web3==7.15.0
 websockets==15.0.1
     # via
     #   polymarket-copy-trading-bot (pyproject.toml)
-    #   polymarket-client
     #   web3
 winloop==0.6.3 ; python_full_version < '3.15' and implementation_name == 'cpython' and platform_machine in 'AMD64 ARM64' and sys_platform == 'win32'
     # via ccxt

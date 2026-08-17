@@ -1,0 +1,173 @@
+"""Security and boundary contracts for the aiohttp control-plane adapter."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from decimal import Decimal
+
+import pytest
+
+from integrations.control_plane import (
+    BearerCredential,
+    ControlPlaneAuthenticator,
+    ControlPlaneHttpConfig,
+    ControlPlaneJsonSerializer,
+    ControlPlanePermission,
+    ControlPlanePermissionPolicy,
+    ControlPlaneTransportError,
+    InProcessActionRateLimiter,
+)
+
+
+class _MonotonicClock:
+    def __init__(self) -> None:
+        self.value = 10.0
+
+    def monotonic(self) -> float:
+        return self.value
+
+
+def _credential(token: str, subject: str) -> BearerCredential:
+    return BearerCredential(
+        token=token,
+        subject=subject,
+        permissions=frozenset(
+            {
+                ControlPlanePermission.SYSTEM_READ,
+                ControlPlanePermission.TASK_WRITE,
+            }
+        ),
+    )
+
+
+def test_authenticator_compares_every_credential_with_constant_time_primitive() -> None:
+    calls: list[tuple[str, str]] = []
+
+    def compare(left: str, right: str) -> bool:
+        calls.append((left, right))
+        return left == right
+
+    authenticator = ControlPlaneAuthenticator(
+        credentials=(
+            _credential("token-a", "operator-a"),
+            _credential("token-b", "operator-b"),
+        ),
+        compare_digest=compare,
+    )
+
+    principal = authenticator.authenticate_header(
+        "Bearer token-a",
+        remote_address="127.0.0.1",
+    )
+
+    assert principal.subject == "operator-a"
+    assert calls == [("token-a", "token-a"), ("token-a", "token-b")]
+    assert "token-a" not in repr(authenticator)
+    assert "token-a" not in repr(authenticator.credentials[0])
+
+
+def test_invalid_bearer_and_missing_permission_fail_with_stable_public_codes() -> None:
+    authenticator = ControlPlaneAuthenticator(credentials=(_credential("token-a", "operator-a"),))
+    policy = ControlPlanePermissionPolicy()
+
+    with pytest.raises(ControlPlaneTransportError) as missing:
+        authenticator.authenticate_header(None, remote_address="127.0.0.1")
+    with pytest.raises(ControlPlaneTransportError) as invalid:
+        authenticator.authenticate_header("Basic token-a", remote_address="127.0.0.1")
+    principal = authenticator.authenticate_header("Bearer token-a", remote_address="127.0.0.1")
+    with pytest.raises(ControlPlaneTransportError) as forbidden:
+        policy.require(principal, ControlPlanePermission.RUNTIME_WRITE)
+
+    assert missing.value.code == "authentication_required"
+    assert invalid.value.code == "invalid_bearer_token"
+    assert forbidden.value.code == "permission_denied"
+
+
+def test_non_loopback_bind_without_credentials_is_rejected() -> None:
+    with pytest.raises(ValueError, match="non-loopback"):
+        ControlPlaneHttpConfig(
+            host="0.0.0.0",
+            port=9103,
+            require_authentication=False,
+        )
+
+
+def test_cors_configuration_requires_explicit_origin_values() -> None:
+    for origin in ("*", "https://ops.example/path", "https://user@ops.example"):
+        with pytest.raises(ValueError, match=r"CORS origins"):
+            ControlPlaneHttpConfig(cors_allowed_origins=(origin,))
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value"),
+    (
+        ("require_authentication", "yes"),
+        ("request_max_bytes", True),
+        ("websocket_queue_capacity", True),
+        ("telemetry_snapshot_limit", True),
+        ("command_rate_limit", True),
+        ("command_rate_window_seconds", True),
+        ("rate_limit_max_keys", True),
+        ("shutdown_timeout_seconds", True),
+    ),
+)
+def test_http_config_rejects_boolean_numeric_and_nonboolean_flags(
+    field_name: str,
+    value: object,
+) -> None:
+    with pytest.raises((TypeError, ValueError)):
+        ControlPlaneHttpConfig(**{field_name: value})
+
+
+def test_rate_limiter_is_bounded_and_uses_injected_monotonic_clock() -> None:
+    clock = _MonotonicClock()
+    limiter = InProcessActionRateLimiter(
+        max_actions=2,
+        window_seconds=10.0,
+        max_keys=2,
+        clock=clock,
+    )
+
+    assert limiter.check("operator-a:task.pause").allowed is True
+    assert limiter.check("operator-a:task.pause").allowed is True
+    limited = limiter.check("operator-a:task.pause")
+    assert limited.allowed is False
+    assert limited.retry_after_seconds == 10
+
+    limiter.check("operator-b:task.pause")
+    limiter.check("operator-c:task.pause")
+    assert limiter.tracked_key_count == 2
+
+    clock.value = 21.0
+    assert limiter.check("operator-a:task.pause").allowed is True
+
+
+def test_serializer_emits_exact_decimal_strings_and_utc_timestamps() -> None:
+    @dataclass(frozen=True)
+    class Payload:
+        amount: Decimal
+        observed_at: datetime
+
+    serializer = ControlPlaneJsonSerializer()
+    result = serializer.to_jsonable(
+        Payload(
+            amount=Decimal("12.3400"),
+            observed_at=datetime(2026, 8, 11, 14, 0, tzinfo=timezone.utc),
+        )
+    )
+
+    assert result == {"amount": "12.3400", "observed_at": "2026-08-11T14:00:00Z"}
+
+
+def test_serializer_bounds_aggregate_text_and_rejects_sensitive_key_variants() -> None:
+    serializer = ControlPlaneJsonSerializer(
+        max_collection_items=10,
+        max_string_chars=16,
+        max_total_string_chars=8,
+    )
+
+    with pytest.raises(ValueError, match="total string"):
+        serializer.to_jsonable({"a": "1234", "b": "5678"})
+    with pytest.raises(ValueError, match="sensitive"):
+        ControlPlaneJsonSerializer().to_jsonable({"api-key": "sv7"})
