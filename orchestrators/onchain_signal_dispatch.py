@@ -150,9 +150,9 @@ class CrossSourceTradeClaimPolicy:
         fill_key = self._identity.build(user_id, leader_id, raw)
         if tx_key == fill_key:
             return CrossSourceClaimDecision(dispatch=True, trade_key=tx_key, winner="on_chain")
-        repo: ProcessedTradeClaimRepository = context.orders_repo
         tx_hash = str(raw.get("tx_hash") or raw.get("transactionHash") or "")
         try:
+            repo: ProcessedTradeClaimRepository = context.orders_repo
             claimed = await repo.try_claim_processed_trade(
                 trade_key=tx_key,
                 user_id=user_id,
