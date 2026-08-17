@@ -6,7 +6,10 @@
 # in every mode. The onchain.enable_onchain_* booleans are deprecated.
 # onchain.enable_onchain_pending_detection stays false by default:
 # pending/mempool signals are provisional and must be an explicit opt-in.
-mode: polling
+# mode is deliberately NOT pinned here: the typed default is "polling", and an
+# explicit base value would shadow the deprecated-boolean derivation for every
+# deployment (a legacy enable_onchain_* true in a higher layer derives
+# on_chain_confirmed with a deprecation warning).
 fetch_interval: 0.5
 aggregate_signal_window_seconds: 1
 leader_positions_min_fetch_spacing_ms: 250

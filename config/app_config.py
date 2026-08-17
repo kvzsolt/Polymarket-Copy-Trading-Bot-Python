@@ -63,6 +63,8 @@ __all__ = [
     "DatabaseConfig",
     "DetectionConfig",
     "DetectionModeResolver",
+    "DetectionModeWarning",
+    "DetectionModeWarningEmitter",
     "DiscoveryConfig",
     "EnvValidationError",
     "ExecutionConfig",
@@ -192,16 +194,17 @@ class DetectionConfig:
     leader_positions_min_fetch_spacing_ms: int = 250
     leader_activity_min_fetch_spacing_ms: int = 250
     trade_queue_max_batches: int = 64
-    mode: str = DetectionMode.POLLING.value
+    mode: Literal["polling", "on_chain_pending", "on_chain_confirmed"] = "polling"
     onchain: "OnchainDetectionConfig" = field(default_factory=lambda: OnchainDetectionConfig())
 
     @property
     def detection_mode(self) -> DetectionMode:
         """Return the typed detection source selected by ``mode``.
 
-        Raises:
-            ValueError: If ``mode`` is not a known ``DetectionMode`` value.
-                ``AppConfigSemanticValidator`` rejects such configs first.
+        ``mode`` is a ``Literal`` validated at load time, so this property is
+        total for any loader-produced config. ``AppConfigSemanticValidator``
+        re-checks the value as defence in depth for directly constructed
+        instances.
         """
 
         return DetectionMode(str(self.mode or "").strip().lower())
@@ -1289,7 +1292,10 @@ def _validate_detection_mode(cfg: AppConfig, errors: list[str]) -> None:
     Both on-chain runtimes issue ``alchemy_pendingTransactions`` over the
     configured WebSocket, so a non-polling mode requires an Alchemy ``wss://``
     endpoint. The provisional pending path additionally needs full pending
-    transaction bodies (calldata) and a positive staleness budget.
+    transaction bodies (calldata) and a positive staleness budget. A
+    non-polling mode is also rejected while the v1 copy-task engine is
+    enabled: that route bypasses ``CrossSourceTradeClaimPolicy`` and would
+    copy the same fill from both sources.
     """
 
     detection = cfg.detection
@@ -1301,6 +1307,12 @@ def _validate_detection_mode(cfg: AppConfig, errors: list[str]) -> None:
         return
     if mode == DetectionMode.POLLING.value:
         return
+    if bool(cfg.copy_trading.copy_tasks.enabled):
+        errors.append(
+            f"detection.mode={mode} is not supported with copy_trading.copy_tasks.enabled=true: "
+            "the v1 copy-task route has no cross-source (on-chain vs polling) dedup yet. "
+            "Set detection.mode=polling or disable copy_trading.copy_tasks."
+        )
     ws_url = str(oc.onchain_ws_url or oc.pending_tx_ws_url or "").strip()
     if not ws_url or not ws_url.lower().startswith("wss://"):
         errors.append(
@@ -1325,6 +1337,59 @@ def _validate_detection_mode(cfg: AppConfig, errors: list[str]) -> None:
             )
 
 
+@dataclass(frozen=True)
+class DetectionModeWarning:
+    """Operator warning produced by ``DetectionModeResolver``.
+
+    Kept as a logging template plus its ``%s`` arguments so it is rendered
+    lazily by the logging framework (repo convention) and can be
+    de-duplicated per process by ``DetectionModeWarningEmitter``.
+
+    Attributes:
+        template: ``%s``-style logging template.
+        args: Positional arguments for ``template``.
+    """
+
+    template: str
+    args: tuple[str, ...]
+
+    def render(self) -> str:
+        """Return the fully interpolated message (tests / diagnostics)."""
+
+        return self.template % self.args
+
+
+class DetectionModeWarningEmitter:
+    """Emit each distinct ``DetectionModeWarning`` at most once per process.
+
+    The resolver runs on every ``_LayeredModel`` construction (config reloads
+    included); without this guard the same deprecation line would repeat on
+    each reload.
+    """
+
+    def __init__(self) -> None:
+        """Start with no emitted warnings."""
+
+        self._emitted: set[tuple[str, tuple[str, ...]]] = set()
+
+    def emit(self, log: logging.Logger, warning: DetectionModeWarning) -> None:
+        """Log ``warning`` through ``log`` unless an identical one was logged.
+
+        Args:
+            log: Logger receiving the lazily formatted WARN record.
+            warning: The resolver warning to emit.
+        """
+
+        key = (warning.template, warning.args)
+        if key in self._emitted:
+            return
+        self._emitted.add(key)
+        log.warning(warning.template, *warning.args)
+
+
+_DETECTION_MODE_WARNINGS = DetectionModeWarningEmitter()
+
+
 class DetectionModeResolver:
     """Resolve the raw ``detection`` payload onto exactly one detection source.
 
@@ -1338,7 +1403,7 @@ class DetectionModeResolver:
 
     _LEGACY_FLAGS = ("enable_onchain_pending_detection", "enable_onchain_mined_detection")
 
-    def resolve(self, payload: Mapping[str, Any] | None) -> tuple[str, str | None]:
+    def resolve(self, payload: Mapping[str, Any] | None) -> tuple[str, DetectionModeWarning | None]:
         """Return ``(mode, warning)`` for one raw ``detection`` section.
 
         Args:
@@ -1347,8 +1412,9 @@ class DetectionModeResolver:
 
         Returns:
             The resolved mode string (not yet validated against
-            ``DetectionMode``) and an operator warning message, or ``None``
-            when no deprecated flag influenced or contradicted the result.
+            ``DetectionMode``) and a lazily rendered operator warning, or
+            ``None`` when no deprecated flag influenced or contradicted the
+            result.
         """
 
         section: Mapping[str, Any] = payload if isinstance(payload, Mapping) else {}
@@ -1356,17 +1422,23 @@ class DetectionModeResolver:
         legacy_enabled = self._legacy_flags_enabled(section)
         if explicit:
             if legacy_enabled:
-                return explicit, (
-                    "detection_legacy_flags_ignored | mode=%s ignored=%s — "
-                    "detection.onchain.enable_onchain_* booleans are deprecated; "
-                    "detection.mode selects the source" % (explicit, ",".join(legacy_enabled))
+                return explicit, DetectionModeWarning(
+                    template=(
+                        "detection_legacy_flags_ignored | mode=%s ignored=%s — "
+                        "detection.onchain.enable_onchain_* booleans are deprecated; "
+                        "detection.mode selects the source"
+                    ),
+                    args=(explicit, ",".join(legacy_enabled)),
                 )
             return explicit, None
         if legacy_enabled:
             derived = DetectionMode.ON_CHAIN_CONFIRMED.value
-            return derived, (
-                "detection_legacy_flags_deprecated | derived_mode=%s from=%s "
-                "replace_with=detection.mode" % (derived, ",".join(legacy_enabled))
+            return derived, DetectionModeWarning(
+                template=(
+                    "detection_legacy_flags_deprecated | derived_mode=%s from=%s "
+                    "replace_with=detection.mode"
+                ),
+                args=(derived, ",".join(legacy_enabled)),
             )
         return DetectionMode.POLLING.value, None
 
@@ -1513,8 +1585,8 @@ class _LayeredModel(BaseModel):
         if detection is not None and not isinstance(detection, dict):
             return values
         mode, warning = DetectionModeResolver().resolve(detection)
-        if warning:
-            logger.warning(warning)
+        if warning is not None:
+            _DETECTION_MODE_WARNINGS.emit(logger, warning)
         return {**values, "detection": {**(detection or {}), "mode": mode}}
 
     @model_validator(mode="before")

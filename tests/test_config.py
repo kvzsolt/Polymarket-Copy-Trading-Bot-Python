@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import FrozenInstanceError
 from pathlib import Path
@@ -44,10 +45,13 @@ def test_checked_in_yaml_loads_as_immutable_typed_config() -> None:
 def test_checked_in_yaml_keeps_pending_onchain_detection_opt_in() -> None:
     """Pending/mempool signals are provisional — never on by default.
 
-    ``app.main()`` starts the pending subscription as soon as an on-chain WS
-    URL is present and this flag is true, so a checked-in ``true`` would feed
-    unconfirmed mempool signals into the copy path for every operator who
-    configures a WS endpoint for the (authoritative) mined subscription.
+    ``app.main()`` reads only ``detection.mode``; the deprecated boolean is
+    consulted by ``DetectionModeResolver`` when no layer sets ``mode`` and
+    derives ``on_chain_confirmed``. A checked-in ``true`` would therefore turn
+    on the on-chain source for every operator who configures a WS endpoint,
+    so the base file must keep it ``false`` (see
+    ``test_checked_in_yaml_keeps_detection_mode_polling`` for the mode
+    invariant itself).
     """
     config = load_config(_overrides())
 
@@ -523,11 +527,77 @@ def test_checked_in_yaml_keeps_detection_mode_polling() -> None:
     from domain.detection import DetectionMode
 
     packaged = yaml.safe_load((ROOT / "config" / "detection.yml").read_text())
-    assert packaged["mode"] == "polling"
+    # The base file must not pin ``mode`` at all: an explicit base value would
+    # shadow the deprecated-boolean derivation in every real deployment (I1).
+    assert packaged.get("mode", "polling") == "polling"
 
     config = load_config(_overrides())
     assert config.detection.mode == "polling"
     assert config.detection.detection_mode is DetectionMode.POLLING
+
+
+def test_legacy_pending_flag_in_higher_layer_derives_on_chain_confirmed(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A legacy ``enable_onchain_pending_detection: true`` above the base layer
+    still derives ``on_chain_confirmed`` (with the deprecation WARN) through the
+    real loader — the base YAML must not shadow the derivation."""
+    import config.app_config as app_config_mod
+    from domain.detection import DetectionMode
+
+    monkeypatch.setattr(
+        app_config_mod, "_DETECTION_MODE_WARNINGS", app_config_mod.DetectionModeWarningEmitter()
+    )
+    overrides = _overrides()
+    overrides["detection"] = {
+        "onchain": {
+            "enable_onchain_pending_detection": True,
+            "pending_tx_ws_url": "wss://polygon.example.invalid/v2/redacted",
+        }
+    }
+    with caplog.at_level(logging.WARNING, logger="AppConfig"):
+        config = load_config(overrides, environment="paper")
+
+    assert config.detection.detection_mode is DetectionMode.ON_CHAIN_CONFIRMED
+    warnings = [
+        r.getMessage()
+        for r in caplog.records
+        if "detection_legacy_flags_deprecated" in r.getMessage()
+    ]
+    assert len(warnings) == 1
+    assert "derived_mode=on_chain_confirmed" in warnings[0]
+    assert "from=enable_onchain_pending_detection" in warnings[0]
+    # Lazy logging: the record carries the template and args, not a pre-rendered string.
+    record = next(
+        r for r in caplog.records if "detection_legacy_flags_deprecated" in r.getMessage()
+    )
+    assert "%s" in str(record.msg)
+    assert record.args
+
+
+def test_detection_mode_deprecation_warning_is_emitted_once_per_process(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import config.app_config as app_config_mod
+
+    monkeypatch.setattr(
+        app_config_mod, "_DETECTION_MODE_WARNINGS", app_config_mod.DetectionModeWarningEmitter()
+    )
+    overrides = _overrides()
+    overrides["detection"] = {
+        "onchain": {
+            "enable_onchain_pending_detection": True,
+            "pending_tx_ws_url": "wss://polygon.example.invalid/v2/redacted",
+        }
+    }
+    with caplog.at_level(logging.WARNING, logger="AppConfig"):
+        load_config(overrides, environment="paper")
+        load_config(overrides, environment="paper")
+
+    warnings = [r for r in caplog.records if "detection_legacy_flags_deprecated" in r.getMessage()]
+    assert len(warnings) == 1
 
 
 def test_detection_mode_env_override_selects_on_chain_pending(
@@ -572,8 +642,32 @@ def test_on_chain_pending_with_hashes_only_fails_closed() -> None:
 
 
 def test_invalid_detection_mode_rejected() -> None:
-    with pytest.raises(EnvValidationError, match="detection.mode must be one of"):
+    """``DetectionConfig.mode`` is a ``Literal``: pydantic rejects an unknown
+    mode before semantic validation, so ``detection_mode`` is total."""
+    with pytest.raises(EnvValidationError, match="detection.mode: Input should be 'polling'"):
         load_config(_onchain_overrides("mempool"))
+
+
+def test_on_chain_mode_with_copy_tasks_enabled_fails_closed() -> None:
+    """I5: the v1 copy-task route has no cross-source dedup yet."""
+    overrides = _onchain_overrides(
+        "on_chain_confirmed",
+        pending_tx_ws_url="wss://polygon.example.invalid/v2/redacted",
+    )
+    overrides["copy_trading"] = {"copy_tasks": {"enabled": True}}
+    with pytest.raises(
+        EnvValidationError,
+        match="detection.mode=on_chain_confirmed is not supported with copy_trading.copy_tasks.enabled=true",
+    ):
+        load_config(overrides)
+
+
+def test_polling_mode_with_copy_tasks_enabled_is_allowed() -> None:
+    overrides = _overrides()
+    overrides["copy_trading"] = {"copy_tasks": {"enabled": True}}
+    config = load_config(overrides)
+    assert config.copy_trading.copy_tasks.enabled is True
+    assert config.detection.mode == "polling"
 
 
 def test_live_environment_selects_on_chain_confirmed() -> None:
