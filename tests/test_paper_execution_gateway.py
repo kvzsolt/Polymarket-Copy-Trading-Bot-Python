@@ -254,6 +254,22 @@ async def test_paper_get_order_serves_simulated_state() -> None:
 
 
 @pytest.mark.asyncio
+async def test_paper_get_order_unknown_id_raises_venue_not_found() -> None:
+    """Unknown ids must surface the gateway-contract not-found error.
+
+    Reconciliation classifies ``VenueOrderNotFoundError`` as "venue knows
+    nothing about this order" (clean); a bare ``KeyError`` is treated as a
+    hard probe error and blocks release forever in paper mode.
+    """
+    from integrations.polymarket.errors import VenueOrderNotFoundError
+
+    gateway, _market = _paper_gateway()
+
+    with pytest.raises(VenueOrderNotFoundError):
+        await gateway.get_order("0xdoes-not-exist")
+
+
+@pytest.mark.asyncio
 async def test_paper_reads_delegate_to_the_ccxt_market_gateway() -> None:
     gateway, market = _paper_gateway()
 

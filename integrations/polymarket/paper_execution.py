@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from decimal import ROUND_DOWN, Decimal
 from typing import Any
 
+from integrations.polymarket.errors import VenueOrderNotFoundError
 from integrations.polymarket.models import (
     LimitOrderRequest,
     MarketableOrderRequest,
@@ -148,9 +149,15 @@ class PaperOrderSimulator:
         )
 
     async def get_order(self, order_id: str) -> VenueOrderState:
+        """Return the simulated state, or the gateway-contract not-found error.
+
+        ``VenueOrderNotFoundError`` is what reconciliation classifies as "venue
+        affirmatively knows nothing about this id"; any other exception is a
+        fail-closed probe error, so a bare ``KeyError`` would block release.
+        """
         state = self._orders.get(order_id)
         if state is None:
-            raise KeyError(order_id)
+            raise VenueOrderNotFoundError(f"paper order not found: {order_id}")
         return state
 
     async def list_open_orders(

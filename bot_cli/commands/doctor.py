@@ -224,6 +224,17 @@ def _try_port_bind(host: str, port: int) -> tuple[bool, str]:
             pass
 
 
+def _redact_dsn(dsn: str) -> str:
+    """Return ``dsn`` with any ``user:password@`` credential masked.
+
+    Doctor output is printed to the console and pasted into tickets, so the
+    Postgres password must never survive into the ``db_writable`` detail.
+    """
+    if not dsn:
+        return "<database.dsn is empty>"
+    return re.sub(r"(://[^:/@\s]+):[^@\s]*@", r"\1:***@", dsn)
+
+
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
@@ -393,7 +404,7 @@ async def run_doctor_checks(
     from storage.postgres.connection import init_pool, shutdown_pool
 
     pool = None
-    db_label = config.database.dsn or "<database.dsn is empty>"
+    db_label = _redact_dsn(config.database.dsn)
     try:
         pool = await init_pool(
             config.database.dsn,
