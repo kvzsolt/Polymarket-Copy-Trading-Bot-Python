@@ -364,10 +364,6 @@ class ExecutionConfig:
     # global master (AppConfig.global_kill_switch) supersedes this and blocks
     # every submission including protective exits.
     kill_switch: bool = False
-    # The official SDK is production-default. CCXT remains optional and its
-    # live-primary selection requires the separate experimental gate below.
-    venue_backend: Literal["sdk", "ccxt", "sdk-shadow-ccxt"] = "sdk"
-    allow_experimental_ccxt_live: bool = False
 
     @property
     def paper_trade_only(self) -> bool:
@@ -1509,6 +1505,15 @@ _LEGACY_KEY_ROUTES: dict[tuple[str, str], tuple[str, ...] | None] = {
 }
 _OBSOLETE_CLOB_CREDENTIAL_KEYS = ("api_key", "api_secret", "api_passphrase")
 
+# Venue backend selection is gone: CCXT is the only transport. These keys must
+# be rejected (not silently dropped) so an operator's stale config cannot
+# imply a hybrid/SDK/shadow mode that no longer exists.
+_OBSOLETE_VENUE_BACKEND_KEYS = (
+    "venue_backend",
+    "allow_experimental_ccxt_live",
+    "shadow_ccxt",
+)
+
 
 class _RouteSentinel(Enum):
     """Identify a legacy key that retains its section-relative route."""
@@ -1562,6 +1567,13 @@ def _translate_legacy_payload(payload: Mapping[str, Any], *, source: str) -> dic
             continue
         for raw_key, value in content.items():
             key = str(raw_key)
+            if section == "execution" and key in _OBSOLETE_VENUE_BACKEND_KEYS:
+                raise EnvValidationError(
+                    f"execution.{key} is obsolete. CCXT is the only Polymarket "
+                    "venue transport; venue backend selection, the experimental "
+                    "CCXT live gate, and shadow mode have been removed. Delete "
+                    "the key and rely on trading_mode for paper/live selection."
+                )
             route = _LEGACY_KEY_ROUTES.get((section, key), _ROUTE_KEEP)
             if route is None:
                 logger.warning(

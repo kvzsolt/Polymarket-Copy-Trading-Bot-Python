@@ -40,10 +40,8 @@ from utils.logger import get_logger
 
 if TYPE_CHECKING:
     from config.app_config import AppConfig
-    from integrations.polymarket.backend_factory import VenueBackend
-    from integrations.polymarket.hybrid_gateway import MismatchSink
-    from integrations.polymarket.runtime_gateway import RuntimeGatewayBundle
-    from integrations.polymarket.sdk_client import PolymarketClient
+    from integrations.polymarket.ccxt_prediction_client import CcxtPredictionClient
+    from integrations.polymarket.venue_runtime import PolymarketVenueRuntime
 
 logger = get_logger("RuntimeBootstrap")
 
@@ -158,7 +156,7 @@ class UserRuntimeState:
     """Hold the composed runtime state for one follower account."""
 
     user: RuntimeUser
-    client: "PolymarketClient"
+    client: "CcxtPredictionClient"
     orders_repo: OrdersRepo
     fills_repo: FillsRepo
     positions_repo: PositionsRepo
@@ -266,7 +264,7 @@ async def fetch_live_positions(wallet: str) -> list[dict] | None:
 
 def build_user_state(
     runtime_user: RuntimeUser,
-    client: "PolymarketClient",
+    client: "CcxtPredictionClient",
     pool,
     config: AppConfig,
     clob_gateway: "ClobGateway | None" = None,
@@ -290,11 +288,13 @@ def build_user_state(
     accounting_service = AccountingService()
     position_manager = PositionManager(config=config)
     # Single CLOB venue boundary shared by execution, reconciliation, and
-    # market data. The official SDK adapter remains the compatibility default.
+    # market data. The CCXT adapter is the only transport; without an
+    # injected gateway the caller has not built a venue runtime.
     if clob_gateway is None:
-        from integrations.polymarket.clob_v2_gateway import PolymarketGateway
-
-        clob_gateway = PolymarketGateway(client, config)
+        raise RuntimeError(
+            "build_user_state requires a CCXT venue gateway; "
+            "build the venue runtime first via build_user_venue_runtime"
+        )
 
     # Freshness-aware market data layer (issue #hardening PR-1).
     # The store is fed by WSS deltas; the MDS falls back to REST via the
@@ -341,8 +341,12 @@ def build_user_state(
         live_mode=not config.execution.paper_trade_only,
     )
     execution_service = ExecutionService(
-        clob_client=client,
-        fee_service=FeeService(client),
+        # ``clob_client`` is retained for backward-compatible construction but
+        # is never read by ExecutionService or FeeService; the venue boundary
+        # is ``clob_gateway``. Pass the gateway so any legacy duck-typed read
+        # still resolves against the CCXT adapter.
+        clob_client=clob_gateway,
+        fee_service=FeeService(clob_gateway),
         order_repo=order_repo,
         config=config,
         clob_gateway=clob_gateway,
@@ -417,49 +421,40 @@ def build_user_state(
     )
 
 
-async def build_user_venue_backend(
+async def build_user_venue_runtime(
     runtime_user: RuntimeUser,
-    client: "PolymarketClient",
     config: AppConfig,
     *,
-    backend: "VenueBackend | str | None" = None,
-    allow_experimental_ccxt_live: bool | None = None,
-    mismatch_sink: "MismatchSink | None" = None,
     exchange_factory: object | None = None,
     ccxt_version: str | None = None,
-) -> "RuntimeGatewayBundle":
-    """Build the configured venue adapter around the official SDK gateway.
+) -> "PolymarketVenueRuntime":
+    """Build the single CCXT-backed venue runtime for one follower wallet.
+
+    Constructs the CCXT exchange directly — no SDK object, no fallback, no
+    selector — and fails closed when the transport is unavailable or live
+    mode lacks live-execution compatibility.
 
     Args:
         runtime_user: Follower runtime identity and wallet settings.
-        client: Official SDK client owned by the application runtime.
         config: Validated application configuration.
-        backend: Optional explicit backend override.
-        allow_experimental_ccxt_live: Explicit CCXT-live authorization.
-        mismatch_sink: Optional structured shadow mismatch consumer.
         exchange_factory: Optional deterministic CCXT factory test seam.
         ccxt_version: Optional installed-version override for tests.
 
     Returns:
-        Selected gateway and any optional CCXT resources it owns.
+        The venue runtime owning the CCXT client and its gateway.
 
     Raises:
         TypeError: If ``exchange_factory`` is not callable.
+        CcxtPredictionUnavailable: When CCXT is missing or fails the gate.
     """
 
-    from integrations.polymarket.clob_v2_gateway import PolymarketGateway
-    from integrations.polymarket.runtime_gateway import build_runtime_polymarket_gateway
+    from integrations.polymarket.venue_runtime import build_polymarket_runtime
 
     if exchange_factory is not None and not callable(exchange_factory):
         raise TypeError("exchange_factory must be callable")
-    sdk_gateway = PolymarketGateway(client, config)  # type: ignore[arg-type]
-    return await build_runtime_polymarket_gateway(
-        sdk_gateway=sdk_gateway,
+    return await build_polymarket_runtime(
+        runtime_user=runtime_user,
         config=config,
-        wallet_config=getattr(runtime_user, "wallet", None),
-        backend=backend,
-        allow_experimental_ccxt_live=allow_experimental_ccxt_live,
-        mismatch_sink=mismatch_sink,
         exchange_factory=exchange_factory,  # type: ignore[arg-type]
         ccxt_version=ccxt_version,
     )
@@ -853,7 +848,10 @@ async def build_trading_context(
     context = TradingContext(
         user_id=user_state.user.user_id,
         wallet_address=user_state.user.wallet.funder_address,
-        client=user_state.client,
+        # Risk monitor reads ``context.client.get_price(token_id, side)``; the
+        # CCXT gateway exposes exactly that surface, so the venue boundary is
+        # the single read authority. The raw CCXT client does not.
+        client=user_state.clob_gateway,
         positions_repo=user_state.positions_repo,
         fills_repo=user_state.fills_repo,
         orders_repo=user_state.orders_repo,
@@ -1027,16 +1025,14 @@ async def hydrate_resolved_market_state(
     idempotent so the count reflects the boot survey, not a delta.
     """
     summary: dict[str, int] = {}
-    loop = asyncio.get_running_loop()
 
     for runtime_user in runtime_users:
         user_state = user_states.get(runtime_user.user_id)
         if user_state is None:
             continue
         market_store = getattr(user_state, "market_store", None)
-        client = getattr(user_state, "client", None)
         positions_repo = getattr(user_state, "positions_repo", None)
-        if market_store is None or client is None or positions_repo is None:
+        if market_store is None or positions_repo is None:
             continue
 
         try:
@@ -1058,34 +1054,21 @@ async def hydrate_resolved_market_state(
             tokens_by_condition.setdefault(cond, []).append(token)
 
         resolved_count = 0
-        # Sync SDK call must run in a thread; condition_ids are unique so
-        # this is bounded by len(positions) — cheap and one-shot at boot.
+        # Gamma market metadata via the official public REST API (allowed by
+        # the CCXT-only execution boundary). condition_ids are unique so this
+        # is bounded by len(positions) — cheap and one-shot at boot.
         for cond, tokens in tokens_by_condition.items():
-            try:
-                market = await loop.run_in_executor(None, client.get_market, cond)
-            except Exception as exc:
-                # SDK raises (PolyApiException or similar) when the condition
-                # itself is unknown to Polymarket — typically a 404 on
-                # ``/markets/{cond}``. Treat that as terminal: if the venue
-                # no longer indexes the condition, every token under it is
-                # retired. We mark resolved here so the risk monitor stops
-                # probing them.
-                err_text = repr(exc).lower()
-                if "404" in err_text or "not_found" in err_text or "not found" in err_text:
-                    for token in tokens:
-                        try:
-                            market_store.mark_resolved(token, cond)
-                            resolved_count += 1
-                        except Exception:
-                            logger.debug("mark_resolved_failed", exc_info=True)
-                else:
-                    logger.debug(
-                        "hydrate_resolved_get_market_failed | cond=%s error=%r",
-                        cond,
-                        exc,
-                    )
-                continue
-            if not isinstance(market, dict):
+            market = await _fetch_gamma_market(cond)
+            if market is None:
+                # A 404 / unreachable condition is treated as terminal: if the
+                # venue no longer indexes the condition, every token under it
+                # is retired. Mark resolved so the risk monitor stops probing.
+                for token in tokens:
+                    try:
+                        market_store.mark_resolved(token, cond)
+                        resolved_count += 1
+                    except Exception:
+                        logger.debug("mark_resolved_failed", exc_info=True)
                 continue
             # Terminal signals per Polymarket OpenAPI:
             #   - ``closed: true``  → resolved binary outcome decided.
@@ -1113,6 +1096,34 @@ async def hydrate_resolved_market_state(
         summary[runtime_user.user_id] = resolved_count
 
     return summary
+
+
+_GAMMA_MARKET_URL = "https://gamma-api.polymarket.com/markets/{}"
+
+
+async def _fetch_gamma_market(condition_id: str) -> dict[str, Any] | None:
+    """Fetch one Gamma market document by condition_id.
+
+    Returns ``None`` when the condition is unknown (404) or the request
+    fails; callers treat that as terminal. A successful fetch returns the
+    raw market dict so callers can read ``closed`` / ``active`` / ``archived``.
+    """
+
+    cond = str(condition_id or "").strip()
+    if not cond:
+        return None
+    try:
+        payload = await fetch_data(_GAMMA_MARKET_URL.format(cond), silent=True)
+    except Exception as exc:
+        logger.debug(
+            "hydrate_resolved_get_market_failed | cond=%s error=%r",
+            cond,
+            exc,
+        )
+        return None
+    if isinstance(payload, dict):
+        return payload
+    return None
 
 
 async def build_context_maps(

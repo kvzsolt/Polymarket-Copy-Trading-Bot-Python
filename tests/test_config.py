@@ -305,6 +305,31 @@ def test_obsolete_clob_credentials_fail_with_migration_error() -> None:
         load_config(overrides)
 
 
+@pytest.mark.parametrize(
+    "key",
+    ["venue_backend", "allow_experimental_ccxt_live", "shadow_ccxt"],
+)
+def test_obsolete_venue_backend_keys_are_rejected(key: str) -> None:
+    """Removed venue selection must fail closed, not silently drop."""
+
+    overrides = _overrides()
+    overrides["execution"] = {**overrides.get("execution", {}), key: "sdk"}
+
+    with pytest.raises(EnvValidationError, match=key):
+        load_config(overrides)
+
+
+def test_execution_config_no_longer_carries_venue_selection_fields() -> None:
+    """CCXT is the only transport; no selector or experimental gate exists."""
+
+    from config.app_config import ExecutionConfig
+
+    config = ExecutionConfig()
+    assert not hasattr(config, "venue_backend")
+    assert not hasattr(config, "allow_experimental_ccxt_live")
+    assert not hasattr(config, "shadow_ccxt")
+
+
 def test_empty_secret_entries_do_not_erase_yaml_values(tmp_path: Path) -> None:
     secrets = tmp_path / "secrets.env"
     secrets.write_text(

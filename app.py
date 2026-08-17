@@ -25,7 +25,7 @@ from bootstrap import build_app
 from config.app_config import AppConfigSemanticValidator, EnvValidationError, load_config
 from config.env import is_valid_eth_address
 from integrations.control_plane import SystemMonotonicClock
-from integrations.polymarket.sdk_client import create_polymarket_client
+from integrations.polymarket.venue_runtime import build_polymarket_runtime
 from orchestrators.control_plane_bootstrap import (
     AiohttpControlPlaneServerFactory,
     ControlPlaneDatabasePool,
@@ -59,7 +59,6 @@ from orchestrators.runtime_bootstrap import (
     build_context_maps,
     build_trading_context,
     build_user_state,
-    build_user_venue_backend,
     configured_leaders,
     ensure_runtime_follows,
     fetch_live_positions,
@@ -85,7 +84,6 @@ from services.telemetry import SystemClock
 from services.multiUserConfig import (
     RuntimeUser,
     UserFollowConfig,
-    bind_resolved_deposit_wallet,
     load_runtime_users,
 )
 from storage.postgres.leaders_repo import LeadersRepo
@@ -423,14 +421,15 @@ async def _refresh_contexts_for_new_leaders(
 
 
 def _get_clob_wrapper_from_user_state(user_state: UserRuntimeState) -> Any | None:
-    """Best-effort access to the unified SDK owner.
+    """Best-effort access to the CCXT venue client that owns L2 credentials.
 
-    Preferred source is ``user_state.client``. The facade exposes the secure
-    SDK client's derived or configured ``api_creds`` for user-stream auth.
+    Preferred source is ``user_state.client`` (the ``CcxtPredictionClient``),
+    which exposes derived ``api_creds`` for user-stream auth. Fallbacks keep
+    older test fixtures working.
     """
     for attr_name in (
-        "clob_client",
         "client",
+        "clob_client",
         "clob_wrapper",
         "clob",
     ):
@@ -1285,27 +1284,18 @@ async def _run_application(client_registry: list[Any]) -> int:
     user_states: dict[str, UserRuntimeState] = {}
 
     for runtime_user in runtime_users:
-        client = await create_polymarket_client(
-            wallet_config=runtime_user.wallet,
+        venue_runtime = await build_polymarket_runtime(
+            runtime_user=runtime_user,
             config=application.config,
-            authenticated=not application.config.execution.paper_trade_only,
         )
-        if client.wallet_address is not None:
-            bind_resolved_deposit_wallet(runtime_user, client.wallet_address)
-        client_registry.append(client)
-        venue_backend = await build_user_venue_backend(
-            runtime_user,
-            client,
-            application.config,
-        )
-        if venue_backend.ccxt_client is not None:
-            client_registry.append(venue_backend)
+        # The CCXT runtime is the single venue owner; close it on shutdown.
+        client_registry.append(venue_runtime)
         user_states[runtime_user.user_id] = build_user_state(
             runtime_user,
-            client,
+            venue_runtime.client,
             _pool,
             application.config,
-            clob_gateway=venue_backend.gateway,
+            clob_gateway=venue_runtime.gateway,
         )
 
     logger.info(

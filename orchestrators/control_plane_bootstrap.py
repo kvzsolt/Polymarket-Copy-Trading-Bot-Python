@@ -340,7 +340,7 @@ class ControlPlaneRuntimeFactory:
             version=self._version,
             environment=config.environment,
             mode=config.execution.trading_mode,
-            backend=config.execution.venue_backend,
+            backend="ccxt",
             capabilities=self._capabilities(
                 config,
                 task_commands_enabled=task_activation_guard is not None,

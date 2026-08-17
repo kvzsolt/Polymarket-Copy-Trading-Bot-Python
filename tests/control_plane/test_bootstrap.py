@@ -199,7 +199,6 @@ def build_config(*, enabled: bool = True, trading_mode: str = "paper") -> AppCon
         polymarket=PolymarketConfig(rpc_url=rpc_url),
         execution=ExecutionConfig(
             trading_mode=trading_mode,  # type: ignore[arg-type]
-            allow_experimental_ccxt_live=trading_mode == "live",
         ),
         control_plane=ControlPlaneConfig(
             enabled=enabled,
