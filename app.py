@@ -2026,63 +2026,21 @@ async def _run_application(client_registry: list[Any]) -> int:
     detection_mode = application.config.detection.detection_mode
     if detection_mode is not DetectionMode.POLLING:
         try:
-            import time as _time_mod
-
             from orchestrators.detection_source_factory import DetectionSourceRequest
+            from orchestrators.onchain_signal_dispatch import OnchainSignalDispatchAdapter
             from orchestrators.trade_pipeline import (
                 execute_trades as _execute_trade_pipeline,
             )
 
-            async def _onchain_signal_sink(signal) -> None:
-                # Wire the on-chain signal into the same copy pipeline the
-                # REST-polling leader monitor uses. Each signal is converted
-                # to a raw signal dict (shaped for ``normalize_trade_signal``)
-                # and dispatched to every user context following the signal's
-                # leader. The copy pipeline's ``build_trade_key`` idempotency
-                # (``leader|tx_hash|side|asset``) catches the duplicate when
-                # the slower REST-polling path later reports the same fill.
-                #
-                # Case-insensitive leader lookup: the on-chain decoders
-                # lowercase ``signal.leader_wallet``, but
-                # ``contexts_by_leader`` is keyed from the configured
-                # configured ``leader.wallets`` entries which may be checksummed or
-                # mixed-case. A direct ``.get(signal.leader_wallet)`` would
-                # miss the match and silently drop the signal (Greptile P1
-                # "Leader lookup mismatches").
-                if v1_runtime is not None:
-                    await v1_runtime.submit_onchain(signal)
-                    return
-
-                leader_lower = signal.leader_wallet.lower()
-                contexts: list = []
-                for ck, cv in contexts_by_leader.items():
-                    if ck.lower() == leader_lower:
-                        contexts = cv
-                        break
-                if not contexts:
-                    logger.debug(
-                        "onchain_signal_no_followers | leader=%s tx=%s",
-                        signal.leader_wallet,
-                        signal.tx_hash,
-                    )
-                    return
-                raw = signal.as_raw_signal_dict()
-                now_ts = _time_mod.time()
-                tasks = [
-                    _execute_trade_pipeline(ctx, leader_lower, [raw], now_ts) for ctx in contexts
-                ]
-                results = await asyncio.gather(*tasks, return_exceptions=True)
-                for idx, result in enumerate(results):
-                    if isinstance(result, Exception):
-                        ctx = contexts[idx]
-                        logger.warning(
-                            "onchain_signal_pipeline_error | leader=%s user=%s tx=%s error=%s",
-                            leader_lower,
-                            ctx.user_id,
-                            signal.tx_hash,
-                            redact_error_detail(result),
-                        )
-
+            # One adapter routes every on-chain signal into the same copy
+            # pipeline the REST-polling leader monitor uses (v1 runtime when
+            # enabled, else the legacy per-context pipeline), logging
+            # ``detection_signal | source=...`` provenance per signal.
+            _onchain_signal_sink = OnchainSignalDispatchAdapter(
+                contexts_by_leader=contexts_by_leader,
+                v1_runtime=v1_runtime,
+                execute_trades=_execute_trade_pipeline,
+            )
             oc_cfg = application.config.detection.onchain
             onchain_runtime = await _build_detection_source_factory(application.config).build(
                 DetectionSourceRequest(

@@ -20,11 +20,13 @@ def test_onchain_wiring_imports_resolve() -> None:
     from services.onchain_detection.condition_id_resolver import GammaConditionIdResolver
     from orchestrators.detection_source_factory import DetectionSourceFactory
     from orchestrators.onchain_detection_runtime import OnchainDetectionRuntime
+    from orchestrators.onchain_signal_dispatch import OnchainSignalDispatchAdapter
     from services.onchain_detection.pending_tx_detector import PendingTxConfig
     from orchestrators.trade_pipeline import execute_trades
 
     assert GammaConditionIdResolver is not None
     assert DetectionSourceFactory is not None
+    assert OnchainSignalDispatchAdapter is not None
     assert OnchainDetectionRuntime is not None
     assert PendingTxConfig is not None
     assert execute_trades is not None

@@ -449,6 +449,10 @@ GAUGE_STALE_LOCKS_ACTIVE = "stale_locks_active"
 GAUGE_PENDING_INTENTS = "pending_intents"
 
 
+# Leader-detection provenance. ``source`` is bounded to ``DetectionMode`` values.
+METRIC_DETECTION_SIGNALS = "detection_signals_total"
+DETECTION_SOURCE_LABEL_VALUES = ("polling", "on_chain_pending", "on_chain_confirmed")
+
 # V1 telemetry metric names. Every label in these schemas has an explicit,
 # bounded value set; opaque leader/task/order identifiers never become labels.
 METRIC_TELEMETRY_LEADER_SIGNAL = "telemetry_leader_signal_total"
@@ -513,6 +517,11 @@ _SKIP_REASONS = (
 )
 
 TELEMETRY_METRIC_SCHEMAS: tuple[MetricSchema, ...] = (
+    MetricSchema(
+        METRIC_DETECTION_SIGNALS,
+        MetricKind.COUNTER,
+        (("source", DETECTION_SOURCE_LABEL_VALUES),),
+    ),
     MetricSchema(
         METRIC_TELEMETRY_LEADER_SIGNAL,
         MetricKind.COUNTER,
