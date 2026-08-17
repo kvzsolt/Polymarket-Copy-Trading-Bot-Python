@@ -1,6 +1,12 @@
 # Leader-signal detection cadence and on-chain detection.
+# mode selects the on-chain detection source: polling | on_chain_pending |
+# on_chain_confirmed. The checked-in base stays "polling"; select an on-chain
+# mode per environment (config/environments/<env>/detection.yml) or via
+# PMCOPY__DETECTION__MODE. REST polling keeps running as a parallel fallback
+# in every mode. The onchain.enable_onchain_* booleans are deprecated.
 # onchain.enable_onchain_pending_detection stays false by default:
 # pending/mempool signals are provisional and must be an explicit opt-in.
+mode: polling
 fetch_interval: 0.5
 aggregate_signal_window_seconds: 1
 leader_positions_min_fetch_spacing_ms: 250

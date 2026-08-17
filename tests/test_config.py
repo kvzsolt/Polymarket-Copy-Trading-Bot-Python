@@ -502,3 +502,75 @@ def test_trading_mode_is_single_immutable_selector(
     assert config.execution.trading_mode == "live"
     assert config.execution.paper_trade_only is False
     assert config.dry_run is False
+
+
+# ---------------------------------------------------------------------------
+# detection.mode selector (Slice 0)
+# ---------------------------------------------------------------------------
+
+
+def _onchain_overrides(mode: str, **onchain: object) -> dict:
+    overrides = _overrides()
+    section: dict = {"mode": mode}
+    if onchain:
+        section["onchain"] = dict(onchain)
+    overrides["detection"] = section
+    return overrides
+
+
+def test_checked_in_yaml_keeps_detection_mode_polling() -> None:
+    """Base YAML must never select an on-chain source; polling is the default."""
+    from domain.detection import DetectionMode
+
+    packaged = yaml.safe_load((ROOT / "config" / "detection.yml").read_text())
+    assert packaged["mode"] == "polling"
+
+    config = load_config(_overrides())
+    assert config.detection.mode == "polling"
+    assert config.detection.detection_mode is DetectionMode.POLLING
+
+
+def test_detection_mode_env_override_selects_on_chain_pending(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from domain.detection import DetectionMode
+
+    monkeypatch.setenv("PMCOPY__DETECTION__MODE", "on_chain_pending")
+    monkeypatch.setenv(
+        "PMCOPY__DETECTION__ONCHAIN__PENDING_TX_WS_URL",
+        "wss://polygon.example.invalid/v2/redacted",
+    )
+    config = load_config(_overrides())
+    assert config.detection.detection_mode is DetectionMode.ON_CHAIN_PENDING
+
+
+def test_on_chain_mode_without_ws_url_fails_closed() -> None:
+    with pytest.raises(EnvValidationError, match="detection.mode=on_chain_confirmed requires"):
+        load_config(_onchain_overrides("on_chain_confirmed"))
+
+
+def test_on_chain_mode_with_non_alchemy_provider_fails_closed() -> None:
+    with pytest.raises(EnvValidationError, match="pending_tx_provider"):
+        load_config(
+            _onchain_overrides(
+                "on_chain_confirmed",
+                pending_tx_ws_url="wss://polygon.example.invalid/v2/redacted",
+                pending_tx_provider="infura",
+            )
+        )
+
+
+def test_on_chain_pending_with_hashes_only_fails_closed() -> None:
+    with pytest.raises(EnvValidationError, match="pending_tx_hashes_only"):
+        load_config(
+            _onchain_overrides(
+                "on_chain_pending",
+                pending_tx_ws_url="wss://polygon.example.invalid/v2/redacted",
+                pending_tx_hashes_only=True,
+            )
+        )
+
+
+def test_invalid_detection_mode_rejected() -> None:
+    with pytest.raises(EnvValidationError, match="detection.mode must be one of"):
+        load_config(_onchain_overrides("mempool"))

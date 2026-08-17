@@ -51,6 +51,7 @@ from pydantic import (
 )
 from config.env import EnvValidationError, SignatureType, WalletConfig, secret_value
 from config.v1_runtime import CopyTasksRuntimeConfig
+from domain.detection import DetectionMode
 
 __all__ = [
     "AppConfig",
@@ -61,6 +62,7 @@ __all__ = [
     "ControlPlaneConfig",
     "DatabaseConfig",
     "DetectionConfig",
+    "DetectionModeResolver",
     "DiscoveryConfig",
     "EnvValidationError",
     "ExecutionConfig",
@@ -89,6 +91,7 @@ __all__ = [
 
 _ETH_ADDR_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
 _HEX_PRIVATE_KEY_RE = re.compile(r"^0x[0-9a-fA-F]{64}$")
+_DETECTION_MODE_VALUES = tuple(mode.value for mode in DetectionMode)
 _ONCHAIN_DETECTION_CONFIDENCE_VALUES = {
     "market_unattributed",
     "pending_probable",
@@ -174,14 +177,34 @@ class ControlPlaneConfig:
 
 @dataclass(frozen=True)
 class DetectionConfig:
-    """Leader-signal detection cadence and on-chain detection policy."""
+    """Leader-signal detection cadence and on-chain detection policy.
+
+    ``mode`` selects the single on-chain detection source (``polling`` keeps
+    REST polling only; ``on_chain_pending`` adds the provisional mempool
+    path; ``on_chain_confirmed`` adds the mempool-observed, receipt-confirmed
+    path). REST polling keeps running as a parallel fallback in every mode.
+    The legacy ``onchain.enable_onchain_*`` booleans are deprecated and only
+    consulted by ``DetectionModeResolver`` when ``mode`` is absent.
+    """
 
     fetch_interval: float = 0.50
     aggregate_signal_window_seconds: float = 4.0
     leader_positions_min_fetch_spacing_ms: int = 250
     leader_activity_min_fetch_spacing_ms: int = 250
     trade_queue_max_batches: int = 64
+    mode: str = DetectionMode.POLLING.value
     onchain: "OnchainDetectionConfig" = field(default_factory=lambda: OnchainDetectionConfig())
+
+    @property
+    def detection_mode(self) -> DetectionMode:
+        """Return the typed detection source selected by ``mode``.
+
+        Raises:
+            ValueError: If ``mode`` is not a known ``DetectionMode`` value.
+                ``AppConfigSemanticValidator`` rejects such configs first.
+        """
+
+        return DetectionMode(str(self.mode or "").strip().lower())
 
 
 @dataclass(frozen=True)
@@ -1202,6 +1225,7 @@ def _validate_semantics(cfg: AppConfig, errors: list[str]) -> None:
     if confidence_required not in _ONCHAIN_DETECTION_CONFIDENCE_VALUES:
         allowed = ", ".join(sorted(_ONCHAIN_DETECTION_CONFIDENCE_VALUES))
         errors.append(f"PENDING_TX_DETECTION_CONFIDENCE_REQUIRED must be one of: {allowed}.")
+    _validate_detection_mode(cfg, errors)
     # Discovery is field-constrained by its Pydantic models. Keep only
     # invariants that span nested sections here.
     d = cfg.discovery
@@ -1257,6 +1281,111 @@ def _validate_semantics(cfg: AppConfig, errors: list[str]) -> None:
         errors.append("control_plane portfolio refresh interval must be positive.")
     if control.portfolio_stale_after_seconds <= 0:
         errors.append("control_plane portfolio stale interval must be positive.")
+
+
+def _validate_detection_mode(cfg: AppConfig, errors: list[str]) -> None:
+    """Fail closed when ``detection.mode`` selects an unusable on-chain source.
+
+    Both on-chain runtimes issue ``alchemy_pendingTransactions`` over the
+    configured WebSocket, so a non-polling mode requires an Alchemy ``wss://``
+    endpoint. The provisional pending path additionally needs full pending
+    transaction bodies (calldata) and a positive staleness budget.
+    """
+
+    detection = cfg.detection
+    oc = detection.onchain
+    mode = str(detection.mode or "").strip().lower()
+    if mode not in _DETECTION_MODE_VALUES:
+        allowed = ", ".join(_DETECTION_MODE_VALUES)
+        errors.append(f"detection.mode must be one of: {allowed}.")
+        return
+    if mode == DetectionMode.POLLING.value:
+        return
+    ws_url = str(oc.onchain_ws_url or oc.pending_tx_ws_url or "").strip()
+    if not ws_url or not ws_url.lower().startswith("wss://"):
+        errors.append(
+            f"detection.mode={mode} requires a wss:// endpoint in "
+            "detection.onchain.onchain_ws_url or detection.onchain.pending_tx_ws_url."
+        )
+    provider = str(oc.pending_tx_provider or "").strip().lower()
+    if provider != "alchemy":
+        errors.append(
+            f"detection.mode={mode} requires detection.onchain.pending_tx_provider=alchemy."
+        )
+    if mode == DetectionMode.ON_CHAIN_PENDING.value:
+        if int(oc.pending_tx_max_signal_age_ms) <= 0:
+            errors.append(
+                "detection.onchain.pending_tx_max_signal_age_ms must be > 0 for "
+                "detection.mode=on_chain_pending."
+            )
+        if bool(oc.pending_tx_hashes_only):
+            errors.append(
+                "detection.onchain.pending_tx_hashes_only must be false for "
+                "detection.mode=on_chain_pending (calldata is required)."
+            )
+
+
+class DetectionModeResolver:
+    """Resolve the raw ``detection`` payload onto exactly one detection source.
+
+    The resolver runs before typed validation. An explicit ``mode`` always
+    wins. Without one, the deprecated ``onchain.enable_onchain_*`` booleans
+    derive ``on_chain_confirmed`` (the mempool-observed, receipt-confirmed
+    runtime — what enabling either boolean used to wire); provisional copy on
+    mempool sightings must be an explicit ``on_chain_pending`` and is never
+    derived. Otherwise the source stays ``polling``.
+    """
+
+    _LEGACY_FLAGS = ("enable_onchain_pending_detection", "enable_onchain_mined_detection")
+
+    def resolve(self, payload: Mapping[str, Any] | None) -> tuple[str, str | None]:
+        """Return ``(mode, warning)`` for one raw ``detection`` section.
+
+        Args:
+            payload: Raw ``detection`` mapping as merged from every config
+                layer, or ``None`` when the section is absent.
+
+        Returns:
+            The resolved mode string (not yet validated against
+            ``DetectionMode``) and an operator warning message, or ``None``
+            when no deprecated flag influenced or contradicted the result.
+        """
+
+        section: Mapping[str, Any] = payload if isinstance(payload, Mapping) else {}
+        explicit = str(section.get("mode") or "").strip().lower()
+        legacy_enabled = self._legacy_flags_enabled(section)
+        if explicit:
+            if legacy_enabled:
+                return explicit, (
+                    "detection_legacy_flags_ignored | mode=%s ignored=%s — "
+                    "detection.onchain.enable_onchain_* booleans are deprecated; "
+                    "detection.mode selects the source" % (explicit, ",".join(legacy_enabled))
+                )
+            return explicit, None
+        if legacy_enabled:
+            derived = DetectionMode.ON_CHAIN_CONFIRMED.value
+            return derived, (
+                "detection_legacy_flags_deprecated | derived_mode=%s from=%s "
+                "replace_with=detection.mode" % (derived, ",".join(legacy_enabled))
+            )
+        return DetectionMode.POLLING.value, None
+
+    @classmethod
+    def _legacy_flags_enabled(cls, section: Mapping[str, Any]) -> tuple[str, ...]:
+        onchain = section.get("onchain")
+        if not isinstance(onchain, Mapping):
+            return ()
+        return tuple(flag for flag in cls._LEGACY_FLAGS if cls._truthy(onchain.get(flag)))
+
+    @staticmethod
+    def _truthy(value: object) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "on"}
+        if isinstance(value, (int, float)):
+            return bool(value)
+        return False
 
 
 class AppConfigSemanticValidator:
@@ -1372,6 +1501,21 @@ class _LayeredModel(BaseModel):
     reconciliation: ReconciliationConfig = ReconciliationConfig()
     logging: LoggingConfig = LoggingConfig()
     control_plane: ControlPlaneConfig = ControlPlaneConfig()
+
+    @model_validator(mode="before")
+    @classmethod
+    def _resolve_detection_mode(cls, values: Any) -> Any:
+        """Thin glue: pin ``detection.mode`` via ``DetectionModeResolver``."""
+
+        if not isinstance(values, dict):
+            return values
+        detection = values.get("detection")
+        if detection is not None and not isinstance(detection, dict):
+            return values
+        mode, warning = DetectionModeResolver().resolve(detection)
+        if warning:
+            logger.warning(warning)
+        return {**values, "detection": {**(detection or {}), "mode": mode}}
 
     @model_validator(mode="before")
     @classmethod

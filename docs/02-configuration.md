@@ -54,6 +54,39 @@ startup fails closed.
 Unknown YAML, secret, or nested process keys fail validation instead of being
 silently ignored.
 
+## Leader detection source (`detection.mode`)
+
+`detection.mode` (env `PMCOPY__DETECTION__MODE`) selects the single on-chain
+leader-detection source. REST polling of the Polymarket data API keeps running
+as a parallel fallback in every mode; the copy layer dedups the same fill by
+trade key, so a signal is copied once regardless of which source saw it first.
+
+| `detection.mode` | Source | Requirements |
+|---|---|---|
+| `polling` (default, checked-in base) | data-api REST polling only | — |
+| `on_chain_confirmed` | Alchemy mempool sighting + receipt confirmation (`PolygonSourceTransactionRuntime`); executes only after the fill is mined | `wss://` URL in `detection.onchain.onchain_ws_url` or `pending_tx_ws_url`, `pending_tx_provider: alchemy` |
+| `on_chain_pending` | Provisional copy on the mempool sighting (`OnchainDetectionRuntime`, `alchemy_pendingTransactions` with calldata), guarded by `pending_tx_max_signal_age_ms`, `pending_tx_detection_confidence_required`, and per-leader supersession | as above, plus `pending_tx_hashes_only: false` and `pending_tx_max_signal_age_ms > 0` |
+
+An invalid mode, a non-polling mode without a `wss://` endpoint, a non-Alchemy
+provider, or `on_chain_pending` with `pending_tx_hashes_only: true` fails
+startup closed. Select an on-chain mode per environment
+(`config/environments/<env>/detection.yml`) or via the environment variable;
+the base `config/detection.yml` must stay `polling`. Changing the mode
+requires a restart — the control plane does not expose `detection.mode`.
+
+Startup logs `detection_mode_selected | mode=<mode> onchain_ws=set|unset
+polling_fallback=true provider=alchemy` (never the URL) and warns
+`detection_ws_url_unused | mode=polling` when a WS URL is configured but
+polling is selected.
+
+The booleans `detection.onchain.enable_onchain_pending_detection` and
+`enable_onchain_mined_detection` are **deprecated**. They are still accepted:
+when no layer sets `detection.mode`, either boolean derives
+`on_chain_confirmed` with a `detection_legacy_flags_deprecated` warning
+(provisional copy is never derived); when `detection.mode` is set — which is
+always the case with the checked-in base file — the booleans are ignored with a
+`detection_legacy_flags_ignored` warning. Replace them with `detection.mode`.
+
 Discovery thresholds, component weights, normalization ranges, decay,
 shrinkage, scheduler cadence, backfill limits, hysteresis, and rank-driven
 sizing multipliers all live in `config/discovery.yml`.
