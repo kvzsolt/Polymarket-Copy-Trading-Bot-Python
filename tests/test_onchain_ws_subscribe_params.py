@@ -131,3 +131,66 @@ async def test_sent_payload_is_valid_json_string() -> None:
     assert isinstance(raw, str), "ws.send must receive a string frame"
     # Must round-trip through json.loads without raising.
     json.loads(raw)
+
+
+@pytest.mark.asyncio
+async def test_connect_log_never_contains_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The WS URL carries the Alchemy key; the connect line logs the host only."""
+
+    import logging
+
+    from clients import onchain_ws as onchain_ws_module
+
+    secret = "SuperSecretAlchemyKey123"
+    client = OnchainWebSocket(
+        ws_url=f"wss://polygon-mainnet.g.alchemy.com/v2/{secret}",
+        subscribe_params=log_subscription_params(),
+        name="pendingtx",
+        on_message=_empty_callback,
+    )
+
+    class _ConnectedSocket(_FakeWebSocket):
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            client._running = False
+            raise StopAsyncIteration
+
+    class _Connect:
+        def __init__(self, *_args, **_kwargs) -> None:
+            self._socket = _ConnectedSocket()
+
+        async def __aenter__(self):
+            return self._socket
+
+        async def __aexit__(self, *_exc) -> bool:
+            return False
+
+    monkeypatch.setattr(onchain_ws_module.websockets, "connect", _Connect)
+
+    records: list[logging.LogRecord] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            records.append(record)
+
+    handler = _Capture(level=logging.DEBUG)
+    onchain_ws_module.logger.addHandler(handler)
+    previous_level = onchain_ws_module.logger.level
+    onchain_ws_module.logger.setLevel(logging.DEBUG)
+    try:
+        client._running = True
+        await client._run()
+    finally:
+        onchain_ws_module.logger.removeHandler(handler)
+        onchain_ws_module.logger.setLevel(previous_level)
+
+    messages = [record.getMessage() for record in records]
+    connected = [message for message in messages if "connected to" in message]
+    assert connected, messages
+    assert "polygon-mainnet.g.alchemy.com" in connected[0]
+    for message in messages:
+        assert secret not in message
+        assert "/v2/" not in message
+    assert client.redacted_endpoint == "polygon-mainnet.g.alchemy.com"

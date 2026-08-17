@@ -78,6 +78,9 @@ def test_settings_validator_exposes_only_frontend_safe_sections_and_keys() -> No
     )
     assert "rpc_url" not in validator.allowed_keys(SettingsPath("paper", "polymarket"))
     assert "fallback_rpc_url" not in validator.allowed_keys(SettingsPath("paper", "polymarket"))
+    # The detection source cannot be hot-swapped; selecting it requires a restart.
+    assert "mode" not in validator.allowed_keys(SettingsPath("paper", "detection"))
+    assert "onchain" in validator.allowed_keys(SettingsPath("paper", "detection"))
 
 
 def test_settings_validator_normalizes_only_supplied_nested_values() -> None:

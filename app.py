@@ -49,6 +49,7 @@ from orchestrators.control_plane_tasks import (
     LeaderMonitoringState,
     RuntimeTaskActivationGuard,
 )
+from orchestrators.detection_startup_reporter import DetectionStartupReporter
 from orchestrators.leader_registry import LeaderRegistry
 from orchestrators.market_data_runtime import (
     MarketDataRuntime,
@@ -2023,7 +2024,7 @@ async def _run_application(client_registry: list[Any]) -> int:
     # ``on_chain_confirmed`` -> gen-2 receipt-confirmed runtime). REST
     # polling below keeps running in every mode as the parallel fallback;
     # the copy layer dedups the same fill by trade key.
-    detection_mode = application.config.detection.detection_mode
+    detection_mode = DetectionStartupReporter(logger, metrics).report(application.config)
     if detection_mode is not DetectionMode.POLLING:
         try:
             from orchestrators.detection_source_factory import DetectionSourceRequest

@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from typing import Any, TYPE_CHECKING
 
 from services.leaderCursorStore import LeaderCursorStore
-from services.metrics import metrics
+from services.metrics import METRIC_DETECTION_SIGNALS, metrics
 from storage.postgres.cursors_repo import TradeCursor
 from utils.fetchData import fetch_data
 
@@ -579,6 +579,14 @@ async def fetch_trade_data(
             if str(trade.get("type", "")).upper() != "TRADE":
                 continue
             metrics.inc("signals_seen_total")
+            metrics.inc(METRIC_DETECTION_SIGNALS, labels={"source": "polling"})
+            logger.debug(
+                "detection_signal | source=polling leader=%s tx=%s side=%s token=%s",
+                user_address,
+                trade.get("transactionHash"),
+                str(trade.get("side") or "").upper(),
+                trade.get("asset") or trade.get("tokenID") or trade.get("token_id"),
+            )
 
             if not trade.get("asset"):
                 trade["asset"] = trade.get("tokenID") or trade.get("token_id")

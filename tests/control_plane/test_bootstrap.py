@@ -12,7 +12,9 @@ from config.app_config import (
     ControlPlaneAuthConfig,
     ControlPlaneConfig,
     DatabaseConfig,
+    DetectionConfig,
     ExecutionConfig,
+    OnchainDetectionConfig,
     PolymarketConfig,
     WalletConfig,
 )
@@ -21,6 +23,7 @@ from integrations.control_plane import (
     ControlPlaneDependencies,
     ControlPlaneHttpConfig,
 )
+import pytest
 from pydantic import SecretStr
 from services.healthServer import ReadinessTracker
 from services.metrics import MetricsRegistry
@@ -184,12 +187,18 @@ class RecordingServerFactory:
         return self.server
 
 
-def build_config(*, enabled: bool = True, trading_mode: str = "paper") -> AppConfig:
+def build_config(
+    *,
+    enabled: bool = True,
+    trading_mode: str = "paper",
+    detection: DetectionConfig | None = None,
+) -> AppConfig:
     """Return a valid authenticated loopback control-plane configuration."""
 
     rpc_url = "https://polygon-rpc.example"
     return AppConfig(
         database=DatabaseConfig(dsn="postgresql://localhost/pmcopy"),
+        detection=detection if detection is not None else DetectionConfig(),
         wallet=WalletConfig(
             private_key=SecretStr(""),
             chain_id=137,
@@ -536,3 +545,65 @@ async def test_factory_composes_manual_discovery_only_with_started_queue(
     assert dependencies.discovery_commands is not None
     capabilities = await dependencies.system.get_capabilities()  # type: ignore[union-attr]
     assert "discovery_manual_run" in capabilities.capabilities
+
+
+@pytest.mark.parametrize(
+    ("mode", "legacy_pending", "legacy_mined", "expected"),
+    [
+        ("polling", True, True, ()),
+        ("on_chain_pending", False, False, ("on_chain_pending",)),
+        ("on_chain_confirmed", False, False, ("on_chain_confirmed",)),
+    ],
+)
+async def test_on_chain_capabilities_follow_detection_mode_not_legacy_flags(
+    tmp_path: Path,
+    mode: str,
+    legacy_pending: bool,
+    legacy_mined: bool,
+    expected: tuple[str, ...],
+) -> None:
+    """Capabilities mirror the selected ``detection.mode``, never the booleans."""
+
+    from orchestrators.control_plane_bootstrap import ControlPlaneRuntimeFactory
+
+    config_root = tmp_path / "config"
+    (config_root / "environments" / "paper").mkdir(parents=True)
+    server_factory = RecordingServerFactory()
+    _telemetry_service, telemetry_query, telemetry_hub = build_telemetry()
+    factory = ControlPlaneRuntimeFactory(
+        server_factory=server_factory,
+        config_root=config_root,
+        version="0.1.0",
+        clock=FixedClock(),
+        monotonic_clock=FixedMonotonicClock(),
+        semantic_validator=AppConfigSemanticValidator(),
+        started_monotonic=100.0,
+    )
+    detection = DetectionConfig(
+        mode=mode,
+        onchain=OnchainDetectionConfig(
+            enable_onchain_pending_detection=legacy_pending,
+            enable_onchain_mined_detection=legacy_mined,
+            pending_tx_ws_url="wss://polygon.example.invalid/v2/redacted",
+        ),
+    )
+
+    factory.build(
+        config=build_config(detection=detection),
+        pool=FakePool(),
+        readiness=ReadinessTracker(),
+        telemetry_query=telemetry_query,
+        telemetry_hub=telemetry_hub,
+        telemetry_service=_telemetry_service,
+        worker_state=FixedWorkerState(),
+    )
+
+    dependencies = server_factory.dependencies
+    assert dependencies is not None
+    capabilities = await dependencies.system.get_capabilities()  # type: ignore[union-attr]
+    on_chain = tuple(
+        capability
+        for capability in capabilities.capabilities
+        if capability in {"on_chain_pending", "on_chain_confirmed"}
+    )
+    assert on_chain == expected

@@ -51,6 +51,9 @@ class AppConfigSettingsValidator:
     _EXCLUDED_KEYS: Mapping[str, frozenset[str]] = {
         "app": frozenset({"multi_user_config_file"}),
         "control_plane": frozenset({"auth"}),
+        # The detection source is wired once at startup; a runtime edit could
+        # not hot-swap it, so it is restart-only and never frontend-editable.
+        "detection": frozenset({"mode"}),
         "logging": frozenset({"log_dir", "app_log_jsonl_file"}),
         "polymarket": frozenset({"rpc_url", "fallback_rpc_url"}),
     }

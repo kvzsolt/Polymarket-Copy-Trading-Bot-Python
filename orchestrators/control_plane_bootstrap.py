@@ -14,6 +14,7 @@ from typing import Protocol, cast
 
 from config.app_config import AppConfig
 from config.env import secret_value
+from domain.detection import DetectionMode
 from integrations.control_plane import (
     ALL_CONTROL_PLANE_PERMISSIONS,
     BearerCredential,
@@ -534,9 +535,10 @@ class ControlPlaneRuntimeFactory:
             capabilities.add("discovery_manual_run")
         if portfolio_enabled:
             capabilities.add("portfolio_read")
-        if config.detection.onchain.enable_onchain_mined_detection:
+        detection_mode = config.detection.detection_mode
+        if detection_mode is DetectionMode.ON_CHAIN_CONFIRMED:
             capabilities.add("on_chain_confirmed")
-        if config.detection.onchain.enable_onchain_pending_detection:
+        if detection_mode is DetectionMode.ON_CHAIN_PENDING:
             capabilities.add("on_chain_pending")
         return tuple(sorted(capabilities))
 

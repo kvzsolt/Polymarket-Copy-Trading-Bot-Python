@@ -608,3 +608,38 @@ async def test_v1_mode_preserves_individual_trade_identities_without_aggregation
     delivered = on_trade.await_args.args[0]
     assert [trade["transactionHash"] for trade in delivered] == ["0xtx-a", "0xtx-b"]
     assert all("_txHashes" not in trade for trade in delivered)
+
+
+@pytest.mark.asyncio
+async def test_polling_trade_increments_detection_signals_polling_counter():
+    """Every polled TRADE row is attributed to ``source=polling`` provenance."""
+    from services.metrics import METRIC_DETECTION_SIGNALS
+
+    now = int(time.time())
+    trade = {
+        "transactionHash": "0xpolled",
+        "timestamp": now - 5,
+        "type": "TRADE",
+        "side": "BUY",
+        "asset": "token-1",
+        "conditionId": "cond-1",
+        "size": 10,
+        "price": 0.5,
+        "usdcSize": 5,
+    }
+
+    async def on_trade(_trades: list[dict]):
+        return None
+
+    state = LeaderMonitorState(
+        last_cursor=TradeCursor(timestamp=now - 300, tx_hash="", trade_id=None),
+        last_processed_ts=float(now - 300),
+    )
+
+    with (
+        patch("services.tradeMonitor.fetch_data", new_callable=AsyncMock, return_value=[trade]),
+        patch.object(trade_monitor_module.metrics, "inc") as inc,
+    ):
+        await fetch_trade_data("0xleader", on_trade, state, _MOCK_READINESS, _MOCK_CONFIG)
+
+    inc.assert_any_call(METRIC_DETECTION_SIGNALS, labels={"source": "polling"})

@@ -21,6 +21,7 @@ import contextlib
 import orjson
 import random
 from typing import Any, Callable, Coroutine
+from urllib.parse import urlparse
 
 import websockets
 from websockets.exceptions import (
@@ -83,6 +84,11 @@ class OnchainWebSocket:
         return self._running
 
     @property
+    def redacted_endpoint(self) -> str:
+        """Return the WebSocket host only; the path carries the provider API key."""
+        return urlparse(self._ws_url).netloc or "<unset>"
+
+    @property
     def connected(self) -> bool:
         return self._ws is not None and self._sub_id is not None
 
@@ -130,7 +136,9 @@ class OnchainWebSocket:
                 ) as ws:
                     self._ws = ws
                     self._reconnect_delay = self._reconnect_min_delay
-                    logger.info("OnchainWS[%s]: connected to %s", self._name, self._ws_url)
+                    logger.info(
+                        "OnchainWS[%s]: connected to %s", self._name, self.redacted_endpoint
+                    )
 
                     await self._send_subscribe(ws)
 
