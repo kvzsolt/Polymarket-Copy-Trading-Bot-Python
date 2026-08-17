@@ -1,0 +1,142 @@
+"""CCXT-only Polymarket venue runtime: direct construction, fail-closed startup.
+
+There is exactly one venue transport: ``ccxt.prediction.polymarket``. The
+builder constructs it directly per follower wallet — no SDK object, no
+fallback, no secondary signer — and refuses to start when the transport is
+unavailable or when live mode lacks live-execution compatibility.
+
+Mode wiring:
+
+* ``live``  — authenticated CCXT for market reads and order writes.
+* ``paper`` — public CCXT for market reads, local simulator for writes.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any, Callable
+
+from integrations.polymarket.ccxt_compat.exceptions import CcxtPredictionUnavailable
+from integrations.polymarket.ccxt_compat.tick_size import (
+    MarketMetadataClient,
+    PolymarketTickSizeResolver,
+    PublicClobTickSizeSource,
+    TickSizeResolver,
+)
+from integrations.polymarket.ccxt_prediction_client import (
+    CcxtPredictionClient,
+    create_ccxt_prediction_client,
+)
+from integrations.polymarket.ccxt_prediction_gateway import CcxtPredictionGateway
+from integrations.polymarket.paper_execution import (
+    PaperExecutionGateway,
+    PaperOrderSimulator,
+)
+from interfaces.clob_gateway import ClobGateway
+
+
+def _attribute(source: Any, name: str, default: Any = None) -> Any:
+    if source is None:
+        return default
+    if isinstance(source, dict):
+        return source.get(name, default)
+    return getattr(source, name, default)
+
+
+def _trading_mode(config: Any) -> str:
+    execution = _attribute(config, "execution")
+    return str(_attribute(execution, "trading_mode", "paper") or "paper").strip().lower()
+
+
+def _wallet_config(runtime_user: Any) -> Any:
+    return _attribute(runtime_user, "wallet")
+
+
+@dataclass(slots=True)
+class PolymarketVenueRuntime:
+    """One CCXT exchange and its venue gateway for one follower account."""
+
+    client: CcxtPredictionClient
+    gateway: ClobGateway
+
+    @property
+    def wallet_address(self) -> str | None:
+        return self.client.wallet_address
+
+    async def close(self) -> None:
+        await self.client.close()
+
+
+async def build_polymarket_runtime(
+    *,
+    runtime_user: Any,
+    config: Any,
+    exchange_factory: Callable[[dict[str, Any]], Any] | None = None,
+    ccxt_version: str | None = None,
+    tick_size_resolver: TickSizeResolver | None = None,
+    market_metadata_client: MarketMetadataClient | None = None,
+) -> PolymarketVenueRuntime:
+    """Build the single CCXT-backed Polymarket runtime for one wallet.
+
+    Args:
+        runtime_user: Follower identity carrying the verified wallet config.
+        config: Validated application configuration.
+        exchange_factory: Optional deterministic CCXT transport factory.
+        ccxt_version: Optional installed-version override for tests.
+        tick_size_resolver: Optional injected tick-size resolver.
+        market_metadata_client: Optional tick-size fallback source.
+
+    Returns:
+        The venue runtime owning the CCXT client and its gateway.
+
+    Raises:
+        CcxtPredictionUnavailable: When CCXT is missing, the transport fails
+            the compatibility gate, or live mode lacks live-execution
+            readiness. The client is closed before raising.
+    """
+
+    mode = _trading_mode(config)
+    authenticated = mode == "live"
+
+    client = await create_ccxt_prediction_client(
+        wallet_config=_wallet_config(runtime_user),
+        config=config,
+        authenticated=authenticated,
+        exchange_factory=exchange_factory,
+        ccxt_version=ccxt_version,
+    )
+
+    resolver = tick_size_resolver
+    if resolver is None:
+        resolver = PolymarketTickSizeResolver(
+            ccxt_client=client,
+            market_metadata_client=market_metadata_client or PublicClobTickSizeSource(),
+        )
+    market_gateway = CcxtPredictionGateway(client, tick_size_resolver=resolver)
+
+    try:
+        compatibility = await market_gateway.check_compatibility()
+        if not compatibility.get("available"):
+            raise CcxtPredictionUnavailable(
+                str(compatibility.get("error") or "CCXT Polymarket transport is unavailable")
+            )
+        if authenticated and not compatibility.get("live_execution_ready"):
+            raise CcxtPredictionUnavailable("CCXT Polymarket live execution compatibility failed")
+    except BaseException:
+        await client.close()
+        raise
+
+    gateway: ClobGateway = market_gateway
+    if not authenticated:
+        gateway = PaperExecutionGateway(
+            market_data_gateway=market_gateway,
+            simulator=PaperOrderSimulator(),
+        )
+
+    return PolymarketVenueRuntime(client=client, gateway=gateway)
+
+
+__all__ = [
+    "PolymarketVenueRuntime",
+    "build_polymarket_runtime",
+]

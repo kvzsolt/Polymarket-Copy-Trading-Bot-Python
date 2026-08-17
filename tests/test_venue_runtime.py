@@ -1,0 +1,244 @@
+"""CCXT-only venue runtime composition contracts.
+
+One CCXT exchange instance per follower runtime, one lifecycle owner, one
+close path. Startup fails closed when the transport is unavailable or — in
+live mode — when live execution compatibility fails. Paper mode wraps the
+public CCXT market reads behind the local paper execution gateway.
+"""
+
+from __future__ import annotations
+
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import pytest
+
+from integrations.polymarket.ccxt_compat.exceptions import CcxtPredictionUnavailable
+from integrations.polymarket.ccxt_prediction_client import CcxtPredictionClient
+from integrations.polymarket.ccxt_prediction_gateway import CcxtPredictionGateway
+from integrations.polymarket.paper_execution import PaperExecutionGateway
+from integrations.polymarket.venue_runtime import (
+    PolymarketVenueRuntime,
+    build_polymarket_runtime,
+)
+
+_PRIVATE_KEY = "0x" + "a" * 64
+_WALLET = "0x" + "b" * 40
+
+
+class RuntimeExchange:
+    """CCXT prediction exchange double with togglable compatibility."""
+
+    def __init__(
+        self,
+        settings: dict,
+        *,
+        available: bool = True,
+        live_ready: bool = True,
+    ) -> None:
+        self.settings = settings
+        self.options = dict(settings.get("options") or {})
+        self.privateKey = settings.get("privateKey")
+        self.walletAddress = settings.get("walletAddress")
+        self.has = {
+            "prediction": available,
+            "createOrder": True,
+            "fetchOrderBook": True,
+            "fetchOrder": True,
+            "fetchOpenOrders": True,
+            "fetchMyTrades": True,
+            "cancelOrder": True,
+        }
+        if not live_ready:
+            self.has["prediction"] = True
+            # Live compatibility fails when the raw paginated private-history
+            # endpoints are missing.
+            self.clob_private_get_data_orders = None  # type: ignore[method-assign]
+            self.clob_private_get_data_trades = None  # type: ignore[method-assign]
+        self.close = AsyncMock()
+        self.load_api_credentials = AsyncMock(return_value={"apiKey": "dk"})
+        # CCXT 4.5.70 exposes generated raw paginated private-history endpoints;
+        # the gateway's compatibility gate requires them. Shadow them with
+        # non-callables to simulate a degraded build when live_ready=False.
+        if live_ready:
+            self.clob_private_get_data_orders = self._noop_raw
+            self.clob_private_get_data_trades = self._noop_raw
+        else:
+            self.clob_private_get_data_orders = None  # type: ignore[method-assign]
+            self.clob_private_get_data_trades = None  # type: ignore[method-assign]
+        if not available:
+            self.has["prediction"] = False
+
+    @staticmethod
+    def _noop_raw(_params: object) -> dict:
+        return {"data": [], "next_cursor": ""}
+
+    def polymarket_order_raw_amounts(self, *_args: object) -> dict[str, str]:
+        return {"makerAmount": "0", "takerAmount": "0"}
+
+
+def _runtime_user() -> SimpleNamespace:
+    return SimpleNamespace(
+        user_id="operator",
+        wallet=SimpleNamespace(funder_address=_WALLET, private_key=_PRIVATE_KEY),
+    )
+
+
+def _config(mode: str) -> SimpleNamespace:
+    return SimpleNamespace(
+        execution=SimpleNamespace(trading_mode=mode),
+        wallet=SimpleNamespace(funder_address=_WALLET, private_key=_PRIVATE_KEY),
+    )
+
+
+def _factory_collector(available: bool = True, live_ready: bool = True):
+    created: list[RuntimeExchange] = []
+
+    def factory(settings: dict) -> RuntimeExchange:
+        exchange = RuntimeExchange(settings, available=available, live_ready=live_ready)
+        created.append(exchange)
+        return exchange
+
+    return factory, created
+
+
+def test_venue_runtime_exposes_client_and_gateway() -> None:
+    client = object.__new__(CcxtPredictionClient)
+    runtime = PolymarketVenueRuntime(client=client, gateway=object())  # type: ignore[arg-type]
+    assert runtime.client is client
+
+
+@pytest.mark.asyncio
+async def test_paper_runtime_is_public_ccxt_plus_paper_gateway() -> None:
+    factory, created = _factory_collector()
+
+    runtime = await build_polymarket_runtime(
+        runtime_user=_runtime_user(),
+        config=_config("paper"),
+        exchange_factory=factory,
+        ccxt_version="4.5.70",
+    )
+
+    assert isinstance(runtime.client, CcxtPredictionClient)
+    assert runtime.client.authenticated is False
+    assert runtime.gateway is not None
+    assert isinstance(runtime.gateway, PaperExecutionGateway)
+    # Public transport: no key material ever reaches the exchange settings.
+    assert "privateKey" not in created[0].settings
+    assert "walletAddress" not in created[0].settings
+
+
+@pytest.mark.asyncio
+async def test_paper_runtime_market_reads_still_use_ccxt() -> None:
+    factory, _created = _factory_collector()
+
+    runtime = await build_polymarket_runtime(
+        runtime_user=_runtime_user(),
+        config=_config("paper"),
+        exchange_factory=factory,
+        ccxt_version="4.5.70",
+    )
+
+    market_gateway = runtime.gateway.market_data_gateway
+    assert isinstance(market_gateway, CcxtPredictionGateway)
+    assert market_gateway.client is runtime.client
+
+
+@pytest.mark.asyncio
+async def test_live_runtime_is_authenticated_ccxt_gateway() -> None:
+    factory, created = _factory_collector()
+
+    runtime = await build_polymarket_runtime(
+        runtime_user=_runtime_user(),
+        config=_config("live"),
+        exchange_factory=factory,
+        ccxt_version="4.5.70",
+    )
+
+    assert runtime.client.authenticated is True
+    assert created[0].settings["privateKey"] == _PRIVATE_KEY
+    assert created[0].settings["walletAddress"] == _WALLET
+    assert isinstance(runtime.gateway, CcxtPredictionGateway)
+    created[0].load_api_credentials.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_unavailable_transport_fails_closed_and_closes_client() -> None:
+    factory, created = _factory_collector(available=False)
+
+    with pytest.raises(CcxtPredictionUnavailable):
+        await build_polymarket_runtime(
+            runtime_user=_runtime_user(),
+            config=_config("paper"),
+            exchange_factory=factory,
+            ccxt_version="4.5.70",
+        )
+
+    assert len(created) == 1
+    created[0].close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_live_without_live_execution_compatibility_fails_closed() -> None:
+    factory, created = _factory_collector(live_ready=False)
+
+    with pytest.raises(CcxtPredictionUnavailable, match="compatibility"):
+        await build_polymarket_runtime(
+            runtime_user=_runtime_user(),
+            config=_config("live"),
+            exchange_factory=factory,
+            ccxt_version="4.5.70",
+        )
+
+    created[0].close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_missing_ccxt_fails_startup_in_paper_and_live(monkeypatch) -> None:
+    def _raise_missing(*_args, **_kwargs):
+        raise CcxtPredictionUnavailable("CCXT prediction support is unavailable")
+
+    monkeypatch.setattr(
+        "integrations.polymarket.ccxt_prediction_client._load_default_factory",
+        _raise_missing,
+    )
+
+    for mode in ("paper", "live"):
+        with pytest.raises(CcxtPredictionUnavailable):
+            await build_polymarket_runtime(
+                runtime_user=_runtime_user(),
+                config=_config(mode),
+                exchange_factory=None,
+                ccxt_version=None,
+            )
+
+
+@pytest.mark.asyncio
+async def test_runtime_close_closes_the_client_once() -> None:
+    factory, created = _factory_collector()
+
+    runtime = await build_polymarket_runtime(
+        runtime_user=_runtime_user(),
+        config=_config("paper"),
+        exchange_factory=factory,
+        ccxt_version="4.5.70",
+    )
+
+    await runtime.close()
+    await runtime.close()
+
+    created[0].close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_wallet_address_passes_through_for_binding() -> None:
+    factory, _created = _factory_collector()
+
+    runtime = await build_polymarket_runtime(
+        runtime_user=_runtime_user(),
+        config=_config("live"),
+        exchange_factory=factory,
+        ccxt_version="4.5.70",
+    )
+
+    assert runtime.wallet_address == _WALLET
