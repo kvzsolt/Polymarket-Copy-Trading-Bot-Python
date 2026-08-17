@@ -1860,3 +1860,49 @@ async def test_immediate_fill_buys_record_daily_spend_once_each(tmp_path):
 
         # 2 * (10 tokens * 0.50) = 10.0 ; the double-count regression would be 20.0
         assert ctx.balance_regime.daily_spent_usdc == Decimal("10.00")
+
+
+@pytest.mark.asyncio
+async def test_polling_skips_when_onchain_claimed_tx_pipeline_level(tmp_path):
+    """Slice 4: the on-chain tx-level claim makes the pipeline skip the polled fill.
+
+    The on-chain raw signal carries ``log_index`` (per-fill key
+    ``...|log:N``); the data-api row has none. Without the tx-level
+    ``CrossSourceTradeClaimPolicy`` claim, both keys would be distinct and the
+    same fill would be copied twice.
+    """
+    from domain.detection import DetectionMode
+    from orchestrators.onchain_signal_dispatch import CrossSourceTradeClaimPolicy
+
+    async with _pg_pool() as pool:
+        exec_svc = AsyncMock()
+        ctx = _make_context(pool, tmp_path, execution_service=exec_svc)
+
+        onchain_raw = {
+            "leader_id": "leader1",
+            "tx_hash": "0xabc",
+            "side": "BUY",
+            "token_id": FAKE_TOKEN_ID,
+            "condition_id": "cond1",
+            "log_index": 7,
+            "order_hash": None,
+        }
+        decision = await CrossSourceTradeClaimPolicy().try_claim(
+            ctx, "leader1", onchain_raw, source=DetectionMode.ON_CHAIN_CONFIRMED
+        )
+        assert decision.dispatch is True
+        assert decision.trade_key == build_trade_key("user1", "leader1", _signal())
+        assert decision.trade_key != build_trade_key("user1", "leader1", onchain_raw)
+
+        results = await execute_trades(ctx, "leader1", [_signal()], time.time())
+        assert len(results) == 1
+        assert results[0].status == "skipped"
+        assert results[0].reason == "already_processed"
+        exec_svc.execute.assert_not_called()
+
+        # And a second on-chain fill of the same tx/side/asset is deduped too.
+        second = await CrossSourceTradeClaimPolicy().try_claim(
+            ctx, "leader1", {**onchain_raw, "log_index": 8}, source=DetectionMode.ON_CHAIN_CONFIRMED
+        )
+        assert second.dispatch is False
+        assert second.winner == "on_chain"

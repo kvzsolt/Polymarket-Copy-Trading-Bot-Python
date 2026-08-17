@@ -69,8 +69,48 @@ class _V1Runtime:
         self.signals.append(signal)
 
 
+class _FakeOrdersRepo:
+    """In-memory ``processed_trades`` claim with the production conflict rules."""
+
+    def __init__(self) -> None:
+        self.rows: dict[str, dict] = {}
+        self.claims: list[tuple[str, str]] = []
+
+    async def try_claim_processed_trade(
+        self,
+        *,
+        trade_key: str,
+        user_id: str,
+        leader_id: str | None,
+        tx_hash: str | None,
+        side: str | None,
+        asset: str | None,
+        condition_id: str | None,
+        status: str = "in_progress",
+        stale_claim_ttl_seconds: float = 30.0,
+    ) -> bool:
+        self.claims.append((trade_key, status))
+        existing = self.rows.get(trade_key)
+        if existing is not None and not str(existing["status"]).startswith("retryable_failed"):
+            return False
+        self.rows[trade_key] = {
+            "trade_key": trade_key,
+            "user_id": user_id,
+            "leader_id": leader_id,
+            "tx_hash": tx_hash,
+            "side": side,
+            "asset": asset,
+            "condition_id": condition_id,
+            "status": status,
+        }
+        return True
+
+    async def get_processed_trade(self, trade_key: str) -> dict | None:
+        return self.rows.get(trade_key)
+
+
 def _ctx(user_id: str) -> SimpleNamespace:
-    return SimpleNamespace(user_id=user_id)
+    return SimpleNamespace(user_id=user_id, orders_repo=_FakeOrdersRepo())
 
 
 def _adapter(
@@ -139,7 +179,11 @@ async def test_logs_provenance_and_increments_metric(caplog: pytest.LogCaptureFi
         await adapter(_signal(provisional=True))
         await adapter(_signal(provisional=False))
 
-    lines = [record.getMessage() for record in caplog.records if "detection_signal |" in record.getMessage()]
+    lines = [
+        record.getMessage()
+        for record in caplog.records
+        if "detection_signal |" in record.getMessage()
+    ]
     assert len(lines) == 2
     assert lines[0].startswith("detection_signal | source=on_chain_pending ")
     assert f"leader={_LEADER}" in lines[0]
@@ -165,7 +209,9 @@ async def test_pipeline_error_is_logged_not_raised(caplog: pytest.LogCaptureFixt
         await adapter(_signal())
 
     assert [call[0] for call in pipeline.calls] == ["u1", "u2"]
-    warnings = [r.getMessage() for r in caplog.records if "onchain_signal_pipeline_error" in r.getMessage()]
+    warnings = [
+        r.getMessage() for r in caplog.records if "onchain_signal_pipeline_error" in r.getMessage()
+    ]
     assert len(warnings) == 1
     assert "user=u1" in warnings[0]
 
@@ -181,3 +227,150 @@ def test_detection_signals_metric_schema_is_bounded() -> None:
     registry = MetricsRegistry(schemas=TELEMETRY_METRIC_SCHEMAS)
     with pytest.raises(ValueError):
         registry.inc(METRIC_DETECTION_SIGNALS, labels={"source": "mempool"})
+
+
+# ---------------------------------------------------------------------------
+# Cross-source dedup (Slice 4): tx-level claim before per-fill dispatch
+# ---------------------------------------------------------------------------
+
+
+def _ctx_with_repo(user_id: str, repo: _FakeOrdersRepo) -> SimpleNamespace:
+    return SimpleNamespace(user_id=user_id, orders_repo=repo)
+
+
+def _polling_row() -> dict:
+    """data-api ``/activity`` shape: no ``logIndex`` / ``orderHash``."""
+    return {
+        "transactionHash": _TX,
+        "side": "BUY",
+        "asset": "123456",
+        "conditionId": "0x" + "ef" * 32,
+        "size": 10,
+        "price": 0.5,
+        "usdcSize": 5,
+        "timestamp": 1_700_000_000,
+        "type": "TRADE",
+    }
+
+
+@pytest.mark.asyncio
+async def test_onchain_signal_skipped_when_polling_claimed_tx(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from orchestrators.trade_pipeline import build_trade_key
+    from services.metrics import METRIC_DETECTION_SIGNALS_DEDUPED
+
+    repo = _FakeOrdersRepo()
+    # Polling already claimed the tx-level key (its per-fill key IS the tx-level key).
+    polling_key = build_trade_key("u1", _LEADER, _polling_row())
+    assert await repo.try_claim_processed_trade(
+        trade_key=polling_key,
+        user_id="u1",
+        leader_id=_LEADER,
+        tx_hash=_TX,
+        side="BUY",
+        asset="123456",
+        condition_id="c",
+        status="in_progress",
+    )
+    adapter, pipeline, metrics = _adapter({_LEADER: [_ctx_with_repo("u1", repo)]})
+
+    with caplog.at_level(logging.INFO, logger="OnchainSignalDispatch"):
+        await adapter(_signal(provisional=False))
+
+    assert pipeline.calls == []
+    deduped = [
+        r.getMessage() for r in caplog.records if "detection_signal_deduped" in r.getMessage()
+    ]
+    assert len(deduped) == 1
+    assert deduped[0].startswith(
+        "detection_signal_deduped | source=on_chain_confirmed winner=polling "
+    )
+    assert f"tx={_TX}" in deduped[0]
+    assert (
+        metrics.counters[f'{METRIC_DETECTION_SIGNALS_DEDUPED}{{source="on_chain_confirmed"}}'] == 1
+    )
+
+
+@pytest.mark.asyncio
+async def test_polling_skips_when_onchain_claimed_tx() -> None:
+    """The on-chain tx-level claim collides with the key polling would build."""
+    from orchestrators.onchain_signal_dispatch import CrossSourceTradeClaimPolicy
+    from orchestrators.trade_pipeline import build_trade_key
+
+    repo = _FakeOrdersRepo()
+    adapter, pipeline, _ = _adapter({_LEADER: [_ctx_with_repo("u1", repo)]})
+
+    await adapter(_signal(provisional=False))
+
+    # On-chain was dispatched; the pipeline (faked here) claims its per-fill key.
+    assert [call[0] for call in pipeline.calls] == ["u1"]
+    polling_key = build_trade_key("u1", _LEADER, _polling_row())
+    fill_key = build_trade_key("u1", _LEADER, pipeline.calls[0][2][0])
+    assert fill_key.endswith("|log:7")
+    assert polling_key != fill_key
+    assert repo.rows[polling_key]["status"] == CrossSourceTradeClaimPolicy.STATUS
+    # Polling arriving later hits the same tx-level key and is refused.
+    assert (
+        await repo.try_claim_processed_trade(
+            trade_key=polling_key,
+            user_id="u1",
+            leader_id=_LEADER,
+            tx_hash=_TX,
+            side="BUY",
+            asset="123456",
+            condition_id="c",
+            status="in_progress",
+        )
+        is False
+    )
+
+
+@pytest.mark.asyncio
+async def test_pending_signal_without_fill_discriminator_is_not_preclaimed() -> None:
+    """When the per-fill key equals the tx-level key the pipeline claim is the dedup."""
+    repo = _FakeOrdersRepo()
+    adapter, pipeline, _ = _adapter({_LEADER: [_ctx_with_repo("u1", repo)]})
+
+    await adapter(_signal(provisional=True))
+
+    assert [call[0] for call in pipeline.calls] == ["u1"]
+    assert repo.claims == []
+
+
+@pytest.mark.asyncio
+async def test_second_onchain_fill_in_same_tx_logs_on_chain_winner(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from dataclasses import replace
+
+    repo = _FakeOrdersRepo()
+    adapter, pipeline, _ = _adapter({_LEADER: [_ctx_with_repo("u1", repo)]})
+
+    with caplog.at_level(logging.INFO, logger="OnchainSignalDispatch"):
+        await adapter(_signal(provisional=False))
+        await adapter(replace(_signal(provisional=False), log_index=8))
+
+    assert [call[0] for call in pipeline.calls] == ["u1"]
+    deduped = [
+        r.getMessage() for r in caplog.records if "detection_signal_deduped" in r.getMessage()
+    ]
+    assert len(deduped) == 1
+    assert "winner=on_chain" in deduped[0]
+
+
+@pytest.mark.asyncio
+async def test_claim_policy_failure_fails_closed_for_that_context(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class _BrokenRepo(_FakeOrdersRepo):
+        async def try_claim_processed_trade(self, **kwargs) -> bool:
+            raise RuntimeError("pg down")
+
+    adapter, pipeline, _ = _adapter({_LEADER: [_ctx_with_repo("u1", _BrokenRepo())]})
+
+    with caplog.at_level(logging.WARNING, logger="OnchainSignalDispatch"):
+        await adapter(_signal(provisional=False))
+
+    assert pipeline.calls == []
+    assert any("cross_source_claim_failed" in r.getMessage() for r in caplog.records)

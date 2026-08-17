@@ -451,6 +451,7 @@ GAUGE_PENDING_INTENTS = "pending_intents"
 
 # Leader-detection provenance. ``source`` is bounded to ``DetectionMode`` values.
 METRIC_DETECTION_SIGNALS = "detection_signals_total"
+METRIC_DETECTION_SIGNALS_DEDUPED = "detection_signals_deduped_total"
 GAUGE_DETECTION_MODE_SELECTED = "detection_mode_selected"
 DETECTION_SOURCE_LABEL_VALUES = ("polling", "on_chain_pending", "on_chain_confirmed")
 
@@ -520,6 +521,11 @@ _SKIP_REASONS = (
 TELEMETRY_METRIC_SCHEMAS: tuple[MetricSchema, ...] = (
     MetricSchema(
         METRIC_DETECTION_SIGNALS,
+        MetricKind.COUNTER,
+        (("source", DETECTION_SOURCE_LABEL_VALUES),),
+    ),
+    MetricSchema(
+        METRIC_DETECTION_SIGNALS_DEDUPED,
         MetricKind.COUNTER,
         (("source", DETECTION_SOURCE_LABEL_VALUES),),
     ),

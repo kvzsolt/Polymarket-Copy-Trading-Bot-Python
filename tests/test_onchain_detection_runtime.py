@@ -244,10 +244,16 @@ async def test_pending_then_mined_same_tx_both_dispatched() -> None:
     The pending is provisional (estimated from calldata); the mined is
     authoritative (from the actual ``OrderFilled`` log). The dispatcher's
     job is per-fill uniqueness (keyed on ``(tx_hash, log_index)`` for
-    mined, ``tx_hash`` for pending) — cross-signal dedup is the copy
-    pipeline's responsibility via ``build_trade_key`` (keyed on
-    ``leader|tx_hash|side|asset``, which matches for the same fill
-    regardless of provisional vs authoritative).
+    mined, ``tx_hash`` for pending) — cross-signal dedup is NOT this
+    runtime's job.
+
+    Note the copy keys do *not* match: ``CopyTradeIdentityBuilder`` appends
+    ``log:<index>`` for the mined signal, so ``build_trade_key`` alone would
+    copy the same fill twice. Downstream, ``CrossSourceTradeClaimPolicy``
+    (``orchestrators.onchain_signal_dispatch``) claims the tx-level key
+    before the per-fill dispatch, and ``ProvisionalPendingSourceBuilder``
+    runs this runtime with ``enable_mined=False`` in ``on_chain_pending``
+    mode, so pending + mined never both reach the pipeline in production.
 
     The previous tx_hash-only gate collapsed these to one dispatch,
     which also collapsed distinct multi-fill mined logs — the bug this
@@ -268,13 +274,13 @@ async def test_pending_then_mined_same_tx_both_dispatched() -> None:
         assert len(dispatched) == 1, "pending dispatched"
         assert dispatched[0].confidence == DetectionConfidence.PENDING_PROBABLE
         # Mined for the same tx arrives — dispatches independently
-        # (different idempotency key: (tx_hash, 0) vs tx_hash). The copy
-        # pipeline's build_trade_key catches the duplicate fill.
+        # (different idempotency key: (tx_hash, 0) vs tx_hash). Cross-source
+        # dedup happens downstream (CrossSourceTradeClaimPolicy).
         await rt._on_mined_log(_build_log(maker=_WATCHED, log_index=0, tx_hash=tx))
         await asyncio.sleep(0.05)
         assert len(dispatched) == 2, (
             "mined dispatches alongside the provisional pending — "
-            "copy pipeline dedupes via build_trade_key"
+            "cross-source dedup is the dispatch adapter's job"
         )
         assert dispatched[1].confidence == DetectionConfidence.MINED_AUTHORITATIVE
     finally:
