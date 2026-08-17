@@ -16,7 +16,13 @@ Before the legacy pipeline runs for a context, ``CrossSourceTradeClaimPolicy``
 claims the *tx-level* copy identity (``user|leader|tx|side|asset`` — the key
 REST polling builds, since data-api rows carry no ``logIndex``/``orderHash``)
 so the same fill is copied once whichever source saw it first. The pipeline
-still claims its own per-fill key, keeping per-fill attribution intact.
+still claims its own per-fill key, keeping per-fill attribution intact. A
+sibling fill of the same tx/side/asset (a second ``OrderFilled`` log for the
+leader in one settlement transaction) loses the tx-level claim to *this*
+policy, not to polling, and is dispatched anyway — sizes are additive and the
+per-fill key keeps idempotency. When a freshly claimed context produces no
+executed outcome the tx-level claim is released again so REST polling really
+is a fallback for that fill.
 
 The provenance rule matches ``orchestrators.v1_event_adapters``: a
 ``provisional`` signal is ``ON_CHAIN_PENDING``; anything else is
@@ -28,6 +34,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol, cast
@@ -41,10 +48,16 @@ from services.metrics import (
     metrics as _metrics,
 )
 from services.onchain_detection.trade_detection_models import OnchainTradeSignal
+from storage.postgres.orders_repo import CROSS_SOURCE_CLAIM_STATUS
 from utils.logger import get_logger, redact_error_detail
 
 TradePipeline = Callable[[Any, str, list[dict[str, Any]], float], Awaitable[Any]]
 _FILL_DISCRIMINATOR_KEYS = ("log_index", "logIndex", "order_hash", "orderHash")
+_DEFAULT_OWN_CLAIM_MEMORY = 4096
+_WINNER_ON_CHAIN = "on_chain"
+_WINNER_POLLING = "polling"
+_WINNER_UNKNOWN = "unknown"
+_WINNER_ERROR = "error"
 
 
 class ProcessedTradeClaimRepository(Protocol):
@@ -65,6 +78,10 @@ class ProcessedTradeClaimRepository(Protocol):
         """Atomically insert the processed-trade row; ``False`` when taken."""
         ...
 
+    async def delete_processed_trade(self, trade_key: str) -> None:
+        """Delete the processed-trade row (used to release a tx-level claim)."""
+        ...
+
 
 @dataclass(frozen=True, slots=True)
 class CrossSourceClaimDecision:
@@ -73,14 +90,20 @@ class CrossSourceClaimDecision:
     Attributes:
         dispatch: Whether the on-chain signal may reach the pipeline.
         trade_key: The tx-level identity that was (or would be) claimed.
-        winner: ``"on_chain"`` when this policy holds the claim (or no
-            pre-claim was needed), ``"polling"`` when REST polling won,
-            ``"error"`` when the claim could not be evaluated.
+        winner: ``"on_chain"`` when this policy holds the claim (fresh or a
+            sibling fill of a tx it already claimed, or no pre-claim was
+            needed), ``"polling"`` when REST polling won, ``"unknown"`` when
+            the claim was lost but the holder could not be determined,
+            ``"error"`` when the claim itself could not be evaluated.
+        claimed: ``True`` only when *this* call inserted the tx-level row.
+            Such a claim is released again if the dispatch produces no
+            executed outcome; sibling admissions never release anything.
     """
 
     dispatch: bool
     trade_key: str
     winner: str
+    claimed: bool = False
 
 
 class CrossSourceTradeClaimPolicy:
@@ -94,9 +117,18 @@ class CrossSourceTradeClaimPolicy:
     and a polling claim that landed first makes this pre-claim fail. When the
     per-fill key already equals the tx-level key (gen-1 pending signals) no
     pre-claim is made: the pipeline's own claim is the cross-source dedup.
+
+    A lost claim is attributed before it is acted on: if the tx-level key was
+    claimed by this policy earlier (bounded in-process memory, or the existing
+    row carries ``cross_source_claimed`` after a restart) the signal is a
+    *sibling fill* of the same settlement transaction and is dispatched — the
+    pipeline's per-fill ``|log:N`` claim keeps idempotency and the sizes are
+    additive. Only a row held by REST polling makes the signal skip. When the
+    holder cannot be determined (probe error / no row) the signal is skipped
+    with ``winner=unknown``; the loss is never attributed to polling on error.
     """
 
-    STATUS = "cross_source_claimed"
+    STATUS = CROSS_SOURCE_CLAIM_STATUS
 
     def __init__(
         self,
@@ -104,6 +136,7 @@ class CrossSourceTradeClaimPolicy:
         identity_builder: CopyTradeIdentityBuilder | None = None,
         metrics: MetricsRegistry = _metrics,
         logger: logging.Logger | None = None,
+        own_claim_memory: int = _DEFAULT_OWN_CLAIM_MEMORY,
     ) -> None:
         """Bind the identity builder and observability collaborators.
 
@@ -112,6 +145,9 @@ class CrossSourceTradeClaimPolicy:
                 the production ``CopyTradeIdentityBuilder``.
             metrics: Registry receiving ``detection_signals_deduped_total``.
             logger: Structured logger for dedup / failure lines.
+            own_claim_memory: Maximum number of tx-level keys remembered as
+                claimed by this process (oldest evicted first; the row status
+                probe covers evicted keys).
         """
 
         self._identity = (
@@ -119,6 +155,9 @@ class CrossSourceTradeClaimPolicy:
         )
         self._metrics = metrics
         self._logger = logger if logger is not None else get_logger("OnchainSignalDispatch")
+        self._own_claim_memory = max(1, int(own_claim_memory))
+        # tx-level key -> number of sibling fills admitted on that claim.
+        self._own_claims: OrderedDict[str, int] = OrderedDict()
 
     async def try_claim(
         self,
@@ -137,9 +176,10 @@ class CrossSourceTradeClaimPolicy:
             source: Provenance label for logs and metrics.
 
         Returns:
-            The decision; ``dispatch=False`` when polling (or an earlier
-            on-chain fill of the same tx/side/asset) already holds the key,
-            or when the claim could not be evaluated (fail closed).
+            The decision; ``dispatch=False`` when REST polling already holds
+            the key, when the holder is unknown, or when the claim could not
+            be evaluated (fail closed). A sibling fill of a tx this policy
+            already claimed is admitted with ``claimed=False``.
         """
 
         user_id = str(getattr(context, "user_id", "") or "")
@@ -149,7 +189,9 @@ class CrossSourceTradeClaimPolicy:
         tx_key = self._identity.build(user_id, leader_id, tx_level_raw)
         fill_key = self._identity.build(user_id, leader_id, raw)
         if tx_key == fill_key:
-            return CrossSourceClaimDecision(dispatch=True, trade_key=tx_key, winner="on_chain")
+            return CrossSourceClaimDecision(
+                dispatch=True, trade_key=tx_key, winner=_WINNER_ON_CHAIN
+            )
         tx_hash = str(raw.get("tx_hash") or raw.get("transactionHash") or "")
         try:
             repo: ProcessedTradeClaimRepository = context.orders_repo
@@ -172,30 +214,146 @@ class CrossSourceTradeClaimPolicy:
                 tx_hash,
                 redact_error_detail(exc),
             )
-            return CrossSourceClaimDecision(dispatch=False, trade_key=tx_key, winner="error")
+            return CrossSourceClaimDecision(dispatch=False, trade_key=tx_key, winner=_WINNER_ERROR)
         if claimed:
-            return CrossSourceClaimDecision(dispatch=True, trade_key=tx_key, winner="on_chain")
-        winner = await self._winner_for(repo, tx_key)
+            self._remember_own_claim(tx_key)
+            return CrossSourceClaimDecision(
+                dispatch=True, trade_key=tx_key, winner=_WINNER_ON_CHAIN, claimed=True
+            )
+        holder = (
+            _WINNER_ON_CHAIN
+            if tx_key in self._own_claims
+            else await self._holder_of(
+                repo, tx_key, source=source, user_id=user_id, tx_hash=tx_hash
+            )
+        )
+        if holder == _WINNER_ON_CHAIN:
+            self._record_sibling(tx_key)
+            self._logger.info(
+                "cross_source_sibling_fill | source=%s tx=%s user=%s — same-tx sibling fill "
+                "dispatched; per-fill claim in the pipeline keeps idempotency",
+                source.value,
+                tx_hash,
+                user_id,
+            )
+            return CrossSourceClaimDecision(
+                dispatch=True, trade_key=tx_key, winner=_WINNER_ON_CHAIN
+            )
+        if holder == _WINNER_UNKNOWN:
+            return CrossSourceClaimDecision(
+                dispatch=False, trade_key=tx_key, winner=_WINNER_UNKNOWN
+            )
         self._logger.info(
             "detection_signal_deduped | source=%s winner=%s tx=%s user=%s",
             source.value,
-            winner,
+            holder,
             tx_hash,
             user_id,
         )
         self._metrics.inc(METRIC_DETECTION_SIGNALS_DEDUPED, labels={"source": source.value})
-        return CrossSourceClaimDecision(dispatch=False, trade_key=tx_key, winner=winner)
+        return CrossSourceClaimDecision(dispatch=False, trade_key=tx_key, winner=holder)
 
-    async def _winner_for(self, repo: Any, trade_key: str) -> str:
-        probe = getattr(repo, "get_processed_trade", None)
-        if not callable(probe):
-            return "polling"
+    async def release(
+        self,
+        context: Any,
+        decision: CrossSourceClaimDecision,
+        *,
+        reason: str,
+    ) -> None:
+        """Release a tx-level claim this policy inserted for ``context``.
+
+        Only a decision with ``claimed=True`` is released, and only when no
+        sibling fill was admitted on that claim in the meantime (releasing
+        then would let polling's aggregate copy the sibling a second time).
+        Failures are logged, never raised.
+
+        Args:
+            context: Trading context whose ``orders_repo`` holds the row.
+            decision: The decision returned by ``try_claim``.
+            reason: Short operator-facing reason for the release.
+        """
+
+        if not decision.claimed:
+            return
+        user_id = str(getattr(context, "user_id", "") or "")
+        siblings = self._own_claims.get(decision.trade_key, 0)
+        if siblings > 0:
+            self._logger.info(
+                "cross_source_claim_kept | reason=%s user=%s key=%s siblings=%d — a sibling "
+                "fill was admitted on this claim; polling stays refused",
+                reason,
+                user_id,
+                decision.trade_key,
+                siblings,
+            )
+            return
+        self._own_claims.pop(decision.trade_key, None)
         try:
-            row = await cast(Awaitable[Mapping[str, Any] | None], probe(trade_key))
-        except Exception:
-            return "polling"
+            repo: ProcessedTradeClaimRepository = context.orders_repo
+            await repo.delete_processed_trade(decision.trade_key)
+        except Exception as exc:
+            self._logger.warning(
+                "cross_source_claim_release_failed | reason=%s user=%s key=%s error=%s",
+                reason,
+                user_id,
+                decision.trade_key,
+                redact_error_detail(exc),
+            )
+            return
+        self._logger.info(
+            "cross_source_claim_released | reason=%s user=%s key=%s — polling may copy this fill",
+            reason,
+            user_id,
+            decision.trade_key,
+        )
+
+    def _remember_own_claim(self, tx_key: str) -> None:
+        self._own_claims[tx_key] = 0
+        self._own_claims.move_to_end(tx_key)
+        while len(self._own_claims) > self._own_claim_memory:
+            self._own_claims.popitem(last=False)
+
+    def _record_sibling(self, tx_key: str) -> None:
+        self._own_claims[tx_key] = self._own_claims.get(tx_key, 0) + 1
+        self._own_claims.move_to_end(tx_key)
+        while len(self._own_claims) > self._own_claim_memory:
+            self._own_claims.popitem(last=False)
+
+    async def _holder_of(
+        self,
+        repo: Any,
+        trade_key: str,
+        *,
+        source: DetectionMode,
+        user_id: str,
+        tx_hash: str,
+    ) -> str:
+        """Return who holds ``trade_key``: ``on_chain``, ``polling`` or ``unknown``."""
+
+        probe = getattr(repo, "get_processed_trade", None)
+        error: str | None = None
+        row: Mapping[str, Any] | None = None
+        if not callable(probe):
+            error = "no_probe"
+        else:
+            try:
+                row = await cast(Awaitable[Mapping[str, Any] | None], probe(trade_key))
+            except Exception as exc:
+                error = redact_error_detail(exc)
+        if error is None and row is None:
+            error = "no_row"
+        if error is not None:
+            self._logger.warning(
+                "cross_source_claim_unresolved | source=%s winner=unknown user=%s tx=%s "
+                "error=%s — claim lost but holder unknown; signal not dispatched",
+                source.value,
+                user_id,
+                tx_hash,
+                error,
+            )
+            return _WINNER_UNKNOWN
         status = str((row or {}).get("status") or "")
-        return "on_chain" if status == self.STATUS else "polling"
+        return _WINNER_ON_CHAIN if status == self.STATUS else _WINNER_POLLING
 
 
 class OnchainSignalSubmitter(Protocol):
@@ -321,19 +479,28 @@ class OnchainSignalDispatchAdapter:
             return
         raw = signal.as_raw_signal_dict()
         source = self.source_for(signal)
-        admitted = []
-        for ctx in contexts:
-            decision = await self._claim_policy.try_claim(ctx, leader_lower, raw, source=source)
-            if decision.dispatch:
-                admitted.append(ctx)
+        decisions = await asyncio.gather(
+            *(
+                self._claim_policy.try_claim(ctx, leader_lower, raw, source=source)
+                for ctx in contexts
+            )
+        )
+        admitted = [
+            (ctx, decision)
+            for ctx, decision in zip(contexts, decisions, strict=True)
+            if decision.dispatch
+        ]
         if not admitted:
             return
         now_ts = self._clock()
         results = await asyncio.gather(
-            *(self._execute_trades(ctx, leader_lower, [dict(raw)], now_ts) for ctx in admitted),
+            *(
+                self._execute_trades(ctx, leader_lower, [dict(raw)], now_ts)
+                for ctx, _decision in admitted
+            ),
             return_exceptions=True,
         )
-        for ctx, result in zip(admitted, results, strict=True):
+        for (ctx, decision), result in zip(admitted, results, strict=True):
             if isinstance(result, BaseException):
                 self._logger.warning(
                     "onchain_signal_pipeline_error | leader=%s user=%s tx=%s error=%s",
@@ -342,6 +509,21 @@ class OnchainSignalDispatchAdapter:
                     signal.tx_hash,
                     redact_error_detail(result),
                 )
+                await self._claim_policy.release(ctx, decision, reason="pipeline_error")
+            elif not self._has_executed_outcome(result):
+                await self._claim_policy.release(ctx, decision, reason="no_executed_outcome")
+
+    @staticmethod
+    def _has_executed_outcome(result: Any) -> bool:
+        """Whether a pipeline result carries anything other than skips.
+
+        The legacy pipeline returns a list of ``TradePipelineResult``; any
+        entry whose ``status`` is not ``"skipped"`` (executed, paper, failed
+        — the pipeline then owns that fill's retry) counts as an outcome.
+        """
+
+        outcomes = list(result) if isinstance(result, (list, tuple)) else []
+        return any(str(getattr(item, "status", "") or "") != "skipped" for item in outcomes)
 
 
 __all__ = [

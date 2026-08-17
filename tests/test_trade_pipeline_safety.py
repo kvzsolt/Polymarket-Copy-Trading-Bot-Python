@@ -1863,13 +1863,63 @@ async def test_immediate_fill_buys_record_daily_spend_once_each(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_cross_source_claim_row_is_invisible_to_manual_sync_probe(tmp_path):
+    """I3 (real Postgres): the tx-level pre-claim never counts as a recent bot trade."""
+    from domain.detection import DetectionMode
+    from orchestrators.onchain_signal_dispatch import CrossSourceTradeClaimPolicy
+
+    async with _pg_pool() as pool:
+        ctx = _make_context(pool, tmp_path, execution_service=AsyncMock())
+        onchain_raw = {
+            "leader_id": "leader1",
+            "tx_hash": "0xabc",
+            "side": "BUY",
+            "token_id": FAKE_TOKEN_ID,
+            "condition_id": "cond1",
+            "log_index": 7,
+            "order_hash": None,
+        }
+        decision = await CrossSourceTradeClaimPolicy().try_claim(
+            ctx, "leader1", onchain_raw, source=DetectionMode.ON_CHAIN_CONFIRMED
+        )
+        assert decision.dispatch is True and decision.claimed is True
+
+        assert (
+            await ctx.orders_repo.has_recent_processed_trade(
+                user_id="user1", asset=FAKE_TOKEN_ID, side="BUY"
+            )
+            is False
+        )
+        # A genuine bot submission on the same scope is still recognised.
+        await ctx.orders_repo.mark_processed_trade(
+            trade_key="user1|leader1|0xdef|BUY|" + FAKE_TOKEN_ID,
+            user_id="user1",
+            leader_id="leader1",
+            tx_hash="0xdef",
+            side="BUY",
+            asset=FAKE_TOKEN_ID,
+            condition_id="cond1",
+            status="submitted_unconfirmed",
+        )
+        assert (
+            await ctx.orders_repo.has_recent_processed_trade(
+                user_id="user1", asset=FAKE_TOKEN_ID, side="BUY"
+            )
+            is True
+        )
+
+
+@pytest.mark.asyncio
 async def test_polling_skips_when_onchain_claimed_tx_pipeline_level(tmp_path):
-    """Slice 4: the on-chain tx-level claim makes the pipeline skip the polled fill.
+    """Slice 4 / C1: the on-chain tx-level claim makes the pipeline skip the polled fill,
+    while a sibling on-chain fill of the same tx is still admitted.
 
     The on-chain raw signal carries ``log_index`` (per-fill key
     ``...|log:N``); the data-api row has none. Without the tx-level
     ``CrossSourceTradeClaimPolicy`` claim, both keys would be distinct and the
-    same fill would be copied twice.
+    same fill would be copied twice. Two ``OrderFilled`` fills of one tx are
+    two distinct copies (sizes are additive); polling's aggregate for that tx
+    is refused.
     """
     from domain.detection import DetectionMode
     from orchestrators.onchain_signal_dispatch import CrossSourceTradeClaimPolicy
@@ -1887,22 +1937,84 @@ async def test_polling_skips_when_onchain_claimed_tx_pipeline_level(tmp_path):
             "log_index": 7,
             "order_hash": None,
         }
-        decision = await CrossSourceTradeClaimPolicy().try_claim(
+        policy = CrossSourceTradeClaimPolicy()
+        decision = await policy.try_claim(
             ctx, "leader1", onchain_raw, source=DetectionMode.ON_CHAIN_CONFIRMED
         )
         assert decision.dispatch is True
+        assert decision.claimed is True
         assert decision.trade_key == build_trade_key("user1", "leader1", _signal())
         assert decision.trade_key != build_trade_key("user1", "leader1", onchain_raw)
 
+        # A second on-chain fill of the same tx/side/asset is our own sibling:
+        # dispatched (claimed=False), both via in-process memory ...
+        second = await policy.try_claim(
+            ctx, "leader1", {**onchain_raw, "log_index": 8}, source=DetectionMode.ON_CHAIN_CONFIRMED
+        )
+        assert second.dispatch is True
+        assert second.claimed is False
+        assert second.winner == "on_chain"
+        # ... and via the row status after a restart (fresh policy instance).
+        third = await CrossSourceTradeClaimPolicy().try_claim(
+            ctx, "leader1", {**onchain_raw, "log_index": 9}, source=DetectionMode.ON_CHAIN_CONFIRMED
+        )
+        assert third.dispatch is True
+        assert third.claimed is False
+
+        # Polling's aggregate for that tx is refused by the pipeline's own claim.
         results = await execute_trades(ctx, "leader1", [_signal()], time.time())
         assert len(results) == 1
         assert results[0].status == "skipped"
         assert results[0].reason == "already_processed"
         exec_svc.execute.assert_not_called()
 
-        # And a second on-chain fill of the same tx/side/asset is deduped too.
-        second = await CrossSourceTradeClaimPolicy().try_claim(
-            ctx, "leader1", {**onchain_raw, "log_index": 8}, source=DetectionMode.ON_CHAIN_CONFIRMED
+
+@pytest.mark.asyncio
+async def test_released_cross_source_claim_lets_polling_copy_pipeline_level(tmp_path):
+    """I2 (real Postgres): a pre-claim whose dispatch raised is released, so
+    the polling fallback really copies the fill afterwards."""
+    from orchestrators.onchain_signal_dispatch import OnchainSignalDispatchAdapter
+    from services.onchain_detection.trade_detection_models import (
+        DetectionConfidence,
+        OnchainTradeSignal,
+    )
+
+    async with _pg_pool() as pool:
+        exec_svc = AsyncMock()
+        exec_svc.execute = AsyncMock(return_value=_exec_result(filled=Decimal("5")))
+        ctx = _make_context(pool, tmp_path, execution_service=exec_svc)
+
+        async def _raising_pipeline(_ctx, _leader, _raws, _now):
+            raise RuntimeError("pipeline blew up before its own claim")
+
+        adapter = OnchainSignalDispatchAdapter(
+            contexts_by_leader={"leader1": [ctx]},
+            v1_runtime=None,
+            execute_trades=_raising_pipeline,
         )
-        assert second.dispatch is False
-        assert second.winner == "on_chain"
+        signal = OnchainTradeSignal(
+            leader_wallet="leader1",
+            token_id=FAKE_TOKEN_ID,
+            side="BUY",
+            size=Decimal("10"),
+            price=Decimal("0.5"),
+            usdc_size=Decimal("5"),
+            tx_hash="0xabc",
+            confidence=DetectionConfidence.MINED_AUTHORITATIVE,
+            maker_side=0,
+            watched_role="maker",
+            event_ts=int(time.time()),
+            log_index=7,
+            condition_id="cond1",
+            provisional=False,
+            exchange="0x" + "11" * 20,
+            order_hash=None,
+        )
+        await adapter(signal)
+
+        tx_key = build_trade_key("user1", "leader1", _signal())
+        assert await ctx.orders_repo.get_processed_trade(tx_key) is None
+
+        results = await execute_trades(ctx, "leader1", [_signal()], time.time())
+        assert len(results) == 1
+        assert results[0].status == "executed"

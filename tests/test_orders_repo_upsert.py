@@ -298,7 +298,7 @@ async def test_has_recent_processed_trade_true_with_side_filter():
     assert isinstance(params[2], float)  # epoch cutoff
     # Side bound case-insensitively as a parameter (no SQL injection surface).
     assert "UPPER(side)" in query
-    assert params[3] == "BUY"
+    assert params[4] == "BUY"
 
 
 async def test_has_recent_processed_trade_false_no_row_and_no_side_filter():
@@ -312,7 +312,29 @@ async def test_has_recent_processed_trade_false_no_row_and_no_side_filter():
     assert out is False
     query, params = conn.calls[0]
     assert "UPPER(side)" not in query  # side omitted → no filter
-    assert len(params) == 3
+    assert len(params) == 4  # user, asset, cutoff, cross-source sentinel exclusion
+
+
+async def test_has_recent_processed_trade_ignores_cross_source_claim_sentinel():
+    """I3: the on-chain tx-level pre-claim row is not a bot-originated trade.
+
+    ``CrossSourceTradeClaimPolicy`` writes an order-less ``processed_trades``
+    row keyed on the tx-level identity; manual-sync must not read it as "the
+    bot acted on this scope" and misclassify a real manual fill.
+    """
+    from storage.postgres.orders_repo import CROSS_SOURCE_CLAIM_STATUS
+
+    conn = _FetchrowConn(None)
+    repo = OrdersRepo(_FakePool(conn))
+
+    await repo.has_recent_processed_trade(user_id="0xUser", asset="0xTok", side="buy")
+
+    query, params = conn.calls[0]
+    assert CROSS_SOURCE_CLAIM_STATUS == "cross_source_claimed"
+    assert "status <> $4" in query
+    assert params[3] == CROSS_SOURCE_CLAIM_STATUS
+    assert "UPPER(side) = $5" in query
+    assert params[4] == "BUY"
 
 
 async def test_has_recent_processed_trade_short_circuits_empty_scope():

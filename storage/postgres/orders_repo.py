@@ -84,6 +84,12 @@ _PROCESSED_TRADE_TERMINAL_STATES = [
     "terminal_failed",
 ]
 
+# Status of the order-less tx-level row the on-chain dispatch path inserts to
+# dedup against REST polling (``CrossSourceTradeClaimPolicy``). It records
+# "an on-chain source is copying this tx" — never a submitted bot order — so
+# activity classification (manual-sync) must not read it as bot activity.
+CROSS_SOURCE_CLAIM_STATUS = "cross_source_claimed"
+
 # Order statuses that are *not terminally settled* and therefore still need
 # reconciliation — NOT only "never reached the venue". The set deliberately
 # includes live/matched states: an order that was ``live`` or ``matched`` when
@@ -1370,8 +1376,12 @@ class OrdersRepo(AbstractOrderRepository):
         acted on this scope" signal that closes the manual-sync race window.
 
         Matches ANY status so both in-flight (``submitted_unconfirmed``) and
-        just-settled rows count. ``processed_at`` is a unix-epoch numeric column
-        (same comparison basis as ``get_unconfirmed_buys``).
+        just-settled rows count — except the order-less
+        ``CROSS_SOURCE_CLAIM_STATUS`` sentinel written by the on-chain
+        cross-source dedup, which is not a bot order and would misclassify a
+        genuine manual fill on the same scope. ``processed_at`` is a
+        unix-epoch numeric column (same comparison basis as
+        ``get_unconfirmed_buys``).
         """
         if not user_id or not asset:
             return False
@@ -1381,8 +1391,9 @@ class OrdersRepo(AbstractOrderRepository):
             WHERE user_id = $1
               AND asset = $2
               AND processed_at >= $3
+              AND status <> $4
         """
-        params: list[Any] = [user_id, asset, cutoff]
+        params: list[Any] = [user_id, asset, cutoff, CROSS_SOURCE_CLAIM_STATUS]
         if side is not None:
             query += f" AND UPPER(side) = ${len(params) + 1}"
             params.append(str(side).upper())
