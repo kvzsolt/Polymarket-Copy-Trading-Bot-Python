@@ -95,24 +95,95 @@ async def test_app_composes_factory_from_config() -> None:
 
 
 def test_confirmed_onchain_runtime_builder_uses_new_polygon_composition() -> None:
-    """Pending-enabled wiring builds the head-driven confirmation runtime."""
+    """The app's confirmed builder composes the head-driven confirmation runtime."""
 
-    from app import _build_confirmed_onchain_runtime
+    from app import _confirmed_source_builder
+    from domain.detection import DetectionMode
     from orchestration.polygon_source_transaction_runtime import (
         PolygonSourceTransactionRuntime,
+    )
+    from orchestrators.detection_source_factory import (
+        ConfirmedSourceBuilder,
+        DetectionSourceRequest,
     )
 
     async def sink(_signal) -> None:
         return None
 
-    runtime = _build_confirmed_onchain_runtime(
-        watched_wallets={"0x" + "11" * 20},
-        ws_url="wss://polygon.example.invalid/v2/redacted",
-        chain_id=137,
-        signal_sink=sink,
+    async def _no_store():
+        return None
+
+    builder = _confirmed_source_builder(_no_store)
+    assert isinstance(builder, ConfirmedSourceBuilder)
+    assert not hasattr(__import__("app"), "_build_confirmed_onchain_runtime")
+
+    runtime = builder.compose(
+        DetectionSourceRequest(
+            mode=DetectionMode.ON_CHAIN_CONFIRMED,
+            watched_wallets=frozenset({"0x" + "11" * 20}),
+            ws_url="wss://polygon.example.invalid/v2/redacted",
+            chain_id=137,
+            signal_sink=sink,
+        ),
+        None,
     )
 
     assert isinstance(runtime, PolygonSourceTransactionRuntime)
+
+
+@pytest.mark.asyncio
+async def test_failed_runtime_start_is_stopped_before_being_dropped() -> None:
+    """A runtime whose ``start()`` raises is stopped (WS/dispatcher tasks
+    released) before ``app.main`` continues without on-chain detection."""
+    from app import _start_onchain_runtime
+    from domain.detection import DetectionMode
+
+    class _Runtime:
+        def __init__(self, *, stop_raises: bool = False) -> None:
+            self.started = 0
+            self.stopped = 0
+            self._stop_raises = stop_raises
+
+        async def start(self) -> None:
+            self.started += 1
+            raise RuntimeError("ws connect failed")
+
+        async def stop(self) -> None:
+            self.stopped += 1
+            if self._stop_raises:
+                raise RuntimeError("stop failed too")
+
+    runtime = _Runtime()
+    with pytest.raises(RuntimeError, match="ws connect failed"):
+        await _start_onchain_runtime(runtime, mode=DetectionMode.ON_CHAIN_CONFIRMED)
+    assert runtime.started == 1
+    assert runtime.stopped == 1
+
+    noisy = _Runtime(stop_raises=True)
+    with pytest.raises(RuntimeError, match="ws connect failed"):
+        await _start_onchain_runtime(noisy, mode=DetectionMode.ON_CHAIN_CONFIRMED)
+    assert noisy.stopped == 1
+
+
+@pytest.mark.asyncio
+async def test_successful_runtime_start_is_not_stopped() -> None:
+    from app import _start_onchain_runtime
+    from domain.detection import DetectionMode
+
+    class _Runtime:
+        def __init__(self) -> None:
+            self.started = 0
+            self.stopped = 0
+
+        async def start(self) -> None:
+            self.started += 1
+
+        async def stop(self) -> None:
+            self.stopped += 1
+
+    runtime = _Runtime()
+    await _start_onchain_runtime(runtime, mode=DetectionMode.ON_CHAIN_PENDING)
+    assert (runtime.started, runtime.stopped) == (1, 0)
 
 
 def test_pending_tx_config_fields_match_onchain_detection_config() -> None:

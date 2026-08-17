@@ -15,11 +15,11 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from interfaces.source_transactions import SourceTransactionStateStore
-    from orchestration.polygon_source_transaction_runtime import (
-        PolygonSourceTransactionRuntime,
+    from orchestrators.detection_source_factory import (
+        ConfirmedSourceBuilder,
+        DetectionSourceRuntime,
     )
     from orchestrators.runtime_bootstrap import TradingContext
-    from services.onchain_detection.trade_detection_models import OnchainTradeSignal
 
 from bootstrap import build_app
 from config.app_config import AppConfigSemanticValidator, EnvValidationError, load_config
@@ -248,49 +248,21 @@ def _build_onchain_condition_id_resolver():
     return GammaConditionIdResolver().resolve
 
 
-def _build_confirmed_onchain_runtime(
-    *,
-    watched_wallets: set[str],
-    ws_url: str,
-    chain_id: int,
-    signal_sink: Callable[["OnchainTradeSignal"], Awaitable[None]],
-    state_store: "SourceTransactionStateStore | None" = None,
-) -> "PolygonSourceTransactionRuntime":
-    """Thin glue: compose the receipt-confirmed runtime via ``ConfirmedSourceBuilder``.
+def _confirmed_source_builder(
+    state_store_provider: "Callable[[], Awaitable[SourceTransactionStateStore | None]]",
+) -> "ConfirmedSourceBuilder":
+    """Thin glue: the receipt-confirmed builder over both CTF exchanges.
 
     Args:
-        watched_wallets: Current leader wallet snapshot, including Safe wallets.
-        ws_url: Alchemy Polygon WebSocket endpoint; retained by the adapter.
-        chain_id: Configured Polygon EVM chain identifier.
-        signal_sink: Existing authoritative on-chain signal consumer.
-        state_store: Durable source reservation/idempotency snapshot adapter.
+        state_store_provider: Awaitable factory for the durable source
+            reservation/idempotency store (Postgres in production, ``None``
+            for an in-memory registry in tests).
 
     Returns:
-        Fully composed, not-yet-started source confirmation runtime.
+        ``ConfirmedSourceBuilder`` filtering on the CTF and neg-risk exchange
+        contracts.
     """
 
-    from orchestrators.detection_source_factory import (
-        DetectionSourceRequest,
-    )
-
-    async def _provide_state_store() -> "SourceTransactionStateStore | None":
-        return state_store
-
-    builder = _confirmed_source_builder(_provide_state_store)
-    runtime = builder.compose(
-        DetectionSourceRequest(
-            mode=DetectionMode.ON_CHAIN_CONFIRMED,
-            watched_wallets=frozenset(watched_wallets),
-            ws_url=ws_url,
-            chain_id=chain_id,
-            signal_sink=signal_sink,
-        ),
-        state_store,
-    )
-    return runtime  # type: ignore[return-value]
-
-
-def _confirmed_source_builder(state_store_provider):
     from config.addresses import (
         POLYMARKET_CTF_EXCHANGE_V2_ADDRESS,
         POLYMARKET_NEG_RISK_EXCHANGE_V2_ADDRESS,
@@ -304,6 +276,35 @@ def _confirmed_source_builder(state_store_provider):
         ),
         state_store_provider=state_store_provider,
     )
+
+
+async def _start_onchain_runtime(runtime: "DetectionSourceRuntime", *, mode: DetectionMode) -> None:
+    """Thin glue: start ``runtime``; on failure stop it before re-raising.
+
+    A partially started runtime (WebSocket connected, dispatcher task spawned)
+    would otherwise leak because ``app.main`` drops its reference and the
+    shutdown path never sees it. ``stop()`` errors are logged and suppressed.
+
+    Args:
+        runtime: Not-yet-started detection source runtime.
+        mode: Selected detection mode (log context only).
+
+    Raises:
+        Exception: Whatever ``runtime.start()`` raised, after ``stop()``.
+    """
+
+    try:
+        await runtime.start()
+    except BaseException:
+        try:
+            await runtime.stop()
+        except Exception as stop_exc:
+            logger.warning(
+                "onchain_detection_stop_after_failed_start_failed | mode=%s error=%s",
+                mode.value,
+                redact_error_detail(stop_exc),
+            )
+        raise
 
 
 async def _default_source_state_store_provider():
@@ -2053,7 +2054,7 @@ async def _run_application(client_registry: list[Any]) -> int:
                 )
             )
             if onchain_runtime is not None:
-                await onchain_runtime.start()
+                await _start_onchain_runtime(onchain_runtime, mode=detection_mode)
                 logger.info(
                     "onchain_detection_started | mode=%s watched=%d",
                     detection_mode.value,

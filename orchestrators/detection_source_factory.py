@@ -112,9 +112,14 @@ class ProvisionalPendingSourceBuilder:
 
     The mined ``OrderFilled`` subscription stays disabled on purpose: gen-1
     mined signals carry a ``log_index`` that changes the copy identity, so
-    running both would copy the same fill twice (pending then mined). The
-    dispatcher's staleness budget, confidence floor, and per-leader
-    supersession safeguards remain active for the pending path.
+    running both would copy the same fill twice (pending then mined). As a
+    consequence there is **no mined correction path** in this mode: the
+    per-leader supersession check lives in the mined handler and can never
+    fire, so a provisional copy of a mempool sighting that is dropped or
+    replaced before mining is not unwound by this runtime. Only the
+    dispatcher's staleness budget and confidence floor remain active. Operate
+    this mode only after a paper soak and with an explicit unwind procedure
+    (see ``docs/audit/pending_detection_notes.md``).
     """
 
     def __init__(

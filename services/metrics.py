@@ -10,6 +10,8 @@ from enum import StrEnum
 from math import ceil, floor, inf, isfinite
 from typing import Iterable
 
+from domain.detection import DetectionMode
+
 
 _METRIC_NAME_RE = re.compile(r"^[a-zA-Z_:][a-zA-Z0-9_:]*$")
 
@@ -453,7 +455,7 @@ GAUGE_PENDING_INTENTS = "pending_intents"
 METRIC_DETECTION_SIGNALS = "detection_signals_total"
 METRIC_DETECTION_SIGNALS_DEDUPED = "detection_signals_deduped_total"
 GAUGE_DETECTION_MODE_SELECTED = "detection_mode_selected"
-DETECTION_SOURCE_LABEL_VALUES = ("polling", "on_chain_pending", "on_chain_confirmed")
+DETECTION_SOURCE_LABEL_VALUES = tuple(mode.value for mode in DetectionMode)
 
 # V1 telemetry metric names. Every label in these schemas has an explicit,
 # bounded value set; opaque leader/task/order identifiers never become labels.

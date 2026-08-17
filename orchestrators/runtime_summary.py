@@ -319,6 +319,7 @@ def print_startup_summary(
             "leader_discovery_and_polling",
             "LEADER DISCOVERY & POLLING",
             {
+                "detection_mode": config.detection.mode,
                 "fetch_interval": config.detection.fetch_interval,
                 "aggregate_signal_window_seconds": config.detection.aggregate_signal_window_seconds,
                 "configured_wallets": config.copy_trading.wallets,
