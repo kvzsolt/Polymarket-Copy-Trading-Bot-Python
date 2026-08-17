@@ -95,7 +95,7 @@ def test_paper_runtime_is_ccxt_market_reads_plus_simulated_writes() -> None:
             runtime_user=_runtime_user(),
             config=_config("paper"),
             exchange_factory=_Exchange,
-            ccxt_version="4.5.70",
+            ccxt_version="4.5.73",
         )
     )
 
@@ -113,7 +113,7 @@ def test_live_runtime_is_authenticated_ccxt_gateway() -> None:
             runtime_user=_runtime_user(),
             config=_config("live"),
             exchange_factory=_Exchange,
-            ccxt_version="4.5.70",
+            ccxt_version="4.5.73",
         )
     )
 
@@ -236,7 +236,7 @@ def test_paper_mode_cannot_perform_live_writes() -> None:
             runtime_user=_runtime_user(),
             config=_config("paper"),
             exchange_factory=_Exchange,
-            ccxt_version="4.5.70",
+            ccxt_version="4.5.73",
         )
     )
 

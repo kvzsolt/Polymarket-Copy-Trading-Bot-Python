@@ -6,7 +6,7 @@ from typing import Any
 
 from integrations.polymarket.ccxt_compat.exceptions import CcxtPredictionUnavailable
 
-_MINIMUM_CCXT_VERSION = (4, 5, 70)
+_MINIMUM_CCXT_VERSION = (4, 5, 73)
 _MAXIMUM_EXCLUSIVE_MAJOR = 5
 _VERSION_COMPONENTS = 3
 
@@ -26,7 +26,7 @@ def parse_ccxt_version(value: Any) -> tuple[int, ...]:
 
 
 def ensure_supported_ccxt_version(version: Any) -> None:
-    """Reject CCXT installs outside the supported ``>=4.5.70,<5`` window.
+    """Reject CCXT installs outside the supported ``>=4.5.73,<5`` window.
 
     Raises:
         CcxtPredictionUnavailable: When the version is missing, older than the
@@ -36,13 +36,13 @@ def ensure_supported_ccxt_version(version: Any) -> None:
     parsed = parse_ccxt_version(version)
     if not parsed:
         raise CcxtPredictionUnavailable(
-            f"CCXT version could not be determined from {version!r}; >= 4.5.70, < 5 is required"
+            f"CCXT version could not be determined from {version!r}; >= 4.5.73, < 5 is required"
         )
     if parsed < _MINIMUM_CCXT_VERSION:
-        raise CcxtPredictionUnavailable(f"CCXT {version} is too old; >= 4.5.70, < 5 is required")
+        raise CcxtPredictionUnavailable(f"CCXT {version} is too old; >= 4.5.73, < 5 is required")
     if parsed[0] >= _MAXIMUM_EXCLUSIVE_MAJOR:
         raise CcxtPredictionUnavailable(
-            f"CCXT {version} is unsupported; >= 4.5.70, < 5 is required"
+            f"CCXT {version} is unsupported; >= 4.5.73, < 5 is required"
         )
 
 

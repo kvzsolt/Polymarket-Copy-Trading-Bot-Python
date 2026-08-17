@@ -54,7 +54,7 @@ def _load_default_factory() -> tuple[Callable[[dict[str, Any]], Any], str | None
     factory = getattr(prediction, "polymarket", None)
     if factory is None:
         raise CcxtPredictionUnavailable(
-            "installed CCXT does not expose ccxt.prediction.polymarket; CCXT >= 4.5.70 is required"
+            "installed CCXT does not expose ccxt.prediction.polymarket; CCXT >= 4.5.73 is required"
         )
     return factory, str(getattr(ccxt, "__version__", "") or "") or None
 

@@ -17,7 +17,7 @@ from integrations.polymarket.ccxt_compat.version_guard import (
 @pytest.mark.parametrize(
     ("value", "expected"),
     [
-        ("4.5.70", (4, 5, 70)),
+        ("4.5.73", (4, 5, 73)),
         ("4.5.71.1", (4, 5, 71)),
         ("4.6.0", (4, 6, 0)),
         ("5.0.0", (5, 0, 0)),
@@ -32,7 +32,7 @@ def test_parse_ccxt_version(value: str | None, expected: tuple[int, ...]) -> Non
 
 
 def test_minimum_supported_version_passes() -> None:
-    ensure_supported_ccxt_version("4.5.70")
+    ensure_supported_ccxt_version("4.5.73")
 
 
 def test_newer_patch_version_passes() -> None:
@@ -40,8 +40,8 @@ def test_newer_patch_version_passes() -> None:
 
 
 def test_too_old_version_fails_closed() -> None:
-    with pytest.raises(RuntimeError, match="4.5.70"):
-        ensure_supported_ccxt_version("4.5.69")
+    with pytest.raises(RuntimeError, match="4.5.73"):
+        ensure_supported_ccxt_version("4.5.72")
 
 
 def test_missing_version_fails_closed() -> None:
@@ -57,7 +57,7 @@ def test_future_major_version_fails_closed() -> None:
 def test_health_payload_uses_ccxt_terminology_only() -> None:
     payload = build_ccxt_health_payload(
         available=True,
-        ccxt_version="4.5.70",
+        ccxt_version="4.5.73",
         authenticated=True,
         live_execution_ready=True,
         capabilities={name: True for name in CCXT_CAPABILITY_METHODS},
@@ -65,7 +65,7 @@ def test_health_payload_uses_ccxt_terminology_only() -> None:
 
     assert payload["available"] is True
     assert payload["transport"] == "ccxt.prediction.polymarket"
-    assert payload["ccxt_version"] == "4.5.70"
+    assert payload["ccxt_version"] == "4.5.73"
     assert payload["authenticated"] is True
     assert payload["live_execution_ready"] is True
     assert payload["precision_patch"] == "pmcopy-arbitrary-tick-v1"
@@ -98,7 +98,7 @@ def test_health_payload_never_carries_sdk_field_names() -> None:
 def test_health_payload_accepts_extra_diagnostics_without_secrets() -> None:
     payload = build_ccxt_health_payload(
         available=True,
-        ccxt_version="4.5.70",
+        ccxt_version="4.5.73",
         authenticated=False,
         live_execution_ready=False,
         capabilities={},

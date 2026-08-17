@@ -4,7 +4,7 @@ aiohappyeyeballs==2.7.1
     # via
     #   aiohttp
     #   ccxt
-aiohttp==3.14.1
+aiohttp==3.14.3
     # via
     #   polymarket-copy-trading-bot (pyproject.toml)
     #   aiohttp-fast-zlib
@@ -28,7 +28,7 @@ attrs==26.1.0
     #   ccxt
 bitarray==3.8.2
     # via eth-account
-ccxt==4.5.70
+ccxt==4.5.73
     # via polymarket-copy-trading-bot (pyproject.toml)
 certifi==2026.6.17
     # via
@@ -48,7 +48,7 @@ ckzg==2.1.7
     # via eth-account
 coincurve==21.0.0 ; python_full_version < '3.14' and implementation_name == 'cpython' and platform_machine != 'x86' and platform_machine in 'x86_64 AMD64 aarch64 arm64 ARM64 i686'
     # via ccxt
-cryptography==49.0.0
+cryptography==50.0.0
     # via ccxt
 cytoolz==1.1.0 ; implementation_name == 'cpython'
     # via eth-utils
@@ -179,8 +179,6 @@ rlp==4.1.0
     # via
     #   eth-account
     #   eth-rlp
-setuptools==83.0.0
-    # via ccxt
 toolz==1.1.0 ; implementation_name == 'cpython' or implementation_name == 'pypy'
     # via
     #   cytoolz

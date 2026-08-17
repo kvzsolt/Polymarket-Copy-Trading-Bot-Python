@@ -49,7 +49,7 @@ async def test_public_client_never_receives_secrets() -> None:
         wallet_address="0x" + "b" * 40,
         authenticated=False,
         exchange_factory=factory,
-        ccxt_version="4.5.70",
+        ccxt_version="4.5.73",
     )
 
     assert "privateKey" not in created[0].settings
@@ -64,13 +64,13 @@ async def test_authenticated_client_requires_private_key_and_verified_deposit_wa
         await create_ccxt_prediction_client(
             wallet_address="0x" + "b" * 40,
             exchange_factory=FakeExchange,
-            ccxt_version="4.5.70",
+            ccxt_version="4.5.73",
         )
     with pytest.raises(CcxtPredictionConfigurationError, match="Deposit Wallet"):
         await create_ccxt_prediction_client(
             private_key="0x" + "a" * 64,
             exchange_factory=FakeExchange,
-            ccxt_version="4.5.70",
+            ccxt_version="4.5.73",
         )
 
 
@@ -81,7 +81,7 @@ async def test_authenticated_client_is_type3_and_patched() -> None:
         private_key="0x" + "a" * 64,
         wallet_config=SimpleNamespace(funder_address=wallet),
         exchange_factory=FakeExchange,
-        ccxt_version="4.5.70",
+        ccxt_version="4.5.73",
     )
 
     assert client.authenticated is True
@@ -102,7 +102,7 @@ async def test_authenticated_client_exposes_normalized_user_stream_credentials()
         wallet_address="0x" + "b" * 40,
         authenticated=True,
         exchange_factory=FakeExchange,
-        ccxt_version="4.5.70",
+        ccxt_version="4.5.73",
     )
 
     assert client.api_creds == {
@@ -129,7 +129,7 @@ async def test_user_stream_credentials_prefer_derived_l2_options() -> None:
         wallet_address="0x" + "b" * 40,
         authenticated=True,
         exchange_factory=OptionsExchange,
-        ccxt_version="4.5.70",
+        ccxt_version="4.5.73",
     )
 
     assert client.api_creds == {
@@ -144,7 +144,7 @@ async def test_client_closes_once() -> None:
     client = await create_ccxt_prediction_client(
         authenticated=False,
         exchange_factory=FakeExchange,
-        ccxt_version="4.5.70",
+        ccxt_version="4.5.73",
     )
     await client.close()
     await client.close()
@@ -157,7 +157,7 @@ async def test_old_ccxt_is_rejected_before_client_creation() -> None:
         await create_ccxt_prediction_client(
             authenticated=False,
             exchange_factory=FakeExchange,
-            ccxt_version="4.5.69",
+            ccxt_version="4.5.72",
         )
 
 
@@ -177,7 +177,7 @@ async def test_authenticated_bootstrap_failure_closes_exchange() -> None:
             wallet_address="0x" + "b" * 40,
             authenticated=True,
             exchange_factory=factory,
-            ccxt_version="4.5.70",
+            ccxt_version="4.5.73",
         )
 
     created[0].close.assert_awaited_once()

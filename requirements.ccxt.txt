@@ -1,6 +1,6 @@
-# CCXT prediction namespace: required minimum >=4.5.70, <5 (per CLAUDE.md).
+# CCXT prediction namespace: required minimum >=4.5.73, <5 (per CLAUDE.md).
 # Pin a range so patch releases are picked up but a breaking major (5.x) is
-# not installed without review. The exact 4.5.70 pin previously blocked
+# not installed without review. The exact 4.5.73 pin previously blocked
 # security/compat patch updates.
 #
 # CCXT is a MANDATORY runtime dependency on this branch: it is declared in
@@ -8,4 +8,4 @@
 # requirements.runtime.txt, so a normal install already provides it. This file
 # is kept only as the standalone pinned constraint for targeted installs (e.g.
 # manually targeted installs). Keep the specifier identical to pyproject.toml.
-ccxt>=4.5.70,<5
+ccxt>=4.5.73,<5

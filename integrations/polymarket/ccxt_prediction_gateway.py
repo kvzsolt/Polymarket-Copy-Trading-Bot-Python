@@ -350,8 +350,9 @@ class CcxtPredictionGateway:
     ) -> list[Any]:
         """Read a complete authenticated cursor collection.
 
-        CCXT 4.5.70's unified ``fetch_open_orders`` and ``fetch_my_trades``
-        wrappers only consume the first CLOB response page. Reconciliation must
+        CCXT's unified ``fetch_open_orders`` and ``fetch_my_trades``
+        wrappers (verified in 4.5.70–4.5.73) only consume the first CLOB
+        response page. Reconciliation must
         not silently accept partial private history, so use CCXT's generated raw
         endpoint when present and walk ``next_cursor`` until the documented
         terminal value. The unified method remains a compatibility fallback for

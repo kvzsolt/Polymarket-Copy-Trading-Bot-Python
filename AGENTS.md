@@ -69,7 +69,9 @@ Do not rewrite the copy-decision, trader-discovery, risk, reconciliation, persis
 Do not rely on memory for CCXT semantics. The installed source is the
 authority: read `.venv/lib/python3.*/site-packages/ccxt/prediction/polymarket.py`
 (and `ccxt/abstract/prediction/polymarket.py` for generated raw endpoints)
-before asserting what a method does.
+before asserting what a method does. The local CCXT checkout at
+`/home/anon/Work/coding/ccxt` is the upstream truth-of-source mirror; verify
+pinned-release behavior against it when planning upgrades.
 
 ## Polymarket execution work
 

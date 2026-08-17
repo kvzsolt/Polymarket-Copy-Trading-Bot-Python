@@ -57,7 +57,7 @@ class RuntimeExchange:
             self.clob_private_get_data_trades = None  # type: ignore[method-assign]
         self.close = AsyncMock()
         self.load_api_credentials = AsyncMock(return_value={"apiKey": "dk"})
-        # CCXT 4.5.70 exposes generated raw paginated private-history endpoints;
+        # CCXT 4.5.73 exposes generated raw paginated private-history endpoints;
         # the gateway's compatibility gate requires them. Shadow them with
         # non-callables to simulate a degraded build when live_ready=False.
         if live_ready:
@@ -116,7 +116,7 @@ async def test_paper_runtime_is_public_ccxt_plus_paper_gateway() -> None:
         runtime_user=_runtime_user(),
         config=_config("paper"),
         exchange_factory=factory,
-        ccxt_version="4.5.70",
+        ccxt_version="4.5.73",
     )
 
     assert isinstance(runtime.client, CcxtPredictionClient)
@@ -136,7 +136,7 @@ async def test_paper_runtime_market_reads_still_use_ccxt() -> None:
         runtime_user=_runtime_user(),
         config=_config("paper"),
         exchange_factory=factory,
-        ccxt_version="4.5.70",
+        ccxt_version="4.5.73",
     )
 
     market_gateway = runtime.gateway.market_data_gateway
@@ -152,7 +152,7 @@ async def test_live_runtime_is_authenticated_ccxt_gateway() -> None:
         runtime_user=_runtime_user(),
         config=_config("live"),
         exchange_factory=factory,
-        ccxt_version="4.5.70",
+        ccxt_version="4.5.73",
     )
 
     assert runtime.client.authenticated is True
@@ -171,7 +171,7 @@ async def test_unavailable_transport_fails_closed_and_closes_client() -> None:
             runtime_user=_runtime_user(),
             config=_config("paper"),
             exchange_factory=factory,
-            ccxt_version="4.5.70",
+            ccxt_version="4.5.73",
         )
 
     assert len(created) == 1
@@ -187,7 +187,7 @@ async def test_live_without_live_execution_compatibility_fails_closed() -> None:
             runtime_user=_runtime_user(),
             config=_config("live"),
             exchange_factory=factory,
-            ccxt_version="4.5.70",
+            ccxt_version="4.5.73",
         )
 
     created[0].close.assert_awaited_once()
@@ -221,7 +221,7 @@ async def test_runtime_close_closes_the_client_once() -> None:
         runtime_user=_runtime_user(),
         config=_config("paper"),
         exchange_factory=factory,
-        ccxt_version="4.5.70",
+        ccxt_version="4.5.73",
     )
 
     await runtime.close()
@@ -238,7 +238,7 @@ async def test_wallet_address_passes_through_for_binding() -> None:
         runtime_user=_runtime_user(),
         config=_config("live"),
         exchange_factory=factory,
-        ccxt_version="4.5.70",
+        ccxt_version="4.5.73",
     )
 
     assert runtime.wallet_address == _WALLET
