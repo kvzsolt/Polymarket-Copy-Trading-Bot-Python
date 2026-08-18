@@ -78,6 +78,23 @@ async def _project(result: ExecutionResult, telemetry):
         return await svc.execute(_req("BUY", reason="copy_trade"))
 
 
+async def _project_fresh(result_factory, telemetry):
+    """Drive the wrapper with a *newly built* result on every call.
+
+    ``_project`` returns the very object it was handed, so comparing two runs
+    would compare an object with itself. This variant builds an
+    independent-but-equal ``ExecutionResult`` per run.
+    """
+    svc = _service(_success_gateway(), telemetry)
+
+    async def _impl(_self, _request):
+        # Patched onto the class, so the descriptor hands us ``self`` too.
+        return result_factory()
+
+    with patch.object(ExecutionService, "_execute_impl", _impl):
+        return await svc.execute(_req("BUY", reason="copy_trade"))
+
+
 class TestOrderResultProjection:
     @pytest.mark.asyncio
     async def test_accepted_submission_reports_a_submitted_trade_event(self) -> None:
@@ -198,13 +215,51 @@ class TestSafety:
     @pytest.mark.asyncio
     async def test_raising_telemetry_backend_never_alters_the_result(self) -> None:
         emitters, service = raising_emitters()
-        expected = _fixed_result(status="filled", filled_amount=Decimal("5"))
 
-        baseline = await _project(expected, None)
-        returned = await _project(expected, emitters.execution)
+        def _result() -> ExecutionResult:
+            return _fixed_result(status="filled", filled_amount=Decimal("5"))
 
-        assert returned == baseline == expected
+        baseline = await _project_fresh(_result, None)
+        returned = await _project_fresh(_result, emitters.execution)
+
+        assert returned is not baseline
+        assert returned == baseline == _result()
         assert service.calls == 1
+
+    @pytest.mark.asyncio
+    async def test_no_event_is_published_before_the_implementation_runs(self) -> None:
+        """Zero pre-submit cost: the projection happens strictly afterwards."""
+        emitters, service = recording_emitters()
+        svc = _service(_success_gateway(), emitters.execution)
+        seen: list[int] = []
+
+        async def _impl(_self, _request):
+            seen.append(len(service.calls))
+            return _fixed_result()
+
+        with patch.object(ExecutionService, "_execute_impl", _impl):
+            await svc.execute(_req("BUY"))
+
+        assert seen == [0]
+        assert len(service.calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_no_event_is_published_before_a_raising_implementation_runs(self) -> None:
+        """The failure projection is also strictly post-attempt."""
+        emitters, service = recording_emitters()
+        svc = _service(_success_gateway(), emitters.execution)
+        seen: list[int] = []
+
+        async def _impl(_self, _request):
+            seen.append(len(service.calls))
+            raise RuntimeError("venue exploded")
+
+        with patch.object(ExecutionService, "_execute_impl", _impl):
+            with pytest.raises(RuntimeError):
+                await svc.execute(_req("BUY"))
+
+        assert seen == [0]
+        assert len(service.calls) == 1
 
     @pytest.mark.asyncio
     async def test_service_without_telemetry_behaves_as_before(self) -> None:

@@ -82,6 +82,22 @@ async def _run(context, rows, *, signals):
         return await execute_trades(context, LEADER, signals, 1_700_000_000.0)
 
 
+async def _run_fresh(context, rows_factory, *, signals):
+    """Drive the wrapper with a *newly built* result list on every call.
+
+    ``_run`` hands the same list object back each time, which would make an
+    equality assertion between two runs compare an object with itself. This
+    variant builds independent-but-equal rows per run so the comparison is a
+    real value check.
+    """
+
+    async def _impl(_context, _leader, _signals, _now):
+        return rows_factory()
+
+    with patch("orchestrators.trade_pipeline._execute_trades_impl", _impl):
+        return await execute_trades(context, LEADER, signals, 1_700_000_000.0)
+
+
 class TestPipelineProjection:
     @pytest.mark.asyncio
     async def test_already_processed_row_reports_a_duplicate_skip(self) -> None:
@@ -175,17 +191,23 @@ class TestLatencyAndSafety:
     async def test_raising_telemetry_backend_leaves_results_byte_identical(self) -> None:
         """The latency/safety proof: telemetry cannot change what the copy did."""
         raw = _raw()
-        rows = [
-            _row(raw, "skipped", "already_processed"),
-            _row(_raw(side="SELL"), "paper", "tier_paper_follow"),
-            _row(_raw(tx_hash="0x" + "ff" * 32), "executed", None),
-        ]
 
-        baseline = await _run(_context(TelemetryEmitters.disabled()), rows, signals=[raw])
+        def _rows() -> list[TradePipelineResult]:
+            # Fresh objects per run so the comparison below is a value check,
+            # not a list compared with itself.
+            return [
+                _row(raw, "skipped", "already_processed"),
+                _row(_raw(side="SELL"), "paper", "tier_paper_follow"),
+                _row(_raw(tx_hash="0x" + "ff" * 32), "executed", None),
+            ]
+
+        baseline = await _run_fresh(_context(TelemetryEmitters.disabled()), _rows, signals=[raw])
 
         emitters, service = raising_emitters()
-        with_telemetry = await _run(_context(emitters), rows, signals=[raw])
+        with_telemetry = await _run_fresh(_context(emitters), _rows, signals=[raw])
 
+        assert with_telemetry is not baseline
+        assert all(a is not b for a, b in zip(with_telemetry, baseline, strict=True))
         assert with_telemetry == baseline
         assert [(r.trade_key, r.status, r.reason, r.order_id) for r in with_telemetry] == [
             (r.trade_key, r.status, r.reason, r.order_id) for r in baseline
@@ -273,17 +295,6 @@ class TestReconciliationSweep:
 # Skipped when Docker is unavailable, same policy as the harness it reuses.
 # ---------------------------------------------------------------------------
 
-from tests.test_trade_pipeline_market_data_authority import (  # noqa: E402
-    FAKE_TOKEN_ID,
-    _exec_result_filled,
-    _make_bundle,
-    _make_context,
-    _pg_pool,
-    _signal,
-    _FakeMDS,
-    _RecordingDecisionService,
-)
-
 # ``tests/conftest.py`` keeps every Testcontainers-backed test out of the
 # portable default tier. This module reaches Docker only transitively (through
 # the imported ``_pg_pool``), which the file-source heuristic cannot see, so the
@@ -322,6 +333,19 @@ async def test_real_pipeline_reports_the_duplicate_and_no_trade_event(
     _mock_balance,
 ) -> None:
     """First run executes (no pipeline trade event); the replay is a duplicate."""
+    # Imported lazily: the harness module pulls in the Postgres repo stack and
+    # is only reachable on the Docker tier, so the default tier never pays for
+    # it and never risks an import-time failure on a container-less machine.
+    from tests.test_trade_pipeline_market_data_authority import (
+        _exec_result_filled,
+        _make_bundle,
+        _make_context,
+        _pg_pool,
+        _signal,
+        _FakeMDS,
+        _RecordingDecisionService,
+    )
+
     async with _pg_pool() as pool:
         emitters, service = recording_emitters()
         exec_svc = AsyncMock()
@@ -352,4 +376,3 @@ async def test_real_pipeline_reports_the_duplicate_and_no_trade_event(
         assert event.reason is SkipReason.DUPLICATE
         assert event.task_ref == safe_ref(build_trade_key(ctx.user_id, "leader1", raw))
         assert service.payloads(TradeEvent) == []
-        assert FAKE_TOKEN_ID

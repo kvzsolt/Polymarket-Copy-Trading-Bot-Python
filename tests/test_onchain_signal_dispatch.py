@@ -1227,3 +1227,86 @@ async def test_dispatch_without_telemetry_is_unchanged() -> None:
     await adapter(_signal())
 
     assert [call[0] for call in pipeline.calls] == ["u1"]
+
+
+@pytest.mark.asyncio
+async def test_mixed_case_leader_publishes_the_lowercase_reference() -> None:
+    """One leader, one ``leader_ref``, whatever spelling the source carries.
+
+    The on-chain dispatcher lower-cases before matching followers while the
+    polling roster keeps the operator's (often checksummed) spelling. Both must
+    reach the stream under the same reference or a UI sees two leaders.
+    """
+    from services.telemetry import LeaderEvent, leader_ref, safe_ref
+    from tests.telemetry_helpers import recording_emitters
+
+    checksummed = "0x" + "AB" * 20
+    assert checksummed != checksummed.lower()
+    # Precondition for the bug this pins: the raw contract accepts both.
+    assert safe_ref(checksummed) != safe_ref(checksummed.lower())
+
+    emitters, service = recording_emitters()
+    adapter, _pipeline = _telemetry_adapter(
+        {checksummed: [_ctx("u1")]},
+        telemetry=emitters.detection,
+    )
+
+    await adapter(_signal_for(checksummed))
+
+    [event] = service.payloads(LeaderEvent)
+    assert event.leader_ref == leader_ref(checksummed) == checksummed.lower()
+
+
+@pytest.mark.asyncio
+async def test_mixed_case_dedup_uses_the_same_reference() -> None:
+    """The dedup site case-folds too, so both events group under one leader."""
+    from orchestrators.trade_pipeline import build_trade_key
+    from services.telemetry import LeaderEvent, leader_ref
+    from tests.telemetry_helpers import recording_emitters
+
+    checksummed = "0x" + "AB" * 20
+    repo = _FakeOrdersRepo()
+    polling_row = {**_polling_row(), "transactionHash": _TX}
+    assert await repo.try_claim_processed_trade(
+        trade_key=build_trade_key("u1", checksummed.lower(), polling_row),
+        user_id="u1",
+        leader_id=checksummed.lower(),
+        tx_hash=_TX,
+        side="BUY",
+        asset="123456",
+        condition_id="c",
+        status="in_progress",
+    )
+    emitters, service = recording_emitters()
+    adapter, pipeline = _telemetry_adapter(
+        {checksummed: [_ctx_with_repo("u1", repo)]},
+        telemetry=emitters.detection,
+    )
+
+    await adapter(_signal_for(checksummed))
+
+    assert pipeline.calls == []
+    received, deduped = service.payloads(LeaderEvent)
+    assert received.leader_ref == deduped.leader_ref == leader_ref(checksummed)
+
+
+def _signal_for(leader_wallet: str) -> OnchainTradeSignal:
+    """Return a mined signal attributed to ``leader_wallet``."""
+    return OnchainTradeSignal(
+        leader_wallet=leader_wallet,
+        token_id="123456",
+        side="BUY",
+        size=Decimal("10"),
+        price=Decimal("0.5"),
+        usdc_size=Decimal("5"),
+        tx_hash=_TX,
+        confidence=DetectionConfidence.MINED_AUTHORITATIVE,
+        maker_side=0,
+        watched_role="maker",
+        event_ts=1_700_000_000,
+        log_index=7,
+        condition_id="0x" + "ef" * 32,
+        provisional=False,
+        exchange="0x" + "11" * 20,
+        order_hash=None,
+    )

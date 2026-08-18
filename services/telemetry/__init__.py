@@ -78,6 +78,7 @@ from services.telemetry.emitters import (
     WssTelemetryEmitter,
     bounded_code,
     exception_code,
+    leader_ref,
     safe_ref,
     skip_reason_for_code,
 )
@@ -184,6 +185,7 @@ __all__ = [
     "bounded_code",
     "event_type_for_payload",
     "exception_code",
+    "leader_ref",
     "is_safe_code",
     "is_safe_ref",
     "safe_ref",

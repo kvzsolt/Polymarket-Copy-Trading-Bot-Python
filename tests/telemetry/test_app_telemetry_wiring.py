@@ -108,6 +108,45 @@ def test_run_application_builds_the_bundle_and_threads_it_into_user_state() -> N
     assert source.index("_build_telemetry_emitters(") < source.index("build_user_state(")
 
 
+def test_run_application_reports_the_startup_roster_before_starting_monitors() -> None:
+    """A UI attached at boot must see the roster size without waiting.
+
+    ``roster_updated`` otherwise only fires from the discovery promotion
+    callback, so a run whose roster never changes would publish nothing.
+    Composition glue cannot be invoked in a unit test, so this is a source-order
+    guard (the repository's existing pattern for ``_run_application``).
+    """
+
+    import app
+
+    source = inspect.getsource(app._run_application)
+
+    seed = source.index("telemetry_emitters.detection.roster_updated(len(monitored_leaders))")
+    monitors = source.index("for wallet in monitored_leaders:")
+    assert seed < monitors, "the roster must be published before monitors start"
+
+
+def test_run_application_reports_the_roster_on_discovery_promotion() -> None:
+    """The dynamic path keeps reporting the recomputed active-leader count."""
+
+    import app
+
+    source = inspect.getsource(app._run_application)
+
+    assert "telemetry_emitters.detection.roster_updated(monitored_leader_count)" in source
+
+
+def test_run_application_passes_the_detection_emitter_to_every_producer() -> None:
+    """Both leader monitors and the on-chain dispatch adapter must be wired."""
+
+    import app
+
+    source = inspect.getsource(app._run_application)
+
+    assert source.count("telemetry=telemetry_emitters.detection") == 3
+    assert source.count("telemetry=telemetry_emitters.wss") == 2
+
+
 def test_trading_context_defaults_to_a_disabled_telemetry_bundle() -> None:
     """Existing ``TradingContext`` constructions keep working without telemetry."""
 

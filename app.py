@@ -2312,6 +2312,12 @@ async def _run_application(client_registry: list[Any]) -> int:
             )
             onchain_runtime = None
 
+    # Seed the stream with the startup roster size, so a UI attached at boot
+    # sees the roster without waiting for the first discovery promotion (which
+    # is the only other place ``roster_updated`` fires). Off-path: it runs once,
+    # before any monitor exists, and the emit is synchronous and guarded.
+    telemetry_emitters.detection.roster_updated(len(monitored_leaders))
+
     for wallet in monitored_leaders:
         monitor_task = asyncio.create_task(
             run_leader_monitor(

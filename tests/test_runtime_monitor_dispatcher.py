@@ -183,3 +183,61 @@ async def test_run_leader_monitor_forwards_the_detection_emitter(
     )
 
     assert len(service.payloads(LeaderEvent)) == 1
+
+
+@pytest.mark.asyncio
+async def test_mixed_case_roster_leader_publishes_the_lowercase_reference() -> None:
+    """The polling roster keeps the operator's spelling; the stream must not.
+
+    ``LeaderBatchDispatcher`` passes the roster wallet through verbatim, so the
+    case-fold has to happen inside the emitter — otherwise a checksummed roster
+    entry and the on-chain dispatcher's lower-cased wallet publish the same
+    leader under two references.
+    """
+    from services.telemetry import leader_ref, safe_ref
+
+    checksummed = "0x" + "AB" * 20
+    assert checksummed != checksummed.lower()
+    # Precondition for the bug this pins: the raw contract accepts both.
+    assert safe_ref(checksummed) != safe_ref(checksummed.lower())
+
+    emitters, service = recording_emitters()
+    dispatcher = LeaderBatchDispatcher(
+        leader=checksummed,
+        contexts=[SimpleNamespace(user_id="u1")],
+        legacy_executor=_Executor(),
+        clock=lambda: 100.0,
+        telemetry=emitters.detection,
+    )
+
+    await dispatcher.dispatch([_row(TX_A)])
+
+    [event] = service.payloads(LeaderEvent)
+    assert event.leader_ref == leader_ref(checksummed) == checksummed.lower()
+
+
+@pytest.mark.asyncio
+async def test_polling_and_onchain_spellings_collapse_onto_one_leader() -> None:
+    """Cross-source proof: both dispatch paths report one ``leader_ref``."""
+    from services.telemetry import leader_ref
+
+    emitters, service = recording_emitters()
+    checksummed = "0x" + "AB" * 20
+
+    polling = LeaderBatchDispatcher(
+        leader=checksummed,
+        contexts=[SimpleNamespace(user_id="u1")],
+        legacy_executor=_Executor(),
+        clock=lambda: 100.0,
+        telemetry=emitters.detection,
+    )
+    await polling.dispatch([_row(TX_A)])
+    # What the on-chain adapter passes: the lower-cased wallet.
+    emitters.detection.signal_received("on_chain_pending", checksummed.lower(), TX_B)
+
+    refs = {event.leader_ref for event in service.payloads(LeaderEvent)}
+    assert refs == {leader_ref(checksummed)}
+    # And the bounded per-leader counter table is keyed once, not twice.
+    snapshot = emitters.detection.snapshot()
+    assert list(snapshot.leaders) == [leader_ref(checksummed)]
+    assert snapshot.leaders[leader_ref(checksummed)].signals_total == 2

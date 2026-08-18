@@ -53,6 +53,7 @@ from services.telemetry import (
     WssOutcome,
     WssTelemetryEmitter,
     is_safe_ref,
+    leader_ref,
     safe_ref,
     skip_reason_for_code,
 )
@@ -323,6 +324,37 @@ def test_safe_ref_passes_safe_tokens_and_hashes_unsafe_values_deterministically(
     assert safe_ref(UNSAFE_TRADE_KEY) == safe_ref(UNSAFE_TRADE_KEY)
     assert is_safe_ref(UNSAFE_TRADE_KEY) is False
     assert is_safe_ref(safe_ref(UNSAFE_TRADE_KEY)) is True
+
+
+def test_leader_ref_case_folds_so_one_leader_has_one_reference() -> None:
+    """A checksummed and a lower-cased spelling must collapse onto one ref.
+
+    ``_SAFE_TOKEN_RE`` accepts both spellings verbatim, so ``safe_ref`` alone
+    would publish the same leader twice — once per detection source.
+    """
+    checksummed = "0x" + "AB" * 20
+    assert safe_ref(checksummed) != safe_ref(checksummed.lower())
+
+    assert leader_ref(checksummed) == leader_ref(checksummed.lower())
+    assert leader_ref(checksummed) == checksummed.lower()
+    assert leader_ref(f"  {checksummed}  ") == checksummed.lower()
+    assert is_safe_ref(leader_ref(checksummed)) is True
+    # An identity that is not a safe token still lands on a bounded digest.
+    assert is_safe_ref(leader_ref("leader|one")) is True
+
+
+async def test_detection_events_and_counters_share_the_folded_leader_ref() -> None:
+    """Both public detection methods normalise, and the counter table too."""
+    service = await _started_service()
+    emitter = DetectionTelemetryEmitter(service, clock=StepClock())
+    checksummed = "0x" + "AB" * 20
+
+    assert emitter.signal_received("polling", checksummed, TX_HASH) is True
+    assert emitter.signal_deduplicated("on_chain_confirmed", checksummed.lower()) is True
+
+    refs = {event.payload.leader_ref for event in service.history_snapshot()}
+    assert refs == {leader_ref(checksummed)}
+    assert list(emitter.snapshot().leaders) == [leader_ref(checksummed)]
 
 
 async def test_unsafe_trade_key_is_hashed_and_the_event_is_accepted() -> None:

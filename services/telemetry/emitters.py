@@ -232,6 +232,28 @@ def safe_ref(value: str) -> str:
     return f"h:{digest.hexdigest()}"
 
 
+def leader_ref(wallet: str) -> str:
+    """Return the canonical opaque reference for one leader wallet.
+
+    Wallet spellings differ per detection source: the REST-polling roster
+    carries whatever casing the operator configured (often EIP-55 checksummed)
+    while the on-chain dispatch path lower-cases before matching followers.
+    ``_SAFE_TOKEN_RE`` accepts both spellings verbatim, so referencing them
+    as-is would publish one leader under two identities and split every
+    per-leader counter and UI grouping. Case-folding first makes the reference
+    a function of the address alone.
+
+    Args:
+        wallet: Leader address in any casing.
+
+    Returns:
+        The lower-cased wallet when it is a safe token, otherwise a digest of
+        the lower-cased value.
+    """
+    text = wallet if isinstance(wallet, str) else str(wallet)
+    return safe_ref(text.strip().lower())
+
+
 def bounded_code(value: str | None) -> str:
     """Return a bounded lowercase code accepted by the failure contract.
 
@@ -490,6 +512,12 @@ class DetectionTelemetryEmitter(TelemetryEmitter):
     This is the only pre-submit emit on the copy path: exactly one event per
     detected signal.
 
+    Leader wallets are case-folded through :func:`leader_ref` before they reach
+    an event or a counter, so the checksummed spelling the polling roster
+    carries and the lower-cased spelling the on-chain dispatcher uses collapse
+    onto one identity. ``roster_updated`` carries a count only and needs no
+    such normalisation.
+
     Counters are plain in-memory integers in plain dicts, with no lock. Every
     production call site (the on-chain dispatch adapter and the polling leader
     dispatcher) runs on the single asyncio loop thread, so the read-modify-write
@@ -531,7 +559,9 @@ class DetectionTelemetryEmitter(TelemetryEmitter):
 
         Args:
             source: Detection source code, typically a ``DetectionMode`` value.
-            leader_wallet: Leader identity; hashed when not a safe token.
+            leader_wallet: Leader identity in any casing; case-folded so every
+                detection source publishes one leader under one reference,
+                then hashed when not a safe token.
             tx_hash: Leader transaction hash used as the copy correlation id.
 
         Returns:
@@ -544,7 +574,9 @@ class DetectionTelemetryEmitter(TelemetryEmitter):
 
         Args:
             source: Detection source code, typically a ``DetectionMode`` value.
-            leader_wallet: Leader identity; hashed when not a safe token.
+            leader_wallet: Leader identity in any casing; case-folded so every
+                detection source publishes one leader under one reference,
+                then hashed when not a safe token.
 
         Returns:
             Whether the event was accepted or scheduled for delivery.
@@ -560,12 +592,12 @@ class DetectionTelemetryEmitter(TelemetryEmitter):
         dedup: bool,
     ) -> bool:
         code = bounded_code(source)
-        leader_ref = safe_ref(leader_wallet)
-        self._touch(code, leader_ref, deduplicated=dedup)
+        ref = leader_ref(leader_wallet)
+        self._touch(code, ref, deduplicated=dedup)
         outcome = LeaderOutcome.DEDUP if dedup else LeaderOutcome.RECEIVED
         severity = TelemetrySeverity.DEBUG if dedup else TelemetrySeverity.INFO
         return self._publish(
-            lambda: LeaderEvent(outcome=outcome, leader_ref=leader_ref, source=code),
+            lambda: LeaderEvent(outcome=outcome, leader_ref=ref, source=code),
             severity=severity,
             correlation_id=safe_ref(tx_hash) if tx_hash else None,
         )
@@ -1264,6 +1296,7 @@ __all__ = [
     "WssTelemetryEmitter",
     "bounded_code",
     "exception_code",
+    "leader_ref",
     "safe_ref",
     "skip_reason_for_code",
 ]

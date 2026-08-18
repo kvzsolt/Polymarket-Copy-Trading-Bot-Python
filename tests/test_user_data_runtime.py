@@ -634,3 +634,28 @@ class TestWssTelemetry:
 
         assert service.calls == 2
         assert runtime.status().authenticated is False
+
+    @pytest.mark.asyncio
+    async def test_failed_reconnect_storm_does_not_raise_or_fake_a_connect(self) -> None:
+        """``UserWebSocket`` fires ``on_disconnected`` from its connect
+        ``finally``, so a run of failed reconnect attempts emits DISCONNECTED
+        with no preceding CONNECTED. That must never raise, and must never make
+        the first real authentication report RECONNECTED.
+        """
+        from services.telemetry import WssEvent, WssOutcome
+        from tests.telemetry_helpers import recording_emitters
+
+        emitters, service = recording_emitters()
+        runtime = self._runtime(emitters.wss)
+
+        for _ in range(3):
+            await runtime._on_disconnected()
+
+        assert [event.outcome for event in service.payloads(WssEvent)] == [
+            WssOutcome.DISCONNECTED
+        ] * 3
+        assert runtime._ever_connected is False
+
+        await runtime._on_authenticated()
+
+        assert service.payloads(WssEvent)[-1].outcome is WssOutcome.CONNECTED

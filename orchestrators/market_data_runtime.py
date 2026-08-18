@@ -77,6 +77,16 @@ class MarketDataRuntime:
 
     It subscribes to token ids, bootstraps each token with REST snapshots, then
     lets MarketWebSocket keep the MarketStateStore fresh.
+
+    Stream lifecycle events are reported from the callbacks this runtime
+    already owns. DISCONNECTED is not paired one-for-one with CONNECTED: the
+    client fires ``on_disconnected`` from the ``finally`` of its connect
+    attempt (``clients/market_ws.py`` ``_run``), so a failed reconnect
+    attempt emits DISCONNECTED with no preceding CONNECTED, and a reconnect
+    storm emits one per attempt. That is truthful and the hub is bounded and
+    drop-on-overflow, so it is left as-is; ``_ever_connected`` only flips on an
+    actual connection, which is what keeps the first real
+    connection reporting CONNECTED rather than RECONNECTED after such a storm.
     """
 
     market_store: MarketStateStore
