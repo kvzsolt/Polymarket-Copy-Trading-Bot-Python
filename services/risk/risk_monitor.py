@@ -20,11 +20,32 @@ from services.metrics import metrics
 from services.executionService import ExecutionRequest
 from services.positionActionCoordinator import PositionScope
 from services.risk.risk_engine import active_policy
+from services.telemetry import RiskTelemetryEmitter
 from storage.postgres.fills_repo import FillRecord
 from utils import is_valid_clob_token_id
 from integrations.polymarket.models import PRICE_TOKEN_NOT_FOUND
 from utils.fetchData import fetch_data
 from utils.logger import get_logger
+
+# Null-object emitter for contexts built without the telemetry field (older
+# tests and tools construct ``TradingContext`` fakes). Every method is a no-op
+# returning ``False``.
+_DISABLED_RISK_TELEMETRY = RiskTelemetryEmitter(None)
+
+
+def _risk_telemetry(context: "TradingContext") -> RiskTelemetryEmitter:
+    """Return the context's protective-exit emitter, or a disabled null object.
+
+    Args:
+        context: Trading context, possibly a fake without the field.
+
+    Returns:
+        The injected emitter when present, else a total null object.
+    """
+    bundle = getattr(context, "telemetry", None)
+    emitter = getattr(bundle, "risk", None)
+    return emitter if isinstance(emitter, RiskTelemetryEmitter) else _DISABLED_RISK_TELEMETRY
+
 
 # ---------------------------------------------------------------------------
 # Venue circuit breaker — suppresses price polls during exchange outages.
@@ -1693,6 +1714,7 @@ async def run_risk_check_for_context(
                         )
                     except Exception:
                         logger.debug("risk_trigger_record_error", exc_info=True)
+                _risk_telemetry(context).exit_triggered(pos.condition_id, pos.token_id, reason)
 
                 req = ExecutionRequest(
                     user_id=context.user_id,
@@ -1831,6 +1853,7 @@ async def run_risk_check_for_context(
                         result.status,
                         result.error,
                     )
+                    _risk_telemetry(context).exit_not_filled(pos.condition_id, pos.token_id, reason)
                     # Terminal accepted-but-zero-fill (e.g. a fully-killed FAK on
                     # a resolved/illiquid market). Probe live holdings — if the
                     # shares are gone, prune the phantom so the loop stops.
@@ -2059,6 +2082,7 @@ async def run_risk_check_for_context(
                         "reason": reason,
                     },
                 )
+                _risk_telemetry(context).exit_filled(pos.condition_id, pos.token_id, reason)
                 if hasattr(context.position_manager, "track_sell"):
                     context.position_manager.track_sell(
                         pos.condition_id,

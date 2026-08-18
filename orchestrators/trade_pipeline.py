@@ -25,6 +25,11 @@ from services.execution.pending_order_reconciliation import (
 )
 from services.executionService import ExecutionRequest
 from services.metrics import COPY_LATENCY_BUCKETS, METRIC_COPY_LATENCY, metrics
+from services.telemetry import (
+    ExecutionTelemetryEmitter,
+    TelemetryEmitters,
+    TradeTelemetryEmitter,
+)
 from domain.position_key import PositionKey
 from services.risk.risk_engine import headroom_for_buy
 from storage.postgres.fills_repo import FillRecord
@@ -48,6 +53,16 @@ from utils.logger import (
 
 logger = get_logger("TradePipeline")
 _COPY_TRADE_IDENTITY = CopyTradeIdentityBuilder()
+
+# Null-object bundle for contexts built without the telemetry field (older
+# tests, tools, and any non-``TradingContext`` fake). Every method on it is a
+# no-op returning ``False``, so the projection sites need no extra branching.
+_DISABLED_TELEMETRY = TelemetryEmitters.disabled()
+
+# Transaction-hash aliases, in the same order ``normalize_signals`` resolves
+# them, so a projected event carries the same correlation token the detection
+# emitters published for that signal.
+_TX_HASH_KEYS = ("transactionHash", "txHash", "transaction_hash", "tx_hash")
 
 
 def _observe_copy_latency(
@@ -92,6 +107,22 @@ def _reconcile_semaphore(context: TradingContext) -> asyncio.Semaphore:
     return semaphore
 
 
+def _execution_telemetry(context: TradingContext) -> ExecutionTelemetryEmitter:
+    """Return the context's execution emitter, or a disabled null object.
+
+    Args:
+        context: Trading context, possibly a fake without the field.
+
+    Returns:
+        The injected emitter when present, else a total null object.
+    """
+    bundle = getattr(context, "telemetry", None)
+    emitter = getattr(bundle, "execution", None)
+    if isinstance(emitter, ExecutionTelemetryEmitter):
+        return emitter
+    return _DISABLED_TELEMETRY.execution
+
+
 def get_reconciliation_service(context: TradingContext) -> ReconciliationService:
     """Return the shared reconciler bound to this trading context.
 
@@ -131,6 +162,7 @@ def get_reconciliation_service(context: TradingContext) -> ReconciliationService
                 else None
             ),
             task_budget_settlement=task_budget_settlement,
+            telemetry=_execution_telemetry(context),
         )
         context.extra["_reconciliation_service"] = svc
     elif getattr(svc, "reservation_service", None) is None and reservation_service is not None:
@@ -1629,6 +1661,7 @@ async def reconcile_submitted_unconfirmed(
 
     if reconciled:
         metrics.inc("reconcile_unconfirmed_total", value=float(reconciled))
+        _trade_telemetry(context).reconciliation_run(reconciled)
 
     return reconciled
 
@@ -1657,7 +1690,149 @@ def _decision_live_price(signal: Any, bundle: Any) -> float:
     return fresh_f if fresh_f > 0 else fallback
 
 
+@dataclass(frozen=True, slots=True)
+class _SignalRef:
+    """Minimal projection of one raw leader row for telemetry correlation.
+
+    Attributes:
+        side: Leader trade side.
+        tx_hash: Leader transaction hash used as the copy correlation id.
+    """
+
+    side: str
+    tx_hash: str
+
+
+def _trade_telemetry(context: TradingContext) -> TradeTelemetryEmitter:
+    """Return the context's copy-pipeline emitter, or a disabled null object.
+
+    Args:
+        context: Trading context, possibly a fake without the field.
+
+    Returns:
+        The injected emitter when present, else a total null object.
+    """
+    bundle = getattr(context, "telemetry", None)
+    emitter = getattr(bundle, "trade", None)
+    return emitter if isinstance(emitter, TradeTelemetryEmitter) else _DISABLED_TELEMETRY.trade
+
+
+def _signals_by_trade_key(
+    user_id: str,
+    leader_id: str,
+    signals: list[dict[str, Any]],
+) -> dict[str, _SignalRef]:
+    """Recover the side and correlation hash of each row by its copy identity.
+
+    ``build_trade_key`` is pure and is exactly what the pipeline loop uses for
+    every ``TradePipelineResult``, so re-deriving it here pairs each result row
+    with the raw signal it came from. ``normalize_signals`` is deliberately not
+    re-run: it prints an operator warning and logs for malformed rows, so a
+    second pass would duplicate operator output for the same batch.
+
+    Args:
+        user_id: Follower account identity.
+        leader_id: Copied leader identity.
+        signals: The raw batch handed to the pipeline.
+
+    Returns:
+        Trade key -> minimal signal reference.
+    """
+    by_key: dict[str, _SignalRef] = {}
+    for raw in signals:
+        if not isinstance(raw, dict):
+            continue
+        tx_hash = ""
+        for key in _TX_HASH_KEYS:
+            value = raw.get(key)
+            if value:
+                tx_hash = str(value)
+                break
+        by_key[build_trade_key(user_id, leader_id, raw)] = _SignalRef(
+            side=str(raw.get("side") or "").strip().upper(),
+            tx_hash=tx_hash,
+        )
+    return by_key
+
+
+def _project_pipeline_results(
+    context: TradingContext,
+    leader_id: str,
+    signals: list[dict[str, Any]],
+    results: list[TradePipelineResult],
+) -> None:
+    """Publish bounded skip events for one finished pipeline batch.
+
+    Runs strictly after the copy path has finished, so its cost is off the
+    detection-to-submit path entirely. Building the correlation map reads
+    caller-supplied dicts, which happens outside the emitter's own guard, so
+    the whole projection is wrapped: a completed copy must never be turned
+    into a raised exception by observability.
+
+    Args:
+        context: Trading context owning the emitter bundle.
+        leader_id: Copied leader identity.
+        signals: The raw batch handed to the pipeline.
+        results: The rows the pipeline returned.
+    """
+    emitter = _trade_telemetry(context)
+    if not emitter.enabled:
+        return
+    user_id = str(getattr(context, "user_id", "") or "")
+    try:
+        emitter.pipeline_results(
+            user_id,
+            leader_id,
+            results,
+            _signals_by_trade_key(user_id, leader_id, signals),
+        )
+    except Exception as exc:
+        # Defence in depth around the correlation map: the emitter itself never
+        # raises, but this projection also touches raw provider dicts. The drop
+        # is visible at DEBUG; the copy outcome is already decided.
+        logger.debug("pipeline_telemetry_projection_failed | error=%r", exc)
+
+
 async def execute_trades(
+    context: TradingContext,
+    leader_id: str,
+    signals: list[dict[str, Any]],
+    now_ts: float,
+) -> list[TradePipelineResult]:
+    """Execute one leader batch and project its outcome onto operator events.
+
+    This wrapper is the pipeline's single telemetry choke point. It performs
+    **zero** work before ``_execute_trades_impl`` runs, so the detection-to-submit
+    path is unchanged, and projects the returned rows afterwards. An escaped
+    exception is reported as a worker failure and then re-raised unchanged;
+    ``asyncio.CancelledError`` is a shutdown signal and passes straight through.
+
+    Args:
+        context: Trading context for one follower.
+        leader_id: Copied leader identity.
+        signals: Raw leader rows detected for this batch.
+        now_ts: Wall-clock timestamp of the batch.
+
+    Returns:
+        One ``TradePipelineResult`` per admitted signal, unchanged.
+
+    Raises:
+        Exception: Whatever ``_execute_trades_impl`` raised.
+    """
+    try:
+        results = await _execute_trades_impl(context, leader_id, signals, now_ts)
+    except Exception as exc:
+        _trade_telemetry(context).pipeline_failed(
+            str(getattr(context, "user_id", "") or ""),
+            leader_id,
+            exc,
+        )
+        raise
+    _project_pipeline_results(context, leader_id, signals, results)
+    return results
+
+
+async def _execute_trades_impl(
     context: TradingContext,
     leader_id: str,
     signals: list[dict[str, Any]],

@@ -391,9 +391,9 @@ class ExecutionService:
         # None = no enforcement (preserves the configless / test default).
         self._geoblock_gate = geoblock_gate
         self._trading_permission = trading_permission
-        # Part C — operator telemetry emitter. Held but not yet used: the
-        # execution emit sites land with the projection wrapper in a later
-        # slice, so injecting it now keeps composition and emission separate.
+        # Part C — operator telemetry emitter, used only by the post-submission
+        # projection in ``execute``. ``None`` keeps the service free of both
+        # cost and branching.
         self._telemetry = telemetry
 
         # Single CLOB venue boundary. ``runtime_bootstrap`` must pass the same
@@ -494,6 +494,36 @@ class ExecutionService:
         await order_repo.save_submission(record)
 
     async def execute(self, req: ExecutionRequest) -> ExecutionResult:
+        """Submit one request and project its outcome onto one operator event.
+
+        This wrapper is the execution boundary's single telemetry choke point.
+        It performs no work before ``_execute_impl`` runs and publishes exactly
+        one bounded event once the result exists, so a copy is reported here
+        and nowhere else. An escaped exception is reported and then re-raised
+        unchanged; ``asyncio.CancelledError`` is a shutdown signal and passes
+        straight through unreported.
+
+        Args:
+            req: The execution request to submit.
+
+        Returns:
+            The unmodified result produced by ``_execute_impl``.
+
+        Raises:
+            Exception: Whatever ``_execute_impl`` raised.
+        """
+        telemetry = self._telemetry
+        try:
+            result = await self._execute_impl(req)
+        except Exception as exc:
+            if telemetry is not None:
+                telemetry.order_exception(req, exc)
+            raise
+        if telemetry is not None:
+            telemetry.order_result(req, result)
+        return result
+
+    async def _execute_impl(self, req: ExecutionRequest) -> ExecutionResult:
         """Validate, reserve, submit, and classify one execution request."""
 
         side = _normalize_side(req.side)

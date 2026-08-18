@@ -1,0 +1,230 @@
+"""Post-submission telemetry projection for ``ExecutionService.execute``.
+
+``execute`` is a thin wrapper around ``_execute_impl``: it projects the
+returned ``ExecutionResult`` onto exactly one bounded operator event after the
+result exists, and reports an escaped exception before re-raising it. The
+wrapper is the only place venue outcomes are published, which is what keeps a
+single copy from being counted both here and in the pipeline projection.
+
+The fakes are imported from the act-time kill-switch suite so this module adds
+no new venue harness.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from decimal import Decimal
+from unittest.mock import AsyncMock, patch
+
+import pytest
+
+from integrations.polymarket.models import VenueSubmitResult
+from services.execution.types import ExecutionResult
+from services.executionService import ExecutionService
+from services.telemetry import (
+    AmbiguousEvent,
+    AmbiguousOperation,
+    FailureComponent,
+    FailureEvent,
+    OrderOutcome,
+    TelemetryProducer,
+    TradeEvent,
+    TradeSide,
+    safe_ref,
+)
+from tests.telemetry_helpers import raising_emitters, recording_emitters
+from tests.test_execution_kill_switch_acttime import (
+    _FeeSvc,
+    _StubClob,
+    _make_exec_config,
+    _make_mds,
+    _mock_order_repo,
+    _req,
+    _success_gateway,
+)
+
+
+def _service(gateway, telemetry) -> ExecutionService:
+    return ExecutionService(
+        _StubClob(),
+        _FeeSvc(),
+        _mock_order_repo(),
+        config=_make_exec_config(),
+        clob_gateway=gateway,
+        market_data_service=_make_mds(),
+        telemetry=telemetry,
+    )
+
+
+def _fixed_result(**overrides) -> ExecutionResult:
+    fields: dict[str, object] = {
+        "accepted": True,
+        "order_id": "ord-1",
+        "status": "submitted_unconfirmed",
+        "requested_amount": Decimal("5"),
+        "filled_amount": Decimal("0"),
+        "avg_price": None,
+        "fees_paid": Decimal("0"),
+        "error": None,
+    }
+    fields.update(overrides)
+    return ExecutionResult(**fields)  # type: ignore[arg-type]
+
+
+async def _project(result: ExecutionResult, telemetry):
+    """Drive the wrapper with a fixed implementation result."""
+    svc = _service(_success_gateway(), telemetry)
+    with patch.object(ExecutionService, "_execute_impl", AsyncMock(return_value=result)):
+        return await svc.execute(_req("BUY", reason="copy_trade"))
+
+
+class TestOrderResultProjection:
+    @pytest.mark.asyncio
+    async def test_accepted_submission_reports_a_submitted_trade_event(self) -> None:
+        emitters, service = recording_emitters()
+
+        returned = await _project(_fixed_result(), emitters.execution)
+
+        assert returned.status == "submitted_unconfirmed"
+        [event] = service.payloads(TradeEvent)
+        assert event.order_outcome is OrderOutcome.SUBMITTED
+        assert event.side is TradeSide.BUY
+        assert event.order_ref == safe_ref("ord-1")
+        assert event.task_ref == safe_ref("sig-BUY")
+        assert service.calls[0].producer is TelemetryProducer.EXECUTION
+
+    @pytest.mark.asyncio
+    async def test_ambiguous_submission_reports_reconciliation_required(self) -> None:
+        emitters, service = recording_emitters()
+
+        await _project(
+            _fixed_result(status="submitted_unconfirmed", error="network timeout after POST"),
+            emitters.execution,
+        )
+
+        [event] = service.payloads(AmbiguousEvent)
+        assert event.operation is AmbiguousOperation.ORDER_SUBMISSION
+        assert event.reconciliation_required is True
+
+    @pytest.mark.asyncio
+    async def test_local_gate_reports_a_failure_without_a_venue_outcome(self) -> None:
+        """A kill switch is a local refusal, never a venue rejection."""
+        emitters, service = recording_emitters()
+        gw = _success_gateway()
+        svc = ExecutionService(
+            _StubClob(),
+            _FeeSvc(),
+            _mock_order_repo(),
+            config=_make_exec_config(global_kill=True),
+            clob_gateway=gw,
+            market_data_service=_make_mds(),
+            telemetry=emitters.execution,
+        )
+
+        result = await svc.execute(_req("BUY"))
+
+        assert result.status == "kill_switch"
+        gw.submit_marketable_order.assert_not_awaited()
+        [event] = service.payloads(FailureEvent)
+        assert event.component is FailureComponent.EXECUTION
+        assert event.code == "kill_switch"
+        assert event.order_outcome is None
+
+    @pytest.mark.asyncio
+    async def test_venue_rejection_reports_a_venue_order_outcome(self) -> None:
+        emitters, service = recording_emitters()
+
+        await _project(
+            _fixed_result(accepted=False, order_id=None, status="rejected", error="nope"),
+            emitters.execution,
+        )
+
+        [event] = service.payloads(FailureEvent)
+        assert event.order_outcome is OrderOutcome.REJECTED
+
+    @pytest.mark.asyncio
+    async def test_a_real_submission_still_reports_exactly_one_event(self) -> None:
+        """End-to-end through the real implementation, not a patched result."""
+        emitters, service = recording_emitters()
+        gw = _success_gateway()
+        gw.submit_marketable_order = AsyncMock(
+            return_value=VenueSubmitResult(success=True, order_id="ord-live", status="submitted")
+        )
+        svc = _service(gw, emitters.execution)
+
+        result = await svc.execute(_req("BUY"))
+
+        assert result.accepted is True
+        assert len(service.calls) == 1
+        assert service.calls[0].producer is TelemetryProducer.EXECUTION
+
+
+class TestExecutionFailure:
+    @pytest.mark.asyncio
+    async def test_escaped_exception_is_reported_and_re_raised(self) -> None:
+        emitters, service = recording_emitters()
+        svc = _service(_success_gateway(), emitters.execution)
+
+        with patch.object(
+            ExecutionService,
+            "_execute_impl",
+            AsyncMock(side_effect=RuntimeError("venue exploded")),
+        ):
+            with pytest.raises(RuntimeError, match="venue exploded"):
+                await svc.execute(_req("BUY"))
+
+        [event] = service.payloads(FailureEvent)
+        assert event.component is FailureComponent.EXECUTION
+        assert "exploded" not in event.code
+        assert service.calls[0].correlation_id == safe_ref("sig-BUY")
+
+    @pytest.mark.asyncio
+    async def test_cancellation_is_not_reported_as_an_execution_failure(self) -> None:
+        emitters, service = recording_emitters()
+        svc = _service(_success_gateway(), emitters.execution)
+
+        with patch.object(
+            ExecutionService,
+            "_execute_impl",
+            AsyncMock(side_effect=asyncio.CancelledError()),
+        ):
+            with pytest.raises(asyncio.CancelledError):
+                await svc.execute(_req("BUY"))
+
+        assert service.calls == []
+
+
+class TestSafety:
+    @pytest.mark.asyncio
+    async def test_raising_telemetry_backend_never_alters_the_result(self) -> None:
+        emitters, service = raising_emitters()
+        expected = _fixed_result(status="filled", filled_amount=Decimal("5"))
+
+        baseline = await _project(expected, None)
+        returned = await _project(expected, emitters.execution)
+
+        assert returned == baseline == expected
+        assert service.calls == 1
+
+    @pytest.mark.asyncio
+    async def test_service_without_telemetry_behaves_as_before(self) -> None:
+        gw = _success_gateway()
+        svc = _service(gw, None)
+
+        result = await svc.execute(_req("BUY"))
+
+        assert result.accepted is True
+        gw.submit_marketable_order.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_telemetry_defaults_to_none(self) -> None:
+        svc = ExecutionService(
+            _StubClob(),
+            _FeeSvc(),
+            _mock_order_repo(),
+            config=_make_exec_config(),
+            clob_gateway=_success_gateway(),
+            market_data_service=_make_mds(),
+        )
+
+        assert svc._telemetry is None

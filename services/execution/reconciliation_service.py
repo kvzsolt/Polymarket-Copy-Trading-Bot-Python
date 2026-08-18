@@ -39,6 +39,7 @@ from decimal import Decimal
 from typing import Any, Awaitable, Callable, Protocol, cast
 
 from domain.order_lifecycle import OrderLifecycleStatus
+from services.telemetry import ExecutionTelemetryEmitter
 from utils.logger import get_logger, redact_error_detail
 from storage.postgres.fills_repo import FillRecord
 
@@ -364,6 +365,13 @@ class ReconciliationService:
     Protocol-based mocks (used by ``reconcile_order``) or the concrete
     ``storage.postgres.*`` repos (used by ``reconcile_trade_record`` and
     ``reconcile_risk_record``).
+
+    The optional ``telemetry`` emitter publishes the three operator-visible
+    reconciliation transitions — an applied matched-size delta (the only
+    *observed fill* the event stream reports, since a submission is never a
+    fill), a negative delta (drift), and an auto-released ambiguous
+    submission. It is synchronous, never awaited, and never raises; ``None``
+    disables all three.
     """
 
     def __init__(
@@ -380,6 +388,7 @@ class ReconciliationService:
         funder_address: str | None = None,
         order_confirmation_cfg: Any | None = None,
         task_budget_settlement: Any | None = None,
+        telemetry: ExecutionTelemetryEmitter | None = None,
     ):
         self.orders_repo = orders_repo
         self.fills_repo = fills_repo
@@ -392,6 +401,10 @@ class ReconciliationService:
         self.risk_triggers_repo = risk_triggers_repo
         self.order_confirmation_cfg = order_confirmation_cfg
         self.task_budget_settlement = task_budget_settlement
+        # Operator telemetry for post-submission truth: observed fills, drift,
+        # and ambiguous-release resolutions. ``None`` disables all three; the
+        # emitter itself is synchronous and never raises.
+        self._telemetry = telemetry
         # Funder wallet for the user_activities write-back. When set, every
         # terminal "filled_reconciled" emission also writes a bot=true row
         # into user_activities so the manual-sync detector has a single
@@ -1574,6 +1587,8 @@ class ReconciliationService:
             )
         except Exception:
             pass
+        if self._telemetry is not None:
+            self._telemetry.ambiguous_released(order_id)
         return True
 
     async def _handle_unresolved_confirmation_timeout(
@@ -1725,6 +1740,8 @@ class ReconciliationService:
             )
         except Exception:
             pass
+        if self._telemetry is not None:
+            self._telemetry.reconciliation_drift(order_id)
 
     @staticmethod
     async def _previous_matched_for_order(orders_repo: Any, order_id: str) -> Decimal:
@@ -2419,6 +2436,10 @@ class ReconciliationService:
             )
         except Exception:
             pass
+        if self._telemetry is not None:
+            # Keyed by the cumulative matched total, so a repeated sweep over
+            # the same total cannot be read as a second fill.
+            self._telemetry.fill_observed(order_id, current_matched)
         return True
 
     # ------------------------------------------------------------------
