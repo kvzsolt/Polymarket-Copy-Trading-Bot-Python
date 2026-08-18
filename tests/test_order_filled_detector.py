@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-import pytest
 from eth_utils import keccak
 
 from config.addresses import (
@@ -295,9 +294,12 @@ def test_watched_params_pad_and_lowercase_the_address_topics() -> None:
     assert topics[2][0] == "0x" + "0" * 24 + ("ab" + "cd" * 19)
 
 
-def test_watched_params_cap_the_filter_and_warn_with_the_count_only(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
+def test_watched_params_cap_the_filter_and_warn_with_the_count_only() -> None:
+    """Beyond the cap the filter keeps a deterministic prefix and the WARN
+    names only counts (never wallet addresses)."""
+    import logging
+
+    from services.onchain_detection import order_filled_detector as detector_module
     from services.onchain_detection.order_filled_detector import (
         WATCHED_TOPIC_FILTER_CAP,
         log_subscription_params_for_watched,
@@ -305,14 +307,28 @@ def test_watched_params_cap_the_filter_and_warn_with_the_count_only(
 
     roster = {f"0x{i:040x}" for i in range(WATCHED_TOPIC_FILTER_CAP + 50)}
 
-    maker, _taker = log_subscription_params_for_watched(
-        exchange_addresses=_EXCHANGE_FILTER,
-        watched_wallets=roster,
-    )
+    records: list[logging.LogRecord] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            records.append(record)
+
+    handler = _Capture(level=logging.WARNING)
+    detector_module.logger.addHandler(handler)
+    previous_level = detector_module.logger.level
+    detector_module.logger.setLevel(logging.WARNING)
+    try:
+        maker, _taker = log_subscription_params_for_watched(
+            exchange_addresses=_EXCHANGE_FILTER,
+            watched_wallets=roster,
+        )
+    finally:
+        detector_module.logger.removeHandler(handler)
+        detector_module.logger.setLevel(previous_level)
 
     assert len(maker[1]["topics"][2]) == WATCHED_TOPIC_FILTER_CAP
-    assert caplog.records, "expected a WARN naming the capped count"
-    warning = caplog.records[-1].getMessage()
+    assert records, "expected a WARN naming the capped count"
+    warning = records[-1].getMessage()
     assert str(WATCHED_TOPIC_FILTER_CAP) in warning
     assert str(WATCHED_TOPIC_FILTER_CAP + 50) in warning
     for address in roster:
