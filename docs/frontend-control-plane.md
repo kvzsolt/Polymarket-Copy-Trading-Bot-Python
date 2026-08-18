@@ -4,21 +4,55 @@ The backend exposes an optional operator API at `/api/v1`. It is an adapter
 over application services; it never calls CCXT, runs SQL, edits arbitrary
 files, or submits manual trades from an HTTP handler. The server binds to
 `127.0.0.1:9103` by default and is disabled until `control_plane.enabled` is
-set. A non-loopback bind is rejected unless bearer authentication is enabled.
+set. The `live` environment sets it
+(`config/environments/live/control_plane.yml`); `paper` leaves it off. A
+non-loopback bind is rejected unless bearer authentication is enabled.
 
 ## Authentication and transport
 
-When authentication is enabled, send `Authorization: Bearer <token>`. The
-token is loaded only from the deployment secret boundary as
-`PMCOPY__CONTROL_PLANE__AUTH__TOKEN`; it is not readable or writable through
-the API. Deploy browsers behind a same-origin reverse proxy. CORS is disabled
-unless an explicit origin allowlist is configured, and wildcard authenticated
-CORS is not supported.
+When authentication is enabled, send `Authorization: Bearer <credential>`.
+Credentials are loaded only from the deployment secret boundary and are never
+readable or writable through the API:
 
-All request and response JSON uses `snake_case`. Timestamps are ISO-8601 with
-an explicit UTC offset. Money, prices, shares, and PnL use decimal strings;
-clients must not parse them through binary floating point. Large collections
-use `limit` plus an opaque `cursor`; `limit` is restricted to `1..100`.
+| Variable | Principal | Permissions |
+| --- | --- | --- |
+| `PMCOPY__CONTROL_PLANE__AUTH__TOKEN` | `operator` | every permission |
+| `PMCOPY__CONTROL_PLANE__AUTH__VIEWER_TOKEN` | `viewer` | every `*.read` plus `telemetry.stream` |
+
+The operator credential is required whenever the control plane is enabled and
+authenticated; startup fails closed without it. The viewer credential is
+optional, must differ from the operator credential, and is composed only when
+its own variable is set — an unset variable means the `viewer` principal does
+not exist. Give a dashboard the viewer credential: every mutation route answers
+`403 permission_denied` for it, including task writes, settings writes,
+discovery runs, lock resets, and every runtime safety command.
+
+Both credentials are capped at 1024 characters and are compared in constant
+time, with every configured credential compared even after a match so
+credential order carries no timing signal.
+
+Deploy browsers behind a same-origin reverse proxy. CORS is disabled unless an
+explicit origin allowlist is configured, and wildcard authenticated CORS is not
+supported.
+
+All request and response JSON uses `snake_case`. Money, prices, shares, and PnL
+use decimal strings; clients must not parse them through binary floating point.
+Large collections use `limit` plus an opaque `cursor`; `limit` is restricted to
+`1..100`.
+
+Timestamps are ISO-8601 UTC in two renderings, and a client must accept both:
+
+- values serialized from a typed DTO end in `Z`
+  (`2026-08-18T14:00:00Z`) — this covers every REST resource body and the WS
+  `telemetry_event` frame;
+- the telemetry and metrics snapshots are pre-rendered by
+  `TelemetryQueryService` with `datetime.isoformat()`, so they keep the explicit
+  offset (`2026-08-18T14:00:00+00:00`) — this covers `generated_at` on
+  `GET /telemetry`, `GET /telemetry/snapshot`, and `GET /metrics/snapshot`, the
+  per-event `timestamp` inside a telemetry snapshot, and the WS
+  `telemetry_snapshot` frame.
+
+The two are the same instant; only the suffix differs.
 
 Errors have a stable shape:
 
@@ -65,11 +99,9 @@ registers only routes backed by composed services; consult
 Each read carries exactly one permission: `system.read` (`/accounts`),
 `runtime.read` (`/detection`), `fill.read` (`/fills`), `portfolio.read`
 (`/pnl`), `risk.read` (`/risk`), `leader.read` (`/leaders`), and
-`telemetry.read` (`/telemetry/snapshot`, `/metrics/snapshot`). The backend
-defines a read-only permission set — every `*.read` permission plus
-`telemetry.stream`, and no mutation permission — which a future viewer
-credential will use; the current build still issues only the operator
-credential, which holds every permission.
+`telemetry.read` (`/telemetry/snapshot`, `/metrics/snapshot`). Every one of
+them is in the read-only set the `viewer` credential holds, so a read-only
+dashboard needs no per-route exceptions.
 
 Follower-scoped collections require `follower_account`. Position and order
 detail lookups remain follower-scoped. Portfolio reads use a background cache;
@@ -167,18 +199,34 @@ newer document. The repository validates known typed keys, rejects secret-like
 keys, writes only the selected environment override, fsyncs a temporary file,
 and atomically replaces the target.
 
-Each setting reports one apply mode: `hot_reloadable`, `restart_required`, or
-`immutable_at_runtime`. A successful restart-required write persists the
-validated desired state and returns `restart_required: true`; the HTTP handler
-does not restart or shell out to the process. Wallet keys, bearer tokens,
-database passwords, RPC credentials, and provider secrets are omitted entirely
-from settings values and schemas.
+There is exactly one apply mode. `AppConfig` is immutable and loaded once, so
+no setting is hot-reloadable and `SettingsApplyMetadata` rejects any write
+result that claims otherwise (`restart_required` must be true and
+`live_applied` must be false). A successful write persists the validated
+desired state and returns `restart_required: true`; the HTTP handler does not
+restart or shell out to the process. A client should render every successful
+settings write as "saved, takes effect on restart" and must not offer an
+apply-now affordance.
+
+Wallet keys, bearer credentials, database passwords, RPC credentials, and
+provider secrets are omitted entirely from settings values and schemas. The
+whole `control_plane.auth` object — the operator credential and the viewer
+credential alike — is excluded from the settings surface, so neither can be
+read or rotated over the API.
 
 ## Live stream and resynchronization
 
 Connect an authenticated WebSocket to `GET /api/v1/stream` after reading the
-REST snapshots. The stream carries immutable safe telemetry events and state
-changes. It is incremental notification, not the state authority.
+REST snapshots. It needs `telemetry.stream`, which the viewer credential holds.
+The stream carries immutable safe telemetry events and state changes. It is
+incremental notification, not the state authority.
+
+Server frames are `{"type": ...}` objects: `stream_ready` on connect,
+`telemetry_event` with a `data` event envelope, `telemetry_snapshot` with a
+`data` snapshot (or `null` when no telemetry query is composed), `pong`,
+`resync_required` with a `dropped_count`, and `error` with a `code`. A client
+may send `{"type": "ping"}` or `{"type": "resync"}` as text; binary frames close
+the socket, and client messages are rate limited per principal.
 
 Every subscriber owns a bounded queue. Producers never await a browser. When a
 slow subscriber overflows, old incremental state is not reconstructed; the

@@ -321,3 +321,48 @@ async def test_viewer_credential_reads_and_streams_but_cannot_mutate_runtime() -
         assert unauthenticated.value.status == 401
     finally:
         await client.close()
+
+
+async def test_stream_events_use_z_while_the_snapshot_uses_an_explicit_offset() -> None:
+    """Both timestamp renderings are ISO-8601 UTC, and they differ on purpose.
+
+    A WS ``telemetry_event`` frame serializes the ``TelemetryEvent`` dataclass
+    through :class:`ControlPlaneJsonSerializer`, which renders ``...Z``. The
+    ``/telemetry`` snapshot is pre-rendered by ``TelemetryQueryService`` with
+    ``datetime.isoformat()``, so it keeps ``+00:00`` and the serializer passes
+    the already-built string through untouched. Clients must parse both.
+    """
+
+    from services.metrics import MetricsRegistry
+    from services.telemetry import TelemetryHub, TelemetryQueryService, TelemetryService
+    from services.telemetry.contracts import LeaderEvent, LeaderOutcome, TelemetryProducer
+
+    moment = datetime(2026, 8, 18, 14, 0, tzinfo=timezone.utc)
+
+    class _FixedClock:
+        def now(self) -> datetime:
+            return moment
+
+    metrics = MetricsRegistry()
+    hub = TelemetryHub(metrics=metrics)
+    service = TelemetryService(hub=hub, metrics=metrics, clock=_FixedClock())
+    await service.start()
+    try:
+        query = TelemetryQueryService(service=service, metrics=metrics, clock=_FixedClock())
+        service.emit(
+            producer=TelemetryProducer.DETECTION,
+            payload=LeaderEvent(
+                outcome=LeaderOutcome.RECEIVED,
+                leader_ref="h:0123456789abcdef",
+                source="polling",
+            ),
+        )
+        serializer = ControlPlaneJsonSerializer()
+        snapshot = serializer.to_jsonable(query.snapshot(limit=10))
+        event = serializer.to_jsonable(service.history_snapshot(limit=1)[0])
+
+        assert event["timestamp"] == "2026-08-18T14:00:00Z"
+        assert snapshot["generated_at"] == "2026-08-18T14:00:00+00:00"
+        assert snapshot["events"][0]["timestamp"] == "2026-08-18T14:00:00+00:00"
+    finally:
+        await hub.close()

@@ -83,7 +83,10 @@ Read these in order:
 4. [`docs/runbooks/00-index.md`](docs/runbooks/00-index.md) — incident runbooks (CLOB outage, WSS outage, circuit breaker open, stale locks, reconciliation drift, manual / off-bot drift).
 5. [`docs/architecture.md`](docs/architecture.md) — canonical architecture overview.
 6. [`docs/frontend-control-plane.md`](docs/frontend-control-plane.md) — authenticated
-   REST/WebSocket contract for a future operator frontend.
+   REST/WebSocket contract for a future operator frontend. The live environment
+   starts it on `127.0.0.1:9103` with an operator credential and an optional
+   read-only viewer credential, both supplied from `secrets.env`; see
+   [`docs/live_runbook.md`](docs/live_runbook.md).
 
 ---
 

@@ -125,6 +125,30 @@ does not pin it; the typed default is `polling`), either boolean derives
 booleans are ignored with a `detection_legacy_flags_ignored` warning. Each
 distinct warning is logged once per process. Replace them with `detection.mode`.
 
+## Operator API (`control_plane`)
+
+`config/control_plane.yml` owns the transport policy — bind host and port,
+request and WebSocket bounds, rate limits, CORS allowlist, portfolio cache
+intervals. The base file keeps `enabled: false`; the live environment turns it
+on with `config/environments/live/control_plane.yml`, which contains
+`enabled: true` and nothing else, so the bind stays `127.0.0.1:9103`.
+
+Credentials never appear in a YAML file. They come from the secret layer only:
+
+| Key | Variable | Role |
+|---|---|---|
+| `control_plane.auth.token` | `PMCOPY__CONTROL_PLANE__AUTH__TOKEN` | `operator` — every permission |
+| `control_plane.auth.viewer_token` | `PMCOPY__CONTROL_PLANE__AUTH__VIEWER_TOKEN` | `viewer` — every `*.read` plus `telemetry.stream`, no writes |
+
+An enabled, authenticated control plane without an operator credential fails
+startup closed. The viewer credential is optional and is composed into a second
+bearer principal only when set; when set it must differ from the operator
+credential and, like it, is capped at 1024 characters. Both are `SecretStr`, so
+`pmcopy config print` and `dump_config_payload` redact them, and the whole
+`control_plane.auth` object is excluded from the settings API — the control
+plane cannot read or rotate its own credentials. An unauthenticated
+non-loopback bind is rejected. See `docs/frontend-control-plane.md`.
+
 Discovery thresholds, component weights, normalization ranges, decay,
 shrinkage, scheduler cadence, backfill limits, hysteresis, and rank-driven
 sizing multipliers all live in `config/discovery.yml`.
