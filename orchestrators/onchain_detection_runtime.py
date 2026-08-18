@@ -67,6 +67,7 @@ logger = get_logger("OnchainDetectionRuntime")
 SignalSink = Callable[[OnchainTradeSignal], Coroutine[Any, Any, None]]
 ConditionIdResolver = Callable[[str], Coroutine[Any, Any, str]]
 WebSocketFactory = Callable[..., OnchainWebSocket]
+MinedSubscriptionParamsFactory = Callable[[frozenset[str]], list[list[Any]]]
 
 _CONFIDENCE_RANK = {
     DetectionConfidence.MARKET_UNATTRIBUTED: 0,
@@ -97,6 +98,7 @@ class OnchainDetectionRuntime:
         pending_config: PendingTxConfig | None = None,
         condition_id_resolver: ConditionIdResolver | None = None,
         websocket_factory: WebSocketFactory = OnchainWebSocket,
+        mined_subscription_params_factory: MinedSubscriptionParamsFactory | None = None,
         queue_maxsize: int = 1000,
         dispatched_cap: int = 10_000,
     ) -> None:
@@ -108,12 +110,18 @@ class OnchainDetectionRuntime:
         self._pending_config = pending_config or PendingTxConfig()
         self._resolver = condition_id_resolver
         self._websocket_factory = websocket_factory
+        self._mined_params_factory = mined_subscription_params_factory
         self._dedupe = MinedFillDeduplicator()
         self._queue: asyncio.Queue[OnchainTradeSignal] = asyncio.Queue(maxsize=queue_maxsize)
-        self._mined_ws: OnchainWebSocket | None = None
+        self._mined_sockets: list[OnchainWebSocket] = []
         self._pending_ws: OnchainWebSocket | None = None
         self._dispatcher_task: asyncio.Task | None = None
         self._running = False
+        # Roster resubscribe (watched-topic-filtered modes only): at most one
+        # background rebuild task exists; ``_resubscribe_requested`` coalesces
+        # multiple roster updates into one rebuild off the signal hot path.
+        self._resubscribe_requested = False
+        self._resubscribe_task: asyncio.Task | None = None
         # Per-fill idempotency state for the dispatcher (Greptile P1 #2
         # re-review). All dispatched keys — mined log keys
         # ``(tx_hash, log_index)``, pending keys ``(tx_hash, leader)``,
@@ -152,7 +160,9 @@ class OnchainDetectionRuntime:
             when every composed socket is down, ``None`` when none exists.
         """
 
-        sockets = [socket for socket in (self._mined_ws, self._pending_ws) if socket is not None]
+        sockets = [*self._mined_sockets]
+        if self._pending_ws is not None:
+            sockets.append(self._pending_ws)
         if not sockets:
             return None
         return any(bool(getattr(socket, "connected", False)) for socket in sockets)
@@ -411,13 +421,15 @@ class OnchainDetectionRuntime:
             return
         self._running = True
         if self._enable_mined:
-            self._mined_ws = self._websocket_factory(
-                ws_url=self._ws_url,
-                subscribe_params=log_subscription_params(),
-                name="orderfilled",
-                on_message=self._on_mined_log,
-            )
-            self._mined_ws.start()
+            for params in self._mined_subscription_params():
+                mined_ws = self._websocket_factory(
+                    ws_url=self._ws_url,
+                    subscribe_params=params,
+                    name="orderfilled",
+                    on_message=self._on_mined_log,
+                )
+                mined_ws.start()
+                self._mined_sockets.append(mined_ws)
         if self._enable_pending:
             self._pending_ws = self._websocket_factory(
                 ws_url=self._ws_url,
@@ -432,17 +444,83 @@ class OnchainDetectionRuntime:
             self._dispatcher_loop(), name="onchain-dispatcher"
         )
         logger.info(
-            "onchain_detection_runtime_started | mined=%s pending=%s watched=%d",
+            "onchain_detection_runtime_started | mined=%s mined_subscriptions=%d pending=%s "
+            "watched=%d",
             self._enable_mined,
+            len(self._mined_sockets),
             self._enable_pending,
+            len(self._watched),
+        )
+
+    def _mined_subscription_params(self) -> list[list[Any]]:
+        """Return the ``eth_subscribe`` params for every mined subscription.
+
+        With a params factory (logs-only confirmed mode) the filters embed the
+        watched leaders as topic2/topic3 OR-lists; without one the runtime
+        keeps the single address-only subscription of the gen-1/pending shape.
+        """
+        if self._mined_params_factory is None:
+            return [log_subscription_params()]
+        return list(self._mined_params_factory(frozenset(self._watched)))
+
+    def _schedule_mined_resubscribe(self) -> None:
+        """Request one roster-driven rebuild of the mined subscriptions.
+
+        Bounded: at most one background rebuild task exists, and roster
+        updates that arrive while a rebuild is running coalesce into a single
+        follow-up pass that reads the latest watched set.
+        """
+        if not self._running or not self._enable_mined:
+            return
+        self._resubscribe_requested = True
+        if self._resubscribe_task is None or self._resubscribe_task.done():
+            self._resubscribe_task = asyncio.create_task(
+                self._resubscribe_mined_loop(), name="onchain-mined-resubscribe"
+            )
+
+    async def _resubscribe_mined_loop(self) -> None:
+        while self._running and self._resubscribe_requested:
+            self._resubscribe_requested = False
+            await self._resubscribe_mined_once()
+
+    async def _resubscribe_mined_once(self) -> None:
+        """Stop the current mined sockets and reopen them for the roster."""
+        old_sockets, self._mined_sockets = self._mined_sockets, []
+        for socket in old_sockets:
+            try:
+                await socket.stop()
+            except Exception as exc:
+                logger.warning(
+                    "onchain_mined_socket_stop_failed | error=%s",
+                    redact_error_detail(exc),
+                )
+        if not self._running or not self._enable_mined:
+            return
+        for params in self._mined_subscription_params():
+            mined_ws = self._websocket_factory(
+                ws_url=self._ws_url,
+                subscribe_params=params,
+                name="orderfilled",
+                on_message=self._on_mined_log,
+            )
+            mined_ws.start()
+            self._mined_sockets.append(mined_ws)
+        logger.info(
+            "onchain_mined_resubscribed | subscriptions=%d watched=%d",
+            len(self._mined_sockets),
             len(self._watched),
         )
 
     async def stop(self) -> None:
         self._running = False
-        if self._mined_ws is not None:
-            await self._mined_ws.stop()
-            self._mined_ws = None
+        if self._resubscribe_task is not None:
+            self._resubscribe_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._resubscribe_task
+            self._resubscribe_task = None
+        for mined_ws in self._mined_sockets:
+            await mined_ws.stop()
+        self._mined_sockets = []
         if self._pending_ws is not None:
             await self._pending_ws.stop()
             self._pending_ws = None
@@ -454,5 +532,13 @@ class OnchainDetectionRuntime:
         logger.info("onchain_detection_runtime_stopped")
 
     def update_watched_wallets(self, wallets: set[str]) -> None:
-        """Runtime-update the watched set (lowercased)."""
+        """Runtime-update the watched set (lowercased).
+
+        In watched-topic-filtered modes the provider-side filters embed the
+        roster, so a roster change also schedules a resubscribe (off the
+        signal hot path). In the legacy address-only mode nothing resubscribes
+        — the client-side maker/taker match reads the updated set directly.
+        """
         self._watched = {w.lower() for w in wallets}
+        if self._mined_params_factory is not None:
+            self._schedule_mined_resubscribe()
