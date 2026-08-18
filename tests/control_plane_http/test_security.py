@@ -153,7 +153,10 @@ def test_the_authorization_header_takes_precedence_over_an_agreeing_offer() -> N
     assert offer.unsupported_subprotocol is False
 
 
-@pytest.mark.parametrize("authorization", ("Bearer token-b", "Basic token-a", "Bearer  token-a"))
+@pytest.mark.parametrize(
+    "authorization",
+    ("Bearer token-b", "Basic token-a", "Bearer  token-a", "Bearer tökén"),
+)
 def test_a_header_disagreeing_with_the_offer_is_rejected_without_echoing_either(
     authorization: str,
 ) -> None:

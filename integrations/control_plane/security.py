@@ -386,9 +386,12 @@ class WebSocketCredentialExtractor:
         """Reject a header that does not restate the offered credential."""
 
         scheme, separator, presented = header.partition(" ")
+        # ``secrets.compare_digest`` raises TypeError on a non-ASCII str, and a
+        # header value can carry one; short-circuit so the answer stays 401.
         if (
             separator != " "
             or scheme.casefold() != "bearer"
+            or not presented.isascii()
             or not self._compare_digest(presented, credential)
         ):
             raise ControlPlaneTransportError(
@@ -646,5 +649,6 @@ __all__ = [
     "MonotonicClock",
     "RateLimitDecision",
     "SystemMonotonicClock",
+    "WebSocketCredentialExtractor",
     "is_loopback_host",
 ]

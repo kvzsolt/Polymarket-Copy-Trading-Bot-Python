@@ -420,7 +420,14 @@ class ControlPlaneHttpApplication:
             router.add_get(f"{API_PREFIX}/telemetry", self._get_telemetry)
             router.add_get(f"{API_PREFIX}/telemetry/snapshot", self._get_telemetry)
         if self._dependencies.telemetry_hub is not None:
-            router.add_get(f"{API_PREFIX}/stream", self._stream_telemetry)
+            # allow_head=False: a HEAD twin would share this handler and could
+            # carry a subprotocol offer into ``prepare`` on a method the guard
+            # below would otherwise have to enumerate.
+            router.add_get(
+                f"{API_PREFIX}/stream",
+                self._stream_telemetry,
+                allow_head=False,
+            )
 
     # ------------------------------------------------------------------
     # System and query handlers
@@ -1200,13 +1207,18 @@ def create_control_plane_app(
 
 
 def _is_stream_upgrade(request: web.Request) -> bool:
-    """Return whether this request is the telemetry WebSocket upgrade.
+    """Return whether this request targets the telemetry WebSocket upgrade.
 
-    Only that one route may read a credential from ``Sec-WebSocket-Protocol``;
+    Only that one path may read a credential from ``Sec-WebSocket-Protocol``;
     every REST route authenticates from the ``Authorization`` header alone.
+
+    The test is deliberately method-agnostic. Gating on ``GET`` would leave any
+    other method registered on this path — a ``HEAD`` twin, a future alias —
+    reaching the handler with an unexamined offer, and aiohttp's handshake logs
+    an offer that overlaps nothing.
     """
 
-    return request.method == "GET" and request.path == f"{API_PREFIX}/stream"
+    return request.path == f"{API_PREFIX}/stream"
 
 
 def _validate_bind_auth(

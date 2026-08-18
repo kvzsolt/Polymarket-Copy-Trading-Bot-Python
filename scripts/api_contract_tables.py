@@ -82,7 +82,7 @@ SOURCE_GUARDS: tuple[tuple[str, str], ...] = (
     ("max_msg_size=4096", HTTP_MODULE),
     ("protocols=self._websocket_credentials.echo_protocols", HTTP_MODULE),
     ('WEBSOCKET_BEARER_SUBPROTOCOL = "bearer"', SECURITY_MODULE),
-    ("[A-Za-z0-9._~+/=-]{1,1024}", SECURITY_MODULE),
+    (f"[{WEBSOCKET_SUBPROTOCOL_CREDENTIAL_CHARSET}]{{1,1024}}", SECURITY_MODULE),
     ('request.query.get("limit", "50")', HTTP_MODULE),
     ("0 <= limit <= 1000", HTTP_MODULE),
     ("1 <= len(raw_items) <= 100", HTTP_MODULE),

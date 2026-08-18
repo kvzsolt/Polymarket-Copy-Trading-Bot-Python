@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 
 import pytest
@@ -194,20 +195,33 @@ async def test_inbound_stream_messages_are_rate_limited_per_principal() -> None:
         await client.close()
 
 
-async def test_the_subprotocol_carrier_authenticates_and_echoes_the_bearer_token() -> None:
+async def test_the_subprotocol_carrier_authenticates_and_echoes_the_bearer_token(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     """A browser sends the credential as the second subprotocol token.
 
     The 101 response must echo exactly ``bearer`` or the browser fails the
-    handshake, and the two tokens are order-insensitive.
+    handshake, and the two tokens are order-insensitive. The open is recorded
+    by carrier and subject, never by credential.
     """
 
     hub = _Hub()
     client = await _client(hub)
     try:
-        operator = await client.ws_connect("/api/v1/stream", protocols=("bearer", _TOKEN))
-        assert operator.protocol == "bearer"
-        assert await operator.receive_json() == {"type": "stream_ready"}
-        await operator.close()
+        with caplog.at_level(logging.INFO, logger="integrations.control_plane.http"):
+            operator = await client.ws_connect("/api/v1/stream", protocols=("bearer", _TOKEN))
+            assert operator.protocol == "bearer"
+            assert await operator.receive_json() == {"type": "stream_ready"}
+            await operator.close()
+
+        opened = [
+            record for record in caplog.records if record.name == "integrations.control_plane.http"
+        ]
+        assert len(opened) == 1
+        assert opened[0].getMessage() == "control_plane_stream_opened"
+        assert opened[0].auth_carrier == "subprotocol"
+        assert opened[0].principal == "operator-a"
+        assert _TOKEN not in str(opened[0].__dict__)
 
         viewer = await client.ws_connect("/api/v1/stream", protocols=(_VIEWER_TOKEN, "bearer"))
         assert viewer.protocol == "bearer"
@@ -339,5 +353,39 @@ async def test_an_unsafe_configured_credential_disables_the_carrier_with_one_war
         with pytest.raises(WSServerHandshakeError) as refused:
             await client.ws_connect("/api/v1/stream", protocols=("bearer", _VIEWER_TOKEN))
         assert refused.value.status == 401
+    finally:
+        await client.close()
+
+
+async def test_a_head_upgrade_cannot_slip_an_offer_past_the_subprotocol_guard(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """``add_get`` also registers HEAD, which must not reach the handshake.
+
+    A method-gated guard would let ``HEAD`` carry an offer straight into
+    ``ws.prepare``, where aiohttp logs the raw token list. The stream route
+    registers GET alone, and the guard reads the path rather than the method.
+    """
+
+    hub = _Hub()
+    client = await _client(hub)
+    try:
+        with caplog.at_level(logging.WARNING, logger="aiohttp.websocket"):
+            response = await client.request(
+                "HEAD",
+                "/api/v1/stream",
+                headers={
+                    "Authorization": f"Bearer {_TOKEN}",
+                    "Connection": "Upgrade",
+                    "Upgrade": "websocket",
+                    "Sec-WebSocket-Version": "13",
+                    "Sec-WebSocket-Key": base64.b64encode(b"0123456789abcdef").decode(),
+                    "Sec-WebSocket-Protocol": f"graphql-ws, {_TOKEN}",
+                },
+            )
+
+        assert response.status in {400, 405}
+        assert [record for record in caplog.records if record.name == "aiohttp.websocket"] == []
+        assert hub.capacities == []
     finally:
         await client.close()
