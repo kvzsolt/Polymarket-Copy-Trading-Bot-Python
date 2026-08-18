@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import inspect
 import signal
 from collections.abc import Awaitable, Callable, Coroutine, Iterable, Sized
@@ -22,6 +23,7 @@ if TYPE_CHECKING:
     from orchestrators.runtime_bootstrap import TradingContext
 
 from bootstrap import build_app
+from clients.onchain_ws import OnchainWebSocket
 from config.app_config import AppConfigSemanticValidator, EnvValidationError, load_config
 from config.env import is_valid_eth_address
 from domain.detection import DetectionMode
@@ -272,6 +274,81 @@ def _build_onchain_condition_id_resolver():
     return GammaConditionIdResolver().resolve
 
 
+def _build_onchain_ws_health_reporter(readiness, metrics_registry: MetricsRegistry = metrics):
+    """Thin glue: the on-chain WebSocket health reporter for this process.
+
+    Args:
+        readiness: Readiness tracker the ``onchain_ws_ok`` check registers on.
+        metrics_registry: Registry receiving the bounded on-chain WS metrics.
+
+    Returns:
+        ``OnchainWsHealthReporter`` ready to be bound to the socket factory.
+    """
+
+    from services.onchain_detection.ws_health_reporter import OnchainWsHealthReporter
+
+    return OnchainWsHealthReporter(metrics_registry, readiness)
+
+
+def _build_pending_copy_tracker(
+    config: object,
+    *,
+    telemetry_service: object | None,
+    metrics_registry: MetricsRegistry = metrics,
+):
+    """Thin glue: the pending-copy confirmation tracker, when it applies.
+
+    Only ``detection.mode=on_chain_pending`` copies off an unmined sighting,
+    so only that mode needs the follow-up. Returns ``None`` (feature off) for
+    every other mode, when the operator disabled it, or when no HTTP RPC
+    endpoint is configured — receipt confirmation cannot run without one, and
+    a tracker that can never confirm would report every copy as ``rpc_error``.
+
+    Args:
+        config: Typed application configuration.
+        telemetry_service: Process telemetry service, or ``None``.
+        metrics_registry: Registry receiving the ``pending_copy_*`` metrics.
+
+    Returns:
+        A not-yet-started ``PendingCopyConfirmationTracker``, or ``None``.
+    """
+
+    from clients.network.web3_receipt_fetcher import Web3ReceiptStatusFetcher
+    from services.onchain_detection.pending_copy_confirmation_tracker import (
+        PendingCopyConfirmationTracker,
+    )
+
+    detection = getattr(config, "detection", None)
+    if detection is None or detection.detection_mode is not DetectionMode.ON_CHAIN_PENDING:
+        return None
+    oc_cfg = getattr(detection, "onchain", None)
+    if oc_cfg is None or not bool(getattr(oc_cfg, "pending_copy_confirmation_enabled", False)):
+        return None
+    polymarket = getattr(config, "polymarket", None)
+    rpc_url = str(getattr(polymarket, "rpc_url", "") or "")
+    if not rpc_url.strip():
+        # The endpoint is a secret; report only that it is absent.
+        logger.warning(
+            "pending_copy_tracker_disabled | reason=no_rpc_endpoint — provisional "
+            "copies will not be confirmed against the leader transaction receipt"
+        )
+        return None
+    return PendingCopyConfirmationTracker(
+        receipt_fetcher=Web3ReceiptStatusFetcher.from_rpc_url(
+            rpc_url,
+            str(getattr(polymarket, "fallback_rpc_url", "") or ""),
+        ),
+        metrics=metrics_registry,
+        telemetry=telemetry_service,
+        deadline_seconds=float(getattr(oc_cfg, "pending_copy_confirmation_deadline_seconds", 60.0)),
+        max_tracked=int(getattr(oc_cfg, "pending_copy_confirmation_max_tracked", 2048)),
+        # Auto-unwind stays design-only: the flag is accepted but no requester
+        # is wired, so enabling it cannot move money (see
+        # docs/known_limitations.md).
+        unwind_hook=None,
+    )
+
+
 def _confirmed_source_builder(
     state_store_provider: "Callable[[], Awaitable[SourceTransactionStateStore | None]]",
 ) -> "ConfirmedSourceBuilder":
@@ -342,19 +419,28 @@ async def _default_source_state_store_provider():
     return PostgresSourceTransactionStateStore(await get_pool())
 
 
-def _build_detection_source_factory(config: object, *, state_store_provider=None):
+def _build_detection_source_factory(
+    config: object,
+    *,
+    state_store_provider=None,
+    websocket_factory=None,
+):
     """Thin glue: one ``DetectionSourceFactory`` covering both on-chain modes.
 
     Args:
         config: Typed application configuration (``detection`` section read).
         state_store_provider: Awaitable factory for the confirmed runtime's
             durable state store; defaults to the shared Postgres pool.
+        websocket_factory: ``OnchainWebSocket``-compatible constructor for the
+            provisional runtime's subscription; ``app.main`` binds the health
+            reporter here. Defaults to the plain client.
 
     Returns:
         ``DetectionSourceFactory`` with the provisional-pending and
         receipt-confirmed builders registered.
     """
 
+    from clients.onchain_ws import OnchainWebSocket
     from orchestrators.detection_source_factory import (
         DetectionSourceFactory,
         ProvisionalPendingSourceBuilder,
@@ -366,6 +452,7 @@ def _build_detection_source_factory(config: object, *, state_store_provider=None
             ProvisionalPendingSourceBuilder(
                 pending_config=_build_pending_tx_config(oc_cfg),
                 condition_id_resolver=_build_onchain_condition_id_resolver(),
+                websocket_factory=websocket_factory or OnchainWebSocket,
             ),
             _confirmed_source_builder(state_store_provider or _default_source_state_store_provider),
         ]
@@ -1068,6 +1155,7 @@ async def _shutdown_runtime(
     user_data_runtimes: list[UserDataRuntime],
     metrics_runner,
     onchain_runtime=None,
+    pending_copy_tracker=None,
 ) -> None:
     shutdown_tasks = list(monitor_tasks)
 
@@ -1088,6 +1176,15 @@ async def _shutdown_runtime(
         except Exception as exc:
             logger.warning(
                 "onchain_runtime_shutdown_failed",
+                extra={"error": redact_error_detail(exc)},
+            )
+
+    if pending_copy_tracker is not None:
+        try:
+            await pending_copy_tracker.stop()
+        except Exception as exc:
+            logger.warning(
+                "pending_copy_tracker_shutdown_failed",
                 extra={"error": redact_error_detail(exc)},
             )
 
@@ -1858,6 +1955,9 @@ async def _run_application(client_registry: list[Any]) -> int:
     # spawned before the on-chain runtime is constructed below, so the name
     # must already exist for the closure to read at call time.
     onchain_runtime = None
+    # Bound here so the shutdown path can stop it even when the on-chain
+    # composition below never runs or fails part-way through.
+    pending_copy_tracker = None
 
     async def _on_new_leaders(new_wallets: list[str]) -> list[str]:
         started_wallets = await _refresh_contexts_for_new_leaders(
@@ -2051,6 +2151,14 @@ async def _run_application(client_registry: list[Any]) -> int:
     # the copy layer dedups the same fill by trade key.
     detection_mode = DetectionStartupReporter(logger, metrics).report(application.config)
     if detection_mode is not DetectionMode.POLLING:
+        # Parsed OUTSIDE the guard below on purpose: the confidence floor
+        # decides whether every mempool sighting is copied or dropped, so an
+        # unparseable value must abort startup rather than be absorbed into
+        # "continue without on-chain detection" (which silently downgrades an
+        # operator-chosen mode to REST polling).
+        _detection_confidence_from_config(
+            application.config.detection.onchain.pending_tx_detection_confidence_required
+        )
         try:
             from orchestrators.detection_source_factory import DetectionSourceRequest
             from orchestrators.onchain_signal_dispatch import OnchainSignalDispatchAdapter
@@ -2058,6 +2166,11 @@ async def _run_application(client_registry: list[Any]) -> int:
                 execute_trades as _execute_trade_pipeline,
             )
 
+            pending_copy_tracker = _build_pending_copy_tracker(
+                application.config,
+                telemetry_service=telemetry_runtime.service,
+                metrics_registry=metrics,
+            )
             # One adapter routes every on-chain signal into the same copy
             # pipeline the REST-polling leader monitor uses (v1 runtime when
             # enabled, else the legacy per-context pipeline), logging
@@ -2066,9 +2179,16 @@ async def _run_application(client_registry: list[Any]) -> int:
                 contexts_by_leader=contexts_by_leader,
                 v1_runtime=v1_runtime,
                 execute_trades=_execute_trade_pipeline,
+                pending_copy_tracker=pending_copy_tracker,
             )
             oc_cfg = application.config.detection.onchain
-            onchain_runtime = await _build_detection_source_factory(application.config).build(
+            _ws_health_reporter = _build_onchain_ws_health_reporter(application.readiness, metrics)
+            onchain_runtime = await _build_detection_source_factory(
+                application.config,
+                websocket_factory=functools.partial(
+                    OnchainWebSocket, state_listener=_ws_health_reporter
+                ),
+            ).build(
                 DetectionSourceRequest(
                     mode=detection_mode,
                     watched_wallets=frozenset(monitored_leaders),
@@ -2084,6 +2204,8 @@ async def _run_application(client_registry: list[Any]) -> int:
                     detection_mode.value,
                     len(monitored_leaders),
                 )
+                if pending_copy_tracker is not None:
+                    await pending_copy_tracker.start()
         except Exception as exc:
             logger.warning(
                 "onchain_detection_start_failed | mode=%s error=%s — bot continues "
@@ -2210,6 +2332,7 @@ async def _run_application(client_registry: list[Any]) -> int:
             user_data_runtimes=user_data_runtimes,
             metrics_runner=metrics_runner,
             onchain_runtime=onchain_runtime,
+            pending_copy_tracker=pending_copy_tracker,
         )
 
 

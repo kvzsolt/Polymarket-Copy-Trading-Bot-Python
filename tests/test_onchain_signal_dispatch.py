@@ -850,3 +850,221 @@ async def test_claim_policy_failure_fails_closed_for_that_context(
 
     assert pipeline.calls == []
     assert any("cross_source_claim_failed" in r.getMessage() for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# Pending-copy confirmation handoff (provisional signals only)
+# ---------------------------------------------------------------------------
+
+
+class _RecordingTracker:
+    """Stands in for ``PendingCopyConfirmationTracker.track`` (sync, bool)."""
+
+    def __init__(self, *, raises: bool = False) -> None:
+        self.entries: list = []
+        self._raises = raises
+
+    def track(self, entry) -> bool:
+        self.entries.append(entry)
+        if self._raises:
+            raise RuntimeError("tracker exploded")
+        return True
+
+
+def _tracking_adapter(
+    contexts_by_leader,
+    *,
+    tracker,
+    pipeline=None,
+    monotonic=None,
+):
+    pipeline = pipeline or _Pipeline()
+    adapter = OnchainSignalDispatchAdapter(
+        contexts_by_leader=contexts_by_leader,
+        v1_runtime=None,
+        execute_trades=pipeline,
+        clock=lambda: 1234.5,
+        metrics=MetricsRegistry(schemas=TELEMETRY_METRIC_SCHEMAS),
+        logger=logging.getLogger("OnchainSignalDispatch"),
+        pending_copy_tracker=tracker,
+        **({"monotonic": monotonic} if monotonic is not None else {}),
+    )
+    return adapter, pipeline
+
+
+@pytest.mark.asyncio
+async def test_provisional_copy_that_reached_the_venue_is_tracked() -> None:
+    tracker = _RecordingTracker()
+    pipeline = _Pipeline(outcomes=[SimpleNamespace(status="executed", reason=None, order_id="o-1")])
+    adapter, _pipeline = _tracking_adapter(
+        {_LEADER: [_ctx("u1"), _ctx("u2")]},
+        tracker=tracker,
+        pipeline=pipeline,
+        monotonic=lambda: 4242.0,
+    )
+
+    await adapter(_signal(provisional=True))
+
+    assert len(tracker.entries) == 1
+    entry = tracker.entries[0]
+    assert entry.tx_hash == _TX
+    assert entry.leader_wallet == _LEADER
+    assert entry.user_ids == ("u1", "u2")
+    assert entry.token_id == "123456"
+    assert entry.condition_id == "0x" + "ef" * 32
+    assert entry.side == "BUY"
+    assert entry.recorded_at == 4242.0
+
+
+@pytest.mark.asyncio
+async def test_tracked_statuses_cover_paper_and_unconfirmed_submissions() -> None:
+    for status in ("executed", "paper", "submitted_unconfirmed"):
+        tracker = _RecordingTracker()
+        pipeline = _Pipeline(outcomes=[SimpleNamespace(status=status, reason=None, order_id=None)])
+        adapter, _pipeline = _tracking_adapter(
+            {_LEADER: [_ctx("u1")]}, tracker=tracker, pipeline=pipeline
+        )
+
+        await adapter(_signal(provisional=True))
+
+        assert [entry.user_ids for entry in tracker.entries] == [("u1",)], status
+
+
+@pytest.mark.asyncio
+async def test_a_provisional_signal_that_only_skipped_is_not_tracked() -> None:
+    tracker = _RecordingTracker()
+    pipeline = _Pipeline(
+        outcomes=[SimpleNamespace(status="skipped", reason="risk_rejected", order_id=None)]
+    )
+    adapter, _pipeline = _tracking_adapter(
+        {_LEADER: [_ctx("u1")]}, tracker=tracker, pipeline=pipeline
+    )
+
+    await adapter(_signal(provisional=True))
+
+    assert tracker.entries == []
+
+
+@pytest.mark.asyncio
+async def test_only_the_users_whose_copy_reached_the_venue_are_tracked() -> None:
+    tracker = _RecordingTracker()
+
+    class _MixedPipeline(_Pipeline):
+        async def __call__(self, ctx, leader_id, raws, now_ts):
+            self.calls.append((ctx.user_id, leader_id, raws, now_ts))
+            if ctx.user_id == "u1":
+                return [SimpleNamespace(status="executed", reason=None, order_id="o-1")]
+            return [SimpleNamespace(status="skipped", reason="risk_rejected", order_id=None)]
+
+    adapter, _pipeline = _tracking_adapter(
+        {_LEADER: [_ctx("u1"), _ctx("u2")]},
+        tracker=tracker,
+        pipeline=_MixedPipeline(),
+    )
+
+    await adapter(_signal(provisional=True))
+
+    assert len(tracker.entries) == 1
+    assert tracker.entries[0].user_ids == ("u1",)
+
+
+@pytest.mark.asyncio
+async def test_a_confirmed_signal_is_never_tracked() -> None:
+    """Only provisional copies need follow-up: a mined fill is already final."""
+    tracker = _RecordingTracker()
+    adapter, _pipeline = _tracking_adapter({_LEADER: [_ctx("u1")]}, tracker=tracker)
+
+    await adapter(_signal(provisional=False))
+
+    assert tracker.entries == []
+
+
+@pytest.mark.asyncio
+async def test_a_pipeline_exception_leaves_that_user_untracked() -> None:
+    tracker = _RecordingTracker()
+    adapter, _pipeline = _tracking_adapter(
+        {_LEADER: [_ctx("u1")]},
+        tracker=tracker,
+        pipeline=_Pipeline(fail_for={"u1"}),
+    )
+
+    await adapter(_signal(provisional=True))
+
+    assert tracker.entries == []
+
+
+@pytest.mark.asyncio
+async def test_a_tracker_failure_never_breaks_dispatch(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    tracker = _RecordingTracker(raises=True)
+    pipeline = _Pipeline(outcomes=[SimpleNamespace(status="executed", reason=None, order_id="o-1")])
+    adapter, _pipeline = _tracking_adapter(
+        {_LEADER: [_ctx("u1")]}, tracker=tracker, pipeline=pipeline
+    )
+
+    with caplog.at_level(logging.DEBUG, logger="OnchainSignalDispatch"):
+        await adapter(_signal(provisional=True))
+
+    assert [call[0] for call in pipeline.calls] == ["u1"]
+    assert len(tracker.entries) == 1
+    assert any("pending_copy_track_skipped" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_dispatch_without_a_tracker_is_unchanged() -> None:
+    adapter, pipeline, _ = _adapter({_LEADER: [_ctx("u1")]})
+
+    await adapter(_signal(provisional=True))
+
+    assert [call[0] for call in pipeline.calls] == ["u1"]
+
+
+@pytest.mark.asyncio
+async def test_the_recorded_stamp_shares_the_trackers_monotonic_time_base() -> None:
+    """``recorded_at`` feeds ``now - recorded_at`` inside the tracker.
+
+    The tracker's default clock is ``time.monotonic``; stamping the entry with
+    wall-clock ``time.time`` would make every age hugely negative and no copy
+    would ever be polled.
+    """
+    import time
+
+    tracker = _RecordingTracker()
+    pipeline = _Pipeline(outcomes=[SimpleNamespace(status="executed", reason=None, order_id="o-1")])
+    adapter, _pipeline = _tracking_adapter(
+        {_LEADER: [_ctx("u1")]}, tracker=tracker, pipeline=pipeline
+    )
+
+    await adapter(_signal(provisional=True))
+
+    assert len(tracker.entries) == 1
+    assert abs(tracker.entries[0].recorded_at - time.monotonic()) < 1.0
+
+
+def test_pending_copy_metric_schemas_are_bounded() -> None:
+    from services.metrics import (
+        GAUGE_PENDING_COPY_TRACKED,
+        METRIC_PENDING_COPY_CONFIRMED,
+        METRIC_PENDING_COPY_TRACKER_DROPPED,
+        METRIC_PENDING_COPY_UNCONFIRMED,
+        MetricKind,
+    )
+
+    schemas = {schema.name: schema for schema in TELEMETRY_METRIC_SCHEMAS}
+
+    assert schemas[METRIC_PENDING_COPY_CONFIRMED].kind is MetricKind.COUNTER
+    assert schemas[METRIC_PENDING_COPY_CONFIRMED].allowed_label_values == ()
+    assert schemas[GAUGE_PENDING_COPY_TRACKED].kind is MetricKind.GAUGE
+    assert schemas[METRIC_PENDING_COPY_UNCONFIRMED].allowed_label_values == (
+        ("reason", ("reverted", "not_mined", "rpc_error")),
+    )
+    assert schemas[METRIC_PENDING_COPY_TRACKER_DROPPED].allowed_label_values == (
+        ("reason", ("full",)),
+    )
+
+    registry = MetricsRegistry(schemas=TELEMETRY_METRIC_SCHEMAS)
+    with pytest.raises(ValueError):
+        registry.inc(METRIC_PENDING_COPY_UNCONFIRMED, labels={"reason": "replaced"})
+    with pytest.raises(ValueError):
+        registry.inc(METRIC_PENDING_COPY_TRACKER_DROPPED, labels={"reason": "stale"})

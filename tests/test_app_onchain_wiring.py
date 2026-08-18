@@ -307,3 +307,239 @@ def test_onchain_runtime_accepts_the_refresh_the_wiring_performs() -> None:
 
     assert _refresh_onchain_watched_wallets(runtime, {"0xSTARTUP", "0xNew"}) is True
     assert runtime._watched == {"0xstartup", "0xnew"}
+
+
+# ---------------------------------------------------------------------------
+# Pending-copy confirmation tracker + WS health reporter composition
+# ---------------------------------------------------------------------------
+
+
+def _pending_config(**overrides):
+    from config.app_config import DetectionConfig, OnchainDetectionConfig
+
+    onchain_kwargs = {
+        "pending_tx_ws_url": "wss://polygon.example.invalid/v2/redacted",
+        "pending_tx_detection_confidence_required": "pending_probable",
+    }
+    onchain_kwargs.update(overrides.pop("onchain", {}))
+    return SimpleNamespace(
+        detection=DetectionConfig(
+            mode=overrides.pop("mode", "on_chain_pending"),
+            onchain=OnchainDetectionConfig(**onchain_kwargs),
+        ),
+        polymarket=SimpleNamespace(
+            rpc_url=overrides.pop("rpc_url", "https://polygon.example.invalid/v2/primary"),
+            fallback_rpc_url=overrides.pop("fallback_rpc_url", ""),
+        ),
+        wallet=SimpleNamespace(chain_id=137),
+    )
+
+
+def test_pending_copy_tracker_is_built_in_pending_mode() -> None:
+    from app import _build_pending_copy_tracker
+    from services.metrics import MetricsRegistry, TELEMETRY_METRIC_SCHEMAS
+    from services.onchain_detection.pending_copy_confirmation_tracker import (
+        PendingCopyConfirmationTracker,
+    )
+
+    tracker = _build_pending_copy_tracker(
+        _pending_config(),
+        telemetry_service=None,
+        metrics_registry=MetricsRegistry(schemas=TELEMETRY_METRIC_SCHEMAS),
+    )
+
+    assert isinstance(tracker, PendingCopyConfirmationTracker)
+    assert tracker.tracked_count == 0
+
+
+def test_pending_copy_tracker_is_not_built_outside_pending_mode() -> None:
+    """The tracker is a pending-mode safeguard; other modes must not pay for it."""
+    from app import _build_pending_copy_tracker
+    from services.metrics import MetricsRegistry, TELEMETRY_METRIC_SCHEMAS
+
+    metrics = MetricsRegistry(schemas=TELEMETRY_METRIC_SCHEMAS)
+
+    for mode in ("polling", "on_chain_confirmed"):
+        assert (
+            _build_pending_copy_tracker(
+                _pending_config(mode=mode), telemetry_service=None, metrics_registry=metrics
+            )
+            is None
+        )
+
+
+def test_pending_copy_tracker_respects_the_disable_flag() -> None:
+    from app import _build_pending_copy_tracker
+    from services.metrics import MetricsRegistry, TELEMETRY_METRIC_SCHEMAS
+
+    config = _pending_config(onchain={"pending_copy_confirmation_enabled": False})
+
+    assert (
+        _build_pending_copy_tracker(
+            config,
+            telemetry_service=None,
+            metrics_registry=MetricsRegistry(schemas=TELEMETRY_METRIC_SCHEMAS),
+        )
+        is None
+    )
+
+
+def test_pending_copy_tracker_is_not_built_without_an_rpc_endpoint() -> None:
+    """Receipt confirmation needs HTTP RPC; without it the tracker stays off."""
+    from app import _build_pending_copy_tracker
+    from services.metrics import MetricsRegistry, TELEMETRY_METRIC_SCHEMAS
+
+    assert (
+        _build_pending_copy_tracker(
+            _pending_config(rpc_url=""),
+            telemetry_service=None,
+            metrics_registry=MetricsRegistry(schemas=TELEMETRY_METRIC_SCHEMAS),
+        )
+        is None
+    )
+
+
+def test_pending_copy_tracker_uses_the_configured_bounds() -> None:
+    from app import _build_pending_copy_tracker
+    from services.metrics import MetricsRegistry, TELEMETRY_METRIC_SCHEMAS
+
+    config = _pending_config(
+        onchain={
+            "pending_copy_confirmation_deadline_seconds": 42.0,
+            "pending_copy_confirmation_max_tracked": 7,
+        }
+    )
+
+    tracker = _build_pending_copy_tracker(
+        config,
+        telemetry_service=None,
+        metrics_registry=MetricsRegistry(schemas=TELEMETRY_METRIC_SCHEMAS),
+    )
+
+    assert tracker is not None
+    assert tracker._deadline_seconds == 42.0
+    assert tracker._max_tracked == 7
+    # Auto-unwind is opt-in and off by default: no hook may be wired.
+    assert tracker._unwind_hook is None
+
+
+def test_auto_unwind_flag_does_not_wire_a_hook_yet() -> None:
+    """The flag exists but the requester is design-only; enabling must be inert."""
+    from app import _build_pending_copy_tracker
+    from services.metrics import MetricsRegistry, TELEMETRY_METRIC_SCHEMAS
+
+    tracker = _build_pending_copy_tracker(
+        _pending_config(onchain={"pending_copy_auto_unwind_enabled": True}),
+        telemetry_service=None,
+        metrics_registry=MetricsRegistry(schemas=TELEMETRY_METRIC_SCHEMAS),
+    )
+
+    assert tracker is not None
+    assert tracker._unwind_hook is None
+
+
+def test_onchain_ws_health_reporter_is_registered_on_readiness() -> None:
+    from app import _build_onchain_ws_health_reporter
+    from services.healthServer import ReadinessTracker
+    from services.metrics import MetricsRegistry, TELEMETRY_METRIC_SCHEMAS
+    from services.onchain_detection.ws_health_reporter import OnchainWsHealthReporter
+
+    readiness = ReadinessTracker()
+    reporter = _build_onchain_ws_health_reporter(
+        readiness, MetricsRegistry(schemas=TELEMETRY_METRIC_SCHEMAS)
+    )
+
+    assert isinstance(reporter, OnchainWsHealthReporter)
+    assert readiness.snapshot()["checks"]["onchain_ws_ok"]["required"] is False
+
+
+@pytest.mark.asyncio
+async def test_detection_factory_forwards_the_health_reporting_socket_factory() -> None:
+    """The reporter must reach the socket the gen-1 runtime actually opens."""
+    from app import _build_detection_source_factory, _build_onchain_ws_health_reporter
+    from domain.detection import DetectionMode
+    from orchestrators.detection_source_factory import DetectionSourceRequest
+    from services.healthServer import ReadinessTracker
+    from services.metrics import MetricsRegistry, TELEMETRY_METRIC_SCHEMAS
+
+    reporter = _build_onchain_ws_health_reporter(
+        ReadinessTracker(), MetricsRegistry(schemas=TELEMETRY_METRIC_SCHEMAS)
+    )
+
+    async def _state_store_provider():
+        return None
+
+    async def _sink(_signal) -> None:
+        return None
+
+    factory = _build_detection_source_factory(
+        _pending_config(),
+        state_store_provider=_state_store_provider,
+        websocket_factory=_socket_factory_with(reporter),
+    )
+    runtime = await factory.build(
+        DetectionSourceRequest(
+            mode=DetectionMode.ON_CHAIN_PENDING,
+            watched_wallets=frozenset({"0x" + "11" * 20}),
+            ws_url="wss://polygon.example.invalid/v2/redacted",
+            chain_id=137,
+            signal_sink=_sink,
+        )
+    )
+
+    built = runtime._websocket_factory(
+        ws_url="wss://polygon.example.invalid/v2/redacted",
+        subscribe_params=["alchemy_pendingTransactions", {}],
+        name="pendingtx",
+        on_message=_sink,
+    )
+    assert built._state_listener is reporter
+
+
+def _socket_factory_with(reporter):
+    import functools
+
+    from clients.onchain_ws import OnchainWebSocket
+
+    return functools.partial(OnchainWebSocket, state_listener=reporter)
+
+
+def test_app_wires_the_reporter_into_the_socket_factory_it_passes() -> None:
+    """Guard the exact ``functools.partial`` shape ``app.main`` uses."""
+    import inspect
+
+    import app
+
+    source = inspect.getsource(app._run_application)
+    assert "websocket_factory=functools.partial(" in source
+    assert "state_listener=" in source
+
+
+def test_startup_aborts_on_an_unparseable_confidence_floor() -> None:
+    """The confidence parse must sit OUTSIDE the on-chain start try/except.
+
+    Inside it, a bad floor degraded silently to REST polling with a warning;
+    the operator asked for ``on_chain_pending`` and would have got polling.
+    """
+    import inspect
+
+    import app
+
+    source = inspect.getsource(app._run_application)
+    parse_at = source.index("_detection_confidence_from_config(")
+    guard_at = source.index("onchain_detection_start_failed")
+    try_at = source.rindex("try:", 0, guard_at)
+
+    assert parse_at < try_at, (
+        "the confidence floor is parsed inside the on-chain start try/except, "
+        "so an invalid floor degrades to polling instead of aborting startup"
+    )
+
+
+def test_shutdown_stops_the_pending_copy_tracker() -> None:
+    import inspect
+
+    import app
+
+    source = inspect.getsource(app._shutdown_runtime)
+    assert "pending_copy_tracker" in source

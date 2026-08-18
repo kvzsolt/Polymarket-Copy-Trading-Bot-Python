@@ -32,6 +32,11 @@ a second copy of the same leader fill.
 The provenance rule matches ``orchestrators.v1_event_adapters``: a
 ``provisional`` signal is ``ON_CHAIN_PENDING``; anything else is
 ``ON_CHAIN_CONFIRMED``.
+
+When a ``pending_copy_tracker`` is injected, a *provisional* dispatch whose
+copy actually reached the venue is handed to it for receipt follow-up. That
+call is synchronous, never awaited, and exception-guarded: bookkeeping for a
+placed copy must never fail the copy.
 """
 
 from __future__ import annotations
@@ -52,6 +57,7 @@ from services.metrics import (
     MetricsRegistry,
     metrics as _metrics,
 )
+from services.onchain_detection.pending_copy_confirmation_tracker import TrackedPendingCopy
 from services.onchain_detection.trade_detection_models import OnchainTradeSignal
 from storage.postgres.orders_repo import CROSS_SOURCE_CLAIM_STATUS
 from utils.logger import get_logger, redact_error_detail
@@ -67,6 +73,10 @@ _WINNER_ERROR = "error"
 # venue (execution dedup, reservation conflict, or an already-persisted fill).
 # Such a "skip" is a post-submission outcome, never "nothing happened".
 _REASON_DUPLICATE_IGNORED = "duplicate_ignored"
+# ``TradePipelineResult.status`` values that mean a copy actually reached the
+# venue (or the paper book). Only those need pending-copy confirmation: a
+# skipped or failed copy leaves no position to orphan.
+_VENUE_REACHED_STATUSES = frozenset({"executed", "paper", "submitted_unconfirmed"})
 
 
 class ProcessedTradeClaimRepository(Protocol):
@@ -498,6 +508,14 @@ class OnchainSignalSubmitter(Protocol):
         ...
 
 
+class PendingCopyTracker(Protocol):
+    """Subset of ``PendingCopyConfirmationTracker`` the dispatcher uses."""
+
+    def track(self, entry: TrackedPendingCopy) -> bool:
+        """Record one provisional copy synchronously; never raises."""
+        ...
+
+
 class OnchainSignalDispatchAdapter:
     """Log, count, and route every on-chain signal into the copy path."""
 
@@ -511,6 +529,8 @@ class OnchainSignalDispatchAdapter:
         metrics: MetricsRegistry = _metrics,
         logger: logging.Logger | None = None,
         claim_policy: CrossSourceTradeClaimPolicy | None = None,
+        pending_copy_tracker: PendingCopyTracker | None = None,
+        monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         """Bind the live follower map and routing collaborators.
 
@@ -528,12 +548,22 @@ class OnchainSignalDispatchAdapter:
             claim_policy: Tx-level cross-source claim applied before the
                 legacy pipeline; defaults to ``CrossSourceTradeClaimPolicy``
                 sharing ``metrics`` and ``logger``.
+            pending_copy_tracker: Optional follow-up tracker for copies taken
+                off a *provisional* mempool sighting. Only ever handed
+                ``provisional`` signals whose copy reached the venue.
+            monotonic: Monotonic seconds source used to stamp tracked copies.
+                It must share the tracker's time base (both default to
+                ``time.monotonic``): the tracker ages entries as
+                ``now - recorded_at``, so a wall-clock stamp would make every
+                age negative and no copy would ever be polled.
         """
 
         self._contexts_by_leader = contexts_by_leader
         self._v1_runtime = v1_runtime
         self._execute_trades = execute_trades
         self._clock = clock
+        self._monotonic = monotonic
+        self._pending_copy_tracker = pending_copy_tracker
         self._metrics = metrics
         self._logger = logger if logger is not None else get_logger("OnchainSignalDispatch")
         self._claim_policy = (
@@ -634,6 +664,7 @@ class OnchainSignalDispatchAdapter:
             ),
             return_exceptions=True,
         )
+        copied_user_ids: list[str] = []
         for (ctx, decision), result in zip(admitted, results, strict=True):
             if isinstance(result, BaseException):
                 self._logger.warning(
@@ -646,8 +677,63 @@ class OnchainSignalDispatchAdapter:
                 await self._claim_policy.release_after_pipeline_error(
                     ctx, decision, reason="pipeline_error"
                 )
-            elif self._is_pre_submission_only(result):
+                continue
+            if self._is_pre_submission_only(result):
                 await self._claim_policy.release(ctx, decision, reason="no_executed_outcome")
+            if self._reached_venue(result):
+                copied_user_ids.append(str(getattr(ctx, "user_id", "") or ""))
+        self._track_pending_copy(signal, copied_user_ids)
+
+    @staticmethod
+    def _reached_venue(result: Any) -> bool:
+        """Whether any pipeline outcome in ``result`` reached the venue.
+
+        ``executed`` / ``submitted_unconfirmed`` mean an order is out;
+        ``paper`` means the paper book holds a simulated position. All three
+        leave something that must be reconciled against the leader
+        transaction actually mining. Skips and failures leave nothing.
+        """
+
+        outcomes = list(result) if isinstance(result, (list, tuple)) else []
+        return any(
+            str(getattr(item, "status", "") or "") in _VENUE_REACHED_STATUSES for item in outcomes
+        )
+
+    def _track_pending_copy(self, signal: OnchainTradeSignal, user_ids: Sequence[str]) -> None:
+        """Hand a provisional copy to the confirmation tracker.
+
+        Synchronous and never awaited: ``track`` is O(1) and exception-free by
+        contract, and this call sits on the dispatch path. The extra
+        ``try/except`` is defence in depth for a third-party tracker — a
+        follow-up bookkeeping failure must never fail a placed copy.
+
+        Args:
+            signal: The dispatched signal (ignored unless ``provisional``).
+            user_ids: Followers whose copy reached the venue.
+        """
+
+        tracker = self._pending_copy_tracker
+        if tracker is None or not signal.provisional or not user_ids:
+            return
+        try:
+            tracker.track(
+                TrackedPendingCopy(
+                    tx_hash=signal.tx_hash,
+                    leader_wallet=signal.leader_wallet,
+                    user_ids=tuple(user_ids),
+                    token_id=signal.token_id,
+                    condition_id=signal.condition_id,
+                    side=signal.side,
+                    recorded_at=self._monotonic(),
+                )
+            )
+        except Exception as exc:
+            self._logger.debug(
+                "pending_copy_track_skipped | tx=%s leader=%s error=%s",
+                signal.tx_hash,
+                signal.leader_wallet,
+                redact_error_detail(exc),
+            )
 
     @staticmethod
     def _is_pre_submission_only(result: Any) -> bool:
@@ -679,5 +765,6 @@ __all__ = [
     "CrossSourceTradeClaimPolicy",
     "OnchainSignalDispatchAdapter",
     "OnchainSignalSubmitter",
+    "PendingCopyTracker",
     "ProcessedTradeClaimRepository",
 ]
