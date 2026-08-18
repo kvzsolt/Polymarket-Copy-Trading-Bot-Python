@@ -19,6 +19,7 @@ from services.onchain_detection.trade_detection_models import (
     DetectionConfidence,
     OnchainTradeSignal,
 )
+from storage.postgres.orders_repo import CROSS_SOURCE_CLAIM_STATUS
 
 _LEADER = "0x" + "ab" * 20
 _TX = "0x" + "cd" * 32
@@ -90,6 +91,7 @@ class _FakeOrdersRepo:
         self.rows: dict[str, dict] = {}
         self.claims: list[tuple[str, str]] = []
         self.deleted: list[str] = []
+        self.release_attempts: list[str] = []
 
     async def try_claim_processed_trade(
         self,
@@ -117,15 +119,30 @@ class _FakeOrdersRepo:
             "asset": asset,
             "condition_id": condition_id,
             "status": status,
+            "order_id": None,
         }
         return True
 
     async def get_processed_trade(self, trade_key: str) -> dict | None:
         return self.rows.get(trade_key)
 
-    async def delete_processed_trade(self, trade_key: str) -> None:
+    async def release_cross_source_claim(self, trade_key: str) -> bool:
+        """Status-guarded delete — mirrors ``OrdersRepo.release_cross_source_claim``."""
+        self.release_attempts.append(trade_key)
+        row = self.rows.get(trade_key)
+        if row is None or str(row.get("status") or "") != CROSS_SOURCE_CLAIM_STATUS:
+            return False
         self.deleted.append(trade_key)
         self.rows.pop(trade_key, None)
+        return True
+
+    def seed_pipeline_fill_row(self, trade_key: str, *, order_id: str | None) -> None:
+        """Simulate the per-fill ``processed_trades`` row the pipeline writes."""
+        self.rows[trade_key] = {
+            "trade_key": trade_key,
+            "status": "executed" if order_id else "in_progress",
+            "order_id": order_id,
+        }
 
 
 def _ctx(user_id: str) -> SimpleNamespace:
@@ -524,6 +541,207 @@ async def test_claim_kept_when_a_result_executed() -> None:
     assert repo.rows[polling_key]["status"] == "cross_source_claimed"
 
 
+# ---------------------------------------------------------------------------
+# N1: a post-submission outcome must never release the tx-level claim
+# ---------------------------------------------------------------------------
+
+
+def _onchain_fill_key(user_id: str = "u1", *, log_index: int = 7) -> str:
+    """Per-fill key the pipeline claims for the on-chain raw signal."""
+    from dataclasses import replace
+
+    from orchestrators.trade_pipeline import build_trade_key
+
+    signal = replace(_signal(provisional=False), log_index=log_index)
+    return build_trade_key(user_id, _LEADER, signal.as_raw_signal_dict())
+
+
+@pytest.mark.asyncio
+async def test_claim_kept_when_skip_is_post_submission_duplicate(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """N1: ``skipped/duplicate_ignored`` means an order already reached the venue.
+
+    ``trade_pipeline`` returns that shape when the coordinator/execution dedup
+    fires or the copy fill was already persisted. Releasing the tx-level claim
+    there lets the next REST polling tick claim the same key and submit a
+    second copy of the same leader fill.
+    """
+    from orchestrators.trade_pipeline import build_trade_key
+
+    repo = _FakeOrdersRepo()
+    pipeline = _Pipeline(
+        outcomes=[
+            SimpleNamespace(status="skipped", reason="duplicate_ignored", order_id="ORD-LIVE-1")
+        ]
+    )
+    adapter, _p, _ = _adapter({_LEADER: [_ctx_with_repo("u1", repo)]}, pipeline=pipeline)
+
+    with caplog.at_level(logging.INFO, logger="OnchainSignalDispatch"):
+        await adapter(_signal(provisional=False))
+
+    polling_key = build_trade_key("u1", _LEADER, _polling_row())
+    assert repo.deleted == []
+    assert repo.rows[polling_key]["status"] == CROSS_SOURCE_CLAIM_STATUS
+    assert not any("cross_source_claim_released" in r.getMessage() for r in caplog.records)
+    # Polling must stay refused — the copy already happened.
+    assert await _polling_claim(repo, polling_key) is False
+
+
+@pytest.mark.asyncio
+async def test_claim_kept_when_skip_is_reservation_conflict_without_order_id(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """``ReservationConflict`` yields ``duplicate_ignored`` with no ``order_id``.
+
+    ``services/execution/coordinator.py`` returns the duplicate status without
+    an order id, so the reason — not only the order id — has to block release.
+    """
+    from orchestrators.trade_pipeline import build_trade_key
+
+    repo = _FakeOrdersRepo()
+    pipeline = _Pipeline(
+        outcomes=[SimpleNamespace(status="skipped", reason="duplicate_ignored", order_id=None)]
+    )
+    adapter, _p, _ = _adapter({_LEADER: [_ctx_with_repo("u1", repo)]}, pipeline=pipeline)
+
+    with caplog.at_level(logging.INFO, logger="OnchainSignalDispatch"):
+        await adapter(_signal(provisional=False))
+
+    polling_key = build_trade_key("u1", _LEADER, _polling_row())
+    assert repo.deleted == []
+    assert repo.rows[polling_key]["status"] == CROSS_SOURCE_CLAIM_STATUS
+    assert not any("cross_source_claim_released" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_claim_kept_when_exception_after_fill_persisted(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """N1: the pipeline raised *after* its own claim and an order id exists."""
+    from orchestrators.trade_pipeline import build_trade_key
+
+    repo = _FakeOrdersRepo()
+    repo.seed_pipeline_fill_row(_onchain_fill_key(), order_id="ORD-LIVE-2")
+    pipeline = _Pipeline(fail_for={"u1"})
+    adapter, _p, _ = _adapter({_LEADER: [_ctx_with_repo("u1", repo)]}, pipeline=pipeline)
+
+    with caplog.at_level(logging.INFO, logger="OnchainSignalDispatch"):
+        await adapter(_signal(provisional=False))
+
+    polling_key = build_trade_key("u1", _LEADER, _polling_row())
+    assert repo.deleted == []
+    assert repo.rows[polling_key]["status"] == CROSS_SOURCE_CLAIM_STATUS
+    assert not any("cross_source_claim_released" in r.getMessage() for r in caplog.records)
+    kept = [r.getMessage() for r in caplog.records if "cross_source_claim_kept" in r.getMessage()]
+    assert len(kept) == 1
+    assert "reason=pipeline_error" in kept[0]
+    assert await _polling_claim(repo, polling_key) is False
+
+
+@pytest.mark.asyncio
+async def test_claim_released_when_exception_before_pipeline_claim(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """I2 preserved: no per-fill row means the pipeline never submitted anything."""
+    from orchestrators.trade_pipeline import build_trade_key
+
+    repo = _FakeOrdersRepo()
+    pipeline = _Pipeline(fail_for={"u1"})
+    adapter, _p, _ = _adapter({_LEADER: [_ctx_with_repo("u1", repo)]}, pipeline=pipeline)
+
+    with caplog.at_level(logging.INFO, logger="OnchainSignalDispatch"):
+        await adapter(_signal(provisional=False))
+
+    polling_key = build_trade_key("u1", _LEADER, _polling_row())
+    assert repo.deleted == [polling_key]
+    released = [
+        r.getMessage() for r in caplog.records if "cross_source_claim_released" in r.getMessage()
+    ]
+    assert len(released) == 1
+    assert "reason=pipeline_error" in released[0]
+    assert await _polling_claim(repo, polling_key) is True
+
+
+@pytest.mark.asyncio
+async def test_claim_released_when_exception_left_a_fill_row_without_order_id() -> None:
+    """A per-fill row still in ``in_progress`` with no order id is releasable."""
+    from orchestrators.trade_pipeline import build_trade_key
+
+    repo = _FakeOrdersRepo()
+    repo.seed_pipeline_fill_row(_onchain_fill_key(), order_id=None)
+    pipeline = _Pipeline(fail_for={"u1"})
+    adapter, _p, _ = _adapter({_LEADER: [_ctx_with_repo("u1", repo)]}, pipeline=pipeline)
+
+    await adapter(_signal(provisional=False))
+
+    polling_key = build_trade_key("u1", _LEADER, _polling_row())
+    assert repo.deleted == [polling_key]
+    assert await _polling_claim(repo, polling_key) is True
+
+
+@pytest.mark.asyncio
+async def test_claim_kept_when_the_per_fill_probe_fails(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An unreadable per-fill row cannot prove "nothing happened" — fail closed."""
+    from orchestrators.trade_pipeline import build_trade_key
+
+    class _ProbeBrokenRepo(_FakeOrdersRepo):
+        async def get_processed_trade(self, trade_key: str) -> dict | None:
+            raise RuntimeError("pg down")
+
+    repo = _ProbeBrokenRepo()
+    pipeline = _Pipeline(fail_for={"u1"})
+    adapter, _p, _ = _adapter({_LEADER: [_ctx_with_repo("u1", repo)]}, pipeline=pipeline)
+
+    with caplog.at_level(logging.INFO, logger="OnchainSignalDispatch"):
+        await adapter(_signal(provisional=False))
+
+    polling_key = build_trade_key("u1", _LEADER, _polling_row())
+    assert repo.deleted == []
+    assert repo.rows[polling_key]["status"] == CROSS_SOURCE_CLAIM_STATUS
+    kept = [r for r in caplog.records if "cross_source_claim_kept" in r.getMessage()]
+    assert len(kept) == 1
+    assert kept[0].levelno == logging.WARNING
+
+
+@pytest.mark.asyncio
+async def test_release_goes_through_the_status_guarded_repo_method() -> None:
+    """The release must never use an unguarded ``DELETE`` on the tx-level key."""
+    from orchestrators.trade_pipeline import build_trade_key
+
+    repo = _FakeOrdersRepo()
+    pipeline = _Pipeline(outcomes=[SimpleNamespace(status="skipped", reason="risk_blocked")])
+    adapter, _p, _ = _adapter({_LEADER: [_ctx_with_repo("u1", repo)]}, pipeline=pipeline)
+
+    await adapter(_signal(provisional=False))
+
+    polling_key = build_trade_key("u1", _LEADER, _polling_row())
+    assert repo.release_attempts == [polling_key]
+
+
+@pytest.mark.asyncio
+async def test_decision_carries_the_per_fill_key() -> None:
+    """``CrossSourceClaimDecision`` exposes the key the pipeline itself claims."""
+    from domain.detection import DetectionMode
+    from orchestrators.onchain_signal_dispatch import CrossSourceTradeClaimPolicy
+    from orchestrators.trade_pipeline import build_trade_key
+
+    repo = _FakeOrdersRepo()
+    ctx = _ctx_with_repo("u1", repo)
+    raw = _signal(provisional=False).as_raw_signal_dict()
+
+    decision = await CrossSourceTradeClaimPolicy().try_claim(
+        ctx, _LEADER, raw, source=DetectionMode.ON_CHAIN_CONFIRMED
+    )
+
+    assert decision.claimed is True
+    assert decision.fill_key == build_trade_key("u1", _LEADER, raw)
+    assert decision.fill_key.endswith("|log:7")
+    assert decision.fill_key != decision.trade_key
+
+
 @pytest.mark.asyncio
 async def test_sibling_fill_never_releases_the_first_fills_claim() -> None:
     """A skipped sibling must not free the tx-level key held for the executed fill."""
@@ -579,7 +797,7 @@ async def test_claim_not_released_when_a_sibling_was_dispatched_meanwhile() -> N
 @pytest.mark.asyncio
 async def test_release_failure_is_logged_not_raised(caplog: pytest.LogCaptureFixture) -> None:
     class _NoDeleteRepo(_FakeOrdersRepo):
-        async def delete_processed_trade(self, trade_key: str) -> None:
+        async def release_cross_source_claim(self, trade_key: str) -> bool:
             raise RuntimeError("pg down")
 
     pipeline = _Pipeline(fail_for={"u1"})

@@ -150,14 +150,30 @@ detection uses bounded in-process memory plus the row status
 determined (probe error, no row) is skipped with `winner=unknown` and is never
 attributed to polling.
 
-The tx-level claim is released again (`cross_source_claim_released`) when the
-freshly claimed dispatch produced no executed outcome — the pipeline raised, or
-every result was `skipped` — so REST polling really is a fallback for that fill.
-The claim is deliberately **kept** (`cross_source_claim_kept`) when a sibling
-fill was already admitted on it: releasing would let polling's aggregate copy
-the sibling a second time. In that narrow case the failed first fill's size is
-not retried by polling (same as the pre-existing single-channel behaviour for a
-skipped fill).
+The tx-level claim is released again (`cross_source_claim_released`) only when
+the freshly claimed dispatch demonstrably submitted nothing, so REST polling
+really is a fallback for that fill. "Submitted nothing" is deliberately narrow,
+because releasing after a copy reached the venue would let the next polling
+tick submit a second one:
+
+- every pipeline result is a *pre-submission* skip — `status="skipped"` with no
+  `order_id` and a reason other than `duplicate_ignored` (an empty result list
+  counts as releasable);
+- or the pipeline raised **and** the per-fill `processed_trades` row is absent
+  or carries no `order_id`, i.e. it raised before its own claim/submit.
+
+A `skipped/duplicate_ignored` result reports the opposite: the execution dedup,
+a `ReservationConflict`, or an already-persisted fill — the copy happened, so
+the claim stays. Anything the per-fill probe cannot prove also keeps the claim
+(`cross_source_claim_kept`, WARN), and the release itself is a status-guarded
+delete (`OrdersRepo.release_cross_source_claim`, `WHERE trade_key = $1 AND
+status = 'cross_source_claimed'`) so it can never remove a row the policy no
+longer owns; a no-op release logs `cross_source_claim_release_skipped`.
+
+The claim is likewise deliberately **kept** when a sibling fill was already
+admitted on it: releasing would let polling's aggregate copy the sibling a
+second time. In that narrow case the failed first fill's size is not retried by
+polling (same as the pre-existing single-channel behaviour for a skipped fill).
 
 Consequences and limits:
 

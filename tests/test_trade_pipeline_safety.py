@@ -2018,3 +2018,119 @@ async def test_released_cross_source_claim_lets_polling_copy_pipeline_level(tmp_
         results = await execute_trades(ctx, "leader1", [_signal()], time.time())
         assert len(results) == 1
         assert results[0].status == "executed"
+
+
+@pytest.mark.asyncio
+async def test_release_cross_source_claim_is_status_guarded(tmp_path):
+    """N1 (real Postgres): the release deletes only rows this policy still owns.
+
+    An unconditional ``DELETE ... WHERE trade_key = $1`` would drop a row that
+    a real submission or a polling claim overwrote in the meantime, re-opening
+    the cross-source double copy. The status predicate makes that impossible.
+    """
+    from storage.postgres.orders_repo import CROSS_SOURCE_CLAIM_STATUS
+
+    async with _pg_pool() as pool:
+        repo = OrdersRepo(pool)
+        claim_key = "user1|leader1|0xabc|BUY|" + FAKE_TOKEN_ID
+        other_key = "user1|leader1|0xdef|BUY|" + FAKE_TOKEN_ID
+        common = {
+            "user_id": "user1",
+            "leader_id": "leader1",
+            "tx_hash": "0xabc",
+            "side": "BUY",
+            "asset": FAKE_TOKEN_ID,
+            "condition_id": "cond1",
+        }
+
+        assert await repo.try_claim_processed_trade(
+            trade_key=claim_key, status=CROSS_SOURCE_CLAIM_STATUS, **common
+        )
+        await repo.mark_processed_trade(
+            trade_key=other_key,
+            status="submitted_unconfirmed",
+            order_id="ORD-LIVE-9",
+            **{**common, "tx_hash": "0xdef"},
+        )
+
+        # A row held under any other status survives the release untouched ...
+        assert await repo.release_cross_source_claim(other_key) is False
+        surviving = await repo.get_processed_trade(other_key)
+        assert surviving is not None
+        assert surviving["status"] == "submitted_unconfirmed"
+        # ... and the read exposes the order id the release predicate needs.
+        assert surviving["order_id"] == "ORD-LIVE-9"
+
+        # The sentinel row this policy owns is removed, once.
+        assert await repo.release_cross_source_claim(claim_key) is True
+        assert await repo.get_processed_trade(claim_key) is None
+        assert await repo.release_cross_source_claim(claim_key) is False
+
+
+@pytest.mark.asyncio
+async def test_post_submission_duplicate_keeps_cross_source_claim_pipeline_level(tmp_path):
+    """N1 (real Postgres): a ``duplicate_ignored`` skip keeps polling refused.
+
+    The pipeline reports ``skipped/duplicate_ignored`` when an order for the
+    copy already reached the venue. Releasing the tx-level claim there would
+    let the next REST polling tick submit a second copy of the same fill.
+    """
+    from orchestrators.onchain_signal_dispatch import OnchainSignalDispatchAdapter
+    from orchestrators.trade_pipeline import TradePipelineResult
+    from services.onchain_detection.trade_detection_models import (
+        DetectionConfidence,
+        OnchainTradeSignal,
+    )
+    from storage.postgres.orders_repo import CROSS_SOURCE_CLAIM_STATUS
+
+    async with _pg_pool() as pool:
+        exec_svc = AsyncMock()
+        exec_svc.execute = AsyncMock(return_value=_exec_result(filled=Decimal("5")))
+        ctx = _make_context(pool, tmp_path, execution_service=exec_svc)
+
+        async def _duplicate_ignored_pipeline(_ctx, _leader, raws, _now):
+            return [
+                TradePipelineResult(
+                    trade_key=build_trade_key("user1", "leader1", raws[0]),
+                    status="skipped",
+                    reason="duplicate_ignored",
+                    order_id="ORD-LIVE-1",
+                )
+            ]
+
+        adapter = OnchainSignalDispatchAdapter(
+            contexts_by_leader={"leader1": [ctx]},
+            v1_runtime=None,
+            execute_trades=_duplicate_ignored_pipeline,
+        )
+        await adapter(
+            OnchainTradeSignal(
+                leader_wallet="leader1",
+                token_id=FAKE_TOKEN_ID,
+                side="BUY",
+                size=Decimal("10"),
+                price=Decimal("0.5"),
+                usdc_size=Decimal("5"),
+                tx_hash="0xabc",
+                confidence=DetectionConfidence.MINED_AUTHORITATIVE,
+                maker_side=0,
+                watched_role="maker",
+                event_ts=int(time.time()),
+                log_index=7,
+                condition_id="cond1",
+                provisional=False,
+                exchange="0x" + "11" * 20,
+                order_hash=None,
+            )
+        )
+
+        tx_key = build_trade_key("user1", "leader1", _signal())
+        held = await ctx.orders_repo.get_processed_trade(tx_key)
+        assert held is not None
+        assert held["status"] == CROSS_SOURCE_CLAIM_STATUS
+
+        results = await execute_trades(ctx, "leader1", [_signal()], time.time())
+        assert len(results) == 1
+        assert results[0].status == "skipped"
+        assert results[0].reason == "already_processed"
+        exec_svc.execute.assert_not_called()

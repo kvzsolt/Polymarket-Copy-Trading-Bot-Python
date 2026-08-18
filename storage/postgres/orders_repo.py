@@ -1076,14 +1076,20 @@ class OrdersRepo(AbstractOrderRepository):
         return not any(status.startswith(p) for p in _LEGACY_RETRY_PREFIXES)
 
     async def get_processed_trade(self, trade_key: str) -> dict[str, Any] | None:
-        """Return processed trade."""
+        """Return processed trade.
+
+        ``order_id`` is part of the projection because it is the only durable
+        evidence that a copy already reached the venue for this key: the
+        cross-source claim release reads it to tell "the pipeline raised
+        before submitting anything" from "an order is already out there".
+        """
         if not trade_key:
             return None
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
                 SELECT trade_key, user_id, leader_id, tx_hash, side, asset,
-                       condition_id, status, processed_at,
+                       condition_id, status, order_id, processed_at,
                        COALESCE(retry_attempt, 0) AS retry_attempt
                 FROM processed_trades
                 WHERE trade_key = $1
@@ -1102,6 +1108,7 @@ class OrdersRepo(AbstractOrderRepository):
             "asset": row["asset"],
             "condition_id": row["condition_id"],
             "status": row["status"],
+            "order_id": row["order_id"],
             "processed_at": row["processed_at"],
             "retry_attempt": row["retry_attempt"],
         }
@@ -1218,6 +1225,33 @@ class OrdersRepo(AbstractOrderRepository):
             return
         async with self._pool.acquire() as conn:
             await conn.execute("DELETE FROM processed_trades WHERE trade_key = $1", trade_key)
+
+    async def release_cross_source_claim(self, trade_key: str) -> bool:
+        """Delete a tx-level cross-source claim row, guarded by its status.
+
+        The on-chain dispatch path inserts an order-less ``processed_trades``
+        row carrying ``CROSS_SOURCE_CLAIM_STATUS`` so REST polling cannot copy
+        the same fill, and releases it again when the dispatch turned out to
+        produce nothing. The status predicate keeps that release incapable of
+        removing a row the claim policy no longer owns — a real submission, a
+        settled fill, or a polling claim that replaced the sentinel meanwhile.
+
+        Args:
+            trade_key: Tx-level processed-trade key to release.
+
+        Returns:
+            ``True`` when a sentinel row was removed; ``False`` when no row
+            matched, i.e. it was absent or held under a different status.
+        """
+        if not trade_key:
+            return False
+        async with self._pool.acquire() as conn:
+            status = await conn.execute(
+                "DELETE FROM processed_trades WHERE trade_key = $1 AND status = $2",
+                trade_key,
+                CROSS_SOURCE_CLAIM_STATUS,
+            )
+        return _affected(status) > 0
 
     async def update_submission_status(
         self,
