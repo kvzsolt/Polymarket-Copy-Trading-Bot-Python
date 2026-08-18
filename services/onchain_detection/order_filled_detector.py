@@ -324,20 +324,20 @@ def log_subscription_params_for_watched(
         watched_wallets: Followed leader wallets, any case. Truncated to
             :data:`WATCHED_TOPIC_FILTER_CAP` per filter (deterministic
             lexicographic prefix, WARN with counts only). ``None`` or empty
-            falls back to the unfiltered :func:`log_subscription_params`
-            shape — the address-only subscription keeps the socket alive and
-            the client-side match drops foreign fills.
+            returns ``()`` — an empty roster opens **no** subscription rather
+            than re-opening the unfiltered feed, whose ~40k CU/min cost is
+            exactly what the leader filter exists to avoid; the runtime idles
+            until the roster delivers a leader again.
 
     Returns:
         A tuple with one ``eth_subscribe`` params list per subscription to
-        open: two role filters with a watched set, one unfiltered list
-        without.
+        open: two role filters with a watched set, none without.
     """
     watched = {
         str(wallet).strip().lower() for wallet in (watched_wallets or ()) if str(wallet).strip()
     }
     if not watched:
-        return (log_subscription_params(exchange_addresses),)
+        return ()
     if len(watched) > WATCHED_TOPIC_FILTER_CAP:
         logger.warning(
             "orderfilled_topic_filter_capped | watched=%d cap=%d — leaders beyond the cap "

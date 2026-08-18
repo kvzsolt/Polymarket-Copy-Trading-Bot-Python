@@ -29,6 +29,11 @@ from services.metrics import (
 #: Bounded reason code reported while no subscription is connected.
 DISCONNECTED_REASON = "ws_disconnected"
 
+#: Bounded reason code reported before the first connection ever happens.
+#: Distinct from ``ws_disconnected`` so a zero-socket state (logs_only idling
+#: on an empty roster, or plain startup) does not read as a WSS outage.
+NOT_CONNECTED_REASON = "not_connected"
+
 
 class OnchainWsHealthReporter:
     """Project on-chain WebSocket connection state onto metrics + readiness.
@@ -66,7 +71,9 @@ class OnchainWsHealthReporter:
         self._readiness = readiness
         self._check_key = check_key
         self._connection_counts: dict[str, int] = {}
-        self._readiness.register_check(check_key, required=False, ready=False)
+        self._readiness.register_check(
+            check_key, required=False, ready=False, reason=NOT_CONNECTED_REASON
+        )
 
     @property
     def check_key(self) -> str:
@@ -121,4 +128,8 @@ class OnchainWsHealthReporter:
         self._metrics.inc(METRIC_ONCHAIN_WS_RECONNECT, labels={"stream": stream})
 
 
-__all__ = ["DISCONNECTED_REASON", "OnchainWsHealthReporter"]
+__all__ = [
+    "DISCONNECTED_REASON",
+    "NOT_CONNECTED_REASON",
+    "OnchainWsHealthReporter",
+]

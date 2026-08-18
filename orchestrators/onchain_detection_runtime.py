@@ -430,6 +430,12 @@ class OnchainDetectionRuntime:
                 )
                 mined_ws.start()
                 self._mined_sockets.append(mined_ws)
+            if not self._mined_sockets and not self._watched:
+                logger.info(
+                    "onchain_mined_subscriptions_idle | watched=%d — no leader filter to open "
+                    "yet; a non-empty roster update reopens them",
+                    len(self._watched),
+                )
         if self._enable_pending:
             self._pending_ws = self._websocket_factory(
                 ws_url=self._ws_url,
@@ -481,11 +487,39 @@ class OnchainDetectionRuntime:
     async def _resubscribe_mined_loop(self) -> None:
         while self._running and self._resubscribe_requested:
             self._resubscribe_requested = False
-            await self._resubscribe_mined_once()
+            try:
+                await self._resubscribe_mined_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                # A failed rebuild must not kill the loop (the next roster
+                # update re-schedules it) nor leak the failure silently.
+                logger.warning(
+                    "onchain_mined_resubscribe_failed | error=%s",
+                    redact_error_detail(exc),
+                )
 
     async def _resubscribe_mined_once(self) -> None:
-        """Stop the current mined sockets and reopen them for the roster."""
-        old_sockets, self._mined_sockets = self._mined_sockets, []
+        """Rebuild the mined subscriptions without a detection gap.
+
+        The replacement sockets open first and only then are the superseded
+        ones stopped, so a fill that lands during the switch is delivered by
+        the new subscription (the per-fill ``(tx_hash, log_index)`` dedupe
+        absorbs any overlap). A raise before the swap leaves the current
+        sockets subscribed.
+        """
+        new_sockets: list[OnchainWebSocket] = []
+        if self._running and self._enable_mined:
+            for params in self._mined_subscription_params():
+                mined_ws = self._websocket_factory(
+                    ws_url=self._ws_url,
+                    subscribe_params=params,
+                    name="orderfilled",
+                    on_message=self._on_mined_log,
+                )
+                mined_ws.start()
+                new_sockets.append(mined_ws)
+        old_sockets, self._mined_sockets = self._mined_sockets, new_sockets
         for socket in old_sockets:
             try:
                 await socket.stop()
@@ -494,22 +528,18 @@ class OnchainDetectionRuntime:
                     "onchain_mined_socket_stop_failed | error=%s",
                     redact_error_detail(exc),
                 )
-        if not self._running or not self._enable_mined:
-            return
-        for params in self._mined_subscription_params():
-            mined_ws = self._websocket_factory(
-                ws_url=self._ws_url,
-                subscribe_params=params,
-                name="orderfilled",
-                on_message=self._on_mined_log,
+        if new_sockets:
+            logger.info(
+                "onchain_mined_resubscribed | subscriptions=%d watched=%d",
+                len(self._mined_sockets),
+                len(self._watched),
             )
-            mined_ws.start()
-            self._mined_sockets.append(mined_ws)
-        logger.info(
-            "onchain_mined_resubscribed | subscriptions=%d watched=%d",
-            len(self._mined_sockets),
-            len(self._watched),
-        )
+        elif not self._watched:
+            logger.info(
+                "onchain_mined_subscriptions_idle | watched=%d — filters closed; a non-empty "
+                "roster update reopens them",
+                len(self._watched),
+            )
 
     async def stop(self) -> None:
         self._running = False

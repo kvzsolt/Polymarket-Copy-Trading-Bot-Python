@@ -1374,7 +1374,9 @@ def _validate_detection_mode(cfg: AppConfig, errors: list[str]) -> None:
             f"detection.mode={mode} requires a wss:// endpoint in "
             "detection.onchain.onchain_ws_url or detection.onchain.pending_tx_ws_url."
         )
-    confirmed_source = str(getattr(oc, "confirmed_source", "mempool_reserved") or "mempool_reserved")
+    confirmed_source = str(
+        getattr(oc, "confirmed_source", "mempool_reserved") or "mempool_reserved"
+    )
     confirmed_source = confirmed_source.strip().lower()
     provider = str(oc.pending_tx_provider or "").strip().lower()
     if mode == DetectionMode.ON_CHAIN_PENDING.value and confirmed_source != "mempool_reserved":
