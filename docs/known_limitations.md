@@ -194,15 +194,23 @@ Consequences and limits:
   mining is not *unwound* by the detection runtime. It is now **detected and
   reported** by the pending-copy confirmation tracker (below), but unwinding
   remains an operator action.
-- **`on_chain_pending` is the checked-in live default** as of
-  `config/environments/live/detection.yml` (`mode: on_chain_pending`,
-  `pending_tx_max_signal_age_ms: 700`, tracker on with a 60 s deadline and a
-  2048-entry ceiling). That is a deliberate latency-for-certainty trade: the
-  copy fires on an unmined sighting. It presumes the operator has run the paper
-  soak and holds an explicit unwind procedure for a provisional copy whose
-  transaction never mines. `on_chain_confirmed` remains the strict superset and
-  the fallback to switch back to (`PMCOPY__DETECTION__MODE=on_chain_confirmed`,
-  restart required) if `pending_copy_unconfirmed_total` climbs.
+- **`on_chain_confirmed` + `confirmed_source: logs_only` is the checked-in
+  live default** as of `config/environments/live/detection.yml` (`mode:
+  on_chain_confirmed`, `onchain.confirmed_source: logs_only`). It detects at
+  **block inclusion** (~2 s Polygon blocks): there is no mempool lead — the
+  measured median mempool advantage of ~0.67 s is given up — but a mined
+  `OrderFilled` is authoritative, so there is no provisional copy, no
+  orphan-position risk, and no pending-copy confirmation to run. The source is
+  provider-agnostic: the two `eth_subscribe` `logs` subscriptions use only the
+  standard topic-filter format (`null` wildcard, per-position OR lists), so any
+  WSS endpoint serves it (`pending_tx_provider: alchemy` or `generic`).
+  Roster changes resubscribe both filters off the signal hot path
+  (`onchain_mined_resubscribed | subscriptions=… watched=…`); beyond
+  `WATCHED_TOPIC_FILTER_CAP` (100) leaders per filter, the filter keeps a
+  deterministic prefix and the WARN `orderfilled_topic_filter_capped` names the
+  counts — leaders beyond the cap keep the REST-polling path only.
+  `on_chain_pending` (mempool, ~0.67 s lead, provisional-copy risks below)
+  remains one restart away: `PMCOPY__DETECTION__MODE=on_chain_pending`.
 - The staleness gate `pending_tx_max_signal_age_ms` bounds only the signal's
   **internal queue age** — the time between the runtime decoding the sighting
   and the dispatcher picking it up. It is not a bound on how long the
@@ -210,16 +218,19 @@ Consequences and limits:
   the subscription delivered it.
 - Switching the live mode does not touch the gen-2
   `AlchemyConnectionManager`/`PolygonSourceTransactionRuntime` path; that code
-  is unchanged and still what `on_chain_confirmed` runs.
-- Alchemy CU cost: with the gen-2 pending subscription carrying full tx bodies
-  and the `logs` subscription filtered by address only, the confirmed mode was
-  measured at ~85k CU/min (≈120M CU/day at 24/7). Follow-up: filter the
-  `logs` subscription on the `OrderFilled` topic and the indexed maker/taker
-  leader addresses before treating 24/7 live operation as cost-settled.
+  is unchanged and still what `on_chain_confirmed` +
+  `confirmed_source: mempool_reserved` runs.
+- Alchemy CU cost: the gen-2 mempool-reserved confirmed mode was measured at
+  ~85k CU/min (≈120M CU/day at 24/7) with full pending tx bodies and an
+  address-only `logs` subscription. The logs-only default resolves that with
+  topic+leader-filtered subscriptions (≈ free tier); the measurement above is
+  what flipping back to `mempool_reserved` costs (≈ $54/day at $0.45/M CU;
+  `on_chain_pending` ≈ $27/day).
 - The gen-1 pending decoder matches direct `matchOrders` calldata only — no
   Safe `execTransaction` wrapper. That is sufficient for Polymarket proxy-wallet
   leaders (the operator relayer calls the exchange directly with the leader as
   `Order.maker`); Safe-wrapped leaders are covered by the gen-2 confirmed path.
+  The logs-only mode has no such gap: it reads the emitted event, not calldata.
 - The deprecated `enable_onchain_*` booleans never select provisional copy;
   only an explicit `detection.mode: on_chain_pending` does.
 - Changing `detection.mode` requires a restart; the control plane excludes it

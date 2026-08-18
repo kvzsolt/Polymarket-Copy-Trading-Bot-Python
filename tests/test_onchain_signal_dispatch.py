@@ -408,22 +408,16 @@ async def test_logs_only_mined_signal_claims_tx_level_identity(
 
     repo = _FakeOrdersRepo()
     adapter, pipeline, metrics = _adapter({_LEADER: [_ctx_with_repo("u1", repo)]})
-    signal = replace(
-        _signal(provisional=False), order_hash="0x" + "ee" * 32
-    )
+    signal = replace(_signal(provisional=False), order_hash="0x" + "ee" * 32)
 
     with caplog.at_level(logging.INFO, logger="OnchainSignalDispatch"):
         await adapter(signal)
 
     assert [call[0] for call in pipeline.calls] == ["u1"]
-    provenance = [
-        r.getMessage() for r in caplog.records if "detection_signal |" in r.getMessage()
-    ]
+    provenance = [r.getMessage() for r in caplog.records if "detection_signal |" in r.getMessage()]
     assert len(provenance) == 1
     assert "source=on_chain_confirmed" in provenance[0]
-    assert (
-        metrics.counters.get('detection_signals_total{source="on_chain_confirmed"}', 0) >= 1
-    )
+    assert metrics.counters.get('detection_signals_total{source="on_chain_confirmed"}', 0) >= 1
     # The fill key carries the mined discriminator, so the tx-level claim was
     # taken and polling's aggregate for the same fill is refused.
     fill_key = build_trade_key("u1", _LEADER, pipeline.calls[0][2][0])

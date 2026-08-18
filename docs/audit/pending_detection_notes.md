@@ -14,7 +14,8 @@ source through `orchestrators/detection_source_factory.py`:
 |---|---|---|---|
 | `polling` | none | data-api REST polling only | required (always) |
 | `on_chain_pending` | gen-1 `OnchainDetectionRuntime(enable_pending=True, enable_mined=False)` | `alchemy_pendingTransactions` sighting decoded from calldata; `PENDING_PROBABLE`, `provisional=True`; dropped when older than `pending_tx_max_signal_age_ms` or below `pending_tx_detection_confidence_required`. **No mined correction path** (mined subscription off for dedup): per-leader supersession never fires, so a provisional copy of a sighting that never mines is *detected and reported* by the pending-copy confirmation tracker (below) but never unwound automatically | required |
-| `on_chain_confirmed` | gen-2 `PolygonSourceTransactionRuntime` | mempool sighting only *reserves*; execution after `eth_getTransactionReceipt` decodes the `OrderFilled` logs (`MINED_AUTHORITATIVE`, `provisional=False`) | required (`PostgresSourceTransactionStateStore`) |
+| `on_chain_confirmed` + `confirmed_source: mempool_reserved` (default) | gen-2 `PolygonSourceTransactionRuntime` | mempool sighting only *reserves*; execution after `eth_getTransactionReceipt` decodes the `OrderFilled` logs (`MINED_AUTHORITATIVE`, `provisional=False`) | required (`PostgresSourceTransactionStateStore`) |
+| `on_chain_confirmed` + `confirmed_source: logs_only` | gen-1 `OnchainDetectionRuntime(enable_pending=False, enable_mined=True)` with two `logs` subscriptions topic-filtered on `OrderFilled` topic0 + the followed leaders (maker role topic2, taker role topic3; cap 100 per filter, deterministic prefix beyond) | the mined `OrderFilled` log itself (`MINED_AUTHORITATIVE`, `provisional=False`, `log_index`/`order_hash` set) — detection at block inclusion, no mempool lead, no provisional copy, no tracker | required (idempotency/copy keys) |
 
 REST polling keeps running in every mode; `CrossSourceTradeClaimPolicy` in
 `orchestrators/onchain_signal_dispatch.py` claims the tx-level trade key so a
@@ -30,6 +31,9 @@ Mempool visibility was measured, not assumed (read-only probe, 120 s,
 first, median mempool-to-mined lead 0.67 s.
 
 ## Rollout status (2026-08-18): `on_chain_pending` is the live default
+
+> **Superseded later the same day — see the next section**: the live default is
+> now `on_chain_confirmed` + `confirmed_source: logs_only`.
 
 `config/environments/live/detection.yml` now pins `mode: on_chain_pending`
 with `pending_tx_max_signal_age_ms: 700`, `pending_tx_provider: alchemy`,
@@ -59,6 +63,31 @@ the config enforces:
 Rollback is a one-line environment change plus a restart:
 `PMCOPY__DETECTION__MODE=on_chain_confirmed` (or edit the live file back).
 `detection.mode` is deliberately not an editable control-plane setting.
+
+## Rollout update (2026-08-18, later): live default is `logs_only` confirmed
+
+`config/environments/live/detection.yml` now pins `mode: on_chain_confirmed`
+with `onchain.confirmed_source: logs_only`. The live copy fires on the mined
+`OrderFilled` event delivered by two topic-filtered `eth_subscribe` `logs`
+subscriptions (`OrderFilled` topic0 + the followed leaders as indexed
+maker/taker topics) on any plain WSS provider — the standard filter format
+(`null` wildcard, per-position OR list) that Alchemy, Infura, QuickNode, and
+self-hosted nodes all implement. The Alchemy endpoint and
+`pending_tx_provider: alchemy` are kept (the operator's WSS is Alchemy;
+`logs_only` also accepts `generic`).
+
+Why: the mempool-reserved confirmed baseline measured ~85k CU/min (≈ $54/day
+at $0.45/M CU) and `on_chain_pending` ≈ $27/day, while the filtered `logs`
+volume is a handful of events per hour — inside the Alchemy 30M CU/month free
+tier. The mempool lead being given up is the measured ~0.67 s median; the
+mined event needs no confirmation and carries no orphan-position risk, so the
+pending-copy tracker is not built in this mode.
+
+Operator obligations carried over from the pending rollout: none of the
+provisional-copy preconditions apply (no provisional copies exist in this
+mode). The mempool path stays one environment variable away —
+`PMCOPY__DETECTION__MODE=on_chain_pending` (restart required) — and the
+pinned pending keys in the live file take effect again unchanged.
 
 ### The paper soak cannot exercise the pending-copy tracker
 

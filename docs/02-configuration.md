@@ -64,8 +64,15 @@ trade key, so a signal is copied once regardless of which source saw it first.
 | `detection.mode` | Source | Requirements |
 |---|---|---|
 | `polling` (default, checked-in base) | data-api REST polling only | — |
-| `on_chain_confirmed` | Alchemy mempool sighting + receipt confirmation (`PolygonSourceTransactionRuntime`); executes only after the fill is mined | `wss://` URL in `detection.onchain.onchain_ws_url` or `pending_tx_ws_url`, `pending_tx_provider: alchemy` |
-| `on_chain_pending` (**checked-in live default**, `config/environments/live/detection.yml`) | Provisional copy on the mempool sighting (`OnchainDetectionRuntime`, `alchemy_pendingTransactions` with calldata), guarded only by `pending_tx_max_signal_age_ms` and `pending_tx_detection_confidence_required`. **No mined correction path**: the mined subscription is off (dedup), so a provisional copy of a sighting that never mines is reported by the pending-copy confirmation tracker below but never unwound automatically — paper soak + explicit unwind procedure required (`docs/audit/pending_detection_notes.md`) | as above, plus `pending_tx_hashes_only: false` and `pending_tx_max_signal_age_ms > 0` |
+| `on_chain_confirmed` + `confirmed_source: mempool_reserved` (default) | Alchemy mempool sighting + receipt confirmation (`PolygonSourceTransactionRuntime`); executes only after the fill is mined | `wss://` URL in `detection.onchain.onchain_ws_url` or `pending_tx_ws_url`, `pending_tx_provider: alchemy` |
+| `on_chain_confirmed` + `confirmed_source: logs_only` (**checked-in live default**, `config/environments/live/detection.yml`) | Mined `OrderFilled` logs only (`OnchainDetectionRuntime`): two `eth_subscribe` `logs` subscriptions topic-filtered on the OrderFilled topic0 and the followed leaders (maker role topic2, taker role topic3) on any plain WSS provider. Detection lands at block inclusion; a mined fill is authoritative, so there is no provisional copy and no pending-copy confirmation to run | `wss://` URL as above; `pending_tx_provider: alchemy` or `generic` |
+| `on_chain_pending` | Provisional copy on the mempool sighting (`OnchainDetectionRuntime`, `alchemy_pendingTransactions` with calldata), guarded only by `pending_tx_max_signal_age_ms` and `pending_tx_detection_confidence_required`. **No mined correction path**: the mined subscription is off (dedup), so a provisional copy of a sighting that never mines is reported by the pending-copy confirmation tracker below but never unwound automatically — paper soak + explicit unwind procedure required (`docs/audit/pending_detection_notes.md`) | as `mempool_reserved`, plus `pending_tx_hashes_only: false` and `pending_tx_max_signal_age_ms > 0` |
+
+`on_chain_pending` with `confirmed_source: logs_only` is rejected at startup
+(the pending mode is the Alchemy mempool subscription and has no logs-only
+variant), and `pending_tx_provider: generic` is accepted only for
+`on_chain_confirmed` + `logs_only` (the mempool subscriptions of the other
+on-chain modes are Alchemy-specific).
 
 In `on_chain_pending`, `pending_tx_detection_confidence_required` must be
 `market_unattributed` or `pending_probable`: a mempool sighting is only ever
@@ -73,19 +80,36 @@ labelled `pending_probable`, so `mined_authoritative`/`confirmed_final` is a
 floor that drops every pending signal. The looser floors are accepted; the
 higher two fail startup closed. Other modes are unaffected.
 
-`config/environments/live/detection.yml` selects `on_chain_pending` and pins
-the whole mempool set explicitly, so the live source never depends on a base
-default drifting:
+Indicative provider cost of each source at $0.45 / 1M compute units
+(Alchemy pay-as-you-go; the filtered `logs` volume is a handful of events per
+hour, so it sits inside the Alchemy free 30M CU/month tier and Infura's free
+3M credits/day):
+
+| Source | Approximate cost |
+|---|---|
+| `polling` | ≈ $0 (REST polling of the data API) |
+| `on_chain_confirmed` + `logs_only` | ≈ free tier (two topic-filtered `logs` subscriptions + `eth_subscribe`) |
+| `on_chain_pending` | ≈ $27/day (`alchemy_pendingTransactions` full body + `logs` + `newHeads`) |
+| `on_chain_confirmed` + `mempool_reserved` | ≈ $54/day (adds the gen-2 receipt confirmation machinery) |
+
+`config/environments/live/detection.yml` selects `on_chain_confirmed` +
+`logs_only` and keeps the mempool keys pinned for the fallback:
 
 | Live key | Value | Why |
 |---|---|---|
-| `mode` | `on_chain_pending` | Copy on the sighting; measured median mempool lead 0.67 s at ~96 % visibility. |
-| `onchain.pending_tx_provider` | `alchemy` | Only provider with `alchemy_pendingTransactions`; anything else fails closed. |
-| `onchain.pending_tx_max_signal_age_ms` | `700` | Wider than the 500 ms base budget so a load spike does not discard signals that are still unmined. |
-| `onchain.pending_tx_detection_confidence_required` | `pending_probable` | The best a mempool sighting reaches; a higher floor drops 100 % of them. |
-| `onchain.pending_copy_confirmation_enabled` | `true` | Every provisional copy gets a receipt verdict. |
-| `onchain.pending_copy_confirmation_deadline_seconds` | `60` | Terminal verdict age; the last poll is always forced. |
-| `onchain.pending_copy_confirmation_max_tracked` | `2048` | Bounded in-flight set; overflow evicts the oldest and counts it. |
+| `mode` | `on_chain_confirmed` | Copy on the mined fill — authoritative, near-zero provider cost, provider-agnostic. |
+| `onchain.confirmed_source` | `logs_only` | Topic-filtered `logs` subscriptions instead of the mempool-reserved gen-2 runtime. |
+| `onchain.pending_tx_provider` | `alchemy` | The operator's WSS is Alchemy; `logs_only` also accepts `generic`. |
+| `onchain.pending_tx_max_signal_age_ms` | `700` | Inert in this mode; kept for the `on_chain_pending` fallback. |
+| `onchain.pending_tx_detection_confidence_required` | `pending_probable` | Inert in this mode; kept for the `on_chain_pending` fallback. |
+| `onchain.pending_copy_confirmation_enabled` | `true` | Inert in this mode; kept for the `on_chain_pending` fallback. |
+| `onchain.pending_copy_confirmation_deadline_seconds` | `60` | Inert in this mode; kept for the `on_chain_pending` fallback. |
+| `onchain.pending_copy_confirmation_max_tracked` | `2048` | Inert in this mode; kept for the `on_chain_pending` fallback. |
+
+One environment variable flips live back to the mempool path:
+`PMCOPY__DETECTION__MODE=on_chain_pending` (the pinned pending keys above
+take effect again). Switching to the gen-2 mempool-reserved confirmed
+runtime additionally needs `PMCOPY__DETECTION__ONCHAIN__CONFIRMED_SOURCE=mempool_reserved`.
 
 The `wss://` endpoint and `polymarket.rpc_url` (which the tracker needs) still
 come from `secrets.env` — no live YAML file carries a credential. Base
@@ -121,8 +145,10 @@ see `docs/known_limitations.md` for the residual risks.
 | `pending_copy_confirmation_max_tracked` | `2048` | Ceiling on concurrently tracked copies; the oldest entry is evicted when full. Must be `> 0`. |
 | `pending_copy_auto_unwind_enabled` | `false` | Opt-in forced protective exit of an unconfirmed copy. Off by default: unwinding is a money-path action and stays operator-driven. |
 
-An invalid mode, a non-polling mode without a `wss://` endpoint, a non-Alchemy
-provider, `on_chain_pending` with `pending_tx_hashes_only: true`, a
+An invalid mode, a non-polling mode without a `wss://` endpoint, a
+non-Alchemy provider outside `on_chain_confirmed` + `logs_only`,
+`on_chain_pending` with `confirmed_source: logs_only` or
+`pending_tx_hashes_only: true`, a
 `pending_copy_confirmation_deadline_seconds`/`pending_copy_confirmation_max_tracked`
 of zero or less in `on_chain_pending`, or any
 non-polling mode together with `copy_trading.copy_tasks.enabled: true` (the v1
