@@ -275,6 +275,12 @@ class TelemetryHub:
     def publish_nowait(self, event: TelemetryEvent) -> HubPublishResult:
         """Attempt to enqueue an event without blocking or awaiting.
 
+        The accepted path deliberately performs no gauge writes: the queue
+        gauges are refreshed by the dispatcher for every drained event, so
+        touching them here only added a metrics-lock round trip to the
+        detection hot path. Overflow keeps its refresh because a dropped event
+        is never drained and would otherwise leave the gauges stale.
+
         Args:
             event: Immutable event to enqueue.
 
@@ -294,7 +300,6 @@ class TelemetryHub:
             self._update_gauges()
             return HubPublishResult(HubPublishStatus.DROPPED_OVERFLOW, event)
         self._last_sequence[event.producer] = event.sequence
-        self._update_gauges()
         return HubPublishResult(HubPublishStatus.ACCEPTED, event)
 
     async def close(self) -> None:

@@ -489,6 +489,7 @@ METRIC_TELEMETRY_LEADER_QUEUE_OVERFLOW = "telemetry_leader_queue_overflow_total"
 METRIC_TELEMETRY_QUEUE_OVERFLOW = "telemetry_queue_overflow_total"
 METRIC_TELEMETRY_RECONCILIATION = "telemetry_reconciliation_total"
 METRIC_TELEMETRY_LATENCY = "telemetry_latency_seconds"
+METRIC_TELEMETRY_EMIT_FAILURE = "telemetry_emit_failure_total"
 GAUGE_TELEMETRY_ACTIVE_ENTITIES = "telemetry_active_entities"
 GAUGE_TELEMETRY_QUEUE_DEPTH = "telemetry_queue_depth"
 GAUGE_TELEMETRY_QUEUE_UTILIZATION = "telemetry_queue_utilization_ratio"
@@ -518,6 +519,25 @@ TELEMETRY_LATENCY_BUCKETS = (
     300.0,
 )
 
+# Bounded producer identities. Kept as a literal so ``services.metrics`` stays
+# free of a ``services.telemetry`` import cycle; ``tests/telemetry`` pins the
+# tuple to ``TelemetryProducer`` so the two can never drift.
+TELEMETRY_PRODUCER_LABEL_VALUES = (
+    "detection",
+    "normalization",
+    "worker",
+    "copy_decision",
+    "sizing",
+    "risk",
+    "execution",
+    "reconciliation",
+    "protective_exit",
+    "discovery",
+    "wss",
+    "runtime",
+    "control_plane",
+)
+
 _SKIP_REASONS = (
     "none",
     "duplicate",
@@ -534,6 +554,7 @@ _SKIP_REASONS = (
     "capacity",
     "finality_retracted",
     "unsupported",
+    "paper_only",
     "other",
 )
 
@@ -678,6 +699,11 @@ TELEMETRY_METRIC_SCHEMAS: tuple[MetricSchema, ...] = (
         "telemetry_sink_failure_total",
         MetricKind.COUNTER,
         (("operation", ("write", "resync")),),
+    ),
+    MetricSchema(
+        METRIC_TELEMETRY_EMIT_FAILURE,
+        MetricKind.COUNTER,
+        (("producer", TELEMETRY_PRODUCER_LABEL_VALUES),),
     ),
     MetricSchema("telemetry_out_of_order_total", MetricKind.COUNTER),
     MetricSchema(

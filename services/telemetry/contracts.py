@@ -13,6 +13,19 @@ _SAFE_TOKEN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 _SAFE_CODE_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,63}$")
 
 
+def is_safe_ref(value: str) -> bool:
+    """Return whether a value may be used verbatim as an opaque event reference.
+
+    Args:
+        value: Candidate reference such as a wallet, order, or task identity.
+
+    Returns:
+        ``True`` when the value matches the bounded opaque-token contract used
+        by every ``*_ref`` field, ``False`` when it must be hashed first.
+    """
+    return _SAFE_TOKEN_RE.fullmatch(value) is not None
+
+
 def _require_safe_token(name: str, value: str) -> None:
     if not _SAFE_TOKEN_RE.fullmatch(value):
         raise ValueError(f"{name} must be an opaque token of at most 128 characters")
@@ -173,6 +186,9 @@ class SkipReason(StrEnum):
     CAPACITY = "capacity"
     FINALITY_RETRACTED = "finality_retracted"
     UNSUPPORTED = "unsupported"
+    # Paper-tier follows never reach the venue. They are a first-class skip so
+    # an operator can tell a deliberate simulation apart from a lost copy.
+    PAPER_ONLY = "paper_only"
     OTHER = "other"
 
 

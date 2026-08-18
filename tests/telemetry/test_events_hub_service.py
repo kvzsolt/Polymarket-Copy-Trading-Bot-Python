@@ -10,7 +10,14 @@ from datetime import UTC, datetime
 
 import pytest
 
-from services.metrics import MetricsRegistry
+from services.metrics import (
+    METRIC_TELEMETRY_COPY_OUTCOME,
+    METRIC_TELEMETRY_EMIT_FAILURE,
+    TELEMETRY_METRIC_SCHEMAS,
+    TELEMETRY_PRODUCER_LABEL_VALUES,
+    MetricKind,
+    MetricsRegistry,
+)
 from services.telemetry import (
     AmbiguousEvent,
     AmbiguousOperation,
@@ -355,3 +362,95 @@ async def test_service_closes_hub_even_when_injected_sink_cleanup_fails() -> Non
     assert hub.closed is True
     assert service.started is False
     assert service.closed is True
+
+
+class GaugeSpyRegistry(MetricsRegistry):
+    """Record every gauge write so publish-path cost can be asserted."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.gauge_calls: list[tuple[str, tuple[tuple[str, str], ...]]] = []
+
+    def set_gauge(
+        self,
+        name: str,
+        value: float,
+        labels: dict[str, str] | None = None,
+    ) -> None:
+        """Record and delegate one gauge write."""
+        self.gauge_calls.append((name, tuple(sorted((labels or {}).items()))))
+        super().set_gauge(name, value, labels)
+
+
+def _detection_event(sequence: int) -> TelemetryEvent:
+    return TelemetryEvent(
+        event_id=f"evt-{sequence:02d}",
+        event_type=TelemetryEventType.LEADER_SIGNAL,
+        timestamp=datetime(2026, 8, 18, tzinfo=UTC),
+        severity=TelemetrySeverity.INFO,
+        correlation_id=None,
+        payload=_leader_received(),
+        producer=TelemetryProducer.DETECTION,
+        sequence=sequence,
+    )
+
+
+@pytest.mark.asyncio
+async def test_accepted_publish_writes_no_gauges_but_dispatch_still_does() -> None:
+    """The accepted publish path stays off the metrics lock; dispatch owns gauges."""
+    registry = GaugeSpyRegistry()
+    hub = TelemetryHub(ingress_capacity=8, default_subscriber_capacity=4, metrics=registry)
+    subscription = hub.subscribe()
+    await hub.start()
+    registry.gauge_calls.clear()
+
+    assert hub.publish_nowait(_detection_event(1)).status is HubPublishStatus.ACCEPTED
+    assert registry.gauge_calls == []
+
+    delivery = await subscription.get()
+    assert delivery.event is not None
+    assert any(name == "telemetry_queue_depth" for name, _ in registry.gauge_calls)
+
+    await hub.close()
+
+
+@pytest.mark.asyncio
+async def test_overflow_publish_still_refreshes_the_queue_gauges() -> None:
+    """A dropped event must leave the operator gauges truthful."""
+    registry = GaugeSpyRegistry()
+    hub = TelemetryHub(ingress_capacity=1, default_subscriber_capacity=1, metrics=registry)
+    await hub.start()
+    assert hub.publish_nowait(_detection_event(1)).status is HubPublishStatus.ACCEPTED
+    registry.gauge_calls.clear()
+
+    assert hub.publish_nowait(_detection_event(2)).status is HubPublishStatus.DROPPED_OVERFLOW
+    assert any(name == "telemetry_queue_utilization_ratio" for name, _ in registry.gauge_calls)
+
+    await hub.close()
+
+
+def test_emit_failure_counter_and_paper_only_reason_are_registered() -> None:
+    """The emitter failure counter and the paper-only skip reason are bounded."""
+    schemas = {schema.name: schema for schema in TELEMETRY_METRIC_SCHEMAS}
+    failure = schemas[METRIC_TELEMETRY_EMIT_FAILURE]
+
+    assert failure.kind is MetricKind.COUNTER
+    assert dict(failure.allowed_label_values)["producer"] == tuple(
+        producer.value for producer in TelemetryProducer
+    )
+    assert TELEMETRY_PRODUCER_LABEL_VALUES == tuple(
+        producer.value for producer in TelemetryProducer
+    )
+
+    assert SkipReason.PAPER_ONLY.value == "paper_only"
+    assert (
+        "paper_only" in dict(schemas[METRIC_TELEMETRY_COPY_OUTCOME].allowed_label_values)["reason"]
+    )
+
+    registry = MetricsRegistry(schemas=TELEMETRY_METRIC_SCHEMAS)
+    registry.inc(METRIC_TELEMETRY_EMIT_FAILURE, labels={"producer": "detection"})
+    registry.inc(
+        METRIC_TELEMETRY_COPY_OUTCOME, labels={"outcome": "skipped", "reason": "paper_only"}
+    )
+    with pytest.raises(ValueError, match="bounded value"):
+        registry.inc(METRIC_TELEMETRY_EMIT_FAILURE, labels={"producer": "0xleader"})

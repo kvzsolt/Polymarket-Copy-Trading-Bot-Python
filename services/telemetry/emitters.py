@@ -1,0 +1,1142 @@
+"""Synchronous, exception-guarded telemetry emitters for producer call sites.
+
+Producers on the detection-to-submit path must never pay for observability.
+Every method in this module is synchronous, never awaits, never raises, and
+returns an explicit boolean so a call site can assert delivery without
+inspecting hub internals. A ``None`` service turns an emitter into a total
+null object, which is how paper runs and telemetry-disabled deployments stay
+free of both cost and branching at the call site.
+
+Layering: this module depends only on the telemetry contracts and the metrics
+registry. Pipeline, execution, and risk collaborators are consumed through
+local structural protocols so ``services.telemetry`` never imports
+``orchestrators`` or ``application``.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import re
+import time
+from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass
+from types import MappingProxyType
+from typing import TYPE_CHECKING, Protocol
+
+from services.metrics import METRIC_TELEMETRY_EMIT_FAILURE, MetricsRegistry
+from services.telemetry.contracts import (
+    AmbiguousEvent,
+    AmbiguousOperation,
+    FailureComponent,
+    FailureEvent,
+    FillEvent,
+    FillOutcome,
+    LeaderEvent,
+    LeaderOutcome,
+    OrderOutcome,
+    ProtectiveExitEvent,
+    ProtectiveOutcome,
+    ReconciliationEvent,
+    ReconciliationOutcome,
+    RiskEvent,
+    RiskOutcome,
+    RosterEvent,
+    RosterOutcome,
+    SkipEvent,
+    SkipReason,
+    TelemetryPayload,
+    TelemetryProducer,
+    TelemetrySeverity,
+    TradeEvent,
+    TradeOutcome,
+    TradeSide,
+    WssEvent,
+    WssOutcome,
+    is_safe_ref,
+)
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from services.telemetry.service import TelemetryService
+
+
+_CODE_SANITIZER_RE = re.compile(r"[^a-z0-9_.-]+")
+_CODE_LEADING_RE = re.compile(r"^[^a-z0-9]+")
+_MAX_CODE_CHARS = 64
+_UNKNOWN_CODE = "unknown"
+_REF_DIGEST_BYTES = 16
+
+# Exact pipeline skip codes mapped onto the bounded contract vocabulary.
+_SKIP_CODE_EXACT: Mapping[str, SkipReason] = MappingProxyType(
+    {
+        "market_data_stale": SkipReason.STALE_MARKET_DATA,
+        "market_data_timeout": SkipReason.STALE_MARKET_DATA,
+        "market_resolved": SkipReason.MARKET_NOT_ALLOWED,
+        "entry_policy_unavailable": SkipReason.RISK_REJECTED,
+        "market_risk_quarantined": SkipReason.RISK_REJECTED,
+        "invalid_price": SkipReason.PRICE_LIMIT,
+        "sell_size_zero": SkipReason.BELOW_MINIMUM_SIZE,
+        "already_processed": SkipReason.DUPLICATE,
+        "duplicate_ignored": SkipReason.DUPLICATE,
+    }
+)
+
+# Prefix families, evaluated in declaration order after the exact table.
+_SKIP_CODE_PREFIXES: tuple[tuple[str, SkipReason], ...] = (
+    ("entry_denied", SkipReason.RISK_REJECTED),
+    ("insufficient_", SkipReason.INSUFFICIENT_BALANCE),
+    ("book_", SkipReason.CAPACITY),
+    ("below_min", SkipReason.BELOW_MINIMUM_SIZE),
+)
+
+# ``ExecutionResult.status`` values that carry a venue-side order outcome.
+# Anything else is a local pre-submit gate and reports no order outcome, so a
+# blocked copy never inflates the venue rejection counters.
+_ORDER_OUTCOME_BY_STATUS: Mapping[str, OrderOutcome] = MappingProxyType(
+    {
+        "rejected": OrderOutcome.REJECTED,
+        "expired": OrderOutcome.NOT_FILLABLE,
+        "not_fillable": OrderOutcome.NOT_FILLABLE,
+        "order_not_fillable": OrderOutcome.NOT_FILLABLE,
+        "cancelled": OrderOutcome.CANCELED,
+        "canceled": OrderOutcome.CANCELED,
+    }
+)
+
+_PARTIAL_FILL_STATUSES = frozenset({"partially_filled", "partial"})
+_UNCONFIRMED_STATUS = "submitted_unconfirmed"
+
+
+class PipelineOutcomeLike(Protocol):
+    """Structural read-only view of one ``TradePipelineResult`` row."""
+
+    @property
+    def trade_key(self) -> str:
+        """Return the canonical copy identity for this row."""
+
+    @property
+    def status(self) -> str:
+        """Return the pipeline status such as ``skipped`` or ``paper``."""
+
+    @property
+    def reason(self) -> str | None:
+        """Return the internal skip or failure code, when present."""
+
+
+class SignalLike(Protocol):
+    """Structural read-only view of one normalized leader signal."""
+
+    @property
+    def side(self) -> str:
+        """Return the leader trade side."""
+
+    @property
+    def tx_hash(self) -> str:
+        """Return the leader transaction hash used for correlation."""
+
+
+class OrderRequestLike(Protocol):
+    """Structural read-only view of one ``ExecutionRequest``."""
+
+    @property
+    def user_id(self) -> str:
+        """Return the follower account identity."""
+
+    @property
+    def leader_id(self) -> str:
+        """Return the copied leader identity."""
+
+    @property
+    def token_id(self) -> str:
+        """Return the outcome token identity."""
+
+    @property
+    def side(self) -> str:
+        """Return the venue-neutral order side."""
+
+
+class OrderResultLike(Protocol):
+    """Structural read-only view of one ``ExecutionResult``."""
+
+    @property
+    def accepted(self) -> bool:
+        """Return whether the venue accepted the submission."""
+
+    @property
+    def order_id(self) -> str | None:
+        """Return the venue order identity, when one exists."""
+
+    @property
+    def status(self) -> str:
+        """Return the execution status code."""
+
+    @property
+    def error(self) -> str | None:
+        """Return the sanitized error text, when present."""
+
+
+def safe_ref(value: str) -> str:
+    """Return a contract-safe opaque reference for an arbitrary identifier.
+
+    Values that already satisfy the opaque-token contract are passed through
+    unchanged so an operator still recognises a wallet or order id. Anything
+    else (composite trade keys, delimiters, over-long identities) is replaced
+    by a deterministic keyless digest, which keeps event references stable
+    across processes without leaking structure.
+
+    Args:
+        value: Any identifier a producer wants to reference in an event.
+
+    Returns:
+        The value itself when safe, otherwise ``"h:"`` plus a BLAKE2b digest.
+    """
+    text = value if isinstance(value, str) else str(value)
+    if is_safe_ref(text):
+        return text
+    digest = hashlib.blake2b(text.encode("utf-8"), digest_size=_REF_DIGEST_BYTES)
+    return f"h:{digest.hexdigest()}"
+
+
+def bounded_code(value: str | None) -> str:
+    """Return a bounded lowercase code accepted by the failure contract.
+
+    Args:
+        value: Candidate code, possibly mixed case or empty.
+
+    Returns:
+        A sanitized code of at most 64 characters, never empty.
+    """
+    text = (value or "").strip().lower()
+    text = _CODE_SANITIZER_RE.sub("_", text)
+    text = _CODE_LEADING_RE.sub("", text)
+    text = text[:_MAX_CODE_CHARS]
+    return text or _UNKNOWN_CODE
+
+
+def exception_code(exc: BaseException) -> str:
+    """Return a bounded code for an exception without any message text.
+
+    Only the exception class name is used. Messages can carry venue payloads,
+    wallet addresses, or credentials and must never reach the event stream.
+
+    Args:
+        exc: Raised exception observed by a producer.
+
+    Returns:
+        A snake-case bounded code such as ``value_error``.
+    """
+    name = type(exc).__name__
+    snake = re.sub(r"(?<!^)(?=[A-Z])", "_", name)
+    return bounded_code(snake)
+
+
+def skip_reason_for_code(code: str | None) -> SkipReason:
+    """Map one pipeline skip code onto the bounded contract vocabulary.
+
+    Args:
+        code: Free-form internal skip code, or ``None``.
+
+    Returns:
+        The bounded reason, defaulting to :attr:`SkipReason.OTHER`.
+    """
+    text = (code or "").strip().lower()
+    if not text:
+        return SkipReason.OTHER
+    exact = _SKIP_CODE_EXACT.get(text)
+    if exact is not None:
+        return exact
+    for prefix, reason in _SKIP_CODE_PREFIXES:
+        if text.startswith(prefix):
+            return reason
+    return SkipReason.OTHER
+
+
+def _skip_payload_factory(reason: SkipReason, task_ref: str) -> Callable[[], TelemetryPayload]:
+    """Bind one skip payload eagerly so deferred delivery cannot rebind it."""
+
+    def build() -> TelemetryPayload:
+        return SkipEvent(reason=reason, task_ref=task_ref)
+
+    return build
+
+
+def _current_loop() -> asyncio.AbstractEventLoop | None:
+    try:
+        return asyncio.get_running_loop()
+    except RuntimeError:
+        return None
+
+
+class TelemetryEmitter:
+    """Publish bounded telemetry payloads without awaiting, blocking, or raising.
+
+    Args:
+        service: Telemetry service, or ``None`` for a total null object.
+        producer: Stable producer identity used for FIFO event sequencing.
+        loop: Event loop owning the telemetry service. Defaults to the loop
+            running at construction time; ``None`` disables cross-thread
+            scheduling entirely.
+    """
+
+    __slots__ = ("_service", "_producer", "_loop", "_metrics")
+
+    def __init__(
+        self,
+        service: "TelemetryService | None",
+        producer: TelemetryProducer,
+        loop: asyncio.AbstractEventLoop | None = None,
+    ) -> None:
+        self._service = service
+        self._producer = producer
+        self._loop = loop if loop is not None else _current_loop()
+        self._metrics = self._resolve_metrics(service)
+
+    @property
+    def enabled(self) -> bool:
+        """Return whether a telemetry service is bound to this emitter."""
+        return self._service is not None
+
+    @property
+    def producer(self) -> TelemetryProducer:
+        """Return the stable producer identity of this emitter."""
+        return self._producer
+
+    def _publish(
+        self,
+        payload_factory: Callable[[], TelemetryPayload],
+        *,
+        severity: TelemetrySeverity,
+        correlation_id: str | None = None,
+    ) -> bool:
+        """Build and enqueue one payload, absorbing every failure.
+
+        Args:
+            payload_factory: Zero-argument builder invoked inside the guard so
+                a malformed payload can never escape into a producer.
+            severity: Bounded operator severity for the event.
+            correlation_id: Optional opaque token grouping related events.
+
+        Returns:
+            ``True`` when the event was accepted by the hub or handed to the
+            owning loop for delivery, ``False`` on any drop or failure.
+        """
+        if self._service is None:
+            return False
+        loop = self._loop
+        if loop is not None and _current_loop() is not loop:
+            try:
+                loop.call_soon_threadsafe(
+                    self._emit,
+                    payload_factory,
+                    severity,
+                    correlation_id,
+                )
+            except Exception:
+                self._record_failure()
+                return False
+            return True
+        return self._emit(payload_factory, severity, correlation_id)
+
+    def _emit(
+        self,
+        payload_factory: Callable[[], TelemetryPayload],
+        severity: TelemetrySeverity,
+        correlation_id: str | None,
+    ) -> bool:
+        service = self._service
+        if service is None:
+            return False
+        try:
+            payload = payload_factory()
+            result = service.emit(
+                producer=self._producer,
+                payload=payload,
+                severity=severity,
+                correlation_id=correlation_id,
+            )
+        except Exception:
+            self._record_failure()
+            return False
+        return bool(getattr(result, "accepted", False))
+
+    def _record_failure(self) -> None:
+        metrics = self._metrics
+        if metrics is None:
+            return
+        try:
+            metrics.inc(
+                METRIC_TELEMETRY_EMIT_FAILURE,
+                labels={"producer": self._producer.value},
+            )
+        except Exception:
+            # Last-resort guard: a broken metrics registry must not turn a
+            # dropped telemetry event into a failed copy trade. The drop is
+            # already visible through the emitter's ``False`` return value.
+            return
+
+    @staticmethod
+    def _resolve_metrics(service: "TelemetryService | None") -> MetricsRegistry | None:
+        if service is None:
+            return None
+        try:
+            return service.metrics_registry
+        except Exception:
+            return None
+
+
+@dataclass(frozen=True, slots=True)
+class DetectionCounters:
+    """Immutable detection counters for one source or one leader."""
+
+    signals_total: int = 0
+    deduplicated_total: int = 0
+    last_signal_at: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class DetectionCountersSnapshot:
+    """Immutable, bounded view of local detection state for operator reads."""
+
+    sources: Mapping[str, DetectionCounters]
+    leaders: Mapping[str, DetectionCounters]
+    active_leader_count: int | None = None
+    leader_ws_connected: bool | None = None
+
+
+class _MutableCounters:
+    """Private accumulator behind :class:`DetectionCounters`."""
+
+    __slots__ = ("signals_total", "deduplicated_total", "last_signal_at")
+
+    def __init__(self) -> None:
+        self.signals_total = 0
+        self.deduplicated_total = 0
+        self.last_signal_at: float | None = None
+
+    def frozen(self) -> DetectionCounters:
+        """Return an immutable copy of the current counters."""
+        return DetectionCounters(
+            signals_total=self.signals_total,
+            deduplicated_total=self.deduplicated_total,
+            last_signal_at=self.last_signal_at,
+        )
+
+
+class DetectionTelemetryEmitter(TelemetryEmitter):
+    """Emit leader-detection events and keep bounded local counters.
+
+    This is the only pre-submit emit on the copy path: exactly one event per
+    detected signal. Counters are plain in-memory integers with no lock. Every
+    production call site (the on-chain dispatch adapter and the polling leader
+    dispatcher) runs on the single asyncio loop thread, so the read-modify-write
+    on these integers is never concurrent; a foreign-thread caller may at worst
+    lose one increment, which is acceptable for an operator counter and never
+    affects the money path.
+
+    Args:
+        service: Telemetry service, or ``None`` for a null object.
+        max_leaders: Hard bound on retained per-leader counters.
+        clock: Injected monotonic-ish wall clock returning seconds.
+        loop: Optional owning event loop override.
+    """
+
+    __slots__ = ("_max_leaders", "_clock", "_sources", "_leaders", "_probe", "_active_leaders")
+
+    def __init__(
+        self,
+        service: "TelemetryService | None",
+        *,
+        max_leaders: int = 256,
+        clock: Callable[[], float] = time.time,
+        loop: asyncio.AbstractEventLoop | None = None,
+    ) -> None:
+        super().__init__(service, TelemetryProducer.DETECTION, loop)
+        if max_leaders <= 0:
+            raise ValueError("max_leaders must be positive")
+        self._max_leaders = max_leaders
+        self._clock = clock
+        self._sources: dict[str, _MutableCounters] = {}
+        self._leaders: dict[str, _MutableCounters] = {}
+        self._probe: Callable[[], bool | None] | None = None
+        self._active_leaders: int | None = None
+
+    def signal_received(self, source: str, leader_wallet: str, tx_hash: str) -> bool:
+        """Record and publish one accepted leader signal.
+
+        Args:
+            source: Detection source code, typically a ``DetectionMode`` value.
+            leader_wallet: Leader identity; hashed when not a safe token.
+            tx_hash: Leader transaction hash used as the copy correlation id.
+
+        Returns:
+            Whether the event was accepted or scheduled for delivery.
+        """
+        code = bounded_code(source)
+        leader_ref = safe_ref(leader_wallet)
+        self._touch(code, leader_ref, deduplicated=False)
+        correlation = safe_ref(tx_hash) if tx_hash else None
+        return self._publish(
+            lambda: LeaderEvent(
+                outcome=LeaderOutcome.RECEIVED,
+                leader_ref=leader_ref,
+                source=code,
+            ),
+            severity=TelemetrySeverity.INFO,
+            correlation_id=correlation,
+        )
+
+    def signal_deduplicated(self, source: str, leader_wallet: str) -> bool:
+        """Record and publish one deduplicated leader signal.
+
+        Args:
+            source: Detection source code, typically a ``DetectionMode`` value.
+            leader_wallet: Leader identity; hashed when not a safe token.
+
+        Returns:
+            Whether the event was accepted or scheduled for delivery.
+        """
+        code = bounded_code(source)
+        leader_ref = safe_ref(leader_wallet)
+        self._touch(code, leader_ref, deduplicated=True)
+        return self._publish(
+            lambda: LeaderEvent(
+                outcome=LeaderOutcome.DEDUP,
+                leader_ref=leader_ref,
+                source=code,
+            ),
+            severity=TelemetrySeverity.DEBUG,
+        )
+
+    def roster_updated(self, active_count: int) -> bool:
+        """Publish the current active leader-roster size.
+
+        Args:
+            active_count: Number of leaders the runtime is following.
+
+        Returns:
+            Whether the event was accepted or scheduled for delivery.
+        """
+        count = int(active_count)
+        self._active_leaders = count
+        outcome = RosterOutcome.UPDATED if count > 0 else RosterOutcome.EMPTY
+        severity = TelemetrySeverity.INFO if count > 0 else TelemetrySeverity.WARNING
+        return self._publish(
+            lambda: RosterEvent(outcome=outcome, active_count=count),
+            severity=severity,
+        )
+
+    def attach_connection_probe(self, probe: Callable[[], bool | None] | None) -> bool:
+        """Bind the late-created leader WSS health probe.
+
+        The detection transport is composed after this emitter, so the probe is
+        injected once it exists and is read only at snapshot time.
+
+        Args:
+            probe: Callable returning connection state, or ``None`` to detach.
+
+        Returns:
+            ``True`` when a callable probe is now attached.
+        """
+        if probe is None or not callable(probe):
+            self._probe = None
+            return False
+        self._probe = probe
+        return True
+
+    def snapshot(self) -> DetectionCountersSnapshot:
+        """Return an immutable, bounded view of local detection state.
+
+        Returns:
+            Per-source and per-leader counters plus the probed WSS state.
+        """
+        connected: bool | None = None
+        probe = self._probe
+        if probe is not None:
+            try:
+                raw = probe()
+            except Exception:
+                raw = None
+            connected = None if raw is None else bool(raw)
+        return DetectionCountersSnapshot(
+            sources=MappingProxyType(
+                {name: counters.frozen() for name, counters in self._sources.items()}
+            ),
+            leaders=MappingProxyType(
+                {name: counters.frozen() for name, counters in self._leaders.items()}
+            ),
+            active_leader_count=self._active_leaders,
+            leader_ws_connected=connected,
+        )
+
+    def _touch(self, source: str, leader_ref: str, *, deduplicated: bool) -> None:
+        now = float(self._clock())
+        self._bump(self._sources, source, now, deduplicated=deduplicated, limit=None)
+        self._bump(
+            self._leaders,
+            leader_ref,
+            now,
+            deduplicated=deduplicated,
+            limit=self._max_leaders,
+        )
+
+    @staticmethod
+    def _bump(
+        table: dict[str, _MutableCounters],
+        key: str,
+        now: float,
+        *,
+        deduplicated: bool,
+        limit: int | None,
+    ) -> None:
+        counters = table.pop(key, None)
+        if counters is None:
+            counters = _MutableCounters()
+            if limit is not None and len(table) >= limit:
+                # Least-recently-active eviction: dict order is insertion order
+                # and every update reinserts, so the head is the stalest key.
+                table.pop(next(iter(table)), None)
+        table[key] = counters
+        if deduplicated:
+            counters.deduplicated_total += 1
+        else:
+            counters.signals_total += 1
+        counters.last_signal_at = now
+
+
+class TradeTelemetryEmitter(TelemetryEmitter):
+    """Project post-submission copy-pipeline outcomes onto bounded events.
+
+    The pipeline owns skips only. Venue outcomes belong to
+    :class:`ExecutionTelemetryEmitter`, so an accepted, failed, or unconfirmed
+    pipeline row produces no event here and is never counted twice.
+
+    Args:
+        service: Telemetry service, or ``None`` for a null object.
+        loop: Optional owning event loop override.
+    """
+
+    __slots__ = ()
+
+    def __init__(
+        self,
+        service: "TelemetryService | None",
+        loop: asyncio.AbstractEventLoop | None = None,
+    ) -> None:
+        super().__init__(service, TelemetryProducer.WORKER, loop)
+
+    def pipeline_results(
+        self,
+        user_id: str,
+        leader_wallet: str,
+        results: Iterable[PipelineOutcomeLike],
+        signals_by_key: Mapping[str, SignalLike],
+    ) -> bool:
+        """Publish one bounded skip event per skipped or paper-tier result.
+
+        Args:
+            user_id: Follower account identity.
+            leader_wallet: Leader the results belong to.
+            results: Pipeline outcome rows, already returned by the pipeline.
+            signals_by_key: Normalized signals keyed by trade key, used to
+                recover the copy correlation id.
+
+        Returns:
+            ``True`` when every derived event was accepted; ``False`` when the
+            emitter is disabled or any event was dropped.
+        """
+        if not self.enabled:
+            return False
+        fallback_ref = safe_ref(f"{user_id}:{leader_wallet}")
+        accepted = True
+        for result in results:
+            reason = self._skip_reason(result)
+            if reason is None:
+                continue
+            trade_key = getattr(result, "trade_key", "") or ""
+            task_ref = safe_ref(trade_key) if trade_key else fallback_ref
+            severity = (
+                TelemetrySeverity.INFO
+                if reason is SkipReason.PAPER_ONLY
+                else TelemetrySeverity.NOTICE
+            )
+            accepted = (
+                self._publish(
+                    _skip_payload_factory(reason, task_ref),
+                    severity=severity,
+                    correlation_id=self._correlation(signals_by_key, trade_key),
+                )
+                and accepted
+            )
+        return accepted
+
+    def pipeline_failed(self, user_id: str, leader_wallet: str, exc: BaseException) -> bool:
+        """Publish a bounded worker failure for an escaped pipeline exception.
+
+        Args:
+            user_id: Follower account identity.
+            leader_wallet: Leader whose batch raised.
+            exc: The escaped exception; only its class name is published.
+
+        Returns:
+            Whether the event was accepted or scheduled for delivery.
+        """
+        code = exception_code(exc)
+        correlation = safe_ref(leader_wallet) if leader_wallet else safe_ref(user_id)
+        return self._publish(
+            lambda: FailureEvent(
+                component=FailureComponent.WORKER,
+                code=code,
+                retryable=False,
+            ),
+            severity=TelemetrySeverity.ERROR,
+            correlation_id=correlation,
+        )
+
+    def reconciliation_run(self, affected: int) -> bool:
+        """Publish one completed reconciliation sweep.
+
+        Args:
+            affected: Number of records the sweep touched.
+
+        Returns:
+            Whether the event was accepted or scheduled for delivery.
+        """
+        return self._publish(
+            lambda: ReconciliationEvent(
+                outcome=ReconciliationOutcome.RUN,
+                affected_count=int(affected),
+            ),
+            severity=TelemetrySeverity.INFO,
+        )
+
+    @staticmethod
+    def _skip_reason(result: PipelineOutcomeLike) -> SkipReason | None:
+        status = str(getattr(result, "status", "") or "").strip().lower()
+        if status == "paper":
+            return SkipReason.PAPER_ONLY
+        if status == "skipped":
+            return skip_reason_for_code(getattr(result, "reason", None))
+        return None
+
+    @staticmethod
+    def _correlation(signals_by_key: Mapping[str, SignalLike], trade_key: str) -> str | None:
+        signal = signals_by_key.get(trade_key) if signals_by_key else None
+        tx_hash = getattr(signal, "tx_hash", None)
+        return safe_ref(tx_hash) if tx_hash else None
+
+
+class ExecutionTelemetryEmitter(TelemetryEmitter):
+    """Project venue-order outcomes and post-submission evidence.
+
+    Args:
+        service: Telemetry service, or ``None`` for a null object.
+        loop: Optional owning event loop override.
+    """
+
+    __slots__ = ()
+
+    def __init__(
+        self,
+        service: "TelemetryService | None",
+        loop: asyncio.AbstractEventLoop | None = None,
+    ) -> None:
+        super().__init__(service, TelemetryProducer.EXECUTION, loop)
+
+    def order_result(self, request: OrderRequestLike, result: OrderResultLike) -> bool:
+        """Publish exactly one bounded event for one execution attempt.
+
+        An accepted submission whose POST outcome is ambiguous is reported as
+        an ambiguous operation requiring reconciliation, never as a fill and
+        never as a plain failure that a caller might retry.
+
+        Args:
+            request: The execution request that was attempted.
+            result: The result returned by the execution service.
+
+        Returns:
+            Whether the event was accepted or scheduled for delivery.
+        """
+        task_ref = self._task_ref(request)
+        order_id = getattr(result, "order_id", None)
+        order_ref = safe_ref(str(order_id)) if order_id else None
+        status = str(getattr(result, "status", "") or "").strip().lower()
+        accepted = bool(getattr(result, "accepted", False))
+        error = getattr(result, "error", None)
+
+        if accepted and status == _UNCONFIRMED_STATUS and error:
+            return self._publish(
+                lambda: AmbiguousEvent(
+                    operation=AmbiguousOperation.ORDER_SUBMISSION,
+                    order_ref=order_ref,
+                    reconciliation_required=True,
+                ),
+                severity=TelemetrySeverity.WARNING,
+            )
+        if accepted:
+            side = self._side(request)
+            outcome = (
+                TradeOutcome.PARTIAL if status in _PARTIAL_FILL_STATUSES else TradeOutcome.EXECUTED
+            )
+            return self._publish(
+                lambda: TradeEvent(
+                    outcome=outcome,
+                    task_ref=task_ref,
+                    side=side,
+                    order_ref=order_ref,
+                    order_outcome=OrderOutcome.SUBMITTED,
+                ),
+                severity=TelemetrySeverity.INFO,
+            )
+        return self._publish(
+            lambda: FailureEvent(
+                component=FailureComponent.EXECUTION,
+                code=bounded_code(status or "failed"),
+                retryable=False,
+                order_outcome=_ORDER_OUTCOME_BY_STATUS.get(status),
+            ),
+            severity=TelemetrySeverity.WARNING,
+        )
+
+    def order_exception(self, request: OrderRequestLike, exc: BaseException) -> bool:
+        """Publish a bounded failure for an exception escaping execution.
+
+        Args:
+            request: The execution request that was attempted.
+            exc: The escaped exception; only its class name is published.
+
+        Returns:
+            Whether the event was accepted or scheduled for delivery.
+        """
+        code = exception_code(exc)
+        task_ref = self._task_ref(request)
+        return self._publish(
+            lambda: FailureEvent(
+                component=FailureComponent.EXECUTION,
+                code=code,
+                retryable=False,
+            ),
+            severity=TelemetrySeverity.ERROR,
+            correlation_id=task_ref,
+        )
+
+    def fill_observed(self, order_id: str, matched_total: object) -> bool:
+        """Publish one observed fill keyed by its cumulative matched size.
+
+        Args:
+            order_id: Venue order identity.
+            matched_total: Cumulative matched size or cost for the order.
+
+        Returns:
+            Whether the event was accepted or scheduled for delivery.
+        """
+        order_ref = safe_ref(str(order_id))
+        fill_ref = safe_ref(f"{order_id}:{matched_total}")
+        return self._publish(
+            lambda: FillEvent(
+                outcome=FillOutcome.OBSERVED,
+                order_ref=order_ref,
+                fill_ref=fill_ref,
+            ),
+            severity=TelemetrySeverity.INFO,
+        )
+
+    def reconciliation_drift(self, order_id: str) -> bool:
+        """Publish detected drift for one reconciled order.
+
+        Args:
+            order_id: Venue order identity used as the correlation token.
+
+        Returns:
+            Whether the event was accepted or scheduled for delivery.
+        """
+        return self._publish(
+            lambda: ReconciliationEvent(
+                outcome=ReconciliationOutcome.DRIFT,
+                affected_count=1,
+            ),
+            severity=TelemetrySeverity.WARNING,
+            correlation_id=safe_ref(str(order_id)),
+        )
+
+    def ambiguous_released(self, order_id: str) -> bool:
+        """Publish the resolution of a previously ambiguous submission.
+
+        Args:
+            order_id: Venue order identity that reconciliation resolved.
+
+        Returns:
+            Whether the event was accepted or scheduled for delivery.
+        """
+        order_ref = safe_ref(str(order_id))
+        return self._publish(
+            lambda: AmbiguousEvent(
+                operation=AmbiguousOperation.ORDER_SUBMISSION,
+                order_ref=order_ref,
+                reconciliation_required=False,
+            ),
+            severity=TelemetrySeverity.NOTICE,
+        )
+
+    @staticmethod
+    def _task_ref(request: OrderRequestLike) -> str:
+        signal_id = getattr(request, "signal_id", None)
+        if signal_id:
+            return safe_ref(str(signal_id))
+        user_id = getattr(request, "user_id", "") or ""
+        leader_id = getattr(request, "leader_id", "") or ""
+        token_id = getattr(request, "token_id", "") or ""
+        return safe_ref(f"{user_id}:{leader_id}:{token_id}")
+
+    @staticmethod
+    def _side(request: OrderRequestLike) -> TradeSide:
+        return TradeSide(str(getattr(request, "side", "") or "").strip().upper())
+
+
+class RiskTelemetryEmitter(TelemetryEmitter):
+    """Project protective-exit and risk-decision transitions.
+
+    Args:
+        service: Telemetry service, or ``None`` for a null object.
+        loop: Optional owning event loop override.
+    """
+
+    __slots__ = ()
+
+    def __init__(
+        self,
+        service: "TelemetryService | None",
+        loop: asyncio.AbstractEventLoop | None = None,
+    ) -> None:
+        super().__init__(service, TelemetryProducer.RISK, loop)
+
+    def exit_triggered(self, condition_id: str, token_id: str, reason: str) -> bool:
+        """Publish a triggered protective exit.
+
+        ``reason`` keeps one vocabulary across the three exit methods. The
+        frozen ``ProtectiveExitEvent`` contract carries no free-text field, so
+        the reason is only serialized on the not-filled failure path.
+
+        Args:
+            condition_id: Market condition identity.
+            token_id: Outcome token identity.
+            reason: Internal exit reason code.
+
+        Returns:
+            Whether the event was accepted or scheduled for delivery.
+        """
+        task_ref = _position_ref(condition_id, token_id)
+        return self._publish(
+            lambda: ProtectiveExitEvent(
+                outcome=ProtectiveOutcome.TRIGGERED,
+                task_ref=task_ref,
+            ),
+            severity=TelemetrySeverity.WARNING,
+        )
+
+    def exit_filled(self, condition_id: str, token_id: str, reason: str) -> bool:
+        """Publish a filled protective exit.
+
+        Args:
+            condition_id: Market condition identity.
+            token_id: Outcome token identity.
+            reason: Internal exit reason code, not serialized.
+
+        Returns:
+            Whether the event was accepted or scheduled for delivery.
+        """
+        task_ref = _position_ref(condition_id, token_id)
+        return self._publish(
+            lambda: ProtectiveExitEvent(
+                outcome=ProtectiveOutcome.FILLED,
+                task_ref=task_ref,
+            ),
+            severity=TelemetrySeverity.NOTICE,
+        )
+
+    def exit_not_filled(self, condition_id: str, token_id: str, reason: str) -> bool:
+        """Publish a protective exit that did not fill and stays retryable.
+
+        Args:
+            condition_id: Market condition identity.
+            token_id: Outcome token identity.
+            reason: Internal exit reason code folded into the bounded code.
+
+        Returns:
+            Whether the event was accepted or scheduled for delivery.
+        """
+        code = bounded_code(f"exit_not_filled_{reason}" if reason else "exit_not_filled")
+        correlation = _position_ref(condition_id, token_id)
+        return self._publish(
+            lambda: FailureEvent(
+                component=FailureComponent.PROTECTIVE_EXIT,
+                code=code,
+                retryable=True,
+                order_outcome=OrderOutcome.NOT_FILLABLE,
+            ),
+            severity=TelemetrySeverity.ERROR,
+            correlation_id=correlation,
+        )
+
+    def risk_rejected(self, task_ref: str) -> bool:
+        """Publish one risk rejection.
+
+        Args:
+            task_ref: Task or trade identity; hashed when not a safe token.
+
+        Returns:
+            Whether the event was accepted or scheduled for delivery.
+        """
+        reference = safe_ref(task_ref) if task_ref else None
+        return self._publish(
+            lambda: RiskEvent(outcome=RiskOutcome.REJECTED, task_ref=reference),
+            severity=TelemetrySeverity.NOTICE,
+        )
+
+
+class WssTelemetryEmitter(TelemetryEmitter):
+    """Project bounded WebSocket lifecycle transitions.
+
+    Args:
+        service: Telemetry service, or ``None`` for a null object.
+        loop: Optional owning event loop override.
+    """
+
+    __slots__ = ()
+
+    def __init__(
+        self,
+        service: "TelemetryService | None",
+        loop: asyncio.AbstractEventLoop | None = None,
+    ) -> None:
+        super().__init__(service, TelemetryProducer.WSS, loop)
+
+    def connected(self, stream: str) -> bool:
+        """Publish a stream connection.
+
+        Args:
+            stream: One of ``leader``, ``market``, or ``user``.
+
+        Returns:
+            Whether the event was accepted or scheduled for delivery.
+        """
+        return self._stream_event(stream, WssOutcome.CONNECTED, TelemetrySeverity.INFO)
+
+    def reconnected(self, stream: str) -> bool:
+        """Publish a stream reconnection.
+
+        Args:
+            stream: One of ``leader``, ``market``, or ``user``.
+
+        Returns:
+            Whether the event was accepted or scheduled for delivery.
+        """
+        return self._stream_event(stream, WssOutcome.RECONNECTED, TelemetrySeverity.NOTICE)
+
+    def disconnected(self, stream: str) -> bool:
+        """Publish a stream disconnection.
+
+        Args:
+            stream: One of ``leader``, ``market``, or ``user``.
+
+        Returns:
+            Whether the event was accepted or scheduled for delivery.
+        """
+        return self._stream_event(stream, WssOutcome.DISCONNECTED, TelemetrySeverity.WARNING)
+
+    def stalled(self, stream: str) -> bool:
+        """Publish a stalled stream heartbeat.
+
+        Args:
+            stream: One of ``leader``, ``market``, or ``user``.
+
+        Returns:
+            Whether the event was accepted or scheduled for delivery.
+        """
+        return self._stream_event(stream, WssOutcome.STALLED, TelemetrySeverity.WARNING)
+
+    def _stream_event(
+        self,
+        stream: str,
+        outcome: WssOutcome,
+        severity: TelemetrySeverity,
+    ) -> bool:
+        name = str(stream or "").strip().lower()
+        return self._publish(
+            lambda: WssEvent(outcome=outcome, stream=name),
+            severity=severity,
+        )
+
+
+def _position_ref(condition_id: str, token_id: str) -> str:
+    """Return a stable opaque reference for one market position."""
+    return safe_ref(f"{condition_id}:{token_id}")
+
+
+@dataclass(frozen=True, slots=True)
+class TelemetryEmitters:
+    """Immutable bundle of every producer-facing telemetry emitter.
+
+    Composition passes this bundle down one path so no collaborator has to know
+    whether telemetry is enabled: a disabled bundle is a total null object.
+    """
+
+    detection: DetectionTelemetryEmitter
+    trade: TradeTelemetryEmitter
+    execution: ExecutionTelemetryEmitter
+    risk: RiskTelemetryEmitter
+    wss: WssTelemetryEmitter
+
+    @property
+    def enabled(self) -> bool:
+        """Return whether the bundle is bound to a telemetry service."""
+        return self.detection.enabled
+
+    @classmethod
+    def build(
+        cls,
+        service: "TelemetryService | None",
+        *,
+        loop: asyncio.AbstractEventLoop | None = None,
+    ) -> "TelemetryEmitters":
+        """Build one bundle sharing a single telemetry service.
+
+        Args:
+            service: Telemetry service, or ``None`` for a disabled bundle.
+            loop: Optional owning event loop override.
+
+        Returns:
+            A frozen bundle with one emitter per producer identity.
+        """
+        return cls(
+            detection=DetectionTelemetryEmitter(service, loop=loop),
+            trade=TradeTelemetryEmitter(service, loop),
+            execution=ExecutionTelemetryEmitter(service, loop),
+            risk=RiskTelemetryEmitter(service, loop),
+            wss=WssTelemetryEmitter(service, loop),
+        )
+
+    @classmethod
+    def disabled(cls) -> "TelemetryEmitters":
+        """Return a bundle whose every method is a no-op returning ``False``."""
+        return cls.build(None)
+
+
+__all__ = [
+    "DetectionCounters",
+    "DetectionCountersSnapshot",
+    "DetectionTelemetryEmitter",
+    "ExecutionTelemetryEmitter",
+    "OrderRequestLike",
+    "OrderResultLike",
+    "PipelineOutcomeLike",
+    "RiskTelemetryEmitter",
+    "SignalLike",
+    "TelemetryEmitter",
+    "TelemetryEmitters",
+    "TradeTelemetryEmitter",
+    "WssTelemetryEmitter",
+    "bounded_code",
+    "exception_code",
+    "safe_ref",
+    "skip_reason_for_code",
+]
