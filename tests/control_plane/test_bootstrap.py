@@ -623,7 +623,7 @@ async def test_factory_composes_extended_reads_only_when_injected(tmp_path: Path
 
     from orchestrators.control_plane_bootstrap import ControlPlaneRuntimeFactory
     from orchestrators.control_plane_reads import ControlPlaneRuntimeReads
-    from services.control_plane.contracts import AccountView
+    from services.control_plane.contracts_reads import AccountView
     from services.telemetry.emitters import DetectionTelemetryEmitter
 
     config_root = tmp_path / "config"
@@ -633,7 +633,7 @@ async def test_factory_composes_extended_reads_only_when_injected(tmp_path: Path
     metrics = MetricsRegistry()
     config = build_config()
     reads = ControlPlaneRuntimeReads(
-        accounts=(
+        accounts=lambda: (
             AccountView(
                 follower_account="account-a",
                 wallet_address="0x1111111111111111111111111111111111111111",

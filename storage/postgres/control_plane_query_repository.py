@@ -18,17 +18,19 @@ from services.control_plane.contracts import (
     DiscoveryCycleView,
     DiscoveryRosterView,
     DiscoveryStatusView,
-    FillView,
     OrderView,
     Page,
     PageRequest,
     PositionView,
     ReentryLockView,
     ReservationView,
-    RiskBlockView,
-    RiskTriggerView,
     TaskDetailView,
     TaskView,
+)
+from services.control_plane.contracts_reads import (
+    FillView,
+    RiskBlockView,
+    RiskTriggerView,
 )
 from storage.postgres.copy_task_repository import CopyTaskCodec
 
@@ -630,6 +632,26 @@ class PostgresControlPlaneQueryRepository:
         )
         return tuple(self._risk_trigger_view(row) for row in rows)
 
+    async def list_leader_roster(self, limit: int) -> tuple[DiscoveryRosterView, ...]:
+        """Return at most ``limit`` roster rows in canonical ranking order.
+
+        The discovery roster repository exposes an unbounded listing, which an
+        operator read must not use: one HTTP request would otherwise scan the
+        whole table.
+        """
+
+        bounded = max(1, min(int(limit), _MAX_LEADER_AGGREGATE_ROWS))
+        rows = await self._fetch(
+            """
+            SELECT wallet, tier, score, updated_at
+            FROM leader_roster
+            ORDER BY score DESC, wallet ASC
+            LIMIT $1
+            """,
+            bounded,
+        )
+        return tuple(self._discovery_roster_view(row) for row in rows)
+
     async def leader_trade_counts(self) -> Mapping[str, int]:
         """Return bounded recorded fill counts grouped by leader identity."""
 
@@ -857,15 +879,15 @@ class PostgresControlPlaneQueryRepository:
         return FillView(
             fill_id=str(self._integer(row, "id")),
             follower_account=self._text(row, "user_id"),
-            leader_wallet=self._optional_text(row, "leader_id"),
-            order_id=self._optional_text(row, "order_id"),
-            condition_id=self._optional_text(row, "condition_id"),
-            token_id=self._optional_text(row, "token_id"),
-            side=self._optional_text(row, "side"),
+            leader_wallet=self._present_text(row, "leader_id"),
+            order_id=self._present_text(row, "order_id"),
+            condition_id=self._present_text(row, "condition_id"),
+            token_id=self._present_text(row, "token_id"),
+            side=self._present_text(row, "side"),
             size=self._decimal_text(row, "size_tokens"),
             price=self._decimal_text(row, "price"),
             fee=self._decimal_text(row, "fee"),
-            filled_at=self._epoch_datetime(row.get("fill_ts")),
+            filled_at=self._optional_epoch_datetime(row.get("fill_ts")),
             created_at=self._datetime(row, "created_at"),
         )
 
@@ -937,6 +959,26 @@ class PostgresControlPlaneQueryRepository:
         if not isinstance(value, datetime) or value.tzinfo is None:
             raise ControlPlaneError(ControlPlaneReason.INTERNAL_ERROR)
         return value
+
+    @classmethod
+    def _present_text(cls, row: Mapping[str, object], name: str) -> str | None:
+        """Return optional text where an empty column value means absent.
+
+        The fills table stores attribution columns as nullable free text, and
+        a legacy row can carry ``''``. Treating that as present would publish
+        an empty leader or order identity the UI would render as real.
+        """
+
+        value = row.get(name)
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return None
+        return cls._text(row, name)
+
+    @classmethod
+    def _optional_epoch_datetime(cls, value: object) -> datetime | None:
+        """Convert an optional epoch column, treating absence as unknown."""
+
+        return None if value is None else cls._epoch_datetime(value)
 
     @staticmethod
     def _epoch_datetime(value: object) -> datetime:

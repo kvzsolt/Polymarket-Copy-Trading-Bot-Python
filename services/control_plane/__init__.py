@@ -6,6 +6,7 @@ from services.control_plane.commands import (
     RuntimeCommandService,
 )
 from services.control_plane.contracts import *  # noqa: F403
+from services.control_plane.contracts_reads import *  # noqa: F403
 from services.control_plane.queries import (
     ActivityQueryService,
     DiscoveryQueryService,

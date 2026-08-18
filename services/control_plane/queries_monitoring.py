@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Protocol
 
-from services.control_plane.contracts import (
+from services.control_plane.contracts_reads import (
     AccountView,
     DetectionSourceStatusView,
     DetectionStatusView,
@@ -142,17 +142,17 @@ class LeaderRosterRecordLike(Protocol):
         ...
 
     @property
-    def score(self) -> float:
+    def score(self) -> str | float:
         """Return the current roster score."""
 
         ...
 
 
 class LeaderRosterPort(Protocol):
-    """Read the durable discovery roster."""
+    """Read a bounded slice of the durable discovery roster."""
 
-    async def list_roster(self) -> Sequence[LeaderRosterRecordLike]:
-        """Return every roster row in ranking order."""
+    async def list_leader_roster(self, limit: int) -> Sequence[LeaderRosterRecordLike]:
+        """Return at most ``limit`` roster rows in ranking order."""
 
         ...
 
@@ -171,22 +171,53 @@ class LeaderCountsPort(Protocol):
         ...
 
 
+class AccountScope:
+    """Resolve the follower accounts this process currently composes.
+
+    The composition root supplies a projection rather than a snapshot: leader
+    bindings change while the process runs, so an account listing captured at
+    startup would report a stale ``leader_count`` forever.
+    """
+
+    def __init__(self, projection: Callable[[], Sequence[AccountView]]) -> None:
+        """Store the live account projection.
+
+        Args:
+            projection: Callable returning the current account views.
+        """
+
+        self._projection = projection
+
+    def list(self) -> tuple[AccountView, ...]:
+        """Return the current composed accounts, tolerating a bad projection."""
+
+        try:
+            return tuple(self._projection())
+        except Exception:
+            return ()
+
+    def contains(self, follower_account: str) -> bool:
+        """Return whether this process composed the named follower account."""
+
+        return any(view.follower_account == follower_account for view in self.list())
+
+
 class AccountQueryService:
     """Serve the follower accounts this process actually composed."""
 
-    def __init__(self, accounts: tuple[AccountView, ...]) -> None:
-        """Store the immutable composed account projections.
+    def __init__(self, scope: AccountScope) -> None:
+        """Store the live composed-account resolver.
 
         Args:
-            accounts: One view per follower account bound at startup.
+            scope: Resolver over the current follower composition.
         """
 
-        self._accounts = tuple(accounts)
+        self._scope = scope
 
     async def list(self) -> tuple[AccountView, ...]:
-        """Return every composed follower account."""
+        """Return every currently composed follower account."""
 
-        return self._accounts
+        return self._scope.list()
 
 
 class DetectionQueryService:
@@ -284,7 +315,6 @@ class LeaderQueryService:
         configured: tuple[str, ...],
         monitored: Callable[[], Iterable[str]],
         counters: DetectionCountersSource,
-        clock: Clock,
         max_leaders: int = _MAX_LEADERS,
     ) -> None:
         """Store every leader-identity source used by the merge.
@@ -295,8 +325,8 @@ class LeaderQueryService:
             configured: Operator-configured leader wallets.
             monitored: Late-bound reader of currently monitored wallets.
             counters: Bounded local detection counters.
-            clock: Aware UTC clock reserved for signal timestamps.
-            max_leaders: Hard ceiling on the merged listing.
+            max_leaders: Hard ceiling on the merged listing and on the roster
+                rows this service is willing to read.
 
         Raises:
             ValueError: If the leader ceiling is not positive.
@@ -309,7 +339,6 @@ class LeaderQueryService:
         self._configured = tuple(configured)
         self._monitored = monitored
         self._counters = counters
-        self._clock = clock
         self._max_leaders = int(max_leaders)
 
     async def list(self) -> tuple[LeaderView, ...]:
@@ -333,9 +362,11 @@ class LeaderQueryService:
         )
 
         ordered: list[str] = []
+        seen: set[str] = set()
         for wallet in (*self._configured, *monitored_wallets, *roster, *signals):
             normalized = _normalize(wallet)
-            if normalized and normalized not in ordered:
+            if normalized and normalized not in seen:
+                seen.add(normalized)
                 ordered.append(normalized)
             if len(ordered) >= self._max_leaders:
                 break
@@ -365,7 +396,7 @@ class LeaderQueryService:
 
         if self._roster is None:
             return {}
-        records = await self._roster.list_roster()
+        records = await self._roster.list_leader_roster(self._max_leaders)
         rows: dict[str, LeaderRosterRecordLike] = {}
         for record in records:
             wallet = _normalize(record.wallet)
@@ -450,6 +481,7 @@ def _normalized_set(wallets: Iterable[str]) -> frozenset[str]:
 
 __all__ = [
     "AccountQueryService",
+    "AccountScope",
     "Clock",
     "DetectionCountersSource",
     "DetectionQueryService",

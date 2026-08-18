@@ -65,9 +65,11 @@ registers only routes backed by composed services; consult
 Each read carries exactly one permission: `system.read` (`/accounts`),
 `runtime.read` (`/detection`), `fill.read` (`/fills`), `portfolio.read`
 (`/pnl`), `risk.read` (`/risk`), `leader.read` (`/leaders`), and
-`telemetry.read` (`/telemetry/snapshot`, `/metrics/snapshot`). A viewer
-credential holds every `*.read` permission plus `telemetry.stream` and no
-mutation permission.
+`telemetry.read` (`/telemetry/snapshot`, `/metrics/snapshot`). The backend
+defines a read-only permission set — every `*.read` permission plus
+`telemetry.stream`, and no mutation permission — which a future viewer
+credential will use; the current build still issues only the operator
+credential, which holds every permission.
 
 Follower-scoped collections require `follower_account`. Position and order
 detail lookups remain follower-scoped. Portfolio reads use a background cache;
@@ -90,14 +92,19 @@ provisional-copy confirmation tracker.
 
 `GET /pnl` is deliberately conservative. `realized` comes from the in-process
 session ledger, so it covers this process run only and resets on restart;
-`session_started_at` states when that run began. A position is marked only from
+`session_started_at` is the instant that ledger began recording. A position is marked only from
 a cached WSS quote that is two-sided and fresher than
 `market_data.executable_quote_max_age_seconds`; otherwise `mark_price`,
 `market_value_usdc`, and `unrealized_pnl_usdc` are `null`. The account-level
 `unrealized_pnl_usdc` is published only when every open position is marked
 (`unrealized_basis: "wss_mid"`); a partially marked book reports `null` with
-`"partial_wss_mid"`, and an unmarked book reports `"unavailable"`. No PnL read
-ever calls the venue.
+`"partial_wss_mid"`, and an unmarked book reports `"unavailable"`. A book
+larger than the rendering ceiling sets `truncated: true` and
+`unrealized_basis: "truncated"` and also withholds the account total, because
+the client cannot reconcile it against the rendered rows; `position_count`,
+`cost_basis_usdc`, and `marked_position_count` still describe the complete
+book. `/fills`, `/pnl`, and `/risk` return `404` for a follower account this
+process did not compose. No PnL read ever calls the venue.
 
 `GET /risk` returns the configured policy, active durable risk blocks, recent
 protective-exit triggers, and `headroom`. `headroom` is `null` unless a present
@@ -111,10 +118,16 @@ one.
 
 `GET /leaders` merges configured wallets, the discovery roster, the currently
 monitored set, and local detection counters under one lower-cased wallet
-identity, capped at 500 rows.
+identity, capped at 500 rows; the roster read itself is bounded by the same
+ceiling. `GET /accounts` is projected per request, so `leader_count` follows
+leader bindings that change while the process runs.
 
-The immutable DTO definitions in `services/control_plane/contracts.py` are the
-canonical response contract. The narrow HTTP ports are defined in
+In `FillView`, `filled_at` is nullable because the durable fill timestamp is;
+`size`, `price`, and `fee` are always exact decimal strings.
+
+The immutable DTO definitions in `services/control_plane/contracts.py` and
+`services/control_plane/contracts_reads.py` are the canonical response
+contract. The narrow HTTP ports are defined in
 `integrations/control_plane/contracts.py`.
 
 ## Commands

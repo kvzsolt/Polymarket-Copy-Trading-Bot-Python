@@ -16,19 +16,22 @@ import pytest
 
 from config.app_config import AppConfig, RiskConfig
 from services.control_plane.contracts import (
-    AccountView,
     ControlPlaneError,
     ControlPlaneReason,
-    FillView,
     Page,
     PageRequest,
-    PendingConfirmationStatsView,
     PortfolioView,
+)
+from services.control_plane.contracts_reads import (
+    AccountView,
+    FillView,
+    PendingConfirmationStatsView,
     RiskBlockView,
     RiskTriggerView,
 )
 from services.control_plane.queries_monitoring import (
     AccountQueryService,
+    AccountScope,
     DetectionQueryService,
     LeaderQueryService,
     MetricsQueryService,
@@ -180,15 +183,17 @@ class FakePortfolioCache:
 
 
 class FakeRoster:
-    """Return one scripted discovery roster."""
+    """Return one scripted discovery roster through a bounded read."""
 
     def __init__(self, records: Sequence[object]) -> None:
         self._records = tuple(records)
+        self.limits: list[int] = []
 
-    async def list_roster(self) -> Sequence[object]:
-        """Return the scripted roster records."""
+    async def list_leader_roster(self, limit: int) -> Sequence[object]:
+        """Record the requested bound and return the scripted rows."""
 
-        return self._records
+        self.limits.append(limit)
+        return self._records[:limit]
 
 
 @dataclass(frozen=True, slots=True)
@@ -297,21 +302,43 @@ def portfolio(**overrides: object) -> PortfolioView:
 # ---------------------------------------------------------------------------
 
 
-async def test_account_query_service_returns_composed_accounts_only() -> None:
-    """Accounts are explicit composition data, never a database scan."""
+def account_view(leader_count: int = 2) -> AccountView:
+    """Return one composed follower account projection."""
 
-    accounts = (
-        AccountView(
-            follower_account="account-a",
-            wallet_address="0x68E60000000000000000000000000000000A83F1",
-            leader_count=2,
-        ),
+    return AccountView(
+        follower_account="account-a",
+        wallet_address="0x68E60000000000000000000000000000000A83F1",
+        leader_count=leader_count,
     )
 
-    result = await AccountQueryService(accounts).list()
 
-    assert result == accounts
-    assert result[0].leader_count == 2
+async def test_account_query_service_projects_live_composition_per_request() -> None:
+    """A leader bound after startup changes the next account read."""
+
+    counts = [2]
+    scope = AccountScope(lambda: (account_view(counts[0]),))
+    service = AccountQueryService(scope)
+
+    first = await service.list()
+    counts[0] = 3
+    second = await service.list()
+
+    assert first[0].leader_count == 2
+    assert second[0].leader_count == 3
+    assert scope.contains("account-a") is True
+    assert scope.contains("account-unknown") is False
+
+
+async def test_account_scope_degrades_a_defective_projection_to_empty() -> None:
+    """A broken projection cannot turn an operator read into a 500."""
+
+    def explode() -> tuple[AccountView, ...]:
+        raise RuntimeError("composition exploded")
+
+    scope = AccountScope(explode)
+
+    assert await AccountQueryService(scope).list() == ()
+    assert scope.contains("account-a") is False
 
 
 def test_account_view_rejects_a_negative_leader_count() -> None:
@@ -458,6 +485,31 @@ def test_fill_view_requires_decimal_strings_for_size_price_and_fee() -> None:
     assert captured.value.reason is ControlPlaneReason.INVALID_DECIMAL_STRING
 
 
+async def test_fill_and_risk_reads_reject_an_uncomposed_follower_account() -> None:
+    """An account this process never composed is a not-found, not an empty page."""
+
+    scope = AccountScope(lambda: (account_view(),))
+    fills = FillQueryService(FakeFillPort(Page(items=(), next_cursor=None)), scope=scope)
+    risk = RiskQueryService(
+        port=FakeRiskPort(),
+        portfolio=None,
+        config=build_config(),
+        clock=FixedClock(),
+        day_start_equity=lambda: None,
+        scope=scope,
+    )
+
+    with pytest.raises(ControlPlaneError) as fill_error:
+        await fills.list("account-unknown", PageRequest(limit=5))
+    with pytest.raises(ControlPlaneError) as risk_error:
+        await risk.get("account-unknown")
+
+    assert fill_error.value.reason is ControlPlaneReason.NOT_FOUND
+    assert risk_error.value.reason is ControlPlaneReason.NOT_FOUND
+    assert (await fills.list("account-a", PageRequest(limit=5))).items == ()
+    assert (await risk.get("account-a")).follower_account == "account-a"
+
+
 # ---------------------------------------------------------------------------
 # PnL
 # ---------------------------------------------------------------------------
@@ -467,15 +519,18 @@ def pnl_service(
     *,
     quotes: Mapping[str, FakeQuote],
     positions: Sequence[FakePosition],
+    max_positions: int = 200,
+    tracker: FakePnlTracker | None = None,
 ) -> PnlQueryService:
     """Build one PnL service over fake local state."""
 
     return PnlQueryService(
-        pnl_trackers={"account-a": FakePnlTracker()},
+        pnl_trackers={"account-a": tracker if tracker is not None else FakePnlTracker()},
         positions=FakePositions({"account-a": positions}),
         market_stores={"account-a": FakeMarketStore(quotes)},
         quote_max_age_seconds=2.0,
         clock=FixedClock(),
+        max_positions=max_positions,
     )
 
 
@@ -600,6 +655,54 @@ async def test_pnl_rejects_an_unknown_follower_account() -> None:
     assert captured.value.reason is ControlPlaneReason.NOT_FOUND
 
 
+async def test_pnl_withholds_the_account_total_when_positions_are_truncated() -> None:
+    """A capped listing keeps exact aggregates but no unauditable total."""
+
+    quote = FakeQuote(best_bid=Decimal("0.50"), best_ask=Decimal("0.60"), fresh=True)
+    service = pnl_service(
+        quotes={f"token-{index}": quote for index in range(3)},
+        positions=tuple(
+            FakePosition(
+                condition_id=f"condition-{index}",
+                token_id=f"token-{index}",
+                leader_id=None,
+                size_tokens=Decimal("10"),
+                avg_entry_price=Decimal("0.40"),
+            )
+            for index in range(3)
+        ),
+        max_positions=2,
+    )
+
+    view = await service.get("account-a")
+
+    assert len(view.positions) == 2
+    assert view.truncated is True
+    assert view.position_count == 3
+    assert view.marked_position_count == 3
+    assert view.cost_basis_usdc == "12.00"
+    assert view.unrealized_pnl_usdc is None
+    assert view.unrealized_basis == "truncated"
+
+
+async def test_pnl_session_start_uses_the_ledger_instant_when_recorded() -> None:
+    """A ledger that knows when it started owns ``session_started_at``."""
+
+    from services.pnlTracker import PnLTracker
+
+    started = datetime(2026, 8, 18, 6, 0, tzinfo=UTC)
+
+    class RecordingTracker(FakePnlTracker):
+        started_at = started
+
+    with_instant = pnl_service(quotes={}, positions=(), tracker=RecordingTracker())
+    without_instant = pnl_service(quotes={}, positions=())
+
+    assert (await with_instant.get("account-a")).realized.session_started_at == started
+    assert (await without_instant.get("account-a")).realized.session_started_at == NOW
+    assert PnLTracker(log_path="/dev/null").started_at.tzinfo is not None
+
+
 # ---------------------------------------------------------------------------
 # Risk
 # ---------------------------------------------------------------------------
@@ -708,13 +811,14 @@ async def test_risk_state_omits_headroom_for_a_stale_cached_snapshot() -> None:
 async def test_leader_list_merges_configuration_roster_monitoring_and_counters() -> None:
     """One leader identity carries configuration, roster, and local counters."""
 
+    roster = FakeRoster(
+        (
+            FakeRosterRecord(wallet=OTHER_LEADER.lower(), tier="active", score=0.75),
+            FakeRosterRecord(wallet="0x9999", tier="watchlist", score=0.10),
+        )
+    )
     service = LeaderQueryService(
-        roster=FakeRoster(
-            (
-                FakeRosterRecord(wallet=OTHER_LEADER.lower(), tier="active", score=0.75),
-                FakeRosterRecord(wallet="0x9999", tier="watchlist", score=0.10),
-            )
-        ),
+        roster=roster,
         counts=FakeLeaderCounts(
             trades={LEADER.lower(): 4},
             positions={LEADER.lower(): 1},
@@ -722,7 +826,6 @@ async def test_leader_list_merges_configuration_roster_monitoring_and_counters()
         configured=(LEADER,),
         monitored=lambda: (LEADER, OTHER_LEADER),
         counters=detection_counters(),
-        clock=FixedClock(),
     )
 
     leaders = {view.wallet: view for view in await service.list()}
@@ -747,6 +850,7 @@ async def test_leader_list_merges_configuration_roster_monitoring_and_counters()
     inactive = leaders["0x9999"]
     assert inactive.monitored is False
     assert inactive.signals_total == 0
+    assert roster.limits == [500]
 
 
 async def test_leader_list_is_bounded_and_survives_absent_sources() -> None:
@@ -758,7 +862,6 @@ async def test_leader_list_is_bounded_and_survives_absent_sources() -> None:
         configured=tuple(f"0x{index:040x}" for index in range(600)),
         monitored=lambda: (),
         counters=DetectionTelemetryEmitter(None),
-        clock=FixedClock(),
     )
 
     leaders = await service.list()

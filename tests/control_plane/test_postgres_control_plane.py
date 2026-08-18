@@ -497,7 +497,7 @@ async def test_fill_pagination_is_identity_keyset_descending_with_its_own_cursor
             {
                 "id": 8,
                 "user_id": "account-a",
-                "leader_id": None,
+                "leader_id": "",
                 "order_id": None,
                 "condition_id": "condition-b",
                 "token_id": "token-b",
@@ -505,18 +505,38 @@ async def test_fill_pagination_is_identity_keyset_descending_with_its_own_cursor
                 "size_tokens": "1",
                 "price": "0.90",
                 "fee": "0",
-                "fill_ts": 1766000001,
+                "fill_ts": None,
                 "created_at": NOW,
             },
         ],
-        [],
+        [
+            {
+                "id": 8,
+                "user_id": "account-a",
+                "leader_id": "",
+                "order_id": None,
+                "condition_id": "condition-b",
+                "token_id": "token-b",
+                "side": "SELL",
+                "size_tokens": "1",
+                "price": "0.90",
+                "fee": "0",
+                "fill_ts": None,
+                "created_at": NOW,
+            }
+        ],
     ]
     repository = PostgresControlPlaneQueryRepository(pool, clock=FixedClock())
 
     first = await repository.list_fills("account-a", PageRequest(limit=1))
-    await repository.list_fills("account-a", PageRequest(limit=1, cursor=first.next_cursor))
+    second = await repository.list_fills(
+        "account-a", PageRequest(limit=1, cursor=first.next_cursor)
+    )
 
     assert [fill.fill_id for fill in first.items] == ["9"]
+    assert [fill.fill_id for fill in second.items] == ["8"]
+    assert second.items[0].filled_at is None
+    assert second.items[0].leader_wallet is None
     assert first.items[0].size == "12.5"
     assert first.items[0].price == "0.42"
     assert first.items[0].filled_at == datetime.fromtimestamp(1766000000, tz=UTC)
@@ -588,6 +608,28 @@ async def test_risk_projections_are_follower_scoped_and_bounded() -> None:
     assert pool.calls[0][2][1:] == ("account-a", 200)
     assert "ORDER BY triggered_at DESC" in pool.calls[1][1]
     assert pool.calls[1][2] == ("account-a", 25)
+
+
+@pytest.mark.asyncio
+async def test_leader_roster_read_is_bounded_by_the_requested_ceiling() -> None:
+    """One operator read never scans the whole discovery roster table."""
+
+    pool = FakePool()
+    pool.fetch_results = [
+        [{"wallet": "0xleader", "tier": "active", "score": 0.75, "updated_at": 1766000000.0}],
+        [],
+    ]
+    repository = PostgresControlPlaneQueryRepository(pool, clock=FixedClock())
+
+    roster = await repository.list_leader_roster(500)
+    await repository.list_leader_roster(10_000)
+
+    assert roster[0].wallet == "0xleader"
+    assert roster[0].tier == "active"
+    assert roster[0].score == "0.75"
+    assert "LIMIT $1" in pool.calls[0][1]
+    assert pool.calls[0][2] == (500,)
+    assert pool.calls[1][2] == (500,)
 
 
 @pytest.mark.asyncio

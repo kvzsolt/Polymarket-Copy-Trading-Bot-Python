@@ -20,8 +20,23 @@ from integrations.control_plane import (
     create_control_plane_app,
 )
 from services.control_plane.contracts import (
-    AccountView,
     CapabilitiesView,
+    ControlPlaneError,
+    ControlPlaneReason,
+    LockResetOutcome,
+    LockResetResult,
+    Page,
+    PageRequest,
+    ReadinessView,
+    ReentryLockView,
+    SettingsPath,
+    SystemStatusView,
+    SystemView,
+    TaskVersionCommand,
+    TaskView,
+)
+from services.control_plane.contracts_reads import (
+    AccountView,
     DetectionStatusView,
     FillView,
     LeaderView,
@@ -29,19 +44,6 @@ from services.control_plane.contracts import (
     PnlView,
     RiskPolicyView,
     RiskStateView,
-    ControlPlaneError,
-    ControlPlaneReason,
-    LockResetResult,
-    LockResetOutcome,
-    Page,
-    PageRequest,
-    ReentryLockView,
-    ReadinessView,
-    SettingsPath,
-    SystemStatusView,
-    SystemView,
-    TaskVersionCommand,
-    TaskView,
 )
 
 _NOW = datetime(2026, 8, 11, 14, 0, tzinfo=timezone.utc)
@@ -910,6 +912,7 @@ class _PnlService:
             ),
             positions=(),
             position_count=0,
+            truncated=False,
             cost_basis_usdc="0",
             unrealized_pnl_usdc=None,
             unrealized_basis="unavailable",

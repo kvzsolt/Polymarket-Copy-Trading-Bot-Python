@@ -86,7 +86,7 @@ from services.healthServer import ReadinessTracker, start_health_server
 from services.metrics import MetricsRegistry, metrics
 from services.control_plane.runtime import OpenOrderControlGateway
 from services.control_plane.commands import DiscoveryCommandPort
-from services.control_plane.contracts import AccountView, PendingConfirmationStatsView
+from services.control_plane.contracts_reads import AccountView, PendingConfirmationStatsView
 from services.control_plane.queries import CachedPortfolioQueryPort
 from services.control_plane.tasks import TaskActivationGuard
 from services.telemetry import SystemClock, TelemetryEmitters, WssTelemetryEmitter
@@ -1155,7 +1155,6 @@ def _build_control_plane_reads(
     monitored_leaders: Callable[[], Iterable[str]],
     detection_counters: Any,
     pending_stats: Callable[[], PendingConfirmationStatsView | None],
-    leaders_repo: Any | None,
     portfolio_cache: CachedPortfolioQueryPort | None,
 ) -> ControlPlaneRuntimeReads:
     """Bundle the local runtime state the extended operator reads may observe.
@@ -1174,33 +1173,16 @@ def _build_control_plane_reads(
         monitored_leaders: Late-bound reader of monitored leader wallets.
         detection_counters: Detection telemetry emitter counter source.
         pending_stats: Late-bound provisional-copy tracker probe.
-        leaders_repo: Optional durable discovery roster reader.
         portfolio_cache: Optional local-only follower portfolio cache.
 
     Returns:
         One immutable read bundle for the control-plane factory.
     """
 
-    leader_counts: dict[str, int] = {}
-    for contexts in contexts_by_leader.values():
-        for context in contexts:
-            user_id = str(getattr(context, "user_id", "") or "")
-            if user_id:
-                leader_counts[user_id] = leader_counts.get(user_id, 0) + 1
-    accounts: list[AccountView] = []
     pnl_trackers: dict[str, Any] = {}
     positions: dict[str, Any] = {}
     market_stores: dict[str, Any] = {}
     for user_id, context in risk_contexts_by_user.items():
-        wallet = str(getattr(context, "wallet_address", "") or "")
-        if wallet:
-            accounts.append(
-                AccountView(
-                    follower_account=user_id,
-                    wallet_address=wallet,
-                    leader_count=leader_counts.get(user_id, 0),
-                )
-            )
         tracker = getattr(context, "pnl_tracker", None)
         if tracker is not None:
             pnl_trackers[user_id] = tracker
@@ -1210,8 +1192,36 @@ def _build_control_plane_reads(
         market_store = getattr(user_states.get(user_id), "market_store", None)
         if market_store is not None:
             market_stores[user_id] = market_store
+
+    def _accounts() -> tuple[AccountView, ...]:
+        """Project the live follower/leader binding on every request.
+
+        ``contexts_by_leader`` changes while the process runs (discovery
+        promotions, roster refreshes), so a snapshot taken at composition
+        would report a stale ``leader_count`` for the life of the process.
+        """
+
+        leader_counts: dict[str, int] = {}
+        for contexts in contexts_by_leader.values():
+            for context in contexts:
+                bound_user = str(getattr(context, "user_id", "") or "")
+                if bound_user:
+                    leader_counts[bound_user] = leader_counts.get(bound_user, 0) + 1
+        views: list[AccountView] = []
+        for account_id, account_context in risk_contexts_by_user.items():
+            wallet = str(getattr(account_context, "wallet_address", "") or "")
+            if wallet:
+                views.append(
+                    AccountView(
+                        follower_account=account_id,
+                        wallet_address=wallet,
+                        leader_count=leader_counts.get(account_id, 0),
+                    )
+                )
+        return tuple(views)
+
     return ControlPlaneRuntimeReads(
-        accounts=tuple(accounts),
+        accounts=_accounts,
         detection_counters=detection_counters,
         pending_stats=pending_stats,
         pnl_trackers=pnl_trackers,
@@ -1219,7 +1229,6 @@ def _build_control_plane_reads(
         market_stores=market_stores,
         monitored_leaders=monitored_leaders,
         configured_leaders=tuple(configured_leaders),
-        leaders_repo=leaders_repo,
         portfolio=portfolio_cache,
         readiness=readiness,
         metrics=metrics_registry,
@@ -2017,7 +2026,6 @@ async def _run_application(client_registry: list[Any]) -> int:
         monitored_leaders=lambda: tuple(monitored_leaders),
         detection_counters=telemetry_emitters.detection,
         pending_stats=pending_confirmation_stats,
-        leaders_repo=leaders_repo,
         portfolio_cache=(portfolio_runtime.cache if portfolio_runtime is not None else None),
     )
     await _start_control_plane_runtime(

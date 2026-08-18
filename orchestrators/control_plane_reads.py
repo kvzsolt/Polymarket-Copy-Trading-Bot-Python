@@ -15,10 +15,9 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Protocol
 
-from services.control_plane.contracts import AccountView, PendingConfirmationStatsView
+from services.control_plane.contracts_reads import AccountView, PendingConfirmationStatsView
 from services.control_plane.queries_monitoring import (
     DetectionCountersSource,
-    LeaderRosterPort,
     MetricsSource,
     ReadinessSource,
 )
@@ -139,7 +138,9 @@ class ControlPlaneRuntimeReads:
     """Local runtime state the composition root exposes to read routes.
 
     Attributes:
-        accounts: One projection per composed follower account.
+        accounts: Live projection of the composed follower accounts. It is
+            a callable, not a snapshot, because leader bindings change while
+            the process runs.
         detection_counters: Bounded local detection counter source.
         pending_stats: Optional provisional-copy tracker probe.
         pnl_trackers: Session realized ledger per follower account.
@@ -147,14 +148,13 @@ class ControlPlaneRuntimeReads:
         market_stores: Cached WSS quote source per follower account.
         monitored_leaders: Late-bound reader of monitored leader wallets.
         configured_leaders: Operator-configured leader wallets.
-        leaders_repo: Optional durable discovery roster reader.
         portfolio: Optional cached portfolio snapshot reader.
         readiness: Canonical process readiness truth.
         metrics: Process metrics registry.
         day_start_equity: Read-only day-start equity probe.
     """
 
-    accounts: tuple[AccountView, ...] = ()
+    accounts: Callable[[], Sequence[AccountView]] | None = None
     detection_counters: DetectionCountersSource | None = None
     pending_stats: Callable[[], PendingConfirmationStatsView | None] | None = None
     pnl_trackers: Mapping[str, PnlTrackerPort] = field(default_factory=dict)
@@ -162,7 +162,6 @@ class ControlPlaneRuntimeReads:
     market_stores: Mapping[str, MarketQuoteSource] = field(default_factory=dict)
     monitored_leaders: Callable[[], Iterable[str]] | None = None
     configured_leaders: tuple[str, ...] = ()
-    leaders_repo: LeaderRosterPort | None = None
     portfolio: CachedPortfolioPort | None = None
     readiness: ReadinessSource | None = None
     metrics: MetricsSource | None = None

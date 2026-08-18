@@ -176,26 +176,27 @@ async def test_reads_composition_maps_accounts_ledgers_and_market_stores() -> No
     context_b = FakeContext("account-b", "0xbbb")
     store_a = object()
     monitored: list[str] = ["0xleader1"]
+    contexts_by_leader: dict[str, list[FakeContext]] = {
+        "0xLEADER1": [context_a, context_b],
+        "0xleader2": [context_a],
+        "0xleader3": [],
+    }
 
     reads = _build_control_plane_reads(
         readiness=ReadinessTracker(),
         metrics_registry=MetricsRegistry(),
-        contexts_by_leader={
-            "0xLEADER1": [context_a, context_b],
-            "0xleader2": [context_a],
-            "0xleader3": [],
-        },
+        contexts_by_leader=contexts_by_leader,
         risk_contexts_by_user={"account-a": context_a, "account-b": context_b},
         user_states={"account-a": FakeUserState(store_a), "account-b": FakeUserState(None)},
         configured_leaders=("0xLEADER1",),
         monitored_leaders=lambda: tuple(monitored),
         detection_counters=DetectionTelemetryEmitter(None),
         pending_stats=lambda: None,
-        leaders_repo=None,
         portfolio_cache=None,
     )
 
-    accounts = {view.follower_account: view for view in reads.accounts}
+    assert reads.accounts is not None
+    accounts = {view.follower_account: view for view in reads.accounts()}
     assert accounts["account-a"].leader_count == 2
     assert accounts["account-a"].wallet_address == "0xaaa"
     assert accounts["account-b"].leader_count == 1
@@ -211,6 +212,12 @@ async def test_reads_composition_maps_accounts_ledgers_and_market_stores() -> No
 
     monitored.append("0xleader2")
     assert list(reads.monitored_leaders()) == ["0xleader1", "0xleader2"]  # type: ignore[misc]
+
+    # A leader bound after composition must change the next account read.
+    contexts_by_leader["0xleader4"] = [context_b]
+    refreshed = {view.follower_account: view for view in reads.accounts()}
+    assert refreshed["account-b"].leader_count == 2
+    assert refreshed["account-a"].leader_count == 2
 
 
 def test_detection_connection_probe_reports_unknown_without_runtime_state() -> None:

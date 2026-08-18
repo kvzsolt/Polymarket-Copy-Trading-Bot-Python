@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import dataclass, asdict
+from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Optional, Union
@@ -64,11 +65,20 @@ class PnLTracker:
     def __init__(self, log_path: Optional[str] = None):
         self._log_path = Path(log_path or "log/pnl.jsonl")
         self._log_path.parent.mkdir(parents=True, exist_ok=True)
+        # The ledger is in-memory, so every metric it reports is scoped to this
+        # object's lifetime. Recording that instant lets an operator read state
+        # "since when" instead of implying an all-time total.
+        self._started_at = datetime.now(tz=timezone.utc)
         self._records: list[TradeRecord] = []
         self._total_invested: Decimal = _ZERO
         self._total_returned: Decimal = _ZERO
         self._peak_value: Decimal = _ZERO
         self._max_drawdown: Decimal = _ZERO
+
+    @property
+    def started_at(self) -> datetime:
+        """Return when this in-memory ledger began recording."""
+        return self._started_at
 
     def record_buy(
         self,

@@ -9,6 +9,7 @@ database access happens behind one injected control-plane query port.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
@@ -18,19 +19,22 @@ from config.app_config import AppConfig
 from services.control_plane.contracts import (
     ControlPlaneError,
     ControlPlaneReason,
-    FillView,
     Page,
     PageRequest,
+    PortfolioView,
+)
+from services.control_plane.contracts_reads import (
+    FillView,
     PnlPositionView,
     PnlSummaryView,
     PnlView,
-    PortfolioView,
     RiskBlockView,
     RiskHeadroomView,
     RiskPolicyView,
     RiskStateView,
     RiskTriggerView,
 )
+from services.control_plane.queries_monitoring import AccountScope
 from services.risk.risk_engine import headroom_for_buy
 
 
@@ -171,18 +175,27 @@ class RiskQueryPort(Protocol):
 class FillQueryService:
     """Serve durable fills through one narrow keyset-paginated port."""
 
-    def __init__(self, port: FillQueryPort) -> None:
-        """Store the durable fill reader.
+    def __init__(self, port: FillQueryPort, *, scope: AccountScope | None = None) -> None:
+        """Store the durable fill reader and the composed account scope.
 
         Args:
             port: Control-plane query repository exposing ``list_fills``.
+            scope: Optional composed-account resolver. When supplied, an
+                account this process did not compose is a stable not-found
+                instead of an empty page that looks like "no fills".
         """
 
         self._port = port
+        self._scope = scope
 
     async def list(self, follower_account: str, page: PageRequest) -> Page[FillView]:
-        """Return one bounded follower-scoped fill page."""
+        """Return one bounded follower-scoped fill page.
 
+        Raises:
+            ControlPlaneError: If the account is outside the composed scope.
+        """
+
+        _require_known_account(self._scope, follower_account)
         return await self._port.list_fills(follower_account, page)
 
 
@@ -223,7 +236,7 @@ class PnlQueryService:
         self._quote_max_age_seconds = float(quote_max_age_seconds)
         self._clock = clock
         self._max_positions = int(max_positions)
-        self._session_started_at = clock.now()
+        self._composed_at = clock.now()
 
     async def get(self, follower_account: str) -> PnlView:
         """Return realized session PnL and honestly marked open positions.
@@ -242,14 +255,15 @@ class PnlQueryService:
         if tracker is None:
             raise ControlPlaneError(ControlPlaneReason.NOT_FOUND)
         store = self._market_stores.get(follower_account)
-        records = tuple(await self._positions.list_open_positions(follower_account))[
-            : self._max_positions
-        ]
+        records = tuple(await self._positions.list_open_positions(follower_account))
         positions: list[PnlPositionView] = []
         cost_basis = _ZERO
         unrealized = _ZERO
         marked = 0
-        for record in records:
+        # Aggregates cover the complete book; only the rendered list is capped,
+        # so a truncated response still reports an exact cost basis and an
+        # exact marked count instead of a partial sum presented as a total.
+        for index, record in enumerate(records):
             size = _decimal(record.size_tokens)
             entry = _decimal(record.avg_entry_price)
             position_cost = size * entry
@@ -260,6 +274,8 @@ class PnlQueryService:
             if position_pnl is not None:
                 marked += 1
                 unrealized += position_pnl
+            if index >= self._max_positions:
+                continue
             positions.append(
                 PnlPositionView(
                     condition_id=str(record.condition_id),
@@ -273,15 +289,18 @@ class PnlQueryService:
                     unrealized_pnl_usdc=(None if position_pnl is None else _text(position_pnl)),
                 )
             )
-        complete = bool(records) and marked == len(records)
+        total = len(records)
+        truncated = total > len(positions)
+        complete = bool(records) and marked == total and not truncated
         return PnlView(
             follower_account=follower_account,
             realized=self._summary(tracker),
             positions=tuple(positions),
-            position_count=len(positions),
+            position_count=total,
+            truncated=truncated,
             cost_basis_usdc=_text(cost_basis),
             unrealized_pnl_usdc=_text(unrealized) if complete else None,
-            unrealized_basis=_valuation_basis(marked=marked, total=len(records)),
+            unrealized_basis=_valuation_basis(marked=marked, total=total, truncated=truncated),
             marked_position_count=marked,
             observed_at=self._clock.now(),
         )
@@ -317,8 +336,21 @@ class PnlQueryService:
             sell_count=_count(metrics.get("total_sells")),
             win_count=_count(metrics.get("wins")),
             loss_count=_count(metrics.get("losses")),
-            session_started_at=self._session_started_at,
+            session_started_at=self._session_start(tracker),
         )
+
+    def _session_start(self, tracker: PnlTrackerPort) -> datetime:
+        """Return when this ledger began recording.
+
+        A ledger that records its own creation instant is authoritative. A
+        collaborator without one falls back to the instant this service was
+        composed, which is never earlier than the real session start.
+        """
+
+        started_at = getattr(tracker, "started_at", None)
+        if isinstance(started_at, datetime) and started_at.tzinfo is not None:
+            return started_at
+        return self._composed_at
 
 
 class RiskQueryService:
@@ -332,6 +364,7 @@ class RiskQueryService:
         config: AppConfig,
         clock: Clock,
         day_start_equity: Callable[[], Decimal | None] | None = None,
+        scope: AccountScope | None = None,
         trigger_limit: int = _MAX_RISK_TRIGGERS,
     ) -> None:
         """Store the durable risk port and the local-only headroom inputs.
@@ -341,7 +374,10 @@ class RiskQueryService:
             portfolio: Optional cached portfolio snapshot reader.
             config: Effective immutable application configuration.
             clock: Aware UTC observation clock.
-            day_start_equity: Optional read-only day-start equity probe.
+            day_start_equity: Optional read-only day-start equity probe. It
+                is a synchronous file read, so it runs on a worker thread and
+                never blocks the event loop serving the copy path.
+            scope: Optional composed-account resolver.
             trigger_limit: Hard ceiling on returned recent triggers.
 
         Raises:
@@ -355,18 +391,24 @@ class RiskQueryService:
         self._config = config
         self._clock = clock
         self._day_start_equity = day_start_equity
+        self._scope = scope
         self._trigger_limit = int(trigger_limit)
 
     async def get(self, follower_account: str) -> RiskStateView:
-        """Return one follower-scoped risk projection."""
+        """Return one follower-scoped risk projection.
 
+        Raises:
+            ControlPlaneError: If the account is outside the composed scope.
+        """
+
+        _require_known_account(self._scope, follower_account)
         blocks = await self._port.list_active_risk_blocks(follower_account)
         triggers = await self._port.list_recent_risk_triggers(
             follower_account,
             self._trigger_limit,
         )
         snapshot = await self._snapshot(follower_account)
-        day_start = self._day_start()
+        day_start = await self._day_start()
         return RiskStateView(
             follower_account=follower_account,
             policy=self._policy(),
@@ -387,7 +429,7 @@ class RiskQueryService:
             return None
         return snapshot
 
-    def _day_start(self) -> Decimal | None:
+    async def _day_start(self) -> Decimal | None:
         """Return the day-start equity the risk engine itself would use.
 
         The order mirrors ``_resolve_buy_risk_cap`` exactly: an explicitly
@@ -398,10 +440,11 @@ class RiskQueryService:
         configured = _decimal(self._config.risk.day_start_equity_usdc)
         if configured > _ZERO:
             return configured
-        if self._day_start_equity is None:
+        probe = self._day_start_equity
+        if probe is None:
             return None
         try:
-            recorded = self._day_start_equity()
+            recorded = await asyncio.to_thread(probe)
         except Exception:
             return None
         if recorded is None:
@@ -465,11 +508,20 @@ class RiskQueryService:
         )
 
 
-def _valuation_basis(*, marked: int, total: int) -> str:
+def _require_known_account(scope: AccountScope | None, follower_account: str) -> None:
+    """Reject a follower account this process never composed."""
+
+    if scope is not None and not scope.contains(follower_account):
+        raise ControlPlaneError(ControlPlaneReason.NOT_FOUND)
+
+
+def _valuation_basis(*, marked: int, total: int, truncated: bool) -> str:
     """Return the honest valuation basis for a possibly partial book."""
 
     if total == 0 or marked == 0:
         return "unavailable"
+    if truncated:
+        return "truncated"
     return "wss_mid" if marked == total else "partial_wss_mid"
 
 

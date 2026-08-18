@@ -8,7 +8,6 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from services.control_plane.contracts import (
-    AccountView,
     ActivityView,
     BulkTaskCommand,
     BulkTaskResult,
@@ -19,21 +18,16 @@ from services.control_plane.contracts import (
     DiscoveryRunCommand,
     DiscoveryRunReceipt,
     DiscoveryStatusView,
-    DetectionStatusView,
     EntryControlState,
-    FillView,
-    LeaderView,
     LockResetCommand,
     LockResetResult,
     OrderView,
     Page,
     PageRequest,
-    PnlView,
     PortfolioView,
     PositionView,
     ReentryLockView,
     ReservationView,
-    RiskStateView,
     RuntimeControlCommand,
     RuntimeView,
     SettingsDocument,
@@ -48,6 +42,14 @@ from services.control_plane.contracts import (
     TaskUpdateCommand,
     TaskVersionCommand,
     TaskView,
+)
+from services.control_plane.contracts_reads import (
+    AccountView,
+    DetectionStatusView,
+    FillView,
+    LeaderView,
+    PnlView,
+    RiskStateView,
 )
 from services.copy_tasks.domain import CopyTask
 from services.telemetry.hub import TelemetrySubscription

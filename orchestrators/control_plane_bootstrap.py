@@ -59,6 +59,7 @@ from services.control_plane.queries import (
 )
 from services.control_plane.queries_monitoring import (
     AccountQueryService,
+    AccountScope,
     DetectionQueryService,
     LeaderQueryService,
     MetricsQueryService,
@@ -330,6 +331,11 @@ class ControlPlaneRuntimeFactory:
 
         if not config.control_plane.enabled:
             return None
+        account_scope = (
+            AccountScope(reads.accounts)
+            if reads is not None and reads.accounts is not None
+            else None
+        )
         authenticator = self._authenticator(config)
         http_config = self._http_config(config)
         query_repository = PostgresControlPlaneQueryRepository(
@@ -403,11 +409,7 @@ class ControlPlaneRuntimeFactory:
             task_decoder = CopyTaskPayloadDecoder()
         dependencies = ControlPlaneDependencies(
             system=SystemQueryService(system_adapter),
-            accounts=(
-                AccountQueryService(reads.accounts)
-                if reads is not None and reads.accounts
-                else None
-            ),
+            accounts=(AccountQueryService(account_scope) if account_scope is not None else None),
             detection=(
                 DetectionQueryService(
                     counters=reads.detection_counters,  # type: ignore[arg-type]
@@ -420,7 +422,11 @@ class ControlPlaneRuntimeFactory:
                 if reads is not None and reads.detection_supported
                 else None
             ),
-            fills=(FillQueryService(query_repository) if reads is not None else None),
+            fills=(
+                FillQueryService(query_repository, scope=account_scope)
+                if reads is not None
+                else None
+            ),
             pnl=(
                 PnlQueryService(
                     pnl_trackers=reads.pnl_trackers,
@@ -439,18 +445,18 @@ class ControlPlaneRuntimeFactory:
                     config=config,
                     clock=self._clock,
                     day_start_equity=reads.day_start_equity,
+                    scope=account_scope,
                 )
                 if reads is not None
                 else None
             ),
             leaders=(
                 LeaderQueryService(
-                    roster=reads.leaders_repo,
+                    roster=query_repository,
                     counts=query_repository,
                     configured=reads.configured_leaders,
                     monitored=reads.monitored_leaders or (lambda: ()),
                     counters=reads.detection_counters,  # type: ignore[arg-type]
-                    clock=self._clock,
                 )
                 if reads is not None and reads.leaders_supported
                 else None
@@ -606,7 +612,7 @@ class ControlPlaneRuntimeFactory:
             capabilities.add("portfolio_read")
         if reads is not None:
             capabilities.update({"fill_read", "metrics_snapshot", "risk_read"})
-            if reads.accounts:
+            if reads.accounts is not None:
                 capabilities.add("account_read")
             if reads.detection_supported:
                 capabilities.add("detection_read")
