@@ -612,21 +612,25 @@ async def test_connected_probe_is_none_before_start_and_reflects_sockets() -> No
 
 
 class _RecordingWebSocket:
-    """Lifecycle socket double that records constructor kwargs."""
+    """Lifecycle socket double that records constructor kwargs and events."""
 
     instances: list[_RecordingWebSocket] = []
+    events: list[str] = []
 
     def __init__(self, **kwargs: object) -> None:
         self.kwargs = kwargs
         self.started = 0
         self.stopped = 0
+        self._event_id = f"socket-{len(_RecordingWebSocket.instances)}"
         _RecordingWebSocket.instances.append(self)
 
     def start(self) -> None:
         self.started += 1
+        _RecordingWebSocket.events.append(f"start:{self._event_id}")
 
     async def stop(self) -> None:
         self.stopped += 1
+        _RecordingWebSocket.events.append(f"stop:{self._event_id}")
 
 
 def _watched_params_factory(watched: frozenset[str]) -> list[list[object]]:
@@ -642,8 +646,14 @@ def _watched_params_factory(watched: frozenset[str]) -> list[list[object]]:
 _EXCHANGES = ("0x" + "aa" * 20, "0x" + "bb" * 20)
 
 
-def _make_logs_only_runtime(sink=None) -> tuple[OnchainDetectionRuntime, type[_RecordingWebSocket]]:
+def _make_logs_only_runtime(
+    sink=None,
+    *,
+    watched: set[str] | None = None,
+    params_factory=None,
+) -> tuple[OnchainDetectionRuntime, type[_RecordingWebSocket]]:
     _RecordingWebSocket.instances = []
+    _RecordingWebSocket.events = []
 
     async def _sink(signal: OnchainTradeSignal) -> None:
         await asyncio.sleep(0)
@@ -651,12 +661,12 @@ def _make_logs_only_runtime(sink=None) -> tuple[OnchainDetectionRuntime, type[_R
             sink(signal)
 
     runtime = OnchainDetectionRuntime(
-        watched_wallets={_WATCHED},
+        watched_wallets={_WATCHED} if watched is None else watched,
         ws_url="wss://test.invalid/ws",
         signal_sink=_sink,
         enable_pending=False,
         enable_mined=True,
-        mined_subscription_params_factory=_watched_params_factory,
+        mined_subscription_params_factory=params_factory or _watched_params_factory,
         websocket_factory=lambda **kwargs: _RecordingWebSocket(**kwargs),
     )
     return runtime, _RecordingWebSocket
@@ -719,7 +729,11 @@ async def test_legacy_mined_runtime_keeps_the_single_unfiltered_subscription() -
 
 @pytest.mark.asyncio
 async def test_update_watched_wallets_resubscribes_the_watched_filters() -> None:
-    """A roster change rebuilds the two topic filters off the hot path."""
+    """A roster change rebuilds the two topic filters off the hot path.
+
+    The replacement sockets open BEFORE the superseded ones stop, so a fill
+    that lands during the switch is never missed (no gap).
+    """
     runtime, recording = _make_logs_only_runtime()
     await runtime.start()
     original = [s for s in recording.instances if s.kwargs["name"] == "orderfilled"]
@@ -742,7 +756,112 @@ async def test_update_watched_wallets_resubscribes_the_watched_filters() -> None
             assert socket.started == 1
         maker_params = replacement[0].kwargs["subscribe_params"]
         assert maker_params[1]["topics"][2] == [_pad32(new_leader)]
+        # Ordering: every replacement socket started before any old socket
+        # was stopped (no detection gap mid-resubscribe).
+        first_new_start = min(recording.events.index(f"start:{s._event_id}") for s in replacement)
+        first_old_stop = min(recording.events.index(f"stop:{s._event_id}") for s in original)
+        assert first_new_start < first_old_stop
     finally:
+        await runtime.stop()
+
+
+@pytest.mark.asyncio
+async def test_logs_only_runtime_with_empty_roster_opens_no_subscriptions() -> None:
+    """An empty roster opens nothing (never the unfiltered feed), the runtime
+    idles visibly, and the first non-empty roster update reopens the filters."""
+    import logging
+
+    from orchestrators import onchain_detection_runtime as runtime_module
+
+    records: list[logging.LogRecord] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            records.append(record)
+
+    handler = _Capture(level=logging.INFO)
+    runtime_module.logger.addHandler(handler)
+    previous_level = runtime_module.logger.level
+    runtime_module.logger.setLevel(logging.INFO)
+    runtime, recording = _make_logs_only_runtime(watched=set())
+    try:
+        await runtime.start()
+        await asyncio.sleep(0.02)
+
+        mined = [s for s in recording.instances if s.kwargs["name"] == "orderfilled"]
+        assert mined == [], "an empty roster must not open any logs subscription"
+        assert runtime.connected is None
+        idle = [
+            r.getMessage() for r in records if "onchain_mined_subscriptions_idle" in r.getMessage()
+        ]
+        assert idle and "watched=0" in idle[0]
+
+        new_leader = "0x" + "88" * 20
+        runtime.update_watched_wallets({new_leader})
+        await asyncio.sleep(0.05)
+        mined = [s for s in recording.instances if s.kwargs["name"] == "orderfilled"]
+        assert len(mined) == 2, "a non-empty roster reopens both role filters"
+        maker_params = mined[0].kwargs["subscribe_params"]
+        assert maker_params[1]["topics"][2] == [_pad32(new_leader)]
+    finally:
+        runtime_module.logger.removeHandler(handler)
+        runtime_module.logger.setLevel(previous_level)
+        await runtime.stop()
+
+
+@pytest.mark.asyncio
+async def test_resubscribe_failure_is_warned_and_the_next_update_still_processes() -> None:
+    """One failing rebuild warns (redacted) and keeps the loop alive: the old
+    sockets stay subscribed and the next roster update is processed."""
+    import logging
+
+    from orchestrators import onchain_detection_runtime as runtime_module
+
+    calls: list[frozenset[str]] = []
+
+    def _flaky_factory(watched: frozenset[str]) -> list[list[object]]:
+        calls.append(watched)
+        if len(calls) == 2:  # first resubscribe attempt fails
+            raise RuntimeError("subscription params exploded")
+        return _watched_params_factory(watched)
+
+    records: list[logging.LogRecord] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            records.append(record)
+
+    handler = _Capture(level=logging.WARNING)
+    runtime_module.logger.addHandler(handler)
+    previous_level = runtime_module.logger.level
+    runtime_module.logger.setLevel(logging.WARNING)
+    runtime, recording = _make_logs_only_runtime(params_factory=_flaky_factory)
+    await runtime.start()
+    original = [s for s in recording.instances if s.kwargs["name"] == "orderfilled"]
+    try:
+        runtime.update_watched_wallets({"0x" + "55" * 20})
+        await asyncio.sleep(0.05)
+
+        failures = [
+            r.getMessage() for r in records if "onchain_mined_resubscribe_failed" in r.getMessage()
+        ]
+        assert failures, "the failed rebuild must WARN"
+        for socket in original:
+            assert socket.stopped == 0, "the old filters survive a failed rebuild"
+
+        runtime.update_watched_wallets({"0x" + "66" * 20})
+        await asyncio.sleep(0.05)
+        replacement = [
+            s
+            for s in recording.instances
+            if s.kwargs["name"] == "orderfilled" and s not in original
+        ]
+        assert len(replacement) == 2, "the next roster update is processed"
+        for socket in original:
+            assert socket.stopped == 1
+    finally:
+        runtime_module.logger.removeHandler(handler)
+        runtime_module.logger.setLevel(previous_level)
         await runtime.stop()
 
 

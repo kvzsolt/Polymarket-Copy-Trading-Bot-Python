@@ -64,6 +64,23 @@ def test_reporter_registers_a_non_required_readiness_check() -> None:
     assert check["ready"] is False
 
 
+def test_unready_before_first_connect_reads_not_connected_not_ws_down() -> None:
+    """Zero sockets (logs_only idling on an empty roster, or plain startup)
+    must not read as a WSS outage: the bounded reason is ``not_connected``,
+    distinct from ``ws_disconnected``, and the first connection clears it."""
+    from services.onchain_detection.ws_health_reporter import NOT_CONNECTED_REASON
+
+    reporter, _metrics, readiness = _reporter()
+
+    check = _check(readiness)
+    assert check["ready"] is False
+    assert check["reason"] == NOT_CONNECTED_REASON
+    assert check["reason"] != "ws_disconnected"
+
+    reporter.on_connected("orderfilled")
+    assert _check(readiness)["reason"] is None
+
+
 def test_reporter_satisfies_the_listener_protocol() -> None:
     reporter, _metrics, _readiness = _reporter()
 

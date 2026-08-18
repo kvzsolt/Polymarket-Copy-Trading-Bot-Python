@@ -335,15 +335,22 @@ def test_watched_params_cap_the_filter_and_warn_with_the_count_only() -> None:
         assert address not in warning
 
 
-def test_watched_params_without_a_watched_set_fall_back_to_today_params() -> None:
-    """No roster means no topic filter: the address-only subscription runs
-    and the client-side maker/taker match still drops foreign fills."""
+def test_watched_params_with_an_empty_roster_open_no_subscriptions() -> None:
+    """Zero watched leaders must not re-open the unfiltered logs feed.
+
+    The address-only subscription costs ~40k CU/min — exactly what
+    ``logs_only`` exists to avoid — so an empty roster (e.g. discovery
+    rotating every leader out) opens nothing; the runtime idles until the
+    roster delivers a leader again.
+    """
     from services.onchain_detection.order_filled_detector import (
-        log_subscription_params,
         log_subscription_params_for_watched,
     )
 
     for empty in (None, set()):
-        assert log_subscription_params_for_watched(
-            exchange_addresses=_EXCHANGE_FILTER, watched_wallets=empty
-        ) == (log_subscription_params(_EXCHANGE_FILTER),)
+        assert (
+            log_subscription_params_for_watched(
+                exchange_addresses=_EXCHANGE_FILTER, watched_wallets=empty
+            )
+            == ()
+        )
