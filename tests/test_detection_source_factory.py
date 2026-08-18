@@ -16,6 +16,7 @@ from orchestrators.detection_source_factory import (
     ConfirmedSourceBuilder,
     DetectionSourceFactory,
     DetectionSourceRequest,
+    LogsOnlyConfirmedSourceBuilder,
     ProvisionalPendingSourceBuilder,
     UnsupportedDetectionModeError,
 )
@@ -35,13 +36,17 @@ async def _resolver(_token_id: str) -> str:
     return ""
 
 
-def _request(mode: DetectionMode) -> DetectionSourceRequest:
+def _request(
+    mode: DetectionMode,
+    confirmed_source: str = "mempool_reserved",
+) -> DetectionSourceRequest:
     return DetectionSourceRequest(
         mode=mode,
         watched_wallets=frozenset({_LEADER}),
         ws_url=_WS_URL,
         chain_id=137,
         signal_sink=_sink,
+        confirmed_source=confirmed_source,
     )
 
 
@@ -254,3 +259,114 @@ async def test_unknown_mode_raises() -> None:
 def test_duplicate_builder_mode_rejected() -> None:
     with pytest.raises(ValueError):
         DetectionSourceFactory([_pending_builder(), _pending_builder()])
+
+
+# ---------------------------------------------------------------------------
+# logs_only confirmed source
+# ---------------------------------------------------------------------------
+
+
+def _padded_topic(address: str) -> str:
+    body = address.lower().removeprefix("0x")
+    return "0x" + body.rjust(64, "0")
+
+
+def _logs_only_builder(websocket_factory: object | None = None) -> LogsOnlyConfirmedSourceBuilder:
+    return LogsOnlyConfirmedSourceBuilder(
+        exchange_addresses=_EXCHANGES,
+        condition_id_resolver=_resolver,
+        runtime_factory=_RecordingRuntime,
+        **({} if websocket_factory is None else {"websocket_factory": websocket_factory}),
+    )
+
+
+@pytest.mark.asyncio
+async def test_logs_only_builds_gen1_runtime_mined_only_with_topic_filters() -> None:
+    runtime = await _logs_only_builder().build(
+        _request(DetectionMode.ON_CHAIN_CONFIRMED, confirmed_source="logs_only")
+    )
+
+    assert isinstance(runtime, _RecordingRuntime)
+    assert runtime.kwargs["enable_pending"] is False
+    assert runtime.kwargs["enable_mined"] is True
+    assert runtime.kwargs["watched_wallets"] == {_LEADER}
+    assert runtime.kwargs["ws_url"] == _WS_URL
+    assert runtime.kwargs["signal_sink"] is _sink
+    assert runtime.kwargs["condition_id_resolver"] is _resolver
+    assert runtime.started is False
+
+    params_factory = runtime.kwargs["mined_subscription_params_factory"]
+    maker_params, taker_params = params_factory(frozenset({_LEADER}))
+    assert maker_params[1]["address"] == list(_EXCHANGES)
+    assert maker_params[1]["topics"][2] == [_padded_topic(_LEADER)]
+    assert taker_params[1]["topics"][3] == [_padded_topic(_LEADER)]
+
+
+@pytest.mark.asyncio
+async def test_logs_only_builder_forwards_websocket_factory() -> None:
+    """The health-reporting socket factory must reach the logs-only runtime."""
+
+    def _socket_factory(**_kwargs: object) -> object:
+        raise AssertionError("never constructed in this test")
+
+    builder = LogsOnlyConfirmedSourceBuilder(
+        exchange_addresses=_EXCHANGES,
+        condition_id_resolver=_resolver,
+        websocket_factory=_socket_factory,
+    )
+
+    from orchestrators.onchain_detection_runtime import OnchainDetectionRuntime
+
+    runtime = await builder.build(
+        _request(DetectionMode.ON_CHAIN_CONFIRMED, confirmed_source="logs_only")
+    )
+
+    assert isinstance(runtime, OnchainDetectionRuntime)
+    assert runtime._websocket_factory is _socket_factory
+    assert runtime._mined_params_factory is not None
+
+
+@pytest.mark.asyncio
+async def test_factory_selects_by_mode_and_confirmed_source() -> None:
+    provider = _StateStoreProvider()
+    bootstrap = _RecordingBootstrap()
+    factory = DetectionSourceFactory(
+        [
+            _pending_builder(),
+            _confirmed_builder(provider, bootstrap),
+            _logs_only_builder(),
+        ]
+    )
+
+    logs_only = await factory.build(
+        _request(DetectionMode.ON_CHAIN_CONFIRMED, confirmed_source="logs_only")
+    )
+    assert isinstance(logs_only, _RecordingRuntime)
+    assert logs_only.kwargs["enable_mined"] is True
+    assert logs_only.kwargs["enable_pending"] is False
+
+    mempool_reserved = await factory.build(_request(DetectionMode.ON_CHAIN_CONFIRMED))
+    assert mempool_reserved is bootstrap.runtime
+    assert bootstrap.config is not None
+
+
+@pytest.mark.asyncio
+async def test_pending_mode_with_logs_only_request_fails_closed() -> None:
+    """Config rejects the combination; a directly built request finds no
+    builder either (fail closed, never an accidental mempool runtime)."""
+    factory = DetectionSourceFactory(
+        [_pending_builder(), _confirmed_builder(), _logs_only_builder()]
+    )
+
+    with pytest.raises(UnsupportedDetectionModeError):
+        await factory.build(_request(DetectionMode.ON_CHAIN_PENDING, "logs_only"))
+
+
+def test_duplicate_builder_key_rejected() -> None:
+    with pytest.raises(ValueError, match="logs_only"):
+        DetectionSourceFactory([_logs_only_builder(), _logs_only_builder()])
+
+
+def test_request_rejects_an_unknown_confirmed_source() -> None:
+    with pytest.raises(ValueError, match="confirmed_source"):
+        _request(DetectionMode.ON_CHAIN_CONFIRMED, "shadow_logs")
