@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any
 from cache.market_state_store import MarketStateStore
 from clients.user_ws import DEFAULT_USER_WS_URL, UserWebSocket
 from services.healthServer import ReadinessTracker
+from services.telemetry import WssTelemetryEmitter
 from utils.logger import get_logger, redact_error_detail
 
 if TYPE_CHECKING:
@@ -36,6 +37,9 @@ RiskCacheEvict = Callable[[str], None]
 MarketTokenSubscribe = Callable[[str], Awaitable[None]]
 
 logger = get_logger("UserDataRuntime")
+
+_WSS_STREAM = "user"
+"""Bounded telemetry stream name owned by this runtime."""
 
 
 @dataclass
@@ -71,6 +75,10 @@ class UserDataRuntime:
     # user WSS; without this, the risk monitor falls back to REST /price
     # because MarketWS was never subscribed for that token.
     on_market_token_seen: MarketTokenSubscribe | None = None
+    # Operator WSS lifecycle emitter. ``None`` keeps the runtime free of both
+    # cost and branching; the emitter itself is synchronous, never awaited and
+    # never raises, so a degraded telemetry backend cannot break the stream.
+    telemetry: WssTelemetryEmitter | None = None
 
     _ws_client: UserWebSocket | None = field(default=None, init=False)
     _ws_task: asyncio.Task | None = field(default=None, init=False)
@@ -78,6 +86,9 @@ class UserDataRuntime:
         default_factory=UserDataRuntimeStatus,
         init=False,
     )
+    # Distinguishes the first successful authentication from every later one,
+    # so an operator sees "connected" once and "reconnected" for each recovery.
+    _ever_connected: bool = field(default=False, init=False)
 
     async def start(self) -> None:
         self._status.running = True
@@ -199,6 +210,17 @@ class UserDataRuntime:
             )
             raise
 
+    def _emit_wss_connected(self) -> None:
+        """Publish the first authentication as CONNECTED, later ones RECONNECTED."""
+        telemetry = self.telemetry
+        if telemetry is None:
+            return
+        if self._ever_connected:
+            telemetry.reconnected(_WSS_STREAM)
+            return
+        self._ever_connected = True
+        telemetry.connected(_WSS_STREAM)
+
     async def _on_authenticated(self) -> None:
         self._status.authenticated = True
         self._status.last_error = None
@@ -209,6 +231,7 @@ class UserDataRuntime:
         )
 
         logger.info("user_wss_authenticated", extra={"user_id": self.user_id})
+        self._emit_wss_connected()
 
         if self.manual_sync_service is not None:
             try:
@@ -232,6 +255,8 @@ class UserDataRuntime:
         )
 
         logger.warning("user_wss_disconnected", extra={"user_id": self.user_id})
+        if self.telemetry is not None:
+            self.telemetry.disconnected(_WSS_STREAM)
 
         if self.manual_sync_service is not None:
             try:

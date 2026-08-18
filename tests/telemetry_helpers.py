@@ -16,10 +16,11 @@ Two services are provided:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 from services.metrics import MetricsRegistry
 from services.telemetry import TelemetryEmitters
+from services.telemetry.service import TelemetryService
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,7 +134,9 @@ def recording_emitters(
         The emitter bundle and the service recording its events.
     """
     service = RecordingTelemetryService(registry)
-    return TelemetryEmitters.build(service), service
+    # Structural stand-in: the emitters only ever call ``emit`` and read
+    # ``metrics_registry``, so a cast keeps the doubles minimal.
+    return TelemetryEmitters.build(cast(TelemetryService, service)), service
 
 
 def raising_emitters(
@@ -148,7 +151,7 @@ def raising_emitters(
         The emitter bundle and the failing service.
     """
     service = RaisingTelemetryService(registry)
-    return TelemetryEmitters.build(service), service
+    return TelemetryEmitters.build(cast(TelemetryService, service)), service
 
 
 __all__ = [

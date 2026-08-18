@@ -83,7 +83,7 @@ from services.control_plane.runtime import OpenOrderControlGateway
 from services.control_plane.commands import DiscoveryCommandPort
 from services.control_plane.queries import CachedPortfolioQueryPort
 from services.control_plane.tasks import TaskActivationGuard
-from services.telemetry import SystemClock, TelemetryEmitters
+from services.telemetry import SystemClock, TelemetryEmitters, WssTelemetryEmitter
 from services.multiUserConfig import (
     RuntimeUser,
     UserFollowConfig,
@@ -767,6 +767,7 @@ async def _start_market_data_runtimes(
     readiness,
     config,
     quote_sink=None,
+    telemetry: WssTelemetryEmitter | None = None,
 ) -> dict[str, MarketDataRuntime]:
     """Start WSS-backed market data runtimes, keyed by user_id.
 
@@ -816,6 +817,7 @@ async def _start_market_data_runtimes(
             readiness=readiness,
             config=config,
             quote_sink=quote_sink,
+            telemetry=telemetry,
         )
 
         await market_runtime.start(initial_tokens)
@@ -952,6 +954,7 @@ async def _start_user_data_runtimes(
     readiness,
     risk_contexts_by_user: dict[str, "TradingContext"] | None = None,
     market_data_runtimes: dict[str, MarketDataRuntime] | None = None,
+    telemetry: WssTelemetryEmitter | None = None,
 ) -> list[UserDataRuntime]:
     """Start user WSS runtimes.
 
@@ -1012,6 +1015,7 @@ async def _start_user_data_runtimes(
             manual_sync_service=getattr(user_state, "manual_sync_service", None),
             on_risk_cache_evict=risk_cache_evict,
             on_market_token_seen=market_token_subscribe,
+            telemetry=telemetry,
         )
 
         await runtime.start()
@@ -1938,6 +1942,7 @@ async def _run_application(client_registry: list[Any]) -> int:
         readiness=application.readiness,
         config=application.config,
         quote_sink=v1_runtime.quote_sink if v1_runtime is not None else None,
+        telemetry=telemetry_emitters.wss,
     )
     logger.info(
         "startup_stage | stage=market_data_runtimes_started users=%d",
@@ -1961,6 +1966,7 @@ async def _run_application(client_registry: list[Any]) -> int:
         readiness=application.readiness,
         risk_contexts_by_user=risk_contexts_by_user,
         market_data_runtimes=market_data_runtimes,
+        telemetry=telemetry_emitters.wss,
     )
     logger.info(
         "startup_stage | stage=user_data_runtimes_started users=%d",

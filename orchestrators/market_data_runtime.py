@@ -27,9 +27,13 @@ from clients.market_ws import DEFAULT_MARKET_WS_URL, MarketWebSocket
 from integrations.polymarket.errors import VenueOrderbookNotFoundError
 from interfaces.clob_gateway import ClobGateway
 from services.healthServer import ReadinessTracker
+from services.telemetry import WssTelemetryEmitter
 from utils.logger import get_logger
 
 logger = get_logger("MarketDataRuntime")
+
+_WSS_STREAM = "market"
+"""Bounded telemetry stream name owned by this runtime."""
 
 
 class MarketQuoteSink(Protocol):
@@ -81,6 +85,10 @@ class MarketDataRuntime:
     config: Any
     ws_url: str = DEFAULT_MARKET_WS_URL
     quote_sink: MarketQuoteSink | None = None
+    # Operator WSS lifecycle emitter. ``None`` keeps the runtime free of both
+    # cost and branching; the emitter itself is synchronous, never awaited and
+    # never raises, so a degraded telemetry backend cannot break the stream.
+    telemetry: WssTelemetryEmitter | None = None
 
     _ws_client: MarketWebSocket | None = field(default=None, init=False)
     _ws_task: asyncio.Task | None = field(default=None, init=False)
@@ -92,6 +100,9 @@ class MarketDataRuntime:
     _last_wss_message_at: float = field(default=0.0, init=False)
     _wss_connected: bool = field(default=False, init=False)
     _wss_degraded_log_last: float = field(default=0.0, init=False)
+    # Distinguishes the first successful connection from every later one, so
+    # an operator sees "connected" once and "reconnected" for each recovery.
+    _ever_connected: bool = field(default=False, init=False)
 
     async def start(self, initial_token_ids: list[str]) -> None:
         """Start market WSS runtime.
@@ -516,6 +527,17 @@ class MarketDataRuntime:
             logger.exception("market_ws_task_failed")
             raise
 
+    def _emit_wss_connected(self) -> None:
+        """Publish the first connection as CONNECTED, later ones as RECONNECTED."""
+        telemetry = self.telemetry
+        if telemetry is None:
+            return
+        if self._ever_connected:
+            telemetry.reconnected(_WSS_STREAM)
+            return
+        self._ever_connected = True
+        telemetry.connected(_WSS_STREAM)
+
     async def _on_wss_connected(self) -> None:
         self._wss_connected = True
         self._last_wss_message_at = time.monotonic()
@@ -530,6 +552,7 @@ class MarketDataRuntime:
             "market_wss_connected",
             extra={"subscribed_token_count": len(self._subscribed_tokens)},
         )
+        self._emit_wss_connected()
 
     async def _on_wss_disconnected(self) -> None:
         self._wss_connected = False
@@ -541,6 +564,8 @@ class MarketDataRuntime:
             last_error="market websocket disconnected",
         )
         logger.warning("market_wss_disconnected")
+        if self.telemetry is not None:
+            self.telemetry.disconnected(_WSS_STREAM)
 
     async def _bootstrap_one_token(self, token_id: str) -> None:
         book = await self.gateway.get_orderbook(token_id)

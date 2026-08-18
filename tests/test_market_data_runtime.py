@@ -952,3 +952,72 @@ class TestEnsureTokenReadyOrBootstrapped:
         result = await rt.ensure_token_ready_or_bootstrapped(TOKEN_A)
 
         assert isinstance(result, bool)
+
+
+# ---------------------------------------------------------------------------
+# C4 — WSS lifecycle telemetry
+# ---------------------------------------------------------------------------
+
+
+class TestWssTelemetry:
+    """The runtime owns the market stream's operator lifecycle events.
+
+    ``clients/market_ws.py`` stays transport-only; the runtime already owns
+    the connected/disconnected callbacks, so the first connection is reported
+    as ``connected`` and every later one as ``reconnected``.
+    """
+
+    def _runtime(self, telemetry) -> MarketDataRuntime:
+        return MarketDataRuntime(
+            market_store=MarketStateStore(),
+            gateway=_make_gateway(),
+            readiness=ReadinessTracker(),
+            config=SimpleNamespace(),
+            telemetry=telemetry,
+        )
+
+    @pytest.mark.asyncio
+    async def test_first_connect_reports_connected_then_reconnected(self) -> None:
+        from services.telemetry import TelemetryProducer, WssEvent, WssOutcome
+        from tests.telemetry_helpers import recording_emitters
+
+        emitters, service = recording_emitters()
+        runtime = self._runtime(emitters.wss)
+
+        await runtime._on_wss_connected()
+        await runtime._on_wss_disconnected()
+        await runtime._on_wss_connected()
+
+        events = service.payloads(WssEvent)
+        assert [event.outcome for event in events] == [
+            WssOutcome.CONNECTED,
+            WssOutcome.DISCONNECTED,
+            WssOutcome.RECONNECTED,
+        ]
+        assert {event.stream for event in events} == {"market"}
+        assert {call.producer for call in service.calls} == {TelemetryProducer.WSS}
+
+    @pytest.mark.asyncio
+    async def test_lifecycle_without_telemetry_is_unchanged(self) -> None:
+        runtime = self._runtime(None)
+
+        await runtime._on_wss_connected()
+        assert runtime._wss_connected is True
+
+        await runtime._on_wss_disconnected()
+        assert runtime._wss_connected is False
+
+    @pytest.mark.asyncio
+    async def test_raising_telemetry_backend_never_breaks_the_callbacks(self) -> None:
+        from tests.telemetry_helpers import raising_emitters
+
+        emitters, service = raising_emitters()
+        runtime = self._runtime(emitters.wss)
+
+        await runtime._on_wss_connected()
+        assert runtime._wss_connected is True
+
+        await runtime._on_wss_disconnected()
+
+        assert service.calls == 2
+        assert runtime._wss_connected is False
