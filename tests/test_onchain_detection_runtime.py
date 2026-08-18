@@ -604,3 +604,182 @@ async def test_connected_probe_is_none_before_start_and_reflects_sockets() -> No
         await runtime.stop()
 
     assert runtime.connected is None
+
+
+# ---------------------------------------------------------------------------
+# logs_only confirmed mode: watched-topic-filtered mined subscriptions
+# ---------------------------------------------------------------------------
+
+
+class _RecordingWebSocket:
+    """Lifecycle socket double that records constructor kwargs."""
+
+    instances: list[_RecordingWebSocket] = []
+
+    def __init__(self, **kwargs: object) -> None:
+        self.kwargs = kwargs
+        self.started = 0
+        self.stopped = 0
+        _RecordingWebSocket.instances.append(self)
+
+    def start(self) -> None:
+        self.started += 1
+
+    async def stop(self) -> None:
+        self.stopped += 1
+
+
+def _watched_params_factory(watched: frozenset[str]) -> list[list[object]]:
+    from services.onchain_detection.order_filled_detector import (
+        log_subscription_params_for_watched,
+    )
+
+    return list(
+        log_subscription_params_for_watched(exchange_addresses=_EXCHANGES, watched_wallets=watched)
+    )
+
+
+_EXCHANGES = ("0x" + "aa" * 20, "0x" + "bb" * 20)
+
+
+def _make_logs_only_runtime(sink=None) -> tuple[OnchainDetectionRuntime, type[_RecordingWebSocket]]:
+    _RecordingWebSocket.instances = []
+
+    async def _sink(signal: OnchainTradeSignal) -> None:
+        await asyncio.sleep(0)
+        if sink is not None:
+            sink(signal)
+
+    runtime = OnchainDetectionRuntime(
+        watched_wallets={_WATCHED},
+        ws_url="wss://test.invalid/ws",
+        signal_sink=_sink,
+        enable_pending=False,
+        enable_mined=True,
+        mined_subscription_params_factory=_watched_params_factory,
+        websocket_factory=lambda **kwargs: _RecordingWebSocket(**kwargs),
+    )
+    return runtime, _RecordingWebSocket
+
+
+@pytest.mark.asyncio
+async def test_logs_only_runtime_opens_the_two_watched_subscriptions() -> None:
+    runtime, recording = _make_logs_only_runtime()
+    await runtime.start()
+    try:
+        mined = [s for s in recording.instances if s.kwargs["name"] == "orderfilled"]
+        pending = [s for s in recording.instances if s.kwargs["name"] == "pendingtx"]
+        assert len(mined) == 2, "maker-role + taker-role topic filters"
+        assert pending == [], "the logs-only runtime opens nothing pending-related"
+
+        maker_params, taker_params = (s.kwargs["subscribe_params"] for s in mined)
+        assert maker_params[1]["topics"] == [
+            [f"0x{ORDER_FILLED_TOPIC0.hex()}"],
+            None,
+            [_pad32(_WATCHED)],
+        ]
+        assert taker_params[1]["topics"] == [
+            [f"0x{ORDER_FILLED_TOPIC0.hex()}"],
+            None,
+            None,
+            [_pad32(_WATCHED)],
+        ]
+        assert maker_params[1]["address"] == ["0x" + "aa" * 20, "0x" + "bb" * 20]
+    finally:
+        await runtime.stop()
+
+
+@pytest.mark.asyncio
+async def test_legacy_mined_runtime_keeps_the_single_unfiltered_subscription() -> None:
+    """Without a params factory the mined subscription is byte-identical to
+    today's gen-1 behaviour (one address-only filter)."""
+    from services.onchain_detection.order_filled_detector import log_subscription_params
+
+    _RecordingWebSocket.instances = []
+
+    async def sink(signal: OnchainTradeSignal) -> None:
+        await asyncio.sleep(0)
+
+    runtime = OnchainDetectionRuntime(
+        watched_wallets={_WATCHED},
+        ws_url="wss://test.invalid/ws",
+        signal_sink=sink,
+        enable_pending=False,
+        enable_mined=True,
+        websocket_factory=lambda **kwargs: _RecordingWebSocket(**kwargs),
+    )
+    await runtime.start()
+    try:
+        mined = [s for s in _RecordingWebSocket.instances if s.kwargs["name"] == "orderfilled"]
+        assert len(mined) == 1
+        assert mined[0].kwargs["subscribe_params"] == log_subscription_params()
+    finally:
+        await runtime.stop()
+
+
+@pytest.mark.asyncio
+async def test_update_watched_wallets_resubscribes_the_watched_filters() -> None:
+    """A roster change rebuilds the two topic filters off the hot path."""
+    runtime, recording = _make_logs_only_runtime()
+    await runtime.start()
+    original = [s for s in recording.instances if s.kwargs["name"] == "orderfilled"]
+    try:
+        new_leader = "0x" + "99" * 20
+        runtime.update_watched_wallets({new_leader})
+        await asyncio.sleep(0.05)
+
+        assert new_leader in runtime._watched
+        assert _WATCHED not in runtime._watched
+        for socket in original:
+            assert socket.stopped == 1, "the old filters were unsubscribed"
+        replacement = [
+            s
+            for s in recording.instances
+            if s.kwargs["name"] == "orderfilled" and s not in original
+        ]
+        assert len(replacement) == 2
+        for socket in replacement:
+            assert socket.started == 1
+        maker_params = replacement[0].kwargs["subscribe_params"]
+        assert maker_params[1]["topics"][2] == [_pad32(new_leader)]
+    finally:
+        await runtime.stop()
+
+
+@pytest.mark.asyncio
+async def test_update_watched_wallets_before_start_updates_the_set_only() -> None:
+    runtime, recording = _make_logs_only_runtime()
+    new_leader = "0x" + "77" * 20
+
+    runtime.update_watched_wallets({new_leader})
+
+    assert runtime._watched == {new_leader}
+    assert recording.instances == []
+
+
+@pytest.mark.asyncio
+async def test_update_watched_wallets_without_factory_keeps_sockets_untouched() -> None:
+    """Legacy modes never resubscribe: the address-only filter has no roster."""
+    _RecordingWebSocket.instances = []
+
+    async def sink(signal: OnchainTradeSignal) -> None:
+        await asyncio.sleep(0)
+
+    runtime = OnchainDetectionRuntime(
+        watched_wallets={_WATCHED},
+        ws_url="wss://test.invalid/ws",
+        signal_sink=sink,
+        enable_pending=False,
+        enable_mined=True,
+        websocket_factory=lambda **kwargs: _RecordingWebSocket(**kwargs),
+    )
+    await runtime.start()
+    try:
+        runtime.update_watched_wallets({"0x" + "66" * 20})
+        await asyncio.sleep(0.05)
+        mined = [s for s in _RecordingWebSocket.instances if s.kwargs["name"] == "orderfilled"]
+        assert len(mined) == 1
+        assert mined[0].stopped == 0
+        assert mined[0].started == 1
+    finally:
+        await runtime.stop()
