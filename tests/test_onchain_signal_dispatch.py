@@ -391,6 +391,48 @@ def _polling_claim(repo: _FakeOrdersRepo, polling_key: str):
 
 
 @pytest.mark.asyncio
+async def test_logs_only_mined_signal_claims_tx_level_identity(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Provenance for the logs-only confirmed source.
+
+    A mined ``OrderFilled`` signal from the logs-only runtime carries
+    ``log_index``/``order_hash`` (``MINED_AUTHORITATIVE``, never
+    provisional), so it is logged and counted as ``on_chain_confirmed`` and
+    the tx-level ``CrossSourceTradeClaimPolicy`` claim applies — REST polling
+    keeps running in every mode and must lose the race for the same fill.
+    """
+    from dataclasses import replace
+
+    from orchestrators.trade_pipeline import build_trade_key
+
+    repo = _FakeOrdersRepo()
+    adapter, pipeline, metrics = _adapter({_LEADER: [_ctx_with_repo("u1", repo)]})
+    signal = replace(
+        _signal(provisional=False), order_hash="0x" + "ee" * 32
+    )
+
+    with caplog.at_level(logging.INFO, logger="OnchainSignalDispatch"):
+        await adapter(signal)
+
+    assert [call[0] for call in pipeline.calls] == ["u1"]
+    provenance = [
+        r.getMessage() for r in caplog.records if "detection_signal |" in r.getMessage()
+    ]
+    assert len(provenance) == 1
+    assert "source=on_chain_confirmed" in provenance[0]
+    assert (
+        metrics.counters.get('detection_signals_total{source="on_chain_confirmed"}', 0) >= 1
+    )
+    # The fill key carries the mined discriminator, so the tx-level claim was
+    # taken and polling's aggregate for the same fill is refused.
+    fill_key = build_trade_key("u1", _LEADER, pipeline.calls[0][2][0])
+    assert fill_key.endswith("|log:7")
+    polling_key = build_trade_key("u1", _LEADER, _polling_row())
+    assert await _polling_claim(repo, polling_key) is False
+
+
+@pytest.mark.asyncio
 async def test_second_onchain_fill_in_same_tx_is_dispatched_as_sibling(
     caplog: pytest.LogCaptureFixture,
 ) -> None:

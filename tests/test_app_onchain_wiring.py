@@ -96,6 +96,54 @@ async def test_app_composes_factory_from_config() -> None:
     assert isinstance(confirmed, PolygonSourceTransactionRuntime)
 
 
+@pytest.mark.asyncio
+async def test_app_composes_the_logs_only_confirmed_runtime_from_config() -> None:
+    """``confirmed_source: logs_only`` routes the confirmed mode to the gen-1
+    mined-only runtime whose subscriptions embed the followed leaders."""
+    from app import _build_detection_source_factory
+    from config.app_config import DetectionConfig, OnchainDetectionConfig
+    from domain.detection import DetectionMode
+    from orchestrators.detection_source_factory import DetectionSourceRequest
+    from orchestrators.onchain_detection_runtime import OnchainDetectionRuntime
+
+    config = SimpleNamespace(
+        detection=DetectionConfig(
+            mode="on_chain_confirmed",
+            onchain=OnchainDetectionConfig(
+                confirmed_source="logs_only",
+                pending_tx_ws_url="wss://polygon.example.invalid/v2/redacted",
+            ),
+        ),
+        wallet=SimpleNamespace(chain_id=137),
+    )
+
+    async def _state_store_provider():
+        return None
+
+    async def _sink(_signal) -> None:
+        return None
+
+    factory = _build_detection_source_factory(config, state_store_provider=_state_store_provider)
+    runtime = await factory.build(
+        DetectionSourceRequest(
+            mode=DetectionMode.ON_CHAIN_CONFIRMED,
+            confirmed_source="logs_only",
+            watched_wallets=frozenset({"0x" + "11" * 20}),
+            ws_url="wss://polygon.example.invalid/v2/redacted",
+            chain_id=137,
+            signal_sink=_sink,
+        )
+    )
+
+    assert isinstance(runtime, OnchainDetectionRuntime)
+    assert runtime._enable_pending is False
+    assert runtime._enable_mined is True
+    assert runtime._mined_params_factory is not None
+    maker_params, taker_params = runtime._mined_params_factory(frozenset({"0x" + "11" * 20}))
+    assert maker_params[1]["topics"][2] == ["0x" + "0" * 24 + "11" * 20]
+    assert taker_params[1]["topics"][3] == ["0x" + "0" * 24 + "11" * 20]
+
+
 def test_confirmed_onchain_runtime_builder_uses_new_polygon_composition() -> None:
     """The app's confirmed builder composes the head-driven confirmation runtime."""
 
@@ -523,6 +571,45 @@ def test_no_ws_health_check_is_registered_outside_pending_mode() -> None:
 
         assert reporter is None, mode
         assert "onchain_ws_ok" not in readiness.snapshot()["checks"], mode
+
+
+def test_onchain_ws_health_reporter_is_registered_for_confirmed_logs_only() -> None:
+    """The logs-only confirmed runtime opens gen-1 ``OnchainWebSocket``
+    subscriptions (stream ``orderfilled``), so its health is observable."""
+    from app import _build_onchain_ws_health_reporter
+    from domain.detection import DetectionMode
+    from services.healthServer import ReadinessTracker
+    from services.metrics import MetricsRegistry, TELEMETRY_METRIC_SCHEMAS
+    from services.onchain_detection.ws_health_reporter import OnchainWsHealthReporter
+
+    readiness = ReadinessTracker()
+    reporter = _build_onchain_ws_health_reporter(
+        readiness,
+        MetricsRegistry(schemas=TELEMETRY_METRIC_SCHEMAS),
+        mode=DetectionMode.ON_CHAIN_CONFIRMED,
+        confirmed_source="logs_only",
+    )
+
+    assert isinstance(reporter, OnchainWsHealthReporter)
+    assert readiness.snapshot()["checks"]["onchain_ws_ok"]["required"] is False
+
+
+def test_no_ws_health_check_is_registered_for_confirmed_mempool_reserved() -> None:
+    from app import _build_onchain_ws_health_reporter
+    from domain.detection import DetectionMode
+    from services.healthServer import ReadinessTracker
+    from services.metrics import MetricsRegistry, TELEMETRY_METRIC_SCHEMAS
+
+    readiness = ReadinessTracker()
+    reporter = _build_onchain_ws_health_reporter(
+        readiness,
+        MetricsRegistry(schemas=TELEMETRY_METRIC_SCHEMAS),
+        mode=DetectionMode.ON_CHAIN_CONFIRMED,
+        confirmed_source="mempool_reserved",
+    )
+
+    assert reporter is None
+    assert "onchain_ws_ok" not in readiness.snapshot()["checks"]
 
 
 @pytest.mark.asyncio

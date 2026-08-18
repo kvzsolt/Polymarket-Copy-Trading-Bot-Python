@@ -119,6 +119,30 @@ def test_a_second_stream_disconnect_does_not_unset_a_healthy_one() -> None:
     assert _check(readiness)["ready"] is False
 
 
+def test_two_sockets_sharing_one_stream_name_keep_the_check_ready() -> None:
+    """``logs_only`` opens two ``orderfilled`` sockets (maker/taker filters).
+
+    One socket's disconnect must not mark the shared stream down while its
+    sibling is still subscribed; the gauge and readiness follow the per-name
+    connection count, not just the last event.
+    """
+    reporter, metrics, readiness = _reporter()
+    reporter.on_connected("orderfilled")
+    reporter.on_connected("orderfilled")
+
+    reporter.on_disconnected("orderfilled")
+
+    assert metrics.gauges[f'{GAUGE_ONCHAIN_WS_CONNECTED}{{stream="orderfilled"}}'] == 1.0
+    assert _check(readiness)["ready"] is True
+    assert reporter.connected_streams == frozenset({"orderfilled"})
+
+    reporter.on_disconnected("orderfilled")
+
+    assert metrics.gauges[f'{GAUGE_ONCHAIN_WS_CONNECTED}{{stream="orderfilled"}}'] == 0.0
+    assert _check(readiness)["ready"] is False
+    assert reporter.connected_streams == frozenset()
+
+
 def test_unknown_stream_names_are_rejected_by_the_schema() -> None:
     reporter, _metrics, _readiness = _reporter()
 
