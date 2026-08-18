@@ -515,11 +515,11 @@ def test_app_wires_the_reporter_into_the_socket_factory_it_passes() -> None:
     assert "state_listener=" in source
 
 
-def test_startup_aborts_on_an_unparseable_confidence_floor() -> None:
-    """The confidence parse must sit OUTSIDE the on-chain start try/except.
+def test_the_confidence_parse_sits_outside_the_onchain_start_guard() -> None:
+    """Inside that guard a bad floor degraded silently to REST polling.
 
-    Inside it, a bad floor degraded silently to REST polling with a warning;
-    the operator asked for ``on_chain_pending`` and would have got polling.
+    The operator asked for ``on_chain_pending`` and would have got polling
+    with only a warning line. Structural guard for the behavioural test below.
     """
     import inspect
 
@@ -534,6 +534,83 @@ def test_startup_aborts_on_an_unparseable_confidence_floor() -> None:
         "the confidence floor is parsed inside the on-chain start try/except, "
         "so an invalid floor degrades to polling instead of aborting startup"
     )
+
+
+@pytest.mark.asyncio
+async def test_startup_aborts_on_an_unparseable_confidence_floor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A non-polling mode with an invalid floor must fail closed at startup.
+
+    The abort happens before any runtime, socket, or database pool is built,
+    so the process exits 1 with nothing half-started.
+    """
+    import app as app_module
+    from config.app_config import AppConfig, DetectionConfig, OnchainDetectionConfig
+
+    config = AppConfig(
+        detection=DetectionConfig(
+            mode="on_chain_pending",
+            onchain=OnchainDetectionConfig(
+                pending_tx_ws_url="wss://polygon.example.invalid/v2/redacted",
+                pending_tx_detection_confidence_required="almost_certain",
+            ),
+        )
+    )
+
+    errors: list[str] = []
+    monkeypatch.setattr(app_module, "load_config", lambda *_a, **_k: config)
+    monkeypatch.setattr(app_module, "configure_logging", lambda *_a, **_k: None)
+    monkeypatch.setattr(app_module, "print_error", errors.append)
+
+    def _never_called(*_args: object, **_kwargs: object):
+        raise AssertionError("startup must abort before composing the application")
+
+    monkeypatch.setattr(app_module, "build_app", _never_called)
+
+    assert await app_module._run_application([]) == 1
+    assert errors
+    assert "pending_tx_detection_confidence_required" in errors[0]
+    assert "almost_certain" not in errors[0]
+
+
+@pytest.mark.asyncio
+async def test_polling_mode_startup_does_not_validate_the_pending_floor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The floor is a pending-path policy; polling must not fail on it."""
+    import app as app_module
+    from config.app_config import AppConfig, DetectionConfig, OnchainDetectionConfig
+
+    config = AppConfig(
+        detection=DetectionConfig(
+            mode="polling",
+            onchain=OnchainDetectionConfig(
+                pending_tx_detection_confidence_required="almost_certain",
+            ),
+        )
+    )
+
+    errors: list[str] = []
+    calls: list[int] = []
+    monkeypatch.setattr(app_module, "load_config", lambda *_a, **_k: config)
+    monkeypatch.setattr(app_module, "print_error", errors.append)
+
+    def _stop_after_the_validation_block(*_args: object, **_kwargs: object) -> None:
+        # ``configure_logging`` runs once at entry and again once the config
+        # is loaded and validated; stopping on the second call proves startup
+        # got PAST the confidence-floor check instead of returning 1.
+        calls.append(1)
+        if len(calls) >= 2:
+            raise RuntimeError("stop the test here")
+
+    monkeypatch.setattr(app_module, "configure_logging", _stop_after_the_validation_block)
+
+    with pytest.raises(RuntimeError, match="stop the test here"):
+        await app_module._run_application([])
+
+    assert len(calls) == 2
+    assert errors == []
 
 
 def test_shutdown_stops_the_pending_copy_tracker() -> None:

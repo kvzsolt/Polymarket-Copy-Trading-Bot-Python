@@ -1242,6 +1242,17 @@ async def _run_application(client_registry: list[Any]) -> int:
 
     try:
         startup_config = load_config()
+        # Fail closed on the detection confidence floor before anything is
+        # started. In ``on_chain_pending`` that floor decides whether every
+        # mempool sighting is copied or dropped, so an unparseable value must
+        # abort startup — inside the on-chain composition guard further down
+        # it would be absorbed and the operator's chosen mode would silently
+        # degrade to REST polling.
+        detection_cfg = getattr(startup_config, "detection", None)
+        if detection_cfg is not None and detection_cfg.detection_mode is not DetectionMode.POLLING:
+            _detection_confidence_from_config(
+                detection_cfg.onchain.pending_tx_detection_confidence_required
+            )
     except EnvValidationError as exc:
         print_error(str(exc))
         return 1
@@ -2151,14 +2162,9 @@ async def _run_application(client_registry: list[Any]) -> int:
     # the copy layer dedups the same fill by trade key.
     detection_mode = DetectionStartupReporter(logger, metrics).report(application.config)
     if detection_mode is not DetectionMode.POLLING:
-        # Parsed OUTSIDE the guard below on purpose: the confidence floor
-        # decides whether every mempool sighting is copied or dropped, so an
-        # unparseable value must abort startup rather than be absorbed into
-        # "continue without on-chain detection" (which silently downgrades an
-        # operator-chosen mode to REST polling).
-        _detection_confidence_from_config(
-            application.config.detection.onchain.pending_tx_detection_confidence_required
-        )
+        # The confidence floor was already validated at startup (before any
+        # runtime was built) precisely so an unparseable value aborts instead
+        # of being absorbed by the guard below.
         try:
             from orchestrators.detection_source_factory import DetectionSourceRequest
             from orchestrators.onchain_signal_dispatch import OnchainSignalDispatchAdapter
