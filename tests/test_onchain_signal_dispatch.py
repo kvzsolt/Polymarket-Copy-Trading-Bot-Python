@@ -1092,3 +1092,138 @@ def test_pending_copy_metric_schemas_are_bounded() -> None:
         registry.inc(METRIC_PENDING_COPY_UNCONFIRMED, labels={"reason": "replaced"})
     with pytest.raises(ValueError):
         registry.inc(METRIC_PENDING_COPY_TRACKER_DROPPED, labels={"reason": "stale"})
+
+
+# ---------------------------------------------------------------------------
+# C2 — detection telemetry emits
+# ---------------------------------------------------------------------------
+
+
+def _telemetry_adapter(
+    contexts_by_leader,
+    *,
+    telemetry,
+    pipeline=None,
+    v1_runtime=None,
+):
+    """Build an adapter whose claim policy shares the detection emitter."""
+    pipeline = pipeline or _Pipeline()
+    adapter = OnchainSignalDispatchAdapter(
+        contexts_by_leader=contexts_by_leader,
+        v1_runtime=v1_runtime,
+        execute_trades=pipeline,
+        clock=lambda: 1234.5,
+        metrics=MetricsRegistry(schemas=TELEMETRY_METRIC_SCHEMAS),
+        logger=logging.getLogger("OnchainSignalDispatch"),
+        telemetry=telemetry,
+    )
+    return adapter, pipeline
+
+
+@pytest.mark.asyncio
+async def test_dispatch_emits_one_signal_received_per_signal() -> None:
+    """Exactly one detection event per signal, correlated by transaction hash."""
+    from services.telemetry import LeaderEvent, LeaderOutcome, TelemetryProducer, safe_ref
+    from tests.telemetry_helpers import recording_emitters
+
+    emitters, service = recording_emitters()
+    adapter, pipeline = _telemetry_adapter(
+        {_LEADER: [_ctx("u1"), _ctx("u2")]},
+        telemetry=emitters.detection,
+    )
+
+    await adapter(_signal(provisional=True))
+
+    assert [call[0] for call in pipeline.calls] == ["u1", "u2"]
+    leader_events = service.payloads(LeaderEvent)
+    assert len(leader_events) == 1
+    assert leader_events[0].outcome is LeaderOutcome.RECEIVED
+    assert leader_events[0].source == "on_chain_pending"
+    assert leader_events[0].leader_ref == safe_ref(_LEADER)
+    assert service.calls[0].producer is TelemetryProducer.DETECTION
+    assert service.calls[0].correlation_id == safe_ref(_TX)
+
+
+@pytest.mark.asyncio
+async def test_dispatch_emits_signal_received_on_the_v1_path_too() -> None:
+    """The v1 runtime short-circuits the legacy fan-out, never the detection emit."""
+    from services.telemetry import LeaderEvent, LeaderOutcome
+    from tests.telemetry_helpers import recording_emitters
+
+    emitters, service = recording_emitters()
+    v1 = _V1Runtime()
+    adapter, pipeline = _telemetry_adapter(
+        {_LEADER: [_ctx("u1")]},
+        telemetry=emitters.detection,
+        v1_runtime=v1,
+    )
+
+    await adapter(_signal(provisional=False))
+
+    assert len(v1.signals) == 1
+    assert pipeline.calls == []
+    [event] = service.payloads(LeaderEvent)
+    assert event.outcome is LeaderOutcome.RECEIVED
+    assert event.source == "on_chain_confirmed"
+
+
+@pytest.mark.asyncio
+async def test_cross_source_dedup_emits_signal_deduplicated() -> None:
+    """A fill polling already claimed reports a DEDUP leader event."""
+    from orchestrators.trade_pipeline import build_trade_key
+    from services.telemetry import LeaderEvent, LeaderOutcome, safe_ref
+    from tests.telemetry_helpers import recording_emitters
+
+    emitters, service = recording_emitters()
+    repo = _FakeOrdersRepo()
+    polling_key = build_trade_key("u1", _LEADER, _polling_row())
+    assert await repo.try_claim_processed_trade(
+        trade_key=polling_key,
+        user_id="u1",
+        leader_id=_LEADER,
+        tx_hash=_TX,
+        side="BUY",
+        asset="123456",
+        condition_id="c",
+        status="in_progress",
+    )
+    adapter, pipeline = _telemetry_adapter(
+        {_LEADER: [_ctx_with_repo("u1", repo)]},
+        telemetry=emitters.detection,
+    )
+
+    await adapter(_signal(provisional=False))
+
+    assert pipeline.calls == []
+    received, deduped = service.payloads(LeaderEvent)
+    assert received.outcome is LeaderOutcome.RECEIVED
+    assert deduped.outcome is LeaderOutcome.DEDUP
+    assert deduped.source == "on_chain_confirmed"
+    assert deduped.leader_ref == safe_ref(_LEADER.lower())
+
+
+@pytest.mark.asyncio
+async def test_raising_telemetry_backend_never_stops_dispatch() -> None:
+    """A failing telemetry service must not change dispatch behaviour."""
+    from tests.telemetry_helpers import raising_emitters
+
+    emitters, service = raising_emitters()
+    adapter, pipeline = _telemetry_adapter(
+        {_LEADER: [_ctx("u1"), _ctx("u2")]},
+        telemetry=emitters.detection,
+    )
+
+    await adapter(_signal())
+
+    assert [call[0] for call in pipeline.calls] == ["u1", "u2"]
+    assert service.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_dispatch_without_telemetry_is_unchanged() -> None:
+    """Omitting the emitter keeps the adapter on its pre-telemetry behaviour."""
+    adapter, pipeline, _metrics = _adapter({_LEADER: [_ctx("u1")]})
+
+    await adapter(_signal())
+
+    assert [call[0] for call in pipeline.calls] == ["u1"]

@@ -1,4 +1,12 @@
-"""Leader-monitor orchestration with one exclusive copy execution path."""
+"""Leader-monitor orchestration with one exclusive copy execution path.
+
+``LeaderBatchDispatcher`` is the REST-polling twin of the on-chain dispatch
+adapter: it is the single point where a polled leader batch enters the copy
+path, so it owns the one permitted pre-submit telemetry call — exactly one
+``signal_received(source="polling", ...)`` per trade row, on both the v1 and
+the legacy branch. ``services.tradeMonitor`` stays a pure transport and is
+deliberately not touched.
+"""
 
 from __future__ import annotations
 
@@ -13,6 +21,7 @@ from typing import Any, TYPE_CHECKING
 from application.trading_context import TradingContext
 from orchestrators.trade_pipeline import execute_trades as execute_trade_pipeline
 from services.metrics import metrics
+from services.telemetry import DetectionTelemetryEmitter
 from services.tradeMonitor import trade_monitor
 from utils.logger import get_logger, safe_error_detail
 
@@ -29,6 +38,11 @@ LegacyExecutor = Callable[
 V1BatchSink = Callable[[str, list[dict[str, Any]]], Awaitable[int]]
 MonotonicClock = Callable[[], float]
 
+POLLING_DETECTION_SOURCE = "polling"
+"""Detection-source code shared with ``detection_signals_total{source=...}``."""
+
+_POLLING_TX_KEYS = ("transactionHash", "txHash", "transaction_hash", "tx_hash")
+
 
 @dataclass(frozen=True, slots=True)
 class LeaderDispatchFailure:
@@ -39,7 +53,18 @@ class LeaderDispatchFailure:
 
 
 class LeaderBatchDispatcher:
-    """Select exactly one active copy pipeline for each leader batch."""
+    """Select exactly one active copy pipeline for each leader batch.
+
+    Args:
+        leader: Monitored leader wallet.
+        contexts: Legacy per-follower contexts for the fan-out branch.
+        legacy_executor: Legacy pipeline entry point.
+        v1_sink: Atomic v1 batch admission callback; when supplied the legacy
+            fan-out is never invoked.
+        clock: Wall-clock seconds source for the pipeline timestamp.
+        telemetry: Operator detection emitter. One ``signal_received`` per
+            polled trade row — synchronous, never awaited, never raising.
+    """
 
     def __init__(
         self,
@@ -49,12 +74,30 @@ class LeaderBatchDispatcher:
         legacy_executor: LegacyExecutor,
         v1_sink: V1BatchSink | None = None,
         clock: MonotonicClock = time.time,
+        telemetry: DetectionTelemetryEmitter | None = None,
     ) -> None:
         self._leader = str(leader)
         self._contexts = tuple(contexts)
         self._legacy_executor = legacy_executor
         self._v1_sink = v1_sink
         self._clock = clock
+        self._telemetry = telemetry
+
+    def _emit_detection(self, trades: list[dict[str, Any]]) -> None:
+        """Publish one detection event per polled trade row.
+
+        Args:
+            trades: The polled batch about to be dispatched.
+        """
+        telemetry = self._telemetry
+        if telemetry is None:
+            return
+        for trade in trades:
+            telemetry.signal_received(
+                POLLING_DETECTION_SOURCE,
+                self._leader,
+                _polling_tx_hash(trade),
+            )
 
     async def dispatch(
         self,
@@ -68,6 +111,7 @@ class LeaderBatchDispatcher:
             batch or raises to the surrounding monitor worker.
         """
 
+        self._emit_detection(trades)
         if self._v1_sink is not None:
             await self._v1_sink(self._leader, trades)
             return ()
@@ -96,6 +140,7 @@ async def run_leader_monitor(
     monitored_leader_count: int = 1,
     research_capture_service: Any | None = None,
     v1_sink: V1BatchSink | None = None,
+    telemetry: DetectionTelemetryEmitter | None = None,
 ) -> None:
     """Poll one leader and route each batch to v1 or legacy execution.
 
@@ -109,6 +154,7 @@ async def run_leader_monitor(
         research_capture_service: Optional read-only research capture service.
         v1_sink: Atomic v1 batch admission callback. When supplied, legacy
             execution is never invoked.
+        telemetry: Operator detection emitter handed to the batch dispatcher.
     """
 
     if not contexts and v1_sink is None:
@@ -126,6 +172,7 @@ async def run_leader_monitor(
         contexts=contexts,
         legacy_executor=execute_trade_pipeline,
         v1_sink=v1_sink,
+        telemetry=telemetry,
     )
 
     if v1_sink is not None:
@@ -204,6 +251,27 @@ async def run_leader_monitor(
     finally:
         worker_task.cancel()
         await asyncio.gather(worker_task, return_exceptions=True)
+
+
+def _polling_tx_hash(trade: dict[str, Any]) -> str:
+    """Return the transaction hash of a polled row, or an empty string.
+
+    The data-api ``/activity`` shape and the internal normalized shape use
+    different key spellings; the same alias order as
+    ``orchestrators.trade_pipeline.normalize_signals`` is used so the
+    correlation token matches the one the pipeline projection publishes.
+
+    Args:
+        trade: One polled leader trade row.
+
+    Returns:
+        The first non-empty transaction hash alias, else ``""``.
+    """
+    for key in _POLLING_TX_KEYS:
+        value = trade.get(key)
+        if value:
+            return str(value)
+    return ""
 
 
 def _stable_row_fingerprint(trade: dict) -> str:

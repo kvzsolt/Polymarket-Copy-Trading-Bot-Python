@@ -7,7 +7,9 @@ each ``OnchainTradeSignal`` it:
 1. logs ``detection_signal | source=<on_chain_pending|on_chain_confirmed> ...``
    so operators can see which source produced a copy (REST polling logs the
    same line with ``source=polling``);
-2. increments ``detection_signals_total{source=...}``;
+2. increments ``detection_signals_total{source=...}`` and publishes exactly
+   one operator ``signal_received`` event — the only pre-submit telemetry
+   call on the copy path, synchronous and exception-guarded by contract;
 3. routes the signal to the v1 copy-task runtime when present, otherwise to
    the legacy per-context trade pipeline (case-insensitive leader lookup,
    concurrent per-context execution, exceptions logged never raised).
@@ -59,6 +61,7 @@ from services.metrics import (
 )
 from services.onchain_detection.pending_copy_confirmation_tracker import TrackedPendingCopy
 from services.onchain_detection.trade_detection_models import OnchainTradeSignal
+from services.telemetry import DetectionTelemetryEmitter
 from storage.postgres.orders_repo import CROSS_SOURCE_CLAIM_STATUS
 from utils.logger import get_logger, redact_error_detail
 
@@ -173,6 +176,7 @@ class CrossSourceTradeClaimPolicy:
         metrics: MetricsRegistry = _metrics,
         logger: logging.Logger | None = None,
         own_claim_memory: int = _DEFAULT_OWN_CLAIM_MEMORY,
+        telemetry: DetectionTelemetryEmitter | None = None,
     ) -> None:
         """Bind the identity builder and observability collaborators.
 
@@ -184,12 +188,17 @@ class CrossSourceTradeClaimPolicy:
             own_claim_memory: Maximum number of tx-level keys remembered as
                 claimed by this process (oldest evicted first; the row status
                 probe covers evicted keys).
+            telemetry: Operator detection emitter. Only the *deduplicated*
+                decision is published here, because this is the one place
+                that knows a cross-source loss actually happened. The call is
+                synchronous, never awaited, and never raises by contract.
         """
 
         self._identity = (
             identity_builder if identity_builder is not None else CopyTradeIdentityBuilder()
         )
         self._metrics = metrics
+        self._telemetry = telemetry
         self._logger = logger if logger is not None else get_logger("OnchainSignalDispatch")
         self._own_claim_memory = max(1, int(own_claim_memory))
         # tx-level key -> number of sibling fills admitted on that claim.
@@ -293,6 +302,8 @@ class CrossSourceTradeClaimPolicy:
             user_id,
         )
         self._metrics.inc(METRIC_DETECTION_SIGNALS_DEDUPED, labels={"source": source.value})
+        if self._telemetry is not None:
+            self._telemetry.signal_deduplicated(source.value, leader_id)
         return CrossSourceClaimDecision(
             dispatch=False, trade_key=tx_key, winner=holder, fill_key=fill_key
         )
@@ -539,6 +550,7 @@ class OnchainSignalDispatchAdapter:
         claim_policy: CrossSourceTradeClaimPolicy | None = None,
         pending_copy_tracker: PendingCopyTracker | None = None,
         monotonic: Callable[[], float] = time.monotonic,
+        telemetry: DetectionTelemetryEmitter | None = None,
     ) -> None:
         """Bind the live follower map and routing collaborators.
 
@@ -564,6 +576,12 @@ class OnchainSignalDispatchAdapter:
                 ``time.monotonic``): the tracker ages entries as
                 ``now - recorded_at``, so a wall-clock stamp would make every
                 age negative and no copy would ever be polled.
+            telemetry: Operator detection emitter. This is the only pre-submit
+                telemetry call on the on-chain copy path: exactly one
+                ``signal_received`` per signal, synchronous, never awaited,
+                never raising. It is also shared with the default claim policy
+                so a cross-source dedup is reported from the one place that
+                knows about it.
         """
 
         self._contexts_by_leader = contexts_by_leader
@@ -573,11 +591,16 @@ class OnchainSignalDispatchAdapter:
         self._monotonic = monotonic
         self._pending_copy_tracker = pending_copy_tracker
         self._metrics = metrics
+        self._telemetry = telemetry
         self._logger = logger if logger is not None else get_logger("OnchainSignalDispatch")
         self._claim_policy = (
             claim_policy
             if claim_policy is not None
-            else CrossSourceTradeClaimPolicy(metrics=metrics, logger=self._logger)
+            else CrossSourceTradeClaimPolicy(
+                metrics=metrics,
+                logger=self._logger,
+                telemetry=telemetry,
+            )
         )
 
     async def __call__(self, signal: OnchainTradeSignal) -> None:
@@ -600,6 +623,8 @@ class OnchainSignalDispatchAdapter:
             signal.provisional,
         )
         self._metrics.inc(METRIC_DETECTION_SIGNALS, labels={"source": source.value})
+        if self._telemetry is not None:
+            self._telemetry.signal_received(source.value, signal.leader_wallet, signal.tx_hash)
         if self._v1_runtime is not None:
             await self._v1_runtime.submit_onchain(signal)
             return

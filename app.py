@@ -2057,6 +2057,9 @@ async def _run_application(client_registry: list[Any]) -> int:
         monitored_leader_count = len(
             [wallet for wallet, contexts in contexts_by_leader.items() if contexts]
         )
+        # Off-path operator projection: the roster only changes when discovery
+        # promotes leaders, and the emit is synchronous and exception-guarded.
+        telemetry_emitters.detection.roster_updated(monitored_leader_count)
 
         await _subscribe_context_tokens(
             market_data_runtimes=market_data_runtimes,
@@ -2115,6 +2118,7 @@ async def _run_application(client_registry: list[Any]) -> int:
                     monitored_leader_count=monitored_leader_count,
                     research_capture_service=research_capture_service,
                     v1_sink=v1_runtime.submit_raw_batch if v1_runtime is not None else None,
+                    telemetry=telemetry_emitters.detection,
                 )
             )
             monitor_tasks.append(monitor_task)
@@ -2269,6 +2273,7 @@ async def _run_application(client_registry: list[Any]) -> int:
                 v1_runtime=v1_runtime,
                 execute_trades=_execute_trade_pipeline,
                 pending_copy_tracker=pending_copy_tracker,
+                telemetry=telemetry_emitters.detection,
             )
             oc_cfg = application.config.detection.onchain
             onchain_runtime = await _build_detection_source_factory(
@@ -2312,6 +2317,7 @@ async def _run_application(client_registry: list[Any]) -> int:
                 monitored_leader_count=len(monitored_leaders),
                 research_capture_service=research_capture_service,
                 v1_sink=v1_runtime.submit_raw_batch if v1_runtime is not None else None,
+                telemetry=telemetry_emitters.detection,
             )
         )
         monitor_tasks.append(monitor_task)
