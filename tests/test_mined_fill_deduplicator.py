@@ -198,3 +198,11 @@ async def test_bounds_do_not_change_the_public_api_shape() -> None:
     dedupe.reset()
     assert dedupe.mined_seen_snapshot() == set()
     assert dedupe.pending_seen_snapshot() == set()
+
+    # Insert again after the reset: clearing must leave the ordered containers
+    # in place. Rebinding them to plain sets would still read back empty here
+    # but break the very next insert's eviction bookkeeping.
+    assert await dedupe.is_duplicate_mined("0xdef", 7) is False
+    assert await dedupe.record_pending("0xdef", "0xLEADER") is True
+    assert dedupe.mined_seen_snapshot() == {("0xdef", 7)}
+    assert dedupe.pending_seen_snapshot() == {("0xdef", "0xleader")}

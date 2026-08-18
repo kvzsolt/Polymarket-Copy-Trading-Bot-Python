@@ -75,10 +75,11 @@ higher two fail startup closed. Other modes are unaffected.
 
 ### Pending-copy confirmation (`detection.onchain.pending_copy_*`)
 
-Only consulted in `on_chain_pending`, by the pending-copy confirmation
-tracker. A copy placed off a provisional sighting is tracked until the leader
-transaction's receipt proves it mined; a sighting that reverts, is replaced, or
-never mines would otherwise leave an orphan position no other loop detects.
+Keys consumed by the pending-copy confirmation tracker; the tracker itself
+lands separately, so **these keys are inert until then** and the
+`on_chain_pending` row above ("no mined correction path") still describes
+today's behaviour. They exist now so the tracker can be enabled without a
+config migration. Only ever consulted in `on_chain_pending`.
 
 | Key | Default | Meaning |
 |---|---|---|

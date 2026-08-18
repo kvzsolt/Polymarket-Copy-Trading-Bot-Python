@@ -657,7 +657,10 @@ def test_on_chain_pending_rejects_confidence_above_pending_probable() -> None:
             )
         )
     message = str(excinfo.value)
-    assert "pending_tx_detection_confidence_required" in message
+    assert (
+        "detection.onchain.pending_tx_detection_confidence_required must be "
+        "market_unattributed or pending_probable when detection.mode=on_chain_pending"
+    ) in message
     assert "drops every pending signal" in message
 
 

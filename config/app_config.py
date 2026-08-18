@@ -1361,11 +1361,11 @@ def _validate_detection_mode(cfg: AppConfig, errors: list[str]) -> None:
             confidence in _ONCHAIN_DETECTION_CONFIDENCE_VALUES
             and confidence not in _PENDING_MODE_CONFIDENCE_VALUES
         ):
-            allowed = ", ".join(_PENDING_MODE_CONFIDENCE_VALUES)
+            allowed = " or ".join(_PENDING_MODE_CONFIDENCE_VALUES)
             errors.append(
-                "detection.onchain.pending_tx_detection_confidence_required must be one of: "
-                f"{allowed} for detection.mode=on_chain_pending — a mempool sighting only ever "
-                "reaches pending_probable, so a higher floor drops every pending signal."
+                f"detection.onchain.pending_tx_detection_confidence_required must be {allowed} "
+                "when detection.mode=on_chain_pending: a mempool sighting only ever reaches "
+                "pending_probable, so a higher floor drops every pending signal."
             )
         if float(oc.pending_copy_confirmation_deadline_seconds) <= 0:
             errors.append(
