@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
+import pytest
 from eth_utils import keccak
 
 from config.addresses import (
@@ -233,3 +234,100 @@ def test_build_signal_log_index_always_set() -> None:
     assert signal is not None
     assert signal.log_index == 99
     assert signal.provisional is False
+
+
+# ---------------------------------------------------------------------------
+# Watched-wallet topic-filtered subscription params (logs_only confirmed mode)
+# ---------------------------------------------------------------------------
+
+_TOPIC0_HEX = "0x" + ORDER_FILLED_TOPIC0.hex()
+
+_LEADER_A = "0x" + "11" * 20
+_LEADER_B = "0xAB" + "cd" * 19  # mixed case on purpose
+_EXCHANGE_FILTER = ("0x" + "aa" * 20, "0x" + "bb" * 20)
+
+
+def test_watched_params_build_maker_and_taker_filters() -> None:
+    """One subscription per indexed role: topic2 (maker) / topic3 (taker).
+
+    A single ``logs`` filter cannot OR topic2 with topic3, so the runtime
+    opens both subscriptions and keeps the client-side maker/taker match as
+    the second guard.
+    """
+    from services.onchain_detection.order_filled_detector import (
+        log_subscription_params_for_watched,
+    )
+
+    maker, taker = log_subscription_params_for_watched(
+        exchange_addresses=_EXCHANGE_FILTER,
+        watched_wallets={_LEADER_B, _LEADER_A},
+    )
+
+    expected_topics = sorted((_pad32(_LEADER_A), _pad32(_LEADER_B)))
+    assert maker == [
+        "logs",
+        {
+            "address": ["0x" + "aa" * 20, "0x" + "bb" * 20],
+            "topics": [[_TOPIC0_HEX], None, expected_topics],
+        },
+    ]
+    assert taker == [
+        "logs",
+        {
+            "address": ["0x" + "aa" * 20, "0x" + "bb" * 20],
+            "topics": [[_TOPIC0_HEX], None, None, expected_topics],
+        },
+    ]
+
+
+def test_watched_params_pad_and_lowercase_the_address_topics() -> None:
+    from services.onchain_detection.order_filled_detector import (
+        log_subscription_params_for_watched,
+    )
+
+    (maker, _taker) = log_subscription_params_for_watched(
+        exchange_addresses=_EXCHANGE_FILTER,
+        watched_wallets={_LEADER_B},
+    )
+
+    topics = maker[1]["topics"]
+    assert topics[2] == [_pad32(_LEADER_B)]
+    assert topics[2][0] == "0x" + "0" * 24 + ("ab" + "cd" * 19)
+
+
+def test_watched_params_cap_the_filter_and_warn_with_the_count_only(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from services.onchain_detection.order_filled_detector import (
+        WATCHED_TOPIC_FILTER_CAP,
+        log_subscription_params_for_watched,
+    )
+
+    roster = {f"0x{i:040x}" for i in range(WATCHED_TOPIC_FILTER_CAP + 50)}
+
+    maker, _taker = log_subscription_params_for_watched(
+        exchange_addresses=_EXCHANGE_FILTER,
+        watched_wallets=roster,
+    )
+
+    assert len(maker[1]["topics"][2]) == WATCHED_TOPIC_FILTER_CAP
+    assert caplog.records, "expected a WARN naming the capped count"
+    warning = caplog.records[-1].getMessage()
+    assert str(WATCHED_TOPIC_FILTER_CAP) in warning
+    assert str(WATCHED_TOPIC_FILTER_CAP + 50) in warning
+    for address in roster:
+        assert address not in warning
+
+
+def test_watched_params_without_a_watched_set_fall_back_to_today_params() -> None:
+    """No roster means no topic filter: the address-only subscription runs
+    and the client-side maker/taker match still drops foreign fills."""
+    from services.onchain_detection.order_filled_detector import (
+        log_subscription_params,
+        log_subscription_params_for_watched,
+    )
+
+    for empty in (None, set()):
+        assert log_subscription_params_for_watched(
+            exchange_addresses=_EXCHANGE_FILTER, watched_wallets=empty
+        ) == (log_subscription_params(_EXCHANGE_FILTER),)
