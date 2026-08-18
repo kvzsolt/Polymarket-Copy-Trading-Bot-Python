@@ -87,12 +87,22 @@ same inventory rendered as tables, plus the semantics a client has to honour
 (decimal strings, capability gating, detection deduplication, session-scoped
 realized PnL, valuation bases, restart-required settings, the viewer role).
 
+Every transport limit the JSON publishes under `limits` — command rate limit
+and window, request size, telemetry snapshot limit, WebSocket queue capacity —
+is the `ControlPlaneHttpConfig` default projected from `config/control_plane.yml`
+(`ControlPlaneRuntimeFactory._http_config`). A deployment may change any of
+them, so a client must treat those numbers as the expected shape rather than as
+protocol constants, and must honour `Retry-After` over its own assumption.
+`websocket_max_inbound_message_bytes` bounds **client-to-server** frames only:
+`web.WebSocketResponse(max_msg_size=...)` reaches the inbound reader alone, so
+server-to-client frames such as `telemetry_snapshot` are not capped by it.
+
 The table below is an orientation map only. When it disagrees with
 `api_contract.json`, the JSON is right.
 
 | Area | Reads | Commands |
 | --- | --- | --- |
-| System | `/system`, `/status`, `/readiness`, `/capabilities` (each also under `/system/…`) | — |
+| System | `/system`; `/status`, `/readiness`, `/capabilities` (these three also under `/system/status`, `/system/readiness`, `/system/capabilities`) | — |
 | Accounts | `/accounts` | — |
 | Tasks | `/tasks`, `/tasks/{task_id}` | `POST /tasks`, `POST /tasks/bulk`, `PUT`/`PATCH`/`DELETE /tasks/{task_id}`, `POST /tasks/{task_id}/{pause,resume,duplicate}` |
 | Portfolio and PnL | `/portfolio`, `/pnl` | — |
@@ -243,7 +253,9 @@ Server frames are `{"type": ...}` objects: `stream_ready` on connect,
 `data` snapshot (or `null` when no telemetry query is composed), `pong`,
 `resync_required` with a `dropped_count`, and `error` with a `code`. A client
 may send `{"type": "ping"}` or `{"type": "resync"}` as text; binary frames close
-the socket, and client messages are rate limited per principal.
+the socket, and client messages are rate limited per principal. The
+`rate_limited` error frame also carries `retry_after_seconds` and is followed
+immediately by a close.
 
 Every subscriber owns a bounded queue. Producers never await a browser. When a
 slow subscriber overflows, old incremental state is not reconstructed; the

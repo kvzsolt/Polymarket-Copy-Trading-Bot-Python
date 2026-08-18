@@ -100,9 +100,21 @@ enables it. In production, serve the console from behind a **same-origin reverse
 proxy** that forwards `/api/v1` to the bot. Cross-origin browsers work only when
 the operator has added the console origin to the server's CORS allowlist; there
 is no wildcard mode and `Access-Control-Allow-Credentials` is never sent, so
-cookie-based auth is impossible. Preflight `OPTIONS` on any `/api/v1` path
-returns `204` with `Access-Control-Allow-Methods: DELETE, GET, PATCH, POST, PUT`
-and `Access-Control-Allow-Headers: Authorization, Content-Type, X-Correlation-ID`.
+cookie-based auth is impossible. Origin handling is uniform across every
+`/api/v1` request, preflights and WebSocket upgrades included:
+
+- **no `Origin` header** (same-origin, or a non-browser client) — the request
+  proceeds and no CORS headers are added;
+- **`Origin` on the allowlist** — the request proceeds and the response carries
+  `Access-Control-Allow-Origin` and `Vary: Origin`; a preflight additionally
+  carries `Access-Control-Allow-Methods: DELETE, GET, PATCH, POST, PUT` and
+  `Access-Control-Allow-Headers: Authorization, Content-Type, X-Correlation-ID`;
+- **`Origin` not on the allowlist** — `403 origin_not_allowed`, decided before
+  authentication and before routing.
+
+A preflight `OPTIONS` that passes the origin check always returns `204`. It is
+short-circuited ahead of authentication, so it never needs a credential — but a
+`204` with no CORS headers means the origin was simply absent, not allowed.
 
 **Authentication:** send the credential on every request, including the
 WebSocket upgrade:
@@ -259,10 +271,18 @@ Collections return:
   collection and a foreign cursor is rejected.
 - `next_cursor: null` means the end of the collection.
 - Only the endpoints listing `cursor` in §7 are paginated. `GET /accounts` and
-  `GET /leaders` return plain arrays. Server-side ceilings that are *not*
-  paginated: leaders 500 rows, PnL positions 200 rendered rows (with
-  `truncated`), risk blocks 200, risk triggers 25. Disclose the cap in the UI
-  rather than implying the list is complete.
+  `GET /leaders` return plain arrays. Three other ceilings exist and none of
+  them is pagination:
+  - `GET /leaders` returns at most **500** rows — a query limit, with no flag.
+    Disclose the cap rather than implying the list is complete.
+  - `GET /pnl` renders at most **200** positions and sets `truncated: true`
+    when it did, while the complete-book counters stay exact (§9.2). This is
+    the only genuine truncation in the API.
+  - `GET /risk` returns at most **200** `active_blocks` and the **25** most
+    recent `recent_triggers`. The 200 is a query limit *and* a contract
+    ceiling: the response schema refuses more than 200, so the read fails
+    closed rather than silently trimming. Neither list carries a flag, so
+    label them "active" and "most recent", never "all".
 
 Use cursor pagination for infinite scroll or a "load more" button. Do not build
 page-number navigation; there is no total count and no offset.
@@ -288,6 +308,13 @@ is only needed as a liveness probe.
 
 Client-side guidance: debounce buttons, disable a control while its request is
 in flight, and never poll a mutation.
+
+Every number in this section — and every value under `limits` in
+`api_contract.json` — is a **deployment default**, not a protocol constant. The
+operator can change the rate limit and window, request size, telemetry snapshot
+limit, and WebSocket queue capacity in `config/control_plane.yml`. Treat the
+limits as the expected shape, keep them in one configuration module, and always
+prefer the `Retry-After` header over your own assumption.
 
 ---
 
@@ -423,10 +450,15 @@ decimal — see non-negotiable 1.
 - `ReadinessView.ready` is the single "is the bot working" boolean;
   `failed_checks` names what is wrong. `live` is process liveness only — a
   process can be `live: true, ready: false`.
-- `TaskView.status` is `active` | `paused` | `deleted`;
-  `monitoring_mode` is `normal` | `priority`; `sizing_mode` is one of
-  `fixed`, `exact_mirror`, `proportional`, `balance_weighted`,
-  `portfolio_weighted`, `adaptive`, `tiered`.
+- Several fields are typed `string` on the wire but carry a **closed
+  vocabulary**, listed in the Vocabulary column of the §9.3 schema tables and
+  published by `api_contract.json` both per field and under `enums`:
+  `TaskView.status` (`active` | `paused` | `deleted`),
+  `TaskView.monitoring_mode`, `TaskView.sizing_mode`, `TaskSizingView.mode`,
+  `TaskPriceView.offset_mode`, `TaskPriceView.offset_direction`,
+  `TaskReactionView.copy_side`, and `PnlView.unrealized_basis`. Generate a
+  union type from those lists rather than a bare `string`, but still fail soft
+  on an unrecognised value.
 - `OrderView.status` and `DiscoveryCycleView.status` are open vocabularies —
   render them verbatim, do not switch on a guessed list, and do not colour-code
   an unknown value as an error.
@@ -436,7 +468,8 @@ decimal — see non-negotiable 1.
 - `OrderView.price_limit` may be `null`; `matched_total` is always present.
   An unknown average fill price is reported as unknown — the backend
   deliberately never substitutes the limit price, so neither may you.
-- `PortfolioView.valuation_basis` is `cost_basis` or `market_mark`.
+- `PortfolioView.valuation_basis` is `cost_basis` or `market_mark`; it is
+  validated server-side but has no named vocabulary in the contract.
   `cost_basis` means no market mark was available and `unrealized_pnl_usdc` is
   `null`.
 - `DetectionStatusView.pending_confirmations` is `null` unless the selected
@@ -479,665 +512,665 @@ headline counts; use `positions` only for the rows you render.
 
 One composed follower account and the leaders bound to it.
 
-| Field | Type | Nullable | Decimal string |
-| --- | --- | --- | --- |
-| `follower_account` | `string` | no | — |
-| `wallet_address` | `string` | no | — |
-| `leader_count` | `integer` | no | — |
+| Field | Type | Nullable | Decimal string | Vocabulary |
+| --- | --- | --- | --- | --- |
+| `follower_account` | `string` | no | — | — |
+| `wallet_address` | `string` | no | — | — |
+| `leader_count` | `integer` | no | — | — |
 
 #### `ActivityView`
 
 Append-only operator activity projection.
 
-| Field | Type | Nullable | Decimal string |
-| --- | --- | --- | --- |
-| `activity_id` | `string` | no | — |
-| `actor` | `string` | no | — |
-| `action` | `string` | no | — |
-| `target_type` | `string` | no | — |
-| `target_id` | `string` | no | — |
-| `outcome` | `string` | no | — |
-| `reason_code` | `string` | no | — |
-| `occurred_at` | `timestamp` | no | — |
+| Field | Type | Nullable | Decimal string | Vocabulary |
+| --- | --- | --- | --- | --- |
+| `activity_id` | `string` | no | — | — |
+| `actor` | `string` | no | — | — |
+| `action` | `string` | no | — | — |
+| `target_type` | `string` | no | — | — |
+| `target_id` | `string` | no | — | — |
+| `outcome` | `string` | no | — | — |
+| `reason_code` | `string` | no | — | — |
+| `occurred_at` | `timestamp` | no | — | — |
 
 #### `BulkTaskResult`
 
 Successful atomic task mutation result.
 
-| Field | Type | Nullable | Decimal string |
-| --- | --- | --- | --- |
-| `tasks` | `array<TaskView>` | no | — |
-| `atomic` | `boolean` | no | — |
+| Field | Type | Nullable | Decimal string | Vocabulary |
+| --- | --- | --- | --- | --- |
+| `tasks` | `array<TaskView>` | no | — | — |
+| `atomic` | `boolean` | no | — | — |
 
 #### `CapabilitiesView`
 
 Explicitly composed control-plane capabilities.
 
-| Field | Type | Nullable | Decimal string |
-| --- | --- | --- | --- |
-| `capabilities` | `array<string>` | no | — |
-| `observed_at` | `timestamp` | no | — |
+| Field | Type | Nullable | Decimal string | Vocabulary |
+| --- | --- | --- | --- | --- |
+| `capabilities` | `array<string>` | no | — | — |
+| `observed_at` | `timestamp` | no | — | — |
 
 #### `DetectionSourceStatusView`
 
 Local signal counters for exactly one detection source.
 
-| Field | Type | Nullable | Decimal string |
-| --- | --- | --- | --- |
-| `source` | `string` | no | — |
-| `signals_total` | `integer` | no | — |
-| `deduplicated_total` | `integer` | no | — |
-| `last_signal_at` | `timestamp` | yes | — |
+| Field | Type | Nullable | Decimal string | Vocabulary |
+| --- | --- | --- | --- | --- |
+| `source` | `string` | no | — | — |
+| `signals_total` | `integer` | no | — | — |
+| `deduplicated_total` | `integer` | no | — | — |
+| `last_signal_at` | `timestamp` | yes | — | — |
 
 #### `DetectionStatusView`
 
 Detection-source health assembled from local counters and readiness.
 
-| Field | Type | Nullable | Decimal string |
-| --- | --- | --- | --- |
-| `mode` | `string` | no | — |
-| `sources` | `array<DetectionSourceStatusView>` | no | — |
-| `leader_ws_connected` | `boolean` | yes | — |
-| `market_ws_ok` | `boolean` | no | — |
-| `user_ws_ok` | `boolean` | no | — |
-| `market_ws_reconnects` | `integer` | no | — |
-| `user_ws_reconnects` | `integer` | no | — |
-| `pending_confirmations` | `PendingConfirmationStatsView` | yes | — |
-| `watched_leader_count` | `integer` | no | — |
-| `observed_at` | `timestamp` | no | — |
+| Field | Type | Nullable | Decimal string | Vocabulary |
+| --- | --- | --- | --- | --- |
+| `mode` | `string` | no | — | — |
+| `sources` | `array<DetectionSourceStatusView>` | no | — | — |
+| `leader_ws_connected` | `boolean` | yes | — | — |
+| `market_ws_ok` | `boolean` | no | — | — |
+| `user_ws_ok` | `boolean` | no | — | — |
+| `market_ws_reconnects` | `integer` | no | — | — |
+| `user_ws_reconnects` | `integer` | no | — | — |
+| `pending_confirmations` | `PendingConfirmationStatsView` | yes | — | — |
+| `watched_leader_count` | `integer` | no | — | — |
+| `observed_at` | `timestamp` | no | — | — |
 
 #### `DiscoveryCandidateView`
 
 Provider-safe candidate score projection.
 
-| Field | Type | Nullable | Decimal string |
-| --- | --- | --- | --- |
-| `wallet` | `string` | no | — |
-| `score` | `string` | no | **yes** |
-| `accepted` | `boolean` | no | — |
-| `reason_code` | `string` | no | — |
-| `cycle_id` | `string` | no | — |
+| Field | Type | Nullable | Decimal string | Vocabulary |
+| --- | --- | --- | --- | --- |
+| `wallet` | `string` | no | — | — |
+| `score` | `string` | no | **yes** | — |
+| `accepted` | `boolean` | no | — | — |
+| `reason_code` | `string` | no | — | — |
+| `cycle_id` | `string` | no | — | — |
 
 #### `DiscoveryCycleView`
 
 Discovery-cycle state without provider payloads or raw errors.
 
-| Field | Type | Nullable | Decimal string |
-| --- | --- | --- | --- |
-| `cycle_id` | `string` | no | — |
-| `status` | `string` | no | — |
-| `started_at` | `timestamp` | no | — |
-| `completed_at` | `timestamp` | yes | — |
-| `candidate_count` | `integer` | no | — |
-| `kept_count` | `integer` | no | — |
-| `config_revision` | `string` | no | — |
+| Field | Type | Nullable | Decimal string | Vocabulary |
+| --- | --- | --- | --- | --- |
+| `cycle_id` | `string` | no | — | — |
+| `status` | `string` | no | — | — |
+| `started_at` | `timestamp` | no | — | — |
+| `completed_at` | `timestamp` | yes | — | — |
+| `candidate_count` | `integer` | no | — | — |
+| `kept_count` | `integer` | no | — | — |
+| `config_revision` | `string` | no | — | — |
 
 #### `DiscoveryRosterView`
 
 Active or inactive discovery roster projection.
 
-| Field | Type | Nullable | Decimal string |
-| --- | --- | --- | --- |
-| `wallet` | `string` | no | — |
-| `tier` | `string` | no | — |
-| `active` | `boolean` | no | — |
-| `score` | `string` | no | **yes** |
-| `updated_at` | `timestamp` | no | — |
+| Field | Type | Nullable | Decimal string | Vocabulary |
+| --- | --- | --- | --- | --- |
+| `wallet` | `string` | no | — | — |
+| `tier` | `string` | no | — | — |
+| `active` | `boolean` | no | — | — |
+| `score` | `string` | no | **yes** | — |
+| `updated_at` | `timestamp` | no | — | — |
 
 #### `DiscoveryRunReceipt`
 
 Immediate queue acknowledgement for a discovery request.
 
-| Field | Type | Nullable | Decimal string |
-| --- | --- | --- | --- |
-| `run_id` | `string` | no | — |
-| `accepted` | `boolean` | no | — |
-| `reason_code` | `string` | no | — |
+| Field | Type | Nullable | Decimal string | Vocabulary |
+| --- | --- | --- | --- | --- |
+| `run_id` | `string` | no | — | — |
+| `accepted` | `boolean` | no | — | — |
+| `reason_code` | `string` | no | — | — |
 
 #### `DiscoveryStatusView`
 
 Current discovery scheduler state without provider error material.
 
-| Field | Type | Nullable | Decimal string |
-| --- | --- | --- | --- |
-| `state` | `string` | no | — |
-| `current_run_id` | `string` | yes | — |
-| `last_cycle_id` | `string` | yes | — |
-| `observed_at` | `timestamp` | no | — |
+| Field | Type | Nullable | Decimal string | Vocabulary |
+| --- | --- | --- | --- | --- |
+| `state` | `string` | no | — | — |
+| `current_run_id` | `string` | yes | — | — |
+| `last_cycle_id` | `string` | yes | — | — |
+| `observed_at` | `timestamp` | no | — | — |
 
 #### `EntryControlState`
 
 Durable global entry-pause and full-stop state.
 
-| Field | Type | Nullable | Decimal string |
-| --- | --- | --- | --- |
-| `entries_paused` | `boolean` | no | — |
-| `full_stop` | `boolean` | no | — |
-| `revision` | `integer` | no | — |
-| `reason_code` | `string` | no | — |
-| `updated_at` | `timestamp` | no | — |
-| `updated_by` | `string` | no | — |
+| Field | Type | Nullable | Decimal string | Vocabulary |
+| --- | --- | --- | --- | --- |
+| `entries_paused` | `boolean` | no | — | — |
+| `full_stop` | `boolean` | no | — | — |
+| `revision` | `integer` | no | — | — |
+| `reason_code` | `string` | no | — | — |
+| `updated_at` | `timestamp` | no | — | — |
+| `updated_by` | `string` | no | — | — |
 
 #### `FillView`
 
 One durable fill projection using exact decimal strings.
 
-| Field | Type | Nullable | Decimal string |
-| --- | --- | --- | --- |
-| `fill_id` | `string` | no | — |
-| `follower_account` | `string` | no | — |
-| `leader_wallet` | `string` | yes | — |
-| `order_id` | `string` | yes | — |
-| `condition_id` | `string` | yes | — |
-| `token_id` | `string` | yes | — |
-| `side` | `string` | yes | — |
-| `size` | `string` | no | **yes** |
-| `price` | `string` | no | **yes** |
-| `fee` | `string` | no | **yes** |
-| `filled_at` | `timestamp` | yes | — |
-| `created_at` | `timestamp` | no | — |
+| Field | Type | Nullable | Decimal string | Vocabulary |
+| --- | --- | --- | --- | --- |
+| `fill_id` | `string` | no | — | — |
+| `follower_account` | `string` | no | — | — |
+| `leader_wallet` | `string` | yes | — | — |
+| `order_id` | `string` | yes | — | — |
+| `condition_id` | `string` | yes | — | — |
+| `token_id` | `string` | yes | — | — |
+| `side` | `string` | yes | — | — |
+| `size` | `string` | no | **yes** | — |
+| `price` | `string` | no | **yes** | — |
+| `fee` | `string` | no | **yes** | — |
+| `filled_at` | `timestamp` | yes | — | — |
+| `created_at` | `timestamp` | no | — | — |
 
 #### `LeaderView`
 
 One leader identity merged from configuration, roster, and counters.
 
-| Field | Type | Nullable | Decimal string |
-| --- | --- | --- | --- |
-| `wallet` | `string` | no | — |
-| `configured` | `boolean` | no | — |
-| `monitored` | `boolean` | no | — |
-| `tier` | `string` | yes | — |
-| `score` | `string` | yes | **yes** |
-| `signals_total` | `integer` | no | — |
-| `deduplicated_total` | `integer` | no | — |
-| `last_signal_at` | `timestamp` | yes | — |
-| `trade_count` | `integer` | no | — |
-| `open_position_count` | `integer` | no | — |
+| Field | Type | Nullable | Decimal string | Vocabulary |
+| --- | --- | --- | --- | --- |
+| `wallet` | `string` | no | — | — |
+| `configured` | `boolean` | no | — | — |
+| `monitored` | `boolean` | no | — | — |
+| `tier` | `string` | yes | — | — |
+| `score` | `string` | yes | **yes** | — |
+| `signals_total` | `integer` | no | — | — |
+| `deduplicated_total` | `integer` | no | — | — |
+| `last_signal_at` | `timestamp` | yes | — | — |
+| `trade_count` | `integer` | no | — | — |
+| `open_position_count` | `integer` | no | — | — |
 
 #### `LockResetResult`
 
 Result of a lock reset attempt.
 
-| Field | Type | Nullable | Decimal string |
-| --- | --- | --- | --- |
-| `outcome` | `LockResetOutcome` | no | — |
-| `released_at` | `timestamp` | yes | — |
+| Field | Type | Nullable | Decimal string | Vocabulary |
+| --- | --- | --- | --- | --- |
+| `outcome` | `LockResetOutcome` | no | — | — |
+| `released_at` | `timestamp` | yes | — | — |
 
 #### `OrderView`
 
 Sanitized order projection without raw request or response payloads.
 
-| Field | Type | Nullable | Decimal string |
-| --- | --- | --- | --- |
-| `idempotency_key` | `string` | no | — |
-| `follower_account` | `string` | no | — |
-| `leader_wallet` | `string` | yes | — |
-| `order_id` | `string` | yes | — |
-| `status` | `string` | no | — |
-| `side` | `string` | yes | — |
-| `amount` | `string` | yes | **yes** |
-| `price_limit` | `string` | yes | **yes** |
-| `matched_total` | `string` | no | **yes** |
-| `created_at` | `timestamp` | no | — |
-| `updated_at` | `timestamp` | no | — |
+| Field | Type | Nullable | Decimal string | Vocabulary |
+| --- | --- | --- | --- | --- |
+| `idempotency_key` | `string` | no | — | — |
+| `follower_account` | `string` | no | — | — |
+| `leader_wallet` | `string` | yes | — | — |
+| `order_id` | `string` | yes | — | — |
+| `status` | `string` | no | — | — |
+| `side` | `string` | yes | — | — |
+| `amount` | `string` | yes | **yes** | — |
+| `price_limit` | `string` | yes | **yes** | — |
+| `matched_total` | `string` | no | **yes** | — |
+| `created_at` | `timestamp` | no | — | — |
+| `updated_at` | `timestamp` | no | — | — |
 
 #### `Page`
 
 Immutable query page with an optional opaque continuation cursor.
 
-| Field | Type | Nullable | Decimal string |
-| --- | --- | --- | --- |
-| `items` | `array<T>` | no | — |
-| `next_cursor` | `string` | yes | — |
+| Field | Type | Nullable | Decimal string | Vocabulary |
+| --- | --- | --- | --- | --- |
+| `items` | `array<T>` | no | — | — |
+| `next_cursor` | `string` | yes | — | — |
 
 #### `PendingConfirmationStatsView`
 
 Bounded state of the provisional-copy confirmation tracker.
 
-| Field | Type | Nullable | Decimal string |
-| --- | --- | --- | --- |
-| `tracked` | `integer` | no | — |
-| `running` | `boolean` | no | — |
-| `deadline_seconds` | `number` | no | — |
-| `max_tracked` | `integer` | no | — |
+| Field | Type | Nullable | Decimal string | Vocabulary |
+| --- | --- | --- | --- | --- |
+| `tracked` | `integer` | no | — | — |
+| `running` | `boolean` | no | — | — |
+| `deadline_seconds` | `number` | no | — | — |
+| `max_tracked` | `integer` | no | — | — |
 
 #### `PnlPositionView`
 
 One open position valued only from a fresh cached WSS mid quote.
 
-| Field | Type | Nullable | Decimal string |
-| --- | --- | --- | --- |
-| `condition_id` | `string` | no | — |
-| `token_id` | `string` | no | — |
-| `leader_wallet` | `string` | yes | — |
-| `size` | `string` | no | **yes** |
-| `avg_entry_price` | `string` | no | **yes** |
-| `cost_basis_usdc` | `string` | no | **yes** |
-| `mark_price` | `string` | yes | **yes** |
-| `market_value_usdc` | `string` | yes | **yes** |
-| `unrealized_pnl_usdc` | `string` | yes | **yes** |
+| Field | Type | Nullable | Decimal string | Vocabulary |
+| --- | --- | --- | --- | --- |
+| `condition_id` | `string` | no | — | — |
+| `token_id` | `string` | no | — | — |
+| `leader_wallet` | `string` | yes | — | — |
+| `size` | `string` | no | **yes** | — |
+| `avg_entry_price` | `string` | no | **yes** | — |
+| `cost_basis_usdc` | `string` | no | **yes** | — |
+| `mark_price` | `string` | yes | **yes** | — |
+| `market_value_usdc` | `string` | yes | **yes** | — |
+| `unrealized_pnl_usdc` | `string` | yes | **yes** | — |
 
 #### `PnlSummaryView`
 
 Session-scoped realized ledger metrics for one follower account.
 
-| Field | Type | Nullable | Decimal string |
-| --- | --- | --- | --- |
-| `realized_pnl_usdc` | `string` | no | **yes** |
-| `total_invested_usdc` | `string` | no | **yes** |
-| `total_returned_usdc` | `string` | no | **yes** |
-| `max_drawdown_usdc` | `string` | no | **yes** |
-| `trade_count` | `integer` | no | — |
-| `buy_count` | `integer` | no | — |
-| `sell_count` | `integer` | no | — |
-| `win_count` | `integer` | no | — |
-| `loss_count` | `integer` | no | — |
-| `session_started_at` | `timestamp` | no | — |
+| Field | Type | Nullable | Decimal string | Vocabulary |
+| --- | --- | --- | --- | --- |
+| `realized_pnl_usdc` | `string` | no | **yes** | — |
+| `total_invested_usdc` | `string` | no | **yes** | — |
+| `total_returned_usdc` | `string` | no | **yes** | — |
+| `max_drawdown_usdc` | `string` | no | **yes** | — |
+| `trade_count` | `integer` | no | — | — |
+| `buy_count` | `integer` | no | — | — |
+| `sell_count` | `integer` | no | — | — |
+| `win_count` | `integer` | no | — | — |
+| `loss_count` | `integer` | no | — | — |
+| `session_started_at` | `timestamp` | no | — | — |
 
 #### `PnlView`
 
 Realized session PnL paired with honestly marked open positions.
 
-| Field | Type | Nullable | Decimal string |
-| --- | --- | --- | --- |
-| `follower_account` | `string` | no | — |
-| `realized` | `PnlSummaryView` | no | — |
-| `positions` | `array<PnlPositionView>` | no | — |
-| `position_count` | `integer` | no | — |
-| `truncated` | `boolean` | no | — |
-| `cost_basis_usdc` | `string` | no | **yes** |
-| `unrealized_pnl_usdc` | `string` | yes | **yes** |
-| `unrealized_basis` | `string` | no | — |
-| `marked_position_count` | `integer` | no | — |
-| `observed_at` | `timestamp` | no | — |
+| Field | Type | Nullable | Decimal string | Vocabulary |
+| --- | --- | --- | --- | --- |
+| `follower_account` | `string` | no | — | — |
+| `realized` | `PnlSummaryView` | no | — | — |
+| `positions` | `array<PnlPositionView>` | no | — | — |
+| `position_count` | `integer` | no | — | — |
+| `truncated` | `boolean` | no | — | — |
+| `cost_basis_usdc` | `string` | no | **yes** | — |
+| `unrealized_pnl_usdc` | `string` | yes | **yes** | — |
+| `unrealized_basis` | `string` | no | — | `wss_mid`, `partial_wss_mid`, `truncated`, `unavailable` |
+| `marked_position_count` | `integer` | no | — | — |
+| `observed_at` | `timestamp` | no | — | — |
 
 #### `PortfolioView`
 
 Cached portfolio snapshot using exact decimal strings.
 
-| Field | Type | Nullable | Decimal string |
-| --- | --- | --- | --- |
-| `follower_account` | `string` | no | — |
-| `cash_usdc` | `string` | no | **yes** |
-| `reserved_usdc` | `string` | no | **yes** |
-| `positions_value_usdc` | `string` | no | **yes** |
-| `equity_usdc` | `string` | no | **yes** |
-| `observed_at` | `timestamp` | no | — |
-| `stale` | `boolean` | no | — |
-| `copyable_balance_usdc` | `string` | no | **yes** |
-| `position_count` | `integer` | no | — |
-| `valuation_basis` | `string` | no | — |
-| `unrealized_pnl_usdc` | `string` | yes | **yes** |
+| Field | Type | Nullable | Decimal string | Vocabulary |
+| --- | --- | --- | --- | --- |
+| `follower_account` | `string` | no | — | — |
+| `cash_usdc` | `string` | no | **yes** | — |
+| `reserved_usdc` | `string` | no | **yes** | — |
+| `positions_value_usdc` | `string` | no | **yes** | — |
+| `equity_usdc` | `string` | no | **yes** | — |
+| `observed_at` | `timestamp` | no | — | — |
+| `stale` | `boolean` | no | — | — |
+| `copyable_balance_usdc` | `string` | no | **yes** | — |
+| `position_count` | `integer` | no | — | — |
+| `valuation_basis` | `string` | no | — | — |
+| `unrealized_pnl_usdc` | `string` | yes | **yes** | — |
 
 #### `PositionView`
 
 Open-position projection with decimal strings.
 
-| Field | Type | Nullable | Decimal string |
-| --- | --- | --- | --- |
-| `follower_account` | `string` | no | — |
-| `condition_id` | `string` | no | — |
-| `token_id` | `string` | no | — |
-| `leader_wallet` | `string` | yes | — |
-| `size` | `string` | no | **yes** |
-| `avg_entry_price` | `string` | no | **yes** |
-| `updated_at` | `timestamp` | no | — |
+| Field | Type | Nullable | Decimal string | Vocabulary |
+| --- | --- | --- | --- | --- |
+| `follower_account` | `string` | no | — | — |
+| `condition_id` | `string` | no | — | — |
+| `token_id` | `string` | no | — | — |
+| `leader_wallet` | `string` | yes | — | — |
+| `size` | `string` | no | **yes** | — |
+| `avg_entry_price` | `string` | no | **yes** | — |
+| `updated_at` | `timestamp` | no | — | — |
 
 #### `ReadinessView`
 
 Authoritative liveness/readiness projection from the runtime.
 
-| Field | Type | Nullable | Decimal string |
-| --- | --- | --- | --- |
-| `live` | `boolean` | no | — |
-| `ready` | `boolean` | no | — |
-| `failed_checks` | `array<string>` | no | — |
-| `observed_at` | `timestamp` | no | — |
-| `circuit_breaker_state` | `string` | no | — |
-| `wss_market_ok` | `boolean` | no | — |
-| `wss_user_ok` | `boolean` | no | — |
-| `reconciliation_ok` | `boolean` | no | — |
-| `detection_ok` | `boolean` | no | — |
-| `discovery_ok` | `boolean` | no | — |
-| `copy_workers_ok` | `boolean` | no | — |
-| `control_plane_ok` | `boolean` | no | — |
-| `telemetry_ok` | `boolean` | no | — |
-| `active_leader_count` | `integer` | no | — |
-| `active_task_count` | `integer` | no | — |
-| `pending_intents` | `integer` | no | — |
-| `reservations` | `integer` | no | — |
-| `stale_locks` | `integer` | no | — |
-| `last_reconciliation` | `timestamp` | yes | — |
-| `last_source_event` | `timestamp` | yes | — |
+| Field | Type | Nullable | Decimal string | Vocabulary |
+| --- | --- | --- | --- | --- |
+| `live` | `boolean` | no | — | — |
+| `ready` | `boolean` | no | — | — |
+| `failed_checks` | `array<string>` | no | — | — |
+| `observed_at` | `timestamp` | no | — | — |
+| `circuit_breaker_state` | `string` | no | — | — |
+| `wss_market_ok` | `boolean` | no | — | — |
+| `wss_user_ok` | `boolean` | no | — | — |
+| `reconciliation_ok` | `boolean` | no | — | — |
+| `detection_ok` | `boolean` | no | — | — |
+| `discovery_ok` | `boolean` | no | — | — |
+| `copy_workers_ok` | `boolean` | no | — | — |
+| `control_plane_ok` | `boolean` | no | — | — |
+| `telemetry_ok` | `boolean` | no | — | — |
+| `active_leader_count` | `integer` | no | — | — |
+| `active_task_count` | `integer` | no | — | — |
+| `pending_intents` | `integer` | no | — | — |
+| `reservations` | `integer` | no | — | — |
+| `stale_locks` | `integer` | no | — | — |
+| `last_reconciliation` | `timestamp` | yes | — | — |
+| `last_source_event` | `timestamp` | yes | — | — |
 
 #### `ReentryLockView`
 
 Protective-exit lock projection carrying a CAS revision.
 
-| Field | Type | Nullable | Decimal string |
-| --- | --- | --- | --- |
-| `follower_account` | `string` | no | — |
-| `task_id` | `string` | no | — |
-| `leader_wallet` | `string` | no | — |
-| `market_id` | `string` | no | — |
-| `reason` | `string` | no | — |
-| `fill_id` | `string` | no | — |
-| `locked_at` | `timestamp` | no | — |
-| `revision` | `integer` | no | — |
-| `lock_id` | `string` | no | — |
+| Field | Type | Nullable | Decimal string | Vocabulary |
+| --- | --- | --- | --- | --- |
+| `follower_account` | `string` | no | — | — |
+| `task_id` | `string` | no | — | — |
+| `leader_wallet` | `string` | no | — | — |
+| `market_id` | `string` | no | — | — |
+| `reason` | `string` | no | — | — |
+| `fill_id` | `string` | no | — | — |
+| `locked_at` | `timestamp` | no | — | — |
+| `revision` | `integer` | no | — | — |
+| `lock_id` | `string` | no | — | — |
 
 #### `ReservationView`
 
 Task-budget reservation projection with exact notional text.
 
-| Field | Type | Nullable | Decimal string |
-| --- | --- | --- | --- |
-| `reservation_id` | `string` | no | — |
-| `follower_account` | `string` | no | — |
-| `task_id` | `string` | no | — |
-| `market_id` | `string` | no | — |
-| `amount` | `string` | no | **yes** |
-| `status` | `string` | no | — |
-| `reserved_at` | `timestamp` | no | — |
-| `expires_at` | `timestamp` | no | — |
+| Field | Type | Nullable | Decimal string | Vocabulary |
+| --- | --- | --- | --- | --- |
+| `reservation_id` | `string` | no | — | — |
+| `follower_account` | `string` | no | — | — |
+| `task_id` | `string` | no | — | — |
+| `market_id` | `string` | no | — | — |
+| `amount` | `string` | no | **yes** | — |
+| `status` | `string` | no | — | — |
+| `reserved_at` | `timestamp` | no | — | — |
+| `expires_at` | `timestamp` | no | — | — |
 
 #### `RiskBlockView`
 
 One active durable risk block on a follower position.
 
-| Field | Type | Nullable | Decimal string |
-| --- | --- | --- | --- |
-| `follower_account` | `string` | no | — |
-| `condition_id` | `string` | no | — |
-| `token_id` | `string` | no | — |
-| `reason` | `string` | no | — |
-| `source` | `string` | no | — |
-| `leader_wallet` | `string` | yes | — |
-| `triggered_at` | `timestamp` | no | — |
-| `expires_at` | `timestamp` | yes | — |
+| Field | Type | Nullable | Decimal string | Vocabulary |
+| --- | --- | --- | --- | --- |
+| `follower_account` | `string` | no | — | — |
+| `condition_id` | `string` | no | — | — |
+| `token_id` | `string` | no | — | — |
+| `reason` | `string` | no | — | — |
+| `source` | `string` | no | — | — |
+| `leader_wallet` | `string` | yes | — | — |
+| `triggered_at` | `timestamp` | no | — | — |
+| `expires_at` | `timestamp` | yes | — | — |
 
 #### `RiskHeadroomView`
 
 Account-level BUY headroom recomputed from one cached snapshot.
 
-| Field | Type | Nullable | Decimal string |
-| --- | --- | --- | --- |
-| `allowed` | `boolean` | no | — |
-| `reason` | `string` | no | — |
-| `policy_name` | `string` | no | — |
-| `cap_notional_usdc` | `string` | no | **yes** |
-| `equity_usdc` | `string` | no | **yes** |
-| `free_cash_usdc` | `string` | no | **yes** |
-| `daily_loss_usdc` | `string` | no | **yes** |
-| `open_position_count` | `integer` | no | — |
+| Field | Type | Nullable | Decimal string | Vocabulary |
+| --- | --- | --- | --- | --- |
+| `allowed` | `boolean` | no | — | — |
+| `reason` | `string` | no | — | — |
+| `policy_name` | `string` | no | — | — |
+| `cap_notional_usdc` | `string` | no | **yes** | — |
+| `equity_usdc` | `string` | no | **yes** | — |
+| `free_cash_usdc` | `string` | no | **yes** | — |
+| `daily_loss_usdc` | `string` | no | **yes** | — |
+| `open_position_count` | `integer` | no | — | — |
 
 #### `RiskPolicyView`
 
 Effective account-level risk limits as configured for this process.
 
-| Field | Type | Nullable | Decimal string |
-| --- | --- | --- | --- |
-| `name` | `string` | no | — |
-| `risk_management_enabled` | `boolean` | no | — |
-| `tiered_policy_enabled` | `boolean` | no | — |
-| `kill_switch` | `boolean` | no | — |
-| `max_open_positions` | `integer` | no | — |
-| `max_market_exposure_usdc` | `string` | no | **yes** |
-| `max_category_exposure_usdc` | `string` | no | **yes** |
-| `max_leader_exposure_usdc` | `string` | no | **yes** |
-| `max_daily_drawdown_pct` | `string` | no | **yes** |
-| `reserve_pct` | `string` | no | **yes** |
-| `reserve_floor_usdc` | `string` | no | **yes** |
-| `hard_cap_pct` | `string` | no | **yes** |
-| `hard_cap_ceiling_usdc` | `string` | no | **yes** |
-| `allow_partial_exits` | `boolean` | no | — |
-| `allow_pyramiding` | `boolean` | no | — |
+| Field | Type | Nullable | Decimal string | Vocabulary |
+| --- | --- | --- | --- | --- |
+| `name` | `string` | no | — | — |
+| `risk_management_enabled` | `boolean` | no | — | — |
+| `tiered_policy_enabled` | `boolean` | no | — | — |
+| `kill_switch` | `boolean` | no | — | — |
+| `max_open_positions` | `integer` | no | — | — |
+| `max_market_exposure_usdc` | `string` | no | **yes** | — |
+| `max_category_exposure_usdc` | `string` | no | **yes** | — |
+| `max_leader_exposure_usdc` | `string` | no | **yes** | — |
+| `max_daily_drawdown_pct` | `string` | no | **yes** | — |
+| `reserve_pct` | `string` | no | **yes** | — |
+| `reserve_floor_usdc` | `string` | no | **yes** | — |
+| `hard_cap_pct` | `string` | no | **yes** | — |
+| `hard_cap_ceiling_usdc` | `string` | no | **yes** | — |
+| `allow_partial_exits` | `boolean` | no | — | — |
+| `allow_pyramiding` | `boolean` | no | — | — |
 
 #### `RiskStateView`
 
 Configured policy, active blocks, recent triggers, and headroom.
 
-| Field | Type | Nullable | Decimal string |
-| --- | --- | --- | --- |
-| `follower_account` | `string` | no | — |
-| `policy` | `RiskPolicyView` | no | — |
-| `active_blocks` | `array<RiskBlockView>` | no | — |
-| `recent_triggers` | `array<RiskTriggerView>` | no | — |
-| `headroom` | `RiskHeadroomView` | yes | — |
-| `day_start_equity_usdc` | `string` | yes | **yes** |
-| `observed_at` | `timestamp` | no | — |
+| Field | Type | Nullable | Decimal string | Vocabulary |
+| --- | --- | --- | --- | --- |
+| `follower_account` | `string` | no | — | — |
+| `policy` | `RiskPolicyView` | no | — | — |
+| `active_blocks` | `array<RiskBlockView>` | no | — | — |
+| `recent_triggers` | `array<RiskTriggerView>` | no | — | — |
+| `headroom` | `RiskHeadroomView` | yes | — | — |
+| `day_start_equity_usdc` | `string` | yes | **yes** | — |
+| `observed_at` | `timestamp` | no | — | — |
 
 #### `RiskTriggerView`
 
 One recorded protective-exit trigger and its fill status.
 
-| Field | Type | Nullable | Decimal string |
-| --- | --- | --- | --- |
-| `trigger_id` | `string` | no | — |
-| `follower_account` | `string` | no | — |
-| `condition_id` | `string` | no | — |
-| `token_id` | `string` | no | — |
-| `reason` | `string` | no | — |
-| `source` | `string` | no | — |
-| `fill_status` | `string` | no | — |
-| `fill_order_id` | `string` | yes | — |
-| `triggered_at` | `timestamp` | no | — |
+| Field | Type | Nullable | Decimal string | Vocabulary |
+| --- | --- | --- | --- | --- |
+| `trigger_id` | `string` | no | — | — |
+| `follower_account` | `string` | no | — | — |
+| `condition_id` | `string` | no | — | — |
+| `token_id` | `string` | no | — | — |
+| `reason` | `string` | no | — | — |
+| `source` | `string` | no | — | — |
+| `fill_status` | `string` | no | — | — |
+| `fill_order_id` | `string` | yes | — | — |
+| `triggered_at` | `timestamp` | no | — | — |
 
 #### `RuntimeView`
 
 Bounded local runtime state.
 
-| Field | Type | Nullable | Decimal string |
-| --- | --- | --- | --- |
-| `entry_control` | `EntryControlState` | no | — |
-| `worker_count` | `integer` | no | — |
-| `queue_depth` | `integer` | no | — |
-| `observed_at` | `timestamp` | no | — |
+| Field | Type | Nullable | Decimal string | Vocabulary |
+| --- | --- | --- | --- | --- |
+| `entry_control` | `EntryControlState` | no | — | — |
+| `worker_count` | `integer` | no | — | — |
+| `queue_depth` | `integer` | no | — | — |
+| `observed_at` | `timestamp` | no | — | — |
 
 #### `SettingsApplyMetadata`
 
 Truthful write/apply metadata for restart-required settings.
 
-| Field | Type | Nullable | Decimal string |
-| --- | --- | --- | --- |
-| `previous_revision` | `string` | no | — |
-| `revision` | `string` | no | — |
-| `applied_at` | `timestamp` | no | — |
-| `applied_by` | `string` | no | — |
-| `restart_required` | `boolean` | no | — |
-| `live_applied` | `boolean` | no | — |
+| Field | Type | Nullable | Decimal string | Vocabulary |
+| --- | --- | --- | --- | --- |
+| `previous_revision` | `string` | no | — | — |
+| `revision` | `string` | no | — | — |
+| `applied_at` | `timestamp` | no | — | — |
+| `applied_by` | `string` | no | — | — |
+| `restart_required` | `boolean` | no | — | — |
+| `live_applied` | `boolean` | no | — | — |
 
 #### `SettingsDocument`
 
 Secret-free immutable settings document and content revision.
 
-| Field | Type | Nullable | Decimal string |
-| --- | --- | --- | --- |
-| `path` | `SettingsPath` | no | — |
-| `values` | `object` | no | — |
-| `revision` | `string` | no | — |
+| Field | Type | Nullable | Decimal string | Vocabulary |
+| --- | --- | --- | --- | --- |
+| `path` | `SettingsPath` | no | — | — |
+| `values` | `object` | no | — | — |
+| `revision` | `string` | no | — | — |
 
 #### `SettingsPath`
 
 Allowlisted environment and service-section identity.
 
-| Field | Type | Nullable | Decimal string |
-| --- | --- | --- | --- |
-| `environment` | `string` | no | — |
-| `section` | `string` | no | — |
+| Field | Type | Nullable | Decimal string | Vocabulary |
+| --- | --- | --- | --- | --- |
+| `environment` | `string` | no | — | — |
+| `section` | `string` | no | — | — |
 
 #### `SettingsWriteResult`
 
 Secret-free written document and truthful apply metadata.
 
-| Field | Type | Nullable | Decimal string |
-| --- | --- | --- | --- |
-| `document` | `SettingsDocument` | no | — |
-| `metadata` | `SettingsApplyMetadata` | no | — |
+| Field | Type | Nullable | Decimal string | Vocabulary |
+| --- | --- | --- | --- | --- |
+| `document` | `SettingsDocument` | no | — | — |
+| `metadata` | `SettingsApplyMetadata` | no | — | — |
 
 #### `SystemStatusView`
 
 System identity paired with authoritative readiness state.
 
-| Field | Type | Nullable | Decimal string |
-| --- | --- | --- | --- |
-| `system` | `SystemView` | no | — |
-| `readiness` | `ReadinessView` | no | — |
+| Field | Type | Nullable | Decimal string | Vocabulary |
+| --- | --- | --- | --- | --- |
+| `system` | `SystemView` | no | — | — |
+| `readiness` | `ReadinessView` | no | — | — |
 
 #### `SystemView`
 
 Process identity and environment snapshot.
 
-| Field | Type | Nullable | Decimal string |
-| --- | --- | --- | --- |
-| `service` | `string` | no | — |
-| `version` | `string` | no | — |
-| `environment` | `string` | no | — |
-| `observed_at` | `timestamp` | no | — |
-| `mode` | `string` | no | — |
-| `backend` | `string` | no | — |
-| `uptime_seconds` | `number` | no | — |
+| Field | Type | Nullable | Decimal string | Vocabulary |
+| --- | --- | --- | --- | --- |
+| `service` | `string` | no | — | — |
+| `version` | `string` | no | — | — |
+| `environment` | `string` | no | — | — |
+| `observed_at` | `timestamp` | no | — | — |
+| `mode` | `string` | no | — | — |
+| `backend` | `string` | no | — | — |
+| `uptime_seconds` | `number` | no | — | — |
 
 #### `TaskConfigurationView`
 
 Complete typed configuration projection for one copy task.
 
-| Field | Type | Nullable | Decimal string |
-| --- | --- | --- | --- |
-| `trigger` | `TaskTriggerView` | no | — |
-| `spend` | `TaskSpendView` | no | — |
-| `price` | `TaskPriceView` | no | — |
-| `reaction` | `TaskReactionView` | no | — |
-| `market_filter` | `TaskMarketFilterView` | no | — |
-| `schedule` | `TaskScheduleView` | no | — |
-| `sizing` | `TaskSizingView` | no | — |
+| Field | Type | Nullable | Decimal string | Vocabulary |
+| --- | --- | --- | --- | --- |
+| `trigger` | `TaskTriggerView` | no | — | — |
+| `spend` | `TaskSpendView` | no | — | — |
+| `price` | `TaskPriceView` | no | — | — |
+| `reaction` | `TaskReactionView` | no | — | — |
+| `market_filter` | `TaskMarketFilterView` | no | — | — |
+| `schedule` | `TaskScheduleView` | no | — | — |
+| `sizing` | `TaskSizingView` | no | — | — |
 
 #### `TaskDetailView`
 
 Task summary and complete typed configuration projection.
 
-| Field | Type | Nullable | Decimal string |
-| --- | --- | --- | --- |
-| `task` | `TaskView` | no | — |
-| `configuration` | `TaskConfigurationView` | no | — |
+| Field | Type | Nullable | Decimal string | Vocabulary |
+| --- | --- | --- | --- | --- |
+| `task` | `TaskView` | no | — | — |
+| `configuration` | `TaskConfigurationView` | no | — | — |
 
 #### `TaskMarketFilterView`
 
 Task metadata-filter projection.
 
-| Field | Type | Nullable | Decimal string |
-| --- | --- | --- | --- |
-| `enabled` | `boolean` | no | — |
-| `include_keywords` | `array<string>` | no | — |
-| `exclude_keywords` | `array<string>` | no | — |
-| `categories` | `array<string>` | no | — |
-| `tokens` | `array<string>` | no | — |
-| `timeframes` | `array<string>` | no | — |
-| `min_liquidity_usdc` | `string` | no | **yes** |
-| `min_volume_24h_usdc` | `string` | no | **yes** |
-| `max_days_until_close` | `string` | no | **yes** |
-| `allow_expired_unresolved` | `boolean` | no | — |
+| Field | Type | Nullable | Decimal string | Vocabulary |
+| --- | --- | --- | --- | --- |
+| `enabled` | `boolean` | no | — | — |
+| `include_keywords` | `array<string>` | no | — | — |
+| `exclude_keywords` | `array<string>` | no | — | — |
+| `categories` | `array<string>` | no | — | — |
+| `tokens` | `array<string>` | no | — | — |
+| `timeframes` | `array<string>` | no | — | — |
+| `min_liquidity_usdc` | `string` | no | **yes** | — |
+| `min_volume_24h_usdc` | `string` | no | **yes** | — |
+| `max_days_until_close` | `string` | no | **yes** | — |
+| `allow_expired_unresolved` | `boolean` | no | — | — |
 
 #### `TaskPriceView`
 
 Exact task source-price and execution-protection projection.
 
-| Field | Type | Nullable | Decimal string |
-| --- | --- | --- | --- |
-| `enabled` | `boolean` | no | — |
-| `min_price` | `string` | no | **yes** |
-| `max_price` | `string` | no | **yes** |
-| `offset_mode` | `string` | no | — |
-| `offset_direction` | `string` | no | — |
-| `offset` | `string` | no | **yes** |
-| `max_slippage_percent` | `string` | no | **yes** |
+| Field | Type | Nullable | Decimal string | Vocabulary |
+| --- | --- | --- | --- | --- |
+| `enabled` | `boolean` | no | — | — |
+| `min_price` | `string` | no | **yes** | — |
+| `max_price` | `string` | no | **yes** | — |
+| `offset_mode` | `string` | no | — | `disabled`, `fixed`, `percentage` |
+| `offset_direction` | `string` | no | — | `above`, `below` |
+| `offset` | `string` | no | **yes** | — |
+| `max_slippage_percent` | `string` | no | **yes** | — |
 
 #### `TaskReactionView`
 
 Task source-action reaction policy projection.
 
-| Field | Type | Nullable | Decimal string |
-| --- | --- | --- | --- |
-| `enabled` | `boolean` | no | — |
-| `follow_buys` | `boolean` | no | — |
-| `copy_sells` | `boolean` | no | — |
-| `buy_on_sells` | `boolean` | no | — |
-| `counter_trade` | `boolean` | no | — |
-| `copy_side` | `string` | no | — |
-| `copy_merges` | `boolean` | no | — |
-| `copy_splits` | `boolean` | no | — |
-| `copy_conversions` | `boolean` | no | — |
+| Field | Type | Nullable | Decimal string | Vocabulary |
+| --- | --- | --- | --- | --- |
+| `enabled` | `boolean` | no | — | — |
+| `follow_buys` | `boolean` | no | — | — |
+| `copy_sells` | `boolean` | no | — | — |
+| `buy_on_sells` | `boolean` | no | — | — |
+| `counter_trade` | `boolean` | no | — | — |
+| `copy_side` | `string` | no | — | `both`, `yes_only`, `no_only` |
+| `copy_merges` | `boolean` | no | — | — |
+| `copy_splits` | `boolean` | no | — | — |
+| `copy_conversions` | `boolean` | no | — | — |
 
 #### `TaskScheduleView`
 
 Task schedule projection using IANA timezone and ISO local times.
 
-| Field | Type | Nullable | Decimal string |
-| --- | --- | --- | --- |
-| `enabled` | `boolean` | no | — |
-| `timezone_name` | `string` | no | — |
-| `start` | `string` | no | — |
-| `end` | `string` | no | — |
+| Field | Type | Nullable | Decimal string | Vocabulary |
+| --- | --- | --- | --- | --- |
+| `enabled` | `boolean` | no | — | — |
+| `timezone_name` | `string` | no | — | — |
+| `start` | `string` | no | — | — |
+| `end` | `string` | no | — | — |
 
 #### `TaskSizingView`
 
 Exact per-task sizing policy projection.
 
-| Field | Type | Nullable | Decimal string |
-| --- | --- | --- | --- |
-| `enabled` | `boolean` | no | — |
-| `mode` | `string` | no | — |
-| `percentage` | `string` | no | **yes** |
-| `fixed_amount` | `string` | no | **yes** |
-| `trade_multiplier` | `string` | no | **yes** |
-| `weighted_multiplier` | `string` | no | **yes** |
-| `buy_min_amount` | `string` | no | **yes** |
-| `buy_max_amount` | `string` | no | **yes** |
-| `copyable_balance_percent` | `string` | no | **yes** |
-| `proportional_balance_cap_enabled` | `boolean` | no | — |
-| `require_leader_balance` | `boolean` | no | — |
-| `strict_fixed_amount` | `boolean` | no | — |
-| `strict_exact_mirror` | `boolean` | no | — |
+| Field | Type | Nullable | Decimal string | Vocabulary |
+| --- | --- | --- | --- | --- |
+| `enabled` | `boolean` | no | — | — |
+| `mode` | `string` | no | — | `fixed`, `exact_mirror`, `proportional`, `balance_weighted`, `portfolio_weighted`, `adaptive`, `tiered` |
+| `percentage` | `string` | no | **yes** | — |
+| `fixed_amount` | `string` | no | **yes** | — |
+| `trade_multiplier` | `string` | no | **yes** | — |
+| `weighted_multiplier` | `string` | no | **yes** | — |
+| `buy_min_amount` | `string` | no | **yes** | — |
+| `buy_max_amount` | `string` | no | **yes** | — |
+| `copyable_balance_percent` | `string` | no | **yes** | — |
+| `proportional_balance_cap_enabled` | `boolean` | no | — | — |
+| `require_leader_balance` | `boolean` | no | — | — |
+| `strict_fixed_amount` | `boolean` | no | — | — |
+| `strict_exact_mirror` | `boolean` | no | — | — |
 
 #### `TaskSpendView`
 
 Exact task spend and duplicate-entry policy projection.
 
-| Field | Type | Nullable | Decimal string |
-| --- | --- | --- | --- |
-| `enabled` | `boolean` | no | — |
-| `max_total` | `string` | no | **yes** |
-| `max_daily` | `string` | no | **yes** |
-| `max_per_market` | `string` | no | **yes** |
-| `one_entry_per_market` | `boolean` | no | — |
-| `global_one_entry_per_market` | `boolean` | no | — |
-| `one_entry_per_sports_type` | `boolean` | no | — |
+| Field | Type | Nullable | Decimal string | Vocabulary |
+| --- | --- | --- | --- | --- |
+| `enabled` | `boolean` | no | — | — |
+| `max_total` | `string` | no | **yes** | — |
+| `max_daily` | `string` | no | **yes** | — |
+| `max_per_market` | `string` | no | **yes** | — |
+| `one_entry_per_market` | `boolean` | no | — | — |
+| `global_one_entry_per_market` | `boolean` | no | — | — |
+| `one_entry_per_sports_type` | `boolean` | no | — | — |
 
 #### `TaskTriggerView`
 
 Exact task source-notional eligibility projection.
 
-| Field | Type | Nullable | Decimal string |
-| --- | --- | --- | --- |
-| `enabled` | `boolean` | no | — |
-| `min_notional` | `string` | no | **yes** |
-| `max_notional` | `string` | no | **yes** |
+| Field | Type | Nullable | Decimal string | Vocabulary |
+| --- | --- | --- | --- | --- |
+| `enabled` | `boolean` | no | — | — |
+| `min_notional` | `string` | no | **yes** | — |
+| `max_notional` | `string` | no | **yes** | — |
 
 #### `TaskView`
 
 Safe task identity, lifecycle, and revision projection.
 
-| Field | Type | Nullable | Decimal string |
-| --- | --- | --- | --- |
-| `task_id` | `string` | no | — |
-| `name` | `string` | no | — |
-| `leader_wallet` | `string` | no | — |
-| `follower_account` | `string` | no | — |
-| `status` | `string` | no | — |
-| `monitoring_mode` | `string` | no | — |
-| `sizing_mode` | `string` | no | — |
-| `version` | `integer` | no | — |
-| `notifications_muted` | `boolean` | no | — |
+| Field | Type | Nullable | Decimal string | Vocabulary |
+| --- | --- | --- | --- | --- |
+| `task_id` | `string` | no | — | — |
+| `name` | `string` | no | — | — |
+| `leader_wallet` | `string` | no | — | — |
+| `follower_account` | `string` | no | — | — |
+| `status` | `string` | no | — | `active`, `paused`, `deleted` |
+| `monitoring_mode` | `string` | no | — | `normal`, `priority` |
+| `sizing_mode` | `string` | no | — | `fixed`, `exact_mirror`, `proportional`, `balance_weighted`, `portfolio_weighted`, `adaptive`, `tiered` |
+| `version` | `integer` | no | — | — |
+| `notifications_muted` | `boolean` | no | — | — |
 
 ### 9.4 Telemetry and metrics snapshots
 
@@ -1216,8 +1249,16 @@ full stop), not two independent toggles.
 
 Upgrade `GET /api/v1/stream` with the same bearer header (see the browser caveat
 in §2). Requires the `telemetry.stream` permission, which the viewer credential
-holds. Text frames only — a binary frame closes the socket. Maximum message size
-is **4096 bytes** in each direction; the server heartbeats every **30 seconds**.
+holds. Text frames only — a binary frame closes the socket. The server
+heartbeats every **30 seconds**.
+
+**Message size is capped in one direction only.** A **client-to-server** frame
+must stay under **4096 bytes**: that is the inbound reader's limit, it rejects a
+frame whose projected size reaches it, and the socket then closes. Both legal
+client frames are a handful of bytes, so this is only a hazard if you invent
+one. **Server-to-client frames are not bounded by that number** — a
+`telemetry_snapshot` carrying up to 100 events is routinely far larger. Do not
+size a receive buffer, a validator, or a "message too large" check on 4096.
 
 ### Server → client frames
 
@@ -1228,7 +1269,7 @@ is **4096 bytes** in each direction; the server heartbeats every **30 seconds**.
 | `telemetry_snapshot` | `data`: a telemetry snapshot object, or `null` | replace the feed contents |
 | `resync_required` | `dropped_count`: integer | **you missed events** — a `telemetry_snapshot` follows; also re-read every REST screen you are showing |
 | `pong` | — | answer to your `ping` |
-| `error` | `code`: `invalid_stream_message` \| `unsupported_stream_message` \| `rate_limited` | the first two are recoverable; `rate_limited` is followed by a close |
+| `error` | `code`: `invalid_stream_message` \| `unsupported_stream_message` \| `rate_limited`; the `rate_limited` variant also carries `retry_after_seconds` (integer) | the first two are recoverable and the socket stays open; `rate_limited` is immediately followed by a close, so wait `retry_after_seconds` before reconnecting |
 
 ### Client → server frames
 
@@ -1550,14 +1591,14 @@ generated from the running backend and holds:
 | `authentication` | header form, principals, 401/403 statuses |
 | `capabilities` | the complete capability vocabulary |
 | `decimal_fields` | every view field that is a decimal string |
-| `enums` | REST enum vocabularies |
+| `enums` | REST enum vocabularies, including the domain vocabularies behind string-typed view fields |
 | `envelope` | success and error envelope shapes |
 | `errors.application`, `errors.transport` | every error code with its HTTP status |
-| `limits` | page, bulk, rate-limit, request-size and WebSocket limits |
+| `limits` | page, bulk, rate-limit, request-size and WebSocket limits — the deployment's `ControlPlaneHttpConfig` defaults, overridable in `config/control_plane.yml`; `_note` restates that caveat and the inbound-only WebSocket cap |
 | `permissions.all`, `permissions.viewer` | permission vocabulary and the read-only set |
 | `routes` | every method/path with permission, capability, query, body, response, status, rate-limit action |
 | `telemetry` | the event envelope, every payload with its fields and category, every enum, the payload → `event_type` mapping, WSS stream names |
-| `views` | every response schema: field name, type, nullability, decimal flag |
+| `views` | every response schema: field name, type, nullability, decimal flag, and closed vocabulary where one exists |
 | `websocket` | frame types in both directions and the client error codes |
 
 Generate your types from it rather than transcribing the tables above by hand.

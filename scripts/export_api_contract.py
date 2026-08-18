@@ -71,11 +71,16 @@ from orchestrators.control_plane_reads import ControlPlaneRuntimeReads  # noqa: 
 from scripts.api_contract_introspection import (  # noqa: E402
     DecimalFieldExtractor,
     TypeRenderer,
+    blank_payload,
+    outcome_values,
+    resolve_vocabulary,
+    summary_line,
 )
 from scripts.api_contract_tables import (  # noqa: E402
     BULK_ITEMS_MAX,
     CURSOR_MAX_CHARS,
     DECIMAL_FIELDS,
+    FIELD_VOCABULARIES,
     HTTP_MODULE,
     PAGE_LIMIT_DEFAULT,
     PAGE_LIMIT_MAX,
@@ -87,7 +92,7 @@ from scripts.api_contract_tables import (  # noqa: E402
     TRANSPORT_ERRORS,
     WEBSOCKET_ERROR_CODES,
     WEBSOCKET_HEARTBEAT_SECONDS,
-    WEBSOCKET_MAX_MESSAGE_BYTES,
+    WEBSOCKET_MAX_INBOUND_MESSAGE_BYTES,
     RouteSpec,
 )
 from services.control_plane import contracts as rest_contracts  # noqa: E402
@@ -156,6 +161,7 @@ class ApiContractExporter:
         *,
         routes: Sequence[RouteSpec] = ROUTES,
         decimal_fields: Mapping[str, tuple[str, ...]] = DECIMAL_FIELDS,
+        field_vocabularies: Mapping[str, Mapping[str, str]] = FIELD_VOCABULARIES,
     ) -> None:
         """Store the hand-written halves of the contract.
 
@@ -163,10 +169,15 @@ class ApiContractExporter:
             routes: Static route table cross-checked against the application.
             decimal_fields: Curated decimal-string field map, cross-checked
                 against the validators each view runs.
+            field_vocabularies: Closed vocabularies behind string-typed view
+                fields, named as ``module:symbol`` and resolved at build time.
         """
 
         self._routes = tuple(routes)
         self._decimal_fields = {name: tuple(fields) for name, fields in decimal_fields.items()}
+        self._field_vocabularies = {
+            view: dict(fields) for view, fields in field_vocabularies.items()
+        }
         self._config = ControlPlaneHttpConfig()
         self._payload_types = tuple(typing.get_args(TelemetryPayload))
         self._renderer = TypeRenderer(
@@ -213,6 +224,7 @@ class ApiContractExporter:
         problems: list[str] = []
         problems.extend(self._route_problems())
         problems.extend(self._decimal_problems())
+        problems.extend(self._vocabulary_problems())
         problems.extend(self._source_guard_problems())
         return tuple(problems)
 
@@ -264,6 +276,52 @@ class ApiContractExporter:
                     f"DECIMAL_FIELDS[{name}] is {self._decimal_fields.get(name)} but the view "
                     f"validates {derived.get(name)}"
                 )
+        return tuple(problems)
+
+    def resolved_vocabularies(self) -> dict[str, dict[str, tuple[str, ...]]]:
+        """Return the members behind every declared string-field vocabulary.
+
+        Returns:
+            ``{view_name: {field_name: (value, ...)}}`` with values in the
+            order the source enum or literal tuple declares them.
+        """
+
+        resolved: dict[str, dict[str, tuple[str, ...]]] = {}
+        for view, fields in self._field_vocabularies.items():
+            for field, target in fields.items():
+                resolved.setdefault(view, {})[field] = resolve_vocabulary(target)
+        return resolved
+
+    def _vocabulary_problems(self) -> tuple[str, ...]:
+        problems: list[str] = []
+        views = self._view_types()
+        for view, fields in self._field_vocabularies.items():
+            owner = views.get(view)
+            if owner is None:
+                problems.append(f"FIELD_VOCABULARIES names unknown view {view}")
+                continue
+            hints = typing.get_type_hints(owner)
+            declared = {item.name for item in dataclasses.fields(cast(Any, owner))}
+            for field, target in sorted(fields.items()):
+                if field not in declared:
+                    problems.append(f"FIELD_VOCABULARIES names unknown field {view}.{field}")
+                    continue
+                if hints[field] is not str:
+                    problems.append(
+                        f"FIELD_VOCABULARIES[{view}.{field}] is not a plain string field"
+                    )
+                try:
+                    members = resolve_vocabulary(target)
+                except (ImportError, AttributeError, TypeError, ValueError) as error:
+                    problems.append(
+                        f"FIELD_VOCABULARIES[{view}.{field}] target {target!r} "
+                        f"does not resolve: {type(error).__name__}"
+                    )
+                    continue
+                if not members:
+                    problems.append(
+                        f"FIELD_VOCABULARIES[{view}.{field}] target {target!r} is empty"
+                    )
         return tuple(problems)
 
     @staticmethod
@@ -353,7 +411,7 @@ class ApiContractExporter:
             "authentication": self._authentication(),
             "capabilities": list(self.capability_vocabulary()),
             "decimal_fields": {name: list(fields) for name, fields in self._decimal_fields.items()},
-            "enums": self._enums(rest_contracts),
+            "enums": self._rest_enums(),
             "envelope": self._envelope(),
             "errors": {
                 "application": self._application_errors(),
@@ -424,6 +482,13 @@ class ApiContractExporter:
 
     def _limits(self) -> dict[str, JsonValue]:
         return {
+            "_note": (
+                "Transport limits are the ControlPlaneHttpConfig defaults, which a deployment "
+                "may override in config/control_plane.yml; treat them as the expected shape, "
+                "not as constants. websocket_max_inbound_message_bytes bounds client-to-server "
+                "frames only - server-to-client frames such as telemetry_snapshot are not "
+                "capped by it."
+            ),
             "bulk_items_max": BULK_ITEMS_MAX,
             "bulk_items_min": 1,
             "command_rate_limit": self._config.command_rate_limit,
@@ -438,7 +503,7 @@ class ApiContractExporter:
             "telemetry_limit_max": TELEMETRY_LIMIT_MAX,
             "telemetry_limit_min": 0,
             "websocket_heartbeat_seconds": WEBSOCKET_HEARTBEAT_SECONDS,
-            "websocket_max_message_bytes": WEBSOCKET_MAX_MESSAGE_BYTES,
+            "websocket_max_inbound_message_bytes": WEBSOCKET_MAX_INBOUND_MESSAGE_BYTES,
             "websocket_queue_capacity": self._config.websocket_queue_capacity,
         }
 
@@ -454,11 +519,36 @@ class ApiContractExporter:
             }
         return errors
 
+    def _rest_enums(self) -> dict[str, JsonValue]:
+        """Return REST enums plus every externally-declared field vocabulary.
+
+        A view that projects a domain enum through ``.value`` annotates the
+        field as ``str``, so the vocabulary lives outside both contract
+        modules. Publishing it here keeps the contract self-sufficient: a
+        generator can emit one shared union type instead of a bare string.
+        """
+
+        enums = self._enums(rest_contracts)
+        for fields in self._field_vocabularies.values():
+            for target in fields.values():
+                name = target.rpartition(":")[2]
+                members = list(resolve_vocabulary(target))
+                existing = enums.get(name)
+                if existing is not None and existing != members:
+                    raise RuntimeError(f"vocabulary name {name!r} resolves two different ways")
+                enums[name] = members
+        return dict(sorted(enums.items()))
+
     def _views(self) -> dict[str, JsonValue]:
+        vocabularies = self.resolved_vocabularies()
         return {
             name: {
-                "doc": _summary(view),
-                "fields": self._fields(view, self._decimal_fields.get(name, ())),
+                "doc": summary_line(view),
+                "fields": self._fields(
+                    view,
+                    self._decimal_fields.get(name, ()),
+                    vocabularies.get(name),
+                ),
             }
             for name, view in self._view_types().items()
         }
@@ -467,7 +557,7 @@ class ApiContractExporter:
         payloads: dict[str, JsonValue] = {
             payload.__name__: {
                 "category": payload.__dataclass_fields__["category"].default.value,
-                "doc": _summary(payload),
+                "doc": summary_line(payload),
                 "fields": self._fields(payload, ()),
             }
             for payload in self._payload_types
@@ -475,7 +565,7 @@ class ApiContractExporter:
         return {
             "enums": self._enums(telemetry_contracts),
             "event": {
-                "doc": _summary(TelemetryEvent),
+                "doc": summary_line(TelemetryEvent),
                 "fields": self._fields(TelemetryEvent, ()),
             },
             "event_type_by_payload": self._event_types(),
@@ -486,15 +576,22 @@ class ApiContractExporter:
     def _event_types(self) -> dict[str, JsonValue]:
         mapping: dict[str, JsonValue] = {}
         for payload in self._payload_types:
-            outcomes = _outcome_values(payload)
+            outcomes = outcome_values(payload)
             if outcomes is None:
                 mapping[payload.__name__] = event_type_for_payload(
-                    cast(Any, _blank_payload(payload))
+                    cast(Any, blank_payload(payload, placeholders=PAYLOAD_FIELD_PLACEHOLDERS))
                 ).value
                 continue
             by_outcome = {
                 outcome.value: event_type_for_payload(
-                    cast(Any, _blank_payload(payload, outcome=outcome))
+                    cast(
+                        Any,
+                        blank_payload(
+                            payload,
+                            outcome=outcome,
+                            placeholders=PAYLOAD_FIELD_PLACEHOLDERS,
+                        ),
+                    )
                 ).value
                 for outcome in outcomes
             }
@@ -504,17 +601,25 @@ class ApiContractExporter:
             )
         return mapping
 
-    def _fields(self, owner: type, decimals: Sequence[str]) -> list[JsonValue]:
+    def _fields(
+        self,
+        owner: type,
+        decimals: Sequence[str],
+        vocabularies: Mapping[str, tuple[str, ...]] | None = None,
+    ) -> list[JsonValue]:
         hints = typing.get_type_hints(owner)
+        vocabulary_by_field = vocabularies or {}
         rendered: list[JsonValue] = []
         for item in dataclasses.fields(cast(Any, owner)):
             type_name, nullable = self._renderer.render(hints[item.name])
+            members = vocabulary_by_field.get(item.name)
             rendered.append(
                 {
                     "decimal": item.name in decimals,
                     "name": item.name,
                     "nullable": nullable,
                     "type": type_name,
+                    "vocabulary": list(members) if members is not None else None,
                 }
             )
         return rendered
@@ -549,7 +654,14 @@ class ApiContractExporter:
             "error_codes": dict(sorted(WEBSOCKET_ERROR_CODES.items())),
             "path": f"{API_PREFIX}/stream",
             "server_frames": {
-                "error": {"code": "string", "type": "error"},
+                "error": {
+                    "code": "string",
+                    "retry_after_seconds": (
+                        "integer, present only on the rate_limited variant, which is "
+                        "immediately followed by a close"
+                    ),
+                    "type": "error",
+                },
                 "pong": {"type": "pong"},
                 "resync_required": {"dropped_count": "integer", "type": "resync_required"},
                 "stream_ready": {"type": "stream_ready"},
@@ -655,55 +767,6 @@ def _export_dependencies() -> ControlPlaneDependencies:
     }
     values["settings_environment"] = "export"
     return ControlPlaneDependencies(**values)
-
-
-def _summary(owner: type) -> str:
-    """Return the first line of a class docstring, or an empty string."""
-
-    doc = inspect.getdoc(owner) or ""
-    return doc.splitlines()[0].strip() if doc else ""
-
-
-def _outcome_values(payload: type) -> tuple[Enum, ...] | None:
-    """Return the ``outcome`` enum members a payload can carry, if any."""
-
-    if "outcome" not in getattr(payload, "__dataclass_fields__", {}):
-        return None
-    annotation = typing.get_type_hints(payload).get("outcome")
-    if isinstance(annotation, type) and issubclass(annotation, Enum):
-        return tuple(annotation)
-    return None
-
-
-def _blank_payload(payload: type, *, outcome: Enum | None = None) -> object:
-    """Build one throwaway payload instance for event-type classification."""
-
-    hints = typing.get_type_hints(payload)
-    kwargs: dict[str, Any] = {}
-    for item in dataclasses.fields(cast(Any, payload)):
-        if not item.init or item.default is not dataclasses.MISSING:
-            continue
-        if item.name == "outcome" and outcome is not None:
-            kwargs["outcome"] = outcome
-            continue
-        kwargs[item.name] = _placeholder(item.name, hints[item.name])
-    return payload(**kwargs)
-
-
-def _placeholder(name: str, annotation: object) -> Any:
-    """Return a contract-valid placeholder value for one payload field."""
-
-    override = PAYLOAD_FIELD_PLACEHOLDERS.get(name)
-    if override is not None:
-        return override
-    if isinstance(annotation, type):
-        if issubclass(annotation, Enum):
-            return next(iter(annotation))
-        if issubclass(annotation, bool):
-            return False
-        if issubclass(annotation, int):
-            return 0
-    return "placeholder"
 
 
 if __name__ == "__main__":  # pragma: no cover - operator entry point

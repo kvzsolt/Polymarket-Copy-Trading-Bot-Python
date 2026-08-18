@@ -36,7 +36,18 @@ from integrations.control_plane.http import API_PREFIX  # noqa: E402
 
 
 WEBSOCKET_HEARTBEAT_SECONDS = 30.0
-WEBSOCKET_MAX_MESSAGE_BYTES = 4096
+
+WEBSOCKET_MAX_INBOUND_MESSAGE_BYTES = 4096
+"""Cap on one **client-to-server** WebSocket message.
+
+``web.WebSocketResponse(max_msg_size=...)`` reaches only the inbound
+``WebSocketReader``; ``send_str``/``send_json`` never consult it, so
+server-to-client frames — including a ``telemetry_snapshot`` carrying up to
+``telemetry_limit_default`` events — are not bounded by this number. The reader
+rejects a frame whose projected size *reaches* the limit, so the usable inbound
+payload is one byte smaller.
+"""
+
 TELEMETRY_LIMIT_MAX = 1000
 PAGE_LIMIT_DEFAULT = 50
 PAGE_LIMIT_MIN = 1
@@ -54,7 +65,32 @@ SOURCE_GUARDS: tuple[tuple[str, str], ...] = (
     ('request.query.get("limit", "50")', HTTP_MODULE),
     ("0 <= limit <= 1000", HTTP_MODULE),
     ("1 <= len(raw_items) <= 100", HTTP_MODULE),
+    ("retry_after_seconds", HTTP_MODULE),
 )
+
+FIELD_VOCABULARIES: Mapping[str, Mapping[str, str]] = {
+    "PnlView": {"unrealized_basis": "services.control_plane.contracts_reads:PNL_VALUATION_BASES"},
+    "TaskPriceView": {
+        "offset_mode": "services.copy_tasks.domain:PriceOffsetMode",
+        "offset_direction": "services.copy_tasks.domain:PriceOffsetDirection",
+    },
+    "TaskReactionView": {"copy_side": "services.copy_tasks.domain:CopySideFilter"},
+    "TaskSizingView": {"mode": "services.copy_tasks.domain:TaskSizingMode"},
+    "TaskView": {
+        "status": "services.copy_tasks.domain:CopyTaskStatus",
+        "monitoring_mode": "services.copy_tasks.domain:MonitoringMode",
+        "sizing_mode": "services.copy_tasks.domain:TaskSizingMode",
+    },
+}
+"""Closed vocabularies behind view fields that are typed as plain strings.
+
+These views project a domain enum (or a validated literal tuple) through
+``.value``, so the annotation says ``str`` and the vocabulary is invisible to
+type introspection. Naming the source here — ``module:symbol`` — lets the
+exporter resolve the real members, so the published contract is self-sufficient
+without anyone retyping a list. The exporter rejects a name that does not
+resolve, a field that does not exist, and a field that is not a string.
+"""
 
 DECIMAL_FIELDS: Mapping[str, tuple[str, ...]] = {
     "DiscoveryCandidateView": ("score",),
@@ -751,6 +787,7 @@ __all__ = [
     "BULK_ITEMS_MAX",
     "CURSOR_MAX_CHARS",
     "DECIMAL_FIELDS",
+    "FIELD_VOCABULARIES",
     "HTTP_MODULE",
     "PAGE_LIMIT_DEFAULT",
     "PAGE_LIMIT_MAX",
@@ -765,6 +802,6 @@ __all__ = [
     "TRANSPORT_ERRORS",
     "WEBSOCKET_ERROR_CODES",
     "WEBSOCKET_HEARTBEAT_SECONDS",
-    "WEBSOCKET_MAX_MESSAGE_BYTES",
+    "WEBSOCKET_MAX_INBOUND_MESSAGE_BYTES",
     "build_routes",
 ]

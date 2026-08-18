@@ -175,15 +175,53 @@
       "audit_unavailable",
       "internal_error"
     ],
+    "CopySideFilter": [
+      "both",
+      "yes_only",
+      "no_only"
+    ],
+    "CopyTaskStatus": [
+      "active",
+      "paused",
+      "deleted"
+    ],
     "LockResetOutcome": [
       "reset",
       "not_found",
       "revision_mismatch"
     ],
+    "MonitoringMode": [
+      "normal",
+      "priority"
+    ],
+    "PNL_VALUATION_BASES": [
+      "wss_mid",
+      "partial_wss_mid",
+      "truncated",
+      "unavailable"
+    ],
+    "PriceOffsetDirection": [
+      "above",
+      "below"
+    ],
+    "PriceOffsetMode": [
+      "disabled",
+      "fixed",
+      "percentage"
+    ],
     "TaskAction": [
       "pause",
       "resume",
       "delete"
+    ],
+    "TaskSizingMode": [
+      "fixed",
+      "exact_mirror",
+      "proportional",
+      "balance_weighted",
+      "portfolio_weighted",
+      "adaptive",
+      "tiered"
     ]
   },
   "envelope": {
@@ -343,6 +381,7 @@
     }
   },
   "limits": {
+    "_note": "Transport limits are the ControlPlaneHttpConfig defaults, which a deployment may override in config/control_plane.yml; treat them as the expected shape, not as constants. websocket_max_inbound_message_bytes bounds client-to-server frames only - server-to-client frames such as telemetry_snapshot are not capped by it.",
     "bulk_items_max": 100,
     "bulk_items_min": 1,
     "command_rate_limit": 30,
@@ -357,7 +396,7 @@
     "telemetry_limit_max": 1000,
     "telemetry_limit_min": 0,
     "websocket_heartbeat_seconds": 30.0,
-    "websocket_max_message_bytes": 4096,
+    "websocket_max_inbound_message_bytes": 4096,
     "websocket_queue_capacity": 128
   },
   "permissions": {
@@ -1444,49 +1483,57 @@
           "decimal": false,
           "name": "event_id",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "event_type",
           "nullable": false,
-          "type": "TelemetryEventType"
+          "type": "TelemetryEventType",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "timestamp",
           "nullable": false,
-          "type": "timestamp"
+          "type": "timestamp",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "severity",
           "nullable": false,
-          "type": "TelemetrySeverity"
+          "type": "TelemetrySeverity",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "correlation_id",
           "nullable": true,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "payload",
           "nullable": false,
-          "type": "TelemetryPayload"
+          "type": "TelemetryPayload",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "producer",
           "nullable": false,
-          "type": "TelemetryProducer"
+          "type": "TelemetryProducer",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "sequence",
           "nullable": false,
-          "type": "integer"
+          "type": "integer",
+          "vocabulary": null
         }
       ]
     },
@@ -1527,25 +1574,29 @@
             "decimal": false,
             "name": "operation",
             "nullable": false,
-            "type": "AmbiguousOperation"
+            "type": "AmbiguousOperation",
+            "vocabulary": null
           },
           {
             "decimal": false,
             "name": "order_ref",
             "nullable": true,
-            "type": "string"
+            "type": "string",
+            "vocabulary": null
           },
           {
             "decimal": false,
             "name": "reconciliation_required",
             "nullable": false,
-            "type": "boolean"
+            "type": "boolean",
+            "vocabulary": null
           },
           {
             "decimal": false,
             "name": "category",
             "nullable": false,
-            "type": "TelemetryCategory"
+            "type": "TelemetryCategory",
+            "vocabulary": null
           }
         ]
       },
@@ -1557,19 +1608,22 @@
             "decimal": false,
             "name": "outcome",
             "nullable": false,
-            "type": "DiscoveryOutcome"
+            "type": "DiscoveryOutcome",
+            "vocabulary": null
           },
           {
             "decimal": false,
             "name": "candidate_count",
             "nullable": false,
-            "type": "integer"
+            "type": "integer",
+            "vocabulary": null
           },
           {
             "decimal": false,
             "name": "category",
             "nullable": false,
-            "type": "TelemetryCategory"
+            "type": "TelemetryCategory",
+            "vocabulary": null
           }
         ]
       },
@@ -1581,31 +1635,36 @@
             "decimal": false,
             "name": "component",
             "nullable": false,
-            "type": "FailureComponent"
+            "type": "FailureComponent",
+            "vocabulary": null
           },
           {
             "decimal": false,
             "name": "code",
             "nullable": false,
-            "type": "string"
+            "type": "string",
+            "vocabulary": null
           },
           {
             "decimal": false,
             "name": "retryable",
             "nullable": false,
-            "type": "boolean"
+            "type": "boolean",
+            "vocabulary": null
           },
           {
             "decimal": false,
             "name": "order_outcome",
             "nullable": true,
-            "type": "OrderOutcome"
+            "type": "OrderOutcome",
+            "vocabulary": null
           },
           {
             "decimal": false,
             "name": "category",
             "nullable": false,
-            "type": "TelemetryCategory"
+            "type": "TelemetryCategory",
+            "vocabulary": null
           }
         ]
       },
@@ -1617,25 +1676,29 @@
             "decimal": false,
             "name": "outcome",
             "nullable": false,
-            "type": "FillOutcome"
+            "type": "FillOutcome",
+            "vocabulary": null
           },
           {
             "decimal": false,
             "name": "order_ref",
             "nullable": false,
-            "type": "string"
+            "type": "string",
+            "vocabulary": null
           },
           {
             "decimal": false,
             "name": "fill_ref",
             "nullable": false,
-            "type": "string"
+            "type": "string",
+            "vocabulary": null
           },
           {
             "decimal": false,
             "name": "category",
             "nullable": false,
-            "type": "TelemetryCategory"
+            "type": "TelemetryCategory",
+            "vocabulary": null
           }
         ]
       },
@@ -1647,25 +1710,29 @@
             "decimal": false,
             "name": "outcome",
             "nullable": false,
-            "type": "LeaderOutcome"
+            "type": "LeaderOutcome",
+            "vocabulary": null
           },
           {
             "decimal": false,
             "name": "leader_ref",
             "nullable": false,
-            "type": "string"
+            "type": "string",
+            "vocabulary": null
           },
           {
             "decimal": false,
             "name": "source",
             "nullable": false,
-            "type": "string"
+            "type": "string",
+            "vocabulary": null
           },
           {
             "decimal": false,
             "name": "category",
             "nullable": false,
-            "type": "TelemetryCategory"
+            "type": "TelemetryCategory",
+            "vocabulary": null
           }
         ]
       },
@@ -1677,19 +1744,22 @@
             "decimal": false,
             "name": "outcome",
             "nullable": false,
-            "type": "LockOutcome"
+            "type": "LockOutcome",
+            "vocabulary": null
           },
           {
             "decimal": false,
             "name": "lock_ref",
             "nullable": false,
-            "type": "string"
+            "type": "string",
+            "vocabulary": null
           },
           {
             "decimal": false,
             "name": "category",
             "nullable": false,
-            "type": "TelemetryCategory"
+            "type": "TelemetryCategory",
+            "vocabulary": null
           }
         ]
       },
@@ -1701,19 +1771,22 @@
             "decimal": false,
             "name": "outcome",
             "nullable": false,
-            "type": "ProtectiveOutcome"
+            "type": "ProtectiveOutcome",
+            "vocabulary": null
           },
           {
             "decimal": false,
             "name": "task_ref",
             "nullable": false,
-            "type": "string"
+            "type": "string",
+            "vocabulary": null
           },
           {
             "decimal": false,
             "name": "category",
             "nullable": false,
-            "type": "TelemetryCategory"
+            "type": "TelemetryCategory",
+            "vocabulary": null
           }
         ]
       },
@@ -1725,19 +1798,22 @@
             "decimal": false,
             "name": "outcome",
             "nullable": false,
-            "type": "ReconciliationOutcome"
+            "type": "ReconciliationOutcome",
+            "vocabulary": null
           },
           {
             "decimal": false,
             "name": "affected_count",
             "nullable": false,
-            "type": "integer"
+            "type": "integer",
+            "vocabulary": null
           },
           {
             "decimal": false,
             "name": "category",
             "nullable": false,
-            "type": "TelemetryCategory"
+            "type": "TelemetryCategory",
+            "vocabulary": null
           }
         ]
       },
@@ -1749,19 +1825,22 @@
             "decimal": false,
             "name": "outcome",
             "nullable": false,
-            "type": "RiskOutcome"
+            "type": "RiskOutcome",
+            "vocabulary": null
           },
           {
             "decimal": false,
             "name": "task_ref",
             "nullable": true,
-            "type": "string"
+            "type": "string",
+            "vocabulary": null
           },
           {
             "decimal": false,
             "name": "category",
             "nullable": false,
-            "type": "TelemetryCategory"
+            "type": "TelemetryCategory",
+            "vocabulary": null
           }
         ]
       },
@@ -1773,19 +1852,22 @@
             "decimal": false,
             "name": "outcome",
             "nullable": false,
-            "type": "RosterOutcome"
+            "type": "RosterOutcome",
+            "vocabulary": null
           },
           {
             "decimal": false,
             "name": "active_count",
             "nullable": false,
-            "type": "integer"
+            "type": "integer",
+            "vocabulary": null
           },
           {
             "decimal": false,
             "name": "category",
             "nullable": false,
-            "type": "TelemetryCategory"
+            "type": "TelemetryCategory",
+            "vocabulary": null
           }
         ]
       },
@@ -1797,13 +1879,15 @@
             "decimal": false,
             "name": "outcome",
             "nullable": false,
-            "type": "RuntimeOutcome"
+            "type": "RuntimeOutcome",
+            "vocabulary": null
           },
           {
             "decimal": false,
             "name": "category",
             "nullable": false,
-            "type": "TelemetryCategory"
+            "type": "TelemetryCategory",
+            "vocabulary": null
           }
         ]
       },
@@ -1815,19 +1899,22 @@
             "decimal": false,
             "name": "reason",
             "nullable": false,
-            "type": "SkipReason"
+            "type": "SkipReason",
+            "vocabulary": null
           },
           {
             "decimal": false,
             "name": "task_ref",
             "nullable": true,
-            "type": "string"
+            "type": "string",
+            "vocabulary": null
           },
           {
             "decimal": false,
             "name": "category",
             "nullable": false,
-            "type": "TelemetryCategory"
+            "type": "TelemetryCategory",
+            "vocabulary": null
           }
         ]
       },
@@ -1839,25 +1926,29 @@
             "decimal": false,
             "name": "outcome",
             "nullable": false,
-            "type": "TaskOutcome"
+            "type": "TaskOutcome",
+            "vocabulary": null
           },
           {
             "decimal": false,
             "name": "task_ref",
             "nullable": false,
-            "type": "string"
+            "type": "string",
+            "vocabulary": null
           },
           {
             "decimal": false,
             "name": "leader_ref",
             "nullable": true,
-            "type": "string"
+            "type": "string",
+            "vocabulary": null
           },
           {
             "decimal": false,
             "name": "category",
             "nullable": false,
-            "type": "TelemetryCategory"
+            "type": "TelemetryCategory",
+            "vocabulary": null
           }
         ]
       },
@@ -1869,37 +1960,43 @@
             "decimal": false,
             "name": "outcome",
             "nullable": false,
-            "type": "TradeOutcome"
+            "type": "TradeOutcome",
+            "vocabulary": null
           },
           {
             "decimal": false,
             "name": "task_ref",
             "nullable": false,
-            "type": "string"
+            "type": "string",
+            "vocabulary": null
           },
           {
             "decimal": false,
             "name": "side",
             "nullable": false,
-            "type": "TradeSide"
+            "type": "TradeSide",
+            "vocabulary": null
           },
           {
             "decimal": false,
             "name": "order_ref",
             "nullable": true,
-            "type": "string"
+            "type": "string",
+            "vocabulary": null
           },
           {
             "decimal": false,
             "name": "order_outcome",
             "nullable": true,
-            "type": "OrderOutcome"
+            "type": "OrderOutcome",
+            "vocabulary": null
           },
           {
             "decimal": false,
             "name": "category",
             "nullable": false,
-            "type": "TelemetryCategory"
+            "type": "TelemetryCategory",
+            "vocabulary": null
           }
         ]
       },
@@ -1911,19 +2008,22 @@
             "decimal": false,
             "name": "outcome",
             "nullable": false,
-            "type": "WssOutcome"
+            "type": "WssOutcome",
+            "vocabulary": null
           },
           {
             "decimal": false,
             "name": "stream",
             "nullable": false,
-            "type": "string"
+            "type": "string",
+            "vocabulary": null
           },
           {
             "decimal": false,
             "name": "category",
             "nullable": false,
-            "type": "TelemetryCategory"
+            "type": "TelemetryCategory",
+            "vocabulary": null
           }
         ]
       }
@@ -1942,19 +2042,22 @@
           "decimal": false,
           "name": "follower_account",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "wallet_address",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "leader_count",
           "nullable": false,
-          "type": "integer"
+          "type": "integer",
+          "vocabulary": null
         }
       ]
     },
@@ -1965,49 +2068,57 @@
           "decimal": false,
           "name": "activity_id",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "actor",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "action",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "target_type",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "target_id",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "outcome",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "reason_code",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "occurred_at",
           "nullable": false,
-          "type": "timestamp"
+          "type": "timestamp",
+          "vocabulary": null
         }
       ]
     },
@@ -2018,61 +2129,71 @@
           "decimal": false,
           "name": "event_id",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "actor",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "action",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "target_type",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "target_id",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "outcome",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "reason_code",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "occurred_at",
           "nullable": false,
-          "type": "timestamp"
+          "type": "timestamp",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "follower_account",
           "nullable": true,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "details",
           "nullable": false,
-          "type": "array<array<string | string>>"
+          "type": "array<array<string | string>>",
+          "vocabulary": null
         }
       ]
     },
@@ -2083,13 +2204,15 @@
           "decimal": false,
           "name": "items",
           "nullable": false,
-          "type": "array<BulkTaskItem>"
+          "type": "array<BulkTaskItem>",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "actor",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         }
       ]
     },
@@ -2100,19 +2223,22 @@
           "decimal": false,
           "name": "task_id",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "action",
           "nullable": false,
-          "type": "TaskAction"
+          "type": "TaskAction",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "expected_version",
           "nullable": false,
-          "type": "integer"
+          "type": "integer",
+          "vocabulary": null
         }
       ]
     },
@@ -2123,13 +2249,15 @@
           "decimal": false,
           "name": "tasks",
           "nullable": false,
-          "type": "array<TaskView>"
+          "type": "array<TaskView>",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "atomic",
           "nullable": false,
-          "type": "boolean"
+          "type": "boolean",
+          "vocabulary": null
         }
       ]
     },
@@ -2140,13 +2268,15 @@
           "decimal": false,
           "name": "capabilities",
           "nullable": false,
-          "type": "array<string>"
+          "type": "array<string>",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "observed_at",
           "nullable": false,
-          "type": "timestamp"
+          "type": "timestamp",
+          "vocabulary": null
         }
       ]
     },
@@ -2157,25 +2287,29 @@
           "decimal": false,
           "name": "source",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "signals_total",
           "nullable": false,
-          "type": "integer"
+          "type": "integer",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "deduplicated_total",
           "nullable": false,
-          "type": "integer"
+          "type": "integer",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "last_signal_at",
           "nullable": true,
-          "type": "timestamp"
+          "type": "timestamp",
+          "vocabulary": null
         }
       ]
     },
@@ -2186,61 +2320,71 @@
           "decimal": false,
           "name": "mode",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "sources",
           "nullable": false,
-          "type": "array<DetectionSourceStatusView>"
+          "type": "array<DetectionSourceStatusView>",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "leader_ws_connected",
           "nullable": true,
-          "type": "boolean"
+          "type": "boolean",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "market_ws_ok",
           "nullable": false,
-          "type": "boolean"
+          "type": "boolean",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "user_ws_ok",
           "nullable": false,
-          "type": "boolean"
+          "type": "boolean",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "market_ws_reconnects",
           "nullable": false,
-          "type": "integer"
+          "type": "integer",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "user_ws_reconnects",
           "nullable": false,
-          "type": "integer"
+          "type": "integer",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "pending_confirmations",
           "nullable": true,
-          "type": "PendingConfirmationStatsView"
+          "type": "PendingConfirmationStatsView",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "watched_leader_count",
           "nullable": false,
-          "type": "integer"
+          "type": "integer",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "observed_at",
           "nullable": false,
-          "type": "timestamp"
+          "type": "timestamp",
+          "vocabulary": null
         }
       ]
     },
@@ -2251,31 +2395,36 @@
           "decimal": false,
           "name": "wallet",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": true,
           "name": "score",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "accepted",
           "nullable": false,
-          "type": "boolean"
+          "type": "boolean",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "reason_code",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "cycle_id",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         }
       ]
     },
@@ -2286,43 +2435,50 @@
           "decimal": false,
           "name": "cycle_id",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "status",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "started_at",
           "nullable": false,
-          "type": "timestamp"
+          "type": "timestamp",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "completed_at",
           "nullable": true,
-          "type": "timestamp"
+          "type": "timestamp",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "candidate_count",
           "nullable": false,
-          "type": "integer"
+          "type": "integer",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "kept_count",
           "nullable": false,
-          "type": "integer"
+          "type": "integer",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "config_revision",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         }
       ]
     },
@@ -2333,31 +2489,36 @@
           "decimal": false,
           "name": "wallet",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "tier",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "active",
           "nullable": false,
-          "type": "boolean"
+          "type": "boolean",
+          "vocabulary": null
         },
         {
           "decimal": true,
           "name": "score",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "updated_at",
           "nullable": false,
-          "type": "timestamp"
+          "type": "timestamp",
+          "vocabulary": null
         }
       ]
     },
@@ -2368,13 +2529,15 @@
           "decimal": false,
           "name": "actor",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "force",
           "nullable": false,
-          "type": "boolean"
+          "type": "boolean",
+          "vocabulary": null
         }
       ]
     },
@@ -2385,19 +2548,22 @@
           "decimal": false,
           "name": "run_id",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "accepted",
           "nullable": false,
-          "type": "boolean"
+          "type": "boolean",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "reason_code",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         }
       ]
     },
@@ -2408,25 +2574,29 @@
           "decimal": false,
           "name": "state",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "current_run_id",
           "nullable": true,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "last_cycle_id",
           "nullable": true,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "observed_at",
           "nullable": false,
-          "type": "timestamp"
+          "type": "timestamp",
+          "vocabulary": null
         }
       ]
     },
@@ -2437,37 +2607,43 @@
           "decimal": false,
           "name": "entries_paused",
           "nullable": false,
-          "type": "boolean"
+          "type": "boolean",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "full_stop",
           "nullable": false,
-          "type": "boolean"
+          "type": "boolean",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "revision",
           "nullable": false,
-          "type": "integer"
+          "type": "integer",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "reason_code",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "updated_at",
           "nullable": false,
-          "type": "timestamp"
+          "type": "timestamp",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "updated_by",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         }
       ]
     },
@@ -2478,73 +2654,85 @@
           "decimal": false,
           "name": "fill_id",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "follower_account",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "leader_wallet",
           "nullable": true,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "order_id",
           "nullable": true,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "condition_id",
           "nullable": true,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "token_id",
           "nullable": true,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "side",
           "nullable": true,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": true,
           "name": "size",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": true,
           "name": "price",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": true,
           "name": "fee",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "filled_at",
           "nullable": true,
-          "type": "timestamp"
+          "type": "timestamp",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "created_at",
           "nullable": false,
-          "type": "timestamp"
+          "type": "timestamp",
+          "vocabulary": null
         }
       ]
     },
@@ -2555,61 +2743,71 @@
           "decimal": false,
           "name": "wallet",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "configured",
           "nullable": false,
-          "type": "boolean"
+          "type": "boolean",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "monitored",
           "nullable": false,
-          "type": "boolean"
+          "type": "boolean",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "tier",
           "nullable": true,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": true,
           "name": "score",
           "nullable": true,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "signals_total",
           "nullable": false,
-          "type": "integer"
+          "type": "integer",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "deduplicated_total",
           "nullable": false,
-          "type": "integer"
+          "type": "integer",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "last_signal_at",
           "nullable": true,
-          "type": "timestamp"
+          "type": "timestamp",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "trade_count",
           "nullable": false,
-          "type": "integer"
+          "type": "integer",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "open_position_count",
           "nullable": false,
-          "type": "integer"
+          "type": "integer",
+          "vocabulary": null
         }
       ]
     },
@@ -2620,43 +2818,50 @@
           "decimal": false,
           "name": "follower_account",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "task_id",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "leader_wallet",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "market_id",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "expected_revision",
           "nullable": false,
-          "type": "integer"
+          "type": "integer",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "actor",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "reason_code",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         }
       ]
     },
@@ -2667,13 +2872,15 @@
           "decimal": false,
           "name": "outcome",
           "nullable": false,
-          "type": "LockResetOutcome"
+          "type": "LockResetOutcome",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "released_at",
           "nullable": true,
-          "type": "timestamp"
+          "type": "timestamp",
+          "vocabulary": null
         }
       ]
     },
@@ -2684,67 +2891,78 @@
           "decimal": false,
           "name": "idempotency_key",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "follower_account",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "leader_wallet",
           "nullable": true,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "order_id",
           "nullable": true,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "status",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "side",
           "nullable": true,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": true,
           "name": "amount",
           "nullable": true,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": true,
           "name": "price_limit",
           "nullable": true,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": true,
           "name": "matched_total",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "created_at",
           "nullable": false,
-          "type": "timestamp"
+          "type": "timestamp",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "updated_at",
           "nullable": false,
-          "type": "timestamp"
+          "type": "timestamp",
+          "vocabulary": null
         }
       ]
     },
@@ -2755,13 +2973,15 @@
           "decimal": false,
           "name": "items",
           "nullable": false,
-          "type": "array<T>"
+          "type": "array<T>",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "next_cursor",
           "nullable": true,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         }
       ]
     },
@@ -2772,13 +2992,15 @@
           "decimal": false,
           "name": "limit",
           "nullable": false,
-          "type": "integer"
+          "type": "integer",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "cursor",
           "nullable": true,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         }
       ]
     },
@@ -2789,25 +3011,29 @@
           "decimal": false,
           "name": "tracked",
           "nullable": false,
-          "type": "integer"
+          "type": "integer",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "running",
           "nullable": false,
-          "type": "boolean"
+          "type": "boolean",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "deadline_seconds",
           "nullable": false,
-          "type": "number"
+          "type": "number",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "max_tracked",
           "nullable": false,
-          "type": "integer"
+          "type": "integer",
+          "vocabulary": null
         }
       ]
     },
@@ -2818,55 +3044,64 @@
           "decimal": false,
           "name": "condition_id",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "token_id",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "leader_wallet",
           "nullable": true,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": true,
           "name": "size",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": true,
           "name": "avg_entry_price",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": true,
           "name": "cost_basis_usdc",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": true,
           "name": "mark_price",
           "nullable": true,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": true,
           "name": "market_value_usdc",
           "nullable": true,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": true,
           "name": "unrealized_pnl_usdc",
           "nullable": true,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         }
       ]
     },
@@ -2877,61 +3112,71 @@
           "decimal": true,
           "name": "realized_pnl_usdc",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": true,
           "name": "total_invested_usdc",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": true,
           "name": "total_returned_usdc",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": true,
           "name": "max_drawdown_usdc",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "trade_count",
           "nullable": false,
-          "type": "integer"
+          "type": "integer",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "buy_count",
           "nullable": false,
-          "type": "integer"
+          "type": "integer",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "sell_count",
           "nullable": false,
-          "type": "integer"
+          "type": "integer",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "win_count",
           "nullable": false,
-          "type": "integer"
+          "type": "integer",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "loss_count",
           "nullable": false,
-          "type": "integer"
+          "type": "integer",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "session_started_at",
           "nullable": false,
-          "type": "timestamp"
+          "type": "timestamp",
+          "vocabulary": null
         }
       ]
     },
@@ -2942,61 +3187,76 @@
           "decimal": false,
           "name": "follower_account",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "realized",
           "nullable": false,
-          "type": "PnlSummaryView"
+          "type": "PnlSummaryView",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "positions",
           "nullable": false,
-          "type": "array<PnlPositionView>"
+          "type": "array<PnlPositionView>",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "position_count",
           "nullable": false,
-          "type": "integer"
+          "type": "integer",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "truncated",
           "nullable": false,
-          "type": "boolean"
+          "type": "boolean",
+          "vocabulary": null
         },
         {
           "decimal": true,
           "name": "cost_basis_usdc",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": true,
           "name": "unrealized_pnl_usdc",
           "nullable": true,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "unrealized_basis",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": [
+            "wss_mid",
+            "partial_wss_mid",
+            "truncated",
+            "unavailable"
+          ]
         },
         {
           "decimal": false,
           "name": "marked_position_count",
           "nullable": false,
-          "type": "integer"
+          "type": "integer",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "observed_at",
           "nullable": false,
-          "type": "timestamp"
+          "type": "timestamp",
+          "vocabulary": null
         }
       ]
     },
@@ -3007,67 +3267,78 @@
           "decimal": false,
           "name": "follower_account",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": true,
           "name": "cash_usdc",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": true,
           "name": "reserved_usdc",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": true,
           "name": "positions_value_usdc",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": true,
           "name": "equity_usdc",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "observed_at",
           "nullable": false,
-          "type": "timestamp"
+          "type": "timestamp",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "stale",
           "nullable": false,
-          "type": "boolean"
+          "type": "boolean",
+          "vocabulary": null
         },
         {
           "decimal": true,
           "name": "copyable_balance_usdc",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "position_count",
           "nullable": false,
-          "type": "integer"
+          "type": "integer",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "valuation_basis",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": true,
           "name": "unrealized_pnl_usdc",
           "nullable": true,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         }
       ]
     },
@@ -3078,43 +3349,50 @@
           "decimal": false,
           "name": "follower_account",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "condition_id",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "token_id",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "leader_wallet",
           "nullable": true,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": true,
           "name": "size",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": true,
           "name": "avg_entry_price",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "updated_at",
           "nullable": false,
-          "type": "timestamp"
+          "type": "timestamp",
+          "vocabulary": null
         }
       ]
     },
@@ -3125,121 +3403,141 @@
           "decimal": false,
           "name": "live",
           "nullable": false,
-          "type": "boolean"
+          "type": "boolean",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "ready",
           "nullable": false,
-          "type": "boolean"
+          "type": "boolean",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "failed_checks",
           "nullable": false,
-          "type": "array<string>"
+          "type": "array<string>",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "observed_at",
           "nullable": false,
-          "type": "timestamp"
+          "type": "timestamp",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "circuit_breaker_state",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "wss_market_ok",
           "nullable": false,
-          "type": "boolean"
+          "type": "boolean",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "wss_user_ok",
           "nullable": false,
-          "type": "boolean"
+          "type": "boolean",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "reconciliation_ok",
           "nullable": false,
-          "type": "boolean"
+          "type": "boolean",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "detection_ok",
           "nullable": false,
-          "type": "boolean"
+          "type": "boolean",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "discovery_ok",
           "nullable": false,
-          "type": "boolean"
+          "type": "boolean",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "copy_workers_ok",
           "nullable": false,
-          "type": "boolean"
+          "type": "boolean",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "control_plane_ok",
           "nullable": false,
-          "type": "boolean"
+          "type": "boolean",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "telemetry_ok",
           "nullable": false,
-          "type": "boolean"
+          "type": "boolean",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "active_leader_count",
           "nullable": false,
-          "type": "integer"
+          "type": "integer",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "active_task_count",
           "nullable": false,
-          "type": "integer"
+          "type": "integer",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "pending_intents",
           "nullable": false,
-          "type": "integer"
+          "type": "integer",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "reservations",
           "nullable": false,
-          "type": "integer"
+          "type": "integer",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "stale_locks",
           "nullable": false,
-          "type": "integer"
+          "type": "integer",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "last_reconciliation",
           "nullable": true,
-          "type": "timestamp"
+          "type": "timestamp",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "last_source_event",
           "nullable": true,
-          "type": "timestamp"
+          "type": "timestamp",
+          "vocabulary": null
         }
       ]
     },
@@ -3250,55 +3548,64 @@
           "decimal": false,
           "name": "follower_account",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "task_id",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "leader_wallet",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "market_id",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "reason",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "fill_id",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "locked_at",
           "nullable": false,
-          "type": "timestamp"
+          "type": "timestamp",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "revision",
           "nullable": false,
-          "type": "integer"
+          "type": "integer",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "lock_id",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         }
       ]
     },
@@ -3309,49 +3616,57 @@
           "decimal": false,
           "name": "reservation_id",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "follower_account",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "task_id",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "market_id",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": true,
           "name": "amount",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "status",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "reserved_at",
           "nullable": false,
-          "type": "timestamp"
+          "type": "timestamp",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "expires_at",
           "nullable": false,
-          "type": "timestamp"
+          "type": "timestamp",
+          "vocabulary": null
         }
       ]
     },
@@ -3362,49 +3677,57 @@
           "decimal": false,
           "name": "follower_account",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "condition_id",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "token_id",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "reason",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "source",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "leader_wallet",
           "nullable": true,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "triggered_at",
           "nullable": false,
-          "type": "timestamp"
+          "type": "timestamp",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "expires_at",
           "nullable": true,
-          "type": "timestamp"
+          "type": "timestamp",
+          "vocabulary": null
         }
       ]
     },
@@ -3415,49 +3738,57 @@
           "decimal": false,
           "name": "allowed",
           "nullable": false,
-          "type": "boolean"
+          "type": "boolean",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "reason",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "policy_name",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": true,
           "name": "cap_notional_usdc",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": true,
           "name": "equity_usdc",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": true,
           "name": "free_cash_usdc",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": true,
           "name": "daily_loss_usdc",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "open_position_count",
           "nullable": false,
-          "type": "integer"
+          "type": "integer",
+          "vocabulary": null
         }
       ]
     },
@@ -3468,91 +3799,106 @@
           "decimal": false,
           "name": "name",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "risk_management_enabled",
           "nullable": false,
-          "type": "boolean"
+          "type": "boolean",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "tiered_policy_enabled",
           "nullable": false,
-          "type": "boolean"
+          "type": "boolean",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "kill_switch",
           "nullable": false,
-          "type": "boolean"
+          "type": "boolean",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "max_open_positions",
           "nullable": false,
-          "type": "integer"
+          "type": "integer",
+          "vocabulary": null
         },
         {
           "decimal": true,
           "name": "max_market_exposure_usdc",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": true,
           "name": "max_category_exposure_usdc",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": true,
           "name": "max_leader_exposure_usdc",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": true,
           "name": "max_daily_drawdown_pct",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": true,
           "name": "reserve_pct",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": true,
           "name": "reserve_floor_usdc",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": true,
           "name": "hard_cap_pct",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": true,
           "name": "hard_cap_ceiling_usdc",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "allow_partial_exits",
           "nullable": false,
-          "type": "boolean"
+          "type": "boolean",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "allow_pyramiding",
           "nullable": false,
-          "type": "boolean"
+          "type": "boolean",
+          "vocabulary": null
         }
       ]
     },
@@ -3563,43 +3909,50 @@
           "decimal": false,
           "name": "follower_account",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "policy",
           "nullable": false,
-          "type": "RiskPolicyView"
+          "type": "RiskPolicyView",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "active_blocks",
           "nullable": false,
-          "type": "array<RiskBlockView>"
+          "type": "array<RiskBlockView>",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "recent_triggers",
           "nullable": false,
-          "type": "array<RiskTriggerView>"
+          "type": "array<RiskTriggerView>",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "headroom",
           "nullable": true,
-          "type": "RiskHeadroomView"
+          "type": "RiskHeadroomView",
+          "vocabulary": null
         },
         {
           "decimal": true,
           "name": "day_start_equity_usdc",
           "nullable": true,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "observed_at",
           "nullable": false,
-          "type": "timestamp"
+          "type": "timestamp",
+          "vocabulary": null
         }
       ]
     },
@@ -3610,55 +3963,64 @@
           "decimal": false,
           "name": "trigger_id",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "follower_account",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "condition_id",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "token_id",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "reason",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "source",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "fill_status",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "fill_order_id",
           "nullable": true,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "triggered_at",
           "nullable": false,
-          "type": "timestamp"
+          "type": "timestamp",
+          "vocabulary": null
         }
       ]
     },
@@ -3669,19 +4031,22 @@
           "decimal": false,
           "name": "expected_revision",
           "nullable": false,
-          "type": "integer"
+          "type": "integer",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "actor",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "reason_code",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         }
       ]
     },
@@ -3692,25 +4057,29 @@
           "decimal": false,
           "name": "entry_control",
           "nullable": false,
-          "type": "EntryControlState"
+          "type": "EntryControlState",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "worker_count",
           "nullable": false,
-          "type": "integer"
+          "type": "integer",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "queue_depth",
           "nullable": false,
-          "type": "integer"
+          "type": "integer",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "observed_at",
           "nullable": false,
-          "type": "timestamp"
+          "type": "timestamp",
+          "vocabulary": null
         }
       ]
     },
@@ -3721,37 +4090,43 @@
           "decimal": false,
           "name": "previous_revision",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "revision",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "applied_at",
           "nullable": false,
-          "type": "timestamp"
+          "type": "timestamp",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "applied_by",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "restart_required",
           "nullable": false,
-          "type": "boolean"
+          "type": "boolean",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "live_applied",
           "nullable": false,
-          "type": "boolean"
+          "type": "boolean",
+          "vocabulary": null
         }
       ]
     },
@@ -3762,19 +4137,22 @@
           "decimal": false,
           "name": "path",
           "nullable": false,
-          "type": "SettingsPath"
+          "type": "SettingsPath",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "values",
           "nullable": false,
-          "type": "object"
+          "type": "object",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "revision",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         }
       ]
     },
@@ -3785,13 +4163,15 @@
           "decimal": false,
           "name": "environment",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "section",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         }
       ]
     },
@@ -3802,25 +4182,29 @@
           "decimal": false,
           "name": "path",
           "nullable": false,
-          "type": "SettingsPath"
+          "type": "SettingsPath",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "values",
           "nullable": false,
-          "type": "object"
+          "type": "object",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "expected_revision",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "actor",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         }
       ]
     },
@@ -3831,13 +4215,15 @@
           "decimal": false,
           "name": "document",
           "nullable": false,
-          "type": "SettingsDocument"
+          "type": "SettingsDocument",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "metadata",
           "nullable": false,
-          "type": "SettingsApplyMetadata"
+          "type": "SettingsApplyMetadata",
+          "vocabulary": null
         }
       ]
     },
@@ -3848,13 +4234,15 @@
           "decimal": false,
           "name": "system",
           "nullable": false,
-          "type": "SystemView"
+          "type": "SystemView",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "readiness",
           "nullable": false,
-          "type": "ReadinessView"
+          "type": "ReadinessView",
+          "vocabulary": null
         }
       ]
     },
@@ -3865,43 +4253,50 @@
           "decimal": false,
           "name": "service",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "version",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "environment",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "observed_at",
           "nullable": false,
-          "type": "timestamp"
+          "type": "timestamp",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "mode",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "backend",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "uptime_seconds",
           "nullable": false,
-          "type": "number"
+          "type": "number",
+          "vocabulary": null
         }
       ]
     },
@@ -3912,43 +4307,50 @@
           "decimal": false,
           "name": "trigger",
           "nullable": false,
-          "type": "TaskTriggerView"
+          "type": "TaskTriggerView",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "spend",
           "nullable": false,
-          "type": "TaskSpendView"
+          "type": "TaskSpendView",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "price",
           "nullable": false,
-          "type": "TaskPriceView"
+          "type": "TaskPriceView",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "reaction",
           "nullable": false,
-          "type": "TaskReactionView"
+          "type": "TaskReactionView",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "market_filter",
           "nullable": false,
-          "type": "TaskMarketFilterView"
+          "type": "TaskMarketFilterView",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "schedule",
           "nullable": false,
-          "type": "TaskScheduleView"
+          "type": "TaskScheduleView",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "sizing",
           "nullable": false,
-          "type": "TaskSizingView"
+          "type": "TaskSizingView",
+          "vocabulary": null
         }
       ]
     },
@@ -3959,13 +4361,15 @@
           "decimal": false,
           "name": "task",
           "nullable": false,
-          "type": "CopyTask"
+          "type": "CopyTask",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "actor",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         }
       ]
     },
@@ -3976,13 +4380,15 @@
           "decimal": false,
           "name": "task",
           "nullable": false,
-          "type": "TaskView"
+          "type": "TaskView",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "configuration",
           "nullable": false,
-          "type": "TaskConfigurationView"
+          "type": "TaskConfigurationView",
+          "vocabulary": null
         }
       ]
     },
@@ -3993,25 +4399,29 @@
           "decimal": false,
           "name": "source_task_id",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "new_task_id",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "new_name",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "actor",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         }
       ]
     },
@@ -4022,61 +4432,71 @@
           "decimal": false,
           "name": "enabled",
           "nullable": false,
-          "type": "boolean"
+          "type": "boolean",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "include_keywords",
           "nullable": false,
-          "type": "array<string>"
+          "type": "array<string>",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "exclude_keywords",
           "nullable": false,
-          "type": "array<string>"
+          "type": "array<string>",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "categories",
           "nullable": false,
-          "type": "array<string>"
+          "type": "array<string>",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "tokens",
           "nullable": false,
-          "type": "array<string>"
+          "type": "array<string>",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "timeframes",
           "nullable": false,
-          "type": "array<string>"
+          "type": "array<string>",
+          "vocabulary": null
         },
         {
           "decimal": true,
           "name": "min_liquidity_usdc",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": true,
           "name": "min_volume_24h_usdc",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": true,
           "name": "max_days_until_close",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "allow_expired_unresolved",
           "nullable": false,
-          "type": "boolean"
+          "type": "boolean",
+          "vocabulary": null
         }
       ]
     },
@@ -4087,43 +4507,57 @@
           "decimal": false,
           "name": "enabled",
           "nullable": false,
-          "type": "boolean"
+          "type": "boolean",
+          "vocabulary": null
         },
         {
           "decimal": true,
           "name": "min_price",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": true,
           "name": "max_price",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "offset_mode",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": [
+            "disabled",
+            "fixed",
+            "percentage"
+          ]
         },
         {
           "decimal": false,
           "name": "offset_direction",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": [
+            "above",
+            "below"
+          ]
         },
         {
           "decimal": true,
           "name": "offset",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": true,
           "name": "max_slippage_percent",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         }
       ]
     },
@@ -4134,55 +4568,68 @@
           "decimal": false,
           "name": "enabled",
           "nullable": false,
-          "type": "boolean"
+          "type": "boolean",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "follow_buys",
           "nullable": false,
-          "type": "boolean"
+          "type": "boolean",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "copy_sells",
           "nullable": false,
-          "type": "boolean"
+          "type": "boolean",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "buy_on_sells",
           "nullable": false,
-          "type": "boolean"
+          "type": "boolean",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "counter_trade",
           "nullable": false,
-          "type": "boolean"
+          "type": "boolean",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "copy_side",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": [
+            "both",
+            "yes_only",
+            "no_only"
+          ]
         },
         {
           "decimal": false,
           "name": "copy_merges",
           "nullable": false,
-          "type": "boolean"
+          "type": "boolean",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "copy_splits",
           "nullable": false,
-          "type": "boolean"
+          "type": "boolean",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "copy_conversions",
           "nullable": false,
-          "type": "boolean"
+          "type": "boolean",
+          "vocabulary": null
         }
       ]
     },
@@ -4193,25 +4640,29 @@
           "decimal": false,
           "name": "enabled",
           "nullable": false,
-          "type": "boolean"
+          "type": "boolean",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "timezone_name",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "start",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "end",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         }
       ]
     },
@@ -4222,79 +4673,100 @@
           "decimal": false,
           "name": "enabled",
           "nullable": false,
-          "type": "boolean"
+          "type": "boolean",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "mode",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": [
+            "fixed",
+            "exact_mirror",
+            "proportional",
+            "balance_weighted",
+            "portfolio_weighted",
+            "adaptive",
+            "tiered"
+          ]
         },
         {
           "decimal": true,
           "name": "percentage",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": true,
           "name": "fixed_amount",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": true,
           "name": "trade_multiplier",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": true,
           "name": "weighted_multiplier",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": true,
           "name": "buy_min_amount",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": true,
           "name": "buy_max_amount",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": true,
           "name": "copyable_balance_percent",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "proportional_balance_cap_enabled",
           "nullable": false,
-          "type": "boolean"
+          "type": "boolean",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "require_leader_balance",
           "nullable": false,
-          "type": "boolean"
+          "type": "boolean",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "strict_fixed_amount",
           "nullable": false,
-          "type": "boolean"
+          "type": "boolean",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "strict_exact_mirror",
           "nullable": false,
-          "type": "boolean"
+          "type": "boolean",
+          "vocabulary": null
         }
       ]
     },
@@ -4305,43 +4777,50 @@
           "decimal": false,
           "name": "enabled",
           "nullable": false,
-          "type": "boolean"
+          "type": "boolean",
+          "vocabulary": null
         },
         {
           "decimal": true,
           "name": "max_total",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": true,
           "name": "max_daily",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": true,
           "name": "max_per_market",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "one_entry_per_market",
           "nullable": false,
-          "type": "boolean"
+          "type": "boolean",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "global_one_entry_per_market",
           "nullable": false,
-          "type": "boolean"
+          "type": "boolean",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "one_entry_per_sports_type",
           "nullable": false,
-          "type": "boolean"
+          "type": "boolean",
+          "vocabulary": null
         }
       ]
     },
@@ -4352,19 +4831,22 @@
           "decimal": false,
           "name": "enabled",
           "nullable": false,
-          "type": "boolean"
+          "type": "boolean",
+          "vocabulary": null
         },
         {
           "decimal": true,
           "name": "min_notional",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": true,
           "name": "max_notional",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         }
       ]
     },
@@ -4375,19 +4857,22 @@
           "decimal": false,
           "name": "task",
           "nullable": false,
-          "type": "CopyTask"
+          "type": "CopyTask",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "expected_version",
           "nullable": false,
-          "type": "integer"
+          "type": "integer",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "actor",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         }
       ]
     },
@@ -4398,19 +4883,22 @@
           "decimal": false,
           "name": "task_id",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "expected_version",
           "nullable": false,
-          "type": "integer"
+          "type": "integer",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "actor",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         }
       ]
     },
@@ -4421,55 +4909,79 @@
           "decimal": false,
           "name": "task_id",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "name",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "leader_wallet",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "follower_account",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "status",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": [
+            "active",
+            "paused",
+            "deleted"
+          ]
         },
         {
           "decimal": false,
           "name": "monitoring_mode",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": [
+            "normal",
+            "priority"
+          ]
         },
         {
           "decimal": false,
           "name": "sizing_mode",
           "nullable": false,
-          "type": "string"
+          "type": "string",
+          "vocabulary": [
+            "fixed",
+            "exact_mirror",
+            "proportional",
+            "balance_weighted",
+            "portfolio_weighted",
+            "adaptive",
+            "tiered"
+          ]
         },
         {
           "decimal": false,
           "name": "version",
           "nullable": false,
-          "type": "integer"
+          "type": "integer",
+          "vocabulary": null
         },
         {
           "decimal": false,
           "name": "notifications_muted",
           "nullable": false,
-          "type": "boolean"
+          "type": "boolean",
+          "vocabulary": null
         }
       ]
     }
@@ -4492,6 +5004,7 @@
     "server_frames": {
       "error": {
         "code": "string",
+        "retry_after_seconds": "integer, present only on the rate_limited variant, which is immediately followed by a close",
         "type": "error"
       },
       "pong": {

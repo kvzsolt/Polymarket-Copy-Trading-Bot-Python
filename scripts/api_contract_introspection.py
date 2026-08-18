@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Type and validator introspection used to build the API contract snapshot.
 
-Two questions have to be answered by reading the real contract classes rather
-than by hand: what wire type each dataclass field carries, and which fields a
-frozen view actually validates as a decimal string. Both answers live here so
+Several questions have to be answered by reading the real contract classes
+rather than by hand: what wire type each dataclass field carries, which fields
+a frozen view actually validates as a decimal string, what members sit behind a
+string-typed field's declared vocabulary, and which event type a payload
+classifies as. Every answer is derived here so
 ``scripts/export_api_contract.py`` stays an assembler and
 ``scripts/api_contract_tables.py`` stays pure declaration.
 """
@@ -12,12 +14,14 @@ from __future__ import annotations
 
 import ast
 import dataclasses
+import importlib
 import inspect
 import textwrap
 import types
 import typing
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime
+from enum import Enum
 from typing import Any, cast
 
 DECIMAL_VALIDATORS = frozenset({"require_decimal_string", "optional_decimal_string"})
@@ -162,4 +166,114 @@ def _is_self(node: ast.expr) -> bool:
     return isinstance(node, ast.Name) and node.id == "self"
 
 
-__all__ = ["DECIMAL_VALIDATORS", "DecimalFieldExtractor", "TypeRenderer"]
+def resolve_vocabulary(target: str) -> tuple[str, ...]:
+    """Resolve a ``module:symbol`` vocabulary into its ordered string members.
+
+    Args:
+        target: Dotted module path and symbol name separated by ``:``.
+
+    Returns:
+        The enum member values, or the literal tuple's strings, in order.
+
+    Raises:
+        ValueError: When the target is malformed or is not a supported kind.
+    """
+
+    module_name, separator, symbol_name = target.partition(":")
+    if not separator or not module_name or not symbol_name:
+        raise ValueError(f"vocabulary target must be 'module:symbol', got {target!r}")
+    symbol = getattr(importlib.import_module(module_name), symbol_name)
+    if isinstance(symbol, type) and issubclass(symbol, Enum):
+        return tuple(str(member.value) for member in symbol)
+    if isinstance(symbol, (tuple, list)) and all(isinstance(item, str) for item in symbol):
+        return tuple(symbol)
+    raise ValueError(f"vocabulary target {target!r} is neither an Enum nor a tuple of strings")
+
+
+def summary_line(owner: type) -> str:
+    """Return the first line of a class docstring, or an empty string."""
+
+    doc = inspect.getdoc(owner) or ""
+    return doc.splitlines()[0].strip() if doc else ""
+
+
+def outcome_values(payload: type) -> tuple[Enum, ...] | None:
+    """Return the ``outcome`` enum members a payload can carry, if any."""
+
+    if "outcome" not in getattr(payload, "__dataclass_fields__", {}):
+        return None
+    annotation = typing.get_type_hints(payload).get("outcome")
+    if isinstance(annotation, type) and issubclass(annotation, Enum):
+        return tuple(annotation)
+    return None
+
+
+def blank_payload(
+    payload: type,
+    *,
+    outcome: Enum | None = None,
+    placeholders: Mapping[str, object] | None = None,
+) -> object:
+    """Build one throwaway payload instance for event-type classification.
+
+    Args:
+        payload: Frozen payload dataclass to instantiate.
+        outcome: Outcome member to pin, when the payload carries one.
+        placeholders: Per-field overrides for fields whose validator
+            rejects the generic placeholder.
+
+    Returns:
+        One instance suitable only for classification.
+    """
+
+    hints = typing.get_type_hints(payload)
+    kwargs: dict[str, Any] = {}
+    for item in dataclasses.fields(cast(Any, payload)):
+        if not item.init or item.default is not dataclasses.MISSING:
+            continue
+        if item.name == "outcome" and outcome is not None:
+            kwargs["outcome"] = outcome
+            continue
+        kwargs[item.name] = placeholder_value(item.name, hints[item.name], placeholders)
+    return payload(**kwargs)
+
+
+def placeholder_value(
+    name: str,
+    annotation: object,
+    placeholders: Mapping[str, object] | None = None,
+) -> Any:
+    """Return a contract-valid placeholder value for one payload field.
+
+    Args:
+        name: Field name being filled.
+        annotation: Resolved field annotation.
+        placeholders: Per-field overrides consulted before the defaults.
+
+    Returns:
+        A value the payload's own validator accepts.
+    """
+
+    override = (placeholders or {}).get(name)
+    if override is not None:
+        return override
+    if isinstance(annotation, type):
+        if issubclass(annotation, Enum):
+            return next(iter(annotation))
+        if issubclass(annotation, bool):
+            return False
+        if issubclass(annotation, int):
+            return 0
+    return "placeholder"
+
+
+__all__ = [
+    "DECIMAL_VALIDATORS",
+    "DecimalFieldExtractor",
+    "TypeRenderer",
+    "blank_payload",
+    "outcome_values",
+    "placeholder_value",
+    "resolve_vocabulary",
+    "summary_line",
+]
